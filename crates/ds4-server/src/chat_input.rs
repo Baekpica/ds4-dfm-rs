@@ -34,6 +34,14 @@ pub fn render(
         return Ok(parsed.prompt_text.clone().unwrap_or_default().into_bytes());
     }
     let mut messages = messages(parsed)?;
+    if model_id != ds4_core::Variant::IQuestQ1 as i32 {
+        // IQuest assigns developer its own control token; older families use system.
+        for message in &mut messages {
+            if message["role"] == "developer" {
+                message["role"] = "system".into();
+            }
+        }
+    }
     prepare_image_text(model_id, &mut messages);
     let tools = serde_json::Deserializer::from_str(&parsed.tool_schemas)
         .into_iter::<Value>()
@@ -147,11 +155,7 @@ pub(crate) fn messages(parsed: &ParsedRequest) -> Result<Vec<Value>, GenerateErr
 }
 
 fn message(msg: &ChatMsg, parts: &[ChatPart], fallback: &str) -> Result<Value, GenerateError> {
-    let role = if msg.role == "developer" {
-        "system"
-    } else {
-        &msg.role
-    };
+    let role = &msg.role;
     let mut out = json!({"role":role, "content":content(parts, fallback)});
     if !msg.name.is_empty() {
         out["name"] = msg.name.clone().into();

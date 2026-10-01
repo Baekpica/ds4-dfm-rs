@@ -1,0 +1,1364 @@
+{
+  "schema": 1,
+  "status": "local campaign complete; strict failures preserved, broader qualification unset",
+  "assembled_utc": "2026-10-01T08:58:31+00:00",
+  "scope": "2026-10-01 actual GGUF on NVIDIA GB10; raw report names are relative to scratch/iquest",
+  "identity": {
+    "artifact": "Baekpica/IQuest-Q1-Mixed-Quant-GGUF",
+    "weight_revision": "6f08e63aa9dcd29cd29966180846266c0ca80639",
+    "source": "IQuestLab/IQuest-Q1",
+    "source_revision": "5c21b0630586ef77d38cff1094b8cf37a417fcd8",
+    "tensor_count": 1254,
+    "weight_payload_bytes": 87975869440,
+    "shard_file_bytes": 87995249696,
+    "shards_sha256": {
+      "IQuest-Q1-MQ-IQ2_XXS-00001-of-00006.gguf": "59cfbc372f2e8988a960626508e62ec49a373efbba4848e122d6cc96288b332d",
+      "IQuest-Q1-MQ-IQ2_XXS-00002-of-00006.gguf": "68db6ed9aacb347f41f732c048220905c9336793bcc5a95a6ee59590f6d7ed36",
+      "IQuest-Q1-MQ-IQ2_XXS-00003-of-00006.gguf": "c2e686e4396d57e33bc9f1662e535b4e910033b95d6875b07c12ff81e34b1342",
+      "IQuest-Q1-MQ-IQ2_XXS-00004-of-00006.gguf": "1eaccda174c4505c70cf2cd4a7a4962ba60a7a29528d3fe777d25537c6934fc5",
+      "IQuest-Q1-MQ-IQ2_XXS-00005-of-00006.gguf": "4ffacc99ab740130b9ccafaf46151c38e48e6940bde105cc393ef041ccc54c23",
+      "IQuest-Q1-MQ-IQ2_XXS-00006-of-00006.gguf": "ae3eb2281a673a4f96bedd704266ea0213fe909af8d456767bc6fdefe23ce844"
+    },
+    "existing_six_shard_check": "all six passed",
+    "git_base": "52e37cd9032a8be78b40654ae3256a23b2b772a5",
+    "runtime_state": "candidate commit; earlier run identities remain separate",
+    "checked_source_files": 14,
+    "source_inventory_sha256": "b5bc2bf43b68052461a9c9ec1f979ffe7b5b02cc2b41403fa423ea997713356f",
+    "git_diff_check": "passed",
+    "current_source_commit": "f94697c5d56ec1b4ec5e27b512b029723988a8d3",
+    "current_fix": "Honor explicit IQuest thinking sampler controls and preserve reasoning in cache history",
+    "current_fix_source_sha256": {
+      "crates/ds4-server/src/generate.rs": "0314ae2f329d4ed30160e46e1fa11f639ac6f48b29387ca45490842a49d41cb2",
+      "crates/ds4-server/src/serve_cont.rs": "15755963e77d61a3169116cc328eb1ae0dbe7d8cd0764b58ff24e6a448537ee0",
+      "crates/ds4-server/tests/generate.rs": "87341543ad3ec401e3370c8c2c896092578a19167fbf9344c2f28fde86b1c14f"
+    },
+    "git_base_scope": "Earlier native/benchmark candidate; current_source_commit adds host fix only",
+    "functional_source_commit": "f94697c5d56ec1b4ec5e27b512b029723988a8d3"
+  },
+  "model_free": {
+    "passed": 1464,
+    "failed": 0,
+    "ignored": 12,
+    "suites": 83,
+    "source_commit": "f94697c5d56ec1b4ec5e27b512b029723988a8d3",
+    "report": "workspace-qualified-summary.json",
+    "raw_log": "evidence-f94697c5/workspace-qualified.log"
+  },
+  "gpu_primitives": {
+    "report": "primitives-after.jsonl",
+    "complete": true,
+    "failures": 0,
+    "scope": "real head dimensions; excludes model serving"
+  },
+  "mapping": {
+    "gpu": "NVIDIA GB10",
+    "scope": "one-MiB-real-Q6-embedding-file-map",
+    "mapped_bytes": 1048576,
+    "exact_device_read": true,
+    "canonical_device_copy_bytes": 0
+  },
+  "embedding": {
+    "report": "embedding-after.json",
+    "scope": "Exact public embedding API/kernel section with stubbed weight-address mapping; real saved Q6 blocks; excludes full native binding",
+    "q6_sample_sha256": "3a4453350a19917de7387d810a55c40643f1cd1bab5c0f391a3d8cbd65409a94",
+    "type_ids": [
+      14,
+      0,
+      1,
+      30,
+      8
+    ],
+    "all_exact_and_invalid_inputs_rejected": true
+  },
+  "prefix": {
+    "report": "prefix-gb10-comparison.json",
+    "tokens": [
+      1,
+      2,
+      3
+    ],
+    "layers": 2,
+    "gates": {
+      "finite_nonzero_stages": true,
+      "embedding_exact": true,
+      "routing_exact": true
+    },
+    "final_hidden": {
+      "max_absolute_error": 0.1875,
+      "relative_rmse": 0.009561502306978775,
+      "mean_cosine": 0.9999563089564077,
+      "element_equal_fraction": 0.20030381944444445,
+      "archived_native_relative_rmse": 0.009561502306978775
+    },
+    "whole_model_quality_qualified": false,
+    "scope": "decoded-F32 reference versus native Q8 activation/KV arithmetic; no universal tolerance"
+  },
+  "serial_mtp_scope": "Each accepted round: finite full-vocabulary bit-exact logits and committed target/MTP payload bytes; snapshot/disk restore; valid/EOS-prefix tokens; memory faults unchanged. Timings include readback and do not qualify throughput.",
+  "serial_mtp_columns": [
+    "report",
+    "ctx",
+    "chunk",
+    "draft",
+    "prompt_tokens",
+    "generated_tokens",
+    "eos_seen",
+    "rounds",
+    "proposed",
+    "accepted",
+    "all_gates_passed",
+    "wraps",
+    "memory",
+    "truncation"
+  ],
+  "wrap_columns": [
+    "prefill_swa",
+    "prefill_mtp",
+    "decode_swa",
+    "decode_mtp"
+  ],
+  "serial_memory_columns": [
+    "session_tensor_quote_bytes",
+    "active_kv_quote_bytes",
+    "snapshot_native_buffer_bytes",
+    "comparison_host_buffers_bytes",
+    "retained_payload_file_bytes"
+  ],
+  "serial_mtp": [
+    [
+      "short/report.json",
+      512,
+      4,
+      3,
+      13,
+      12,
+      false,
+      6,
+      15,
+      6,
+      true,
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        105514016,
+        99171200,
+        5298197,
+        2097152,
+        14151576
+      ],
+      null
+    ],
+    [
+      "mtp-wrap/report.json",
+      8192,
+      128,
+      7,
+      517,
+      32,
+      false,
+      13,
+      74,
+      19,
+      true,
+      [
+        0,
+        0,
+        0,
+        1
+      ],
+      [
+        1101758336,
+        1025696768,
+        106704069,
+        2097152,
+        314561120
+      ],
+      {
+        "fixture_bytes": 2184,
+        "source_payload_bytes": 100767816,
+        "host_prefix_unchanged": true,
+        "recovered_position": 517,
+        "recovery_full_vocab_logits_bit_exact": true,
+        "recovery_payload_byte_exact": true
+      }
+    ],
+    [
+      "swa-wrap/report.json",
+      8192,
+      128,
+      7,
+      4220,
+      32,
+      false,
+      14,
+      92,
+      18,
+      true,
+      [
+        0,
+        8,
+        1,
+        0
+      ],
+      [
+        1101758336,
+        1025696768,
+        794332689,
+        2097152,
+        2382090192
+      ],
+      {
+        "fixture_bytes": 16996,
+        "source_payload_bytes": 792863780,
+        "host_prefix_unchanged": true,
+        "recovered_position": 4220,
+        "recovery_full_vocab_logits_bit_exact": true,
+        "recovery_payload_byte_exact": true
+      }
+    ]
+  ],
+  "memory": {
+    "weight_owner_ranges": 91,
+    "owner_log": "owner-evidence.log",
+    "weight_import_committed_bytes": 88097161216,
+    "worker_owned_weight_bytes": {
+      "weight_span": 0,
+      "weight_whole": 0,
+      "weight_derived": 0,
+      "weight_host_pin": 0
+    },
+    "scratch_sticky_bytes": 83886080,
+    "kernel_partials_bytes": 54826016,
+    "scope": "import aliases existing owner allocation; not another physical weight copy. Snapshot bytes exclude Rust ledger/allocator overhead.",
+    "clock_policy_mhz": [
+      300,
+      2200
+    ],
+    "clock_policy_changed": false,
+    "throughput_qualified": false
+  },
+  "reuse_case_columns": [
+    "report",
+    "passed",
+    "output",
+    "prompt",
+    "completion",
+    "cached",
+    "finish",
+    "reuse",
+    "errors",
+    "native_cross_bank_events"
+  ],
+  "reuse_campaigns": [
+    {
+      "folder": "reuse-on-long",
+      "runner_schema": 4,
+      "passed": false,
+      "server_sha256": "830d85164837a2a5e3aa1c99377a82636ab29dd843e57b73d0e6f2ab74ceac9b",
+      "ctx": 8192,
+      "banks": 2,
+      "native_chunk": 128,
+      "mtp_mode": "on",
+      "draft": 3,
+      "temperature": 0,
+      "reasoning": "none",
+      "max_tokens": 32,
+      "fixture_report": "reuse-on-long/fixture.json",
+      "cases": [
+        [
+          "cold.append.summary.json",
+          false,
+          "o1",
+          4414,
+          23,
+          0,
+          "stop",
+          "cold",
+          [
+            "answer_format",
+            "cold_parity"
+          ],
+          0
+        ],
+        [
+          "cold.edit.summary.json",
+          false,
+          "o2",
+          4414,
+          23,
+          0,
+          "stop",
+          "cold",
+          [
+            "answer_format"
+          ],
+          0
+        ],
+        [
+          "cold.fork.summary.json",
+          true,
+          "o3",
+          4435,
+          1,
+          0,
+          "stop",
+          "cold",
+          [],
+          0
+        ],
+        [
+          "cold.restart.summary.json",
+          true,
+          "o4",
+          4456,
+          1,
+          0,
+          "stop",
+          "cold",
+          [],
+          0
+        ],
+        [
+          "cold.seed.summary.json",
+          false,
+          "o5",
+          4371,
+          23,
+          0,
+          "stop",
+          "cold",
+          [
+            "answer_format"
+          ],
+          0
+        ],
+        [
+          "restored.restart.summary.json",
+          false,
+          "o4",
+          4456,
+          1,
+          4436,
+          "stop",
+          "partial",
+          [
+            "legacy_label"
+          ],
+          0
+        ],
+        [
+          "seed.seed.summary.json",
+          false,
+          "o5",
+          4371,
+          23,
+          0,
+          "stop",
+          "cold",
+          [
+            "answer_format"
+          ],
+          0
+        ],
+        [
+          "warm.append.summary.json",
+          false,
+          "o6",
+          4414,
+          1,
+          4395,
+          "stop",
+          "partial",
+          [
+            "legacy_label"
+          ],
+          0
+        ],
+        [
+          "warm.edit.summary.json",
+          false,
+          "o2",
+          4414,
+          23,
+          4371,
+          "stop",
+          "partial",
+          [
+            "answer_format"
+          ],
+          0
+        ],
+        [
+          "warm.fork.summary.json",
+          false,
+          "o3",
+          4435,
+          1,
+          4371,
+          "stop",
+          "partial",
+          [
+            "legacy_label"
+          ],
+          0
+        ]
+      ]
+    },
+    {
+      "folder": "reuse-on-short",
+      "runner_schema": 5,
+      "passed": false,
+      "server_sha256": "63d550cbc9211c9f23b1db3a80f11e51846cb20eb55c5157bc72404150ab449f",
+      "ctx": 8192,
+      "banks": 2,
+      "native_chunk": 128,
+      "mtp_mode": "on",
+      "draft": 3,
+      "temperature": 0,
+      "reasoning": "none",
+      "max_tokens": 32,
+      "fixture_report": "reuse-on-short/fixture.json",
+      "cases": [
+        [
+          "cold.append.summary.json",
+          false,
+          "o7",
+          583,
+          32,
+          0,
+          "length",
+          "cold",
+          [
+            "answer_format",
+            "terminal",
+            "cold_parity"
+          ],
+          0
+        ],
+        [
+          "cold.edit.summary.json",
+          false,
+          "o8",
+          583,
+          27,
+          0,
+          "stop",
+          "cold",
+          [
+            "answer_format",
+            "cold_parity"
+          ],
+          0
+        ],
+        [
+          "cold.fork.summary.json",
+          false,
+          "o9",
+          635,
+          28,
+          0,
+          "stop",
+          "cold",
+          [
+            "answer_format"
+          ],
+          0
+        ],
+        [
+          "cold.restart.summary.json",
+          false,
+          "o10",
+          683,
+          28,
+          0,
+          "stop",
+          "cold",
+          [
+            "answer_format"
+          ],
+          0
+        ],
+        [
+          "cold.seed.summary.json",
+          false,
+          "o11",
+          531,
+          32,
+          0,
+          "length",
+          "cold",
+          [
+            "answer_format",
+            "terminal"
+          ],
+          0
+        ],
+        [
+          "restored.restart.summary.json",
+          false,
+          "o10",
+          683,
+          28,
+          664,
+          "stop",
+          "partial",
+          [
+            "answer_format"
+          ],
+          1
+        ],
+        [
+          "seed.seed.summary.json",
+          false,
+          "o11",
+          531,
+          32,
+          0,
+          "length",
+          "cold",
+          [
+            "answer_format",
+            "terminal"
+          ],
+          0
+        ],
+        [
+          "warm.append.summary.json",
+          false,
+          "o12",
+          583,
+          32,
+          563,
+          "length",
+          "partial",
+          [
+            "answer_format",
+            "terminal"
+          ],
+          1
+        ],
+        [
+          "warm.edit.summary.json",
+          false,
+          "o13",
+          583,
+          32,
+          531,
+          "length",
+          "partial",
+          [
+            "answer_format",
+            "terminal"
+          ],
+          0
+        ],
+        [
+          "warm.fork.summary.json",
+          false,
+          "o9",
+          635,
+          28,
+          531,
+          "stop",
+          "partial",
+          [
+            "answer_format"
+          ],
+          0
+        ]
+      ]
+    }
+  ],
+  "reuse_notes": [
+    "v4 rejected legitimate partial labels; original failures are preserved, with no native cross-bank trace.",
+    "Long warm/cold append differs: 5 versus 5 plus self-prose; both stop. This is independent of the v4 label error.",
+    "v5 accepts IQuest MTP partial labels only with native evidence for cross-bank forks; all short cases still fail strict answer formatting.",
+    "Short warm/cold append and edit differ. Actual generated think delimiters and length finishes remain failures.",
+    "Case summaries record native cross-bank frontier events, not payload values. Separate bank_state records completed byte parity."
+  ],
+  "http": {
+    "ctx": 8192,
+    "banks": 2,
+    "mtp_mode": "off",
+    "tools": {
+      "report": "http-tools-off/report.json",
+      "passed": true,
+      "cases": [
+        {
+          "name": "tools.chat",
+          "passed": true,
+          "text": "42",
+          "generated_arguments": {
+            "a": 19,
+            "b": 23
+          },
+          "tool_result": 42,
+          "history": "returned structured assistant/output items replayed unchanged"
+        },
+        {
+          "name": "tools.responses",
+          "passed": true,
+          "text": "42",
+          "generated_arguments": {
+            "a": 19,
+            "b": 23
+          },
+          "tool_result": 42,
+          "history": "returned structured assistant/output items replayed unchanged"
+        }
+      ],
+      "scope": "Chat and Responses generated calls plus structured-history continuation"
+    },
+    "reasoning": {
+      "report": "http-reasoning-off/report.json",
+      "original_campaign_passed": false,
+      "request_reasoning": "enabled/high",
+      "passed_cases": [
+        "reasoning.chat.buffered",
+        "reasoning.chat.sse",
+        "reasoning.responses.buffered",
+        "reasoning.responses.sse"
+      ],
+      "passed_contract": "answer 42, nonempty generated reasoning, no internal delimiters, proper terminal",
+      "failed_cases": [
+        {
+          "name": "reasoning.anthropic.buffered",
+          "error": "missing/nonpositive usage"
+        }
+      ],
+      "anthropic_usage": {
+        "input_tokens": 0,
+        "output_tokens": 21,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 22
+      },
+      "anthropic_answer": "42",
+      "interpretation": "Anthropic buffered response was misclassified by v1 input_tokens>0 check; cached input is separate. Not a runtime bug. Original failed receipt is retained; final f946 six-case reports supersede this incomplete campaign.",
+      "anthropic_sse": "not run in original failed campaign"
+    },
+    "basic": {
+      "report": "http-basic-off/report.json",
+      "passed": false,
+      "first_case": "basic.chat.buffered",
+      "output": "o14",
+      "error": "strict answer must be 42; remaining surfaces not run in v1 fail-fast campaign"
+    },
+    "harness_v2": {
+      "script": "http_gate-v2.py",
+      "prior_script": "http_gate-v1.py",
+      "cpu_tests": 22,
+      "cpu_log": "http-v2-after.log",
+      "changes": "Anthropic summed input fields; optional keep-going retains failures and runs final fault check"
+    },
+    "harness_v3": {
+      "script": "http_gate-v3.py",
+      "cpu_tests": 26,
+      "cpu_log": "http-v3-after.log",
+      "change": "Optional reasoning-effort high affects only sampling/concurrency: 256-token budget, nonempty generated reasoning required; strict answers unchanged. Default none preserves prior fixtures."
+    }
+  },
+  "bank_state": {
+    "report": "bank-long/report.json",
+    "ctx": 8192,
+    "chunk": 128,
+    "banks": 2,
+    "cut": 4395,
+    "serial_from": 4371,
+    "prompt_tokens": 4414,
+    "target_ring": 4223,
+    "checkpoint_after_physical_wrap": true,
+    "payload_bytes": 803418156,
+    "prefix_bytes": 802384480,
+    "exact": {
+      "source_preserved": true,
+      "full_fork": true,
+      "partial_fork": true,
+      "matched_schedule": true,
+      "in_place_rewind": true,
+      "disk_restore": true
+    },
+    "memory_faults_unchanged": true,
+    "cross_width_quality_qualified": false,
+    "cross_width": {
+      "source_first": 532,
+      "cold_first": 532,
+      "forced_first": 532,
+      "source_next": 0,
+      "cold_next": 781
+    },
+    "at_prompt": {
+      "changed": 159331,
+      "vocab": 160000,
+      "max_abs": 6.109375,
+      "rms": 1.4857433066621273,
+      "source_eos": 18.125,
+      "cold_eos": 18.875
+    },
+    "after_first": {
+      "changed": 158874,
+      "vocab": 160000,
+      "max_abs": 3.94140625,
+      "rms": 0.9017015300450041,
+      "source_eos": 24.75,
+      "cold_eos": 24.25
+    },
+    "eos_margin_warm": 0.25,
+    "eos_margin_cold": -0.5,
+    "interpretation": "Exact fork/rewind/disk/matched-schedule state passes. Cold recomputation width changes logits and flips EOS after the same first token, reproducing HTTP divergence. Significant numerical sensitivity remains unqualified, not harmless FP.",
+    "numerics": {
+      "report": "bank-long/numerics-audit.json",
+      "scope": "CPU read-only payload inspection and arithmetic illustration; no new GPU execution",
+      "kv_layers": [
+        {
+          "layer": 0,
+          "first_changed_position": 4352,
+          "changed_rows": 62,
+          "preceding_rows_bit_exact": 4352,
+          "last_changed_position": 4413,
+          "suffix_max_abs": 0.10430908203125,
+          "suffix_rms": 0.0036789809514508063,
+          "suffix_relative_rms": 0.0017827401540102485
+        },
+        {
+          "layer": 1,
+          "first_changed_position": 4352,
+          "changed_rows": 62,
+          "preceding_rows_bit_exact": 4352,
+          "last_changed_position": 4413,
+          "suffix_max_abs": 0.181640625,
+          "suffix_rms": 0.024788947934862138,
+          "suffix_relative_rms": 0.009222014083129292
+        }
+      ],
+      "dispatch": "Layer0/1 rows0..4351 are byte-exact. All62 rows4352..4413 differ; warm schedule uses width19 MMVQ at4414, cold uses width62 MMQ. Dense routed vector threshold is20.",
+      "interpretation": "Measured KV divergence aligns with recomputation-width boundaries. Packer/formula differences illustrate a mechanism; they do not quantitatively attribute the full-model logits/EOS error."
+    }
+  },
+  "pending": [
+    "whole-88-layer native/source quality",
+    "512K workload and physical-fit qualification"
+  ],
+  "qualification": {
+    "serving_ctx": null,
+    "serving_banks": null,
+    "mtp_speedup": null,
+    "whole_model_quality": false,
+    "strict_reuse_campaigns": false,
+    "thinking_reuse_visible_answers": "all five in each recorded on/off workload; strict full-message parity unqualified",
+    "scope_note": "The plan has no reasoning mode or MTP margin, so the passed bounded thinking profile cannot promote family-wide limits."
+  },
+  "model_outputs": {
+    "o1": "5\n\nI do not see a question in your message that requires reasoning. Please provide a clear question or task.",
+    "o2": "6\n\nI do not see a question in your message that requires reasoning. Please provide a clear question or task.",
+    "o3": "8",
+    "o4": "9",
+    "o5": "4\n\nI do not see a question in your message that requires reasoning. Please provide a clear question or task.",
+    "o6": "5",
+    "o7": "5\n\n---\n\nThe user asks \"What is 4 + 1? Reply with just the number.\" The answer is 5.</think>5\n\n---\n\nThe",
+    "o8": "6\n\n---\n\nYou ask \"What is 4 + 2? Reply with just the number.\" The answer is 6.</think>",
+    "o9": "8\n\n---\n\nYou ask \"What is 5 + 3? Reply with just the number.\" The answer is 8.</think>8",
+    "o10": "9\n\n---\n\nYou ask \"What is 8 + 1? Reply with just the number.\" The answer is 9.</think>9",
+    "o11": "4\n\n---\n\nYou list the inventory items and then ask \"What is 2 + 2? Reply with just the number.\" The answer is 4.",
+    "o12": "5\n\n---\n\nYou ask \"What is 4 + 1? Reply with just the number.\" The answer is 5.</think>5<think>The user has",
+    "o13": "6\n\n---\n\nYou ask \"What is 4 + 2? Reply with just the number.\" The answer is 6.</think>6<think>The user has",
+    "o14": "19 + 23 = 42\n\nThe answer is 42."
+  },
+  "raw_report_sha256": {
+    "artifacts.json": "d1185820cfaafebe0f845e314d79f90fde8ec331f2fc36b805957fcbea483708",
+    "bank-long/numerics-audit.json": "1ac314b1bebdc7bcbbaf9e9e0144376cce117e71ceeaba202ab4c6a7cc1a4822",
+    "bank-long/report.json": "6873d9ddaef3df2d8f71f58f0966f94dc8c3d286e0e6d37e2182d60a71a8978e",
+    "bench-2048/summary.json": "05da2c2df4d2b2c7753442c4da12cbd858bf72512949a7823cda92d8963004d3",
+    "cleanup.json": "bca2d41e1c4815a246822f8408da250e09404cf0918bf38308a69490c2e0afa5",
+    "embedding-after.json": "9fad62481cdefe4db3574658921f95c4116fb5620554d3b6aa4b46919ffef630",
+    "evidence-f94697c5/clippy-qualified.log": "351d0df69a1974a880e931564495709060f8eea720febda5717b350c7115b7bf",
+    "evidence-f94697c5/fmt-qualified.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidence-f94697c5/gpu-clocks.csv": "7d38dba7a301f56507ecdce7b7d32417251e87db83b64ca3da3ff47b704252b4",
+    "evidence-f94697c5/http-final-cont.log": "be76e04335f3e5e9c1c1f8b4d93e12a279063ef57444a75cad4bccba98894bb5",
+    "evidence-f94697c5/http-final-serial.log": "335aeddda878d7d605acbf98ed3d8aea8628d1a0498d25ba0353ac1aa5f7c9fe",
+    "evidence-f94697c5/http-published-cpu.log": "8fb90e40cc459a7231b9ef88fa6fc99b1e32c2d0a1d76d0b28676934f8b5d816",
+    "evidence-f94697c5/http-published-help.log": "99ef9f42c8073d9d2a09480f41441d5a732f4e093c6992083402a800930c0202",
+    "evidence-f94697c5/reuse-off-thinking-fixed.log": "a6e9b4065dab9ec75620de26ca3f4f322e824106793bb6174eb182f7cad39391",
+    "evidence-f94697c5/reuse-on-thinking-fixed.log": "295bb37056c9c005209593633792d343207162dd0925936e87932e8b085770b2",
+    "evidence-f94697c5/workspace-qualified.log": "23fd0a5c93df44674a5bebf6ecb7b274c1032a9b69d0eafb9ee2191cf4cf5321",
+    "http-basic-off/report.json": "e676a8b6a780ba02ff4648fbfb5f3f21c151a243e5282f27d4f2afb58a6159df",
+    "http-final-basic/report.json": "af9254e0a6a780fc7a763787f03118e933036c2de1a7a65aba771ab3344de9a5",
+    "http-final-concurrency/report.json": "3dc56a0497a5bc0dece185e2a30f29c088ecff50090f1b918f5530a2a908ce82",
+    "http-final-reasoning-8137/report.json": "daf61d0d0b6ef7a2230cad9fb82265ddbb47502df2fc90d9168ca21ed4b643fb",
+    "http-final-sampling/report.json": "da125c94cbb3bc7c59fb99013c436ab04773c6e31bbead6e32fa18f858b3b19f",
+    "http-final-serial-reasoning/report.json": "0bce399cf32296e27dd1c2a02ef4fb932354d6373f353e41a1a088d19fb337e0",
+    "http-final-serial-sampling/report.json": "39c3856f28234898cff632d42edc8cf08847f94df64d9856dbe40d39287484a8",
+    "http-final-serial-tools/report.json": "e95d250cc8f941c0503e8ab4657bd77d52f39e96aebdcf8801cfca524f18c322",
+    "http-final-tools/report.json": "3fa670207c332c15326b954b849fc7180d9130e19f495901c77f34616d3bc6a9",
+    "http-reasoning-off/reasoning.anthropic.buffered.response.json": "c8c75e366dae3bd67c5ff1742bacf8752b030562001244a64ed3c6a52083a825",
+    "http-reasoning-off/report.json": "e75f4d7c6d15b23bd11054dc6bc22918d9556656d5542b7aee6abf4e7e57ffe4",
+    "http-tools-off/report.json": "5fda48334d1ab735d85b7ee86050d3ad450eb6796cc11551a26a4c57e8a312e5",
+    "http-v2-after.log": "2b45302451cb66d75b0a76289da51ac7d95a80fe661c58a8ac3fb530d64750ea",
+    "http-v3-after.log": "8fb90e40cc459a7231b9ef88fa6fc99b1e32c2d0a1d76d0b28676934f8b5d816",
+    "http_gate-v1.py": "2f75b5d593b8ce0cc7a6e15eff649cf3e7c7f3e9e4473dd0b0b8d95af0bcafb0",
+    "http_gate-v2.py": "310d15721aa807b1d518b661776c0633c8f7de791943b2b4b7860ea5c8c2004b",
+    "http_gate-v3.py": "25fce13bc872ee3c55671853cae405fdd0cfc397e1bd9fba07013d53bdce969a",
+    "mapping-probe.json": "7917e71956cf2dbbb2743a4f5b0074990b06d2de275a1f972548696a683a6b2d",
+    "mtp-wrap/report.json": "067f7b39d46fc2e24f4017f5087ff71e2e26d2815ec208ed4833d06d9bac3cf3",
+    "owner-evidence.log": "4b40cb5a80c26300a689e07e68efbbdb76202856a7523aa83dae02dfa35c883e",
+    "prefix-gb10-comparison.json": "3683ed3c0aec63467c4db644c5eec22fe468bb0271ab740e8ed14d722be4da74",
+    "primitives-after.jsonl": "5599db67222b986a774b7a19b1e61d6ba7fa39a7da3f6ae0a09acc2332fffef2",
+    "reuse-off-thinking-fixed-summary.json": "2c4d7473c3b4bda4050d71e65e9bc4dc93e42c2dee8cb883e26d327b4ec2e37d",
+    "reuse-off-thinking-fixed/cold.append.summary.json": "3d27c7945ef1073831958d25026e64bc2bcf31b3b59d6d9b74e52b3628d24490",
+    "reuse-off-thinking-fixed/cold.edit.summary.json": "a8429ada14d9320cac476d2161aa824551410dcb291e157205a2a5883e97bc9d",
+    "reuse-off-thinking-fixed/cold.fork.summary.json": "525462e689127872c151e7d5d27365d043752b95d6e4218f289b1d4677fc0d54",
+    "reuse-off-thinking-fixed/cold.restart.summary.json": "2c86b26e55c6f97816639a8be7161ce6c7d3e0281ad580ccb16fc07e99dc700d",
+    "reuse-off-thinking-fixed/cold.result.json": "a6682cef7433ee2da727e2063ba5d4a3c9f755d0b3e03872ca4a8d2a43237df9",
+    "reuse-off-thinking-fixed/cold.seed.summary.json": "3a6a0693beb94c5aec28f79644a15f2c411fb88a73d4fdc0e8f38dcf06da2362",
+    "reuse-off-thinking-fixed/fixture.json": "e16488126c900e6e18511fc7e91ce6c15cf906463915350dfab00820b6f30bb8",
+    "reuse-off-thinking-fixed/restored.restart.summary.json": "3ddd32e3153e522534a03ec9da5873473eb81f772ca5afb83b4aac6a32073c6f",
+    "reuse-off-thinking-fixed/restored.result.json": "450f35399f6c5191e5cf952bee41cfc457b093f00b5865928bff5ce73331aa93",
+    "reuse-off-thinking-fixed/seed.process.json": "95081c9d1e8a055b22bc85bc14ced716fd8a7a38032ac30f70394abcac97a531",
+    "reuse-off-thinking-fixed/seed.result.json": "1421d94e8bac62ad7494ea54a9e75b4043a7cc7c9baf21f0a06965d125ea4384",
+    "reuse-off-thinking-fixed/seed.seed.summary.json": "ef5c72db6cbd1c8e2545e3566191e08cfb3806a55590996e48852ec06a5d9f1a",
+    "reuse-off-thinking-fixed/warm.append.summary.json": "b8fec11d9bd50ffabaf93cca466f4930ea4d9b9ffb412547cd766a317716a76b",
+    "reuse-off-thinking-fixed/warm.edit.summary.json": "4c0c992206b22b61056cdba9a52468161395fb5f4e80d92ad92008a4d18f46cc",
+    "reuse-off-thinking-fixed/warm.fork.summary.json": "6299c039cc95bd52b540960ffa3ce61bca3c9bbf4b056aaec5539583b25126c6",
+    "reuse-off-thinking-fixed/warm.result.json": "285f8fdef1449ec1f8b58b8769f5fc6cc13f9eb7ea717065ec2b2d555cd72554",
+    "reuse-on-long/cold.append.summary.json": "10a0647788b6a59bb36f1b5fd3dadda2756f53d0e80f5273a1d8292c1607ad46",
+    "reuse-on-long/cold.edit.summary.json": "81c0b35c0e19256bb2711f2662f2f591f145e4841e5ba37ab2f1bb380eccf2ff",
+    "reuse-on-long/cold.fork.summary.json": "2241e29d382dd4c8bd0719a8ee00f6db3e814179c75e474ffcd51fff13cdf273",
+    "reuse-on-long/cold.restart.summary.json": "5eb895e56b8114027876f8f0ede3c5f5fae141afe6b2d679ece47e06413e46b0",
+    "reuse-on-long/cold.seed.summary.json": "ff29d2d58d7a6038821e39289042146edf2aa4ff0c71044a849d1d31bd0c725f",
+    "reuse-on-long/fixture.json": "e1d2aa6c8b6dd17e0985c04e7274b11cffd2316b4cdf19897775cd92ca8fbf38",
+    "reuse-on-long/restored.restart.summary.json": "e3f61b477a605a8a9755153091527fbc4821048f3997b33bfd694394b93ee445",
+    "reuse-on-long/seed.process.json": "77534108efb57ece5c9861749be58bf65c2bfe33272f517124fc70a3baa4d633",
+    "reuse-on-long/seed.seed.summary.json": "ce6c280417504abe10f8fab44329090217ea82ec16507756a5c20dc70d1ab717",
+    "reuse-on-long/warm.append.summary.json": "4a4f74ce5746774bdef61cf09bcf27ba3fdcd336b118008e523fd36006e4870b",
+    "reuse-on-long/warm.edit.summary.json": "c7243da69c42f3317518dcd8c05f50b7eaec9b8051a1993c09278670a3ed42ff",
+    "reuse-on-long/warm.fork.summary.json": "8c1ff3268372031de3169e55d192484e21406b8d8095497dae32a19767e3f296",
+    "reuse-on-short/cold.append.summary.json": "130b2ab43f243c605268541b309666cca94589187fa76922a3f09809fff557e6",
+    "reuse-on-short/cold.edit.summary.json": "24e175dd6c1e802f6aed03edce520a76048a5593b86b093465fe55422fc5510e",
+    "reuse-on-short/cold.fork.summary.json": "68e4f8533c0f336da940011aca2241b324b2fcf0dd50d42393a3d75ae63e385a",
+    "reuse-on-short/cold.restart.summary.json": "79105988761b20ef957d42e5e78c78d78b8a12f4cb741282b3ffc745961a5255",
+    "reuse-on-short/cold.seed.summary.json": "f80dc3178a4f37f51e097c944be9c5ff7f2314a9791fd55e80ce8e52933ccfdf",
+    "reuse-on-short/fixture.json": "1009ab01df069d317f3777d22b6195f7124fd184b51ba58435f400e25be7b7a8",
+    "reuse-on-short/restored.restart.summary.json": "b23658d78cbcc8e58b1e638d5d00445f4794a1f6d2a42c2be1fdfab4c2b49472",
+    "reuse-on-short/seed.process.json": "6ec0d1879c921027c9a29f89cb0696fe8226d4ea21e0902d32e049aa39544f60",
+    "reuse-on-short/seed.seed.summary.json": "2c1b4809b72ba461f5ab635db13de31cb616f51384ab8f890a1e07fd025743fd",
+    "reuse-on-short/warm.append.summary.json": "5ac18569e9b0bb02e901bdcae7bf3737326a8296a83b0a4f803e99c48c90134c",
+    "reuse-on-short/warm.edit.summary.json": "b99bb6d4ca4b8c35e4007f7dc0c2b525dc6725e3f60b8ca1a22c85a4e77e7511",
+    "reuse-on-short/warm.fork.summary.json": "836f981975e594785819f2253288aaf9bbad8e9a6d2ae17a0fbfa4f76c699d98",
+    "reuse-on-thinking-fixed-summary.json": "6bc4cfad54b3a9cde877044ae01ae594fd97a2d743dc8fd67bb02f04e4d67a63",
+    "reuse-on-thinking-fixed/cold.append.summary.json": "5b051a4bfffd5e217c67aa2fa08d05b6e96819e752458601d154f81c8ed4c299",
+    "reuse-on-thinking-fixed/cold.edit.summary.json": "4e097196d44cc42aa734f4c0db9937cf2cc6a7b841f906636d1c4e2415212111",
+    "reuse-on-thinking-fixed/cold.fork.summary.json": "5139c492a3fe9ffb00fee504d450dfe2aaf94d10defb31971670ac04b25828ea",
+    "reuse-on-thinking-fixed/cold.restart.summary.json": "59782b02425244767513d8fdf7440562c71c2c5ad50fa02cb65f4b4c78dc6eef",
+    "reuse-on-thinking-fixed/cold.result.json": "7c90be9642294eb41ba7d3f1f6da4e9cfebffa109d7a09e88f9b813e764a9bdf",
+    "reuse-on-thinking-fixed/cold.seed.summary.json": "349bddf9b955c97f835a315e829e752babf3bcfddf7ce5bef0479a3a99f06d15",
+    "reuse-on-thinking-fixed/fixture.json": "27ac1da23ebc58e1a2f1b8cd599fe40a891435d96dbde9752728751ae1498dfa",
+    "reuse-on-thinking-fixed/restored.restart.summary.json": "af464607f9faf7b9eb67fe5720b3da5bd945779ff0eac292d158d86fbb5f7dd1",
+    "reuse-on-thinking-fixed/restored.result.json": "6ce80e0574192d735f3849d24eede2d11407b00c4d558074d6660de65916f843",
+    "reuse-on-thinking-fixed/seed.process.json": "b357026f5f97ffa7a1ad6f6cdc93f1966ef19eaefb7db31152de76dd44a74dc3",
+    "reuse-on-thinking-fixed/seed.result.json": "a6983019cbba3e35f5c30df5e7eeb780f681980547733d372158526a2d474d26",
+    "reuse-on-thinking-fixed/seed.seed.summary.json": "ec04fe0e4fccb836b7f234405fcc2c033fe4492a59e63391b215d7aaebd76c44",
+    "reuse-on-thinking-fixed/warm.append.summary.json": "6be613d4f00d6aa45b4803911f25beb2ac5539a97c8018ba7cebb8c2d0e438de",
+    "reuse-on-thinking-fixed/warm.edit.summary.json": "95d1202912763ac2fd340028700e253ec30e49c9bc8d2c05cad6f782c30ef719",
+    "reuse-on-thinking-fixed/warm.fork.summary.json": "095259b32d8957e606d38eb8aec79b79dbe1c2f8da8170996516072213ef810b",
+    "reuse-on-thinking-fixed/warm.result.json": "51e883eaa8cb3add75b063f695e1b94c07b2044a53c30dead80ead6f478ee66d",
+    "short/report.json": "5e80029d655bb764396cee79788405f7f11c33616fe9b25a0bfbb6d25afe9903",
+    "swa-wrap/report.json": "44d81ec26f06721e7dcecd62f116aae652f6850e202f6e51a028a9407e6e8793",
+    "workspace-final-summary.json": "c62fc8eb1518e9d339a5c15797c64306bd3d6be1b069c281561bb4d58e33b022",
+    "workspace-final.log": "28d046f0a4d6a1aa5a2e9265ea6e9a8bdf42e57a77a6647be878f493b92f5520",
+    "workspace-qualified-summary.json": "68aa82602028f279f0bfe6d4824a9f9c9e169d5c671d4d4f6a0ae7da6c7ca766"
+  },
+  "benchmark": {
+    "report": "bench-2048/summary.json",
+    "scope": "2K raw-prompt frontier, 32 EOS-suppressed greedy output tokens, 8K capacity, chunk128; ABBA fresh workers share one canonical owner. No end-to-end Agent or MTP acceleration claim. CSV timed prefill/decode exclude initialization and snapshot/logit I/O.",
+    "source_commit": "52e37cd9032a8be78b40654ae3256a23b2b772a5",
+    "executable_sha256": "a6389106cddc08bee2c4c997f4cf5b9a514b9a448869b4dcaf5eabd5e87d9fbb",
+    "prompt_sha256": "5a321733c27a87b3bb3ce6a6081ebcc8a8653bdccb03944e709da27439df5891",
+    "columns": [
+      "name",
+      "draft",
+      "prefill_tps",
+      "decode_tps",
+      "first_token_seconds",
+      "wall_seconds",
+      "kvcache_bytes"
+    ],
+    "rows": [
+      [
+        "target1",
+        1,
+        62.2,
+        3.39,
+        0.2954,
+        51.80120515823364,
+        392827956
+      ],
+      [
+        "mtp1",
+        3,
+        60.28,
+        2.09,
+        1.21,
+        59.07490634918213,
+        393942068
+      ],
+      [
+        "mtp2",
+        3,
+        60.27,
+        2.08,
+        1.2053,
+        59.000059604644775,
+        393942068
+      ],
+      [
+        "target2",
+        1,
+        62.16,
+        3.39,
+        0.2958,
+        52.16189885139465,
+        392827956
+      ]
+    ],
+    "all_final_vocab_logits_finite_exact": true,
+    "vocab": 160000,
+    "max_abs": 0,
+    "all_32_tokens_exact": true,
+    "token_sha256": "4c3e3e63e065f113bc073346e571bd15fd0a37dc3d1b4120da90f47cb3e4e694",
+    "logits_sha256": "c6ff667a43a557e59b8e50ab0127525e5ad86df8d2a8853a6dcf3880a78e8159",
+    "clock_mhz": {
+      "min": 2190.0,
+      "max": 2197.0,
+      "median": 2190.0
+    },
+    "interpretation": "MTP is slower in both matched pairs. No speedup or end-to-end Agent acceleration claim."
+  },
+  "model_free_previous": {
+    "passed": 1461,
+    "failed": 0,
+    "ignored": 12,
+    "suites": 83,
+    "report": "workspace-final-summary.json",
+    "raw_log": "workspace-final.log"
+  },
+  "host_checks": {
+    "source_commit": "f94697c5d56ec1b4ec5e27b512b029723988a8d3",
+    "fmt": {
+      "exit_code": 0,
+      "log": "evidence-f94697c5/fmt-qualified.log"
+    },
+    "clippy": {
+      "exit_code": 0,
+      "warnings": true,
+      "log": "evidence-f94697c5/clippy-qualified.log"
+    },
+    "exit_status_basis": "completed root-owned checks; logs retained"
+  },
+  "thinking_reuse_campaigns": [
+    {
+      "folder": "reuse-on-thinking-fixed",
+      "runner_schema": 6,
+      "report": "reuse-on-thinking-fixed-summary.json",
+      "source_commit": "f94697c5d56ec1b4ec5e27b512b029723988a8d3",
+      "server_sha256": "4ead1143966992a8e6b53fe0fbcb296e2ce4ebf9ee6d898cac0f631295459c85",
+      "ctx": 8192,
+      "banks": 2,
+      "native_chunk": 128,
+      "mtp_mode": "on",
+      "draft": 3,
+      "reasoning": "high",
+      "temperature": 0,
+      "max_tokens": 256,
+      "padding_lines": 64,
+      "fixture": "reuse-on-thinking-fixed/fixture.json",
+      "log": "evidence-f94697c5/reuse-on-thinking-fixed.log",
+      "phases": {
+        "seed": true,
+        "warm": true,
+        "restored": true,
+        "cold": false
+      },
+      "strict_campaign_passed": false,
+      "visible_answers_correct": 5,
+      "full_messages_exact": 4,
+      "columns": [
+        "case",
+        "prompt_tokens",
+        "warm_cached",
+        "answer",
+        "full_message_exact",
+        "warm_completion_tokens",
+        "cold_completion_tokens",
+        "reuse",
+        "native_cross_bank_events"
+      ],
+      "rows": [
+        [
+          "seed",
+          530,
+          0,
+          "4",
+          true,
+          33,
+          33,
+          "cold",
+          0
+        ],
+        [
+          "append",
+          582,
+          564,
+          "5",
+          false,
+          33,
+          33,
+          "partial",
+          1
+        ],
+        [
+          "edit",
+          582,
+          530,
+          "6",
+          true,
+          33,
+          33,
+          "partial",
+          1
+        ],
+        [
+          "fork",
+          634,
+          615,
+          "8",
+          true,
+          33,
+          33,
+          "exact",
+          0
+        ],
+        [
+          "restart",
+          686,
+          668,
+          "9",
+          true,
+          33,
+          33,
+          "partial",
+          1
+        ]
+      ]
+    },
+    {
+      "folder": "reuse-off-thinking-fixed",
+      "runner_schema": 6,
+      "report": "reuse-off-thinking-fixed-summary.json",
+      "source_commit": "f94697c5d56ec1b4ec5e27b512b029723988a8d3",
+      "server_sha256": "4ead1143966992a8e6b53fe0fbcb296e2ce4ebf9ee6d898cac0f631295459c85",
+      "ctx": 8192,
+      "banks": 2,
+      "native_chunk": 128,
+      "mtp_mode": "off",
+      "draft": null,
+      "reasoning": "high",
+      "temperature": 0,
+      "max_tokens": 256,
+      "padding_lines": 64,
+      "fixture": "reuse-off-thinking-fixed/fixture.json",
+      "log": "evidence-f94697c5/reuse-off-thinking-fixed.log",
+      "phases": {
+        "seed": true,
+        "warm": true,
+        "restored": true,
+        "cold": false
+      },
+      "strict_campaign_passed": false,
+      "visible_answers_correct": 5,
+      "full_messages_exact": 3,
+      "columns": [
+        "case",
+        "prompt_tokens",
+        "warm_cached",
+        "answer",
+        "full_message_exact",
+        "warm_completion_tokens",
+        "cold_completion_tokens",
+        "reuse",
+        "native_cross_bank_events"
+      ],
+      "rows": [
+        [
+          "seed",
+          530,
+          0,
+          "4",
+          true,
+          33,
+          33,
+          "cold",
+          0
+        ],
+        [
+          "append",
+          582,
+          563,
+          "5",
+          false,
+          30,
+          33,
+          "fork",
+          1
+        ],
+        [
+          "edit",
+          582,
+          530,
+          "6",
+          true,
+          33,
+          33,
+          "partial",
+          1
+        ],
+        [
+          "fork",
+          631,
+          612,
+          "8",
+          false,
+          30,
+          36,
+          "exact",
+          0
+        ],
+        [
+          "restart",
+          680,
+          661,
+          "9",
+          true,
+          30,
+          30,
+          "fork",
+          1
+        ]
+      ]
+    }
+  ],
+  "thinking_reuse_interpretation": "Both modes pass seed, warm reuse and disk-restart phases with all five visible answers correct and stop finishes. Strict cold comparisons remain failed: MTP-on append changes reasoning text (33 versus33 completion tokens); MTP-off append/fork change reasoning text and completion counts (30 versus33 and30 versus36). No accepted forms or comparison rules were relaxed; original none-mode campaigns remain failed.",
+  "http_final": {
+    "source_commit": "f94697c5d56ec1b4ec5e27b512b029723988a8d3",
+    "ctx": 8192,
+    "configured_banks": 2,
+    "native_chunk": 128,
+    "mtp_mode": "on",
+    "draft": 3,
+    "margin": 0,
+    "scope": "Recorded local API fixtures only; no broad quality or maximum-context qualification",
+    "continuous": {
+      "server_log": "evidence-f94697c5/http-final-cont.log",
+      "prefix_reuse": "partial",
+      "disk_cache": true,
+      "cases": {
+        "reasoning": {
+          "report": "http-final-reasoning-8137/report.json",
+          "passed": true,
+          "count": 6,
+          "fault_counters_unchanged": true,
+          "surfaces": [
+            "Chat",
+            "Responses",
+            "Anthropic"
+          ],
+          "transports": [
+            "buffered",
+            "SSE"
+          ],
+          "request_reasoning": "high",
+          "temperature": 0,
+          "answer": "42",
+          "nonempty_reasoning": true,
+          "terminal_and_delimiter_checks": true,
+          "greedy_mtp_active": true
+        },
+        "tools": {
+          "report": "http-final-tools/report.json",
+          "passed": true,
+          "count": 2,
+          "fault_counters_unchanged": true,
+          "surfaces": [
+            "Chat",
+            "Responses"
+          ],
+          "transport": "buffered",
+          "request_reasoning": "none",
+          "generated_name": "add",
+          "generated_arguments": {
+            "a": 19,
+            "b": 23
+          },
+          "tool_result": 42,
+          "answer": "42",
+          "continuation": "returned structured call history replayed unchanged with matching call IDs"
+        },
+        "sampling": {
+          "report": "http-final-sampling/report.json",
+          "passed": true,
+          "count": 1,
+          "fault_counters_unchanged": true,
+          "request_reasoning": "high",
+          "temperature": 0.7,
+          "top_p": 0.9,
+          "seed": 29,
+          "answer": "42",
+          "mtp_active": false,
+          "speculative_draft_delta": 0,
+          "speculative_hit_delta": 0
+        },
+        "concurrency": {
+          "report": "http-final-concurrency/report.json",
+          "passed": true,
+          "request_reasoning": "high",
+          "requests": 2,
+          "prompt_tokens_each": 39,
+          "completion_tokens": [
+            114,
+            155
+          ],
+          "exact_visible_sequence": "1 through24 separated by single spaces",
+          "both_first_text_before_either_finish": true,
+          "max_inflight": 2.0,
+          "max_reported_banks_live": 0.0,
+          "scope": "two inflight requests with interleaved visible generation on continuous lane; native active-bank gauge is recorded separately",
+          "fault_counters_unchanged": true
+        },
+        "reasoning_off_basic": {
+          "report": "http-final-basic/report.json",
+          "passed": false,
+          "failed": 8,
+          "total": 8,
+          "surfaces": [
+            "Chat",
+            "Responses",
+            "Anthropic",
+            "Completions"
+          ],
+          "transports": [
+            "buffered",
+            "SSE"
+          ],
+          "request_reasoning": "none",
+          "expected": "42",
+          "all_visible_outputs": "19 + 23 = 42\n\nThe answer is 42.",
+          "failure": "strict answer format; arithmetic correct, unsolicited explanation",
+          "fault_counters_unchanged": true
+        }
+      }
+    },
+    "serial": {
+      "server_log": "evidence-f94697c5/http-final-serial.log",
+      "prefix_reuse": "off",
+      "disk_cache": false,
+      "cases": {
+        "reasoning": {
+          "report": "http-final-serial-reasoning/report.json",
+          "passed": true,
+          "count": 6,
+          "fault_counters_unchanged": true,
+          "surfaces": [
+            "Chat",
+            "Responses",
+            "Anthropic"
+          ],
+          "transports": [
+            "buffered",
+            "SSE"
+          ],
+          "request_reasoning": "high",
+          "temperature": 0,
+          "answer": "42",
+          "nonempty_reasoning": true,
+          "terminal_and_delimiter_checks": true,
+          "greedy_mtp_active": true
+        },
+        "tools": {
+          "report": "http-final-serial-tools/report.json",
+          "passed": true,
+          "count": 2,
+          "fault_counters_unchanged": true,
+          "surfaces": [
+            "Chat",
+            "Responses"
+          ],
+          "transport": "buffered",
+          "request_reasoning": "none",
+          "generated_name": "add",
+          "generated_arguments": {
+            "a": 19,
+            "b": 23
+          },
+          "tool_result": 42,
+          "answer": "42",
+          "continuation": "returned structured call history replayed unchanged with matching call IDs"
+        },
+        "sampling": {
+          "report": "http-final-serial-sampling/report.json",
+          "passed": true,
+          "count": 1,
+          "fault_counters_unchanged": true,
+          "request_reasoning": "high",
+          "temperature": 0.7,
+          "top_p": 0.9,
+          "seed": 29,
+          "answer": "42",
+          "mtp_active": false,
+          "speculative_draft_delta": 0,
+          "speculative_hit_delta": 0
+        }
+      }
+    },
+    "excluded_attempt": {
+      "name": "http-final-reasoning",
+      "reason": "wrong port; zero HTTP requests reached server; preserved, excluded from qualification"
+    }
+  },
+  "published_harness": {
+    "script": "tests/iquest_http_live.py",
+    "script_sha256": "b013e290d3227937ada2ed1d1798577024a8bcd05180787b98f1511d6b0a3937",
+    "cpu_tests": "tests/test_iquest_http_live.py",
+    "cpu_tests_sha256": "d991a087dcd0f9ba0729ea4616ff064c4497840667f65b3f1a6796609846ded2",
+    "tests_passed": 26,
+    "cpu_log": "evidence-f94697c5/http-published-cpu.log",
+    "help_log": "evidence-f94697c5/http-published-help.log",
+    "frozen_v3_behavior_ast_equal": true,
+    "scope": "Standalone stdlib live harness; CPU tests use inline wire fixtures and make no HTTP/model calls"
+  },
+  "local_gates_complete": true,
+  "all_local_gates_passed": false,
+  "cleanup": {
+    "report": "cleanup.json",
+    "task_owner_stopped": true,
+    "task_http_port": 8137,
+    "port_closed": true,
+    "gpu_compute_process_count": 0,
+    "settings_changed": false,
+    "cache_reclaimed": true,
+    "host_available_before_bytes": 32439853056,
+    "host_available_after_bytes": 127073804288,
+    "clock_log": "evidence-f94697c5/gpu-clocks.csv"
+  },
+  "updated_utc": "2026-10-01T09:16:27.240267+00:00",
+  "qualification_guard": {
+    "passed": 97,
+    "commands": [
+      "cargo test -p ds4-core --lib serving::tests --locked -- --test-threads=1",
+      "cargo test -p ds4-core --test iquest_serving --test serving_docs --locked -- --test-threads=1"
+    ],
+    "source": "crates/ds4-core/src/serving.rs",
+    "source_sha256": "a36e3efe588c5116ce3e7d4e0201307feae372cf68235464cf747128ede3d8bd",
+    "scope": "Final model-free guard and qualification note; no inference behavior changed after the f946 GPU gates."
+  }
+}

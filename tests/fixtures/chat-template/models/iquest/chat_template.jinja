@@ -1,0 +1,193 @@
+{%- if tools -%}
+    {%- macro tool_to_json(tool) -%}
+        {%- set ns_tool = namespace(first=true) -%}
+        {{ '{' -}}
+        {%- for k, v in tool.items() -%}
+            {%- if k != 'defer_loading' and k != 'strict' -%}
+                {%- if not ns_tool.first -%}{{- ', ' -}}{%- endif -%}
+                {%- set ns_tool.first = false -%}
+                "{{ k }}": {{ v | tojson(ensure_ascii=False) }}
+            {%- endif -%}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- endmacro -%}
+    {% macro render_extra_keys(json_dict, handled_keys) %}
+        {%- if json_dict is mapping %}
+            {%- for json_key in json_dict if json_key not in handled_keys %}
+                {%- if json_dict[json_key] is mapping or (json_dict[json_key] is sequence and json_dict[json_key] is not string) %}
+                    {{- '\n<' ~ json_key ~ '>' ~ (json_dict[json_key] | tojson | safe) ~ '</' ~ json_key ~ '>' }}
+                {%- else %}
+                    {{-'\n<' ~ json_key ~ '>' ~ (json_dict[json_key] | string) ~ '</' ~ json_key ~ '>' }}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+    {%- endmacro -%}
+    {{- '<|iquest_system|>\n# Tools\n\nYou have access to the following functions:\n\n<tools>' }}
+    {%- for tool in tools %}
+        {%- if tool.function is defined %}
+            {%- set tool = tool.function %}
+        {%- endif %}
+        {%- set _req = tool.parameters.required if (tool.parameters is defined and tool.parameters is mapping and tool.parameters.required is defined and tool.parameters.required is iterable and tool.parameters.required is not string) else [] %}
+        {{- '\ndef ' ~ tool.name ~ '(' }}
+        {%- if tool.parameters is defined and tool.parameters is mapping and tool.parameters.properties is defined and tool.parameters.properties is mapping %}
+            {%- set _ns = namespace(first=true) %}
+            {%- for param_name, param_fields in tool.parameters.properties|items %}
+                {%- if not _ns.first %}{{- ', ' }}{%- endif %}
+                {{- param_name }}
+                {%- if param_fields.type is defined %}{{- ': ' ~ (param_fields.type | string) }}{%- endif %}
+                {%- if param_name not in _req %}{{- ' = None' }}{%- endif %}
+                {%- set _ns.first = false %}
+            {%- endfor %}
+        {%- endif %}
+        {{- ') -> any:' }}
+        {{- '\n    """' }}
+        {%- if tool.description is defined %}
+            {{- (tool.description | trim) }}
+        {%- endif %}
+        {%- if tool.parameters is defined and tool.parameters is mapping and tool.parameters.properties is defined and tool.parameters.properties is mapping %}
+            {{- '\n\n    Args:' }}
+            {%- for param_name, param_fields in tool.parameters.properties|items %}
+                {{- '\n        ' ~ param_name }}
+                {{- ' (' }}
+                {%- if param_fields.type is defined %}{{- (param_fields.type | string) }}{%- else %}{{- 'any' }}{%- endif %}
+                {%- if param_name not in _req %}{{- ', optional' }}{%- endif %}
+                {{- ')' }}
+                {%- if param_fields.description is defined %}
+                    {{- ': ' ~ (param_fields.description | trim) }}
+                {%- endif %}
+                {%- set handled_keys = ['name', 'type', 'description'] %}
+                {{- render_extra_keys(param_fields, handled_keys) }}
+            {%- endfor %}
+        {%- endif %}
+        {% set handled_keys = ['type', 'properties', 'required'] %}
+        {{- render_extra_keys(tool.parameters, handled_keys) }}
+        {{- '\n    """' }}
+        {%- set handled_keys = ['type', 'name', 'description', 'parameters'] %}
+        {{- render_extra_keys(tool, handled_keys) }}
+    {%- endfor %}
+    {{- "\n</tools>" }}
+    {{- '\n\nFor each function call, output the function name and arguments within the following XML format:\n<iquest_tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</iquest_tool_call>' }}
+    {{- '<|iquest_end|>' -}}
+{%- endif -%}
+{%- macro visible_text(content) -%}
+    {%- if content is undefined or content is none -%}
+        {{- '' }}
+    {%- elif content is string -%}
+        {{- content }}
+    {%- elif content is iterable and content is not mapping -%}
+        {%- for item in content -%}
+            {%- if item is mapping and item.type == 'text' -%}
+                {{- item.text }}
+            {%- elif item is string -%}
+                {{- item }}
+            {%- elif item is mapping and item.type in ['image', 'image_url', 'video', 'video_url', 'audio', 'audio_url', 'input_audio'] -%}
+                {%- set media_type = item.type | replace('_url', '') | replace('input_', '') -%}
+                {{- "<reminder>You are unable to process this " ~ media_type ~ " because you don't have multi-modal input ability. Try different methods.</reminder>" }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{- content }}
+    {%- endif -%}
+{%- endmacro -%}
+{%- set ns = namespace(last_user_index=-1) -%}
+{%- for m in messages %}
+    {%- if m.role == 'user' %}
+        {%- set ns.last_user_index = loop.index0 -%}
+    {%- endif %}
+{%- endfor %}
+{%- for m in messages -%}
+    {%- if m.role == 'user' -%}{{- '<|iquest_user|>' -}}{{ visible_text(m.content) }}{{- '<|iquest_end|>' -}}
+    {%- elif m.role == 'assistant' -%}
+        {{- '<|iquest_assistant|>' -}}
+        {%- set content = visible_text(m.content) %}
+        {%- if m.reasoning_content is string %}
+            {%- set reasoning_content = m.reasoning_content %}
+        {%- elif m.reasoning_content is none %}
+            {%- set reasoning_content = '' %}
+        {%- elif '</think>' in content %}
+            {%- set reasoning_content = content.split('</think>')[0].split('<think>')[-1] %}
+            {%- set content = content.split('</think>')[-1] %}
+        {%- endif %}
+        {%- if (clear_thinking is not defined or not clear_thinking or loop.index0 > ns.last_user_index) and reasoning_content is defined -%}
+            {%- if m.reasoning_content_mask is defined and not m.reasoning_content_mask -%}
+                {%- generation -%}{{- '<think>' + reasoning_content + '</think>' -}}{%- endgeneration -%}
+            {%- else -%}
+                {{- '<think>' -}}
+                {{- reasoning_content -}}
+                {%- if m.boundary_token_mask is defined and not m.boundary_token_mask -%}
+                    {%- generation -%}{{- '</think>' -}}{%- endgeneration -%}
+                {%- else -%}
+                    {{- '</think>' -}}
+                {%- endif %}
+            {%- endif -%}
+        {%- else -%}
+            {{- '<think>' -}}
+            {%- if m.boundary_token_mask is defined and not m.boundary_token_mask -%}
+                {%- generation -%}{{- '</think>' -}}{%- endgeneration -%}
+            {%- else -%}
+                {{- '</think>' -}}
+            {%- endif %}
+        {%- endif -%}
+        {%- if m.content_mask is defined and not m.content_mask -%}
+            {%- generation -%}
+            {%- if content.strip() -%}{{- content.strip() -}}{%- endif -%}
+            {%- if m.tool_calls -%}
+                {%- for tc in m.tool_calls -%}
+                    {%- if tc.function -%}{%- set tc = tc.function -%}{%- endif -%}
+                    {{- '<iquest_tool_call>' + tc.name -}}
+                    {%- set _args = (tc.arguments | fromjson) if tc.arguments is string else tc.arguments -%}{%- if _args is not mapping -%}{{- raise_exception('tool call arguments must be a JSON object') -}}{%- endif -%}{%- for k, v in _args.items() -%}<arg_key>{{ k }}</arg_key><arg_value>{{ v | tojson(ensure_ascii=False) if v is not string else v }}</arg_value>{%- endfor -%}</iquest_tool_call>{%- endfor -%}
+            {%- endif -%}
+            {{- '<|iquest_end|>' -}}
+            {%- endgeneration -%}
+        {%- else -%}
+            {%- if content.strip() -%}{{- content.strip() -}}{%- endif -%}
+            {%- if m.tool_calls -%}
+                {%- for tc in m.tool_calls -%}
+                    {%- if tc.function -%}{%- set tc = tc.function -%}{%- endif -%}
+                    {{- '<iquest_tool_call>' + tc.name -}}
+                    {%- set _args = (tc.arguments | fromjson) if tc.arguments is string else tc.arguments -%}{%- if _args is not mapping -%}{{- raise_exception('tool call arguments must be a JSON object') -}}{%- endif -%}{%- for k, v in _args.items() -%}<arg_key>{{ k }}</arg_key><arg_value>{{ v | tojson(ensure_ascii=False) if v is not string else v }}</arg_value>{%- endfor -%}</iquest_tool_call>{%- endfor -%}
+            {%- endif -%}
+            {%- if m.boundary_token_mask is defined and not m.boundary_token_mask -%}
+                {%- generation -%}{{- '<|iquest_end|>' -}}{%- endgeneration -%}
+            {%- else -%}
+                {{- '<|iquest_end|>' -}}
+            {%- endif %}
+        {%- endif -%}
+    {%- elif m.role == 'tool' -%}
+        {%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}
+            {{- '<|iquest_tool|>' -}}
+        {%- endif %}
+        {%- if m.content is string -%}
+            {{- '<tool_response>' + m.content + '</tool_response>' -}}
+        {%- elif m.content is iterable and m.content is not mapping and m.content and m.content.0.type == "tool_reference" -%}
+            {{- '<tool_response><tools>\n' -}}
+            {% for tr in m.content %}
+                {%- for tool in tools -%}
+                    {%- if 'function' in tool -%}
+                        {%- set tool = tool['function'] -%}
+                    {%- endif -%}
+                    {%- if tool.name == tr.name -%}
+                        {{- tool_to_json(tool) + '\n' -}}
+                    {%- endif -%}
+                {%- endfor -%}
+            {%- endfor -%}
+            {{- '</tools></tool_response>' -}}
+        {%- elif m.content is iterable and m.content is not mapping and m.content and m.content.0 is mapping and m.content.0.output is defined -%}
+            {%- for tr in m.content -%}
+                {{- '<tool_response>' + tr.output + '</tool_response>' -}}
+            {%- endfor -%}
+        {%- else -%}
+            {{- '<tool_response>' + visible_text(m.content) + '</tool_response>' -}}
+        {% endif -%}
+        {%- if loop.last or (messages[loop.index0 + 1].role != "tool") -%}
+            {{- '<|iquest_end|>' -}}
+        {%- endif -%}
+    {%- elif m.role == 'system' -%}
+        {{- '<|iquest_system|>' -}}{{ visible_text(m.content) }}{{- '<|iquest_end|>' -}}
+    {%- elif m.role == 'developer' -%}
+        {{- '<|iquest_developer|>' -}}{{ visible_text(m.content) }}{{- '<|iquest_end|>' -}}
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{- '<|iquest_assistant|>' -}}{{- '<think></think>' if (enable_thinking is defined and not enable_thinking) else '<think>' -}}
+{%- endif -%}

@@ -1,10 +1,122 @@
 //! Transformers' `tojson`: Python JSON spacing, ordering and number spelling.
 //! This compatibility code is shared by every model; templates stay unchanged.
 
-use minijinja::value::{Kwargs, Value};
+use minijinja::value::{DynObject, Kwargs, Object, ObjectRepr, Value, ValueKind};
 use minijinja::{Error, ErrorKind};
+use serde::ser::{Error as _, SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 use serde_json::Value as Json;
+use std::cmp::Ordering;
 use std::fmt::Write;
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct WideInteger(serde_json::Number);
+
+impl Object for WideInteger {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Plain
+    }
+
+    fn render(self: &Arc<Self>, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "{}", self.0)
+    }
+
+    fn custom_cmp(self: &Arc<Self>, other: &DynObject) -> Option<Ordering> {
+        let other = other.downcast_ref::<Self>()?;
+        let left = self.0.to_string();
+        let right = other.0.to_string();
+        let left_negative = left.starts_with('-');
+        let right_negative = right.starts_with('-');
+        if left_negative != right_negative {
+            return Some(right_negative.cmp(&left_negative));
+        }
+        // JSON integer lexemes have no leading zeroes. Length then digits
+        // orders magnitudes exactly without converting through a float.
+        let order = left.len().cmp(&right.len()).then_with(|| left.cmp(&right));
+        Some(if left_negative {
+            order.reverse()
+        } else {
+            order
+        })
+    }
+}
+
+pub(crate) fn is_wide_integer(value: &Value) -> bool {
+    value.downcast_object_ref::<WideInteger>().is_some()
+}
+
+/// serde_json arbitrary-precision numbers serialize as private structs.
+/// Convert JSON explicitly so templates still receive native scalar values.
+pub(crate) fn from_json(value: &Json) -> Result<Value, Error> {
+    Ok(match value {
+        Json::Null => Value::from(()),
+        Json::Bool(value) => Value::from(*value),
+        Json::String(value) => Value::from(value.clone()),
+        Json::Array(items) => items
+            .iter()
+            .map(from_json)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect(),
+        Json::Object(items) => items
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), from_json(value)?)))
+            .collect::<Result<Vec<_>, Error>>()?
+            .into_iter()
+            .collect(),
+        Json::Number(value) => {
+            let text = value.to_string();
+            if let Some(value) = value.as_i64() {
+                Value::from(value)
+            } else if let Some(value) = value.as_u64() {
+                Value::from(value)
+            } else if let Ok(value) = text.parse::<i128>() {
+                Value::from(value)
+            } else if text.contains(['.', 'e', 'E']) {
+                Value::from(
+                    value
+                        .as_f64()
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| invalid("float exceeds Jinja range"))?,
+                )
+            } else {
+                // MiniJinja coerces U128 arithmetic to i128. Keep every
+                // integer outside signed i128 opaque so arithmetic rejects
+                // instead of wrapping, while display and JSON remain exact.
+                Value::from_object(WideInteger(value.clone()))
+            }
+        }
+    })
+}
+
+struct JsonValue<'a>(&'a Value);
+
+impl Serialize for JsonValue<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(integer) = self.0.downcast_object_ref::<WideInteger>() {
+            return integer.0.serialize(serializer);
+        }
+        match self.0.kind() {
+            ValueKind::Seq | ValueKind::Iterable => {
+                let mut seq = serializer.serialize_seq(self.0.len())?;
+                for value in self.0.try_iter().map_err(S::Error::custom)? {
+                    seq.serialize_element(&JsonValue(&value))?;
+                }
+                seq.end()
+            }
+            ValueKind::Map => {
+                let mut map = serializer.serialize_map(self.0.len())?;
+                for key in self.0.try_iter().map_err(S::Error::custom)? {
+                    let value = self.0.get_item(&key).map_err(S::Error::custom)?;
+                    map.serialize_entry(&key, &JsonValue(&value))?;
+                }
+                map.end()
+            }
+            _ => self.0.serialize(serializer),
+        }
+    }
+}
 
 struct Options {
     indent: Option<String>,
@@ -160,7 +272,7 @@ pub(crate) fn tojson_filter(value: Value, kwargs: Kwargs) -> Result<String, Erro
         return Err(invalid("undefined value"));
     }
     let options = Options::parse(kwargs)?;
-    let value = serde_json::to_value(&value).map_err(invalid)?;
+    let value = serde_json::to_value(JsonValue(&value)).map_err(invalid)?;
     let mut out = String::new();
     options.write(&value, &mut out, 0);
     Ok(out)

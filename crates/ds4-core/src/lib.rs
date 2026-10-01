@@ -18,6 +18,7 @@ mod inkling;
 mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
+mod iquest;
 mod layout;
 mod ling3vl;
 mod mapped;
@@ -58,6 +59,7 @@ pub use bind::{
 };
 pub use gguf::{GgufError, GgufFile};
 pub use identify::{dump_parse, identify_file, identify_gguf, Identified, IdentifyError};
+pub use iquest::{IQuestCache, IQuestPlan};
 pub use layout::{
     dump_expected_dspark_shape, dump_expected_layouts, dump_expected_layouts_shape,
     dump_expected_layouts_variant, dump_expected_mtp_shape, dump_expected_support,
@@ -1251,6 +1253,16 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        // Refuse impossible IQuest widths before tensor validation or native
+        // open, which would otherwise hide the requested width behind a clamp.
+        if identified.shape.family == ModelFamily::IQuestQ1
+            && tuning.mtp_draft_tokens > iquest::DRAFT_SLOTS as i32
+        {
+            return Err(Error {
+                code: 1,
+                message: "IQuest-Q1 accepts at most seven recursive draft tokens".into(),
+            });
+        }
         // Resolve Naive's common sidecar environment here as well as native:
         // the Rust catalog must validate and retain the actual loaded file.
         let env_dspark = (identified.shape.family == ModelFamily::NaiveN05)
@@ -1860,6 +1872,7 @@ impl Session<'_> {
                 | ModelFamily::Ling3Vl
                 | ModelFamily::Dots3Note
                 | ModelFamily::Mimo2
+                | ModelFamily::IQuestQ1
         ) {
             return;
         }
@@ -2447,6 +2460,9 @@ impl Session<'_> {
         }
         if self.host.family == ModelFamily::Mimo2 {
             return self.eval_mimo2_argmax(first, max_tokens, eos);
+        }
+        if self.host.family == ModelFamily::IQuestQ1 {
+            return self.eval_iquest_argmax(first, max_tokens, eos);
         }
         if self.host.family == ModelFamily::NaiveN05 {
             return self.eval_naive_argmax(first, max_tokens, eos);
@@ -3145,6 +3161,14 @@ mod tests {
 
     thread_local! {
         static STEP_GENERATION: Cell<u64> = const { Cell::new(1) };
+        static IQUEST_FAILURE: Cell<IQuestFailure> = const { Cell::new(IQuestFailure::Reject) };
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum IQuestFailure {
+        Reject,
+        Trial,
+        Commit,
     }
 
     #[no_mangle]
@@ -3201,6 +3225,46 @@ mod tests {
     ) -> i32 {
         STEP_GENERATION.with(|g| g.set(g.get() + 1));
         1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_iquest_trial(
+        _s: *mut ds4_bridge_session,
+        first: i32,
+        _max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        match IQUEST_FAILURE.with(Cell::get) {
+            IQuestFailure::Reject => -1,
+            IQuestFailure::Trial => {
+                // Native readback failure invalidates the checkpoint generation.
+                STEP_GENERATION.with(|g| g.set(g.get() + 1));
+                -1
+            }
+            IQuestFailure::Commit => {
+                assert!(cap >= 1);
+                // SAFETY: eval_iquest_argmax supplies live output arrays.
+                unsafe {
+                    *tokens = first;
+                    *target = first + 1;
+                }
+                1
+            }
+        }
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_iquest_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
     }
 
     #[no_mangle]
@@ -3442,6 +3506,73 @@ mod tests {
                 assert!(session.host.tokens().is_empty());
             }
         }
+    }
+
+    fn iquest_error_ledger(failure: IQuestFailure) {
+        STEP_GENERATION.with(|g| g.set(1));
+        IQUEST_FAILURE.with(|mode| mode.set(failure));
+        let mut session = std::mem::ManuallyDrop::new(Session {
+            raw: NonNull::<ds4_bridge_session>::dangling(),
+            host: SessionLedger::new(ModelFamily::IQuestQ1, SessionBackend::Cuda, 1024, 64),
+            _model: PhantomData,
+            _not_send: PhantomData,
+        });
+        let prefix = [1, 2, 3];
+        session.host.replace_checkpoint(&prefix);
+        session.host.mtp_draft_valid = true;
+        assert!(session.eval_iquest_argmax(4, 4, 0).is_err());
+        assert_eq!(session.generation(), session.native_generation());
+
+        if failure == IQuestFailure::Reject {
+            // Rejected input before native mutation retains the reusable prefix.
+            assert_eq!(session.generation(), 1);
+            assert!(session.host().valid);
+            assert!(session.host().mtp_draft_valid);
+            assert_eq!(session.host().tokens(), &prefix);
+            assert_eq!(session.last_plan(&[1, 2, 3, 4]).start, 3);
+            return;
+        }
+
+        assert_eq!(session.generation(), 2);
+        assert!(!session.host().valid);
+        assert!(!session.host().mtp_draft_valid);
+        assert!(session.host().tokens().is_empty());
+        assert_eq!(session.pos(), 0);
+        assert_eq!(session.host().common_prefix_with(&prefix), 0);
+        let plan = session.last_plan(&[1, 2, 3, 4]);
+        assert_eq!(plan.start, 0);
+        assert!(plan.rebuild);
+
+        // Invalid state cannot reach the native disk writer or survive a repeat
+        // reconciliation as a reusable checkpoint from the old generation.
+        let path = std::env::temp_dir().join(format!(
+            "ds4-iquest-failed-save-{}-{failure:?}.kv",
+            std::process::id()
+        ));
+        assert!(!path.exists());
+        assert_eq!(
+            session.save_payload(&path).unwrap_err().message,
+            "session has no valid checkpoint to save"
+        );
+        assert!(!path.exists());
+        session.step_failed();
+        assert_eq!(session.generation(), 2);
+        assert!(!session.host().valid);
+    }
+
+    #[test]
+    fn iquest_trial_failure_ledger() {
+        iquest_error_ledger(IQuestFailure::Trial);
+    }
+
+    #[test]
+    fn iquest_commit_failure_ledger() {
+        iquest_error_ledger(IQuestFailure::Commit);
+    }
+
+    #[test]
+    fn iquest_rejected_trial_keeps() {
+        iquest_error_ledger(IQuestFailure::Reject);
     }
 
     #[test]

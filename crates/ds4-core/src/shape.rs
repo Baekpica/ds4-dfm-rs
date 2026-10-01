@@ -31,6 +31,7 @@ pub enum ModelFamily {
     Mimo2 = 10,
     Qwen35 = 12,
     NaiveN05 = 11,
+    IQuestQ1 = 13,
 }
 
 impl ModelFamily {
@@ -49,6 +50,7 @@ impl ModelFamily {
             "mimo2" => Some(Self::Mimo2),
             "qwen35" => Some(Self::Qwen35),
             "naive_n05_flash" => Some(Self::NaiveN05),
+            "iquest_q1" => Some(Self::IQuestQ1),
             _ => None,
         }
     }
@@ -68,6 +70,7 @@ impl ModelFamily {
             Self::Mimo2 => "mimo2",
             Self::Qwen35 => "qwen35",
             Self::NaiveN05 => "naive_n05_flash",
+            Self::IQuestQ1 => "iquest_q1",
         }
     }
 }
@@ -90,6 +93,7 @@ pub enum Variant {
     Mimo26Flash = 12,
     Qwen35_27B = 14,
     NaiveN05Flash = 13,
+    IQuestQ1 = 15,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -338,6 +342,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"mimo2") => ArchRoute::Fixed(Variant::Mimo26Flash),
         Some(b"qwen35") => ArchRoute::Fixed(Variant::Qwen35_27B),
         Some(b"naive_n05_flash") => ArchRoute::Fixed(Variant::NaiveN05Flash),
+        Some(b"iquest_q1") => ArchRoute::Fixed(Variant::IQuestQ1),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -359,6 +364,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Mimo26Flash => SHAPE_MIMO26_FLASH,
         Variant::Qwen35_27B => SHAPE_QWEN35,
         Variant::NaiveN05Flash => SHAPE_NAIVE_N05_FLASH,
+        Variant::IQuestQ1 => SHAPE_IQUEST_Q1,
     }
 }
 
@@ -1275,4 +1281,63 @@ pub(crate) const SHAPE_MIMO26_FLASH: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 1048576,
+};
+
+// MTP is a separately named block sharing the target embedding and head.
+pub(crate) const SHAPE_IQUEST_Q1: Shape = Shape {
+    name: "IQuest-Q1",
+    family: ModelFamily::IQuestQ1,
+    variant: Variant::IQuestQ1,
+    n_layer: 88,
+    n_embd: 3072,
+    n_vocab: 160000,
+    n_head: 48,
+    n_head_kv: 8,
+    n_noise_head: 0,
+    n_head_dim: 128,
+    n_value_dim: 128,
+    n_rot: 32,
+    n_out_group: 0,
+    n_lora_q: 0,
+    n_lora_o: 0,
+    n_expert: 256,
+    n_expert_used: 8,
+    n_expert_shared: 0,
+    n_ff_exp: 1536,
+    n_ff_dense: 12288,
+    n_ff_shexp: 0,
+    n_hash_layer: 0,
+    n_swa: 4096,
+    n_swa_period: 4,
+    n_indexer_head: 0,
+    n_indexer_head_dim: 0,
+    n_indexer_top_k: 0,
+    n_hc: 0,
+    n_hc_sinkhorn_iter: 0,
+    n_nextn_predict: 1,
+    n_leading_dense: 1,
+    n_kv_lora: 0,
+    n_key_mla: 0,
+    n_value_mla: 0,
+    n_swa_head: 48,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 25,
+    n_kda_head_dim: 0,
+    n_ssm_conv: 0,
+    use_rope: true,
+    use_qk_norm: true,
+    rms_eps: 1e-6,
+    kda_l2_eps: 0.0,
+    kda_gate_clamp_min: 0.0,
+    hc_eps: 0.0,
+    expert_weight_scale: 1.0,
+    swiglu_clamp_exp: 0.0,
+    rope_freq_base: 1000000.0,
+    rope_freq_base_swa: 10000.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 0.0,
+    rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 524288,
 };

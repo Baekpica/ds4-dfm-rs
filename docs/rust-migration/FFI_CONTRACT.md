@@ -74,6 +74,8 @@ freeze or permission to bind native internals.
 | `ds4_bridge_session_sync_cb` | one `ds4_session_sync` plus call-scoped durable `prefill_chunk` frontiers |
 | `ds4_bridge_sync_step37` | validated Step image crops and expanded prompt → synchronous native vision encoding and full target/MTP refill |
 | `ds4_bridge_eval` | `ds4_session_eval` one token |
+| `ds4_bridge_iquest_trial` | recursive embedded MTP proposals and sequential target verification; caller-owned token/argmax arrays; returns pending trial width, 0 for ordinary fallback, or -1 on failure |
+| `ds4_bridge_iquest_commit` | commit an accepted prefix of the pending trial; restore rejected target/MTP ring writes and normalized hidden carry before publishing the frontier |
 | `ds4_bridge_session_argmax` | greedy next id |
 | `ds4_bridge_session_pos` | native committed timeline (host `SessionLedger` is authoritative) |
 | `ds4_bridge_session_ctx` | session context length |

@@ -1922,6 +1922,7 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::validate(g),
         ModelFamily::Mimo2 => crate::Mimo2Plan::validate(g),
         ModelFamily::NaiveN05 => crate::naive::validate_metadata(g),
+        ModelFamily::IQuestQ1 => crate::iquest::validate(g),
         ModelFamily::Glm53 => validate_glm53(g, shape),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::Qwen35 => validate_qwen35(g, shape),
@@ -1985,6 +1986,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Ling30FlashVl => crate::shape::SHAPE_LING30_FLASH_VL,
                         Variant::Mimo26Flash => crate::shape::SHAPE_MIMO26_FLASH,
                         Variant::NaiveN05Flash => crate::shape::SHAPE_NAIVE_N05_FLASH,
+                        Variant::IQuestQ1 => crate::shape::SHAPE_IQUEST_Q1,
                         Variant::Flash => SHAPE_FLASH,
                         Variant::Pro => SHAPE_PRO,
                     };

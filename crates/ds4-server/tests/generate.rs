@@ -62,6 +62,7 @@ struct PromptSyncDecode {
     remembered_tools: Vec<(Vec<String>, String)>,
     prefix_width: usize,
     prefix_budgets: Vec<i32>,
+    sample_params: Vec<(f32, i32, f32, f32)>,
 }
 
 impl PromptSyncDecode {
@@ -90,6 +91,7 @@ impl PromptSyncDecode {
             remembered_tools: Vec::new(),
             prefix_width: 1,
             prefix_budgets: Vec::new(),
+            sample_params: Vec::new(),
         }
     }
 }
@@ -241,6 +243,7 @@ impl DecodeIo for PromptSyncDecode {
         rng: &mut u64,
     ) -> i32 {
         self.events.push("sample");
+        self.sample_params.push((temperature, top_k, top_p, min_p));
         self.inner.sample(temperature, top_k, top_p, min_p, rng)
     }
 
@@ -439,12 +442,86 @@ fn mtp_sampling_policy() {
 }
 
 #[test]
+fn iquest_thinking_sampling() {
+    use ds4_core::chat_template::{RenderClock, Template};
+    use ds4_server::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
+    let iquest = ds4_core::Variant::IQuestQ1 as i32;
+    for model_id in [iquest, 0] {
+        for temperature in [0.0, 0.4] {
+            let parsed = parse_request(
+                WireSurface::OpenaiChat,
+                &env(),
+                &format!(r#"{{"messages":[{{"role":"user","content":"2 + 2"}}],"reasoning_effort":"high","temperature":{temperature},"top_k":9,"top_p":0.9,"min_p":0.03}}"#),
+            )
+            .unwrap();
+            let mut script = ScriptedDecode::from_pieces(&[b"Compute.", b"</think>", b"4"]);
+            script.model_id = model_id;
+            let mut engine = PromptSyncDecode::new(script, 0, 1);
+            if model_id == iquest {
+                engine.template = Some(Template::compile(
+                    include_str!("../../../tests/fixtures/chat-template/models/iquest/chat_template.jinja"),
+                    RenderClock::Fixed(0),
+                ).unwrap());
+            }
+            engine.prefix_width = 2;
+            let mut out = Vec::new();
+            generate_and_write(
+                &mut engine,
+                &parsed,
+                "thinking-sample",
+                CREATED_TEST,
+                false,
+                16,
+                &mut out,
+            )
+            .unwrap();
+            let expected = if model_id == iquest {
+                (temperature, 9, 0.9, 0.03)
+            } else {
+                (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
+            };
+            assert!(!engine.sample_params.is_empty());
+            assert!(
+                engine
+                    .sample_params
+                    .iter()
+                    .all(|&params| params == expected),
+                "model {model_id}, requested {temperature}: {:?}",
+                engine.sample_params
+            );
+            assert_eq!(
+                !engine.prefix_budgets.is_empty(),
+                model_id == iquest && temperature == 0.0
+            );
+        }
+    }
+}
+
+#[test]
 fn stop_list_find_matches_c_order() {
     let stops = vec!["STOP".into(), "END".into()];
     assert_eq!(
         stop_list_find_from(&stops, b"hello STOP tail END", 0),
         Some((6, 4))
     );
+}
+
+#[test]
+fn iquest_structured_tools_allow_dedicated_output_parser() {
+    let model_id = ds4_core::Variant::IQuestQ1 as i32;
+    let plain = user_req();
+    assert_eq!(generation_blocked(&plain, model_id), None);
+    let expected = None;
+    let mut tools = plain.clone();
+    tools.has_tools = true;
+    assert_eq!(generation_blocked(&tools, model_id), expected);
+    assert_eq!(generation_blocked(&tools, 0), None);
+    let mut results = plain.clone();
+    results.has_tool_results = true;
+    assert_eq!(generation_blocked(&results, model_id), expected);
+    let mut history = plain.clone();
+    history.messages[0].calls.push(ToolCall::default());
+    assert_eq!(generation_blocked(&history, model_id), expected);
 }
 
 #[test]

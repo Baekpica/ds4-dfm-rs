@@ -1184,6 +1184,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         | ModelSyntax::NaiveN05 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
+        ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
         // Ling shares GLM's thinking and tool-call XML.
         ModelSyntax::DeepSeek
         | ModelSyntax::Motif3
@@ -1270,7 +1271,10 @@ pub(crate) fn thinking_visible_key(
     format: ChatFormat,
     terminal: bool,
 ) -> Option<Vec<u8>> {
-    if matches!(syntax, ModelSyntax::Step37 | ModelSyntax::Ling3Vl) {
+    if matches!(
+        syntax,
+        ModelSyntax::Step37 | ModelSyntax::Ling3Vl | ModelSyntax::IQuestQ1
+    ) {
         // Removing reasoning changes these families' history grammar. Re-render
         // the structured history with Jinja instead of inventing a prefix.
         return None;
@@ -1646,7 +1650,11 @@ fn decode_pass(
         let mut top_k = parsed.top_k;
         let mut top_p = parsed.top_p;
         let mut min_p = parsed.min_p;
-        if think_mode_enabled(parsed.think_mode) {
+        // IQuest uses the requested sampler in both channels. Greedy thinking
+        // must remain eligible for its embedded target-verified MTP path.
+        if think_mode_enabled(parsed.think_mode)
+            && syntax_for_model_id(engine.model_id()) != ModelSyntax::IQuestQ1
+        {
             temperature = DEFAULT_TEMPERATURE;
             top_k = 0;
             top_p = DEFAULT_TOP_P;
@@ -3036,6 +3044,9 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 #[cfg(any(feature = "native", test))]
 fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, draft: i32) -> bool {
     match family {
+        ds4_core::ModelFamily::IQuestQ1 => {
+            (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
+        }
         ds4_core::ModelFamily::Dots3Note => dots3,
         ds4_core::ModelFamily::Inkling
         | ds4_core::ModelFamily::Step37
@@ -3043,6 +3054,15 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
         ds4_core::ModelFamily::Mimo2 => draft > 1,
         _ => false,
     }
+}
+
+#[test]
+fn iquest_embedded_mtp_uses_serial_greedy_route() {
+    use ds4_core::ModelFamily::IQuestQ1;
+    assert!(serial_mtp_ready(IQuestQ1, false, false, 2));
+    assert!(serial_mtp_ready(IQuestQ1, false, false, 7));
+    assert!(!serial_mtp_ready(IQuestQ1, false, false, 1));
+    assert!(!serial_mtp_ready(IQuestQ1, false, false, 8));
 }
 
 #[test]

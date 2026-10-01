@@ -23,7 +23,7 @@ ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }
 ds4-kv = { path = "../ds4-kv" }
 ds4-sys = { path = "../ds4-sys" }
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = { version = "0.11", default-features = false }
 
 [dev-dependencies]

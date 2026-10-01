@@ -1,0 +1,15 @@
+{
+  "repo": "IQuestLab/IQuest-Q1",
+  "revision": "5c21b0630586ef77d38cff1094b8cf37a417fcd8",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "b3c99aab1b3f17a2513d134ac8da39303da965f73924e35057f0cd6f10eaa06d",
+  "tokenizer_config_sha256": "318ecfb34e5ec637accea8266c5e731e58462c698ab542696ffacec1c0145206",
+  "license_sha256": "92448dcba479a19b4564798e1a34efc1fc58f3adaa8400e825a659d2d2a2ed30",
+  "special_tokens": {
+    "eos_token": "<|iquest_end|>",
+    "pad_token": "<|iquest_end|>"
+  },
+  "source_url": "https://huggingface.co/IQuestLab/IQuest-Q1/blob/5c21b0630586ef77d38cff1094b8cf37a417fcd8/chat_template.jinja",
+  "artifact_repo": "Baekpica/IQuest-Q1-Mixed-Quant-GGUF",
+  "artifact_revision": "6f08e63aa9dcd29cd29966180846266c0ca80639"
+}

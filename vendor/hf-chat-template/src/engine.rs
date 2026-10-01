@@ -68,7 +68,15 @@ pub(crate) fn build(source: String, cfg: &EngineConfig) -> Result<Environment<'s
     env.add_filter("fromjson", |text: String| -> Result<Value, Error> {
         let value: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| Error::new(ErrorKind::InvalidOperation, e.to_string()))?;
-        Ok(Value::from_serialize(value))
+        crate::json::from_json(&value)
+    });
+    // Schema templates must still recognize exact protocol integers whose
+    // magnitude exceeds the engine's safe arithmetic range.
+    env.add_test("integer", |value: &Value| {
+        value.is_integer() || crate::json::is_wide_integer(value)
+    });
+    env.add_test("number", |value: &Value| {
+        value.is_number() || crate::json::is_wide_integer(value)
     });
 
     // Tool schemas also print defaults outside JSON. Keep plain float output

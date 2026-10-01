@@ -49,7 +49,7 @@ serde = { version = "1", features = ["derive"] }
 hf-hub = { version = "0.5", default-features = false, features = ["ureq"], optional = true }
 # preserve_order: the typed render path builds a serde_json::Value context; without this,
 # object keys sort alphabetically and tool-call prompts diverge from the transformers reference.
-serde_json = { version = "1.0.150", features = ["preserve_order"] }
+serde_json = { version = "1.0.150", features = ["preserve_order", "arbitrary_precision"] }
 # Local-timezone clock for the `strftime` feature. default-features off keeps only `clock`
 # (the part that resolves the local offset); we reuse our own strftime formatter, so chrono's
 # formatting/serde/wasm pieces aren't needed.

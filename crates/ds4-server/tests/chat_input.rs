@@ -12,6 +12,7 @@ const GLM: i32 = 7;
 const K2: i32 = 8;
 const SOLAR: i32 = 2;
 const STEP: i32 = ds4_core::Variant::Step37Flash as i32;
+const IQUEST: i32 = ds4_core::Variant::IQuestQ1 as i32;
 const PNG: &str = concat!(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
     "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -28,6 +29,9 @@ fn env() -> ParseEnv {
 
 fn template(model_id: i32) -> Template {
     let source = match model_id {
+        IQUEST => {
+            include_str!("../../../tests/fixtures/chat-template/models/iquest/chat_template.jinja")
+        }
         STEP => include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
         INKLING => {
             include_str!("../../../tests/fixtures/chat-template/models/inkling/chat_template.jinja")
@@ -47,6 +51,79 @@ fn template(model_id: i32) -> Template {
         _ => panic!("unknown fixture model {model_id}"),
     };
     Template::compile(source, RenderClock::Fixed(0)).unwrap()
+}
+
+#[test]
+fn iquest_keeps_developer_role() {
+    let chat = parse_chat_request(
+        &env(),
+        r#"{"messages":[{"role":"system","content":"System"},{"role":"developer","content":"Developer"},{"role":"user","content":"Hello"}]}"#,
+    )
+    .unwrap();
+    let responses = parse_responses_request(
+        &env(),
+        r#"{"input":[{"role":"system","content":"System"},{"role":"developer","content":"Developer"},{"role":"user","content":"Hello"}]}"#,
+    )
+    .unwrap();
+    for parsed in [chat, responses] {
+        let rendered = chat_input::render(&template(IQUEST), IQUEST, &parsed).unwrap();
+        assert_eq!(
+            String::from_utf8(rendered).unwrap(),
+            concat!(
+                "<|iquest_system|>System<|iquest_end|>",
+                "<|iquest_developer|>Developer<|iquest_end|>",
+                "<|iquest_user|>Hello<|iquest_end|>",
+                "<|iquest_assistant|><think>",
+            )
+        );
+    }
+}
+
+#[test]
+fn iquest_tool_history_numbers() {
+    for number in [
+        "2",
+        "18446744073709551617",
+        "340282366920938463463374607431768211456",
+    ] {
+        let body = format!(
+            r#"{{"reasoning_effort":"none","messages":[{{"role":"user","content":"Look up"}},{{"role":"assistant","content":"","tool_calls":[{{"id":"call_1","type":"function","function":{{"name":"lookup","arguments":"{{\"count\":{number}}}"}}}}]}},{{"role":"tool","tool_call_id":"call_1","content":"Found"}}]}}"#
+        );
+        let chat = parse_chat_request(&env(), &body).unwrap();
+        let body = format!(
+            r#"{{"reasoning":{{"effort":"none"}},"input":[{{"role":"user","content":"Look up"}},{{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{{\"count\":{number}}}"}},{{"type":"function_call_output","call_id":"call_1","output":"Found"}}]}}"#
+        );
+        let responses = parse_responses_request(&env(), &body).unwrap();
+        let body = format!(
+            r#"{{"thinking":{{"type":"disabled"}},"messages":[{{"role":"user","content":"Look up"}},{{"role":"assistant","content":[{{"type":"tool_use","id":"call_1","name":"lookup","input":{{"count":{number}}}}}]}},{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"call_1","content":"Found"}}]}}]}}"#
+        );
+        let anthropic = parse_anthropic_request(&env(), &body).unwrap();
+        for parsed in [chat, responses, anthropic] {
+            let rendered = chat_input::render(&template(IQUEST), IQUEST, &parsed).unwrap();
+            let rendered = String::from_utf8(rendered).unwrap();
+            let expected = format!(
+                "<iquest_tool_call>lookup<arg_key>count</arg_key><arg_value>{number}</arg_value></iquest_tool_call>"
+            );
+            assert!(rendered.contains(&expected), "{rendered}");
+            assert!(rendered.ends_with("<|iquest_assistant|><think></think>"));
+        }
+    }
+}
+
+#[test]
+fn legacy_developer_uses_system() {
+    let parsed = parse_chat_request(
+        &env(),
+        r#"{"messages":[{"role":"developer","content":"Use Korean"},{"role":"user","content":"Hello"}]}"#,
+    )
+    .unwrap();
+    let messages = json!([
+        {"role":"system","content":"Use Korean"},
+        {"role":"user","content":"Hello"},
+    ]);
+    for model_id in [QWEN, SOLAR, K2, GLM, INKLING, STEP] {
+        assert_render(model_id, &parsed, messages.clone(), json!([]));
+    }
 }
 
 fn assert_render(model_id: i32, parsed: &ParsedRequest, messages: Value, tools: Value) {

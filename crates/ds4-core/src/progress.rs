@@ -95,6 +95,7 @@ impl Session<'_> {
             )
         };
         if rc != 0 {
+            self.step_failed();
             return Err(fail(rc, &err));
         }
         self.host.commit_sync(tokens.as_slice(), &plan);
@@ -119,7 +120,15 @@ mod tests {
 
     thread_local! {
         static SYNC_RC: Cell<i32> = const { Cell::new(0) };
+        static SYNC_FAILURE: Cell<SyncFailure> = const { Cell::new(SyncFailure::None) };
         static NATIVE_PREFIX: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum SyncFailure {
+        None,
+        Rejected,
+        Mutated,
     }
 
     #[no_mangle]
@@ -140,6 +149,17 @@ mod tests {
     ) -> i32 {
         assert!(!s.is_null());
         assert!(!tokens.is_null());
+        match SYNC_FAILURE.with(Cell::get) {
+            SyncFailure::Rejected => return 1,
+            SyncFailure::Mutated => {
+                // Model native forward failure: checkpoint cleared and the
+                // generation advanced through the shared mock FFI boundary.
+                NATIVE_PREFIX.with(|live| live.borrow_mut().clear());
+                ds4_sys::ds4_bridge_session_invalidate(s);
+                return 1;
+            }
+            SyncFailure::None => {}
+        }
         let prompt = std::slice::from_raw_parts(tokens, n_tokens as usize);
         let callback = progress.expect("progress callback");
 
@@ -226,6 +246,54 @@ mod tests {
             _model: PhantomData,
             _not_send: PhantomData,
         })
+    }
+
+    fn iquest_sync_error(failure: SyncFailure) {
+        let mut session = fake_session();
+        session.host.family = ModelFamily::IQuestQ1;
+        session.host.generation = session.native_generation();
+        let generation = session.generation();
+        let prefix = [1, 2, 3];
+        session.host.replace_checkpoint(&prefix);
+        session.host.mtp_draft_valid = true;
+        NATIVE_PREFIX.with(|live| *live.borrow_mut() = prefix.to_vec());
+        SYNC_FAILURE.with(|mode| mode.set(failure));
+        let tokens = TokenBuffer::from_tokens(vec![1, 2, 3, 4]);
+        let mut callbacks = 0;
+
+        let result = session.sync_progress(&tokens, |_| callbacks += 1);
+        SYNC_FAILURE.with(|mode| mode.set(SyncFailure::None));
+        assert!(result.is_err());
+        assert_eq!(callbacks, 0);
+        assert_eq!(session.generation(), session.native_generation());
+
+        if failure == SyncFailure::Rejected {
+            assert_eq!(session.generation(), generation);
+            assert!(session.host().valid);
+            assert!(session.host().mtp_draft_valid);
+            assert_eq!(session.host().tokens(), &prefix);
+            assert_eq!(session.last_plan(tokens.as_slice()).start, 3);
+            return;
+        }
+
+        assert_eq!(session.generation(), generation + 1);
+        assert!(!session.host().valid);
+        assert!(!session.host().mtp_draft_valid);
+        assert!(session.host().tokens().is_empty());
+        assert_eq!(session.pos(), 0);
+        let plan = session.last_plan(tokens.as_slice());
+        assert_eq!(plan.start, 0);
+        assert!(plan.rebuild);
+    }
+
+    #[test]
+    fn iquest_sync_failure_ledger() {
+        iquest_sync_error(SyncFailure::Mutated);
+    }
+
+    #[test]
+    fn iquest_sync_reject_keeps() {
+        iquest_sync_error(SyncFailure::Rejected);
     }
 
     #[test]

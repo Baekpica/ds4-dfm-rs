@@ -17780,6 +17780,7 @@ int ds4_gpu_matmul_q8_0_hc_expand_n2_split_residual_tensor(
 }
 
 #include "ds4_naive_stub.inc"
+#include "ds4_iquest_stub.inc"
 
 /* The optional CUDA fusions decline before the existing graph fallback. */
 int ds4_gpu_mimo2_attn_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *attn, uint32_t rows) {

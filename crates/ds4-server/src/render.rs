@@ -58,6 +58,8 @@ pub const QWEN_VISION_END: &str = "<|vision_end|>";
 pub const GLM_BOS: &str = "[gMASK]<sop>";
 pub const GLM_TOOL_CALL_START: &str = "<tool_call>";
 pub const GLM_TOOL_CALL_END: &str = "</tool_call>";
+pub const IQUEST_TOOL_CALL_START: &str = "<iquest_tool_call>";
+pub const IQUEST_TOOL_CALL_END: &str = "</iquest_tool_call>";
 pub const GLM_VISION_START: &str = "<|begin_of_image|>";
 pub const GLM_IMAGE: &str = "<|image|>";
 pub const GLM_VISION_END: &str = "<|end_of_image|>";
@@ -91,6 +93,7 @@ pub enum ModelSyntax {
     Mimo2 = 12,
     Qwen35 = 14,
     NaiveN05 = 13,
+    IQuestQ1 = 15,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -109,6 +112,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         12 => ModelSyntax::Mimo2,
         14 => ModelSyntax::Qwen35,
         13 => ModelSyntax::NaiveN05,
+        15 => ModelSyntax::IQuestQ1,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -126,6 +130,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => GLM_TOOL_CALL_START,
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::Inkling => inkling::INVOKE,
+        ModelSyntax::IQuestQ1 => IQUEST_TOOL_CALL_START,
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
     }
 }
@@ -1871,6 +1876,9 @@ pub fn render_chat_choice(
         ModelSyntax::NaiveN05 => Err(RenderError(
             "Naive input requires its official Jinja template",
         )),
+        ModelSyntax::IQuestQ1 => Err(RenderError(
+            "IQuest input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -1948,6 +1956,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::NaiveN05 => {
             return Err(RenderError(
                 "Naive tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::IQuestQ1 => {
+            return Err(RenderError(
+                "IQuest tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),

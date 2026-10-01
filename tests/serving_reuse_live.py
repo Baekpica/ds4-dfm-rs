@@ -25,13 +25,21 @@ PROFILES = {
     "solar": {"names": ["solar-open2"], "reuse": "partial"},
     "motif": {"names": ["motif3"], "reuse": "partial"},
     "naive": {"names": ["naive_n05_flash"], "reuse": "partial"},
+    "iquest": {"names": ["iquest_q1"], "reuse": "partial"},
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"
-FIXTURE_SCHEMA = "serving-reuse-live-v4"
-NATIVE_REUSE = re.compile(
-    r"ds4: Motif-3 bank reuse source=(\d+) target=(\d+) cached=(\d+) partial=([01]) "
+FIXTURE_SCHEMA = "serving-reuse-live-v6"
+DEFAULT_REASONING = "none"
+DEFAULT_MAX_TOKENS = 32
+NATIVE_TRACE = {
+    "motif": ("Motif-3", "DS4_MOTIF3_BATCH_TRACE"),
+    "iquest": ("IQuest-Q1", "DS4_IQUEST_BATCH_TRACE"),
+}
+NATIVE_REUSE = {family: re.compile(
+    rf"ds4: {re.escape(label)} bank reuse source=(\d+) target=(\d+) cached=(\d+) partial=([01]) "
     r"source_before=(\d+) source_after=(\d+) target_after=(\d+)")
+    for family, (label, _) in NATIVE_TRACE.items()}
 MAX_NATIVE_LOG_BYTES = 1024 * 1024
 
 
@@ -48,29 +56,31 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def native_forks(text, cached, banks):
+def native_forks(text, cached, banks, family="motif"):
     """Only a successful, source-preserving copy can prove a partial fork."""
     found = []
     for line in text.splitlines():
-        match = NATIVE_REUSE.fullmatch(line)
+        match = NATIVE_REUSE[family].fullmatch(line)
         if match is None:
             continue
         source, target, kept, partial, before, after, target_after = map(int, match.groups())
         if (source != target and source < banks and target < banks and kept == cached > 0
                 and target_after == kept and before == after >= kept):
-            found.append(dict(zip(
+            entry = dict(zip(
                 ("source", "target", "cached", "partial", "source_before", "source_after", "target_after"),
-                (source, target, kept, partial, before, after, target_after))))
+                (source, target, kept, partial, before, after, target_after)))
+            found.append(dict(entry, family=family))
     return found
 
 
-def native_log_start(pid):
+def native_log_start(pid, family="motif"):
     # Read only the actual server's stderr file, never a caller-supplied log.
     path = Path(f"/proc/{pid}/fd/2")
     info = path.stat()
-    require(stat.S_ISREG(info.st_mode), "Motif fork evidence needs stderr redirected to a regular file")
+    label, variable = NATIVE_TRACE[family]
+    require(stat.S_ISREG(info.st_mode), f"{label} fork evidence needs stderr redirected to a regular file")
     env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-    require(b"DS4_MOTIF3_BATCH_TRACE=1" in env, "Motif fork evidence requires DS4_MOTIF3_BATCH_TRACE=1")
+    require(f"{variable}=1".encode() in env, f"{label} fork evidence requires {variable}=1")
     return path, (info.st_dev, info.st_ino), info.st_size
 
 
@@ -88,7 +98,9 @@ def native_log_read(mark):
 
 
 def has_warm_fork(family, kinds, native):
-    return bool(native) if family == "motif" else "fork" in kinds
+    if family in NATIVE_TRACE:
+        return any(event.get("family") == family for event in native)
+    return "fork" in kinds
 
 
 def reference_phase(name):
@@ -108,12 +120,12 @@ def verify_cold_body(output, name, body):
 
 
 def follow_body(body, response, user):
-    # Preserve the generated text, including leading/trailing whitespace.
-    # Thinking and tool output are rejected by inspect_case, not synthesized.
+    # Keep the actual assistant message, including reasoning and whitespace.
+    # Failed responses still need identical history for cold diagnosis.
     follow = copy.deepcopy(body)
     message = response["choices"][0]["message"]
     follow["messages"].extend([
-        {"role": "assistant", "content": message["content"]},
+        copy.deepcopy(message),
         {"role": "user", "content": user},
     ])
     return follow
@@ -157,8 +169,14 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
     # Compare only the frozen literal forms; never extract a number from prose.
     if not isinstance(text, str) or text.strip() not in case["accepted_forms"]:
         errors.append(f"arithmetic answer form: {text!r} not in {case['accepted_forms']!r}")
-    if message.get("reasoning_content") or message.get("tool_calls"):
-        errors.append("fixture requires plain visible output without reasoning/tools")
+    reasoning = message.get("reasoning_content")
+    if config["reasoning_effort"] == "high":
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            errors.append("high mode requires nonempty reasoning_content")
+    elif reasoning not in (None, ""):
+        errors.append("none mode requires empty reasoning_content")
+    if message.get("tool_calls"):
+        errors.append("fixture requires output without tools")
     if choice.get("finish_reason") != "stop":
         errors.append(f"finish_reason: {choice.get('finish_reason')!r} != stop")
     usage = response["usage"]
@@ -183,9 +201,10 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
         elif config["family"] == "motif" and phase == "warm":
             # The official history removes generation-only empty thinking.
             kinds = {"exact", "fork", "partial"}
-        elif config["family"] == "naive" and config["mtp_mode"] == "on":
-            # A verified stop may be committed too. Canonical history can
-            # restore a proper checkpoint prefix instead of that frontier.
+        elif config["family"] in ("naive", "iquest") and config["mtp_mode"] == "on":
+            # A verified stop may already be committed. Canonical history
+            # rejects a duplicated-stop full plan; token-LCP reuse reports
+            # partial even when it copies the complete source frontier.
             kinds = {"exact", "fork", "partial"}
         else:
             kinds = {"exact", "fork"}
@@ -208,7 +227,7 @@ def run_case(args, config, name, case, previous):
     if args.phase == "cold":
         verify_cold_body(args.output, name, case["body"])
     write_json(args.output / f"{key}.request.json", case["body"])
-    native_mark = native_log_start(args.pid) if config["family"] == "motif" else None
+    native_mark = native_log_start(args.pid, config["family"]) if config["family"] in NATIVE_TRACE else None
     start = time.monotonic()
     try:
         response = request(args.url, "/v1/chat/completions", case["body"])
@@ -233,7 +252,8 @@ def run_case(args, config, name, case, previous):
         data = native_log_read(native_mark)
         (args.output / f"{key}.native.log").write_bytes(data)
         native = native_forks(data.decode("utf-8", errors="replace"),
-                              response["usage"]["prompt_tokens_details"]["cached_tokens"], config["banks"])
+                              response["usage"]["prompt_tokens_details"]["cached_tokens"],
+                              config["banks"], config["family"])
         native_log = {"pid": args.pid, "fd": 2, "device_inode": native_mark[1],
                       "start": native_mark[2], "end": native_mark[2] + len(data),
                       "sha256": hashlib.sha256(data).hexdigest()}
@@ -266,7 +286,11 @@ def main():
     parser.add_argument("--expect-speculation", choices=["off", "on"])
     parser.add_argument("--lane", choices=["continuous"])
     parser.add_argument("--padding-lines", type=int, default=64)
+    parser.add_argument("--reasoning-effort", choices=["none", "high"],
+                        help="seed only; default: none")
+    parser.add_argument("--max-tokens", type=int, help="seed only; positive, default: 32")
     args = parser.parse_args()
+    require(args.max_tokens is None or args.max_tokens > 0, "max-tokens must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     phase_path = args.output / f"{args.phase}.process.json"
     require(not phase_path.exists(), f"refusing to overwrite phase evidence: {phase_path}")
@@ -285,13 +309,17 @@ def main():
                 "on mode requires an explicit positive draft")
         require(args.mtp_mode == "on" or args.expect_speculation == "off", "off mode cannot speculate")
         require(args.family not in ("solar", "motif") or args.mtp_mode == "off", "this family has no MTP")
-        config = {key: getattr(args, key) for key in (*required, "mtp_draft", "padding_lines")}
+        args.reasoning_effort = args.reasoning_effort or DEFAULT_REASONING
+        if args.max_tokens is None:
+            args.max_tokens = DEFAULT_MAX_TOKENS
+        config = {key: getattr(args, key) for key in (
+            *required, "mtp_draft", "padding_lines", "reasoning_effort", "max_tokens")}
         config["expect_speculation"] = args.expect_speculation == "on"
         config["requested_lane"] = "auto"
         templates = read_json(FIXTURE)
         padding = "".join(templates["padding"].format(i=i) for i in range(args.padding_lines))
-        body = {"model": args.model, "temperature": 0, "seed": 1, "max_tokens": 32,
-                "reasoning_effort": "none",
+        body = {"model": args.model, "temperature": 0, "seed": 1, "max_tokens": args.max_tokens,
+                "reasoning_effort": args.reasoning_effort,
                 "messages": [{"role": "user", "content": padding + templates["seed"]["user"]}]}
         cases = {"seed": {"body": body, "answer": templates["seed"]["answer"],
                           "accepted_forms": templates["seed"]["accepted_forms"]}}
@@ -302,7 +330,8 @@ def main():
     else:
         require(not any(getattr(args, key) is not None for key in (
             "family", "model", "context", "banks", "native_chunk", "mtp_mode", "mtp_draft",
-            "expect_speculation", "lane")), "later phases use the frozen seed configuration")
+            "expect_speculation", "lane", "reasoning_effort", "max_tokens")),
+            "later phases use the frozen seed configuration")
         verify_fixture(args.output, args.phase)
         fixture = read_json(fixture_path)
         require(fixture.get("schema") == FIXTURE_SCHEMA

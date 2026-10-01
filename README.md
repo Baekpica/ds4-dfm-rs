@@ -159,6 +159,7 @@ collection. Feature and context limits remain specific to each artifact.
 | MiMo-V2.6-Flash-RL | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF) | [256K two-bank text and serial media; longer-context limits](docs/mimo2-serving-2026-09-25.md) |
 | MiMo-V2.6-Flash-MOPD | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF) | [Own text/performance gates; drafting remains separate](docs/ds4-dfm-model-families.md#mimo-mopd) |
 | Naive-N0.5-Flash | `naive_n05_flash` | [Baekpica MQ87](https://huggingface.co/Baekpica/Naive-N0.5-Flash-Mixed-Quant-GGUF) | [Banks, partial reuse and disk KV; draft acceleration unqualified](docs/naive-n05-flash.md) |
+| IQuest-Q1 | `iquest_q1` | [Baekpica mixed quant](https://huggingface.co/Baekpica/IQuest-Q1-Mixed-Quant-GGUF) | [Hybrid Q8 KV, banks and embedded MTP; bounded Spark thinking-mode gates](docs/iquest-q1.md) |
 
 <a id="qwen-release-scope"></a>
 <a id="glm-53-flash-release-scope"></a>

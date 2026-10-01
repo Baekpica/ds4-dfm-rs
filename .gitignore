@@ -169,3 +169,10 @@ tests/naive_banks
 /tests/test_exaone_batch
 
 /tests/cuda_tokentile_ldmatrix
+/tests/iquest_verify
+/tests/iquest_bank_verify
+/tests/test_iquest_prefix
+/tests/test_iquest_primitives
+/tests/test_iquest_dispatch
+/tests/weight_mapping_probe
+/tests/weight_mapping_policy

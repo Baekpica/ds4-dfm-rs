@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 // Only catalog membership is listed here. Every capability and bound comes
 // from the same policy used by admission and ds4-perf serving-controls.
-const VARIANTS: [Variant; 14] = [
+const VARIANTS: [Variant; 15] = [
     Variant::Flash,
     Variant::Pro,
     Variant::SolarOpen2_250B,
@@ -21,6 +21,7 @@ const VARIANTS: [Variant; 14] = [
     Variant::Ling30FlashVl,
     Variant::Mimo26Flash,
     Variant::NaiveN05Flash,
+    Variant::IQuestQ1,
 ];
 
 fn bound(value: Option<u32>) -> String {

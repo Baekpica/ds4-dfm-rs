@@ -217,6 +217,12 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
+    if family == ModelFamily::IQuestQ1 {
+        return mtp.is_none()
+            && (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
+            && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none();
+    }
+
     // Qwen4Exp and MiMo carry embedded MTP heads, so bench can speculate
     // without an external draft file. Other families still need that file.
     // Naive's fixed seven-row DSpark block can verify one proposal too.
@@ -228,6 +234,30 @@ fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
     draft >= min_draft
         && (mtp.is_some() || matches!(family, ModelFamily::Qwen4Exp | ModelFamily::Mimo2))
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+}
+
+fn check_mtp_args(args: &BenchArgs) -> Result<(), String> {
+    let dspark = std::env::var_os("DS4_DSPARK_MODEL").filter(|path| !path.is_empty());
+    let max_draft = ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32;
+    if args.mtp_draft <= max_draft && args.mtp.is_none() && dspark.is_none() {
+        return Ok(());
+    }
+
+    // Probe metadata only for potentially invalid controls. Ordinary benches
+    // retain one model-open scan; reject IQuest sidecars before loading weights.
+    let Ok(identified) = ds4_core::identify_gguf(std::path::Path::new(&args.model)) else {
+        return Ok(()); // Model::open retains the original malformed-model error.
+    };
+    if identified.shape.family != ModelFamily::IQuestQ1 {
+        return Ok(());
+    }
+    if args.mtp.is_some() || dspark.is_some() {
+        return Err("IQuest-Q1 uses embedded MTP; external drafters are unsupported".into());
+    }
+    if args.mtp_draft > max_draft {
+        return Err("IQuest-Q1 accepts at most seven recursive draft tokens".into());
+    }
+    Ok(())
 }
 
 fn backend_name(backend: Backend) -> &'static str {
@@ -391,6 +421,7 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
 
     let (prompt_path, chat_prompt) = prompt_source(&args)?;
     let text = read_prompt(prompt_path)?;
+    check_mtp_args(&args)?;
     let native_dist = crate::distributed_config(&args.dist);
     let mut open_options = Vec::with_capacity(5);
     if args.quality {
@@ -772,6 +803,119 @@ fn help_text() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SavedEnv(&'static str, Option<std::ffi::OsString>);
+
+    impl SavedEnv {
+        fn unset(key: &'static str) -> Self {
+            let saved = Self(key, std::env::var_os(key));
+            std::env::remove_var(key);
+            saved
+        }
+    }
+
+    impl Drop for SavedEnv {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(value) => std::env::set_var(self.0, value),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    #[test]
+    fn iquest_embedded_mtp_gate() {
+        let _disabled = SavedEnv::unset("DS4_MTP_SPEC_DISABLE");
+        for draft in 2..=7 {
+            assert!(use_mtp_spec(ModelFamily::IQuestQ1, None, draft));
+        }
+        for draft in [0, 1, 8] {
+            assert!(!use_mtp_spec(ModelFamily::IQuestQ1, None, draft));
+        }
+        assert!(!use_mtp_spec(ModelFamily::IQuestQ1, Some("draft.gguf"), 3));
+        for value in ["", "0", "1"] {
+            std::env::set_var("DS4_MTP_SPEC_DISABLE", value);
+            assert!(!use_mtp_spec(ModelFamily::IQuestQ1, None, 3));
+        }
+    }
+
+    fn write_arch(path: &std::path::Path, architecture: &str) {
+        // Identification needs only architecture. Any full model open fails
+        // required metadata, proving bad controls are rejected before loading.
+        let mut bytes = Vec::from(*b"GGUF");
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        for (index, value) in ["general.architecture", architecture].iter().enumerate() {
+            if index == 1 {
+                bytes.extend_from_slice(&8u32.to_le_bytes());
+            }
+            bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn iquest_rejects_bad_mtp_early() {
+        let _drafter = SavedEnv::unset("DS4_DSPARK_MODEL");
+        let dir = std::env::temp_dir().join(format!("ds4-bench-iquest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("metadata.gguf");
+        for architecture in ["iquest_q1", "qwen4exp", "mimo2", "naive_n05_flash"] {
+            write_arch(&model, architecture);
+            for (draft, mtp, dspark, expected) in [
+                (
+                    8,
+                    None,
+                    None,
+                    "IQuest-Q1 accepts at most seven recursive draft tokens",
+                ),
+                (
+                    3,
+                    Some("draft.gguf"),
+                    None,
+                    "IQuest-Q1 uses embedded MTP; external drafters are unsupported",
+                ),
+                (
+                    3,
+                    None,
+                    Some("draft.gguf"),
+                    "IQuest-Q1 uses embedded MTP; external drafters are unsupported",
+                ),
+            ] {
+                match dspark {
+                    Some(path) => std::env::set_var("DS4_DSPARK_MODEL", path),
+                    None => std::env::remove_var("DS4_DSPARK_MODEL"),
+                }
+                let args = BenchArgs {
+                    model: model.to_string_lossy().into_owned(),
+                    mtp_draft: draft,
+                    mtp: mtp.map(str::to_owned),
+                    ..BenchArgs::default()
+                };
+                if architecture == "iquest_q1" {
+                    assert_eq!(check_mtp_args(&args).unwrap_err(), expected);
+                } else {
+                    check_mtp_args(&args).unwrap();
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn iquest_accepts_embedded_mtp() {
+        let _drafter = SavedEnv::unset("DS4_DSPARK_MODEL");
+        std::env::set_var("DS4_DSPARK_MODEL", "");
+        for draft in [1, 2, 7] {
+            let args = BenchArgs {
+                mtp_draft: draft,
+                ..BenchArgs::default()
+            };
+            check_mtp_args(&args).unwrap();
+        }
+    }
 
     #[test]
     fn inkling_sweep_replays_prefix() {
