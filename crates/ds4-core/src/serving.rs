@@ -2125,6 +2125,7 @@ fn measured_limits(
         && driver == BankDriver::Present
         && req.mtp_path.is_none()
         && !facts.mtp_loaded
+        && facts.dspark_ok != Some(true)
         && req.mtp_mode != MtpMode::On
         && facts.native_chunk.or(req.native_chunk) == Some(crate::naive::PREFILL_CAP)
         && req.sched_chunk == Some(crate::naive::PREFILL_CAP)
@@ -2945,6 +2946,49 @@ mod tests {
             };
             let p = resolve_plan(&req, Some(caps), &facts);
             assert_eq!(p.qualified.ctx, Some(8192));
+        }
+    }
+
+    #[test]
+    fn naive_draft_scope_is_bounded() {
+        let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        for (width, ctx) in [(1, 524288), (2, 262144)] {
+            for mode in [MtpMode::Off, MtpMode::Auto, MtpMode::On] {
+                let req = ServingRequest {
+                    ctx,
+                    max_seqs: MaxSeqs::Fixed(width),
+                    native_chunk: Some(crate::naive::PREFILL_CAP),
+                    sched_chunk: Some(crate::naive::PREFILL_CAP),
+                    sched_chunk_live: Some(crate::naive::PREFILL_CAP),
+                    mtp_mode: mode,
+                    ..ServingRequest::default()
+                };
+                // DSpark attachment survives Off/Auto, before and after open.
+                let facts = EngineFacts {
+                    dspark_ok: Some(true),
+                    ..EngineFacts::default()
+                };
+                for facts in [
+                    facts.clone(),
+                    EngineFacts {
+                        banks_fitted: Some(width),
+                        cont_lane: Some(true),
+                        native_chunk: req.native_chunk,
+                        ..facts
+                    },
+                ] {
+                    let p = resolve_plan(&req, Some(caps), &facts);
+                    assert!(!p.has_errors(), "{:?}", p.issues);
+                    assert_eq!(p.qualified.ctx, Some(8192), "{width}/{mode:?}");
+                    assert_eq!(p.qualified.prompt, Some(702));
+                    assert!(p.issues.iter().any(|i| i.code == "ctx_unqualified"));
+                    assert_eq!(p.effective.ctx, ctx);
+                    assert!(p.effective.mtp_weights);
+                    if mode != MtpMode::On {
+                        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+                    }
+                }
+            }
         }
     }
 
