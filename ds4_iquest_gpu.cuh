@@ -22,6 +22,14 @@ static bool iq_attn_shuffle() {
     return enabled;
 }
 
+static bool iq_attn_warp() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_WARP");
+        return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 extern "C" int ds4_gpu_iquest_rms(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t offset, uint32_t width, uint32_t rows) {
     if (!rows || rows > IQ_PREFILL_MAX * IQ_HEADS || (width != IQ_HEAD && width != IQ_EMBED)) { return 0; }
@@ -85,7 +93,15 @@ extern "C" int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         offset > size || sink_bytes > size - offset) { return 0; }
     const float *sink = (const float *)cuda_model_range_ptr(map, offset, sink_bytes, "IQuest learned sink");
     if (!sink) { return 0; }
-    if (iq_attn_shuffle()) {
+    // The four-head launch is measured at the default prefill width. Tails,
+    // decode and the recursive draft window keep the retained reduction.
+    if (iq_attn_shuffle() && rows == IQ_PREFILL &&
+        (window == 0 || window == IQ_WINDOW) && iq_attn_warp()) {
+        iquest_attn_warp_kernel<<<dim3(rows, IQ_HEADS / IQ_ATTN_HEADS_PER_BLOCK),
+            IQ_ATTN_HEADS_PER_BLOCK * IQ_WARP_WIDTH, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+            sink, (const unsigned *)positions->ptr, capacity, window);
+    } else if (iq_attn_shuffle()) {
         iquest_attn_shuffle_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
             sink, (const unsigned *)positions->ptr, capacity, window);

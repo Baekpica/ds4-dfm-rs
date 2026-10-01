@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "date": "2026-10-01",
-  "status": "P1 adopted; six-round campaign ongoing",
+  "status": "P1/P2 adopted at2K; campaign ongoing; primary subsequent workload8K cold-KV",
   "effective_rounds": {
-    "prefill": 1,
+    "prefill": 2,
     "decode": 0
   },
   "dedicated_round_goal": {
@@ -19,7 +19,8 @@
       "ds4_iquest_gpu.cuh": "20801ac17cf7231c1859f8e94d088862889a96f8606981ba9ee4896fdead1895",
       "tests/iquest_attention_profile.cu": "403ae7da9d735cbaa5a3bb19cd3289799b51c47f3631664e2f6a8242c245a2af",
       "tests/iquest_reduce_verify.cu": "ccf1d1e36eed86c80728548145e133b8b896ed39f1b3691d66e0a7b5cd784bd3"
-    }
+    },
+    "P1_commit": "907c76fc"
   },
   "artifact": {
     "repository": "Baekpica/IQuest-Q1-Mixed-Quant-GGUF",
@@ -257,7 +258,8 @@
     "Only recorded 2K+32 ordinary workload qualifies whole-model optimization parity.",
     "Synthetic wrap/MTP-window cases do not qualify full-model long context, recursive MTP or continuous serving.",
     "Existing IQuest quality/serving limitations remain; no 512K qualification or new quality claim.",
-    "Campaign remains ongoing; fresh retained-baseline profiling precedes subsequent rounds."
+    "Campaign remains ongoing; fresh retained-baseline profiling precedes subsequent rounds.",
+    "Subsequent primary measurements use8192 cold-KV tokens. Current P1/P2 whole-model results remain2K evidence."
   ],
   "raw_reports": {
     "root": "scratch/iquest-perf",
@@ -275,7 +277,130 @@
       "ncu-attn-prefill-p1.details.txt": "31e562c0262cc45f14a0b545ad0ba2af3dadfeab38f35518602b25f124000e8d",
       "p1-attn-timing.jsonl": "4f2e2729b802a594aabdb97a2195a9a5fb5356a01718cb32192ca9ca786dd549",
       "p1-profile/attribution.json": "6153683574afc7833f6ac4cc70c96678a12b3ae92354f8f857ba2138c06ab0f8",
-      "state-verify-cpu-renamed.log": "c6baea8e02359de78b82b67b53a81608c136af0bbfe53f9d0a462fc56d1d1d09"
+      "state-verify-cpu-renamed.log": "c6baea8e02359de78b82b67b53a81608c136af0bbfe53f9d0a462fc56d1d1d09",
+      "p2-ab/summary.json": "43f5af96f3f2f3c09c087697c108605cc13ec2fa2c78d2eb02d4b1a2f1a21c70",
+      "p2-ab/independent-audit.json": "888b1b1eedb3e5d57e84ff17626d8bd34553ad960096ab329537705153c36fe2",
+      "p2-state-comparison.json": "fcc33b948e49b463d834101d9ea2f48a4c6f89ada6ee09e86ea2e00c99c7667c",
+      "p2-state-independent-audit.json": "d7340854e504fbd5d25feef5304a7384c4c4575bb2608c63db750f199156afa4",
+      "p2-fixture-coverage.json": "fc08db98547046e781760ed2da07b47e36de28741630faa3c8647522c5d1b4fa",
+      "p2-sass-proof.json": "7eb96e366ca7db36bebe0a72819a230555a3d12ee11976841d7289f25f4130a0",
+      "p2-attn-timing.jsonl": "07dac5806ff0504bec944754362c79a25eebd9c084ec410c7dfc489f93e7e9e9",
+      "ncu-attn-prefill-p2.details.txt": "8eaebb6d303a2cef954cf9344aed7adcd3f7a490ea64821dc27be1070fe343e1"
+    }
+  },
+  "P2": {
+    "kind": "dedicated prefill round",
+    "implementation": "Four independent head warps per128-thread CTA, rows128 and full/SWA4096 only; tails/decode/MTP retain P1",
+    "motivation": {
+      "retained_P1_attention_gpu_seconds": 9.485993792,
+      "retained_P1_attention_share_percent": 45.270735,
+      "NCU_P1_LSU_percent": 61.23
+    },
+    "numerical_contract": "Exact rounded Q8 products, original reduction tree, ascending recurrence and two BF16 boundaries under production fast-math. No ring-index or source-prefetch change.",
+    "control": "DS4_IQUEST_ATTN_WARP=0 retains P1; DS4_IQUEST_ATTN_SHUFFLE=0 restores original for all shapes",
+    "source": {
+      "base_commit": "907c76fc",
+      "binary_sha256": "d17412d952e443c6acdb8a3ed2a57c13dc7a064537748eb8778371ee360c8377",
+      "files_sha256": {
+        "cuda/iquest_primitives.cuh": "b3f709549bc691b9915497ffed2dc0469428ae02eb1217187374112c2d6e9215",
+        "ds4_iquest_gpu.cuh": "ea10bef0fed611b614d4c3bf6d13c122efc9892c59318f9e0b09ddb25bc2fd8a",
+        "tests/iquest_attention_profile.cu": "06a4ed0350cc7c1de3cd742021b269bbd7abf2f7532d38b4a9f04a60474db9e3"
+      }
+    },
+    "AB": {
+      "order": "ABBAAB",
+      "samples_per_arm": 3,
+      "fresh_separate_warmup_per_measurement": true,
+      "scope": "2K+32 ordinary, capacity8192/chunk128/EOS-suppressed greedy; not8K",
+      "statistics": {
+        "A": {
+          "prefill_tps": {
+            "min": 97.05,
+            "median": 97.05,
+            "max": 97.29
+          },
+          "gen_tps": {
+            "min": 4.49,
+            "median": 4.49,
+            "max": 4.5
+          }
+        },
+        "B": {
+          "prefill_tps": {
+            "min": 128.25,
+            "median": 128.38,
+            "max": 128.52
+          },
+          "gen_tps": {
+            "min": 4.49,
+            "median": 4.49,
+            "max": 4.49
+          }
+        }
+      },
+      "gain_percent": {
+        "prefill_tps": 32.28232869654817,
+        "gen_tps": 0.0
+      },
+      "all12_workers_logit_token_exact": true
+    },
+    "state": {
+      "comparison": {
+        "prefill": {
+          "payload_bytes_compared": 392827956,
+          "logit_bytes_compared": 640000,
+          "all_bytes_equal": true
+        },
+        "final": {
+          "payload_bytes_compared": 398955700,
+          "logit_bytes_compared": 640000,
+          "all_bytes_equal": true
+        }
+      },
+      "four_restore_checks_pass": true,
+      "resident_decode_before_restore": true,
+      "faults_unchanged": true,
+      "speculative_counters_zero": true,
+      "scope": "2K ordinary; no physical SWA wrap"
+    },
+    "fixtures": {
+      "long_cases": 64,
+      "reference13": true,
+      "three_way_full_output_exact": true,
+      "F32_sinks_and_permuted_positions": true,
+      "long_readback_elements": 25362432,
+      "production_shaped": 22,
+      "diagnostic_only": 42
+    },
+    "isolated_attention": {
+      "scope": "synthetic rows128/pos2047/full/cap8192, three fresh samples each,3warmup+7timed launches",
+      "median_ms": {
+        "A": 11.2928095,
+        "B": 5.65836811
+      },
+      "NCU_cache_flushed_ms": {
+        "P1": 12.86,
+        "P2": 5.84
+      },
+      "NCU_LSU_percent": 87.31,
+      "NCU_occupancy_percent": 88.52,
+      "registers_per_thread": {
+        "P1": 38,
+        "P2": 40
+      },
+      "shared_bytes": {
+        "P1": 512,
+        "P2": 0
+      },
+      "local_spills": 0,
+      "NCU_policy": "clock-control none/cache-control all/full set/one standalone launch, idle persistent owner"
+    },
+    "SASS": {
+      "scope": "standalone; linked production audit pending",
+      "compiler_consequences": "single-key loop, early current K/V loads, uniform scalar math; attribute complete generated mapping",
+      "cta_barriers": 0,
+      "local_memory_ops": 0,
+      "BF16_conversions": 8
     }
   }
 }

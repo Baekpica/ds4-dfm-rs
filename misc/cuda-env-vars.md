@@ -203,6 +203,11 @@ The bandwidth figure is informational; we don't tier on it.
   reduction. The default keeps the same FP32 addition tree while replacing
   six block barriers with warp shuffles. Both BF16 output boundaries and
   the learned-key sink remain unchanged. Read once per process.
+- `DS4_IQUEST_ATTN_WARP=0` keeps the retained 128-thread reduction for
+  128-row full/SWA prefill. The default assigns four independent head
+  warps to each block. Tails, decode and the draft window retain the old
+  launch. `DS4_IQUEST_ATTN_SHUFFLE=0` also disables this path. Read once
+  per process.
 - `DS4_MIMO2_SWA_DECODE=0` restores MiMo's one-row, window-128 attention
   walk. The default shares KV across eight query heads. `DS4_MIMO2_SWA_VEC=0`
   selects scalar copies inside the shared tile. Both accept `0` and `1` in

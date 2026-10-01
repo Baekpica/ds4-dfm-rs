@@ -1,6 +1,7 @@
 # IQuest-Q1 GB10 optimization — 2026-10-01
 
-P1 adopted; campaign ongoing: **1/3 prefill, 0/3 dedicated decode rounds**.
+P1/P2 adopted at 2K; ongoing: **2/3 prefill, 0/3 dedicated decode rounds**.
+Subsequent rounds use 8K cold-KV; initial rates remain 2K evidence.
 Pinned mixed-quant artifact; 2048 prompt tokens, 8192 capacity, chunk 128,
 32 EOS-suppressed greedy outputs, MTP off. One VMM owner, fresh ABBAAB workers,
 each preceded by a separate warmup; observed clocks 2190–2197 MHz, unchanged policy.
@@ -19,3 +20,7 @@ Synthetic resident attention medians improve 1.452→0.884 ms (row 1) and 29.043
 The retained whole-workload profile totals 20.954 s prefill/6.995 s decode kernel time; attention remains 9.486 s (45.27%)/4.771 s (68.20%). Subsequent rounds start from this profile.
 
 [Compact evidence and hashes](2026-10-01-iquest-q1-optimization-gb10.json). Shard hashes are release-manifest-derived with sizes/mtimes checked, not a fresh 88 GB hash pass. Existing [family limits](../iquest-q1.md) remain: no new 512K, long-context, MTP or quality qualification. Full-model state proof here does not cross the SWA ring.
+
+P2 assigns four independent head warps per CTA at rows128/full or SWA4096. It preserves the product/tree/recurrence/BF16 contract; tails, decode and MTP retain P1. Three fresh samples per arm give prefill **97.05 (97.05–97.29)→128.38 (128.25–128.52) tok/s, +32.28%**; decode medians are both 4.49. All 12 workers retain exact logits/tokens; ordinary prefill/final payloads and four restore checks are exact. The 64 long attention cases plus Reference13 pass three-way full-output parity, including F32 sinks and permuted positions.
+
+Synthetic rows128 attention is 11.293→5.658 ms. Cache-flushed NCU is 12.86→5.84 ms, regs 38→40, shared 512→0 B/block, no spills; LSU 87.31%, occupancy 88.52%. Standalone SASS preserves arithmetic and removes CTA barriers; it also changes scheduling and unrolling. No new tensor allocation. `DS4_IQUEST_ATTN_WARP=0` retains P1; parent `DS4_IQUEST_ATTN_SHUFFLE=0` restores the original path. The next retained whole profile uses 8K cold-KV.
