@@ -239,6 +239,36 @@ extern "C" int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down
     return cuda_ok(cudaGetLastError(), "Naive ordered expert sum");
 }
 
+static bool naive_ranges_overlap(uintptr_t a, uint64_t a_bytes,
+                                  uintptr_t b, uint64_t b_bytes) {
+    return a < b ? b - a < a_bytes : a - b < b_bytes;
+}
+
+extern "C" int ds4_gpu_naive_sum_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows) {
+    enum { THREADS = 256 };
+    static_assert(N05_EMBED == 4096 && N05_USED == 8 && sizeof(float) == 4,
+                  "pinned Naive sum geometry");
+    if (!rows || rows > N05_PREFILL_MAX) { return 0; }
+    const char *fuse = getenv("DS4_NAIVE_SUM_ADD");
+    if (rows <= N05_DF_BLOCK || (fuse && !strcmp(fuse, "0"))) { return -1; }
+
+    const uint64_t count = (uint64_t)rows * N05_EMBED;
+    const uint64_t bytes = count * sizeof(float), down_bytes = bytes * N05_USED;
+    const uint64_t weight_bytes = (uint64_t)rows * N05_USED * sizeof(float);
+    if (!naive_buf(cur, bytes) || !naive_buf(down, down_bytes) ||
+        !naive_buf(weights, weight_bytes)) { return 0; }
+    const uintptr_t c = (uintptr_t)cur->ptr, d = (uintptr_t)down->ptr, w = (uintptr_t)weights->ptr;
+    if (c % alignof(float) || d % alignof(float) || w % alignof(float) ||
+        naive_ranges_overlap(c, bytes, d, down_bytes) ||
+        naive_ranges_overlap(c, bytes, w, weight_bytes) ||
+        naive_ranges_overlap(d, down_bytes, w, weight_bytes)) { return 0; }
+
+    naive_sum_add<<<(count + THREADS - 1) / THREADS, THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)down->ptr, (const float *)weights->ptr, count);
+    return cuda_ok(cudaGetLastError(), "Naive ordered sum and BF16 residual");
+}
+
 extern "C" int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count) {
     const uint64_t bytes = count * sizeof(float);
     if (!count || count > INT_MAX || !naive_buf(cur, bytes) || !naive_buf(other, bytes)) { return 0; }

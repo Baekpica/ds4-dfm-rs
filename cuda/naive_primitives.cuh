@@ -367,6 +367,21 @@ __global__ static void naive_sum(float *out, const float *down, const float *wei
     out[i] = sum;
 }
 
+/* Keep every ordered BF16 transition of naive_sum then naive_add. Fusion
+ * removes only the intermediate F32 write/read and the second launch. */
+__global__ static void naive_sum_add(
+        float *cur, const float *down, const float *weights, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const uint64_t row = i / N05_EMBED, col = i % N05_EMBED;
+    float sum = 0;
+    for (unsigned e = 0; e < N05_USED; e++) {
+        const float term = naive_bf16(naive_bf16(down[(row * N05_USED + e) * N05_EMBED + col]) * weights[row * N05_USED + e]);
+        sum = naive_bf16(sum + term);
+    }
+    cur[i] = naive_bf16(cur[i] + naive_bf16(sum));
+}
+
 /* One head/token row. Keep the original F32 scale: rounding it to BF16
  * changes reconstructed keys and can change the selected history. */
 __global__ static void naive_fp8_pack(

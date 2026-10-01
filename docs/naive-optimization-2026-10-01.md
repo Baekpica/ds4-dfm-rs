@@ -1,7 +1,7 @@
 # Naive additional optimization rounds, 2026-10-01
 
 Base: `2aedeb43` (main after PR70). Earlier P4/D3 are excluded from these
-additional rounds. Retained so far: **prefill 2, decode 3**.
+additional rounds. Retained so far: **prefill 3, decode 3**.
 
 ## Protocol
 
@@ -169,3 +169,54 @@ Evidence: `router-{off,on}/scout.json`, `router-compare/compare.json`,
 warm-pair logs and `router-model.guard.jsonl`. Eager/8K qualification limits
 remain those above. Benchmark SHA-256:
 `0025ef24e0fc7216b8b26ca15827f3efca0a0f82edcfc7110ad75ba2059a2fc1`.
+
+## P7: ordered MoE sum and residual
+
+Adopted for prefill; additional counts: **prefill 3, decode 3**.
+This adds no decode round.
+
+Fresh retained-router diagnosis: 188 MoE sum/residual pairs take 302.373248 ms,
+1.8968% of prefill wall. The pair writes an F32 intermediate for the residual update. Fusion removes
+that write/read and one launch, retaining
+ascending expert order and every BF16 down/product/partial-sum/residual
+boundary. Dense layer zero and widths one through seven keep the old pair.
+`DS4_NAIVE_SUM_ADD=0` restores it. F32 extents must be aligned and disjoint.
+
+| Measurement | Off | On |
+| --- | ---: | ---: |
+| Prefill samples, tok/s | 514.46 / 514.77 / 514.28 | 515.99 / 516.28 / 516.05 |
+| Decode samples, tok/s | 18.92 / 18.87 / 18.89 | 18.92 / 18.92 / 18.91 |
+| Mean prefill, tok/s | 514.5033 | 516.1067 (+0.31163%) |
+| Mean decode, tok/s | 18.8933 | 18.9167 |
+| Nsight MoE sum/residual total, ms | 302.082784 | 257.159808 |
+| Nsight prefill/decode wall, ms | 15930.590 / 1710.227 | 15898.263 / 1712.579 |
+| Warm isolated width-2048 pair, ms | 1.616283 | 1.383939 |
+| Matched NCU width-2048 pair, ms | 1.610336 | 1.378720 |
+
+Three alternating fresh isolated pairs use synthetic resident operands;
+full-counter NCU uses cache-control none. Actual routed values and preceding
+down-kernel cache state are not captured. Combined warp instructions fall
+33,816,576→29,097,984; global load requests/sectors fall 5.56%/8.33%, stores
+fall 50%. Fused registers/thread are 27, versus sum 26 and residual 16;
+static shared memory is zero, allocated shared memory stays 1 KiB/CTA and
+spills stay zero. Source arithmetic is unchanged. One 32 MiB intermediate
+write/read per 2048-row layer disappears; fallback scratch remains allocated.
+
+Prototype and production parity matrices, exceptional GPU-byte fixtures,
+memchecks, primitives, actual-state 43/2053/2181 and Rust perf tests pass.
+Both scouts complete without warnings; 915,456 checked logits match
+exactly, with zero token/argmax mismatches. Proof scope remains eager/8K.
+
+Automatic comparison: **Pass**, not Improved. Engineering
+adopts the repeatable prefill gain: its time envelope is −0.3874% to −0.2364%,
+while decode is −0.2643% to +0.0529%, with no meaningful regression. No fixed
+percentage floor is imposed. Both arms observe 2190–2197 MHz and equal sampled
+means, 2193.2766 MHz (47 samples each). Minimum host availability is
+25.5179 GiB; peak memory PSI full avg10 is 0.67, including hashing.
+
+Evidence: `sum-{off,on}/scout.json`, `sum-compare/compare.json`,
+`sum-state-{43,2053,2181}.log`, `sum-production-suite.json`,
+`sum-prototype/candidate-results/{receipt,resource-compact}.json`,
+`sum-source.{json,patch}` (11 frozen source pins), and `sum-model.guard.jsonl`.
+Benchmark SHA-256:
+`69cf89f7b64fb1029e6acebf65ed6242942e4c16de0595b335f7a5ec9157a234`.

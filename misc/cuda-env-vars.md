@@ -56,6 +56,12 @@ selection-rank probability summation, normalization and numeric-ID ordering.
 Any nonfinite input/score uses the original serial selection semantics.
 Widths two through seven keep the previous kernel. No workspace is added.
 
+`DS4_NAIVE_SUM_ADD=0` restores separate Naive expert sum and residual
+kernels. Its default fuses MoE rows above seven, preserving ascending expert
+order and every BF16 down/product/partial-sum/residual boundary. Dense layer
+zero and widths one through seven keep the original pair. The validated F32
+buffers must be disjoint; fallback scratch remains allocated.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed
