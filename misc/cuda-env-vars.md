@@ -204,10 +204,18 @@ The bandwidth figure is informational; we don't tier on it.
   six block barriers with warp shuffles. Both BF16 output boundaries and
   the learned-key sink remain unchanged. Read once per process.
 - `DS4_IQUEST_ATTN_WARP=0` keeps the retained 128-thread reduction for
-  128-row full/SWA prefill. The default assigns four independent head
-  warps to each block. Tails, decode and the draft window retain the old
+  128-row full/SWA prefill. With tiled attention disabled, four independent
+  head warps share each block. Tails, decode and the draft window retain the old
   launch. `DS4_IQUEST_ATTN_SHUFFLE=0` also disables this path. Read once
   per process.
+- `DS4_IQUEST_ATTN_TILED=0` restores the four-head warp prefill path.
+  The default uses TF32-pair tiles for 128-row full/SWA prefill on CUDA
+  targets supporting TF32 MMA. Q8 KV stays canonical; bounded PV tiles
+  merge in FP32 before ordinary BF16 output, then the F32 learned-key sink
+  and second BF16 store. This changes arithmetic order and is not bit-exact.
+  LSE needs 24 KiB of common temporary storage. Parent shuffle/warp switches
+  also disable it; tails, decode and the 512-token draft window fall back.
+  Read once per process. See the [measured numerical and speed scope](../docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md).
 - `DS4_MIMO2_SWA_DECODE=0` restores MiMo's one-row, window-128 attention
   walk. The default shares KV across eight query heads. `DS4_MIMO2_SWA_VEC=0`
   selects scalar copies inside the shared tile. Both accept `0` and `1` in

@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "date": "2026-10-01",
-  "status": "P1/P2 adopted; primary P2 8K cold-KV A/B and full ordinary state parity complete; campaign ongoing",
+  "status": "ongoing; P1/P2/P3 adopted; dedicated decode rounds pending",
   "effective_rounds": {
-    "prefill": 2,
+    "prefill": 3,
     "decode": 0
   },
   "dedicated_round_goal": {
@@ -255,9 +255,9 @@
     }
   },
   "limits": [
-    "Only the recorded 2K+32 and 8K+32 ordinary workloads qualify full-model optimization state parity.",
+    "P1/P2 full-model parity applies only to their recorded 2K+32 and 8K+32 ordinary workloads. P3 changes arithmetic and is not cross-path logits/KV/token exact.",
     "Synthetic wrap/MTP-window cases do not qualify full-model long context, recursive MTP or continuous serving.",
-    "Existing IQuest quality/serving limitations remain; no 512K qualification or new quality claim.",
+    "Existing family limits remain; no 512K or corpus-wide quality qualification. P3 has four bounded answer pairs, including 8676-token retrieval.",
     "Campaign remains ongoing; fresh retained-baseline profiling precedes subsequent rounds.",
     "Primary 8192-token cold-KV P2 measurements include exact prefill/final logits and chronological committed native payloads; this does not qualify other contexts or serving modes."
   ],
@@ -616,7 +616,7 @@
       }
     }
   },
-  "primary_evidence": "P2.cold_8k",
+  "primary_evidence": "P3.cold8k",
   "workload_scope": "The existing workload field and P1 evidence retain the initial 2K protocol; primary_workload is the subsequent 8K cold-KV protocol.",
   "primary_workload": {
     "prompt_tokens": 8192,
@@ -653,9 +653,995 @@
     }
   },
   "P3": {
-    "status": "candidate under investigation; unqualified",
-    "default_enabled": false,
-    "diagnostic_enable": "DS4_IQUEST_ATTN_TILED=1",
-    "effective_round_credit": 0
+    "status": "adopted with changed-arithmetic contract; bounded quality gates, not lossless",
+    "default_enabled": true,
+    "fallback": "DS4_IQUEST_ATTN_TILED=0",
+    "effective_round_credit": {
+      "prefill": 1,
+      "decode": 0
+    },
+    "scope": "rows128, full or SWA4096; TF32-pair QK/PV with FP32 running numerator; original F32 sink and both BF16 boundaries",
+    "cold8k": {
+      "passed": true,
+      "quality_qualified": false,
+      "cross_arm_exact": false,
+      "within_arm_exact": true,
+      "scope": "CONTROL/TIMING ONLY. Independent CPU audit of six completed cold-KV fresh-process ABBAAB workers; weights/OS cache not cold; not adoption or final-state qualification",
+      "workload": {
+        "frontier": 8192,
+        "capacity": 16384,
+        "chunk": 128,
+        "generated": 32,
+        "mtp": "off"
+      },
+      "measured_per_arm": 3,
+      "warmup_workers": 0,
+      "cache_policy": {
+        "name": "cold_kv",
+        "fresh_process": true,
+        "fresh_session": true,
+        "prefill_start_position": 0,
+        "reused_kv_tokens": 0,
+        "restored_payload": false,
+        "separate_warmup_process": false,
+        "weight_owner": "persistent canonical VMM owner",
+        "weights_and_os_cache": "uncontrolled; not claimed cold",
+        "native_boot_prewarm": "unchanged, outside measured fresh-session prefill",
+        "verification": "bench creates a new Session; one frontier; full frontier prefill count in CSV and logits receipt"
+      },
+      "source_base": "de7612b1abd9a5e2ec3caccb7e6fc66ca79d16d9",
+      "source_has_uncommitted_candidate": true,
+      "control": "DS4_IQUEST_ATTN_TILED",
+      "shared_variant_controls": {
+        "DS4_IQUEST_ATTN_SHUFFLE": "1",
+        "DS4_IQUEST_ATTN_WARP": "1"
+      },
+      "candidate_binary_sha256": "13fb104dc4ac5eee85127ec6de4deaa167d2731b035fe2ec0ba7fe0e43042c8f",
+      "model_hashes_fresh": false,
+      "owner_pids": [
+        716070
+      ],
+      "small_inputs_before_after_unchanged": true,
+      "rows": [
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "00-A-measured",
+          "prefill_tps": 78.82,
+          "decode_tps": 2.2,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "logits_vs_first_A": {
+            "rms": 0.0,
+            "relative_l2": 0.0,
+            "max_abs": 0.0,
+            "mean_shift": 0.0
+          },
+          "token_changes_vs_first_A": [],
+          "clock_samples": 233,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "f0c6934b61d653bf09108cb2c28d5c4e4317cc09aebe9fa5b6aec58e90a94514",
+          "logits_json_sha256": "4a0ecdb35f7bf5a1ae6b34525e1d966f538e67fd660c96219d482bc571a99ba3",
+          "tokens_json_sha256": "0578d0ad3ffcc7f40d1ed80927bbcef9f99074297a46d07257e817503d07ffce"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "01-B-measured",
+          "prefill_tps": 132.67,
+          "decode_tps": 2.2,
+          "logits_f32_bits_exact": false,
+          "tokens_identical": false,
+          "logits_vs_first_A": {
+            "rms": 1.1790736142887948,
+            "relative_l2": 0.3392568769367921,
+            "max_abs": 4.90625,
+            "mean_shift": 0.4092961759198457
+          },
+          "token_changes_vs_first_A": [
+            {
+              "index": 19,
+              "A": 772,
+              "observed": 1899
+            },
+            {
+              "index": 20,
+              "A": 2342,
+              "observed": 772
+            },
+            {
+              "index": 21,
+              "A": 2501,
+              "observed": 2342
+            },
+            {
+              "index": 22,
+              "A": 814,
+              "observed": 2501
+            },
+            {
+              "index": 23,
+              "A": 4784,
+              "observed": 814
+            },
+            {
+              "index": 24,
+              "A": 866,
+              "observed": 18999
+            },
+            {
+              "index": 25,
+              "A": 18029,
+              "observed": 4784
+            },
+            {
+              "index": 26,
+              "A": 20134,
+              "observed": 866
+            },
+            {
+              "index": 27,
+              "A": 812,
+              "observed": 18029
+            },
+            {
+              "index": 28,
+              "A": 783,
+              "observed": 20134
+            },
+            {
+              "index": 29,
+              "A": 30781,
+              "observed": 812
+            },
+            {
+              "index": 30,
+              "A": 1370,
+              "observed": 783
+            },
+            {
+              "index": 31,
+              "A": 817,
+              "observed": 30781
+            }
+          ],
+          "clock_samples": 155,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "aa3f2510b0bc0cefad9aa5884394d2459c06a4bce194ae5533157e6db1ed2d84",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "02-B-measured",
+          "prefill_tps": 132.45,
+          "decode_tps": 2.21,
+          "logits_f32_bits_exact": false,
+          "tokens_identical": false,
+          "logits_vs_first_A": {
+            "rms": 1.1790736142887948,
+            "relative_l2": 0.3392568769367921,
+            "max_abs": 4.90625,
+            "mean_shift": 0.4092961759198457
+          },
+          "token_changes_vs_first_A": [
+            {
+              "index": 19,
+              "A": 772,
+              "observed": 1899
+            },
+            {
+              "index": 20,
+              "A": 2342,
+              "observed": 772
+            },
+            {
+              "index": 21,
+              "A": 2501,
+              "observed": 2342
+            },
+            {
+              "index": 22,
+              "A": 814,
+              "observed": 2501
+            },
+            {
+              "index": 23,
+              "A": 4784,
+              "observed": 814
+            },
+            {
+              "index": 24,
+              "A": 866,
+              "observed": 18999
+            },
+            {
+              "index": 25,
+              "A": 18029,
+              "observed": 4784
+            },
+            {
+              "index": 26,
+              "A": 20134,
+              "observed": 866
+            },
+            {
+              "index": 27,
+              "A": 812,
+              "observed": 18029
+            },
+            {
+              "index": 28,
+              "A": 783,
+              "observed": 20134
+            },
+            {
+              "index": 29,
+              "A": 30781,
+              "observed": 812
+            },
+            {
+              "index": 30,
+              "A": 1370,
+              "observed": 783
+            },
+            {
+              "index": 31,
+              "A": 817,
+              "observed": 30781
+            }
+          ],
+          "clock_samples": 156,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2197
+          },
+          "raw_report_sha256": "de2752d8f5c838b401abaac6ee503c0ce2a67d72483dbfc532a9a1afcd4da419",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "03-A-measured",
+          "prefill_tps": 78.83,
+          "decode_tps": 2.2,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "logits_vs_first_A": {
+            "rms": 0.0,
+            "relative_l2": 0.0,
+            "max_abs": 0.0,
+            "mean_shift": 0.0
+          },
+          "token_changes_vs_first_A": [],
+          "clock_samples": 233,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "48431082f34840d4e45c7cddcb5c45c8e3205c62ba5c9ae8ef3c75412c37fe8f",
+          "logits_json_sha256": "4a0ecdb35f7bf5a1ae6b34525e1d966f538e67fd660c96219d482bc571a99ba3",
+          "tokens_json_sha256": "0578d0ad3ffcc7f40d1ed80927bbcef9f99074297a46d07257e817503d07ffce"
+        },
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "04-A-measured",
+          "prefill_tps": 78.77,
+          "decode_tps": 2.2,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "logits_vs_first_A": {
+            "rms": 0.0,
+            "relative_l2": 0.0,
+            "max_abs": 0.0,
+            "mean_shift": 0.0
+          },
+          "token_changes_vs_first_A": [],
+          "clock_samples": 235,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2190
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2190
+          },
+          "raw_report_sha256": "fab677ed8e87c6961bb803ac6bd1f336330175a32bbf029320217bfc18a545e0",
+          "logits_json_sha256": "4a0ecdb35f7bf5a1ae6b34525e1d966f538e67fd660c96219d482bc571a99ba3",
+          "tokens_json_sha256": "0578d0ad3ffcc7f40d1ed80927bbcef9f99074297a46d07257e817503d07ffce"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "05-B-measured",
+          "prefill_tps": 132.56,
+          "decode_tps": 2.2,
+          "logits_f32_bits_exact": false,
+          "tokens_identical": false,
+          "logits_vs_first_A": {
+            "rms": 1.1790736142887948,
+            "relative_l2": 0.3392568769367921,
+            "max_abs": 4.90625,
+            "mean_shift": 0.4092961759198457
+          },
+          "token_changes_vs_first_A": [
+            {
+              "index": 19,
+              "A": 772,
+              "observed": 1899
+            },
+            {
+              "index": 20,
+              "A": 2342,
+              "observed": 772
+            },
+            {
+              "index": 21,
+              "A": 2501,
+              "observed": 2342
+            },
+            {
+              "index": 22,
+              "A": 814,
+              "observed": 2501
+            },
+            {
+              "index": 23,
+              "A": 4784,
+              "observed": 814
+            },
+            {
+              "index": 24,
+              "A": 866,
+              "observed": 18999
+            },
+            {
+              "index": 25,
+              "A": 18029,
+              "observed": 4784
+            },
+            {
+              "index": 26,
+              "A": 20134,
+              "observed": 866
+            },
+            {
+              "index": 27,
+              "A": 812,
+              "observed": 18029
+            },
+            {
+              "index": 28,
+              "A": 783,
+              "observed": 20134
+            },
+            {
+              "index": 29,
+              "A": 30781,
+              "observed": 812
+            },
+            {
+              "index": 30,
+              "A": 1370,
+              "observed": 783
+            },
+            {
+              "index": 31,
+              "A": 817,
+              "observed": 30781
+            }
+          ],
+          "clock_samples": 157,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "658fde4da8279f077f232e32f68bb4f24dbc89fb7a2029ba13e2d9130a1e7c26",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        }
+      ],
+      "statistics": {
+        "A": {
+          "prefill_tps": {
+            "min": 78.77,
+            "median": 78.82,
+            "max": 78.83
+          },
+          "gen_tps": {
+            "min": 2.2,
+            "median": 2.2,
+            "max": 2.2
+          }
+        },
+        "B": {
+          "prefill_tps": {
+            "min": 132.45,
+            "median": 132.56,
+            "max": 132.67
+          },
+          "gen_tps": {
+            "min": 2.2,
+            "median": 2.2,
+            "max": 2.21
+          }
+        }
+      },
+      "median_throughput_gain_percent": {
+        "prefill_tps": 68.18066480588685,
+        "gen_tps": 0.0
+      },
+      "proof": {
+        "independent_comparisons": 5,
+        "full_vocab_values_each": 160000,
+        "all_finite": true,
+        "f32_bits_reconstructed_from_json_exact": false,
+        "json_numbers_source": "bench json_f32 uses finite f32.to_string() round-trip representation",
+        "tokens_each": 32,
+        "all_tokens_identical": false,
+        "reference_directory": "00-A-measured",
+        "final_decode_logits_checked": false,
+        "committed_native_payload_checked": false
+      },
+      "raw_receipts": {
+        "manifest.json": "dec7b68fa84118c7c7b4d6f6b4ae8c778f469b11d29bd7ee0c4f53b1a2327e43",
+        "summary.json": "71f18d101fb047b5c5587529db3d3f23e35b9d36827c847e1b71fd7027203c2d"
+      },
+      "remaining": "Explicit numerical/quality assessment and full-state gates required; passing this audit cannot adopt the candidate"
+    },
+    "numerical_contract": {
+      "cross_path_exact": false,
+      "prefill_logits": {
+        "rms": 1.1790736142887948,
+        "relative_l2": 0.3392568769367921,
+        "max_abs": 4.90625
+      },
+      "forced_greedy_matches": 31,
+      "forced_steps": 32,
+      "first_argmax_equal": true,
+      "final_argmax_equal": true,
+      "state": "All finite; chronology and four byte-exact self-restores pass. First-layer KV exact, deeper values differ; no cache-value parity claim.",
+      "quality": "Arithmetic, Python reasoning, short retrieval and 8676-token retrieval exact expected answers pass in both arms. Not a corpus quality assessment."
+    },
+    "quality_short": {
+      "scope": "three bounded thinking answers; not a corpus or family-wide quality claim",
+      "binary_sha256": "80a3b7bdd00df6eb9c8bedb999e8c5e8fbe313cd01e72fbe5f4a9e65716cdcd9",
+      "passed": true,
+      "results": [
+        {
+          "raw_text": "The user is asking a simple arithmetic question: 19 + 23. The reference notes are irrelevant filler. Need final answer only integer. Compute 19+23=42. Final should be just 42.</think>42",
+          "reasoning": "The user is asking a simple arithmetic question: 19 + 23. The reference notes are irrelevant filler. Need final answer only integer. Compute 19+23=42. Final should be just 42.",
+          "answer": "42",
+          "expected": "42",
+          "answer_passed": true,
+          "prompt_tokens": 611,
+          "generated_including_eos": 46,
+          "case": "arithmetic",
+          "arm": "A"
+        },
+        {
+          "raw_text": "The user is asking a simple arithmetic question: 19 + 23. The reference notes are irrelevant filler. Need final answer only integer. Compute 19+23=42. Final should be just 42.</think>42",
+          "reasoning": "The user is asking a simple arithmetic question: 19 + 23. The reference notes are irrelevant filler. Need final answer only integer. Compute 19+23=42. Final should be just 42.",
+          "answer": "42",
+          "expected": "42",
+          "answer_passed": true,
+          "prompt_tokens": 611,
+          "generated_including_eos": 46,
+          "case": "arithmetic",
+          "arm": "B"
+        },
+        {
+          "raw_text": "We need answer user's question. Need compute Python program prints integer. values [3,1,4,1,5], sum(x*x for x in values if x % 2). x % 2 truthy for odd numbers: 3,1,1,5. squares:9+1+1+25=36. Need final only integer. Ensure no extra? User says Give only integer as final answer. So final 36.</think>36",
+          "reasoning": "We need answer user's question. Need compute Python program prints integer. values [3,1,4,1,5], sum(x*x for x in values if x % 2). x % 2 truthy for odd numbers: 3,1,1,5. squares:9+1+1+25=36. Need final only integer. Ensure no extra? User says Give only integer as final answer. So final 36.",
+          "answer": "36",
+          "expected": "36",
+          "answer_passed": true,
+          "prompt_tokens": 641,
+          "generated_including_eos": 96,
+          "case": "code",
+          "arm": "B"
+        },
+        {
+          "raw_text": "We need answer user's question. Need compute Python program prints integer. values [3,1,4,1,5], sum(x*x for x in values if x % 2). x % 2 truthy for odd numbers: 3,1,1,5. squares:9+1+1+25=36. Need final only integer. Ensure no extra? User says Give only integer as final answer. So final 36.</think>36",
+          "reasoning": "We need answer user's question. Need compute Python program prints integer. values [3,1,4,1,5], sum(x*x for x in values if x % 2). x % 2 truthy for odd numbers: 3,1,1,5. squares:9+1+1+25=36. Need final only integer. Ensure no extra? User says Give only integer as final answer. So final 36.",
+          "answer": "36",
+          "expected": "36",
+          "answer_passed": true,
+          "prompt_tokens": 641,
+          "generated_including_eos": 96,
+          "case": "code",
+          "arm": "A"
+        },
+        {
+          "raw_text": "We need answer user's request. Need produce final answer only exact code. Need identify record 37: \"The archive access code is ORCHID-7291.\" So exact code ORCHID-7291. Ensure only that.</think>ORCHID-7291",
+          "reasoning": "We need answer user's request. Need produce final answer only exact code. Need identify record 37: \"The archive access code is ORCHID-7291.\" So exact code ORCHID-7291. Ensure only that.",
+          "answer": "ORCHID-7291",
+          "expected": "ORCHID-7291",
+          "answer_passed": true,
+          "prompt_tokens": 1188,
+          "generated_including_eos": 56,
+          "case": "retrieval",
+          "arm": "A"
+        },
+        {
+          "raw_text": "We need answer user's request. Need produce final answer only exact code. Need identify record 37: \"The archive access code is ORCHID-7291.\" So exact code ORCHID-7291. Ensure only that.</think>ORCHID-7291",
+          "reasoning": "We need answer user's request. Need produce final answer only exact code. Need identify record 37: \"The archive access code is ORCHID-7291.\" So exact code ORCHID-7291. Ensure only that.",
+          "answer": "ORCHID-7291",
+          "expected": "ORCHID-7291",
+          "answer_passed": true,
+          "prompt_tokens": 1188,
+          "generated_including_eos": 56,
+          "case": "retrieval",
+          "arm": "B"
+        }
+      ]
+    },
+    "quality_long": {
+      "scope": "one bounded long-context thinking retrieval pair; not a corpus or family-wide quality claim",
+      "binary_sha256": "fa3b297c7e90d1b57f4243e0f0163878e9f6189f39fd85907e248cb10a6bb9c6",
+      "passed": true,
+      "results": [
+        {
+          "raw_text": "We need answer user's question. Need use reference notes? They provide many records. Record 137: \"The archive access code is ORCHID-7291.\" Question: What access code is stated in record 137? Give only exact code final answer. So final ORCHID-7291. Need ensure only that.</think>ORCHID-7291",
+          "reasoning": "We need answer user's question. Need use reference notes? They provide many records. Record 137: \"The archive access code is ORCHID-7291.\" Question: What access code is stated in record 137? Give only exact code final answer. So final ORCHID-7291. Need ensure only that.",
+          "answer": "ORCHID-7291",
+          "expected": "ORCHID-7291",
+          "answer_passed": true,
+          "prompt_tokens": 8676,
+          "generated_including_eos": 75,
+          "case": "retrieval",
+          "arm": "A"
+        },
+        {
+          "raw_text": "We need answer user's question. Need use reference notes. They ask: What access code is stated in record 137? Give only exact code final answer. In provided records, Record 137: \"The archive access code is ORCHID-7291.\" So exact code ORCHID-7291. Need final only that. Ensure no extra.</think>ORCHID-7291",
+          "reasoning": "We need answer user's question. Need use reference notes. They ask: What access code is stated in record 137? Give only exact code final answer. In provided records, Record 137: \"The archive access code is ORCHID-7291.\" So exact code ORCHID-7291. Need final only that. Ensure no extra.",
+          "answer": "ORCHID-7291",
+          "expected": "ORCHID-7291",
+          "answer_passed": true,
+          "prompt_tokens": 8676,
+          "generated_including_eos": 80,
+          "case": "retrieval",
+          "arm": "B"
+        }
+      ]
+    },
+    "rejected_candidate": "Initial long-MMA numerator biased constant-value averages; rejected before adoption. Tile-local MMA partials and FP32 running accumulation repair it.",
+    "regression": {
+      "old_max_abs_error": 2.9981e-05,
+      "final": {
+        "passed": true,
+        "keys": 8192,
+        "unit_elements": 761856,
+        "max_abs_error": 5.960464477539063e-08,
+        "mean_error": -7.62520357966423e-09,
+        "tolerance": 3.814697265625e-06,
+        "nonfinite": 0
+      },
+      "scope": "8192-key analytic unit-V raw accumulation; test-specific tolerance, not model quality threshold"
+    },
+    "fixtures": "64 long cases plus racecheck pass; component FP64 references and independent sink-stage checks. No whole-model bit-equivalence claim.",
+    "resources": {
+      "extra_device_bytes": 24576,
+      "extra_allocations": 1,
+      "freed_on_model_drop": true,
+      "prefill_registers": 255,
+      "static_shared_bytes": 34848,
+      "driver_shared_bytes": 1024,
+      "spills": 0
+    },
+    "isolated_full8k": {
+      "hot_median_ms": {
+        "grouped": 23.505,
+        "tiled": 4.61528
+      },
+      "hot_tiled_range_ms": [
+        3.78291,
+        4.75123
+      ],
+      "cache_flushed_ncu_ms": {
+        "grouped": 24.685024,
+        "tiled": 5.828544
+      },
+      "scope": "resident synthetic F32 sink; three fresh processes per arm; separate from whole-model timings"
+    },
+    "retained_profile": {
+      "scope": "NVTX-scoped profiled attribution, not speed A/B",
+      "command": [
+        "nsys",
+        "stats",
+        "--report",
+        "nvtx_kern_sum:base,nvtx_gpu_proj_sum,nvtx_pushpop_trace,cuda_api_sum",
+        "--format",
+        "csv:noconv",
+        "--output",
+        "scratch/iquest-perf/p3-default-8k-profile/stats",
+        "scratch/iquest-perf/p3-default-8k-profile/00-B-profile/trace.nsys-rep"
+      ],
+      "phases": {
+        "prefill": {
+          "host_ns": 62002343536,
+          "aggregate_kernel_ns": 61536879144,
+          "launches": 385792,
+          "kernels": [
+            {
+              "name": "mul_mat_q",
+              "gpu_ns": 30617603328,
+              "launches": 21248,
+              "share_percent": 49.754884800629824,
+              "avg_ns": 1440964.0
+            },
+            {
+              "name": "prefill",
+              "gpu_ns": 13935086272,
+              "launches": 5632,
+              "share_percent": 22.645097485998697,
+              "avg_ns": 2474269.6
+            },
+            {
+              "name": "ds4_moe_worklist_mmq_kernel",
+              "gpu_ns": 12807302656,
+              "launches": 18176,
+              "share_percent": 20.812401984231506,
+              "avg_ns": 704627.1
+            },
+            {
+              "name": "iquest_router_kernel",
+              "gpu_ns": 1574872640,
+              "launches": 5568,
+              "share_percent": 2.559233847908834,
+              "avg_ns": 282843.5
+            },
+            {
+              "name": "iquest_rms_kernel",
+              "gpu_ns": 358157344,
+              "launches": 28288,
+              "share_percent": 0.582020650026613,
+              "avg_ns": 12661.1
+            },
+            {
+              "name": "motif3_round_bf16_kernel",
+              "gpu_ns": 355101608,
+              "launches": 90432,
+              "share_percent": 0.5770549513390838,
+              "avg_ns": 3926.7
+            },
+            {
+              "name": "ds4_mmq_sanitize_f32_kernel",
+              "gpu_ns": 327597696,
+              "launches": 33536,
+              "share_percent": 0.5323599450557148,
+              "avg_ns": 9768.5
+            },
+            {
+              "name": "iquest_sum_kernel",
+              "gpu_ns": 239638944,
+              "launches": 5568,
+              "share_percent": 0.38942329759562627,
+              "avg_ns": 43038.6
+            },
+            {
+              "name": "quantize_mmq_q8_1",
+              "gpu_ns": 225091584,
+              "launches": 34432,
+              "share_percent": 0.36578322971704846,
+              "avg_ns": 6537.3
+            },
+            {
+              "name": "mm_ids_helper",
+              "gpu_ns": 202057408,
+              "launches": 34432,
+              "share_percent": 0.3283517312068646,
+              "avg_ns": 5868.3
+            },
+            {
+              "name": "mul_mat_q_stream_k_fixup",
+              "gpu_ns": 136800544,
+              "launches": 11264,
+              "share_percent": 0.22230660037191438,
+              "avg_ns": 12144.9
+            },
+            {
+              "name": "mul_mat_vec_q",
+              "gpu_ns": 136329536,
+              "launches": 64,
+              "share_percent": 0.22154119269029013,
+              "avg_ns": 2130149.0
+            },
+            {
+              "name": "iquest_rope_kernel",
+              "gpu_ns": 128782464,
+              "launches": 11264,
+              "share_percent": 0.20927688532699437,
+              "avg_ns": 11433.1
+            },
+            {
+              "name": "iquest_add_kernel",
+              "gpu_ns": 117867424,
+              "launches": 11264,
+              "share_percent": 0.19153948922918748,
+              "avg_ns": 10464.1
+            },
+            {
+              "name": "nvjet_sm121_sss_tf32_mma_64x32x64_4_32x16x64_tmaAB_alignCD4_splitK_TNNN",
+              "gpu_ns": 114758496,
+              "launches": 5568,
+              "share_percent": 0.18648735131896796,
+              "avg_ns": 20610.4
+            },
+            {
+              "name": "iquest_swiglu_kernel",
+              "gpu_ns": 85112512,
+              "launches": 5632,
+              "share_percent": 0.13831138852659655,
+              "avg_ns": 15112.3
+            },
+            {
+              "name": "iquest_kv_kernel",
+              "gpu_ns": 52607680,
+              "launches": 5632,
+              "share_percent": 0.08548967827389306,
+              "avg_ns": 9340.9
+            },
+            {
+              "name": "sink",
+              "gpu_ns": 38663680,
+              "launches": 5632,
+              "share_percent": 0.06283009560742374,
+              "avg_ns": 6865.0
+            },
+            {
+              "name": "ds4_moe_build_tile_worklist",
+              "gpu_ns": 32914112,
+              "launches": 18176,
+              "share_percent": 0.05348680735495051,
+              "avg_ns": 1810.9
+            },
+            {
+              "name": "dots3_scale_kernel",
+              "gpu_ns": 19324480,
+              "launches": 5568,
+              "share_percent": 0.0314030874961656,
+              "avg_ns": 3470.6
+            },
+            {
+              "name": "fill_f32_kernel",
+              "gpu_ns": 18395680,
+              "launches": 22720,
+              "share_percent": 0.029893748685163254,
+              "avg_ns": 809.7
+            },
+            {
+              "name": "splitKreduce_kernel",
+              "gpu_ns": 12296832,
+              "launches": 5568,
+              "share_percent": 0.01998286583761369,
+              "avg_ns": 2208.5
+            },
+            {
+              "name": "embed_tokens_generic_kernel",
+              "gpu_ns": 420896,
+              "launches": 64,
+              "share_percent": 0.0006839735876352748,
+              "avg_ns": 6576.5
+            },
+            {
+              "name": "quantize_q8_1",
+              "gpu_ns": 95328,
+              "launches": 64,
+              "share_percent": 0.0001549119833927989,
+              "avg_ns": 1489.5
+            }
+          ]
+        },
+        "decode": {
+          "host_ns": 14514676400,
+          "aggregate_kernel_ns": 14378376736,
+          "launches": 155104,
+          "kernels": [
+            {
+              "name": "iquest_attn_shuffle_kernel",
+              "gpu_ns": 12150574976,
+              "launches": 2816,
+              "share_percent": 84.50588824521394,
+              "avg_ns": 4314834.9
+            },
+            {
+              "name": "iquest_router_kernel",
+              "gpu_ns": 784359840,
+              "launches": 2784,
+              "share_percent": 5.455134848679764,
+              "avg_ns": 281738.4
+            },
+            {
+              "name": "mul_mat_q",
+              "gpu_ns": 562134336,
+              "launches": 4992,
+              "share_percent": 3.9095813548448115,
+              "avg_ns": 112607.0
+            },
+            {
+              "name": "mul_mat_vec_q",
+              "gpu_ns": 514808992,
+              "launches": 11968,
+              "share_percent": 3.58043888717314,
+              "avg_ns": 43015.5
+            },
+            {
+              "name": "mul_mat_vec_q_moe",
+              "gpu_ns": 132629312,
+              "launches": 2784,
+              "share_percent": 0.9224220121310918,
+              "avg_ns": 47639.8
+            },
+            {
+              "name": "iquest_rms_kernel",
+              "gpu_ns": 82863840,
+              "launches": 14144,
+              "share_percent": 0.5763087274833247,
+              "avg_ns": 5858.6
+            },
+            {
+              "name": "matmul_f32_kernel",
+              "gpu_ns": 43653184,
+              "launches": 2784,
+              "share_percent": 0.303603006107796,
+              "avg_ns": 15680.0
+            },
+            {
+              "name": "motif3_round_bf16_kernel",
+              "gpu_ns": 34046912,
+              "launches": 45216,
+              "share_percent": 0.23679246013045904,
+              "avg_ns": 753.0
+            },
+            {
+              "name": "quantize_q8_1",
+              "gpu_ns": 15181408,
+              "launches": 14752,
+              "share_percent": 0.10558499251163313,
+              "avg_ns": 1029.1
+            },
+            {
+              "name": "iquest_rope_kernel",
+              "gpu_ns": 14495488,
+              "launches": 5632,
+              "share_percent": 0.10081449572611895,
+              "avg_ns": 2573.8
+            },
+            {
+              "name": "ds4_mmq_sanitize_f32_kernel",
+              "gpu_ns": 11422944,
+              "launches": 14016,
+              "share_percent": 0.07944529629272888,
+              "avg_ns": 815.0
+            },
+            {
+              "name": "fill_f32_kernel",
+              "gpu_ns": 6341952,
+              "launches": 11360,
+              "share_percent": 0.04410756594046723,
+              "avg_ns": 558.3
+            },
+            {
+              "name": "iquest_add_kernel",
+              "gpu_ns": 5689536,
+              "launches": 5632,
+              "share_percent": 0.03957008572292287,
+              "avg_ns": 1010.2
+            },
+            {
+              "name": "quantize_mmq_q8_1",
+              "gpu_ns": 3778624,
+              "launches": 2496,
+              "share_percent": 0.026279906761235667,
+              "avg_ns": 1513.9
+            },
+            {
+              "name": "iquest_kv_kernel",
+              "gpu_ns": 3439936,
+              "launches": 2816,
+              "share_percent": 0.023924369650067848,
+              "avg_ns": 1221.6
+            },
+            {
+              "name": "iquest_sum_kernel",
+              "gpu_ns": 3383552,
+              "launches": 2784,
+              "share_percent": 0.023532225244372675,
+              "avg_ns": 1215.4
+            },
+            {
+              "name": "iquest_swiglu_kernel",
+              "gpu_ns": 3226720,
+              "launches": 2816,
+              "share_percent": 0.022441476247600806,
+              "avg_ns": 1145.9
+            },
+            {
+              "name": "mm_ids_helper",
+              "gpu_ns": 3159904,
+              "launches": 2496,
+              "share_percent": 0.021976778450159537,
+              "avg_ns": 1266.0
+            },
+            {
+              "name": "dots3_scale_kernel",
+              "gpu_ns": 3109248,
+              "launches": 2784,
+              "share_percent": 0.0216244716429998,
+              "avg_ns": 1116.8
+            },
+            {
+              "name": "embed_tokens_generic_kernel",
+              "gpu_ns": 76032,
+              "launches": 32,
+              "share_percent": 0.000528794045364204,
+              "avg_ns": 2376.0
+            }
+          ]
+        }
+      }
+    },
+    "source_sha256": {
+      "cuda/iquest_prefill.cuh": "816fb66ab5281c334c8f32d1c7439e497701882bb675a798156f3adcf3321971",
+      "ds4_iquest_gpu.cuh": "d335495d035ca7c1bc1ff12519665f62ab7a3a7aa73401abc189b8f4e1cd5b2c",
+      "tests/iquest_attention_profile.cu": "cdf3178af44ed004faa402068612fcac6899fb51999d4b450abc506c134be97b",
+      "tests/iquest_attn_precision.cu": "2aa6066155d41e6db010cab0dc3ed6e2f471786066629266b083d2cc942e9a13"
+    },
+    "raw_sha256": {
+      "scratch/iquest-perf/p3-v2-8k-cold/independent-audit.json": "e8e25df7261c77f706f0e32c6a187292f66dc8972d86a7a40a834b649ec4a9a2",
+      "scratch/iquest-perf/p3-v2-8k-state-assessment.json": "d17822522f4354405e04eaee5b0497e21c81aa6362c1d5016eaf33d1cdf82bc1",
+      "scratch/iquest-perf/p3-v2-quality/summary.json": "4b7dc7ac87f38588e6a0ee3da11613ddcb846f091c4c52bc321c3680f5dbb657",
+      "scratch/iquest-perf/p3-v2-quality-long-v2/summary.json": "49a9fa50a5f0f3e37b73e10c4636452f35a5f93e61ed64940ca551c7138814ef",
+      "scratch/iquest-perf/p3-precision-diagnosis.json": "9b3792c30c2ffa5e09253d8bd25517c7297936510e4387b70e5a96ba01389ed2",
+      "scratch/iquest-perf/precision-regression-final.json": "3e92c547f68d239866e134d266e79957e804ca00a8f69141d822e33679a867cd",
+      "scratch/iquest-perf/p3-default-parity.json": "e7128a065472ed40b17f4a45f22e01a4625623d4dfc2545cbba273b7f919280f",
+      "scratch/iquest-perf/p3-default-8k-profile/attribution.json": "49206d0123334419a4adfb834e343e4aa0580edd0a49e9aa70a83db18bd72433",
+      "scratch/iquest-perf/p3-final-attn-hot-timing.jsonl": "8f7410cff968a6c5c439c426ff80452395cc80045152c6fbb43a866616f35c51",
+      "scratch/iquest-perf/ncu-attn-prefill-8k-p3-final-grouped.ncu-rep": "77cdb0c6fcceaeb402264233bdb5b760fdf5a38261e196e025f8d6f172451880",
+      "scratch/iquest-perf/ncu-attn-prefill-8k-p3-final-tiled.ncu-rep": "d0d4e12301ea469f88d6397a69bac271afdfe747d7d6309e02c618897ea45890",
+      "scratch/iquest-perf/p3-v2-racecheck.log": "08e99408cbb8a134b838aadaa56e4d919bdf744ba55bc3fe8bb490990288625e"
+    }
   }
 }

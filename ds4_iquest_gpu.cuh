@@ -1,6 +1,7 @@
 /* Native tensor adapters. Model admission and ring lineage stay in the graph;
  * these kernels must receive contiguous, admitted live device positions. */
 #include "cuda/iquest_primitives.cuh"
+#include "cuda/iquest_prefill.cuh"
 
 extern "C" int ds4_gpu_iquest_policy(void) {
     /* Only the active engine needs canonical MMQ weights. Cleanup releases
@@ -26,6 +27,15 @@ static bool iq_attn_warp() {
     static const bool enabled = [] {
         const char *value = getenv("DS4_IQUEST_ATTN_WARP");
         return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool iq_attn_tiled() {
+    // A process-wide fallback retains the scalar prefill arithmetic.
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_TILED");
+        return (!value || strcmp(value, "0") != 0) && iq_prefill::supported();
     }();
     return enabled;
 }
@@ -97,6 +107,23 @@ extern "C" int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
     // decode and the recursive draft window keep the retained reduction.
     if (iq_attn_shuffle() && rows == IQ_PREFILL &&
         (window == 0 || window == IQ_WINDOW) && iq_attn_warp()) {
+        if (iq_attn_tiled()) {
+            // Borrow LSE scratch across adjacent launches on the same stream.
+            // The sink consumes it before subsequent projections reuse it.
+            float *lse = (float *)cuda_tmp_alloc((uint64_t)rows * IQ_HEADS * sizeof(float),
+                                                "IQuest tiled LSE");
+            if (!lse) { return 0; }
+            iq_prefill::prefill<<<dim3((rows + iq_prefill::TQ - 1) / iq_prefill::TQ, IQ_HEADS),
+                iq_prefill::THREADS, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, lse, (const float *)query->ptr,
+                (const iquest_q8 *)cache->ptr, (const unsigned *)positions->ptr,
+                rows, capacity, window);
+            if (!cuda_ok(cudaGetLastError(), "IQuest tiled ordinary attention")) { return 0; }
+            iq_prefill::sink<<<dim3(rows, IQ_HEADS / IQ_ATTN_HEADS_PER_BLOCK),
+                IQ_ATTN_HEADS_PER_BLOCK * IQ_WARP_WIDTH, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, lse, (const float *)query->ptr, sink, rows);
+            return cuda_ok(cudaGetLastError(), "IQuest tiled learned sink");
+        }
         iquest_attn_warp_kernel<<<dim3(rows, IQ_HEADS / IQ_ATTN_HEADS_PER_BLOCK),
             IQ_ATTN_HEADS_PER_BLOCK * IQ_WARP_WIDTH, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
