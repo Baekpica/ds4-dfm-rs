@@ -59,6 +59,10 @@ int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t rows) {
     (void)out; (void)down; (void)weights; (void)rows; return 0;
 }
+int ds4_gpu_naive_sum_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows) {
+    (void)cur; (void)down; (void)weights; (void)rows; return -1;
+}
 int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count) {
     (void)cur; (void)other; (void)count; return 0;
 }

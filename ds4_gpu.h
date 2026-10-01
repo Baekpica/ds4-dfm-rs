@@ -5022,6 +5022,10 @@ int ds4_gpu_naive_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
         uint32_t tokens);
 int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t rows);
+/* Optional ordered BF16 sum + in-place residual. All three F32 spans must
+ * be disjoint. -1 declines before work, 0 fails, 1 means residual added. */
+int ds4_gpu_naive_sum_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows);
 int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count);
 int ds4_gpu_naive_df_tap(ds4_gpu_tensor *out, const ds4_gpu_tensor *hidden,
         uint32_t first, uint32_t rows, uint32_t tap);

@@ -45,7 +45,7 @@ readily documented paired results are omitted.
 | Ling-3.0-flash-VL MQ-Q5 | 1,889 | 24.65 | [8K + 64, plain](docs/performance.md#ling) |
 | MiMo-V2.6-Flash-RL mixed quant | 1,217.76 | 24.44 | [8K + 128, plain](docs/performance.md#mimo) |
 | MiMo-V2.6-Flash-MOPD mixed quant | 1,206.29 | 24.18 | [8K + 128, plain](docs/performance.md#mimo-mopd) |
-| Naive-N0.5-Flash MQ87 | 506.16 | 17.44 | [8K + 32, plain](docs/performance.md#naive) |
+| Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | Prism Bonsai 2 27B PQ2_0 | 1,023.3 | 17.50–18.00 | [2,140 + 64, RTX 4070 SUPER](docs/performance.md#bonsai) |
 
 ![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)

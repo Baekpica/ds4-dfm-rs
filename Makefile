@@ -1008,8 +1008,63 @@ test-naive-primitives: tests/naive_primitives
 tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
+tests/naive_softmax: tests/naive_softmax.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
 tests/naive_index_profile: tests/naive_index_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/naive_index_u2_profile: tests/naive_index_u2_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-naive-index-u2
+test-naive-index-u2: tests/naive_index_u2_profile
+	@set -e; \
+	for args in \
+	    "2112 32 1 0 1" \
+	    "8192 32 1 0 1" \
+	    "2049 32 1 0 1" \
+	    "2051 32 1 0 1" \
+	    "2111 32 1 0 1" \
+	    "2113 32 1 0 1" \
+	    "8191 32 1 0 1" \
+	    "8193 32 1 0 1" \
+	    "2113 8 1 0 1" \
+	    "8193 9 1 0 1" \
+	    "8191 31 1 0 1" \
+	    "2112 32 1 1 1" \
+	    "8193 32 1 1 1" \
+	    "2112 32 1 2 1" \
+	    "8193 32 1 2 1" \
+	    "2112 32 1 3 1" \
+	    "8193 32 1 3 1" \
+	    "2112 32 1 2 1 31" \
+	    "2112 32 1 2 1 126" \
+	    "2112 32 1 2 1 127" \
+	    "2112 32 1 2 1 128" \
+	    "2112 32 1 2 1 2047" \
+	    "2112 1 1 2 1 0" \
+	    "8192 1 2 0 1" \
+	    "8193 7 2 0 1" \
+	    "2113 8 2 0 1" \
+	    "8191 31 2 0 1"; do \
+	    ./tests/naive_index_u2_profile $$args; \
+	done
+
+tests/naive_router_profile: tests/naive_router_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/naive_sum_profile: tests/naive_sum_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-naive-sum
+test-naive-sum: tests/naive_sum_profile
+	@set -e; \
+	for rows in 1 5 7 8 31 43 127 133 2048 2053 2181; do \
+	    for fixture in 0 1 2; do \
+	        ./tests/naive_sum_profile $$rows 1 $$fixture; \
+	    done; \
+	done
 
 tests/naive_swiglu_profile: tests/naive_swiglu_profile.cu cuda/naive_primitives.cuh cuda/mmq/ds4_mimo2_swiglu.cuh ds4_naive_plan.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -o $@ $< cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)

@@ -108,9 +108,18 @@ extern "C" int ds4_gpu_naive_select(ds4_gpu_tensor *ids, ds4_gpu_tensor *scores,
             !naive_buf(scales, (uint64_t)history * sizeof(float)) ||
             !naive_buf(weights, (uint64_t)rows * N05_INDEX_HEADS * sizeof(float))) { return 0; }
         if (naive_index_layout() == NaiveIndexLayout::Warp) {
-            naive_index_scores<NaiveIndexLayout::Warp><<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
-                (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
-                (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+            enum { KEYS_PER_CTA = 8, THREADS = 128 };
+            const char *reuse = getenv("DS4_NAIVE_INDEX_U2");
+            // Full query tiles reuse loads without changing any per-key equation.
+            if (rows == N05_QUERY_TILE && (!reuse || strcmp(reuse, "0"))) {
+                naive_index_u2<<<dim3((history + KEYS_PER_CTA - 1) / KEYS_PER_CTA, rows), THREADS, 0, ds4_current_stream()>>>(
+                    (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
+                    (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+            } else {
+                naive_index_scores<NaiveIndexLayout::Warp><<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
+                    (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
+                    (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+            }
         } else {
             naive_index_scores<<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
                 (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
@@ -140,6 +149,9 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
     const char *swa = getenv("DS4_NAIVE_SWA_PREFILL_SCORES");
     const char *dsa = getenv("DS4_NAIVE_DSA_DECODE_TILE");
     const char *address = getenv("DS4_NAIVE_DSA_DIRECT");
+    const char *unit = getenv("DS4_NAIVE_SWA_DECODE_UNIT");
+    const char *walk = getenv("DS4_NAIVE_SWA_RING_WALK");
+    const bool ring = window && (!walk || strcmp(walk, "0"));
     const bool full = !window && (!address || strcmp(address, "0"));
     // Only the 1-KiB SWA tile retains wide-prefill occupancy. DSA stays narrow.
     const bool cached = (rows == 1 && (!scores || strcmp(scores, "0"))) ||
@@ -155,6 +167,25 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
                 (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr,
                 (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, capacity);
         }
+    } else if (cached && ring) {
+        // Consecutive SWA keys need one division, then exact increment/wrap.
+        if (rows == 1 && (!unit || strcmp(unit, "0"))) {
+            naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit, NaiveRing::Walk>
+                <<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+                    (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
+                    (const unsigned *)positions->ptr, nullptr, heads, capacity, window);
+        } else {
+            naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Walk, NaiveRing::Walk>
+                <<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+                    (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
+                    (const unsigned *)positions->ptr, nullptr, heads, capacity, window);
+        }
+    } else if (cached && window && rows == 1 && (!unit || strcmp(unit, "0"))) {
+        // Eliding exp(0) helps narrow SWA; wide rows lose throughput.
+        naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit>
+            <<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
+                (const unsigned *)positions->ptr, nullptr, heads, capacity, window);
     } else if (cached && window) {
         naive_attention<4, N05_WINDOW><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
@@ -186,8 +217,15 @@ extern "C" int ds4_gpu_naive_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights
         !naive_buf(ids, (uint64_t)rows * N05_USED * sizeof(int)) ||
         !naive_buf(weights, (uint64_t)rows * N05_USED * sizeof(float)) ||
         !naive_buf(logits, (uint64_t)rows * N05_EXPERTS * sizeof(float))) { return 0; }
-    naive_router<<<rows, N05_EXPERTS, 0, ds4_current_stream()>>>(
-        (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+    const char *warp = getenv("DS4_NAIVE_ROUTER_WARP");
+    // Parallel selection helps decode and prefill; verification keeps its path.
+    if ((rows == 1 || rows > 7) && (!warp || strcmp(warp, "0"))) {
+        naive_router_warp<<<rows, N05_ROUTER_WARP, 0, ds4_current_stream()>>>(
+            (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+    } else {
+        naive_router<<<rows, N05_EXPERTS, 0, ds4_current_stream()>>>(
+            (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+    }
     return cuda_ok(cudaGetLastError(), "Naive unbiased router");
 }
 
@@ -208,6 +246,36 @@ extern "C" int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down
     naive_sum<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)down->ptr, (const float *)weights->ptr, count);
     return cuda_ok(cudaGetLastError(), "Naive ordered expert sum");
+}
+
+static bool naive_ranges_overlap(uintptr_t a, uint64_t a_bytes,
+                                  uintptr_t b, uint64_t b_bytes) {
+    return a < b ? b - a < a_bytes : a - b < b_bytes;
+}
+
+extern "C" int ds4_gpu_naive_sum_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows) {
+    enum { THREADS = 256 };
+    static_assert(N05_EMBED == 4096 && N05_USED == 8 && sizeof(float) == 4,
+                  "pinned Naive sum geometry");
+    if (!rows || rows > N05_PREFILL_MAX) { return 0; }
+    const char *fuse = getenv("DS4_NAIVE_SUM_ADD");
+    if (rows <= N05_DF_BLOCK || (fuse && !strcmp(fuse, "0"))) { return -1; }
+
+    const uint64_t count = (uint64_t)rows * N05_EMBED;
+    const uint64_t bytes = count * sizeof(float), down_bytes = bytes * N05_USED;
+    const uint64_t weight_bytes = (uint64_t)rows * N05_USED * sizeof(float);
+    if (!naive_buf(cur, bytes) || !naive_buf(down, down_bytes) ||
+        !naive_buf(weights, weight_bytes)) { return 0; }
+    const uintptr_t c = (uintptr_t)cur->ptr, d = (uintptr_t)down->ptr, w = (uintptr_t)weights->ptr;
+    if (c % alignof(float) || d % alignof(float) || w % alignof(float) ||
+        naive_ranges_overlap(c, bytes, d, down_bytes) ||
+        naive_ranges_overlap(c, bytes, w, weight_bytes) ||
+        naive_ranges_overlap(d, down_bytes, w, weight_bytes)) { return 0; }
+
+    naive_sum_add<<<(count + THREADS - 1) / THREADS, THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)down->ptr, (const float *)weights->ptr, count);
+    return cuda_ok(cudaGetLastError(), "Naive ordered sum and BF16 residual");
 }
 
 extern "C" int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count) {

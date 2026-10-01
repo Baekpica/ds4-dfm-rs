@@ -111,7 +111,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [September 26 text](benchmarks/mimo2-2026-09-26/README.md),
   [September 26 media](benchmarks/mimo2-media-2026-09-26/README.md).
 - **MiMo MOPD:** [September 30 controls and proofs](benchmarks/2026-09-30-mimo2-mopd-spark.md).
-- **Naive:** [September 30 campaign](benchmarks/naive-2026-09-30/README.md),
+- **Naive:** [October 1 additional rounds](benchmarks/naive-2026-10-01/README.md),
+  [September 30 campaign](benchmarks/naive-2026-09-30/README.md),
   [serving](benchmarks/naive-2026-09-30/serving.md),
   [long-context gates](benchmarks/naive-2026-09-30/long-context.md).
 - **Bonsai:** [serving](releases/bonsai-serving-2026-09-30.md),

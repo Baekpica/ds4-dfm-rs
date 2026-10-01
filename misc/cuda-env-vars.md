@@ -39,6 +39,36 @@ tree, signed head sum and stable top-k stay byte-exact. KV layout and total
 allocation stay unchanged; query-producer stores become less coalesced.
 This is a Naive-specific indexer layout, not a generic FP8 GEMM switch.
 
+`DS4_NAIVE_INDEX_U2=0` restores one key per warp for packed Naive index
+scores. Its default reuses each query/head-weight load across two keys only
+for Warp layout, full 32-row query tiles and history above 2,048. Each key
+keeps its reconstruction, four-FMA/XOR and signed head-sum order; odd or
+noncausal second keys keep their original bounds and -Inf mask. Planar and
+narrow rows keep the original kernel. Allocation and stable top-k are unchanged.
+
+`DS4_NAIVE_SWA_DECODE_UNIT=0` restores the two-exponent softmax recurrence
+for cached SWA at width one. Its default skips the exact unit exponent while
+preserving serial order, FMA and BF16 boundaries. Nonfinite values use the
+original recurrence. Prefill, wider verification and DSA stay unchanged.
+
+`DS4_NAIVE_SWA_RING_WALK=0` restores per-key modulo addressing in cached
+SWA. Its default computes the first slot once and increments/wraps it for
+each pass, preserving early windows and physical KV addresses. It applies
+at width one or above seven with score caching enabled; DSA and uncached
+verification keep their previous addressing. Buffers and arithmetic are unchanged.
+
+`DS4_NAIVE_ROUTER_WARP=0` restores the serial Naive top-8 scan. Its default
+uses one warp per row for width one or greater than seven, retaining sigmoid,
+selection-rank probability summation, normalization and numeric-ID ordering.
+Any nonfinite input/score uses the original serial selection semantics.
+Widths two through seven keep the previous kernel. No workspace is added.
+
+`DS4_NAIVE_SUM_ADD=0` restores separate Naive expert sum and residual
+kernels. Its default fuses MoE rows above seven, preserving ascending expert
+order and every BF16 down/product/partial-sum/residual boundary. Dense layer
+zero and widths one through seven keep the original pair. The validated F32
+buffers must be disjoint; fallback scratch remains allocated.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

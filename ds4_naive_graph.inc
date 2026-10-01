@@ -261,8 +261,11 @@ static bool naive_layer(ds4_naive_graph *g, const ds4_model *m,
         if (!naive_linear(b->b_router_logits, m, l->ffn_gate_inp, N05_EMBED, N05_EXPERTS, b->b_norm, n) ||
             !ds4_gpu_naive_router(b->b_router_selected, b->b_router_weights, b->b_router_logits,
                 m->map, m->size, l->ffn_exp_probs_b->abs_offset, n) ||
-            !naive_moe(b, m, l, n) ||
-            !ds4_gpu_naive_sum(b->b_ffn_out, b->b_routed_down, b->b_router_weights, n)) { return false; }
+            !naive_moe(b, m, l, n)) { return false; }
+        const int fused = ds4_gpu_naive_sum_add(b->b_cur, b->b_routed_down, b->b_router_weights, n);
+        if (fused >= 0) { return fused > 0; }
+        // Dense and declined paths still own the allocated FFN scratch.
+        if (!ds4_gpu_naive_sum(b->b_ffn_out, b->b_routed_down, b->b_router_weights, n)) { return false; }
     }
     return ds4_gpu_naive_add(b->b_cur, b->b_ffn_out, (uint64_t)n * N05_EMBED);
 }

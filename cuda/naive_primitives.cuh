@@ -13,11 +13,42 @@ static constexpr unsigned N05_INDEX_PARTS = N05_INDEX_DIM / N05_INDEX_WARP;
 
 enum class NaiveCache { Ring, Full };
 enum class NaiveIndexLayout { Planar, Warp };
+enum class NaiveSoftmax { Walk, Unit };
+enum class NaiveRing { Modulo, Walk };
+
+template<NaiveSoftmax MODE> __device__ static void naive_softmax_step(
+        float score, float &maximum, float &denominator) {
+    const float next = fmaxf(maximum, score);
+    if constexpr (MODE == NaiveSoftmax::Unit) {
+        // One exponent is exactly one. Keep FMA/add order and exceptional values.
+        if (isfinite(maximum) && isfinite(score)) {
+            denominator = score > maximum ? __fmaf_rn(denominator, expf(maximum - score), 1.0f)
+                                          : denominator + expf(score - maximum);
+            maximum = next;
+            return;
+        }
+    }
+    denominator = denominator * expf(maximum - next) + expf(score - next);
+    maximum = next;
+}
 
 template<NaiveCache CACHE> __device__ static unsigned naive_cache_slot(unsigned key, unsigned capacity) {
     // DSA's bounded frontier keeps every causal ID inside its full history.
     if constexpr (CACHE == NaiveCache::Full) { return key; }
     return key % capacity;
+}
+
+template<NaiveRing RING, NaiveCache CACHE> __device__ static unsigned naive_attn_slot(
+        unsigned key, unsigned capacity, unsigned window, unsigned &ring_slot) {
+    if constexpr (RING == NaiveRing::Walk && CACHE == NaiveCache::Ring) {
+        if (window) {
+            const unsigned slot = ring_slot;
+            ring_slot++;
+            if (ring_slot == capacity) { ring_slot = 0; }
+            return slot;
+        }
+    }
+    return naive_cache_slot<CACHE>(key, capacity);
 }
 
 __device__ static float naive_e4m3(uint8_t code) {
@@ -119,7 +150,8 @@ __global__ static void naive_kv_store(
  * QK; both paths retain the serial denominator and V accumulation order.
  * The two passes avoid a scores[heads,history] allocation. Sparse IDs are
  * ascending; SWA walks exactly the causal window and adds its zero-V sink. */
-template<unsigned WARPS = 4, unsigned SCORE_CAP = 0, NaiveCache CACHE = NaiveCache::Ring>
+template<unsigned WARPS = 4, unsigned SCORE_CAP = 0, NaiveCache CACHE = NaiveCache::Ring,
+         NaiveSoftmax SOFTMAX = NaiveSoftmax::Walk, NaiveRing RING = NaiveRing::Modulo>
 __global__ static void naive_attention(
         float *out, const float *q, const __nv_bfloat16 *cache, const float *sinks,
         const unsigned *positions, const unsigned *selected,
@@ -138,10 +170,17 @@ __global__ static void naive_attention(
         query[d] = q[((uint64_t)row * N05_HEADS + head) * N05_KEY + lane + d * WARP];
     }
     float maximum = sinks ? sinks[head] : -INFINITY, denominator = sinks ? 1 : 0;
+    unsigned first_slot = 0;
+    if constexpr (RING == NaiveRing::Walk && CACHE == NaiveCache::Ring) {
+        // SWA visits consecutive keys; divide once and wrap each address exactly.
+        if (window) { first_slot = first % capacity; }
+    }
+    unsigned ring_slot = first_slot;
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = window ? first + i : selected[(uint64_t)row * N05_TOP_K + i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
+        const unsigned cache_row = naive_attn_slot<RING, CACHE>(key, capacity, window, ring_slot);
+        const __nv_bfloat16 *slot = cache + (uint64_t)cache_row * stride;
         float dot = 0;
         for (unsigned d = 0; d < N05_KEY / WARP; d++) {
             dot = __fmaf_rn(query[d], __bfloat162float(slot[kv_head * N05_KEY + lane + d * WARP]), dot);
@@ -151,15 +190,16 @@ __global__ static void naive_attention(
         if constexpr (SCORE_CAP) {
             if (!lane) { scores[warp][i] = __float2bfloat16_rn(score); }
         }
-        const float next = fmaxf(maximum, score);
-        denominator = denominator * expf(maximum - next) + expf(score - next);
-        maximum = next;
+        naive_softmax_step<SOFTMAX>(score, maximum, denominator);
     }
     if constexpr (SCORE_CAP) { __syncwarp(); }
+    // Both walks must restart at the same row, including a partial early window.
+    ring_slot = first_slot;
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = window ? first + i : selected[(uint64_t)row * N05_TOP_K + i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
+        const unsigned cache_row = naive_attn_slot<RING, CACHE>(key, capacity, window, ring_slot);
+        const __nv_bfloat16 *slot = cache + (uint64_t)cache_row * stride;
         float score;
         if constexpr (SCORE_CAP) {
             score = __bfloat162float(scores[warp][i]);
@@ -206,6 +246,103 @@ __global__ static void naive_router(int *ids, float *weights, const float *logit
     }
 }
 
+/* Stable finite-row top-8; preserve serial normalization and exceptional scans. */
+enum { N05_ROUTER_WARP = 32, N05_ROUTER_PER_LANE = N05_EXPERTS / N05_ROUTER_WARP };
+static constexpr unsigned N05_ROUTER_MASK = 0xffffffffu;
+static_assert(N05_EXPERTS == 256 && N05_USED == 8, "pinned router shape");
+
+struct NaiveRouterKey { float score; unsigned id; };
+struct NaiveRouterPick { NaiveRouterKey key; float prob; };
+enum class NaiveRouterTrace { Off, On };
+
+__device__ static bool naive_router_better(NaiveRouterKey a, NaiveRouterKey b) {
+    // Float comparison preserves signed-zero ties; bit-key ordering would not.
+    return a.score > b.score || (a.score == b.score && a.id < b.id);
+}
+
+__device__ static NaiveRouterPick naive_router_warp_pick(NaiveRouterPick pick) {
+    #pragma unroll
+    for (unsigned step = N05_ROUTER_WARP / 2; step; step /= 2) {
+        const NaiveRouterPick other = {{__shfl_down_sync(N05_ROUTER_MASK, pick.key.score, step),
+            __shfl_down_sync(N05_ROUTER_MASK, pick.key.id, step)},
+            __shfl_down_sync(N05_ROUTER_MASK, pick.prob, step)};
+        if (naive_router_better(other.key, pick.key)) { pick = other; }
+    }
+    return pick;
+}
+
+__device__ static void naive_router_finish(int *ids, float *weights, float sum) {
+    for (unsigned k = 0; k < N05_USED; k++) { weights[k] /= sum + 1e-20f; }
+    for (unsigned k = 1; k < N05_USED; k++) {
+        const int id = ids[k]; const float weight = weights[k];
+        unsigned j = k;
+        while (j && ids[j - 1] > id) { ids[j] = ids[j - 1]; weights[j] = weights[j - 1]; j--; }
+        ids[j] = id; weights[j] = weight;
+    }
+}
+
+__device__ static void naive_router_serial(int *ids, float *weights, const float *prob, float *score) {
+    // Preserve NaN comparisons and repeated ID 0 when every score is -Inf.
+    float sum = 0;
+    for (unsigned k = 0; k < N05_USED; k++) {
+        unsigned best = 0;
+        for (unsigned j = 1; j < N05_EXPERTS; j++) { if (score[j] > score[best]) { best = j; } }
+        ids[k] = best; weights[k] = prob[best]; sum += prob[best]; score[best] = -INFINITY;
+    }
+    naive_router_finish(ids, weights, sum);
+}
+
+template<NaiveRouterTrace TRACE = NaiveRouterTrace::Off>
+__global__ static void naive_router_warp(int *ids, float *weights, const float *logits, const float *bias,
+                                 float *prob_trace = nullptr, float *score_trace = nullptr) {
+    // Shared arrays exist only for exceptional-row fallback; finite rows use registers.
+    __shared__ float fallback_prob[N05_EXPERTS], fallback_score[N05_EXPERTS];
+    const unsigned lane = threadIdx.x;
+    float prob[N05_ROUTER_PER_LANE], score[N05_ROUTER_PER_LANE];
+    bool bad = false;
+    #pragma unroll
+    for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+        const unsigned e = lane + j * N05_ROUTER_WARP;
+        const float input = logits[(uint64_t)blockIdx.x * N05_EXPERTS + e], correction = bias[e];
+        prob[j] = 1.0f / (1.0f + expf(-input));
+        score[j] = prob[j] + correction;
+        if constexpr (TRACE == NaiveRouterTrace::On) {
+            const uint64_t at = (uint64_t)blockIdx.x * N05_EXPERTS + e;
+            prob_trace[at] = prob[j]; score_trace[at] = score[j];
+        }
+        bad |= !isfinite(input) || !isfinite(correction) || !isfinite(prob[j]) || !isfinite(score[j]);
+    }
+    ids += (uint64_t)blockIdx.x * N05_USED; weights += (uint64_t)blockIdx.x * N05_USED;
+    if (__any_sync(N05_ROUTER_MASK, bad)) {
+        #pragma unroll
+        for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+            const unsigned e = lane + j * N05_ROUTER_WARP;
+            fallback_prob[e] = prob[j]; fallback_score[e] = score[j];
+        }
+        __syncwarp(N05_ROUTER_MASK);
+        if (!lane) { naive_router_serial(ids, weights, fallback_prob, fallback_score); }
+        return;
+    }
+
+    float sum = 0;
+    for (unsigned k = 0; k < N05_USED; k++) {
+        NaiveRouterPick pick = {{-INFINITY, N05_EXPERTS}, 0};
+        #pragma unroll
+        for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+            const NaiveRouterKey key = {score[j], lane + j * N05_ROUTER_WARP};
+            if (naive_router_better(key, pick.key)) { pick = {key, prob[j]}; }
+        }
+        pick = naive_router_warp_pick(pick);
+        const unsigned selected = __shfl_sync(N05_ROUTER_MASK, pick.key.id, 0);
+        if (!lane) { ids[k] = selected; weights[k] = pick.prob; sum += pick.prob; }
+        #pragma unroll
+        for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+            if (lane + j * N05_ROUTER_WARP == selected) { score[j] = -INFINITY; }
+        }
+    }
+    if (!lane) { naive_router_finish(ids, weights, sum); }
+}
+
 __global__ static void naive_swiglu(float *out, const float *gate, const float *up, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
@@ -228,6 +365,21 @@ __global__ static void naive_sum(float *out, const float *down, const float *wei
         sum = naive_bf16(sum + term);
     }
     out[i] = sum;
+}
+
+/* Keep every ordered BF16 transition of naive_sum then naive_add. Fusion
+ * removes only the intermediate F32 write/read and the second launch. */
+__global__ static void naive_sum_add(
+        float *cur, const float *down, const float *weights, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const uint64_t row = i / N05_EMBED, col = i % N05_EMBED;
+    float sum = 0;
+    for (unsigned e = 0; e < N05_USED; e++) {
+        const float term = naive_bf16(naive_bf16(down[(row * N05_USED + e) * N05_EMBED + col]) * weights[row * N05_USED + e]);
+        sum = naive_bf16(sum + term);
+    }
+    cur[i] = naive_bf16(cur[i] + naive_bf16(sum));
 }
 
 /* One head/token row. Keep the original F32 scale: rounding it to BF16
@@ -314,6 +466,90 @@ __global__ static void naive_index_scores(
         score = __fadd_rn(score, __fmul_rn(fmaxf(0, dot), weights[(uint64_t)row * N05_INDEX_HEADS + h]));
     }
     if (!lane) { scores[(uint64_t)row * history + key] = score; }
+}
+
+static_assert(N05_INDEX_HEADS == 16 && N05_INDEX_DIM == 128 &&
+              N05_INDEX_WARP == 32 && N05_INDEX_PARTS == 4 && N05_QUERY_TILE == 32,
+              "pinned Naive paired index geometry");
+
+enum class NaiveKeys : unsigned { One = 1, Two = 2 };
+
+/* Compile-time key count removes conditional collectives from the head loop.
+ * Every key keeps its original four-FMA/XOR/serial-head equation. */
+template<NaiveKeys COUNT> __device__ static __forceinline__ void naive_index_pair(
+        float *scores, const float *q, const uint8_t *codes, const float *scales,
+        const float *weights, unsigned key, unsigned row, unsigned lane, unsigned history) {
+    constexpr unsigned KEYS = static_cast<unsigned>(COUNT);
+    float scale[KEYS], k[KEYS][N05_INDEX_PARTS];
+#pragma unroll
+    for (unsigned at = 0; at < KEYS; at++) {
+        scale[at] = scales[key + at];
+#pragma unroll
+        for (unsigned d = 0; d < N05_INDEX_PARTS; d++) {
+            k[at][d] = __fmul_rn(naive_e4m3(codes[(uint64_t)(key + at) * N05_INDEX_DIM + lane + d * N05_INDEX_WARP]), scale[at]);
+        }
+    }
+
+    float score[KEYS] = {};
+#pragma unroll
+    for (unsigned h = 0; h < N05_INDEX_HEADS; h++) {
+        const float *head = q + ((uint64_t)row * N05_INDEX_HEADS + h) * N05_INDEX_DIM;
+        const float4 query = ((const float4 *)head)[lane];
+        float dot[KEYS] = {};
+#pragma unroll
+        for (unsigned at = 0; at < KEYS; at++) {
+            dot[at] = __fmaf_rn(query.x, k[at][0], dot[at]);
+            dot[at] = __fmaf_rn(query.y, k[at][1], dot[at]);
+            dot[at] = __fmaf_rn(query.z, k[at][2], dot[at]);
+            dot[at] = __fmaf_rn(query.w, k[at][3], dot[at]);
+        }
+#pragma unroll
+        for (unsigned step = N05_INDEX_WARP / 2; step; step /= 2) {
+#pragma unroll
+            for (unsigned at = 0; at < KEYS; at++) {
+                dot[at] += __shfl_xor_sync(0xffffffff, dot[at], step);
+            }
+        }
+        const float weight = weights[(uint64_t)row * N05_INDEX_HEADS + h];
+#pragma unroll
+        for (unsigned at = 0; at < KEYS; at++) {
+            score[at] = __fadd_rn(score[at], __fmul_rn(fmaxf(0, dot[at]), weight));
+        }
+    }
+    if (!lane) {
+#pragma unroll
+        for (unsigned at = 0; at < KEYS; at++) {
+            scores[(uint64_t)row * history + key + at] = score[at];
+        }
+    }
+}
+
+__global__ static void naive_index_u2(
+        float *scores, const float *q, const uint8_t *codes, const float *scales,
+        const float *weights, const unsigned *positions, unsigned history) {
+    enum { WARP = 32, WARPS = 4, KEYS = 2 };
+    const unsigned lane = threadIdx.x % WARP;
+    const unsigned key = (blockIdx.x * WARPS + threadIdx.x / WARP) * KEYS;
+    const unsigned row = blockIdx.y;
+    if (key >= history) { return; }
+
+    const unsigned pos = positions[row];
+    const bool exists = key + 1 < history;
+    if (key > pos) {
+        if (!lane) {
+            scores[(uint64_t)row * history + key] = -INFINITY;
+            if (exists) { scores[(uint64_t)row * history + key + 1] = -INFINITY; }
+        }
+        return;
+    }
+    // These predicates are warp-uniform. End the partial path before entering
+    // the common two-key loop, matching the original early-return structure.
+    if (!exists || key + 1 > pos) {
+        naive_index_pair<NaiveKeys::One>(scores, q, codes, scales, weights, key, row, lane, history);
+        if (!lane && exists) { scores[(uint64_t)row * history + key + 1] = -INFINITY; }
+        return;
+    }
+    naive_index_pair<NaiveKeys::Two>(scores, q, codes, scales, weights, key, row, lane, history);
 }
 
 /* Positive/negative zero tie. Absolute position is the secondary key, so
