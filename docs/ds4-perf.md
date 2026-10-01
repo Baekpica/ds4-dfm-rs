@@ -145,6 +145,28 @@ controls prevent automatic acceptance. GPU process snapshots must match the
 intended owners before and after each run; transient contention between these
 snapshots is not detected. Historical comparisons read preserved
 proofs and hashes; they do not reload the model.
+`DS4_NAIVE_DECODE_SCORES=0` restores the original one-row Naive attention;
+`1` or unset reuses BF16 scores with identical reduction order. It supports
+matched `--env` comparisons and leaves wider prefill unchanged.
+`DS4_NAIVE_SWA_PREFILL_SCORES=0` restores the wide SWA two-pass QK walk;
+`1` or unset reuses its 128 BF16 scores without changing reduction order.
+Widths 2–7 and wider DSA remain on their previous paths.
+`DS4_NAIVE_DSA_DECODE_TILE=0` restores the prior four-head DSA score cache;
+`1` or unset uses one CTA per head with four parallel key walks. The finite
+BF16 dot, serial denominator and ascending V FMA remain exact. It applies
+only to one-row DSA; `DS4_NAIVE_DECODE_SCORES=0` restores the original walk
+regardless of this control.
+`DS4_NAIVE_DSA_DIRECT=0` restores DSA's prior modulo address calculation;
+`1` or unset directly indexes its full history. Bounded causal IDs select
+identical rows. SWA keeps ring addressing; allocation and arithmetic do not
+change. This diagnostic control supports matched comparisons of both phases.
+
+`DS4_NAIVE_SWIGLU_Q8=0` restores materialized BF16 SwiGLU before the
+IQ2_XS expert Down projection. Its default emits the same sorted D4 Q8
+bytes directly at widths 32–8192 for the fixed 2048→4096, 256-expert,
+eight-route shape. BF16 boundaries and the Down worklist tile are retained;
+decode and bounded verification stay on the original path. Workspace is
+retained for fallback, so avoided memory traffic is not a VRAM saving.
 Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
 comparing its ordinary BF16 projection with the prior implementation.
 Unset the variable for the optimized path; comparisons reject other values.

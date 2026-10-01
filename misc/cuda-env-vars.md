@@ -8,6 +8,37 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## Naive sparse attention
+
+`DS4_NAIVE_DECODE_SCORES=0` restores the one-row two-pass QK walk.
+The default caches rounded BF16 scores on chip before the V pass, preserving
+the dot, softmax and value accumulation order.
+`DS4_NAIVE_SWA_PREFILL_SCORES=0` restores the SWA walk above seven rows;
+its default reuses the same scores with a 1-KiB tile per CTA. Wider DSA
+prefill stays on the original walk because its larger tile loses occupancy.
+`DS4_NAIVE_DSA_DECODE_TILE=0` restores the prior four-head decode cache;
+the default uses one CTA per DSA head, four parallel QK walks and a shared
+BF16 score/probability tile. Serial softmax and V reduction stay exact.
+It only applies at width one with decode scores enabled; disabling
+`DS4_NAIVE_DECODE_SCORES` still restores the original attention.
+`DS4_NAIVE_DSA_DIRECT=0` restores modulo addressing for full DSA histories.
+Its default removes that identity operation: the bounded forward keeps
+every causal key below capacity. SWA retains wrapping. Buffers, arithmetic
+and committed cache rows remain unchanged.
+
+`DS4_NAIVE_SWIGLU_Q8=0` restores materialized BF16 SwiGLU before expert
+Down. Its default emits identical D4 Q8 bytes directly for IQ2_XS Down,
+2048→4096, 256 experts/eight routes and widths 32–8192. Input, SiLU and
+product keep Naive's BF16 boundaries. Decode/verification and the Down
+worklist tile stay unchanged; the fallback workspace remains allocated.
+
+`DS4_NAIVE_INDEX_PACK=0` restores planar F32 index queries. Its default
+packs four original dimensions per lane during the existing E4M3 round-trip,
+then loads them as one vector. Reconstructed keys, four FMA steps, XOR dot
+tree, signed head sum and stable top-k stay byte-exact. KV layout and total
+allocation stay unchanged; query-producer stores become less coalesced.
+This is a Naive-specific indexer layout, not a generic FP8 GEMM switch.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

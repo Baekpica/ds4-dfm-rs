@@ -1,0 +1,430 @@
+{
+  "context": 8192,
+  "banks": 1,
+  "chunk": 64,
+  "mtp_mode": "off",
+  "binary_sha256": "d3ae702ba8349435427438c6844a867a4850c808c24cd14bd8a44c540c63556c",
+  "cases": [
+    {
+      "phase": "seed",
+      "case": "seed",
+      "request_sha256": "22adc11e9510502d7eb8e3425c8f6a33d7c3a95b8145866c8e1959a91cd6aae8",
+      "seconds": 5.057243946008384,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n4"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 624,
+        "completion_tokens": 2,
+        "total_tokens": 626,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 624
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "seed",
+      "case": "append",
+      "request_sha256": "6c45c0853719186383700de28aabb3ce7af94805db28f442d8e7fa32704a15d8",
+      "seconds": 0.5120446609944338,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n5"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 650,
+        "completion_tokens": 2,
+        "total_tokens": 652,
+        "prompt_tokens_details": {
+          "cached_tokens": 626,
+          "cache_write_tokens": 24
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "seed",
+      "case": "edit",
+      "request_sha256": "9ba10bcfaa3ee0ec8e65424081bec5ea4ff1e5f0491fa426392f8b7e3646e3e6",
+      "seconds": 0.5533688360010274,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n6"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 650,
+        "completion_tokens": 2,
+        "total_tokens": 652,
+        "prompt_tokens_details": {
+          "cached_tokens": 624,
+          "cache_write_tokens": 26
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "seed",
+      "case": "fork",
+      "request_sha256": "59293e71e6e05e7f4b22d136088a10d0b7af7ac2f1e43aa023fc68e08caea189",
+      "seconds": 0.5552283049910329,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n8"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 676,
+        "completion_tokens": 2,
+        "total_tokens": 678,
+        "prompt_tokens_details": {
+          "cached_tokens": 624,
+          "cache_write_tokens": 52
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "restored",
+      "case": "restart",
+      "request_sha256": "1119c447b0c222fec501590e8033bf53e9f954b953510df6fc44800a14a54094",
+      "seconds": 0.5638915019953856,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n9"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 702,
+        "completion_tokens": 2,
+        "total_tokens": 704,
+        "prompt_tokens_details": {
+          "cached_tokens": 678,
+          "cache_write_tokens": 24
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "cold",
+      "case": "seed",
+      "request_sha256": "22adc11e9510502d7eb8e3425c8f6a33d7c3a95b8145866c8e1959a91cd6aae8",
+      "seconds": 5.053024726992589,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n4"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 624,
+        "completion_tokens": 2,
+        "total_tokens": 626,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 624
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "cold",
+      "case": "append",
+      "request_sha256": "6c45c0853719186383700de28aabb3ce7af94805db28f442d8e7fa32704a15d8",
+      "seconds": 5.334142681007506,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n5"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 650,
+        "completion_tokens": 2,
+        "total_tokens": 652,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 650
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "cold",
+      "case": "edit",
+      "request_sha256": "9ba10bcfaa3ee0ec8e65424081bec5ea4ff1e5f0491fa426392f8b7e3646e3e6",
+      "seconds": 5.32765514300263,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n6"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 650,
+        "completion_tokens": 2,
+        "total_tokens": 652,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 650
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "cold",
+      "case": "fork",
+      "request_sha256": "59293e71e6e05e7f4b22d136088a10d0b7af7ac2f1e43aa023fc68e08caea189",
+      "seconds": 5.447501832997659,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n8"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 676,
+        "completion_tokens": 2,
+        "total_tokens": 678,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 676
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "cold",
+      "case": "restart",
+      "request_sha256": "1119c447b0c222fec501590e8033bf53e9f954b953510df6fc44800a14a54094",
+      "seconds": 5.5695686289982405,
+      "message": {
+        "role": "assistant",
+        "content": "\n\n9"
+      },
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 702,
+        "completion_tokens": 2,
+        "total_tokens": 704,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 702
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    }
+  ],
+  "long_32k": {
+    "seed": {
+      "context": 32768,
+      "banks": 1,
+      "phase": "seed",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "usage": {
+        "prompt_tokens": 32512,
+        "completion_tokens": 13,
+        "total_tokens": 32525,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 32512
+        }
+      },
+      "finish_reason": "stop",
+      "events": 16,
+      "first_content_seconds": 73.74002120099613,
+      "total_seconds": 75.61446762199921,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "passed": true,
+      "errors": [],
+      "fixture": {
+        "context": 32768,
+        "input_tokens": 32512,
+        "expected_answer": "ORCHID-74-COPPER-29",
+        "needle_fraction": 0.17,
+        "needle_token_offset": 5547,
+        "request_sha256": "dbfdf63227edbc99be45c86464fc9225625c8f4573f73b316cc5b603ce3eb64e",
+        "prompt_ids_sha256": "222e557ad2009b234ae43715290698cc0a35e046c48b94748e11574217415616",
+        "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+        "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+        "request_bytes": 197640
+      }
+    },
+    "follow": {
+      "context": 32768,
+      "banks": 1,
+      "phase": "follow",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "usage": {
+        "prompt_tokens": 32548,
+        "completion_tokens": 13,
+        "total_tokens": 32561,
+        "prompt_tokens_details": {
+          "cached_tokens": 32525,
+          "cache_write_tokens": 23
+        }
+      },
+      "finish_reason": "stop",
+      "events": 16,
+      "first_content_seconds": 0.546663251996506,
+      "total_seconds": 1.296535147994291,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": [],
+      "fixture": {
+        "context": 32768,
+        "input_tokens": 32512,
+        "expected_answer": "ORCHID-74-COPPER-29",
+        "needle_fraction": 0.17,
+        "needle_token_offset": 5547,
+        "request_sha256": "dbfdf63227edbc99be45c86464fc9225625c8f4573f73b316cc5b603ce3eb64e",
+        "prompt_ids_sha256": "222e557ad2009b234ae43715290698cc0a35e046c48b94748e11574217415616",
+        "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+        "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+        "request_bytes": 197640
+      }
+    },
+    "restored": {
+      "context": 32768,
+      "banks": 1,
+      "phase": "restored",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "usage": {
+        "prompt_tokens": 32584,
+        "completion_tokens": 13,
+        "total_tokens": 32597,
+        "prompt_tokens_details": {
+          "cached_tokens": 32561,
+          "cache_write_tokens": 23
+        }
+      },
+      "finish_reason": "stop",
+      "events": 16,
+      "first_content_seconds": 0.6908258510084124,
+      "total_seconds": 1.4751679050095845,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": [],
+      "fixture": {
+        "context": 32768,
+        "input_tokens": 32512,
+        "expected_answer": "ORCHID-74-COPPER-29",
+        "needle_fraction": 0.17,
+        "needle_token_offset": 5547,
+        "request_sha256": "dbfdf63227edbc99be45c86464fc9225625c8f4573f73b316cc5b603ce3eb64e",
+        "prompt_ids_sha256": "222e557ad2009b234ae43715290698cc0a35e046c48b94748e11574217415616",
+        "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+        "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+        "request_bytes": 197640
+      }
+    }
+  },
+  "note": "Functional one-bank proofs precede the host checkpoint-quote correction; quote pool zero in those archived stats is not the final admission plan.",
+  "long_32k_binary_sha256": "1a068537b3145425fe84d74851b4fbe7e5a0f2b9edad130e15476f6c50395e7c",
+  "corrected_quote": {
+    "server_sha256": "8225186b745a3ea999c09efe085736b91566ceec8d7b6dd303a237af3aa164ae",
+    "context": 32768,
+    "banks": 1,
+    "quote": {
+      "shared_weights": 0,
+      "per_bank": 1228207104,
+      "mtp_state": 0,
+      "scratch": 1447923968,
+      "checkpoint_pool": 204472320,
+      "ple": 0,
+      "media_reserve": 0,
+      "floor": 4294967296,
+      "available": 37005137152,
+      "banks": 1,
+      "total": 7175570688
+    }
+  }
+}

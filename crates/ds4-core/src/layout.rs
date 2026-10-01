@@ -2797,6 +2797,9 @@ pub fn expected_mtp_layouts(shape: &Shape) -> Vec<LayoutSpec> {
 }
 
 pub fn expected_dspark_layouts(shape: &Shape, markov_rank: u32) -> Vec<LayoutSpec> {
+    if shape.family == ModelFamily::NaiveN05 {
+        return crate::naive::draft_layouts();
+    }
     let mut out = Vec::new();
     let e = shape.n_embd as u64;
     let hc = shape.n_hc as u64;
@@ -2877,6 +2880,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::Step37 => crate::Step37Plan::layouts(),
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::layouts(),
         ModelFamily::Mimo2 => crate::Mimo2Plan::layouts(),
+        ModelFamily::NaiveN05 => crate::naive::layouts(),
         ModelFamily::Glm53 => expected_glm53(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),
@@ -2936,16 +2940,17 @@ pub fn dump_expected_mtp_shape(shape: &Shape) -> String {
 }
 
 pub fn dump_expected_dspark_shape(shape: &Shape) -> String {
+    let (rank, layers) = if shape.family == ModelFamily::NaiveN05 {
+        (crate::naive::draft_rank(), crate::naive::DRAFT_LAYERS)
+    } else {
+        (DSPARK_MARKOV_RANK, DSPARK_N_LAYER)
+    };
     dump_layout_table(
         format!(
             "LAYOUT kind=dspark name={} family={} variant={} markov_rank={} n_layer={}\n",
-            shape.name,
-            shape.family as u32,
-            shape.variant as u32,
-            DSPARK_MARKOV_RANK,
-            DSPARK_N_LAYER
+            shape.name, shape.family as u32, shape.variant as u32, rank, layers
         ),
-        &expected_dspark_layouts(shape, DSPARK_MARKOV_RANK),
+        &expected_dspark_layouts(shape, rank),
     )
 }
 
@@ -3064,6 +3069,9 @@ pub fn validate_mtp_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
 pub fn validate_dspark_layouts(plan: &BindPlan, markov_rank: u32) -> Result<(), LayoutError> {
     let by_name = plan_by_name(plan);
     expect_specs(&expected_dspark_layouts(&plan.shape, markov_rank), &by_name)?;
+    if plan.shape.family == ModelFamily::NaiveN05 {
+        return Ok(());
+    }
     for il in 0..DSPARK_N_LAYER {
         expect_gate_up(
             &by_name,

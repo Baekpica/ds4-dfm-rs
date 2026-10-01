@@ -1,0 +1,519 @@
+{
+  "commit": "01b949d8",
+  "server_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+  "context": 8192,
+  "banks": 2,
+  "native_chunk": 64,
+  "scheduler_chunk": 64,
+  "live_chunk": 64,
+  "disk_capacity_bytes": 2147483648,
+  "max_prompt_tokens": 702,
+  "cases": {
+    "api-reuse-main": {
+      "phases": {
+        "seed": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "fab1b5400d3f54817269c708b436cea0b7ddd3b73028c0a3cd17bd628e40dbac",
+          "pid": 262727,
+          "start_ticks": "5874559",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "7038c8812dc3dcb2cd8230c89756cbd415b833e309cd00a55c857ca81c6141c2",
+          "result_sha256": "954111f0e439051f37f5a1121c8f1ef7aab67ac2fc57bbb58cf13c6e0e452ddc"
+        },
+        "warm": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "d8348a339a3d06a84aed456e9a9f082be2793ab257cc90b13b3c393c1ddb7b1a",
+          "pid": 262727,
+          "start_ticks": "5874559",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "7038c8812dc3dcb2cd8230c89756cbd415b833e309cd00a55c857ca81c6141c2",
+          "result_sha256": "53e4c23918aaa21688f5c0d5bb1ff1c62b0e463918df33fd95407d4d8c9b940e"
+        },
+        "restored": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "d8348a339a3d06a84aed456e9a9f082be2793ab257cc90b13b3c393c1ddb7b1a",
+          "pid": 263188,
+          "start_ticks": "5886334",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "7038c8812dc3dcb2cd8230c89756cbd415b833e309cd00a55c857ca81c6141c2",
+          "result_sha256": "cef4b3a003f0dfea7bfb7b0d8411df9add0d0d58ade6b806578903b410c7d58f"
+        },
+        "cold": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "d8348a339a3d06a84aed456e9a9f082be2793ab257cc90b13b3c393c1ddb7b1a",
+          "pid": 263422,
+          "start_ticks": "5895395",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "7038c8812dc3dcb2cd8230c89756cbd415b833e309cd00a55c857ca81c6141c2",
+          "result_sha256": "8fd75e29ba05da551725a6121e79440295020fc669cf52945a54fa8040c35109"
+        }
+      },
+      "requests": [
+        {
+          "phase": "cold",
+          "case": "append",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 650
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "edit",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 650
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "fork",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 676,
+            "completion_tokens": 2,
+            "total_tokens": 678,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 676
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "restart",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 702,
+            "completion_tokens": 2,
+            "total_tokens": 704,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 702
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "seed",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 624,
+            "completion_tokens": 2,
+            "total_tokens": 626,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 624
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "restored",
+          "case": "restart",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 702,
+            "completion_tokens": 2,
+            "total_tokens": 704,
+            "prompt_tokens_details": {
+              "cached_tokens": 678,
+              "cache_write_tokens": 24
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "fork",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "seed",
+          "case": "seed",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 624,
+            "completion_tokens": 2,
+            "total_tokens": 626,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 624
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": false,
+            "fallback_reason": null,
+            "reuse_miss": "no checkpoint at or below LCP"
+          }
+        },
+        {
+          "phase": "warm",
+          "case": "append",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 626,
+              "cache_write_tokens": 24
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "fork",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "warm",
+          "case": "edit",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 624,
+              "cache_write_tokens": 26
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "partial",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "warm",
+          "case": "fork",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 676,
+            "completion_tokens": 2,
+            "total_tokens": 678,
+            "prompt_tokens_details": {
+              "cached_tokens": 652,
+              "cache_write_tokens": 24
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "exact",
+            "speculation_active": false,
+            "fallback_reason": null
+          }
+        }
+      ]
+    },
+    "api-reuse-draft-v4": {
+      "phases": {
+        "seed": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "207b61db23499f8b431614f6181149bdf287470e6f54b5574c2a8126d64d2981",
+          "pid": 267284,
+          "start_ticks": "6045266",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "aee96e694ebf6c9ba21f05c7495a5ea97574497a3e001701c9ade9267595a2d9",
+          "result_sha256": "9df39796aa7582c89c9ac46240cbedfa535b20a68e79d837ff9148bf9ed5a730"
+        },
+        "warm": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "c5400e2b89d5ad681cbb8059fdaf2f8fbf3eb65aba5b438c98331d1a726095e6",
+          "pid": 267284,
+          "start_ticks": "6045266",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "aee96e694ebf6c9ba21f05c7495a5ea97574497a3e001701c9ade9267595a2d9",
+          "result_sha256": "d98e461c5b7fdda1dfcebdffe19ee5e9deac4bde14ab796de869dbc3d138f3f5"
+        },
+        "restored": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "c5400e2b89d5ad681cbb8059fdaf2f8fbf3eb65aba5b438c98331d1a726095e6",
+          "pid": 267322,
+          "start_ticks": "6046861",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "aee96e694ebf6c9ba21f05c7495a5ea97574497a3e001701c9ade9267595a2d9",
+          "result_sha256": "ba9f35d009a4286fcf9ffeb2d35b5d2acdb49d083a0311301001781107cb3909"
+        },
+        "cold": {
+          "passed": true,
+          "errors": [],
+          "fixture_sha256": "c5400e2b89d5ad681cbb8059fdaf2f8fbf3eb65aba5b438c98331d1a726095e6",
+          "pid": 267339,
+          "start_ticks": "6047764",
+          "executable_sha256": "62a5e9d8935704077564427b128838721a23265d93f1f4b254d66014eafebb63",
+          "artifacts_sha256": "aee96e694ebf6c9ba21f05c7495a5ea97574497a3e001701c9ade9267595a2d9",
+          "result_sha256": "cad0f376c409f697b8f26e70c766e40c06d243923f41e09f4d4b9c38b43b262c"
+        }
+      },
+      "requests": [
+        {
+          "phase": "cold",
+          "case": "append",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 650
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "edit",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 650
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "fork",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 676,
+            "completion_tokens": 2,
+            "total_tokens": 678,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 676
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "restart",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 702,
+            "completion_tokens": 2,
+            "total_tokens": 704,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 702
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "cold",
+          "case": "seed",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 624,
+            "completion_tokens": 2,
+            "total_tokens": 626,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 624
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "restored",
+          "case": "restart",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 702,
+            "completion_tokens": 2,
+            "total_tokens": 704,
+            "prompt_tokens_details": {
+              "cached_tokens": 679,
+              "cache_write_tokens": 23
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "partial",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "seed",
+          "case": "seed",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 624,
+            "completion_tokens": 2,
+            "total_tokens": 626,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 624
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "cold",
+            "speculation_active": true,
+            "fallback_reason": null,
+            "reuse_miss": "no checkpoint at or below LCP"
+          }
+        },
+        {
+          "phase": "warm",
+          "case": "append",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 626,
+              "cache_write_tokens": 24
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "fork",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "warm",
+          "case": "edit",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 650,
+            "completion_tokens": 2,
+            "total_tokens": 652,
+            "prompt_tokens_details": {
+              "cached_tokens": 624,
+              "cache_write_tokens": 26
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "partial",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        },
+        {
+          "phase": "warm",
+          "case": "fork",
+          "passed": true,
+          "usage": {
+            "prompt_tokens": 676,
+            "completion_tokens": 2,
+            "total_tokens": 678,
+            "prompt_tokens_details": {
+              "cached_tokens": 653,
+              "cache_write_tokens": 23
+            }
+          },
+          "trace": {
+            "effective_lane": "continuous",
+            "reuse_kind": "partial",
+            "speculation_active": true,
+            "fallback_reason": null
+          }
+        }
+      ]
+    }
+  },
+  "surface": {
+    "passed": true,
+    "result_sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e",
+    "checks": [
+      "two overlapping requests",
+      "continuous served=2 fallback=0",
+      "XML tool call and tool-result continuation",
+      "stream cancel after eight SSE chunks",
+      "successful next request",
+      "zero governor faults"
+    ]
+  }
+}

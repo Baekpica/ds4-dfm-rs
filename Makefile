@@ -1,5 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
+NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 
 ifeq ($(UNAME_S),Darwin)
 NATIVE_CPU_FLAG ?= -mcpu=native
@@ -308,7 +309,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
+ds4.o: ds4.c $(NAIVE_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
@@ -381,6 +382,20 @@ ds4-bench ds4-bench-perf: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OB
 		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-bench-rs" $@
+
+tests/naive_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example naive_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_gate" $@
+
+tests/naive_serve_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example naive_serve_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_serve_gate" $@
 
 # Phase 4: C KVC oracle linked against ds4_kvstore.o (no CUDA engine).
 tests/parity/kv_c_oracle: tests/parity/kv_c_oracle.c tests/parity/kv_c_stubs.c ds4_kvstore.o
@@ -699,7 +714,7 @@ rax.o: rax.c rax.h rax_malloc.h
 linenoise.o: linenoise.c linenoise.h
 	$(CC) $(CFLAGS) -c -o $@ linenoise.c
 
-ds4_cpu.o: ds4.c ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h
+ds4_cpu.o: ds4.c ds4_naive_bind.inc ds4_naive_plan.h ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4.c
 
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
@@ -717,10 +732,10 @@ ds4_eval_cpu.o: ds4_eval.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_go
 ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h ds4_web.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_agent.c
 
-ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
+ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -839,6 +854,113 @@ tests/test_step37_vision_ops: tests/test_step37_vision_ops.cu cuda/step37_vision
 .PHONY: test-step37-vision-ops
 test-step37-vision-ops: tests/test_step37_vision_ops
 	./tests/test_step37_vision_ops
+
+tests/naive_state: tests/naive_state.c ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-naive-state
+test-naive-state: tests/naive_state
+	./tests/naive_state
+
+tests/naive_dense.o: tests/naive_dense.c ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_dense: tests/naive_dense.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-naive-dense
+test-naive-dense: tests/naive_dense
+	./tests/naive_dense
+
+tests/naive_graph.o: tests/naive_graph.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_graph: tests/naive_graph.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/naive_banks.o: tests/naive_banks.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_banks: tests/naive_banks.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/naive_trial.o: tests/naive_trial.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_trial: tests/naive_trial.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/naive_trial_live.o: tests/naive_trial_live.c ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_trial_live: tests/naive_trial_live.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-naive-trial
+test-naive-trial: tests/naive_trial
+	./tests/naive_trial
+
+.PHONY: test-naive-banks
+test-naive-banks: tests/naive_banks
+	./tests/naive_banks
+
+.PHONY: test-naive-graph
+test-naive-graph: tests/naive_graph
+	./tests/naive_graph
+
+tests/naive_bind: tests/naive_bind.c ds4.c ds4_naive_bind.inc ds4_naive_plan.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-naive-bind
+test-naive-bind: tests/naive_bind
+	NAIVE_NATIVE_BIND=$(DS4_RS_ROOT)/tests/naive_bind \
+		cargo test -p ds4-core --test naive --locked native_bind_matches_directory
+
+tests/naive_draft_bind: tests/naive_draft_bind.c ds4.c ds4_naive_bind.inc ds4_naive_plan.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-naive-draft-bind
+test-naive-draft-bind: tests/naive_draft_bind
+	NAIVE_DRAFT_BIND=$(DS4_RS_ROOT)/tests/naive_draft_bind \
+		cargo test -p ds4-core --test naive_draft --locked draft_bind_matches_directory
+
+tests/naive_draft_ops: tests/naive_draft_ops.cu cuda/naive_primitives.cuh cuda/naive_draft.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-naive-draft-ops
+test-naive-draft-ops: tests/naive_draft_ops
+	./tests/naive_draft_ops
+
+tests/naive_draft_graph.o: tests/naive_draft_graph.c ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_draft_graph: tests/naive_draft_graph.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ -Xlinker --gc-sections $(CUDA_LDLIBS)
+
+tests/naive_memory: tests/naive_memory.c ds4_naive_plan.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+.PHONY: test-naive-memory
+test-naive-memory: tests/naive_memory
+	./tests/naive_memory
+
+tests/naive_primitives: tests/naive_primitives.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-naive-primitives
+test-naive-primitives: tests/naive_primitives
+	./tests/naive_primitives
+
+tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/naive_index_profile: tests/naive_index_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/naive_swiglu_profile: tests/naive_swiglu_profile.cu cuda/naive_primitives.cuh cuda/mmq/ds4_mimo2_swiglu.cuh ds4_naive_plan.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -o $@ $< cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
 
 tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primitives.cuh tests/fixtures/step37/primitives.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<

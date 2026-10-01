@@ -1052,11 +1052,11 @@ fn history_retire_prompt(prompt: &[u8], syntax: ModelSyntax) -> &[u8] {
     // Their separate history checkpoints were captured before that suffix;
     // shortening a retired key would describe different native KV.
     //
-    // Ling and MiMo replay the pair before history assistant content. A
+    // Ling, MiMo and Naive replay the pair before assistant content. A
     // stripped key cannot prefix the next rendered turn or restore disk KV.
     if matches!(
         syntax,
-        ModelSyntax::Motif3 | ModelSyntax::Ling3Vl | ModelSyntax::Mimo2
+        ModelSyntax::Motif3 | ModelSyntax::Ling3Vl | ModelSyntax::Mimo2 | ModelSyntax::NaiveN05
     ) {
         return prompt;
     }

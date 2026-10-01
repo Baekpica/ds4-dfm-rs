@@ -31,6 +31,7 @@ The request's effective and qualified plan remains authoritative.
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
 | Ling-3.0-flash-VL | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 | MiMo-V2.6-Flash-RL | opt_in / unverified | partial / unverified | unverified | unverified | Embedded / serial / qualified |
+| Naive-N0.5-Flash | opt_in / qualified | partial / qualified | qualified | qualified | External / serial + bank / unverified |
 
 ## Bounds and allocator controls
 
@@ -53,6 +54,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | Step-3.7-Flash | 262144 | 65536 | 2 | 6300 | `DS4_STEP37_PREFILL_CHUNK` |
 | Ling-3.0-flash-VL | 262144 | 65536 | 2 | — | `DS4_LING3VL_PREFILL_CHUNK` |
 | MiMo-V2.6-Flash-RL | 1048576 | 524288 | 1 | — | `DS4_MIMO2_PREFILL_CHUNK` |
+| Naive-N0.5-Flash | 1048576 | 8192 | 2 | 702 | `DS4_NAIVE_PREFILL_CHUNK` |
 
 Scheduler chunk candidates: 256, 512, 1024, 2048, 4096, 8192. The resolved plan only offers
 values at or below its known native capacity. Unknown capacity offers no
@@ -68,6 +70,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **Inkling Small:** serial text snapshots present; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
 - **MiMo-V2.6-Flash-RL:** 512K serial text and 256K serial media/DFlash are prior gates. With MTP off, 256K two-bank text plus serial media passed bounded checks at chunk 2048 with Q8 repack off, including live partial reuse and restart disk continuation. 1M one-bank text passed a bounded 1,040,506-token prompt; two banks did not fit. 512K two-bank media exceeds Spark memory.
+- **Naive-N0.5-Flash:** main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified.
 
 Regenerate without loading a model:
 

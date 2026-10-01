@@ -29,6 +29,7 @@ pub enum ModelFamily {
     Step37 = 8,
     Ling3Vl = 9,
     Mimo2 = 10,
+    NaiveN05 = 11,
 }
 
 impl ModelFamily {
@@ -45,6 +46,7 @@ impl ModelFamily {
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
             "mimo2" => Some(Self::Mimo2),
+            "naive_n05_flash" => Some(Self::NaiveN05),
             _ => None,
         }
     }
@@ -62,6 +64,7 @@ impl ModelFamily {
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
             Self::Mimo2 => "mimo2",
+            Self::NaiveN05 => "naive_n05_flash",
         }
     }
 }
@@ -82,6 +85,7 @@ pub enum Variant {
     Step37Flash = 10,
     Ling30FlashVl = 11,
     Mimo26Flash = 12,
+    NaiveN05Flash = 13,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -328,6 +332,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"step35") => ArchRoute::Fixed(Variant::Step37Flash),
         Some(b"bailingmoe3") => ArchRoute::Fixed(Variant::Ling30FlashVl),
         Some(b"mimo2") => ArchRoute::Fixed(Variant::Mimo26Flash),
+        Some(b"naive_n05_flash") => ArchRoute::Fixed(Variant::NaiveN05Flash),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -347,6 +352,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Step37Flash => SHAPE_STEP37_FLASH,
         Variant::Ling30FlashVl => SHAPE_LING30_FLASH_VL,
         Variant::Mimo26Flash => SHAPE_MIMO26_FLASH,
+        Variant::NaiveN05Flash => SHAPE_NAIVE_N05_FLASH,
     }
 }
 
@@ -1126,6 +1132,20 @@ pub(crate) const SHAPE_LING30_FLASH_VL: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 131_072,
+};
+
+// Naive shares GQA dimensions, but replaces all nine global layers with DSA.
+pub(crate) const SHAPE_NAIVE_N05_FLASH: Shape = Shape {
+    name: "Naive-N0.5-Flash",
+    family: ModelFamily::NaiveN05,
+    variant: Variant::NaiveN05Flash,
+    n_nextn_predict: 0,
+    n_indexer_head: 16,
+    n_indexer_head_dim: 128,
+    n_indexer_top_k: 2048,
+    n_full_attn_count: 0,
+    rms_eps: 1e-5,
+    ..SHAPE_MIMO26_FLASH
 };
 
 // The irregular full/SWA schedule lives in Mimo2Layer, not n_swa_period.

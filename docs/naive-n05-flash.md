@@ -1,0 +1,240 @@
+# Naive-N0.5-Flash
+
+The Rust catalog, MQ87 metadata/layout validator, NFC/Qwen2 tokenizer,
+official Jinja input template and eager CUDA execution are implemented.
+HTTP serving passes short-request gates at 8K context and two banks,
+including partial reuse, disk restart, tools and stream cancellation.
+See the [serving and arithmetic report](benchmarks/naive-2026-09-30/serving.md)
+for its 702-token prompt bound and reference differences.
+The [near-capacity report](benchmarks/naive-2026-09-30/long-context.md)
+records 256K two-bank and 512K one-bank seeds and buffered disk
+continuations, including the preserved 256K streaming-budget failure.
+The user stopped the 1M prefill after 210.9 minutes; no completed 1M
+retrieval or continuation is qualified.
+The Rust host can open one full CUDA model; forced CPU, Metal, distributed,
+steering, vision and embedded-MTP settings fail before native allocation.
+DSpark serial and banked target verification, accepted-prefix commit and
+cache persistence are implemented. Automatic speculation remains off until
+qualification; explicit speculation still needs performance work.
+
+All four downloaded shards and their provenance/manifest pass SHA-256 checks.
+
+Four retained prefill and three decode rounds have fresh byte-exact proofs.
+The latest 8K pair improves prefill 498.07→506.16 tok/s; ordinary
+decode stays within noise at 17.44 tok/s. A 32K pair improves prefill
+407.86→431.27 tok/s; its automatic first-decode timing screen remains
+inconclusive. See the [GB10 rounds](benchmarks/naive-2026-09-30/README.md)
+for the exact workload, controls and limits; this does not qualify DSpark
+acceleration or long-context serving.
+
+## Artifact contract
+
+- Main: [NaiveAI/Naive-N0.5-Flash](https://huggingface.co/NaiveAI/Naive-N0.5-Flash),
+  revision `0235b3b5ff27422b1f57cdc2acddfaf643e08356`.
+- Mixed artifact: [MQ87](https://huggingface.co/Baekpica/Naive-N0.5-Flash-Mixed-Quant-GGUF),
+  revision `65b235a48e87acaf7b806b96870378c9c68a654c`.
+  Four shards, 613 GGUF tensors, 86,960,547,072 file bytes.
+- Architecture: `naive_n05_flash`; 48 layers, hidden 4096, vocabulary 152576,
+  one dense FFN followed by 47 top-8 MoE layers with 256 experts each.
+- Attention: 39 SWA layers with window 128 and eight KV heads; nine DSA layers
+  at `0,5,11,17,23,29,35,41,47` with four KV heads. Q/K width 192, V width 128.
+- DSA: direct hidden projections, 16 indexer heads of width 128, stable
+  top-2048 selection and native per-row E4M3 rounding. Full GQA and indexer
+  histories remain necessary.
+- Numerical controls: RMSNorm epsilon `1e-5`, split-half RoPE on 64 dimensions,
+  theta 10000 for SWA and 10000000 for DSA, V scale 0.707, SWA-only sinks,
+  sigmoid routing with correction bias and normalized unbiased mixing weights.
+- Main has no embedded MTP. Its companion DSpark uses five SWA/1024 layers,
+  an anchor plus six proposals, eight target hidden taps, Markov correction
+  and confidence tensors. Draft source revision:
+  `b2b8ee9f5d6b3fd1dfba113d3a363138e37c83b0`.
+
+The validator requires the MQ87 types and split Q/K/V layout. MiMo metadata,
+global attention, fused QKV and DeepSeek MLA/compressed KV are different
+contracts.
+
+## Current checks
+
+The [final October 1 checks](benchmarks/naive-2026-09-30/final-validation.md)
+pass 1420 workspace tests, C oracles and final-binary short reuse/restart
+and concurrent serving. The configured 256K/two-bank endpoint remains
+live with partial reuse, disk KV and MTP off.
+
+The September 30 host checks cover identification, metadata rejection,
+all 613 tensor names/types/dimensions, eight official-template vectors and
+their original-tokenizer IDs. The tokenizer check used a 13,014,912-byte
+header capture while the main weights were downloading. This is directory
+and input-protocol evidence, not full-file integrity or inference evidence.
+
+CUDA primitive checks on GB10 also pass: E4M3 finite codes/scales and midpoint
+ties, device-position replay, affine indexer LayerNorm, RMSNorm epsilon,
+partial NeoX RoPE, signed index scores, causal stable top-k through a 1M
+history, and unbiased sigmoid routing. BF16 attention agrees with an
+independent source-equation reference: SWA maximum absolute difference 0;
+DSA difference 0.0009765625 for the 2049-key fixture. This tests primitives,
+not full-model inference or long-context serving. GPU clocks were set to
+300–2200 MHz before these checks.
+The native split-projection binder also matches all 613 source-directory
+entries. CUDA memcheck reports zero errors for the primitive fixtures.
+
+The DSpark inspector accepts the downloaded Q8 artifact and rejects changed
+source/target revisions, tap ordering, mask/block semantics and every tensor
+dimension. Its 63-tensor directory and SHA-256
+`193b96b39d132656635bc4f6a09ad91c64aed7a52c08f46dabe0e3847cef8a8b`
+were checked locally. This validates the sidecar contract, not draft execution.
+
+The independent five-layer CUDA draft now runs the real Q8 file against
+synthetic source-equation fixtures (four tap rows, seven noise rows at
+positions 17, 1048 and 1048569). Hidden cosine is 0.99882–0.99925 with
+relative L2 differences 0.0388–0.0486; Markov bias cosine is 0.9999967.
+MMQ activation quantization and F32 Q8 weight reconstruction differ from the
+reference's BF16 decoded weights. Learned-mask perturbations leave the
+output byte-identical. Raw confidence is evaluated without a sigmoid.
+These are isolated graph checks; they do not establish target-token parity,
+acceptance or acceleration. Independent local attention checks have maximum
+absolute difference 0.00006103515625 at the 1024 and 1M position fixtures.
+Device-backtrace CUDA memcheck reports zero errors for the real draft fixture.
+
+The eager main graph and serial session/snapshot paths are implemented.
+A weight-free GPU test matches allocator bytes to the
+quote and restores 2051 rows of DSA K/V, index codes/scales and wrapped SWA
+from prefill chunk 32 to chunk 7 byte-for-byte. Truncated snapshots invalidate
+the frontier. State tests reject logits after invalidation or a mismatched
+frontier. These checks do not establish full-model correctness.
+
+Persistent banks share forward scratch and keep independent DSA/SWA/indexer
+histories. The weight-free common bank API passes a three-bank allocation,
+full-prefix copy, partial fork, self-restore and snapshot round trip. Eight
+lazy SWA checkpoint slots need up to 204,472,320 bytes plus page alignment;
+each checkpoint preserves 25,559,040 bytes of displaced SWA rows. Full DSA
+KV and indexer histories are copied from the source bank at the chosen cut.
+Live partial reuse and disk restart pass the bounded HTTP campaign above.
+Bank memcheck passes with zero errors using `--show-backtrace device`.
+The default host backtrace collector crashes in `libgcc _Unwind_Backtrace`
+at CUDA context initialization on this test; device trace and memory checks
+remain enabled in the passing run.
+
+The integrated DSpark runs the fixed seven-row noise block, then verifies
+the requested target prefix and commits only accepted rows. Target/SWA,
+indexer and five draft-cache frontiers move together; rejected rows never
+become payload state. Loaded draft context remains maintained with trials
+off. Draft-aware checkpoints add 10,485,760 bytes per slot to the target's
+25,559,040 bytes (288,358,400 bytes for all eight slots, before alignment).
+
+An actual-weight 43-token code fixture exposed width-dependent arithmetic:
+width 1 and width 7 had identical first-MoE inputs, but different Gate/Up
+and Down paths. The small initial difference grew through BF16 boundaries
+and routing, flipping the next-token argmax. Verification now uses the
+one-token linear and expert reductions at widths 1–7. The regression fails
+before this change and passes afterward: all 48 first-row hidden states,
+full-vocabulary logits and the argmax match exactly. Changing rejected
+proposal values also leaves these outputs and committed target/draft rows
+byte-identical on this fixture.
+
+Fresh serial generation with the real target and draft preserves the ordinary
+decode text/token stream on arithmetic, a 256-token code case and a Korean
+capital answer (excluding the terminal stop token). Full-logit memory and
+disk snapshot round trips also pass. The code case reaches its output limit;
+this is bounded equivalence evidence, not a complete coding-quality gate.
+DSpark remains slower on these fixtures; no acceleration is qualified.
+
+The host quote and native geometry tests include full DSA K/V and indexer
+history. With prefill chunk 2048 and one bank, the planned 1M allocation is:
+
+| Component | Bytes | GiB |
+| --- | ---: | ---: |
+| DSA BF16 K/V | 24,159,191,040 | 22.500 |
+| SWA BF16 rings | 434,304,000 | 0.404 |
+| Indexer E4M3 codes and F32 scales | 1,245,708,288 | 1.160 |
+| Activations, scores and top-k workspace | 1,837,994,240 | 1.712 |
+
+The four GGUF files add 80.988 GiB of mapped files; GPU weight residency,
+derived tensors, allocator overhead and host headroom need live measurement.
+These are planned sizes, not evidence that 1M serving fits. Disk KV stores
+checkpoints and does not replace an active bank's GPU history.
+
+```sh
+cargo test -p ds4-core --test naive --locked
+cargo test -p ds4-core --test naive_draft --locked
+make test-naive-memory
+make test-naive-bind
+make test-naive-draft-bind
+make CUDA_ARCH=sm_121 test-naive-draft-ops
+make CUDA_ARCH=sm_121 test-naive-primitives
+make test-naive-state
+make CUDA_ARCH=sm_121 test-naive-graph
+make CUDA_ARCH=sm_121 test-naive-banks
+# Optional real vocabulary gate; reads only the GGUF header.
+NAIVE_TOKENIZER_GGUF=/absolute/path/to/first-shard.gguf \
+  cargo test -p ds4-core --test naive --locked
+```
+
+## Serving
+
+Build with `make cuda CUDA_ARCH=sm_121` and
+`make CUDA_ARCH=sm_121 ds4_weight_server`. Preserve the user's 300–2200 MHz
+clock range. Start one owner in a separate terminal and wait for its
+`ready manifest=` and broker socket before starting the worker.
+Use all four shards in the same model directory.
+
+```sh
+NAIVE_MODEL=/absolute/path/Naive-N0.5-Flash-MQ87-00001-of-00004.gguf
+NAIVE_DRAFT=/absolute/path/draft/Naive-N0.5-Flash-DSpark-Draft-Q8_0.gguf
+NAIVE_RUN="$PWD/scratch/naive-serving"
+mkdir -p "$NAIVE_RUN"
+python3 tools/host_memory_guard.py --max-gib 90 --high-gib 88 \
+  --reserve-gib 12 --trip-gib 4 --timeout 0 \
+  --log "$NAIVE_RUN/owner.memory.jsonl" -- \
+  ./ds4_weight_server --base "$NAIVE_MODEL" --drafter "$NAIVE_DRAFT" \
+  --backend vmm --scope base --reserve-gb 28 --no-repack-q8-aligned \
+  --manifest "$NAIVE_RUN/weights.ipc"
+```
+
+The byte-neutral aligned IQ2 replacements remain enabled; additive aligned
+Q8 copies are disabled. Set the same path variables in the worker terminal:
+
+```sh
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$NAIVE_RUN/weights.ipc" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base DS4_SERVER_CONTINUOUS=1 DS4_SERVER_FORK=1 \
+DS4_SERVER_PIN_MIN_TOKENS=0 DS4_SERVER_PERSIST_MIN_TOKENS=1024 \
+python3 tools/host_memory_guard.py --max-gib 18 --high-gib 17 \
+  --reserve-gib 12 --trip-gib 12 --timeout 0 \
+  --log "$NAIVE_RUN/worker.memory.jsonl" -- \
+  ./ds4-server --cuda -m "$NAIVE_MODEL" --model-id naive-n05-flash \
+  --host 127.0.0.1 --port 8002 -c 262144 --max-seqs 2 \
+  --native-chunk 2048 --prefill-chunk 2048 --prefill-chunk-live 2048 \
+  --prefix-reuse partial --mtp-mode off --print-plan \
+  --kv-disk-dir "$NAIVE_RUN/disk-kv" --kv-disk-space 32G \
+  --kv-cache-min-tokens 1024
+```
+
+This matches the recorded 256K main-only worker shape. Explicit DSpark sets
+`DS4_DSPARK_MODEL="$NAIVE_DRAFT"` on the worker command and adds
+`--mtp-mode on --mtp-draft 2 --mtp-margin 0`. Its larger quote and short
+functional gates apply; Naive has no embedded `--mtp` sibling.
+Read `/v1/models`, `/v1/stats` and a real completion after launch.
+
+`tests/naive_long_fixture.py` builds hashed near-capacity requests with the
+official source tokenizer and Jinja template. `--output-mode buffered`
+keeps reasoning separate; `--prompt-margin` and `--max-output` record the
+chosen budget. `tests/naive_long_live.py` checks seed, follow and a fresh
+disk-restored continuation. Its defaults retain the original 64-token
+stream fixture and its known 256K follow failure.
+
+## Remaining gates
+
+Full original-source model parity and broader generation quality remain
+unqualified. Primitive and actual-weight regressions cover indexer rounding,
+stable ties and target/indexer/draft cache transitions. The bounded HTTP
+campaign covers partial reuse, bank changes and disk restart. DSpark passes
+token/state and actual-speculation checks; useful acceleration still needs
+fresh-process speed evidence.
+
+The completed long gates use main-only banks and native/scheduler chunks
+2048. The plan reports 262144 context and 262011 input tokens for two
+banks, or 524288 context and 523441 input tokens for one bank. Draft-loaded
+and other shapes retain the short 8192-context, 702-token bound.
+These are recorded buffered retrieval and continuation limits, not broad
+quality guarantees. Qualify 1048576 separately with a full prompt, distant
+retrieval, continuation, memory and actual decode; readiness alone is
+insufficient. Only completed DGX gates may become public serving claims.
