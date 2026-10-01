@@ -176,6 +176,7 @@ tests/naive_banks
 /tests/iquest_attn_precision
 /tests/iquest_reduce_verify
 /tests/iquest_router_profile
+/tests/iquest_router_verify
 /tests/test_iquest_prefix
 /tests/test_iquest_primitives
 /tests/test_iquest_dispatch

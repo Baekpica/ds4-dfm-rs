@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "date": "2026-10-01",
-  "status": "ongoing; P1/P2/P3 and D1 adopted; two dedicated decode rounds pending",
+  "status": "ongoing; P1/P2/P3,D1/D2 adopted; final dedicated decode round pending",
   "effective_rounds": {
     "prefill": 3,
-    "decode": 1
+    "decode": 2
   },
   "dedicated_round_goal": {
     "prefill": 3,
@@ -616,7 +616,7 @@
       }
     }
   },
-  "primary_evidence": "D1.cold8k",
+  "primary_evidence": "D2.cold8k",
   "workload_scope": "The existing workload field and P1 evidence retain the initial 2K protocol; primary_workload is the subsequent 8K cold-KV protocol.",
   "primary_workload": {
     "prompt_tokens": 8192,
@@ -2419,5 +2419,810 @@
       "scratch/iquest-perf/ncu-d1-final-reduced.ncu-rep": "1bdf71a8191deb93888d581dc95150882624e7d896376a39cbdfcc09722e978f",
       "scratch/iquest-perf/ncu-d1-final-cache128.ncu-rep": "90d59c7049a26d315393b3f8da641af5cf360bcc194cdce903840256f86ce73f"
     }
+  },
+  "D2": {
+    "status": "adopted",
+    "default_enabled": true,
+    "effective_round_credit": {
+      "prefill": 0,
+      "decode": 1
+    },
+    "fallback": "DS4_IQUEST_ROUTER_WARP=0",
+    "scope": "rows1 expert selection; wider rows retain serial kernel",
+    "bottleneck": "Retained D1 decode serial router0.784275s/6.967042s GPU,11.2569%; fresh row1 NCU292.960us, one active thread, fixed-latency dependencies, no spills.",
+    "cross_family_reference": "Qwen/DS4 warp top-k structure; preserve IQuest-specific unsanitized NaN behavior, lower-ID ties and serial selected softmax instead of copying other-family contracts.",
+    "change": "One warp selects256/top8 using first-unused and numeric argmax summaries; explicit used masks; original lane0 exp/add/div normalization.",
+    "cold8k": {
+      "passed": true,
+      "scope": "Independent CPU audit of six completed cold-KV fresh-process ABBAAB workers; weights/OS cache not cold; not adoption or final-state qualification",
+      "workload": {
+        "frontier": 8192,
+        "capacity": 16384,
+        "chunk": 128,
+        "generated": 32,
+        "mtp": "off"
+      },
+      "measured_per_arm": 3,
+      "warmup_workers": 0,
+      "cache_policy": {
+        "name": "cold_kv",
+        "fresh_process": true,
+        "fresh_session": true,
+        "prefill_start_position": 0,
+        "reused_kv_tokens": 0,
+        "restored_payload": false,
+        "separate_warmup_process": false,
+        "weight_owner": "persistent canonical VMM owner",
+        "weights_and_os_cache": "uncontrolled; not claimed cold",
+        "native_boot_prewarm": "unchanged, outside measured fresh-session prefill",
+        "verification": "bench creates a new Session; one frontier; full frontier prefill count in CSV and logits receipt"
+      },
+      "source_base": "8f5c17c7b58de5d1b3bdb48bd57472e18add5ed4",
+      "source_has_uncommitted_candidate": true,
+      "control": "DS4_IQUEST_ROUTER_WARP",
+      "shared_variant_controls": {
+        "DS4_IQUEST_ATTN_SHUFFLE": "1",
+        "DS4_IQUEST_ATTN_WARP": "1",
+        "DS4_IQUEST_ATTN_TILED": "1",
+        "DS4_IQUEST_ATTN_CACHED": "1"
+      },
+      "candidate_binary_sha256": "eb63c2b30e412a8e887d0ed9e91785f023c2a05332af599b55d033c7b2dd9f73",
+      "model_hashes_fresh": false,
+      "owner_pids": [
+        716070
+      ],
+      "small_inputs_before_after_unchanged": true,
+      "rows": [
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "00-A-measured",
+          "prefill_tps": 132.56,
+          "decode_tps": 4.52,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 143,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "13e1cd77b5c31b592a3135956b70d498ae850660730043580e6d11d8a0866c9c",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "01-B-measured",
+          "prefill_tps": 132.68,
+          "decode_tps": 5.07,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 141,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "f5469d7257c98f8eeabf923a7f4209c7f9777b22a5ce50549113320cbd446ac6",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "02-B-measured",
+          "prefill_tps": 132.56,
+          "decode_tps": 5.06,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 141,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "f37810555c2ebc01e24fc04f26a5a46eebfbd4b206af57948de1a162b19cbb3f",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "03-A-measured",
+          "prefill_tps": 132.58,
+          "decode_tps": 4.51,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 142,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2197
+          },
+          "raw_report_sha256": "009137cb0bfb6e5e6eea62fd4024b494b1be3f1ecaaf84a4e94909418d1e7193",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "04-A-measured",
+          "prefill_tps": 132.43,
+          "decode_tps": 4.51,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 142,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2190
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2190
+          },
+          "raw_report_sha256": "5204e7965bee9db61193ca1cbbb40360c3a29882d1b3bf61a33d8457eefc8fae",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "05-B-measured",
+          "prefill_tps": 132.83,
+          "decode_tps": 5.07,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 140,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2197
+          },
+          "raw_report_sha256": "b508f226c0e33c2e337afd1319d791bb4af1ea8bbc0ce26e650af7cee2093ded",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        }
+      ],
+      "statistics": {
+        "A": {
+          "prefill_tps": {
+            "min": 132.43,
+            "median": 132.56,
+            "max": 132.58
+          },
+          "gen_tps": {
+            "min": 4.51,
+            "median": 4.51,
+            "max": 4.52
+          }
+        },
+        "B": {
+          "prefill_tps": {
+            "min": 132.56,
+            "median": 132.68,
+            "max": 132.83
+          },
+          "gen_tps": {
+            "min": 5.06,
+            "median": 5.07,
+            "max": 5.07
+          }
+        }
+      },
+      "median_throughput_gain_percent": {
+        "prefill_tps": 0.09052504526252392,
+        "gen_tps": 12.416851441241693
+      },
+      "proof": {
+        "independent_comparisons": 5,
+        "full_vocab_values_each": 160000,
+        "all_finite": true,
+        "f32_bits_reconstructed_from_json_exact": true,
+        "json_numbers_source": "bench json_f32 uses finite f32.to_string() round-trip representation",
+        "tokens_each": 32,
+        "all_tokens_identical": true,
+        "reference_directory": "00-A-measured",
+        "final_decode_logits_checked": false,
+        "committed_native_payload_checked": false
+      },
+      "raw_receipts": {
+        "manifest.json": "99d40f08b67112545226cbafbb080042a49ec6855488629db28f93927daf4f1e",
+        "summary.json": "bf10c8190fc7981f00dabfb91921ab6647a7e8fdc9f576132f85448255337344"
+      },
+      "remaining": "Ordinary prefill/final logits + KV gate, then root adoption decision"
+    },
+    "state": {
+      "passed": true,
+      "scope": "Independent ordinary MTP-off full native payload and raw logit audit; not performance",
+      "workload": {
+        "frontier": 8192,
+        "capacity": 16384,
+        "steps": 32,
+        "chunk": 128,
+        "prompt_mode": "raw",
+        "vocab": 160000,
+        "eos": 0
+      },
+      "arms": [
+        {
+          "directory": "scratch/iquest-perf/d2-8k-state-A",
+          "report_sha256": "79de02e0ca4e5f0faf40d346f1438c5ba8cfaa01d227237b6eacfd9a590b5539",
+          "states": {
+            "prefill": {
+              "position": 8192,
+              "payload_bytes": 1007842356,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8192,
+                0,
+                34,
+                4096,
+                160000,
+                8192
+              ],
+              "payload_sha256": "651381024a7bb350316aeab3dadf99da10bfddcb2a75d727e8cb30d0c3cefee7",
+              "logits_sha256": "b72f39d238819baa030091221ed9c27f04ed226839b5ce0718756dfe9e3858cd"
+            },
+            "final": {
+              "position": 8224,
+              "payload_bytes": 1009583284,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8224,
+                0,
+                34,
+                4096,
+                160000,
+                8224
+              ],
+              "payload_sha256": "60febaab90c180eea55e58ace3c7e0fe66934d826dc498535dc16554698f09ba",
+              "logits_sha256": "dc5df4d0dbb3572072bd17afb41a95723ea60ee1ccd77d67736dd4abc7ed1e7a"
+            }
+          }
+        },
+        {
+          "directory": "scratch/iquest-perf/d2-8k-state-B",
+          "report_sha256": "154096f042a7042b9ae711e0589e28f7b6070bc41f49b36ee92babd1a13df098",
+          "states": {
+            "prefill": {
+              "position": 8192,
+              "payload_bytes": 1007842356,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8192,
+                0,
+                34,
+                4096,
+                160000,
+                8192
+              ],
+              "payload_sha256": "651381024a7bb350316aeab3dadf99da10bfddcb2a75d727e8cb30d0c3cefee7",
+              "logits_sha256": "b72f39d238819baa030091221ed9c27f04ed226839b5ce0718756dfe9e3858cd"
+            },
+            "final": {
+              "position": 8224,
+              "payload_bytes": 1009583284,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8224,
+                0,
+                34,
+                4096,
+                160000,
+                8224
+              ],
+              "payload_sha256": "60febaab90c180eea55e58ace3c7e0fe66934d826dc498535dc16554698f09ba",
+              "logits_sha256": "dc5df4d0dbb3572072bd17afb41a95723ea60ee1ccd77d67736dd4abc7ed1e7a"
+            }
+          }
+        }
+      ],
+      "control": "DS4_IQUEST_ROUTER_WARP",
+      "shared_environment": {
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-iquest-q1/scratch/iquest-perf/weights-02.ipc",
+        "DS4_WEIGHT_RESIDENCY": "mapped",
+        "DS4_IQUEST_ATTN_TILED": "1",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:/usr/local/cuda-13.3/lib64:/usr/local/cuda-13.3/lib64:",
+        "DS4_IQUEST_PREFILL_CHUNK": "128",
+        "DS4_IQUEST_ATTN_WARP": "1",
+        "DS4_IQUEST_ATTN_CACHED": "1",
+        "DS4_IQUEST_ATTN_SHUFFLE": "1"
+      },
+      "comparison": {
+        "prefill": {
+          "payload_bytes_compared": 1007842356,
+          "logit_bytes_compared": 640000,
+          "all_bytes_equal": true
+        },
+        "final": {
+          "payload_bytes_compared": 1009583284,
+          "logit_bytes_compared": 640000,
+          "all_bytes_equal": true
+        }
+      },
+      "tokens_identical": true,
+      "restore_self_checks": 4,
+      "fault_counters_unchanged": true,
+      "speculative_counters_zero": true,
+      "evidence_limit": "Only chronological committed payload state is serialized; this does not inspect unused ring slots or qualify HTTP/continuous/MTP paths."
+    },
+    "adversarial": {
+      "passed": true,
+      "rows": 1800,
+      "readback_per_output": 14400,
+      "id_mismatch": 0,
+      "weight_bit_mismatch": 0,
+      "invalid_or_duplicate_ids": 0,
+      "oracle": "retained_cuda_serial_full_readback",
+      "seed": 2435820403
+    },
+    "component_cases": {
+      "passed": true,
+      "cases": 22,
+      "rows": [
+        1,
+        128
+      ],
+      "oracle": "native CPU IDs plus independent CUDA serial selected softmax, full bits"
+    },
+    "resources": {
+      "new_global_allocations": 0,
+      "tracked_memory_counters_equal": true,
+      "registers_before": 32,
+      "registers_after": 36,
+      "static_shared_bytes": 0,
+      "spills": 0,
+      "cta_threads_before": 1,
+      "cta_threads_after": 32
+    },
+    "isolated_router": {
+      "hot_median_ms": {
+        "baseline": 0.282095999,
+        "warp": 0.00650550006
+      },
+      "ncu_cache_flushed_ms": {
+        "baseline": 0.29232,
+        "warp": 0.0096
+      },
+      "scope": "one row, synthetic finite F32 scores; three fresh processes per arm, warm8/repeat64; separate from whole model"
+    },
+    "retained_profile": {
+      "scope": "NVTX-scoped profiled attribution, not speed A/B",
+      "command": [
+        "nsys",
+        "stats",
+        "--report",
+        "nvtx_kern_sum:base,nvtx_gpu_proj_sum,nvtx_pushpop_trace,cuda_api_sum",
+        "--format",
+        "csv:noconv",
+        "--output",
+        "scratch/iquest-perf/d2-8k-profile/stats",
+        "scratch/iquest-perf/d2-8k-profile/00-B-profile/trace.nsys-rep"
+      ],
+      "phases": {
+        "prefill": {
+          "host_ns": 61785278000,
+          "aggregate_kernel_ns": 61326730277,
+          "launches": 385792,
+          "kernels": [
+            {
+              "name": "mul_mat_q",
+              "gpu_ns": 30519419168,
+              "launches": 21248,
+              "share_percent": 49.7652802132939,
+              "avg_ns": 1436343.1
+            },
+            {
+              "name": "prefill",
+              "gpu_ns": 13908362560,
+              "launches": 5632,
+              "share_percent": 22.67911968757969,
+              "avg_ns": 2469524.6
+            },
+            {
+              "name": "ds4_moe_worklist_mmq_kernel",
+              "gpu_ns": 12741780448,
+              "launches": 18176,
+              "share_percent": 20.776878842958112,
+              "avg_ns": 701022.3
+            },
+            {
+              "name": "iquest_router_kernel",
+              "gpu_ns": 1575806336,
+              "launches": 5568,
+              "share_percent": 2.5695260922641934,
+              "avg_ns": 283011.2
+            },
+            {
+              "name": "motif3_round_bf16_kernel",
+              "gpu_ns": 366026437,
+              "launches": 90432,
+              "share_percent": 0.5968464898531769,
+              "avg_ns": 4047.5
+            },
+            {
+              "name": "iquest_rms_kernel",
+              "gpu_ns": 359187904,
+              "launches": 28288,
+              "share_percent": 0.5856955072896002,
+              "avg_ns": 12697.5
+            },
+            {
+              "name": "ds4_mmq_sanitize_f32_kernel",
+              "gpu_ns": 325838688,
+              "launches": 33536,
+              "share_percent": 0.5313159311253915,
+              "avg_ns": 9716.1
+            },
+            {
+              "name": "iquest_sum_kernel",
+              "gpu_ns": 233774048,
+              "launches": 5568,
+              "share_percent": 0.38119437795573247,
+              "avg_ns": 41985.3
+            },
+            {
+              "name": "quantize_mmq_q8_1",
+              "gpu_ns": 225274112,
+              "launches": 34432,
+              "share_percent": 0.36733429449521277,
+              "avg_ns": 6542.6
+            },
+            {
+              "name": "mm_ids_helper",
+              "gpu_ns": 188716320,
+              "launches": 34432,
+              "share_percent": 0.3077227811553101,
+              "avg_ns": 5480.8
+            },
+            {
+              "name": "mul_mat_vec_q",
+              "gpu_ns": 136377504,
+              "launches": 64,
+              "share_percent": 0.22237856703595865,
+              "avg_ns": 2130898.5
+            },
+            {
+              "name": "mul_mat_q_stream_k_fixup",
+              "gpu_ns": 136219680,
+              "launches": 11264,
+              "share_percent": 0.222121217590966,
+              "avg_ns": 12093.4
+            },
+            {
+              "name": "iquest_rope_kernel",
+              "gpu_ns": 127957888,
+              "launches": 11264,
+              "share_percent": 0.20864945419728234,
+              "avg_ns": 11359.9
+            },
+            {
+              "name": "iquest_add_kernel",
+              "gpu_ns": 121474400,
+              "launches": 11264,
+              "share_percent": 0.1980774116789295,
+              "avg_ns": 10784.3
+            },
+            {
+              "name": "nvjet_sm121_sss_tf32_mma_64x32x64_4_32x16x64_tmaAB_alignCD4_splitK_TNNN",
+              "gpu_ns": 102650464,
+              "launches": 5568,
+              "share_percent": 0.16738290715378001,
+              "avg_ns": 18435.8
+            },
+            {
+              "name": "iquest_swiglu_kernel",
+              "gpu_ns": 83419840,
+              "launches": 5632,
+              "share_percent": 0.13602525297404583,
+              "avg_ns": 14811.8
+            },
+            {
+              "name": "iquest_kv_kernel",
+              "gpu_ns": 52676640,
+              "launches": 5632,
+              "share_percent": 0.08589507342405285,
+              "avg_ns": 9353.1
+            },
+            {
+              "name": "sink",
+              "gpu_ns": 39082592,
+              "launches": 5632,
+              "share_percent": 0.06372847830541774,
+              "avg_ns": 6939.4
+            },
+            {
+              "name": "ds4_moe_build_tile_worklist",
+              "gpu_ns": 33318784,
+              "launches": 18176,
+              "share_percent": 0.05432995343059385,
+              "avg_ns": 1833.1
+            },
+            {
+              "name": "dots3_scale_kernel",
+              "gpu_ns": 19332800,
+              "launches": 5568,
+              "share_percent": 0.03152426342098754,
+              "avg_ns": 3472.1
+            },
+            {
+              "name": "fill_f32_kernel",
+              "gpu_ns": 17076352,
+              "launches": 22720,
+              "share_percent": 0.02784487599920898,
+              "avg_ns": 751.6
+            },
+            {
+              "name": "splitKreduce_kernel",
+              "gpu_ns": 12437792,
+              "launches": 5568,
+              "share_percent": 0.020281192138927182,
+              "avg_ns": 2233.8
+            },
+            {
+              "name": "embed_tokens_generic_kernel",
+              "gpu_ns": 440736,
+              "launches": 64,
+              "share_percent": 0.0007186686751589198,
+              "avg_ns": 6886.5
+            },
+            {
+              "name": "quantize_q8_1",
+              "gpu_ns": 78784,
+              "launches": 64,
+              "share_percent": 0.0001284660043738663,
+              "avg_ns": 1231.0
+            }
+          ]
+        },
+        "decode": {
+          "host_ns": 6330764928,
+          "aggregate_kernel_ns": 6193326560,
+          "launches": 155104,
+          "kernels": [
+            {
+              "name": "cached",
+              "gpu_ns": 4735694304,
+              "launches": 2816,
+              "share_percent": 76.4644695886987,
+              "avg_ns": 1681709.6
+            },
+            {
+              "name": "mul_mat_q",
+              "gpu_ns": 561070272,
+              "launches": 4992,
+              "share_percent": 9.059271565360506,
+              "avg_ns": 112393.9
+            },
+            {
+              "name": "mul_mat_vec_q",
+              "gpu_ns": 511044192,
+              "launches": 11968,
+              "share_percent": 8.25152988541912,
+              "avg_ns": 42700.9
+            },
+            {
+              "name": "mul_mat_vec_q_moe",
+              "gpu_ns": 132565248,
+              "launches": 2784,
+              "share_percent": 2.1404530621101303,
+              "avg_ns": 47616.8
+            },
+            {
+              "name": "iquest_rms_kernel",
+              "gpu_ns": 84175552,
+              "launches": 14144,
+              "share_percent": 1.359133111818344,
+              "avg_ns": 5951.3
+            },
+            {
+              "name": "matmul_f32_kernel",
+              "gpu_ns": 42642720,
+              "launches": 2784,
+              "share_percent": 0.68852691016506,
+              "avg_ns": 15317.1
+            },
+            {
+              "name": "motif3_round_bf16_kernel",
+              "gpu_ns": 34618624,
+              "launches": 45216,
+              "share_percent": 0.5589665531862411,
+              "avg_ns": 765.6
+            },
+            {
+              "name": "select",
+              "gpu_ns": 17697248,
+              "launches": 2784,
+              "share_percent": 0.28574705093541847,
+              "avg_ns": 6356.8
+            },
+            {
+              "name": "quantize_q8_1",
+              "gpu_ns": 15613120,
+              "launches": 14752,
+              "share_percent": 0.25209586235672354,
+              "avg_ns": 1058.4
+            },
+            {
+              "name": "iquest_rope_kernel",
+              "gpu_ns": 14404992,
+              "launches": 5632,
+              "share_percent": 0.2325889303663652,
+              "avg_ns": 2557.7
+            },
+            {
+              "name": "ds4_mmq_sanitize_f32_kernel",
+              "gpu_ns": 10995552,
+              "launches": 14016,
+              "share_percent": 0.1775387086968009,
+              "avg_ns": 784.5
+            },
+            {
+              "name": "fill_f32_kernel",
+              "gpu_ns": 6151584,
+              "launches": 11360,
+              "share_percent": 0.09932600744372827,
+              "avg_ns": 541.5
+            },
+            {
+              "name": "iquest_add_kernel",
+              "gpu_ns": 5383168,
+              "launches": 5632,
+              "share_percent": 0.08691884640424967,
+              "avg_ns": 955.8
+            },
+            {
+              "name": "quantize_mmq_q8_1",
+              "gpu_ns": 4075296,
+              "launches": 2496,
+              "share_percent": 0.06580140673221661,
+              "avg_ns": 1632.7
+            },
+            {
+              "name": "iquest_kv_kernel",
+              "gpu_ns": 3955360,
+              "launches": 2816,
+              "share_percent": 0.06386487070689843,
+              "avg_ns": 1404.6
+            },
+            {
+              "name": "iquest_sum_kernel",
+              "gpu_ns": 3827904,
+              "launches": 2784,
+              "share_percent": 0.061806913666118714,
+              "avg_ns": 1375.0
+            },
+            {
+              "name": "iquest_swiglu_kernel",
+              "gpu_ns": 3630432,
+              "launches": 2816,
+              "share_percent": 0.058618449468616426,
+              "avg_ns": 1289.2
+            },
+            {
+              "name": "mm_ids_helper",
+              "gpu_ns": 3044352,
+              "launches": 2496,
+              "share_percent": 0.049155360540200546,
+              "avg_ns": 1219.7
+            },
+            {
+              "name": "dots3_scale_kernel",
+              "gpu_ns": 2662016,
+              "launches": 2784,
+              "share_percent": 0.042982006103033585,
+              "avg_ns": 956.2
+            },
+            {
+              "name": "embed_tokens_generic_kernel",
+              "gpu_ns": 74624,
+              "launches": 32,
+              "share_percent": 0.0012049098215160157,
+              "avg_ns": 2332.0
+            }
+          ]
+        }
+      }
+    },
+    "source_and_binary": {
+      "ds4-bench-perf": "eb63c2b30e412a8e887d0ed9e91785f023c2a05332af599b55d033c7b2dd9f73",
+      "tests/iquest_perf_verify": "72aac475dde55c45babedd0c80b014a1d61044f04ce7d4aa29f26544d9102d31",
+      "tests/iquest_router_profile": "85706e477e49effe5049d033d95e375aab97a3c5e22d4647ad485bf81a100435",
+      "tests/iquest_router_verify": "db0581b701fe18d2f0398d317fbf42cf36d8a0c5a6171d830fa967bf11a16053",
+      "cuda/iquest_router.cuh": "e551c0ad838a1f4eaf258c96d80fdeaa60b818bf95713d169710081d845bb14d",
+      "ds4_iquest_gpu.cuh": "daf1aee23bdc6d9730c2f4ab61ddf367483d1aa03c41887652d91aa280dba4f4",
+      "tests/iquest_router_profile.cu": "eaaef43a8c45cf70a2a6fa61399b89d24bcc80c952ee2ae49a1bf119485ef414",
+      "tests/iquest_router_verify.cu": "6019fe58fa192ede616ff2d391bb46bc5a0b467ce91afb7b2027f2f8441a3444"
+    },
+    "raw_sha256": {
+      "scratch/iquest-perf/d2-8k-cold/independent-audit.json": "7f8779aac3c27e8306a8887d5babe11ce77d2529852cb1b17f4e3a47ba035594",
+      "scratch/iquest-perf/d2-state-audit.json": "708d683150dd6382af783b44453390cdc8210759f9d2b8557cfaccdbedfb549c",
+      "scratch/iquest-perf/d2-router-stress.json": "cc85adad6fa3a72c1c98f0469976faddba448bea5a22a311f2d5d80f66e571e8",
+      "scratch/iquest-perf/d2-router-racecheck.log": "f4f7a46679ded41cb1234ab3592ef766c046fc9ffab0d9466e3762c276934b6f",
+      "scratch/iquest-perf/d2-router-hot.json": "94c73917d1229923b53de9bcddfff7810a8f9f31a079fda0ec371f9c3fd49952",
+      "scratch/iquest-perf/d2-production-inventory.json": "8a4eec7ddef07918fa4d6321e88905d8d9fda1214c16b023c82bed2babe2b411",
+      "scratch/iquest-perf/d2-retained-state-match.json": "2e6eb0ecda01272a5c848aed407daf381065c2b3557fc0077251f531a3d8aa7a",
+      "scratch/iquest-perf/d2-8k-profile/attribution.json": "3f5218955fbdb9254a9ead83f9aa99df81558d9d5fc88b776c7bb187ed085a1c",
+      "scratch/iquest-perf/ncu-d2-baseline.ncu-rep": "2a42699abac0f75168f798f3e1a5d088f4c97df61e35e29824069430ca4901c7",
+      "scratch/iquest-perf/ncu-d2-warp.ncu-rep": "1a9d75671164dcb015a8e0a8aa9a8b2a3f2f0c10820ca1ad9608d60e37e39915",
+      "scratch/iquest-perf/d2-router-cases-row1.jsonl": "df56f36c38f6505599651b2b0b9bdad7c0b1e69052f15ac144dd6fedc3e48b6c",
+      "scratch/iquest-perf/d2-router-cases-row128.jsonl": "e326a632fc5942c91ec9a5115e068575f2745f784afc7e2d5d7a3527359a0603"
+    }
+  },
+  "model_free_tests": {
+    "exit_code": 0,
+    "suites": 84,
+    "passed": 1473,
+    "failed": 0,
+    "ignored": 12,
+    "command": "cargo test --workspace --locked -- --test-threads=1",
+    "scope": "model-free workspace tests during D2 correctness-only state gates, before performance campaign",
+    "log_sha256": "07c61b533b6514604bce0857e924d134656aa731c8466ba52b5f8fcdc8297842"
   }
 }

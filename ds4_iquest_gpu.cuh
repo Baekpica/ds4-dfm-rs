@@ -3,6 +3,7 @@
 #include "cuda/iquest_primitives.cuh"
 #include "cuda/iquest_prefill.cuh"
 #include "cuda/iquest_decode.cuh"
+#include "cuda/iquest_router.cuh"
 
 extern "C" int ds4_gpu_iquest_policy(void) {
     /* Only the active engine needs canonical MMQ weights. Cleanup releases
@@ -49,6 +50,14 @@ static bool iq_attn_cached() {
     return enabled;
 }
 
+static bool iq_router_warp() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ROUTER_WARP");
+        return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 extern "C" int ds4_gpu_iquest_rms(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t offset, uint32_t width, uint32_t rows) {
     if (!rows || rows > IQ_PREFILL_MAX * IQ_HEADS || (width != IQ_HEAD && width != IQ_EMBED)) { return 0; }
@@ -79,8 +88,13 @@ extern "C" int ds4_gpu_iquest_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weight
     if (!rows || rows > 8192 || !iq_tensor(ids, (uint64_t)rows * IQ_USED * sizeof(unsigned)) ||
         !iq_tensor(weights, (uint64_t)rows * IQ_USED * sizeof(float)) ||
         !iq_tensor(logits, (uint64_t)rows * IQ_EXPERTS * sizeof(float))) { return 0; }
-    iquest_router_kernel<<<rows, 1, 0, ds4_current_stream()>>>(
-        (unsigned *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr);
+    if (rows == 1 && iq_router_warp()) {
+        iq_router::select<<<rows, iq_router::WARP, 0, ds4_current_stream()>>>(
+            (unsigned *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr);
+    } else {
+        iquest_router_kernel<<<rows, 1, 0, ds4_current_stream()>>>(
+            (unsigned *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr);
+    }
     return cuda_ok(cudaGetLastError(), "IQuest normalized softmax router");
 }
 

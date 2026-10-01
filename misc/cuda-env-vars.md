@@ -209,6 +209,11 @@ The bandwidth figure is informational; we don't tier on it.
   launch; single-row calls use the cached dispatch below.
   `DS4_IQUEST_ATTN_SHUFFLE=0` also disables this path. Read once
   per process.
+- `DS4_IQUEST_ROUTER_WARP=0` restores serial expert selection for
+  single-row calls. The default distributes the 256-expert/top8 scan over
+  one warp, preserving lower-ID ties, first-unused NaN behavior and the
+  serial selected-softmax normalization. Wider calls retain the old path.
+  No extra allocation or persistent state. Read once per process.
 - `DS4_IQUEST_ATTN_CACHED=0` restores retained shuffle attention for
   single-row full/SWA4096 calls. The default stages 128 compressed Q8 keys
   per CTA, then keeps the original key order, reduction tree, online FMA

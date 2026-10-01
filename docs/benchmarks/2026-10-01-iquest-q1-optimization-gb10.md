@@ -1,6 +1,6 @@
 # IQuest-Q1 GB10 optimization — 2026-10-01
 
-P1/P2/P3 and D1 adopted; ongoing: **3/3 prefill, 1/3 dedicated decode rounds**. P3 changes arithmetic; its bounded quality gates are described below.
+P1/P2/P3 and D1/D2 adopted; ongoing: **3/3 prefill, 2/3 dedicated decode rounds**. P3 changes arithmetic; its bounded quality gates are described below.
 
 The primary workload is now **8192 cold-KV prompt tokens**, capacity 16384, chunk 128, 32 EOS-suppressed greedy outputs, MTP off. Six fresh ABBAAB processes open empty sessions without separate warmup workers. The canonical weight owner persists; weights/OS caches are not claimed cold, and native startup prewarming remains unchanged. Clocks span 2184–2197 MHz, with every run's median 2190 MHz and unchanged clock policy.
 
@@ -79,3 +79,14 @@ Separate whole-model proof compares all prefill/final logits and **1,007,842,356
 The final resident target median improves **3.5266→2.0236 ms**; cache-flushed NCU improves **6.7416→2.6470 ms**. Registers rise38→40 and static shared512→34816 B, without spills. Tracked tensor/allocator counters are equal; no global scratch is added. System-wide available memory varies with page cache and is not an allocation equality claim.
 
 The fresh retained profile measures **61.815 s prefill /7.104 s decode** host time. Decode attention is4.743 s/68.07% of aggregate GPU time, and the serial router is0.784 s/11.26%. This profile selects the next target; it is separate from the speed A/B.
+
+
+## D2: warp expert selection
+
+The retained D1 serial router consumes 0.784 s, 11.26% of decode GPU time. Its single thread repeatedly scans 256 experts for top8. D2 uses the warp-selection structure found in Qwen/DS4, while preserving IQuest's lower-ID ties, first-unused NaN behavior and serial selected-softmax order. Explicit unused masks retain valid negative-infinity candidates. Only single-row calls change; `DS4_IQUEST_ROUTER_WARP=0` restores the serial path.
+
+Six fresh 8K cold-KV workers give Decode **4.51 (4.51–4.52)→5.07 (5.06–5.07) tok/s, +12.42%**. Prefill is **132.56 (132.43–132.58)→132.68 (132.56–132.83), +0.09%**; this incidental difference earns no prefill-round credit. All six full prefill vectors and 32-token streams are exact.
+
+The separate ordinary-mode proof retains exact prefill/final logits, both complete native payloads, all 32 greedy choices and four self-restores. It also matches the committed D1 state. Tracked allocation counters, faults and speculative counters are unchanged. Twenty-two CPU-ID/CUDA-weight cases pass; 1,800 adversarial rows compare all 14,400 IDs and weight bits exactly against the retained CUDA kernel, including malformed inputs. Racecheck reports zero hazards. Model-free workspace tests pass: 1,473 passed, 0 failed, 12 ignored.
+
+Resident router median improves **282.096→6.506 μs**; cache-flushed NCU improves **292.320→9.600 μs**. The CTA changes from one thread to one warp, registers32→36, with no shared memory, spills or new allocation. The retained whole profile measures **61.785 s prefill /6.331 s decode** host time. Attention now occupies **4.736 s, 76.46%** of decode GPU time; detailed profiling of that retained path precedes the final round.

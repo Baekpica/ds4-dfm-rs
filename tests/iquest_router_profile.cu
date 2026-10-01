@@ -12,6 +12,7 @@
 #include <limits>
 #include <vector>
 #include "../cuda/iquest_primitives.cuh"
+#include "../cuda/iquest_router.cuh"
 
 #define CUDA_OK(call) do { \
     const cudaError_t error = (call); \
@@ -39,7 +40,9 @@ constexpr uint32_t kFloatOneBits = 0x3f800000u;
 constexpr uint64_t kFnvOffset = UINT64_C(14695981039346656037);
 constexpr uint64_t kFnvPrime = UINT64_C(1099511628211);
 
+enum class Implementation { Baseline, Warp };
 struct Options {
+    Implementation implementation = Implementation::Baseline;
     unsigned rows = 1;
     unsigned warmup = 1;
     unsigned repeat = 8;
@@ -55,7 +58,7 @@ static void fail(const char *message) {
 static void usage() {
     std::fprintf(stderr,
         "Usage: iquest_router_profile [--rows 1|128] [--case NAME|all]\n"
-        "  [--warmup 0..128] [--repeat 1..128] [--device N]\n"
+        "  [--implementation baseline|warp] [--warmup 0..128] [--repeat 1..128] [--device N]\n"
         "Cases: finite negative ties near_ties signed_zero positive_inf\n"
         "       negative_inf nan_first nan_middle nan_last nan_all\n"
         "All IDs and weight bits must match; nonfinite cases record existing\n"
@@ -85,6 +88,11 @@ static Options options(int argc, char **argv) {
         else if (!std::strcmp(arg, "--repeat")) { result.repeat = number(value); }
         else if (!std::strcmp(arg, "--device")) { result.device = number(value); }
         else if (!std::strcmp(arg, "--case")) { result.fixture = value; }
+        else if (!std::strcmp(arg, "--implementation")) {
+            if (!std::strcmp(value, "baseline")) { result.implementation = Implementation::Baseline; }
+            else if (!std::strcmp(value, "warp")) { result.implementation = Implementation::Warp; }
+            else { fail("Unknown implementation"); }
+        }
         else { usage(); fail("Unknown option"); }
     }
     if (result.rows != 1 && result.rows != IQ_PREFILL) { fail("Rows must be 1 or 128"); }
@@ -182,8 +190,11 @@ static bool run_case(const Options &opt, const NamedFixture &test,
     CUDA_OK(cudaMemset(weights, 0xff, selected_count * sizeof(float)));
     CUDA_OK(cudaMemset(ids, 0xff, selected_count * sizeof(unsigned)));
     const auto launch = [&]() {
-        // Matches ds4_gpu_iquest_router, including its one-thread CTA.
-        iquest_router_kernel<<<opt.rows, 1>>>(ids, weights, input);
+        if (opt.implementation == Implementation::Warp) {
+            iq_router::select<<<opt.rows, iq_router::WARP>>>(ids, weights, input);
+        } else {
+            iquest_router_kernel<<<opt.rows, 1>>>(ids, weights, input);
+        }
         CUDA_OK(cudaGetLastError());
     };
     for (unsigned i = 0; i < opt.warmup; i++) { launch(); }
@@ -217,10 +228,10 @@ static bool run_case(const Options &opt, const NamedFixture &test,
     }
     const bool passed = !id_mismatch && !weight_mismatch && !tie_contract_errors &&
         (nonfinite_input || !nonfinite_weight);
-    std::printf("{\"kernel\":\"iquest_router_kernel\",\"implementation\":\"production_baseline\","
+    std::printf("{\"kernel\":\"%s\",\"implementation\":\"%s\","
         "\"fixture\":\"%s\",\"scope\":\"synthetic_resident_router_only\","
         "\"device\":%u,\"compute_capability\":\"%d.%d\",\"rows\":%u,\"experts\":%u,\"used\":%u,"
-        "\"grid\":[%u,1,1],\"block\":[1,1,1],\"input_storage\":\"f32\","
+        "\"grid\":[%u,1,1],\"block\":[%u,1,1],\"input_storage\":\"f32\","
         "\"input_sanitized\":false,\"stream\":\"default\",\"surrounding_graph\":false,"
         "\"warmup_launches\":%u,\"timed_launches\":%u,\"event_total_ms\":%.9g,\"event_mean_ms\":%.9g,"
         "\"input_fnv1a64\":\"%016llx\",\"ids_fnv1a64\":\"%016llx\",\"weights_fnv1a64\":\"%016llx\","
@@ -229,9 +240,11 @@ static bool run_case(const Options &opt, const NamedFixture &test,
         "\"nonfinite_input\":%zu,\"nonfinite_weight\":%zu,\"tie_contract_errors\":%zu,"
         "\"id_reference\":\"native_cpu_iquest_router\",\"weight_reference\":\"cuda_serial_selected_softmax\","
         "\"ids_exact\":%s,\"weights_bit_exact\":%s,\"passed\":%s}\n",
+        opt.implementation == Implementation::Warp ? "iq_router::select" : "iquest_router_kernel",
+        opt.implementation == Implementation::Warp ? "warp" : "baseline",
         test.name, opt.device, properties.major, properties.minor, opt.rows,
         static_cast<unsigned>(IQ_EXPERTS), static_cast<unsigned>(IQ_USED),
-        opt.rows, opt.warmup, opt.repeat, elapsed_ms, elapsed_ms / opt.repeat,
+        opt.rows, opt.implementation == Implementation::Warp ? iq_router::WARP : 1, opt.warmup, opt.repeat, elapsed_ms, elapsed_ms / opt.repeat,
         static_cast<unsigned long long>(hash_bytes(logits.data(), logits.size() * sizeof(float))),
         static_cast<unsigned long long>(hash_bytes(actual_ids.data(), selected_count * sizeof(unsigned))),
         static_cast<unsigned long long>(hash_bytes(actual_weights.data(), selected_count * sizeof(float))),
