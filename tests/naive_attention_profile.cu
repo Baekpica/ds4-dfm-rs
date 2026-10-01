@@ -12,7 +12,9 @@
 #define CUDA(call) do { const cudaError_t rc = (call); if (rc != cudaSuccess) { \
     fprintf(stderr, "%s: %s\n", #call, cudaGetErrorString(rc)); exit(1); } } while (0)
 
-enum class AttentionPath : unsigned { Walk, Cache, Tile, DirectTile, DirectWalk, UnitWalk, UnitCache };
+enum class AttentionPath : unsigned {
+    Walk, Cache, Tile, DirectTile, DirectWalk, UnitWalk, UnitCache, RingCache, UnitRingCache
+};
 
 template<class T> static T *upload(const std::vector<T> &values) {
     T *out;
@@ -26,7 +28,13 @@ template<unsigned WARPS> static void launch(
         const unsigned *pos, const unsigned *ids, unsigned rows,
         unsigned heads, unsigned capacity, unsigned window, AttentionPath path) {
     const dim3 grid(N05_HEADS / WARPS, rows);
-    if (path == AttentionPath::UnitCache && window) {
+    if (path == AttentionPath::UnitRingCache && window) {
+        naive_attention<WARPS, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit, NaiveRing::Walk>
+            <<<grid, WARPS * 32>>>(out, q, kv, sinks, pos, nullptr, heads, capacity, window);
+    } else if (path == AttentionPath::RingCache && window) {
+        naive_attention<WARPS, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Walk, NaiveRing::Walk>
+            <<<grid, WARPS * 32>>>(out, q, kv, sinks, pos, nullptr, heads, capacity, window);
+    } else if (path == AttentionPath::UnitCache && window) {
         naive_attention<WARPS, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit><<<grid, WARPS * 32>>>(
             out, q, kv, sinks, pos, nullptr, heads, capacity, window);
     } else if (path == AttentionPath::UnitWalk) {
@@ -54,20 +62,25 @@ template<unsigned WARPS> static void launch(
 
 int main(int argc, char **argv) {
     enum { HISTORY = 8192, REPEATS = 20 };
+    if (argc > 7) { return 2; }
     const unsigned rows = argc >= 2 ? (unsigned)atoi(argv[1]) : N05_QUERY_TILE;
     const unsigned warps = argc >= 3 ? (unsigned)atoi(argv[2]) : 4;
     const auto path = argc >= 4 ? static_cast<AttentionPath>((unsigned)atoi(argv[3])) : AttentionPath::Walk;
     const unsigned window = argc >= 5 ? (unsigned)atoi(argv[4]) : 0;
     const unsigned limit = window ? N05_PREFILL : N05_QUERY_TILE;
-    if (!rows || rows > limit || (warps != 1 && warps != 4) || path > AttentionPath::UnitCache ||
+    const bool swa_path = path == AttentionPath::UnitCache || path == AttentionPath::RingCache ||
+        path == AttentionPath::UnitRingCache;
+    if (!rows || rows > limit || (warps != 1 && warps != 4) || path > AttentionPath::UnitRingCache ||
         (path >= AttentionPath::Tile && path <= AttentionPath::DirectWalk && (window || warps != 4)) ||
-        (path == AttentionPath::UnitWalk && window) || (path == AttentionPath::UnitCache && !window) ||
+        (path == AttentionPath::UnitWalk && window) || (swa_path && !window) ||
         (window && window != N05_WINDOW)) { return 2; }
     const unsigned heads = window ? 8 : 4;
     const unsigned stride = heads * (N05_KEY + N05_VALUE);
     const unsigned full_capacity = argc >= 6 ? (unsigned)atoi(argv[5]) : HISTORY;
     const unsigned capacity = window && argc < 6 ? rows + N05_WINDOW - 1 : full_capacity;
     if (capacity > N05_CONTEXT || capacity < rows || (!window && capacity < HISTORY)) { return 2; }
+    const unsigned last_pos = argc == 7 ? (unsigned)atoi(argv[6]) : HISTORY - 1;
+    if ((argc == 7 && !window) || last_pos >= N05_CONTEXT || rows > last_pos + 1) { return 2; }
     std::vector<__nv_bfloat16> cache((size_t)capacity * stride);
     std::vector<float> sink(N05_HEADS);
     std::vector<float> query((size_t)rows * N05_HEADS * N05_KEY);
@@ -79,7 +92,7 @@ int main(int argc, char **argv) {
         query[i] = __bfloat162float(__float2bfloat16_rn(((int)((i * 7) % 113) - 56) * .015625f));
     }
     for (unsigned r = 0; r < rows; r++) {
-        positions[r] = HISTORY - rows + r;
+        positions[r] = last_pos + 1 - rows + r;
         for (unsigned i = 0; i < N05_TOP_K; i++) { selected[r * N05_TOP_K + i] = i * (positions[r] + 1) / N05_TOP_K; }
     }
     auto *kv = upload(cache);
@@ -110,8 +123,9 @@ int main(int argc, char **argv) {
     CUDA(cudaMemcpy(expected.data(), reference, expected.size() * sizeof(float), cudaMemcpyDeviceToHost));
     for (float value : result) { assert(std::isfinite(value)); }
     assert(!memcmp(result.data(), expected.data(), result.size() * sizeof(float)));
-    printf("attention rows=%u warps=%u path=%u window=%u selected=%u history=%u capacity=%u milliseconds=%.6f byte_exact=1\n",
-        rows, warps, static_cast<unsigned>(path), window, window ? window : N05_TOP_K, HISTORY, capacity, elapsed / REPEATS);
+    printf("attention rows=%u warps=%u path=%u window=%u selected=%u history=%u capacity=%u last_pos=%u milliseconds=%.6f byte_exact=1\n",
+        rows, warps, static_cast<unsigned>(path), window, window ? window : N05_TOP_K,
+        last_pos + 1, capacity, last_pos, elapsed / REPEATS);
     CUDA(cudaEventDestroy(start)); CUDA(cudaEventDestroy(end));
     CUDA(cudaFree(out)); CUDA(cudaFree(reference)); CUDA(cudaFree(q)); CUDA(cudaFree(kv));
     CUDA(cudaFree(sinks)); CUDA(cudaFree(pos)); CUDA(cudaFree(ids));

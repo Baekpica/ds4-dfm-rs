@@ -14,6 +14,7 @@ static constexpr unsigned N05_INDEX_PARTS = N05_INDEX_DIM / N05_INDEX_WARP;
 enum class NaiveCache { Ring, Full };
 enum class NaiveIndexLayout { Planar, Warp };
 enum class NaiveSoftmax { Walk, Unit };
+enum class NaiveRing { Modulo, Walk };
 
 template<NaiveSoftmax MODE> __device__ static void naive_softmax_step(
         float score, float &maximum, float &denominator) {
@@ -35,6 +36,19 @@ template<NaiveCache CACHE> __device__ static unsigned naive_cache_slot(unsigned 
     // DSA's bounded frontier keeps every causal ID inside its full history.
     if constexpr (CACHE == NaiveCache::Full) { return key; }
     return key % capacity;
+}
+
+template<NaiveRing RING, NaiveCache CACHE> __device__ static unsigned naive_attn_slot(
+        unsigned key, unsigned capacity, unsigned window, unsigned &ring_slot) {
+    if constexpr (RING == NaiveRing::Walk && CACHE == NaiveCache::Ring) {
+        if (window) {
+            const unsigned slot = ring_slot;
+            ring_slot++;
+            if (ring_slot == capacity) { ring_slot = 0; }
+            return slot;
+        }
+    }
+    return naive_cache_slot<CACHE>(key, capacity);
 }
 
 __device__ static float naive_e4m3(uint8_t code) {
@@ -137,7 +151,7 @@ __global__ static void naive_kv_store(
  * The two passes avoid a scores[heads,history] allocation. Sparse IDs are
  * ascending; SWA walks exactly the causal window and adds its zero-V sink. */
 template<unsigned WARPS = 4, unsigned SCORE_CAP = 0, NaiveCache CACHE = NaiveCache::Ring,
-         NaiveSoftmax SOFTMAX = NaiveSoftmax::Walk>
+         NaiveSoftmax SOFTMAX = NaiveSoftmax::Walk, NaiveRing RING = NaiveRing::Modulo>
 __global__ static void naive_attention(
         float *out, const float *q, const __nv_bfloat16 *cache, const float *sinks,
         const unsigned *positions, const unsigned *selected,
@@ -156,10 +170,17 @@ __global__ static void naive_attention(
         query[d] = q[((uint64_t)row * N05_HEADS + head) * N05_KEY + lane + d * WARP];
     }
     float maximum = sinks ? sinks[head] : -INFINITY, denominator = sinks ? 1 : 0;
+    unsigned first_slot = 0;
+    if constexpr (RING == NaiveRing::Walk && CACHE == NaiveCache::Ring) {
+        // SWA visits consecutive keys; divide once and wrap each address exactly.
+        if (window) { first_slot = first % capacity; }
+    }
+    unsigned ring_slot = first_slot;
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = window ? first + i : selected[(uint64_t)row * N05_TOP_K + i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
+        const unsigned cache_row = naive_attn_slot<RING, CACHE>(key, capacity, window, ring_slot);
+        const __nv_bfloat16 *slot = cache + (uint64_t)cache_row * stride;
         float dot = 0;
         for (unsigned d = 0; d < N05_KEY / WARP; d++) {
             dot = __fmaf_rn(query[d], __bfloat162float(slot[kv_head * N05_KEY + lane + d * WARP]), dot);
@@ -172,10 +193,13 @@ __global__ static void naive_attention(
         naive_softmax_step<SOFTMAX>(score, maximum, denominator);
     }
     if constexpr (SCORE_CAP) { __syncwarp(); }
+    // Both walks must restart at the same row, including a partial early window.
+    ring_slot = first_slot;
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = window ? first + i : selected[(uint64_t)row * N05_TOP_K + i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
+        const unsigned cache_row = naive_attn_slot<RING, CACHE>(key, capacity, window, ring_slot);
+        const __nv_bfloat16 *slot = cache + (uint64_t)cache_row * stride;
         float score;
         if constexpr (SCORE_CAP) {
             score = __bfloat162float(scores[warp][i]);

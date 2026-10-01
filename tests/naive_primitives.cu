@@ -379,6 +379,20 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
     CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
     if (window) {
+        naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Walk, NaiveRing::Walk>
+            <<<dim3(N05_HEADS / 4, rows), 128, 0, stream>>>(out, dq,
+                (const __nv_bfloat16 *)cache, sink, dp, nullptr, kv_heads, capacity, window);
+        CUDA(cudaStreamSynchronize(stream));
+        CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
+        naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit, NaiveRing::Walk>
+            <<<dim3(N05_HEADS / 4, rows), 128, 0, stream>>>(out, dq,
+                (const __nv_bfloat16 *)cache, sink, dp, nullptr, kv_heads, capacity, window);
+        CUDA(cudaStreamSynchronize(stream));
+        CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
+    }
+    if (window) {
         naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit>
             <<<dim3(N05_HEADS / 4, rows), 128, 0, stream>>>(out, dq,
                 (const __nv_bfloat16 *)cache, sink, dp, nullptr, kv_heads, capacity, window);

@@ -44,6 +44,12 @@ for cached SWA at width one. Its default skips the exact unit exponent while
 preserving serial order, FMA and BF16 boundaries. Nonfinite values use the
 original recurrence. Prefill, wider verification and DSA stay unchanged.
 
+`DS4_NAIVE_SWA_RING_WALK=0` restores per-key modulo addressing in cached
+SWA. Its default computes the first slot once and increments/wraps it for
+each pass, preserving early windows and physical KV addresses. It applies
+at width one or above seven with score caching enabled; DSA and uncached
+verification keep their previous addressing. Buffers and arithmetic are unchanged.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

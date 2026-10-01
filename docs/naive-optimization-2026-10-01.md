@@ -1,12 +1,12 @@
 # Naive additional optimization rounds, 2026-10-01
 
 Base: `2aedeb43` (main after PR70). Earlier P4/D3 are excluded from these
-additional rounds. Retained so far: **prefill 0, decode 1**.
+additional rounds. Retained so far: **prefill 1, decode 2**.
 
 ## Protocol
 
 GB10, driver 615.71.09, CUDA 13.3, `sm_121a`, clock range 300–2200 MHz;
-observed clocks 2190–2197 MHz. MQ87 source/artifact pins are unchanged from
+observed clocks 2184–2197 MHz. MQ87 source/artifact pins are unchanged from
 [the family contract](naive-n05-flash.md). One resident VMM owner shares the
 main weights; no serving worker or competing GPU workload runs during samples.
 
@@ -68,3 +68,50 @@ Local evidence: `scratch/naive/perf-2026-10-01/unit-{off,on}/scout.json`,
 `unit-compare/compare.json`, `unit-state-{43,2053}.log`, `unit-softmax.log`,
 `unit-cap2175-{warm,memcheck}.log`, `swa-dec-2175-{off,on}.ncu-rep`,
 `unit-source.{json,patch}`, and `unit-model.guard.jsonl`.
+
+## P5/D5: consecutive SWA ring addresses
+
+Fresh retained-D4 measurement: prefill/decode wall 16.186014 / 1.794196 s;
+cached SWA totals 1.275177 / 0.203818 s (7.88% / 11.36% of wall).
+Each consecutive key repeated unsigned remainder for both K/V passes.
+Compute the initial slot once, increment/wrap, and restart before the V pass.
+Addresses, causal order, arithmetic and BF16 boundaries remain unchanged.
+Dispatch covers cached SWA width one or greater than seven; other paths keep
+their previous behavior. `DS4_NAIVE_SWA_RING_WALK=0` restores remainder.
+
+| Measurement | Off | On |
+| --- | ---: | ---: |
+| Prefill samples, tok/s | 506.19 / 505.42 / 505.87 | 512.51 / 512.64 / 512.92 |
+| Decode samples, tok/s | 17.96 / 17.93 / 17.96 | 18.15 / 18.17 / 18.10 |
+| Mean prefill, tok/s | 505.8267 | 512.6900 (+1.36%) |
+| Mean decode, tok/s | 17.9500 | 18.1400 (+1.06%) |
+| Nsight SWA prefill total, ms | 1276.848 | 1067.507 |
+| Nsight SWA decode total, ms | 203.672 | 189.025 |
+| Nsight prefill/decode wall, ms | 16191.658 / 1791.186 | 15983.106 / 1784.918 |
+| Warm isolated prefill, ms | 8.294753 | 6.893195 |
+| Warm isolated Unit decode, us | 92.959 | 80.323 |
+| NCU cold prefill/decode, us | 8191.136 / 229.280 | 6820.032 / 219.104 |
+
+Isolation uses synthetic resident BF16 operands, capacity 2175 and three
+alternating fresh process pairs; NCU captures one cold-cache launch per path.
+Dynamic warp instructions fall 16.4% / 13.0%. Registers stay 40/thread,
+allocated shared memory 2 KiB/CTA; memory requests/sectors and spill metrics
+match. No allocation, tensor or arithmetic work is added.
+
+Forty edge cases match output bytes, including early windows and wrap;
+tiny-capacity and maximum-position fixtures are address stress only.
+Early/wrapped memcheck, primitives and Rust perf tests pass. Actual-weight
+43/2053/2181-token proofs pass; 2181 crosses the physical 2175-row ring.
+State-proof scope is the same as D4. Both full scouts are complete without
+warnings; exact comparison checks 915,456 logits with zero error and zero
+token/argmax mismatches. Time envelopes: prefill −1.46% to −1.23%, decode
+−1.32% to −0.77%. Observed active clocks are 2184–2197 MHz; mean sampled
+active clocks differ by 1.02 MHz. Guard minimum availability is 25.33 GiB;
+peak memory PSI full avg10 is 0.83, including hashing.
+
+Evidence: `ring-{off,on}/scout.json`, `ring-compare/compare.json`,
+`ring-state-{43,2053,2181}.log`, `ring-source.{json,patch}`,
+`ring-prototype/{warm,edges,memcheck-early,memcheck-wrap}.log`, its four
+NCU reports, and `ring-model.guard.jsonl`. The preceding retained diagnosis
+uses official normalization with prior full-hash witnesses and current
+metadata checks; adoption scouts freshly hash all shards.
