@@ -3,9 +3,11 @@
 The Rust host implements the pinned mixed-quant artifact, official Jinja,
 NFC tokenizer and IQuest output protocol. The native CUDA path implements
 hybrid Q8_0 KV, persistent banks, partial prefix reuse, snapshots, disk KV
-and embedded recursive MTP. Bounded DGX Spark serial/MTP parity passes;
-HTTP serving qualification remains pending. The 524288-token configured
-ceiling is not a qualified limit.
+and embedded recursive MTP. Bounded DGX Spark serial/MTP and bank-state
+checks pass. Thinking-mode HTTP reuse, restart, serial/continuous streaming
+and two-request concurrency pass their functional checks, with remaining
+warm/cold reasoning-text differences. The 524288-token configured ceiling
+is not a qualified limit.
 
 ## Artifact contract
 
@@ -38,6 +40,13 @@ keeps its own delimiter. Thinking opens `<think>`; disabled thinking renders
 `<think></think>`. NFC normalization and the three ordered pre-tokenizer
 splits precede byte-level BPE. EOS/pad is `<|iquest_end|>` (ID 0); chat adds
 no extra BOS or EOS wrapper.
+
+Keep thinking enabled for normal use; do not force `reasoning_effort=none`.
+The recorded HTTP checks use `reasoning_effort=high` with a 256-token budget.
+At runtime revision `f94697c5`, IQuest honors explicit sampling parameters
+in both serial and continuous lanes and retains reasoning-bearing history
+for cache retirement. Temperature 0 enables greedy MTP when requested;
+positive temperatures use ordinary target sampling.
 
 The output parser separates reasoning and extracts
 `<iquest_tool_call>NAME<arg_key>KEY</arg_key><arg_value>VALUE</arg_value>…`
@@ -72,7 +81,9 @@ disables benchmark speculation.
 Greedy verification runs ordinary one-token target steps sequentially.
 Accepted-prefix commit restores rejected target and MTP ring writes before
 publishing the frontier. Sampled generation uses ordinary target decoding.
-This is a correctness path; MTP acceleration is unqualified.
+The fresh 2048-prompt/32-output ABBA comparison measured 3.39 tokens/s for
+ordinary decode and 2.08–2.09 tokens/s with draft3. MTP is slower on this
+workload; keep it off by default. See the [dated report](benchmarks/2026-10-01-iquest-q1-gb10.md).
 
 ## Memory contract
 
@@ -120,8 +131,8 @@ mkdir -p "$IQUEST_RUN"
   --no-repack-q2k-aligned --manifest "$IQUEST_RUN/weights.ipc"
 ```
 
-Set the same variables in the worker terminal. This is the initial
-qualification shape; its live gates are pending:
+Set the same variables in the worker terminal. Qualification of this shape
+remains bounded by the results and limitations below:
 
 ```sh
 DS4_CUDA_WEIGHT_IPC_MANIFEST="$IQUEST_RUN/weights.ipc" \
@@ -186,7 +197,38 @@ DS4_CUDA_WEIGHT_IPC_SCOPE=base DS4_IQUEST_PREFILL_CHUNK=4 \
   --ctx 512 --draft 3 --steps 12
 ```
 
-Concurrent banks, partial reuse, HTTP disk restart and streaming still need
-fresh Spark gates. No serving context or bank count is qualified yet.
-Downloaded reference reports retain their own hardware
-and workload scope; they do not qualify 512K Spark serving.
+Six native bank checks pass beyond the 4223-row physical ring: source
+preservation, full/partial fork, matched-schedule replay, in-place rewind
+and disk restore preserve exact payloads. Cold prefill with different
+batch widths is not bit-exact: the audited KV difference starts at token
+4352, and one long continuation changes EOS selection. These are separate
+from the exact state-copy checks; cross-width output parity is unqualified.
+
+With `f94697c5`, the v6 thinking-mode HTTP campaign passes seed, append,
+edit, branch and worker-restart checks at context8192/two banks/chunk128,
+MTP draft3/margin0. Warm requests reuse 564/530/615 tokens; restart restores
+668 tokens from disk. All five warm/cold answers are the strict expected
+`4/5/6/8/9` with `stop` and nonempty reasoning. Four full messages match;
+append reasoning differs, so the strict whole-message cold gate fails.
+MTP-off seed/warm/restart checks also pass with the same five strict
+answers; three whole messages match cold, with reasoning wording changes
+on append and branch. Neither mode has deterministic full-message parity.
+Earlier disabled-thinking format failures and the initial thinking-mode
+host failures remain recorded in the [dated report](benchmarks/2026-10-01-iquest-q1-gb10.md).
+
+Chat, Responses and Anthropic Messages pass buffered/SSE reasoning checks
+in both serial and continuous lanes. Both lanes pass Chat/Responses
+generated-tool-call continuation and temperature0.7 thinking through
+ordinary sampling with zero speculative counter increase.
+Two concurrent SSE requests interleave generation in the continuous lane
+and return exact `1..24` sequences with nonempty reasoning and unchanged
+fault counters. Eight disabled-thinking API checks fail their strict answer
+format despite zero fault-counter changes.
+
+Serving qualification fields remain unset: the current fields cannot
+express the thinking-mode and prefill-width limitations. The bounded
+checks above do not establish a general context/bank limit, cross-width
+output parity or whole-model source quality. See the [dated report and
+compact evidence](benchmarks/2026-10-01-iquest-q1-gb10.md). Downloaded
+reference reports retain their own hardware and workload scope; they do
+not qualify 512K Spark serving.

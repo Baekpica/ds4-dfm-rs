@@ -648,6 +648,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(crate::iquest::CONTEXT),
+            // The passed short HTTP profile requires thinking and a fixed
+            // MTP margin; this plan cannot express those qualification limits.
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -2240,7 +2242,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
         Variant::Qwen38FlashNext => {
             "common UX baseline; configured values and verified combinations differ"
         }
-        Variant::IQuestQ1 => "native Q8_0 hybrid cache and recursive MTP are present; 512K Spark memory, throughput and quality remain unqualified",
+        Variant::IQuestQ1 => "8K/two-bank thinking HTTP passed at chunk 128 with short prompts and MTP off/on (draft 3, margin 0); plan bounds stay unqualified because reasoning and margin are not represented; no-thinking output, other shapes and 512K remain unqualified",
         Variant::Mimo26Flash => {
             "512K serial text and 256K serial media/DFlash are prior gates. With MTP off, 256K two-bank text plus serial media passed bounded checks at chunk 2048 with Q8 repack off, including live partial reuse and restart disk continuation. 1M one-bank text passed a bounded 1,040,506-token prompt; two banks did not fit. 512K two-bank media exceeds Spark memory"
         }
@@ -2938,6 +2940,55 @@ mod tests {
         serial.lane = LaneMode::Serial;
         let p = resolve_plan(&serial, Some(caps), &EngineFacts::default());
         assert!(p.issues.iter().any(|i| i.code == "partial_lane"));
+    }
+
+    #[test]
+    fn iquest_bounds_keep_scope() {
+        const CHUNK: u32 = 128;
+        const BANKS: u32 = 2;
+        let caps = caps(ModelFamily::IQuestQ1, Variant::IQuestQ1);
+        assert_eq!(caps.ctx_max, Some(524_288));
+
+        for mtp_mode in [MtpMode::Off, MtpMode::On] {
+            let req = ServingRequest {
+                backend: Backend::Cuda,
+                ctx: 8192,
+                max_seqs: MaxSeqs::Fixed(BANKS),
+                prefix_reuse: PrefixReuse::Partial,
+                mtp_mode,
+                mtp_draft: Some(3),
+                native_chunk: Some(CHUNK),
+                sched_chunk: Some(CHUNK),
+                sched_chunk_live: Some(CHUNK),
+                ..ServingRequest::default()
+            };
+            let facts = EngineFacts {
+                mtp_loaded: true,
+                banks_fitted: Some(BANKS),
+                cont_lane: Some(true),
+                partial_reuse: Some(true),
+                native_chunk: Some(CHUNK),
+                ..EngineFacts::default()
+            };
+            let p = resolve_plan(&req, Some(caps), &facts);
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.effective.ctx, req.ctx);
+            assert_eq!(p.effective.max_seqs, BANKS);
+            assert_eq!(p.effective.mtp_mode, mtp_mode);
+            assert_eq!(p.qualified.ctx, None);
+            assert_eq!(p.qualified.banks_n, None);
+            assert_eq!(p.qualified.prompt, None);
+            assert_eq!(p.qualified.banks, Support::Present);
+            assert_eq!(p.qualified.prefix_reuse, Support::Present);
+            assert_eq!(
+                p.qualified.mtp,
+                if mtp_mode == MtpMode::On {
+                    Support::Present
+                } else {
+                    Support::None
+                }
+            );
+        }
     }
 
     #[test]

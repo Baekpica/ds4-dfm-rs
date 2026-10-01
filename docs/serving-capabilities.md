@@ -73,7 +73,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
 - **MiMo-V2.6-Flash-RL:** 512K serial text and 256K serial media/DFlash are prior gates. With MTP off, 256K two-bank text plus serial media passed bounded checks at chunk 2048 with Q8 repack off, including live partial reuse and restart disk continuation. 1M one-bank text passed a bounded 1,040,506-token prompt; two banks did not fit. 512K two-bank media exceeds Spark memory.
 - **Naive-N0.5-Flash:** main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified.
-- **IQuest-Q1:** native Q8_0 hybrid cache and recursive MTP are present; 512K Spark memory, throughput and quality remain unqualified.
+- **IQuest-Q1:** 8K/two-bank thinking HTTP passed at chunk 128 with short prompts and MTP off/on (draft 3, margin 0); plan bounds stay unqualified because reasoning and margin are not represented; no-thinking output, other shapes and 512K remain unqualified.
 
 Regenerate without loading a model:
 
