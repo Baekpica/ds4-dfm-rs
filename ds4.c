@@ -71350,10 +71350,18 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         return 1;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
+        /* Validate the request before policy activation or weight import;
+         * the generic clamp above must not hide an unsupported draft width. */
+        if (opt->mtp_draft_tokens > IQ_DRAFT_SLOTS) {
+            fprintf(stderr, "ds4: IQuest-Q1 accepts at most %d recursive draft tokens (requested %d)\n",
+                    IQ_DRAFT_SLOTS, opt->mtp_draft_tokens);
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
 #ifndef DS4_NO_GPU
         if (!ds4_gpu_iquest_policy()) { ds4_engine_close(e); *out = NULL; return 1; }
 #endif
-        if (e->mtp_draft_tokens > IQ_DRAFT_SLOTS) { e->mtp_draft_tokens = IQ_DRAFT_SLOTS; }
         if (!opt->inspect_only && (e->backend != DS4_BACKEND_CUDA || load_slice ||
             opt->distributed.role != DS4_DISTRIBUTED_NONE ||
             (opt->mtp_path && opt->mtp_path[0]) || (opt->dspark_path && opt->dspark_path[0]) ||

@@ -57,6 +57,9 @@ text. Completed calls feed Chat Completions, Responses and Anthropic Messages;
 tool continuation re-renders structured history through the same Jinja.
 See [template normalization and checks](chat-templates.md).
 
+Use HTTP tool clients for IQuest agent workflows; the built-in `ds4-agent`
+executor requires DeepSeek DSML and rejects IQuest before loading weights.
+
 Tool/history integers preserve exact decimal display, `tojson` and
 integer/number classification at any size. Template integer arithmetic is
 limited to signed 128-bit values; larger operands reject arithmetic.

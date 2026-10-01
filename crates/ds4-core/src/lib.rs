@@ -1253,6 +1253,16 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        // Refuse impossible IQuest widths before tensor validation or native
+        // open, which would otherwise hide the requested width behind a clamp.
+        if identified.shape.family == ModelFamily::IQuestQ1
+            && tuning.mtp_draft_tokens > iquest::DRAFT_SLOTS as i32
+        {
+            return Err(Error {
+                code: 1,
+                message: "IQuest-Q1 accepts at most seven recursive draft tokens".into(),
+            });
+        }
         // Resolve Naive's common sidecar environment here as well as native:
         // the Rust catalog must validate and retain the actual loaded file.
         let env_dspark = (identified.shape.family == ModelFamily::NaiveN05)

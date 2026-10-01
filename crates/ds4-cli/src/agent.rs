@@ -987,6 +987,48 @@ mod tests {
     fn agent_requires_dsml_family() {
         assert!(agent_family(ds4_core::ModelFamily::DeepSeek4).is_ok());
         assert!(agent_family(ds4_core::ModelFamily::Inkling).is_err());
+        assert!(agent_family(ds4_core::ModelFamily::IQuestQ1).is_err());
+    }
+
+    #[test]
+    fn iquest_metadata_rejects() {
+        // Exercise the metadata admission used before model open. MTP options
+        // cannot make an IQuest model compatible with the DSML executor.
+        const GGUF_VERSION: u32 = 3;
+        const GGUF_STRING: u32 = 8;
+        let path =
+            std::env::temp_dir().join(format!("ds4-agent-iquest-{}.gguf", std::process::id()));
+        let mut bytes = Vec::from(*b"GGUF");
+        bytes.extend_from_slice(&GGUF_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        for (index, value) in ["general.architecture", "iquest_q1"].iter().enumerate() {
+            if index == 1 {
+                bytes.extend_from_slice(&GGUF_STRING.to_le_bytes());
+            }
+            bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        std::fs::write(&path, bytes).unwrap();
+
+        for controls in [
+            &[][..],
+            &["--mtp-draft", "3", "--temp", "0"],
+            &["--mtp-draft", "8", "--temp", "0"],
+            &["--mtp", "missing-sidecar.gguf", "--temp", "0"],
+        ] {
+            let mut args = argv(&["--non-interactive", "-p", "hello", "-m"]);
+            args.push(path.to_string_lossy().into_owned());
+            args.extend(controls.iter().map(|value| (*value).to_owned()));
+            let args = parse_args(args).unwrap();
+            let identified = ds4_core::identify_gguf(std::path::Path::new(&args.model)).unwrap();
+            assert_eq!(
+                agent_family(identified.shape.family).unwrap_err(),
+                "ds4-agent's built-in executor requires DeepSeek DSML; use an HTTP tool client for this family",
+                "controls={controls:?}"
+            );
+        }
+        std::fs::remove_file(path).unwrap();
     }
     use std::path::PathBuf;
     use std::process::Command;
