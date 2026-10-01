@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "date": "2026-10-01",
-  "status": "P1/P2 adopted at2K; campaign ongoing; primary subsequent workload8K cold-KV",
+  "status": "P1/P2 adopted; primary P2 8K cold-KV A/B and full ordinary state parity complete; campaign ongoing",
   "effective_rounds": {
     "prefill": 2,
     "decode": 0
@@ -255,11 +255,11 @@
     }
   },
   "limits": [
-    "Only recorded 2K+32 ordinary workload qualifies whole-model optimization parity.",
+    "Only the recorded 2K+32 and 8K+32 ordinary workloads qualify full-model optimization state parity.",
     "Synthetic wrap/MTP-window cases do not qualify full-model long context, recursive MTP or continuous serving.",
     "Existing IQuest quality/serving limitations remain; no 512K qualification or new quality claim.",
     "Campaign remains ongoing; fresh retained-baseline profiling precedes subsequent rounds.",
-    "Subsequent primary measurements use8192 cold-KV tokens. Current P1/P2 whole-model results remain2K evidence."
+    "Primary 8192-token cold-KV P2 measurements include exact prefill/final logits and chronological committed native payloads; this does not qualify other contexts or serving modes."
   ],
   "raw_reports": {
     "root": "scratch/iquest-perf",
@@ -285,7 +285,28 @@
       "p2-fixture-coverage.json": "fc08db98547046e781760ed2da07b47e36de28741630faa3c8647522c5d1b4fa",
       "p2-sass-proof.json": "7eb96e366ca7db36bebe0a72819a230555a3d12ee11976841d7289f25f4130a0",
       "p2-attn-timing.jsonl": "07dac5806ff0504bec944754362c79a25eebd9c084ec410c7dfc489f93e7e9e9",
-      "ncu-attn-prefill-p2.details.txt": "8eaebb6d303a2cef954cf9344aed7adcd3f7a490ea64821dc27be1070fe343e1"
+      "ncu-attn-prefill-p2.details.txt": "8eaebb6d303a2cef954cf9344aed7adcd3f7a490ea64821dc27be1070fe343e1",
+      "p2-8k-cold/manifest.json": "46d55fa070c9fc8c9d5c9fc86fbd6cef59dcd653f2ebaf639f3690301685db74",
+      "p2-8k-cold/summary.json": "d5ea5230240a5a9c317a366659201cef064741f1a8e428548981534f48250d17",
+      "p2-8k-cold/independent-audit.json": "40138103f85cc5c7de257ecc818e8616f5c4200087aee73e11549f2eb95ddd62",
+      "p2-8k-profile/manifest.json": "1ea80aef6a412d01d2c61ac87c6dbb44176626d85967b61d59be5e4829d364b8",
+      "p2-8k-profile/attribution.json": "46285dc59be30f3116699b309f2413035e03915ae3539f6b56f85d66f8282fef",
+      "p2-8k-profile/00-B-profile/result.json": "9f339a3aa2760574b0272a264c8e1b5e4d58f72bacae8de12c1b3ad108a9803b",
+      "campaign_cold.py": "3ffa884345e20156cdd80d4fcbb49b9d42c33d0f126f34fbe4402f59fd31636c",
+      "audit_cold.py": "eaabc60cc3557c55cf077f192af5a348d66d90a79fb05528a130b1234e1b3f4f",
+      "p2-8k-cold.config.json": "526ee71f718b40a9ade44096003ad05677eff7c8f685249ed263836f4b9bc70c",
+      "p2-8k-cold/00-A-measured/result.json": "b6058f95e32faff4451cbf657f75ee5539a655113c0a9ca743f60c32a2da10a0",
+      "p2-8k-cold/01-B-measured/result.json": "69abe4768d46694dd75a6e7a56f8abd2b80f778da95a65e960a2a5b3b4b3ec8c",
+      "p2-8k-cold/02-B-measured/result.json": "147bc63bc8958908d8771b76a10746da190d13ed2dfa4890cadc2b7da5d43935",
+      "p2-8k-cold/03-A-measured/result.json": "93cecd747b46f5fe45cfae5218100372e7d7787908cb103ac8277c1251e0a5af",
+      "p2-8k-cold/04-A-measured/result.json": "a5833eee8be7cd363f9d0f126e5a7540c4607c5d8f3a123caf2af4d610306a82",
+      "p2-8k-cold/05-B-measured/result.json": "9c3647c19ff5b470f24a265f6e01f65890d2f90f4e8dea3cdd8971c4a84e97c5",
+      "p2-linked-sass-proof.json": "e837d217f443cb3ec0da7e930da68992a2132f0382528ca2ea13d875a4d4280f",
+      "p2-linked-sass-proof.txt": "60637f7af943778b98afb2b4ecb7ae9dcddbe5e816e63207769980d567a00058",
+      "p2-8k-state-comparison.json": "01255926b947e9a9dbc2dfb481bd29b04eb42bfb2aa5415a99f686242cd3515a",
+      "p2-8k-state-independent-audit.json": "5923ddb02df7bd6daeb480714ec0af4ddee9770b0b716ce02dfd786349f12b0c",
+      "p2-8k-state-A/report.json": "cf6dc020106240b0b7c74d95e2c3bacc7645d1d0c3965af5dafeb8023226ef19",
+      "p2-8k-state-B/report.json": "9055a023d6af9d880aca782f0072dd97e0092564f5b8f66c0e06159054adc741"
     }
   },
   "P2": {
@@ -305,7 +326,8 @@
         "cuda/iquest_primitives.cuh": "b3f709549bc691b9915497ffed2dc0469428ae02eb1217187374112c2d6e9215",
         "ds4_iquest_gpu.cuh": "ea10bef0fed611b614d4c3bf6d13c122efc9892c59318f9e0b09ddb25bc2fd8a",
         "tests/iquest_attention_profile.cu": "06a4ed0350cc7c1de3cd742021b269bbd7abf2f7532d38b4a9f04a60474db9e3"
-      }
+      },
+      "adopted_commit": "dca2bb069077a4f8cc4d7d3f37621375d1c056ac"
     },
     "AB": {
       "order": "ABBAAB",
@@ -388,19 +410,252 @@
         "P1": 38,
         "P2": 40
       },
-      "shared_bytes": {
+      "local_spills": 0,
+      "NCU_policy": "clock-control none/cache-control all/full set/one standalone launch, idle persistent owner",
+      "static_shared_bytes": {
         "P1": 512,
         "P2": 0
       },
-      "local_spills": 0,
-      "NCU_policy": "clock-control none/cache-control all/full set/one standalone launch, idle persistent owner"
+      "driver_shared_bytes_per_block": 1024,
+      "linked_total_shared_bytes": {
+        "P1": 1536,
+        "P2": 1024
+      }
     },
     "SASS": {
-      "scope": "standalone; linked production audit pending",
+      "scope": "Archived linked production binary plus standalone; selected instruction sequences match exactly",
       "compiler_consequences": "single-key loop, early current K/V loads, uniform scalar math; attribute complete generated mapping",
       "cta_barriers": 0,
       "local_memory_ops": 0,
-      "BF16_conversions": 8
+      "BF16_conversions": 8,
+      "linked_instruction_match": {
+        "grouped_vs_standalone": true,
+        "retained_vs_standalone": true,
+        "retained_vs_archived_P1": true,
+        "comparison": "Whitespace normalized; instruction offsets, predicates, operands and reuse annotations retained; encoded scheduling/control words excluded"
+      },
+      "linked_resources": {
+        "P1": {
+          "registers": 38,
+          "total_shared_bytes": 1536,
+          "stack_bytes": 0,
+          "local_bytes": 0
+        },
+        "P2": {
+          "registers": 40,
+          "total_shared_bytes": 1024,
+          "stack_bytes": 0,
+          "local_bytes": 0
+        }
+      },
+      "shared_accounting": "NCU static shared memory is 512 to 0 bytes/block; NCU separately reports 1 KiB driver shared memory. Linked cuobjdump totals are 1536 to 1024 bytes/block."
+    },
+    "cold_8k": {
+      "scope": "Primary 8K cold-KV comparison; separate from the initial 2K warmup protocol",
+      "source_commit": "dca2bb069077a4f8cc4d7d3f37621375d1c056ac",
+      "binary_sha256": "d17412d952e443c6acdb8a3ed2a57c13dc7a064537748eb8778371ee360c8377",
+      "source_files_sha256": {
+        "cuda/iquest_primitives.cuh": "b3f709549bc691b9915497ffed2dc0469428ae02eb1217187374112c2d6e9215",
+        "ds4_iquest_gpu.cuh": "ea10bef0fed611b614d4c3bf6d13c122efc9892c59318f9e0b09ddb25bc2fd8a",
+        "tests/iquest_attention_profile.cu": "06a4ed0350cc7c1de3cd742021b269bbd7abf2f7532d38b4a9f04a60474db9e3"
+      },
+      "order": "ABBAAB",
+      "measured_workers": 6,
+      "samples_per_arm": 3,
+      "separate_warmup_workers": 0,
+      "controls": {
+        "shared": {
+          "DS4_IQUEST_ATTN_SHUFFLE": "1"
+        },
+        "A": {
+          "DS4_IQUEST_ATTN_WARP": "0"
+        },
+        "B": {
+          "DS4_IQUEST_ATTN_WARP": "1"
+        }
+      },
+      "samples": [
+        {
+          "variant": "A",
+          "prefill_tps": 46.79,
+          "decode_tps": 2.21,
+          "receipt": "00-A-measured/result.json"
+        },
+        {
+          "variant": "B",
+          "prefill_tps": 78.75,
+          "decode_tps": 2.2,
+          "receipt": "01-B-measured/result.json"
+        },
+        {
+          "variant": "B",
+          "prefill_tps": 78.76,
+          "decode_tps": 2.2,
+          "receipt": "02-B-measured/result.json"
+        },
+        {
+          "variant": "A",
+          "prefill_tps": 46.79,
+          "decode_tps": 2.21,
+          "receipt": "03-A-measured/result.json"
+        },
+        {
+          "variant": "A",
+          "prefill_tps": 46.75,
+          "decode_tps": 2.2,
+          "receipt": "04-A-measured/result.json"
+        },
+        {
+          "variant": "B",
+          "prefill_tps": 78.77,
+          "decode_tps": 2.2,
+          "receipt": "05-B-measured/result.json"
+        }
+      ],
+      "statistics": {
+        "A": {
+          "prefill_tps": {
+            "min": 46.75,
+            "median": 46.79,
+            "max": 46.79
+          },
+          "gen_tps": {
+            "min": 2.2,
+            "median": 2.21,
+            "max": 2.21
+          }
+        },
+        "B": {
+          "prefill_tps": {
+            "min": 78.75,
+            "median": 78.76,
+            "max": 78.77
+          },
+          "gen_tps": {
+            "min": 2.2,
+            "median": 2.2,
+            "max": 2.2
+          }
+        }
+      },
+      "median_gain_percent": {
+        "prefill_tps": 68.32656550544989,
+        "gen_tps": -0.4524886877827927
+      },
+      "decode_interpretation": "Reported CSV medians decrease 2.21 to 2.20 tok/s (-0.4525%); rates are rounded to two decimal places. No zero-regression claim.",
+      "ownership": {
+        "recorded_owner_pids": [
+          716070
+        ],
+        "owner_only_before_after_all_workers": true,
+        "scope": "historical receipt, not current liveness"
+      },
+      "graphics_and_sm_clock_mhz": {
+        "min": 2184,
+        "each_run_median": 2190,
+        "max": 2197,
+        "policy": "User settings preserved; no clock-control changes"
+      },
+      "correctness": {
+        "independent_comparisons": 5,
+        "finite_prefill_logits_per_worker": 160000,
+        "prefill_logits_f32_bits_exact": true,
+        "tokens_per_worker": 32,
+        "tokens_identical": true,
+        "full_prefill_count_each": 8192,
+        "context_capacity_each": 16384,
+        "final_logits": "full 160000-value F32 raw file bit-exact",
+        "committed_native_payload": "byte-exact at prefill and after 32 fixed decode tokens",
+        "restore_checks": 4,
+        "ordinary_state": {
+          "comparison": {
+            "prefill": {
+              "payload_bytes_compared": 1007842356,
+              "logit_bytes_compared": 640000,
+              "all_bytes_equal": true
+            },
+            "final": {
+              "payload_bytes_compared": 1009583284,
+              "logit_bytes_compared": 640000,
+              "all_bytes_equal": true
+            }
+          },
+          "source_prompt_tokens": 9654,
+          "fixed_tokens_match_greedy": true,
+          "fault_counters_unchanged": true,
+          "speculative_counters_zero": true,
+          "prefill_exceeds_physical_swa_capacity": true,
+          "physical_swa_capacity": 4223,
+          "decode_crosses_physical_ring": false,
+          "scope": "Only chronological committed payload state is serialized; this does not inspect unused ring slots or qualify HTTP/continuous/MTP paths."
+        }
+      },
+      "input_checks": {
+        "all_small_input_and_binary_hashes_unchanged": true,
+        "all_shard_sizes_mtimes_unchanged": true,
+        "model_shard_hashes_fresh": false,
+        "model_hash_source": "release manifest; no fresh 88 GB hash pass"
+      },
+      "retained_profile": {
+        "scope": "Fresh retained P2 8K cold-KV NVTX attribution; separate profiled run, not speed A/B",
+        "attention_share_denominator": "aggregate phase GPU kernel time",
+        "prefill": {
+          "host_seconds": 103.943610304,
+          "aggregate_kernel_seconds": 103.48153118,
+          "attention_kernel": "iquest_attn_warp_kernel",
+          "attention_gpu_seconds": 56.29160432,
+          "attention_kernel_share_percent": 54.397730375755735
+        },
+        "decode": {
+          "host_seconds": 14.51868768,
+          "aggregate_kernel_seconds": 14.382413888,
+          "attention_kernel": "iquest_attn_shuffle_kernel",
+          "attention_gpu_seconds": 12.157260064,
+          "attention_kernel_share_percent": 84.5286483803907
+        }
+      }
     }
+  },
+  "primary_evidence": "P2.cold_8k",
+  "workload_scope": "The existing workload field and P1 evidence retain the initial 2K protocol; primary_workload is the subsequent 8K cold-KV protocol.",
+  "primary_workload": {
+    "prompt_tokens": 8192,
+    "context_capacity": 16384,
+    "prefill_chunk": 128,
+    "generated_tokens": 32,
+    "mtp": "off (draft=1)",
+    "sampling": "greedy, EOS suppressed",
+    "prompt_mode": "raw byte tokenization, first 8192 tokens of the repeated input",
+    "prompt_sha256": "f8082000683e432d7f2ff6f5342234c8c1b0c3a90adf6688e653a9e6162cc3fa",
+    "prompt_bytes": 36505,
+    "prompt_construction": {
+      "operation": "wrap-prompt.txt bytes + one newline + the same bytes",
+      "copies": 2,
+      "source_tokens": 4827,
+      "source_sha256": "5a321733c27a87b3bb3ce6a6081ebcc8a8653bdccb03944e709da27439df5891",
+      "full_combined_token_count": 9654,
+      "minimum_8192_tokens_verified_by_bench": true,
+      "scope": "repeated throughput fixture; not quality evidence"
+    },
+    "residency": "same canonical VMM owner; six sequential fresh processes and sessions",
+    "cache_policy": {
+      "name": "cold_kv",
+      "fresh_process": true,
+      "fresh_session": true,
+      "prefill_start_position": 0,
+      "reused_kv_tokens": 0,
+      "restored_payload": false,
+      "separate_warmup_process": false,
+      "weight_owner": "persistent canonical VMM owner",
+      "weights_and_os_cache": "uncontrolled; not claimed cold",
+      "native_boot_prewarm": "unchanged, outside measured fresh-session prefill",
+      "verification": "bench creates a new Session; one frontier; full frontier prefill count in CSV and logits receipt"
+    }
+  },
+  "P3": {
+    "status": "candidate under investigation; unqualified",
+    "default_enabled": false,
+    "diagnostic_enable": "DS4_IQUEST_ATTN_TILED=1",
+    "effective_round_credit": 0
   }
 }
