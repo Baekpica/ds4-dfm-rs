@@ -1650,7 +1650,11 @@ fn decode_pass(
         let mut top_k = parsed.top_k;
         let mut top_p = parsed.top_p;
         let mut min_p = parsed.min_p;
-        if think_mode_enabled(parsed.think_mode) {
+        // IQuest uses the requested sampler in both channels. Greedy thinking
+        // must remain eligible for its embedded target-verified MTP path.
+        if think_mode_enabled(parsed.think_mode)
+            && syntax_for_model_id(engine.model_id()) != ModelSyntax::IQuestQ1
+        {
             temperature = DEFAULT_TEMPERATURE;
             top_k = 0;
             top_p = DEFAULT_TOP_P;

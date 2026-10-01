@@ -258,10 +258,12 @@ impl ContStepper {
             .unwrap_or(-1)
     }
 
-    /// Effective sampling block for the engine's per-seq sampler. Thinking
-    /// requests pin the serial defaults, mirroring `decode_pass`.
+    /// Match serial sampling: IQuest keeps the requested sampler in thinking;
+    /// other families retain their legacy thinking defaults.
     pub fn sampling(&self, parsed: &ParsedRequest) -> (f32, i32, f32, f32) {
-        if think_mode_enabled(parsed.think_mode) {
+        if think_mode_enabled(parsed.think_mode)
+            && syntax_for_model_id(self.model_id) != crate::render::ModelSyntax::IQuestQ1
+        {
             (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
         } else {
             (parsed.temperature, parsed.top_k, parsed.top_p, parsed.min_p)
@@ -1121,7 +1123,9 @@ fn thinking_bank_retire_key(
         .windows(close.len())
         .position(|window| window == close);
 
-    if prompt_preserves_reasoning {
+    // Official IQuest history retains supplied reasoning even without tools.
+    // Keep that exact prefix; a visible-only rewrite cannot describe its KV.
+    if prompt_preserves_reasoning || syntax == ModelSyntax::IQuestQ1 {
         if engine_finished && has_tools && !saw_tool_start {
             if let Some(at) = close_at {
                 if let Some(visible) = thinking_visible_key(
@@ -3976,6 +3980,98 @@ mod bank_tests {
 
     fn shutdown_requested() -> bool {
         true
+    }
+
+    #[test]
+    fn iquest_thinking_sampling() {
+        for model_id in [ds4_core::Variant::IQuestQ1 as i32, 2] {
+            for temperature in [0.0, 0.4] {
+                let parsed = parse_chat_request(
+                    &ParseEnv::default(),
+                    &format!(r#"{{"messages":[{{"role":"user","content":"2 + 2"}}],"reasoning_effort":"high","temperature":{temperature},"top_k":9,"top_p":0.9,"min_p":0.03}}"#),
+                ).unwrap();
+                let (stepper, _) = ContStepper::new(
+                    &parsed,
+                    model_id,
+                    "thinking-sample",
+                    0,
+                    false,
+                    16,
+                    b"<think>".to_vec(),
+                    1,
+                    8192,
+                );
+                let expected = if model_id == ds4_core::Variant::IQuestQ1 as i32 {
+                    (temperature, 9, 0.9, 0.03)
+                } else {
+                    (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
+                };
+                assert_eq!(stepper.sampling(&parsed), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn iquest_thinking_retire() {
+        use ds4_core::chat_template::{RenderClock, Template};
+        let model_id = ds4_core::Variant::IQuestQ1 as i32;
+        let template = Template::compile(
+            include_str!("../../../tests/fixtures/chat-template/models/iquest/chat_template.jinja"),
+            RenderClock::Fixed(0),
+        )
+        .unwrap();
+        let parsed = parse_chat_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"2 + 2"}],"reasoning_effort":"high"}"#,
+        )
+        .unwrap();
+        let prompt = crate::chat_input::render(&template, model_id, &parsed).unwrap();
+        let pieces = [b"Compute.".as_slice(), b"</think>", b"4", b"<|iquest_end|>"];
+        let key = thinking_bank_retire_key(
+            &prompt,
+            &[0, 1, 2, 3],
+            true,
+            false,
+            prompt_preserves_reasoning(&parsed),
+            false,
+            false,
+            ModelSyntax::IQuestQ1,
+            ChatFormat::IQuestQ1,
+            |token| pieces[token as usize].to_vec(),
+        )
+        .expect("IQuest reasoning history must retain a reusable record");
+        let mut expected = prompt.clone();
+        expected.extend_from_slice(b"Compute.</think>4");
+        assert_eq!(key.text, expected);
+        assert!(!key.partial_only);
+
+        let follow = parse_chat_request(&ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"2 + 2"},{"role":"assistant","content":"4","reasoning_content":"Compute."},{"role":"user","content":"4 + 1"}],"reasoning_effort":"high"}"#,
+        ).unwrap();
+        let rendered = crate::chat_input::render(&template, model_id, &follow).unwrap();
+        assert!(rendered.starts_with(&key.text));
+        assert!(rendered[key.text.len()..].starts_with(b"<|iquest_end|><|iquest_user|>"));
+
+        // Exercise the real persistence gate with a mock native payload. The
+        // record must retain the same reasoning-bearing key across disk IO.
+        let (dir, mut store) = temp_store("iquest-thinking");
+        let mut bank = warm("", 0);
+        bank.record.as_mut().unwrap().text = key.text.clone();
+        assert!(save_bank_record(
+            &mut store,
+            &mut bank,
+            (model_id as u8, 2, 8192),
+            4,
+            1,
+            Reason::BankShutdown,
+            |path| fs::write(path, b"native-payload")
+                .map_err(|e| GenerateError::Engine(e.to_string())),
+        )
+        .unwrap());
+        let record = store.read(&store.entries()[0].path).unwrap();
+        assert_eq!(record.text, key.text);
+        assert_eq!(record.payload, b"native-payload");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
