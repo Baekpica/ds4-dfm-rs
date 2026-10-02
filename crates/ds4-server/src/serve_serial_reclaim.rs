@@ -223,7 +223,14 @@ pub(crate) struct ReclaimBank {
 }
 
 const fn fits_above_floor(avail: AvailBytes, need: NeedBytes, floor: MemFloor) -> bool {
-    avail.raw().saturating_sub(floor.bytes()) >= need.raw()
+    avail.raw() >= floor.bytes() && avail.raw() - floor.bytes() >= need.raw()
+}
+
+const fn serial_deficit(ask: SerialReclaimAsk) -> u64 {
+    ask.need
+        .raw()
+        .saturating_add(ask.floor.bytes())
+        .saturating_sub(ask.avail.raw())
 }
 
 /// C `serial_session_ensure_fit` collect want: deficit + headroom.
@@ -231,9 +238,7 @@ pub(crate) fn serial_reclaim_want(ask: SerialReclaimAsk) -> u64 {
     if fits_above_floor(ask.avail, ask.need, ask.floor) {
         return 0;
     }
-    let usable = ask.avail.raw().saturating_sub(ask.floor.bytes());
-    let deficit = ask.need.raw().saturating_sub(usable);
-    deficit.saturating_add(ask.headroom.raw())
+    serial_deficit(ask).saturating_add(ask.headroom.raw())
 }
 
 /// C `serial_reclaim_gate`: reclaim idle pages before a typed refuse.
@@ -242,9 +247,7 @@ pub(crate) fn serial_reclaim_gate(ask: SerialReclaimAsk) -> SerialReclaimOutcome
     if fits_above_floor(ask.avail, ask.need, ask.floor) {
         return SerialReclaimOutcome::Admit { reclaimed: 0 };
     }
-    let usable = ask.avail.raw().saturating_sub(ask.floor.bytes());
-    let deficit = ask.need.raw().saturating_sub(usable);
-    let want = deficit.saturating_add(ask.headroom.raw());
+    let want = serial_reclaim_want(ask);
     let reclaimed = want.min(ask.reclaimable.raw());
     let after = AvailBytes::from_raw(ask.avail.raw().saturating_add(reclaimed));
     if fits_above_floor(after, ask.need, ask.floor) {

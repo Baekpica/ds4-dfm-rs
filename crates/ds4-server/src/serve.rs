@@ -22,6 +22,7 @@ use crate::cont::{monotonic_now, place_bank_continuation, ContOwner, ContPin, Co
 use crate::error::{http_response_bytes, wire_http_error_bytes, wire_stream_error_bytes};
 use crate::generate::{
     generate_terminal_prepared, prepare_serial_prompt, DecodeIo, GenerateError, GenerateOutcome,
+    NativeGraphFit,
 };
 use crate::http::{
     chunked_enabled, parse_surface_for_path, read_http_request, shed_surface_for_path,
@@ -1621,42 +1622,8 @@ fn run_serial<W: TerminalSink>(
         };
     }
 
-    let live = engine.native_graph_fit(cfg.ctx).and_then(|quote| {
-        serial_fit_from_native(
-            quote.need_bytes,
-            quote.avail_bytes,
-            quote.headroom_bytes,
-            0,
-            quote.fail_open,
-        )
-    });
-    let mut quote = resolve_serial_fit(cfg.serial_fit, live);
-    let floor = MemFloor::from_gb(cfg.mem_floor_gb);
-    let mut ask = quote.ask(floor);
-    let want = serial_reclaim_want(ask);
-    if want > 0 {
-        if let Some(exec) = cont.as_deref_mut() {
-            let released = exec.trim_idle_banks(want);
-            quote.avail = AvailBytes::from_raw(quote.avail.raw().saturating_add(released));
-            ask = quote.ask(floor);
-        }
-    }
-    match serial_reclaim_gate(ask) {
-        SerialReclaimOutcome::Admit { .. } => {}
-        SerialReclaimOutcome::Refuse { .. } => {
-            let prompt_n = match job.parsed.prompt_text.as_deref() {
-                Some(text) => engine.tokenize_text(text),
-                None => engine.tokenize_rendered_chat(&[]),
-            }
-            .map(|toks| i32::try_from(toks.len()).unwrap_or(i32::MAX))
-            .unwrap_or(0);
-            return refuse_serial_capacity(cfg, inner, job, i64::from(prompt_n), out);
-        }
-    }
-
-    // C worker `run_job_single`: hold → `serial_session_ensure_fit` →
-    // generate. Phase 1 (render+tokenize) runs first so the fit decision
-    // sizes from the exact sync-bound token count.
+    // Host prompt preparation does not allocate the inference graph. Resize
+    // first so admission quotes this request, rather than the unused boot ctx.
     let prep = match prepare_serial_prompt(engine, parsed) {
         Ok(prep) => prep,
         Err(error) => return settle_generation_result(cfg, job, Err(error), out),
@@ -1679,10 +1646,46 @@ fn run_serial<W: TerminalSink>(
         prep.parsed.max_tokens,
         cfg.default_tokens,
     ));
+    let serial_cont = cont.as_mut().map(|exec| &mut **exec as &mut dyn ContExec);
     if let Some(refusal) = ensure_serial_session_fit(
-        cfg, inner, job, engine, cont, frame, prompt_len, budget, out,
+        cfg,
+        inner,
+        job,
+        engine,
+        serial_cont,
+        frame,
+        prompt_len,
+        budget,
+        out,
     ) {
         return refusal;
+    }
+
+    let probe = engine.serial_session_probe();
+    let fit_ctx = probe.map_or(cfg.ctx, |p| p.cur_ctx);
+    let live = engine.native_graph_fit(fit_ctx).and_then(|mut quote| {
+        // A retained graph is already charged to live memory.
+        if probe.is_some_and(|p| !p.graph_pending) {
+            quote.need_bytes = 0;
+        }
+        serial_native_fit(quote)
+    });
+    let mut quote = resolve_serial_fit(cfg.serial_fit, live);
+    let floor = MemFloor::from_gb(cfg.mem_floor_gb);
+    let mut ask = quote.ask(floor);
+    let want = serial_reclaim_want(ask);
+    if want > 0 {
+        if let Some(exec) = cont.as_deref_mut() {
+            let released = exec.trim_idle_banks(want);
+            quote.avail = AvailBytes::from_raw(quote.avail.raw().saturating_add(released));
+            ask = quote.ask(floor);
+        }
+    }
+    match serial_reclaim_gate(ask) {
+        SerialReclaimOutcome::Admit { .. } => {}
+        SerialReclaimOutcome::Refuse { .. } => {
+            return refuse_serial_capacity(cfg, inner, job, prompt_len, out);
+        }
     }
 
     lock_inner(inner).runtime.requests_serial += 1;
@@ -1784,10 +1787,7 @@ fn ensure_serial_session_fit<W: Write>(
     }
     let exec = cont?;
     let current_fits = if probe.graph_pending && cur_ctx <= bounds.request_cap {
-        match engine.native_graph_fit(probe.cur_ctx) {
-            Some(quote) => quote.fits,
-            None => true, // no native probe: fail open like the C CPU leg
-        }
+        serial_ctx_fits(cfg, engine, probe.cur_ctx)
     } else {
         true
     };
@@ -1817,7 +1817,7 @@ fn ensure_serial_session_fit<W: Write>(
             engine.serial_session_reset();
             lock_inner(inner).creg.demote_serial();
             let need_min_ctx = i32::try_from(bounds.need_min).unwrap_or(i32::MAX);
-            let mut min_fits = fit_settle_probe(engine, need_min_ctx);
+            let mut min_fits = fit_settle_probe(cfg, engine, need_min_ctx);
             if !min_fits {
                 // C deepmem D4-2: collect from the commons before refusing.
                 // The quote's exact deficit bounds the collect (deficit +
@@ -1825,13 +1825,17 @@ fn ensure_serial_session_fit<W: Write>(
                 // whole-commons shape. One C trim, then the same settle
                 // window; a still-unfittable request refuses as before.
                 let want = match engine.native_graph_fit(need_min_ctx) {
-                    Some(quote) if quote.deficit_bytes > 0 => {
-                        quote.deficit_bytes.saturating_add(quote.headroom_bytes)
+                    Some(quote) if !quote.fail_open => {
+                        let live = serial_native_fit(quote);
+                        let fit = resolve_serial_fit(cfg.serial_fit, live);
+                        let floor = MemFloor::from_gb(cfg.mem_floor_gb);
+                        serial_reclaim_want(fit.ask(floor))
+                            .max(quote.deficit_bytes.saturating_add(quote.headroom_bytes))
                     }
                     _ => u64::MAX,
                 };
                 if exec.trim_idle_banks(want) > 0 {
-                    min_fits = fit_settle_probe(engine, need_min_ctx);
+                    min_fits = fit_settle_probe(cfg, engine, need_min_ctx);
                 }
             }
             let mut target: i64 = 0;
@@ -1843,9 +1847,7 @@ fn ensure_serial_session_fit<W: Write>(
                 let mut hi = bounds.request_cap;
                 while hi - lo > 1024 {
                     let mid = lo + (hi - lo) / 2;
-                    let fits = engine
-                        .native_graph_fit(i32::try_from(mid).unwrap_or(i32::MAX))
-                        .is_none_or(|quote| quote.fits);
+                    let fits = serial_ctx_fits(cfg, engine, i32::try_from(mid).unwrap_or(i32::MAX));
                     if fits {
                         lo = mid;
                     } else {
@@ -1854,7 +1856,8 @@ fn ensure_serial_session_fit<W: Write>(
                 }
                 target = lo;
             }
-            if target > 0 {
+            // Check before creating: lazy-graph=0 allocates at creation.
+            if target > 0 && serial_ctx_fits(cfg, engine, target as i32) {
                 if let Ok(()) =
                     engine.serial_session_rightsize(i32::try_from(target).unwrap_or(i32::MAX))
                 {
@@ -1883,16 +1886,41 @@ fn ensure_serial_session_fit<W: Write>(
 /// C ensure-fit settle window: freed graph bytes reach MemAvailable with
 /// driver-reclaim lag (the WAIT_MEM class); give the fit probe a bounded
 /// settle window. An engine without a native probe fails open.
-fn fit_settle_probe(engine: &dyn DecodeIo, ctx: i32) -> bool {
+fn fit_settle_probe(cfg: &ServerConfig, engine: &dyn DecodeIo, ctx: i32) -> bool {
     for _ in 0..20 {
-        match engine.native_graph_fit(ctx) {
-            Some(quote) if quote.fits => return true,
-            None => return true,
-            Some(_) => {}
+        if serial_ctx_fits(cfg, engine, ctx) {
+            return true;
         }
         thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+fn serial_ctx_fits(cfg: &ServerConfig, engine: &dyn DecodeIo, ctx: i32) -> bool {
+    let Some(quote) = engine.native_graph_fit(ctx) else {
+        return true;
+    };
+    if !quote.fits {
+        return false;
+    }
+    let fit = resolve_serial_fit(cfg.serial_fit, serial_native_fit(quote));
+    serial_reclaim_gate(fit.ask(MemFloor::from_gb(cfg.mem_floor_gb))).admitted()
+}
+
+fn serial_native_fit(quote: NativeGraphFit) -> Option<SerialFitQuote> {
+    // Motif/Dots/Solar/EXAONE report a verdict without a byte budget.
+    let numberless = quote.fits
+        && quote.need_bytes == 0
+        && quote.avail_bytes == 0
+        && quote.headroom_bytes == 0
+        && quote.deficit_bytes == 0;
+    serial_fit_from_native(
+        quote.need_bytes,
+        quote.avail_bytes,
+        quote.headroom_bytes,
+        0,
+        quote.fail_open || numberless,
+    )
 }
 
 /// C `serial_session_ensure_fit` final refusal: typed 503, retryable
@@ -4342,7 +4370,7 @@ mod owner_tests {
     mod stream_disconnect;
 
     // C `serial_session_ensure_fit` driver behavior (v0.5.2 inc1).
-    use crate::generate::{NativeGraphFit, SerialSessionProbe};
+    use crate::generate::SerialSessionProbe;
     use ds4_kv::Store as KvStore;
 
     struct FitProbeDecode {
@@ -4351,6 +4379,8 @@ mod owner_tests {
         fits_at_or_below: i32,
         rightsized: Option<i32>,
         resets: u32,
+        memory_budget: Option<u64>,
+        bytes_per_ctx: Option<u64>,
     }
 
     impl FitProbeDecode {
@@ -4364,6 +4394,8 @@ mod owner_tests {
                 fits_at_or_below,
                 rightsized: None,
                 resets: 0,
+                memory_budget: None,
+                bytes_per_ctx: None,
             }
         }
     }
@@ -4394,10 +4426,24 @@ mod owner_tests {
             0
         }
         fn native_graph_fit(&self, ctx: i32) -> Option<NativeGraphFit> {
+            let (need_bytes, avail_bytes) = self.memory_budget.map_or((0, 0), |budget| {
+                let need = self.bytes_per_ctx.map_or_else(
+                    || {
+                        if ctx <= self.fits_at_or_below {
+                            budget / 2
+                        } else {
+                            budget + 1
+                        }
+                    },
+                    |bytes| ctx as u64 * bytes,
+                );
+                (need, budget)
+            });
             Some(NativeGraphFit {
-                fits: ctx <= self.fits_at_or_below,
-                need_bytes: 0,
-                avail_bytes: 0,
+                fits: ctx <= self.fits_at_or_below
+                    && self.memory_budget.is_none_or(|avail| need_bytes <= avail),
+                need_bytes,
+                avail_bytes,
                 headroom_bytes: 0,
                 deficit_bytes: 0,
                 fail_open: false,
@@ -4466,6 +4512,116 @@ mod owner_tests {
         cfg.ctx = boot_ctx;
         cfg.serial_rightsize = true;
         cfg
+    }
+
+    #[test]
+    fn serial_admit_uses_sized_ctx() {
+        // Verdict-only family probes have no byte quote; both forms serve.
+        for budget in [Some(8 << 30), None] {
+            let mut cfg = serial_fit_cfg(262_144);
+            cfg.mem_floor_gb = 2;
+            let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+            let mut job = queued_completion("hello", 32);
+            job.parsed.max_tokens = 128;
+            let mut engine = FitProbeDecode::new(cfg.ctx, true, 40_000);
+            engine.memory_budget = budget;
+            let mut cont = NoTrimCont;
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+
+            // The request-sized graph fits; the unused boot graph does not.
+            run_serial(
+                &cfg,
+                &inner,
+                &job,
+                "sized-fit",
+                &mut engine,
+                Some(&mut cont),
+                &mut DirectSink {
+                    stream: &mut server,
+                    started: false,
+                },
+                Instant::now(),
+                None,
+            );
+            server.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert!(engine.rightsized.is_some_and(|ctx| ctx <= 40_000));
+        }
+    }
+
+    #[test]
+    fn serial_admit_keeps_graph() {
+        for (avail, status) in [(3 << 30, "HTTP/1.1 200"), (1 << 30, "HTTP/1.1 503")] {
+            let mut cfg = serial_fit_cfg(262_144);
+            cfg.mem_floor_gb = 2;
+            let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+            let job = queued_completion("hello", 32);
+            let mut engine = FitProbeDecode::new(33_000, false, 40_000);
+            engine.memory_budget = Some(avail);
+            let mut cont = NoTrimCont;
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+
+            // Retained KV needs no new graph allocation, but keeps the floor.
+            run_serial(
+                &cfg,
+                &inner,
+                &job,
+                "retained-fit",
+                &mut engine,
+                Some(&mut cont),
+                &mut DirectSink {
+                    stream: &mut server,
+                    started: false,
+                },
+                Instant::now(),
+                None,
+            );
+            server.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+
+            assert!(response.starts_with(status), "{response}");
+            assert_eq!(engine.resets, 0);
+            assert_eq!(engine.rightsized, None);
+        }
+    }
+
+    #[test]
+    fn serial_fit_checks_floor() {
+        let mut cfg = serial_fit_cfg(262_144);
+        cfg.mem_floor_gb = 8;
+        let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+        let job = queued_completion("hello", 32);
+        let mut engine = FitProbeDecode::new(cfg.ctx, true, cfg.ctx);
+        engine.memory_budget = Some(12 << 30);
+        engine.bytes_per_ctx = Some(128 << 10);
+        let mut cont = NoTrimCont;
+        let mut out = Vec::new();
+
+        // A small graph fits above the floor; a native-only target does not.
+        assert!(ensure_serial_session_fit(
+            &cfg,
+            &inner,
+            &job,
+            &mut engine,
+            Some(&mut cont),
+            SerialFrameKind::Canonical,
+            1,
+            65_536,
+            &mut out,
+        )
+        .is_none());
+        let target = engine.rightsized.expect("a smaller graph fits");
+        let quote = engine.native_graph_fit(target).unwrap();
+        let floor = MemFloor::from_gb(cfg.mem_floor_gb).bytes();
+        assert!(quote.avail_bytes >= quote.need_bytes + floor);
     }
 
     #[test]
