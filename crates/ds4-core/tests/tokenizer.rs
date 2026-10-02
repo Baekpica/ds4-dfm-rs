@@ -790,6 +790,29 @@ fn qwen_declared_nfc_input() {
         baseline.encode_text("<think>é</think>"),
         vec![baseline.think_start_id, 195, 169, baseline.think_end_id]
     );
+
+    // C input cannot use the legacy splitter for this declared tokenizer.
+    // Rejection must also work without Qwen family selection, as in dump-text.
+    for c_family in ["qwen4exp", "deepseek4"] {
+        for cmd in ["encode", "render"] {
+            let out = Command::new(require_oracle())
+                .args([
+                    c_family,
+                    path.to_str().unwrap(),
+                    cmd,
+                    &hex_text("<think>e\u{301}</think>"),
+                ])
+                .output()
+                .expect("run C tokenizer rejection gate");
+            assert!(
+                !out.status.success(),
+                "C {c_family}/{cmd} accepted NFC input"
+            );
+            assert!(out.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&out.stderr)
+                .contains("Qwen4Exp NFC/Unicode tokenization requires a Rust host"));
+        }
+    }
 }
 
 #[test]

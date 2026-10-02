@@ -247,7 +247,9 @@ Darwin declares `tokenizer.ggml.pre=qwen4exp` and
 `tokenizer.ggml.normalizer=nfc`. The Rust input path preserves source NFC,
 Unicode marks and added tokens. Existing Qwen, Uncensored and Swift artifacts
 retain their prior tokenizer behavior; CUDA kernels and the shared Qwen graph
-are unchanged. Use the common [owner/cache setup](#qwen-owner-and-cache), select
+are unchanged. Darwin input requires the Rust hosts. Standalone C hosts reject
+its declared tokenizer at vocabulary loading. The native engine accepts the
+validated Rust host vocab. Use the common [owner/cache setup](#qwen-owner-and-cache), select
 `DS4_QWEN_PLE_DIR` explicitly and follow the artifact's serving command.
 
 The [serving receipt](https://huggingface.co/Baekpica/Darwin-180B-RSI-Mixed-Quant-GGUF/blob/main/reproduction/manifests/darwin/serving-receipt.json)

@@ -38032,6 +38032,14 @@ static int vocab_lookup_optional(const ds4_vocab *vocab, const char *text) {
 
 /* Load token strings, special token ids, and merge ranks from GGUF metadata. */
 static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
+    /* Rust installs its validated vocab separately. C input must not silently
+     * apply the legacy Qwen splitter to the declared NFC/Unicode contract. */
+    ds4_str pre = {0};
+    if (model_get_string(model, "tokenizer.ggml.pre", &pre) &&
+        ds4_streq(pre, "qwen4exp")) {
+        ds4_die("Qwen4Exp NFC/Unicode tokenization requires a Rust host");
+    }
+
     memset(vocab, 0, sizeof(*vocab));
     vocab->eot_id = -1;
     vocab->im_start_id = -1;
