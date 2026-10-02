@@ -169,8 +169,11 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
     choice = response["choices"][0]
     message = choice["message"]
     text = message.get("content")
-    # Compare only the frozen literal forms; never extract a number from prose.
-    if not isinstance(text, str) or text.strip() not in case["accepted_forms"]:
+    # Arithmetic ignores outer whitespace; the execution probe is byte-exact.
+    answer = text
+    if isinstance(text, str) and name != MTP_PROBE:
+        answer = text.strip()
+    if not isinstance(answer, str) or answer not in case["accepted_forms"]:
         label = "MTP probe" if name == MTP_PROBE else "arithmetic"
         errors.append(f"{label} answer form: {text!r} not in {case['accepted_forms']!r}")
     reasoning = message.get("reasoning_content")

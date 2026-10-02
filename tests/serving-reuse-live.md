@@ -75,7 +75,8 @@ After the five cold comparisons, every MTP-on campaign also copies the frozen
 digit sequence `1234567890`. This probe requires the exact visible sequence,
 at least two completion tokens, `speculation_active=true`, zero cached tokens,
 the declared lane and no fallback. Its body, reasoning mode and token budget
-freeze at seed. MTP-off campaigns skip this probe.
+freeze at seed. Leading/trailing whitespace fails this probe. MTP-off campaigns
+skip it.
 For Naive's short arithmetic gate, also declare `--mtp-margin 0` on the
 server. Its default margin 3 can exclude every proposal on a short reply.
 For IQuest, use `--family iquest`, declare the same draft 2–7 on server and

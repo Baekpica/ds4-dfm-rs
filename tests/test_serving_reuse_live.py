@@ -502,6 +502,19 @@ class ReuseRunnerTests(unittest.TestCase):
     def test_mtp_probe_missing_activity(self):
         self.run_four_phases(fork_on_append=True, mtp_mode="on", probe_active=None)
 
+    def test_probe_text_is_exact(self):
+        config = self.config()
+        config.update(mtp_mode="on", expect_speculation=True, mtp_draft=2)
+        stats = self.stats("cold")
+        stats["last_request"]["speculation_active"] = True
+        for text in (" 1234567890", "1234567890 ", "1234567890\n", "\n1234567890"):
+            with self.subTest(text=text):
+                response = self.response(text, 0)
+                response["usage"]["completion_tokens"] = 2
+                errors = gate.inspect_case(config, "cold", gate.MTP_PROBE,
+                                           self.case(gate.MTP_PROBE), response, stats)
+                self.assertTrue(any("MTP probe answer form" in error for error in errors), errors)
+
     def test_mtp_on_requires_activity(self):
         with TemporaryDirectory() as directory:
             output = Path(directory)
