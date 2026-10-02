@@ -1,0 +1,56 @@
+{
+  "revision": "0caa1f4961fc9d1ef9de400df7f11dd7ac6a6cd1",
+  "fresh_full_hashes": true,
+  "files": [
+    {
+      "name": "Darwin-180B-RSI-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+      "bytes": 32066883744,
+      "sha256": "fcc7852c21db6b7dbd09ced7364b81cc6b1ed7c7ebc4bf7161bc74a7a6086008"
+    },
+    {
+      "name": "Darwin-180B-RSI-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+      "bytes": 31811595296,
+      "sha256": "e972836147b37aacc3e2abcfc4daaee1c63559e43ba4be7844574c3955eb3d1d"
+    },
+    {
+      "name": "Darwin-180B-RSI-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+      "bytes": 19396505568,
+      "sha256": "5a86bba0cbf7a9690bd43747cd0b3793913ec4e61e26007ffa43ed4f19e05c6a"
+    },
+    {
+      "name": "ple-fp8-00001-of-00004.bin",
+      "bytes": 12800098304,
+      "sha256": "3cffb8fcc5f070d34bff3eddc67a721b26f284b0ec71f5da5aecda8b468543a7"
+    },
+    {
+      "name": "ple-fp8-00002-of-00004.bin",
+      "bytes": 12800098304,
+      "sha256": "f2f63094e120bc207d6ad72117343b911a62b24ad659e99467eddf5f6ba23a36"
+    },
+    {
+      "name": "ple-fp8-00003-of-00004.bin",
+      "bytes": 12800098304,
+      "sha256": "a4396a17923598c1905820102e0a996f7b8f9032b5edbb30d734bcdef932ce0d"
+    },
+    {
+      "name": "ple-fp8-00004-of-00004.bin",
+      "bytes": 12800098304,
+      "sha256": "deeaaf2efd5f1983cfd2306a6da5135f4c2731a73d977e09de270ea097a65c16"
+    },
+    {
+      "name": "ple-fp8-weight-scale.bf16.bin",
+      "bytes": 2,
+      "sha256": "c7c58bd6007672362da2106fdbfaf9f50629e4bdf8598169c598027394ef9791"
+    },
+    {
+      "name": "ple-manifest.json",
+      "bytes": 83031,
+      "sha256": "507885ac42e4a5f631a12cf95d12755980a4c61f3fc09b17f665be2a4af9312e"
+    }
+  ],
+  "embedded_template": {
+    "metadata": "tokenizer.chat_template",
+    "bytes": 8952,
+    "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+  }
+}

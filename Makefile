@@ -22,6 +22,8 @@ DS4_DOTS3_MODEL ?=
 DS4_QWEN4EXP_MODEL ?=
 DS4_QWEN4EXP_ROOT ?=
 DS4_QWEN4EXP_SOURCE ?=
+DS4_QWEN_VISION_TOKENS ?=
+DS4_QWEN_VISION_IMAGES ?= tests/fixtures/qwen-images/screen.png
 DS4_GLM53_MODEL ?=
 DS4_GLM53_VISION_MODEL ?=
 CUDA_EXTRA_BINS :=
@@ -98,7 +100,8 @@ endif
         test-qwen4exp-gdn-forward test-qwen4exp-qsa \
         test-qwen4exp-qsa-forward test-qwen4exp-batch \
         test-qwen4exp-verify \
-        test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-norm \
+        test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-host \
+        test-qwen-vision-norm \
         test-mmid-fast \
         test-mmq-parity test-qwen35-cuda test-model-family-kernels test-inkling-kernels test-inkling-moe \
         test-inkling-attn-prep test-inkling-attention test-inkling-norm test-inkling-linear test-inkling-batch test-inkling-q8-batch test-inkling-media \
@@ -1299,6 +1302,18 @@ test-qwen-vision-model: tests/test_qwen_vision_model
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || (echo "Set DS4_QWEN4EXP_MODEL to the Qwen GGUF"; exit 1)
 	./tests/test_qwen_vision_model "$(DS4_QWEN4EXP_MODEL)" tests/fixtures/qwen-images/screen.png
 
+# Rust-tokenized full-model gate; no retained C tokenizer is invoked.
+tests/test_qwen_vision_host.o: tests/test_qwen_vision_host.c ds4.c ds4.h ds4_gpu.h native/bridge/ds4_host_load.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_qwen_vision_host: tests/test_qwen_vision_host.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-qwen-vision-host: tests/test_qwen_vision_host
+	@test -n "$(DS4_QWEN4EXP_MODEL)" || (echo "Set DS4_QWEN4EXP_MODEL to the Qwen/Darwin GGUF"; exit 1)
+	@test -n "$(DS4_QWEN_VISION_TOKENS)" || (echo "Set DS4_QWEN_VISION_TOKENS to Rust --dump-tokens output"; exit 1)
+	./tests/test_qwen_vision_host "$(DS4_QWEN4EXP_MODEL)" "$(DS4_QWEN_VISION_TOKENS)" $(DS4_QWEN_VISION_IMAGES)
+
 test-qwen4exp-primitives: tests/test_qwen4exp_primitives
 	./tests/test_qwen4exp_primitives
 
@@ -2002,6 +2017,7 @@ clean:
 	rm -f tests/test_inkling_encoders tests/test_inkling_encoders.o
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
+	rm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
 	rm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o tests/test_glm53_bounds tests/test_glm53_bounds.o tests/test_k2_lifecycle tests/test_k2_lifecycle.o
 	rm -f tests/test_k2_rewind tests/test_deepseek_budget

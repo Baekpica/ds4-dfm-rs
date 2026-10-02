@@ -1,0 +1,30 @@
+[
+  {
+    "arm": "pair",
+    "case": "multi",
+    "calls": 27,
+    "attention_ms": 3983.127232,
+    "span_ms": 4366.439392
+  },
+  {
+    "arm": "pair",
+    "case": "screen",
+    "calls": 27,
+    "attention_ms": 786.038048,
+    "span_ms": 892.14496
+  },
+  {
+    "arm": "quad",
+    "case": "multi",
+    "calls": 27,
+    "attention_ms": 3269.798944,
+    "span_ms": 3656.368128
+  },
+  {
+    "arm": "quad",
+    "case": "screen",
+    "calls": 27,
+    "attention_ms": 651.261056,
+    "span_ms": 756.005504
+  }
+]

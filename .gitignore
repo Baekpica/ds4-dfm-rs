@@ -164,6 +164,8 @@ tests/naive_banks
 /tests/test_qwen35_rows
 /tests/test_qwen35_session
 /tests/test_qwen35_ref
+/tests/test_qwen_vision_attention
+/tests/test_qwen_vision_host
 /tests/libds4ple_test.so
 /tests/test_ling3vl_mla_expand
 /tests/test_exaone_batch

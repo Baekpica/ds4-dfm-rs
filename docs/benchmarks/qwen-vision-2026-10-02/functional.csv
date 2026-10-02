@@ -1,0 +1,11 @@
+mode,case,worker_pid,prompt_tokens,completion_tokens,cached_tokens,reuse_kind,encoder,image_count,patch_rows,feature_rows,workspace_mib,speculation_active,answer_raw,tool_arguments,zero_faults_and_sheds,request_sha256,evidence_dir
+seed,screen,979961,796,1,0,cold,computed,1,3072,768,170.8,False,3,,True,2d18618108bd823057076f6077b9b69d416d17a7612e8b82a83b9f47381bde39,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+seed,document,979961,1564,6,0,cold,computed,1,6144,1536,341.6,True,385.00,,True,feb0818bfd2ed60e0df84ac4b04aa7655fb766e1c2a4b36d6855c2877617952b,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+seed,changed,979961,796,1,0,cold,computed,1,3072,768,170.8,False,9,,True,a5077aed838af74ed55041dafe2de41f61f57b2ae39d5af539b35a6f1f81f761,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+seed,photo,979961,280,1,0,cold,computed,1,1024,256,57.0,False,Earth,,True,bab6647e711a02e59dc9508399e7a2ef14fc078efa1260aa72352aa0fe92dd95,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+seed,multi-tool,979961,2963,43,0,cold,computed,4,10496,2624,570.8,True,,"{""failed_tasks"":3,""invoice_total"":385}",True,7f626b81eed396764524755847518c4f83ee3e743d66e8968a611451bb57e34e,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+seed,tool-result,979961,3046,6,3006,exact,cached,4,10496,2624,0.1,True,"3, 385",,True,189a270c82f154feab9c4370ddf0716b6623650768fb556bf7158bbdcfdfb2e6,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+seed,long-seed,979961,18135,1,0,cold,computed,1,3072,768,171.2,False,3,,True,a664cca5d149e46f74cfe77a17b296f5f2e1cae19a5bc339f352f7ccc40d20ac,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+seed,long-followup,979961,18166,2,18136,exact,cached,1,3072,768,0.4,True,12,,True,477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a,scratch/qwen-multi-image-20261002/functional-quad-r3/seed/http
+restore,restore,980308,18166,2,18136,exact,cached,1,3072,768,0.4,True,12,,True,477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a,scratch/qwen-multi-image-20261002/functional-quad-r3/restore/http
+cold,cold,980454,18166,2,0,cold,computed,1,3072,768,171.2,True,12,,True,477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a,scratch/qwen-multi-image-20261002/functional-quad-r3/cold/http

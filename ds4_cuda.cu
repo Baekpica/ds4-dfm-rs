@@ -1319,6 +1319,8 @@ static float *g_comp_pair_partials = NULL;
  * machine (n_head < SM count). On small-SM integrated GPUs (GB10, 48 SMs, 64
  * heads) the condition is false -> no split -> output unchanged. */
 static int g_cuda_sm_count = 0;
+/* The four-query vision mapping is speed-qualified on GB10 only. */
+static bool g_qwen_vision_quad_ok = false;
 /* Dedicated capture-stable scratch for the flash-decode attention partials
  * (per (head,split): m, l, acc[head_dim]). Allocated once in ds4_gpu_init. */
 static float *g_attn_split_partials = NULL;
@@ -4074,7 +4076,9 @@ extern "C" int ds4_gpu_init(void) {
     if (!cuda_ok(cudaSetDevice(dev), "set device")) return 0;
     m2_hmma_init();
     cudaDeviceProp prop;
+    g_qwen_vision_quad_ok = false;
     if (cudaGetDeviceProperties(&prop, dev) == cudaSuccess) {
+        g_qwen_vision_quad_ok = prop.major == 12 && prop.minor == 1;
         fprintf(stderr, "ds4: CUDA backend initialized on %s (sm_%d%d)\n",
                 prop.name, prop.major, prop.minor);
     }
@@ -28873,14 +28877,16 @@ extern "C" int ds4_gpu_qwen4exp_vision_qkv_rope_tensor(
     return cuda_ok(cudaGetLastError(), "Qwen vision QKV RoPE launch");
 }
 
-/* Two queries per warp reuse the same K/V registers. Each query keeps the
- * original dot reduction, online softmax, and value accumulation order.
- * Explicit FMA association below preserves the old kernel's rounding. */
+/* Reuse K/V registers across queries without changing any query's dot,
+ * online softmax, or value accumulation order. Four queries reduce LSU
+ * pressure; two retain the measured fallback. FMA association stays exact. */
+template<uint32_t queries>
 __global__ static void qwen_vision_tile_kernel(
         float *out, const float *qkv,
         const int32_t *segment_start, const int32_t *segment_end,
         uint32_t rows, uint32_t heads, uint32_t head_dim) {
-    constexpr uint32_t query_tile = 16u, key_tile = 32u;
+    constexpr uint32_t warps = 8u;
+    constexpr uint32_t query_tile = warps * queries, key_tile = 32u;
     extern __shared__ float kv_tile[];
     float *key = kv_tile, *value = key + key_tile * head_dim;
     const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
@@ -28893,8 +28899,8 @@ __global__ static void qwen_vision_tile_kernel(
     }
     if (!same) {
 #pragma unroll
-        for (uint32_t i = 0; i < 2u; i++) {
-            const uint32_t row = row0 + warp + 8u * i;
+        for (uint32_t i = 0; i < queries; i++) {
+            const uint32_t row = row0 + warp + warps * i;
             if (row < rows) {
                 qwen4exp_vision_attention_row(out, qkv, segment_start,
                     segment_end, row, head, heads, head_dim);
@@ -28902,12 +28908,13 @@ __global__ static void qwen_vision_tile_kernel(
         }
         return;
     }
-    float q0[2], q1[2], q2[2];
-    float acc0[2] = {}, acc1[2] = {}, acc2[2] = {};
-    float m[2] = {-INFINITY, -INFINITY}, l[2] = {};
+    float q0[queries], q1[queries], q2[queries];
+    float acc0[queries] = {}, acc1[queries] = {}, acc2[queries] = {};
+    float m[queries], l[queries] = {};
 #pragma unroll
-    for (uint32_t i = 0; i < 2u; i++) {
-        const uint32_t row = row0 + warp + 8u * i;
+    for (uint32_t i = 0; i < queries; i++) {
+        m[i] = -INFINITY;
+        const uint32_t row = row0 + warp + warps * i;
         const bool active = row < rows;
         const float *q = qkv + (uint64_t)(active ? row : row0) * 3u * width +
             (uint64_t)head * head_dim;
@@ -28937,7 +28944,7 @@ __global__ static void qwen_vision_tile_kernel(
             const float v1 = lane + 32u < head_dim ? pv[lane + 32u] : 0.0f;
             const float v2 = lane + 64u < head_dim ? pv[lane + 64u] : 0.0f;
 #pragma unroll
-            for (uint32_t i = 0; i < 2u; i++) {
+            for (uint32_t i = 0; i < queries; i++) {
                 float dot = 0.0f;
                 if (lane < head_dim) { dot += q0[i] * k0; }
                 if (lane + 32u < head_dim) { dot += q1[i] * k1; }
@@ -28955,8 +28962,8 @@ __global__ static void qwen_vision_tile_kernel(
         __syncthreads();
     }
 #pragma unroll
-    for (uint32_t i = 0; i < 2u; i++) {
-        const uint32_t row = row0 + warp + 8u * i;
+    for (uint32_t i = 0; i < queries; i++) {
+        const uint32_t row = row0 + warp + warps * i;
         if (row < rows) {
             float *dst = out + (uint64_t)row * width + (uint64_t)head * head_dim;
             const float inv = l[i] > 0.0f ? 1.0f / l[i] : 0.0f;
@@ -28989,12 +28996,22 @@ extern "C" int ds4_gpu_qwen4exp_vision_attention_tensor(
             (const int32_t *)segment_end->ptr, rows, heads, head_dim);
     } else if (head_dim == 72u && rows >= 512u &&
                getenv("DS4_QWEN_VISION_LEGACY") == NULL) {
-        const dim3 grid((rows + 15u) / 16u, heads);
+        const char *control = getenv("DS4_QWEN_VISION_QUAD");
+        const bool quad = control ? strcmp(control, "0") != 0 : g_qwen_vision_quad_ok;
+        const uint32_t query_tile = quad ? 32u : 16u;
+        const dim3 grid((rows + query_tile - 1u) / query_tile, heads);
         const uint32_t shared = 2u * 32u * head_dim * sizeof(float);
-        qwen_vision_tile_kernel<<<grid, 256u, shared, ds4_current_stream()>>>(
-            (float *)out->ptr, (const float *)qkv->ptr,
-            (const int32_t *)segment_start->ptr,
-            (const int32_t *)segment_end->ptr, rows, heads, head_dim);
+        if (quad) {
+            qwen_vision_tile_kernel<4u><<<grid, 256u, shared, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)qkv->ptr,
+                (const int32_t *)segment_start->ptr,
+                (const int32_t *)segment_end->ptr, rows, heads, head_dim);
+        } else {
+            qwen_vision_tile_kernel<2u><<<grid, 256u, shared, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)qkv->ptr,
+                (const int32_t *)segment_start->ptr,
+                (const int32_t *)segment_end->ptr, rows, heads, head_dim);
+        }
     } else {
         dim3 grid((rows + 7u) / 8u, heads);
         const uint32_t shared = 2u * 32u * head_dim * sizeof(float);
