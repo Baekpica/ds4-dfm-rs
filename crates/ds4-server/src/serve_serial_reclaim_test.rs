@@ -120,6 +120,25 @@ fn already_fits_does_not_reclaim() {
 }
 
 #[test]
+fn reclaim_restores_floor() {
+    for (need, reclaim) in [(0, 1), (2, 3)] {
+        let short = ask(1, need, 2, 0);
+        assert_eq!(serial_reclaim_want(short), reclaim * GIB);
+        assert!(!serial_reclaim_gate(short).admitted());
+
+        let funded = ask(1, need, 2, reclaim);
+        let outcome = serial_reclaim_gate(funded);
+        assert_eq!(
+            outcome,
+            SerialReclaimOutcome::Admit {
+                reclaimed: reclaim * GIB
+            }
+        );
+        assert_eq!(remaining_after(funded, outcome), funded.floor.bytes());
+    }
+}
+
+#[test]
 fn mem_floor_cli_wins_over_env() {
     let floor = MemFloor::from_cli_or_env(Some(b"2"), Some(b"8"));
     assert_eq!(floor, MemFloor::from_gb(2));
