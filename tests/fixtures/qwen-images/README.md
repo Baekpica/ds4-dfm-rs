@@ -61,6 +61,9 @@ The manual gate uses one 262144-token bank, 8192-token prefill and plain decode.
 Four reset-bank admissions compare pair/pair/quad/quad exactly, selected by
 `DS4_QWEN_VISION_QUAD=0/0/1/1`:
 features, 32 raw full-vocabulary logits, 32 greedy IDs, payload and M-RoPE.
+For packed K/V parity, prefix the gate command with
+`DS4_QWEN_VISION_GATE_CONTROL=DS4_QWEN_VISION_PACK`. All four admissions then
+use Quad and compare packing `0/0/1/1`. Use a new output directory.
 EOS and Qwen EOT are excluded from sampling; saved logits precede exclusion.
 The saved frontier is the prompt plus 31 consumed outputs; output 32 is pending.
 Payload logits are zero-filled; `logits.f32` holds the real frontiers. Separate

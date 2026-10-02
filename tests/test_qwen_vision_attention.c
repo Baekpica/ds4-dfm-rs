@@ -76,12 +76,24 @@ static void check_case(uint32_t rows, uint32_t heads, uint32_t dim,
     CHECK(ds4_gpu_tensor_read(dout, 0, got, n * sizeof(float)));
     CHECK(memcmp(old, got, n * sizeof(float)) == 0);
     CHECK(setenv("DS4_QWEN_VISION_QUAD", "1", 1) == 0);
+    CHECK(setenv("DS4_QWEN_VISION_PACK", "0", 1) == 0);
     start = now_ms();
     CHECK(ds4_gpu_qwen4exp_vision_attention_tensor(dout, dq, db, de, rows, heads, dim));
     CHECK(ds4_gpu_synchronize());
     const double quad_ms = now_ms() - start;
     CHECK(ds4_gpu_tensor_read(dout, 0, got, n * sizeof(float)));
     CHECK(memcmp(old, got, n * sizeof(float)) == 0);
+    CHECK(setenv("DS4_QWEN_VISION_PACK", "1", 1) == 0);
+    start = now_ms();
+    CHECK(ds4_gpu_qwen4exp_vision_attention_tensor(dout, dq, db, de, rows, heads, dim));
+    CHECK(ds4_gpu_synchronize());
+    const double packed_ms = now_ms() - start;
+    CHECK(ds4_gpu_tensor_read(dout, 0, got, n * sizeof(float)));
+    CHECK(memcmp(old, got, n * sizeof(float)) == 0);
+    CHECK(ds4_gpu_qwen4exp_vision_attention_tensor(dout, dq, db, de, rows, heads, dim));
+    CHECK(ds4_gpu_tensor_read(dout, 0, got, n * sizeof(float)));
+    CHECK(memcmp(old, got, n * sizeof(float)) == 0);
+    CHECK(unsetenv("DS4_QWEN_VISION_PACK") == 0);
     CHECK(unsetenv("DS4_QWEN_VISION_QUAD") == 0);
     CHECK(ds4_gpu_qwen4exp_vision_attention_tensor(dout, dq, db, de, rows, heads, dim));
     CHECK(ds4_gpu_tensor_read(dout, 0, got, n * sizeof(float)));
@@ -144,6 +156,8 @@ static void check_case(uint32_t rows, uint32_t heads, uint32_t dim,
         for (size_t i = 3 * first; i < 3 * last; i++) {
             qkv[i] = -2.0f * qkv[i];
         }
+        CHECK(setenv("DS4_QWEN_VISION_QUAD", "1", 1) == 0);
+        CHECK(setenv("DS4_QWEN_VISION_PACK", "1", 1) == 0);
         CHECK(ds4_gpu_tensor_write(dq, 0, qkv, 3 * n * sizeof(float)));
         CHECK(ds4_gpu_qwen4exp_vision_attention_tensor(dout, dq, db, de, rows, heads, dim));
         CHECK(ds4_gpu_tensor_read(dout, 0, got, n * sizeof(float)));
@@ -151,8 +165,10 @@ static void check_case(uint32_t rows, uint32_t heads, uint32_t dim,
         CHECK(memcmp(old + last, got + last, (n - last) * sizeof(float)) == 0);
         CHECK(memcmp(old + first, got + first, (last - first) * sizeof(float)) != 0);
     }
-    printf("PASS rows=%u heads=%u dim=%u segment=%u scale=%.1f legacy=%.3f ms pair=%.3f ms quad=%.3f ms max_old=%.3g max_f64=%.3g rel_rms=%.3g\n",
-        rows, heads, dim, segment, scale, old_ms, pair_ms, quad_ms, max_old, max_ref,
+    CHECK(unsetenv("DS4_QWEN_VISION_PACK") == 0);
+    CHECK(unsetenv("DS4_QWEN_VISION_QUAD") == 0);
+    printf("PASS rows=%u heads=%u dim=%u segment=%u scale=%.1f legacy=%.3f ms pair=%.3f ms quad=%.3f ms packed=%.3f ms max_old=%.3g max_f64=%.3g rel_rms=%.3g\n",
+        rows, heads, dim, segment, scale, old_ms, pair_ms, quad_ms, packed_ms, max_old, max_ref,
         sqrt(err / fmax(ref, 1e-30)));
     ds4_gpu_tensor_free(de); ds4_gpu_tensor_free(db);
     ds4_gpu_tensor_free(dout); ds4_gpu_tensor_free(dq);
@@ -161,6 +177,8 @@ static void check_case(uint32_t rows, uint32_t heads, uint32_t dim,
 
 int main(void) {
     CHECK(unsetenv("DS4_CUDA_NO_QWEN_VISION_TILE") == 0);
+    CHECK(unsetenv("DS4_QWEN_VISION_PACK") == 0);
+    CHECK(unsetenv("DS4_QWEN_VISION_QUAD") == 0);
     CHECK(ds4_gpu_init());
     check_case(67, 16, 72, 36, 1.0f, UNIFORM_SEGMENTS);
     check_case(256, 16, 72, 256, 1.0f, UNIFORM_SEGMENTS);

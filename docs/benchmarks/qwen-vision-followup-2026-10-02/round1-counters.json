@@ -1,0 +1,224 @@
+{
+  "baseline": {
+    "gpu__time_duration.sum": {
+      "value": "24.090912",
+      "unit": "ms"
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": "92.783228",
+      "unit": "%"
+    },
+    "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": "92.783228",
+      "unit": "%"
+    },
+    "smsp__sass_inst_executed_op_shared_ld.sum": {
+      "value": "226492416.000000",
+      "unit": "inst"
+    },
+    "smsp__inst_executed.sum": {
+      "value": "7020453888.000000",
+      "unit": "inst"
+    },
+    "launch__registers_per_thread": {
+      "value": "56",
+      "unit": "register/thread"
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "value": "64.423209",
+      "unit": "%"
+    },
+    "derived__local_spilling_requests": {
+      "value": "0",
+      "unit": ""
+    },
+    "derived__shared_spilling_requests": {
+      "value": "0",
+      "unit": ""
+    },
+    "kernel": "void qwen_vision_tile_kernel<4>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum": {
+      "value": "1155928600",
+      "unit": ""
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_atom.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+      "value": "226500456",
+      "unit": ""
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": {
+      "value": "21968664",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_atom.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_ld.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_redas.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_st.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "value": "22167552",
+      "unit": ""
+    },
+    "launch__shared_mem_per_block_dynamic": {
+      "value": "18.432000",
+      "unit": "Kbyte/block"
+    },
+    "smsp__sass_inst_executed_op_shared_st.sum": {
+      "value": "21233664.000000",
+      "unit": "inst"
+    },
+    "smsp__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "smsp__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts_cache_access.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed": {
+      "value": "92.783228",
+      "unit": "%"
+    },
+    "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+      "value": "2.325646",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+      "value": "1.444354",
+      "unit": "inst"
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "value": "97.903482",
+      "unit": "%"
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "value": "2.194430",
+      "unit": "Ghz"
+    }
+  },
+  "packed": {
+    "gpu__time_duration.sum": {
+      "value": "20.572096",
+      "unit": "ms"
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": "93.306776",
+      "unit": "%"
+    },
+    "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": "93.306776",
+      "unit": "%"
+    },
+    "smsp__sass_inst_executed_op_shared_ld.sum": {
+      "value": "75497472.000000",
+      "unit": "inst"
+    },
+    "smsp__inst_executed.sum": {
+      "value": "5740572672.000000",
+      "unit": "inst"
+    },
+    "launch__registers_per_thread": {
+      "value": "56",
+      "unit": "register/thread"
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "value": "64.628804",
+      "unit": "%"
+    },
+    "derived__local_spilling_requests": {
+      "value": "0",
+      "unit": ""
+    },
+    "derived__shared_spilling_requests": {
+      "value": "0",
+      "unit": ""
+    },
+    "kernel": "void qwen_vision_tile_kernel<4, 1>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared.sum": {
+      "value": "1119247997",
+      "unit": ""
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_atom.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+      "value": "188834869",
+      "unit": ""
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": {
+      "value": "22941468",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_atom.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_ld.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_redas.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_output_wavefronts_pipe_lsu_mem_dshared_op_st.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "value": "22167552",
+      "unit": ""
+    },
+    "launch__shared_mem_per_block_dynamic": {
+      "value": "18.432000",
+      "unit": "Kbyte/block"
+    },
+    "smsp__sass_inst_executed_op_shared_st.sum": {
+      "value": "5898240.000000",
+      "unit": "inst"
+    },
+    "smsp__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "smsp__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts_cache_access.sum": {
+      "value": "0",
+      "unit": ""
+    },
+    "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed": {
+      "value": "93.306776",
+      "unit": "%"
+    },
+    "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+      "value": "0.487872",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+      "value": "5.708751",
+      "unit": "inst"
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "value": "98.199272",
+      "unit": "%"
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "value": "2.194313",
+      "unit": "Ghz"
+    }
+  }
+}

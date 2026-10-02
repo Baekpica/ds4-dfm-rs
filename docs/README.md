@@ -83,7 +83,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [September 7 prefill](qwen38-prefill-2026-09-07.md),
   [September 7 image/text/agent](qwen38-image-2026-09-07.md),
   [September 14 draft/prefix](qwen38-perf-2026-09-14.md),
-  [October 2 Darwin images](qwen-vision-2026-10-02.md).
+  [October 2 Darwin images](qwen-vision-2026-10-02.md) and
+  [follow-up rounds](qwen-vision-followup-2026-10-02.md).
 - **Solar:** [September 7](solar-open2-optimization-2026-09-07.md),
   [September 12 rounds 1–4](solar-open2-optimization-2026-09-12.md),
   [September 12 round 5](solar-open2-optimization-2026-09-12-r5.md),

@@ -303,6 +303,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     REQUIRE(sizeof(int) == sizeof(int32_t));
+    const char *gate_control = getenv("DS4_QWEN_VISION_GATE_CONTROL");
+    if (gate_control) {
+        REQUIRE(strcmp(gate_control, "DS4_QWEN_VISION_PACK") == 0);
+    }
     gate_vocab host;
     host_vocab_open(&host, argv[1]);
     REQUIRE(unsetenv("DS4_CUDA_NO_QWEN_VISION_TILE") == 0);
@@ -364,7 +368,13 @@ int main(int argc, char **argv) {
            GATE_CTX, GATE_BANKS, GATE_PREFILL, image_i, patches, prompt.len,
            GATE_TOKENS, c.eos, sample_eot_exclusion(&engine->vocab, c.eos));
     for (int pass = 0; pass < GATE_PASSES; pass++) {
-        REQUIRE(setenv("DS4_QWEN_VISION_QUAD", pass < GATE_PAIR_PASSES ? "0" : "1", 1) == 0);
+        const char *arm = pass < GATE_PAIR_PASSES ? "0" : "1";
+        REQUIRE(setenv("DS4_QWEN_VISION_QUAD", gate_control ? "1" : arm, 1) == 0);
+        if (gate_control) {
+            /* Compare one diagnostic change while retaining the quad path. */
+            REQUIRE(setenv(gate_control, arm, 1) == 0);
+            printf("control=%s value=%s\n", gate_control, arm);
+        }
         c.features = file_open(argv[2], pass, "features.f32");
         c.logits = file_open(argv[2], pass, "logits.f32");
         c.admitted = c.done = c.sampled = 0;
@@ -374,7 +384,7 @@ int main(int argc, char **argv) {
         REQUIRE(fclose(c.logits) == 0 && fclose(c.features) == 0);
         save_state(argv[2], pass, &c);
         printf("pass=%d queries=%d sampled=%d committed=%u\n", pass,
-               pass < GATE_PAIR_PASSES ? 2 : 4, c.sampled,
+               !gate_control && pass < GATE_PAIR_PASSES ? 2 : 4, c.sampled,
                c.ctx->bank_hist_len[c.bank]);
         family_banked_reset(c.ctx, c.bank);
     }

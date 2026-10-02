@@ -28880,15 +28880,19 @@ extern "C" int ds4_gpu_qwen4exp_vision_qkv_rope_tensor(
 /* Reuse K/V registers across queries without changing any query's dot,
  * online softmax, or value accumulation order. Four queries reduce LSU
  * pressure; two retain the measured fallback. FMA association stays exact. */
-template<uint32_t queries>
+template<uint32_t queries, bool packed>
 __global__ static void qwen_vision_tile_kernel(
         float *out, const float *qkv,
         const int32_t *segment_start, const int32_t *segment_end,
         uint32_t rows, uint32_t heads, uint32_t head_dim) {
     constexpr uint32_t warps = 8u;
     constexpr uint32_t query_tile = warps * queries, key_tile = 32u;
-    extern __shared__ float kv_tile[];
+    constexpr uint32_t lanes = 32u, packed_head_dim = 72u;
+    constexpr uint32_t tail_lanes = packed_head_dim - 2u * lanes;
+    extern __shared__ __align__(16) float kv_tile[];
     float *key = kv_tile, *value = key + key_tile * head_dim;
+    float4 *packed_kv = reinterpret_cast<float4 *>(kv_tile);
+    float2 *packed_tail = reinterpret_cast<float2 *>(packed_kv + key_tile * lanes);
     const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
     const uint32_t row0 = blockIdx.x * query_tile;
     const uint32_t head = blockIdx.y, width = heads * head_dim;
@@ -28925,24 +28929,51 @@ __global__ static void qwen_vision_tile_kernel(
     const float scale = rsqrtf((float)head_dim);
     for (int32_t base = begin; base < end; base += key_tile) {
         const uint32_t valid = min((uint32_t)(end - base), key_tile);
-        const uint32_t tile_values = valid * head_dim;
-        for (uint32_t j = threadIdx.x; j < 2u * tile_values; j += blockDim.x) {
-            const bool is_value = j >= tile_values;
-            const uint32_t local = is_value ? j - tile_values : j;
-            const uint32_t k = local / head_dim, d = local % head_dim;
-            const uint64_t at = (uint64_t)(base + k) * 3u * width +
-                (uint64_t)(is_value ? 2u : 1u) * width + (uint64_t)head * head_dim + d;
-            (is_value ? value : key)[local] = qkv[at];
+        if constexpr (packed) {
+            /* Same 72 K/V floats, arranged for one full-warp vector load and
+             * one eight-lane tail load. No query arithmetic changes. */
+            for (uint32_t j = threadIdx.x; j < valid * lanes; j += blockDim.x) {
+                const uint32_t k = j / lanes, d = j % lanes;
+                const uint64_t at = (uint64_t)(base + k) * 3u * width +
+                    (uint64_t)head * head_dim + d;
+                packed_kv[j] = make_float4(qkv[at + width], qkv[at + width + lanes],
+                    qkv[at + 2u * width], qkv[at + 2u * width + lanes]);
+            }
+            for (uint32_t j = threadIdx.x; j < valid * tail_lanes; j += blockDim.x) {
+                const uint32_t k = j / tail_lanes, d = j % tail_lanes + 2u * lanes;
+                const uint64_t at = (uint64_t)(base + k) * 3u * width +
+                    (uint64_t)head * head_dim + d;
+                packed_tail[j] = make_float2(qkv[at + width], qkv[at + 2u * width]);
+            }
+        } else {
+            const uint32_t tile_values = valid * head_dim;
+            for (uint32_t j = threadIdx.x; j < 2u * tile_values; j += blockDim.x) {
+                const bool is_value = j >= tile_values;
+                const uint32_t local = is_value ? j - tile_values : j;
+                const uint32_t k = local / head_dim, d = local % head_dim;
+                const uint64_t at = (uint64_t)(base + k) * 3u * width +
+                    (uint64_t)(is_value ? 2u : 1u) * width + (uint64_t)head * head_dim + d;
+                (is_value ? value : key)[local] = qkv[at];
+            }
         }
         __syncthreads();
         for (uint32_t k = 0; k < valid; k++) {
-            const float *pk = key + k * head_dim, *pv = value + k * head_dim;
-            const float k0 = lane < head_dim ? pk[lane] : 0.0f;
-            const float k1 = lane + 32u < head_dim ? pk[lane + 32u] : 0.0f;
-            const float k2 = lane + 64u < head_dim ? pk[lane + 64u] : 0.0f;
-            const float v0 = lane < head_dim ? pv[lane] : 0.0f;
-            const float v1 = lane + 32u < head_dim ? pv[lane + 32u] : 0.0f;
-            const float v2 = lane + 64u < head_dim ? pv[lane + 64u] : 0.0f;
+            float k0, k1, k2, v0, v1, v2;
+            if constexpr (packed) {
+                const float4 kv = packed_kv[k * lanes + lane];
+                const float2 tail = lane < tail_lanes
+                    ? packed_tail[k * tail_lanes + lane] : make_float2(0.0f, 0.0f);
+                k0 = kv.x; k1 = kv.y; k2 = tail.x;
+                v0 = kv.z; v1 = kv.w; v2 = tail.y;
+            } else {
+                const float *pk = key + k * head_dim, *pv = value + k * head_dim;
+                k0 = lane < head_dim ? pk[lane] : 0.0f;
+                k1 = lane + 32u < head_dim ? pk[lane + 32u] : 0.0f;
+                k2 = lane + 64u < head_dim ? pk[lane + 64u] : 0.0f;
+                v0 = lane < head_dim ? pv[lane] : 0.0f;
+                v1 = lane + 32u < head_dim ? pv[lane + 32u] : 0.0f;
+                v2 = lane + 64u < head_dim ? pv[lane + 64u] : 0.0f;
+            }
 #pragma unroll
             for (uint32_t i = 0; i < queries; i++) {
                 float dot = 0.0f;
@@ -29002,12 +29033,22 @@ extern "C" int ds4_gpu_qwen4exp_vision_attention_tensor(
         const dim3 grid((rows + query_tile - 1u) / query_tile, heads);
         const uint32_t shared = 2u * 32u * head_dim * sizeof(float);
         if (quad) {
-            qwen_vision_tile_kernel<4u><<<grid, 256u, shared, ds4_current_stream()>>>(
-                (float *)out->ptr, (const float *)qkv->ptr,
-                (const int32_t *)segment_start->ptr,
-                (const int32_t *)segment_end->ptr, rows, heads, head_dim);
+            const char *pack_control = getenv("DS4_QWEN_VISION_PACK");
+            const bool packed = g_qwen_vision_quad_ok &&
+                (!pack_control || strcmp(pack_control, "0") != 0);
+            if (packed) {
+                qwen_vision_tile_kernel<4u, true><<<grid, 256u, shared, ds4_current_stream()>>>(
+                    (float *)out->ptr, (const float *)qkv->ptr,
+                    (const int32_t *)segment_start->ptr,
+                    (const int32_t *)segment_end->ptr, rows, heads, head_dim);
+            } else {
+                qwen_vision_tile_kernel<4u, false><<<grid, 256u, shared, ds4_current_stream()>>>(
+                    (float *)out->ptr, (const float *)qkv->ptr,
+                    (const int32_t *)segment_start->ptr,
+                    (const int32_t *)segment_end->ptr, rows, heads, head_dim);
+            }
         } else {
-            qwen_vision_tile_kernel<2u><<<grid, 256u, shared, ds4_current_stream()>>>(
+            qwen_vision_tile_kernel<2u, false><<<grid, 256u, shared, ds4_current_stream()>>>(
                 (float *)out->ptr, (const float *)qkv->ptr,
                 (const int32_t *)segment_start->ptr,
                 (const int32_t *)segment_end->ptr, rows, heads, head_dim);
