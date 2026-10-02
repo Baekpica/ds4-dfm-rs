@@ -24,7 +24,7 @@
     "attention_ms": 3924.782496,
     "all_gpu_kernel_ms": 7531.896603,
     "attention_gpu_time_pct": 52.108820697787266,
-    "scope": "screen plus four-image cold requests"
+    "scope": "whole-worker capture includes startup/prewarm and screen plus four-image cold requests; per-request attention/TTFT contributions in the report exclude startup/prewarm"
   },
   "steps": [
     {

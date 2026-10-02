@@ -305,7 +305,8 @@ int main(int argc, char **argv) {
     REQUIRE(sizeof(int) == sizeof(int32_t));
     const char *gate_control = getenv("DS4_QWEN_VISION_GATE_CONTROL");
     if (gate_control) {
-        REQUIRE(strcmp(gate_control, "DS4_QWEN_VISION_PACK") == 0);
+        REQUIRE(strcmp(gate_control, "DS4_QWEN_VISION_PACK") == 0 ||
+                strcmp(gate_control, "DS4_QWEN_VISION_FUSE_ROPE") == 0);
     }
     gate_vocab host;
     host_vocab_open(&host, argv[1]);

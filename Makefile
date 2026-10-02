@@ -101,7 +101,7 @@ endif
         test-qwen4exp-qsa-forward test-qwen4exp-batch \
         test-qwen4exp-verify \
         test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-host \
-        test-qwen-vision-norm \
+        test-qwen-vision-norm test-qwen-vision-rope \
         test-mmid-fast \
         test-mmq-parity test-qwen35-cuda test-model-family-kernels test-inkling-kernels test-inkling-moe \
         test-inkling-attn-prep test-inkling-attention test-inkling-norm test-inkling-linear test-inkling-batch test-inkling-q8-batch test-inkling-media \
@@ -1279,6 +1279,15 @@ tests/test_qwen_vision_attention.o: tests/test_qwen_vision_attention.c ds4_gpu.h
 tests/test_qwen_vision_norm.o: tests/test_qwen_vision_norm.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
 
+tests/test_qwen_vision_rope.o: tests/test_qwen_vision_rope.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
+
+tests/test_qwen_vision_rope: tests/test_qwen_vision_rope.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-qwen-vision-rope: tests/test_qwen_vision_rope
+	./tests/test_qwen_vision_rope
+
 tests/test_qwen_vision_norm: tests/test_qwen_vision_norm.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
@@ -2016,6 +2025,7 @@ clean:
 	rm -f tests/test_inkling_mtp_shared tests/test_inkling_mtp_shared.o
 	rm -f tests/test_inkling_encoders tests/test_inkling_encoders.o
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
+	rm -f tests/test_qwen_vision_rope tests/test_qwen_vision_rope.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
 	rm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o

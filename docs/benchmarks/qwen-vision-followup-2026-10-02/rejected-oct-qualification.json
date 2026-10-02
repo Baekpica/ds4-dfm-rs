@@ -1,0 +1,299 @@
+{
+  "schema": "qwen-rejected-oct-qualification-v1",
+  "decision": {
+    "adopted": false,
+    "reason": "Fresh whole-workload regressions despite isolated -0.944% and 94-register cost",
+    "full_model_exact_cases": 5,
+    "attention_parity_cases": 23,
+    "memcheck_errors": 0,
+    "ab_audits_passed": true,
+    "additional_accepted_rounds": 1,
+    "remaining_minimum": 1
+  },
+  "source": {
+    "worktree": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi",
+    "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+    "diff_sha256": "2f1504152c079ec06ecf06af1bc96c5c0390ac28287196878092a1733d39565b",
+    "status": " M docs/qwen-vision-followup-2026-10-02.md\n M ds4_cuda.cu\n M tests/test_qwen_vision_attention.c\n M tests/test_qwen_vision_host.c\n"
+  },
+  "archived_code_patch": {
+    "path": "scratch/qwen-multi-image-r2-20261002/oct-rejected.patch",
+    "sha256": "d30bedb577b0454d95c20c72badfb3944466188fcb038324f001b1dda6fa2a01",
+    "scope": [
+      "ds4_cuda.cu",
+      "tests/test_qwen_vision_attention.c",
+      "tests/test_qwen_vision_host.c"
+    ],
+    "note": "The full measured diff pin includes contemporaneous report edits; this saved patch retains only experiment code."
+  },
+  "build": {
+    "http_worker_sha256": "2fd4df4b0845ff952d7570e42b938eef27d781983d4fd65b6b547b0feacd4722",
+    "native_gate_sha256": "c23ca208f6816e0211cc713e2f01fff74727a704877658c79b4ee46c9c83f679",
+    "isolated_profile_sha256": "f0c6dc6eb3e1d4294effae61d77d0d271fcdae3cbad66552c0b759faff40f9a6"
+  },
+  "artifact": {
+    "id": "Darwin-180B-RSI",
+    "revision": "0caa1f4961fc9d1ef9de400df7f11dd7ac6a6cd1",
+    "manifest_sha256": "22a1f667f731c776f78fe1eca86ca1dafadde48aa9e35ecf8bf985cae1f24c9b",
+    "full_hashes": "../qwen-vision-2026-10-02/artifacts.json"
+  },
+  "device": {
+    "name": "NVIDIA GB10",
+    "sm": 121,
+    "driver": "615.71.09",
+    "cuda_toolkit": "13.3.73",
+    "clock_range_mhz": [
+      300,
+      2200
+    ]
+  },
+  "serving": {
+    "argv": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/ds4-server-oct-measured",
+      "--cuda",
+      "-m",
+      "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/MQ-Q5-SSD-PLE-BF16/Darwin-180B-RSI-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+      "-c",
+      "262144",
+      "--max-seqs",
+      "1",
+      "--prefix-reuse",
+      "partial",
+      "--native-chunk",
+      "8192",
+      "--mtp-mode",
+      "on",
+      "--mtp-draft",
+      "2",
+      "--mem-floor-gb",
+      "2",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8002",
+      "--cors",
+      "--model-id",
+      "Darwin-180B-RSI",
+      "--kv-disk-dir",
+      "<fresh-kv>",
+      "--kv-disk-space-mb",
+      "32768",
+      "--no-update-check"
+    ],
+    "runtime_env": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/workspace/ds4-exaone/runtime/darwin-8002-20261002/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_QWEN_BATCH": "1",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/PLE-FP8",
+      "DS4_QWEN_PLE_WORKERS": "16",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_VISION_PACK": "1",
+      "DS4_QWEN_VISION_QUAD": "1",
+      "DS4_SERVER_COALESCE_MAX": "1",
+      "DS4_SERVER_COALESCE_MAX_TOKENS": "16384",
+      "DS4_SERVER_COALESCE_WAIT_MS": "20",
+      "DS4_SERVER_CONTINUOUS": "1",
+      "DS4_SERVER_FORK": "1",
+      "DS4_SERVER_FORK_PARTIAL": "1",
+      "DS4_SERVER_WARM": "1",
+      "DS4_SESSION_GRAPH_FIT": "1",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "1024"
+    },
+    "owner_binary_sha256": "2c006f64a583138c2e94087816366812a75a5793959dde6008934615f18a9829",
+    "owner_preserved": true
+  },
+  "comparison": {
+    "control": "DS4_QWEN_VISION_OCT",
+    "arms": [
+      0,
+      1
+    ],
+    "quad": "1",
+    "pack": "1",
+    "order": [
+      0,
+      1,
+      1,
+      0,
+      0,
+      1
+    ],
+    "suites": [
+      "prefill",
+      "response"
+    ],
+    "workers": 12,
+    "repeats_per_arm_suite": 3,
+    "cache": "empty isolated disk KV per fresh worker, every prompt uncached; fixed case order can warm PLE/allocator"
+  },
+  "audit": {
+    "complete": true,
+    "passed": true,
+    "stats": 90,
+    "responses": 78,
+    "ownership_snapshots": 48,
+    "parity": {
+      "choices_finish_reasons": true,
+      "usage": true,
+      "request_sha256": true,
+      "fixture_sha256": true
+    },
+    "fault_maxima": {
+      "census": 0,
+      "governor": 0,
+      "observation": 0,
+      "substrate_outstanding": 0
+    },
+    "guards_all_exit_zero": true,
+    "min_available_gib": 20.558094024658203,
+    "max_full_psi_avg10_pct": 0.18,
+    "clock_samples": 392,
+    "observed_clock_mhz": [
+      2190,
+      2197
+    ]
+  },
+  "correctness": {
+    "attention_cases": 23,
+    "exact_off_on_repeat_default": true,
+    "cross_image_isolation": true,
+    "f64_max_and_relative_rms_bounds": 5e-05,
+    "memcheck_errors": 0,
+    "native_full_model_cases": 5,
+    "native_passes": "packed Quad/packed Quad/packed OCT/packed OCT",
+    "samples": 32,
+    "vocab": 248320,
+    "raw_logits_before_eos_exclusion": true,
+    "excluded_token_ids": [
+      248046,
+      248044
+    ],
+    "saved_frontier": "prompt+31; output 32 pending",
+    "numeric_rows": "rejected-oct-numeric.csv",
+    "functional_mtp_restore_audit_run": false
+  },
+  "scope": "Rejected GB10/Darwin experiment. HTTP caps 1/32 include MTP serving, but do not qualify independent functional tool/cache/restore behavior or filled 256K/concurrency.",
+  "raw_receipts": [
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/ab-oct-summary.json",
+      "sha256": "db87603e13b0d7c0172b1eacf0df5ac0dd22d9ed5e000e5fec2ae3ad52613ca4"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/ab-oct-summary.csv",
+      "sha256": "8dc248bfd9702e2584707909f661ea18bcc27b9551f75b4ac2259c149b96c817"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/ab-oct-summary-samples.csv",
+      "sha256": "a0f41fe96b1aab5901efb69fbedca0ef5a7b4a9ae31759550b7ca15ee195506c"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/oct-codegen.json",
+      "sha256": "c4fef55a759fe192c0c21da3eec9a33bf67a37652d0b9371a8d63d4bc22ab15a"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/oct-counters.json",
+      "sha256": "bc9b5b5cef3db455568bd1521f3ff552d19804776f0686759c7a2dc53273c5a5"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/packed-remeasure-counters.json",
+      "sha256": "c01813ffcb387a64394c608062184d2fbdbac117e7463a2956ba8f3d68578042"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/oct-decision.json",
+      "sha256": "d2e3cf8d03d3cac41c884c9628fe72e665f450077dd8462874ce60b605c664ab"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/oct-parity.log",
+      "sha256": "ac1891f24e1bcee89601c283455e91a9caa5de89ebdc17e6b6bc3b09804cf98a"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/oct-memcheck.log",
+      "sha256": "f6c7ddb655b3d3d726626213a85b340c171cf6a69e6f55ef96327ff9f1042c32"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/oct-rejected.patch",
+      "sha256": "d30bedb577b0454d95c20c72badfb3944466188fcb038324f001b1dda6fa2a01"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/attention-oct-metadata.json",
+      "sha256": "82a1066611653fc83d8ecbb91babbc9f320156dbe3f8d9ad4f62fdf5988a59cf"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/attention-oct-receipt.json",
+      "sha256": "b469fad03682fc7ceee5a74194f0cb179fd781adc1cd4e4ef40025357445b310"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/metadata.json",
+      "sha256": "bf62e7895a34c6fec0f205172b0fe2a424d0b054306511d87b17e39c668d9ae6"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/receipt.json",
+      "sha256": "c9904913c73f0863ef39ff84d580ffe54ebe29654da7f78cde5eea2d63dced4f"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/screen/receipt.json",
+      "sha256": "332b8288e24fd1a5a00a2b8b41a1156c3b4c59a26263bd95c16da7b309598d88"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/screen/worker.log",
+      "sha256": "1efc4d3f3cbf51c02ecdc2e62ba1ddb6943365001d8c1bb04686d44f202493ac"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/document/receipt.json",
+      "sha256": "b78c1a54dca969e86db9548fafdfb86a8c0ba398ed629eba528145d3d13f91ba"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/document/worker.log",
+      "sha256": "ac05ad8146ea9ee09238834a96d6748e253fb0a5b2e6d123c36580d1fbf378a7"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/photo/receipt.json",
+      "sha256": "780e969a89091c058419a196c5127ae592e54889be6f8df2128001589efd7be6"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/photo/worker.log",
+      "sha256": "3e1eaa028cc27e88bfb055da402733f40ebbf6491da62c38facbbf27cde83c79"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/large/receipt.json",
+      "sha256": "8caa2f949a7972d3174ad29c204a1e474a5ff45eeb0e73504f3bfb17061faccc"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/large/worker.log",
+      "sha256": "e3a211ecaf13738029420161a2a4e843fcc67e160e8e957cac30de2223bd1515"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/multi/receipt.json",
+      "sha256": "318e8ad0760e8eae7b72aa06745e66db3e3c0f25c179b8f841b1191b7fe4f7e7"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-oct/multi/worker.log",
+      "sha256": "faf756b870061064308c75f9733f503d3a5e404311f076ed060527140750a59b"
+    }
+  ],
+  "published_evidence": [
+    {
+      "path": "rejected-oct-codegen.json",
+      "sha256": "c4fef55a759fe192c0c21da3eec9a33bf67a37652d0b9371a8d63d4bc22ab15a"
+    },
+    {
+      "path": "rejected-oct-counters.json",
+      "sha256": "1556aad27c129183e98b6640066e56398ce83cd7d1298044bba8eea46907dd57"
+    },
+    {
+      "path": "rejected-oct-latency.csv",
+      "sha256": "60e6c54fe887323b6c0e37f18968b1c27f074796880816cc61b4b39c477510b1"
+    },
+    {
+      "path": "rejected-oct-numeric.csv",
+      "sha256": "cab8081c610618154fe288696bd5ea8a96626cf4402ff9aa5fcf7e18b87d137a"
+    },
+    {
+      "path": "rejected-oct-samples.csv",
+      "sha256": "b420e5e28c527fb417a8e7fb8a0caf1e7c18451c90575064a5ce05333a50217d"
+    }
+  ]
+}

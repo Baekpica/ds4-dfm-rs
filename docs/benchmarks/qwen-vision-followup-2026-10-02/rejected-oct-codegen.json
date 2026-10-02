@@ -1,0 +1,19 @@
+[
+  {
+    "queries": 4,
+    "kernel": "_Z23qwen_vision_tile_kernelILj4ELb1EEvPfPKfPKiS4_jjj",
+    "instructions": 2320,
+    "static_bytes": 37120,
+    "encoded_assembly_sha256": "c02ba3dcb6e89806f74c9a304e3fd988948a9448d9bb87066978730c6dfd1d05",
+    "retained_quad_exact_assembly_and_encoding": true,
+    "resource_record": "Function _Z23qwen_vision_tile_kernelILj4ELb1EEvPfPKfPKiS4_jjj:\n  REG:56 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:940 TEXTURE:0 SURFACE:0 SAMPLER:0"
+  },
+  {
+    "queries": 8,
+    "kernel": "_Z23qwen_vision_tile_kernelILj8ELb1EEvPfPKfPKiS4_jjj",
+    "instructions": 4360,
+    "static_bytes": 69760,
+    "encoded_assembly_sha256": "cf8090e62d931ae23dd2d56177c3cc7b6f0c8fac4192f98ce1ba61b8d75356c8",
+    "resource_record": "Function _Z23qwen_vision_tile_kernelILj8ELb1EEvPfPKfPKiS4_jjj:\n  REG:94 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:940 TEXTURE:0 SURFACE:0 SAMPLER:0"
+  }
+]

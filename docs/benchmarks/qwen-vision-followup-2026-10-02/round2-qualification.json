@@ -1,0 +1,379 @@
+{
+  "schema": "qwen-vision-followup-round2-v1",
+  "control": "DS4_QWEN_VISION_FUSE_ROPE",
+  "decision": {
+    "adopted": true,
+    "reason": "Two fresh worker campaigns show disjoint four-image cap1 TTFT ranges and useful reductions, unchanged full numerical state and responses, overlapping decode controls, and passing MTP/tool/live/disk/cold gates. Target requests/instructions fall without new tensor storage; 32 registers and 4352 bytes of additional fallback-retained code are recorded.",
+    "accepted_additional_rounds": 2,
+    "minimum_remaining": 0,
+    "ab_multi_ttft_ms": [
+      5103.2,
+      5082.4
+    ],
+    "text_control_multi_ttft_ms": [
+      5112.4,
+      5104.0
+    ],
+    "target_ms": [
+      0.549824,
+      0.449792
+    ],
+    "further_whole_profile_required": true,
+    "pr_required": true,
+    "service_restore_required": true
+  },
+  "source": {
+    "worktree": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi",
+    "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+    "diff_sha256": "ca95263e47f3d247f2f57dfa9f53611c1f9924f3e314960e828235e270b10f22",
+    "status": " M Makefile\n M docs/benchmarks/qwen-vision-followup-2026-10-02/round1-qualification.json\n M docs/qwen-vision-followup-2026-10-02.md\n M ds4_cuda.cu\n M tests/fixtures/qwen-images/README.md\n M tests/test_qwen_vision_host.c\nA  tests/test_qwen_vision_rope.c\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-codegen.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-counters.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-latency.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-numeric.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-qualification.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-samples.csv\n?? tests/test_qwen_vision_rope\n"
+  },
+  "worker_binary_sha256": "25012b163bd7990d598418073ae26aa3e733a164374ddd15be63bbf45228934f",
+  "numeric_binary_sha256": "0d19493582e001a0b6ee6bec33d9eba153a0fdf3b5577d462f0f33a232ebe3c6",
+  "artifact": {
+    "artifact_manifest_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-20261002/artifacts-verified.json",
+    "artifact_manifest_sha256": "22a1f667f731c776f78fe1eca86ca1dafadde48aa9e35ecf8bf985cae1f24c9b",
+    "id": "Darwin-180B-RSI",
+    "revision": "0caa1f4961fc9d1ef9de400df7f11dd7ac6a6cd1",
+    "full_hashes": "../qwen-vision-2026-10-02/artifacts.json"
+  },
+  "serving": {
+    "argv": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/ds4-server-fuse-measured",
+      "--cuda",
+      "-m",
+      "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/MQ-Q5-SSD-PLE-BF16/Darwin-180B-RSI-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+      "-c",
+      "262144",
+      "--max-seqs",
+      "1",
+      "--prefix-reuse",
+      "partial",
+      "--native-chunk",
+      "8192",
+      "--mtp-mode",
+      "on",
+      "--mtp-draft",
+      "2",
+      "--mem-floor-gb",
+      "2",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8002",
+      "--cors",
+      "--model-id",
+      "Darwin-180B-RSI",
+      "--kv-disk-dir",
+      "<fresh-kv>",
+      "--kv-disk-space-mb",
+      "32768",
+      "--no-update-check"
+    ],
+    "runtime_env": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/workspace/ds4-exaone/runtime/darwin-8002-20261002/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_QWEN_BATCH": "1",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/PLE-FP8",
+      "DS4_QWEN_PLE_WORKERS": "16",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_VISION_OCT": "0",
+      "DS4_QWEN_VISION_PACK": "1",
+      "DS4_QWEN_VISION_QUAD": "1",
+      "DS4_SERVER_COALESCE_MAX": "1",
+      "DS4_SERVER_COALESCE_MAX_TOKENS": "16384",
+      "DS4_SERVER_COALESCE_WAIT_MS": "20",
+      "DS4_SERVER_CONTINUOUS": "1",
+      "DS4_SERVER_FORK": "1",
+      "DS4_SERVER_FORK_PARTIAL": "1",
+      "DS4_SERVER_WARM": "1",
+      "DS4_SESSION_GRAPH_FIT": "1",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "1024"
+    }
+  },
+  "whole_worker_baseline": {
+    "raw_path": "scratch/qwen-multi-image-r2-20261002/whole-after-oct.json",
+    "sha256": "72354475cc3e1a6a9f874de0a5dbd898110cd42901e86728fe27308137dcdc20",
+    "source": {
+      "worktree": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi",
+      "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+      "diff_sha256": "2d7f534ce89ffd335dd2393670573384173cc6cbf6914a4acb45fda1002777a3",
+      "status": " M docs/qwen-vision-followup-2026-10-02.md\n"
+    },
+    "build": {
+      "binary_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/ds4-server-packed-retained",
+      "binary_sha256": "6b60a3d55b16ce3b3a830cb32b2d630f94c05360649da0452ddbf5d3f4ba824c"
+    },
+    "workloads": [
+      {
+        "case": "multi",
+        "profiled_ttft_ms": 5127.4,
+        "qkv_bias_ms": 31.056704,
+        "rope_ms": 24.990464
+      },
+      {
+        "case": "screen",
+        "profiled_ttft_ms": 1468.8,
+        "qkv_bias_ms": 8.670528,
+        "rope_ms": 7.371936
+      }
+    ]
+  },
+  "ab": {
+    "workers": 12,
+    "responses": 78,
+    "stats": 90,
+    "ownership_snapshots": 48,
+    "exact_choices_usage_requests_fixtures": true,
+    "fault_maxima": {
+      "census": 0,
+      "governor": 0,
+      "observation": 0,
+      "substrate_outstanding": 0
+    },
+    "all_guards_exit_zero": true,
+    "clock_samples": 394,
+    "observed_clock_mhz": [
+      2190,
+      2197
+    ],
+    "min_available_gib": 20.524620056152344,
+    "max_full_psi_avg10_pct": 0.0
+  },
+  "text": {
+    "workers": 6,
+    "responses": 12,
+    "stats": 18,
+    "ownership_snapshots": 24,
+    "exact_choices_usage_requests_fixtures": true,
+    "fault_maxima": {
+      "census": 0,
+      "governor": 0,
+      "observation": 0,
+      "substrate_outstanding": 0
+    },
+    "all_guards_exit_zero": true,
+    "clock_samples": 102,
+    "observed_clock_mhz": [
+      2190,
+      2197
+    ],
+    "min_available_gib": 20.73031234741211,
+    "max_full_psi_avg10_pct": 0.0
+  },
+  "numerical": {
+    "cases": [
+      "screen",
+      "document",
+      "photo",
+      "large",
+      "multi"
+    ],
+    "samples": 32,
+    "vocab": 248320,
+    "passes": 4,
+    "exact": true,
+    "state_boundary": "prompt+31; output 32 pending"
+  },
+  "rope_fixture": {
+    "cases": 16,
+    "full_qkv_v_exact": true,
+    "repeat_default": true,
+    "rounding_edges": true,
+    "memcheck_errors": 0
+  },
+  "functional_independent_audit": "PASS",
+  "limits": "Configured 262144-token seq1 capacity; fixed one/four still images and 18K reuse/restore fixture. Filled 256K, video, concurrency and long Agent throughput remain unqualified.",
+  "raw_receipts": [
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/ab-fuse-summary.json",
+      "sha256": "79866a6db4ac077bd8f70effcc4e38d8071e8677d068e2068b33ea5fdbe82af0"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/text-fuse-summary.json",
+      "sha256": "161caad6a96de76fc6ede12cef3d1b2ee6ee2fd3e4e9f9f53dac690b2deefd46"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/fuse-counters.json",
+      "sha256": "6b6da5550197f9abce31df54925887709348dd4879c35078cd9ca35273d35918"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/fuse-codegen.json",
+      "sha256": "524aa33741e2732a7f98c05d6032fcea78ee39d73f4771094e102a2500be4c7b"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/functional-fuse-audit.json",
+      "sha256": "ac752aeba771caa8c1f88611be71219c9f4ba02b2f35457534c873c76c4121e8"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/fuse-unit.log",
+      "sha256": "98df757f80eee3a989ede0d70ec4dfd3dc221c2180e33c5ba4ec8ac7c49ce2e0"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/fuse-memcheck.log",
+      "sha256": "5b1ae306086e88e554c5db8aeacc7c893afec8d84015604055b7b2e1dd85dc44"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/fuse-decision.json",
+      "sha256": "82d79b74e8b9d2fe08494f570307ee3987e87d5624cb6932e49194bd56e88db7"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/metadata.json",
+      "sha256": "6004497d15cf400ad3552bfcf6ee491ea49c993d806552e219f0971651389473"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/receipt.json",
+      "sha256": "02f73640c74ee7336beebe97e97136bd089c92647dc16d88a72310d8176c3d78"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/screen/worker.log",
+      "sha256": "84c60196dba4c0c1bb3611a3d0dcefa15fda2cae480e5b38481c9ededfb8f3ca"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/screen/receipt.json",
+      "sha256": "dcb3d1ba7d549f637460fb8b49d569ec9181f1a7791f757f33e706a5e8458d55"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/document/worker.log",
+      "sha256": "0b8a7174f5738485551b0b389dd638b0760f29b1dfce59fee9a4529d920c9dd9"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/document/receipt.json",
+      "sha256": "b07f1c778665d8cc00c1a545e84325a5c88d71b501d04e91b7adebe819650f70"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/photo/worker.log",
+      "sha256": "dfa466bcdd047516531834495a930bfb496fa7aa13a1ef47d65045be32816c8e"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/photo/receipt.json",
+      "sha256": "8e61f6c153fc6ef09196550f5650d768e155a91c5e3303a46e911f5522309fb8"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/large/worker.log",
+      "sha256": "904136a5e92076749165d5adce18b0dfcb21860d977af58a9482517a691cf4f7"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/large/receipt.json",
+      "sha256": "1c85f9e1469eb717228e52578e9b1f1c3e3db162cecc40cb9e3557ae5db45737"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/multi/worker.log",
+      "sha256": "df0649cfa6324465ea552f8d0bbf24b11750ceb1a99a2f5309889ec8c4e55aa7"
+    },
+    {
+      "path": "scratch/qwen-multi-image-r2-20261002/numeric-fuse/multi/receipt.json",
+      "sha256": "974326e473bb2a51ae32f3be96138b05efb4f49b3c3c4c210a734cc3f17521d2"
+    }
+  ],
+  "pipeline_receipt": {
+    "path": "scratch/qwen-multi-image-r2-20261002/fuse-qualification.json",
+    "sha256": "be473478be9a5570bac5cb854f319294478c147be9500e505aaa3d06f0276d95",
+    "complete": true
+  },
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "sm": 121,
+    "cuda": "13.3.73",
+    "driver": "615.71.09",
+    "clock_range_mhz": [
+      300,
+      2200
+    ]
+  },
+  "measured_regime": {
+    "control": "DS4_QWEN_VISION_FUSE_ROPE=0/1",
+    "fresh_workers": 18,
+    "repeats_per_arm_suite": 3,
+    "order": [
+      0,
+      1,
+      1,
+      0,
+      0,
+      1
+    ],
+    "cache": "Every timed prompt uncached; empty isolated disk KV per worker; fixed case order can warm PLE/allocator."
+  },
+  "published_evidence": [
+    {
+      "path": "round2-codegen.json",
+      "sha256": "524aa33741e2732a7f98c05d6032fcea78ee39d73f4771094e102a2500be4c7b"
+    },
+    {
+      "path": "round2-counters.json",
+      "sha256": "5c99166d3be00b2b1c5efed09a32916236fe2dd7a132ad85486e578ca628935d"
+    },
+    {
+      "path": "round2-default-sass.json",
+      "sha256": "4b349efb88ceaece03629c36c67553892aa8e48928c093d04e5b103b5d9d8cfe"
+    },
+    {
+      "path": "round2-functional.json",
+      "sha256": "dd9185fa4d452829d7834edc6effbde33ed2238333a45cfc69f3f086aa831ebe"
+    },
+    {
+      "path": "round2-latency.csv",
+      "sha256": "c1fab7608119e131b17b4ba166de5513b6e26a8b7e6bbdb28ae2a196e0cfc4e5"
+    },
+    {
+      "path": "round2-numeric.csv",
+      "sha256": "d716c34470f9d18c16d5423ffb2245cf57ce7c16d9922c20ff7a29514cb68bf9"
+    },
+    {
+      "path": "round2-samples.csv",
+      "sha256": "27f0a6478631a50225472008ccf38032e9824aba43ac34fa6bdcc0b3a56e4e76"
+    },
+    {
+      "path": "round2-text-latency.csv",
+      "sha256": "c4d284afd483a104750664f64c3d0408308ccf33d8f86d64d33dcccc677c8820"
+    },
+    {
+      "path": "round2-text-samples.csv",
+      "sha256": "69aa20dac51006c2d570372170db359d110d5b60723ba57b1ee83cc2705e439f"
+    },
+    {
+      "path": "round2-whole-profile.json",
+      "sha256": "ef107ca4be61762beedb5143c510b1a7af930e31e32234aec7d39a64b0ee3e62"
+    }
+  ],
+  "default_build": {
+    "worker_binary_sha256": "485c7773e0ade5ac55961703b81dea875acc38bbdff7d2bb9eedb42c8cb1616a",
+    "unit_cases": 16,
+    "unit_exact_repeat_unset_default": true,
+    "nonzero_assembly_and_encoding_exact": true,
+    "kernel_instructions": {
+      "_Z27qwen4exp_vision_bias_kernelPfPKfmji": 160,
+      "_Z27qwen4exp_vision_rope_kernelPfPKiS1_jjjf": 240,
+      "_Z28qwen_vision_bias_rope_kernelPfPKfPKiS3_jjjf": 272,
+      "_Z23qwen_vision_tile_kernelILj4ELb1EEvPfPKfPKiS4_jjj": 2320
+    },
+    "raw_receipts": [
+      {
+        "path": "scratch/qwen-multi-image-r2-20261002/fuse-default-unit.log",
+        "sha256": "98df757f80eee3a989ede0d70ec4dfd3dc221c2180e33c5ba4ec8ac7c49ce2e0"
+      },
+      {
+        "path": "scratch/qwen-multi-image-r2-20261002/fuse-default-build.log",
+        "sha256": "1622f32e64fecbb172f8d1b90ab30e88060b4799bd25efe93f91fe6fe32bf1fa"
+      },
+      {
+        "path": "scratch/qwen-multi-image-r2-20261002/fuse-default-sass-exact.json",
+        "sha256": "4b349efb88ceaece03629c36c67553892aa8e48928c093d04e5b103b5d9d8cfe"
+      }
+    ]
+  },
+  "retained_whole_profile": {
+    "evidence": "round2-whole-profile.json",
+    "complete": true,
+    "retained_worker_sha256": "485c7773e0ade5ac55961703b81dea875acc38bbdff7d2bb9eedb42c8cb1616a",
+    "decision": {
+      "further_candidate_adopted": false,
+      "reason": "Attention remains 54.44% of four-image TTFT. No unexpected fallback or new redundant transformation was identified; eight-query mapping was rejected for end-to-end regressions and register/code costs. Further changes require another measurement campaign.",
+      "scope": "Configured 262144-token seq1 capacity; fixed one/four still images and 18K reuse/restore fixture. Filled 256K, video, concurrency and long Agent throughput remain unqualified."
+    }
+  }
+}

@@ -1,0 +1,784 @@
+{
+  "schema": "qwen-vision-followup-whole-round2-v1",
+  "purpose": "Two single fresh Nsight worker captures locate the retained bottleneck; repeated latency qualification is in the matched A/B CSVs.",
+  "profiler": {
+    "command_prefix": [
+      "nsys",
+      "profile",
+      "--trace=cuda,nvtx,osrt",
+      "--sample=none",
+      "--cpuctxsw=none",
+      "--cuda-graph-trace=node",
+      "--force-overwrite=false"
+    ],
+    "extractor": {
+      "path": "scratch/qwen-multi-image-r2-20261002/whole_profile.py",
+      "sha256": "3d8f85bb3639788a3f95b4ad44a60edfe840b4a4c436c9e13fc7a2f906e46d41"
+    }
+  },
+  "boundaries": {
+    "vision": "Patch GEMM BF16 input cast through final merger bias, ending before text embedding; excludes startup/prewarm and text/decode.",
+    "qkv_stage": "Only the bias immediately before each standalone RoPE and the RoPE immediately before each attention, or the single fused kernel immediately before attention; excludes other vision bias calls.",
+    "counts_per_request": {
+      "vision_layers": 27,
+      "old_qkv_pairs": 27,
+      "old_qkv_kernel_calls": 54,
+      "fused_qkv_kernel_calls": 27
+    },
+    "workload_order": [
+      "multi",
+      "screen"
+    ],
+    "timed_prompt_cached_tokens": 0,
+    "output_tokens_per_request": 1,
+    "not_a_repeated_ab": true
+  },
+  "captures": [
+    {
+      "name": "profile-after-oct",
+      "source": {
+        "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+        "diff_sha256": "2d7f534ce89ffd335dd2393670573384173cc6cbf6914a4acb45fda1002777a3"
+      },
+      "build": {
+        "binary_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/ds4-server-packed-retained",
+        "binary_sha256": "6b60a3d55b16ce3b3a830cb32b2d630f94c05360649da0452ddbf5d3f4ba824c"
+      },
+      "artifact": {
+        "id": "Darwin-180B-RSI",
+        "artifact_manifest_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-20261002/artifacts-verified.json",
+        "artifact_manifest_sha256": "22a1f667f731c776f78fe1eca86ca1dafadde48aa9e35ecf8bf985cae1f24c9b"
+      },
+      "serving_argv": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/ds4-server-packed-retained",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/MQ-Q5-SSD-PLE-BF16/Darwin-180B-RSI-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "-c",
+        "262144",
+        "--max-seqs",
+        "1",
+        "--prefix-reuse",
+        "partial",
+        "--native-chunk",
+        "8192",
+        "--mtp-mode",
+        "on",
+        "--mtp-draft",
+        "2",
+        "--mem-floor-gb",
+        "2",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8002",
+        "--cors",
+        "--model-id",
+        "Darwin-180B-RSI",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/profile-after-oct/cold-kv",
+        "--kv-disk-space-mb",
+        "32768",
+        "--no-update-check"
+      ],
+      "runtime_env": {
+        "DS4_SERVER_COALESCE_WAIT_MS": "20",
+        "DS4_QWEN_PLE_CACHE_MB": "2048",
+        "DS4_MEMGOV": "observe",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_QWEN_PREFILL_CHUNK": "8192",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/workspace/ds4-exaone/runtime/darwin-8002-20261002/weights.manifest",
+        "DS4_SESSION_GRAPH_FIT": "1",
+        "DS4_QWEN_BATCH": "1",
+        "DS4_QWEN_VISION_QUAD": "1",
+        "DS4_SERVER_FORK": "1",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "DS4_SERVER_FORK_PARTIAL": "1",
+        "DS4_SERVER_COALESCE_MAX_TOKENS": "16384",
+        "DS4_SESSION_GRAPH_HEADROOM_MB": "1024",
+        "DS4_SERVER_COALESCE_MAX": "1",
+        "DS4_SERVER_WARM": "1",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/PLE-FP8",
+        "DS4_QWEN_PLE_WORKERS": "16"
+      },
+      "control_values": {
+        "DS4_QWEN_VISION_QUAD": "1",
+        "DS4_QWEN_VISION_PACK": null,
+        "DS4_QWEN_VISION_FUSE_ROPE": null,
+        "DS4_QWEN_VISION_OCT": null
+      },
+      "hardware": {
+        "gpu": "NVIDIA GB10",
+        "sm": 121,
+        "driver": "615.71.09",
+        "cuda": "13.3.73",
+        "clock_range_mhz": [
+          300,
+          2200
+        ],
+        "samples": 108,
+        "observed_clock_mhz": [
+          2190,
+          2197
+        ]
+      },
+      "workloads": [
+        {
+          "case": "multi",
+          "profiled_ttft_ms": 5127.4,
+          "profiled_wall_ms": 5135.663102002582,
+          "vision_busy_ms": 3189.845888,
+          "vision_span_ms": 3201.373024,
+          "vision_gap_ms": 11.527136000000155,
+          "vision_kernel_calls": 660,
+          "attention_calls": 27,
+          "attention_ms": 2784.391296,
+          "attention_ttft_pct": 54.304156024495846,
+          "qkv_bias_ms": 31.056704,
+          "rope_ms": 24.990464,
+          "qkv_stage_ms": 56.047168,
+          "qkv_stage_calls": 54,
+          "qkv_stage_ttft_pct": 1.093091391348442,
+          "prompt_tokens": 2659,
+          "completion_tokens": 1,
+          "cached_tokens": 0,
+          "kernels": [
+            {
+              "kernel": "void qwen_vision_tile_kernel<(unsigned int)4, (bool)1>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+              "calls": 27,
+              "ms": 2784.3912960000002
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_kernel(float *, const float *, unsigned long, unsigned int, int)",
+              "calls": 56,
+              "ms": 69.68601599999998
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)1>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 58.161088
+            },
+            {
+              "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_bf16_128x256_32x3_tn_align8>(T1::Params)",
+              "calls": 27,
+              "ms": 55.647360000000006
+            },
+            {
+              "kernel": "<unnamed>::dq8::dense_q8_d2r_kernel(const char *, const char *, const block_q8_1_mmq *, float *, int, int, int, int)",
+              "calls": 27,
+              "ms": 42.073631999999996
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_residual_kernel(float *, const float *, const float *, unsigned long, unsigned int)",
+              "calls": 54,
+              "ms": 30.494943999999997
+            },
+            {
+              "kernel": "f32_to_bf16_kernel(__nv_bfloat16 *, const float *, unsigned long)",
+              "calls": 28,
+              "ms": 29.786911999999997
+            },
+            {
+              "kernel": "<unnamed>::ds4_mmq_sanitize_f32_kernel(float *, unsigned long)",
+              "calls": 56,
+              "ms": 25.598911999999995
+            },
+            {
+              "kernel": "qwen4exp_vision_rope_kernel(float *, const int *, const int *, unsigned int, unsigned int, unsigned int, float)",
+              "calls": 27,
+              "ms": 24.990463999999992
+            },
+            {
+              "kernel": "void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)0>(const float *, const int *, void *, long, long, long, long, long, int, int)",
+              "calls": 137,
+              "ms": 22.854495999999994
+            },
+            {
+              "kernel": "qwen4exp_vision_layernorm_kernel(float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+              "calls": 55,
+              "ms": 22.217056000000003
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)0>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 14.123135999999997
+            },
+            {
+              "kernel": "void mm_ids_helper<(int)1>(const int *, int *, int *, int *, int, int, int, int, int)",
+              "calls": 54,
+              "ms": 5.551615999999996
+            },
+            {
+              "kernel": "void mul_mat_q<(ggml_type)8, (int)128, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3, const char *, long)",
+              "calls": 2,
+              "ms": 3.031904
+            },
+            {
+              "kernel": "nvjet_sm121_tss_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_TNNN",
+              "calls": 1,
+              "ms": 0.635424
+            },
+            {
+              "kernel": "qwen4exp_vision_patch_position_kernel(float *, const float *, const cuda_block_q8_0 *, const int *, const float *, unsigned int, unsigned int)",
+              "calls": 1,
+              "ms": 0.439296
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_build_tile_worklist<(int)128>(const int *, uint3 *, unsigned int *, int, int, int)",
+              "calls": 54,
+              "ms": 0.16233599999999998
+            }
+          ]
+        },
+        {
+          "case": "screen",
+          "profiled_ttft_ms": 1468.8,
+          "profiled_wall_ms": 1476.660804997664,
+          "vision_busy_ms": 669.9184319999999,
+          "vision_span_ms": 674.8088,
+          "vision_gap_ms": 4.89036800000008,
+          "vision_kernel_calls": 661,
+          "attention_calls": 27,
+          "attention_ms": 559.679392,
+          "attention_ttft_pct": 38.10453376906318,
+          "qkv_bias_ms": 8.670528,
+          "rope_ms": 7.371936,
+          "qkv_stage_ms": 16.042464,
+          "qkv_stage_calls": 54,
+          "qkv_stage_ttft_pct": 1.0922156862745098,
+          "prompt_tokens": 797,
+          "completion_tokens": 1,
+          "cached_tokens": 0,
+          "kernels": [
+            {
+              "kernel": "void qwen_vision_tile_kernel<(unsigned int)4, (bool)1>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+              "calls": 27,
+              "ms": 559.679392
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_kernel(float *, const float *, unsigned long, unsigned int, int)",
+              "calls": 56,
+              "ms": 19.17711999999999
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)1>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 18.489759999999997
+            },
+            {
+              "kernel": "nvjet_sm121_tss_mma_128x192x64_2_32x96x64_tmaAB_alignCD4_bz_TNNN",
+              "calls": 27,
+              "ms": 13.719936000000002
+            },
+            {
+              "kernel": "<unnamed>::dq8::dense_q8_d2r_kernel(const char *, const char *, const block_q8_1_mmq *, float *, int, int, int, int)",
+              "calls": 27,
+              "ms": 12.986847999999997
+            },
+            {
+              "kernel": "f32_to_bf16_kernel(__nv_bfloat16 *, const float *, unsigned long)",
+              "calls": 28,
+              "ms": 9.093280000000002
+            },
+            {
+              "kernel": "qwen4exp_vision_rope_kernel(float *, const int *, const int *, unsigned int, unsigned int, unsigned int, float)",
+              "calls": 27,
+              "ms": 7.371936000000002
+            },
+            {
+              "kernel": "<unnamed>::ds4_mmq_sanitize_f32_kernel(float *, unsigned long)",
+              "calls": 56,
+              "ms": 7.0511680000000005
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_residual_kernel(float *, const float *, const float *, unsigned long, unsigned int)",
+              "calls": 54,
+              "ms": 6.755648
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)0>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 5.492096
+            },
+            {
+              "kernel": "qwen4exp_vision_layernorm_kernel(float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+              "calls": 55,
+              "ms": 4.1983999999999995
+            },
+            {
+              "kernel": "void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)0>(const float *, const int *, void *, long, long, long, long, long, int, int)",
+              "calls": 137,
+              "ms": 3.0167680000000012
+            },
+            {
+              "kernel": "void mm_ids_helper<(int)1>(const int *, int *, int *, int *, int, int, int, int, int)",
+              "calls": 54,
+              "ms": 1.6833600000000002
+            },
+            {
+              "kernel": "void mul_mat_q<(ggml_type)8, (int)128, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3, const char *, long)",
+              "calls": 2,
+              "ms": 0.8294079999999999
+            },
+            {
+              "kernel": "nvjet_sm121_tss_mma_192x128x64_2_48x64x64_tmaAB_alignCD4_bz_TNNN",
+              "calls": 1,
+              "ms": 0.141952
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_build_tile_worklist<(int)128>(const int *, uint3 *, unsigned int *, int, int, int)",
+              "calls": 54,
+              "ms": 0.12335999999999997
+            },
+            {
+              "kernel": "qwen4exp_vision_patch_position_kernel(float *, const float *, const cuda_block_q8_0 *, const int *, const float *, unsigned int, unsigned int)",
+              "calls": 1,
+              "ms": 0.094944
+            },
+            {
+              "kernel": "void mul_mat_q_stream_k_fixup<(ggml_type)8, (int)128, (bool)0>(const int *, const int *, float *, float *, uint3, int, int, int, uint3, int, uint3, int, uint3)",
+              "calls": 1,
+              "ms": 0.013056
+            }
+          ]
+        }
+      ],
+      "raw_receipts": [
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/whole-after-oct.json",
+          "sha256": "72354475cc3e1a6a9f874de0a5dbd898110cd42901e86728fe27308137dcdc20"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/metadata.json",
+          "sha256": "205d53082092217627801e9d52d61742760f8187dfea992c39902cddf0a3442e"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/receipt.json",
+          "sha256": "6bea9d8711a2bd0b1aaa9563060d90db70810bcfc5ddf30db897b04d88a6322c"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/http/receipt.json",
+          "sha256": "c0df512711d260fb5cb9a670ea76218cc4b4311c206d519901f933c8783eebc4"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/http/results.jsonl",
+          "sha256": "153ea55be655d95e6de7657e984e18d72c85eb0200a2400627ecd2a9fee6fa5e"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/clocks.jsonl",
+          "sha256": "8398d5ee679ee7bea44dc3fb9d2d2205731e81f29d5a70c5d00daff2a5678e83"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/http/multi.request.raw.json",
+          "sha256": "df4cd065ddf940d4cf6b4bc4d6086b5626de0a320347dbb793e92e7ae9d8b315"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/http/screen.request.raw.json",
+          "sha256": "bab1f958eed6feeb841e860d32b172f50c6f9ca97653dd55becedf6d79517294"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/http/multi.stats.raw.json",
+          "sha256": "7a38e82beab67e604b4e1573d41b58d38a52d41b9a3551f8f8ceb9abc814551a"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/http/screen.stats.raw.json",
+          "sha256": "09472d066f9b793cd1fdc0e2316d6824ff406bdc80ba462a2f16bdb20e758a6c"
+        }
+      ],
+      "sqlite": {
+        "path": "scratch/qwen-multi-image-r2-20261002/profile-after-oct/profile/candidate-profile.sqlite",
+        "bytes": 8323072,
+        "hash_retained": false
+      }
+    },
+    {
+      "name": "profile-fused-retained",
+      "source": {
+        "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+        "diff_sha256": "dc16b77b8c3355c89efeac4bd6531db0bf9acc1ecb2a1e43d068bf6e21332a2c"
+      },
+      "build": {
+        "binary_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/ds4-server-fuse-retained",
+        "binary_sha256": "485c7773e0ade5ac55961703b81dea875acc38bbdff7d2bb9eedb42c8cb1616a"
+      },
+      "artifact": {
+        "id": "Darwin-180B-RSI",
+        "artifact_manifest_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-20261002/artifacts-verified.json",
+        "artifact_manifest_sha256": "22a1f667f731c776f78fe1eca86ca1dafadde48aa9e35ecf8bf985cae1f24c9b"
+      },
+      "serving_argv": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/ds4-server-fuse-retained",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/MQ-Q5-SSD-PLE-BF16/Darwin-180B-RSI-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "-c",
+        "262144",
+        "--max-seqs",
+        "1",
+        "--prefix-reuse",
+        "partial",
+        "--native-chunk",
+        "8192",
+        "--mtp-mode",
+        "on",
+        "--mtp-draft",
+        "2",
+        "--mem-floor-gb",
+        "2",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8002",
+        "--cors",
+        "--model-id",
+        "Darwin-180B-RSI",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/profile-fused-retained/cold-kv",
+        "--kv-disk-space-mb",
+        "32768",
+        "--no-update-check"
+      ],
+      "runtime_env": {
+        "DS4_SERVER_COALESCE_WAIT_MS": "20",
+        "DS4_MEMGOV": "observe",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_QWEN_PREFILL_CHUNK": "8192",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/workspace/ds4-exaone/runtime/darwin-8002-20261002/weights.manifest",
+        "DS4_SESSION_GRAPH_FIT": "1",
+        "DS4_QWEN_PLE_WORKERS": "16",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Darwin-180B-RSI-Mixed-Quant-GGUF/PLE-FP8",
+        "DS4_SERVER_WARM": "1",
+        "DS4_QWEN_BATCH": "1",
+        "DS4_QWEN_VISION_QUAD": "1",
+        "DS4_SERVER_FORK": "1",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "DS4_SERVER_FORK_PARTIAL": "1",
+        "DS4_SERVER_COALESCE_MAX_TOKENS": "16384",
+        "DS4_SESSION_GRAPH_HEADROOM_MB": "1024",
+        "DS4_QWEN_VISION_OCT": "0",
+        "DS4_QWEN_PLE_CACHE_MB": "2048",
+        "DS4_SERVER_COALESCE_MAX": "1"
+      },
+      "control_values": {
+        "DS4_QWEN_VISION_QUAD": "1",
+        "DS4_QWEN_VISION_PACK": null,
+        "DS4_QWEN_VISION_FUSE_ROPE": null,
+        "DS4_QWEN_VISION_OCT": "0"
+      },
+      "hardware": {
+        "gpu": "NVIDIA GB10",
+        "sm": 121,
+        "driver": "615.71.09",
+        "cuda": "13.3.73",
+        "clock_range_mhz": [
+          300,
+          2200
+        ],
+        "samples": 89,
+        "observed_clock_mhz": [
+          2190,
+          2197
+        ]
+      },
+      "workloads": [
+        {
+          "case": "multi",
+          "profiled_ttft_ms": 5118.4,
+          "profiled_wall_ms": 5126.755097997375,
+          "vision_busy_ms": 3183.417376,
+          "vision_span_ms": 3194.7352,
+          "vision_gap_ms": 11.3178240000002,
+          "vision_kernel_calls": 633,
+          "attention_calls": 27,
+          "attention_ms": 2786.64592,
+          "attention_ttft_pct": 54.443691778680844,
+          "qkv_bias_ms": 0,
+          "rope_ms": 0,
+          "fused_bias_rope_ms": 44.922528,
+          "qkv_stage_ms": 44.922528,
+          "qkv_stage_calls": 27,
+          "qkv_stage_ttft_pct": 0.8776673960612692,
+          "prompt_tokens": 2659,
+          "completion_tokens": 1,
+          "cached_tokens": 0,
+          "kernels": [
+            {
+              "kernel": "void qwen_vision_tile_kernel<(unsigned int)4, (bool)1>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+              "calls": 27,
+              "ms": 2786.6459200000004
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)1>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 57.734976
+            },
+            {
+              "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_bf16_128x256_32x3_tn_align8>(T1::Params)",
+              "calls": 27,
+              "ms": 56.051615999999996
+            },
+            {
+              "kernel": "<unnamed>::dq8::dense_q8_d2r_kernel(const char *, const char *, const block_q8_1_mmq *, float *, int, int, int, int)",
+              "calls": 27,
+              "ms": 45.19641599999999
+            },
+            {
+              "kernel": "qwen_vision_bias_rope_kernel(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int, float)",
+              "calls": 27,
+              "ms": 44.922528
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_kernel(float *, const float *, unsigned long, unsigned int, int)",
+              "calls": 29,
+              "ms": 38.63462399999999
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_residual_kernel(float *, const float *, const float *, unsigned long, unsigned int)",
+              "calls": 54,
+              "ms": 30.147679999999994
+            },
+            {
+              "kernel": "f32_to_bf16_kernel(__nv_bfloat16 *, const float *, unsigned long)",
+              "calls": 28,
+              "ms": 30.133887999999995
+            },
+            {
+              "kernel": "<unnamed>::ds4_mmq_sanitize_f32_kernel(float *, unsigned long)",
+              "calls": 56,
+              "ms": 25.415104000000003
+            },
+            {
+              "kernel": "void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)0>(const float *, const int *, void *, long, long, long, long, long, int, int)",
+              "calls": 137,
+              "ms": 22.947935999999988
+            },
+            {
+              "kernel": "qwen4exp_vision_layernorm_kernel(float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+              "calls": 55,
+              "ms": 22.349152
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)0>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 13.970944000000003
+            },
+            {
+              "kernel": "void mm_ids_helper<(int)1>(const int *, int *, int *, int *, int, int, int, int, int)",
+              "calls": 54,
+              "ms": 5.558271999999997
+            },
+            {
+              "kernel": "void mul_mat_q<(ggml_type)8, (int)128, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3, const char *, long)",
+              "calls": 2,
+              "ms": 2.478464
+            },
+            {
+              "kernel": "nvjet_sm121_tss_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_TNNN",
+              "calls": 1,
+              "ms": 0.63728
+            },
+            {
+              "kernel": "qwen4exp_vision_patch_position_kernel(float *, const float *, const cuda_block_q8_0 *, const int *, const float *, unsigned int, unsigned int)",
+              "calls": 1,
+              "ms": 0.432416
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_build_tile_worklist<(int)128>(const int *, uint3 *, unsigned int *, int, int, int)",
+              "calls": 54,
+              "ms": 0.16016000000000002
+            }
+          ]
+        },
+        {
+          "case": "screen",
+          "profiled_ttft_ms": 1460.9,
+          "profiled_wall_ms": 1470.3540089831222,
+          "vision_busy_ms": 665.054944,
+          "vision_span_ms": 669.908064,
+          "vision_gap_ms": 4.85311999999999,
+          "vision_kernel_calls": 634,
+          "attention_calls": 27,
+          "attention_ms": 559.97424,
+          "attention_ttft_pct": 38.330771442261614,
+          "qkv_bias_ms": 0,
+          "rope_ms": 0,
+          "fused_bias_rope_ms": 11.110848,
+          "qkv_stage_ms": 11.110848,
+          "qkv_stage_calls": 27,
+          "qkv_stage_ttft_pct": 0.7605481552467657,
+          "prompt_tokens": 797,
+          "completion_tokens": 1,
+          "cached_tokens": 0,
+          "kernels": [
+            {
+              "kernel": "void qwen_vision_tile_kernel<(unsigned int)4, (bool)1>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+              "calls": 27,
+              "ms": 559.97424
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)1>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 18.391104
+            },
+            {
+              "kernel": "nvjet_sm121_tss_mma_128x192x64_2_32x96x64_tmaAB_alignCD4_bz_TNNN",
+              "calls": 27,
+              "ms": 13.591392000000003
+            },
+            {
+              "kernel": "<unnamed>::dq8::dense_q8_d2r_kernel(const char *, const char *, const block_q8_1_mmq *, float *, int, int, int, int)",
+              "calls": 27,
+              "ms": 12.619040000000004
+            },
+            {
+              "kernel": "qwen_vision_bias_rope_kernel(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int, float)",
+              "calls": 27,
+              "ms": 11.110847999999999
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_kernel(float *, const float *, unsigned long, unsigned int, int)",
+              "calls": 29,
+              "ms": 10.324224
+            },
+            {
+              "kernel": "f32_to_bf16_kernel(__nv_bfloat16 *, const float *, unsigned long)",
+              "calls": 28,
+              "ms": 8.941184000000002
+            },
+            {
+              "kernel": "qwen4exp_vision_bias_residual_kernel(float *, const float *, const float *, unsigned long, unsigned int)",
+              "calls": 54,
+              "ms": 7.489472000000002
+            },
+            {
+              "kernel": "<unnamed>::ds4_mmq_sanitize_f32_kernel(float *, unsigned long)",
+              "calls": 56,
+              "ms": 6.996895999999995
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_worklist_mmq_tail_kernel<(ggml_type)8, (ggml_type)8, (bool)0>(const char *, const int *, const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int, int)",
+              "calls": 27,
+              "ms": 5.434015999999999
+            },
+            {
+              "kernel": "qwen4exp_vision_layernorm_kernel(float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+              "calls": 55,
+              "ms": 4.102112000000001
+            },
+            {
+              "kernel": "void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)0>(const float *, const int *, void *, long, long, long, long, long, int, int)",
+              "calls": 137,
+              "ms": 3.1668800000000026
+            },
+            {
+              "kernel": "void mm_ids_helper<(int)1>(const int *, int *, int *, int *, int, int, int, int, int)",
+              "calls": 54,
+              "ms": 1.6865919999999994
+            },
+            {
+              "kernel": "void mul_mat_q<(ggml_type)8, (int)128, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3, const char *, long)",
+              "calls": 2,
+              "ms": 0.8406399999999999
+            },
+            {
+              "kernel": "nvjet_sm121_tss_mma_192x128x64_2_48x64x64_tmaAB_alignCD4_bz_TNNN",
+              "calls": 1,
+              "ms": 0.141312
+            },
+            {
+              "kernel": "void <unnamed>::ds4_moe_build_tile_worklist<(int)128>(const int *, uint3 *, unsigned int *, int, int, int)",
+              "calls": 54,
+              "ms": 0.13971200000000003
+            },
+            {
+              "kernel": "qwen4exp_vision_patch_position_kernel(float *, const float *, const cuda_block_q8_0 *, const int *, const float *, unsigned int, unsigned int)",
+              "calls": 1,
+              "ms": 0.092864
+            },
+            {
+              "kernel": "void mul_mat_q_stream_k_fixup<(ggml_type)8, (int)128, (bool)0>(const int *, const int *, float *, float *, uint3, int, int, int, uint3, int, uint3, int, uint3)",
+              "calls": 1,
+              "ms": 0.012416
+            }
+          ]
+        }
+      ],
+      "raw_receipts": [
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/whole-fused-retained.json",
+          "sha256": "78599a35535fcb83447a874977db540531ae1156ddf036aa931b0af780b84596"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/metadata.json",
+          "sha256": "7e2fce93bf8f3cf4d48d5b30d684ab34fa6d56a2e84594bffb1da1db3fdbf814"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/receipt.json",
+          "sha256": "6bea9d8711a2bd0b1aaa9563060d90db70810bcfc5ddf30db897b04d88a6322c"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/http/receipt.json",
+          "sha256": "c0df512711d260fb5cb9a670ea76218cc4b4311c206d519901f933c8783eebc4"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/http/results.jsonl",
+          "sha256": "dcfaa5b819e61213b06130588033509b5e0d36574f3792770f4fe0e9d37eeb0d"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/clocks.jsonl",
+          "sha256": "0e5a3eef8adba70bb00da233fde430d7ed94c060ab4c6809dcf84c2be57cf316"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/http/multi.request.raw.json",
+          "sha256": "df4cd065ddf940d4cf6b4bc4d6086b5626de0a320347dbb793e92e7ae9d8b315"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/http/screen.request.raw.json",
+          "sha256": "bab1f958eed6feeb841e860d32b172f50c6f9ca97653dd55becedf6d79517294"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/http/multi.stats.raw.json",
+          "sha256": "e9f7e56933ae3f77415e03bea9b0bef295bc6a2d48c88728d2c3116d8aa12fd1"
+        },
+        {
+          "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/http/screen.stats.raw.json",
+          "sha256": "0eaf2376437f961d3995f71af7688d3ebd39a37b1a8cb378fe9d7b7590077402"
+        }
+      ],
+      "sqlite": {
+        "path": "scratch/qwen-multi-image-r2-20261002/profile-fused-retained/profile/candidate-profile.sqlite",
+        "bytes": 8380416,
+        "hash_retained": false
+      }
+    }
+  ],
+  "comparison": [
+    {
+      "case": "multi",
+      "prompt_tokens": 2659,
+      "qkv_stage_ms_before": 56.047168,
+      "qkv_stage_ms_after": 44.922528,
+      "qkv_stage_change_pct": -19.848710286307416,
+      "retained_attention_ms": 2786.64592,
+      "retained_attention_ttft_pct": 54.443691778680844,
+      "retained_profiled_ttft_ms": 5118.4
+    },
+    {
+      "case": "screen",
+      "prompt_tokens": 797,
+      "qkv_stage_ms_before": 16.042464,
+      "qkv_stage_ms_after": 11.110848,
+      "qkv_stage_change_pct": -30.74101335056758,
+      "retained_attention_ms": 559.97424,
+      "retained_attention_ttft_pct": 38.330771442261614,
+      "retained_profiled_ttft_ms": 1460.9
+    }
+  ],
+  "decision": {
+    "further_candidate_adopted": false,
+    "reason": "Attention remains 54.44% of four-image TTFT. No unexpected fallback or new redundant transformation was identified; eight-query mapping was rejected for end-to-end regressions and register/code costs. Further changes require another measurement campaign.",
+    "scope": "Configured 262144-token seq1 capacity; fixed one/four still images and 18K reuse/restore fixture. Filled 256K, video, concurrency and long Agent throughput remain unqualified."
+  }
+}

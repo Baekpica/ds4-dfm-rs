@@ -1,0 +1,72 @@
+{
+  "binary_sha256": "7cedd1c598ea07d36902c14b2674a68043487ca7521fb2d9f2a94a81b54a8514",
+  "kernels": {
+    "bias": {
+      "function": "_Z27qwen4exp_vision_bias_kernelPfPKfmji",
+      "static_instructions": 160,
+      "encoded_bytes": 2560,
+      "instruction_encoding_sha256": "402fd98a849b30262693a12f2dc7a004897178555564d13f82b65a971dae1e7e",
+      "fadd_ftz": 7,
+      "baseline_exact": true,
+      "resources": {
+        "REG": 20,
+        "STACK": 0,
+        "SHARED": 1024,
+        "LOCAL": 0,
+        "TEXTURE": 0,
+        "SURFACE": 0,
+        "SAMPLER": 0
+      }
+    },
+    "rope": {
+      "function": "_Z27qwen4exp_vision_rope_kernelPfPKiS1_jjjf",
+      "static_instructions": 240,
+      "encoded_bytes": 3840,
+      "instruction_encoding_sha256": "03433a7e9d6afaf2d9c9b1c5028cacf065115c7982562d6deb3677f0c913aab8",
+      "fadd_ftz": 0,
+      "baseline_exact": true,
+      "resources": {
+        "REG": 22,
+        "STACK": 0,
+        "SHARED": 1024,
+        "LOCAL": 0,
+        "TEXTURE": 0,
+        "SURFACE": 0,
+        "SAMPLER": 0
+      }
+    },
+    "fused": {
+      "function": "_Z28qwen_vision_bias_rope_kernelPfPKfPKiS3_jjjf",
+      "static_instructions": 272,
+      "encoded_bytes": 4352,
+      "instruction_encoding_sha256": "ee60647bd73eaf2ca6ddc3e5bdbc2e64319a1f7534d01432f99d95a10e0bf97c",
+      "fadd_ftz": 6,
+      "resources": {
+        "REG": 32,
+        "STACK": 0,
+        "SHARED": 1024,
+        "LOCAL": 0,
+        "TEXTURE": 0,
+        "SURFACE": 0,
+        "SAMPLER": 0
+      }
+    },
+    "packed": {
+      "function": "_Z23qwen_vision_tile_kernelILj4ELb1EEvPfPKfPKiS4_jjj",
+      "static_instructions": 2320,
+      "encoded_bytes": 37120,
+      "instruction_encoding_sha256": "7b80e8710839d41d7f0ac6145a68f30aad37b4f705e95fe57089ca5100cba11a",
+      "fadd_ftz": 176,
+      "retained_exact": true,
+      "resources": {
+        "REG": 56,
+        "STACK": 0,
+        "SHARED": 1024,
+        "LOCAL": 0,
+        "TEXTURE": 0,
+        "SURFACE": 0,
+        "SAMPLER": 0
+      }
+    }
+  }
+}

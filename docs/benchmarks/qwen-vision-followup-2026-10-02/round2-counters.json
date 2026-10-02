@@ -1,0 +1,798 @@
+{
+  "schema": "qwen-vision-fused-rope-comparison-v1",
+  "matched_fresh_processes": true,
+  "changes": {
+    "gpu__time_duration.sum": {
+      "off": 0.549824,
+      "on": 0.449792,
+      "unit": "ms",
+      "change_pct": -18.193458270282846
+    },
+    "smsp__inst_executed.sum": {
+      "off": 25214976,
+      "on": 10229760,
+      "unit": "inst",
+      "change_pct": -59.42982456140351
+    },
+    "smsp__sass_inst_executed_op_global_ld.sum": {
+      "off": 995328,
+      "on": 774144,
+      "unit": "inst",
+      "change_pct": -22.22222222222222
+    },
+    "smsp__sass_inst_executed_op_global_st.sum": {
+      "off": 552960,
+      "on": 331776,
+      "unit": "inst",
+      "change_pct": -40.0
+    },
+    "lts__t_sectors.sum": {
+      "off": 4641708,
+      "on": 3037513,
+      "unit": "sector",
+      "change_pct": -34.56044628399718
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "off": 995328,
+      "on": 774144,
+      "unit": "request",
+      "change_pct": -22.22222222222222
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "off": 552960,
+      "on": 331776,
+      "unit": "request",
+      "change_pct": -40.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "off": 3846144,
+      "on": 3354624,
+      "unit": "sector",
+      "change_pct": -12.779552715654951
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "off": 2408448,
+      "on": 1622016,
+      "unit": "sector",
+      "change_pct": -32.6530612244898
+    },
+    "derived__local_spilling_requests": {
+      "off": 0,
+      "on": 0,
+      "unit": "request",
+      "change_pct": null
+    },
+    "derived__shared_spilling_requests": {
+      "off": 0,
+      "on": 0,
+      "unit": "request",
+      "change_pct": null
+    },
+    "l1tex__t_requests_pipe_lsu_mem_local_op_ld.sum": {
+      "off": 0,
+      "on": 0,
+      "unit": "request",
+      "change_pct": null
+    },
+    "l1tex__t_requests_pipe_lsu_mem_local_op_st.sum": {
+      "off": 0,
+      "on": 0,
+      "unit": "request",
+      "change_pct": null
+    }
+  },
+  "cost_notes": [
+    "One fused body is retained alongside both fallback kernels; no additional tensors or dynamic shared memory.",
+    "Register and occupancy changes are recorded per kernel; the sum of old rates is not meaningful.",
+    "DRAM counters are unavailable on this capture; requests/sectors are not claimed as DRAM bytes."
+  ],
+  "off": {
+    "source": {
+      "worktree": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi",
+      "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+      "diff_sha256": "ca95263e47f3d247f2f57dfa9f53611c1f9924f3e314960e828235e270b10f22",
+      "status": " M Makefile\n M docs/benchmarks/qwen-vision-followup-2026-10-02/round1-qualification.json\n M docs/qwen-vision-followup-2026-10-02.md\n M ds4_cuda.cu\n M tests/fixtures/qwen-images/README.md\n M tests/test_qwen_vision_host.c\nA  tests/test_qwen_vision_rope.c\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-codegen.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-counters.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-latency.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-numeric.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-qualification.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-samples.csv\n?? tests/test_qwen_vision_rope\n"
+    },
+    "profile_binary_sha256": "7cedd1c598ea07d36902c14b2674a68043487ca7521fb2d9f2a94a81b54a8514",
+    "geometry": {
+      "rows": 3072,
+      "heads": 16,
+      "head_dim": 72,
+      "grid_h": 48,
+      "grid_w": 64,
+      "merge": 2,
+      "input": "QKV and 13824-byte bias LCG42 FP32 scale1",
+      "bias_residency": "standalone registered map; production uses imported VMM weights",
+      "freq_base": 10000
+    },
+    "controls": {
+      "DS4_QWEN_VISION_FUSE_ROPE": "0"
+    },
+    "command": [
+      "ncu",
+      "--set",
+      "full",
+      "--replay-mode",
+      "application",
+      "--clock-control",
+      "none",
+      "--kernel-name",
+      "regex:qwen.*vision.*(bias|rope).*kernel",
+      "--launch-count",
+      "2",
+      "--export",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/rope-off",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/profile-rope-fuse-measured",
+      "once"
+    ],
+    "user_clock_range_mhz": [
+      300,
+      2200
+    ],
+    "observed_clocks": {
+      "samples": 106,
+      "min_mhz": 2190,
+      "max_mhz": 2197
+    },
+    "kernels": {
+      "bias": {
+        "name": "qwen4exp_vision_bias_kernel(float *, const float *, unsigned long, unsigned int, int)",
+        "grid": "(41472, 1, 1)",
+        "block": "(256, 1, 1)",
+        "unavailable_metrics": [
+          "dram__bytes_read.sum",
+          "dram__bytes_write.sum",
+          "dram__throughput.avg.pct_of_peak_sustained_elapsed"
+        ],
+        "metrics": {
+          "gpu__time_duration.sum": {
+            "value": 0.313152,
+            "unit": "ms"
+          },
+          "smsp__inst_executed.sum": {
+            "value": 16920576,
+            "unit": "inst"
+          },
+          "smsp__sass_inst_executed_op_global_ld.sum": {
+            "value": 663552,
+            "unit": "inst"
+          },
+          "smsp__sass_inst_executed_op_global_st.sum": {
+            "value": 331776,
+            "unit": "inst"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 663552,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+            "value": 331776,
+            "unit": "request"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 2654208,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+            "value": 1327104,
+            "unit": "sector"
+          },
+          "lts__t_sectors.sum": {
+            "value": 2699132,
+            "unit": "sector"
+          },
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": 12.818054,
+            "unit": "%"
+          },
+          "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": 9.301579,
+            "unit": "%"
+          },
+          "sm__warps_active.avg.pct_of_peak_sustained_active": {
+            "value": 79.539937,
+            "unit": "%"
+          },
+          "smsp__warps_eligible.avg.per_cycle_active": {
+            "value": 0.158051,
+            "unit": "warp"
+          },
+          "launch__registers_per_thread": {
+            "value": 20,
+            "unit": "register/thread"
+          },
+          "launch__registers_per_thread_allocated": {
+            "value": 24,
+            "unit": "register/thread"
+          },
+          "launch__shared_mem_per_block_dynamic": {
+            "value": 0,
+            "unit": "byte/block"
+          },
+          "launch__shared_mem_per_block": {
+            "value": 1024,
+            "unit": "byte/block"
+          },
+          "launch__occupancy_limit_registers": {
+            "value": 10,
+            "unit": "block"
+          },
+          "launch__occupancy_limit_shared_mem": {
+            "value": 16,
+            "unit": "block"
+          },
+          "launch__occupancy_limit_warps": {
+            "value": 6,
+            "unit": "block"
+          },
+          "launch__waves_per_multiprocessor": {
+            "value": 144,
+            "unit": "wave"
+          },
+          "derived__local_spilling_requests": {
+            "value": 0,
+            "unit": "request"
+          },
+          "derived__shared_spilling_requests": {
+            "value": 0,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_local_op_ld.sum": {
+            "value": 0,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_local_op_st.sum": {
+            "value": 0,
+            "unit": "request"
+          },
+          "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+            "value": 65.489936,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+            "value": 2.482823,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+            "value": 0.089241,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+            "value": 0.057478,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_wait_per_issue_active.ratio": {
+            "value": 3.436372,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": {
+            "value": 0,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio": {
+            "value": 0.22763,
+            "unit": "inst"
+          },
+          "dram__bytes_read.sum": {
+            "value": null,
+            "unit": "byte",
+            "available": false
+          },
+          "dram__bytes_write.sum": {
+            "value": null,
+            "unit": "byte",
+            "available": false
+          },
+          "dram__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": null,
+            "unit": "%",
+            "available": false
+          }
+        }
+      },
+      "rope": {
+        "name": "qwen4exp_vision_rope_kernel(float *, const int *, const int *, unsigned int, unsigned int, unsigned int, float)",
+        "grid": "(6912, 1, 1)",
+        "block": "(256, 1, 1)",
+        "unavailable_metrics": [
+          "dram__bytes_read.sum",
+          "dram__bytes_write.sum",
+          "dram__throughput.avg.pct_of_peak_sustained_elapsed"
+        ],
+        "metrics": {
+          "gpu__time_duration.sum": {
+            "value": 0.236672,
+            "unit": "ms"
+          },
+          "smsp__inst_executed.sum": {
+            "value": 8294400,
+            "unit": "inst"
+          },
+          "smsp__sass_inst_executed_op_global_ld.sum": {
+            "value": 331776,
+            "unit": "inst"
+          },
+          "smsp__sass_inst_executed_op_global_st.sum": {
+            "value": 221184,
+            "unit": "inst"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 331776,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+            "value": 221184,
+            "unit": "request"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 1191936,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+            "value": 1081344,
+            "unit": "sector"
+          },
+          "lts__t_sectors.sum": {
+            "value": 1942576,
+            "unit": "sector"
+          },
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": 8.315096,
+            "unit": "%"
+          },
+          "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": 10.724637,
+            "unit": "%"
+          },
+          "sm__warps_active.avg.pct_of_peak_sustained_active": {
+            "value": 86.458347,
+            "unit": "%"
+          },
+          "smsp__warps_eligible.avg.per_cycle_active": {
+            "value": 0.117972,
+            "unit": "warp"
+          },
+          "launch__registers_per_thread": {
+            "value": 22,
+            "unit": "register/thread"
+          },
+          "launch__registers_per_thread_allocated": {
+            "value": 24,
+            "unit": "register/thread"
+          },
+          "launch__shared_mem_per_block_dynamic": {
+            "value": 0,
+            "unit": "byte/block"
+          },
+          "launch__shared_mem_per_block": {
+            "value": 1024,
+            "unit": "byte/block"
+          },
+          "launch__occupancy_limit_registers": {
+            "value": 10,
+            "unit": "block"
+          },
+          "launch__occupancy_limit_shared_mem": {
+            "value": 16,
+            "unit": "block"
+          },
+          "launch__occupancy_limit_warps": {
+            "value": 6,
+            "unit": "block"
+          },
+          "launch__waves_per_multiprocessor": {
+            "value": 24,
+            "unit": "wave"
+          },
+          "derived__local_spilling_requests": {
+            "value": 0,
+            "unit": "request"
+          },
+          "derived__shared_spilling_requests": {
+            "value": 0,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_local_op_ld.sum": {
+            "value": 0,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_local_op_st.sum": {
+            "value": 0,
+            "unit": "request"
+          },
+          "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+            "value": 116.54976,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+            "value": 1.110262,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+            "value": 0.204257,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+            "value": 0.177263,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_wait_per_issue_active.ratio": {
+            "value": 2.545343,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": {
+            "value": 0.194434,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio": {
+            "value": 0.387923,
+            "unit": "inst"
+          },
+          "dram__bytes_read.sum": {
+            "value": null,
+            "unit": "byte",
+            "available": false
+          },
+          "dram__bytes_write.sum": {
+            "value": null,
+            "unit": "byte",
+            "available": false
+          },
+          "dram__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": null,
+            "unit": "%",
+            "available": false
+          }
+        }
+      }
+    },
+    "grouped": {
+      "gpu__time_duration.sum": {
+        "value": 0.549824,
+        "unit": "ms"
+      },
+      "smsp__inst_executed.sum": {
+        "value": 25214976,
+        "unit": "inst"
+      },
+      "smsp__sass_inst_executed_op_global_ld.sum": {
+        "value": 995328,
+        "unit": "inst"
+      },
+      "smsp__sass_inst_executed_op_global_st.sum": {
+        "value": 552960,
+        "unit": "inst"
+      },
+      "lts__t_sectors.sum": {
+        "value": 4641708,
+        "unit": "sector"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+        "value": 995328,
+        "unit": "request"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+        "value": 552960,
+        "unit": "request"
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+        "value": 3846144,
+        "unit": "sector"
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+        "value": 2408448,
+        "unit": "sector"
+      },
+      "derived__local_spilling_requests": {
+        "value": 0,
+        "unit": "request"
+      },
+      "derived__shared_spilling_requests": {
+        "value": 0,
+        "unit": "request"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_local_op_ld.sum": {
+        "value": 0,
+        "unit": "request"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_local_op_st.sum": {
+        "value": 0,
+        "unit": "request"
+      }
+    },
+    "notes": [
+      "Kernel durations sum the serial API launches; startup/host/upload time is excluded.",
+      "Rates, occupancy and resources remain per kernel; they are not added or averaged.",
+      "Global requests/sectors and L2 sectors are measured; absent DRAM metrics remain null.",
+      "QKV/bias are synthetic LCG42 scale1; screenshot merge-2 positions are native order.",
+      "The tiny registered bias map differs from production imported VMM weights.",
+      "A missing completion receipt means parsing preceded capture qualification."
+    ],
+    "capture_receipt": {
+      "complete": true,
+      "returncode": 0,
+      "kernels_audited": 2,
+      "mode": "baseline"
+    },
+    "raw_input_sha256": "41eeebacbecb6979389170a442d26f75ee69af4202f6b9af1a6574deb66d83e8",
+    "metadata_sha256": "6bc55ba3a11aa58ae5bdfe9e2ba7d83ac51a4ba1e7a7affdd13952681ece6e19",
+    "receipt_sha256": "420069db4dc3ae8a70db0d63da7ec11334fdbd27d417e75c8b1f0a3a75dc3444"
+  },
+  "on": {
+    "source": {
+      "worktree": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi",
+      "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+      "diff_sha256": "ca95263e47f3d247f2f57dfa9f53611c1f9924f3e314960e828235e270b10f22",
+      "status": " M Makefile\n M docs/benchmarks/qwen-vision-followup-2026-10-02/round1-qualification.json\n M docs/qwen-vision-followup-2026-10-02.md\n M ds4_cuda.cu\n M tests/fixtures/qwen-images/README.md\n M tests/test_qwen_vision_host.c\nA  tests/test_qwen_vision_rope.c\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-codegen.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-counters.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-latency.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-numeric.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-qualification.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-samples.csv\n?? tests/test_qwen_vision_rope\n"
+    },
+    "profile_binary_sha256": "7cedd1c598ea07d36902c14b2674a68043487ca7521fb2d9f2a94a81b54a8514",
+    "geometry": {
+      "rows": 3072,
+      "heads": 16,
+      "head_dim": 72,
+      "grid_h": 48,
+      "grid_w": 64,
+      "merge": 2,
+      "input": "QKV and 13824-byte bias LCG42 FP32 scale1",
+      "bias_residency": "standalone registered map; production uses imported VMM weights",
+      "freq_base": 10000
+    },
+    "controls": {
+      "DS4_QWEN_VISION_FUSE_ROPE": "1"
+    },
+    "command": [
+      "ncu",
+      "--set",
+      "full",
+      "--replay-mode",
+      "application",
+      "--clock-control",
+      "none",
+      "--kernel-name",
+      "regex:qwen.*vision.*(bias|rope).*kernel",
+      "--launch-count",
+      "1",
+      "--export",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/rope-fused",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi/scratch/qwen-multi-image-r2-20261002/profile-rope-fuse-measured",
+      "once"
+    ],
+    "user_clock_range_mhz": [
+      300,
+      2200
+    ],
+    "observed_clocks": {
+      "samples": 86,
+      "min_mhz": 2190,
+      "max_mhz": 2197
+    },
+    "kernels": {
+      "fused": {
+        "name": "qwen_vision_bias_rope_kernel(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int, float)",
+        "grid": "(6912, 1, 1)",
+        "block": "(256, 1, 1)",
+        "unavailable_metrics": [
+          "dram__bytes_read.sum",
+          "dram__bytes_write.sum",
+          "dram__throughput.avg.pct_of_peak_sustained_elapsed"
+        ],
+        "metrics": {
+          "gpu__time_duration.sum": {
+            "value": 0.449792,
+            "unit": "ms"
+          },
+          "smsp__inst_executed.sum": {
+            "value": 10229760,
+            "unit": "inst"
+          },
+          "smsp__sass_inst_executed_op_global_ld.sum": {
+            "value": 774144,
+            "unit": "inst"
+          },
+          "smsp__sass_inst_executed_op_global_st.sum": {
+            "value": 331776,
+            "unit": "inst"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 774144,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+            "value": 331776,
+            "unit": "request"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+            "value": 3354624,
+            "unit": "sector"
+          },
+          "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+            "value": 1622016,
+            "unit": "sector"
+          },
+          "lts__t_sectors.sum": {
+            "value": 3037513,
+            "unit": "sector"
+          },
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": 5.393373,
+            "unit": "%"
+          },
+          "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": 8.773721,
+            "unit": "%"
+          },
+          "sm__warps_active.avg.pct_of_peak_sustained_active": {
+            "value": 81.492563,
+            "unit": "%"
+          },
+          "smsp__warps_eligible.avg.per_cycle_active": {
+            "value": 0.0713,
+            "unit": "warp"
+          },
+          "launch__registers_per_thread": {
+            "value": 32,
+            "unit": "register/thread"
+          },
+          "launch__registers_per_thread_allocated": {
+            "value": 32,
+            "unit": "register/thread"
+          },
+          "launch__shared_mem_per_block_dynamic": {
+            "value": 0,
+            "unit": "byte/block"
+          },
+          "launch__shared_mem_per_block": {
+            "value": 1024,
+            "unit": "byte/block"
+          },
+          "launch__occupancy_limit_registers": {
+            "value": 8,
+            "unit": "block"
+          },
+          "launch__occupancy_limit_shared_mem": {
+            "value": 16,
+            "unit": "block"
+          },
+          "launch__occupancy_limit_warps": {
+            "value": 6,
+            "unit": "block"
+          },
+          "launch__waves_per_multiprocessor": {
+            "value": 24,
+            "unit": "wave"
+          },
+          "derived__local_spilling_requests": {
+            "value": 0,
+            "unit": "request"
+          },
+          "derived__shared_spilling_requests": {
+            "value": 0,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_local_op_ld.sum": {
+            "value": 0,
+            "unit": "request"
+          },
+          "l1tex__t_requests_pipe_lsu_mem_local_op_st.sum": {
+            "value": 0,
+            "unit": "request"
+          },
+          "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+            "value": 200.645176,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+            "value": 0.896238,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+            "value": 0.17637,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+            "value": 0.13349,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_wait_per_issue_active.ratio": {
+            "value": 2.344909,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": {
+            "value": 1.131387,
+            "unit": "inst"
+          },
+          "smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio": {
+            "value": 0.372871,
+            "unit": "inst"
+          },
+          "dram__bytes_read.sum": {
+            "value": null,
+            "unit": "byte",
+            "available": false
+          },
+          "dram__bytes_write.sum": {
+            "value": null,
+            "unit": "byte",
+            "available": false
+          },
+          "dram__throughput.avg.pct_of_peak_sustained_elapsed": {
+            "value": null,
+            "unit": "%",
+            "available": false
+          }
+        }
+      }
+    },
+    "grouped": {
+      "gpu__time_duration.sum": {
+        "value": 0.449792,
+        "unit": "ms"
+      },
+      "smsp__inst_executed.sum": {
+        "value": 10229760,
+        "unit": "inst"
+      },
+      "smsp__sass_inst_executed_op_global_ld.sum": {
+        "value": 774144,
+        "unit": "inst"
+      },
+      "smsp__sass_inst_executed_op_global_st.sum": {
+        "value": 331776,
+        "unit": "inst"
+      },
+      "lts__t_sectors.sum": {
+        "value": 3037513,
+        "unit": "sector"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+        "value": 774144,
+        "unit": "request"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+        "value": 331776,
+        "unit": "request"
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+        "value": 3354624,
+        "unit": "sector"
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+        "value": 1622016,
+        "unit": "sector"
+      },
+      "derived__local_spilling_requests": {
+        "value": 0,
+        "unit": "request"
+      },
+      "derived__shared_spilling_requests": {
+        "value": 0,
+        "unit": "request"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_local_op_ld.sum": {
+        "value": 0,
+        "unit": "request"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_local_op_st.sum": {
+        "value": 0,
+        "unit": "request"
+      }
+    },
+    "notes": [
+      "Kernel durations sum the serial API launches; startup/host/upload time is excluded.",
+      "Rates, occupancy and resources remain per kernel; they are not added or averaged.",
+      "Global requests/sectors and L2 sectors are measured; absent DRAM metrics remain null.",
+      "QKV/bias are synthetic LCG42 scale1; screenshot merge-2 positions are native order.",
+      "The tiny registered bias map differs from production imported VMM weights.",
+      "A missing completion receipt means parsing preceded capture qualification."
+    ],
+    "capture_receipt": {
+      "complete": true,
+      "returncode": 0,
+      "kernels_audited": 1,
+      "mode": "fused"
+    },
+    "raw_input_sha256": "91acb6d51fc73944a2ab234f4d6e6c02ba0eea5cb793e065222a8d7e3af466f8",
+    "metadata_sha256": "54a65f48429c0aea6a6230ca3e5d792fdcc8f8371fc73a32734340e809d7810a",
+    "receipt_sha256": "1878b70e01b3e45846a5a0ba9d086c0337414764684f15b179af353a4009fcb1"
+  }
+}

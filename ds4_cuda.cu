@@ -28583,6 +28583,42 @@ __global__ static void qwen4exp_vision_rope_kernel(
     }
 }
 
+/* Bias must round before rotation, just as the separate FP32 materialization.
+ * Each pair owns both Q/K halves and the corresponding unrotated V halves. */
+__global__ static void qwen_vision_bias_rope_kernel(
+        float *qkv, const float *bias, const int32_t *height, const int32_t *width,
+        uint32_t rows, uint32_t heads, uint32_t head_dim, float freq_base) {
+    const uint32_t half = head_dim / 2u;
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const uint64_t pairs = (uint64_t)rows * heads * half;
+    if (i >= pairs) { return; }
+    const uint32_t f = (uint32_t)(i % half);
+    const uint64_t rh = i / half;
+    const uint32_t row = (uint32_t)(rh / heads);
+    const uint32_t head = (uint32_t)(rh - (uint64_t)row * heads);
+    const uint32_t axis_half = half / 2u;
+    const uint32_t pos = f < axis_half ? (uint32_t)height[row]
+                                        : (uint32_t)width[row];
+    const uint32_t fi = f < axis_half ? f : f - axis_half;
+    const float angle = (float)pos * powf(freq_base,
+        -(2.0f * (float)fi) / (float)half);
+    float sine, cosine;
+    sincosf(angle, &sine, &cosine);
+    const uint64_t row_base = (uint64_t)row * 3u * heads * head_dim;
+    for (uint32_t qk = 0; qk < 2u; qk++) {
+        const uint64_t at = (uint64_t)(qk * heads + head) * head_dim;
+        float *base = qkv + row_base + at;
+        const float a = __fadd_rn(base[f], bias[at + f]);
+        const float b = __fadd_rn(base[f + half], bias[at + f + half]);
+        base[f] = a * cosine - b * sine;
+        base[f + half] = b * cosine + a * sine;
+    }
+    const uint64_t at = (uint64_t)(2u * heads + head) * head_dim;
+    float *value = qkv + row_base + at;
+    value[f] = __fadd_rn(value[f], bias[at + f]);
+    value[f + half] = __fadd_rn(value[f + half], bias[at + f + half]);
+}
+
 __device__ __forceinline__ static void qwen4exp_vision_attention_row(
         float *out, const float *qkv,
         const int32_t *segment_start, const int32_t *segment_end,
@@ -28803,17 +28839,25 @@ extern "C" int ds4_gpu_qwen4exp_vision_layernorm_tensor(
     return cuda_ok(cudaGetLastError(), "Qwen vision LayerNorm launch");
 }
 
-static int qwen4exp_vision_bias_common(
+static const float *qwen_vision_bias_ptr(
         ds4_gpu_tensor *x, const void *model_map, uint64_t model_size,
-        uint64_t bias_offset, uint32_t rows, uint32_t dim, int activation) {
+        uint64_t bias_offset, uint32_t rows, uint32_t dim) {
     const uint64_t values = (uint64_t)rows * dim;
     const uint64_t bytes = (uint64_t)dim * sizeof(float);
     if (!x || !model_map || rows == 0u || dim == 0u ||
         values > UINT64_MAX / sizeof(float) || x->bytes < values * sizeof(float) ||
-        bias_offset > model_size || bytes > model_size - bias_offset) return 0;
-    const float *bias = (const float *)cuda_model_range_ptr(
+        bias_offset > model_size || bytes > model_size - bias_offset) { return nullptr; }
+    return (const float *)cuda_model_range_ptr(
         model_map, bias_offset, bytes, "Qwen vision bias");
-    if (!bias) return 0;
+}
+
+static int qwen4exp_vision_bias_common(
+        ds4_gpu_tensor *x, const void *model_map, uint64_t model_size,
+        uint64_t bias_offset, uint32_t rows, uint32_t dim, int activation) {
+    const float *bias = qwen_vision_bias_ptr(x, model_map, model_size,
+                                          bias_offset, rows, dim);
+    if (!bias) { return 0; }
+    const uint64_t values = (uint64_t)rows * dim;
     qwen4exp_vision_bias_kernel<<<
         (values + 255u) / 256u, 256u, 0, ds4_current_stream()>>>(
         (float *)x->ptr, bias, values, dim, activation);
@@ -28859,15 +28903,31 @@ extern "C" int ds4_gpu_qwen4exp_vision_qkv_rope_tensor(
         uint64_t bias_offset, const ds4_gpu_tensor *height_positions,
         const ds4_gpu_tensor *width_positions, uint32_t rows,
         uint32_t heads, uint32_t head_dim, float freq_base) {
-    const uint32_t dim = 3u * heads * head_dim;
+    const uint64_t width = (uint64_t)heads * head_dim;
     if (!qkv || !height_positions || !width_positions || rows == 0u ||
         heads == 0u || head_dim == 0u || (head_dim & 3u) != 0u ||
+        width > UINT32_MAX / 3u ||
         height_positions->bytes < (uint64_t)rows * sizeof(int32_t) ||
         width_positions->bytes < (uint64_t)rows * sizeof(int32_t) ||
-        !isfinite(freq_base) || freq_base <= 0.0f ||
-        !qwen4exp_vision_bias_common(qkv, model_map, model_size,
-                                     bias_offset, rows, dim, 0)) return 0;
+        !isfinite(freq_base) || freq_base <= 0.0f) { return 0; }
+    const uint32_t dim = 3u * (uint32_t)width;
     const uint64_t pairs = (uint64_t)rows * heads * (head_dim / 2u);
+    const char *control = getenv("DS4_QWEN_VISION_FUSE_ROPE");
+    if (g_qwen_vision_quad_ok && head_dim == 72u && rows >= 512u &&
+        (!control || strcmp(control, "1") == 0)) {
+        const float *bias = qwen_vision_bias_ptr(qkv, model_map, model_size,
+                                              bias_offset, rows, dim);
+        if (!bias) { return 0; }
+        qwen_vision_bias_rope_kernel<<<
+            (pairs + 255u) / 256u, 256u, 0, ds4_current_stream()>>>(
+            (float *)qkv->ptr, bias,
+            (const int32_t *)height_positions->ptr,
+            (const int32_t *)width_positions->ptr,
+            rows, heads, head_dim, freq_base);
+        return cuda_ok(cudaGetLastError(), "Qwen vision fused bias/RoPE launch");
+    }
+    if (!qwen4exp_vision_bias_common(qkv, model_map, model_size,
+                                    bias_offset, rows, dim, 0)) { return 0; }
     qwen4exp_vision_rope_kernel<<<
         (pairs + 255u) / 256u, 256u, 0, ds4_current_stream()>>>(
         (float *)qkv->ptr,

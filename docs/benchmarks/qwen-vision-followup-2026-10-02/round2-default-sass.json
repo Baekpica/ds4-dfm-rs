@@ -1,0 +1,31 @@
+{
+  "nonvacuous": true,
+  "measured_sha256": "25012b163bd7990d598418073ae26aa3e733a164374ddd15be63bbf45228934f",
+  "retained_sha256": "485c7773e0ade5ac55961703b81dea875acc38bbdff7d2bb9eedb42c8cb1616a",
+  "kernels": [
+    {
+      "kernel": "_Z27qwen4exp_vision_bias_kernelPfPKfmji",
+      "instructions": 160,
+      "exact_assembly_and_encoding": true,
+      "sha256": "402fd98a849b30262693a12f2dc7a004897178555564d13f82b65a971dae1e7e"
+    },
+    {
+      "kernel": "_Z27qwen4exp_vision_rope_kernelPfPKiS1_jjjf",
+      "instructions": 240,
+      "exact_assembly_and_encoding": true,
+      "sha256": "03433a7e9d6afaf2d9c9b1c5028cacf065115c7982562d6deb3677f0c913aab8"
+    },
+    {
+      "kernel": "_Z28qwen_vision_bias_rope_kernelPfPKfPKiS3_jjjf",
+      "instructions": 272,
+      "exact_assembly_and_encoding": true,
+      "sha256": "ee60647bd73eaf2ca6ddc3e5bdbc2e64319a1f7534d01432f99d95a10e0bf97c"
+    },
+    {
+      "kernel": "_Z23qwen_vision_tile_kernelILj4ELb1EEvPfPKfPKiS4_jjj",
+      "instructions": 2320,
+      "exact_assembly_and_encoding": true,
+      "sha256": "7b80e8710839d41d7f0ac6145a68f30aad37b4f705e95fe57089ca5100cba11a"
+    }
+  ]
+}

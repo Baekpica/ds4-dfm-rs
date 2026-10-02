@@ -1,0 +1,210 @@
+{
+  "schema": "qwen-rejected-oct-counters-v1",
+  "geometry": {
+    "rows": 3072,
+    "heads": 16,
+    "head_dim": 72,
+    "segments": 1,
+    "input": "LCG42 FP32 scale1"
+  },
+  "regime": {
+    "set": "full",
+    "replay": "application",
+    "clock_control": "none",
+    "clock_range_mhz": [
+      300,
+      2200
+    ],
+    "controls": {
+      "QUAD": "1",
+      "PACK": "1",
+      "OCT": "0/1"
+    }
+  },
+  "source": {
+    "worktree": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi",
+    "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+    "diff_sha256": "2f1504152c079ec06ecf06af1bc96c5c0390ac28287196878092a1733d39565b",
+    "status": " M docs/qwen-vision-followup-2026-10-02.md\n M ds4_cuda.cu\n M tests/test_qwen_vision_attention.c\n M tests/test_qwen_vision_host.c\n"
+  },
+  "profile_binary_sha256": "f0c6dc6eb3e1d4294effae61d77d0d271fcdae3cbad66552c0b759faff40f9a6",
+  "baseline": {
+    "kernel": "void qwen_vision_tile_kernel<4, 1>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+    "grid": "(96, 16, 1)",
+    "block": "(256, 1, 1)",
+    "metrics": {
+      "gpu__time_duration.sum": {
+        "value": "20.552096",
+        "unit": "ms"
+      },
+      "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+        "value": "93.356467",
+        "unit": "%"
+      },
+      "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+        "value": "93.356467",
+        "unit": "%"
+      },
+      "smsp__sass_inst_executed_op_shared_ld.sum": {
+        "value": "75497472.000000",
+        "unit": "inst"
+      },
+      "smsp__sass_inst_executed_op_shared_st.sum": {
+        "value": "5898240.000000",
+        "unit": "inst"
+      },
+      "smsp__inst_executed.sum": {
+        "value": "5740572672.000000",
+        "unit": "inst"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+        "value": "22167552",
+        "unit": ""
+      },
+      "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+        "value": "188834848",
+        "unit": ""
+      },
+      "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": {
+        "value": "22954335",
+        "unit": ""
+      },
+      "launch__registers_per_thread": {
+        "value": "56",
+        "unit": "register/thread"
+      },
+      "launch__shared_mem_per_block_dynamic": {
+        "value": "18.432000",
+        "unit": "Kbyte/block"
+      },
+      "sm__warps_active.avg.pct_of_peak_sustained_active": {
+        "value": "64.647798",
+        "unit": "%"
+      },
+      "derived__local_spilling_requests": {
+        "value": "0",
+        "unit": ""
+      },
+      "derived__shared_spilling_requests": {
+        "value": "0",
+        "unit": ""
+      },
+      "derived__pct_occupancy_per_register_count": {
+        "value": "9555.000000",
+        "unit": "%/register"
+      },
+      "launch__occupancy_limit_registers": {
+        "value": "4.000000",
+        "unit": "block"
+      },
+      "launch__occupancy_limit_shared_mem": {
+        "value": "5.000000",
+        "unit": "block"
+      },
+      "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+        "value": "0.835445",
+        "unit": "inst"
+      },
+      "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+        "value": "0.488190",
+        "unit": "inst"
+      },
+      "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+        "value": "5.697127",
+        "unit": "inst"
+      }
+    }
+  },
+  "candidate": {
+    "kernel": "void qwen_vision_tile_kernel<8, 1>(float *, const float *, const int *, const int *, unsigned int, unsigned int, unsigned int)",
+    "grid": "(48, 16, 1)",
+    "block": "(256, 1, 1)",
+    "metrics": {
+      "gpu__time_duration.sum": {
+        "value": "20.358048",
+        "unit": "ms"
+      },
+      "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+        "value": "89.448969",
+        "unit": "%"
+      },
+      "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+        "value": "89.448969",
+        "unit": "%"
+      },
+      "smsp__sass_inst_executed_op_shared_ld.sum": {
+        "value": "37748736.000000",
+        "unit": "inst"
+      },
+      "smsp__sass_inst_executed_op_shared_st.sum": {
+        "value": "2949120.000000",
+        "unit": "inst"
+      },
+      "smsp__inst_executed.sum": {
+        "value": "5388005376.000000",
+        "unit": "inst"
+      },
+      "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+        "value": "11550720",
+        "unit": ""
+      },
+      "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+        "value": "94392785",
+        "unit": ""
+      },
+      "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": {
+        "value": "11393674",
+        "unit": ""
+      },
+      "launch__registers_per_thread": {
+        "value": "94",
+        "unit": "register/thread"
+      },
+      "launch__shared_mem_per_block_dynamic": {
+        "value": "18.432000",
+        "unit": "Kbyte/block"
+      },
+      "sm__warps_active.avg.pct_of_peak_sustained_active": {
+        "value": "32.414458",
+        "unit": "%"
+      },
+      "derived__local_spilling_requests": {
+        "value": "0",
+        "unit": ""
+      },
+      "derived__shared_spilling_requests": {
+        "value": "0",
+        "unit": ""
+      },
+      "derived__pct_occupancy_per_register_count": {
+        "value": "9555.000000",
+        "unit": "%/register"
+      },
+      "launch__occupancy_limit_registers": {
+        "value": "2.000000",
+        "unit": "block"
+      },
+      "launch__occupancy_limit_shared_mem": {
+        "value": "5.000000",
+        "unit": "block"
+      },
+      "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+        "value": "0.702848",
+        "unit": "inst"
+      },
+      "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+        "value": "1.443778",
+        "unit": "inst"
+      },
+      "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+        "value": "0.686161",
+        "unit": "inst"
+      }
+    }
+  },
+  "duration_change_pct": -0.9441762047043722,
+  "codegen": "rejected-oct-codegen.json",
+  "raw_baseline": "scratch/qwen-multi-image-r2-20261002/attention-packed-remeasure-raw.csv",
+  "raw_candidate": "scratch/qwen-multi-image-r2-20261002/attention-oct-raw.csv",
+  "interpretation": "Shared/global load counts fall, while register-limited CTA residency falls 4 to 2 and achieved occupancy roughly halves. The isolated gain did not survive whole-workload A/B."
+}

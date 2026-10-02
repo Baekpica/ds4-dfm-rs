@@ -64,6 +64,11 @@ features, 32 raw full-vocabulary logits, 32 greedy IDs, payload and M-RoPE.
 For packed K/V parity, prefix the gate command with
 `DS4_QWEN_VISION_GATE_CONTROL=DS4_QWEN_VISION_PACK`. All four admissions then
 use Quad and compare packing `0/0/1/1`. Use a new output directory.
+For bias/RoPE fusion, use
+`DS4_QWEN_VISION_GATE_CONTROL=DS4_QWEN_VISION_FUSE_ROPE` to compare
+separate/separate/fused/fused with the retained attention dispatch.
+The model-free `make CUDA_ARCH=sm_121 test-qwen-vision-rope` compares every
+QKV byte, including V, merge-2 positions, rounding edges and fallback shapes.
 EOS and Qwen EOT are excluded from sampling; saved logits precede exclusion.
 The saved frontier is the prompt plus 31 consumed outputs; output 32 is pending.
 Payload logits are zero-filled; `logits.f32` holds the real frontiers. Separate
