@@ -32,7 +32,7 @@ format following. The prompts still request just the number, so an accepted
 equation can violate that formatting instruction. Earlier number-only runs
 remain failures under their original contract: `2 + 2 = 4.` must not retroactively
 turn such a formatting failure into a pass. Start a new evidence directory;
-v6 refuses to resume an older frozen fixture. Never add answer forms after
+v7 refuses to resume an older frozen fixture. Never add answer forms after
 seeing output within a campaign.
 
 | Profile | Artifact scope | Warm reuse | MTP |
@@ -69,6 +69,13 @@ the runner's explicit `--lane continuous` checks the actual route. There is
 no server `--lane continuous` option. Do not set `DS4_SERVER_CONTINUOUS=0`.
 For an additional MTP-on run, pass `--mtp-mode on --mtp-draft 2` to the server
 and runner, and `--expect-speculation on` to the runner. Solar/Motif reject on.
+The runner rejects MTP on with speculation expected off. An arithmetic stop
+after one token may precede the first draft; it cannot prove MTP execution.
+After the five cold comparisons, every MTP-on campaign also copies the frozen
+digit sequence `1234567890`. This probe requires the exact visible sequence,
+at least two completion tokens, `speculation_active=true`, zero cached tokens,
+the declared lane and no fallback. Its body, reasoning mode and token budget
+freeze at seed. MTP-off campaigns skip this probe.
 For Naive's short arithmetic gate, also declare `--mtp-margin 0` on the
 server. Its default margin 3 can exclude every proposal on a short reply.
 For IQuest, use `--family iquest`, declare the same draft 2–7 on server and
@@ -158,13 +165,16 @@ Canonical token validation rejects a full candidate with a duplicated stop;
 token-LCP reuse reports `partial` even when it copies the complete source
 frontier. Positive cached tokens, actual speculation, a warm bank fork and
 byte-exact cold responses remain required. v5 added IQuest's acceptance and
-native fork evidence; v6 adds frozen reasoning/output controls. Older receipts
-remain unchanged and cannot resume under v6.
+native fork evidence; v6 added frozen reasoning/output controls. v7 adds the
+mandatory MTP execution probe. Older receipts remain unchanged and cannot
+resume under v7.
 
-Every cold request uses the identical saved body, requires zero cached tokens
+Each arithmetic cold request uses the identical saved body, requires zero cached tokens
 and `cold` trace, and compares the full assistant message, finish reason and
 completion-token count against its matching seed/warm/restored response.
 Two different accepted forms still fail this byte-exact comparison.
+The additional MTP probe uses its seed-frozen body; it has no warm response to
+compare and does not change the arithmetic histories or fork/restore checks.
 The run also checks effective context, bank count, chunk, MTP and disk policy,
 request lane/MTP/reuse settings, actual speculation and absence of fallback.
 Both scheduler chunks must equal the declared native chunk.
