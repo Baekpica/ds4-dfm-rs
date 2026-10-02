@@ -29,9 +29,11 @@ PROFILES = {
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"
-FIXTURE_SCHEMA = "serving-reuse-live-v6"
+FIXTURE_SCHEMA = "serving-reuse-live-v7"
 DEFAULT_REASONING = "none"
 DEFAULT_MAX_TOKENS = 32
+MTP_PROBE = "mtp_probe"
+MIN_MTP_TOKENS = 2
 NATIVE_TRACE = {
     "motif": ("Motif-3", "DS4_MOTIF3_BATCH_TRACE"),
     "iquest": ("IQuest-Q1", "DS4_IQUEST_BATCH_TRACE"),
@@ -115,7 +117,8 @@ def verify_fixture(output, phase):
 
 
 def verify_cold_body(output, name, body):
-    original = read_json(output / f"{reference_phase(name)}.{name}.request.json")
+    phase = "seed" if name == MTP_PROBE else reference_phase(name)
+    original = read_json(output / f"{phase}.{name}.request.json")
     require(body == original, f"cold request differs from recorded body: {name}")
 
 
@@ -166,9 +169,13 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
     choice = response["choices"][0]
     message = choice["message"]
     text = message.get("content")
-    # Compare only the frozen literal forms; never extract a number from prose.
-    if not isinstance(text, str) or text.strip() not in case["accepted_forms"]:
-        errors.append(f"arithmetic answer form: {text!r} not in {case['accepted_forms']!r}")
+    # Arithmetic ignores outer whitespace; the execution probe is byte-exact.
+    answer = text
+    if isinstance(text, str) and name != MTP_PROBE:
+        answer = text.strip()
+    if not isinstance(answer, str) or answer not in case["accepted_forms"]:
+        label = "MTP probe" if name == MTP_PROBE else "arithmetic"
+        errors.append(f"{label} answer form: {text!r} not in {case['accepted_forms']!r}")
     reasoning = message.get("reasoning_content")
     if config["reasoning_effort"] == "high":
         if not isinstance(reasoning, str) or not reasoning.strip():
@@ -185,8 +192,16 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
     trace = stats.get("last_request") or {}
     if trace.get("effective_lane") != config["lane"]:
         errors.append(f"lane: {trace.get('effective_lane')!r} != {config['lane']}")
-    if trace.get("speculation_active") is not config["expect_speculation"]:
-        errors.append(f"speculation: {trace.get('speculation_active')!r} != {config['expect_speculation']}")
+    active = trace.get("speculation_active")
+    # Arithmetic can stop before the first draft. The final cold probe must
+    # generate multiple tokens with observed MTP work; configuration is not proof.
+    one_token_stop = (name != MTP_PROBE and config["mtp_mode"] == "on" and config["expect_speculation"]
+                      and active is False and usage["completion_tokens"] == 1
+                      and choice.get("finish_reason") == "stop")
+    if active is not config["expect_speculation"] and not one_token_stop:
+        errors.append(f"speculation: {active!r} != {config['expect_speculation']}")
+    if name == MTP_PROBE and usage["completion_tokens"] < MIN_MTP_TOKENS:
+        errors.append(f"MTP probe requires at least {MIN_MTP_TOKENS} completion tokens")
     if trace.get("fallback_reason"):
         errors.append(f"fallback: {trace['fallback_reason']}")
     if phase == "cold" or name == "seed":
@@ -198,6 +213,10 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
             errors.append(f"cached tokens: expected 0 < {cached} < {prompt}")
         if name == "edit":
             kinds = {"partial"} if PROFILES[config["family"]]["reuse"] == "partial" else {"exact", "fork"}
+        elif config["family"] == "qwen" and phase == "restored":
+            # Disk token-LCP restore reports partial for a shorter prefix.
+            # Fresh-process identity and cold parity are checked separately.
+            kinds = {"exact", "fork", "partial"}
         elif config["family"] == "motif" and phase == "warm":
             # The official history removes generation-only empty thinking.
             kinds = {"exact", "fork", "partial"}
@@ -239,7 +258,7 @@ def run_case(args, config, name, case, previous):
     stats = request(args.url, "/v1/stats")
     write_json(args.output / f"{key}.stats.json", stats)
     reference = None
-    if args.phase == "cold":
+    if args.phase == "cold" and name != MTP_PROBE:
         phase = reference_phase(name)
         reference = read_json(args.output / f"{phase}.{name}.response.json")
     errors = inspect_case(config, args.phase, name, case, response, stats, reference)
@@ -308,6 +327,7 @@ def main():
         require(args.mtp_mode == "off" or args.mtp_draft is not None and args.mtp_draft > 0,
                 "on mode requires an explicit positive draft")
         require(args.mtp_mode == "on" or args.expect_speculation == "off", "off mode cannot speculate")
+        require(args.mtp_mode == "off" or args.expect_speculation == "on", "on mode must expect speculation")
         require(args.family not in ("solar", "motif") or args.mtp_mode == "off", "this family has no MTP")
         args.reasoning_effort = args.reasoning_effort or DEFAULT_REASONING
         if args.max_tokens is None:
@@ -323,6 +343,13 @@ def main():
                 "messages": [{"role": "user", "content": padding + templates["seed"]["user"]}]}
         cases = {"seed": {"body": body, "answer": templates["seed"]["answer"],
                           "accepted_forms": templates["seed"]["accepted_forms"]}}
+        if config["expect_speculation"]:
+            probe = copy.deepcopy(body)
+            probe["messages"][0]["content"] = padding + templates[MTP_PROBE]["user"]
+            cases[MTP_PROBE] = {"body": probe, "answer": templates[MTP_PROBE]["answer"],
+                                "accepted_forms": templates[MTP_PROBE]["accepted_forms"]}
+            # Freeze before any generation; cold verifies this exact body.
+            write_json(args.output / f"seed.{MTP_PROBE}.request.json", probe)
         fixture = {"schema": FIXTURE_SCHEMA, "answer_contract": templates["answer_contract"],
                    "config": config, "templates": templates,
                    "source_fixture_sha256": digest(FIXTURE), "cases": cases}
@@ -359,6 +386,8 @@ def main():
     warm_native = []
     names = {"seed": ["seed"], "warm": ["append", "edit", "fork"],
              "restored": ["restart"], "cold": ["seed", "append", "edit", "fork", "restart"]}[args.phase]
+    if args.phase == "cold" and config["expect_speculation"]:
+        names.append(MTP_PROBE)
     for name in names:
         response, stats, errors = run_case(args, config, name, cases[name], stats)
         all_errors.extend(f"{name}: {error}" for error in errors)

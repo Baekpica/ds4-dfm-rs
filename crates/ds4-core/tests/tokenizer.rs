@@ -751,6 +751,90 @@ fn host_vocab_apply_matches_c() {
 }
 
 #[test]
+fn qwen_declared_nfc_input() {
+    let family = ModelFamily::Qwen4Exp;
+    let source = write_family(family);
+    let baseline = load(family, &source);
+    let path = tmp("darwin-nfc.gguf");
+    let mut bytes = fs::read(source).unwrap();
+    const KV_COUNT_OFFSET: usize = 16;
+    const STRING_TYPE: u32 = 8;
+    let count = u64::from_le_bytes(
+        bytes[KV_COUNT_OFFSET..KV_COUNT_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    bytes[KV_COUNT_OFFSET..KV_COUNT_OFFSET + 8].copy_from_slice(&(count + 2).to_le_bytes());
+    for (key, value) in [
+        ("tokenizer.ggml.pre", "qwen4exp"),
+        ("tokenizer.ggml.normalizer", "nfc"),
+    ] {
+        put_bytes(&mut bytes, key.as_bytes());
+        put_u32(&mut bytes, STRING_TYPE);
+        put_bytes(&mut bytes, value.as_bytes());
+    }
+    fs::write(&path, bytes).unwrap();
+    let vocab = load(family, &path);
+
+    // Source NFC composes the accent before byte-level BPE.
+    assert_eq!(vocab.encode_text("e\u{301}"), vec![195, 169]);
+    assert_eq!(vocab.encode_text("é"), vec![195, 169]);
+    assert_ne!(baseline.encode_text("e\u{301}"), vec![195, 169]);
+
+    // Raw CLI/completion input preserves added tokens before source NFC.
+    assert_eq!(
+        vocab.encode_text("<think>e\u{301}</think>"),
+        vec![vocab.think_start_id, 195, 169, vocab.think_end_id]
+    );
+    assert_ne!(
+        baseline.encode_text("<think>é</think>"),
+        vec![baseline.think_start_id, 195, 169, baseline.think_end_id]
+    );
+
+    // C input cannot use the legacy splitter for this declared tokenizer.
+    // Rejection must also work without Qwen family selection, as in dump-text.
+    for c_family in ["qwen4exp", "deepseek4"] {
+        for cmd in ["encode", "render"] {
+            let out = Command::new(require_oracle())
+                .args([
+                    c_family,
+                    path.to_str().unwrap(),
+                    cmd,
+                    &hex_text("<think>e\u{301}</think>"),
+                ])
+                .output()
+                .expect("run C tokenizer rejection gate");
+            assert!(
+                !out.status.success(),
+                "C {c_family}/{cmd} accepted NFC input"
+            );
+            assert!(out.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&out.stderr)
+                .contains("Qwen4Exp NFC/Unicode tokenization requires a Rust host"));
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires DS4_DARWIN_MODEL"]
+fn darwin_raw_input_matches() {
+    let path = std::env::var("DS4_DARWIN_MODEL").expect("set DS4_DARWIN_MODEL");
+    let vocab = Vocab::load_path(Path::new(&path), ModelFamily::Qwen4Exp).unwrap();
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/darwin/tokenizer-text.json"
+    ))
+    .unwrap();
+    for case in fixture["cases"].as_array().unwrap() {
+        assert_eq!(
+            serde_json::json!(vocab.encode_text(case["text"].as_str().unwrap())),
+            case["token_ids"],
+            "{}",
+            case["text"]
+        );
+    }
+}
+
+#[test]
 fn tokenizer_families_match_c_oracle() {
     for family in [
         ModelFamily::Glm53,

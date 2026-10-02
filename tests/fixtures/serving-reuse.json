@@ -41,6 +41,13 @@
       "5 + 3 = 8."
     ]
   },
+  "mtp_probe": {
+    "user": "Copy this exact digit sequence without spaces, punctuation or explanation: 1234567890",
+    "answer": "1234567890",
+    "accepted_forms": [
+      "1234567890"
+    ]
+  },
   "restart": {
     "user": "What is 8 + 1? Reply with just the number.",
     "answer": 9,

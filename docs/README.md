@@ -34,7 +34,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 |---|---|
 | [Model families](ds4-dfm-model-families.md) | Architecture selectors, native state, context, snapshots and reuse |
 | [Qwen](ds4-dfm-model-families.md#qwen-release-scope) | Q5, images, owner/cache setup and YaRN |
-| [Qwen derivatives](ds4-dfm-model-families.md#qwen-derivatives) | Uncensored and Swift artifact-specific evidence |
+| [Qwen derivatives](ds4-dfm-model-families.md#qwen-derivatives) | Uncensored, Swift and Darwin artifact-specific evidence |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |
 | [GLM](ds4-dfm-model-families.md#glm-53-flash-release-scope) | Exact Q2 + vision, serial graph and 2K cap |
 | [K2](ds4-dfm-model-families.md#k2-horizon-375b-release-scope) | MQ87, IFM tools, one-bank serving and disk limits |

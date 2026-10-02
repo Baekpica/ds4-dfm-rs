@@ -6171,7 +6171,10 @@ static bool qwen4exp_source_revision_supported(ds4_str revision) {
     return ds4_streq(revision,
                      "f5d08274bafd880402bd16f5e3e6c514136ec06c") ||
            ds4_streq(revision,
-                     "8336e613ea508b13c2159bd0f68965d97a606b95");
+                     "8336e613ea508b13c2159bd0f68965d97a606b95") ||
+           /* Darwin retains the pinned Qwen graph and Community License. */
+           ds4_streq(revision,
+                     "bc3c7b0410b40c085b78084e13f01c12df31087b");
 }
 
 static bool tensor_type_is_qwen4exp_plain(uint32_t type) {
@@ -38029,6 +38032,14 @@ static int vocab_lookup_optional(const ds4_vocab *vocab, const char *text) {
 
 /* Load token strings, special token ids, and merge ranks from GGUF metadata. */
 static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
+    /* Rust installs its validated vocab separately. C input must not silently
+     * apply the legacy Qwen splitter to the declared NFC/Unicode contract. */
+    ds4_str pre = {0};
+    if (model_get_string(model, "tokenizer.ggml.pre", &pre) &&
+        ds4_streq(pre, "qwen4exp")) {
+        ds4_die("Qwen4Exp NFC/Unicode tokenization requires a Rust host");
+    }
+
     memset(vocab, 0, sizeof(*vocab));
     vocab->eot_id = -1;
     vocab->im_start_id = -1;
