@@ -32,6 +32,34 @@ class ReuseRunnerTests(unittest.TestCase):
         return {"last_request": {"effective_lane": "continuous", "reuse_kind": kind,
                                  "speculation_active": False, "fallback_reason": None}}
 
+    def test_mtp_one_token_stop(self):
+        config = self.config()
+        config.update(mtp_mode="on", mtp_draft=2, expect_speculation=True)
+        errors = gate.inspect_case(config, "seed", "seed", self.case("seed"),
+                                   self.response("4", 0), self.stats("cold"))
+        self.assertEqual(errors, [])
+
+    def test_mtp_activity_stays_strict(self):
+        config = self.config()
+        config.update(mtp_mode="on", mtp_draft=2, expect_speculation=True)
+        for tokens, finish, active in [(2, "stop", False), (1, "length", False),
+                                       (1, "stop", None)]:
+            with self.subTest(tokens=tokens, finish=finish, active=active):
+                response = self.response("4", 0)
+                response["usage"]["completion_tokens"] = tokens
+                response["choices"][0]["finish_reason"] = finish
+                stats = self.stats("cold")
+                stats["last_request"]["speculation_active"] = active
+                errors = gate.inspect_case(config, "seed", "seed", self.case("seed"),
+                                           response, stats)
+                self.assertTrue(any("speculation" in error for error in errors), errors)
+
+        stats = self.stats("cold")
+        stats["last_request"]["speculation_active"] = True
+        errors = gate.inspect_case(self.config(), "seed", "seed", self.case("seed"),
+                                   self.response("4", 0), stats)
+        self.assertTrue(any("speculation" in error for error in errors), errors)
+
     def test_all_declared_literal_answer_forms(self):
         forms = {
             "seed": (4, "2 + 2"), "append": (5, "4 + 1"),
@@ -215,10 +243,31 @@ class ReuseRunnerTests(unittest.TestCase):
                                                self.response(answer), self.stats("partial"))
                     self.assertEqual(not errors, okay, errors)
 
+    def test_qwen_restored_partial(self):
+        for mode in ("off", "on"):
+            with self.subTest(mode=mode):
+                config = self.config()
+                config.update(mtp_mode=mode, expect_speculation=mode == "on")
+                errors = gate.inspect_case(config, "restored", "restart", self.case("restart"),
+                                           self.response("9"), self.stats("partial"))
+                self.assertEqual(errors, [])
+
+    def test_qwen_restore_stays_strict(self):
+        for cached, fallback, reference in [(0, None, None), (320, None, None),
+                                            (300, "fixture", None),
+                                            (300, None, self.response("9."))]:
+            with self.subTest(cached=cached, fallback=fallback, reference=reference):
+                stats = self.stats("partial")
+                stats["last_request"]["fallback_reason"] = fallback
+                errors = gate.inspect_case(self.config(), "restored", "restart",
+                                           self.case("restart"), self.response("9", cached),
+                                           stats, reference)
+                self.assertTrue(errors)
+
     def test_naive_stop_partial(self):
         for phase, name, answer in [("warm", "fork", "8"), ("restored", "restart", "9")]:
             for family, mode, okay in [("naive", "on", True), ("naive", "off", False),
-                                       ("qwen", "on", False)]:
+                                       ("qwen", "on", phase == "restored")]:
                 with self.subTest(phase=phase, family=family, mode=mode):
                     config = self.config(family)
                     config.update(mtp_mode=mode, expect_speculation=mode == "on")
@@ -367,11 +416,13 @@ class ReuseRunnerTests(unittest.TestCase):
                                    cold, self.stats("cold"), warm)
         self.assertTrue(any("cached" in error for error in errors), errors)
 
-    def test_declared_mtp_activity_is_checked(self):
+    def test_mtp_activity_multiple(self):
         config = self.config()
         config.update(mtp_mode="on", expect_speculation=True, mtp_draft=2)
+        response = self.response("8.")
+        response["usage"]["completion_tokens"] = 2
         errors = gate.inspect_case(config, "warm", "fork", self.case("fork"),
-                                   self.response("8"), self.stats())
+                                   response, self.stats())
         self.assertTrue(any("speculation" in error for error in errors), errors)
 
     def test_plan_refuses_wrong_mode_or_fitted_width(self):

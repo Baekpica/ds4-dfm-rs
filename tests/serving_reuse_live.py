@@ -185,8 +185,14 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
     trace = stats.get("last_request") or {}
     if trace.get("effective_lane") != config["lane"]:
         errors.append(f"lane: {trace.get('effective_lane')!r} != {config['lane']}")
-    if trace.get("speculation_active") is not config["expect_speculation"]:
-        errors.append(f"speculation: {trace.get('speculation_active')!r} != {config['expect_speculation']}")
+    active = trace.get("speculation_active")
+    # A one-token stop can precede the first draft. Activity records work,
+    # while plan_errors separately checks the enabled mode and draft count.
+    one_token_stop = (config["mtp_mode"] == "on" and config["expect_speculation"]
+                      and active is False and usage["completion_tokens"] == 1
+                      and choice.get("finish_reason") == "stop")
+    if active is not config["expect_speculation"] and not one_token_stop:
+        errors.append(f"speculation: {active!r} != {config['expect_speculation']}")
     if trace.get("fallback_reason"):
         errors.append(f"fallback: {trace['fallback_reason']}")
     if phase == "cold" or name == "seed":
@@ -198,6 +204,10 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
             errors.append(f"cached tokens: expected 0 < {cached} < {prompt}")
         if name == "edit":
             kinds = {"partial"} if PROFILES[config["family"]]["reuse"] == "partial" else {"exact", "fork"}
+        elif config["family"] == "qwen" and phase == "restored":
+            # Disk token-LCP restore reports partial for a shorter prefix.
+            # Fresh-process identity and cold parity are checked separately.
+            kinds = {"exact", "fork", "partial"}
         elif config["family"] == "motif" and phase == "warm":
             # The official history removes generation-only empty thinking.
             kinds = {"exact", "fork", "partial"}
