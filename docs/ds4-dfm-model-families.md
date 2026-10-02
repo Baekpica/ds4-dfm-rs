@@ -229,9 +229,39 @@ The same `qwen4exp` runtime also accepts these explicit Q5 layouts:
 |---|---|
 | [Qwen3.8 Flash Next Uncensored](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF) | Base/Uncensored PLE comparisons and scoped snapshot, fork and restart gates are recorded separately in the [FP8 PLE guide](qwen38-ple-fp8.md). |
 | [Swift1.5-Qwen3.8 Flash Next](https://huggingface.co/Baekpica/Swift1.5-Qwen3.8-Flash-Next-Mixed-Quant-GGUF) | Q5 backbone with the shared official FP8 PLE. Its published card records bounded 262,144-context, two-bank text/tool/image checks with MTP draft 2. Full-length 262K input and cross-process disk restore were not tested. Throughput remains unmeasured; the card graph is a Qwen Base reference. |
+| [Darwin-180B-RSI](https://huggingface.co/Baekpica/Darwin-180B-RSI-Mixed-Quant-GGUF) | Swift Q5 recipe, unchanged official FP8 PLE after all 128 BF16 parts matched. Bounded 8K two-bank CUDA, text/tool/image/stream/concurrency, live partial/fork reuse, disk restart and MTP on/off passed. See [scope below](#darwin-180b-rsi). |
 
 These are artifact-specific records. Base Qwen qualification does not establish
 all quantizations, contexts or feature combinations for its derivatives.
+
+#### Darwin-180B-RSI
+
+The supported source is
+[`FINAL-Bench/Darwin-180B-RSI@bc3c7b0410b40c085b78084e13f01c12df31087b`](https://huggingface.co/FINAL-Bench/Darwin-180B-RSI/tree/bc3c7b0410b40c085b78084e13f01c12df31087b).
+It retains the pinned Qwen configuration and Community License. Its three
+`MQ-Q5-SSD-PLE-BF16` main shards use the Swift tensor map; this package supplies
+four official FP8 PLE files. All 128 source BF16 PLE parts matched the Qwen
+reference before those files were copied.
+
+Darwin declares `tokenizer.ggml.pre=qwen4exp` and
+`tokenizer.ggml.normalizer=nfc`. The Rust input path preserves source NFC,
+Unicode marks and added tokens. Existing Qwen, Uncensored and Swift artifacts
+retain their prior tokenizer behavior; CUDA kernels and the shared Qwen graph
+are unchanged. Use the common [owner/cache setup](#qwen-owner-and-cache), select
+`DS4_QWEN_PLE_DIR` explicitly and follow the artifact's serving command.
+
+The [serving receipt](https://huggingface.co/Baekpica/Darwin-180B-RSI-Mixed-Quant-GGUF/blob/main/reproduction/manifests/darwin/serving-receipt.json)
+pins build `c787fb44` and an 8,192-token context, two banks, native chunk 512,
+2 GiB PLE cache, 32 GiB disk KV and embedded MTP draft 2. All 28 API requests
+passed, including images, tools, streaming and native two-bank concurrency.
+Live append/edit/fork, fresh-process disk restore and cold-response parity
+passed, as did MTP off. Fault and shed counters stayed zero. The same build
+passed the [existing Qwen API regression](https://huggingface.co/Baekpica/Darwin-180B-RSI-Mixed-Quant-GGUF/blob/main/reproduction/manifests/darwin/qwen-regression-receipt.json).
+
+The longest lifecycle prompt was 743 tokens. Filled 8K/262K contexts, Darwin
+throughput and quantized benchmark quality remain unmeasured. The model card
+copies the Qwen Base performance graph and table as an explicitly labeled
+reference.
 
 ## GLM 5.3 Flash release scope
 
