@@ -1,0 +1,130 @@
+{
+  "schema": "qwen-vision-followup-round1-v1",
+  "pipeline_complete": true,
+  "control": "DS4_QWEN_VISION_PACK",
+  "source": {
+    "git_commit": "7d5ba917269923776b94e35a62314a99f304f75d",
+    "diff_sha256": "573673fbff684a56acc79e8d10df9f561f95574a1886190b55b0dd70e43f0366"
+  },
+  "worker_binary_sha256": "87ec571075f436b5267a5a6f441e33226e9043db8335cc58bde7650d3b3a5f5c",
+  "numeric_binary_sha256": "a8493f6804bffb487dfb30fe23c2ec5efcc68e5e47875853a511a8bef71809ca",
+  "artifact_revision": "0caa1f4961fc9d1ef9de400df7f11dd7ac6a6cd1",
+  "artifact_manifest_sha256": "22a1f667f731c776f78fe1eca86ca1dafadde48aa9e35ecf8bf985cae1f24c9b",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "615.71.09",
+    "cuda": "13.3.73",
+    "user_clock_range_mhz": [
+      300,
+      2200
+    ]
+  },
+  "whole_worker_baseline": {
+    "attention_calls": 54,
+    "attention_ms": 3924.782496,
+    "all_gpu_kernel_ms": 7531.896603,
+    "attention_gpu_time_pct": 52.108820697787266,
+    "scope": "whole-worker capture includes startup/prewarm and screen plus four-image cold requests; per-request attention/TTFT contributions in the report exclude startup/prewarm"
+  },
+  "steps": [
+    {
+      "phase": "numeric",
+      "complete": true
+    },
+    {
+      "phase": "ab",
+      "complete": true
+    },
+    {
+      "phase": "audit-ab",
+      "complete": true
+    },
+    {
+      "phase": "text",
+      "complete": true
+    },
+    {
+      "phase": "audit-text",
+      "complete": true
+    },
+    {
+      "phase": "functional",
+      "complete": true
+    }
+  ],
+  "ab": {
+    "workers": 12,
+    "responses": 78,
+    "stats_files": 90,
+    "ownership_snapshots": 48,
+    "clock_samples": 399,
+    "clock_mhz_min": 2190,
+    "clock_mhz_max": 2197,
+    "min_available_gib": 20.641578674316406,
+    "max_memory_psi_full_avg10": 0.54,
+    "fault_maxima": {
+      "census": 0,
+      "governor": 0,
+      "observation": 0,
+      "substrate_outstanding": 0
+    },
+    "all_guards_exit_zero": true,
+    "audits_passed": true
+  },
+  "text": {
+    "workers": 6,
+    "responses": 12,
+    "stats_files": 18,
+    "ownership_snapshots": 24,
+    "clock_samples": 103,
+    "clock_mhz_min": 2190,
+    "clock_mhz_max": 2197,
+    "min_available_gib": 20.915828704833984,
+    "max_memory_psi_full_avg10": 0.0,
+    "fault_maxima": {
+      "census": 0,
+      "governor": 0,
+      "observation": 0,
+      "substrate_outstanding": 0
+    },
+    "all_guards_exit_zero": true,
+    "audits_passed": true
+  },
+  "numerical": {
+    "cases": [
+      "screen",
+      "document",
+      "photo",
+      "large",
+      "multi"
+    ],
+    "passes_per_case": 4,
+    "samples_per_pass": 32,
+    "result": "EXACT PASS",
+    "state_boundary": "prompt+31; output32 pending"
+  },
+  "attention_fixture": {
+    "cases": 13,
+    "exact_scalar_packed_default_repeat": true,
+    "sampled_f64_max_and_rel_rms_bound": 5e-05,
+    "memcheck_errors": 0
+  },
+  "functional_independent_audit": "PASS",
+  "raw_receipts": {
+    "packed-qualification.json": "70c275c91d064acceb64cbb715abb2c55df0dd346b9879e04b8f5cb307b2f0a1",
+    "ab-packed-summary.json": "c0688a1601cb12e5960e0a3cc549134a2a1eb6ca9707eb27c120bef2f3c3825e",
+    "text-packed-summary.json": "e2f51c4896a6b0d9fabd2daef3fee47f2a7e083a3ca507495794accb634317d3",
+    "packed-parity.log": "ef163c0a25b8e395a4bfe86cc44895db108583cb17b55ff18ab4487415c3062a",
+    "packed-memcheck.log": "d94aabafd0e4927e78bf08c4bec5b769fea74c15f97c9d0eaa38f2bc3f965bd4",
+    "numeric-packed/metadata.json": "70b5064c8e551fa99750171fd24d973a601d47055db503acb6cf9a9ca7d706ac",
+    "numeric-packed/receipt.json": "e3861aada34469e51faa20ae904af5e09f1762597726645e223a3b1af1e9792d",
+    "functional-packed-audit.json": "17df1b8f855a18090ea01b6dcb89a67488a70850c03b4d7a9ef19a40171e7b40",
+    "packed-default-sass-exact.json": "79b77cc36d8c4b4680e261a61a9d50c04db92b6325ed40241c20a9a92be0276e"
+  },
+  "default_build": {
+    "worker_binary_sha256": "6b60a3d55b16ce3b3a830cb32b2d630f94c05360649da0452ddbf5d3f4ba824c",
+    "attention_fixture_cases": 13,
+    "attention_fixture_result": "PASS",
+    "scalar_and_packed_sass_exact_measured_to_default": true
+  }
+}

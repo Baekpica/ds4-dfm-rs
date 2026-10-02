@@ -1,0 +1,348 @@
+{
+  "schema": "qwen-vision-functional-audit-v1",
+  "complete": true,
+  "blockers": [],
+  "source": {
+    "worktree": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-darwin-rsi",
+    "git_commit": "228fd11e864374a5cbdf4d0fcab2bcea32c9acca",
+    "diff_sha256": "ca95263e47f3d247f2f57dfa9f53611c1f9924f3e314960e828235e270b10f22",
+    "status": " M Makefile\n M docs/benchmarks/qwen-vision-followup-2026-10-02/round1-qualification.json\n M docs/qwen-vision-followup-2026-10-02.md\n M ds4_cuda.cu\n M tests/fixtures/qwen-images/README.md\n M tests/test_qwen_vision_host.c\nA  tests/test_qwen_vision_rope.c\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-codegen.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-counters.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-latency.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-numeric.csv\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-qualification.json\n?? docs/benchmarks/qwen-vision-followup-2026-10-02/rejected-oct-samples.csv\n?? tests/test_qwen_vision_rope\n"
+  },
+  "binary_sha256": "25012b163bd7990d598418073ae26aa3e733a164374ddd15be63bbf45228934f",
+  "artifact_manifest_sha256": "22a1f667f731c776f78fe1eca86ca1dafadde48aa9e35ecf8bf985cae1f24c9b",
+  "fixture_sha256": {
+    "small.png": "058b0f6089d0b504622a8466e63974dff8c169d9aaee941270c6a536645fe642",
+    "screen.png": "c11a3a38ba18c8769a0b0785470c089d2fa7287955e033de8cb99b7ae80f67b4",
+    "photo.jpg": "a48278513a38768ff92247972e60bc873eb361a8527cb8686a3e19c3ae1bdf9d",
+    "document.png": "3119517bbf598dbd3059aa26c4904b71508ab5e899565009ff08fbf080a326d4",
+    "screen-changed.png": "7faf8cc447f8d19fbdf3536e2e9b7e16d9b964ef3e3ad474f1abdf814f32a26c"
+  },
+  "chat_requests": 10,
+  "http_success_responses": 26,
+  "stats_snapshots": 13,
+  "receipt_file_hashes_verified": 93,
+  "embedded_images_verified": 16,
+  "effective_shape": {
+    "ctx": 262144,
+    "max_seqs": 1,
+    "native_chunk": 8192,
+    "mtp_mode": "on",
+    "mtp_draft": 2,
+    "prefix_reuse": "partial",
+    "disk": true,
+    "mem_floor_gb": 2,
+    "mtp_weights": true,
+    "banks_opt_in": false,
+    "sched_chunk": 4096,
+    "sched_chunk_live": 512,
+    "bank_persist_min_tokens": 8192,
+    "disk_min_tokens": 512,
+    "disk_is_offload": false
+  },
+  "requested_shape": {
+    "ctx": 262144,
+    "max_seqs": "1",
+    "prefix_reuse": "partial",
+    "mtp_mode": "on",
+    "disk": true,
+    "mem_floor_gb": 2,
+    "backend": "cuda",
+    "lane": "auto",
+    "mtp_path": false
+  },
+  "fault_maxima": {
+    "census": 0,
+    "observation": 0,
+    "substrate_outstanding": 0,
+    "governor": 0,
+    "governor_decision_fault": 0,
+    "sheds": 0
+  },
+  "speculation_active_cases": [
+    "document",
+    "multi-tool",
+    "tool-result",
+    "long-followup",
+    "restore",
+    "cold"
+  ],
+  "exact_tool_and_assistant_history": true,
+  "frozen_request_sha256": "477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a",
+  "frozen_bytes_and_response_tokens_equal": true,
+  "cases": [
+    {
+      "mode": "seed",
+      "case": "screen",
+      "prompt_tokens": 796,
+      "completion_tokens": 1,
+      "cached_tokens": 0,
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "3"
+      },
+      "encoder": "computed",
+      "images": 1,
+      "patches": 3072,
+      "features": 768,
+      "workspace_mib": 170.8,
+      "request_sha256": "2d18618108bd823057076f6077b9b69d416d17a7612e8b82a83b9f47381bde39"
+    },
+    {
+      "mode": "seed",
+      "case": "document",
+      "prompt_tokens": 1564,
+      "completion_tokens": 6,
+      "cached_tokens": 0,
+      "reuse_kind": "cold",
+      "speculation_active": true,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "385.00"
+      },
+      "encoder": "computed",
+      "images": 1,
+      "patches": 6144,
+      "features": 1536,
+      "workspace_mib": 341.6,
+      "request_sha256": "feb0818bfd2ed60e0df84ac4b04aa7655fb766e1c2a4b36d6855c2877617952b"
+    },
+    {
+      "mode": "seed",
+      "case": "changed",
+      "prompt_tokens": 796,
+      "completion_tokens": 1,
+      "cached_tokens": 0,
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "9"
+      },
+      "encoder": "computed",
+      "images": 1,
+      "patches": 3072,
+      "features": 768,
+      "workspace_mib": 170.8,
+      "request_sha256": "a5077aed838af74ed55041dafe2de41f61f57b2ae39d5af539b35a6f1f81f761"
+    },
+    {
+      "mode": "seed",
+      "case": "photo",
+      "prompt_tokens": 280,
+      "completion_tokens": 1,
+      "cached_tokens": 0,
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "Earth"
+      },
+      "encoder": "computed",
+      "images": 1,
+      "patches": 1024,
+      "features": 256,
+      "workspace_mib": 57.0,
+      "request_sha256": "bab6647e711a02e59dc9508399e7a2ef14fc078efa1260aa72352aa0fe92dd95"
+    },
+    {
+      "mode": "seed",
+      "case": "multi-tool",
+      "prompt_tokens": 2963,
+      "completion_tokens": 43,
+      "cached_tokens": 0,
+      "reuse_kind": "cold",
+      "speculation_active": true,
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_82d24cf708faaae07b7f08252a2a581e",
+            "type": "function",
+            "function": {
+              "name": "record_observation",
+              "arguments": "{\"failed_tasks\":3,\"invoice_total\":385}"
+            }
+          }
+        ]
+      },
+      "encoder": "computed",
+      "images": 4,
+      "patches": 10496,
+      "features": 2624,
+      "workspace_mib": 570.8,
+      "request_sha256": "7f626b81eed396764524755847518c4f83ee3e743d66e8968a611451bb57e34e"
+    },
+    {
+      "mode": "seed",
+      "case": "tool-result",
+      "prompt_tokens": 3046,
+      "completion_tokens": 6,
+      "cached_tokens": 3006,
+      "reuse_kind": "exact",
+      "speculation_active": true,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "3, 385"
+      },
+      "encoder": "cached",
+      "images": 4,
+      "patches": 10496,
+      "features": 2624,
+      "workspace_mib": 0.1,
+      "request_sha256": "28e84df500315896dd909baee6e86aea25ee9d07898a411123e8b212e6e40982"
+    },
+    {
+      "mode": "seed",
+      "case": "long-seed",
+      "prompt_tokens": 18135,
+      "completion_tokens": 1,
+      "cached_tokens": 0,
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "3"
+      },
+      "encoder": "computed",
+      "images": 1,
+      "patches": 3072,
+      "features": 768,
+      "workspace_mib": 171.2,
+      "request_sha256": "a664cca5d149e46f74cfe77a17b296f5f2e1cae19a5bc339f352f7ccc40d20ac"
+    },
+    {
+      "mode": "seed",
+      "case": "long-followup",
+      "prompt_tokens": 18166,
+      "completion_tokens": 2,
+      "cached_tokens": 18136,
+      "reuse_kind": "exact",
+      "speculation_active": true,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "12"
+      },
+      "encoder": "cached",
+      "images": 1,
+      "patches": 3072,
+      "features": 768,
+      "workspace_mib": 0.4,
+      "request_sha256": "477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a"
+    },
+    {
+      "mode": "restore",
+      "case": "restore",
+      "prompt_tokens": 18166,
+      "completion_tokens": 2,
+      "cached_tokens": 18136,
+      "reuse_kind": "exact",
+      "speculation_active": true,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "12"
+      },
+      "encoder": "cached",
+      "images": 1,
+      "patches": 3072,
+      "features": 768,
+      "workspace_mib": 0.4,
+      "request_sha256": "477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a"
+    },
+    {
+      "mode": "cold",
+      "case": "cold",
+      "prompt_tokens": 18166,
+      "completion_tokens": 2,
+      "cached_tokens": 0,
+      "reuse_kind": "cold",
+      "speculation_active": true,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "12"
+      },
+      "encoder": "computed",
+      "images": 1,
+      "patches": 3072,
+      "features": 768,
+      "workspace_mib": 171.2,
+      "request_sha256": "477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a"
+    }
+  ],
+  "checkpoint_hash_validation": "Replay client verified checkpoint size and SHA before restore; audit verifies frozen manifests and receipts without rereading gigabyte checkpoints.",
+  "scope": "Darwin CUDA GB10 seq1; fixed 1/4 images, tools, and an 18K continuation. Configured 256K retained; filled 256K not tested.",
+  "guards": {
+    "seed": {
+      "status": 0,
+      "payload_status": 0,
+      "minimum_available_gib": 20.10565185546875,
+      "last_sample_available_gib": 34.04487991333008,
+      "maximum_psi_full_avg10": 0.18,
+      "clock_samples": 43,
+      "sm_clock_min_mhz": 2190,
+      "sm_clock_max_mhz": 2197,
+      "sm_clock_median_mhz": 2190,
+      "clock_interval_min_seconds": 1.000104539,
+      "clock_interval_max_seconds": 1.000659017,
+      "evidence": "scratch/qwen-multi-image-r2-20261002/functional-fuse/seed/memory.jsonl"
+    },
+    "restore": {
+      "status": 0,
+      "payload_status": 0,
+      "minimum_available_gib": 20.391830444335938,
+      "last_sample_available_gib": 34.97796630859375,
+      "maximum_psi_full_avg10": 0.12,
+      "clock_samples": 14,
+      "sm_clock_min_mhz": 2190,
+      "sm_clock_max_mhz": 2197,
+      "sm_clock_median_mhz": 2190.0,
+      "clock_interval_min_seconds": 1.000239089,
+      "clock_interval_max_seconds": 1.000539181,
+      "evidence": "scratch/qwen-multi-image-r2-20261002/functional-fuse/restore/memory.jsonl"
+    },
+    "cold": {
+      "status": 0,
+      "payload_status": 0,
+      "minimum_available_gib": 20.2127685546875,
+      "last_sample_available_gib": 34.56035614013672,
+      "maximum_psi_full_avg10": 0.02,
+      "clock_samples": 24,
+      "sm_clock_min_mhz": 2190,
+      "sm_clock_max_mhz": 2197,
+      "sm_clock_median_mhz": 2190.0,
+      "clock_interval_min_seconds": 1.00011451,
+      "clock_interval_max_seconds": 1.000577332,
+      "evidence": "scratch/qwen-multi-image-r2-20261002/functional-fuse/cold/memory.jsonl"
+    }
+  },
+  "clock_samples": 81,
+  "gpu_snapshots_audited": 9,
+  "disk_restore": {
+    "first_request_fresh_routes": 0,
+    "different_worker": true,
+    "successful_kv_reads": 534,
+    "kv_bytes_read": 1151496300,
+    "kv_read_operations": {
+      "read": 534
+    },
+    "client_successful_kv_reads": 534,
+    "client_kv_bytes_read": 1151496300,
+    "cached_tokens": 18136,
+    "encoder": "cached",
+    "request_sha256": "477e7174b023a7f62ca39baa3837564b730e1b93ba1d3176fb39cb31efec103a",
+    "trace_sha256": "a50eae217e280dd4a813db60644e2d4b641a38dab3e371371beda8c90d9d2ad8"
+  },
+  "zero_faults_and_sheds": true
+}

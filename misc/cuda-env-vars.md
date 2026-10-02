@@ -69,6 +69,37 @@ order and every BF16 down/product/partial-sum/residual boundary. Dense layer
 zero and widths one through seven keep the original pair. The validated F32
 buffers must be disjoint; fallback scratch remains allocated.
 
+## Qwen vision attention
+
+On runtime `sm_121`, 72-value heads with at least 512 total patches use
+four queries per warp to reuse K/V registers. Other devices retain two
+queries; small inputs and other head widths retain their existing dispatch.
+Per-key FP32 dot, online softmax and value accumulation order stay exact.
+Blocks crossing image segments use the original per-row helper.
+Eligible four-query blocks pack shared K/V into vector loads without increasing
+shared storage. Packing is speed-qualified on Darwin GB10.
+The same eligible shapes fuse QKV bias with RoPE by default, rounding each
+bias sum before the unchanged rotation and storing biased V.
+
+| Variable | Diagnostic control |
+|---|---|
+| `DS4_QWEN_VISION_QUAD=0` | Restore two queries per warp. |
+| `DS4_QWEN_VISION_QUAD=1` | Force four queries on other CUDA devices for qualification. |
+| `DS4_QWEN_VISION_PACK=0` | Restore scalar shared K/V loads on the four-query path. |
+| `DS4_QWEN_VISION_PACK=1` | Enable packed shared K/V on eligible sm121 four-query blocks. |
+| `DS4_QWEN_VISION_FUSE_ROPE=0` | Restore separate QKV bias and RoPE kernels. |
+| `DS4_QWEN_VISION_FUSE_ROPE=1` | Enable eligible QKV bias/RoPE fusion; also the unset default. |
+| `DS4_QWEN_VISION_LEGACY=1` | Restore the original eight-query block. |
+| `DS4_CUDA_NO_QWEN_VISION_TILE=1` | Restore untiled per-row attention. |
+
+The controls are read per dispatch. The untiled override takes precedence,
+then legacy, then quad; packing applies within eligible quad dispatch.
+Bias/RoPE fusion is independent of attention controls; unrecognized fusion
+values retain the separate kernels.
+Fresh Darwin GB10 evidence is recorded in
+[`docs/qwen-vision-2026-10-02.md`](../docs/qwen-vision-2026-10-02.md) and
+[`the follow-up`](../docs/qwen-vision-followup-2026-10-02.md).
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

@@ -1,0 +1,19 @@
+{
+  "nonvacuous": true,
+  "measured_sha256": "87ec571075f436b5267a5a6f441e33226e9043db8335cc58bde7650d3b3a5f5c",
+  "retained_sha256": "6b60a3d55b16ce3b3a830cb32b2d630f94c05360649da0452ddbf5d3f4ba824c",
+  "kernels": [
+    {
+      "kernel": "_Z23qwen_vision_tile_kernelILj4ELb0EEvPfPKfPKiS4_jjj",
+      "instructions": 2304,
+      "exact_assembly_and_encoding": true,
+      "sha256": "424c134c5ed340c764bab28b235dadddc351bbde5fe91f65b3f2fd7f1c70c878"
+    },
+    {
+      "kernel": "_Z23qwen_vision_tile_kernelILj4ELb1EEvPfPKfPKiS4_jjj",
+      "instructions": 2320,
+      "exact_assembly_and_encoding": true,
+      "sha256": "c02ba3dcb6e89806f74c9a304e3fd988948a9448d9bb87066978730c6dfd1d05"
+    }
+  ]
+}

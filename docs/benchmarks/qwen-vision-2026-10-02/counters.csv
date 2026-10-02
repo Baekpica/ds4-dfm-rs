@@ -1,0 +1,17 @@
+arm,metric,value
+pair,gpu__time_duration.sum,29.286016
+pair,sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed,93.686136
+pair,smsp__inst_executed.sum,8830894080.000000
+pair,l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum,452995143
+pair,l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum,43401216
+pair,l1tex__t_requests_pipe_lsu_mem_global_op_st.sum,147456
+pair,derived__local_spilling_requests,0
+pair,derived__shared_spilling_requests,0
+quad,gpu__time_duration.sum,24.408320
+quad,sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed,91.629250
+quad,smsp__inst_executed.sum,7020453888.000000
+quad,l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum,226500651
+quad,l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum,22167552
+quad,l1tex__t_requests_pipe_lsu_mem_global_op_st.sum,147456
+quad,derived__local_spilling_requests,0
+quad,derived__shared_spilling_requests,0

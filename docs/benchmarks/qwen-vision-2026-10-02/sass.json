@@ -1,0 +1,74 @@
+{
+  "result": "EXACT",
+  "tool": "/usr/local/cuda/bin/cuobjdump CUDA 13.3 V13.3.73",
+  "method": "Full --dump-sass and --dump-resource-usage; one actual sm_121a Function section per target; nonzero contiguous instruction count and two encoding words required; normalized assembly + hex and raw128-bit instruction encodings compared",
+  "binaries": {
+    "measured": {
+      "path": "scratch/qwen-multi-image-20261002/ds4-server-quad-measured",
+      "sha256": "543b789d37c78dc63ab82011a0aaa5f0c239b7b8ec8fd9239ed2af647f64be48"
+    },
+    "final": {
+      "path": "ds4-server",
+      "sha256": "801f862b4fd3038fe3cf44820f49a1d53194566d0db862bafaf50b80c7a0f0f4"
+    }
+  },
+  "kernels": {
+    "measured": {
+      "2": {
+        "instruction_count": 1280,
+        "instruction_bytes": 20480,
+        "sass_sha256": "70aafb9cdc4d269c4d18c067f2d483bf474720451a1f73485ee5a782074c52fa",
+        "encoding_sha256": "bbd786383288cb220b4b589f66b808ea5b6e8a59e494f8f88cf9cbdc089b86b2",
+        "resource": "REG:48 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:940 TEXTURE:0 SURFACE:0 SAMPLER:0",
+        "normalized_file": "scratch/qwen-multi-image-20261002/measured-qwen-vision-2q.normalized.sass",
+        "encoding_file": "scratch/qwen-multi-image-20261002/measured-qwen-vision-2q.instructions.bin"
+      },
+      "4": {
+        "instruction_count": 2304,
+        "instruction_bytes": 36864,
+        "sass_sha256": "168a80ea08b2c05a80d8969bf0157162e830491677340d15bc049fd889d3c682",
+        "encoding_sha256": "2e9df214aaa8edee6d00190680996c125cbdbd418c8af8749d78d8965a31c634",
+        "resource": "REG:56 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:940 TEXTURE:0 SURFACE:0 SAMPLER:0",
+        "normalized_file": "scratch/qwen-multi-image-20261002/measured-qwen-vision-4q.normalized.sass",
+        "encoding_file": "scratch/qwen-multi-image-20261002/measured-qwen-vision-4q.instructions.bin"
+      }
+    },
+    "final": {
+      "2": {
+        "instruction_count": 1280,
+        "instruction_bytes": 20480,
+        "sass_sha256": "70aafb9cdc4d269c4d18c067f2d483bf474720451a1f73485ee5a782074c52fa",
+        "encoding_sha256": "bbd786383288cb220b4b589f66b808ea5b6e8a59e494f8f88cf9cbdc089b86b2",
+        "resource": "REG:48 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:940 TEXTURE:0 SURFACE:0 SAMPLER:0",
+        "normalized_file": "scratch/qwen-multi-image-20261002/final-qwen-vision-2q.normalized.sass",
+        "encoding_file": "scratch/qwen-multi-image-20261002/final-qwen-vision-2q.instructions.bin"
+      },
+      "4": {
+        "instruction_count": 2304,
+        "instruction_bytes": 36864,
+        "sass_sha256": "168a80ea08b2c05a80d8969bf0157162e830491677340d15bc049fd889d3c682",
+        "encoding_sha256": "2e9df214aaa8edee6d00190680996c125cbdbd418c8af8749d78d8965a31c634",
+        "resource": "REG:56 STACK:0 SHARED:1024 LOCAL:0 CONSTANT[0]:940 TEXTURE:0 SURFACE:0 SAMPLER:0",
+        "normalized_file": "scratch/qwen-multi-image-20261002/final-qwen-vision-4q.normalized.sass",
+        "encoding_file": "scratch/qwen-multi-image-20261002/final-qwen-vision-4q.instructions.bin"
+      }
+    }
+  },
+  "sass_dump_exit_codes": {
+    "measured": 0,
+    "final": 0
+  },
+  "resource_dump_exit_codes": {
+    "measured": 0,
+    "final": 0
+  },
+  "dump_stderr_bytes": {
+    "measured.sass": 0,
+    "measured.resources": 0,
+    "final.sass": 0,
+    "final.resources": 0
+  },
+  "source_dynamic_shared_bytes": 18432,
+  "source_threads_per_block": 256,
+  "conclusion": "Runtime sm121 default predicate changes host dispatch only; measured/final pair and quad instructions and compiler resource usage are identical."
+}

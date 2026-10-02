@@ -1,0 +1,8 @@
+{
+  "nonvacuous": true,
+  "instructions": 2304,
+  "encoded_bytes": 36864,
+  "encoded_sha256": "c516d3cbfdc134c488a24d240dfbe14fbec6bfde747eb534193c7891071c7050",
+  "exact_assembly_and_encoding": true,
+  "retained_binary_sha256": "801f862b4fd3038fe3cf44820f49a1d53194566d0db862bafaf50b80c7a0f0f4"
+}
