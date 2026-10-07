@@ -55,7 +55,6 @@ pub struct AgentArgs {
     steering_attn: f32,
     steering_ffn: f32,
     trace: Option<String>,
-    ssd_options: Vec<ds4_core::ModelOpenOption>,
     dist: ds4_dist::Options,
     non_interactive: bool,
     help: bool,
@@ -87,7 +86,6 @@ impl Default for AgentArgs {
             steering_attn: 0.0,
             steering_ffn: 0.0,
             trace: None,
-            ssd_options: Vec::new(),
             dist: ds4_dist::Options::default(),
             non_interactive: false,
             help: false,
@@ -198,18 +196,6 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<AgentArgs, S
                 let value = need_value(&arg, args.next())?;
                 parsed.mtp_margin = parse_f32_range(&arg, value, 0.0, 1000.0)?;
             }
-            "--ssd-streaming" => parsed
-                .ssd_options
-                .push(ds4_core::ModelOpenOption::SsdStreaming),
-            "--ssd-streaming-cold" => parsed
-                .ssd_options
-                .push(ds4_core::ModelOpenOption::SsdStreamingCold),
-            "--ssd-streaming-cache-experts" => {
-                let value = need_value(&arg, args.next())?;
-                parsed.ssd_options.push(
-                    ds4_core::ModelOpenOption::ssd_cache(&value).map_err(|error| error.message)?,
-                );
-            }
             "--quality" => parsed.quality = true,
             "--warm-weights" => parsed.warm_weights = true,
             "--power" => {
@@ -297,7 +283,6 @@ fn use_mtp_spec(temp: f32, mtp: Option<&str>, draft: i32) -> bool {
 
 fn mtp_open_options(args: &AgentArgs) -> Vec<ds4_core::ModelOpenOption> {
     let mut options = Vec::new();
-    options.extend(args.ssd_options.iter().cloned());
     if args.mtp.is_some() {
         options.push(ds4_core::ModelOpenOption::MtpDraftTokens(args.mtp_draft));
         options.push(ds4_core::ModelOpenOption::MtpMargin(args.mtp_margin));
@@ -846,9 +831,6 @@ fn help_text(name: &str) -> String {
            --mtp FILE             Optional MTP support GGUF.\n\
            --mtp-draft N          Maximum MTP draft tokens. Default: 1\n\
            --mtp-margin F         MTP verifier margin. Default: 3\n\
-           --ssd-streaming         Stream GLM CUDA routed experts from SSD\n\
-           --ssd-streaming-cache-experts N|GB  Global slots or GiB budget\n\
-           --ssd-streaming-cold    Advise eviction of read expert pages\n\
            --quality              Prefer exact kernels where available.\n\
            --warm-weights         Touch mapped tensor pages before generation.\n\
             --power N              Target GPU duty cycle percentage, 1..100. Default: 100\n\
@@ -1004,6 +986,7 @@ mod tests {
     #[test]
     fn agent_requires_dsml_family() {
         assert!(agent_family(ds4_core::ModelFamily::DeepSeek4).is_ok());
+        assert!(agent_family(ds4_core::ModelFamily::Glm53).is_err());
         assert!(agent_family(ds4_core::ModelFamily::Inkling).is_err());
         assert!(agent_family(ds4_core::ModelFamily::IQuestQ1).is_err());
     }
@@ -1317,30 +1300,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_ssd_streaming() {
-        let parsed = parse_args(argv(&[
-            "--non-interactive",
-            "-p",
-            "hello",
-            "--ssd-streaming",
-            "--ssd-streaming-cache-experts",
-            "2GB",
-            "--ssd-streaming-cold",
-        ]));
-        let parsed = parsed.unwrap();
-        assert_eq!(
-            parsed.ssd_options,
-            vec![
-                ds4_core::ModelOpenOption::SsdStreaming,
-                ds4_core::ModelOpenOption::SsdCacheBytes(2 * (1 << 30)),
-                ds4_core::ModelOpenOption::SsdStreamingCold,
-            ]
-        );
-        let options = mtp_open_options(&parsed);
-        assert!(parsed
-            .ssd_options
-            .iter()
-            .all(|option| options.contains(option)));
+    fn rejects_ssd_streaming() {
+        for args in [
+            &["--ssd-streaming"][..],
+            &["--ssd-streaming-cache-experts", "24GB"],
+            &["--ssd-streaming-cold"],
+        ] {
+            assert_eq!(
+                parse_args(argv(args)).unwrap_err(),
+                format!("unknown option: {}", args[0])
+            );
+        }
+    }
+
+    #[test]
+    fn help_omits_ssd_streaming() {
+        assert!(!help_text("ds4-agent").contains("--ssd-streaming"));
     }
 
     #[test]

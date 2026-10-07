@@ -3,7 +3,9 @@
 `--ssd-streaming` keeps GLM-5.3 routed experts in the mmap-backed GGUF and
 loads selected gate/up/down triplets into a bounded device cache. Rust owns
 options and admission; the native driver owns file I/O, residency and eviction.
-The option is shared by `ds4`, `ds4-bench`, `ds4-agent` and `ds4-server`.
+The option is shared by `ds4`, `ds4-bench` and `ds4-server`.
+GLM tool workflows use an HTTP client; the built-in `ds4-agent` executor
+requires DeepSeek DSML and omits these GLM-only options.
 Streaming defaults to Off. Omit `--ssd-streaming` for the normal resident
 weight path; add it to enable the bounded expert cache. Qualify performance
 on both paths. The resident reference uses one VMM owner and a worker with
