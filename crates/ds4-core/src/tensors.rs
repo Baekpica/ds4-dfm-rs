@@ -111,7 +111,8 @@ pub fn tensor_nbytes(typ: u32, elements: u64) -> Option<u64> {
     if block_elems == 0 {
         return None;
     }
-    let blocks = elements.saturating_add(u64::from(block_elems) - 1) / u64::from(block_elems);
+    let block_elems = u64::from(block_elems);
+    let blocks = elements / block_elems + u64::from(elements % block_elems != 0);
     blocks.checked_mul(u64::from(block_bytes))
 }
 

@@ -20,6 +20,7 @@ enum {
     T_Q5_K = 13,
     T_Q6_K = 14,
     T_IQ2_XXS = 16,
+    T_IQ2_XS = 17,
     T_I32 = 26,
     T_I64 = 27,
     T_BF16 = 30
@@ -60,7 +61,8 @@ typedef enum {
     CLS_QWEN_MATRIX,
     CLS_QWEN_PLAIN,
     CLS_QWEN_MTP_ROUTED,
-    CLS_GLM_DENSE
+    CLS_GLM_DENSE,
+    CLS_GLM_ROUTED
 } type_class;
 
 typedef struct {
@@ -251,6 +253,9 @@ static void spec(const char *name, type_class cls, uint32_t typ, uint32_t ndim,
         break;
     case CLS_GLM_DENSE:
         ct = "glm-dense";
+        break;
+    case CLS_GLM_ROUTED:
+        ct = "glm-routed";
         break;
     default:
         ct = "unknown";
@@ -833,9 +838,9 @@ static void expected_glm53(const layout_shape *s)
         } else {
             specf("blk.%u.ffn_gate_inp.weight", il, CLS_EXACT, T_F32, 2, e, s->n_expert, 0, 0);
             specf("blk.%u.exp_probs_b.bias", il, CLS_EXACT, T_F32, 1, s->n_expert, 0, 0, 0);
-            specf("blk.%u.ffn_gate_exps.weight", il, CLS_ROUTED, 0, 3, e, s->n_ff_exp, s->n_expert, 0);
-            specf("blk.%u.ffn_up_exps.weight", il, CLS_ROUTED, 0, 3, e, s->n_ff_exp, s->n_expert, 0);
-            specf("blk.%u.ffn_down_exps.weight", il, CLS_ROUTED, 0, 3, s->n_ff_exp, e, s->n_expert, 0);
+            specf("blk.%u.ffn_gate_exps.weight", il, CLS_GLM_ROUTED, 0, 3, e, s->n_ff_exp, s->n_expert, 0);
+            specf("blk.%u.ffn_up_exps.weight", il, CLS_GLM_ROUTED, 0, 3, e, s->n_ff_exp, s->n_expert, 0);
+            specf("blk.%u.ffn_down_exps.weight", il, CLS_GLM_ROUTED, 0, 3, s->n_ff_exp, e, s->n_expert, 0);
             specf("blk.%u.ffn_gate_shexp.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_ff_exp, 0, 0);
             specf("blk.%u.ffn_up_shexp.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_ff_exp, 0, 0);
             specf("blk.%u.ffn_down_shexp.weight", il, CLS_GLM_DENSE, 0, 2, s->n_ff_exp, e, 0, 0);
@@ -973,6 +978,8 @@ static bool type_ok2(const expect_spec *sp, uint32_t typ)
         return typ == T_F16 || typ == T_BF16;
     case CLS_ROUTED:
         return typ == T_IQ2_XXS || typ == T_Q2_K || typ == T_Q4_K;
+    case CLS_GLM_ROUTED:
+        return typ == T_IQ2_XXS || typ == T_IQ2_XS || typ == T_Q2_K || typ == T_Q4_K;
     case CLS_EXAONE:
         return typ == T_Q8_0 || typ == T_Q6_K || typ == T_Q5_K || typ == T_Q4_K ||
                typ == T_Q3_K || typ == T_Q2_K || typ == T_IQ2_XXS || typ == T_F16 ||

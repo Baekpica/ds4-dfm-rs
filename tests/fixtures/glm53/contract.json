@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "artifact": {
+    "repo": "Baekpica/GLM-5.3-Flash-Uncensored-Mixed-Quant-GGUF",
+    "revision": "597f15ced1876cbebd7224b359abe77571c79c7c",
+    "file": "GLM-5.3-Flash-Uncensored-Mixed-IQ2XXS-IQ2XS-Q2K.gguf",
+    "bytes": 93920031264,
+    "sha256": "7f6f96df758b5d651561c2f06ffdd0d1075a24f10654320e24e7d66c48db6017"
+  },
+  "context": 2048,
+  "prefill_rows": [
+    1,
+    128
+  ],
+  "modes": [
+    "resident",
+    "ssd"
+  ],
+  "ssd_cache_experts": 1024,
+  "greedy_tokens": 24,
+  "sampling": {
+    "temperature": 0.7,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0,
+    "seed": 424242
+  },
+  "prompt": "A warehouse had 240 notebooks. On Monday it shipped 35, on Tuesday it received 18, and on Wednesday it shipped 47. Show the calculation and state how many notebooks remain. Then write a Python function that computes the remaining count from an initial count and a list of signed changes. Keep the explanation concise. Before answering, account for every event in order. A positive change is incoming stock and a negative change is outgoing stock. Use the same sign convention for the explanation and the function. The function should return an integer and should not print. Include one assertion for this example. The audit records each movement once. The Monday shipment left the warehouse after the opening count was recorded. The Tuesday receipt increased the physical stock before Wednesday's shipment. There were no returns, losses, adjustments, or other movements during this period. A previous draft incorrectly added an outgoing shipment, so check the signs carefully. Do not change any of the event counts. The final explanation should be understandable to a colleague who has never seen this ledger. The Python function should also work for an empty list of changes. Avoid any external dependencies. The assertion should use the initial count and these three signed changes, and should verify the same result stated in the explanation. Give the result first, then the calculation and code.",
+  "answer_review": {
+    "remaining": 176,
+    "python_result": "initial + sum(changes)",
+    "scope": "24-token continuations are bounded diagnostics; review partial answers and record truncation."
+  },
+  "automated_gates": [
+    "full-vocab finite logits",
+    "prefix-extension generation stable",
+    "snapshot exact state/logits restore",
+    "two banks concurrently decode",
+    "exact fork preserves source",
+    "partial fork uses retained KDA checkpoint floor",
+    "partial state matches cold replay with same chunks",
+    "bank disk payload exact restore",
+    "MTP pending sync/save/load rejected",
+    "MTP abort exact frontier",
+    "MTP keep1 equals width1 target"
+  ],
+  "long_context": {
+    "status": "pending_separate_live_gate",
+    "context": 1048576,
+    "requirements": [
+      "original artifact/tokenizer and pinned prompt hash",
+      "causal selected-pool/tail frontier beyond2048 and at1M",
+      "full-vocab logits and representative continuation",
+      "KDA/tail/live-latent/pooled state snapshots",
+      "long-prefix extension, partial fork and disk restore",
+      "MTP accepted-prefix state and byte-exact restore",
+      "vision spans and continuation where applicable",
+      "clocks300-2200, actual memory headroom/fault counters",
+      "whole prefill/decode profile and matched off/on correctness plus speed before optimization adoption"
+    ],
+    "selective_gate": {
+      "context": 8192,
+      "prompt_tokens": 6147,
+      "purpose": "Cross dense2048 and causal pool selection with partial tail before1M",
+      "processes": 1,
+      "engine_copies": 1,
+      "retry_policy": "New failure or change only; no blanket retries"
+    },
+    "million_gate": {
+      "prompt_tokens": 1048515,
+      "generation_tokens": 32,
+      "position_checks": [
+        2048,
+        2049,
+        8191,
+        1048515
+      ],
+      "require_completed_prompt": true,
+      "processes": 1,
+      "engine_copies": 1,
+      "status": "pending actual memory admission and live execution"
+    }
+  },
+  "vision_artifact": {
+    "file": "GLM-5.3-Flash-Uncensored-BF16-Vision.gguf",
+    "bytes": 1127280960,
+    "sha256": "e7f71610840eb4df88164ac1eda36bf1ea0449e140ebcd6afba458c7c54b04d7"
+  }
+}

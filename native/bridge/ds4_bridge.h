@@ -99,6 +99,10 @@ typedef struct {
     int32_t power_percent;    /* 1..100; native default is 100 */
     int32_t warm_weights;
     int32_t quality;
+    int32_t ssd_streaming;
+    int32_t ssd_streaming_cold;
+    uint32_t ssd_streaming_cache_experts;
+    uint64_t ssd_streaming_cache_bytes;
     const ds4_bridge_bind_plan *plan; /* optional; borrowed for the call */
     const ds4_host_tensor_dir *tensors; /* optional full inventory; borrowed */
     const ds4_host_shape *shape; /* optional; skip C validate when set */
@@ -225,6 +229,10 @@ int ds4_bridge_inkling_trial(ds4_bridge_session *s, int32_t first, int32_t max_t
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen);
 int ds4_bridge_inkling_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_glm53_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                           int32_t *tokens, int32_t *target, int32_t cap,
+                           char *err, size_t errlen);
+int ds4_bridge_glm53_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
 int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen);

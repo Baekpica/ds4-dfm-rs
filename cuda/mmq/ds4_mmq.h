@@ -1067,6 +1067,12 @@ int ds4_mmq_iq2_xs_moe_vec(
     int             n_expert_used,
     cudaStream_t    stream);
 
+/* GLM raw expert tables, including padded SSD-cache slots. Byte strides must
+ * contain one full expert and align to the tensor's quant block size. */
+int ds4_mmq_glm_moe(uint32_t type, const void *w, const float *x,
+    const int32_t *ids, float *out, int m, int k, int tokens, int experts,
+    int used, uint64_t expert_stride, cudaStream_t stream);
+
 int ds4_mmq_iq1_s_moe_vec(
     const void    * W,
     const float   * X_f32,
@@ -1502,6 +1508,11 @@ int ds4_mmq_q5_K_moe_pair_raw_vec(
 // favour the vec path (n_tokens <= 8 on Blackwell).
 //
 // Returns 0 on success, non-zero on validation or launch failure.
+
+// Spark raw Q8 shared FFN, K4096/M2048/clamp10. 1=success, 0=refusal,
+// -1=launch failure; no fallback after a partial launch.
+int ds4_mmq_glm53_shared_q8(const void *gate, const void *up,
+    const float *x, float *mid, cudaStream_t stream);
 
 int ds4_mmq_q8_0_dense_vec(
     const void  * W_q8_0,

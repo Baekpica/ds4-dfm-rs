@@ -808,7 +808,7 @@ ds4_cuda.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitiv
 cuda/mmq/ds4_ggml_stubs.o: cuda/mmq/ds4_ggml_stubs.cu cuda/mmq/ds4_ggml_stubs.h cuda/mmq/common.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
 
-cuda/mmq/ds4_mmq.o: cuda/mmq/ds4_mmq.cu cuda/mmq/ds4_mmq.h cuda/mmq/ds4_mmq_d2r.cuh cuda/mmq/ds4_mmq_pipe.cuh cuda/mmq/mmq.cuh cuda/mmq/common.cuh cuda/mmq/quantize.cuh cuda/mmq/mmid.cuh cuda/mmq/mmvq.cuh cuda/mmq/vecdotq.cuh cuda/mmq/mma.cuh cuda/mmq/ds4_mimo2_swiglu.cuh
+cuda/mmq/ds4_mmq.o: cuda/mmq/ds4_mmq.cu cuda/mmq/ds4_mmq.h cuda/mmq/ds4_mmq_d2r.cuh cuda/mmq/ds4_mmq_pipe.cuh cuda/mmq/mmq.cuh cuda/mmq/common.cuh cuda/mmq/quantize.cuh cuda/mmq/mmid.cuh cuda/mmq/mmvq.cuh cuda/mmq/vecdotq.cuh cuda/mmq/mma.cuh cuda/mmq/ds4_mimo2_swiglu.cuh cuda/mmq/ds4_glm_q2.h cuda/mmq/ds4_glm_shared.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
 
 cuda/mmq/ds4_mmq_d2r.o: cuda/mmq/ds4_mmq_d2r.cu cuda/mmq/ds4_mmq_d2r.cuh cuda/mmq/mmq.cuh cuda/mmq/common.cuh cuda/mmq/vecdotq.cuh cuda/mmq/mma.cuh
@@ -1673,6 +1673,133 @@ test-glm53-loader: tests/test_glm53_loader
 		{ echo "set DS4_GLM53_MODEL to GLM-5.3-Flash-Q2.gguf" >&2; exit 2; }
 	./tests/test_glm53_loader "$(DS4_GLM53_MODEL)"
 
+tests/test_glm53_quant: tests/test_glm53_quant.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+test-glm53-quant: tests/test_glm53_quant
+	./tests/test_glm53_quant
+
+tests/test_glm53_mixed.o: tests/test_glm53_mixed.c ds4_gpu.h cuda/mmq/ggml-common.h
+	$(CC) $(CFLAGS) -std=c11 -I. -c -o $@ $<
+
+tests/test_glm53_mixed: tests/test_glm53_mixed.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-glm53-mixed: tests/test_glm53_mixed
+	./tests/test_glm53_mixed
+
+GLM53_NATIVE_DEPS = ds4_glm53_cache.h ds4_glm53_stream.inc ds4_glm53_compact.h \
+	ds4_glm53_graph.inc ds4_glm53_payload.inc ds4_glm53_mtp.inc ds4_glm53_batch.inc \
+	ds4_glm53_image.inc
+ds4.o: $(GLM53_NATIVE_DEPS)
+tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
+	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
+	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
+ds4_cuda.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc \
+	cuda/glm53_vision_norm.cuh ds4_glm53_attn.h cuda/glm53_low_attn.cuh cuda/glm53_pool_score.cuh
+
+tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
+	$(CC) $(CFLAGS) -Werror -o $@ $<
+
+tests/test_glm53_compact.o: tests/test_glm53_compact.c ds4_glm53_compact.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm53_compact: tests/test_glm53_compact.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-glm53-cache test-glm53-compact
+test-glm53-cache: tests/test_glm53_cache
+	./tests/test_glm53_cache
+
+tests/test_glm53_stream: tests/test_glm53_stream.c ds4.c ds4.h ds4_gpu.h ds4_glm53_cache.h ds4_glm53_stream.inc
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -o $@ $< -Wl,--gc-sections -lm -pthread
+
+.PHONY: test-glm53-stream
+test-glm53-stream: tests/test_glm53_stream
+	./tests/test_glm53_stream
+
+test-glm53-compact: tests/test_glm53_compact
+	./tests/test_glm53_compact
+
+tests/test_glm53_weight.o: tests/test_glm53_weight.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm53_weight: tests/test_glm53_weight.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-glm53-weight: tests/test_glm53_weight
+	./tests/test_glm53_weight
+	./tests/test_glm53_weight freeze
+
+tests/test_glm53_payload: tests/test_glm53_payload.c ds4.c ds4.h ds4_glm53_payload.inc ds4_glm53_compact.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+test-glm53-payload: tests/test_glm53_payload
+	./tests/test_glm53_payload
+
+tests/test_glm53_stop: tests/test_glm53_stop.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-glm53-stop
+test-glm53-stop: tests/test_glm53_stop
+	./tests/test_glm53_stop
+
+tests/test_glm53_tokens: tests/test_glm53_tokens.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+tests/test_glm53_mtp: tests/test_glm53_mtp.c ds4_glm53_mtp.inc ds4_gpu.h
+	$(CC) $(CFLAGS) -Werror -I. -o $@ $< -lm
+
+test-glm53-mtp: tests/test_glm53_mtp
+	./tests/test_glm53_mtp
+
+tests/test_glm53_banks: tests/test_glm53_banks.c ds4_glm53_batch.inc ds4_glm53_compact.h
+	$(CC) $(CFLAGS) -Werror -I. -o $@ $< -lm
+
+test-glm53-banks: tests/test_glm53_banks
+	./tests/test_glm53_banks
+
+tests/test_glm53_map: tests/test_glm53_map.c ds4_glm53_map.inc
+	$(CC) $(CFLAGS) -Werror -Wno-unused-function -I. -o $@ $<
+
+test-glm53-map: tests/test_glm53_map
+	./tests/test_glm53_map
+
+tests/test_glm53_vision_norm: tests/test_glm53_vision_norm.cu cuda/glm53_vision_norm.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
+test-glm53-vision-norm: tests/test_glm53_vision_norm
+	./tests/test_glm53_vision_norm
+
+tests/test_glm53_attention: tests/test_glm53_attention.c ds4_glm53_attn.h
+	$(CC) $(CFLAGS) -Werror -I. -o $@ $<
+
+tests/test_glm53_attention_cuda: tests/test_glm53_attention.cu ds4_glm53_attn.h cuda/glm53_low_attn.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
+tests/bench_glm53_attention: tests/bench_glm53_attention.cu ds4_glm53_attn.h ds4_glm53_compact.h cuda/glm53_low_attn.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
+tests/bench_glm53_pool: tests/bench_glm53_pool.cu ds4_glm53_compact.h cuda/glm53_pool_score.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< -lcudart
+
+tests/bench_glm53_shared: tests/bench_glm53_shared.cu $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-glm53-attention test-glm53-attention-cuda
+test-glm53-attention: tests/test_glm53_attention
+	./tests/test_glm53_attention
+
+test-glm53-attention-cuda: tests/test_glm53_attention_cuda
+	./tests/test_glm53_attention_cuda
+
+.PHONY: test-glm53-quant test-glm53-mixed test-glm53-weight \
+	test-glm53-payload test-glm53-mtp test-glm53-banks test-glm53-map test-glm53-vision-norm
+
 tests/test_glm53_vision_loader: tests/test_glm53_vision_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
@@ -1735,6 +1862,34 @@ tests/test_glm53_session.o: tests/test_glm53_session.c ds4.h
 
 tests/test_glm53_session: tests/test_glm53_session.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_glm53_long.o: tests/test_glm53_long.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_glm53_long: tests/test_glm53_long.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_glm53_mtp_actual.o: tests/test_glm53_mtp_actual.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_glm53_mtp_actual: tests/test_glm53_mtp_actual.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/bench_glm53_stream.o: tests/bench_glm53_stream.cu ds4_gpu.h
+	$(NVCC) $(NVCCFLAGS) -I. -c -o $@ $<
+
+tests/bench_glm53_stream: tests/bench_glm53_stream.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+# Build only; the operator runs each arm in a separate process.
+.PHONY: bench-glm53-stream glm53-stream-plan
+bench-glm53-stream: tests/bench_glm53_stream
+
+glm53-stream-plan:
+	@test -n "$(DS4_GLM53_MODEL)" -a -n "$(DS4_GLM53_HASH_RECEIPT)" -a -n "$(DS4_GLM53_IO_PLAN_DIR)" || \
+		{ echo "set DS4_GLM53_MODEL, DS4_GLM53_HASH_RECEIPT and DS4_GLM53_IO_PLAN_DIR" >&2; exit 2; }
+	python3 tests/glm53_stream_fixture.py --model "$(DS4_GLM53_MODEL)" \
+		--receipt "$(DS4_GLM53_HASH_RECEIPT)" --output "$(DS4_GLM53_IO_PLAN_DIR)"
 
 test-glm53-session: tests/test_glm53_session
 	@test -n "$(DS4_GLM53_MODEL)" || \
@@ -1985,6 +2140,10 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
+	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
+	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
+	rm -f tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
 	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o

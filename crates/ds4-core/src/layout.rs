@@ -50,6 +50,7 @@ pub enum TypeClass {
     QwenPlain,
     QwenMtpRouted,
     GlmDense,
+    GlmRouted,
 }
 
 impl TypeClass {
@@ -69,6 +70,7 @@ impl TypeClass {
             TypeClass::QwenPlain => "qwen-plain".into(),
             TypeClass::QwenMtpRouted => "qwen-mtp-routed".into(),
             TypeClass::GlmDense => "glm-dense".into(),
+            TypeClass::GlmRouted => "glm-routed".into(),
         }
     }
 
@@ -163,6 +165,9 @@ fn type_ok(class: TypeClass, typ: u32) -> bool {
         TypeClass::Plain => typ == T_F16 || typ == T_F32,
         TypeClass::MotifProj => typ == T_F16 || typ == T_BF16,
         TypeClass::Routed => typ == T_IQ2_XXS || typ == T_Q2_K || typ == T_Q4_K,
+        TypeClass::GlmRouted => {
+            typ == T_IQ2_XXS || typ == T_IQ2_XS || typ == T_Q2_K || typ == T_Q4_K
+        }
         TypeClass::ExaoneQuant => {
             typ == T_Q8_0
                 || typ == T_Q6_K
@@ -2337,7 +2342,13 @@ fn expected_glm53(shape: &Shape) -> Vec<LayoutSpec> {
                     [shape.n_ff_exp as u64, e, shape.n_expert as u64, 0],
                 ),
             ] {
-                spec(&mut out, format!("{p}{suffix}"), TypeClass::Routed, 3, dims);
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::GlmRouted,
+                    3,
+                    dims,
+                );
             }
             for (suffix, dims) in [
                 ("ffn_gate_shexp.weight", [e, shape.n_ff_exp as u64, 0, 0]),

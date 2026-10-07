@@ -42,6 +42,7 @@ seeing output within a campaign.
 | `motif` | Motif-3 MQ87-88-FIT canonical GGUF | partial | off |
 | `naive` | Naive-N0.5-Flash MQ87 main plus any loaded DSpark sidecar | partial | off, or separately on with draft 1–6 |
 | `iquest` | IQuest-Q1 canonical six-shard mixed artifact with embedded recursive MTP | partial | off, or separately on with draft 2–7 |
+| `glm` | GLM-5.3 Flash Uncensored mixed artifact plus loaded Vision sidecar | partial | off, or separately on with draft 1–3 |
 | `deepseek` | exact Flash/PRO artifact; include any loaded MTP/DSpark sidecar | exact | explicitly off, or separately on with the declared draft |
 
 Provide the same verified artifact manifest to every phase. The runner records
@@ -92,6 +93,12 @@ Motif's official template removes the generation-only empty thinking pair, so
 append/branch may restore a partial checkpoint at the canonical history
 frontier. This is reported as `partial`, including when native code copies
 that checkpoint to another bank.
+
+For GLM, use `--family glm` and `DS4_GLM53_BATCH_TRACE=1`. Keep SSD/cache/Vision
+settings identical across phases. Its canonical history can restore a partial
+checkpoint after omitting the generation-only thinking close. Native trace
+must prove a copy to another bank with the source frontier preserved. These
+flags prepare a gate; completed live receipts establish qualification.
 
 Start with an empty, dedicated disk cache and evidence directory. `$PID` is
 the inference server PID, not its owner, shell or watchdog. Record clocks and
@@ -146,22 +153,23 @@ python3 tests/serving_reuse_live.py cold \
 |---|---|---|
 | seed: 2 + 2 | `4`, `4.`, `2 + 2 = 4`, `2 + 2 = 4.` | cold, zero cached |
 | append: 4 + 1 after actual seed reply | `5`, `5.`, `4 + 1 = 5`, `4 + 1 = 5.` | exact/fork, positive proper prefix |
-| edit: replace second user turn with 4 + 2 | `6`, `6.`, `4 + 2 = 6`, `4 + 2 = 6.` | partial for Qwen/Solar/Motif/Naive/IQuest; exact/fork for DeepSeek |
+| edit: replace second user turn with 4 + 2 | `6`, `6.`, `4 + 2 = 6`, `4 + 2 = 6.` | partial for Qwen/Solar/Motif/Naive/IQuest/GLM; exact/fork for DeepSeek |
 | fork: extend the retained append branch with 5 + 3 | `8`, `8.`, `5 + 3 = 8`, `5 + 3 = 8.` | exact/fork, positive proper prefix |
 | restart: extend actual fork reply with 8 + 1 | `9`, `9.`, `8 + 1 = 9`, `8 + 1 = 9.` | exact/fork as first generation after restart |
 
-The warm phase must observe at least one actual bank fork. For Motif and
-IQuest, the family-matched native trace must confirm a successful copy to a different bank, with the reported
+The warm phase must observe at least one actual bank fork. For Motif,
+IQuest and GLM, the family-matched native trace must confirm a successful copy to a different bank, with the reported
 cached count, unchanged source frontier and matching target frontier. A
 `partial`/`fork` label alone cannot satisfy this check; an in-place rewind
 cannot count as a fork. This demonstrates
 the copy and frontier; tensor/source-content preservation is a separate native
-gate. Other families require at least one `fork` request trace. A later branch can
+gate. A full-prefix copy plus an in-place partial rewind does not establish a
+partial checkpoint copied to another bank. Report that combination separately. Other families require at least one `fork` request trace. A later branch can
 reuse its still-resident parent with `exact`; the scheduler need not copy a
 bank again for that request.
 
-Motif append/branch and Naive/IQuest MTP-on continuation/restart also accept
-`partial`. MTP may commit a verified stop row that the retired text key omits.
+Motif/GLM append/branch and Naive/IQuest MTP-on continuation/restart also
+accept `partial`. MTP may commit a verified stop row that the retired text key omits.
 Canonical token validation rejects a full candidate with a duplicated stop;
 token-LCP reuse reports `partial` even when it copies the complete source
 frontier. Positive cached tokens, actual speculation, a warm bank fork and

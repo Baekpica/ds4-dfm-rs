@@ -143,6 +143,15 @@ static void compare(const char *label, const float *got, const float *want,
     printf("%-34s abs=%.3e rel=%.3e %s\n", label, max_abs, max_rel, ok ? "ok" : "FAIL");
 }
 
+static void glm_compare(const char *label, const float *got, const float *want,
+                        size_t n, double atol, double rtol) {
+    /* A NaN must not disappear inside a max-error comparison. */
+    for (size_t i = 0; i < n; i++) {
+        CHECK(isfinite(got[i]) && isfinite(want[i]), "GLM ragged values finite");
+    }
+    compare(label, got, want, n, atol, rtol);
+}
+
 typedef struct {
     ds4_gpu_tensor *q, *k, *v, *g, *beta, *out, *scratch;
     ds4_gpu_tensor *state, *qc, *kc, *vc;
@@ -360,6 +369,81 @@ int main(void) {
             (size_t)T_MAX_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
     compare("GLM chunked vs generic state", got_state, generic_state,
             T_STATE, 2.0e-4, 2.0e-3);
+
+    /* The cold tool-result prompt has 204 tokens: a 128-row prefill followed
+     * by 76 rows (64+12 delta chunks). Compare every carried lane against
+     * scalar width-one recurrence, including standalone ragged tails. */
+    enum { GLM_REPLAY_ROWS = 204 };
+    static const uint32_t replay_split[] = {128, 76};
+    uint32_t one_row[GLM_REPLAY_ROWS];
+    for (uint32_t i = 0; i < GLM_REPLAY_ROWS; i++) { one_row[i] = 1u; }
+    const struct {
+        uint32_t total;
+        const uint32_t *split;
+        uint32_t n_split;
+        const char *name;
+    } ragged[] = {
+        {76u, NULL, 0u, "GLM76"},
+        {85u, NULL, 0u, "GLM85"},
+        {127u, NULL, 0u, "GLM127"},
+        {GLM_REPLAY_ROWS, NULL, 0u, "GLM204"},
+        {GLM_REPLAY_ROWS, replay_split, 2u, "GLM128+76"},
+        {GLM_REPLAY_ROWS, one_row, GLM_REPLAY_ROWS, "GLM204 width1"},
+    };
+    for (size_t c = 0; c < sizeof(ragged) / sizeof(ragged[0]); c++) {
+        memset(&hs, 0, sizeof(hs));
+        for (uint32_t t = 0; t < ragged[c].total; t++) {
+            host_step(want + (size_t)t * T_VECTOR, &hs,
+                q + (size_t)t * T_VECTOR, k + (size_t)t * T_VECTOR,
+                v + (size_t)t * T_VECTOR, g + (size_t)t * T_VECTOR,
+                beta + (size_t)t * T_HEAD, qw, kw, vw, decay, dt, 1);
+        }
+        run_case(&d, q, k, v, g, beta, ragged[c].total, ragged[c].split,
+            ragged[c].n_split, 1, got, got_state, got_conv,
+            got_conv + T_CONV_STATE, got_conv + 2u * T_CONV_STATE);
+        snprintf(label, sizeof(label), "%s output", ragged[c].name);
+        glm_compare(label, got, want, (size_t)ragged[c].total * T_VECTOR,
+            1.0e-4, 1.0e-3);
+        snprintf(label, sizeof(label), "%s state", ragged[c].name);
+        glm_compare(label, got_state, hs.state, T_STATE, 2.0e-4, 2.0e-3);
+        const float *conv_want[] = {hs.q_conv, hs.k_conv, hs.v_conv};
+        const char *conv_name[] = {"q", "k", "v"};
+        for (size_t j = 0; j < 3u; j++) {
+            snprintf(label, sizeof(label), "%s %s conv", ragged[c].name, conv_name[j]);
+            glm_compare(label, got_conv + j * T_CONV_STATE, conv_want[j],
+                T_CONV_STATE, 0.0, 0.0);
+            CHECK(!memcmp(got_conv + j * T_CONV_STATE, conv_want[j],
+                T_CONV_STATE * sizeof(float)), "GLM ragged conv byte exact");
+        }
+
+        /* Read the final launch's raw inputs back independently. Kernels
+         * must not overwrite a later append's source rows or fixed controls. */
+        uint32_t from = 0u, last_rows = 0u, done = 0u;
+        for (uint32_t part = 0u; done < ragged[c].total; part++) {
+            last_rows = part < ragged[c].n_split
+                ? ragged[c].split[part] : ragged[c].total - done;
+            from = done;
+            done += last_rows;
+        }
+        ds4_gpu_tensor *raw_dev[] = {d.q, d.k, d.v, d.g, d.beta};
+        const float *raw_host[] = {q, k, v, g, beta};
+        const uint32_t raw_cols[] = {T_VECTOR, T_VECTOR, T_VECTOR, T_VECTOR, T_HEAD};
+        for (size_t j = 0u; j < 5u; j++) {
+            const uint64_t bytes = (uint64_t)last_rows * raw_cols[j] * sizeof(float);
+            CHECK(ds4_gpu_tensor_read(raw_dev[j], 0u, got, bytes), "GLM ragged input read");
+            CHECK(!memcmp(got, raw_host[j] + (size_t)from * raw_cols[j], bytes),
+                "GLM ragged inputs byte exact");
+        }
+        ds4_gpu_tensor *fixed_dev[] = {d.qw, d.kw, d.vw, d.decay, d.dt};
+        const float *fixed_host[] = {qw, kw, vw, decay, dt};
+        const uint32_t fixed_cols[] = {T_CONV_STATE, T_CONV_STATE, T_CONV_STATE, T_HEAD, T_VECTOR};
+        for (size_t j = 0u; j < 5u; j++) {
+            const uint64_t bytes = (uint64_t)fixed_cols[j] * sizeof(float);
+            CHECK(ds4_gpu_tensor_read(fixed_dev[j], 0u, got, bytes), "GLM ragged controls read");
+            CHECK(!memcmp(got, fixed_host[j], bytes), "GLM ragged controls byte exact");
+        }
+        printf("%-34s inputs/controls byte exact\n", ragged[c].name);
+    }
     free(generic_out);
     free(generic_state);
 

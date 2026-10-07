@@ -26,6 +26,7 @@ PROFILES = {
     "motif": {"names": ["motif3"], "reuse": "partial"},
     "naive": {"names": ["naive_n05_flash"], "reuse": "partial"},
     "iquest": {"names": ["iquest_q1"], "reuse": "partial"},
+    "glm": {"names": ["glm5-next"], "reuse": "partial"},
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"
@@ -37,6 +38,7 @@ MIN_MTP_TOKENS = 2
 NATIVE_TRACE = {
     "motif": ("Motif-3", "DS4_MOTIF3_BATCH_TRACE"),
     "iquest": ("IQuest-Q1", "DS4_IQUEST_BATCH_TRACE"),
+    "glm": ("GLM-5.3", "DS4_GLM53_BATCH_TRACE"),
 }
 NATIVE_REUSE = {family: re.compile(
     rf"ds4: {re.escape(label)} bank reuse source=(\d+) target=(\d+) cached=(\d+) partial=([01]) "
@@ -219,6 +221,10 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
             kinds = {"exact", "fork", "partial"}
         elif config["family"] == "motif" and phase == "warm":
             # The official history removes generation-only empty thinking.
+            kinds = {"exact", "fork", "partial"}
+        elif config["family"] == "glm":
+            # Canonical history omits the generation-only thinking close.
+            # A separate native trace must prove the actual bank copy.
             kinds = {"exact", "fork", "partial"}
         elif config["family"] in ("naive", "iquest") and config["mtp_mode"] == "on":
             # A verified stop may already be committed. Canonical history

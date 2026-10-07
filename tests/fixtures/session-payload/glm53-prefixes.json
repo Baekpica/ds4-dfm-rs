@@ -1,0 +1,72 @@
+{
+  "schema": "glm53-native-host-prefix-v1",
+  "scope": "Exact52-byte native header plus token IDs only; no logits, tensor tail or GPU execution. Source native GPU gates are recorded in the receipts; this fixture qualifies only host prefix recognition/range I/O.",
+  "native_codec": "ds4_glm53_payload.inc",
+  "model_sha256": "7f6f96df758b5d651561c2f06ffdd0d1075a24f10654320e24e7d66c48db6017",
+  "entries": [
+    {
+      "fixture": "glm53-mtp.prefix.bin",
+      "prefix_bytes": 868,
+      "prefix_sha256": "75e99590edf6798ee43b33c5c1a68b1ff8e6e6a3e3024b13e933cb4f4eb77194",
+      "source_native_payload": "scratch/glm-uncensored/mtp-tail-v6/green-evidence/baseline.payload.bin",
+      "source_payload_bytes": 159115372,
+      "source_stat": {
+        "inode": 161621080,
+        "device": 66306,
+        "mtime_ns": 1791359793095802812,
+        "ctime_ns": 1791359793095802812
+      },
+      "native_gate_receipt": "scratch/glm-uncensored/mtp-tail-v6/green-evidence/receipt.json",
+      "native_gate_receipt_sha256": "6cd4727893def21601ee7527a9906e422a519f672200de49c771d48a427d81c1",
+      "header": [
+        878072644,
+        3,
+        2048,
+        512,
+        11,
+        894255943,
+        1024,
+        204,
+        45,
+        4,
+        128,
+        154880,
+        156053504
+      ],
+      "tag": "GCM5",
+      "tokens": 204
+    },
+    {
+      "fixture": "glm53-compact.prefix.bin",
+      "prefix_bytes": 24640,
+      "prefix_sha256": "21e07be7db0e4e1701608941c350474cf4dc5cc86ac869fc0f88184a075d7634",
+      "source_native_payload": "scratch/glm-uncensored/long-8k-v5/gate/full-6147.payload.bin",
+      "source_payload_bytes": 230262848,
+      "source_stat": {
+        "inode": 161620585,
+        "device": 66306,
+        "mtime_ns": 1791354278662530742,
+        "ctime_ns": 1791354278662530742
+      },
+      "native_gate_receipt": "scratch/glm-uncensored/long-8k-v5/gate-receipt.json",
+      "native_gate_receipt_sha256": "b1089204ac0f46f32a0bb3a7af0c94598ccb6b7f529ea6fbeb69ba8cd409f51d",
+      "header": [
+        878072644,
+        3,
+        8192,
+        512,
+        11,
+        893602887,
+        1024,
+        6147,
+        45,
+        4,
+        128,
+        154880,
+        156053504
+      ],
+      "tag": "GLC5",
+      "tokens": 6147
+    }
+  ]
+}

@@ -143,6 +143,9 @@ mod tests {
     fn quote_comparison_respects_accounting_phase() {
         let mut actual = actual();
         actual.quote = Some(ds4_core::ServingQuote {
+            expert_cache: 0,
+            expert_staging: 0,
+            expert_metadata: 0,
             shared_weights: 1,
             per_bank: 2,
             mtp_state: 3,

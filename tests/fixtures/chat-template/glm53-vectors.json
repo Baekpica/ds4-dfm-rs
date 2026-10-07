@@ -1,0 +1,561 @@
+{
+  "oracle": "Python Jinja2 and Transformers-compatible Python json.dumps",
+  "python_version": "3.12.3",
+  "jinja2_version": "3.1.2",
+  "template_sha256": "34d5ee66b12fa6446cdae131c352b8f68cd85369e0e6fda115583805fada3891",
+  "vectors": [
+    {
+      "name": "user_none_effort",
+      "context": {
+        "reasoning_effort": "none",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          }
+        ],
+        "tools": []
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>"
+    },
+    {
+      "name": "user_thinking_on",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          }
+        ],
+        "tools": []
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>"
+    },
+    {
+      "name": "system_multiturn",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise. 한국어로 답해."
+          },
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "서울에서 찾을 수 있어요.",
+            "reasoning_content": "질문의 장소를 확인한다."
+          },
+          {
+            "role": "user",
+            "content": "두 곳만 골라 줘."
+          }
+        ],
+        "tools": []
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>Be concise. 한국어로 답해.<|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>질문의 장소를 확인한다.</think>서울에서 찾을 수 있어요.<|user|>두 곳만 골라 줘.<|assistant|><think>"
+    },
+    {
+      "name": "tool_schema",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"lookup\", \"description\": \"Find places: 서울, café, 漢字.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"labels\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"active\": {\"type\": \"boolean\"}}, \"required\": [\"city\"]}, \"scale\": {\"type\": \"number\", \"default\": 1e-05}, \"limit\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>"
+    },
+    {
+      "name": "tool_result",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "도구로 위치를 확인한다.",
+            "tool_calls": [
+              {
+                "id": "call_01",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": {
+                    "location": {
+                      "city": "서울",
+                      "labels": [
+                        "중구",
+                        "café"
+                      ],
+                      "active": true
+                    },
+                    "scale": 1e-05,
+                    "limit": 2
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01",
+            "content": "{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"lookup\", \"description\": \"Find places: 서울, café, 漢字.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"labels\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"active\": {\"type\": \"boolean\"}}, \"required\": [\"city\"]}, \"scale\": {\"type\": \"number\", \"default\": 1e-05}, \"limit\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>도구로 위치를 확인한다.</think><tool_call>lookup<arg_key>location</arg_key><arg_value>{\"city\": \"서울\", \"labels\": [\"중구\", \"café\"], \"active\": true}</arg_value><arg_key>scale</arg_key><arg_value>1e-05</arg_value><arg_key>limit</arg_key><arg_value>2</arg_value></tool_call><|observation|><tool_response>{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}</tool_response><|assistant|><think>"
+    },
+    {
+      "name": "no_generation",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": false,
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "서울에서 찾을 수 있어요.",
+            "reasoning_content": "질문의 장소를 확인한다."
+          }
+        ],
+        "tools": []
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>질문의 장소를 확인한다.</think>서울에서 찾을 수 있어요."
+    },
+    {
+      "name": "keep_history_thinking",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise. 한국어로 답해."
+          },
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "서울에서 찾을 수 있어요.",
+            "reasoning_content": "질문의 장소를 확인한다."
+          },
+          {
+            "role": "user",
+            "content": "두 곳만 골라 줘."
+          }
+        ],
+        "tools": [],
+        "clear_thinking": false
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>Be concise. 한국어로 답해.<|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>질문의 장소를 확인한다.</think>서울에서 찾을 수 있어요.<|user|>두 곳만 골라 줘.<|assistant|><think>"
+    },
+    {
+      "name": "clear_history_thinking",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise. 한국어로 답해."
+          },
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "서울에서 찾을 수 있어요.",
+            "reasoning_content": "질문의 장소를 확인한다."
+          },
+          {
+            "role": "user",
+            "content": "두 곳만 골라 줘."
+          }
+        ],
+        "tools": [],
+        "clear_thinking": true
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>Be concise. 한국어로 답해.<|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think></think>서울에서 찾을 수 있어요.<|user|>두 곳만 골라 줘.<|assistant|><think>"
+    },
+    {
+      "name": "reordered_tool_results",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "user",
+            "content": "  서울의 장소를 알려 줘. café도 좋아.\n"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "도구로 위치를 확인한다.",
+            "tool_calls": [
+              {
+                "id": "call_01",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": {
+                    "location": {
+                      "city": "서울",
+                      "labels": [
+                        "중구",
+                        "café"
+                      ],
+                      "active": true
+                    },
+                    "scale": 1e-05,
+                    "limit": 2
+                  }
+                }
+              },
+              {
+                "id": "call_02",
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "arguments": {
+                    "location": {
+                      "city": "Zürich",
+                      "labels": [
+                        "중구",
+                        "café"
+                      ],
+                      "active": true
+                    },
+                    "scale": 1e-05,
+                    "limit": 2
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_02",
+            "content": "Zürich: café"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_01",
+            "content": "{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "description": "Find places: 서울, café, 漢字.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "active": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  },
+                  "scale": {
+                    "type": "number",
+                    "default": 1e-05
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "location"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"name\": \"lookup\", \"description\": \"Find places: 서울, café, 漢字.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"labels\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"active\": {\"type\": \"boolean\"}}, \"required\": [\"city\"]}, \"scale\": {\"type\": \"number\", \"default\": 1e-05}, \"limit\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>  서울의 장소를 알려 줘. café도 좋아.\n<|assistant|><think>도구로 위치를 확인한다.</think><tool_call>lookup<arg_key>location</arg_key><arg_value>{\"city\": \"서울\", \"labels\": [\"중구\", \"café\"], \"active\": true}</arg_value><arg_key>scale</arg_key><arg_value>1e-05</arg_value><arg_key>limit</arg_key><arg_value>2</arg_value></tool_call><tool_call>lookup<arg_key>location</arg_key><arg_value>{\"city\": \"Zürich\", \"labels\": [\"중구\", \"café\"], \"active\": true}</arg_value><arg_key>scale</arg_key><arg_value>1e-05</arg_value><arg_key>limit</arg_key><arg_value>2</arg_value></tool_call><|observation|><tool_response>{\"city\": \"서울\", \"items\": [\"café\", \"漢字\"], \"count\": 2}</tool_response><tool_response>Zürich: café</tool_response><|assistant|><think>"
+    },
+    {
+      "name": "media_reminders",
+      "context": {
+        "reasoning_effort": "high",
+        "add_generation_prompt": true,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "입력을 설명해 줘."
+              },
+              {
+                "type": "image"
+              },
+              {
+                "type": "input_audio"
+              }
+            ]
+          }
+        ],
+        "tools": []
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>입력을 설명해 줘.<|begin_of_image|><|image|><|end_of_image|><|begin_of_audio|><|end_of_audio|><|assistant|><think>"
+    },
+    {
+      "name": "embedded_history_low",
+      "adapter": "low",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Compute 2 + 2."
+          },
+          {
+            "role": "assistant",
+            "content": "<think>Two pairs make four.</think>4"
+          },
+          {
+            "role": "user",
+            "content": "Now add 1."
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "reasoning_effort": "low"
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think>",
+      "adapter_expected": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think>"
+    },
+    {
+      "name": "embedded_history_high",
+      "adapter": "high",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Compute 2 + 2."
+          },
+          {
+            "role": "assistant",
+            "content": "<think>Two pairs make four.</think>4"
+          },
+          {
+            "role": "user",
+            "content": "Now add 1."
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "reasoning_effort": "high"
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think>",
+      "adapter_expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think>"
+    },
+    {
+      "name": "embedded_history_max",
+      "adapter": "max",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Compute 2 + 2."
+          },
+          {
+            "role": "assistant",
+            "content": "<think>Two pairs make four.</think>4"
+          },
+          {
+            "role": "user",
+            "content": "Now add 1."
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "reasoning_effort": "max"
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think>",
+      "adapter_expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think>"
+    },
+    {
+      "name": "embedded_history_none",
+      "adapter": "none",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Compute 2 + 2."
+          },
+          {
+            "role": "assistant",
+            "content": "<think>Two pairs make four.</think>4"
+          },
+          {
+            "role": "user",
+            "content": "Now add 1."
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "reasoning_effort": "none"
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think>",
+      "adapter_expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Compute 2 + 2.<|assistant|><think>Two pairs make four.</think>4<|user|>Now add 1.<|assistant|><think></think>"
+    },
+    {
+      "name": "ordered_images",
+      "adapter": "high",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Compare the images."
+              },
+              {
+                "type": "image"
+              },
+              {
+                "type": "image_url",
+                "image_url": {
+                  "url": "fixture://second"
+                }
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "add_generation_prompt": true,
+        "reasoning_effort": "high"
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Compare the images.<|begin_of_image|><|image|><|end_of_image|><|begin_of_image|><|image|><|end_of_image|><|assistant|><think>",
+      "adapter_expected": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Compare the images.<|begin_of_image|><|image|><|end_of_image|><|begin_of_image|><|image|><|end_of_image|><|assistant|><think>"
+    }
+  ]
+}

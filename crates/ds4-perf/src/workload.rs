@@ -50,10 +50,27 @@ fn arguments(command: &[OsString]) -> Result<BTreeMap<String, PathBuf>, String> 
                 };
                 paths.insert(key.into(), PathBuf::from(path));
             }
-            "--cuda" | "--quality" | "--warm-weights" => {}
-            "-sys" | "--system" | "--backend" | "-t" | "--threads" | "--ctx-start"
-            | "--ctx-max" | "--ctx-alloc" | "--step-incr" | "--step-mul" | "--gen-tokens"
-            | "--tokens" | "-n" | "--mtp-draft" | "--mtp-margin" => {
+            "--cuda"
+            | "--quality"
+            | "--warm-weights"
+            | "--ssd-streaming"
+            | "--ssd-streaming-cold" => {}
+            "-sys"
+            | "--system"
+            | "--backend"
+            | "-t"
+            | "--threads"
+            | "--ctx-start"
+            | "--ctx-max"
+            | "--ctx-alloc"
+            | "--step-incr"
+            | "--step-mul"
+            | "--gen-tokens"
+            | "--tokens"
+            | "-n"
+            | "--mtp-draft"
+            | "--mtp-margin"
+            | "--ssd-streaming-cache-experts" => {
                 args.next().ok_or("benchmark option value missing")?;
             }
             _ => {
@@ -194,6 +211,65 @@ impl Workload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glm_ssd_arguments() {
+        for cache in ["1024", "24GB", "0.5gb"] {
+            let args = [
+                "ds4-bench-perf",
+                "--cuda",
+                "--ssd-streaming",
+                "--ssd-streaming-cold",
+                "--ssd-streaming-cache-experts",
+                cache,
+                "-m",
+                "model.gguf",
+                "--prompt-file",
+                "prompt.txt",
+                "--ctx-start",
+                "2048",
+                "--ctx-max",
+                "2048",
+            ]
+            .map(OsString::from);
+            let paths = arguments(&args).unwrap();
+            assert_eq!(paths.len(), 2);
+            assert_eq!(paths["model"], PathBuf::from("model.gguf"));
+            assert_eq!(paths["prompt"], PathBuf::from("prompt.txt"));
+        }
+    }
+
+    #[test]
+    fn glm_ssd_cache_missing() {
+        let args = [
+            "ds4-bench-perf",
+            "-m",
+            "model.gguf",
+            "--prompt-file",
+            "prompt.txt",
+            "--ssd-streaming-cache-experts",
+        ]
+        .map(OsString::from);
+        assert_eq!(
+            arguments(&args).unwrap_err(),
+            "benchmark option value missing"
+        );
+    }
+
+    #[test]
+    fn glm_ssd_unknown_flag() {
+        let args = [
+            "ds4-bench-perf",
+            "-m",
+            "model.gguf",
+            "--prompt-file",
+            "prompt.txt",
+            "--ssd-streaming-unknown",
+        ]
+        .map(OsString::from);
+        assert!(arguments(&args).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn split_model_uses_consumed_alias_directory() {

@@ -78,8 +78,16 @@ const STEP_MEDIA_ROWS: u64 = 8192;
 const STEP_RGB_LIMIT: u64 = 128 * MIB;
 const STEP_SOURCE_EDGE: u64 = 3024;
 const STEP_PIXELS_PER_TOKEN: u64 = 56 * 56 * 3;
-const GLM_NATIVE_DEFAULT: u32 = 2048;
+const GLM_NATIVE_DEFAULT: u32 = 128;
+const GLM_NATIVE_MAX: u32 = 256;
 const GLM_ATTENTION_PERIOD: u32 = 4;
+const GLM_POOL_SIZE: u64 = 4;
+const GLM_MTP_SAVES: u64 = 5;
+const GLM_CHECKPOINT_SLOTS: u64 = 8;
+// GB10's queried CUDA minimum mapping page. Native reserve/capture checks
+// the device's actual granularity; this quote is scoped to Spark admission.
+const GLM_CHECKPOINT_PAGE: u64 = 2 * MIB;
+const GLM_DSA_DIAG_ENV: &str = "DS4_GLM53_DSA_EXPANDED";
 const EXAONE_PREFILL_CHUNK_ENV: &str = "DS4_EXAONE_PREFILL_CHUNK";
 const EXAONE_NATIVE_DEFAULT: u32 = 512;
 const K2_NATIVE_DEFAULT: u32 = 1024;
@@ -165,6 +173,16 @@ pub fn fill_quote_facts(
         if let Some(s) = shape {
             native = native.max(ctx_tokens.min(s.n_nextn_predict + 1));
         }
+    }
+    if caps.family == ModelFamily::Glm53 {
+        let slots = if req.ssd_streaming {
+            facts.ssd_cache_experts
+        } else {
+            None
+        };
+        native =
+            crate::ssd_quote::prefill_rows(req, slots, shape.map(|s| s.n_expert_used).unwrap_or(8))
+                .unwrap_or(0);
     }
     let ctx = u64::from(ctx_tokens);
     let kv = shape.map(|s| bank_kv_bytes(s, ctx, native)).unwrap_or(0);
@@ -292,7 +310,39 @@ pub fn fill_quote_facts(
                 },
             )
         }
-        (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
+        (ModelFamily::Glm53, Some(s)) => {
+            let graph = glm_graph_bytes(s, ctx, u64::from(native));
+            let mtp = req.mtp_mode == MtpMode::On;
+            if quote_batch_alloc(req, caps, facts) && graph != u64::MAX {
+                let logits = u64::from(s.n_vocab) * SIZEOF_F32;
+                let private = glm_state_bytes(s) + glm_history_bytes(s, ctx) + logits;
+                // Native clones only state/history/logits. Controls, row
+                // workspace and the five rollback journals stay shared.
+                let bank = private + logits + ctx * SIZEOF_I32;
+                let predictor = if mtp {
+                    ctx * u64::from(s.n_kv_lora) * SIZEOF_U16 + GLM_MTP_SAVES * logits
+                } else {
+                    0
+                };
+                let shared = if mtp {
+                    2 * u64::from(s.n_embd) * SIZEOF_F32 + GLM_MTP_SAVES * glm_state_bytes(s)
+                } else {
+                    0
+                };
+                (
+                    bank + predictor,
+                    graph - private,
+                    shared,
+                    if partial {
+                        glm_checkpoint_bytes(s, mtp)
+                    } else {
+                        0
+                    },
+                )
+            } else {
+                (graph, 0, if mtp { glm_mtp_bytes(s, ctx) } else { 0 }, 0)
+            }
+        }
         (ModelFamily::IQuestQ1, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
             let bank = crate::iquest::bank_bytes(ctx_tokens, cap).unwrap_or(0);
@@ -466,7 +516,24 @@ pub fn fill_quote_facts(
         }
     } else if caps.family == ModelFamily::Glm53 {
         if host.vision || facts.vision_loaded {
-            glm_media_bytes()
+            // Images use a separate lazy serial graph while text banks
+            // retain their private histories and shared workspace.
+            let serial = if quote_batch_alloc(req, caps, facts) {
+                shape
+                    .map(|s| {
+                        glm_graph_bytes(s, ctx, u64::from(native)).saturating_add(
+                            if req.mtp_mode == MtpMode::On {
+                                glm_mtp_bytes(s, ctx)
+                            } else {
+                                0
+                            },
+                        )
+                    })
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            glm_media_bytes().saturating_add(serial)
         } else {
             0
         }
@@ -524,12 +591,17 @@ pub fn attach_host_quote(
     resident: bool,
 ) {
     // Only the base weights are sliced; MTP and drafter load whole.
-    let mut weights_bytes = model_path
-        .map(|path| match slice {
-            Some(slice) => gguf_slice_span_bytes(path, split_count, slice),
-            None => gguf_span_bytes(path, split_count),
-        })
-        .unwrap_or(0);
+    let mut weights_bytes = if req.ssd_streaming {
+        // The server retains the validated tensor quote across open/fit.
+        facts.ssd_mandatory_bytes.unwrap_or(u64::MAX)
+    } else {
+        model_path
+            .map(|path| match slice {
+                Some(slice) => gguf_slice_span_bytes(path, split_count, slice),
+                None => gguf_span_bytes(path, split_count),
+            })
+            .unwrap_or(0)
+    };
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
     let vision_bytes = artifact_span_bytes(vision_path);
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
@@ -566,6 +638,9 @@ pub fn attach_host_quote(
     }
 
     let mapped = weights_bytes
+        .saturating_add(facts.ssd_cache_bytes.unwrap_or(0))
+        .saturating_add(facts.ssd_staging_bytes.unwrap_or(0))
+        .saturating_add(facts.ssd_metadata_bytes.unwrap_or(0))
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
         .saturating_add(dspark_bytes);
@@ -802,7 +877,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Step37 => STEP_NATIVE_MAX,
         ModelFamily::Ling3Vl => LING_NATIVE_MAX,
         ModelFamily::Inkling => INKLING_NATIVE_MAX,
-        ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
+        ModelFamily::Glm53 => GLM_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1913,9 +1988,14 @@ fn dots3_mtp_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
         + (DOTS3_TRIAL_ROWS + 1) * u64::from(s.n_vocab) * SIZEOF_F32
 }
 
-// C glm53_graph_bytes_estimate: scalar workspace, KDA state/control tensors,
-// and full DSA KV. The trailing prediction layer is not executed.
-fn glm_graph_bytes(s: Shape, ctx: u64) -> u64 {
+// C glm53_graph_bytes_for: batched row views, KDA state/control/tails,
+// FP16 latent/pool cache and delta-rule scratch. Both predictor carries
+// exist even with MTP disabled, so snapshots have one state layout.
+fn glm_graph_bytes(s: Shape, ctx: u64, rows: u64) -> u64 {
+    let expanded = std::env::var(GLM_DSA_DIAG_ENV).ok().as_deref() == Some("1");
+    if rows == 0 || (expanded && ctx > 2048) {
+        return u64::MAX;
+    }
     let hidden = u64::from(s.n_embd);
     let hc_count = u64::from(s.n_hc);
     let hc = hc_count * hidden;
@@ -1925,9 +2005,12 @@ fn glm_graph_bytes(s: Shape, ctx: u64) -> u64 {
     let kda_dim = heads * kda_head;
     let used = u64::from(s.n_expert_used);
     let ff = u64::from(s.n_ff_dense).max(used * u64::from(s.n_ff_exp));
+    let pools = ctx.div_ceil(GLM_POOL_SIZE);
+    let index_dim = u64::from(s.n_indexer_head_dim);
+    let index_heads = u64::from(s.n_indexer_head);
     let floats = 4 * hidden
         + 4 * hc
-        + 3 * hc_count * hc_count
+        + 2 * hc_count * (hc_count + 2)
         + hc_count
         + 2 * u64::from(s.n_lora_q)
         + 2 * u64::from(s.n_kv_lora)
@@ -1935,8 +2018,20 @@ fn glm_graph_bytes(s: Shape, ctx: u64) -> u64 {
         + 3 * ff
         + used * hidden
         + used
-        + u64::from(s.n_vocab);
-    let workspace = (1 + used) * SIZEOF_I32 + floats * SIZEOF_F32;
+        + 2 * heads * u64::from(s.n_kv_lora)
+        + index_heads * index_dim
+        + 2 * index_dim
+        + index_heads
+        + pools;
+    let indices = 1
+        + used
+        + u64::from(s.n_indexer_top_k) / GLM_POOL_SIZE
+        + u64::from(s.n_indexer_top_k)
+        + GLM_POOL_SIZE
+        - 1;
+    let workspace = u64::from(s.n_vocab) * SIZEOF_F32
+        + rows * (indices * SIZEOF_I32 + floats * SIZEOF_F32)
+        + kda_prefill_scratch_bytes(rows, heads, kda_head);
     let conv = kda_dim * u64::from(s.n_ssm_conv) * SIZEOF_F32;
     let controls = 3 * conv + (heads + kda_dim + kda_head) * SIZEOF_F32;
     let state = kda_dim * kda_head * SIZEOF_F32 + 3 * conv;
@@ -1944,7 +2039,56 @@ fn glm_graph_bytes(s: Shape, ctx: u64) -> u64 {
     let dsa = (0..exec)
         .filter(|il| il % GLM_ATTENTION_PERIOD == GLM_ATTENTION_PERIOD - 1)
         .count() as u64;
-    workspace + (u64::from(exec) - dsa) * (state + controls) + dsa * ctx * qdim * 2 * SIZEOF_U16
+    let tail = 2 * GLM_POOL_SIZE * index_dim * SIZEOF_F32;
+    let cache = if expanded {
+        ctx * qdim * 2 * SIZEOF_U16
+    } else {
+        (ctx * u64::from(s.n_kv_lora) + pools * index_dim) * SIZEOF_U16
+    };
+    workspace
+        + (u64::from(exec) - dsa) * (state + controls)
+        + dsa * (tail + cache)
+        + 2 * hidden * SIZEOF_F32
+}
+
+fn glm_state_bytes(s: Shape) -> u64 {
+    let heads = u64::from(s.n_head);
+    let dim = heads * u64::from(s.n_kda_head_dim);
+    let exec = s.n_layer.saturating_sub(s.n_nextn_predict);
+    let dsa = u64::from(exec / GLM_ATTENTION_PERIOD);
+    let kda = u64::from(exec) - dsa;
+    let state =
+        (dim * u64::from(s.n_kda_head_dim) + 3 * dim * u64::from(s.n_ssm_conv)) * SIZEOF_F32;
+    let tail = 2 * GLM_POOL_SIZE * u64::from(s.n_indexer_head_dim) * SIZEOF_F32;
+    kda * state + dsa * tail + 2 * u64::from(s.n_embd) * SIZEOF_F32
+}
+
+fn glm_history_bytes(s: Shape, ctx: u64) -> u64 {
+    let exec = s.n_layer.saturating_sub(s.n_nextn_predict);
+    let dsa = u64::from(exec / GLM_ATTENTION_PERIOD);
+    let rows = if std::env::var(GLM_DSA_DIAG_ENV).ok().as_deref() == Some("1") {
+        ctx * u64::from(s.n_head) * u64::from(s.n_key_mla) * 2
+    } else {
+        ctx * u64::from(s.n_kv_lora) + ctx.div_ceil(GLM_POOL_SIZE) * u64::from(s.n_indexer_head_dim)
+    };
+    dsa * rows * SIZEOF_U16
+}
+
+fn glm_checkpoint_bytes(s: Shape, mtp: bool) -> u64 {
+    // All eight lazy slots can become physically mapped. Latent/pool rows
+    // remain bank-owned; slots save recurrent state and two MTP cursors.
+    let cursors = if mtp { 2 * SIZEOF_U32 } else { 0 };
+    let slab = GLM_CHECKPOINT_SLOTS * (glm_state_bytes(s) + cursors);
+    slab.div_ceil(GLM_CHECKPOINT_PAGE) * GLM_CHECKPOINT_PAGE
+        + GLM_CHECKPOINT_SLOTS * u64::from(s.n_vocab) * SIZEOF_F32
+}
+
+fn glm_mtp_bytes(s: Shape, ctx: u64) -> u64 {
+    // Native session quote covers KV, concat and rollback state. The host
+    // also keeps five target-logit rows until accepted-prefix commit.
+    ctx * u64::from(s.n_kv_lora) * SIZEOF_U16
+        + 2 * u64::from(s.n_embd) * SIZEOF_F32
+        + GLM_MTP_SAVES * (glm_state_bytes(s) + u64::from(s.n_vocab) * SIZEOF_F32)
 }
 
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
@@ -1995,6 +2139,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
             ModelFamily::Motif3
                 | ModelFamily::ExaoneMoe
                 | ModelFamily::Step37
+                | ModelFamily::Glm53
                 | ModelFamily::DeepSeek4
         )
     {
@@ -2370,6 +2515,94 @@ mod tests {
         SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
+
+    #[test]
+    fn ssd_quote_uses_resident_spans() {
+        let _env = lock_test_env();
+        let _ipc = EnvGuard::unset(WEIGHT_IPC_MANIFEST_ENV);
+        let req = ServingRequest {
+            ssd_streaming: true,
+            ctx: 2048,
+            max_seqs: MaxSeqs::Off,
+            prefix_reuse: PrefixReuse::Off,
+            mtp_mode: MtpMode::Off,
+            mem_floor_gb: 0,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        let mut facts = EngineFacts {
+            ssd_mandatory_bytes: Some(4 * GIB),
+            ssd_cache_experts: Some(8),
+            ssd_cache_bytes: Some(GIB),
+            ssd_staging_bytes: Some(2 * 1024 * 1024),
+            ssd_metadata_bytes: Some(256),
+            ..EngineFacts::default()
+        };
+        // A retained inventory quote must work without reopening the GGUF.
+        attach_host_quote(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_GLM53_FLASH),
+            Some(Path::new("missing-ssd-fixture.gguf")),
+            None,
+            None,
+            None,
+            1,
+            None,
+            false,
+            false,
+        );
+        facts.host_available_bytes = Some(u64::MAX);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        let quote = plan.quote.unwrap();
+        assert_eq!(quote.shared_weights, 4 * GIB);
+        assert_eq!(quote.expert_cache, GIB);
+        assert_eq!(quote.expert_staging, 2 * 1024 * 1024);
+        assert_eq!(quote.expert_metadata, 256);
+        assert_eq!(
+            quote.total,
+            5 * GIB + quote.per_bank + quote.expert_staging + quote.expert_metadata + quote.floor
+        );
+        assert!(plan.to_json()["qualified"]["ctx"].is_null());
+        assert_eq!(plan.to_json()["qualified"]["ssd_streaming"], "unverified");
+        assert_eq!(
+            plan.to_json()["effective"]["ssd_streaming_cache_bytes"],
+            GIB
+        );
+        facts.host_available_bytes = Some(quote.total);
+        assert!(!resolve_plan(&req, Some(caps), &facts).has_errors());
+        facts.host_available_bytes = Some(quote.total - 1);
+        assert!(resolve_plan(&req, Some(caps), &facts)
+            .issues
+            .iter()
+            .any(|i| i.code == "quote_overflow"));
+    }
+
+    #[test]
+    fn ssd_copy_admission() {
+        let _env = lock_test_env();
+        let keys = [
+            "DS4_MODEL_ANON_HUGE",
+            WEIGHT_IPC_MANIFEST_ENV,
+            "DS4_CUDA_COPY_MODEL",
+            "DS4_CUDA_COPY_MODEL_CHUNKED",
+        ];
+        let _unset: Vec<_> = keys.iter().map(|key| EnvGuard::unset(key)).collect();
+        for key in keys {
+            let _copy = EnvGuard::set(key, "");
+            assert!(
+                crate::check_ssd_options(
+                    &[crate::ModelOpenOption::SsdStreaming],
+                    Some(ModelFamily::Glm53),
+                    Backend::Cuda,
+                    None
+                )
+                .is_err(),
+                "{key}"
+            );
+        }
+    }
 
     // The native log for `-c 8192` prints KV=0.06 GiB state=76.6 MiB
     // workspace=1.24 GiB per graph; the quote has to reach the same bytes or
@@ -3353,6 +3586,7 @@ mod tests {
         let _env = lock_test_env();
         let req = ServingRequest {
             ctx: 2048,
+            max_seqs: MaxSeqs::Off,
             ..ServingRequest::default()
         };
         let caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
@@ -4413,12 +4647,189 @@ exit 1
     }
 
     #[test]
+    fn glm_bank_native_allocations() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLM53_PREFILL_ROWS");
+        let _expanded = EnvGuard::unset(GLM_DSA_DIAG_ENV);
+        let mut caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        caps.banks = BankLane::Persistent;
+        caps.reuse = ReuseKind::Partial;
+        caps.reuse_support = Support::Present;
+
+        // Golden bytes follow native ROW_BUFFERS, bank clone and MTP clone
+        // allocations for the artifact's 34 KDA + 11 DSA trunk blocks.
+        for (cap, shared) in [(1, 16_782_240), (128, 332_674_560), (256, 650_839_552)] {
+            // The artifact's padded 7,603,500-byte slots resolve the default
+            // 24 GiB budget to 3,389 entries; None is the resident arm.
+            for slots in [None, Some(8), Some(1024), Some(3389)] {
+                let rows = cap.min(slots.map(|n| n / 8).unwrap_or(cap));
+                let workspace = match rows {
+                    1 => 16_782_240,
+                    128 => 332_674_560,
+                    256 => shared,
+                    _ => unreachable!(),
+                };
+                for mtp in [MtpMode::Off, MtpMode::On] {
+                    for vision in [false, true] {
+                        let req = ServingRequest {
+                            ctx: 1_048_576,
+                            max_seqs: MaxSeqs::Fixed(2),
+                            native_chunk: Some(cap),
+                            prefix_reuse: PrefixReuse::Partial,
+                            mtp_mode: mtp,
+                            ssd_streaming: slots.is_some(),
+                            ..ServingRequest::default()
+                        };
+                        let mut facts = EngineFacts {
+                            ssd_cache_experts: slots,
+                            ..EngineFacts::default()
+                        };
+                        let mut host = qwen_host(None);
+                        host.vision = vision;
+                        fill_quote_facts(&mut facts, &req, caps, Some(SHAPE_GLM53_FLASH), host);
+                        let enabled = mtp == MtpMode::On;
+                        assert_eq!(facts.native_chunk, Some(rows));
+                        assert_eq!(
+                            facts.per_bank_bytes,
+                            Some(if enabled {
+                                13_787_683_840
+                            } else {
+                                12_710_844_416
+                            }),
+                            "cap={cap}, slots={slots:?}, mtp={mtp:?}"
+                        );
+                        assert_eq!(facts.scratch_bytes, Some(workspace));
+                        assert_eq!(
+                            facts.mtp_state_bytes,
+                            Some(if enabled { 780_300_288 } else { 0 })
+                        );
+                        assert_eq!(facts.checkpoint_pool_bytes, Some(1_254_858_752));
+                        let serial =
+                            12_706_030_592 + workspace + if enabled { 1_857_139_712 } else { 0 };
+                        assert_eq!(
+                            facts.media_reserve_bytes,
+                            Some(if vision { 3_577_856_000 + serial } else { 0 })
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn glm_bank_lazy_admission() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLM53_PREFILL_ROWS");
+        let _expanded = EnvGuard::unset(GLM_DSA_DIAG_ENV);
+        let _fit = EnvGuard::set(FIT_HEADROOM_ENV, "0");
+        let _session = EnvGuard::set(SESSION_HEADROOM_ENV, "0");
+        let mut caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        caps.banks = BankLane::Persistent;
+        caps.bank_support = Support::Present;
+        caps.reuse = ReuseKind::Partial;
+        caps.reuse_support = Support::Present;
+        let req = ServingRequest {
+            ctx: 1_048_576,
+            max_seqs: MaxSeqs::Fixed(2),
+            native_chunk: Some(128),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::On,
+            mem_floor_gb: 0,
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts {
+            banks_fitted: Some(2),
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_GLM53_FLASH),
+            qwen_host(None),
+        );
+        let total = 10 * GIB + 2 * 13_787_683_840 + 332_674_560 + 780_300_288 + 1_254_858_752;
+        facts.host_available_bytes = Some(total - 1);
+        assert!(resolve_plan(&req, Some(caps), &facts)
+            .issues
+            .iter()
+            .any(|i| i.code == "banks_not_quoted"));
+        facts.host_available_bytes = Some(total);
+        assert_eq!(
+            resolve_plan(&req, Some(caps), &facts).quote.unwrap().total,
+            total
+        );
+
+        // Lazy capture must remain funded after already allocated banks are
+        // credited back to the current MemAvailable observation.
+        let resident = 2 * 13_787_683_840 + 332_674_560 + 780_300_288;
+        assert_eq!(resident_runtime(&facts), resident);
+        assert_eq!(
+            total - 10 * GIB - resident,
+            facts.checkpoint_pool_bytes.unwrap()
+        );
+    }
+
+    #[test]
+    fn glm_bank_scope_funding() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLM53_PREFILL_ROWS");
+        let _expanded = EnvGuard::unset(GLM_DSA_DIAG_ENV);
+        let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
+        let _derived = EnvGuard::unset(FIT_DERIVED_ENV);
+        let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        let _session_fit = EnvGuard::unset(SESSION_FIT_ENV);
+        let _session = EnvGuard::unset(SESSION_HEADROOM_ENV);
+        let mut caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        caps.banks = BankLane::Persistent;
+        caps.reuse = ReuseKind::Partial;
+        caps.reuse_support = Support::Present;
+        let mut req = ServingRequest {
+            ctx: 1_048_576,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            mem_floor_gb: 12,
+            ..ServingRequest::default()
+        };
+        let mut host = qwen_host(None);
+        host.vision = true;
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(&mut facts, &req, caps, Some(SHAPE_GLM53_FLASH), host);
+        assert_eq!(facts.fit_headroom_bytes, Some(14 * GIB));
+        assert_eq!(facts.checkpoint_pool_bytes, Some(1_254_858_752));
+
+        req.prefix_reuse = PrefixReuse::Off;
+        fill_quote_facts(&mut facts, &req, caps, Some(SHAPE_GLM53_FLASH), host);
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+        req.prefix_reuse = PrefixReuse::Partial;
+        facts.partial_reuse = Some(false);
+        fill_quote_facts(&mut facts, &req, caps, Some(SHAPE_GLM53_FLASH), host);
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+
+        // A serial session already owns its language graph; only image
+        // buffers are extra. No batch slab or second language lane exists.
+        req.max_seqs = MaxSeqs::Off;
+        req.mtp_mode = MtpMode::On;
+        fill_quote_facts(&mut facts, &req, caps, Some(SHAPE_GLM53_FLASH), host);
+        assert_eq!(facts.per_bank_bytes, Some(13_038_705_152));
+        assert_eq!(facts.scratch_bytes, Some(0));
+        assert_eq!(facts.mtp_state_bytes, Some(1_857_139_712));
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+        assert_eq!(facts.media_reserve_bytes, Some(3_577_856_000));
+        assert_eq!(facts.fit_headroom_bytes, Some(GIB));
+    }
+
+    #[test]
     fn glm_quote_matches_native() {
         let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLM53_PREFILL_ROWS");
+        let _expanded = EnvGuard::unset("DS4_GLM53_DSA_EXPANDED");
         let caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
         let mut req = ServingRequest::default();
         req.ctx = 2048;
         req.mem_floor_gb = 0;
+        req.max_seqs = MaxSeqs::Off;
         let mut facts = fill_family(
             ModelFamily::Glm53,
             Variant::Glm53Flash,
@@ -4428,10 +4839,127 @@ exit 1
         );
         assert_eq!(
             facts.per_bank_bytes.unwrap() + facts.scratch_bytes.unwrap(),
-            1_648_433_940
+            379_902_464
+        );
+        assert_eq!(facts.native_chunk, Some(128));
+        facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+        assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+
+        req.ctx = 1_048_576;
+        let facts = fill_family(
+            ModelFamily::Glm53,
+            Variant::Glm53Flash,
+            SHAPE_GLM53_FLASH,
+            &req,
+            qwen_host(None),
+        );
+        assert_eq!(facts.per_bank_bytes, Some(13_038_705_152));
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(!plan.has_errors());
+        assert_eq!(plan.qualified.ctx, Some(2048));
+        assert!(plan.issues.iter().any(|i| i.code == "ctx_unqualified"));
+    }
+
+    #[test]
+    fn glm_quote_row_modes() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLM53_PREFILL_ROWS");
+        let _expanded = EnvGuard::unset(GLM_DSA_DIAG_ENV);
+        let caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        let mut req = ServingRequest {
+            ctx: 2048,
+            max_seqs: MaxSeqs::Off,
+            ssd_streaming: true,
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts {
+            ssd_cache_experts: Some(8),
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_GLM53_FLASH),
+            qwen_host(None),
+        );
+        assert_eq!(facts.native_chunk, Some(1));
+        assert_eq!(facts.per_bank_bytes, Some(196_919_200));
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(plan
+            .env_overrides()
+            .iter()
+            .any(|(key, value)| key == "DS4_GLM53_PREFILL_ROWS" && value == "1"));
+
+        req.ssd_streaming = false;
+        req.native_chunk = Some(256);
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_GLM53_FLASH),
+            qwen_host(None),
+        );
+        assert_eq!(facts.per_bank_bytes, Some(564_111_872));
+        req.native_chunk = None;
+        let _expanded = EnvGuard::set(GLM_DSA_DIAG_ENV, "1");
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_GLM53_FLASH),
+            qwen_host(None),
+        );
+        assert_eq!(facts.per_bank_bytes, Some(1_831_787_008));
+        req.ctx = 2049;
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_GLM53_FLASH),
+            qwen_host(None),
+        );
+        assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+    }
+
+    #[test]
+    fn glm_mtp_quote_reserves_state() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLM53_PREFILL_ROWS");
+        let _expanded = EnvGuard::unset(GLM_DSA_DIAG_ENV);
+        let caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        let mut req = ServingRequest {
+            ctx: 2048,
+            max_seqs: MaxSeqs::Off,
+            mtp_mode: MtpMode::On,
+            mem_floor_gb: 0,
+            ..ServingRequest::default()
+        };
+        let mut facts = fill_family(
+            ModelFamily::Glm53,
+            Variant::Glm53Flash,
+            SHAPE_GLM53_FLASH,
+            &req,
+            qwen_host(None),
+        );
+        assert_eq!(facts.mtp_state_bytes, Some(785_495_040));
+        assert_eq!(
+            resolve_plan(&req, Some(caps), &facts).quote.unwrap().total,
+            11 * GIB + 1_165_397_504
         );
         facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
         assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+        for mode in [MtpMode::Off, MtpMode::Auto] {
+            req.mtp_mode = mode;
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                caps,
+                Some(SHAPE_GLM53_FLASH),
+                qwen_host(None),
+            );
+            assert_eq!(facts.mtp_state_bytes, Some(0));
+        }
     }
 
     #[test]
