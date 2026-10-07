@@ -1875,6 +1875,15 @@ tests/test_glm53_mtp_actual.o: tests/test_glm53_mtp_actual.c ds4.h ds4_gpu.h
 tests/test_glm53_mtp_actual: tests/test_glm53_mtp_actual.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_glm53_compare: tests/test_glm53_mtp_long.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -DGLM53_COMPARE_ONLY -I. -o $@ $<
+
+tests/test_glm53_mtp_long.o: tests/test_glm53_mtp_long.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_glm53_mtp_long: tests/test_glm53_mtp_long.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
 tests/bench_glm53_stream.o: tests/bench_glm53_stream.cu ds4_gpu.h
 	$(NVCC) $(NVCCFLAGS) -I. -c -o $@ $<
 
@@ -2143,6 +2152,7 @@ clean:
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
+	rm -f tests/test_glm53_compare tests/test_glm53_mtp_long tests/test_glm53_mtp_long.o
 	rm -f tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
 	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o

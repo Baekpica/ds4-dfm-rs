@@ -207,3 +207,5 @@ tests/naive_banks
 /tests/test_glm53_tokens
 /tests/test_glm53_long
 /tests/test_glm53_mtp_actual
+/tests/test_glm53_compare
+/tests/test_glm53_mtp_long
