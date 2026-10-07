@@ -18,6 +18,7 @@ import time
 
 GIB = 1024 ** 3
 GUARD_EXIT = 75
+PSI_FULL_LIMIT = 20
 
 
 def memory_snapshot():
@@ -157,6 +158,8 @@ def run_guard(args, read_memory=None):
 
         try:
             before = read_memory()
+            if before["psi_full_avg10"] >= PSI_FULL_LIMIT:
+                raise ValueError("sustained host memory stalls before launch")
             maximum, high = memory_limits(before["available_gib"], args.max_gib,
                                           args.high_gib, args.reserve_gib)
             cgroup = scope_path(unit)
@@ -190,9 +193,10 @@ def run_guard(args, read_memory=None):
                     reason = "watchdog received a stop signal"
                 elif snapshot["available_gib"] < args.trip_gib:
                     reason = "host memory watchdog floor crossed"
-                elif (snapshot["psi_full_avg10"] >= 20 and
-                      snapshot["available_gib"] < args.trip_gib + 4):
-                    reason = "sustained host memory stalls near reserve"
+                # CUDA allocation/reclaim can stall while MemAvailable is high.
+                # Stop this scope before oomd selects another user application.
+                elif snapshot["psi_full_avg10"] >= PSI_FULL_LIMIT:
+                    reason = "sustained host memory stalls"
                 elif args.timeout and now - start >= args.timeout:
                     reason = "job deadline exceeded"
                 if reason:

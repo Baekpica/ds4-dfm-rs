@@ -25,8 +25,11 @@ can be stopped. Two watchers using the same floor have no shutdown priority.
 
 The default job deadline is 1,800 seconds. The guard samples the whole host
 every 100 ms, including memory that the CUDA driver may not charge to the
-scope. It sends SIGTERM when the trip floor is crossed, or when memory PSI
-full stalls reach 20% within 4 GiB of that floor, then SIGKILL after one second.
+scope. It refuses launch at memory PSI full stalls of 20% or higher.
+During execution, it sends SIGTERM when the trip floor is crossed or PSI full
+stalls reach 20%, then SIGKILL after one second. CUDA allocation/reclaim can
+stall with substantial `MemAvailable`; the PSI trigger is independent of
+the available-memory floor.
 Only that job's scope is targeted, including profiler descendants that
 create a separate process session. A filesystem cgroup kill is the fallback
 if the user service manager does not respond. It never directly kills a
