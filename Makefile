@@ -1752,7 +1752,7 @@ tests/test_glm53_tokens: tests/test_glm53_tokens.c ds4.c ds4.h $(GLM53_NATIVE_DE
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 tests/test_glm53_mtp: tests/test_glm53_mtp.c ds4_glm53_mtp.inc ds4_gpu.h
-	$(CC) $(CFLAGS) -Werror -I. -o $@ $< -lm
+	$(CC) $(CFLAGS) -Werror -Wno-unused-function -I. -o $@ $< -lm
 
 test-glm53-mtp: tests/test_glm53_mtp
 	./tests/test_glm53_mtp
