@@ -42,6 +42,7 @@ typedef struct {
 typedef struct { ds4_model model; ds4_weights weights; ds4_glm53_stream glm53_stream; } ds4_engine;
 typedef enum { GLM53_MTP_SAVE, GLM53_MTP_RESTORE } glm53_mtp_move;
 static unsigned prefill_calls, teacher_calls;
+static uint64_t span_need, usable_mem = UINT64_MAX, observed_reserve;
 
 static bool ds4_glm53_layer_is_kda(uint32_t il) { return il != 1u; }
 static bool partial_checkpoint_ref(const ds4_partial_checkpoint *cp, uint32_t b) {
@@ -79,9 +80,11 @@ static int ds4_gpu_tensor_copy(ds4_gpu_tensor *dst, uint64_t d,
 }
 static int ds4_gpu_synchronize(void) { return 1; }
 static uint64_t batch_span_need(const ds4_gpu_tensor *t, uint64_t o, uint64_t n) {
-    (void)t; (void)o; (void)n; return 0u;
+    (void)t; (void)o; (void)n; return span_need;
 }
-static uint64_t ds4_mem_usable_beyond(uint64_t reserve) { (void)reserve; return UINT64_MAX; }
+static uint64_t ds4_mem_usable_beyond(uint64_t reserve) {
+    observed_reserve = reserve; return usable_mem;
+}
 static int ds4_gpu_tensor_ensure(ds4_gpu_tensor *t, uint64_t o, uint64_t n) {
     return t && o <= t->bytes && n <= t->bytes - o;
 }
@@ -146,6 +149,47 @@ static bool glm53_mtp_ckpt(ds4_glm53_gpu_graph *g, ds4_gpu_tensor *t,
 }
 
 #include "../ds4_glm53_batch.inc"
+
+typedef struct {
+    ds4_glm53_batch_runtime *glm53;
+    uint32_t max_seq, seq_cap;
+    uint64_t serial_reserve, bank_gen[DS4_MULTISEQ_MAX_SEQ];
+    uint8_t bank_hist_valid[DS4_MULTISEQ_MAX_SEQ];
+    uint32_t bank_hist_len[DS4_MULTISEQ_MAX_SEQ];
+    int *bank_hist;
+} ds4_batch_ctx;
+enum { DS4_SESSION_PAYLOAD_U32_FIELDS = 13 };
+static void payload_set_err(char *err, size_t len, const char *msg) {
+    if (len) { snprintf(err, len, "%s", msg); }
+}
+static int payload_read_u32(FILE *fp, uint32_t *out, uint64_t *left,
+        char *err, size_t len) {
+    (void)err; (void)len;
+    if (*left < sizeof(*out) || fread(out, sizeof(*out), 1u, fp) != 1u) { return 1; }
+    *left -= sizeof(*out); return 0;
+}
+/* The payload codec has separate byte-exact tests. Supply a finite restored
+ * frontier here to exercise the real bank loader and checkpoint lifecycle. */
+static uint64_t glm53_payload_bytes(const ds4_glm53_gpu_graph *g, uint32_t n) {
+    (void)g; (void)n; abort();
+}
+static int glm53_payload_save(ds4_glm53_gpu_graph *g, const int *tokens,
+        uint32_t n, const float *logits, FILE *fp, char *err, size_t len) {
+    (void)g; (void)tokens; (void)n; (void)logits; (void)fp; (void)err; (void)len; abort();
+}
+static int glm53_payload_restore(ds4_glm53_gpu_graph *g, FILE *fp, uint64_t *left,
+        const uint32_t *h, int **tokens, float *logits, char *err, size_t len) {
+    (void)fp; (void)err; (void)len;
+    *tokens = xcalloc(h[7], sizeof(**tokens));
+    for (uint32_t i = 0; i < h[7]; i++) { (*tokens)[i] = (int)(i % DS4_N_VOCAB); }
+    for (uint32_t i = 0; i < DS4_N_VOCAB; i++) { logits[i] = (float)i + 0.25f; }
+    memset(g->state_pool->data, 37, g->state_bytes);
+    g->cache_len = h[7]; g->mtp_len = h[7] - 1u; g->mtp_min = 1u;
+    *left = 0u; return 0;
+}
+#define GLM53_BATCH_API
+#include "../ds4_glm53_batch.inc"
+#undef GLM53_BATCH_API
 
 static void setup(ds4_glm53_gpu_graph *g) {
     memset(g, 0, sizeof(*g)); g->ready = true; g->ctx_cap = 16u; g->state_bytes = 128u;
@@ -271,4 +315,49 @@ static void frontier_test(void) {
     assert(!partial_checkpoint_ref(&rt.checkpoint[cp], 1u));
     ds4_gpu_tensor_free(rt.checkpoint_slab); teardown(&graph[0]); teardown(&graph[1]);
 }
-int main(void) { old_mtp_window_test(); prefill_test(); clone_test(); frontier_test(); puts("GLM compact bank frontier: PASS"); return 0; }
+static void loaded_frontier_test(void) {
+    ds4_glm53_gpu_graph graph; setup(&graph); graph.mtp_ready = true;
+    float logits[DS4_N_VOCAB], cp_logits[GLM53_BANK_CHECKPOINTS * DS4_N_VOCAB];
+    uint8_t valid = 0u, failed = 0u;
+    ds4_glm53_batch_runtime rt = {.graph=&graph, .max_seq=1u, .bank_logits=logits,
+        .bank_logits_valid=&valid, .failed=&failed, .checkpoint_logits=cp_logits,
+        .checkpoint_slot_bytes=136u};
+    rt.checkpoint_slab = ds4_gpu_tensor_alloc(rt.checkpoint_slot_bytes * GLM53_BANK_CHECKPOINTS);
+    int history[16];
+    ds4_batch_ctx ctx = {.glm53=&rt, .max_seq=1u, .seq_cap=16u,
+        .serial_reserve=64u, .bank_hist=history};
+    uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS] = {0}; h[7] = 5u;
+    FILE *fp = tmpfile(); assert(fp);
+    assert(fwrite(h, sizeof(h), 1u, fp) == 1u); rewind(fp);
+    char err[128] = {0};
+    (void)glm53_bank_save_payload;
+    assert(!glm53_bank_load_payload(&ctx, 0u, fp, sizeof(h), err, sizeof(err)));
+    assert(ctx.bank_hist_valid[0] && ctx.bank_hist_len[0] == 5u && ctx.bank_gen[0] == 1u);
+    assert(history[4] == 4 && valid && !failed);
+
+    /* An appended answer changes recurrent state. An edited question must
+     * restore the loaded prefix instead of restarting from token zero. */
+    graph.cache_len = 10u; graph.mtp_min = 8u; graph.mtp_len = 9u;
+    memset(graph.state_pool->data, 91, graph.state_bytes);
+    memset(logits, 0, sizeof(logits));
+    assert(glm53_ckpt_capture(&rt, 0u, 10u, GLM53_HAS_LOGITS, ctx.serial_reserve));
+    const int cp = glm53_ckpt_find(&rt, 0u, 5u, 6u); assert(cp >= 0);
+    uint32_t pos = 0u;
+    assert(glm53_ckpt_restore(&rt, 0u, 0u, (uint32_t)cp, 5u, &pos));
+    assert(pos == 5u && graph.cache_len == 5u && graph.mtp_min == 1u && graph.mtp_len == 4u);
+    for (uint32_t i = 0; i < graph.state_bytes; i++) { assert(graph.state_pool->data[i] == 37u); }
+    for (uint32_t i = 0; i < DS4_N_VOCAB; i++) { assert(logits[i] == (float)i + 0.25f); }
+
+    /* Lack of checkpoint funding must not invalidate a successful load. */
+    rewind(fp); span_need = 1u; usable_mem = 0u; observed_reserve = 0u;
+    assert(!glm53_bank_load_payload(&ctx, 0u, fp, sizeof(h), err, sizeof(err)));
+    assert(observed_reserve == ctx.serial_reserve && valid && !failed && graph.cache_len == 5u);
+    assert(glm53_ckpt_find(&rt, 0u, 5u, 6u) == -1);
+    span_need = 0u; usable_mem = UINT64_MAX;
+    fclose(fp); ds4_gpu_tensor_free(rt.checkpoint_slab); teardown(&graph);
+}
+int main(void) {
+    (void)glm53_batch_create; (void)glm53_ckpt_trim; (void)glm53_bank_bytes_for;
+    old_mtp_window_test(); prefill_test(); clone_test(); frontier_test(); loaded_frontier_test();
+    puts("GLM compact bank frontier: PASS"); return 0;
+}

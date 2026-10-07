@@ -423,6 +423,9 @@ static int glm53_bank_load_payload(ds4_batch_ctx *ctx, uint32_t bank,
     free(tokens);
     ctx->bank_hist_len[bank] = h[7]; ctx->bank_hist_valid[bank] = 1u;
     rt->bank_logits_valid[bank] = 1u; rt->failed[bank] = 0u;
+    /* Keep the imported prefix restorable after an answer is appended. A
+     * funded checkpoint is optional; loading still obeys the memory reserve. */
+    (void)glm53_ckpt_capture(rt, bank, h[7], GLM53_HAS_LOGITS, ctx->serial_reserve);
     return 0;
 }
 
