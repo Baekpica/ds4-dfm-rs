@@ -26,6 +26,7 @@ pub struct Template {
 /// official generation mode always starts thinking.
 #[derive(Debug, Clone, Copy)]
 pub struct ChatOptions {
+    model: i32,
     mode: ChatThinkMode,
     effort: &'static str,
     prefill: &'static str,
@@ -38,7 +39,7 @@ impl ChatOptions {
             (6, High | Max) => "xhigh",
             (2, Low) => "medium",
             (2, Max) => "xhigh",
-            (7, None | Low | Max) => "max",
+            (7, None | Max) => "max",
             // The existing K2 output parser handles its default think channel.
             (8, _) => "high",
             (_, None) => "none",
@@ -53,6 +54,7 @@ impl ChatOptions {
             _ => "",
         };
         Self {
+            model: model_id,
             mode,
             effort,
             prefill,
@@ -163,7 +165,10 @@ impl Template {
     ) -> Result<String> {
         let mut messages = messages.to_vec();
         for message in &mut messages {
-            if message["role"] != "assistant" {
+            // GLM extracts embedded thinking in its template. An injected
+            // empty reasoning field would bypass that source-defined path.
+            if message["role"] != "assistant" || options.model == crate::Variant::Glm53Flash as i32
+            {
                 continue;
             }
             // APIs may omit hidden reasoning. Supply an empty canonical field,

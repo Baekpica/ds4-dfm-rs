@@ -1,0 +1,12 @@
+{
+  "repo": "Baekpica/GLM-5.3-Flash-Uncensored-Mixed-Quant-GGUF",
+  "revision": "597f15ced1876cbebd7224b359abe77571c79c7c",
+  "template_path": "GLM-5.3-Flash-Uncensored-Mixed-IQ2XXS-IQ2XS-Q2K.gguf:tokenizer.chat_template",
+  "template_sha256": "34d5ee66b12fa6446cdae131c352b8f68cd85369e0e6fda115583805fada3891",
+  "gguf_sha256": "7f6f96df758b5d651561c2f06ffdd0d1075a24f10654320e24e7d66c48db6017",
+  "source_repo": "orcarouter/GLM-5.3-Flash-Uncensored-FP8",
+  "source_revision": "0480f690f80e8f4c4ee63edd10dcbea8b7d9e31b",
+  "source_url": "https://huggingface.co/Baekpica/GLM-5.3-Flash-Uncensored-Mixed-Quant-GGUF/blob/597f15ced1876cbebd7224b359abe77571c79c7c/GLM-5.3-Flash-Uncensored-Mixed-IQ2XXS-IQ2XS-Q2K.gguf",
+  "special_tokens": {},
+  "extraction": "Unmodified embedded UTF-8 bytes; original-source URL unavailable at audit."
+}

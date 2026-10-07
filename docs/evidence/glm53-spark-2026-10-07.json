@@ -1,0 +1,1986 @@
+{
+  "date_utc": "2026-10-07",
+  "base_commit": "15ca821e148fc205ed14109d314afb17b78c6d9d",
+  "source_scope": "Feature tree measured before commit; retained arithmetic source is 15523923206e5ba92beff0869d893ffd5369d524. Per-round frozen binary and native object identities follow. Default selection changed without changing retained arithmetic. Later perf-control tests and test-name edits do not change inference. The final bank-load repair preserves imported-prefix checkpoints; changed load/reuse gates run fresh, unchanged arithmetic proofs are inherited.",
+  "final_source_commit": "e6808ea25586fb2ecebc45674be7964f42d986f6",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "host": "DGX Spark",
+    "clock_range_mhz": [
+      300,
+      2200
+    ],
+    "driver": "615.71.09",
+    "cuda_toolkit": "13.3",
+    "nvcc": "13.3.73",
+    "compiler_path": "/usr/local/cuda/bin/nvcc"
+  },
+  "artifact_revision": "597f15ced1876cbebd7224b359abe77571c79c7c",
+  "artifacts": {
+    "main": {
+      "bytes": 93920031264,
+      "sha256": "7f6f96df758b5d651561c2f06ffdd0d1075a24f10654320e24e7d66c48db6017"
+    },
+    "vision": {
+      "bytes": 1127280960,
+      "sha256": "e7f71610840eb4df88164ac1eda36bf1ea0449e140ebcd6afba458c7c54b04d7"
+    }
+  },
+  "protocol": {
+    "ctx_alloc": 16384,
+    "prefill_rows": 128,
+    "input_tokens": [
+      2048,
+      8192
+    ],
+    "output_tokens": 64,
+    "sampling": "greedy",
+    "mtp": "off",
+    "ssd_streaming": false,
+    "capture": false,
+    "max_seqs": 1,
+    "vision": false,
+    "weights": "One retained raw VMM owner, no aligned repacks; serial fresh Rust workers",
+    "boot_prewarm_tokens": 512,
+    "boot_prewarm_timed": false,
+    "prompt": "speed-bench/promessi_sposi.txt",
+    "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+    "cache": "Fresh workload KV, inherited OS pages, no CPU builds during arms",
+    "pairing": "ABBA per input length; shared Q8 adds one fresh Off/On pair per length",
+    "comparison": "Round-specific matched baselines; percentages are not a cumulative speed claim"
+  },
+  "rounds": {
+    "attention": {
+      "scope": "Normal raw VMM owner, one fresh Rust worker, SSDOff/MTPoff/rows128; natural2K/8K +64greedy,512bootprewarm outside timing. No CPU builds during timing.",
+      "decision": "Adopt selected2051/128-row/64-head/latent512 paired AV: repeatable8Kpref+3.081%,2Kpref equivalent, decode within observed variation, full logits/64IDs exact, no workspace growth. Reference fallback for decode/all other geometries.",
+      "analysis_sha256": "da6a07fce7b0c7a41ea7dcd78c46fafff49fb91b6d10530aae3dd2fbdbf30574",
+      "build_receipt_sha256": "f0b8e8004c76973d8036d2642b30e3d8b56570710745945901b5f1977b87b215",
+      "binary_sha256": "42fa806928054f26a738d6e804142872158b5330d204004b36b60f54425f5cf7",
+      "native_objects": {
+        "native/bridge/ds4_bridge.o": "8a8f4df12c6ebda0222accb44cfce8ec13b8aec573bd81772b03f1aa6e984b87",
+        "ds4.o": "bd578da797846dfabacb965679727ffb30de8acfb3da512b64b9067dc2217ab9",
+        "ds4_ple.o": "51e5cfa6c712b7e7c4c290b99d84abe0218330d8086e9ed2c1acaa457f1d9761",
+        "ds4_distributed.o": "d7e5976da61803eaa76275811acb66c236e0249af23e11a3bfb23ba652a21141",
+        "ds4_cuda.o": "1c9b00d078124c276c6c2fa2256f5e596d7af0690537c0e512011d1647e251ad",
+        "cuda/mmq/ds4_ggml_stubs.o": "f3c7ce84d937c5f43c33140da49e54dc9505c1a26ae4f0dece8ff2ebac8f3d05",
+        "scratch/glm-uncensored/q2-target-v5/ds4_mmq-q2-fixed.o": "e8f4bbb0aecaabfab9dffe6e5e1c32eb13feb88c1ab29304f8e5cf332d859fba",
+        "cuda/mmq/ds4_mmq_d2r.o": "e96f9e5f4d83b8ea757e6d3a4f24273f9485c72dec0ea60204f0256a5e7d6ffa",
+        "cuda/mmq/quantize.o": "75b411600550ec7d23babb4427178a847132fa7421d754c4d9318155573ceda0",
+        "cuda/mmq/mmid.o": "43993e6eaa82c2864745e5fdbc6e46519a3019580ca94e0e9b465e066af1ec89",
+        "cuda/mmq/mmvq.o": "1cebabdd439ba10e4a946697300c818746a318f4d59fd6708bd41f980822f3bd",
+        "cuda/mmq/ds4_repack.o": "6f1c072910a33f3f36a6406b75062888f5c0e5a1ba99abe3a38951466a370bed",
+        "cuda/mmq/ds4_fattn.o": "dd252a0d3917acd5755b0966c3c322c032f81e5dce56b7bede15fe0724144fff",
+        "cuda/qwen38_ple.o": "5750124727f3f2ac4de0754a96ab64ab9d7dfcc32998ebeb5289e487f44784a2"
+      },
+      "frontiers": {
+        "2048": {
+          "arms": {
+            "off1": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.58",
+                "gen_tokens": "64",
+                "gen_tps": "14.76",
+                "gen_tps_ss": "14.92",
+                "first_token_sec": "0.1147",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2197
+              ],
+              "min_available_bytes": 29143572480,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "on1": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.67",
+                "gen_tokens": "64",
+                "gen_tps": "14.78",
+                "gen_tps_ss": "14.90",
+                "first_token_sec": "0.1023",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29184159744,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "on2": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.35",
+                "gen_tokens": "64",
+                "gen_tps": "14.78",
+                "gen_tps_ss": "14.90",
+                "first_token_sec": "0.1005",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29107761152,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "off2": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.50",
+                "gen_tokens": "64",
+                "gen_tps": "14.71",
+                "gen_tps_ss": "14.83",
+                "first_token_sec": "0.1010",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29106905088,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            }
+          },
+          "median_tps": {
+            "prefill_tps": {
+              "off": 160.54000000000002,
+              "on": 160.51,
+              "percent": -0.01868693160584911
+            },
+            "gen_tps": {
+              "off": 14.735,
+              "on": 14.78,
+              "percent": 0.305395317271806
+            },
+            "gen_tps_ss": {
+              "off": 14.875,
+              "on": 14.9,
+              "percent": 0.1680672268907557
+            }
+          },
+          "matched_pair_percent": [
+            {
+              "prefill_tps": 0.05604683024036383,
+              "gen_tps": 0.13550135501354532,
+              "gen_tps_ss": -0.13404825737265424
+            },
+            {
+              "prefill_tps": -0.09345794392523477,
+              "gen_tps": 0.47586675730795225,
+              "gen_tps_ss": 0.47201618341199403
+            }
+          ],
+          "all_float32_logits_equal": true,
+          "vocab_size": 154880,
+          "all_64_ids_equal": true,
+          "compared_arm_pairs": 6
+        },
+        "8192": {
+          "arms": {
+            "off1": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "122.27",
+                "gen_tokens": "64",
+                "gen_tps": "14.39",
+                "gen_tps_ss": "14.50",
+                "first_token_sec": "0.1014",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 29087768576,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "on1": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "126.02",
+                "gen_tokens": "64",
+                "gen_tps": "14.37",
+                "gen_tps_ss": "14.48",
+                "first_token_sec": "0.1015",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29065646080,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "on2": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "125.94",
+                "gen_tokens": "64",
+                "gen_tps": "14.37",
+                "gen_tps_ss": "14.48",
+                "first_token_sec": "0.1028",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 29071142912,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "off2": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "122.16",
+                "gen_tokens": "64",
+                "gen_tps": "14.37",
+                "gen_tps_ss": "14.48",
+                "first_token_sec": "0.1020",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 29079171072,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            }
+          },
+          "median_tps": {
+            "prefill_tps": {
+              "off": 122.215,
+              "on": 125.97999999999999,
+              "percent": 3.080636583070806
+            },
+            "gen_tps": {
+              "off": 14.379999999999999,
+              "on": 14.37,
+              "percent": -0.06954102920723182
+            },
+            "gen_tps_ss": {
+              "off": 14.49,
+              "on": 14.48,
+              "percent": -0.06901311249136732
+            }
+          },
+          "matched_pair_percent": [
+            {
+              "prefill_tps": 3.0669829066819254,
+              "gen_tps": -0.1389854065323215,
+              "gen_tps_ss": -0.13793103448275223
+            },
+            {
+              "prefill_tps": 3.094302554027495,
+              "gen_tps": 0.0,
+              "gen_tps_ss": 0.0
+            }
+          ],
+          "all_float32_logits_equal": true,
+          "vocab_size": 154880,
+          "all_64_ids_equal": true,
+          "compared_arm_pairs": 6
+        }
+      }
+    },
+    "pool": {
+      "scope": "Normal raw VMM owner, one fresh Rust worker, SSDOff/MTPoff/rows128, retained scoped attention On; natural2K/8K +64greedy,512bootprewarm outside timing. No CPU builds during timing.",
+      "decision": "ADOPT: both 8K pairs improve prefill/decode; all frontier bits/64IDs exact; 2K prefill identical execution within variation; no added global workspace, disclosed register/key-read cost",
+      "analysis_sha256": "34dae4dd2e11ea9b52cd520ac26872c5758d4f5bfc2c75bceaa8798733ecbee5",
+      "build_receipt_sha256": "a626f3d8a975176193161fae593f2ac49032c27efbb8e067bad93b1dc9123d0f",
+      "binary_sha256": "1a547a883f90381bb1e5ea43c7de28ada47fb90785add7ed4f1aabcdffd162cf",
+      "native_objects": {
+        "native/bridge/ds4_bridge.o": "8a8f4df12c6ebda0222accb44cfce8ec13b8aec573bd81772b03f1aa6e984b87",
+        "ds4.o": "bd578da797846dfabacb965679727ffb30de8acfb3da512b64b9067dc2217ab9",
+        "ds4_ple.o": "51e5cfa6c712b7e7c4c290b99d84abe0218330d8086e9ed2c1acaa457f1d9761",
+        "ds4_distributed.o": "d7e5976da61803eaa76275811acb66c236e0249af23e11a3bfb23ba652a21141",
+        "ds4_cuda.o": "ca838cde6c4a8879adaf7b1edccf109b3f05260d5cba176b1dc60dfea89743f0",
+        "cuda/mmq/ds4_ggml_stubs.o": "f3c7ce84d937c5f43c33140da49e54dc9505c1a26ae4f0dece8ff2ebac8f3d05",
+        "scratch/glm-uncensored/q2-target-v5/ds4_mmq-q2-fixed.o": "e8f4bbb0aecaabfab9dffe6e5e1c32eb13feb88c1ab29304f8e5cf332d859fba",
+        "cuda/mmq/ds4_mmq_d2r.o": "e96f9e5f4d83b8ea757e6d3a4f24273f9485c72dec0ea60204f0256a5e7d6ffa",
+        "cuda/mmq/quantize.o": "75b411600550ec7d23babb4427178a847132fa7421d754c4d9318155573ceda0",
+        "cuda/mmq/mmid.o": "43993e6eaa82c2864745e5fdbc6e46519a3019580ca94e0e9b465e066af1ec89",
+        "cuda/mmq/mmvq.o": "1cebabdd439ba10e4a946697300c818746a318f4d59fd6708bd41f980822f3bd",
+        "cuda/mmq/ds4_repack.o": "6f1c072910a33f3f36a6406b75062888f5c0e5a1ba99abe3a38951466a370bed",
+        "cuda/mmq/ds4_fattn.o": "dd252a0d3917acd5755b0966c3c322c032f81e5dce56b7bede15fe0724144fff",
+        "cuda/qwen38_ple.o": "5750124727f3f2ac4de0754a96ab64ab9d7dfcc32998ebeb5289e487f44784a2"
+      },
+      "frontiers": {
+        "2048": {
+          "arms": {
+            "off1": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.87",
+                "gen_tokens": "64",
+                "gen_tps": "14.74",
+                "gen_tps_ss": "14.88",
+                "first_token_sec": "0.1088",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2197
+              ],
+              "min_available_bytes": 29121708032,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "on1": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "161.01",
+                "gen_tokens": "64",
+                "gen_tps": "14.83",
+                "gen_tps_ss": "14.95",
+                "first_token_sec": "0.1025",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29195608064,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "on2": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.56",
+                "gen_tokens": "64",
+                "gen_tps": "14.77",
+                "gen_tps_ss": "14.89",
+                "first_token_sec": "0.1039",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2197
+              ],
+              "min_available_bytes": 29145042944,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "off2": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "161.02",
+                "gen_tokens": "64",
+                "gen_tps": "14.73",
+                "gen_tps_ss": "14.85",
+                "first_token_sec": "0.1029",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29130932224,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            }
+          },
+          "median_tps": {
+            "prefill_tps": {
+              "off": 160.945,
+              "on": 160.785,
+              "percent": -0.0994128428966401
+            },
+            "gen_tps": {
+              "off": 14.735,
+              "on": 14.8,
+              "percent": 0.44112656939261363
+            },
+            "gen_tps_ss": {
+              "off": 14.865,
+              "on": 14.92,
+              "percent": 0.36999663639420977
+            }
+          },
+          "matched_pair_percent": [
+            {
+              "prefill_tps": 0.08702679181946671,
+              "gen_tps": 0.6105834464043447,
+              "gen_tps_ss": 0.47043010752687575
+            },
+            {
+              "prefill_tps": -0.28567879766489,
+              "gen_tps": 0.27155465037338455,
+              "gen_tps_ss": 0.2693602693602859
+            }
+          ],
+          "all_float32_logits_equal": true,
+          "vocab_size": 154880,
+          "all_64_ids_equal": true,
+          "compared_arm_pairs": 6
+        },
+        "8192": {
+          "arms": {
+            "off1": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "125.99",
+                "gen_tokens": "64",
+                "gen_tps": "14.41",
+                "gen_tps_ss": "14.52",
+                "first_token_sec": "0.1019",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 29077676032,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "on1": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.18",
+                "gen_tokens": "64",
+                "gen_tps": "14.68",
+                "gen_tps_ss": "14.80",
+                "first_token_sec": "0.1033",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29073743872,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "on2": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.23",
+                "gen_tokens": "64",
+                "gen_tps": "14.62",
+                "gen_tps_ss": "14.73",
+                "first_token_sec": "0.1025",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 29068267520,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "off2": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "125.97",
+                "gen_tokens": "64",
+                "gen_tps": "14.38",
+                "gen_tps_ss": "14.48",
+                "first_token_sec": "0.1013",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29095313408,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            }
+          },
+          "median_tps": {
+            "prefill_tps": {
+              "off": 125.97999999999999,
+              "on": 137.20499999999998,
+              "percent": 8.910144467375769
+            },
+            "gen_tps": {
+              "off": 14.395,
+              "on": 14.649999999999999,
+              "percent": 1.771448419590138
+            },
+            "gen_tps_ss": {
+              "off": 14.5,
+              "on": 14.765,
+              "percent": 1.8275862068965587
+            }
+          },
+          "matched_pair_percent": [
+            {
+              "prefill_tps": 8.881657274386857,
+              "gen_tps": 1.8736988202636917,
+              "gen_tps_ss": 1.9283746556473913
+            },
+            {
+              "prefill_tps": 8.938636183218218,
+              "gen_tps": 1.6689847009735637,
+              "gen_tps_ss": 1.7265193370165743
+            }
+          ],
+          "all_float32_logits_equal": true,
+          "vocab_size": 154880,
+          "all_64_ids_equal": true,
+          "compared_arm_pairs": 6
+        }
+      }
+    },
+    "shared_q8": {
+      "scope": "Normal raw VMM owner, one fresh Rust worker, SSDOff/MTPoff/rows128, retained attention and pool On; natural2K/8K +64greedy,512bootprewarm outside timing. No CPU builds during timing.",
+      "decision": "ADOPT: repeatable2K decode gain at constant2190MHz;8K small positive within variation/no regression. Exact all logits/tokens, no added global workspace; static shared768B reported.",
+      "analysis_sha256": "0f812b49a7509f59f23d2b68e2db6bde3240bd2e52bb9c11d87fbddf90c927cd",
+      "build_receipt_sha256": "e0c5f5712dbfcfce8e6b9a266a4a4029af5312d08f45bcd45d99e874212fc15d",
+      "binary_sha256": "7f938a438542a9f3c62487afca33eb8eff01dd699c287279578cee3e7ef6ed91",
+      "native_objects": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/native/bridge/ds4_bridge.o": "8a8f4df12c6ebda0222accb44cfce8ec13b8aec573bd81772b03f1aa6e984b87",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/ds4.o": "87387db0e85df7abd01a7d52ab28bb0a9c5b0d4a8710ac1138dae4086cc49209",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/ds4_ple.o": "51e5cfa6c712b7e7c4c290b99d84abe0218330d8086e9ed2c1acaa457f1d9761",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/ds4_distributed.o": "d7e5976da61803eaa76275811acb66c236e0249af23e11a3bfb23ba652a21141",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/ds4_cuda.o": "d6175a345f415f2683c1704cad0fb53951655895adb5049e98bdceaf27b5f51d",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/ds4_ggml_stubs.o": "f3c7ce84d937c5f43c33140da49e54dc9505c1a26ae4f0dece8ff2ebac8f3d05",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/ds4_mmq.o": "e0c1a08adc165fa2bc9e8f6bd0b566986d62acedef866f1428ae716d887fe9e3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/ds4_mmq_d2r.o": "e96f9e5f4d83b8ea757e6d3a4f24273f9485c72dec0ea60204f0256a5e7d6ffa",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/quantize.o": "75b411600550ec7d23babb4427178a847132fa7421d754c4d9318155573ceda0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/mmid.o": "43993e6eaa82c2864745e5fdbc6e46519a3019580ca94e0e9b465e066af1ec89",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/mmvq.o": "1cebabdd439ba10e4a946697300c818746a318f4d59fd6708bd41f980822f3bd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/ds4_repack.o": "6f1c072910a33f3f36a6406b75062888f5c0e5a1ba99abe3a38951466a370bed",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/mmq/ds4_fattn.o": "dd252a0d3917acd5755b0966c3c322c032f81e5dce56b7bede15fe0724144fff",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-uncensored/cuda/qwen38_ple.o": "5750124727f3f2ac4de0754a96ab64ab9d7dfcc32998ebeb5289e487f44784a2"
+      },
+      "frontiers": {
+        "2048": {
+          "arms": {
+            "off1": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.71",
+                "gen_tokens": "64",
+                "gen_tps": "14.82",
+                "gen_tps_ss": "14.93",
+                "first_token_sec": "0.1010",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 28614119424,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "on1": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.99",
+                "gen_tokens": "64",
+                "gen_tps": "14.88",
+                "gen_tps_ss": "15.00",
+                "first_token_sec": "0.1002",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29004591104,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "on2": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.80",
+                "gen_tokens": "64",
+                "gen_tps": "14.81",
+                "gen_tps_ss": "14.93",
+                "first_token_sec": "0.1025",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 28970020864,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "off2": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.86",
+                "gen_tokens": "64",
+                "gen_tps": "14.77",
+                "gen_tps_ss": "14.89",
+                "first_token_sec": "0.1020",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29039722496,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "off3": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.69",
+                "gen_tokens": "64",
+                "gen_tps": "14.78",
+                "gen_tps_ss": "14.90",
+                "first_token_sec": "0.1011",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 28967538688,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            },
+            "on3": {
+              "metrics": {
+                "ctx_tokens": "2048",
+                "prefill_tokens": "2048",
+                "prefill_tps": "160.74",
+                "gen_tokens": "64",
+                "gen_tps": "14.85",
+                "gen_tps_ss": "14.97",
+                "first_token_sec": "0.1017",
+                "kvcache_bytes": "181191732"
+              },
+              "active_sm_mhz": [
+                2190,
+                2190
+              ],
+              "min_available_bytes": 29020659712,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "441295f3ad55429b34c3df485911272fdd03884bc42db81fc3ce90d9f7fa5815"
+            }
+          },
+          "median_tps": {
+            "prefill_tps": {
+              "off": 160.71,
+              "on": 160.8,
+              "percent": 0.05600149337314786
+            },
+            "gen_tps": {
+              "off": 14.78,
+              "on": 14.85,
+              "percent": 0.47361299052774974
+            },
+            "gen_tps_ss": {
+              "off": 14.9,
+              "on": 14.97,
+              "percent": 0.46979865771812346
+            }
+          },
+          "matched_pair_percent": [
+            {
+              "prefill_tps": 0.1742268682720427,
+              "gen_tps": 0.4048582995951344,
+              "gen_tps_ss": 0.46885465505692725
+            },
+            {
+              "prefill_tps": -0.037299515106303804,
+              "gen_tps": 0.27081922816520887,
+              "gen_tps_ss": 0.2686366689053088
+            },
+            {
+              "prefill_tps": 0.03111581305619282,
+              "gen_tps": 0.47361299052774974,
+              "gen_tps_ss": 0.46979865771812346
+            }
+          ],
+          "all_float32_logits_equal": true,
+          "vocab_size": 154880,
+          "all_64_ids_equal": true,
+          "compared_arm_pairs": 15
+        },
+        "8192": {
+          "arms": {
+            "off1": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.18",
+                "gen_tokens": "64",
+                "gen_tps": "14.63",
+                "gen_tps_ss": "14.75",
+                "first_token_sec": "0.1037",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 28991946752,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "on1": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.21",
+                "gen_tokens": "64",
+                "gen_tps": "14.69",
+                "gen_tps_ss": "14.80",
+                "first_token_sec": "0.1012",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 28979003392,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "on2": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.31",
+                "gen_tokens": "64",
+                "gen_tps": "14.71",
+                "gen_tps_ss": "14.84",
+                "first_token_sec": "0.1034",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 28977520640,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "off2": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.46",
+                "gen_tokens": "64",
+                "gen_tps": "14.68",
+                "gen_tps_ss": "14.79",
+                "first_token_sec": "0.1013",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 28955115520,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "off3": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.17",
+                "gen_tokens": "64",
+                "gen_tps": "14.69",
+                "gen_tps_ss": "14.80",
+                "first_token_sec": "0.1007",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2190
+              ],
+              "min_available_bytes": 28997562368,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            },
+            "on3": {
+              "metrics": {
+                "ctx_tokens": "8192",
+                "prefill_tokens": "8192",
+                "prefill_tps": "137.43",
+                "gen_tokens": "64",
+                "gen_tps": "14.70",
+                "gen_tps_ss": "14.81",
+                "first_token_sec": "0.1018",
+                "kvcache_bytes": "254747700"
+              },
+              "active_sm_mhz": [
+                2184,
+                2197
+              ],
+              "min_available_bytes": 28855332864,
+              "guard_max_psi": 0.0,
+              "proof_sha256": "98427ed643005d43c8f0648e69fdc724eb1466c1f6b9086c39aec1bacce31e52"
+            }
+          },
+          "median_tps": {
+            "prefill_tps": {
+              "off": 137.18,
+              "on": 137.31,
+              "percent": 0.09476600087476861
+            },
+            "gen_tps": {
+              "off": 14.68,
+              "on": 14.7,
+              "percent": 0.13623978201635634
+            },
+            "gen_tps_ss": {
+              "off": 14.79,
+              "on": 14.81,
+              "percent": 0.13522650439488082
+            }
+          },
+          "matched_pair_percent": [
+            {
+              "prefill_tps": 0.021869077124936354,
+              "gen_tps": 0.41011619958988277,
+              "gen_tps_ss": 0.3389830508474523
+            },
+            {
+              "prefill_tps": -0.1091226538629475,
+              "gen_tps": 0.2043596730245234,
+              "gen_tps_ss": 0.33806626098715764
+            },
+            {
+              "prefill_tps": 0.1895458190566579,
+              "gen_tps": 0.0680735194009463,
+              "gen_tps_ss": 0.06756756756756133
+            }
+          ],
+          "all_float32_logits_equal": true,
+          "vocab_size": 154880,
+          "all_64_ids_equal": true,
+          "compared_arm_pairs": 15
+        }
+      }
+    }
+  },
+  "inherited_build": {
+    "native_sources": {
+      "ds4.c": "59df6bf8e6d467ce7027e28bd72d1bc8d21acd992a487c94454d2066e5c8c638",
+      "ds4_cuda.cu": "aa2548d5a166e8734ed2fecd47c45f95367f7a3266aff81ab8f24802f62cce8d",
+      "ds4_glm53_graph.inc": "646d9faefe63a7536b3c23e0055d3d422d66b31d0fdf8cc864734ea1b0997786",
+      "cuda/glm53_low_attn.cuh": "60b60000f1a706b88fc92360524b1c497fe8b5a30d936c014ba7d6124afd20b8",
+      "cuda/glm53_pool_score.cuh": "b2f341e6232ed3f4f7263830d4b6f8658a1512a66d7d7c95654f60af5e1b7a41",
+      "cuda/mmq/ds4_glm_shared.cuh": "276e15deb27bf2d85e465a7229944dea6c5e041cdd11d814944e380bdb1e450c",
+      "cuda/mmq/ds4_mmq.cu": "af7c5d210be53f9190b48381482af5f2b54a1a84d950be29d2c6dd1b04a97fa9",
+      "cuda/mmq/ds4_mmq.h": "cb337a6ccad55288fc2a123fadc227fdc0478b0457ce3377d01a882f9f26f55c"
+    },
+    "native_objects": {
+      "native/bridge/ds4_bridge.o": "8a8f4df12c6ebda0222accb44cfce8ec13b8aec573bd81772b03f1aa6e984b87",
+      "ds4.o": "8f7d0aea6fb7e667948c5fef7e079c91aaae249b94730778889573d230008d0d",
+      "ds4_ple.o": "51e5cfa6c712b7e7c4c290b99d84abe0218330d8086e9ed2c1acaa457f1d9761",
+      "ds4_distributed.o": "d7e5976da61803eaa76275811acb66c236e0249af23e11a3bfb23ba652a21141",
+      "ds4_cuda.o": "3a2f455f857eac045bd466ef51d6b847d1ceedc3633990f025d456b3c50f6007",
+      "cuda/mmq/ds4_ggml_stubs.o": "f3c7ce84d937c5f43c33140da49e54dc9505c1a26ae4f0dece8ff2ebac8f3d05",
+      "cuda/mmq/ds4_mmq.o": "e0c1a08adc165fa2bc9e8f6bd0b566986d62acedef866f1428ae716d887fe9e3",
+      "cuda/mmq/ds4_mmq_d2r.o": "e96f9e5f4d83b8ea757e6d3a4f24273f9485c72dec0ea60204f0256a5e7d6ffa",
+      "cuda/mmq/quantize.o": "75b411600550ec7d23babb4427178a847132fa7421d754c4d9318155573ceda0",
+      "cuda/mmq/mmid.o": "43993e6eaa82c2864745e5fdbc6e46519a3019580ca94e0e9b465e066af1ec89",
+      "cuda/mmq/mmvq.o": "1cebabdd439ba10e4a946697300c818746a318f4d59fd6708bd41f980822f3bd",
+      "cuda/mmq/ds4_repack.o": "6f1c072910a33f3f36a6406b75062888f5c0e5a1ba99abe3a38951466a370bed",
+      "cuda/mmq/ds4_fattn.o": "dd252a0d3917acd5755b0966c3c322c032f81e5dce56b7bede15fe0724144fff",
+      "cuda/qwen38_ple.o": "5750124727f3f2ac4de0754a96ab64ab9d7dfcc32998ebeb5289e487f44784a2"
+    },
+    "binaries": {
+      "ds4-server-rs": "0322c3019f27bebf7b56d97245eee732fd95fe707801cead4b87a3a9ca15dc47",
+      "ds4-bench-rs": "b7b801d2c177314689648950975e8684bb6ef5dd8d3e88d553fbd0c15958bcdf",
+      "ds4-rs": "8f177f411e5664252262011a6bfe582c5c75dc4bef6912dd6539470d575c67b9",
+      "ds4-agent-rs": "fd969caa720cf2fa93cdbbc3ab7304d8f5cf474333eac9a8d49c6263ae4bf43d",
+      "glm53_state_gate": "3e00c03a44d828ce25c6a76e9e29e167d3ac57177eeb46e61bc5636629609abb"
+    }
+  },
+  "final_build": {
+    "native_sources": {
+      "ds4.c": "59df6bf8e6d467ce7027e28bd72d1bc8d21acd992a487c94454d2066e5c8c638",
+      "ds4_cuda.cu": "aa2548d5a166e8734ed2fecd47c45f95367f7a3266aff81ab8f24802f62cce8d",
+      "ds4_glm53_graph.inc": "646d9faefe63a7536b3c23e0055d3d422d66b31d0fdf8cc864734ea1b0997786",
+      "cuda/glm53_low_attn.cuh": "60b60000f1a706b88fc92360524b1c497fe8b5a30d936c014ba7d6124afd20b8",
+      "cuda/glm53_pool_score.cuh": "b2f341e6232ed3f4f7263830d4b6f8658a1512a66d7d7c95654f60af5e1b7a41",
+      "cuda/mmq/ds4_glm_shared.cuh": "276e15deb27bf2d85e465a7229944dea6c5e041cdd11d814944e380bdb1e450c",
+      "cuda/mmq/ds4_mmq.cu": "af7c5d210be53f9190b48381482af5f2b54a1a84d950be29d2c6dd1b04a97fa9",
+      "cuda/mmq/ds4_mmq.h": "cb337a6ccad55288fc2a123fadc227fdc0478b0457ce3377d01a882f9f26f55c",
+      "ds4_glm53_batch.inc": "b82eabdc37a30bd5df64da4ed73b937e8f7bc97cdc3ee85a95a8bd5859cac7c5",
+      "tests/test_glm53_banks.c": "347058b2a58e18c34b198aa12ecb01864f04f3b1473ebb5bc780826d4c6edba3"
+    },
+    "native_objects": {
+      "native/bridge/ds4_bridge.o": "8a8f4df12c6ebda0222accb44cfce8ec13b8aec573bd81772b03f1aa6e984b87",
+      "ds4.o": "15ee64e02ccf8f00b2acd8cee31aacbee571a71fe3de4de7ae6f1606ce08a19a",
+      "ds4_ple.o": "51e5cfa6c712b7e7c4c290b99d84abe0218330d8086e9ed2c1acaa457f1d9761",
+      "ds4_distributed.o": "d7e5976da61803eaa76275811acb66c236e0249af23e11a3bfb23ba652a21141",
+      "ds4_cuda.o": "3a2f455f857eac045bd466ef51d6b847d1ceedc3633990f025d456b3c50f6007",
+      "cuda/mmq/ds4_ggml_stubs.o": "f3c7ce84d937c5f43c33140da49e54dc9505c1a26ae4f0dece8ff2ebac8f3d05",
+      "cuda/mmq/ds4_mmq.o": "e0c1a08adc165fa2bc9e8f6bd0b566986d62acedef866f1428ae716d887fe9e3",
+      "cuda/mmq/ds4_mmq_d2r.o": "e96f9e5f4d83b8ea757e6d3a4f24273f9485c72dec0ea60204f0256a5e7d6ffa",
+      "cuda/mmq/quantize.o": "75b411600550ec7d23babb4427178a847132fa7421d754c4d9318155573ceda0",
+      "cuda/mmq/mmid.o": "43993e6eaa82c2864745e5fdbc6e46519a3019580ca94e0e9b465e066af1ec89",
+      "cuda/mmq/mmvq.o": "1cebabdd439ba10e4a946697300c818746a318f4d59fd6708bd41f980822f3bd",
+      "cuda/mmq/ds4_repack.o": "6f1c072910a33f3f36a6406b75062888f5c0e5a1ba99abe3a38951466a370bed",
+      "cuda/mmq/ds4_fattn.o": "dd252a0d3917acd5755b0966c3c322c032f81e5dce56b7bede15fe0724144fff",
+      "cuda/qwen38_ple.o": "5750124727f3f2ac4de0754a96ab64ab9d7dfcc32998ebeb5289e487f44784a2"
+    },
+    "binaries": {
+      "ds4-server-rs": "00e79629b49f0e7c395e8d8d08a7f80e014c3b7df88e43bdf5657a608fd2f2c1",
+      "ds4-rs": "cb587aa877d84db7a15840ee9655b990f328e15c6b2da24c5de3c413da1ee663",
+      "ds4-agent-rs": "bd92ae54eeacd284e9b71a9f1fd01d55107af494b8aee7aa20316cec5b0a5cf5",
+      "ds4-bench-rs": "f675a394ede39da64b26f7c335b0ce7d75a3393412940c74bc5b8eced8e0dc00"
+    },
+    "build_base_commit": "beed5931a4c2242bd55a4711f300339cd2663993",
+    "native_diff_sha256": "aa79ae135eb547d1e82dbeaba90b7b957127f57136abea87db876449cadc2930",
+    "scope": "Only native bank payload load captures an optional reserve-bounded checkpoint. CUDA kernels, serialization, target/MTP arithmetic and Rust host unchanged."
+  },
+  "bank_load_repair": {
+    "source_commit": "e6808ea25586fb2ecebc45674be7964f42d986f6",
+    "production_change": "Optional reserve-bounded checkpoint after successful GLM bank payload load",
+    "regression_scope": "Production bank loader load -> append -> edit restores recurrent state, MTP frontier and logits; no-funding case keeps load valid and respects reserve",
+    "red_exit": 2,
+    "green_exit": 0,
+    "test_sha256": "347058b2a58e18c34b198aa12ecb01864f04f3b1473ebb5bc780826d4c6edba3",
+    "native_sha256": "b82eabdc37a30bd5df64da4ed73b937e8f7bc97cdc3ee85a95a8bd5859cac7c5",
+    "fresh_resident_http": "Six requests reuse1048512 tokens; MTP/ordinary target answers and completion counts match",
+    "fresh_server_sha256": "00e79629b49f0e7c395e8d8d08a7f80e014c3b7df88e43bdf5657a608fd2f2c1",
+    "unchanged_paths": "CUDA kernels, serialized layout, target/MTP arithmetic, normal prefill/decode and Rust orchestration; prior full-native1M/actualMTP/numeric/performance proofs inherited by path"
+  },
+  "production_install": {
+    "source_commit": "e6808ea25586fb2ecebc45674be7964f42d986f6",
+    "normal_binaries": {
+      "ds4-bench-rs": "f675a394ede39da64b26f7c335b0ce7d75a3393412940c74bc5b8eced8e0dc00",
+      "ds4-perf": "e652bb55f58cd7b92587475cfb114d1edbe480e05d19bcf5fc3e07ae59631214",
+      "ds4-server-rs": "00e79629b49f0e7c395e8d8d08a7f80e014c3b7df88e43bdf5657a608fd2f2c1",
+      "ds4-rs": "cb587aa877d84db7a15840ee9655b990f328e15c6b2da24c5de3c413da1ee663",
+      "ds4-agent-rs": "bd92ae54eeacd284e9b71a9f1fd01d55107af494b8aee7aa20316cec5b0a5cf5"
+    },
+    "installed": {
+      "ds4": {
+        "sha256": "cb587aa877d84db7a15840ee9655b990f328e15c6b2da24c5de3c413da1ee663",
+        "bytes": 100454792,
+        "help_exit": 0,
+        "features": "ordinary native"
+      },
+      "ds4-server": {
+        "sha256": "00e79629b49f0e7c395e8d8d08a7f80e014c3b7df88e43bdf5657a608fd2f2c1",
+        "bytes": 103296640,
+        "help_exit": 2,
+        "features": "ordinary native"
+      },
+      "ds4-agent": {
+        "sha256": "bd92ae54eeacd284e9b71a9f1fd01d55107af494b8aee7aa20316cec5b0a5cf5",
+        "bytes": 99791192,
+        "help_exit": 0,
+        "features": "ordinary native"
+      },
+      "ds4-bench": {
+        "sha256": "f675a394ede39da64b26f7c335b0ce7d75a3393412940c74bc5b8eced8e0dc00",
+        "bytes": 99734064,
+        "help_exit": 0,
+        "features": "ordinary native"
+      },
+      "ds4-perf": {
+        "sha256": "e652bb55f58cd7b92587475cfb114d1edbe480e05d19bcf5fc3e07ae59631214",
+        "bytes": 4357816,
+        "help_exit": 0,
+        "features": "standalone model-free host"
+      }
+    },
+    "scope": "Installed ordinary native Rust hosts and standalone ds4-perf; the timing bench with perf-nvtx is retained separately as diagnostic evidence"
+  },
+  "final_resident_api": {
+    "context_alloc": 16384,
+    "max_seqs": 1,
+    "mtp": "on",
+    "draft": 3,
+    "vision": true,
+    "ssd_streaming": false,
+    "prefix_reuse": "partial",
+    "disk_gib": 8,
+    "requests": [
+      {
+        "api": "openai",
+        "case": "text",
+        "seconds": 0.851
+      },
+      {
+        "api": "openai",
+        "case": "followup",
+        "seconds": 0.909
+      },
+      {
+        "api": "openai",
+        "case": "tool-buffered",
+        "seconds": 2.961
+      },
+      {
+        "api": "openai",
+        "case": "tool-result-buffered",
+        "seconds": 2.543
+      },
+      {
+        "api": "openai",
+        "case": "tool-stream",
+        "seconds": 2.904
+      },
+      {
+        "api": "openai",
+        "case": "tool-result-stream",
+        "seconds": 2.539
+      },
+      {
+        "api": "openai",
+        "case": "image-red",
+        "seconds": 1.993
+      },
+      {
+        "api": "openai",
+        "case": "image-blue",
+        "seconds": 1.189
+      },
+      {
+        "api": "anthropic",
+        "case": "text",
+        "seconds": 0.928
+      },
+      {
+        "api": "anthropic",
+        "case": "followup",
+        "seconds": 0.833
+      },
+      {
+        "api": "anthropic",
+        "case": "tool-buffered",
+        "seconds": 2.556
+      },
+      {
+        "api": "anthropic",
+        "case": "tool-result-buffered",
+        "seconds": 1.861
+      },
+      {
+        "api": "anthropic",
+        "case": "tool-stream",
+        "seconds": 2.845
+      },
+      {
+        "api": "anthropic",
+        "case": "tool-result-stream",
+        "seconds": 2.404
+      },
+      {
+        "api": "anthropic",
+        "case": "image-red",
+        "seconds": 1.195
+      },
+      {
+        "api": "anthropic",
+        "case": "image-blue",
+        "seconds": 1.203
+      },
+      {
+        "api": "responses",
+        "case": "text",
+        "seconds": 0.914
+      },
+      {
+        "api": "responses",
+        "case": "followup",
+        "seconds": 0.837
+      },
+      {
+        "api": "responses",
+        "case": "tool-buffered",
+        "seconds": 2.547
+      },
+      {
+        "api": "responses",
+        "case": "tool-result-buffered",
+        "seconds": 1.877
+      },
+      {
+        "api": "responses",
+        "case": "tool-stream",
+        "seconds": 3.021
+      },
+      {
+        "api": "responses",
+        "case": "tool-result-stream",
+        "seconds": 2.422
+      },
+      {
+        "api": "responses",
+        "case": "image-red",
+        "seconds": 1.208
+      },
+      {
+        "api": "responses",
+        "case": "image-blue",
+        "seconds": 1.197
+      }
+    ],
+    "census_faults": 0,
+    "governor_faults": 0,
+    "scope": "Short actual API/tool/image requests; configured 16K is not a completed 16K prompt",
+    "evidence_kind": "Inherited for unchanged API/tool/image paths; bank payload load/reuse runs fresh below",
+    "build_scope": "release-v15 production server; native1M HTTP uses release-v16"
+  },
+  "retained_whole_trace": {
+    "scope": "Resident VMM owner/raw weights; SSDoff; MTPoff; one worker; clipped NVTX interval union. Profiling is diagnostic, not speed evidence.",
+    "proof": {
+      "full_float32_bits_equal": true,
+      "rel_l2": 0.0,
+      "max_abs": 0.0,
+      "all64_ids_equal": true,
+      "first_id_difference": null
+    },
+    "phases": [
+      {
+        "name": "ds4.prefill",
+        "wall_sec": 59.733770992,
+        "gpu_union_sec": 59.589067436,
+        "gpu_gap_sec": 0.144703556,
+        "top_kernels": [
+          {
+            "short_name": "glm53_low_attn_kernel",
+            "count": 528,
+            "sum_sec": 13.756690336
+          },
+          {
+            "short_name": "ds4_moe_worklist_mmq_kernel",
+            "count": 4736,
+            "sum_sec": 12.575812896
+          },
+          {
+            "short_name": "ds4_moe_worklist_mmq_kernel",
+            "count": 3008,
+            "sum_sec": 9.203258528
+          },
+          {
+            "short_name": "glm53_proj_v_kernel",
+            "count": 704,
+            "sum_sec": 3.942064256
+          },
+          {
+            "short_name": "mul_mat_q",
+            "count": 320,
+            "sum_sec": 3.661263136
+          }
+        ]
+      },
+      {
+        "name": "ds4.decode",
+        "wall_sec": 4.407832176,
+        "gpu_union_sec": 4.19978832,
+        "gpu_gap_sec": 0.208043856,
+        "top_kernels": [
+          {
+            "short_name": "mul_mat_vec_q",
+            "count": 17024,
+            "sum_sec": 1.475077056
+          },
+          {
+            "short_name": "glm53_low_attn_kernel",
+            "count": 704,
+            "sum_sec": 0.516475232
+          },
+          {
+            "short_name": "mul_mat_q",
+            "count": 4352,
+            "sum_sec": 0.454589984
+          },
+          {
+            "short_name": "mul_mat_vec_q",
+            "count": 4736,
+            "sum_sec": 0.35305728
+          },
+          {
+            "short_name": "glm53_shared_q8",
+            "count": 2688,
+            "sum_sec": 0.21354592
+          }
+        ]
+      }
+    ]
+  },
+  "final_resident_state": {
+    "scope": "Final default sharedFFN; one raw owner; SSDOff/ctx2048/draft3; Rust FILE/snapshot/range restore and actual accepted transition.",
+    "binary_sha256": "3e00c03a44d828ce25c6a76e9e29e167d3ac57177eeb46e61bc5636629609abb",
+    "arms": {
+      "off": {
+        "result": "PASS",
+        "context": 2048,
+        "prompt_tokens": 260,
+        "accepted": [
+          576
+        ],
+        "file_snapshot_range": "byte_exact",
+        "transition_replay": "byte_exact",
+        "payload_bytes": 159785804,
+        "census_faults": 0
+      },
+      "on": {
+        "result": "PASS",
+        "context": 2048,
+        "prompt_tokens": 260,
+        "accepted": [
+          576
+        ],
+        "file_snapshot_range": "byte_exact",
+        "transition_replay": "byte_exact",
+        "payload_bytes": 159785804,
+        "census_faults": 0
+      }
+    },
+    "evidence_kind": "Inherited session snapshot/FILE/disk-range path, unchanged by bank-load checkpoint capture"
+  },
+  "actual_accepted_mtp": {
+    "status": "PASS",
+    "diagnostic_commit": "beed5931",
+    "native_binary_sha256": "64d7705ed8d71473606adf519fd06e137f9fc25dc8528502d68991fae2bfb97b",
+    "rust_binary_sha256": "07848f01b01cb9ef0e982c2141090c84b148249df9cd6658653dab1536e3fb15",
+    "native_source_sha256": "2c8cc0aa6e1169e1b9f9dcd7acaaa0bca060ee462ecea71cf6a2a73f9c113636",
+    "rust_source_sha256": "9bd6c8e87d210df89d82fe5bc735bab7e7b62d0ed86fe027c92544ae0e340f7b",
+    "scope": "Separate native1M and Rust6147/official544 accepted-prefix gates, SSDOff/raw owner/max_seqs1/On3/Margin0. No general MTP quality or speed claim.",
+    "minimum_actual_acceptance": 2,
+    "runs": {
+      "native-1m": {
+        "status": "PASS",
+        "exit": 0,
+        "build_sha256": "64d7705ed8d71473606adf519fd06e137f9fc25dc8528502d68991fae2bfb97b",
+        "source_checkpoint_bytes": 12709458748,
+        "source_checkpoint_unchanged": true,
+        "headroom": {
+          "min_available_gib": 14.326644897460938,
+          "peak_full_psi_avg10": 1.97
+        },
+        "result": {
+          "result": "PASS",
+          "context": 1048576,
+          "prompt_tokens": 1048512,
+          "generated_ids": [
+            4913,
+            446,
+            21542,
+            788,
+            330,
+            48,
+            57,
+            101729,
+            16,
+            18,
+            497,
+            330,
+            1998,
+            277,
+            788,
+            330
+          ],
+          "accepted_counts": [
+            1,
+            1,
+            4,
+            2,
+            2,
+            2,
+            1,
+            3
+          ],
+          "max_accepted": 4,
+          "target_state": "byte_exact",
+          "file_restore": "byte_exact",
+          "target_logits": "all_f32_bits_equal",
+          "target_argmax": "all_ids_equal",
+          "census_faults": 0,
+          "memgov_faults": 0,
+          "native_gate_ids": "all_equal"
+        }
+      },
+      "rust-6k": {
+        "status": "PASS",
+        "exit": 0,
+        "build_sha256": "07848f01b01cb9ef0e982c2141090c84b148249df9cd6658653dab1536e3fb15",
+        "source_checkpoint_bytes": 230262856,
+        "source_checkpoint_unchanged": true,
+        "headroom": {
+          "min_available_gib": 27.01306915283203,
+          "peak_full_psi_avg10": 0.0
+        },
+        "result": {
+          "result": "PASS",
+          "context": 8192,
+          "prompt_tokens": 6147,
+          "generated_ids": [
+            4913,
+            446,
+            21542,
+            788,
+            330,
+            48,
+            57,
+            101729,
+            16,
+            18,
+            497,
+            330,
+            1998,
+            277,
+            788,
+            330,
+            6484,
+            22,
+            101961,
+            21,
+            497,
+            330,
+            12975,
+            9365,
+            788,
+            330,
+            30604,
+            102487,
+            18,
+            17,
+            9204,
+            154827
+          ],
+          "accepted_counts": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            2,
+            2,
+            2,
+            1,
+            4,
+            1,
+            4,
+            1,
+            3,
+            2,
+            3,
+            1
+          ],
+          "generated_text": "{\"quartz\": \"QZ5813\", \"cedar\": \"CD7426\", \"harbor\": \"HB9632\"}",
+          "max_accepted": 4,
+          "snapshot_restore": "byte_exact",
+          "target_state": "byte_exact",
+          "target_argmax": "all_ids_equal",
+          "target_logits": "all_f32_bits_equal",
+          "census_faults": 0
+        }
+      },
+      "rust-digits": {
+        "status": "PASS",
+        "exit": 0,
+        "build_sha256": "07848f01b01cb9ef0e982c2141090c84b148249df9cd6658653dab1536e3fb15",
+        "source_checkpoint_bytes": 2202,
+        "source_checkpoint_unchanged": true,
+        "headroom": {
+          "min_available_gib": 27.118450164794922,
+          "peak_full_psi_avg10": 0.0
+        },
+        "result": {
+          "result": "PASS",
+          "context": 2048,
+          "prompt_tokens": 544,
+          "generated_ids": [
+            108714,
+            100461,
+            21,
+            100928,
+            24,
+            15,
+            154827
+          ],
+          "accepted_counts": [
+            2,
+            2,
+            1,
+            2
+          ],
+          "generated_text": "1234567890",
+          "max_accepted": 2,
+          "snapshot_restore": "byte_exact",
+          "target_state": "byte_exact",
+          "target_argmax": "all_ids_equal",
+          "target_logits": "all_f32_bits_equal",
+          "census_faults": 0
+        }
+      }
+    }
+  },
+  "one_m_context": {
+    "status": "PASS",
+    "context": 1048576,
+    "input_tokens": 1048512,
+    "scope": "SSDOff raw owner/one worker; one native full prefill; ordinary greedy decode with MTP state enabled from open; FILE restore and generated-prefix replay. Rust On3 serving is a separate gate.",
+    "native_binary_sha256": "62f48cc7aac8ec0e3544d0249995354a9c546774b90890613a8b9bcb45bdf738",
+    "fixture_prompt_sha256": "7e8593a5d812aecf49242d91fd3372345599f9b8b70433d7837715a4209e71c7",
+    "fixture_ids_sha256": "ef4dcde0a5b64b4dc11ad50b370a98754500b89b6b3c9485780f394873b92fa7",
+    "records": [
+      {
+        "key": "quartz",
+        "code": "QZ5813",
+        "requested_fraction": 0.01,
+        "token_position": 10480,
+        "actual_fraction": 0.009995116889458585
+      },
+      {
+        "key": "cedar",
+        "code": "CD7426",
+        "requested_fraction": 0.5,
+        "token_position": 524244,
+        "actual_fraction": 0.49998855520966856
+      },
+      {
+        "key": "harbor",
+        "code": "HB9632",
+        "requested_fraction": 0.95,
+        "token_position": 996067,
+        "actual_fraction": 0.9499814975889642
+      }
+    ],
+    "memory_admission": {
+      "available": 31251243008,
+      "reserve": 12884901888,
+      "quoted_active": 16155517440,
+      "scope_max_gib": 17.10498809814453
+    },
+    "headroom": {
+      "min_available_gib": 13.390338897705078,
+      "peak_full_psi_avg10": 17.67
+    },
+    "rust_http": {
+      "status": "PASS",
+      "server_sha256": "00e79629b49f0e7c395e8d8d08a7f80e014c3b7df88e43bdf5657a608fd2f2c1",
+      "scope": "Explicit trusted native1M checkpoint import: same artifacts/native layout/retained math, manually bound to actual target startup identity. No cold HTTP1M prefill or automatic cross-runtime import claim.",
+      "ctx_alloc": 1048576,
+      "max_seqs": 2,
+      "mtp": "on",
+      "draft": 3,
+      "vision": true,
+      "ssd_cache_gib": 24,
+      "disk_gib": 64,
+      "greedy": [
+        {
+          "key": "quartz",
+          "mode": "mtp",
+          "seconds": 47.24037504196167,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 10,
+            "total_tokens": 1048532,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "{\"quartz\":\"QZ5813\"}"
+        },
+        {
+          "key": "cedar",
+          "mode": "mtp",
+          "seconds": 32.073378562927246,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "CD7426"
+        },
+        {
+          "key": "harbor",
+          "mode": "mtp",
+          "seconds": 16.00311255455017,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "HB9632"
+        }
+      ],
+      "topk1": [
+        {
+          "key": "quartz",
+          "mode": "topk1",
+          "seconds": 8.644832849502563,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 10,
+            "total_tokens": 1048532,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "{\"quartz\":\"QZ5813\"}"
+        },
+        {
+          "key": "cedar",
+          "mode": "topk1",
+          "seconds": 5.375349521636963,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "CD7426"
+        },
+        {
+          "key": "harbor",
+          "mode": "topk1",
+          "seconds": 5.07625937461853,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "HB9632"
+        }
+      ],
+      "comparison": "All three decoded answers and completion counts match; no token-ID/cache-value identity claim.",
+      "image": {
+        "scope": "Short actual red image in configured1M serial graph beside long text banks; no1M image prompt claim",
+        "file_sha256": "5f09a0cab89f97c21e46f90710bd648f0cb312c80f8352ab42f3ab7d62ad2eb9",
+        "content": "Red",
+        "usage": {
+          "prompt_tokens": 42,
+          "completion_tokens": 1,
+          "total_tokens": 43,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 42
+          }
+        }
+      },
+      "headroom": {
+        "min_available_gib": 59.60718536376953,
+        "peak_full_psi_avg10": 2.37
+      },
+      "census_faults": 0,
+      "governor_faults": 0
+    },
+    "resident_rust_http": {
+      "status": "PASS",
+      "server_sha256": "00e79629b49f0e7c395e8d8d08a7f80e014c3b7df88e43bdf5657a608fd2f2c1",
+      "scope": "Explicit trusted native1M checkpoint import: same artifacts/native layout/retained math, manually bound to actual target startup identity. No cold HTTP1M prefill or automatic cross-runtime import claim.",
+      "ctx_alloc": 1048576,
+      "max_seqs": 1,
+      "mtp": "on",
+      "draft": 3,
+      "ssd_streaming": false,
+      "vision": false,
+      "greedy": [
+        {
+          "key": "quartz",
+          "mode": "mtp",
+          "seconds": 13.00492000579834,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 10,
+            "total_tokens": 1048532,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "{\"quartz\":\"QZ5813\"}"
+        },
+        {
+          "key": "cedar",
+          "mode": "mtp",
+          "seconds": 18.230836629867554,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "CD7426"
+        },
+        {
+          "key": "harbor",
+          "mode": "mtp",
+          "seconds": 10.420802593231201,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "HB9632"
+        }
+      ],
+      "topk1": [
+        {
+          "key": "quartz",
+          "mode": "topk1",
+          "seconds": 4.9976067543029785,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 10,
+            "total_tokens": 1048532,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "{\"quartz\":\"QZ5813\"}"
+        },
+        {
+          "key": "cedar",
+          "mode": "topk1",
+          "seconds": 4.419504880905151,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "CD7426"
+        },
+        {
+          "key": "harbor",
+          "mode": "topk1",
+          "seconds": 4.424849987030029,
+          "usage": {
+            "prompt_tokens": 1048522,
+            "completion_tokens": 4,
+            "total_tokens": 1048526,
+            "prompt_tokens_details": {
+              "cached_tokens": 1048512,
+              "cache_write_tokens": 10
+            }
+          },
+          "content": "HB9632"
+        }
+      ],
+      "comparison": "All three decoded answers and completion counts match; no token-ID/cache-value identity claim.",
+      "headroom": {
+        "min_available_gib": 13.32705307006836,
+        "peak_full_psi_avg10": 5.72
+      },
+      "census_faults": 0,
+      "governor_faults": 0
+    },
+    "structural_result": "PASS",
+    "retrieval_result": "PASS",
+    "answer": "{\"quartz\": \"QZ5813\", \"cedar\": \"CD7426\", \"harbor\": \"HB9632\"}",
+    "expected": {
+      "quartz": "QZ5813",
+      "cedar": "CD7426",
+      "harbor": "HB9632"
+    },
+    "elapsed_sec": 16966.207667589188,
+    "generated_ids": [
+      4913,
+      446,
+      21542,
+      788,
+      330,
+      48,
+      57,
+      101729,
+      16,
+      18,
+      497,
+      330,
+      1998,
+      277,
+      788,
+      330,
+      6484,
+      22,
+      101961,
+      21,
+      497,
+      330,
+      12975,
+      9365,
+      788,
+      330,
+      30604,
+      102487,
+      18,
+      17,
+      9204,
+      154827
+    ],
+    "restore": "Full FILE prefix and generated-token replay byte exact; no repeated1M prefill",
+    "performance_scope": "Repeated ASCII filler; elapsed time is diagnostic, not natural-text throughput",
+    "payload_bytes": {
+      "full-1048512.payload.bin": 12709458748,
+      "generated.payload.bin": 12709859512,
+      "replayed-generation.payload.bin": 12709859512,
+      "checkpoint-2049.payload.bin": 181203008,
+      "restored-1048512.payload.bin": 12709458748
+    },
+    "resident_before_repair": {
+      "status": "FAIL",
+      "failure": "Edited-query timeout after 900 seconds; helper stopped guard, not OOM",
+      "source_commit": "beed5931",
+      "server_sha256": "0322c3019f27bebf7b56d97245eee732fd95fe707801cead4b87a3a9ca15dc47",
+      "first_quartz_response": {
+        "message": {
+          "role": "assistant",
+          "content": "{\"quartz\":\"QZ5813\"}"
+        },
+        "usage": {
+          "prompt_tokens": 1048522,
+          "completion_tokens": 10,
+          "total_tokens": 1048532,
+          "prompt_tokens_details": {
+            "cached_tokens": 1048512,
+            "cache_write_tokens": 10
+          }
+        }
+      },
+      "cause": "Loaded prefix lacked a partial checkpoint; edit after appended answer restarted prefill",
+      "headroom": {
+        "min_available_gib": 13.278694152832031,
+        "peak_full_psi_avg10": 2.8
+      },
+      "recovery": "Production loader RED->GREEN regression plus fresh V16 cached1M HTTP gate"
+    }
+  },
+  "distinct_bank_partial_http": {
+    "status": "PASS",
+    "scope": "Fresh SSDOff/raw shared VMM owner, ctx8192/two banks/On3,4450-token first-question edit atLCP4436 afterperiodic4096 checkpoint; source-preserving cross-bank partial-copy trace and parent continuation, fresh-process reuseOff matched answers/finish/counts. Diagnostic max2 only; normal performance reference remains max_seqs1. No1M cross-bank partial-copy claim.",
+    "server_sha256": "00e79629b49f0e7c395e8d8d08a7f80e014c3b7df88e43bdf5657a608fd2f2c1",
+    "ctx_alloc": 8192,
+    "max_seqs": 2,
+    "reuse_fixture_sha256": "26b13992c862e9ee53ddfbcefb3b375e8457613efb1e070b1604a86425591c80",
+    "template_sha256": "34d5ee66b12fa6446cdae131c352b8f68cd85369e0e6fda115583805fada3891",
+    "cases": {
+      "seed": {
+        "request_sha256": "defb176d97c83e872f0f954c4a606bf7f5b0fd52f46c22fffda464716dd33541",
+        "expected": "4"
+      },
+      "edit": {
+        "request_sha256": "e8233c314e57220ad799948a836b40bbe7300ce1ae2a69cf5c2df208766490c5",
+        "expected": "6"
+      },
+      "parent": {
+        "request_sha256": "1d771e99961f915e96e60ad0edc4752cffe0b35229b2cdf937a19db5823d2abb",
+        "expected": "5"
+      }
+    },
+    "partial_copy": [
+      {
+        "source": 0,
+        "target": 1,
+        "cached": 4096,
+        "source_before": 4452,
+        "source_after": 4452,
+        "target_after": 4096,
+        "partial": 1
+      }
+    ],
+    "artifact_unchanged": true,
+    "ssd_streaming": false,
+    "weights": "One raw shared VMM owner",
+    "guard_cap_gib": 8,
+    "mtp": "on",
+    "draft": 3,
+    "vision": false,
+    "arms": {
+      "warm": {
+        "requests": {
+          "seed": {
+            "message": {
+              "role": "assistant",
+              "content": "4"
+            },
+            "finish_reason": "stop",
+            "prompt_tokens": 4450,
+            "completion_tokens": 1,
+            "cached_tokens": 0,
+            "reuse_kind": "cold"
+          },
+          "edit": {
+            "message": {
+              "role": "assistant",
+              "content": "6"
+            },
+            "finish_reason": "stop",
+            "prompt_tokens": 4450,
+            "completion_tokens": 1,
+            "cached_tokens": 4096,
+            "reuse_kind": "partial"
+          },
+          "parent": {
+            "message": {
+              "role": "assistant",
+              "content": "5"
+            },
+            "finish_reason": "stop",
+            "prompt_tokens": 4469,
+            "completion_tokens": 1,
+            "cached_tokens": 4452,
+            "reuse_kind": "partial"
+          }
+        },
+        "headroom": {
+          "min_available_gib": 25.890178680419922,
+          "peak_full_psi_avg10": 0.0
+        },
+        "census_faults": 0,
+        "governor_faults": 0
+      },
+      "cold": {
+        "requests": {
+          "seed": {
+            "message": {
+              "role": "assistant",
+              "content": "4"
+            },
+            "finish_reason": "stop",
+            "prompt_tokens": 4450,
+            "completion_tokens": 1,
+            "cached_tokens": 0,
+            "reuse_kind": "cold"
+          },
+          "edit": {
+            "message": {
+              "role": "assistant",
+              "content": "6"
+            },
+            "finish_reason": "stop",
+            "prompt_tokens": 4450,
+            "completion_tokens": 1,
+            "cached_tokens": 0,
+            "reuse_kind": "cold"
+          },
+          "parent": {
+            "message": {
+              "role": "assistant",
+              "content": "5"
+            },
+            "finish_reason": "stop",
+            "prompt_tokens": 4469,
+            "completion_tokens": 1,
+            "cached_tokens": 0,
+            "reuse_kind": "cold"
+          }
+        },
+        "headroom": {
+          "min_available_gib": 26.011470794677734,
+          "peak_full_psi_avg10": 0.0
+        },
+        "census_faults": 0,
+        "governor_faults": 0
+      }
+    },
+    "previous_fixture_failures": [
+      {
+        "status": "FAIL",
+        "version": 16,
+        "scope": "Harness selected a new-turn fixture instead of a real edited question",
+        "native_trace": "source0 target1 cached540 partial0; valid full-copy, not a native correctness failure"
+      },
+      {
+        "status": "FAIL",
+        "version": 17,
+        "scope": "Actual edit at tokenLCP547/input558 has no earlier periodic4096 checkpoint",
+        "native_trace": "reuse_miss: no checkpoint at or below LCP; correct answer6 with cached0",
+        "cause": "Test wrongly assumed Rust history_frontier supplies GLM history checkpoints; helper is Step37/Motif3 only"
+      }
+    ],
+    "fixture_recovery": "V18 true first-question edit: input4450/LCP4436 with periodicanchor4096; raw shared owner and bounded fresh workers, SSDOff. No production change for either fixture failure.",
+    "fixture": {
+      "schema": "distinct-bank-partial-v18",
+      "source_fixture_sha256": "26b13992c862e9ee53ddfbcefb3b375e8457613efb1e070b1604a86425591c80",
+      "template_sha256": "34d5ee66b12fa6446cdae131c352b8f68cd85369e0e6fda115583805fada3891",
+      "cases": {
+        "seed": {
+          "request_sha256": "defb176d97c83e872f0f954c4a606bf7f5b0fd52f46c22fffda464716dd33541",
+          "prompt_sha256": "22f1e13ccd95def876a35a207b427d486cb07b46b637e5e95cf33375e3c6d0b6",
+          "tokens_sha256": "2971baae4b1d16e94000cb5153137808ad8198e6d1b1e59285a3fad921ea95ac",
+          "input_tokens": 4450,
+          "expected": "4"
+        },
+        "edit": {
+          "request_sha256": "e8233c314e57220ad799948a836b40bbe7300ce1ae2a69cf5c2df208766490c5",
+          "prompt_sha256": "0a82805efefbeafc430ff7a5a8b99e4df24a861e0a0b7c51d9f2783d99775ef5",
+          "tokens_sha256": "54fbc1000dc79df234151fd1ac307030b19b217f770a9567e549f98734c24579",
+          "input_tokens": 4450,
+          "expected": "6"
+        },
+        "parent": {
+          "request_sha256": "1d771e99961f915e96e60ad0edc4752cffe0b35229b2cdf937a19db5823d2abb",
+          "prompt_sha256": "8bffa959f3ed6750b5e44f7668e824049c11a750a4f9cf5fa298d7ee6d7f993c",
+          "tokens_sha256": "fd45d5cc98a604554cfa6b71565c691f22d4f41a0c95993c9eb60b32a6a21ef1",
+          "input_tokens": 4469,
+          "expected": "5"
+        }
+      },
+      "seed_edit_token_lcp": 4436,
+      "parent_seed_prefix_exact": true,
+      "checkpoint_anchor": 4096,
+      "no_gpu_inference": true,
+      "scope": "True first-question edit after4096 periodic checkpoint; fresh raw-owner bounded workers with SSDOff, warm/cold matched prompts. Normal throughput reference remains max_seqs1; this diagnostic max2 fits8K memory."
+    },
+    "warm_disk_gib": 8
+  }
+}

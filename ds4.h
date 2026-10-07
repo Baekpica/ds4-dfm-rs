@@ -232,6 +232,10 @@ typedef struct {
     int power_percent;
     bool warm_weights;
     bool quality;
+    bool ssd_streaming;
+    bool ssd_streaming_cold;
+    uint32_t ssd_streaming_cache_experts;
+    uint64_t ssd_streaming_cache_bytes;
     bool inspect_only;
     bool load_slice;
     uint32_t load_layer_start;
@@ -1426,6 +1430,11 @@ int ds4_session_naive_commit(ds4_session *s, int keep, char *err, size_t errlen)
 int ds4_session_iquest_trial(ds4_session *s, int first, int max_tokens,
                              int *tokens, int *target, int cap, char *err, size_t errlen);
 int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* GLM recursively uses its embedded predictor, with anchor plus three drafts.
+ * keep=0 aborts; commit restores recorded KDA/tails/frontier without reforward. */
+int ds4_session_glm53_trial(ds4_session *s, int first, int max_tokens,
+                            int *tokens, int *target, int cap, char *err, size_t errlen);
+int ds4_session_glm53_commit(ds4_session *s, int keep, char *err, size_t errlen);
 /* dots3 uses the same four-row native trial/host acceptance contract.
  * A failed device operation invalidates the native generation. */
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,

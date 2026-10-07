@@ -227,6 +227,10 @@ static int model_open_impl(ds4_bridge_model **out,
     eopt.power_percent = opt->power_percent;
     eopt.warm_weights = opt->warm_weights != 0;
     eopt.quality = opt->quality != 0;
+    eopt.ssd_streaming = opt->ssd_streaming != 0;
+    eopt.ssd_streaming_cold = opt->ssd_streaming_cold != 0;
+    eopt.ssd_streaming_cache_experts = opt->ssd_streaming_cache_experts;
+    eopt.ssd_streaming_cache_bytes = opt->ssd_streaming_cache_bytes;
     eopt.mtp_path = opt->mtp_path;
     eopt.dspark_path = opt->dspark_path;
     eopt.mtp_draft_tokens = opt->mtp_draft_tokens > 0 ? opt->mtp_draft_tokens : 1;
@@ -662,6 +666,26 @@ int ds4_bridge_inkling_commit(ds4_bridge_session *s, int32_t keep, char *err, si
         return 1;
     }
     return ds4_session_inkling_commit(s->session, keep, err, errlen);
+}
+
+int ds4_bridge_glm53_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                           int32_t *tokens, int32_t *target, int32_t cap,
+                           char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_glm53_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_glm53_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_glm53_commit(s->session, keep, err, errlen);
 }
 
 int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,

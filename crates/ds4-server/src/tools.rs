@@ -1148,7 +1148,27 @@ fn parse_qwen_generated(
     })
 }
 
-fn parse_glm_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
+fn glm_arg_type(raw: &[u8], expected: Option<&str>) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) else {
+        return false;
+    };
+    match expected {
+        Some("number") => value.is_number(),
+        Some("integer") => value.as_number().is_some_and(|n| n.is_i64() || n.is_u64()),
+        Some("boolean") => value.is_boolean(),
+        Some("array") => value.is_array(),
+        Some("object") => value.is_object(),
+        Some("null") => value.is_null(),
+        _ => false,
+    }
+}
+
+fn parse_glm_generated(
+    syntax: ModelSyntax,
+    text: &[u8],
+    require_thinking_closed: bool,
+    orders: &[ToolSchemaOrder],
+) -> Option<ParsedGenerated> {
     const ARG_KEY_START: &[u8] = b"<arg_key>";
     const ARG_KEY_END: &[u8] = b"</arg_key>";
     const ARG_VALUE_START: &[u8] = b"<arg_value>";
@@ -1217,6 +1237,7 @@ fn parse_glm_generated(text: &[u8], require_thinking_closed: bool) -> Option<Par
             return None;
         }
         let name = String::from_utf8_lossy(name).into_owned();
+        let order = tool_schema_orders_find(orders, &name);
         p = name_end;
         let mut args = Vec::new();
 
@@ -1234,7 +1255,12 @@ fn parse_glm_generated(text: &[u8], require_thinking_closed: bool) -> Option<Par
             if key_end > close {
                 return None;
             }
-            let key = dsml_unescape_text(trim_ascii_span(&text[p..key_end]));
+            let raw_key = trim_ascii_span(&text[p..key_end]);
+            let key = if syntax == ModelSyntax::Glm53 {
+                raw_key.to_vec()
+            } else {
+                dsml_unescape_text(raw_key)
+            };
             if key.is_empty() {
                 return None;
             }
@@ -1247,8 +1273,21 @@ fn parse_glm_generated(text: &[u8], require_thinking_closed: bool) -> Option<Par
             if value_end > close {
                 return None;
             }
-            let value = dsml_unescape_text(&text[p..value_end]);
-            tool_call_json_args_add(&mut args, &key, &value, true);
+            let raw_value = &text[p..value_end];
+            if syntax == ModelSyntax::Glm53 {
+                // The embedded template writes strings verbatim and other
+                // values as JSON. Only an explicit schema resolves that ambiguity.
+                let expected = tool_schema_order_prop_type(order, &String::from_utf8_lossy(&key));
+                tool_call_json_args_add(
+                    &mut args,
+                    &key,
+                    raw_value,
+                    !glm_arg_type(raw_value, expected),
+                );
+            } else {
+                let value = dsml_unescape_text(raw_value);
+                tool_call_json_args_add(&mut args, &key, &value, true);
+            }
             p = value_end + ARG_VALUE_END.len();
         }
 
@@ -1310,7 +1349,7 @@ pub fn parse_generated_message(
         ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),
         // Ling emits GLM's tool XML, not Qwen's JSON envelope.
         ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => {
-            parse_glm_generated(text, require_thinking_closed)
+            parse_glm_generated(syntax, text, require_thinking_closed, orders)
         }
         // Malformed tool envelopes must not become user-visible raw text.
         ModelSyntax::Inkling => return crate::render::inkling::parse(text).unwrap_or_default(),

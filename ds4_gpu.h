@@ -41,6 +41,10 @@ int ds4_gpu_init(void);
 void ds4_gpu_cleanup(void);
 
 ds4_gpu_tensor *ds4_gpu_tensor_alloc(uint64_t bytes);
+/* CUDA-owned cache weights: requires a bound model source and records
+ * WEIGHT_SPAN against it. Ordinary tensor_free releases the same charge.
+ * Returns NULL for zero bytes, an unbound source, or unsupported backends. */
+ds4_gpu_tensor *ds4_gpu_weight_alloc(const void *model_map, uint64_t bytes);
 ds4_gpu_tensor *ds4_gpu_tensor_alloc_managed(uint64_t bytes);
 ds4_gpu_tensor *ds4_gpu_tensor_view(const ds4_gpu_tensor *base, uint64_t offset, uint64_t bytes);
 /* R5 Inc1b: demand-mapped reserved tensors.  reserve() takes the full VIRTUAL
@@ -573,6 +577,10 @@ void ds4_gpu_derived_artifact_stats(int *source, uint64_t *count, uint64_t *byte
 /* Print the canonical one-line boot banner for the artifact tier. */
 void ds4_gpu_report_derived_artifacts(void);
 int ds4_gpu_set_model_map_spans(const void *model_map, uint64_t model_size, const uint64_t *offsets, const uint64_t *sizes, uint32_t count, uint64_t max_tensor_bytes);
+/* Bounded SSD source: coherent CUDA host page tables are required. It never
+ * registers/copies the full mmap; the unit plan keeps routed experts cold. */
+int ds4_gpu_set_stream_map(const void *model_map, uint64_t model_size,
+        const uint64_t *offsets, const uint64_t *sizes, uint32_t count);
 /* Retire the host registration for one mapping BEFORE its owner frees it.
    Required for map-swapping callers (kernel unit tests); a registration that
    outlives its allocation poisons later cudaMemcpy calls whose host buffers
@@ -1134,6 +1142,11 @@ int ds4_gpu_matmul_q8_0_pair_tensor(
         uint64_t                out1_dim,
         const ds4_gpu_tensor *x,
         uint64_t                n_tok);
+
+/* Raw Q8 GLM shared decode only. 1=success, 0=refusal, -1=launch failure. */
+int ds4_gpu_glm53_shared_q8(ds4_gpu_tensor *mid, const void *model_map,
+        uint64_t model_size, uint64_t gate_offset, uint64_t up_offset,
+        uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, float clamp);
 
 int ds4_gpu_shared_gate_up_swiglu_q8_0_tensor(
         ds4_gpu_tensor       *gate,
@@ -3825,6 +3838,19 @@ int ds4_gpu_routed_moe_one_tensor(
         uint32_t                n_total_expert,
         uint32_t                n_expert,
         float                   clamp,
+        const ds4_gpu_tensor *x);
+
+/* Raw GLM expert weights owned by the bounded SSD cache. Slot strides include
+ * padding; selected IDs index slots, preserving router order and weights. */
+int ds4_gpu_glm53_moe_owned(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
+        ds4_gpu_tensor *mid, ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *gate_w, const ds4_gpu_tensor *up_w,
+        const ds4_gpu_tensor *down_w, uint32_t gate_type, uint32_t down_type,
+        uint64_t gate_stride, uint64_t down_stride,
+        uint32_t in_dim, uint32_t mid_dim, uint32_t out_dim,
+        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+        uint32_t experts, uint32_t used, uint32_t tokens, float clamp,
         const ds4_gpu_tensor *x);
 
 int ds4_gpu_routed_moe_batch_tensor(

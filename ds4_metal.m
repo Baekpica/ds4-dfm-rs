@@ -14,6 +14,7 @@
 
 #include "ds4.h"
 #include "ds4_gpu.h"
+#include "ds4_glm53_compact.h"
 
 /*
  * Objective-C Metal glue for the C engine.
@@ -4613,6 +4614,12 @@ ds4_gpu_tensor *ds4_gpu_tensor_alloc_managed(uint64_t bytes) {
     return ds4_gpu_tensor_alloc(bytes);
 }
 
+ds4_gpu_tensor *ds4_gpu_weight_alloc(const void *model_map, uint64_t bytes) {
+    (void)model_map;
+    (void)bytes;
+    return NULL; /* SSD expert caches are CUDA-only. */
+}
+
 int ds4_gpu_should_use_managed_kv_cache(uint64_t kv_cache_bytes, uint64_t context_bytes) {
     (void)kv_cache_bytes;
     (void)context_bytes;
@@ -5571,6 +5578,12 @@ int ds4_gpu_set_model_map_range(const void *model_map, uint64_t model_size, uint
                 g_model_view_count);
         return 1;
     }
+}
+
+int ds4_gpu_set_stream_map(const void *model_map, uint64_t model_size,
+        const uint64_t *offsets, const uint64_t *sizes, uint32_t count) {
+    (void)model_map; (void)model_size; (void)offsets; (void)sizes; (void)count;
+    return 0;
 }
 
 int ds4_gpu_set_model_map_spans(
@@ -6708,6 +6721,14 @@ int ds4_gpu_matmul_q8_0_pair_tensor(
            ds4_gpu_matmul_q8_0_tensor(out1, model_map, model_size,
                                       weight1_offset, in_dim, out1_dim,
                                       x, n_tok);
+}
+
+int ds4_gpu_glm53_shared_q8(ds4_gpu_tensor *mid, const void *model_map,
+        uint64_t model_size, uint64_t gate_offset, uint64_t up_offset,
+        uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, float clamp) {
+    (void)mid; (void)model_map; (void)model_size; (void)gate_offset; (void)up_offset;
+    (void)in_dim; (void)out_dim; (void)x; (void)clamp;
+    return 0;
 }
 
 int ds4_gpu_shared_gate_up_swiglu_q8_0_tensor(
@@ -15471,6 +15492,90 @@ int ds4_gpu_router_select_batch_tensor(
     }
 
     return 1;
+}
+
+int ds4_gpu_glm53_moe_owned(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
+        ds4_gpu_tensor *mid, ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *gate_w, const ds4_gpu_tensor *up_w,
+        const ds4_gpu_tensor *down_w, uint32_t gate_type, uint32_t down_type,
+        uint64_t gate_stride, uint64_t down_stride,
+        uint32_t in_dim, uint32_t mid_dim, uint32_t out_dim,
+        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+        uint32_t experts, uint32_t used, uint32_t tokens, float clamp,
+        const ds4_gpu_tensor *x) {
+    (void)out; (void)gate; (void)up; (void)mid; (void)down;
+    (void)gate_w; (void)up_w; (void)down_w; (void)gate_type; (void)down_type;
+    (void)gate_stride; (void)down_stride; (void)in_dim; (void)mid_dim; (void)out_dim;
+    (void)selected; (void)weights; (void)experts; (void)used; (void)tokens;
+    (void)clamp; (void)x;
+    /* GLM's bounded expert streaming contract is CUDA-only. */
+    return 0;
+}
+
+/* The compact GLM graph is qualified only on CUDA. */
+int ds4_gpu_glm53_store_low(ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *latent, uint32_t rows, uint32_t pos0,
+        uint32_t cap, uint32_t latent_dim) {
+    (void)cache; (void)latent; (void)rows; (void)pos0; (void)cap; (void)latent_dim;
+    return 0;
+}
+
+int ds4_gpu_glm53_absorb_q(ds4_gpu_tensor *low_q,
+        const ds4_gpu_tensor *q, const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint32_t rows, uint32_t heads,
+        uint32_t latent_dim, uint32_t head_dim) {
+    (void)low_q; (void)q; (void)model_map; (void)model_size; (void)weight_offset;
+    (void)rows; (void)heads; (void)latent_dim; (void)head_dim;
+    return 0;
+}
+
+int ds4_gpu_glm53_attn_low(ds4_gpu_tensor *low_out,
+        const ds4_gpu_tensor *low_q, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *selected, uint32_t sel_stride, uint32_t rows,
+        uint32_t pos0, uint32_t cap, uint32_t heads, uint32_t latent_dim,
+        uint32_t head_dim) {
+    (void)low_out; (void)low_q; (void)cache; (void)selected; (void)sel_stride;
+    (void)rows; (void)pos0; (void)cap; (void)heads; (void)latent_dim; (void)head_dim;
+    return 0;
+}
+
+int ds4_gpu_glm53_proj_v(ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *low_out, const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint32_t rows, uint32_t heads,
+        uint32_t latent_dim, uint32_t head_dim) {
+    (void)out; (void)low_out; (void)model_map; (void)model_size; (void)weight_offset;
+    (void)rows; (void)heads; (void)latent_dim; (void)head_dim;
+    return 0;
+}
+
+int ds4_gpu_glm53_pool_key(ds4_gpu_tensor *pool_cache,
+        ds4_gpu_tensor *tail_k, ds4_gpu_tensor *tail_gate,
+        const ds4_gpu_tensor *raw_k, const ds4_gpu_tensor *gate,
+        const void *model_map, uint64_t model_size, uint64_t norm_offset,
+        uint64_t bias_offset, uint64_t ape_offset, uint32_t pos0,
+        uint32_t rows, uint32_t cap, float eps) {
+    (void)pool_cache; (void)tail_k; (void)tail_gate; (void)raw_k; (void)gate;
+    (void)model_map; (void)model_size; (void)norm_offset; (void)bias_offset;
+    (void)ape_offset; (void)pos0; (void)rows; (void)cap; (void)eps;
+    return 0;
+}
+
+int ds4_gpu_glm53_pool_score(ds4_gpu_tensor *scores,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *pool_cache, uint32_t n_pools, uint32_t rows,
+        uint32_t pos0, uint32_t heads, float scale) {
+    (void)scores; (void)q; (void)weights; (void)pool_cache; (void)n_pools;
+    (void)rows; (void)pos0; (void)heads; (void)scale;
+    return 0;
+}
+
+int ds4_gpu_glm53_pool_expand(ds4_gpu_tensor *selected,
+        const ds4_gpu_tensor *pool_selected, uint32_t rows, uint32_t pos0,
+        uint32_t selected_pools, uint32_t index_topk, uint32_t out_width) {
+    (void)selected; (void)pool_selected; (void)rows; (void)pos0;
+    (void)selected_pools; (void)index_topk; (void)out_width;
+    return 0;
 }
 
 int ds4_gpu_routed_moe_one_tensor(

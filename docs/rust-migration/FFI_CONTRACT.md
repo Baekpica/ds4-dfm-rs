@@ -76,6 +76,8 @@ freeze or permission to bind native internals.
 | `ds4_bridge_eval` | `ds4_session_eval` one token |
 | `ds4_bridge_iquest_trial` | recursive embedded MTP proposals and sequential target verification; caller-owned token/argmax arrays; returns pending trial width, 0 for ordinary fallback, or -1 on failure |
 | `ds4_bridge_iquest_commit` | commit an accepted prefix of the pending trial; restore rejected target/MTP ring writes and normalized hidden carry before publishing the frontier |
+| `ds4_bridge_glm53_trial` | embedded proposals and width-one target verification; borrowed token/argmax outputs, pending native journal, 0 for ordinary fallback and -1 on failure |
+| `ds4_bridge_glm53_commit` | restore the recorded accepted prefix, including recurrent state, pool tails and predictor frontier; never re-forward to commit |
 | `ds4_bridge_session_argmax` | greedy next id |
 | `ds4_bridge_session_pos` | native committed timeline (host `SessionLedger` is authoritative) |
 | `ds4_bridge_session_ctx` | session context length |
@@ -171,6 +173,10 @@ optional `mtp_path` / `dspark_path` / `mtp_bind` / `dspark_bind`
 sibling fields appended at the end). Do
 not pass `ds4_engine_options` by value into Rust — that struct will
 keep growing on the C side and is not the ABI.
+
+SSD enable/cold flags and expert-count/byte budgets cross as scalar options;
+file I/O, cache slots and device handles remain native. The POD layouts are
+source-matched: rebuild Rust and the bridge together after an options change.
 
 Token arrays are `const int32_t *` + length. Do not export
 `ds4_tokens`.

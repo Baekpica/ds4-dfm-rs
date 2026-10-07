@@ -28,6 +28,10 @@ const LAYOUT_MIMO2: u32 = 0x324f_4d49; /* "IMO2" */
 const LAYOUT_IQUEST: u32 = 0x3151_5149;
 const LAYOUT_NAIVE: u32 = 0x3530_4e4e;
 const LAYOUT_NAIVE_DRAFT: u32 = 0x4430_4e4e;
+const LAYOUT_GLM_COMPACT: u32 = u32::from_le_bytes(*b"GLC5");
+const LAYOUT_GLM_EXPANDED: u32 = u32::from_le_bytes(*b"GLE5");
+const LAYOUT_GLM_MTP_COMPACT: u32 = u32::from_le_bytes(*b"GCM5");
+const LAYOUT_GLM_MTP_EXPANDED: u32 = u32::from_le_bytes(*b"GEM5");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -43,6 +47,7 @@ pub enum PayloadLayout {
     Mimo2,
     Naive,
     IQuestQ1,
+    Glm53,
 }
 
 impl PayloadLayout {
@@ -59,6 +64,10 @@ impl PayloadLayout {
             LAYOUT_IQUEST => Self::IQuestQ1,
             LAYOUT_MIMO2 => Self::Mimo2,
             LAYOUT_NAIVE | LAYOUT_NAIVE_DRAFT => Self::Naive,
+            LAYOUT_GLM_COMPACT
+            | LAYOUT_GLM_EXPANDED
+            | LAYOUT_GLM_MTP_COMPACT
+            | LAYOUT_GLM_MTP_EXPANDED => Self::Glm53,
             _ => Self::DeepSeek,
         }
     }
@@ -77,6 +86,7 @@ impl PayloadLayout {
             Self::Mimo2 => ModelFamily::Mimo2,
             Self::IQuestQ1 => ModelFamily::IQuestQ1,
             Self::Naive => ModelFamily::NaiveN05,
+            Self::Glm53 => ModelFamily::Glm53,
         }
     }
 
@@ -85,7 +95,10 @@ impl PayloadLayout {
         ctx <= 0
             || tokens > ctx as usize
             || (tokens == ctx as usize
-                && !matches!(self, Self::Qwen4Exp | Self::Naive | Self::IQuestQ1))
+                && !matches!(
+                    self,
+                    Self::Qwen4Exp | Self::Naive | Self::IQuestQ1 | Self::Glm53
+                ))
     }
 
     pub fn oracle_name(self) -> &'static str {
@@ -237,7 +250,9 @@ pub(crate) fn read_prefix_range(
         ));
     }
     let n = fields[7] as usize;
-    if PayloadLayout::from_fields(&fields).exceeds_context(n, ctx) {
+    let layout = PayloadLayout::from_fields(&fields);
+    if layout.exceeds_context(n, ctx) || (layout == PayloadLayout::Glm53 && fields[2] > ctx as u32)
+    {
         return Err(invalid_data("session payload exceeds context"));
     }
     let prefix_len = HEADER_BYTES as u64 + fields[7] as u64 * 4;
@@ -269,6 +284,24 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::IQuestQ1 => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
+            }
+        }
+        PayloadLayout::Glm53 => {
+            // Native owns the tensor tail and MTP cursor checks. Word 12 is
+            // state bytes; the host validates only the serialized timeline.
+            if p.version() != VERSION
+                || p.ctx() == 0
+                || p.tokens.is_empty()
+                || p.token_count() as usize != p.tokens.len()
+                || p.token_count() > p.ctx()
+            {
+                return Err(err("invalid GLM session payload prefix"));
+            }
+            if p.tokens
+                .iter()
+                .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
+            {
+                return Err(err("invalid GLM session payload token"));
             }
         }
         // QWN3 word 12 is the PLE convolution byte count, not live rows.
@@ -363,9 +396,12 @@ impl SessionLedger {
                 "session payload was written for a different model family",
             ));
         }
-        if prefix
-            .layout()
-            .exceeds_context(prefix.tokens.len(), self.ctx)
+        let layout = prefix.layout();
+        if layout == PayloadLayout::Glm53 {
+            validate_layout(prefix)?;
+        }
+        if layout.exceeds_context(prefix.tokens.len(), self.ctx)
+            || (layout == PayloadLayout::Glm53 && prefix.ctx() > self.ctx as u32)
         {
             return Err(err("session payload exceeds context"));
         }
@@ -629,6 +665,269 @@ mod tests {
     use std::io::{Cursor, Seek};
 
     use super::*;
+
+    fn glm_prefix(tag: [u8; 4]) -> HostPrefix {
+        HostPrefix {
+            // Native GLC5/GCM5 word 12 is state bytes, not a row count.
+            fields: [
+                MAGIC,
+                VERSION,
+                8192,
+                512,
+                11,
+                u32::from_le_bytes(tag),
+                1024,
+                3,
+                45,
+                4,
+                128,
+                154880,
+                156053504,
+            ],
+            tokens: vec![7, 8, 9],
+        }
+    }
+
+    #[test]
+    fn glm_prefix_tags() {
+        for tag in [*b"GLC5", *b"GCM5", *b"GLE5", *b"GEM5"] {
+            let prefix = glm_prefix(tag);
+            assert_eq!(prefix.layout().family(), ModelFamily::Glm53);
+            let bytes = prefix.encode();
+            let parsed = read_prefix_range(
+                &mut Cursor::new(&bytes),
+                0,
+                bytes.len() as u64,
+                ModelFamily::Glm53,
+                8192,
+            )
+            .unwrap();
+            assert_eq!(parsed, prefix);
+            let mut host = SessionLedger::new(
+                ModelFamily::Glm53,
+                crate::session::SessionBackend::Cuda,
+                8192,
+                128,
+            );
+            host.apply_payload(&parsed).unwrap();
+            assert_eq!(host.tokens(), &[7, 8, 9]);
+        }
+    }
+
+    #[test]
+    fn glm_prefix_bounds() {
+        let mut prefix = glm_prefix(*b"GLC5");
+        prefix.fields[2] = 3;
+        let bytes = prefix.encode();
+        for ctx in [3, 4] {
+            read_prefix_range(
+                &mut Cursor::new(&bytes),
+                0,
+                bytes.len() as u64,
+                ModelFamily::Glm53,
+                ctx,
+            )
+            .unwrap();
+            let mut host = SessionLedger::new(
+                ModelFamily::Glm53,
+                crate::session::SessionBackend::Cuda,
+                ctx,
+                128,
+            );
+            host.apply_payload(&prefix).unwrap();
+        }
+        for ctx in [2, 0, -1] {
+            assert!(read_prefix_range(
+                &mut Cursor::new(&bytes),
+                0,
+                bytes.len() as u64,
+                ModelFamily::Glm53,
+                ctx
+            )
+            .is_err());
+            let mut host = SessionLedger::new(
+                ModelFamily::Glm53,
+                crate::session::SessionBackend::Cuda,
+                ctx,
+                128,
+            );
+            assert!(host.apply_payload(&prefix).is_err());
+        }
+        prefix.fields[2] = 8192;
+        let bytes = prefix.encode();
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Glm53,
+            4096
+        )
+        .is_err());
+        let mut host = SessionLedger::new(
+            ModelFamily::Glm53,
+            crate::session::SessionBackend::Cuda,
+            4096,
+            128,
+        );
+        assert!(host.apply_payload(&prefix).is_err());
+        for (word, value) in [
+            (0, 0),
+            (1, 0),
+            (1, 2),
+            (1, VERSION + 1),
+            (2, 0),
+            (2, 2),
+            (5, u32::from_le_bytes(*b"BAD5")),
+            (7, 0),
+        ] {
+            let mut bad = prefix.clone();
+            bad.fields[word] = value;
+            assert!(
+                read_prefix_range(
+                    &mut Cursor::new(bad.encode()),
+                    0,
+                    bytes.len() as u64,
+                    ModelFamily::Glm53,
+                    8192
+                )
+                .is_err(),
+                "word={word} value={value}"
+            );
+        }
+        let mut overcount = prefix.clone();
+        overcount.fields[7] = u32::MAX;
+        assert!(read_prefix_range(
+            &mut Cursor::new(overcount.encode()),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Glm53,
+            8192
+        )
+        .is_err());
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64 - 1,
+            ModelFamily::Glm53,
+            8192
+        )
+        .is_err());
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64 + 1,
+            ModelFamily::Glm53,
+            8192
+        )
+        .is_err());
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            u64::MAX,
+            1,
+            ModelFamily::Glm53,
+            8192
+        )
+        .is_err());
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            HEADER_BYTES as u64 - 1,
+            ModelFamily::Glm53,
+            8192
+        )
+        .is_err());
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Qwen4Exp,
+            8192
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn glm_prefix_tokens() {
+        let prefix = glm_prefix(*b"GCM5");
+        let mut host = SessionLedger::new(
+            ModelFamily::Glm53,
+            crate::session::SessionBackend::Cuda,
+            8192,
+            128,
+        );
+        host.apply_payload(&prefix).unwrap();
+        for token in [prefix.fields[11], u32::MAX] {
+            let mut bad = prefix.clone();
+            bad.tokens[0] = token;
+            assert!(parse_prefix(&bad.encode()).is_err());
+            assert!(host.apply_payload(&bad).is_err());
+            assert_eq!(host.tokens(), &[7, 8, 9]);
+        }
+        let mut bad = prefix.clone();
+        bad.tokens.pop();
+        assert!(host.apply_payload(&bad).is_err());
+        assert_eq!(host.tokens(), &[7, 8, 9]);
+    }
+
+    #[test]
+    fn glm_native_prefixes() {
+        let fixtures: &[(&[u8], u32, usize, &str)] = &[
+            (
+                include_bytes!("../../../tests/fixtures/session-payload/glm53-compact.prefix.bin"),
+                8192,
+                6147,
+                "DS4_GLM53_PAYLOAD_OFF",
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/session-payload/glm53-mtp.prefix.bin"),
+                2048,
+                204,
+                "DS4_GLM53_PAYLOAD_ON",
+            ),
+        ];
+        for &(bytes, ctx, count, source_env) in fixtures {
+            let mut cursor = Cursor::new(bytes);
+            let prefix = read_prefix_range(
+                &mut cursor,
+                0,
+                bytes.len() as u64,
+                ModelFamily::Glm53,
+                ctx as i32,
+            )
+            .unwrap();
+            assert_eq!(prefix.tokens.len(), count);
+            assert_eq!(prefix.fields[2], ctx);
+            assert_eq!(prefix.fields[12], 156053504);
+            assert_eq!(prefix.encode(), bytes);
+            assert_eq!(cursor.position(), bytes.len() as u64);
+            let expected: Vec<i32> = bytes[HEADER_BYTES..]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| i32::from_le_bytes(*b))
+                .collect();
+            let mut host = SessionLedger::new(
+                ModelFamily::Glm53,
+                crate::session::SessionBackend::Cuda,
+                ctx as i32,
+                128,
+            );
+            host.apply_payload(&prefix).unwrap();
+            assert_eq!(host.tokens(), expected);
+
+            // Optional live evidence consumes only its native prefix, even
+            // when the FILE contains a long-context tensor tail.
+            if let Some(path) = std::env::var_os(source_env) {
+                let mut file = std::fs::File::open(path).unwrap();
+                let length = file.metadata().unwrap().len();
+                let actual =
+                    read_prefix_range(&mut file, 0, length, ModelFamily::Glm53, ctx as i32)
+                        .unwrap();
+                assert_eq!(actual, prefix);
+                assert_eq!(file.stream_position().unwrap(), bytes.len() as u64);
+            }
+        }
+    }
 
     #[test]
     fn naive_prefix_keeps_family() {

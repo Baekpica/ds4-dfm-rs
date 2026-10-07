@@ -43,6 +43,13 @@ license. Adjacent license files are copied unchanged when present at the
 pinned revision. The Inkling and K2 source cards declare Apache-2.0; the
 pinned Motif card declares MIT but has no separate license file.
 
+`glm53-vectors.json` adds 15 independent renders for the GLM Uncensored
+artifact's embedded template. Its provenance pins the GGUF and template
+hashes. Cases include embedded reasoning, Low/High/Max/None, tools/results,
+and ordered image placeholders. Regenerate only these vectors with
+`python3 tests/fixtures/chat-template/make_glm53_vectors.py`; verify with
+`cargo test -p ds4-core --test glm53_template --locked`.
+
 `images/red.png` and `images/blue.png` retain the synthetic solid-color inputs
 from the local Inkling HTTP checks. They exercise placeholder order and changed
 image identity in `tests/chat_template_live.py`; they are not quality benchmarks.

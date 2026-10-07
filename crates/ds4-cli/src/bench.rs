@@ -31,6 +31,7 @@ pub struct BenchArgs {
     mtp_margin: f32,
     output_head_bench_iters: i32,
     dump_frontier_logits_dir: Option<String>,
+    ssd_options: Vec<ds4_core::ModelOpenOption>,
     dist: ds4_dist::Options,
     help: bool,
 }
@@ -59,6 +60,7 @@ impl Default for BenchArgs {
             mtp_margin: 3.0,
             output_head_bench_iters: 0,
             dump_frontier_logits_dir: None,
+            ssd_options: Vec::new(),
             dist: ds4_dist::Options::default(),
             help: false,
         }
@@ -136,6 +138,18 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<BenchArgs, S
                     parse_nonnegative_i32(&arg, &require_value(&arg, iter.next())?)?;
             }
             "--csv" => parsed.csv = Some(require_value(&arg, iter.next())?),
+            "--ssd-streaming" => parsed
+                .ssd_options
+                .push(ds4_core::ModelOpenOption::SsdStreaming),
+            "--ssd-streaming-cold" => parsed
+                .ssd_options
+                .push(ds4_core::ModelOpenOption::SsdStreamingCold),
+            "--ssd-streaming-cache-experts" => {
+                let value = require_value(&arg, iter.next())?;
+                parsed.ssd_options.push(
+                    ds4_core::ModelOpenOption::ssd_cache(&value).map_err(|error| error.message)?,
+                );
+            }
             "--quality" => parsed.quality = true,
             "--warm-weights" => parsed.warm_weights = true,
             "--power" => {
@@ -217,6 +231,12 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
+    if family == ModelFamily::Glm53 {
+        return mtp.is_none()
+            && draft > 1
+            && ds4_core::check_mtp_draft(family, draft).is_ok()
+            && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none();
+    }
     if family == ModelFamily::IQuestQ1 {
         return mtp.is_none()
             && (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
@@ -424,6 +444,7 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
     check_mtp_args(&args)?;
     let native_dist = crate::distributed_config(&args.dist);
     let mut open_options = Vec::with_capacity(5);
+    open_options.extend(args.ssd_options.iter().cloned());
     if args.quality {
         open_options.push(ModelOpenOption::Quality);
     }
@@ -780,6 +801,9 @@ fn help_text() -> &'static str {
      --cuda|--metal|--cpu   Select backend\n\
      --backend NAME         metal, cuda, or cpu\n\
      -t, --threads N        CPU helper threads\n\
+     --ssd-streaming         Stream GLM CUDA routed experts from SSD\n\
+     --ssd-streaming-cache-experts N|GB  Global slots or GiB budget\n\
+     --ssd-streaming-cold    Advise eviction of read expert pages\n\
      --quality              Prefer exact kernels where applicable\n\
      --warm-weights         Touch mapped tensor pages before benchmarking\n\
      --power N              GPU duty cycle, 1..100 (default: 100)\n\
@@ -1010,6 +1034,27 @@ mod tests {
         assert_eq!(
             parse_args(argv(&["--prompt-file", "prompt.txt", "--power"])).unwrap_err(),
             "--power requires a value"
+        );
+    }
+
+    #[test]
+    fn parses_ssd_streaming() {
+        let parsed = parse_args(argv(&[
+            "--prompt-file",
+            "prompt.txt",
+            "--ssd-streaming",
+            "--ssd-streaming-cache-experts",
+            "8",
+            "--ssd-streaming-cold",
+        ]));
+        let parsed = parsed.unwrap();
+        assert_eq!(
+            parsed.ssd_options,
+            vec![
+                ds4_core::ModelOpenOption::SsdStreaming,
+                ds4_core::ModelOpenOption::SsdCacheExperts(8),
+                ds4_core::ModelOpenOption::SsdStreamingCold,
+            ]
         );
     }
 
@@ -1283,6 +1328,16 @@ mod tests {
             Some(value) => std::env::set_var("DS4_MTP_SPEC_DISABLE", value),
             None => std::env::remove_var("DS4_MTP_SPEC_DISABLE"),
         }
+    }
+
+    #[test]
+    fn glm_embedded_mtp_gate() {
+        let _disabled = SavedEnv::unset("DS4_MTP_SPEC_DISABLE");
+        assert!(use_mtp_spec(ModelFamily::Glm53, None, 2));
+        assert!(use_mtp_spec(ModelFamily::Glm53, None, 3));
+        assert!(!use_mtp_spec(ModelFamily::Glm53, None, 1));
+        assert!(!use_mtp_spec(ModelFamily::Glm53, None, 4));
+        assert!(!use_mtp_spec(ModelFamily::Glm53, Some("mtp.gguf"), 3));
     }
 
     #[test]

@@ -76,7 +76,7 @@ fn class_type(class: TypeClass, name: &str, routed_up: u32) -> u32 {
     match class {
         TypeClass::Exact(t) | TypeClass::OptionalExact(t) => t,
         TypeClass::Plain => 1,
-        TypeClass::Routed => {
+        TypeClass::Routed | TypeClass::GlmRouted => {
             if name.contains("ffn_up_exps") {
                 routed_up
             } else {

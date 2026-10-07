@@ -357,6 +357,30 @@ class ReuseRunnerTests(unittest.TestCase):
             with self.subTest(line=bad):
                 self.assertEqual(gate.native_forks(bad, 300, 2, "iquest"), [])
 
+    def test_glm_partial_needs_native_fork(self):
+        self.assertEqual(gate.PROFILES["glm"]["names"], ["glm5-next"])
+        line = ("ds4: GLM-5.3 bank reuse source=0 target=1 cached=300 partial=1 "
+                "source_before=320 source_after=320 target_after=300")
+        events = gate.native_forks(line, 300, 2, "glm")
+        self.assertEqual(len(events), 1)
+        self.assertTrue(gate.has_warm_fork("glm", ["partial"], events))
+        self.assertFalse(gate.has_warm_fork("glm", ["fork"], []))
+        for bad in (line.replace("target=1", "target=0"),
+                    line.replace("source_after=320", "source_after=300"),
+                    line.replace("target_after=300", "target_after=299")):
+            self.assertEqual(gate.native_forks(bad, 300, 2, "glm"), [])
+
+    def test_glm_canonical_partial_reuse(self):
+        for phase in ("warm", "restored"):
+            for mode in ("off", "on"):
+                with self.subTest(phase=phase, mode=mode):
+                    config = self.config("glm")
+                    if mode == "on":
+                        config.update(mtp_mode="on", mtp_draft=3, expect_speculation=True)
+                    errors = gate.inspect_case(config, phase, "append", self.case("append"),
+                                               self.response("5"), self.stats("partial"))
+                    self.assertEqual(errors, [])
+
     def test_iquest_v4_refused(self):
         with TemporaryDirectory() as directory:
             output = Path(directory)

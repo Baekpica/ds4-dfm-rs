@@ -27,6 +27,8 @@
 #include "ds4_mmq_d2r.cuh"
 #include "ds4_mmq_pipe.cuh"
 #include "ds4_mimo2_swiglu.cuh"
+#include "ds4_glm_q2.h"
+#include "ds4_glm_shared.cuh"
 
 #include <climits>
 #include <cstdio>
@@ -2105,7 +2107,9 @@ int ds4_mmq_moe_impl(
         int64_t         d2r_ncols_floor = 0,
         /* Unweighted SwiGLU can emit the Down consumer's D4 Q8 directly. */
         const float   * up_f32 = nullptr,
-        SwiGLUOutput    activation = SwiGLUOutput::F32) {
+        SwiGLUOutput    activation = SwiGLUOutput::F32,
+        int64_t         expert_stride = 0,
+        MoePolicy       policy = MoePolicy::Generic) {
 
     if (!W || !X_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -2155,7 +2159,13 @@ int ds4_mmq_moe_impl(
     const int64_t ne12         = n_tokens;      // src1 channels (= tokens)
     const int64_t blck         = ggml_blck_size(type);
     const int64_t s01          = (int64_t)K / blck;
-    const int64_t s02          = (int64_t)M * s01;   // per-expert weight stride in blocks
+    const int64_t natural_stride = (int64_t)M * s01;
+    const int64_t s02 = expert_stride ? expert_stride : natural_stride;
+    if (s02 < natural_stride || s02 > INT_MAX ||
+        (int64_t)(n_experts - 1) * s02 + natural_stride > INT_MAX) {
+        fprintf(stderr, "%s: invalid expert weight stride\n", tag);
+        return -1;
+    }
 
     // 1. Build the expert-major work map.
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx->pool(), ne_get_rows);
@@ -2262,13 +2272,14 @@ int ds4_mmq_moe_impl(
                           type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_XS) &&
                          ne_get_rows >= DS4_MMQ_WIDE_IQ_MIN_ROWS &&
                          n_experts >= DS4_MMQ_WIDE_IQ_MIN_EXPERTS;
-    if ((ncols_max_hint > 0 || wide_iq) &&
+    const bool glm_q2 = policy == MoePolicy::GlmQ2Down && type == GGML_TYPE_Q2_K;
+    if ((ncols_max_hint > 0 || wide_iq || glm_q2) &&
         x_soa == NULL && moe_worklist_enabled(type)) {
         int worklist_rc = -1;
         if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K ||
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_IQ2_XXS ||
                       type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ||
-                      type == GGML_TYPE_IQ2_XS) {
+                      type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_Q2_K) {
             if constexpr (type == GGML_TYPE_IQ2_XS) {
                 enum {
                     kMimoDownRows = 4096, kMimoDownColumns = 2048,
@@ -2295,7 +2306,7 @@ int ds4_mmq_moe_impl(
                         M, K, ne_get_rows, n_experts, s01, s02, stream);
                 }
             }
-            if (worklist_rc == -1) {
+            if (worklist_rc == -1 && (type != GGML_TYPE_Q2_K || glm_q2)) {
                 worklist_rc = ds4_mmq_moe_worklist_launch<type>(
                     tag, *ctx, W, (const int *)src1_q8_1.get(),
                     ids_dst.get(), expert_bounds.get(), out_f32,
@@ -4406,7 +4417,8 @@ int ds4_mmq_moe_vec_impl(
         int             n_tokens,
         int             n_experts,
         int             n_expert_used,
-        cudaStream_t    stream) {
+        cudaStream_t    stream,
+        int64_t         expert_stride = 0) {
 
     if (!W || !X_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -4509,7 +4521,13 @@ int ds4_mmq_moe_vec_impl(
     //    expects.
     const int64_t blck      = ggml_blck_size(type);
     const int64_t s01_row   = (int64_t)K / blck;            // weight row stride in blocks
-    const int64_t s02_chan  = (int64_t)M * s01_row;         // expert-stack stride
+    const int64_t natural_stride = (int64_t)M * s01_row;
+    const int64_t s02_chan = expert_stride ? expert_stride : natural_stride;
+    if (s02_chan < natural_stride || s02_chan > INT_MAX ||
+        (int64_t)(n_experts - 1) * s02_chan + natural_stride > INT_MAX) {
+        fprintf(stderr, "%s: invalid expert weight stride\n", tag);
+        return -1;
+    }
     const int64_t s11_y     = ne10_padded / QK8_1;          // src1 channel stride in blocks
     const int64_t s12_y     = (int64_t)1 * s11_y;           // ne11 * s11
     const int64_t s1_dst    = (int64_t)M;                   // dst channel (slot) stride
@@ -5209,6 +5227,31 @@ int ds4_mmq_moe_pair_vec_impl(
     }
     ds4_mmq_sanitize_f32(out_silu, (uint64_t)M * (uint64_t)n_expert_used, stream);
     return 0;
+}
+
+extern "C" int ds4_mmq_glm53_shared_q8(const void *gate, const void *up,
+        const float *x, float *mid, cudaStream_t stream) {
+    const int dev = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[dev].cc != GGML_CUDA_CC_DGX_SPARK) { return 0; }
+    if (!gate || !up || !x || !mid) { return -1; }
+    cudaStreamCaptureStatus status;
+    if (cudaStreamIsCapturing(stream, &status) != cudaSuccess) { return -1; }
+    if (status != cudaStreamCaptureStatusNone) { return 0; }
+    auto *ctx = get_ctx_for_device(dev);
+    if (!ctx) { return -1; }
+
+    ds4_pool_set_stream(stream);
+    constexpr int padded = GGML_PAD(GLM_SHARED_K, MATRIX_ROW_PADDING);
+    constexpr size_t bytes = padded / QK8_1 * sizeof(block_q8_1);
+    ggml_cuda_pool_alloc<char> quant(ctx->pool(), bytes);
+    quantize_row_q8_1_cuda(x, nullptr, quant.get(), GGML_TYPE_Q8_0,
+        GLM_SHARED_K, GLM_SHARED_K, GLM_SHARED_K, GLM_SHARED_K,
+        padded, 1, 1, 1, stream);
+    if (cudaGetLastError() != cudaSuccess) { return -1; }
+
+    glm53_shared_q8<<<GLM_SHARED_M, dim3(32, GLM_SHARED_WARPS), 0, stream>>>(
+        gate, up, reinterpret_cast<const block_q8_1 *>(quant.get()), mid);
+    return cudaGetLastError() == cudaSuccess ? 1 : -1;
 }
 
 template <ggml_type type>
@@ -6212,6 +6255,60 @@ extern "C" int ds4_mmq_iq2_xs_moe_vec(
     return ds4_mmq_moe_vec_impl<GGML_TYPE_IQ2_XS>(
         "ds4_mmq_iq2_xs_moe_vec", W, X, ids, out, M, K,
         n_tokens, n_experts, n_expert_used, stream);
+}
+
+/* SSD slots keep a common padded byte stride across GLM's layer recipes. */
+template <ggml_type type>
+static int glm_moe_strided(const void *w, const float *x, const int32_t *ids,
+                          float *out, int m, int k, int tokens, int experts,
+                          int used, uint64_t stride, cudaStream_t stream) {
+    const uint64_t block_bytes = ggml_type_size(type);
+    if (stride % block_bytes != 0u || stride / block_bytes > INT_MAX) {
+        return -1;
+    }
+    const int64_t blocks = (int64_t)(stride / block_bytes);
+    if (tokens <= 8) {
+        const int rc = ds4_mmq_moe_vec_impl<type>("glm-owned-vec", w, x, ids,
+            out, m, k, tokens, experts, used, stream, blocks);
+        if (rc == 0) { return rc; }
+    }
+    MoePolicy policy = MoePolicy::Generic;
+    if constexpr (type == GGML_TYPE_Q2_K) {
+        static_assert(GLM_Q2_SPARK_CC == GGML_CUDA_CC_DGX_SPARK &&
+                      GLM_Q2_TYPE == GGML_TYPE_Q2_K, "GLM Q2 backend codes");
+        const int dev = ggml_cuda_get_device();
+        const char *env = getenv("DS4_GLM53_Q2_WORKLIST");
+        if ((!env || strcmp(env, "0") != 0) && dev >= 0 && dev < GGML_CUDA_MAX_DEVICES) {
+            policy = glm_q2_policy(ggml_cuda_info().devices[dev].cc, type,
+                m, k, tokens, experts, used, stride, MoeLayout::Raw);
+        }
+    }
+    /* The measured GLM raw-down schedule keeps D2S6/scatter/sanitize intact.
+     * Generic Q2 callers retain their existing rectangular launch policy. */
+    return ds4_mmq_moe_impl<type>("glm-owned-mmq", w, x, ids, out, m, k,
+        tokens, experts, used, stream, nullptr, 0, true, 0, 0, nullptr,
+        SwiGLUOutput::F32, blocks, policy);
+}
+
+extern "C" int ds4_mmq_glm_moe(uint32_t type, const void *w, const float *x,
+        const int32_t *ids, float *out, int m, int k, int tokens, int experts,
+        int used, uint64_t stride, cudaStream_t stream) {
+    switch (type) {
+    case GGML_TYPE_IQ2_XXS:
+        return glm_moe_strided<GGML_TYPE_IQ2_XXS>(w, x, ids, out,
+            m, k, tokens, experts, used, stride, stream);
+    case GGML_TYPE_IQ2_XS:
+        return glm_moe_strided<GGML_TYPE_IQ2_XS>(w, x, ids, out,
+            m, k, tokens, experts, used, stride, stream);
+    case GGML_TYPE_Q2_K:
+        return glm_moe_strided<GGML_TYPE_Q2_K>(w, x, ids, out,
+            m, k, tokens, experts, used, stride, stream);
+    case GGML_TYPE_Q4_K:
+        return glm_moe_strided<GGML_TYPE_Q4_K>(w, x, ids, out,
+            m, k, tokens, experts, used, stride, stream);
+    default:
+        return -1;
+    }
 }
 
 extern "C" int ds4_mmq_iq1_s_moe_vec(

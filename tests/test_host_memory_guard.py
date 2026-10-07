@@ -37,6 +37,43 @@ class HostMemoryGuardTest(unittest.TestCase):
     def test_low_memory_kills_scope_descendants(self):
         self.check_low_memory_cleanup()
 
+    def test_pressure_refuses_with_available_ram(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = pathlib.Path(tmp) / "launched"
+            args = guard.parse_args(["--log", str(pathlib.Path(tmp)/"guard.jsonl"),
+                "--", sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"])
+            rc = guard.run_guard(args, lambda: {"available_gib": 29.2, "psi_full_avg10": 20})
+            self.assertEqual(rc, guard.GUARD_EXIT)
+            self.assertFalse(marker.exists())
+
+    def test_pressure_stops_before_available_floor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            marker = root / "pid"
+            log = root / "guard.jsonl"
+            payload = (
+                "import os,pathlib,time,sys; "
+                f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
+                "time.sleep(0.5); sys.exit(7)"
+            )
+            args = guard.parse_args(["--max-gib", "0.25", "--high-gib", "0.2",
+                "--poll-seconds", "0.02", "--grace-seconds", "0.1", "--timeout", "3",
+                "--log", str(log), "--", sys.executable, "-c", payload])
+            sample = lambda: {"available_gib": 29.2,
+                              "psi_full_avg10": 82.17 if marker.exists() else 0}
+            unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+            try:
+                self.assertEqual(guard.run_guard(args, sample), guard.GUARD_EXIT)
+                self.assertIsNone(unrelated.poll())
+            finally:
+                unrelated.terminate()
+                unrelated.wait(timeout=5)
+            events = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertTrue(any(row["event"] == "terminate" and
+                "memory stalls" in row["reason"] for row in events))
+            stat = pathlib.Path(f"/proc/{marker.read_text()}/stat")
+            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+
     def test_missing_cgroup_kill_uses_pidfds(self):
         scopes = set()
         write_text = pathlib.Path.write_text

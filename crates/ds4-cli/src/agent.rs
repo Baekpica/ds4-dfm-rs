@@ -986,6 +986,7 @@ mod tests {
     #[test]
     fn agent_requires_dsml_family() {
         assert!(agent_family(ds4_core::ModelFamily::DeepSeek4).is_ok());
+        assert!(agent_family(ds4_core::ModelFamily::Glm53).is_err());
         assert!(agent_family(ds4_core::ModelFamily::Inkling).is_err());
         assert!(agent_family(ds4_core::ModelFamily::IQuestQ1).is_err());
     }
@@ -1296,6 +1297,25 @@ mod tests {
             .unwrap_err(),
             "--power must be between 1 and 100"
         );
+    }
+
+    #[test]
+    fn rejects_ssd_streaming() {
+        for args in [
+            &["--ssd-streaming"][..],
+            &["--ssd-streaming-cache-experts", "24GB"],
+            &["--ssd-streaming-cold"],
+        ] {
+            assert_eq!(
+                parse_args(argv(args)).unwrap_err(),
+                format!("unknown option: {}", args[0])
+            );
+        }
+    }
+
+    #[test]
+    fn help_omits_ssd_streaming() {
+        assert!(!help_text("ds4-agent").contains("--ssd-streaming"));
     }
 
     #[test]

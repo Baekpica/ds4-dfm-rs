@@ -13,6 +13,7 @@ mod bind;
 pub mod chat_template;
 mod dots3_mtp;
 mod gguf;
+mod glm_mtp;
 mod identify;
 mod inkling;
 mod inkling_audio;
@@ -37,6 +38,8 @@ mod session;
 mod shape;
 mod sibling;
 mod spec;
+mod ssd;
+mod ssd_quote;
 mod step37;
 mod step37_mtp;
 mod tensors;
@@ -117,6 +120,8 @@ pub use shape::{
 };
 pub use sibling::{probe_dspark_sidecar, probe_mtp_sidecar, probe_vision_sidecar, SiblingAttach};
 pub use spec::{snapshot_spec, SpecMetrics};
+pub use ssd::check_ssd_options;
+pub use ssd_quote::probe_ssd_quote;
 pub use step37::{Step37Error, Step37Layer, Step37Plan, Step37Sidecar, Step37SidecarPlan};
 pub use tensors::{
     apply_host_dir, consume_host_dir, dump_apply_tapes, dump_consume_tapes, dump_nbytes_table,
@@ -177,6 +182,10 @@ pub enum Backend {
 pub enum ModelOpenOption {
     Quality,
     WarmWeights,
+    SsdStreaming,
+    SsdStreamingCold,
+    SsdCacheExperts(u32),
+    SsdCacheBytes(u64),
     PowerPercent(u8),
     MtpDraftTokens(i32),
     MtpMargin(f32),
@@ -215,6 +224,10 @@ pub struct AudioInput<'a> {
 struct OpenTuning {
     quality: bool,
     warm_weights: bool,
+    ssd_streaming: bool,
+    ssd_streaming_cold: bool,
+    ssd_streaming_cache_experts: u32,
+    ssd_streaming_cache_bytes: u64,
     power_percent: i32,
     mtp_draft_tokens: i32,
     mtp_margin: f32,
@@ -229,6 +242,10 @@ impl Default for OpenTuning {
         Self {
             quality: false,
             warm_weights: false,
+            ssd_streaming: false,
+            ssd_streaming_cold: false,
+            ssd_streaming_cache_experts: 0,
+            ssd_streaming_cache_bytes: 0,
             power_percent: 100,
             mtp_draft_tokens: 1,
             mtp_margin: 3.0,
@@ -238,6 +255,23 @@ impl Default for OpenTuning {
             vision_path: None,
         }
     }
+}
+
+/// Validate common draft controls before metadata validation or GPU allocation.
+pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
+    let message = if draft <= 0 {
+        "MTP draft tokens must be positive"
+    } else if family == ModelFamily::IQuestQ1 && draft > iquest::DRAFT_SLOTS as i32 {
+        "IQuest-Q1 accepts at most seven recursive draft tokens"
+    } else if family == ModelFamily::Glm53 && draft > glm_mtp::DRAFT_MAX {
+        "GLM-5.3 accepts at most three recursive draft tokens"
+    } else {
+        return Ok(());
+    };
+    Err(Error {
+        code: 1,
+        message: message.into(),
+    })
 }
 
 fn inkling_open_check(
@@ -327,6 +361,20 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
         match option {
             ModelOpenOption::Quality => tuning.quality = true,
             ModelOpenOption::WarmWeights => tuning.warm_weights = true,
+            ModelOpenOption::SsdStreaming => tuning.ssd_streaming = true,
+            ModelOpenOption::SsdStreamingCold => tuning.ssd_streaming_cold = true,
+            ModelOpenOption::SsdCacheExperts(count) if *count > 0 => {
+                tuning.ssd_streaming_cache_experts = *count;
+            }
+            ModelOpenOption::SsdCacheBytes(bytes) if *bytes > 0 => {
+                tuning.ssd_streaming_cache_bytes = *bytes;
+            }
+            ModelOpenOption::SsdCacheExperts(_) | ModelOpenOption::SsdCacheBytes(_) => {
+                return Err(Error {
+                    code: 1,
+                    message: "SSD expert cache must be positive".into(),
+                });
+            }
             ModelOpenOption::PowerPercent(percent) if (1..=100).contains(percent) => {
                 tuning.power_percent = i32::from(*percent);
             }
@@ -399,6 +447,22 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
         });
     }
 
+    if !tuning.ssd_streaming
+        && (tuning.ssd_streaming_cold
+            || tuning.ssd_streaming_cache_experts != 0
+            || tuning.ssd_streaming_cache_bytes != 0)
+    {
+        return Err(Error {
+            code: 1,
+            message: "SSD cache and cold options require --ssd-streaming".into(),
+        });
+    }
+    if tuning.ssd_streaming_cache_experts != 0 && tuning.ssd_streaming_cache_bytes != 0 {
+        return Err(Error {
+            code: 1,
+            message: "SSD expert count and byte budgets are mutually exclusive".into(),
+        });
+    }
     Ok(tuning)
 }
 
@@ -1253,14 +1317,19 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
-        if identified.shape.family == ModelFamily::IQuestQ1
-            && tuning.mtp_draft_tokens > iquest::DRAFT_SLOTS as i32
+        check_mtp_draft(identified.shape.family, tuning.mtp_draft_tokens)?;
+        if identified.shape.family == ModelFamily::Glm53
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some())
         {
             return Err(Error {
                 code: 1,
-                message: "IQuest-Q1 accepts at most seven recursive draft tokens".into(),
+                message: "GLM-5.3 requires one full CUDA model with embedded MTP".into(),
             });
         }
         // Resolve Naive's common sidecar environment here as well as native:
@@ -1430,6 +1499,10 @@ impl Model {
             power_percent: tuning.power_percent,
             warm_weights: i32::from(tuning.warm_weights),
             quality: i32::from(tuning.quality),
+            ssd_streaming: i32::from(tuning.ssd_streaming),
+            ssd_streaming_cold: i32::from(tuning.ssd_streaming_cold),
+            ssd_streaming_cache_experts: tuning.ssd_streaming_cache_experts,
+            ssd_streaming_cache_bytes: tuning.ssd_streaming_cache_bytes,
             plan: ffi_plan.as_c(),
             tensors: ffi_dir.as_c(),
             shape: &ffi_shape,
@@ -1873,6 +1946,7 @@ impl Session<'_> {
                 | ModelFamily::Dots3Note
                 | ModelFamily::Mimo2
                 | ModelFamily::IQuestQ1
+                | ModelFamily::Glm53
         ) {
             return;
         }
@@ -2449,6 +2523,9 @@ impl Session<'_> {
         max_tokens: i32,
         eos: i32,
     ) -> Result<Vec<i32>> {
+        if self.host.family == ModelFamily::Glm53 {
+            return self.eval_glm_argmax(first, max_tokens, eos);
+        }
         if self.host.family == ModelFamily::Inkling {
             return self.eval_inkling_argmax(first, max_tokens, eos);
         }
@@ -3162,6 +3239,9 @@ mod tests {
     thread_local! {
         static STEP_GENERATION: Cell<u64> = const { Cell::new(1) };
         static IQUEST_FAILURE: Cell<IQuestFailure> = const { Cell::new(IQuestFailure::Reject) };
+        static GLM_TRIAL_CALLS: Cell<u32> = const { Cell::new(0) };
+        static GLM_FIRST: Cell<i32> = const { Cell::new(0) };
+        static GLM_KEEP: Cell<i32> = const { Cell::new(0) };
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3259,6 +3339,99 @@ mod tests {
 
     #[no_mangle]
     extern "C" fn ds4_bridge_iquest_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_glm53_trial(
+        _s: *mut ds4_bridge_session,
+        first: i32,
+        _max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        assert_eq!(cap, 4);
+        GLM_TRIAL_CALLS.with(|calls| calls.set(calls.get() + 1));
+        GLM_FIRST.with(|value| value.set(first));
+        if first < 0 {
+            if first == -2 {
+                STEP_GENERATION.with(|g| g.set(g.get() + 1));
+            }
+            return -1;
+        }
+        // SAFETY: The four-row host wrapper lends these arrays synchronously.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                [first, first + 1, first + 2, first + 3].as_ptr(),
+                tokens,
+                4,
+            );
+            std::ptr::copy_nonoverlapping(
+                [first + 1, 99, first + 3, first + 4].as_ptr(),
+                target,
+                4,
+            );
+        }
+        match first {
+            3 => 1,
+            30 => 5,
+            _ => 4,
+        }
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_glm53_commit(
+        _s: *mut ds4_bridge_session,
+        keep: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        GLM_KEEP.with(|value| value.set(keep));
+        if GLM_FIRST.with(Cell::get) == 3 {
+            STEP_GENERATION.with(|g| g.set(g.get() + 1));
+            return 1;
+        }
+        0
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_eval_speculative_argmax(
+        _s: *mut ds4_bridge_session,
+        _first: i32,
+        _max: i32,
+        _eos: i32,
+        _accepted: *mut i32,
+        _cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        -1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_inkling_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_inkling_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
         err: *mut c_char,
@@ -3573,6 +3746,38 @@ mod tests {
     #[test]
     fn iquest_rejected_trial_keeps() {
         iquest_error_ledger(IQuestFailure::Reject);
+    }
+
+    #[test]
+    fn glm_mtp_dispatch_ledger() {
+        for first in [10, -1, -2, 3, 30] {
+            STEP_GENERATION.with(|value| value.set(1));
+            GLM_TRIAL_CALLS.with(|value| value.set(0));
+            GLM_KEEP.with(|value| value.set(0));
+            let mut session = std::mem::ManuallyDrop::new(Session {
+                raw: NonNull::<ds4_bridge_session>::dangling(),
+                host: SessionLedger::new(ModelFamily::Glm53, SessionBackend::Cuda, 1024, 64),
+                _model: PhantomData,
+                _not_send: PhantomData,
+            });
+            session.host.replace_checkpoint(&[1, 2, 3]);
+            let result = session.eval_speculative_argmax(first, 4, 99);
+            assert_eq!(GLM_TRIAL_CALLS.with(Cell::get), 1);
+            assert_eq!(session.generation(), session.native_generation());
+            if first == 10 {
+                assert_eq!(result.unwrap(), [10, 11]);
+                assert_eq!(GLM_KEEP.with(Cell::get), 2);
+                assert_eq!(session.host.tokens(), [1, 2, 3, 10, 11]);
+                continue;
+            }
+            assert!(result.is_err());
+            assert_eq!(session.host.valid, first == -1);
+            if first == -1 {
+                assert_eq!(session.host.tokens(), [1, 2, 3]);
+            } else {
+                assert!(session.host.tokens().is_empty());
+            }
+        }
     }
 
     #[test]

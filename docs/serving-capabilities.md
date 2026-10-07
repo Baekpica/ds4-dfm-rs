@@ -25,7 +25,7 @@ The request's effective and qualified plan remains authoritative.
 | K-EXAONE 236B A23B | persistent / qualified | partial / unverified | qualified | qualified | None / none / none |
 | dots3-note-prev | opt_in / unverified | partial / unverified | unverified | qualified | Embedded / serial / unverified |
 | Qwen3.8-Flash-Next | persistent / qualified | partial / qualified | qualified | qualified | Embedded / bank / qualified |
-| GLM 5.3 Flash | serial / none | none / none | none | none | None / none / none |
+| GLM 5.3 Flash | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
 | K2-Horizon 375B A23B | persistent / qualified | exact / qualified | unverified | unverified | None / none / none |
 | Inkling Small | serial / none | exact / qualified | unverified | unverified | Sidecar / serial / qualified |
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
@@ -49,7 +49,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | K-EXAONE 236B A23B | — | — | — | — | `DS4_EXAONE_PREFILL_CHUNK` |
 | dots3-note-prev | 524288 | — | 1 | — | `DS4_DOTS3_PREFILL_CHUNK` |
 | Qwen3.8-Flash-Next | 1048576 | 262144 | 2 | — | `DS4_QWEN_PREFILL_CHUNK` |
-| GLM 5.3 Flash | 2048 | 2048 | 1 | — | — |
+| GLM 5.3 Flash | 1048576 | 2048 | 1 | — | `DS4_GLM53_PREFILL_ROWS` |
 | K2-Horizon 375B A23B | — | 32768 | 1 | — | `DS4_EXAONE_PREFILL_CHUNK` |
 | Inkling Small | 1048576 | 1024 | 1 | — | `DS4_INKLING_PREFILL_CHUNK` |
 | Step-3.7-Flash | 262144 | 65536 | 2 | 6300 | `DS4_STEP37_PREFILL_CHUNK` |
@@ -67,7 +67,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **K-EXAONE 236B A23B:** exact reuse qualified; LLLG partial checkpoints await live qualification.
 - **dots3-note-prev:** text banks, local-window partial reuse and serial MTP are present but unqualified.
 - **Qwen3.8-Flash-Next:** common UX baseline; configured values and verified combinations differ.
-- **GLM 5.3 Flash:** serial graph is capped at 2,048 tokens; snapshots unsupported.
+- **GLM 5.3 Flash:** compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate.
 - **K2-Horizon 375B A23B:** 32K one-bank serving is qualified; disk KV and external owner import are not.
 - **Inkling Small:** serial text snapshots present; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.

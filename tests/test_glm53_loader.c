@@ -1,4 +1,5 @@
 /* GLM 5.3 Flash metadata smoke. This maps only the GGUF header and directory. */
+#define DS4_NO_GPU
 #include "../ds4.c"
 
 int main(int argc, char **argv) {

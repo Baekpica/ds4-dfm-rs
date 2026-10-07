@@ -21,6 +21,8 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// Scheduler yields the fence allows. Not native workspace/graph capacity.
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
+const GLM_CTX_MAX: u32 = 1_048_576;
+const GLM_QUALIFIED_CTX: u32 = 2048;
 const GIB: u64 = 1 << 30;
 const DOTS3_MAX_DRAFT: i32 = 3;
 /// C `QWEN4EXP_YARN_MAX_FACTOR`: how far Qwen's RoPE context may stretch
@@ -179,6 +181,10 @@ pub struct ServingRequest {
     pub mtp_mode: MtpMode,
     pub max_seqs: MaxSeqs,
     pub ctx: i32,
+    pub ssd_streaming: bool,
+    pub ssd_streaming_cold: bool,
+    pub ssd_streaming_cache_experts: Option<u32>,
+    pub ssd_streaming_cache_bytes: Option<u64>,
     pub mem_floor_gb: u64,
     pub kv_disk_dir: Option<String>,
     pub kv_disk_space_mb: Option<u64>,
@@ -212,6 +218,7 @@ pub struct EngineFacts {
     pub vision_path_ok: Option<bool>,
     /// `Some(false)` when the base artifact cannot load at all.
     pub artifact_ok: Option<bool>,
+    pub artifact_qualified: Option<bool>,
     /// `Some(false)` when a DSpark drafter cannot attach to this family.
     pub dspark_ok: Option<bool>,
     /// An IPC-dependent quote awaits successful native import during open.
@@ -225,6 +232,11 @@ pub struct EngineFacts {
     /// Native workspace/graph max. Distinct from scheduler yield.
     pub native_chunk: Option<u32>,
     pub shared_weights_bytes: Option<u64>,
+    pub ssd_mandatory_bytes: Option<u64>,
+    pub ssd_cache_experts: Option<u32>,
+    pub ssd_cache_bytes: Option<u64>,
+    pub ssd_staging_bytes: Option<u64>,
+    pub ssd_metadata_bytes: Option<u64>,
     pub per_bank_bytes: Option<u64>,
     pub mtp_state_bytes: Option<u64>,
     pub scratch_bytes: Option<u64>,
@@ -246,6 +258,10 @@ pub struct RequestedView {
     pub mtp_mode: MtpMode,
     pub max_seqs: MaxSeqs,
     pub ctx: i32,
+    pub ssd_streaming: bool,
+    pub ssd_streaming_cold: bool,
+    pub ssd_streaming_cache_experts: Option<u32>,
+    pub ssd_streaming_cache_bytes: Option<u64>,
     pub mem_floor_gb: u64,
     pub disk_dir: bool,
     pub mtp_path: bool,
@@ -260,6 +276,10 @@ pub struct EffectiveView {
     pub mtp_draft: Option<i32>,
     pub max_seqs: u32,
     pub ctx: i32,
+    pub ssd_streaming: bool,
+    pub ssd_streaming_cold: bool,
+    pub ssd_streaming_cache_experts: Option<u32>,
+    pub ssd_streaming_cache_bytes: Option<u64>,
     pub mem_floor_gb: u64,
     pub disk: bool,
     pub banks_opt_in: bool,
@@ -274,6 +294,7 @@ pub struct EffectiveView {
 pub struct QualifiedView {
     pub prefix_reuse: Support,
     pub disk: Support,
+    pub ssd_streaming: Support,
     pub mtp: Support,
     pub banks: Support,
     pub ctx: Option<u32>,
@@ -287,6 +308,9 @@ pub struct QualifiedView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServingQuote {
     pub shared_weights: u64,
+    pub expert_cache: u64,
+    pub expert_staging: u64,
+    pub expert_metadata: u64,
     pub per_bank: u64,
     pub mtp_state: u64,
     pub scratch: u64,
@@ -302,6 +326,9 @@ pub struct ServingQuote {
 impl ServingQuote {
     fn cost(self, banks: u32) -> u64 {
         self.shared_weights
+            .saturating_add(self.expert_cache)
+            .saturating_add(self.expert_staging)
+            .saturating_add(self.expert_metadata)
             .saturating_add(self.per_bank.saturating_mul(u64::from(banks)))
             .saturating_add(self.mtp_state)
             .saturating_add(self.scratch)
@@ -409,6 +436,10 @@ impl Default for ServingRequest {
             mtp_mode: MtpMode::Auto,
             max_seqs: MaxSeqs::Auto,
             ctx: DEFAULT_CTX,
+            ssd_streaming: false,
+            ssd_streaming_cold: false,
+            ssd_streaming_cache_experts: None,
+            ssd_streaming_cache_bytes: None,
             mem_floor_gb: DEFAULT_MEM_FLOOR_GB,
             kv_disk_dir: None,
             kv_disk_space_mb: None,
@@ -888,22 +919,22 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         ModelFamily::Glm53 => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
-            bank_support: Support::None,
-            reuse: ReuseKind::None,
-            reuse_support: Support::None,
-            disk: Support::None,
-            snapshot: Support::None,
-            mtp: MtpKind::None,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
-            ctx_max: Some(2048),
-            qualified_ctx: Some(2048),
+            ctx_max: Some(GLM_CTX_MAX),
+            qualified_ctx: Some(GLM_QUALIFIED_CTX),
             qualified_banks: Some(1),
             qualified_prompt: None,
-            media_serial: false,
+            media_serial: true,
         },
         ModelFamily::DeepSeek4 => ServingCaps {
             family,
@@ -948,6 +979,10 @@ pub fn resolve_plan(
         mtp_mode: req.mtp_mode,
         max_seqs: req.max_seqs,
         ctx: req.ctx,
+        ssd_streaming: req.ssd_streaming,
+        ssd_streaming_cold: req.ssd_streaming_cold,
+        ssd_streaming_cache_experts: req.ssd_streaming_cache_experts,
+        ssd_streaming_cache_bytes: req.ssd_streaming_cache_bytes,
         mem_floor_gb: req.mem_floor_gb,
         disk_dir: req.kv_disk_dir.is_some(),
         mtp_path: req.mtp_path.is_some(),
@@ -965,6 +1000,7 @@ pub fn resolve_plan(
             qualified: QualifiedView {
                 prefix_reuse: Support::None,
                 disk: Support::None,
+                ssd_streaming: Support::None,
                 mtp: Support::None,
                 banks: Support::None,
                 ctx: None,
@@ -987,6 +1023,46 @@ pub fn resolve_plan(
         };
     };
 
+    let ssd_supported = caps.family == ModelFamily::Glm53
+        && req.backend == Backend::Cuda
+        && req.distribution == Distribution::Single;
+    let unqualified_artifact =
+        caps.family == ModelFamily::Glm53 && facts.artifact_qualified == Some(false);
+    if unqualified_artifact {
+        issues.push(warn(
+            "artifact_unqualified",
+            "current GLM artifact has no workload qualification; family evidence is historical",
+        ));
+    }
+    if (!req.ssd_streaming
+        && (req.ssd_streaming_cold
+            || req.ssd_streaming_cache_experts.is_some()
+            || req.ssd_streaming_cache_bytes.is_some()))
+        || (req.ssd_streaming_cache_experts.is_some() && req.ssd_streaming_cache_bytes.is_some())
+    {
+        issues.push(error(
+            "ssd_options",
+            "SSD cold/cache options require streaming and one exclusive count or byte budget",
+        ));
+    }
+    if req.ssd_streaming {
+        if !ssd_supported {
+            issues.push(error(
+                "ssd_unsupported",
+                "SSD streaming requires one full GLM-5.3 CUDA model",
+            ));
+        }
+        if facts.ssd_cache_experts.is_none() {
+            issues.push(error(
+                "ssd_quote_missing",
+                "SSD streaming requires a validated tensor/cache quote",
+            ));
+        }
+        issues.push(warn(
+            "ssd_unqualified",
+            "SSD expert streaming awaits artifact and workload qualification",
+        ));
+    }
     let (mut max_seqs, mut banks_opt_in) =
         resolve_seqs(req.max_seqs, caps, facts, req.backend, &mut issues);
     let quote = apply_quote(
@@ -1004,6 +1080,11 @@ pub fn resolve_plan(
     // A draft below the family minimum allocates no speculative runtime, so
     // the plan would claim a feature that runs ordinary decode.
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
+    if caps.family == ModelFamily::Glm53 {
+        if let Err(failure) = crate::check_mtp_draft(caps.family, draft as i32) {
+            issues.push(error("mtp_draft", failure.message));
+        }
+    }
     let (mtp_mode, mtp_draft) = match mtp_mode {
         MtpMode::Off => (MtpMode::Off, None),
         _ if caps.family == ModelFamily::IQuestQ1 && draft > crate::iquest::DRAFT_SLOTS as i32 => {
@@ -1151,6 +1232,16 @@ pub fn resolve_plan(
         ));
     }
     let native = facts.native_chunk.or(req.native_chunk);
+    if caps.family == ModelFamily::Glm53
+        && req
+            .native_chunk
+            .is_some_and(|n| ![1, 128, 256].contains(&n))
+    {
+        issues.push(error(
+            "native_chunk",
+            "GLM native prefill rows must be 1/128/256",
+        ));
+    }
     let requested_boot = req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK);
     if req.chunk_fence == ChunkFence::On && requested_boot > PREFILL_CHUNK_FENCE {
         issues.push(warn(
@@ -1205,20 +1296,45 @@ pub fn resolve_plan(
             caps.reuse_support
         },
         disk: if disk { caps.disk } else { Support::None },
+        ssd_streaming: if req.ssd_streaming && ssd_supported {
+            Support::Present
+        } else {
+            Support::None
+        },
         mtp: if mtp_weights {
             caps.mtp_support
         } else {
             Support::None
         },
-        banks: if max_seqs > 1 {
+        banks: if unqualified_artifact {
+            Support::Present
+        } else if max_seqs > 1 {
             caps.bank_support
         } else {
             Support::Qualified
         },
-        ctx: qualified_ctx,
-        banks_n: caps.qualified_banks,
-        prompt: qualified_prompt,
-        note: qualified_note(caps),
+        ctx: if req.ssd_streaming || unqualified_artifact {
+            None
+        } else {
+            qualified_ctx
+        },
+        banks_n: if unqualified_artifact {
+            None
+        } else {
+            caps.qualified_banks
+        },
+        prompt: if req.ssd_streaming || unqualified_artifact {
+            None
+        } else {
+            qualified_prompt
+        },
+        note: if unqualified_artifact {
+            "current GLM artifact has no workload qualification; family 2K evidence is historical"
+        } else if req.ssd_streaming {
+            "SSD expert streaming is unverified"
+        } else {
+            qualified_note(caps)
+        },
     };
 
     ResolvedPlan {
@@ -1234,6 +1350,10 @@ pub fn resolve_plan(
             mtp_draft,
             max_seqs,
             ctx: req.ctx,
+            ssd_streaming: req.ssd_streaming && ssd_supported && facts.ssd_cache_experts.is_some(),
+            ssd_streaming_cold: req.ssd_streaming && req.ssd_streaming_cold,
+            ssd_streaming_cache_experts: facts.ssd_cache_experts,
+            ssd_streaming_cache_bytes: facts.ssd_cache_bytes,
             mem_floor_gb: req.mem_floor_gb,
             disk,
             banks_opt_in,
@@ -1390,6 +1510,17 @@ impl ResolvedPlan {
                 .into(),
             ));
         }
+        if self.family == Some(ModelFamily::Glm53) {
+            out.push((
+                "DS4_GLM53_MTP".into(),
+                if self.effective.mtp_mode == MtpMode::On {
+                    "1"
+                } else {
+                    "0"
+                }
+                .into(),
+            ));
+        }
         // Never publish a yield past the allocated native workspace.
         let boot = published_chunk(self.effective.sched_chunk, self.effective.native_chunk);
         let live = published_chunk(self.effective.sched_chunk_live, self.effective.native_chunk);
@@ -1398,7 +1529,20 @@ impl ResolvedPlan {
         // C family allocators read DS4_*_PREFILL_CHUNK, not --native-chunk.
         if let Some(native) = self.effective.native_chunk {
             if let Some(key) = self.native_prefill_env() {
-                out.push((key.into(), native.to_string()));
+                // Context/cache bounds can yield another row count; native
+                // accepts these three capacities and reapplies those bounds.
+                let value = if self.family == Some(ModelFamily::Glm53) {
+                    if native <= 1 {
+                        1
+                    } else if native <= 128 {
+                        128
+                    } else {
+                        256
+                    }
+                } else {
+                    native
+                };
+                out.push((key.into(), value.to_string()));
             }
         }
         out
@@ -1419,6 +1563,7 @@ impl ResolvedPlan {
             Some(ModelFamily::Mimo2) => Some("DS4_MIMO2_PREFILL_CHUNK"),
             Some(ModelFamily::IQuestQ1) => Some("DS4_IQUEST_PREFILL_CHUNK"),
             Some(ModelFamily::NaiveN05) => Some("DS4_NAIVE_PREFILL_CHUNK"),
+            Some(ModelFamily::Glm53) => Some("DS4_GLM53_PREFILL_ROWS"),
             _ => None,
         }
     }
@@ -1430,10 +1575,12 @@ impl ResolvedPlan {
             .caps
             .and(self.effective.native_chunk)
             .map(|cap| {
-                VERIFIED_PREFILL_CHUNKS
-                    .into_iter()
-                    .filter(|n| *n <= cap)
-                    .collect()
+                let chunks: &[u32] = if self.family == Some(ModelFamily::Glm53) {
+                    &[1, 128, 256]
+                } else {
+                    &VERIFIED_PREFILL_CHUNKS
+                };
+                chunks.iter().copied().filter(|n| *n <= cap).collect()
             })
             .unwrap_or_default();
         json!({
@@ -1491,6 +1638,10 @@ impl ResolvedPlan {
                     LaneMode::Serial => "serial",
                 },
                 "ctx": self.requested.ctx,
+                "ssd_streaming": self.requested.ssd_streaming,
+                "ssd_streaming_cold": self.requested.ssd_streaming_cold,
+                "ssd_streaming_cache_experts": self.requested.ssd_streaming_cache_experts,
+                "ssd_streaming_cache_bytes": self.requested.ssd_streaming_cache_bytes,
                 "mem_floor_gb": self.requested.mem_floor_gb,
                 "disk": self.requested.disk_dir,
                 "mtp_path": self.requested.mtp_path,
@@ -1503,6 +1654,10 @@ impl ResolvedPlan {
                 "mtp_draft": self.effective.mtp_draft,
                 "max_seqs": self.effective.max_seqs,
                 "ctx": self.effective.ctx,
+                "ssd_streaming": self.effective.ssd_streaming,
+                "ssd_streaming_cold": self.effective.ssd_streaming_cold,
+                "ssd_streaming_cache_experts": self.effective.ssd_streaming_cache_experts,
+                "ssd_streaming_cache_bytes": self.effective.ssd_streaming_cache_bytes,
                 "mem_floor_gb": self.effective.mem_floor_gb,
                 "disk": self.effective.disk,
                 "banks_opt_in": self.effective.banks_opt_in,
@@ -1515,6 +1670,9 @@ impl ResolvedPlan {
             },
             "quote": self.quote.map(|q| json!({
                 "shared_weights": q.shared_weights,
+                "expert_cache": q.expert_cache,
+                "expert_staging": q.expert_staging,
+                "expert_metadata": q.expert_metadata,
                 "per_bank": q.per_bank,
                 "mtp_state": q.mtp_state,
                 "scratch": q.scratch,
@@ -1529,6 +1687,7 @@ impl ResolvedPlan {
             "qualified": {
                 "prefix_reuse": self.qualified.prefix_reuse.as_str(),
                 "disk": self.qualified.disk.as_str(),
+                "ssd_streaming": self.qualified.ssd_streaming.as_str(),
                 "mtp": self.qualified.mtp.as_str(),
                 "banks": self.qualified.banks.as_str(),
                 "ctx": self.qualified.ctx,
@@ -1571,6 +1730,33 @@ impl ResolvedPlan {
             self.effective.mem_floor_gb,
             self.effective.disk
         );
+        if self.requested.ssd_streaming {
+            let _ = writeln!(
+                s,
+                "requested SSD: cache_experts={:?} cache_bytes={:?} cold={}",
+                self.requested.ssd_streaming_cache_experts,
+                self.requested.ssd_streaming_cache_bytes,
+                self.requested.ssd_streaming_cold
+            );
+            let _ = writeln!(
+                s,
+                "effective SSD: cache_experts={:?} cache_bytes={:?} cold={} qualified={}",
+                self.effective.ssd_streaming_cache_experts,
+                self.effective.ssd_streaming_cache_bytes,
+                self.effective.ssd_streaming_cold,
+                self.qualified.ssd_streaming.as_str()
+            );
+            if let Some(quote) = self.quote {
+                let _ = writeln!(
+                    s,
+                    "SSD bytes: mandatory={} cache={} staging={} metadata={}",
+                    quote.shared_weights,
+                    quote.expert_cache,
+                    quote.expert_staging,
+                    quote.expert_metadata
+                );
+            }
+        }
         let _ = writeln!(
             s,
             "qualified: reuse={} disk={} mtp={} banks={} ctx={:?} prompt={:?}",
@@ -1637,6 +1823,10 @@ fn default_effective(req: &ServingRequest) -> EffectiveView {
             MaxSeqs::Fixed(n) => n,
         },
         ctx: req.ctx,
+        ssd_streaming: false,
+        ssd_streaming_cold: false,
+        ssd_streaming_cache_experts: None,
+        ssd_streaming_cache_bytes: None,
         mem_floor_gb: req.mem_floor_gb,
         disk: req.kv_disk_dir.is_some(),
         banks_opt_in: false,
@@ -1838,6 +2028,9 @@ fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Optio
     let available = facts.host_available_bytes?;
     let mut quote = ServingQuote {
         shared_weights: facts.shared_weights_bytes.unwrap_or(0),
+        expert_cache: facts.ssd_cache_bytes.unwrap_or(0),
+        expert_staging: facts.ssd_staging_bytes.unwrap_or(0),
+        expert_metadata: facts.ssd_metadata_bytes.unwrap_or(0),
         per_bank: facts.per_bank_bytes.unwrap_or(0),
         mtp_state: facts.mtp_state_bytes.unwrap_or(0),
         scratch: facts.scratch_bytes.unwrap_or(0),
@@ -2101,7 +2294,7 @@ enum BankDriver {
 /// backend has no lane, the native fit refused it, the family serves
 /// serially, or an opt-in family stayed at width one without a bank.
 ///
-/// This mirrors the native admission gate: Inkling and GLM refuse banks
+/// This mirrors the native admission gate: Inkling refuses banks
 /// outright; Qwen, Step and dots3 require their batch environment switch to
 /// be `1` (which `env_overrides` publishes from the resolved width), and
 /// the remaining families are persistent.
@@ -2231,7 +2424,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
         Variant::K2Horizon375B => {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
-        Variant::Glm53Flash => "serial graph is capped at 2,048 tokens; snapshots unsupported",
+        Variant::Glm53Flash => "compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate",
         Variant::Dots3NotePrev => {
             "text banks, local-window partial reuse and serial MTP are present but unqualified"
         }
@@ -2366,6 +2559,44 @@ mod tests {
     }
 
     #[test]
+    fn ssd_request_admission() {
+        for req in [
+            ServingRequest {
+                ssd_streaming_cold: true,
+                ..ServingRequest::default()
+            },
+            ServingRequest {
+                ssd_streaming_cache_experts: Some(8),
+                ..ServingRequest::default()
+            },
+            ServingRequest {
+                ssd_streaming: true,
+                ssd_streaming_cache_experts: Some(8),
+                ssd_streaming_cache_bytes: Some(GIB),
+                ..ServingRequest::default()
+            },
+        ] {
+            let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
+            assert!(p.issues.iter().any(|i| i.code == "ssd_options"));
+        }
+        let facts = EngineFacts {
+            ssd_cache_experts: Some(8),
+            ..EngineFacts::default()
+        };
+        let req = ServingRequest {
+            ssd_streaming: true,
+            backend: Backend::Cpu,
+            ..ServingRequest::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Glm53, Variant::Glm53Flash)),
+            &facts,
+        );
+        assert!(!p.effective.ssd_streaming);
+    }
+
+    #[test]
     fn controls_follow_family_caps() {
         let req = ServingRequest {
             native_chunk: Some(1280),
@@ -2388,10 +2619,13 @@ mod tests {
             ..ServingRequest::default()
         };
         let glm = plan(req, ModelFamily::Glm53, Variant::Glm53Flash).to_json();
-        assert!(glm["controls"]["native_prefill_env"].is_null());
-        assert_eq!(glm["controls"]["prefix_reuse"], "none");
-        assert_eq!(glm["controls"]["banks"], "serial");
-        assert_eq!(glm["controls"]["disk"], "none");
+        assert_eq!(
+            glm["controls"]["native_prefill_env"],
+            "DS4_GLM53_PREFILL_ROWS"
+        );
+        assert_eq!(glm["controls"]["prefix_reuse"], "partial");
+        assert_eq!(glm["controls"]["banks"], "persistent");
+        assert_eq!(glm["controls"]["disk"], "unverified");
     }
 
     #[test]
@@ -2815,19 +3049,19 @@ mod tests {
 
     #[test]
     fn a_ctx_above_the_session_cap_is_an_error() {
-        // GLM's default 8,192 cannot create a session at all.
+        // Structural capacity and the historical qualification are separate.
         let p = plan(
             ServingRequest::default(),
             ModelFamily::Glm53,
             Variant::Glm53Flash,
         );
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+        assert!(!p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unqualified"));
 
         let mut req = ServingRequest::default();
-        req.ctx = 2048;
+        req.ctx = 1_048_577;
         let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
-        assert!(!p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
     }
 
     #[test]
@@ -2843,19 +3077,117 @@ mod tests {
 
     #[test]
     fn glm_exact_context_boundary() {
-        for ctx in [1, 2048, 2049, i32::MAX] {
+        for ctx in [1, 2048, 2049, 1_048_576, 1_048_577, i32::MAX] {
             let req = ServingRequest {
                 ctx,
                 ..ServingRequest::default()
             };
             let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
-            assert_eq!(p.has_errors(), ctx > 2048, "ctx={ctx}: {:?}", p.issues);
+            assert_eq!(p.has_errors(), ctx > 1_048_576, "ctx={ctx}: {:?}", p.issues);
             assert_eq!(
                 p.issues.iter().any(|i| i.code == "ctx_unavailable"),
-                ctx > 2048
+                ctx > 1_048_576
             );
             assert_eq!(p.qualified.ctx, Some(2048));
         }
+    }
+
+    #[test]
+    fn glm_rows_follow_allocator() {
+        for rows in [1, 128, 256, 129, 2048] {
+            let p = plan(
+                ServingRequest {
+                    ctx: 2048,
+                    native_chunk: Some(rows),
+                    ..ServingRequest::default()
+                },
+                ModelFamily::Glm53,
+                Variant::Glm53Flash,
+            );
+            assert_eq!(
+                p.issues.iter().any(|i| i.code == "native_chunk"),
+                ![1, 128, 256].contains(&rows)
+            );
+            if [1, 128, 256].contains(&rows) {
+                assert!(p
+                    .env_overrides()
+                    .iter()
+                    .any(|(key, value)| key == "DS4_GLM53_PREFILL_ROWS"
+                        && value == &rows.to_string()));
+            }
+        }
+    }
+
+    #[test]
+    fn glm_mtp_is_opt_in() {
+        let mut req = ServingRequest {
+            ctx: 2048,
+            mtp_mode: MtpMode::On,
+            ..ServingRequest::default()
+        };
+        let p = plan(req.clone(), ModelFamily::Glm53, Variant::Glm53Flash);
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
+        assert_eq!(p.qualified.mtp, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_unverified"));
+        assert!(!p.uses_serial_mtp());
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_GLM53_MTP" && v == "1"));
+        req.mtp_mode = MtpMode::Auto;
+        let auto = plan(req.clone(), ModelFamily::Glm53, Variant::Glm53Flash);
+        assert_eq!(auto.effective.mtp_mode, MtpMode::Off);
+        assert!(auto
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_GLM53_MTP" && v == "0"));
+        req.mtp_mode = MtpMode::On;
+        req.mtp_draft = Some(4);
+        assert!(plan(req.clone(), ModelFamily::Glm53, Variant::Glm53Flash)
+            .issues
+            .iter()
+            .any(|i| i.code == "mtp_draft"));
+        req.mtp_draft = Some(3);
+        req.mtp_path = Some("mtp.gguf".into());
+        assert!(plan(req, ModelFamily::Glm53, Variant::Glm53Flash)
+            .issues
+            .iter()
+            .any(|i| i.code == "mtp_contract"));
+    }
+
+    #[test]
+    fn glm_artifact_unqualified() {
+        let facts = EngineFacts {
+            artifact_qualified: Some(false),
+            ..EngineFacts::default()
+        };
+        let req = ServingRequest {
+            ctx: 2048,
+            ..ServingRequest::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Glm53, Variant::Glm53Flash)),
+            &facts,
+        );
+        assert!(!p.has_errors());
+        assert_eq!(p.qualified.ctx, None);
+        assert_eq!(p.qualified.prompt, None);
+        assert_eq!(p.qualified.banks_n, None);
+        assert_ne!(p.qualified.banks, Support::Qualified);
+        assert!(p.issues.iter().any(|i| i.code == "artifact_unqualified"));
+        let qwen = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert_eq!(
+            qwen.qualified.ctx,
+            plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)
+                .qualified
+                .ctx
+        );
     }
 
     #[test]
@@ -3238,15 +3570,28 @@ mod tests {
     }
 
     #[test]
-    fn glm_disk_is_an_error() {
-        let mut req = ServingRequest::default();
-        req.ctx = 2048;
-        req.kv_disk_dir = Some("/tmp/kv".into());
+    fn glm_bank_disk_and_mtp() {
+        let req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            kv_disk_dir: Some("/tmp/kv".into()),
+            mtp_mode: MtpMode::On,
+            mtp_draft: Some(3),
+            ..ServingRequest::default()
+        };
         let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
-        assert!(p.has_errors());
-        assert!(!p.effective.disk);
-        assert!(p.issues.iter().any(|i| i.code == "disk_unsupported"));
-        assert!(!p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 2);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+        assert!(p.effective.disk);
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
+        assert!(p.wants_bank_lane());
+        assert!(!p.uses_serial_mtp());
+        assert_eq!(p.qualified.banks, Support::Present);
+        assert_eq!(p.qualified.disk, Support::Present);
+        assert_eq!(p.caps.unwrap().snapshot, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "media_serial"));
     }
 
     #[test]
@@ -3271,11 +3616,9 @@ mod tests {
 
     #[test]
     fn serial_default_auto_is_width_one() {
-        // Each family's own session cap, since the shared default context
-        // cannot create a GLM or Inkling session at all.
+        // These families retain one lane when no bank width is requested.
         let families = [
             (ModelFamily::Inkling, Variant::InklingSmall, 1024),
-            (ModelFamily::Glm53, Variant::Glm53Flash, 2048),
             (ModelFamily::Dots3Note, Variant::Dots3NotePrev, DEFAULT_CTX),
         ];
         for (family, variant, ctx) in families {
@@ -3602,12 +3945,12 @@ mod tests {
     }
 
     #[test]
-    fn glm_forced_exact_reuse_errors() {
+    fn glm_exact_reuse_present() {
         let mut req = ServingRequest::default();
         req.prefix_reuse = PrefixReuse::Exact;
         let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "reuse_unsupported"));
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
     }
 
     #[test]

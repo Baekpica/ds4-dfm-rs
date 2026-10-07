@@ -252,6 +252,12 @@ pub trait DecodeIo {
         self.eval(first)?;
         Ok(vec![first])
     }
+    /// Drop the committed tail after an output boundary. Engines without
+    /// a recorded prefix state retain the conservative invalidation path.
+    fn trim_greedy(&mut self, _pos: i32) -> Result<(), GenerateError> {
+        self.invalidate();
+        Ok(())
+    }
     fn last_eval_speculated(&self) -> bool {
         false
     }
@@ -1707,6 +1713,7 @@ fn decode_pass(
         let budget = (max_tokens - acc.completion).min(engine.ctx() - engine.pos());
         // Forced control prefixes can change policy between tokens. Only
         // an unconstrained greedy segment may be committed ahead of output.
+        let prefix_start = engine.pos();
         let accepted = if temperature <= 0.0
             && parsed.eos_policy == EosPolicy::Default
             && matches!(ov, SampleOverride::None)
@@ -1810,7 +1817,7 @@ fn decode_pass(
             if acc.track_tools && acc.saw_tool_end && req.chat_format == ChatFormat::DeepSeek {
                 *finish = "tool_calls";
                 if index + 1 < count {
-                    engine.invalidate();
+                    engine.trim_greedy(prefix_start + index as i32 + 1)?;
                 }
                 break 'decode;
             }
@@ -3044,6 +3051,7 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 #[cfg(any(feature = "native", test))]
 fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, draft: i32) -> bool {
     match family {
+        ds4_core::ModelFamily::Glm53 => ds4_core::check_mtp_draft(family, draft).is_ok(),
         ds4_core::ModelFamily::IQuestQ1 => {
             (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
         }
@@ -3063,6 +3071,15 @@ fn iquest_embedded_mtp_uses_serial_greedy_route() {
     assert!(serial_mtp_ready(IQuestQ1, false, false, 7));
     assert!(!serial_mtp_ready(IQuestQ1, false, false, 1));
     assert!(!serial_mtp_ready(IQuestQ1, false, false, 8));
+}
+
+#[test]
+fn glm_serial_mtp_gate() {
+    use ds4_core::ModelFamily::Glm53;
+    assert!(serial_mtp_ready(Glm53, false, false, 1));
+    assert!(serial_mtp_ready(Glm53, false, false, 3));
+    assert!(!serial_mtp_ready(Glm53, false, false, 0));
+    assert!(!serial_mtp_ready(Glm53, false, false, 4));
 }
 
 #[test]
@@ -3644,6 +3661,28 @@ impl DecodeIo for NativeDecode<'_> {
 
     fn last_eval_speculated(&self) -> bool {
         self.speculated
+    }
+
+    fn trim_greedy(&mut self, pos: i32) -> Result<(), GenerateError> {
+        if self.model.family() != ds4_core::ModelFamily::Glm53 {
+            self.invalidate();
+            return Ok(());
+        }
+        let session = self.session()?;
+        if pos <= 0 || pos > session.pos() {
+            session.invalidate();
+            return Err(GenerateError::Engine("invalid GLM output frontier".into()));
+        }
+        // GLM retains each accepted lane's KDA, DSA and logits in its MTP
+        // journal. Keep the tool close, rather than losing its continuation.
+        session.rewind(pos);
+        if session.argmax() < 0 {
+            session.invalidate();
+            return Err(GenerateError::Engine(
+                "GLM output frontier restore failed".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn last_reuse(&self) -> ReuseTaken {

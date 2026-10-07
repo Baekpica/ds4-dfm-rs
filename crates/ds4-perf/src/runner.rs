@@ -184,6 +184,13 @@ const PERF_ENV: &[&str] = &[
     "DS4_CUDA_FP4_INDEX",
     "DS4_CUDA_MMQ",
     "DS4_MTP_SPEC_DISABLE",
+    "DS4_GLM53_PREFILL_ROWS",
+    "DS4_GLM53_DSA_EXPANDED",
+    "DS4_GLM53_MTP",
+    "DS4_GLM53_LOW_ATTN",
+    "DS4_GLM53_POOL_WARP",
+    "DS4_GLM53_SHARED_Q8",
+    "DS4_GLM53_Q2_WORKLIST",
     "DS4_QWEN_BATCH",
     "DS4_QWEN_PREFILL_CHUNK",
     "DS4_QWEN_PLE_CACHE_MB",
@@ -671,6 +678,37 @@ pub fn unreviewed_env() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glm_kernel_controls() {
+        for key in [
+            "DS4_GLM53_LOW_ATTN",
+            "DS4_GLM53_POOL_WARP",
+            "DS4_GLM53_SHARED_Q8",
+            "DS4_GLM53_Q2_WORKLIST",
+        ] {
+            for value in ["0", "1"] {
+                let env = controls(&[format!("{key}={value}")]).unwrap();
+                assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&value.into()));
+                assert!(environment(env).contains(&format!("{key}='{value}'")));
+            }
+        }
+    }
+
+    #[test]
+    fn glm_ssd_controls() {
+        for (key, value) in [
+            ("DS4_GLM53_PREFILL_ROWS", "128"),
+            ("DS4_GLM53_DSA_EXPANDED", "0"),
+            ("DS4_GLM53_MTP", "1"),
+        ] {
+            let env = controls(&[format!("{key}={value}")]).unwrap();
+            assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&value.into()));
+            assert!(environment(env).contains(&format!("{key}='{value}'")));
+        }
+        assert!(controls(&["DS4_GLM53_UNKNOWN=secret".into()]).is_err());
+        assert!(!environment([("DS4_GLM53_UNKNOWN".into(), "secret".into())]).contains("secret"));
+    }
 
     #[test]
     fn naive_attention_env() {
