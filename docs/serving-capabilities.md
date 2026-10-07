@@ -67,7 +67,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **K-EXAONE 236B A23B:** exact reuse qualified; LLLG partial checkpoints await live qualification.
 - **dots3-note-prev:** text banks, local-window partial reuse and serial MTP are present but unqualified.
 - **Qwen3.8-Flash-Next:** common UX baseline; configured values and verified combinations differ.
-- **GLM 5.3 Flash:** compact banks, partial reuse, snapshots and embedded MTP are present; [mixed-artifact 1M and API gates](glm53-uncensored.md#live-verification) retain their workload scope; the default family profile keeps historical 2K qualification.
+- **GLM 5.3 Flash:** compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate.
 - **K2-Horizon 375B A23B:** 32K one-bank serving is qualified; disk KV and external owner import are not.
 - **Inkling Small:** serial text snapshots present; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
