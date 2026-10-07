@@ -1127,3 +1127,21 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   provides identical VMM ranges and running both would double-allocate
   the model. See `misc/proof-harness/README.md` for the sidecar
   lifecycle.
+
+- `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
+  Default enabled: pair latent outputs only for selected2051/128-row/
+  64-head/latent512 prefill. Preserve each output's FMA order; no added
+  workspace. Decode and other shapes keep the reference kernel. The
+  unrestricted pair path regressed whole-model decode and was rejected.
+- `DS4_GLM53_POOL_WARP=0` restores reference GLM-5.3 pooled index scores.
+  Default enabled for32 heads: compute independent heads in separate warps,
+  preserving the original dot-product tree and ordered head sum. No added
+  workspace; registers/key reads increase while synchronization decreases.
+  Other head counts retain the reference kernel.
+  See `docs/glm53-uncensored.md` for the matched resident A/B boundary.
+- `DS4_GLM53_SHARED_Q8=0` restores separate GLM shared gate/up and SwiGLU.
+  Default enabled only for eager Spark decode, raw Q8_0, K4096/M2048 and
+  clamp10. Quantize Q8_1 once; preserve each dot and the four-warp tree.
+  Aligned artifacts, capture and other shapes retain the reference path.
+  No global workspace growth; paired static shared memory is768B.
+  Three fresh2K pairs improve decode0.27–0.47%;8K remains within variation.

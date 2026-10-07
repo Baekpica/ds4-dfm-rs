@@ -23,6 +23,7 @@ artifact and workload. They do not describe live processes or qualify a new buil
 | [Chat templates](chat-templates.md) | Official input assets, normalization and continuation |
 | [API matrix](ds4-api-surface-matrix.md) | HTTP objects, routing, media forms and unsupported requests |
 | [Memory guard](host-memory-guard.md) | Large-model admission, job limits and cleanup |
+| [SSD expert streaming](ssd-streaming.md) | Bounded GLM expert cache, options and memory policy |
 
 ## Models
 
@@ -36,7 +37,8 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Qwen](ds4-dfm-model-families.md#qwen-release-scope) | Q5, images, owner/cache setup and YaRN |
 | [Qwen derivatives](ds4-dfm-model-families.md#qwen-derivatives) | Uncensored, Swift and Darwin artifact-specific evidence |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |
-| [GLM](ds4-dfm-model-families.md#glm-53-flash-release-scope) | Exact Q2 + vision, serial graph and 2K cap |
+| [GLM](ds4-dfm-model-families.md#glm-53-flash-release-scope) | Q2 + vision; recorded serial 2K qualification |
+| [GLM Uncensored](glm53-uncensored.md) | Mixed recipe, SSD/bank contracts and current verification boundaries |
 | [K2](ds4-dfm-model-families.md#k2-horizon-375b-release-scope) | MQ87, IFM tools, one-bank serving and disk limits |
 | [dots3](ds4-dfm-model-families.md#dots3-serving) | Separate opt-in text banks and serial MTP |
 | [Bonsai](BONSAI.md) | Pinned ternary PQ2_0, CPU reference and serial CUDA |
