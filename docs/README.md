@@ -24,6 +24,7 @@ artifact and workload. They do not describe live processes or qualify a new buil
 | [API matrix](ds4-api-surface-matrix.md) | HTTP objects, routing, media forms and unsupported requests |
 | [Memory guard](host-memory-guard.md) | Large-model admission, job limits and cleanup |
 | [SSD expert streaming](ssd-streaming.md) | Bounded GLM expert cache, options and memory policy |
+| [GLM Prefill on Spark, 2026-10-08](glm53-prefill-2026-10-08.md) | Large batches, partial offload, numerical contracts and measured adoption |
 
 ## Models
 

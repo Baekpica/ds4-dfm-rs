@@ -16,8 +16,9 @@ on both paths. The resident reference uses one VMM owner and a worker with
 | Option | Meaning |
 |---|---|
 | `--ssd-streaming` | Enable the GLM CUDA expert cache |
+| `--ssd-streaming-cache-experts auto` | Fit expert slots after active state, workspace, media and reserve; default when streaming is enabled |
 | `--ssd-streaming-cache-experts N` | Global cache capacity in expert triplets |
-| `--ssd-streaming-cache-experts 24GB` | Byte budget in GiB; 24 GiB is the default |
+| `--ssd-streaming-cache-experts 24GB` | Fixed byte budget in GiB |
 | `--ssd-streaming-cold` | Advise eviction of consumed expert file pages |
 
 Capacity spans all routed layers, including the embedded predictor. It must
@@ -27,8 +28,11 @@ strides; IQ2_XXS, IQ2_XS and Q2_K retain their GGUF quantized bytes.
 
 Each routing batch pins existing hits before choosing LRU victims. The driver
 drains earlier work before reusing a slot, reads misses with bounded staging,
-and invalidates a partially uploaded slot on failure. Wide prefill batches
-are subdivided when their worst-case route union exceeds capacity.
+and invalidates a partially uploaded slot on failure. Prefill supports up to
+2048 physical rows. Routing batches are subdivided by the actual unique expert
+union; duplicate routes occupy one slot. Memory admission reduces workspace
+width before reducing requested context or banks. Unsafe forced cache budgets
+are rejected before weight allocation.
 
 Enable streaming only for one full, single-shard GLM-5.3 CUDA artifact on
 coherent pageable-memory hardware such as the DGX Spark/GB10. The native
@@ -49,6 +53,21 @@ Account for these components separately:
 - **Workspace:** projection/routing buffers and bounded host transfer staging.
 - **Media and artifacts:** the optional Vision model and its execution storage.
 - **Headroom:** admission reserve and remaining host/GPU capacity.
+
+Prefill staging and Decode hot experts share the same slot budget. Transient
+read/upload state is returned after Prefill. GB10 uses bounded pageable
+transfer buffers without a second large pinned host cache. The
+[2026-10-08 campaign](glm53-prefill-2026-10-08.md) records the large-batch,
+layer-major and next-layer supply contracts and their adoption evidence.
+One-bank prompts can retain a checkpoint-aligned 4K activation window while
+GEMMs remain at most 2K rows. Two complete expert staging groups overlap
+next-layer reading with GPU work. Short appends, two banks and smaller caches
+keep selected-expert supply. Recent unique routes fill the funded Decode hot
+area; copies from intermediate windows without a logits frontier are skipped.
+
+Auto is fitted again at model open. The serving report uses that admitted
+capacity, so changes in available memory cannot leave preflight counts in
+`/v1/stats`.
 
 File page cache can retain expert reads. `--ssd-streaming-cold` is advisory;
 the expert device cache limit does not impose an OS page-cache limit.
@@ -99,9 +118,12 @@ checkpoint across banks, preserves the source and matches fresh reuse Off
 answers/counts. This is a bounded diagnostic; resident performance uses one bank.
 Metadata and `--check-config` are preflight only.
 
-Startup reports mandatory tensor bytes, cache capacity and staging. Engine
-close reports cache hits, misses, file read bytes and cache bytes. The serving
-plan distinguishes requested/effective settings from recorded qualification.
+Startup reports mandatory tensor bytes, cache capacity, staging and requested/
+effective rows. Phase counters report hits/misses, unique routes, rereads and
+I/O/upload/join waits. `pread_bytes` is logical file volume. Process
+`read_bytes` and filesystem inputs measure kernel-accounted storage reads,
+including readahead; none measures SSD controller traffic. The serving plan
+distinguishes requested/effective settings from recorded qualification.
 
 The interface follows the SSD options in
 [upstream ds4](https://github.com/antirez/ds4/blob/0aaea5a238fb41a35106a551e73c8409dfb751ac/ds4.c).

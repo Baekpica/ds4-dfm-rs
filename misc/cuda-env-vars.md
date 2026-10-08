@@ -1133,6 +1133,41 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   64-head/latent512 prefill. Preserve each output's FMA order; no added
   workspace. Decode and other shapes keep the reference kernel. The
   unrestricted pair path regressed whole-model decode and was rejected.
+- `DS4_GLM53_LOW_ATTN_WIDE=0` restores reference attention for 129–2048 rows.
+  Default enabled for selected 2051/64-head/latent512 prefill; preserve each
+  output's FMA order. Decode and other shapes retain the reference.
+- `DS4_GLM53_GATE_UP_PAIR=0` restores separate mixed gate/up preparation.
+  Default enabled above 8 rows for raw/padded IQ2_XXS, IQ2_XS and Q4_K pairs.
+  Share Q8_1 activations and routing maps without weight repacking. Same-width
+  outputs are exact; small-width Decode keeps its existing path.
+- `DS4_GLM53_DENSE_GEMM=1` enables diagnostic dense Tensor Core attention.
+  Default Off: FP16 Q/probability with FP32 accumulation passes its rounded
+  reference but loses two codes in the recorded 6K retrieval at 2048 rows.
+  Dense rows 128–2048/keys<=2051 only; sparse and Decode remain unchanged.
+- `DS4_GLM53_PREFILL_ROWS=N` requests 1–2048 physical rows (default 2048).
+  Rust fits workspace against weights, active KV/state, checkpoints, media
+  and reserve; it reports the effective width while preserving context/banks.
+- `DS4_GLM53_PREFILL_WINDOW=0` disables checkpoint-aligned layer-major
+  SSD Prefill. Default On when eligible; GEMMs remain <=2048 rows. One bank,
+  rows >=128 and at least two full expert layers are required. Short appends,
+  two banks and smaller caches use selected-expert supply. Rust publishes 0
+  when the admitted plan cannot use the window, including serial media graphs.
+- `DS4_GLM53_PREFETCH=0` disables whole-next-layer supply inside
+  the layer-major window. Default On; two staging groups share the expert
+  budget, with one bounded pageable reader and a separate CUDA upload stream.
+- `DS4_GLM53_HOT_CACHE=0` disables recent-route retention during
+  selected-expert Prefill. Default On; protect the last 8 rows of each layer
+  only when capacity also leaves one complete layer free. No added workspace.
+  Same-width logits/tokens are exact. The recorded 24 GiB 2K A/B reduces first
+  Decode-token waiting and improves sustained Decode without added storage.
+  See `docs/glm53-prefill-2026-10-08.md` for the adoption and workload boundary.
+- `DS4_GLM53_HOT_COPY=0` restores last-eight-row grouped cache retention.
+  Default On fills the funded hot area from recent unique routes across
+  physical chunks. It adds weight copies without enlarging the GPU pool.
+- `DS4_GLM53_HOT_LAST=0` copies grouped hot weights after every window.
+  Default On skips intermediate copies without a requested logits frontier.
+  The fixed 10000-slot 8K+64 A/B improves whole latency 1.35%, with 2.6% lower
+  Prefill throughput and 65.1% higher Decode. See the campaign for scope.
 - `DS4_GLM53_POOL_WARP=0` restores reference GLM-5.3 pooled index scores.
   Default enabled for32 heads: compute independent heads in separate warps,
   preserving the original dot-product tree and ordered head sum. No added
