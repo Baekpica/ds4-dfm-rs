@@ -46703,6 +46703,9 @@ struct ds4_session {
     ds4_qwen_gpu_graph qwen_graph;
     bool qwen_graph_ready;
     ds4_glm53_gpu_graph glm53_graph;
+    /* Lazy allocation must retain this session's fitted rows and window,
+     * even after another context/bank fit changes the process environment. */
+    uint32_t glm53_rows, glm53_window;
     bool glm53_graph_ready;
 #endif
     /* Prism Bonsai keeps its whole trunk in one struct per backend, both
@@ -59137,7 +59140,9 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         /* GLM owns KDA/latent state; DeepSeek's raw cache shape is unrelated. */
         return e->backend == DS4_BACKEND_CUDA
-            ? glm53_session_bytes((uint32_t)ctx, e->glm53_stream.count,
+            ? glm53_session_bytes((uint32_t)ctx,
+                                  glm53_graph_row_cap((uint32_t)ctx, e->glm53_stream.count),
+                                  glm53_window_cap((uint32_t)ctx, e->glm53_stream.count),
                                   e->glm53_mtp ? GLM53_MTP_ON : GLM53_MTP_OFF) : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
@@ -72318,10 +72323,11 @@ static uint32_t qwen4exp_graph_prefill_cap_for_context(uint32_t ctx_size) {
 }
 
 static bool glm53_graph_session_fit_check(
-        ds4_backend backend, uint32_t ctx_size, uint32_t slots, glm53_mtp_mode mtp, bool loud,
+        ds4_backend backend, uint32_t ctx_size, uint32_t rows, uint32_t window,
+        glm53_mtp_mode mtp, bool loud,
         ds4_session_graph_fit_quote *q) {
     if (q) memset(q, 0, sizeof(*q));
-    const uint64_t plan = glm53_session_bytes(ctx_size, slots, mtp);
+    const uint64_t plan = glm53_session_bytes(ctx_size, rows, window, mtp);
     if (backend != DS4_BACKEND_CUDA || plan == 0u) return false;
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
     if (fit && fit[0] == '0' && fit[1] == '\0') {
@@ -72774,16 +72780,18 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     }
     if (ds4_session_is_glm53(s)) {
         const glm53_mtp_mode mtp = e->glm53_mtp ? GLM53_MTP_ON : GLM53_MTP_OFF;
-        const uint64_t est = glm53_session_bytes((uint32_t)s->ctx_size, e->glm53_stream.count, mtp);
+        const uint64_t est = glm53_session_bytes((uint32_t)s->ctx_size,
+                                                s->glm53_rows, s->glm53_window, mtp);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, est, 0);
         s->graph_alloc_bytes = 0u;
         const uint64_t census_before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = glm53_graph_session_fit_check(
-                e->backend, (uint32_t)s->ctx_size, e->glm53_stream.count, mtp, true, NULL) &&
-            glm53_graph_alloc(&s->glm53_graph, &e->model, &e->weights,
-                              (uint32_t)s->ctx_size,
-                              e->glm53_stream.count ? &e->glm53_stream : NULL) &&
+                e->backend, (uint32_t)s->ctx_size, s->glm53_rows, s->glm53_window,
+                mtp, true, NULL) &&
+            glm53_graph_alloc_plan(&s->glm53_graph, &e->model, &e->weights,
+                                   (uint32_t)s->ctx_size, s->glm53_rows, s->glm53_window,
+                                   e->glm53_stream.count ? &e->glm53_stream : NULL) &&
             (!e->glm53_mtp || glm53_mtp_enable(&s->glm53_graph));
         ds4_gpu_mem_scope_end();
         if (!ok) {
@@ -73074,7 +73082,9 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         q->fits = glm53_graph_session_fit_check(
-            e->backend, (uint32_t)ctx_size, e->glm53_stream.count,
+            e->backend, (uint32_t)ctx_size,
+            glm53_graph_row_cap((uint32_t)ctx_size, e->glm53_stream.count),
+            glm53_window_cap((uint32_t)ctx_size, e->glm53_stream.count),
             e->glm53_mtp ? GLM53_MTP_ON : GLM53_MTP_OFF, false, q) ? 1 : 0;
         return q->fits;
     }
@@ -73250,7 +73260,9 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         s->engine = e;
         s->ctx_size = ctx_size;
         s->generation = 1u;
-        s->prefill_cap = glm53_prefill_cap((uint32_t)ctx_size, e->glm53_stream.count);
+        s->glm53_rows = glm53_graph_row_cap((uint32_t)ctx_size, e->glm53_stream.count);
+        s->glm53_window = glm53_window_cap((uint32_t)ctx_size, e->glm53_stream.count);
+        s->prefill_cap = s->glm53_window ? s->glm53_window : s->glm53_rows;
         if (!s->prefill_cap) { free(s); return 1; }
         s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
         if (ds4_session_lazy_graph_enabled()) {

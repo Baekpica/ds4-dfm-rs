@@ -16,7 +16,8 @@ from test_glm53_close_fixture import ROOT, run
 
 
 def body(source, name="glm53_graph_prefill"):
-    match = re.search(r"^static (?:bool|int|uint32_t) " + re.escape(name) + r"\(", source, re.M)
+    match = re.search(r"^(?:static )?(?:bool|int|void|uint32_t|uint64_t) " + re.escape(name) + r"\(",
+                      source, re.M)
     if not match:
         raise ValueError("Prefill signature changed; update the fixture boundary")
     tokens = re.finditer(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*|[{}]',

@@ -58,8 +58,8 @@ static uint32_t glm53_prefill_cap(uint32_t ctx, uint32_t slots) {
     return window ? window : glm53_graph_row_cap(ctx, slots);
 }
 
-static uint64_t glm53_window_bytes(uint32_t ctx, uint32_t slots) {
-    return 2u * (uint64_t)glm53_window_cap(ctx, slots) * DS4_N_HC * DS4_N_EMBD * sizeof(float);
+static uint64_t glm53_window_bytes(uint32_t window) {
+    return 2u * (uint64_t)window * DS4_N_HC * DS4_N_EMBD * sizeof(float);
 }
 
 static bool glm53_graph_diag(void) {
@@ -130,21 +130,22 @@ static uint64_t glm53_graph_state_bytes(void) {
         2u * (uint64_t)DS4_N_EMBD * sizeof(float);
 }
 
-static uint64_t glm53_graph_bytes_for(uint32_t ctx_cap, uint32_t slots) {
+static uint64_t glm53_graph_bytes_plan(uint32_t ctx_cap, uint32_t rows, uint32_t window) {
     if (!ctx_cap || ctx_cap > DS4_GLM53_RESIDENT_CTX_MAX ||
+        !rows || rows > ctx_cap || rows > GLM53_PREFILL_MAX ||
+        (window && (window != GLM53_PREFILL_WINDOW || window > ctx_cap ||
+                    rows < GLM53_DENSE_MIN_ROWS)) ||
         (glm53_graph_diag() && ctx_cap > GLM53_DIAG_CTX_MAX)) { return 0u; }
     ds4_glm53_gpu_graph quote = {0};
     ds4_glm53_gpu_graph *g = &quote;
     g->pool_cap = (ctx_cap + DS4_GLM53_POOL_SIZE - 1u) / DS4_GLM53_POOL_SIZE;
-    const uint32_t rows = glm53_graph_row_cap(ctx_cap, slots);
-    if (!rows) { return 0u; }
     uint64_t bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
 #define GLM53_QUOTE(field, cols, type) bytes += (uint64_t)rows * (cols) * sizeof(type);
     GLM53_ROW_BUFFERS(GLM53_QUOTE)
 #undef GLM53_QUOTE
     bytes += ds4_gpu_solar_kda_prefill_scratch_bytes(rows, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
     bytes += glm53_dense_reserve(rows, ctx_cap);
-    bytes += glm53_window_bytes(ctx_cap, slots);
+    bytes += glm53_window_bytes(window);
 
     uint32_t kda, dsa;
     glm53_graph_layers(&kda, &dsa);
@@ -162,14 +163,20 @@ static uint64_t glm53_graph_bytes_for(uint32_t ctx_cap, uint32_t slots) {
     return bytes + (uint64_t)dsa * cache + 2u * (uint64_t)DS4_N_EMBD * sizeof(float);
 }
 
+static uint64_t glm53_graph_bytes_for(uint32_t ctx_cap, uint32_t slots) {
+    return glm53_graph_bytes_plan(ctx_cap, glm53_graph_row_cap(ctx_cap, slots),
+                                  glm53_window_cap(ctx_cap, slots));
+}
+
 static uint64_t glm53_graph_bytes_estimate(uint32_t ctx_cap) {
     return glm53_graph_bytes_for(ctx_cap, 0u);
 }
 
 typedef enum { GLM53_MTP_OFF, GLM53_MTP_ON } glm53_mtp_mode;
 
-static uint64_t glm53_session_bytes(uint32_t ctx, uint32_t slots, glm53_mtp_mode mode) {
-    const uint64_t base = glm53_graph_bytes_for(ctx, slots);
+static uint64_t glm53_session_bytes(uint32_t ctx, uint32_t rows,
+        uint32_t window, glm53_mtp_mode mode) {
+    const uint64_t base = glm53_graph_bytes_plan(ctx, rows, window);
     if (!base || mode == GLM53_MTP_OFF) { return base; }
     return base + glm53_mtp_bytes(ctx) + GLM53_MTP_SAVES * glm53_graph_state_bytes();
 }
@@ -296,16 +303,17 @@ static bool glm53_graph_state(ds4_glm53_gpu_graph *g,
         state_cursor == g->state_bytes && control_cursor == g->control_bytes;
 }
 
-static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
+static bool glm53_graph_alloc_plan(ds4_glm53_gpu_graph *g,
         const ds4_model *model, const ds4_weights *weights, uint32_t ctx_cap,
-        ds4_glm53_stream *stream) {
+        uint32_t rows, uint32_t window, ds4_glm53_stream *stream) {
     if (!g || !model || !weights || (stream && stream->count < DS4_N_EXPERT_USED) ||
         DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
-        !glm53_graph_bytes_for(ctx_cap, stream ? stream->count : 0u)) { return false; }
+        (window && (!stream || stream->count < 2u * DS4_N_EXPERT)) ||
+        !glm53_graph_bytes_plan(ctx_cap, rows, window)) { return false; }
     memset(g, 0, sizeof(*g));
     g->ctx_cap = ctx_cap;
-    g->row_cap = glm53_graph_row_cap(ctx_cap, stream ? stream->count : 0u);
-    g->window_cap = glm53_window_cap(ctx_cap, stream ? stream->count : 0u);
+    g->row_cap = rows;
+    g->window_cap = window;
     g->pool_cap = (ctx_cap + DS4_GLM53_POOL_SIZE - 1u) / DS4_GLM53_POOL_SIZE;
     g->expanded_diag = glm53_graph_diag();
     g->stream = stream;
@@ -322,7 +330,7 @@ static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
     g->workspace_bytes += logit_bytes;
     // The CUDA temporary arena retains the largest dense GEMM slab.
     g->workspace_bytes += glm53_dense_reserve(g->row_cap, ctx_cap);
-    g->workspace_bytes += glm53_window_bytes(ctx_cap, stream ? stream->count : 0u);
+    g->workspace_bytes += glm53_window_bytes(window);
     const uint64_t scratch_bytes = ds4_gpu_solar_kda_prefill_scratch_bytes(
         g->row_cap, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
     if (scratch_bytes) {
@@ -346,6 +354,14 @@ static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
         (double)g->kv_bytes / 1073741824.0, (double)g->state_bytes / 1048576.0,
         (double)g->workspace_bytes / 1048576.0);
     return true;
+}
+
+static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
+        const ds4_model *model, const ds4_weights *weights, uint32_t ctx_cap,
+        ds4_glm53_stream *stream) {
+    const uint32_t slots = stream ? stream->count : 0u;
+    return glm53_graph_alloc_plan(g, model, weights, ctx_cap,
+        glm53_graph_row_cap(ctx_cap, slots), glm53_window_cap(ctx_cap, slots), stream);
 }
 
 static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,

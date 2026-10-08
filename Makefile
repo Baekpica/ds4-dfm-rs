@@ -1763,7 +1763,8 @@ test-glm53-lifetime:
 test-glm53-fit:
 	@glm_fixture_dir=$$(mktemp -d); \
 	trap 'rm -rf "$$glm_fixture_dir"' EXIT; \
-	python3 tests/test_glm53_fit_fixture.py "$$glm_fixture_dir/fit" --sanitize
+	python3 tests/test_glm53_fit_fixture.py "$$glm_fixture_dir/fit" --sanitize && \
+	python3 tests/test_glm53_lazy_fixture.py "$$glm_fixture_dir/lazy" --sanitize
 
 tests/test_glm53_width: tests/test_glm53_width.cu $(DS4_CUDA_CORE_OBJS)
 	@test -f "$(DS4_GLM53_WIDTH_FIXTURE)/weights.h" || \
