@@ -19,6 +19,7 @@ const PREFILL_ROWS_MAX: u64 = 2048;
 const PREFILL_ROWS_ENV: &str = "DS4_GLM53_PREFILL_ROWS";
 const PREFILL_WINDOW: u32 = 4096;
 const STAGE_BANKS: u32 = 2;
+const PREFETCH_ENV: &str = "DS4_GLM53_PREFETCH";
 pub(super) const PREFILL_WINDOW_ENV: &str = "DS4_GLM53_PREFILL_WINDOW";
 
 struct WindowEnv {
@@ -100,6 +101,16 @@ pub(super) fn window_bytes(
         * u64::from(shape.n_hc)
         * u64::from(shape.n_embd)
         * 4
+}
+
+fn staging_banks(req: &ServingRequest, slots: u32, rows: u32, experts: u32) -> u64 {
+    let ahead = std::env::var(PREFETCH_ENV).ok().is_none_or(|v| v != "0")
+        && prefill_window(req, Some(slots), rows, experts).is_some();
+    if ahead {
+        u64::from(STAGE_BANKS)
+    } else {
+        1
+    }
 }
 
 pub(super) fn prefill_rows(req: &ServingRequest, slots: Option<u32>, used: u32) -> Result<u32> {
@@ -192,13 +203,8 @@ pub fn probe_ssd_quote(
     let cache = capacity
         .checked_mul(per_slot)
         .ok_or_else(|| invalid("SSD cache budget overflow"))?;
-    let selection = u64::from(prefill_rows(
-        req,
-        Some(capacity as u32),
-        shape.n_expert_used,
-    )?) * u64::from(shape.n_expert_used)
-        * SELECTED_ID_BYTES
-        * 2;
+    let rows = prefill_rows(req, Some(capacity as u32), shape.n_expert_used)?;
+    let selection = u64::from(rows) * u64::from(shape.n_expert_used) * SELECTED_ID_BYTES * 2;
     let metadata = capacity
         .checked_mul(CACHE_SLOT_BYTES)
         .and_then(|bytes| bytes.checked_add(selection))
@@ -208,16 +214,8 @@ pub fn probe_ssd_quote(
     facts.ssd_mandatory_bytes = Some(span_bytes(spans)?);
     facts.ssd_cache_experts = Some(capacity as u32);
     facts.ssd_cache_bytes = Some(cache);
-    let ahead = std::env::var("DS4_GLM53_PREFETCH")
-        .ok()
-        .is_none_or(|v| v != "0")
-        && window_bytes(
-            req,
-            shape,
-            prefill_rows(req, Some(capacity as u32), shape.n_expert_used)?,
-            Some(capacity as u32),
-        ) > 0;
-    facts.ssd_staging_bytes = Some(gate_max.max(down_max) * if ahead { 2 } else { 1 });
+    facts.ssd_staging_bytes =
+        Some(gate_max.max(down_max) * staging_banks(req, capacity as u32, rows, shape.n_expert));
     facts.ssd_metadata_bytes = Some(metadata);
     Ok(())
 }
@@ -236,7 +234,8 @@ pub(super) fn fit_auto_cache(
     {
         return;
     }
-    let Some(quote) = crate::resolve_plan(req, Some(caps), facts).quote else {
+    let plan = crate::resolve_plan(req, Some(caps), facts);
+    let Some(quote) = plan.quote else {
         return;
     };
     if quote.total > quote.available {
@@ -246,12 +245,29 @@ pub(super) fn fit_auto_cache(
     let Some(slot) = facts.ssd_cache_bytes.and_then(|n| n.checked_div(count)) else {
         return;
     };
+    let Ok(rows) = prefill_rows(req, Some(count as u32), shape.n_expert_used) else {
+        return;
+    };
+    let rows = plan.effective.native_chunk.unwrap_or(rows);
+    let staging = facts.ssd_staging_bytes.unwrap_or(0);
+    let transfer = staging / staging_banks(req, count as u32, rows, shape.n_expert);
     let metadata = count * CACHE_SLOT_BYTES;
-    let budget = quote.available - quote.total + quote.expert_cache + metadata;
+    let budget = quote.available - quote.total + quote.expert_cache + metadata + staging;
     let all = u64::from(shape.n_layer - shape.n_leading_dense) * u64::from(shape.n_expert);
-    let capacity = (budget / (slot + CACHE_SLOT_BYTES)).min(all);
+    let cost = slot + CACHE_SLOT_BYTES;
+    let mut capacity = (budget.saturating_sub(transfer) / cost).min(all);
+    if staging_banks(req, capacity as u32, rows, shape.n_expert) > 1 {
+        // Crossing the two-layer slot threshold funds a second read buffer.
+        // If it cannot fit, the largest selected-expert cache stays below it.
+        let selected_max = u64::from(STAGE_BANKS * shape.n_expert - 1);
+        capacity = (budget.saturating_sub(u64::from(STAGE_BANKS) * transfer) / cost)
+            .min(all)
+            .max(selected_max);
+    }
     facts.ssd_cache_experts = Some(capacity as u32);
     facts.ssd_cache_bytes = Some(capacity * slot);
+    facts.ssd_staging_bytes =
+        Some(transfer * staging_banks(req, capacity as u32, rows, shape.n_expert));
     facts.ssd_metadata_bytes =
         Some(facts.ssd_metadata_bytes.unwrap_or(0) - metadata + capacity * CACHE_SLOT_BYTES);
 }
@@ -537,5 +553,84 @@ mod tests {
             capacity.push(plan.effective.ssd_streaming_cache_experts.unwrap());
         }
         assert!(capacity[1] < capacity[0]);
+    }
+
+    #[test]
+    fn glm_review_auto_staging() {
+        let shape = shape_for_variant(Variant::Glm53Flash);
+        let caps = crate::caps_from_shape(shape);
+        let inventory = inventory();
+        let req = ServingRequest {
+            ctx: 32768,
+            max_seqs: crate::MaxSeqs::Fixed(1),
+            native_chunk: Some(2048),
+            ssd_streaming: true,
+            ..ServingRequest::default()
+        };
+        let transfer = inventory
+            .tensors
+            .iter()
+            .filter(|t| t.name.ends_with("_exps.weight"))
+            .map(|t| t.bytes / u64::from(shape.n_expert))
+            .max()
+            .unwrap();
+        let threshold = STAGE_BANKS * shape.n_expert;
+        for (target, stage, shortfall, rows) in [
+            (threshold - 1, 1, 0, 2048),
+            (threshold, 2, 0, 2048),
+            (threshold + 1, 2, 0, 2048),
+            (threshold, 2, transfer, 2048),
+            (threshold, 1, 0, 64),
+        ] {
+            let mut facts = EngineFacts::default();
+            probe_ssd_quote(&mut facts, &req, shape, &inventory).unwrap();
+            assert_eq!(facts.ssd_staging_bytes, Some(transfer));
+            let count = u64::from(shape.n_expert_used);
+            let slot = facts.ssd_cache_bytes.unwrap() / count;
+            let host = crate::QuoteHost {
+                weights_bytes: facts.ssd_mandatory_bytes.unwrap(),
+                mtp_bytes: 0,
+                available_bytes: 90 * GIB,
+                native_chunk: None,
+                vision: false,
+            };
+            let fitted = ServingRequest {
+                native_chunk: Some(rows),
+                ..req.clone()
+            };
+            crate::fill_quote_facts(&mut facts, &fitted, caps, Some(shape), host);
+            let total = crate::resolve_plan(&req, Some(caps), &facts)
+                .quote
+                .unwrap()
+                .total;
+            let fixed = total - count * (slot + CACHE_SLOT_BYTES) - transfer;
+            facts.host_available_bytes = Some(
+                fixed + u64::from(target) * (slot + CACHE_SLOT_BYTES) + stage * transfer
+                    - shortfall,
+            );
+            fit_auto_cache(&mut facts, &req, caps, shape);
+            let capacity = if shortfall == 0 { target } else { target - 1 };
+            let banks = if capacity < threshold || rows < 128 {
+                1
+            } else {
+                2
+            };
+            assert_eq!(facts.ssd_cache_experts, Some(capacity));
+            assert_eq!(facts.ssd_staging_bytes, Some(banks * transfer));
+            let quote = crate::resolve_plan(&req, Some(caps), &facts).quote.unwrap();
+            assert!(quote.total <= quote.available);
+
+            // Repricing the fitted count must match an explicit native cache.
+            let pinned = ServingRequest {
+                ssd_streaming_cache_experts: Some(capacity),
+                ..fitted
+            };
+            let mut exact = EngineFacts::default();
+            probe_ssd_quote(&mut exact, &pinned, shape, &inventory).unwrap();
+            assert_eq!(facts.ssd_staging_bytes, exact.ssd_staging_bytes);
+            fit_auto_cache(&mut facts, &req, caps, shape);
+            assert_eq!(facts.ssd_cache_experts, Some(capacity));
+            assert_eq!(facts.ssd_staging_bytes, exact.ssd_staging_bytes);
+        }
     }
 }

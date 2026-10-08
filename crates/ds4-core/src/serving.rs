@@ -1599,14 +1599,23 @@ impl ResolvedPlan {
         // admission. An unidentified model or workspace offers no chunk choices.
         let scheduler_chunks: Vec<_> = self
             .caps
-            .and(self.effective.native_chunk)
+            .and(
+                self.effective
+                    .prefill_window
+                    .or(self.effective.native_chunk),
+            )
             .map(|cap| {
-                let chunks: &[u32] = if self.family == Some(ModelFamily::Glm53) {
-                    &[1, 128, 256]
-                } else {
-                    &VERIFIED_PREFILL_CHUNKS
-                };
-                chunks.iter().copied().filter(|n| *n <= cap).collect()
+                if self.family == Some(ModelFamily::Glm53)
+                    && cap > 0
+                    && cap < VERIFIED_PREFILL_CHUNKS[0]
+                {
+                    return vec![cap];
+                }
+                VERIFIED_PREFILL_CHUNKS
+                    .iter()
+                    .copied()
+                    .filter(|n| *n <= cap)
+                    .collect()
             })
             .unwrap_or_default();
         json!({
@@ -2687,6 +2696,51 @@ mod tests {
         assert_eq!(controls["scheduler_chunks"], json!([]));
         for key in ["native_prefill_env", "prefix_reuse", "banks", "mtp", "disk"] {
             assert!(controls[key].is_null(), "{key}: {controls}");
+        }
+    }
+
+    #[test]
+    fn glm_review_controls() {
+        let caps = caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        let window_slots = 2 * crate::SHAPE_GLM53_FLASH.n_expert;
+        for (rows, slots, expected) in [
+            (Some(128), None, vec![128]),
+            (None, None, vec![256, 512, 1024, 2048]),
+            (
+                Some(2048),
+                Some(window_slots),
+                vec![256, 512, 1024, 2048, 4096],
+            ),
+        ] {
+            let req = ServingRequest {
+                ctx: 8192,
+                max_seqs: MaxSeqs::Fixed(1),
+                native_chunk: rows,
+                ssd_streaming: slots.is_some(),
+                ssd_streaming_cache_experts: slots,
+                ..ServingRequest::default()
+            };
+            let facts = EngineFacts {
+                native_chunk: Some(rows.unwrap_or(GLM_PREFILL_MAX)),
+                ssd_cache_experts: slots,
+                ..EngineFacts::default()
+            };
+            let p = resolve_plan(&req, Some(caps), &facts);
+            let widths = p.to_json()["controls"]["scheduler_chunks"].clone();
+            assert_eq!(widths, json!(expected));
+
+            // Every advertised proposal must survive the same admission fence.
+            for width in expected {
+                let proposed = ServingRequest {
+                    sched_chunk: Some(width),
+                    sched_chunk_live: Some(width),
+                    ..req.clone()
+                };
+                let p = resolve_plan(&proposed, Some(caps), &facts);
+                assert!(!p.has_errors(), "{}", p.report());
+                assert_eq!(p.effective.sched_chunk, width);
+                assert_eq!(p.effective.sched_chunk_live, width);
+            }
         }
     }
 
