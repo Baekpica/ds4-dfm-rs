@@ -1759,6 +1759,12 @@ test-glm53-lifetime:
 		ctor close finish finish_retry finish_cancel && \
 	python3 tests/test_glm53_prefill_fixture.py "$$glm_fixture_dir/prefill"
 
+.PHONY: test-glm53-fit
+test-glm53-fit:
+	@glm_fixture_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$glm_fixture_dir"' EXIT; \
+	python3 tests/test_glm53_fit_fixture.py "$$glm_fixture_dir/fit" --sanitize
+
 tests/test_glm53_width: tests/test_glm53_width.cu $(DS4_CUDA_CORE_OBJS)
 	@test -f "$(DS4_GLM53_WIDTH_FIXTURE)/weights.h" || \
 		{ echo "set DS4_GLM53_WIDTH_FIXTURE to the extracted fixture directory" >&2; exit 2; }

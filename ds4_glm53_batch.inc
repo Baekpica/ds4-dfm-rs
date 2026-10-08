@@ -460,8 +460,7 @@ static int glm53_batch_ctx_create(ds4_engine *e, int ctx_size, int max_seq,
         }
     }
     ds4_batch_ctx *ctx = xcalloc(1u, sizeof(*ctx));
-    ctx->e = e; ctx->ctx_size = (uint32_t)ctx_size; ctx->prefill_cap = chosen == 1u
-        ? glm53_prefill_cap((uint32_t)ctx_size, slots) : cap;
+    ctx->e = e; ctx->ctx_size = (uint32_t)ctx_size;
     ctx->raw_cap = (uint32_t)ctx_size; ctx->seq_cap = (uint32_t)ctx_size; ctx->max_seq = chosen;
     ctx->serial_reserve = serial;
     for (;;) {
@@ -474,6 +473,9 @@ static int glm53_batch_ctx_create(ds4_engine *e, int ctx_size, int max_seq,
         }
         ctx->max_seq--;
     }
+    /* Allocation retry can reach one bank after the memory estimate. Publish
+     * that runtime's actual window/row cap, never the pre-retry bank plan. */
+    ctx->prefill_cap = ctx->glm53->prefill_cap;
     if ((uint64_t)ctx->max_seq * ctx->seq_cap > SIZE_MAX / sizeof(int)) {
         GLM53_BANK_ERR("batch_ctx_create: GLM-5.3 bank history size overflow");
         glm53_batch_free(ctx->glm53); free(ctx); return 1;
