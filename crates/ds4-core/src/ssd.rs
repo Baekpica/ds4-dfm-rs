@@ -140,10 +140,7 @@ pub(super) fn resolve_budget(
     if let Some(rows) = plan.effective.native_chunk {
         std::env::set_var("DS4_GLM53_PREFILL_ROWS", rows.to_string());
     }
-    std::env::set_var(
-        "DS4_GLM53_PREFILL_WINDOW",
-        plan.effective.prefill_window.unwrap_or(0).to_string(),
-    );
+    crate::ssd_quote::apply_window(plan.effective.prefill_window);
     eprintln!("SSD admission: requested={} rows={:?} effective={} experts {} bytes rows={:?} ctx={} banks={} qualified=unverified",
         if req.ssd_streaming_cache_experts.is_some() || req.ssd_streaming_cache_bytes.is_some() { "fixed" } else { "auto" },
         req.native_chunk, tuning.ssd_streaming_cache_experts,

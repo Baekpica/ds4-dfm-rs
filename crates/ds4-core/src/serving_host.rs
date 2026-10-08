@@ -5034,6 +5034,97 @@ exit 1
     }
 
     #[test]
+    fn glm_window_plan_reenables() {
+        let _env = lock_test_env();
+        let _vars: Vec<_> = [
+            "DS4_MEM_FLOOR_GB",
+            "DS4_SERVER_COALESCE_MAX",
+            "DS4_SERVER_FORK",
+            "DS4_SERVER_FORK_PARTIAL",
+            "DS4_GLM53_PREFILL_WINDOW",
+            "DS4_GLM53_PREFILL_ROWS",
+            "DS4_GLM53_MTP",
+            "DS4_MTP_SPEC_DISABLE",
+            "DS4_SERVER_CONTINUOUS",
+            "DS4_CONT_PREFILL_CHUNK",
+            "DS4_CONT_PREFILL_CHUNK_LIVE",
+        ]
+        .into_iter()
+        .map(EnvGuard::unset)
+        .collect();
+        let shape = SHAPE_GLM53_FLASH;
+        let caps = crate::caps_from_shape(shape);
+        let mut req = ServingRequest {
+            ctx: 32768,
+            max_seqs: MaxSeqs::Fixed(2),
+            native_chunk: Some(2048),
+            mtp_mode: MtpMode::Off,
+            ssd_streaming: true,
+            ssd_streaming_cache_experts: Some(1024),
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts {
+            ssd_cache_experts: Some(1024),
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(&mut facts, &req, caps, Some(shape), qwen_host(None));
+        let banked = resolve_plan(&req, Some(caps), &facts);
+        assert!(!banked.has_errors(), "{}", banked.report());
+        assert_eq!(banked.effective.prefill_window, None);
+        banked.apply_env();
+        assert_eq!(std::env::var("DS4_GLM53_PREFILL_WINDOW").unwrap(), "0");
+
+        // A serial allocation must refit against user intent, not the bank
+        // plan's native override, and price its two HC buffers before use.
+        req.max_seqs = MaxSeqs::Off;
+        let serial = std::thread::spawn(move || {
+            fill_quote_facts(&mut facts, &req, caps, Some(shape), qwen_host(None));
+            assert_eq!(
+                crate::ssd_quote::window_bytes(&req, shape, 2048, Some(1024)),
+                512 * MIB
+            );
+            resolve_plan(&req, Some(caps), &facts)
+        })
+        .join()
+        .unwrap();
+        assert!(!serial.has_errors(), "{}", serial.report());
+        assert_eq!(serial.effective.prefill_window, Some(4096));
+        serial.apply_env();
+        assert_eq!(std::env::var("DS4_GLM53_PREFILL_WINDOW").unwrap(), "4096");
+    }
+
+    #[test]
+    fn glm_window_keeps_user_off() {
+        let _env = lock_test_env();
+        let _window = EnvGuard::set("DS4_GLM53_PREFILL_WINDOW", "0");
+        let req = ServingRequest {
+            ctx: 32768,
+            max_seqs: MaxSeqs::Off,
+            ssd_streaming: true,
+            ssd_streaming_cache_experts: Some(1024),
+            ..ServingRequest::default()
+        };
+        let shape = SHAPE_GLM53_FLASH;
+        crate::ssd_quote::apply_window(None);
+        assert_eq!(
+            crate::ssd_quote::prefill_window(&req, Some(1024), 2048, shape.n_expert),
+            None
+        );
+        assert_eq!(
+            crate::ssd_quote::window_bytes(&req, shape, 2048, Some(1024)),
+            0
+        );
+
+        // An external diagnostic change replaces the remembered input.
+        std::env::set_var("DS4_GLM53_PREFILL_WINDOW", "4096");
+        crate::ssd_quote::apply_window(Some(4096));
+        assert_eq!(
+            crate::ssd_quote::prefill_window(&req, Some(1024), 2048, shape.n_expert),
+            Some(4096)
+        );
+    }
+
+    #[test]
     fn unopened_bank_has_no_credit() {
         let facts = EngineFacts {
             per_bank_bytes: Some(7 * GIB),

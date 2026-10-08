@@ -1647,6 +1647,10 @@ impl ResolvedPlan {
             std::env::remove_var("DS4_MTP_SPEC_DISABLE");
         }
         for (key, value) in self.env_overrides() {
+            if key == crate::ssd_quote::PREFILL_WINDOW_ENV {
+                crate::ssd_quote::apply_window(self.effective.prefill_window);
+                continue;
+            }
             std::env::set_var(key, value);
         }
     }

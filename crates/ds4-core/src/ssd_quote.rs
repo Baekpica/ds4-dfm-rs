@@ -4,6 +4,8 @@ use crate::{
     tensor_nbytes, validate_layouts, BindPlan, EngineFacts, Error, ModelFamily, Result,
     ServingRequest, Shape, TensorInventory,
 };
+use std::ffi::OsString;
+use std::sync::Mutex;
 
 #[cfg(test)]
 const GIB: u64 = 1 << 30;
@@ -17,6 +19,53 @@ const PREFILL_ROWS_MAX: u64 = 2048;
 const PREFILL_ROWS_ENV: &str = "DS4_GLM53_PREFILL_ROWS";
 const PREFILL_WINDOW: u32 = 4096;
 const STAGE_BANKS: u32 = 2;
+pub(super) const PREFILL_WINDOW_ENV: &str = "DS4_GLM53_PREFILL_WINDOW";
+
+struct WindowEnv {
+    requested: Option<OsString>,
+    written: OsString,
+}
+
+static WINDOW_ENV: Mutex<Option<WindowEnv>> = Mutex::new(None);
+
+impl WindowEnv {
+    fn requested(&self, current: Option<&std::ffi::OsStr>) -> Option<OsString> {
+        if current == Some(self.written.as_os_str()) {
+            return self.requested.clone();
+        }
+        current.map(OsString::from)
+    }
+}
+
+fn window_enabled() -> bool {
+    let state = WINDOW_ENV.lock().unwrap_or_else(|p| p.into_inner());
+    let current = std::env::var_os(PREFILL_WINDOW_ENV);
+    let requested = state
+        .as_ref()
+        .map(|s| s.requested(current.as_deref()))
+        .unwrap_or(current);
+    requested
+        .as_ref()
+        .and_then(|v| v.to_str())
+        .is_none_or(|v| v == "4096")
+}
+
+pub(super) fn apply_window(window: Option<u32>) {
+    let mut state = WINDOW_ENV.lock().unwrap_or_else(|p| p.into_inner());
+    let current = std::env::var_os(PREFILL_WINDOW_ENV);
+    let requested = state
+        .as_ref()
+        .map(|s| s.requested(current.as_deref()))
+        .unwrap_or_else(|| current.clone());
+    let written = OsString::from(window.unwrap_or(0).to_string());
+    if current.as_ref() != Some(&written) {
+        std::env::set_var(PREFILL_WINDOW_ENV, &written);
+    }
+    // Native needs the fitted value, but a bank plan's internal 0 must not
+    // become a user kill switch for later serial/media allocations. Retain
+    // provenance across host threads; an external env change replaces it.
+    *state = Some(WindowEnv { requested, written });
+}
 
 pub(super) fn prefill_window(
     req: &ServingRequest,
@@ -30,9 +79,7 @@ pub(super) fn prefill_window(
         && rows >= 128
         && req.ctx >= PREFILL_WINDOW as i32
         && slots.is_some_and(|n| n >= STAGE_BANKS * experts)
-        && std::env::var("DS4_GLM53_PREFILL_WINDOW")
-            .ok()
-            .is_none_or(|v| v == "4096"))
+        && window_enabled())
     .then_some(PREFILL_WINDOW)
 }
 

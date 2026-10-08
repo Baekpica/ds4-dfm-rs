@@ -1798,6 +1798,7 @@ impl Model {
                 message: format!("GLM runtime budget rejected: {}", plan.report()),
             });
         }
+        ssd_quote::apply_window(plan.effective.prefill_window);
         if let Some(rows) = plan.effective.native_chunk {
             std::env::set_var("DS4_GLM53_PREFILL_ROWS", rows.to_string());
             eprintln!("GLM Prefill rows: requested={} effective={rows} ctx={ctx_size} banks={} qualified=unverified",
