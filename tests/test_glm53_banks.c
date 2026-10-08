@@ -25,7 +25,7 @@ typedef struct { int unused; } ds4_model;
 typedef struct { int unused; } ds4_weights;
 typedef struct {
     bool ready, expanded_diag, mtp_ready;
-    uint32_t ctx_cap, cache_len, row_cap, pool_cap, last_rows, mtp_len, mtp_min;
+    uint32_t ctx_cap, cache_len, row_cap, window_cap, pool_cap, last_rows, mtp_len, mtp_min;
     uint64_t state_bytes, control_bytes;
     ds4_gpu_tensor *state_pool, *control_pool, *logits, *kda_scratch;
     ds4_gpu_tensor *last_hidden, *mtp_hidden, *mtp_kv, *mtp_concat, *mtp_journal;

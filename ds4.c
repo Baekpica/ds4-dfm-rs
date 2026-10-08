@@ -21698,6 +21698,7 @@ typedef struct {
     uint32_t ctx_cap;
     uint32_t cache_len;
     uint32_t row_cap;
+    uint32_t window_cap;
     uint32_t pool_cap;
     uint32_t last_rows;
     ds4_glm53_stream *stream;
@@ -72144,6 +72145,10 @@ void ds4_engine_close(ds4_engine *e) {
 #endif
     ds4_ple_store_close(e->qwen_ple_store);
     e->qwen_ple_store = NULL;
+#ifndef DS4_NO_GPU
+    /* The reader borrows the model and layer table until its join. */
+    glm53_stream_cancel(&e->glm53_stream);
+#endif
     weights_free(&e->weights);
     vocab_free(&e->vocab);
     ds4_threads_shutdown();
@@ -73245,7 +73250,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         s->engine = e;
         s->ctx_size = ctx_size;
         s->generation = 1u;
-        s->prefill_cap = glm53_graph_row_cap((uint32_t)ctx_size, e->glm53_stream.count);
+        s->prefill_cap = glm53_prefill_cap((uint32_t)ctx_size, e->glm53_stream.count);
         if (!s->prefill_cap) { free(s); return 1; }
         s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
         if (ds4_session_lazy_graph_enabled()) {

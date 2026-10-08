@@ -389,6 +389,7 @@ impl Model {
         max_seq: i32,
         max_total_tokens: i32,
     ) -> Result<BatchCtx<'_>> {
+        self.fit_glm_rows(ctx_size, crate::MaxSeqs::Fixed(max_seq.max(1) as u32))?;
         let mut raw = ptr::null_mut();
         let mut err = [0u8; 512];
         let rc = unsafe {

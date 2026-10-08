@@ -4,7 +4,7 @@ use crate::{Backend, DistributedConfig, Error, ModelFamily, ModelOpenOption, Ope
 
 const GIB: u64 = 1 << 30;
 const CACHE_ARG_ERROR: &str =
-    "--ssd-streaming-cache-experts must be a positive count or <number>GB";
+    "--ssd-streaming-cache-experts must be auto, a positive count or <number>GB";
 const COPY_ENV_KEYS: [&str; 4] = [
     "DS4_MODEL_ANON_HUGE",
     "DS4_CUDA_WEIGHT_IPC_MANIFEST",
@@ -15,6 +15,9 @@ const COPY_ENV_KEYS: [&str; 4] = [
 impl ModelOpenOption {
     /// A bare count is global expert capacity; GB denotes GiB, as upstream.
     pub fn ssd_cache(value: &str) -> Result<Self> {
+        if value == "auto" {
+            return Ok(Self::SsdCacheAuto);
+        }
         let invalid = || Error {
             code: 1,
             message: CACHE_ARG_ERROR.into(),
@@ -79,12 +82,86 @@ pub(super) fn check_tuning(
     Ok(())
 }
 
+pub(super) fn resolve_budget(
+    tuning: &mut OpenTuning,
+    id: &crate::Identified,
+    inventory: &crate::TensorInventory,
+    backend: Backend,
+) -> Result<()> {
+    if !tuning.ssd_streaming {
+        return Ok(());
+    }
+    let mut req = tuning.serving_budget.clone().unwrap_or_default();
+    req.backend = backend;
+    req.ssd_streaming = true;
+    req.ssd_streaming_cold = tuning.ssd_streaming_cold;
+    req.ssd_streaming_cache_experts =
+        (tuning.ssd_streaming_cache_experts != 0).then_some(tuning.ssd_streaming_cache_experts);
+    req.ssd_streaming_cache_bytes =
+        (tuning.ssd_streaming_cache_bytes != 0).then_some(tuning.ssd_streaming_cache_bytes);
+    req.mtp_draft = Some(tuning.mtp_draft_tokens);
+    req.mtp_mode = crate::glm_mtp::mode(
+        tuning.mtp_draft_tokens,
+        std::env::var("DS4_GLM53_MTP").ok().as_deref(),
+        std::env::var("DS4_MTP_SPEC_DISABLE").ok().as_deref(),
+    );
+    let caps = crate::caps_from_ident(id);
+    let mut facts = crate::EngineFacts::default();
+    crate::probe_ssd_quote(&mut facts, &req, id.shape, inventory)?;
+    crate::attach_host_quote(
+        &mut facts,
+        &req,
+        caps,
+        Some(id.shape),
+        None,
+        None,
+        tuning.vision_path.as_deref().map(std::path::Path::new),
+        None,
+        1,
+        None,
+        tuning.vision_path.is_some(),
+        false,
+    );
+    let plan = crate::resolve_plan(&req, Some(caps), &facts);
+    if plan.has_errors() || plan.quote.is_none() {
+        return Err(Error {
+            code: 1,
+            message: format!("SSD budget rejected: {}", plan.report()),
+        });
+    }
+    tuning.ssd_streaming_cache_experts =
+        plan.effective
+            .ssd_streaming_cache_experts
+            .ok_or_else(|| Error {
+                code: 1,
+                message: "SSD cache budget unavailable".into(),
+            })?;
+    tuning.ssd_streaming_cache_bytes = 0;
+    if let Some(rows) = plan.effective.native_chunk {
+        std::env::set_var("DS4_GLM53_PREFILL_ROWS", rows.to_string());
+    }
+    std::env::set_var(
+        "DS4_GLM53_PREFILL_WINDOW",
+        plan.effective.prefill_window.unwrap_or(0).to_string(),
+    );
+    eprintln!("SSD admission: requested={} rows={:?} effective={} experts {} bytes rows={:?} ctx={} banks={} qualified=unverified",
+        if req.ssd_streaming_cache_experts.is_some() || req.ssd_streaming_cache_bytes.is_some() { "fixed" } else { "auto" },
+        req.native_chunk, tuning.ssd_streaming_cache_experts,
+        plan.effective.ssd_streaming_cache_bytes.unwrap_or(0), plan.effective.native_chunk,
+        req.ctx, plan.effective.max_seqs);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn cache_counts_and_bytes() {
+        assert_eq!(
+            ModelOpenOption::ssd_cache("auto").unwrap(),
+            ModelOpenOption::SsdCacheAuto
+        );
         assert_eq!(
             ModelOpenOption::ssd_cache("8").unwrap(),
             ModelOpenOption::SsdCacheExperts(8)
@@ -113,6 +190,7 @@ mod tests {
     fn cache_requires_streaming() {
         for option in [
             ModelOpenOption::SsdStreamingCold,
+            ModelOpenOption::SsdCacheAuto,
             ModelOpenOption::SsdCacheExperts(8),
             ModelOpenOption::SsdCacheBytes(GIB),
         ] {
@@ -133,6 +211,17 @@ mod tests {
         assert!(
             check_ssd_options(&options, Some(ModelFamily::Glm53), Backend::Cuda, None).is_err()
         );
+        assert!(check_ssd_options(
+            &[
+                ModelOpenOption::SsdStreaming,
+                ModelOpenOption::SsdCacheAuto,
+                ModelOpenOption::SsdCacheExperts(8)
+            ],
+            Some(ModelFamily::Glm53),
+            Backend::Cuda,
+            None
+        )
+        .is_err());
     }
 
     #[test]

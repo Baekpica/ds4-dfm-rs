@@ -295,7 +295,8 @@ static ds4_glm53_batch_runtime *glm53_batch_create(ds4_engine *e,
     if (ds4_engine_has_mtp(e) && !glm53_mtp_enable(&rt->graph[0])) {
         glm53_batch_free(rt); return NULL;
     }
-    rt->prefill_cap = rt->graph[0].row_cap;
+    if (max_seq > 1u) { rt->graph[0].window_cap = 0u; }
+    rt->prefill_cap = rt->graph[0].window_cap ? rt->graph[0].window_cap : rt->graph[0].row_cap;
     for (uint32_t b = 0; b < max_seq; b++) {
         if (b && !glm53_bank_clone(&rt->graph[b], &rt->graph[0])) {
             glm53_batch_free(rt); return NULL;
@@ -459,7 +460,8 @@ static int glm53_batch_ctx_create(ds4_engine *e, int ctx_size, int max_seq,
         }
     }
     ds4_batch_ctx *ctx = xcalloc(1u, sizeof(*ctx));
-    ctx->e = e; ctx->ctx_size = (uint32_t)ctx_size; ctx->prefill_cap = cap;
+    ctx->e = e; ctx->ctx_size = (uint32_t)ctx_size; ctx->prefill_cap = chosen == 1u
+        ? glm53_prefill_cap((uint32_t)ctx_size, slots) : cap;
     ctx->raw_cap = (uint32_t)ctx_size; ctx->seq_cap = (uint32_t)ctx_size; ctx->max_seq = chosen;
     ctx->serial_reserve = serial;
     for (;;) {

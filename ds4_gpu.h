@@ -78,6 +78,13 @@ const void *ds4_gpu_tensor_ptr(const ds4_gpu_tensor *tensor);
 void *ds4_gpu_tensor_contents(ds4_gpu_tensor *tensor);
 int ds4_gpu_tensor_fill_f32(ds4_gpu_tensor *tensor, float value, uint64_t count);
 int ds4_gpu_tensor_write(ds4_gpu_tensor *tensor, uint64_t offset, const void *data, uint64_t bytes);
+/* Bounded SSD uploads use an independent stream. A completed write releases
+ * its host buffer without waiting for unrelated inference commands. */
+typedef struct ds4_gpu_upload ds4_gpu_upload;
+ds4_gpu_upload *ds4_gpu_upload_new(void);
+int ds4_gpu_upload_write(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
+                        uint64_t offset, const void *src, uint64_t bytes);
+void ds4_gpu_upload_free(ds4_gpu_upload *upload);
 int ds4_gpu_tensor_read(const ds4_gpu_tensor *tensor, uint64_t offset, void *data, uint64_t bytes);
 int ds4_gpu_tensor_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
                           const ds4_gpu_tensor *src, uint64_t src_offset,

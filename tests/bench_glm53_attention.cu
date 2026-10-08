@@ -139,8 +139,8 @@ static void launch(ds4_gpu_tensor &out, const ds4_gpu_tensor &q,
 int main(int argc, char **argv) {
     CHECK(argc == 4);
     const uint32_t rows = (uint32_t)strtoul(argv[1], NULL, 10);
-    CHECK(rows == 1u || rows == 128u);
-    const uint32_t pos0 = rows == 1u ? DECODE_POS : PREFILL_POS;
+    CHECK(rows == 1u || rows == 128u || rows == 2048u);
+    const uint32_t pos0 = rows == 1u ? DECODE_POS : DECODE_POS - rows;
     Run mode = NUMERIC;
     if (strcmp(argv[2], "time") == 0) { mode = TIMING; }
     else if (strcmp(argv[2], "ncu") == 0) { mode = PROFILE; }

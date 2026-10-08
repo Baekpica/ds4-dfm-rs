@@ -21,7 +21,8 @@ enum {
     T_VECTOR = T_HEAD * T_DIM,
     T_STATE = T_HEAD * T_DIM * T_DIM,
     T_CONV_STATE = T_VECTOR * T_CONV,
-    T_MAX_TOKENS = 512,
+    T_MAX_TOKENS = 2048,
+    T_SOLAR_TOKENS = 512,
 };
 
 typedef struct {
@@ -261,6 +262,7 @@ int main(void) {
         make_token(t, q + (size_t)t * T_VECTOR, k + (size_t)t * T_VECTOR,
                    v + (size_t)t * T_VECTOR, g + (size_t)t * T_VECTOR,
                    beta + (size_t)t * T_HEAD);
+        if (t >= T_SOLAR_TOKENS) { continue; }
         host_step(want + (size_t)t * T_VECTOR, &hs,
                   q + (size_t)t * T_VECTOR, k + (size_t)t * T_VECTOR,
                   v + (size_t)t * T_VECTOR, g + (size_t)t * T_VECTOR,
@@ -283,9 +285,9 @@ int main(void) {
     }
 
     /* Full-length single call: output, recurrent state, conv states. */
-    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 0, got, got_state,
+    run_case(&d, q, k, v, g, beta, T_SOLAR_TOKENS, NULL, 0, 0, got, got_state,
              got_conv, got_conv + T_CONV_STATE, got_conv + 2u * T_CONV_STATE);
-    compare("single 512 output", got, want, (size_t)T_MAX_TOKENS * T_VECTOR,
+    compare("single 512 output", got, want, (size_t)T_SOLAR_TOKENS * T_VECTOR,
             1.0e-4, 1.0e-3);
     compare("single 512 state", got_state, hs.state, T_STATE, 2.0e-4, 2.0e-3);
     compare("single 512 q conv", got_conv, hs.q_conv, T_CONV_STATE, 0.0, 0.0);
@@ -306,11 +308,11 @@ int main(void) {
         {split_c, 3, "128+7+377"},
     };
     for (size_t i = 0; i < sizeof(splits) / sizeof(splits[0]); i++) {
-        run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, splits[i].s, splits[i].n,
+        run_case(&d, q, k, v, g, beta, T_SOLAR_TOKENS, splits[i].s, splits[i].n,
                  0, got, got_state, got_conv, got_conv + T_CONV_STATE,
                  got_conv + 2u * T_CONV_STATE);
         snprintf(label, sizeof(label), "split %s output", splits[i].name);
-        compare(label, got, want, (size_t)T_MAX_TOKENS * T_VECTOR,
+        compare(label, got, want, (size_t)T_SOLAR_TOKENS * T_VECTOR,
                 1.0e-4, 1.0e-3);
         snprintf(label, sizeof(label), "split %s state", splits[i].name);
         compare(label, got_state, hs.state, T_STATE, 2.0e-4, 2.0e-3);
@@ -325,14 +327,14 @@ int main(void) {
     float *generic_out = calloc((size_t)T_MAX_TOKENS * T_VECTOR, sizeof(float));
     float *generic_state = calloc(T_STATE, sizeof(float));
     CHECK(generic_out && generic_state, "generic scratch");
-    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 0, generic_out,
+    run_case(&d, q, k, v, g, beta, T_SOLAR_TOKENS, NULL, 0, 0, generic_out,
              generic_state, got_conv, got_conv + T_CONV_STATE,
              got_conv + 2u * T_CONV_STATE);
     unsetenv("DS4_SOLAR_KDA_STATE_PARTS");
-    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 0, got, got_state,
+    run_case(&d, q, k, v, g, beta, T_SOLAR_TOKENS, NULL, 0, 0, got, got_state,
              got_conv, got_conv + T_CONV_STATE, got_conv + 2u * T_CONV_STATE);
     compare("chunked vs generic output", got, generic_out,
-            (size_t)T_MAX_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
+            (size_t)T_SOLAR_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
     compare("chunked vs generic state", got_state, generic_state, T_STATE,
             2.0e-4, 2.0e-3);
 
@@ -347,9 +349,9 @@ int main(void) {
     run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 1,
              got, got_state, got_conv, got_conv + T_CONV_STATE,
              got_conv + 2u * T_CONV_STATE);
-    compare("GLM single 512 output", got, want,
+    compare("GLM single 2048 output", got, want,
             (size_t)T_MAX_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
-    compare("GLM single 512 state", got_state, hs.state, T_STATE,
+    compare("GLM single 2048 state", got_state, hs.state, T_STATE,
             2.0e-4, 2.0e-3);
     run_case(&d, q, k, v, g, beta, T_MAX_TOKENS,
              split_b, sizeof(split_b) / sizeof(split_b[0]), 1,
@@ -375,8 +377,10 @@ int main(void) {
      * scalar width-one recurrence, including standalone ragged tails. */
     enum { GLM_REPLAY_ROWS = 204 };
     static const uint32_t replay_split[] = {128, 76};
-    uint32_t one_row[GLM_REPLAY_ROWS];
-    for (uint32_t i = 0; i < GLM_REPLAY_ROWS; i++) { one_row[i] = 1u; }
+    uint32_t one_row[T_MAX_TOKENS];
+    for (uint32_t i = 0; i < T_MAX_TOKENS; i++) { one_row[i] = 1u; }
+    static const uint32_t half_split[] = {1024u, 1024u};
+    static const uint32_t append_split[] = {1871u, 1u, 16u, 32u, 128u};
     const struct {
         uint32_t total;
         const uint32_t *split;
@@ -389,6 +393,10 @@ int main(void) {
         {GLM_REPLAY_ROWS, NULL, 0u, "GLM204"},
         {GLM_REPLAY_ROWS, replay_split, 2u, "GLM128+76"},
         {GLM_REPLAY_ROWS, one_row, GLM_REPLAY_ROWS, "GLM204 width1"},
+        {T_MAX_TOKENS, NULL, 0u, "GLM2048"},
+        {T_MAX_TOKENS, half_split, 2u, "GLM1024+1024"},
+        {T_MAX_TOKENS, append_split, 5u, "GLM1871+1+16+32+128"},
+        {T_MAX_TOKENS, one_row, T_MAX_TOKENS, "GLM2048 width1"},
     };
     for (size_t c = 0; c < sizeof(ragged) / sizeof(ragged[0]); c++) {
         memset(&hs, 0, sizeof(hs));

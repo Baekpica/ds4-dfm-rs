@@ -23,6 +23,7 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GLM_CTX_MAX: u32 = 1_048_576;
 const GLM_QUALIFIED_CTX: u32 = 2048;
+const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
 const DOTS3_MAX_DRAFT: i32 = 3;
 /// C `QWEN4EXP_YARN_MAX_FACTOR`: how far Qwen's RoPE context may stretch
@@ -258,6 +259,7 @@ pub struct RequestedView {
     pub mtp_mode: MtpMode,
     pub max_seqs: MaxSeqs,
     pub ctx: i32,
+    pub native_chunk: Option<u32>,
     pub ssd_streaming: bool,
     pub ssd_streaming_cold: bool,
     pub ssd_streaming_cache_experts: Option<u32>,
@@ -288,6 +290,7 @@ pub struct EffectiveView {
     pub bank_persist_min: i32,
     pub disk_min_tokens: Option<i32>,
     pub native_chunk: Option<u32>,
+    pub prefill_window: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -300,6 +303,8 @@ pub struct QualifiedView {
     pub ctx: Option<u32>,
     pub banks_n: Option<u32>,
     pub prompt: Option<u32>,
+    pub native_chunk: Option<u32>,
+    pub ssd_streaming_cache_experts: Option<u32>,
     pub note: &'static str,
 }
 
@@ -979,6 +984,7 @@ pub fn resolve_plan(
         mtp_mode: req.mtp_mode,
         max_seqs: req.max_seqs,
         ctx: req.ctx,
+        native_chunk: req.native_chunk,
         ssd_streaming: req.ssd_streaming,
         ssd_streaming_cold: req.ssd_streaming_cold,
         ssd_streaming_cache_experts: req.ssd_streaming_cache_experts,
@@ -1006,6 +1012,8 @@ pub fn resolve_plan(
                 ctx: None,
                 banks_n: None,
                 prompt: None,
+                native_chunk: None,
+                ssd_streaming_cache_experts: None,
                 note: "no model identified; family limits unknown",
             },
             issues: vec![if req.check_config {
@@ -1235,14 +1243,27 @@ pub fn resolve_plan(
     if caps.family == ModelFamily::Glm53
         && req
             .native_chunk
-            .is_some_and(|n| ![1, 128, 256].contains(&n))
+            .is_some_and(|n| !(1..=GLM_PREFILL_MAX).contains(&n))
     {
         issues.push(error(
             "native_chunk",
-            "GLM native prefill rows must be 1/128/256",
+            "GLM native prefill rows must be 1..2048",
         ));
     }
-    let requested_boot = req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK);
+    let prefill_window = if caps.family == ModelFamily::Glm53 && max_seqs == 1 {
+        crate::ssd_quote::prefill_window(
+            req,
+            facts.ssd_cache_experts,
+            native.unwrap_or(0),
+            crate::SHAPE_GLM53_FLASH.n_expert,
+        )
+    } else {
+        None
+    };
+    let sched_cap = prefill_window.or(native);
+    let requested_boot = req
+        .sched_chunk
+        .unwrap_or(prefill_window.unwrap_or(DEFAULT_SCHED_CHUNK));
     if req.chunk_fence == ChunkFence::On && requested_boot > PREFILL_CHUNK_FENCE {
         issues.push(warn(
             "chunk_fenced",
@@ -1250,7 +1271,7 @@ pub fn resolve_plan(
         ));
     }
     let requested_live = req.sched_chunk_live.unwrap_or(DEFAULT_SCHED_LIVE);
-    if let Some(native) = native {
+    if let Some(native) = sched_cap {
         if req.sched_chunk.is_some() && requested_boot > native {
             issues.push(error(
                 "chunk_past_native",
@@ -1264,25 +1285,32 @@ pub fn resolve_plan(
             ));
         }
     }
-    if chunk_unverified(requested_boot, native, req.chunk_fence) {
+    if chunk_unverified(requested_boot, sched_cap, req.chunk_fence) {
         issues.push(error(
             "chunk_unverified",
             format!("prefill chunk {requested_boot} is below the verified set"),
         ));
     }
-    if chunk_unverified(requested_live, native, req.chunk_fence) {
+    if chunk_unverified(requested_live, sched_cap, req.chunk_fence) {
         issues.push(error(
             "chunk_unverified",
             format!("live prefill chunk {requested_live} is below the verified set"),
         ));
     }
-    let sched_chunk = snap_verified_chunk(requested_boot, native, req.chunk_fence);
-    let mut sched_live = snap_verified_chunk(requested_live, native, req.chunk_fence);
+    let sched_chunk = snap_verified_chunk(requested_boot, sched_cap, req.chunk_fence);
+    let mut sched_live = snap_verified_chunk(requested_live, sched_cap, req.chunk_fence);
     if sched_live > sched_chunk {
         sched_live = sched_chunk;
     }
 
     let qualified = QualifiedView {
+        // Old qualification covers the recorded width only; wider workspace
+        // support and a successful boot cannot extend that evidence.
+        native_chunk: (caps.family == ModelFamily::Glm53
+            && !req.ssd_streaming
+            && !unqualified_artifact)
+            .then_some(128),
+        ssd_streaming_cache_experts: None,
         // Resolution never returns a reuse stronger than the family's, and
         // exact-frontier reuse is a subset of a qualified partial path, so a
         // downgraded plan keeps the family's verification level.
@@ -1362,6 +1390,7 @@ pub fn resolve_plan(
             bank_persist_min: req.bank_persist_min.unwrap_or(DEFAULT_BANK_PERSIST),
             disk_min_tokens: req.kv_min_tokens,
             native_chunk: native,
+            prefill_window,
         },
         qualified,
         quote,
@@ -1520,28 +1549,25 @@ impl ResolvedPlan {
                 }
                 .into(),
             ));
+            // Serial media graphs share this policy with continuous banks.
+            out.push((
+                "DS4_GLM53_PREFILL_WINDOW".into(),
+                self.effective.prefill_window.unwrap_or(0).to_string(),
+            ));
         }
         // Never publish a yield past the allocated native workspace.
-        let boot = published_chunk(self.effective.sched_chunk, self.effective.native_chunk);
-        let live = published_chunk(self.effective.sched_chunk_live, self.effective.native_chunk);
+        let cap = self
+            .effective
+            .prefill_window
+            .or(self.effective.native_chunk);
+        let boot = published_chunk(self.effective.sched_chunk, cap);
+        let live = published_chunk(self.effective.sched_chunk_live, cap);
         out.push(("DS4_CONT_PREFILL_CHUNK".into(), boot.to_string()));
         out.push(("DS4_CONT_PREFILL_CHUNK_LIVE".into(), live.to_string()));
         // C family allocators read DS4_*_PREFILL_CHUNK, not --native-chunk.
         if let Some(native) = self.effective.native_chunk {
             if let Some(key) = self.native_prefill_env() {
-                // Context/cache bounds can yield another row count; native
-                // accepts these three capacities and reapplies those bounds.
-                let value = if self.family == Some(ModelFamily::Glm53) {
-                    if native <= 1 {
-                        1
-                    } else if native <= 128 {
-                        128
-                    } else {
-                        256
-                    }
-                } else {
-                    native
-                };
+                let value = native;
                 out.push((key.into(), value.to_string()));
             }
         }
@@ -1638,6 +1664,11 @@ impl ResolvedPlan {
                     LaneMode::Serial => "serial",
                 },
                 "ctx": self.requested.ctx,
+                "native_chunk": self.requested.native_chunk,
+                "ssd_streaming_cache_policy": if self.requested.ssd_streaming {
+                    Some(if self.requested.ssd_streaming_cache_experts.is_none()
+                        && self.requested.ssd_streaming_cache_bytes.is_none() { "auto" } else { "fixed" })
+                } else { None },
                 "ssd_streaming": self.requested.ssd_streaming,
                 "ssd_streaming_cold": self.requested.ssd_streaming_cold,
                 "ssd_streaming_cache_experts": self.requested.ssd_streaming_cache_experts,
@@ -1664,6 +1695,7 @@ impl ResolvedPlan {
                 "sched_chunk": self.effective.sched_chunk,
                 "sched_chunk_live": self.effective.sched_chunk_live,
                 "native_chunk": self.effective.native_chunk,
+                "prefill_window": self.effective.prefill_window,
                 "bank_persist_min_tokens": self.effective.bank_persist_min,
                 "disk_min_tokens": self.effective.disk_min_tokens,
                 "disk_is_offload": false
@@ -1693,6 +1725,8 @@ impl ResolvedPlan {
                 "ctx": self.qualified.ctx,
                 "banks_n": self.qualified.banks_n,
                 "prompt": self.qualified.prompt,
+                "native_chunk": self.qualified.native_chunk,
+                "ssd_streaming_cache_experts": self.qualified.ssd_streaming_cache_experts,
                 "note": self.qualified.note
             },
             "issues": self.issues.iter().map(|i| json!({
@@ -1835,6 +1869,7 @@ fn default_effective(req: &ServingRequest) -> EffectiveView {
         bank_persist_min: req.bank_persist_min.unwrap_or(DEFAULT_BANK_PERSIST),
         disk_min_tokens: req.kv_min_tokens,
         native_chunk: req.native_chunk,
+        prefill_window: None,
     }
 }
 
@@ -3094,7 +3129,7 @@ mod tests {
 
     #[test]
     fn glm_rows_follow_allocator() {
-        for rows in [1, 128, 256, 129, 2048] {
+        for rows in [1, 128, 256, 129, 2048, 2049] {
             let p = plan(
                 ServingRequest {
                     ctx: 2048,
@@ -3106,9 +3141,9 @@ mod tests {
             );
             assert_eq!(
                 p.issues.iter().any(|i| i.code == "native_chunk"),
-                ![1, 128, 256].contains(&rows)
+                !(1..=GLM_PREFILL_MAX).contains(&rows)
             );
-            if [1, 128, 256].contains(&rows) {
+            if (1..=GLM_PREFILL_MAX).contains(&rows) {
                 assert!(p
                     .env_overrides()
                     .iter()
@@ -3116,6 +3151,32 @@ mod tests {
                         && value == &rows.to_string()));
             }
         }
+    }
+
+    #[test]
+    fn glm_window_controls() {
+        let mut p = plan(
+            ServingRequest {
+                ctx: 8192,
+                max_seqs: MaxSeqs::Fixed(2),
+                ..ServingRequest::default()
+            },
+            ModelFamily::Glm53,
+            Variant::Glm53Flash,
+        );
+        assert_eq!(p.effective.max_seqs, 2);
+        assert_eq!(p.effective.prefill_window, None);
+        let has_window = |p: &ResolvedPlan, value: &str| {
+            p.env_overrides()
+                .iter()
+                .any(|(key, actual)| key == "DS4_GLM53_PREFILL_WINDOW" && actual == value)
+        };
+        // Retract inherited windows for serial media sessions too; their
+        // allocator cannot infer the model's continuous-bank count.
+        assert!(has_window(&p, "0"));
+        p.effective.max_seqs = 1;
+        p.effective.prefill_window = Some(4096);
+        assert!(has_window(&p, "4096"));
     }
 
     #[test]

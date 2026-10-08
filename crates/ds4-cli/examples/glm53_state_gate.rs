@@ -1,10 +1,14 @@
 //! Exercise Rust's serial payload and snapshot surfaces with one live model.
-use ds4_core::{Backend, Model, ModelFamily, ModelOpenOption, Session, SessionSnapshot};
+use ds4_core::{
+    Backend, Model, ModelFamily, ModelOpenOption, Session, SessionSnapshot, TokenBuffer,
+};
 use serde_json::json;
 use std::io::{Read, Write};
 use std::path::Path;
 
-const CONTEXT: i32 = 2048;
+const DEFAULT_CONTEXT: i32 = 2048;
+const ANSWER_TOKENS: usize = 128;
+const APPEND_ROWS: [usize; 4] = [1, 16, 32, 128];
 const CACHE_BYTES: u64 = 24 << 30;
 const IO_BYTES: usize = 65536;
 const RANGE_PREFIX: usize = 73;
@@ -45,18 +49,27 @@ fn check_frontier(session: &Session<'_>, tokens: &[i32], logits: &[f32]) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let weights = match args.as_slice() {
-        [_, _, _] => Weights::Ssd,
-        [_, _, _, mode] if mode == "--resident" => Weights::Resident,
-        _ => {
-            return Err(
-                "usage: glm53_state_gate MODEL RENDERED_PROMPT OUTPUT_DIR [--resident]".into(),
-            );
+    if args.len() < 3 {
+        return Err("usage: glm53_state_gate MODEL PROMPT OUT [--resident] [--ctx N]".into());
+    }
+    let mut weights = Weights::Ssd;
+    let mut context = DEFAULT_CONTEXT;
+    let mut tail = args[3..].iter();
+    while let Some(arg) = tail.next() {
+        match arg.as_str() {
+            "--resident" => weights = Weights::Resident,
+            "--ctx" => context = tail.next().ok_or("--ctx needs N")?.parse()?,
+            _ => return Err(format!("unknown option: {arg}").into()),
         }
-    };
+    }
     let mut options = vec![
         ModelOpenOption::MtpDraftTokens(3),
         ModelOpenOption::MtpMargin(0.0),
+        ModelOpenOption::ServingBudget(ds4_core::ServingRequest {
+            ctx: context,
+            max_seqs: ds4_core::MaxSeqs::Off,
+            ..ds4_core::ServingRequest::default()
+        }),
     ];
     match weights {
         Weights::Ssd => options.extend([
@@ -76,9 +89,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = Model::open_configured(&args[0], Backend::Cuda, 8, true, None, &options)?;
     assert_eq!(model.family(), ModelFamily::Glm53);
     let prompt = model.tokenize_rendered_chat(&text)?;
-    assert!(!prompt.is_empty() && prompt.len() < CONTEXT as usize - 4);
-    let mut session = model.session(CONTEXT)?;
+    assert!(context > 0 && !prompt.is_empty() && prompt.len() + ANSWER_TOKENS < context as usize);
+    let mut session = model.session(context)?;
+    let prefill = std::time::Instant::now();
     session.sync(&prompt)?;
+    let prefill_ms = prefill.elapsed().as_secs_f64() * 1000.0;
     let logits = session.copy_logits(model.vocab().n_vocab() as usize)?;
     check_frontier(&session, prompt.as_slice(), &logits);
     let baseline = out.join("baseline.payload.bin");
@@ -113,6 +128,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let replay = out.join("file-replay.payload.bin");
     session.save_payload(&replay)?;
     same_files(&expected, &replay)?;
+    // Fix append lengths while replaying the same committed prefix. API tool
+    // grammar is checked separately; this gate isolates state and supply.
+    let tool_text = model.tokenize_rendered_chat("<|observation|>Search completed. The result contains the requested record. Continue using the recorded data.")?;
+    let mut appends = Vec::new();
+    for n in APPEND_ROWS {
+        session.load_snapshot(&snapshot)?;
+        let mut joined = prompt.as_slice().to_vec();
+        joined.extend(tool_text.as_slice().iter().copied().cycle().take(n));
+        let joined = TokenBuffer::from_tokens(joined);
+        let start = std::time::Instant::now();
+        session.sync(&joined)?;
+        let ttft_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let reference = session.copy_logits(logits.len())?;
+        check_frontier(&session, joined.as_slice(), &reference);
+        let first = session.argmax();
+        let decode = std::time::Instant::now();
+        session.eval(first)?;
+        let decode_ms = decode.elapsed().as_secs_f64() * 1000.0;
+        session.load_snapshot(&snapshot)?;
+        session.sync(&joined)?;
+        check_frontier(&session, joined.as_slice(), &reference);
+        appends
+            .push(json!({"rows":n,"ttft_ms":ttft_ms,"decode_ms":decode_ms,"replay":"byte_exact"}));
+    }
+    session.load_snapshot(&snapshot)?;
+    let mut answer = Vec::new();
+    let mut answer_ids = Vec::new();
+    for _ in 0..ANSWER_TOKENS {
+        let token = session.argmax();
+        if model.token_is_stop(token) {
+            break;
+        }
+        answer_ids.push(token);
+        answer.extend(model.token_text(token)?);
+        session.eval(token)?;
+    }
+    std::fs::write(out.join("answer.txt"), &answer)?;
+    std::fs::write(
+        out.join("answer.tokens.json"),
+        serde_json::to_vec(&answer_ids)?,
+    )?;
 
     session.load_snapshot(&snapshot)?;
     check_frontier(&session, prompt.as_slice(), &logits);
@@ -147,10 +203,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(memory.census.faults, 0);
     println!(
         "{}",
-        json!({"result": "PASS", "context": CONTEXT,
-        "prompt_tokens": prompt.len(), "accepted": accepted,
+        json!({"result": "PASS", "context": context,
+        "prompt_tokens": prompt.len(), "prefill_ms": prefill_ms, "accepted": accepted,
         "file_snapshot_range": "byte_exact", "transition_replay": "byte_exact",
-        "payload_bytes": bytes, "census_faults": memory.census.faults})
+        "payload_bytes": bytes, "appends":appends,"answer_tokens":answer_ids.len(),
+        "census_faults": memory.census.faults})
     );
     Ok(())
 }

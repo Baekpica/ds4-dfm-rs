@@ -4765,6 +4765,14 @@ int ds4_gpu_tensor_fill_f32(ds4_gpu_tensor *tensor, float value, uint64_t count)
     return 1;
 }
 
+ds4_gpu_upload *ds4_gpu_upload_new(void) { return NULL; }
+int ds4_gpu_upload_write(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
+        uint64_t offset, const void *src, uint64_t bytes) {
+    (void)upload; (void)dst; (void)offset; (void)src; (void)bytes;
+    return 0;
+}
+void ds4_gpu_upload_free(ds4_gpu_upload *upload) { (void)upload; }
+
 int ds4_gpu_tensor_write(ds4_gpu_tensor *tensor, uint64_t offset, const void *data, uint64_t bytes) {
     if (!tensor || (!data && bytes != 0)) return 0;
     DS4MetalTensor *obj = ds4_gpu_tensor_obj(tensor);
