@@ -5034,6 +5034,55 @@ exit 1
     }
 
     #[test]
+    fn glm_fit_keeps_retry_window() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLM53_PREFILL_ROWS");
+        let _window = EnvGuard::unset("DS4_GLM53_PREFILL_WINDOW");
+        let shape = SHAPE_GLM53_FLASH;
+        let req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(2),
+            mtp_mode: MtpMode::Off,
+            ssd_streaming: true,
+            ssd_streaming_cache_experts: Some(2 * shape.n_expert),
+            native_chunk: Some(2048),
+            ..ServingRequest::default()
+        };
+        let caps = crate::caps_from_shape(shape);
+        let mut facts = EngineFacts {
+            ssd_cache_experts: req.ssd_streaming_cache_experts,
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(shape),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 90 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(!plan.has_errors(), "{}", plan.report());
+        assert_eq!(plan.effective.prefill_window, None);
+        crate::apply_glm_fit(&req, shape, &plan);
+
+        // Pass the actual Rust allocation policy into the native retry fixture.
+        if let Some(path) = std::env::var_os("DS4_GLM_FIT_POLICY_RECEIPT") {
+            std::fs::write(path, std::env::var("DS4_GLM53_PREFILL_WINDOW").unwrap()).unwrap();
+        }
+        assert_eq!(std::env::var("DS4_GLM53_PREFILL_WINDOW").unwrap(), "4096");
+
+        std::env::set_var("DS4_GLM53_PREFILL_WINDOW", "0");
+        crate::apply_glm_fit(&req, shape, &plan);
+        assert_eq!(std::env::var("DS4_GLM53_PREFILL_WINDOW").unwrap(), "0");
+    }
+
+    #[test]
     fn glm_window_plan_reenables() {
         let _env = lock_test_env();
         let _vars: Vec<_> = [

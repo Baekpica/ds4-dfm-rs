@@ -1763,7 +1763,10 @@ test-glm53-lifetime:
 test-glm53-fit:
 	@glm_fixture_dir=$$(mktemp -d); \
 	trap 'rm -rf "$$glm_fixture_dir"' EXIT; \
-	python3 tests/test_glm53_fit_fixture.py "$$glm_fixture_dir/fit" --sanitize && \
+	DS4_GLM_FIT_POLICY_RECEIPT="$$glm_fixture_dir/window" \
+		cargo test -p ds4-core --lib glm_fit_keeps_retry_window --locked -- --test-threads=1 && \
+	python3 tests/test_glm53_fit_fixture.py "$$glm_fixture_dir/fit" --sanitize \
+		--window-policy "$$glm_fixture_dir/window" && \
 	python3 tests/test_glm53_lazy_fixture.py "$$glm_fixture_dir/lazy" --sanitize
 
 tests/test_glm53_width: tests/test_glm53_width.cu $(DS4_CUDA_CORE_OBJS)

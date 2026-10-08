@@ -89,7 +89,9 @@ int main(int argc, char **argv) {
     CHECK(argc == 2);
     const char *name = argv[1];
     CHECK(setenv("DS4_GLM53_PREFILL_ROWS", "2048", 1) == 0);
-    CHECK(setenv("DS4_GLM53_PREFILL_WINDOW", "4096", 1) == 0);
+    if (strcmp(name, "policy-retry") != 0) {
+        CHECK(setenv("DS4_GLM53_PREFILL_WINDOW", "4096", 1) == 0);
+    }
     ds4_engine engine = {.glm53_stream = {.count = 2u * DS4_N_EXPERT}};
     glm53_fit_mode mode = GLM53_FIT_BANKS;
     uint32_t requested = MAX_BANKS;
@@ -109,7 +111,7 @@ int main(int argc, char **argv) {
     } else if (strcmp(name, "fail") == 0) {
         fit_banks = 0u;
     } else {
-        CHECK(strcmp(name, "retry") == 0);
+        CHECK(strcmp(name, "retry") == 0 || strcmp(name, "policy-retry") == 0);
     }
 
     ds4_batch_ctx *ctx = NULL;

@@ -32,7 +32,7 @@ and invalidates a partially uploaded slot on failure. Prefill supports up to
 2048 physical rows. Routing batches are subdivided by the actual unique expert
 union; duplicate routes occupy one slot. Memory admission reduces workspace
 width before reducing requested context or banks. Unsafe forced cache budgets
-are rejected before weight allocation.
+are rejected before weight allocation when a serving budget is supplied.
 
 Enable streaming only for one full, single-shard GLM-5.3 CUDA artifact on
 coherent pageable-memory hardware such as the DGX Spark/GB10. The native
@@ -73,7 +73,9 @@ Library callers using SSD Auto must pass `ModelOpenOption::ServingBudget`
 with the intended context, banks and optional state. Missing budgets are
 rejected before sizing; defaults cannot stand in for a later workload because
 allocated expert slots cannot be reclaimed by session fitting. Explicit cache
-count/GB options may omit this budget. The CLI, benchmark and server supply it.
+count/GB options may omit this budget; native validates their capacity at open,
+then session/bank creation admits the actual workload. The CLI, benchmark and
+server supply the budget.
 
 File page cache can retain expert reads. `--ssd-streaming-cold` is advisory;
 the expert device cache limit does not impose an OS page-cache limit.

@@ -22,6 +22,8 @@ def main():
         "retry", "two", "one", "disabled", "small", "strict", "fail"])
     parser.add_argument("--cc", default=os.environ.get("CC", "cc"))
     parser.add_argument("--sanitize", action="store_true")
+    parser.add_argument("--window-policy", type=Path,
+                        help="Rust allocation-policy receipt for a 2-to-1 bank retry")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -54,6 +56,9 @@ def main():
     if built:
         return 1
     env = os.environ.copy()
+    if args.window_policy:
+        env["DS4_GLM53_PREFILL_WINDOW"] = args.window_policy.read_text().strip()
+        args.cases.append("policy-retry")
     if args.sanitize:
         env.update(ASAN_OPTIONS="detect_leaks=1:halt_on_error=1",
                    UBSAN_OPTIONS="halt_on_error=1")

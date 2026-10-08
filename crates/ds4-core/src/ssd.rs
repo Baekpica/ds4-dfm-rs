@@ -109,7 +109,11 @@ pub(super) fn resolve_budget(
         return Ok(());
     }
     check_budget(tuning)?;
-    let mut req = tuning.serving_budget.clone().unwrap_or_default();
+    let Some(mut req) = tuning.serving_budget.clone() else {
+        // A forced cache needs no invented workload. Native validates its
+        // capacity at open; session/bank creation admits the actual request.
+        return Ok(());
+    };
     req.backend = backend;
     req.ssd_streaming = true;
     req.ssd_streaming_cold = tuning.ssd_streaming_cold;
@@ -309,6 +313,43 @@ mod tests {
         assert!(error.message.contains("ServingBudget"), "{error}");
         assert_eq!(tuning.ssd_streaming_cache_experts, 0);
         assert_eq!(tuning.ssd_streaming_cache_bytes, 0);
+    }
+
+    #[test]
+    fn fixed_cache_defers_workload() {
+        let id = crate::Identified {
+            shape: crate::SHAPE_GLM53_FLASH,
+            architecture: None,
+            split_count: 1,
+            n_kv: 0,
+            n_tensors: 0,
+            alignment: 32,
+            version: 3,
+        };
+        let inventory = crate::TensorInventory {
+            shards: Vec::new(),
+            tensors: Vec::new(),
+            data_pos: 0,
+            alignment: 32,
+            page: 4096,
+        };
+        for fixed in [
+            ModelOpenOption::SsdCacheExperts(8),
+            ModelOpenOption::SsdCacheBytes(GIB),
+        ] {
+            let options = [ModelOpenOption::SsdStreaming, fixed];
+            let mut tuning = crate::open_tuning(&options).unwrap();
+            let count = tuning.ssd_streaming_cache_experts;
+            let bytes = tuning.ssd_streaming_cache_bytes;
+            // Without a workload, sizing must leave the forced native budget
+            // intact. Empty metadata catches any invented serving request.
+            resolve_budget(&mut tuning, &id, &inventory, Backend::Cuda).unwrap();
+            assert_eq!(tuning.ssd_streaming_cache_experts, count);
+            assert_eq!(tuning.ssd_streaming_cache_bytes, bytes);
+
+            tuning.serving_budget = Some(crate::ServingRequest::default());
+            assert!(resolve_budget(&mut tuning, &id, &inventory, Backend::Cuda).is_err());
+        }
     }
 
     #[test]

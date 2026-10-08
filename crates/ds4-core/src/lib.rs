@@ -1218,6 +1218,20 @@ fn glm_runtime_req(req: &ServingRequest, ctx: i32, banks: MaxSeqs) -> ServingReq
     req
 }
 
+fn apply_glm_fit(req: &ServingRequest, shape: Shape, plan: &ResolvedPlan) {
+    let serial = glm_runtime_req(req, req.ctx, MaxSeqs::Off);
+    let rows = plan.effective.native_chunk.unwrap_or(0);
+    // Native prices this eligible window before bank allocation, then disables
+    // it for multiple banks. Keep the policy available for a one-bank retry.
+    let window = ssd_quote::prefill_window(
+        &serial,
+        plan.effective.ssd_streaming_cache_experts,
+        rows,
+        shape.n_expert,
+    );
+    ssd_quote::apply_window(window);
+}
+
 impl Model {
     pub fn open(
         path: &str,
@@ -1483,7 +1497,8 @@ impl Model {
             req.ssd_streaming = tuning.ssd_streaming;
             req.ssd_streaming_cache_experts = (tuning.ssd_streaming_cache_experts != 0)
                 .then_some(tuning.ssd_streaming_cache_experts);
-            req.ssd_streaming_cache_bytes = None;
+            req.ssd_streaming_cache_bytes =
+                (tuning.ssd_streaming_cache_bytes != 0).then_some(tuning.ssd_streaming_cache_bytes);
         }
         let bind_plan = BindPlan::resolve(identified.shape, &inventory);
         if let Some(name) = bind_plan.missing_required().first() {
@@ -1799,7 +1814,7 @@ impl Model {
                 message: format!("GLM runtime budget rejected: {}", plan.report()),
             });
         }
-        ssd_quote::apply_window(plan.effective.prefill_window);
+        apply_glm_fit(&req, shape, &plan);
         if let Some(rows) = plan.effective.native_chunk {
             std::env::set_var("DS4_GLM53_PREFILL_ROWS", rows.to_string());
             eprintln!("GLM Prefill rows: requested={} effective={rows} ctx={ctx_size} banks={} qualified=unverified",
