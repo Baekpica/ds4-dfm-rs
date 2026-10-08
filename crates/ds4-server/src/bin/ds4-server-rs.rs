@@ -107,6 +107,7 @@ fn main() {
                 let option = ModelOpenOption::ssd_cache(&value)
                     .unwrap_or_else(|error| cli_error(&error.message));
                 match option {
+                    ModelOpenOption::SsdCacheAuto => {}
                     ModelOpenOption::SsdCacheExperts(count) => {
                         serve_req.ssd_streaming_cache_experts = Some(count)
                     }
@@ -273,8 +274,11 @@ fn main() {
     let ident = model_path
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
+    // Auto admission needs the requested workload before any cache is sized.
+    let mut preflight_options = model_options.clone();
+    preflight_options.push(ModelOpenOption::ServingBudget(serve_req.clone()));
     ds4_core::check_ssd_options(
-        &model_options,
+        &preflight_options,
         ident.as_ref().map(|model| model.shape.family),
         backend,
         distributed_config(&dist.opt).as_ref(),
@@ -411,6 +415,7 @@ fn main() {
     ) {
         model_options.push(ModelOpenOption::MtpDraftTokens(draft));
     }
+    model_options.push(ModelOpenOption::ServingBudget(serve_req.clone()));
     // A family whose caps refuse banks has no multi-sequence graph to open;
     // asking native for one only reports the refusal. Bonsai (qwen35) is the
     // resident case: its session is the trunk state itself.
@@ -478,7 +483,7 @@ fn main() {
     let lane = if let Some(ref model) = model {
         // What only the open engine knows. The refit re-resolves so a
         // fitted-down width or a refused lane cannot stay silently claimed.
-        let opened = EngineFacts {
+        let mut opened = EngineFacts {
             drafter_shared: Some(model.drafter_shared()),
             mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
             vision_loaded: model_options
@@ -486,6 +491,9 @@ fn main() {
                 .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
             ..facts.clone()
         };
+        model
+            .ssd_quote(&mut opened)
+            .unwrap_or_else(|error| cli_error(&error.message));
         if cont_width > 0 && backend == Backend::Cuda {
             match model.batch_ctx_fit(
                 cfg.ctx,
@@ -785,7 +793,7 @@ fn cli_error(message: &str) -> ! {
 fn usage() -> ! {
     eprintln!(
         "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
-         [--ssd-streaming] [--ssd-streaming-cache-experts N|GB] [--ssd-streaming-cold]\n\
+         [--ssd-streaming] [--ssd-streaming-cache-experts auto|N|GB] [--ssd-streaming-cold]\n\
          [--ignore-eos-in-reasoning] [--ignore-eos]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\

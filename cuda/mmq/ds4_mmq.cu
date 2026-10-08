@@ -2676,7 +2676,9 @@ int ds4_mmq_moe_pair_impl(
         int64_t         ncols_max_hint = 0,
         const ds4_mmq_q3_handoff *q3_handoff = nullptr,
         /* See ds4_mmq_moe_impl: family D2R engagement floor (0 = policy). */
-        int64_t         d2r_ncols_floor = 0) {
+        int64_t         d2r_ncols_floor = 0,
+        /* Raw GLM cache slots may include whole-quant-block padding. */
+        int64_t         expert_stride = 0) {
 
     const bool direct_gateup_q8 =
         fused_down != nullptr && fused_down->direct_gateup_q8;
@@ -2766,7 +2768,13 @@ int ds4_mmq_moe_pair_impl(
     const int64_t ne12         = n_tokens;
     const int64_t blck         = ggml_blck_size(type);
     const int64_t s01          = (int64_t)K / blck;
-    const int64_t s02          = (int64_t)M * s01;
+    const int64_t natural_stride = (int64_t)M * s01;
+    const int64_t s02 = expert_stride ? expert_stride : natural_stride;
+    if (s02 < natural_stride || s02 > INT_MAX ||
+        (int64_t)(n_experts - 1) * s02 + natural_stride > INT_MAX) {
+        fprintf(stderr, "%s: invalid expert weight stride\n", tag);
+        return -1;
+    }
     size_t q3_payload = 0;
     size_t q3_slack = 0;
     size_t q3_required = 0;
@@ -3025,6 +3033,7 @@ int ds4_mmq_moe_pair_impl(
                   type == GGML_TYPE_Q8_0) {
         pair_worklist_yind =
             !direct_gateup_q8 && !fused_down && !q3_handoff &&
+            !expert_stride &&
             ncols_max_hint > 0 && xa_soa == nullptr && xb_soa == nullptr &&
             moe_worklist_enabled(type) && moe_yind_enabled() &&
             ds4_mmq_moe_worklist_preflight<type>(
@@ -3268,7 +3277,8 @@ int ds4_mmq_moe_pair_impl(
         int pair_b_rc = -1;
         if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K ||
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q8_0 ||
-                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M) {
+                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ||
+                      type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
             pair_a_rc = ds4_mmq_moe_worklist_launch<type>(
                 tag, *ctx, W_a, (const int *)src1_q8_1,
                 ids_dst, expert_bounds, out_a,
@@ -6306,6 +6316,41 @@ extern "C" int ds4_mmq_glm_moe(uint32_t type, const void *w, const float *x,
     case GGML_TYPE_Q4_K:
         return glm_moe_strided<GGML_TYPE_Q4_K>(w, x, ids, out,
             m, k, tokens, experts, used, stride, stream);
+    default:
+        return -1;
+    }
+}
+
+template <ggml_type type>
+static int glm_pair_strided(const void *gate, const void *up, const float *x,
+        const int32_t *ids, float *gate_out, float *up_out, int m, int k,
+        int tokens, int experts, int used, uint64_t stride, cudaStream_t stream) {
+    const uint64_t block = ggml_type_size(type);
+    if (!block || stride % block || stride / block > INT_MAX || tokens <= 8) {
+        return -1;
+    }
+    // Keep the two-single-call assignment layout and rounding. Sharing only
+    // preparation makes the same-width supply contract byte exact.
+    return ds4_mmq_moe_pair_impl<type>("glm-raw-pair", gate, up, x, ids,
+        gate_out, up_out, m, k, tokens, experts, used, stream,
+        nullptr, nullptr, 0, true, nullptr, (int64_t)tokens * used,
+        nullptr, 0, (int64_t)(stride / block));
+}
+
+extern "C" int ds4_mmq_glm_pair(uint32_t type, const void *gate,
+        const void *up, const float *x, const int32_t *ids, float *gate_out,
+        float *up_out, int m, int k, int tokens, int experts, int used,
+        uint64_t stride, cudaStream_t stream) {
+    switch (type) {
+    case GGML_TYPE_IQ2_XXS:
+        return glm_pair_strided<GGML_TYPE_IQ2_XXS>(gate, up, x, ids,
+            gate_out, up_out, m, k, tokens, experts, used, stride, stream);
+    case GGML_TYPE_IQ2_XS:
+        return glm_pair_strided<GGML_TYPE_IQ2_XS>(gate, up, x, ids,
+            gate_out, up_out, m, k, tokens, experts, used, stride, stream);
+    case GGML_TYPE_Q4_K:
+        return glm_pair_strided<GGML_TYPE_Q4_K>(gate, up, x, ids,
+            gate_out, up_out, m, k, tokens, experts, used, stride, stream);
     default:
         return -1;
     }

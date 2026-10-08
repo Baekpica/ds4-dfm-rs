@@ -33,7 +33,7 @@ static bool glm53_compact_shape(uint32_t rows, uint32_t heads,
     fprintf(stderr, "pool FAIL %d: %s\n", __LINE__, #x); exit(1); \
 } } while (0)
 
-enum { HEADS = 32, WARM_CALLS = 3, TIME_CALLS = 12 };
+enum { HEADS = 32, WARM_CALLS = 3, TIME_CALLS = 12, GUARD = 16 };
 enum Run { NUMERIC, TIMING, PROFILE };
 static constexpr float SCALE = 1.0f / 64.0f;
 static constexpr float SENTINEL = 12345.0f;
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
     CHECK(argc == 5);
     const uint32_t rows = (uint32_t)strtoul(argv[1], NULL, 10);
     const uint32_t pools = (uint32_t)strtoul(argv[2], NULL, 10);
-    CHECK(rows == 1u || rows == 128u);
+    CHECK(rows == 1u || rows == 128u || rows == 2048u);
     CHECK(pools == 2048u || pools == 16384u || pools == 262144u);
     const uint32_t pos0 = pools * DS4_GLM53_POOL_SIZE - (rows == 1u ? 0u : rows);
     Run mode = NUMERIC;
@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
     else { CHECK(!strcmp(argv[3], "numeric")); }
     std::vector<__half> key((uint64_t)pools * DS4_GLM53_POOL_DIM);
     std::vector<float> q((uint64_t)rows * HEADS * DS4_GLM53_POOL_DIM);
-    std::vector<float> weights((uint64_t)rows * HEADS), out((uint64_t)rows * pools, SENTINEL);
+    std::vector<float> weights((uint64_t)rows * HEADS), out((uint64_t)rows * pools + GUARD, SENTINEL);
     uint32_t state = 0x58137426u;
     for (auto &x : key) { x = __float2half_rn((float)((int)(random_step(&state) % 769u) - 384) / 512.0f); }
     for (auto &x : q) { x = (float)((int)(random_step(&state) % 1025u) - 512) / 1024.0f; }
@@ -152,6 +152,9 @@ int main(int argc, char **argv) {
         }
     }
     cpu_check(rows, pools, pos0, key, q, weights, out);
+    for (uint64_t i = (uint64_t)rows * pools; i < out.size(); i++) {
+        CHECK(out[i] == SENTINEL);
+    }
     // Refusals must leave a valid frontier untouched; no captured position arguments.
     CHECK(!ds4_gpu_glm53_pool_score(&dout, &dq, &dw, &dk, pools, rows, UINT32_MAX, HEADS, SCALE));
     CHECK(!ds4_gpu_glm53_pool_score(&dout, &dq, &dw, &dk, pools, rows, pos0, HEADS, -SCALE));
@@ -163,9 +166,10 @@ int main(int argc, char **argv) {
     capture = 0;
     FILE *file = fopen(argv[4], "wb");
     CHECK(file);
-    CHECK(fwrite(out.data(), sizeof(float), out.size(), file) == out.size());
+    const size_t count = out.size() - GUARD;
+    CHECK(fwrite(out.data(), sizeof(float), count, file) == count);
     CHECK(fclose(file) == 0);
-    printf("all_checked=%zu masked=%llu output=%s PASS\n", out.size(), (unsigned long long)masked, argv[4]);
+    printf("all_checked=%zu masked=%llu guard=%u output=%s PASS\n", count, (unsigned long long)masked, GUARD, argv[4]);
     CHECK(cuda_ok(cudaFree(dout.ptr), "out free"));
     CHECK(cuda_ok(cudaFree(dw.ptr), "weights free"));
     CHECK(cuda_ok(cudaFree(dq.ptr), "q free"));

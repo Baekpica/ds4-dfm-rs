@@ -5,6 +5,8 @@ Development evidence, 2026-10-07, base commit `15ca821e`, retained arithmetic
 [Baekpica's mixed artifact](https://huggingface.co/Baekpica/GLM-5.3-Flash-Uncensored-Mixed-Quant-GGUF).
 The [earlier antirez Q2 gate](ds4-dfm-model-families.md#glm-53-flash-release-scope)
 qualifies its own artifact and recorded runtime.
+The [2026-10-08 Prefill campaign](glm53-prefill-2026-10-08.md) records the newer
+2048-row path and SSD policy. Its gates do not extend this record's 1M scope.
 
 ## Artifacts and input
 
@@ -30,7 +32,8 @@ EOS, user and observation tokens terminate generation.
 The Rust hosts share context, `--max-seqs`, persistent text banks, partial
 reuse, snapshots, disk KV and embedded MTP. Image requests use a serial graph
 beside text banks. [SSD expert streaming](ssd-streaming.md) defaults to Off;
-add `--ssd-streaming --ssd-streaming-cache-experts 24GB` to enable it.
+add `--ssd-streaming` for an automatic expert budget, or specify a fixed
+capacity with `--ssd-streaming-cache-experts 24GB`.
 
 The normal path holds one raw VMM weight owner and one worker. The measured
 owner has 87.46 GiB logical weights, 87.50 GiB device allocation and 132 ranges.

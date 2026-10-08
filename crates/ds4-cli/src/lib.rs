@@ -367,6 +367,14 @@ fn mtp_open_options(
     }
     let mut options = Vec::new();
     options.extend(args.ssd_options.iter().cloned());
+    if args.ssd_options.contains(&ModelOpenOption::SsdStreaming) {
+        options.push(ModelOpenOption::ServingBudget(ds4_core::ServingRequest {
+            ctx: args.ctx,
+            backend: args.backend,
+            max_seqs: ds4_core::MaxSeqs::Off,
+            ..ds4_core::ServingRequest::default()
+        }));
+    }
     if args.mtp.is_some()
         || args.dspark.is_some()
         || std::env::var_os("DS4_DSPARK_MODEL").is_some()
@@ -1052,7 +1060,7 @@ Usage:
 C-compatible flags (same names as `ds4 --help`):
   -m, --model FILE        GGUF model path. Default: ds4flash.gguf
   --ssd-streaming         Stream GLM CUDA routed experts from SSD
-  --ssd-streaming-cache-experts N|GB  Global expert slots or GiB budget
+  --ssd-streaming-cache-experts auto|N|GB  Auto budget, slots or GiB
   --ssd-streaming-cold    Advise eviction of read expert pages
   --mtp FILE              Optional MTP support GGUF
   --mtp-draft N           Maximum MTP draft tokens. Default: 1
@@ -1548,6 +1556,22 @@ mod tests {
     }
 
     #[test]
+    fn ssd_budget_uses_context() {
+        let parsed = parse_args(args(&["--ssd-streaming", "-c", "1048576"])).unwrap();
+        let options = mtp_open_options(&parsed, None).unwrap();
+        assert!(options.iter().any(|option| matches!(option,
+            ModelOpenOption::ServingBudget(req) if req.ctx == 1048576
+                && req.max_seqs == ds4_core::MaxSeqs::Off)));
+        assert!(ds4_core::check_ssd_options(
+            &options,
+            Some(ds4_core::ModelFamily::Glm53),
+            ds4_core::Backend::Cuda,
+            None,
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn parses_ssd_streaming() {
         let parsed = parse_args(args(&[
             "--ssd-streaming",
@@ -1564,7 +1588,12 @@ mod tests {
                 ds4_core::ModelOpenOption::SsdStreamingCold,
             ]
         );
-        assert_eq!(mtp_open_options(&parsed, None).unwrap(), parsed.ssd_options);
+        let options = mtp_open_options(&parsed, None).unwrap();
+        assert_eq!(options[..parsed.ssd_options.len()], parsed.ssd_options);
+        assert!(
+            matches!(options.last(), Some(ModelOpenOption::ServingBudget(req))
+            if req.ctx == parsed.ctx && req.max_seqs == ds4_core::MaxSeqs::Off)
+        );
     }
 
     #[test]

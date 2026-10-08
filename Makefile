@@ -1689,6 +1689,38 @@ tests/test_glm53_mixed: tests/test_glm53_mixed.o $(DS4_CUDA_CORE_OBJS)
 test-glm53-mixed: tests/test_glm53_mixed
 	./tests/test_glm53_mixed
 
+tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
+
+test-glm53-pair: tests/test_glm53_pair
+	./tests/test_glm53_pair
+
+tests/test_glm53_dense_gemm: tests/test_glm53_dense_gemm.cu cuda/glm53_dense_attn.cuh ds4_glm53_attn.h
+	$(NVCC) $(NVCCFLAGS) -DTEST_DENSE_GEMM -I. -o $@ $< $(CUDA_LDLIBS)
+
+test-glm53-dense-gemm: tests/test_glm53_dense_gemm
+	./tests/test_glm53_dense_gemm
+
+tests/test_glm53_upload_async: tests/test_glm53_upload_async.cu $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
+
+test-glm53-upload-async: tests/test_glm53_upload_async
+	./tests/test_glm53_upload_async
+
+tests/glm53_state_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example glm53_state_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm53_state_gate" $@
+
+tests/glm53_mtp_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example glm53_mtp_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm53_mtp_gate" $@
+
 GLM53_NATIVE_DEPS = ds4_glm53_cache.h ds4_glm53_stream.inc ds4_glm53_compact.h \
 	ds4_glm53_graph.inc ds4_glm53_payload.inc ds4_glm53_mtp.inc ds4_glm53_batch.inc \
 	ds4_glm53_image.inc
@@ -1696,7 +1728,7 @@ ds4.o: $(GLM53_NATIVE_DEPS)
 tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
 	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
-ds4_cuda.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc \
+ds4_cuda.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc cuda/glm53_dense_attn.cuh \
 	cuda/glm53_vision_norm.cuh ds4_glm53_attn.h cuda/glm53_low_attn.cuh cuda/glm53_pool_score.cuh
 
 tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
@@ -1718,6 +1750,29 @@ tests/test_glm53_stream: tests/test_glm53_stream.c ds4.c ds4.h ds4_gpu.h ds4_glm
 .PHONY: test-glm53-stream
 test-glm53-stream: tests/test_glm53_stream
 	./tests/test_glm53_stream
+
+.PHONY: test-glm53-lifetime
+test-glm53-lifetime:
+	@glm_fixture_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$glm_fixture_dir"' EXIT; \
+	python3 tests/test_glm53_close_fixture.py "$$glm_fixture_dir/close" \
+		ctor close finish finish_retry finish_cancel && \
+	python3 tests/test_glm53_prefill_fixture.py "$$glm_fixture_dir/prefill"
+
+.PHONY: test-glm53-fit
+test-glm53-fit:
+	@glm_fixture_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$glm_fixture_dir"' EXIT; \
+	DS4_GLM_FIT_POLICY_RECEIPT="$$glm_fixture_dir/window" \
+		cargo test -p ds4-core --lib glm_fit_keeps_retry_window --locked -- --test-threads=1 && \
+	python3 tests/test_glm53_fit_fixture.py "$$glm_fixture_dir/fit" --sanitize \
+		--window-policy "$$glm_fixture_dir/window" && \
+	python3 tests/test_glm53_lazy_fixture.py "$$glm_fixture_dir/lazy" --sanitize
+
+tests/test_glm53_width: tests/test_glm53_width.cu $(DS4_CUDA_CORE_OBJS)
+	@test -f "$(DS4_GLM53_WIDTH_FIXTURE)/weights.h" || \
+		{ echo "set DS4_GLM53_WIDTH_FIXTURE to the extracted fixture directory" >&2; exit 2; }
+	$(NVCC) $(NVCCFLAGS) -I. -I"$(DS4_GLM53_WIDTH_FIXTURE)" -o $@ $^ $(CUDA_LDLIBS)
 
 test-glm53-compact: tests/test_glm53_compact
 	./tests/test_glm53_compact

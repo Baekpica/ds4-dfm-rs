@@ -454,6 +454,18 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
     open_options.push(ModelOpenOption::PowerPercent(args.power_percent as u8));
     open_options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
     open_options.push(ModelOpenOption::MtpMargin(args.mtp_margin));
+    if open_options.contains(&ModelOpenOption::SsdStreaming) {
+        open_options.push(ModelOpenOption::ServingBudget(ds4_core::ServingRequest {
+            ctx: args.ctx_alloc,
+            max_seqs: ds4_core::MaxSeqs::Off,
+            mtp_mode: if args.mtp_draft > 1 {
+                ds4_core::MtpMode::On
+            } else {
+                ds4_core::MtpMode::Off
+            },
+            ..ds4_core::ServingRequest::default()
+        }));
+    }
     let model = if let Some(config) = native_dist.as_ref() {
         Model::open_distributed_options(
             &args.model,

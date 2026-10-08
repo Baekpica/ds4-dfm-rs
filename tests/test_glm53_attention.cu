@@ -39,6 +39,8 @@ static ds4_gpu_tensor alloc(uint64_t bytes) {
     return out;
 }
 
+enum { WIDE_ROWS = 2048u, WIDE_SELECTED = 16u };
+
 static void check_case(uint32_t visible, uint32_t rows, uint32_t heads,
         uint32_t dim, uint32_t offset, int extreme, glm53_attn_mode mode) {
     const uint32_t cap = visible + rows - 1u;
@@ -63,7 +65,9 @@ static void check_case(uint32_t visible, uint32_t rows, uint32_t heads,
             }
         }
         for (uint32_t s = 0u; s < stride; s++) {
-            selected[(uint64_t)t * stride + s] = s == stride - 1u ? UINT32_MAX
+            const uint32_t used = rows >= WIDE_ROWS ? WIDE_SELECTED : stride - 1u;
+            selected[(uint64_t)t * stride + s] = s >= used ? UINT32_MAX
+                : rows >= WIDE_ROWS && s + 1u == used ? visible + t
                 : (s * 397u + t * 23u) % (visible + t);
         }
     }
@@ -81,6 +85,7 @@ static void check_case(uint32_t visible, uint32_t rows, uint32_t heads,
     CHECK(ds4_gpu_glm53_attn_low(&out, &q, &device_cache, stride ? &picked : NULL,
         stride, rows, pos0, cap, heads, dim, 256u));
     CHECK(cuda_ok(cudaMemcpy(output.data(), out.ptr, (size_t)out.bytes, cudaMemcpyDeviceToHost), "output read"));
+    for (float value : output) { CHECK(isfinite(value)); }
 
     // Pairing changes load reuse, never the selected-order FMA transition.
     if (dim == 512u && (stride || cap <= DS4_GLM53_MAX_SELECTED)) {
@@ -103,7 +108,14 @@ static void check_case(uint32_t visible, uint32_t rows, uint32_t heads,
     }
 
     double worst = 0.0;
+    uint32_t cpu_rows = 0u;
     for (uint32_t t = 0u; t < rows; t++) {
+        /* Wide coverage keeps the production grid and selection stride;
+         * sample the scalar dot/softmax while checking every GPU row finite. */
+        if (rows >= WIDE_ROWS && t != 0u && t != 1u && t != rows / 2u && t != rows - 1u) {
+            continue;
+        }
+        cpu_rows++;
         const uint32_t count = stride ? stride : visible + t;
         for (uint32_t h = 0u; h < heads; h++) {
             std::vector<double> scores(count);
@@ -157,8 +169,8 @@ static void check_case(uint32_t visible, uint32_t rows, uint32_t heads,
     CHECK(cuda_ok(cudaFree(out.ptr), "output free"));
     CHECK(cuda_ok(cudaFree(q.ptr), "query free"));
     CHECK(cuda_ok(cudaFree(full.ptr), "cache free"));
-    printf("GLM attention: visible=%u rows=%u heads=%u dim=%u offset=%u extreme=%d selected=%u max_abs=%.9g PASS\n",
-        visible, rows, heads, dim, offset, extreme, stride, worst);
+    printf("GLM attention: visible=%u rows=%u heads=%u dim=%u offset=%u extreme=%d selected=%u cpu_rows=%u max_abs=%.9g PASS\n",
+        visible, rows, heads, dim, offset, extreme, stride, cpu_rows, worst);
 }
 
 int main(void) {
@@ -167,5 +179,6 @@ int main(void) {
     check_case(4097u, 3u, 4u, 512u, 13u, 0, GLM53_ATTN_ALL);
     check_case(4097u, 3u, 4u, 1024u, 7u, 1, GLM53_ATTN_ALL);
     check_case(4097u, 3u, 4u, 512u, 3u, 0, GLM53_ATTN_SELECTED);
+    check_case(2051u, WIDE_ROWS, 1u, 512u, 3u, 0, GLM53_ATTN_SELECTED);
     return 0;
 }

@@ -184,8 +184,12 @@ pub enum ModelOpenOption {
     WarmWeights,
     SsdStreaming,
     SsdStreamingCold,
+    SsdCacheAuto,
     SsdCacheExperts(u32),
     SsdCacheBytes(u64),
+    /// Memory admission uses the intended context, banks and optional state.
+    /// Required for automatic SSD cache sizing; fixed count/bytes may omit it.
+    ServingBudget(ServingRequest),
     PowerPercent(u8),
     MtpDraftTokens(i32),
     MtpMargin(f32),
@@ -226,8 +230,10 @@ struct OpenTuning {
     warm_weights: bool,
     ssd_streaming: bool,
     ssd_streaming_cold: bool,
+    ssd_cache_auto: bool,
     ssd_streaming_cache_experts: u32,
     ssd_streaming_cache_bytes: u64,
+    serving_budget: Option<ServingRequest>,
     power_percent: i32,
     mtp_draft_tokens: i32,
     mtp_margin: f32,
@@ -244,8 +250,10 @@ impl Default for OpenTuning {
             warm_weights: false,
             ssd_streaming: false,
             ssd_streaming_cold: false,
+            ssd_cache_auto: false,
             ssd_streaming_cache_experts: 0,
             ssd_streaming_cache_bytes: 0,
+            serving_budget: None,
             power_percent: 100,
             mtp_draft_tokens: 1,
             mtp_margin: 3.0,
@@ -363,6 +371,8 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
             ModelOpenOption::WarmWeights => tuning.warm_weights = true,
             ModelOpenOption::SsdStreaming => tuning.ssd_streaming = true,
             ModelOpenOption::SsdStreamingCold => tuning.ssd_streaming_cold = true,
+            ModelOpenOption::SsdCacheAuto => tuning.ssd_cache_auto = true,
+            ModelOpenOption::ServingBudget(req) => tuning.serving_budget = Some(req.clone()),
             ModelOpenOption::SsdCacheExperts(count) if *count > 0 => {
                 tuning.ssd_streaming_cache_experts = *count;
             }
@@ -449,6 +459,7 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
 
     if !tuning.ssd_streaming
         && (tuning.ssd_streaming_cold
+            || tuning.ssd_cache_auto
             || tuning.ssd_streaming_cache_experts != 0
             || tuning.ssd_streaming_cache_bytes != 0)
     {
@@ -461,6 +472,14 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
         return Err(Error {
             code: 1,
             message: "SSD expert count and byte budgets are mutually exclusive".into(),
+        });
+    }
+    if tuning.ssd_cache_auto
+        && (tuning.ssd_streaming_cache_experts != 0 || tuning.ssd_streaming_cache_bytes != 0)
+    {
+        return Err(Error {
+            code: 1,
+            message: "SSD auto and fixed budgets are mutually exclusive".into(),
         });
     }
     Ok(tuning)
@@ -636,6 +655,7 @@ pub struct Model {
     chat_template: Option<chat_template::Template>,
     vision_ready: bool,
     mtp_draft_tokens: i32,
+    runtime_budget: Option<ServingRequest>,
     _distributed: Option<FfiDistributed>,
     _not_send: PhantomData<*const ()>,
 }
@@ -1186,6 +1206,32 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
     })
 }
 
+fn glm_runtime_req(req: &ServingRequest, ctx: i32, banks: MaxSeqs) -> ServingRequest {
+    let mut req = req.clone();
+    req.ctx = ctx;
+    req.max_seqs = banks;
+    // Serial media uses snapshots; partial reuse remains the text banks'
+    // policy. Validate this allocation without changing the serving request.
+    if banks == MaxSeqs::Off && req.prefix_reuse == PrefixReuse::Partial {
+        req.prefix_reuse = PrefixReuse::Exact;
+    }
+    req
+}
+
+fn apply_glm_fit(req: &ServingRequest, shape: Shape, plan: &ResolvedPlan) {
+    let serial = glm_runtime_req(req, req.ctx, MaxSeqs::Off);
+    let rows = plan.effective.native_chunk.unwrap_or(0);
+    // Native prices this eligible window before bank allocation, then disables
+    // it for multiple banks. Keep the policy available for a one-bank retry.
+    let window = ssd_quote::prefill_window(
+        &serial,
+        plan.effective.ssd_streaming_cache_experts,
+        rows,
+        shape.n_expert,
+    );
+    ssd_quote::apply_window(window);
+}
+
 impl Model {
     pub fn open(
         path: &str,
@@ -1312,7 +1358,7 @@ impl Model {
         distributed: Option<&DistributedConfig>,
         options: &[ModelOpenOption],
     ) -> Result<Self> {
-        let tuning = open_tuning(options)?;
+        let mut tuning = open_tuning(options)?;
         let identified = identify_gguf(std::path::Path::new(path)).map_err(|e| Error {
             code: 1,
             message: format!("identify failed: {}", e.token()),
@@ -1431,6 +1477,28 @@ impl Model {
                     message: e.to_string(),
                 })?;
             }
+        }
+        let mut runtime_budget = (identified.shape.family == ModelFamily::Glm53)
+            .then(|| tuning.serving_budget.clone().unwrap_or_default());
+        if let Some(req) = &mut runtime_budget {
+            req.mtp_mode = glm_mtp::mode(
+                tuning.mtp_draft_tokens,
+                std::env::var("DS4_GLM53_MTP").ok().as_deref(),
+                std::env::var("DS4_MTP_SPEC_DISABLE").ok().as_deref(),
+            );
+            req.native_chunk = Some(ssd_quote::prefill_rows(
+                req,
+                None,
+                identified.shape.n_expert_used,
+            )?);
+        }
+        ssd::resolve_budget(&mut tuning, &identified, &inventory, backend)?;
+        if let Some(req) = &mut runtime_budget {
+            req.ssd_streaming = tuning.ssd_streaming;
+            req.ssd_streaming_cache_experts = (tuning.ssd_streaming_cache_experts != 0)
+                .then_some(tuning.ssd_streaming_cache_experts);
+            req.ssd_streaming_cache_bytes =
+                (tuning.ssd_streaming_cache_bytes != 0).then_some(tuning.ssd_streaming_cache_bytes);
         }
         let bind_plan = BindPlan::resolve(identified.shape, &inventory);
         if let Some(name) = bind_plan.missing_required().first() {
@@ -1562,6 +1630,7 @@ impl Model {
             chat_template,
             vision_ready: tuning.vision_path.is_some(),
             mtp_draft_tokens: tuning.mtp_draft_tokens,
+            runtime_budget,
             _distributed: ffi_distributed,
             _not_send: PhantomData,
         })
@@ -1696,7 +1765,66 @@ impl Model {
         inkling_audio::probe_audio(data, u32::MAX)
     }
 
+    /// Report the cache admitted at open; Auto may change since preflight.
+    pub fn ssd_quote(&self, facts: &mut EngineFacts) -> Result<()> {
+        let Some(req) = &self.runtime_budget else {
+            return Ok(());
+        };
+        if req.ssd_streaming {
+            probe_ssd_quote(facts, req, self.bind_plan.shape, &self.inventory)?;
+        }
+        Ok(())
+    }
+
+    fn fit_glm_rows(&self, ctx_size: i32, banks: MaxSeqs) -> Result<()> {
+        let Some(req) = &self.runtime_budget else {
+            return Ok(());
+        };
+        if self.backend != Backend::Cuda {
+            return Ok(());
+        }
+        let mut req = glm_runtime_req(req, ctx_size, banks);
+        req.backend = self.backend;
+        let shape = self.bind_plan.shape;
+        let caps = caps_from_shape(shape);
+        let mut facts = EngineFacts::default();
+        if req.ssd_streaming {
+            probe_ssd_quote(&mut facts, &req, shape, &self.inventory)?;
+        }
+        // Ownership is now known, but no bank graph has been allocated.
+        // Fit rows against live memory before native can reduce bank count.
+        attach_host_quote(
+            &mut facts,
+            &req,
+            caps,
+            Some(shape),
+            self.inventory.shards.first().map(|s| s.path.as_path()),
+            None,
+            None,
+            None,
+            1,
+            None,
+            self.vision_ready,
+            true,
+        );
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        if plan.has_errors() {
+            return Err(Error {
+                code: 1,
+                message: format!("GLM runtime budget rejected: {}", plan.report()),
+            });
+        }
+        apply_glm_fit(&req, shape, &plan);
+        if let Some(rows) = plan.effective.native_chunk {
+            std::env::set_var("DS4_GLM53_PREFILL_ROWS", rows.to_string());
+            eprintln!("GLM Prefill rows: requested={} effective={rows} ctx={ctx_size} banks={} qualified=unverified",
+                req.native_chunk.unwrap_or(0), plan.effective.max_seqs);
+        }
+        Ok(())
+    }
+
     pub fn session(&self, ctx_size: i32) -> Result<Session<'_>> {
+        self.fit_glm_rows(ctx_size, MaxSeqs::Off)?;
         let mut raw = ptr::null_mut();
         let mut err = [0u8; 512];
         let rc = unsafe {
@@ -3020,6 +3148,33 @@ impl Drop for Session<'_> {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn glm_serial_budget_keeps_banks() {
+        let req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            ssd_streaming: true,
+            ssd_streaming_cache_experts: Some(8230),
+            native_chunk: Some(2048),
+            ..ServingRequest::default()
+        };
+        let serial = glm_runtime_req(&req, 4096, MaxSeqs::Off);
+        assert_eq!(serial.ctx, 4096);
+        assert_eq!(serial.max_seqs, MaxSeqs::Off);
+        assert_eq!(serial.prefix_reuse, PrefixReuse::Exact);
+        assert_eq!(
+            serial.ssd_streaming_cache_experts,
+            req.ssd_streaming_cache_experts
+        );
+        assert_eq!(serial.native_chunk, req.native_chunk);
+
+        let banked = glm_runtime_req(&req, 8192, MaxSeqs::Fixed(2));
+        assert_eq!(banked.prefix_reuse, PrefixReuse::Partial);
+        assert_eq!(req.prefix_reuse, PrefixReuse::Partial);
+        assert_eq!(req.max_seqs, MaxSeqs::Fixed(2));
+    }
 
     #[test]
     fn graph_fit_quote_copies_c_fields() {

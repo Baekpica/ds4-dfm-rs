@@ -4984,6 +4984,44 @@ extern "C" int ds4_gpu_tensor_write(ds4_gpu_tensor *tensor, uint64_t offset, con
     return cuda_ok(cudaMemcpy((char *)tensor->ptr + offset, data, (size_t)bytes, cudaMemcpyHostToDevice), "tensor write");
 }
 
+struct ds4_gpu_upload {
+    cudaStream_t stream;
+    int device;
+};
+
+extern "C" ds4_gpu_upload *ds4_gpu_upload_new(void) {
+    ds4_gpu_upload *upload = new (std::nothrow) ds4_gpu_upload{};
+    if (!upload) { return NULL; }
+    if (!cuda_ok(cudaGetDevice(&upload->device), "SSD upload device") ||
+        !cuda_ok(cudaStreamCreateWithFlags(&upload->stream, cudaStreamNonBlocking),
+                 "SSD upload stream")) {
+        delete upload;
+        return NULL;
+    }
+    return upload;
+}
+
+extern "C" int ds4_gpu_upload_write(ds4_gpu_upload *upload, ds4_gpu_tensor *dst,
+        uint64_t offset, const void *src, uint64_t bytes) {
+    if (!upload || !dst || !src || offset > dst->bytes ||
+        bytes > dst->bytes - offset) { return 0; }
+    if (!cuda_ok(cudaSetDevice(upload->device), "SSD upload worker device")) { return 0; }
+    const cudaError_t copied = cudaMemcpyAsync((char *)dst->ptr + offset, src,
+        (size_t)bytes, cudaMemcpyHostToDevice, upload->stream);
+    // Even a failed submission must drain earlier work before the caller
+    // reuses/frees its pageable buffer or the cache destroys its tensors.
+    const cudaError_t drained = cudaStreamSynchronize(upload->stream);
+    return cuda_ok(copied, "SSD upload copy") && cuda_ok(drained, "SSD upload completion");
+}
+
+extern "C" void ds4_gpu_upload_free(ds4_gpu_upload *upload) {
+    if (!upload) { return; }
+    (void)cudaSetDevice(upload->device);
+    (void)cudaStreamSynchronize(upload->stream);
+    (void)cudaStreamDestroy(upload->stream);
+    delete upload;
+}
+
 extern "C" int ds4_gpu_tensor_read(const ds4_gpu_tensor *tensor, uint64_t offset, void *data, uint64_t bytes) {
     if (!tensor || !data || offset > tensor->bytes || bytes > tensor->bytes - offset) return 0;
     return cuda_ok(cudaMemcpy(data, (const char *)tensor->ptr + offset, (size_t)bytes, cudaMemcpyDeviceToHost), "tensor read");
@@ -37207,13 +37245,22 @@ static int glm53_moe_mixed(
                 (float *)up->ptr, mid_dim, in_dim, tokens, experts, used, 0, stream);
         }
     } else {
-        rc = ds4_mmq_glm_moe(gate_type, gw, (const float *)x->ptr, ids,
-            (float *)gate->ptr, mid_dim, in_dim, tokens, experts, used,
-            gate_stride, stream);
-        if (rc == 0) {
-            rc = ds4_mmq_glm_moe(gate_type, uw, (const float *)x->ptr, ids,
-                (float *)up->ptr, mid_dim, in_dim, tokens, experts, used,
+        const char *pair = getenv("DS4_GLM53_GATE_UP_PAIR");
+        if (tokens > 8u && (!pair || strcmp(pair, "0") != 0)) {
+            rc = ds4_mmq_glm_pair(gate_type, gw, uw, (const float *)x->ptr,
+                ids, (float *)gate->ptr, (float *)up->ptr, mid_dim, in_dim,
+                tokens, experts, used, gate_stride, stream);
+        }
+        if (rc != 0) {
+            if (rc != -1) { return 0; }
+            rc = ds4_mmq_glm_moe(gate_type, gw, (const float *)x->ptr, ids,
+                (float *)gate->ptr, mid_dim, in_dim, tokens, experts, used,
                 gate_stride, stream);
+            if (rc == 0) {
+                rc = ds4_mmq_glm_moe(gate_type, uw, (const float *)x->ptr, ids,
+                    (float *)up->ptr, mid_dim, in_dim, tokens, experts, used,
+                    gate_stride, stream);
+            }
         }
     }
     if (rc != 0) { return 0; }

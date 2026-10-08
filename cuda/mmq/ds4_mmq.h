@@ -1073,6 +1073,12 @@ int ds4_mmq_glm_moe(uint32_t type, const void *w, const float *x,
     const int32_t *ids, float *out, int m, int k, int tokens, int experts,
     int used, uint64_t expert_stride, cudaStream_t stream);
 
+/* Same raw arithmetic; gate/up reuse one quantized input and expert map. */
+int ds4_mmq_glm_pair(uint32_t type, const void *gate, const void *up,
+    const float *x, const int32_t *ids, float *gate_out, float *up_out,
+    int m, int k, int tokens, int experts, int used,
+    uint64_t expert_stride, cudaStream_t stream);
+
 int ds4_mmq_iq1_s_moe_vec(
     const void    * W,
     const float   * X_f32,

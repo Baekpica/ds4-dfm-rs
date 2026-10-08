@@ -117,7 +117,20 @@ extern "C" int ds4_gpu_glm53_absorb_q(ds4_gpu_tensor *low_q,
     return cuda_ok(cudaGetLastError(), "GLM-5.3 compact Q absorption");
 }
 
+#include "cuda/glm53_dense_attn.cuh"
+static int glm53_dense_engine(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *cache, uint32_t rows, uint32_t pos0,
+        uint32_t heads, uint32_t latent, uint32_t head_dim) {
+    void *scratch = cuda_tmp_alloc(glm53_dense_bytes(rows, pos0 + rows),
+        "GLM dense attention");
+    if (!scratch) { return 0; }
+    return glm53_dense_run(g_cublas, ds4_current_stream(), (float *)out->ptr,
+        (const float *)q->ptr, (const __half *)cache->ptr, scratch,
+        rows, pos0, heads, latent, head_dim);
+}
+#define DS4_GLM53_DENSE_ENGINE
 #include "cuda/glm53_low_attn.cuh"
+#undef DS4_GLM53_DENSE_ENGINE
 
 __global__ static void glm53_proj_v_kernel(float *out, const float *low,
         const char *weight, uint32_t heads, uint32_t latent_dim,

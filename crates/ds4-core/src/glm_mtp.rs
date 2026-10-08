@@ -5,6 +5,30 @@ const USER: i32 = 154827;
 const OBSERVATION: i32 = 154829;
 pub(super) const DRAFT_MAX: i32 = TRIAL_CAP as i32 - 1;
 
+pub(super) fn mode(draft: i32, enable: Option<&str>, disable: Option<&str>) -> crate::MtpMode {
+    // Native enables embedded MTP for a multi-token draft unless disabled.
+    if (draft > 1 || enable == Some("1")) && disable != Some("1") {
+        crate::MtpMode::On
+    } else {
+        crate::MtpMode::Off
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn mode_matches_native() {
+    use crate::MtpMode::{Off, On};
+    for (draft, enable, disable, expected) in [
+        (1, None, None, Off),
+        (1, Some("1"), None, On),
+        (3, Some("0"), None, On),
+        (3, Some("1"), Some("1"), Off),
+        (3, None, Some("1"), Off),
+    ] {
+        assert_eq!(mode(draft, enable, disable), expected);
+    }
+}
+
 impl crate::Session<'_> {
     pub(super) fn eval_glm_argmax(
         &mut self,

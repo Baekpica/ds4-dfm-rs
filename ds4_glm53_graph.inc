@@ -1,4 +1,5 @@
 #include "ds4_glm53_compact.h"
+#include "ds4_glm53_attn.h"
 
 /* GLM-5.3's compact graph follows the pinned native DSA/indexer algebra.
  * Layer-major prefill batches the projections and MoE work while each KDA
@@ -7,11 +8,18 @@
 enum {
     DS4_GLM53_RESIDENT_CTX_MAX = 1048576u,
     GLM53_DIAG_CTX_MAX = 2048u,
-    GLM53_PREFILL_DEFAULT = 128u,
-    GLM53_PREFILL_MAX = 256u,
+    GLM53_PREFILL_DEFAULT = 2048u,
+    GLM53_PREFILL_MAX = 2048u,
+    GLM53_PREFILL_WINDOW = 4096u,
     GLM53_QUANT_Q8 = 8u
 };
 static const float GLM53_POOL_EPS = 1.0e-6f;
+
+static uint64_t glm53_dense_reserve(uint32_t rows, uint32_t ctx) {
+    const char *value = getenv("DS4_GLM53_DENSE_GEMM");
+    if (!value || strcmp(value, "0") == 0 || rows < GLM53_DENSE_MIN_ROWS) { return 0u; }
+    return glm53_dense_bytes(rows, ctx);
+}
 
 #define GLM53_MTP_STATE
 #include "ds4_glm53_mtp.inc"
@@ -22,23 +30,36 @@ static bool glm53_mtp_step(ds4_glm53_gpu_graph *g, const ds4_model *m,
         uint32_t pos, int *next);
 
 static uint32_t glm53_graph_row_cap(uint32_t ctx, uint32_t slots) {
+    (void)slots; /* Routing is subdivided by its actual expert union. */
     uint32_t rows = GLM53_PREFILL_DEFAULT;
     const char *value = getenv("DS4_GLM53_PREFILL_ROWS");
     if (value && value[0]) {
         char *end = NULL;
         const unsigned long parsed = strtoul(value, &end, 10);
-        if (!end || *end || (parsed != 1ul && parsed != 128ul && parsed != 256ul)) {
-            fprintf(stderr, "ds4: invalid DS4_GLM53_PREFILL_ROWS (use 1/128/256)\n");
+        if (!end || *end || parsed < 1ul || parsed > GLM53_PREFILL_MAX) {
+            fprintf(stderr, "ds4: invalid DS4_GLM53_PREFILL_ROWS (use 1..2048)\n");
             return 0u;
         }
         rows = (uint32_t)parsed;
     }
-    if (slots) {
-        const uint32_t routed_rows = slots / DS4_N_EXPERT_USED;
-        if (!routed_rows) { return 0u; }
-        if (rows > routed_rows) { rows = routed_rows; }
-    }
     return rows < ctx ? rows : ctx;
+}
+
+static uint32_t glm53_window_cap(uint32_t ctx, uint32_t slots) {
+    const char *value = getenv("DS4_GLM53_PREFILL_WINDOW");
+    if ((value && strcmp(value, "4096") != 0) || ctx < GLM53_PREFILL_WINDOW ||
+        slots < 2u * DS4_N_EXPERT ||
+        glm53_graph_row_cap(ctx, slots) < GLM53_DENSE_MIN_ROWS) { return 0u; }
+    return GLM53_PREFILL_WINDOW;
+}
+
+static uint32_t glm53_prefill_cap(uint32_t ctx, uint32_t slots) {
+    const uint32_t window = glm53_window_cap(ctx, slots);
+    return window ? window : glm53_graph_row_cap(ctx, slots);
+}
+
+static uint64_t glm53_window_bytes(uint32_t window) {
+    return 2u * (uint64_t)window * DS4_N_HC * DS4_N_EMBD * sizeof(float);
 }
 
 static bool glm53_graph_diag(void) {
@@ -109,19 +130,22 @@ static uint64_t glm53_graph_state_bytes(void) {
         2u * (uint64_t)DS4_N_EMBD * sizeof(float);
 }
 
-static uint64_t glm53_graph_bytes_for(uint32_t ctx_cap, uint32_t slots) {
+static uint64_t glm53_graph_bytes_plan(uint32_t ctx_cap, uint32_t rows, uint32_t window) {
     if (!ctx_cap || ctx_cap > DS4_GLM53_RESIDENT_CTX_MAX ||
+        !rows || rows > ctx_cap || rows > GLM53_PREFILL_MAX ||
+        (window && (window != GLM53_PREFILL_WINDOW || window > ctx_cap ||
+                    rows < GLM53_DENSE_MIN_ROWS)) ||
         (glm53_graph_diag() && ctx_cap > GLM53_DIAG_CTX_MAX)) { return 0u; }
     ds4_glm53_gpu_graph quote = {0};
     ds4_glm53_gpu_graph *g = &quote;
     g->pool_cap = (ctx_cap + DS4_GLM53_POOL_SIZE - 1u) / DS4_GLM53_POOL_SIZE;
-    const uint32_t rows = glm53_graph_row_cap(ctx_cap, slots);
-    if (!rows) { return 0u; }
     uint64_t bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
 #define GLM53_QUOTE(field, cols, type) bytes += (uint64_t)rows * (cols) * sizeof(type);
     GLM53_ROW_BUFFERS(GLM53_QUOTE)
 #undef GLM53_QUOTE
     bytes += ds4_gpu_solar_kda_prefill_scratch_bytes(rows, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
+    bytes += glm53_dense_reserve(rows, ctx_cap);
+    bytes += glm53_window_bytes(window);
 
     uint32_t kda, dsa;
     glm53_graph_layers(&kda, &dsa);
@@ -139,14 +163,20 @@ static uint64_t glm53_graph_bytes_for(uint32_t ctx_cap, uint32_t slots) {
     return bytes + (uint64_t)dsa * cache + 2u * (uint64_t)DS4_N_EMBD * sizeof(float);
 }
 
+static uint64_t glm53_graph_bytes_for(uint32_t ctx_cap, uint32_t slots) {
+    return glm53_graph_bytes_plan(ctx_cap, glm53_graph_row_cap(ctx_cap, slots),
+                                  glm53_window_cap(ctx_cap, slots));
+}
+
 static uint64_t glm53_graph_bytes_estimate(uint32_t ctx_cap) {
     return glm53_graph_bytes_for(ctx_cap, 0u);
 }
 
 typedef enum { GLM53_MTP_OFF, GLM53_MTP_ON } glm53_mtp_mode;
 
-static uint64_t glm53_session_bytes(uint32_t ctx, uint32_t slots, glm53_mtp_mode mode) {
-    const uint64_t base = glm53_graph_bytes_for(ctx, slots);
+static uint64_t glm53_session_bytes(uint32_t ctx, uint32_t rows,
+        uint32_t window, glm53_mtp_mode mode) {
+    const uint64_t base = glm53_graph_bytes_plan(ctx, rows, window);
     if (!base || mode == GLM53_MTP_OFF) { return base; }
     return base + glm53_mtp_bytes(ctx) + GLM53_MTP_SAVES * glm53_graph_state_bytes();
 }
@@ -273,15 +303,17 @@ static bool glm53_graph_state(ds4_glm53_gpu_graph *g,
         state_cursor == g->state_bytes && control_cursor == g->control_bytes;
 }
 
-static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
+static bool glm53_graph_alloc_plan(ds4_glm53_gpu_graph *g,
         const ds4_model *model, const ds4_weights *weights, uint32_t ctx_cap,
-        ds4_glm53_stream *stream) {
+        uint32_t rows, uint32_t window, ds4_glm53_stream *stream) {
     if (!g || !model || !weights || (stream && stream->count < DS4_N_EXPERT_USED) ||
         DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
-        !glm53_graph_bytes_for(ctx_cap, stream ? stream->count : 0u)) { return false; }
+        (window && (!stream || stream->count < 2u * DS4_N_EXPERT)) ||
+        !glm53_graph_bytes_plan(ctx_cap, rows, window)) { return false; }
     memset(g, 0, sizeof(*g));
     g->ctx_cap = ctx_cap;
-    g->row_cap = glm53_graph_row_cap(ctx_cap, stream ? stream->count : 0u);
+    g->row_cap = rows;
+    g->window_cap = window;
     g->pool_cap = (ctx_cap + DS4_GLM53_POOL_SIZE - 1u) / DS4_GLM53_POOL_SIZE;
     g->expanded_diag = glm53_graph_diag();
     g->stream = stream;
@@ -296,6 +328,9 @@ static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
     const uint64_t logit_bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
     g->logits = ds4_gpu_tensor_alloc(logit_bytes);
     g->workspace_bytes += logit_bytes;
+    // The CUDA temporary arena retains the largest dense GEMM slab.
+    g->workspace_bytes += glm53_dense_reserve(g->row_cap, ctx_cap);
+    g->workspace_bytes += glm53_window_bytes(window);
     const uint64_t scratch_bytes = ds4_gpu_solar_kda_prefill_scratch_bytes(
         g->row_cap, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
     if (scratch_bytes) {
@@ -319,6 +354,14 @@ static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
         (double)g->kv_bytes / 1073741824.0, (double)g->state_bytes / 1048576.0,
         (double)g->workspace_bytes / 1048576.0);
     return true;
+}
+
+static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
+        const ds4_model *model, const ds4_weights *weights, uint32_t ctx_cap,
+        ds4_glm53_stream *stream) {
+    const uint32_t slots = stream ? stream->count : 0u;
+    return glm53_graph_alloc_plan(g, model, weights, ctx_cap,
+        glm53_graph_row_cap(ctx_cap, slots), glm53_window_cap(ctx_cap, slots), stream);
 }
 
 static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,
@@ -462,12 +505,14 @@ static bool glm53_graph_routed(ds4_glm53_gpu_graph *g, const ds4_model *model,
             DS4_SWIGLU_CLAMP_EXP, g->norm, il, rows, &mid_is_f16) != 0;
     }
     ds4_glm53_stream *s = g->stream;
-    const uint32_t cap = s->count / DS4_N_EXPERT_USED;
-    if (!cap) { return false; }
+    if (!glm53_stream_routes(s, g->selected, rows)) { return false; }
     for (uint32_t done = 0; done < rows;) {
-        const uint32_t chunk = rows - done < cap ? rows - done : cap;
-        /* Worst-case top-8 routes fit in the bounded cache, even when no two
-         * rows share an expert. Row-local IDs are rewritten after staging. */
+        int32_t *ids = s->ids + (uint64_t)done * DS4_N_EXPERT_USED;
+        const uint32_t chunk = glm53_cache_rows(ids, rows - done,
+            DS4_N_EXPERT_USED, DS4_N_EXPERT, s->count);
+        if (!chunk) { return false; }
+        /* Cache admission changes supply only; projection widths are kept
+         * whenever the actual route union fits, including duplicate routes. */
         ds4_gpu_tensor *out = ds4_gpu_tensor_view(g->ffn_out,
             (uint64_t)done * DS4_N_EMBD * sizeof(float), (uint64_t)chunk * DS4_N_EMBD * sizeof(float));
         ds4_gpu_tensor *x = ds4_gpu_tensor_view(g->norm,
@@ -487,7 +532,7 @@ static bool glm53_graph_routed(ds4_glm53_gpu_graph *g, const ds4_model *model,
         ds4_gpu_tensor *weights = ds4_gpu_tensor_view(g->route_weights,
             (uint64_t)done * DS4_N_EXPERT_USED * sizeof(float), (uint64_t)chunk * DS4_N_EXPERT_USED * sizeof(float));
         const bool ok = out && x && gate && up && mid && down && picked && weights &&
-            glm53_stream_select(s, model, l, il, picked, chunk) &&
+            glm53_stream_stage(s, model, l, il, ids, chunk) &&
             ds4_gpu_glm53_moe_owned(out, gate, up, mid, down, s->gate, s->up, s->down,
                 l->ffn_gate_exps->type, l->ffn_down_exps->type, s->gate_stride, s->down_stride,
                 DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, s->selected, weights, s->count,
@@ -558,9 +603,9 @@ static bool glm53_graph_output(ds4_glm53_gpu_graph *g, const ds4_model *model,
     return ok;
 }
 
-static bool glm53_graph_batch(ds4_glm53_gpu_graph *g, const ds4_model *model,
+static bool glm53_graph_embed(ds4_glm53_gpu_graph *g, const ds4_model *model,
         const ds4_weights *weights, const int *tokens, uint32_t rows,
-        uint32_t pos0, const float *embeddings, float *host_logits) {
+        const float *embeddings) {
     const bool embedded = embeddings
         ? ds4_gpu_tensor_write(g->cur, 0u, embeddings, (uint64_t)rows * DS4_N_EMBD * sizeof(float)) != 0
         : ds4_gpu_tensor_write(g->token, 0u, tokens, (uint64_t)rows * sizeof(int32_t)) &&
@@ -568,32 +613,108 @@ static bool glm53_graph_batch(ds4_glm53_gpu_graph *g, const ds4_model *model,
             weights->token_embd->abs_offset, weights->token_embd->type,
             (uint32_t)weights->token_embd->dim[1], rows, DS4_N_EMBD);
     if (!embedded || !ds4_gpu_repeat_hc_rows_tensor(g->hc_cur, g->cur, DS4_N_EMBD, DS4_N_HC, rows)) { return false; }
+    return true;
+}
+
+static bool glm53_graph_layer(ds4_glm53_gpu_graph *g, const ds4_model *model,
+        const ds4_weights *weights, uint32_t il, uint32_t rows, uint32_t pos0) {
+    const ds4_layer_weights *l = &weights->layer[il];
+    if (!glm53_graph_hc_pre(g, model, l->hc_attn_fn, l->hc_attn_scale,
+            l->hc_attn_base, l->attn_norm, g->hc_cur, rows)) {
+        fprintf(stderr, "ds4: GLM-5.3 layer %u attention mHC failed\n", il);
+        return false;
+    }
+    const bool attention = ds4_glm53_layer_is_kda(il)
+        ? glm53_graph_kda(g, model, l, il, rows)
+        : glm53_graph_dsa(g, model, l, il, pos0, rows);
+    if (!attention || !ds4_gpu_hc_expand_split_tensor(g->hc_after_attn,
+            g->attn_out, g->hc_cur, g->hc_split, DS4_N_EMBD, DS4_N_HC) ||
+        !glm53_graph_hc_pre(g, model, l->hc_ffn_fn, l->hc_ffn_scale,
+            l->hc_ffn_base, l->ffn_norm, g->hc_after_attn, rows) ||
+        !glm53_graph_ffn(g, model, l, il, rows) ||
+        !ds4_gpu_hc_expand_split_tensor(g->hc_next, g->ffn_out,
+            g->hc_after_attn, g->hc_split, DS4_N_EMBD, DS4_N_HC)) {
+        fprintf(stderr, "ds4: GLM-5.3 layer %u batch execution failed\n", il);
+        return false;
+    }
+    return true;
+}
+
+static bool glm53_graph_batch(ds4_glm53_gpu_graph *g, const ds4_model *model,
+        const ds4_weights *weights, const int *tokens, uint32_t rows,
+        uint32_t pos0, const float *embeddings, float *host_logits) {
+    if (!glm53_graph_embed(g, model, weights, tokens, rows, embeddings)) { return false; }
     const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
     for (uint32_t il = 0; il < layers; il++) {
-        const ds4_layer_weights *l = &weights->layer[il];
-        if (!glm53_graph_hc_pre(g, model, l->hc_attn_fn, l->hc_attn_scale,
-                l->hc_attn_base, l->attn_norm, g->hc_cur, rows)) {
-            fprintf(stderr, "ds4: GLM-5.3 layer %u attention mHC failed\n", il);
-            return false;
-        }
-        const bool attention = ds4_glm53_layer_is_kda(il)
-            ? glm53_graph_kda(g, model, l, il, rows)
-            : glm53_graph_dsa(g, model, l, il, pos0, rows);
-        if (!attention || !ds4_gpu_hc_expand_split_tensor(g->hc_after_attn,
-                g->attn_out, g->hc_cur, g->hc_split, DS4_N_EMBD, DS4_N_HC) ||
-            !glm53_graph_hc_pre(g, model, l->hc_ffn_fn, l->hc_ffn_scale,
-                l->hc_ffn_base, l->ffn_norm, g->hc_after_attn, rows) ||
-            !glm53_graph_ffn(g, model, l, il, rows) ||
-            !ds4_gpu_hc_expand_split_tensor(g->hc_next, g->ffn_out,
-                g->hc_after_attn, g->hc_split, DS4_N_EMBD, DS4_N_HC)) {
-            fprintf(stderr, "ds4: GLM-5.3 layer %u batch execution failed\n", il);
-            return false;
-        }
+        if (!glm53_graph_layer(g, model, weights, il, rows, pos0)) { return false; }
         ds4_gpu_tensor *swap = g->hc_cur;
         g->hc_cur = g->hc_next;
         g->hc_next = swap;
     }
     return glm53_graph_output(g, model, weights, rows, host_logits);
+}
+
+/* Keep each layer's KDA/pool/causal-KV updates in token order. Scratch rows
+ * stay <=2048; only HC rows survive across chunks within a checkpoint window. */
+static bool glm53_graph_window(ds4_glm53_gpu_graph *g, const ds4_model *model,
+        const ds4_weights *weights, const int *tokens, uint32_t rows,
+        uint32_t pos0, const float *embeddings, float *host_logits) {
+    const uint64_t row_bytes = (uint64_t)DS4_N_HC * DS4_N_EMBD * sizeof(float);
+    ds4_gpu_tensor *cur = ds4_gpu_tensor_alloc(rows * row_bytes);
+    ds4_gpu_tensor *next = ds4_gpu_tensor_alloc(rows * row_bytes);
+    bool ok = cur && next;
+    const char *value = getenv("DS4_GLM53_HOT_LAST");
+    // Only the last window feeds Decode. Earlier hot copies are overwritten
+    // before use; 0 keeps them for a matched diagnostic comparison.
+    const enum glm53_hot_copy keep = host_logits || (value && strcmp(value, "0") == 0)
+        ? GLM53_HOT_KEEP : GLM53_HOT_SKIP;
+    for (uint32_t done = 0; ok && done < rows;) {
+        const uint32_t chunk = rows - done < g->row_cap ? rows - done : g->row_cap;
+        ds4_glm53_gpu_graph active;
+        if (!glm53_graph_bind(&active, g, chunk)) { ok = false; break; }
+        ok = glm53_graph_embed(&active, model, weights, tokens + done, chunk,
+            embeddings ? embeddings + (uint64_t)done * DS4_N_EMBD : NULL) &&
+            ds4_gpu_tensor_copy(cur, done * row_bytes, active.hc_cur, 0u, chunk * row_bytes);
+        glm53_graph_unbind(&active);
+        done += chunk;
+    }
+    const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    for (uint32_t il = 0; ok && il < layers; il++) {
+        ok = glm53_stream_begin(g->stream, model, weights, il);
+        for (uint32_t done = 0; ok && done < rows;) {
+            const uint32_t chunk = rows - done < g->row_cap ? rows - done : g->row_cap;
+            ds4_glm53_gpu_graph active;
+            if (!glm53_graph_bind(&active, g, chunk)) { ok = false; break; }
+            ok = ds4_gpu_tensor_copy(active.hc_cur, 0u, cur, done * row_bytes, chunk * row_bytes) &&
+                glm53_graph_layer(&active, model, weights, il, chunk, pos0 + done) &&
+                ds4_gpu_tensor_copy(next, done * row_bytes, active.hc_next, 0u, chunk * row_bytes);
+            glm53_graph_unbind(&active);
+            done += chunk;
+        }
+        if (ok) { ok = glm53_stream_end(g->stream, il, keep); }
+        ds4_gpu_tensor *swap = cur; cur = next; next = swap;
+    }
+    const uint32_t last = (rows - 1u) % g->row_cap + 1u;
+    if (ok) {
+        ds4_glm53_gpu_graph active;
+        ok = glm53_graph_bind(&active, g, last);
+        if (ok) {
+            ok = ds4_gpu_tensor_copy(active.hc_cur, 0u, cur, (rows - last) * row_bytes, last * row_bytes) &&
+                glm53_graph_output(&active, model, weights, last, host_logits);
+            glm53_graph_unbind(&active);
+        }
+    }
+    ds4_gpu_tensor_free(cur); ds4_gpu_tensor_free(next);
+    if (!ok) {
+        glm53_stream_finish(g->stream);
+        g->cache_len = UINT32_MAX;
+        return false;
+    }
+    // No partially evaluated window is a reusable prefix. Restore/reset must
+    // replace a failed graph; success commits every layer at the same frontier.
+    g->cache_len = pos0 + rows;
+    g->last_rows = last;
+    return true;
 }
 
 static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
@@ -604,10 +725,32 @@ static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
     for (uint32_t t = 0; t < rows; t++) {
         if (tokens[t] < 0 || (uint32_t)tokens[t] >= DS4_N_VOCAB) { return false; }
     }
+    const glm53_stream_stats before = glm53_stream_snap(g->stream);
+    glm53_stream_hot_begin(g->stream, rows);
+    bool staged = false;
     for (uint32_t done = 0; done < rows;) {
-        const uint32_t chunk = rows - done < g->row_cap ? rows - done : g->row_cap;
+        const uint32_t window = g->window_cap
+            ? g->window_cap - (pos0 + done) % g->window_cap : 0u;
+        const uint32_t span = rows - done < window ? rows - done : window;
+        if (span > g->row_cap) {
+            if (!glm53_graph_window(g, model, weights, tokens + done, span, pos0 + done,
+                    host_embeddings ? host_embeddings + (uint64_t)done * DS4_N_EMBD : NULL,
+                    done + span == rows ? host_logits : NULL)) {
+                glm53_stream_finish(g->stream);
+                g->cache_len = UINT32_MAX;
+                return false;
+            }
+            staged = true;
+            done += span;
+            continue;
+        }
+        const uint32_t left = window ? span : rows - done;
+        const uint32_t chunk = left < g->row_cap ? left : g->row_cap;
         ds4_glm53_gpu_graph active;
-        if (!glm53_graph_bind(&active, g, chunk)) { return false; }
+        if (!glm53_graph_bind(&active, g, chunk)) {
+            glm53_stream_finish(g->stream);
+            return false;
+        }
         const bool ok = glm53_graph_batch(&active, model, weights, tokens + done, chunk, pos0 + done,
             host_embeddings ? host_embeddings + (uint64_t)done * DS4_N_EMBD : NULL,
             done + chunk == rows ? host_logits : NULL);
@@ -617,11 +760,18 @@ static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
             g->hc_next = swap;
         }
         glm53_graph_unbind(&active);
-        if (!ok) { return false; }
+        if (!ok) {
+            glm53_stream_finish(g->stream);
+            g->cache_len = UINT32_MAX;
+            return false;
+        }
         done += chunk;
         g->cache_len = pos0 + done;
         g->last_rows = chunk;
     }
+    if (staged) { glm53_stream_finish(g->stream); }
+    glm53_stream_hot_end(g->stream);
+    glm53_stream_delta(g->stream, before, pos0, rows);
     return true;
 }
 
