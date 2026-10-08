@@ -1562,6 +1562,13 @@ mod tests {
         assert!(options.iter().any(|option| matches!(option,
             ModelOpenOption::ServingBudget(req) if req.ctx == 1048576
                 && req.max_seqs == ds4_core::MaxSeqs::Off)));
+        assert!(ds4_core::check_ssd_options(
+            &options,
+            Some(ds4_core::ModelFamily::Glm53),
+            ds4_core::Backend::Cuda,
+            None,
+        )
+        .is_ok());
     }
 
     #[test]

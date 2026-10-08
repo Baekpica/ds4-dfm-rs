@@ -69,6 +69,12 @@ Auto is fitted again at model open. The serving report uses that admitted
 capacity, so changes in available memory cannot leave preflight counts in
 `/v1/stats`.
 
+Library callers using SSD Auto must pass `ModelOpenOption::ServingBudget`
+with the intended context, banks and optional state. Missing budgets are
+rejected before sizing; defaults cannot stand in for a later workload because
+allocated expert slots cannot be reclaimed by session fitting. Explicit cache
+count/GB options may omit this budget. The CLI, benchmark and server supply it.
+
 File page cache can retain expert reads. `--ssd-streaming-cold` is advisory;
 the expert device cache limit does not impose an OS page-cache limit.
 Streaming trades file I/O for resident weight memory; measure its effect on

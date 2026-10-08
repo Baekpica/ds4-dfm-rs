@@ -274,8 +274,11 @@ fn main() {
     let ident = model_path
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
+    // Auto admission needs the requested workload before any cache is sized.
+    let mut preflight_options = model_options.clone();
+    preflight_options.push(ModelOpenOption::ServingBudget(serve_req.clone()));
     ds4_core::check_ssd_options(
-        &model_options,
+        &preflight_options,
         ident.as_ref().map(|model| model.shape.family),
         backend,
         distributed_config(&dist.opt).as_ref(),

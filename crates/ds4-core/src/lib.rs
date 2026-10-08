@@ -188,6 +188,7 @@ pub enum ModelOpenOption {
     SsdCacheExperts(u32),
     SsdCacheBytes(u64),
     /// Memory admission uses the intended context, banks and optional state.
+    /// Required for automatic SSD cache sizing; fixed count/bytes may omit it.
     ServingBudget(ServingRequest),
     PowerPercent(u8),
     MtpDraftTokens(i32),

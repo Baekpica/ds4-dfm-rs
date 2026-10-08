@@ -5,6 +5,8 @@ use crate::{Backend, DistributedConfig, Error, ModelFamily, ModelOpenOption, Ope
 const GIB: u64 = 1 << 30;
 const CACHE_ARG_ERROR: &str =
     "--ssd-streaming-cache-experts must be auto, a positive count or <number>GB";
+const AUTO_BUDGET_ERROR: &str =
+    "SSD Auto cache requires ServingBudget with the requested context and banks";
 const COPY_ENV_KEYS: [&str; 4] = [
     "DS4_MODEL_ANON_HUGE",
     "DS4_CUDA_WEIGHT_IPC_MANIFEST",
@@ -79,7 +81,22 @@ pub(super) fn check_tuning(
                     .into(),
         });
     }
-    Ok(())
+    check_budget(tuning)
+}
+
+fn check_budget(tuning: &OpenTuning) -> Result<()> {
+    // Auto commits expert memory at open; a later session can shrink rows,
+    // but cannot reclaim that cache for its actual context or bank count.
+    if tuning.serving_budget.is_some()
+        || tuning.ssd_streaming_cache_experts != 0
+        || tuning.ssd_streaming_cache_bytes != 0
+    {
+        return Ok(());
+    }
+    Err(Error {
+        code: 1,
+        message: AUTO_BUDGET_ERROR.into(),
+    })
 }
 
 pub(super) fn resolve_budget(
@@ -91,6 +108,7 @@ pub(super) fn resolve_budget(
     if !tuning.ssd_streaming {
         return Ok(());
     }
+    check_budget(tuning)?;
     let mut req = tuning.serving_budget.clone().unwrap_or_default();
     req.backend = backend;
     req.ssd_streaming = true;
@@ -230,8 +248,75 @@ mod tests {
     }
 
     #[test]
+    fn auto_requires_serving_budget() {
+        let req = crate::ServingRequest {
+            ctx: 262144,
+            max_seqs: crate::MaxSeqs::Fixed(2),
+            mtp_mode: crate::MtpMode::On,
+            mtp_draft: Some(3),
+            prefix_reuse: crate::PrefixReuse::Partial,
+            ..crate::ServingRequest::default()
+        };
+        for explicit in [false, true] {
+            let mut options = vec![ModelOpenOption::SsdStreaming];
+            if explicit {
+                options.push(ModelOpenOption::SsdCacheAuto);
+            }
+            let error = check_ssd_options(&options, Some(ModelFamily::Glm53), Backend::Cuda, None)
+                .unwrap_err();
+            assert!(error.message.contains("ServingBudget"), "{error}");
+
+            options.push(ModelOpenOption::ServingBudget(req.clone()));
+            assert!(
+                check_ssd_options(&options, Some(ModelFamily::Glm53), Backend::Cuda, None,).is_ok()
+            );
+        }
+        for fixed in [
+            ModelOpenOption::SsdCacheExperts(8),
+            ModelOpenOption::SsdCacheBytes(GIB),
+        ] {
+            assert!(check_ssd_options(
+                &[ModelOpenOption::SsdStreaming, fixed],
+                Some(ModelFamily::Glm53),
+                Backend::Cuda,
+                None,
+            )
+            .is_ok());
+        }
+    }
+
+    #[test]
+    fn auto_fails_before_tensor_probe() {
+        let id = crate::Identified {
+            shape: crate::SHAPE_GLM53_FLASH,
+            architecture: None,
+            split_count: 1,
+            n_kv: 0,
+            n_tensors: 0,
+            alignment: 32,
+            version: 3,
+        };
+        // Empty metadata must not hide the missing workload or reach sizing.
+        let inventory = crate::TensorInventory {
+            shards: Vec::new(),
+            tensors: Vec::new(),
+            data_pos: 0,
+            alignment: 32,
+            page: 4096,
+        };
+        let mut tuning = crate::open_tuning(&[ModelOpenOption::SsdStreaming]).unwrap();
+        let error = resolve_budget(&mut tuning, &id, &inventory, Backend::Cuda).unwrap_err();
+        assert!(error.message.contains("ServingBudget"), "{error}");
+        assert_eq!(tuning.ssd_streaming_cache_experts, 0);
+        assert_eq!(tuning.ssd_streaming_cache_bytes, 0);
+    }
+
+    #[test]
     fn admission_is_glm_cuda_only() {
-        let options = [ModelOpenOption::SsdStreaming];
+        let options = [
+            ModelOpenOption::SsdStreaming,
+            ModelOpenOption::SsdCacheExperts(8),
+        ];
         assert!(check_ssd_options(&options, Some(ModelFamily::Glm53), Backend::Cuda, None).is_ok());
         for backend in [Backend::Cpu, Backend::Metal] {
             assert!(check_ssd_options(&options, Some(ModelFamily::Glm53), backend, None).is_err());
