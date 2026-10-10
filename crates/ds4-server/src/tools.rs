@@ -427,6 +427,266 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
     }
 }
 
+/// Collapse every decorated DSML spelling to the plain tag set, keeping a
+/// per-byte map back into the original text.
+///
+/// The V4.1 artifact decorates the wrapper and invoke opens with U+FF5C
+/// (｜, EF BD 9C) but leaves the parameter tags plain inside the same block
+/// (measured 2026-10-10; docs/deepseek41-port-plan.md 6.23), so the strict
+/// one-style parse rejects a call the model considers complete.  The six
+/// replacements mirror the tool shim's `normalize`
+/// (`~/youngai/tool-shim/shim.py:53-58`), written against this artifact's
+/// live output on 2026-10-07.
+fn dsml_normalize(text: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let pats: [(&[u8], &[u8]); 6] = [
+        (b"<\xef\xbd\x9cDSML\xef\xbd\x9c", b"<"),
+        (b"</\xef\xbd\x9cDSML\xef\xbd\x9c", b"</"),
+        (b"<DSML\xef\xbd\x9c", b"<"),
+        (b"</DSML\xef\xbd\x9c", b"</"),
+        (b"<\xef\xbd\x9c", b"<"),
+        (b"</\xef\xbd\x9c", b"</"),
+    ];
+    let mut out = Vec::with_capacity(text.len());
+    let mut map = Vec::with_capacity(text.len());
+    let mut i = 0;
+    'outer: while i < text.len() {
+        for (pat, rep) in pats {
+            if text[i..].starts_with(pat) {
+                for &b in rep {
+                    out.push(b);
+                    map.push(i);
+                }
+                i += pat.len();
+                continue 'outer;
+            }
+        }
+        out.push(text[i]);
+        map.push(i);
+        i += 1;
+    }
+    (out, map)
+}
+
+/// The model sometimes prefixes names with `$`; the shim strips it
+/// (shim.py:132, :185) along with surrounding whitespace.
+fn dsml_clean_name(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw)
+        .trim()
+        .trim_start_matches('$')
+        .to_string()
+}
+
+/// Tolerant DSML scan for the V4.1 route (docs/deepseek41-port-plan.md 6.23).
+///
+/// Mirrors the tool shim's scanner (`~/youngai/tool-shim/shim.py:44-190`),
+/// built against this artifact's live output: normalize the decorated
+/// spellings, key the scan on `<invoke>`, tolerate a missing closer or a
+/// bare `<parameter name=...>`, skip undeclared tool names, and coerce each
+/// value to the type the request's schema declares (the model regularly
+/// emits a number as a quoted string).  Runs only as a fallback when the
+/// strict style match found no calls, so every other family's bytes stay
+/// identical; returns None when no calls can be reconstructed.
+pub fn parse_dsml_tolerant(text: &[u8], orders: &[ToolSchemaOrder]) -> Option<ParsedGenerated> {
+    let (norm, map) = dsml_normalize(text);
+    let start = [
+        find_substr(&norm, b"<tool_calls"),
+        find_substr(&norm, b"<calls>"),
+        find_substr(&norm, b"<invoke"),
+    ]
+    .into_iter()
+    .flatten()
+    .min()?;
+    let mut p = start;
+    if norm[p..].starts_with(b"<tool_calls") || norm[p..].starts_with(b"<calls") {
+        let gt = norm[p..].iter().position(|&c| c == b'>')?;
+        p += gt + 1;
+    }
+    let mut calls = Vec::new();
+    loop {
+        p = skip_ws(&norm, p);
+        if p >= norm.len()
+            || norm[p..].starts_with(b"</tool_calls")
+            || norm[p..].starts_with(b"</calls")
+        {
+            break;
+        }
+        if !norm[p..].starts_with(b"<invoke") {
+            let Some(rel) = find_substr(&norm[p..], b"<invoke") else {
+                break;
+            };
+            p += rel;
+        }
+        let Some(gt) = norm[p..].iter().position(|&c| c == b'>') else {
+            break;
+        };
+        let tag = &norm[p..=p + gt];
+        let Some(raw_name) = dsml_attr(tag, "name") else {
+            break;
+        };
+        let name = dsml_clean_name(&raw_name);
+        p += gt + 1;
+        let mut args = Vec::new();
+        let mut complete = true;
+        loop {
+            p = skip_ws(&norm, p);
+            if p >= norm.len()
+                || norm[p..].starts_with(b"</invoke")
+                || norm[p..].starts_with(b"<invoke")
+                || norm[p..].starts_with(b"</tool_calls")
+                || norm[p..].starts_with(b"</calls")
+            {
+                break;
+            }
+            if !norm[p..].starts_with(b"<parameter") {
+                break; // stray bytes end the invoke body; keep what parsed
+            }
+            if !dsml_tolerant_param(&norm, &mut p, &name, orders, &mut args) {
+                complete = false;
+                break;
+            }
+        }
+        if norm[p..].starts_with(b"</invoke") {
+            if let Some(gt) = norm[p..].iter().position(|&c| c == b'>') {
+                p += gt + 1;
+            }
+        }
+        if !complete {
+            break; // a truncated argument: drop this call and stop
+        }
+        // An undeclared name is skipped, declared siblings survive (the
+        // shim's `allowed` check).
+        let declared =
+            orders.is_empty() || orders.iter().any(|o| o.name == name || o.wire_name == name);
+        if !declared {
+            continue;
+        }
+        let mut wrapped = vec![b'{'];
+        wrapped.extend_from_slice(&args);
+        wrapped.push(b'}');
+        calls.push(ToolCall {
+            name,
+            arguments: String::from_utf8_lossy(&wrapped).into_owned(),
+            ..Default::default()
+        });
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    let orig_start = map[start];
+    let content_len = trim_tool_separator_ws(text, 0, orig_start);
+    let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::DeepSeek);
+    let orig_end = if p < norm.len() { map[p] } else { text.len() };
+    Some(ParsedGenerated {
+        content,
+        reasoning,
+        calls,
+        raw_dsml: String::from_utf8_lossy(&text[orig_start..orig_end.max(orig_start)])
+            .into_owned(),
+        ok: true,
+        ..Default::default()
+    })
+}
+
+/// One `<parameter>` of the tolerant scan, with the shim's coercion rules.
+/// The value goes through the declared schema type first (integer, number,
+/// boolean, object, array); a string= hint or a plain string is the
+/// fallback.  Nested trees keep the strict parser's rule: no string
+/// attribute and the value starts with a nested `<parameter`.
+fn dsml_tolerant_param(
+    norm: &[u8],
+    p: &mut usize,
+    tool: &str,
+    orders: &[ToolSchemaOrder],
+    out: &mut Vec<u8>,
+) -> bool {
+    let Some(gt) = norm[*p..].iter().position(|&c| c == b'>') else {
+        return false;
+    };
+    let tag = &norm[*p..=*p + gt];
+    let Some(raw_name) = dsml_attr(tag, "name") else {
+        return false;
+    };
+    let pname = dsml_clean_name(&raw_name);
+    let string_attr = dsml_attr(tag, "string");
+    let value_start = *p + gt + 1;
+
+    let after_ws = skip_ws(norm, value_start);
+    if string_attr.is_none() && norm[after_ws..].starts_with(b"<parameter") {
+        let mut np = after_ws;
+        if let Some(obj) =
+            dsml_parse_nested_params_object(norm, &mut np, b"<parameter", b"</parameter>")
+        {
+            np = skip_ws(norm, np);
+            if norm[np..].starts_with(b"</parameter>") {
+                np += b"</parameter>".len();
+            }
+            *p = np;
+            tool_call_json_args_add(out, pname.as_bytes(), &obj, false);
+            return true;
+        }
+    }
+
+    let (raw, next) = match find_substr(&norm[value_start..], b"</parameter>") {
+        Some(rel) => (
+            &norm[value_start..value_start + rel],
+            value_start + rel + b"</parameter>".len(),
+        ),
+        None => {
+            // Missing closer: the value runs to the end of the invoke body
+            // (the shim's lookahead: </invoke>|<invoke|</tool_calls>|EOF).
+            // A body that ends at EOF may be a truncated stream rather than
+            // a model omission; drop the call instead of serving half an
+            // argument.
+            let end = [b"</invoke" as &[u8], b"<invoke", b"</tool_calls", b"</calls"]
+                .iter()
+                .filter_map(|m| find_substr(&norm[value_start..], m))
+                .min()
+                .map(|rel| value_start + rel)
+                .unwrap_or(norm.len());
+            if end == norm.len() {
+                return false;
+            }
+            (&norm[value_start..end], end)
+        }
+    };
+    *p = next;
+    let unescaped = dsml_unescape_text(raw);
+    let value = trim_ascii_span(&unescaped);
+    let declared = tool_schema_order_prop_type(tool_schema_orders_find(orders, tool), &pname);
+    let coerced = match declared {
+        Some("integer") => std::str::from_utf8(value)
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .map(|n| n.to_string().into_bytes()),
+        Some("number") => std::str::from_utf8(value)
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|f| f.is_finite())
+            .map(|f| f.to_string().into_bytes()),
+        Some("boolean") if value == b"true" || value == b"false" => Some(value.to_vec()),
+        Some("object") | Some("array") => json_value_is_complete(&String::from_utf8_lossy(value))
+            .map(|min| min.into_bytes()),
+        _ => None,
+    };
+    if let Some(v) = coerced {
+        tool_call_json_args_add(out, pname.as_bytes(), &v, false);
+        return true;
+    }
+    let is_string = string_attr
+        .as_deref()
+        .map(|v| v == b"true")
+        .unwrap_or(true);
+    if is_string {
+        tool_call_json_args_add(out, pname.as_bytes(), value, true);
+    } else if let Some(min) = json_value_is_complete(&String::from_utf8_lossy(value)) {
+        tool_call_json_args_add(out, pname.as_bytes(), min.as_bytes(), false);
+    } else {
+        // string="false" but not JSON: keep the text, never emit null.
+        tool_call_json_args_add(out, pname.as_bytes(), value, true);
+    }
+    true
+}
+
 fn parse_hermes_tool_call_json(json: &str) -> Option<ToolCall> {
     let mut p = Json::new(json);
     p.ws();

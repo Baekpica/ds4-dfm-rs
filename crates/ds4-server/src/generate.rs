@@ -3099,6 +3099,19 @@ fn generate_terminal_v41(
             ..Default::default()
         }
     };
+    // The V4.1 artifact mixes DSML tag spellings inside one block -- the
+    // wrapper and invoke opens carry the U+FF5C decoration while the
+    // parameter tags stay plain (measured 2026-10-10, docs 6.23; the tool
+    // shim exists for exactly this).  The strict style match above rejects
+    // the mix and returns the block as text; recover the calls with the
+    // shim's tolerant scan.
+    if parsed_gen.calls.is_empty() && parsed.kind == ReqKind::Chat && parsed.has_tools {
+        if let Some(tolerant) =
+            crate::tools::parse_dsml_tolerant(&st.acc.text, &parsed.tool_orders)
+        {
+            parsed_gen = tolerant;
+        }
+    }
     if !parsed_gen.calls.is_empty() {
         if let Some(stream) = st.oa.as_ref() {
             stream.tool.apply_ids(&mut parsed_gen.calls);
