@@ -74,6 +74,8 @@ struct ds4_v41_feed {
     ds41_engram_feed feed;
     ds4_v41_rows_fn fn;
     void *ud;
+    ds4_v41_wait_fn wait_fn;
+    void *wait_ud;
     void *raw[DS4_V41_MAX_ENGRAM];
     uint32_t n_layers, rows_cap;
 };
@@ -87,12 +89,19 @@ static int v41_feed_tramp(uint32_t pos0, const int *tokens, int n, void *ud) {
     f->feed.pos0 = pos0;   /* declare the exact block; the forward asserts it at the point of use */
     return rc;
 }
+/* P2: the wait hook's trampoline — the provider collects layer k's round. */
+static int v41_feed_wait_tramp(int k, void *ud) {
+    ds4_v41_feed *f = (ds4_v41_feed *)ud;
+    return f->wait_fn ? f->wait_fn(k, f->wait_ud) : 0;
+}
 void ds4_v41_feed_close(ds4_v41_feed *f) {
     if (!f) return;
     for (uint32_t k = 0; k < DS4_V41_MAX_ENGRAM; k++) if (f->raw[k]) ds4_gpu_host_free(f->raw[k]);
+    if (f->feed.flags) ds4_gpu_host_free(f->feed.flags);
     free(f);
 }
-ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud) {
+ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
+                                ds4_v41_wait_fn wait, void *wait_ud) {
     if (!engine || DS4_MODEL_VARIANT != DS4_VARIANT_V41 || g_ds4_v41.n_engram == 0) return NULL;
     const uint32_t cols = (g_ds4_v41.engram_max_ngram - 1u) * g_ds4_v41.engram_heads;
     const uint32_t stride = g_ds4_v41.engram_head_dim + g_ds4_v41.engram_head_dim / 32u;
@@ -101,6 +110,7 @@ ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, 
     ds4_v41_feed *f = calloc(1, sizeof *f);
     if (!f) return NULL;
     f->fn = fn; f->ud = ud; f->rows_cap = cap; f->n_layers = g_ds4_v41.n_engram;
+    f->wait_fn = wait; f->wait_ud = wait_ud;
     for (uint32_t k = 0; k < f->n_layers; k++) {
         f->raw[k] = ds4_gpu_host_alloc((uint64_t)cap * cols * stride);
         if (!f->raw[k]) { ds4_v41_feed_close(f); return NULL; }
@@ -108,6 +118,14 @@ ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, 
     }
     f->feed.prepare = v41_feed_tramp;
     f->feed.ud = f;
+    /* P2: the graph route's flag slots exist only for the async protocol
+     * (the engine's J->flags, core_v41_engram.c:222-225). */
+    if (wait) {
+        f->feed.flags = ds4_gpu_host_alloc((uint64_t)(DS4_V41_MAX_ENGRAM + 2) * sizeof(int32_t));
+        if (!f->feed.flags) { ds4_v41_feed_close(f); return NULL; }
+        memset(f->feed.flags, 0, (DS4_V41_MAX_ENGRAM + 2) * sizeof(int32_t));
+        f->feed.wait = v41_feed_wait_tramp;
+    }
     return f;
 }
 const ds41_engram_feed *ds4_v41_feed_handle(const ds4_v41_feed *f) {
@@ -155,6 +173,7 @@ typedef struct {
     ds4_gpu_tensor *xlast;      /* [1][E] the last position's normed head input */
     ds4_gpu_tensor *eraw[DS4_V41_MAX_ENGRAM], *erows, *ekv;   /* engram: raw row bytes [cap][cols][stride], decoded rows, wkv output */
     const v41_engram_feed *efeed;    /* caller-supplied rows (hash + pread are host work) */
+    int egraph_uploaded;        /* capture pass: bitmask — layer ei's flag wait + upload are in the graph (core_v41.h:126) */
     int no_engram;              /* compare-only mode: skip the engram layers */
     /* Draft towers (P5/E1, core_v41.h:64-167): the same struct doubles as the
      * tower state when draft is set — layer ids are tower indices, no engram,
@@ -449,7 +468,28 @@ static bool v41_engram_rows(ds4_engine *e, ds4_v41_state *st, uint32_t il) {
         fprintf(stderr, "ds4: [v41] engram feed pos0 %u != block pos0 %u (rows must be for the block the forward is about to run)\n", fd->pos0, st->pos0);
         return false;
     }
-    if (!ds4_gpu_tensor_write_zerocopy(st->eraw[ei], 0, fd->raw[ei], (uint64_t)n * cols * stride)) return false;
+    if (st->graph) {
+        /* ★capture★ (core_v41_engram.c:433-446): record the layer's flag-wait
+         * spin kernel then the zero-copy upload, once per capture pass; the
+         * host must not wait here (a host wait or a sync copy would void the
+         * capture).  No wait hook = the synchronous protocol: the upload
+         * alone is recorded, exactly the old graph. */
+        if (!(st->egraph_uploaded & (1 << ei))) {
+            if (fd->wait && fd->flags &&
+                !ds4_gpu_host_flag_wait(&fd->flags[ei], &fd->flags[v->n_engram], &fd->flags[v->n_engram + 1])) return false;
+            if (!ds4_gpu_tensor_write_zerocopy(st->eraw[ei], 0, fd->raw[ei], (uint64_t)n * cols * stride)) return false;
+            st->egraph_uploaded |= 1 << ei;
+        }
+    } else {
+        /* The engine's v41_ejob_wait (core_v41_engram.c:441): this layer's
+         * rows must be on the host before the upload — waiting on the disk,
+         * never on the GPU. */
+        if (fd->wait && fd->wait((int)ei, fd->ud) != 0) {
+            fprintf(stderr, "ds4: [v41] engram layer L%u rows not ready (feed wait failed)\n", il);
+            return false;
+        }
+        if (!ds4_gpu_tensor_write_zerocopy(st->eraw[ei], 0, fd->raw[ei], (uint64_t)n * cols * stride)) return false;
+    }
     /* Diagnostic (kept): DS41_FEED_DIGEST=<path> appends the FNV-1a of the
      * exact bytes this upload put on the device.  The row-id self-check
      * cannot see a payload error (right ids, wrong bytes); the caller prints

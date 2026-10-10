@@ -284,6 +284,11 @@ int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
  * dspark mode 0 off / 1 default on / 2 explicit --dspark. */
 typedef int (*ds4_bridge_v41_rows_fn)(uint32_t pos0, const int32_t *tokens, int n,
                                       uint8_t *const *dst, void *ud);
+/* P2: the per-layer collect hook (the engine's v41_ejob_wait call site,
+ * core_v41_engram.c:441) — the native forward calls it at each engram layer
+ * and only then uploads the layer's rows; NULL keeps the synchronous
+ * protocol (prepare filled everything, the graph records no flag wait). */
+typedef int (*ds4_bridge_v41_wait_fn)(int k, void *ud);
 typedef int (*ds4_bridge_v41_emit_fn)(int32_t token, void *ud);
 typedef int (*ds4_bridge_v41_progress_fn)(void *ud, const char *event, int32_t current, int32_t total);
 void ds4_bridge_v41_set_dspark(int mode);
@@ -325,6 +330,7 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
+                            ds4_bridge_v41_wait_fn wait,
                             ds4_bridge_v41_emit_fn emit, void *emit_ud,
                             ds4_bridge_v41_progress_fn progress, void *progress_ud,
                             char *err, size_t errlen);

@@ -126,6 +126,10 @@ pub type ds4_bridge_prefill_fn = Option<unsafe extern "C" fn(*mut c_void, i32, i
 pub type ds4_bridge_v41_rows_fn = Option<
     unsafe extern "C" fn(u32, *const i32, c_int, *const *mut u8, *mut c_void) -> c_int,
 >;
+/* P2: the per-layer collect hook — the native forward calls it at each
+ * engram layer (the engine's v41_ejob_wait call site, core_v41_engram.c:441)
+ * and only then uploads the layer's rows; nonzero refuses the block. */
+pub type ds4_bridge_v41_wait_fn = Option<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>;
 pub type ds4_bridge_v41_emit_fn = Option<unsafe extern "C" fn(i32, *mut c_void) -> c_int>;
 pub type ds4_bridge_v41_progress_fn =
     Option<unsafe extern "C" fn(*mut c_void, *const c_char, i32, i32) -> c_int>;
@@ -852,6 +856,7 @@ extern "C" {
         verify_k: c_int,
         rows: ds4_bridge_v41_rows_fn,
         rows_ud: *mut c_void,
+        wait: ds4_bridge_v41_wait_fn,
         emit: ds4_bridge_v41_emit_fn,
         emit_ud: *mut c_void,
         progress: ds4_bridge_v41_progress_fn,

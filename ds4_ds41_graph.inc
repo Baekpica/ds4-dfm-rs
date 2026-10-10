@@ -230,6 +230,7 @@ static bool dg_capture(ds4_engine *e, ds4_v41_state *st, uint32_t n) {
     /* (The engine also prepares the --idx-mma indexer scratch here,
      * core_decode_graph.c:179; the port's indexer mma is not ported.) */
     st->graph = 1; st->graph_pos_lo = in->lo; st->graph_pos_cap = cap;
+    st->egraph_uploaded = 0;   /* P2: a fresh capture pass records every engram layer's flag wait + upload (core_decode_graph.c:180) */
     if (!ds4_gpu_decode_graph_capture_begin()) { st->graph = 0; return false; }
     /* Slot uploads are zero-copy kernels, not memcpy nodes (nsys on GB10: a
      * memcpy node costs ~170 us, the four of them 0.69 ms/step). */
@@ -270,6 +271,43 @@ static void dg_invalidate(decode_graph *g, const char *why) {
     int any = 0;
     for (uint32_t n = 0; n < DGRAPH_NMAX; n++) if (g->g[n].exec) { ds4_gpu_decode_graph_free(g->g[n].exec); g->g[n].exec = NULL; any = 1; }
     if (any) { fprintf(stderr, "ds4: [graph] %s: graphs invalidated, re-capturing\n", why); g->regrow++; }
+}
+
+/* ---- the engram graph three-step (core_v41.h:344-347, core_v41_engram.c:261-286)
+ * arm: before the launch, publish this step's sequence into the want slot —
+ * each captured spin kernel waits flag[ei] >= want — and clear the timeout
+ * slot.  serve: after the launch, before the sync — collect each layer's
+ * round on the host and publish its flag; the GPU resumes within ~1 us of the
+ * publish (ds41_engram.cuh:74-97).  err: after the sync — a host read failure
+ * leaves a flag unset, the spin kernel times out and writes the err slot; the
+ * step's output is unusable and the caller refuses it.  All three are no-ops
+ * for the synchronous protocol (no wait hook) and for engram-less runs. */
+static bool v41_engram_graph_live(const ds4_v41_state *st) {
+    return !st->no_engram && g_ds4_v41.n_engram > 0 && st->efeed && st->efeed->wait && st->efeed->flags;
+}
+static void v41_engram_graph_arm(ds4_v41_state *st) {
+    if (!v41_engram_graph_live(st)) return;
+    /* the flags/seq slots are native-owned mutable state inside the caller's
+     * struct; the provider never touches them. */
+    v41_engram_feed *fd = (v41_engram_feed *)st->efeed;
+    fd->graph_seq++;
+    fd->flags[g_ds4_v41.n_engram + 1] = 0;
+    fd->flags[g_ds4_v41.n_engram] = (int32_t)fd->graph_seq;
+    __sync_synchronize();
+}
+static void v41_engram_graph_serve(ds4_v41_state *st) {
+    if (!v41_engram_graph_live(st)) return;
+    const v41_engram_feed *fd = st->efeed;
+    for (uint32_t ei = 0; ei < g_ds4_v41.n_engram; ei++) {
+        if (fd->wait((int)ei, fd->ud) != 0) return;   /* no publish: the GPU times out, the err check stops the step */
+        __sync_synchronize();                          /* rows in memory before the flag (core_v41_engram.c:277-279) */
+        fd->flags[ei] = (int32_t)fd->graph_seq;
+        __sync_synchronize();
+    }
+}
+static int v41_engram_graph_err(const ds4_v41_state *st) {
+    if (!v41_engram_graph_live(st)) return 0;
+    return st->efeed->flags[g_ds4_v41.n_engram + 1];
 }
 
 /* Launch half of one step (core_decode_graph.c:219-271): write the pinned
@@ -335,7 +373,11 @@ static bool dg_launch(ds4_engine *e, ds4_v41_state *st, const int32_t *ids, uint
         }
     }
     const double t1 = now_sec();
-    const double tp2 = t1;   /* the port has no arm step: the engine publishes a sequence number the graph's spin kernel waits on (v41_engram_graph_arm); the port's provider is synchronous, nothing to publish */
+    /* arm (core_v41.h:344-346, core_v41_engram.c:261-269): the step's sequence
+     * must be published before the launch — the captured spin kernels compare
+     * flag[ei] against it.  No-op for the synchronous protocol. */
+    v41_engram_graph_arm(st);
+    const double tp2 = now_sec();
     if (!ds4_gpu_decode_graph_launch(in->exec)) return false;
     g->t_launched = now_sec();
     if (g->cur_pure) { g->t_prep += t1 - t0; g->t_launch += g->t_launched - t1; }
@@ -365,9 +407,19 @@ static bool dg_wait(ds4_engine *e, ds4_v41_state *st, int32_t *next) {
     if (!g) return false;
     if (g->direct_pending) { g->direct_pending = 0; return dg_direct_step(e, st, g->pending_tok, next); }
     const uint32_t n = g->cur_n;
-    /* The engine collects the engram preads here (v41_engram_graph_serve); the
-     * port's provider finished before the launch -- nothing to serve. */
+    /* serve (core_v41_engram.c:271-280): between the launch and the sync,
+     * collect each engram layer's round and publish its flag — the graph's
+     * spin kernels resume as each layer's rows land.  A synchronous provider
+     * finished in prepare; the call is then a no-op. */
+    v41_engram_graph_serve(st);
     if (!ds4_gpu_synchronize()) return false;
+    /* err (core_v41_engram.c:282-286): a host read failure leaves a flag
+     * unset, the spin kernel times out and writes the err slot — refuse the
+     * step before its output is sampled or its position advanced. */
+    if (v41_engram_graph_err(st)) {
+        fprintf(stderr, "ds4: [v41] engram graph wait timed out; the step's output is unusable\n");
+        return false;
+    }
     const double t3 = now_sec();
     if (g->cur_pure) { g->t_sync += t3 - g->t_launched; g->t_last_sync = t3; }
     else g->t_last_sync = 0.0;   /* after a batch/k0 step the next pure step's gap is not counted */

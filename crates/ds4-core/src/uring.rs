@@ -205,6 +205,11 @@ mod imp {
 
     // The ring is a single-owner object (the engine's ejob is too): raw
     // pointers into its own mmaps, used from the thread that runs the round.
+    // P2: the owner is the feed's `FeedCore` mutex — the calling thread runs
+    // the small (decode) rounds and the fetch worker runs the oversize
+    // (prefill) rounds (`core_v41_engram.c:128-150`), never both at once.
+    // `Send` is the claim that the mutex provides exactly that exclusivity.
+    unsafe impl Send for Ring {}
 
     impl Ring {
         /// `v41_ering_open` (`core_v41_ering.c:39-69`).  Any failure returns

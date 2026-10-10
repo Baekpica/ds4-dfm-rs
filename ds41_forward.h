@@ -8,10 +8,14 @@
  * capture protocol the engine's --score-ids uses.
  *
  * Engram rows are host work by design: the port keeps the hash + pread on the
- * Rust host and the native forward consumes a pinned feed (the engine's
- * background pool / io_uring path stays behind; the port's first unit is the
- * eager single-state forward).  raw buffers MUST come from
- * ds4_gpu_host_alloc — the upload is a pinned zero-copy write.
+ * Rust host and the native forward consumes a pinned feed.  P2 mirrors the
+ * engine's read protocol (core_v41_engram.c:311-379): the provider's
+ * `prepare` submits round 0 only, the forward collects each layer's round
+ * through the `wait` hook at its engram layer (eager route) or through the
+ * arm/serve/err three-step around the graph launch, and a provider without
+ * the hook keeps the synchronous path (prepare filled everything before
+ * returning).  raw buffers MUST come from ds4_gpu_host_alloc — the upload is
+ * a pinned zero-copy write.
  */
 #ifndef DS41_FORWARD_H
 #define DS41_FORWARD_H
@@ -52,6 +56,20 @@ typedef struct {
      * itself. */
     int (*prepare)(uint32_t pos0, const int *tokens, int n, void *ud);
     void *ud;
+    /* P2: the per-layer collect hook (the engine's v41_ejob_wait call site,
+     * core_v41_engram.c:441).  The eager forward calls it with the engram
+     * layer index before uploading that layer's rows; nonzero refuses the
+     * block.  NULL keeps the synchronous protocol: `prepare` filled every
+     * layer's rows before returning and the graph records no flag wait (the
+     * old path, bit for bit). */
+    int (*wait)(int k, void *ud);
+    /* P2 graph route: pinned [DS41_MAX_ENGRAM + 2] i32 slots — flags[ei] =
+     * layer ei's rows are published, flags[n_eng] = this step's want
+     * sequence (written by the arm step before the launch), flags[n_eng + 1]
+     * = the spin kernel's timeout.  NULL = no graph support (synchronous
+     * protocol).  Native-owned; the provider never touches it. */
+    int32_t *flags;
+    uint32_t graph_seq;   /* the arm sequence (native-owned; only grows, no ABA) */
 } ds41_engram_feed;
 
 /* Teacher-forced scoring of `ids` through an opened V4.1 engine.  Writes the
@@ -156,8 +174,11 @@ void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int curr
  * trampoline, so a cap drift fails loud.  NULL when the model carries no
  * engram layers. */
 typedef int (*ds4_v41_rows_fn)(uint32_t pos0, const int *tokens, int n, uint8_t *const *dst, void *ud);
+/* P2: the per-layer collect hook (see ds41_engram_feed.wait). */
+typedef int (*ds4_v41_wait_fn)(int k, void *ud);
 typedef struct ds4_v41_feed ds4_v41_feed;
-ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud);
+ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
+                                ds4_v41_wait_fn wait, void *wait_ud);
 void ds4_v41_feed_close(ds4_v41_feed *f);
 const ds41_engram_feed *ds4_v41_feed_handle(const ds4_v41_feed *f);
 
