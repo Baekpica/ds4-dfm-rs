@@ -20,11 +20,25 @@ use std::path::Path;
 use ds4_sys::{
     ds4_bridge_v41_generate, ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_set_dspark,
     ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof,
-    ds4_bridge_v41_set_sampling,
+    ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear,
+    ds4_bridge_v41_zchain_rb_set,
 };
 
 use crate::engram::{EngramHash, EngramShard};
-use crate::{identify_file, Error, GgufFile, Model, Result, TensorInventory, V41Wire};
+use crate::{
+    identify_file, Error, GgufFile, Model, Result, TensorInventory, V41Wire, V41Zchain, ZchainGeom,
+};
+
+/// `--mem-budget-mb` (unit Z): the engine's process memory red line and L1
+/// load gate (`core_util.c:198-256`).  Call before opening the model; 0
+/// leaves the budget unset (the gate is then a no-op, the engine's own
+/// default).  On Linux the footprint-watchdog half is inert by the engine's
+/// own design (`core_util.c:141-145`); the L1 gate is the active half.
+pub fn set_mem_budget_mb(mb: i32) {
+    unsafe {
+        ds4_sys::ds4_bridge_set_mem_budget_mb(mb);
+    }
+}
 
 /// The last V4.1 run's speculation account: (rounds, offered, accepted), the
 /// engine's `ds4_engine_v41_last_spec_stats` (`core_v41_api.c:41-46`; the
@@ -88,6 +102,17 @@ pub struct V41RunOptions<'a> {
     /// `cli_diag.c:50`); None resets it to the all-zero face = bare argmax,
     /// so a run never inherits the previous request's face.
     pub sampling: Option<V41Sampling>,
+    /// `--zchain <dir>`: the ② anti-repair sidecar (install.sh's own
+    /// spelling; the deployment's third file next to the GGUF).  The engine
+    /// carries it to the per-state mount (`core_engine_open.c:120-124` ->
+    /// `v41_state_plugins`, `core_v41_state.c:77-87`); the port mounts it
+    /// here, before the native call, with the same files read on the Rust
+    /// host (`zchain.rs`, P2/P3).
+    pub zchain: Option<&'a str>,
+    /// `--posttrain <dir>`: the ③ post-train gain directory (the
+    /// `base.fnv`-gated third file; finance-only in the deployment,
+    /// install.sh).  Merged with ② exactly as `core_v41_amp.c:227-270`.
+    pub posttrain: Option<&'a str>,
 }
 
 impl Default for V41RunOptions<'_> {
@@ -101,6 +126,8 @@ impl Default for V41RunOptions<'_> {
             emit_trace: false,
             prof: false,
             sampling: None,
+            zchain: None,
+            posttrain: None,
         }
     }
 }
@@ -270,6 +297,102 @@ fn asset_error(e: impl std::fmt::Display) -> Error {
     }
 }
 
+/// Mount the ②/③ sidecar for one run (the engine's per-state
+/// `v41_state_plugins` -> `v41_amp_load`, `core_v41_state.c:77-87` /
+/// `core_v41_amp.c:227-270`): the process-wide rb table unloads first
+/// (`core_v41_amp.c:114`), then every present layer's rb delta and gr
+/// gain table land on the device (rb before gr, the engine's order at
+/// `:228-230`).  The files are read and merged by the P2/P3 Rust reader
+/// (`zchain.rs`); the device writes are the P4-7 stores.  No directories =
+/// the engine's naked base: only the rb unload (`core_v41_state.c:78`).
+///
+/// A directory carrying `amp_Lnn.bin` is refused by name: the low-rank
+/// apply is not ported (the recorded §6.14 limit; no Spark directory
+/// carries one).  The refusal fires before any device write, so a failed
+/// mount never leaves a half-mounted process (the engine mounts rb/gr
+/// first and fails at the amp read; the request outcome is the same).
+fn v41_mount_zchain(
+    model: &Model,
+    path: &Path,
+    zchain: Option<&str>,
+    posttrain: Option<&str>,
+) -> Result<()> {
+    if zchain.is_none() && posttrain.is_none() {
+        unsafe { ds4_bridge_v41_zchain_rb_clear() };
+        return Ok(());
+    }
+    let g = GgufFile::open(path).map_err(asset_error)?;
+    let shape = identify_file(&g).map_err(asset_error)?.shape;
+    let geom = ZchainGeom {
+        n_layer: shape.n_layer,
+        n_expert: shape.n_expert,
+        n_embd: shape.n_embd,
+    };
+    let merged = zchain_load_for_run(zchain, posttrain, geom)?;
+    // Unreachable with a directory given (load answers None only for two
+    // Nones); kept total rather than panicking.
+    let Some(merged) = merged else {
+        return Ok(());
+    };
+    unsafe { ds4_bridge_v41_zchain_rb_clear() };
+    for (il, delta) in merged.rb.iter().enumerate() {
+        let Some(delta) = delta else { continue };
+        let ok = unsafe {
+            ds4_bridge_v41_zchain_rb_set(model.raw_ptr(), il as u32, delta.as_ptr(), geom.n_expert)
+        };
+        if ok == 0 {
+            return Err(asset_error(format!("V4.1 zchain: rb L{il:02} upload refused")));
+        }
+    }
+    for (il, gr) in merged.gr.iter().enumerate() {
+        let Some(gr) = gr else { continue };
+        let ok = unsafe {
+            ds4_bridge_v41_zchain_gr_set(
+                model.raw_ptr(),
+                il as u32,
+                gr.factor.as_ptr(),
+                geom.n_expert,
+                geom.n_embd,
+            )
+        };
+        if ok == 0 {
+            return Err(asset_error(format!("V4.1 zchain: gr L{il:02} upload refused")));
+        }
+    }
+    eprintln!(
+        "ds4: [v41] zchain mount: gr={} rb={} amp=0 from {}{}",
+        merged.n_gr_layers(),
+        merged.n_rb_layers(),
+        zchain.unwrap_or("(none)"),
+        if posttrain.is_some() { " + posttrain" } else { "" },
+    );
+    Ok(())
+}
+
+/// The load-and-refuse half of the mount, split out so it is unit-testable
+/// without a model: the P2/P3 reader/merger plus the port's recorded limit
+/// — a directory carrying `amp_Lnn.bin` is refused by name because the
+/// low-rank apply is not ported (§6.14; no Spark directory carries one).
+/// No device state is touched here, so a refusal never leaves a partial
+/// mount behind.
+fn zchain_load_for_run(
+    zchain: Option<&str>,
+    posttrain: Option<&str>,
+    geom: ZchainGeom,
+) -> Result<Option<V41Zchain>> {
+    let merged = V41Zchain::load(zchain.map(Path::new), posttrain.map(Path::new), geom, 1.0)
+        .map_err(|e| asset_error(format!("V4.1 zchain refused: {}", e.token())))?;
+    let Some(merged) = merged else {
+        return Ok(None);
+    };
+    if merged.n_amp_layers() > 0 {
+        return Err(asset_error(
+            "V4.1 zchain carries amp_Lnn.bin; the low-rank amplifier apply is not ported",
+        ));
+    }
+    Ok(Some(merged))
+}
+
 impl Model {
     /// Run the engine's one-shot V4.1 generate
     /// (`ds4_engine_v41_generate_argmax`, `core_v41_api.c:426-470` + the
@@ -330,6 +453,10 @@ impl Model {
                 None => ds4_bridge_v41_set_sampling(std::ptr::null()),
             }
         }
+        // The ②/③ sidecar mount lands before the native call, exactly like
+        // the engine's per-state mount inside the generate (the device
+        // tables are process-level; the forward reads them).
+        v41_mount_zchain(self, path, opts.zchain, opts.posttrain)?;
         let mut feed = if opts.no_engram {
             None
         } else {
@@ -371,5 +498,95 @@ impl Model {
             return Err(crate::fail(rc, &err));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Synthetic sidecar files (the layouts the readers check,
+    /// `core_v41_amp.c:44-84` / `:193-220`).
+    fn put_i32(buf: &mut Vec<u8>, v: i32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    fn gr_f32(n_expert: i32, d: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        put_i32(&mut b, n_expert);
+        put_i32(&mut b, d);
+        put_i32(&mut b, 1);
+        for i in 0..(n_expert * d) {
+            b.extend_from_slice(&(1.0f32 + i as f32 * 0.001).to_le_bytes());
+        }
+        b
+    }
+
+    fn amp_f32(d: i32, k: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        put_i32(&mut b, d);
+        put_i32(&mut b, k);
+        put_i32(&mut b, 1);
+        for i in 0..(2 * k * d) {
+            b.extend_from_slice(&(0.1f32 * i as f32).to_le_bytes());
+        }
+        b
+    }
+
+    fn tmpdir(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("ds4-v41-mount-{n}-{name}"));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    const GEOM: ZchainGeom = ZchainGeom {
+        n_layer: 2,
+        n_expert: 4,
+        n_embd: 2,
+    };
+
+    #[test]
+    fn no_dirs_answers_none() {
+        assert!(zchain_load_for_run(None, None, GEOM).unwrap().is_none());
+    }
+
+    #[test]
+    fn gr_only_dir_loads_and_counts() {
+        let dir = tmpdir("gr-only");
+        std::fs::write(dir.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        let merged = zchain_load_for_run(Some(dir.to_str().unwrap()), None, GEOM)
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.n_gr_layers(), 1);
+        assert_eq!(merged.n_rb_layers(), 0);
+        assert_eq!(merged.n_amp_layers(), 0);
+    }
+
+    #[test]
+    fn amp_layer_is_refused_by_name() {
+        let dir = tmpdir("amp");
+        std::fs::write(dir.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        std::fs::write(dir.join("amp_L00.bin"), amp_f32(2, 1)).unwrap();
+        let err = zchain_load_for_run(Some(dir.to_str().unwrap()), None, GEOM).unwrap_err();
+        assert!(
+            err.message.contains("amp_Lnn.bin"),
+            "refusal must name amp_Lnn.bin, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn empty_dir_is_refused() {
+        let dir = tmpdir("empty");
+        let err = zchain_load_for_run(Some(dir.to_str().unwrap()), None, GEOM).unwrap_err();
+        assert!(
+            err.message.contains("zchain-empty"),
+            "expected the engine's empty-plugin refusal, got: {}",
+            err.message
+        );
     }
 }

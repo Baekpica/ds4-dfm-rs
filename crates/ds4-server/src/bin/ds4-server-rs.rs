@@ -57,6 +57,7 @@ fn main() {
     let mut dist = DistArgs::default();
     let mut ctx_set = false;
     let mut v41_flags = V41Flags::default();
+    let mut mem_budget_mb: Option<i32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if dist
@@ -222,6 +223,16 @@ fn main() {
                 cfg.apply_mem_floor_gb(&raw);
                 serve_req.mem_floor_gb = cfg.mem_floor_gb;
             }
+            // Unit Z: the engine's process red line (core_util.c:198-200);
+            // install.sh boots with --mem-budget-mb 110000.  Armed before
+            // the model open so the L1 gate sees it.
+            "--mem-budget-mb" => {
+                mem_budget_mb = Some(
+                    args.next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                );
+            }
             // DeepSeek V4.1 (ds41) run surface — the engine's own spellings
             // (cli_opts.c:258-395).  They bind only when the opened model is
             // V4.1; the boot below refuses --ctx for V4.1 (the context comes
@@ -242,9 +253,14 @@ fn main() {
             "--no-graph" => v41_flags.no_graph = true,
             "--emit-trace" => v41_flags.emit_trace = true,
             "--v41-prof" => v41_flags.prof = true,
-            "--zchain" => cli_error(
-                "ds4-server-rs: --zchain is not supported by this server (the V4.1 sidecar mount is not ported)",
-            ),
+            // Unit Z: the sidecar mount the deployment boots with
+            // (install.sh: --zchain <domain sidecar> [--posttrain <dir>]).
+            "--zchain" => {
+                v41_flags.zchain = Some(args.next().unwrap_or_else(|| usage()));
+            }
+            "--posttrain" => {
+                v41_flags.posttrain = Some(args.next().unwrap_or_else(|| usage()));
+            }
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("ds4-server-rs: unknown argument {other}");
@@ -475,6 +491,11 @@ fn main() {
         CacheIdentity::capture(Path::new(path), &sidecars, &settings)
             .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")))
     });
+    // --mem-budget-mb (unit Z) arms the engine's L1 load gate; it must be
+    // set before the model open reads it (core_util.c:238-256).
+    if let Some(mb) = mem_budget_mb {
+        ds4_core::set_mem_budget_mb(mb);
+    }
     let mut v41_route: Option<ds4_server::V41ServeRoute> = None;
     let model = match model_path.as_deref() {
         Some(path) => {
@@ -538,6 +559,8 @@ fn main() {
                             verify_k: v41_flags.verify_k,
                             emit_trace: v41_flags.emit_trace,
                             prof: v41_flags.prof,
+                            zchain: v41_flags.zchain.clone(),
+                            posttrain: v41_flags.posttrain.clone(),
                         });
                         eprintln!(
                             "ds4-server-rs: V4.1 serving route: context {} (model metadata deepseek4.context_length; whole-prompt prefill per request, no KV reuse)",
@@ -887,6 +910,8 @@ struct V41Flags {
     no_graph: bool,
     emit_trace: bool,
     prof: bool,
+    zchain: Option<String>,
+    posttrain: Option<String>,
 }
 
 impl V41Flags {
@@ -899,6 +924,8 @@ impl V41Flags {
             || self.no_graph
             || self.emit_trace
             || self.prof
+            || self.zchain.is_some()
+            || self.posttrain.is_some()
     }
 }
 

@@ -821,6 +821,28 @@ extern "C" {
      * ds4_engine_set_decode_sampling, core_v41_api.c:10-13).  NULL resets to
      * the all-zero face = bare argmax. */
     pub fn ds4_bridge_v41_set_sampling(sp: *const ds4_bridge_v41_sampling);
+    /* --mem-budget-mb (unit Z): the engine's budget global + L1 load gate
+     * (core_util.c:198-256); call before opening the model. */
+    pub fn ds4_bridge_set_mem_budget_mb(mb: c_int);
+    /* The V4.1 zchain sidecar mount (unit Z): the device side the Rust
+     * reader (zchain.rs, P2/P3) drives, 1:1 with v41_amp_load's per-state
+     * writes (core_v41_amp.c:227-270).  All return 1 on success, 0 on
+     * refusal; rb_clear is the engine's process-wide unload first
+     * (core_v41_amp.c:114). */
+    pub fn ds4_bridge_v41_zchain_gr_set(
+        m: *mut ds4_bridge_model,
+        il: u32,
+        data: *const f32,
+        n_expert: u32,
+        n_embd: u32,
+    ) -> c_int;
+    pub fn ds4_bridge_v41_zchain_rb_set(
+        m: *mut ds4_bridge_model,
+        il: u32,
+        delta: *const f32,
+        n_expert: u32,
+    ) -> c_int;
+    pub fn ds4_bridge_v41_zchain_rb_clear();
     pub fn ds4_bridge_v41_generate(
         m: *mut ds4_bridge_model,
         prompt: *const i32,

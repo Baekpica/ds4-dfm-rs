@@ -144,7 +144,7 @@ pub use tok::{dump_cmd, dump_vocab_apply_tapes, ChatThinkMode, TokError, Vocab};
 pub use v41::{
     V41Wire, V41WireError, MTP_MAX_EXPERTS, MTP_MAX_TOWERS, V41_MAX_COMPRESS_RATIO, V41_MAX_ENGRAM,
 };
-pub use v41_run::{v41_last_spec_stats, V41Feed, V41RunOptions, V41Sampling};
+pub use v41_run::{set_mem_budget_mb, v41_last_spec_stats, V41Feed, V41RunOptions, V41Sampling};
 pub use validate::{
     dump_validate, host_compress_ratios, validate_file, validate_gguf, validate_qwen_inventory,
     ValidateError,

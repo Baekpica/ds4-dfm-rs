@@ -12,10 +12,18 @@
 #   D  temp 0.7 + seed 12345                 (default)      sampling + speculation
 # Two boots per side: A/B/C share the --no-dspark boot, D the default one.
 #
-# usage: ds41_sampling_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port>
+# usage: ds41_sampling_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port> [zchain_dir]
+#
+# With [zchain_dir] both sides boot with --zchain <dir>: the engine's own
+# deployment spelling (install.sh passes --zchain "$MODEL/$SIDECAR"; the
+# finance sidecar …-grrb-vqfin41_vqhalf_a_n8192-engine is the default
+# domain).  The dir must have no spaces.
 set -u
 
 ENG="$1" SRV="$2" MODEL="$3" ENGRAM="$4" PORT="$5"
+ZC="${6:-}"
+ZFLAG=""
+[ -n "$ZC" ] && ZFLAG="--zchain $ZC"
 LOG=/tmp/ds41_sampling_gate
 
 fail() { echo "ds41 sampling gate: FAIL ($1)"; exit 1; }
@@ -46,7 +54,7 @@ run_pair() { # <name> <extra flags...>
     name="$1"; shift
     eflags="$*"
     # ---- engine side (the oracle) ----
-    "$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/$name.eng.trace" $eflags > "$LOG/$name.eng.log" 2>&1 &
+    "$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/$name.eng.trace" $ZFLAG $eflags > "$LOG/$name.eng.log" 2>&1 &
     EPID=$!
     boot_wait "$LOG/$name.eng.log" "$EPID" "engine server ($name)"
     for c in $CASES; do
@@ -58,7 +66,7 @@ run_pair() { # <name> <extra flags...>
     kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
 
     # ---- port side: the same requests ----
-    "$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $eflags > "$LOG/$name.srv.log" 2>&1 &
+    "$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG $eflags > "$LOG/$name.srv.log" 2>&1 &
     SPID=$!
     boot_wait "$LOG/$name.srv.log" "$SPID" "port server ($name)"
     grep -q "V4.1 serving route" "$LOG/$name.srv.log" || fail "no V4.1 route line at boot ($name)"
@@ -82,8 +90,10 @@ run_pair() { # <name> <extra flags...>
     ' "$LOG/$name.eng.trace" > "$LOG/$name.eng.ids"
     # Port: [ptok] blocks precede their request's "[v41] prefill" line, [emit]
     # lines follow it; a new [ptok] block after a prefill line starts the next
-    # request (core_v41_api.c:171-173 / :246).
+    # request (core_v41_api.c:171-173 / :246).  r starts at 0: uninitialized,
+    # awk would file request 1 under P[""] and the loop prints P[0] empty.
     awk '
+        BEGIN { r = 0 }
         /\[v41\] prefill/ { pf = 1; next }
         /\[ptok\]/ { if (pf) { r++; pf = 0 } ; split($0, a, " "); P[r] = P[r] " " a[3]; next }
         /\[emit\]/ { split($0, a, " "); G[r] = G[r] " " a[3]; next }

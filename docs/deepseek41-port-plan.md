@@ -145,6 +145,7 @@ before any state-changing command.
 | P5 | MTP towers and DSpark verify/rollback | byte-identical greedy output with drafting on and off at N=1; cache-frontier gate at N>1. The engine's own cautions: the main-hidden ring trim in rollback, and the compressor pending-row snapshot taken before the shift |
 | P6 | Serving: the flags, the sampling profile for this family, the four API contracts, the DSML tool path | a served tool call, end to end, no shim |
 | P7 | Performance ledger: prefill and decode on the §2 prompts, cache reuse demonstrated | the ledger, published with its method |
+| Z | The install.sh startup contract (2026-10-10, §6.18): `--zchain` (the ② mount over the P4-7 stores + the P2/P3 Rust reader), `--posttrain` (③), `--mem-budget-mb` (the engine's 90 %/85 % guardrails), and the install.sh smoke on the v41 route | both sides booted exactly as install.sh boots; served ids byte-identical with the finance sidecar mounted; the smoke passes |
 
 P0 and P1 can start without further owner decisions.
 
@@ -1384,6 +1385,63 @@ engine returns it).
    mapping divergence are recorded for unit H.
 
 Unit: G complete
+
+## 6.18 Unit Z plan: the install.sh startup contract (2026-10-10)
+
+The engine's own deployment recipe is install.sh (fetched from
+huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash; on the Spark at
+~/youngai/model/install.sh). Its `start` boots the server with exactly
+this line (install.sh, the `nohup "$MODEL/bin/ds4-server" ...` call):
+
+    ds4-server --cuda -m <gguf> --zchain <sidecar_dir> --engram-dir <dir> \
+               [--posttrain <dir>] --mem-budget-mb 110000 --host H --port P
+
+with `--zchain` = the domain sidecar picked by `sidecar_of`
+(install.sh:41-48; finance default -> `…-grrb-vqfin41_vqhalf_a_n8192-engine`)
+and `--posttrain` = `posttrain-experimental-20260924` (finance only,
+opt-in). Every item of that line must work on the port, flag for flag: a
+served contract that only works after dropping the deployment's own flags
+is not the engine's contract, and a gate that boots the engine without
+them measures a configuration nobody serves. Status, item by item:
+
+| item | engine | port status |
+|---|---|---|
+| `--cuda` | server_config.c | ported (`Backend::Cuda`) |
+| `-m` / `--model` | | ported |
+| `--zchain DIR` | server_config.c:314-317 -> core_engine_open.c:120-124 (`ds4_engine_v41_set_amp_dir`, core_v41_api.c:75) -> per-state `v41_state_plugins` (core_v41_state.c:77-87) -> `v41_amp_load` (core_v41_amp.c:227-270): rb with a full unload first (:113-120), the gr ②×③ product (:130-152), the amp concat (:234-256). Mount failure = request failure, never a silent bare run (:84-86) | NOT ported: the server refuses it by name, the CLI has no flag. The P4-7 stores and the P2/P3 Rust reader/merger (§6.6.3-4) exist; the mount path is missing |
+| `--engram-dir DIR` | | ported (P5.1-P5.5) |
+| `--posttrain DIR` | server_config.c:318 (`set_posttrain_dir` at parse); ③ is the `base.fnv`-gated third file | NOT ported (unknown argument) |
+| `--mem-budget-mb N` | server_config.c:339-340 -> `ds4_set_mem_budget_mb` (core_util.c:198-200): in-process red line; watchdog aborts at 90 % (DS4_WATCHDOG_TRIP_FRAC, :9; sampler :156-189; `_exit(137)`), L1 load gate at 85 % (DS4_L1_GATE_FRAC, :10; :236-256), the expert AUTO verdict reads the budget (core_engine_open.c:319) | NOT ported (the port's host-memory-guard is a different, external policy) |
+| `--host` / `--port` | | ported |
+| smoke request: `model: "deepseek-chat"`, temp 0 | server_msgs.c:300-301 (alias -> thinking off) | the alias logic exists; the smoke path is not yet gated on the v41 route |
+| install.sh shell guardrails: START_FLOOR_MB 100000 before load, RUN_FLOOR_MB 10000 after, KILL_MB 2500 watchdog | install.sh itself | the port deploys under the host-memory-guard; map the floors or record the deviation |
+
+Work, in order:
+
+1. The `--zchain` mount: bridge entries over the P4-7 stores (gr set /
+   rb set / rb clear), the Rust mount call (`V41Zchain::load` -> push per
+   layer, per run, mirroring the engine's per-state mount at every
+   generate), the server and CLI flags. A dir carrying `amp_Lnn.bin` is
+   refused by name (the amp apply is not ported; no Spark dir carries
+   one - the recorded limit of §6.14 stands until one exists). The port
+   prints its own mount counts for the gate to compare with the engine's
+   `[反修]` boot lines.
+2. `--posttrain` through the same path (the Rust module already merges
+   and gates it, §6.6.4).
+3. `--mem-budget-mb`: arm the engine's two guardrails at the engine's own
+   fractions (90 % watchdog abort, 85 % L1 load gate) on the port's
+   process.
+4. The smoke: the install.sh request served by both sides with the
+   finance sidecar mounted, ids equal.
+
+Gate Z-1: the unit H gates (sampling A-D + the wire gate) re-run with BOTH
+sides booted exactly as install.sh boots (`--zchain` finance +
+`--engram-dir`); the served ids must stay byte-identical with the sidecar
+mounted, and the port's gr/rb mount counts must equal the engine's `[反修]`
+lines. Gate Z-2: the install.sh smoke request (`deepseek-chat` alias)
+served by the port, ids equal to the engine's under the same boot. Unit
+Z's readings land in this section when it closes; unit H's evidence
+follows as §6.19, measured under the same canonical boot.
 
 ## 7. Numerics contract
 

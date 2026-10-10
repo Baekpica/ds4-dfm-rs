@@ -46,6 +46,9 @@ pub struct ShadowArgs {
     pub dspark: Option<String>,
     pub gen_ids: Option<String>,
     pub engram_dir: Option<String>,
+    pub zchain: Option<String>,
+    pub posttrain: Option<String>,
+    pub mem_budget_mb: Option<i32>,
     pub no_engram: bool,
     pub no_dspark: bool,
     pub dspark_verify: i32,
@@ -109,6 +112,9 @@ impl Default for ShadowArgs {
             dspark: None,
             gen_ids: None,
             engram_dir: None,
+            zchain: None,
+            posttrain: None,
+            mem_budget_mb: None,
             no_engram: false,
             no_dspark: false,
             dspark_verify: 0,
@@ -212,6 +218,20 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
             }
             "--engram-dir" => {
                 parsed.engram_dir = Some(require_value(&arg, iter.next())?);
+            }
+            /* Unit Z: the deployment's sidecar spelling (install.sh boots
+             * with --zchain <domain dir> [--posttrain <dir>]). */
+            "--zchain" => {
+                parsed.zchain = Some(require_value(&arg, iter.next())?);
+            }
+            "--posttrain" => {
+                parsed.posttrain = Some(require_value(&arg, iter.next())?);
+            }
+            /* Unit Z: the engine's process red line (core_util.c:198-200);
+             * install.sh boots the server with 110000. */
+            "--mem-budget-mb" => {
+                let v = require_value(&arg, iter.next())?;
+                parsed.mem_budget_mb = Some(parse_i32(&arg, &v)?);
             }
             "--v41-no-engram" => parsed.no_engram = true,
             "--no-dspark" => parsed.no_dspark = true,
@@ -695,6 +715,8 @@ fn run_v41_one_shot(
             dry_base: args.dry_base,
             dry_allowed_length: args.dry_allowed_length,
         }),
+        zchain: args.zchain.as_deref(),
+        posttrain: args.posttrain.as_deref(),
     };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -1429,6 +1451,11 @@ pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
         None
     };
     let mtp_opts = mtp_open_options(&args, embedded_family)?;
+    // --mem-budget-mb (unit Z): the engine's L1 load gate reads the budget
+    // at open (core_util.c:238-256); arm it before the model open.
+    if let Some(mb) = args.mem_budget_mb {
+        ds4_core::set_mem_budget_mb(mb);
+    }
     let model = match native_dist.as_ref() {
         Some(config) => ds4_core::Model::open_distributed_options(
             model_path,
@@ -2150,6 +2177,12 @@ mod tests {
             "p1.ids",
             "--engram-dir",
             "/mnt/engram",
+            "--zchain",
+            "/mnt/sidecar",
+            "--posttrain",
+            "/mnt/posttrain",
+            "--mem-budget-mb",
+            "110000",
             "--no-dspark",
             "--dspark-verify",
             "5",
@@ -2161,6 +2194,9 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.gen_ids.as_deref(), Some("p1.ids"));
         assert_eq!(parsed.engram_dir.as_deref(), Some("/mnt/engram"));
+        assert_eq!(parsed.zchain.as_deref(), Some("/mnt/sidecar"));
+        assert_eq!(parsed.posttrain.as_deref(), Some("/mnt/posttrain"));
+        assert_eq!(parsed.mem_budget_mb, Some(110000));
         assert!(parsed.no_dspark);
         assert_eq!(parsed.dspark_verify, 5);
         assert!(parsed.no_graph);

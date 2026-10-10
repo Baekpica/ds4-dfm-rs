@@ -3735,6 +3735,11 @@ pub struct V41ServeRoute {
     pub verify_k: i32,
     pub emit_trace: bool,
     pub prof: bool,
+    /// `--zchain` / `--posttrain` (unit Z): the ②/③ sidecar directories
+    /// the Rust mount reads per run (the engine's per-state v41_amp_load,
+    /// core_v41_amp.c:227-270).
+    pub zchain: Option<String>,
+    pub posttrain: Option<String>,
 }
 
 #[cfg(feature = "native")]
@@ -3935,6 +3940,8 @@ impl DecodeIo for NativeDecode<'_> {
             emit_trace: route.emit_trace,
             prof: route.prof,
             sampling,
+            zchain: route.zchain.as_deref(),
+            posttrain: route.posttrain.as_deref(),
         };
         self.model
             .v41_generate(&route.model_path, prompt, n_predict, &opts, emit, progress)
