@@ -3129,6 +3129,15 @@ fn generate_terminal_v41(
         );
         finish = "tool_calls";
     }
+    // The OpenAI finish_reason set has no "error": open-grok rejected the
+    // whole chunk with "serialization error: unknown variant `error`" when
+    // the route's unterminated-tool-call state (engine
+    // server_generate_v41.c:230-234) reached the wire (2026-10-10 23:17
+    // session evidence).  The client surfaces carry "stop" instead; the
+    // engine keeps its internal distinction in the logs.
+    if finish == "error" {
+        finish = "stop";
+    }
     st.req.timings.prefill_tokens = prompt_n;
     st.req.timings.prefill_cached = 0;
     st.req.timings.decode_tokens = completion;
