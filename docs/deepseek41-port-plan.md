@@ -145,7 +145,7 @@ before any state-changing command.
 | P5 | MTP towers and DSpark verify/rollback | byte-identical greedy output with drafting on and off at N=1; cache-frontier gate at N>1. The engine's own cautions: the main-hidden ring trim in rollback, and the compressor pending-row snapshot taken before the shift |
 | P6 | Serving: the flags, the sampling profile for this family, the four API contracts, the DSML tool path | a served tool call, end to end, no shim |
 | P7 | Performance ledger: prefill and decode on the §2 prompts, cache reuse demonstrated | the ledger, published with its method |
-| Z | The install.sh startup contract (2026-10-10, §6.18): `--zchain` (the ② mount over the P4-7 stores + the P2/P3 Rust reader), `--posttrain` (③), `--mem-budget-mb` (the engine's 90 %/85 % guardrails), and the install.sh smoke on the v41 route | both sides booted exactly as install.sh boots; served ids byte-identical with the finance sidecar mounted; the smoke passes |
+| Z | DONE 2026-10-10 (`f377e87`..`91dba0f`, §6.18): the install.sh startup contract: `--zchain` (the ② mount over the P4-7 stores + the P2/P3 Rust reader), `--posttrain` (③), `--mem-budget-mb` (the engine's L1 85 % gate; the Linux footprint watchdog is inert by the engine's own design, core_util.c:141-145), and the install.sh smoke on the v41 route | both sides booted exactly as install.sh boots; served ids byte-identical with the finance sidecar mounted; the smoke passes (all PASS 2026-10-10, §6.18/§6.19) |
 
 P0 and P1 can start without further owner decisions.
 
@@ -1457,6 +1457,72 @@ served by the port, ids equal to the engine's under the same boot. Unit
 Z's readings land in this section when it closes; unit H's evidence
 follows as §6.19, measured under the same canonical boot.
 
+### Evidence (2026-10-10 evening, Spark; oracle = the source-built engine)
+
+Oracle (owner rule, §6.4): the engine built from the pinned source
+(github.com/JLFN/YoungAi @ 3946dbc, `make cuda-generic` on the Spark) —
+`~/youngai-src/ds4-server`, sha256
+`ace08941e4132e834b631c101b09e21a41f46eadb1be95d5c8b5b6fbe2de6826`; the
+prebuilt HuggingFace binaries are not an oracle. Both sides booted exactly
+as install.sh boots, modulo the gates' own trace instruments: `--cuda -m
+<gguf> --zchain <finance sidecar> --engram-dir <dir> --mem-budget-mb
+110000 --host 127.0.0.1 --port 8099`.
+
+Gate Z-1 (both gates; the id readings are §6.19): PASS 19:21-19:38 —
+`tests/ds41_sampling_gate.sh` (cases A-D byte-identical) and
+`tests/ds41_wire_gate.sh` (anthropic + responses + smoke identical) both
+green under that boot. Mount parity: the port's `[v41] zchain mount: gr=39
+rb=27 amp=0` equals the engine's `[反修·权重侧] 39 层挂上逐专家增益覆盖
+(盘上 40.7 MB)` + `[反修·路由] 27 层挂上路由偏置侧车 (盘上 0.041 MB)`,
+and the port's L1 line `ds4: L1 budget gate: planned resident 4.44 GiB
+within 107.42 GiB budget` carries the engine's own figure.
+
+Gate Z-2, the deploy demo (the port's own install.sh at the repo root,
+19:38:45-19:42:41): preflight `machine ok: NVIDIA GB10, CUDA 13 runtime,
+124546 MB memory`; `artifact files ok`; `make ds4-server` up to date; boot
+19:38:45 -> loaded 19:41:55 (`11293 MB of memory left`); the smoke
+answered: "A price-to-earnings ratio is a valuation metric that compares a
+company's current stock price to its earnings per share, indicating how
+much investors are willing to pay for each dollar of earnings."; `ready:
+http://127.0.0.1:8000/v1, domain finance`; `bash install.sh stop` ->
+`stopped`; status -> `not running`, 121834 MB available. The server loaded
+only `$REPO/ds4-server` — the reference binary is never the port's runtime
+(owner rule).
+
+Recorded limits: a dir carrying `amp_Lnn.bin` is refused by name (no Spark
+dir carries one; the §6.14 limit stands); the engine's expert-offload AUTO
+verdict has no port counterpart (the port's residency is its own memgov
+plan; the engine's own VQ-blob rule forces offload for this artifact); the
+Linux footprint watchdog is inert by the engine's own design
+(core_util.c:141-145), so the port carries the L1 load gate — the active
+half on Linux.
+
+Unit: Z complete
+
+## 6.19 Unit H evidence: sampling and the wire surfaces under the canonical boot (2026-10-10)
+
+Unit H's implementation landed earlier (`082a90e` + `da61df2`, §6.17's
+era); these are its gates re-run with the source-built oracle and both
+sides on the install.sh boot (the runs §6.18 records).
+
+The sampling gate (tests/ds41_sampling_gate.sh, 19:21-19:32): PASS. Cases
+A (temp 0.7 + seed 12345), B (the omitted-temperature default) and C (temp
+0.7 + frequency_penalty 0.5) on the `--no-dspark` boot, and D (sampling
+under speculation) on the default boot: served ids byte-identical to the
+engine's on all four (8/18/13/8 generated), finish stop on all four. The
+port samples through `cuda/ds41_sample.cuh` with the engine's own coins
+and rejection decisions (case D also exercises the draft draws under
+speculation); the earlier prebuilt-oracle pass (19:0x) is superseded by
+this run and its ids are unchanged.
+
+The wire gate (tests/ds41_wire_gate.sh, 19:33-19:38): PASS. `/v1/messages`,
+`/v1/responses` and the install.sh smoke request (`deepseek-chat` alias,
+temp 0, max_tokens 48, the finance question) served by both sides under
+the same boot: prompt ids, generated ids (8/8/39) and finish reasons
+identical.
+
+Unit: H complete
+
 ## 7. Numerics contract
 
 - Device arithmetic and every format detail follow the C engine's code, and the
@@ -1465,7 +1531,9 @@ follows as §6.19, measured under the same canonical boot.
   `cuda_vq_row.inc.cu`, not a plausible reading of the format description.
 - Greedy (temperature 0) comparisons are the gate. Sampled comparisons are
   reported as distributions, because the Rust host samples with its own profile
-  and the streams diverge after the first non-greedy step.
+  and the streams diverge after the first non-greedy step. (For the v41 route
+  unit H superseded this: the port samples with the engine's own coins, so a
+  pinned seed is gated byte-identical, §6.19.)
 - Where the Rust host's existing DeepSeek kernels and the engine disagree
   numerically, the engine's captured behaviour wins for this family, and the
   deviation is recorded rather than smoothed over.
