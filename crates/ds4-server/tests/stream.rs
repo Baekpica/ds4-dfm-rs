@@ -425,3 +425,81 @@ fn buffered_finals_match_c() {
     assert!(out.contains("\"status\":\"completed\""));
     assert!(out.contains("Hello world."));
 }
+
+#[test]
+fn bare_invoke_block_holds_back_and_finishes_with_the_call() {
+    // The V4.1 artifact dropped the wrapper in a live open-grok session
+    // (01a127cf, 2026-10-11): the block opened straight with <invoke>, the
+    // live start detector missed it, and the markup streamed as visible
+    // content while the finish still served the call.  The detector now
+    // knows the invoke spellings; the block must be held back and the call
+    // emitted at the finish.
+    let raw = b"Here you go.\n\n<invoke name=\"web_fetch\">\n\
+        <parameter name=\"url\">https://example.com</parameter>\n\
+        </invoke>\n</tool_calls>";
+    let r = StreamReq {
+        think_mode: ThinkMode::None,
+        has_tools: true,
+        chat_format: ChatFormat::DeepSeek,
+        syntax: ModelSyntax::DeepSeek,
+        ..Default::default()
+    };
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    // "Here you go." streams as one delta; a chunk ending mid-marker is
+    // held back; the full text holds the block in suppress mode.
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        &raw[..12],
+        false,
+    ));
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        &raw[..17],
+        false,
+    ));
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        raw,
+        false,
+    ));
+    let calls = [ToolCall {
+        name: "web_fetch".into(),
+        arguments: r#"{"url": "https://example.com"}"#.into(),
+        ..Default::default()
+    }];
+    assert!(openai_sse_finish_live(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        raw,
+        "tool_calls",
+        12,
+        20,
+        &calls,
+    ));
+    let out = String::from_utf8(w.out).unwrap();
+    assert!(
+        !out.contains("<invoke"),
+        "the invoke markup leaked as content: {out}"
+    );
+    assert!(
+        out.contains("Here you go."),
+        "the pre-block text must stream: {out}"
+    );
+    assert!(
+        out.contains("\"tool_calls\""),
+        "the finish must emit the call: {out}"
+    );
+    assert!(out.contains("web_fetch"), "the call name must be present: {out}");
+}

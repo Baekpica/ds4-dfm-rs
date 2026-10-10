@@ -1771,6 +1771,19 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
                 b"<tool_calls>",
                 b"<tool_call>",
                 b"<dots_function_call>",
+                // The V4.1 artifact sometimes drops the wrapper entirely and
+                // opens straight with an invoke (observed 2026-10-11,
+                // open-grok session 01a127cf), and the shim records a short
+                // `<...calls>` wrapper (~/youngai/tool-shim/shim.py:44-48).
+                // Without these the live stream never enters tool mode, so
+                // the block streams as visible content while the
+                // finish-level tolerant parse still serves the calls.
+                DSML_INVOKE_START.as_bytes(),
+                DSML_INVOKE_START_SHORT.as_bytes(),
+                b"<invoke",
+                b"<\xef\xbd\x9cDSML\xef\xbd\x9ccalls>",
+                b"<DSML\xef\xbd\x9ccalls>",
+                b"<calls>",
             ];
             cands.iter().filter_map(|p| find_substr(s, p)).min()
         }
