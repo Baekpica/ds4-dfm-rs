@@ -191,21 +191,25 @@ pub fn append_tool_call_deltas_json(out: &mut Vec<u8>, calls: &[ToolCall], id_pr
         if i > 0 {
             out.push(b',');
         }
-        let fallback = format!("{id_prefix}_tool_{i}");
-        let id = if tc.id.is_empty() {
-            fallback.as_str()
-        } else {
-            tc.id.as_str()
-        };
-        out.extend_from_slice(format!("{{\"index\":{i},\"id\":").as_bytes());
-        out.extend(json_escape_bytes(id.as_bytes()));
-        out.extend_from_slice(b",\"type\":\"function\",\"function\":{\"name\":");
-        out.extend(json_escape_bytes(tc.name.as_bytes()));
-        out.extend_from_slice(b",\"arguments\":");
-        append_json_object_string(out, &tc.arguments);
-        out.extend_from_slice(b"}}");
+        append_tool_call_delta_entry(out, i, tc, id_prefix);
     }
     out.push(b']');
+}
+
+fn append_tool_call_delta_entry(out: &mut Vec<u8>, index: usize, tc: &ToolCall, id_prefix: &str) {
+    let fallback = format!("{id_prefix}_tool_{index}");
+    let id = if tc.id.is_empty() {
+        fallback.as_str()
+    } else {
+        tc.id.as_str()
+    };
+    out.extend_from_slice(format!("{{\"index\":{index},\"id\":").as_bytes());
+    out.extend(json_escape_bytes(id.as_bytes()));
+    out.extend_from_slice(b",\"type\":\"function\",\"function\":{\"name\":");
+    out.extend(json_escape_bytes(tc.name.as_bytes()));
+    out.extend_from_slice(b",\"arguments\":");
+    append_json_object_string(out, &tc.arguments);
+    out.extend_from_slice(b"}}");
 }
 
 fn tool_schema_orders_find<'a>(
@@ -912,6 +916,35 @@ pub fn openai_sse_finish_live(
         append_tool_call_deltas_json(&mut deltas, calls, id);
         w.put(&deltas);
         w.put_str("},\"finish_reason\":null}]}\n\n");
+    } else if let Some(partial) = st.tool.partial_invoke_index() {
+        // The live stream put this call's name on the wire and then failed
+        // on the V4.1 artifact's mixed spellings, before its arguments
+        // (docs 6.23).  Complete that index with an arguments-only delta
+        // (the client merges deltas by index) and emit any later calls in
+        // full; the earlier ones were streamed complete.
+        let idx = partial.max(0) as usize;
+        if let Some(first) = calls.get(idx) {
+            let mut deltas = Vec::new();
+            deltas.push(b'[');
+            deltas.extend_from_slice(
+                format!("{{\"index\":{idx},\"function\":{{\"arguments\":").as_bytes(),
+            );
+            append_json_object_string(&mut deltas, &first.arguments);
+            deltas.extend_from_slice(b"}}");
+            for (i, tc) in calls.iter().enumerate().skip(idx + 1) {
+                deltas.push(b',');
+                append_tool_call_delta_entry(&mut deltas, i, tc, id);
+            }
+            deltas.push(b']');
+            w.put_str(&format!(
+                "data: {{\"id\":\"{id}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":",
+                w.created
+            ));
+            w.esc_str(&r.model);
+            w.put_str(",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":");
+            w.put(&deltas);
+            w.put_str("},\"finish_reason\":null}]}\n\n");
+        }
     }
     w.put_str(&format!(
         "data: {{\"id\":\"{id}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":",

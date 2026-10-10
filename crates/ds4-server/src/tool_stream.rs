@@ -150,6 +150,20 @@ impl DsmlToolStream {
         }
     }
 
+    /// A call whose name went on the wire but whose arguments did not: the
+    /// live stream started this invoke and then failed mid-block on the
+    /// V4.1 artifact's mixed tag spellings (docs 6.23).  The finish
+    /// completes this index with an arguments-only delta -- the client
+    /// merges deltas by index.  None when the live stream finished
+    /// cleanly, emitted no call, or already streamed part of the
+    /// arguments (nothing safe to append).
+    pub fn partial_invoke_index(&self) -> Option<i32> {
+        if !self.emitted_any || self.state == DsmlToolState::Done || self.args_open {
+            return None;
+        }
+        Some(self.index)
+    }
+
     fn fail(&mut self) -> bool {
         self.active = false;
         self.state = DsmlToolState::Error;
