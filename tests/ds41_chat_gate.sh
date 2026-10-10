@@ -8,10 +8,17 @@
 # One chat+tools request (greedy, reasoning off): it covers the V4.1 head, the
 # tool-schema block and the DSML tool path in one shot.
 #
-# usage: ds41_chat_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port>
+# usage: ds41_chat_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port> [zchain_dir]
+#
+# With [zchain_dir] both sides boot with the deployment's own line
+# (--zchain <dir> --mem-budget-mb 110000, install.sh's start); the dir must
+# have no spaces.
 set -u
 
 ENG="$1" SRV="$2" MODEL="$3" ENGRAM="$4" PORT="$5"
+ZC="${6:-}"
+ZFLAG=""
+[ -n "$ZC" ] && ZFLAG="--zchain $ZC --mem-budget-mb 110000"
 LOG=/tmp/ds41_chat_gate
 REQ=/tmp/ds41_chat_gate.req.json
 
@@ -22,7 +29,11 @@ cat > "$REQ" <<'JSON'
 JSON
 
 # ---- engine side: boot with --trace (the oracle) ----
-"$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG.eng.trace" > "$LOG.eng.log" 2>&1 &
+# rm first: the redirect truncates only once the child runs, so a grep racing
+# that truncation would read the PREVIOUS run's log and pass boot_wait
+# instantly (hit 2026-10-10 18:49 in the sampling gate).
+rm -f "$LOG.eng.log" "$LOG.eng.trace"
+"$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG.eng.trace" $ZFLAG > "$LOG.eng.log" 2>&1 &
 EPID=$!
 trap 'kill $EPID 2>/dev/null; wait $EPID 2>/dev/null' EXIT
 
@@ -52,7 +63,8 @@ sed -n 's/^generated: *//p' "$LOG.eng.trace" | tr '\n' ' ' | sed 's/ $//' > "$LO
 grep -q '^--- rendered prompt ---' "$LOG.eng.trace" || fail "engine trace has no rendered prompt"
 
 # ---- port side: the same request through ds4-server-rs --emit-trace ----
-"$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace > "$LOG.srv.log" 2>&1 &
+rm -f "$LOG.srv.log"
+"$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG > "$LOG.srv.log" 2>&1 &
 SPID=$!
 trap 'kill $SPID 2>/dev/null; wait $SPID 2>/dev/null' EXIT
 

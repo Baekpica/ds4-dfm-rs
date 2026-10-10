@@ -1075,13 +1075,13 @@ test-ds41-serving-http: ds4 ds4-server
 # --trace dumps the rendered prompt text and both id lists (server_trace.c:222);
 # the port server --emit-trace prints the same ids ([ptok] + [emit]).
 #   make test-ds41-chat ENG_SERVER=<engine ds4-server> MODEL=<gguf> \
-#        ENGRAM_DIR=<shard dir> [PORT=8478]
+#        ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8478]
 .PHONY: test-ds41-chat
 test-ds41-chat: ds4-server
 	@if [ -z "$(ENG_SERVER)" ] || [ -z "$(MODEL)" ] || [ -z "$(ENGRAM_DIR)" ]; then \
-	  echo "usage: make test-ds41-chat ENG_SERVER=<engine server> MODEL=<gguf> ENGRAM_DIR=<shard dir> [PORT=8478]"; \
+	  echo "usage: make test-ds41-chat ENG_SERVER=<engine server> MODEL=<gguf> ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8478]"; \
 	else \
-	  sh tests/ds41_chat_gate.sh "$(ENG_SERVER)" ./ds4-server "$(MODEL)" "$(ENGRAM_DIR)" "$${PORT:-8478}"; \
+	  sh tests/ds41_chat_gate.sh "$(ENG_SERVER)" ./ds4-server "$(MODEL)" "$(ENGRAM_DIR)" "$${PORT:-8478}" "$(ZCHAIN)"; \
 	fi
 
 # The Rust host (./ds4) is the default binary, and the one the server shares.
