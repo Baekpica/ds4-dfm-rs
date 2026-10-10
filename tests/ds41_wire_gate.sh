@@ -6,14 +6,20 @@
 # Both surfaces share the chat renderer (server_httpd.c:246-252), so the ids
 # must be byte-identical at greedy; this drives the two parse paths end to end.
 #
-# Two greedy requests (reasoning off) through one boot per side:
+# Three greedy requests (reasoning off) through one boot per side:
 #   1  POST /v1/messages   messages + max_tokens + reasoning_effort
 #   2  POST /v1/responses  input + max_output_tokens + reasoning.effort
+#   3  POST /v1/chat/completions  THE install.sh smoke request verbatim
+#      (model "deepseek-chat" = the alias that disables thinking,
+#      server_msgs.c:300-301; temperature 0, max_tokens 48, the finance
+#      question -- install.sh's own smoke)
 #
 # usage: ds41_wire_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port> [zchain_dir]
 #
-# With [zchain_dir] both sides boot with --zchain <dir>, the engine's own
-# deployment spelling (install.sh).  The dir must have no spaces.
+# With [zchain_dir] both sides boot with the deployment's own line:
+# --cuda -m <gguf> --zchain <dir> --engram-dir <dir> --mem-budget-mb 110000
+# --host 127.0.0.1 --port <port> (install.sh's start, verbatim modulo the
+# trace instruments).  The dir must have no spaces.
 set -u
 
 ENG="$1" SRV="$2" MODEL="$3" ENGRAM="$4" PORT="$5"
@@ -34,6 +40,9 @@ JSON
 cat > "$LOG/req.responses.json" <<'JSON'
 {"input":"Name three colors.","max_output_tokens":48,"temperature":0,"reasoning":{"effort":"none"}}
 JSON
+cat > "$LOG/req.smoke.json" <<'JSON'
+{"model":"deepseek-chat","temperature":0,"max_tokens":48,"messages":[{"role":"user","content":"In one sentence, what is a price-to-earnings ratio?"}]}
+JSON
 
 boot_wait() { # <log> <pid> <name>
     i=0
@@ -50,7 +59,7 @@ boot_wait() { # <log> <pid> <name>
 # that truncation would read the PREVIOUS run's log and pass boot_wait
 # instantly.
 rm -f "$LOG/eng.log" "$LOG/eng.trace"
-"$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/eng.trace" $ZFLAG > "$LOG/eng.log" 2>&1 &
+"$ENG" --cuda -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/eng.trace" $ZFLAG --host 127.0.0.1 > "$LOG/eng.log" 2>&1 &
 EPID=$!
 boot_wait "$LOG/eng.log" "$EPID" "engine server"
 curl -sS -m 900 "http://127.0.0.1:$PORT/v1/messages" \
@@ -61,11 +70,15 @@ curl -sS -m 900 "http://127.0.0.1:$PORT/v1/responses" \
     -H 'content-type: application/json' -d @"$LOG/req.responses.json" > "$LOG/eng.responses.json" \
   || fail "engine responses request failed"
 grep -q '"status"' "$LOG/eng.responses.json" || fail "engine responses response has no status"
+curl -sS -m 900 "http://127.0.0.1:$PORT/v1/chat/completions" \
+    -H 'content-type: application/json' -d @"$LOG/req.smoke.json" > "$LOG/eng.smoke.json" \
+  || fail "engine smoke request failed"
+grep -q '"choices"' "$LOG/eng.smoke.json" || fail "engine smoke response has no choices"
 kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
 
 # ---- port side: the same requests ----
 rm -f "$LOG/srv.log"
-"$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG > "$LOG/srv.log" 2>&1 &
+"$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG --host 127.0.0.1 > "$LOG/srv.log" 2>&1 &
 SPID=$!
 boot_wait "$LOG/srv.log" "$SPID" "port server"
 grep -q "V4.1 serving route" "$LOG/srv.log" || fail "no V4.1 route line at boot"
@@ -77,6 +90,10 @@ curl -sS -m 900 "http://127.0.0.1:$PORT/v1/responses" \
     -H 'content-type: application/json' -d @"$LOG/req.responses.json" > "$LOG/srv.responses.json" \
   || fail "port responses request failed"
 grep -q '"status"' "$LOG/srv.responses.json" || fail "port responses response has no status"
+curl -sS -m 900 "http://127.0.0.1:$PORT/v1/chat/completions" \
+    -H 'content-type: application/json' -d @"$LOG/req.smoke.json" > "$LOG/srv.smoke.json" \
+  || fail "port smoke request failed"
+grep -q '"choices"' "$LOG/srv.smoke.json" || fail "port smoke response has no choices"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 
 # ---- per-request id extraction ----
@@ -116,6 +133,7 @@ check() { # <name> <request index>
 
 check anthropic 1
 check responses 2
+check smoke 3
 
 # ---- finish parity ----
 es=$(sed -n 's/.*"stop_reason":"\([^"]*\)".*/\1/p' "$LOG/eng.anthropic.json")
@@ -126,5 +144,9 @@ er=$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$LOG/eng.responses.json")
 sr=$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$LOG/srv.responses.json")
 [ "$er" = "$sr" ] || fail "responses status differs (engine=$er port=$sr)"
 [ "$er" = "incomplete" ] && fail "responses response incomplete (token cap?)"
+efin=$(sed -n 's/.*"finish_reason":"\([^"]*\)".*/\1/p' "$LOG/eng.smoke.json")
+sfin=$(sed -n 's/.*"finish_reason":"\([^"]*\)".*/\1/p' "$LOG/srv.smoke.json")
+[ "$efin" = "$sfin" ] || fail "smoke finish_reason differs (engine=$efin port=$sfin)"
+[ "$efin" = "length" ] && fail "smoke response hit the token cap"
 
-echo "ds41 wire gate: PASS (anthropic + responses: prompt ids, generated ids and finish reasons equal the engine's)"
+echo "ds41 wire gate: PASS (anthropic + responses + the install.sh smoke: prompt ids, generated ids and finish reasons equal the engine's)"

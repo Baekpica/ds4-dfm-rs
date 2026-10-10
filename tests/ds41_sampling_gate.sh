@@ -62,7 +62,7 @@ run_pair() { # <name> <extra flags...>
     # boot_wait instantly (hit 2026-10-10 18:49: port "request A failed"
     # while the server was still loading).
     rm -f "$LOG/$name.eng.log" "$LOG/$name.eng.trace"
-    "$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/$name.eng.trace" $ZFLAG $eflags > "$LOG/$name.eng.log" 2>&1 &
+    "$ENG" --cuda -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/$name.eng.trace" $ZFLAG $eflags --host 127.0.0.1 > "$LOG/$name.eng.log" 2>&1 &
     EPID=$!
     boot_wait "$LOG/$name.eng.log" "$EPID" "engine server ($name)"
     for c in $CASES; do
@@ -75,7 +75,7 @@ run_pair() { # <name> <extra flags...>
 
     # ---- port side: the same requests ----
     rm -f "$LOG/$name.srv.log"
-    "$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG $eflags > "$LOG/$name.srv.log" 2>&1 &
+    "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG $eflags --host 127.0.0.1 > "$LOG/$name.srv.log" 2>&1 &
     SPID=$!
     boot_wait "$LOG/$name.srv.log" "$SPID" "port server ($name)"
     grep -q "V4.1 serving route" "$LOG/$name.srv.log" || fail "no V4.1 route line at boot ($name)"
