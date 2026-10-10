@@ -230,6 +230,10 @@ be present on the Spark (clone or rsync of the `ds41` branch) — see O5.
 
 Working rules for the Spark, non-negotiable:
 
+- THE PORT RUNS ONLY ON THE SPARK (owner rule, 2026-10-10: "we will only run
+  this in the nvidia-spark box that you have tmux ssh access to").  The
+  deployment (install.sh) enforces it in its preflight (aarch64 + GB10 +
+  CUDA 13 + 128 GB); model-free unit tests may still run on the dev box.
 - Drive it only through the owner's ssh tmux pane, or an askpass session; there
   is no standing ssh key (owner rule, 2026-10-03).
 - Read-only by default. Any state-changing command (build, write, stop a

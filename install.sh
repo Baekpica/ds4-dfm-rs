@@ -4,6 +4,11 @@
 # over the model artifact files (the GGUF, the n-gram shards, the domain
 # sidecars) that live in --dir.
 #
+# THIS DEPLOYMENT RUNS ONLY ON THE NVIDIA DGX SPARK (owner rule 2026-10-10:
+# "we will only run this in the nvidia-spark box").  The preflight below
+# enforces it: aarch64 Linux, a GB10 GPU, the CUDA 13 runtime, 128 GB of
+# memory - anything else is refused before a byte of the model is read.
+#
 # The reference engine (the YoungAi tree) is a porting reference only: this
 # script never loads or starts its server - the process it starts is
 # $REPO/ds4-server, built here.  (The test gates do boot the reference as
