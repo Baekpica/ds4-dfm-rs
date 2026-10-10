@@ -281,6 +281,13 @@ impl EngramShard {
         self.dio
     }
 
+    /// The shard's fd for the io_uring round (`v41_ering_req.fd`,
+    /// core_v41.h:260); the ring owns no fd of its own.
+    pub(crate) fn raw_fd(&self) -> std::os::raw::c_int {
+        use std::os::unix::io::AsRawFd;
+        self.file.as_raw_fd()
+    }
+
     /// C `v41_ejob_create`'s span check (`core_v41_engram.c:236-242`).
     pub fn check_span(
         &self,

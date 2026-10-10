@@ -46,6 +46,7 @@ mod step37;
 mod step37_mtp;
 mod tensors;
 mod tok;
+mod uring;
 mod v41;
 mod v41_run;
 mod validate;

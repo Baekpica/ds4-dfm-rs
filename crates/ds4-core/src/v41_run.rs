@@ -25,6 +25,7 @@ use ds4_sys::{
 };
 
 use crate::engram::{EngramHash, EngramShard};
+use crate::uring::Req;
 use crate::{
     identify_file, Error, GgufFile, Model, Result, TensorInventory, V41Wire, V41Zchain, ZchainGeom,
 };
@@ -139,10 +140,14 @@ pub struct V41Feed {
     shards: Vec<EngramShard>,
     weight_off: Vec<u64>,
     scale_off: Vec<u64>,
+    rows: Vec<u64>,
     head_dim: u32,
     cols: u32,
     stride: u32,
     hist: Vec<i32>,
+    /// The engine's io_uring channel (`v41_ering`, core_v41_ering.c): one
+    /// submit per engram layer's round; None keeps the serial preads.
+    ring: Option<crate::uring::Ring>,
 }
 
 impl V41Feed {
@@ -169,15 +174,28 @@ impl V41Feed {
         }
         let head_dim = wire.engram_head_dim;
         let stride = head_dim + head_dim / 32;
+        // The engine's row channel (core_v41_engram.c:231-233): io_uring when
+        // the kernel takes it, serial preads otherwise.  Its own line, so a
+        // gate log shows which path ran.
+        let ring = crate::uring::Ring::open(crate::uring::ERING_CAP);
+        match &ring {
+            Some(r) => eprintln!(
+                "ds4: [v41] engram rows: io_uring (one submit per round, depth {})",
+                r.cap()
+            ),
+            None => eprintln!("ds4: [v41] engram rows: serial preads (no io_uring)"),
+        }
         Ok(Some(Self {
             hash,
             shards,
             weight_off: wire.engram_weight_off.clone(),
             scale_off: wire.engram_scale_off.clone(),
+            rows: wire.engram_rows.clone(),
             head_dim,
             cols: (wire.engram_max_ngram - 1) * wire.engram_heads,
             stride,
             hist: Vec::new(),
+            ring,
         }))
     }
 
@@ -196,11 +214,23 @@ impl V41Feed {
             self.hist.resize(end, 0);
         }
         self.hist[start..end].copy_from_slice(tokens);
+        if self.ring.is_some() {
+            for (k, &base) in dst.iter().enumerate() {
+                self.prepare_round(k as u32, start, end, base)?;
+            }
+            return Ok(());
+        }
         for (k, &base) in dst.iter().enumerate() {
             let ei = k as u32;
             for (i, p) in (start..end).enumerate() {
                 let rows = self.hash.rows(&self.hist, p as i64, ei);
                 for (c, &row_id) in rows.iter().enumerate() {
+                    if row_id < 0 || row_id as u64 >= self.rows[k] {
+                        return Err(format!(
+                            "engram row {row_id} out of range (layer {k}, rows {})",
+                            self.rows[k]
+                        ));
+                    }
                     let row = self.shards[k]
                         .row(self.weight_off[k], self.scale_off[k], row_id as u64, self.head_dim)
                         .map_err(|e| e.to_string())?;
@@ -216,6 +246,61 @@ impl V41Feed {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// One engram layer's round on the ring, the engine's own shape
+    /// (`core_v41_engram.c:238-254`): hash the block's rows on this thread,
+    /// fill one request per plane per row (weights then scales), one submit
+    /// for the whole round, one wait.  The row-range refusal is the engine's
+    /// err=1 (`core_v41_engram.c:247`).
+    fn prepare_round(
+        &mut self,
+        ei: u32,
+        start: usize,
+        end: usize,
+        base: *mut u8,
+    ) -> std::result::Result<(), String> {
+        let ring = self.ring.as_mut().expect("ring round without a ring");
+        let hd = self.head_dim as u64;
+        let nsc = hd / 32;
+        let k = ei as usize;
+        let direct = self.shards[k].is_direct();
+        let fd = self.shards[k].raw_fd();
+        let reqs = ring.reqs_mut();
+        reqs.clear();
+        reqs.reserve((end - start) * self.cols as usize * 2);
+        for (i, p) in (start..end).enumerate() {
+            let rows = self.hash.rows(&self.hist, p as i64, ei);
+            for (c, &row_id) in rows.iter().enumerate() {
+                if row_id < 0 || row_id as u64 >= self.rows[k] {
+                    return Err(format!(
+                        "engram row {row_id} out of range (layer {k}, rows {})",
+                        self.rows[k]
+                    ));
+                }
+                let r = row_id as u64;
+                let slot = (i * self.cols as usize + c) * self.stride as usize;
+                let wdst = unsafe { base.add(slot) };
+                reqs.push(Req {
+                    fd,
+                    direct,
+                    len: hd as u32,
+                    off: self.weight_off[k] + r * hd,
+                    dst: wdst,
+                });
+                reqs.push(Req {
+                    fd,
+                    direct,
+                    len: nsc as u32,
+                    off: self.scale_off[k] + r * nsc,
+                    dst: unsafe { wdst.add(hd as usize) },
+                });
+            }
+        }
+        if !ring.submit() || !ring.wait() {
+            return Err("engram io_uring round failed".into());
         }
         Ok(())
     }
