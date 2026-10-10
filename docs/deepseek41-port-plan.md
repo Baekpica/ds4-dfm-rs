@@ -146,6 +146,7 @@ before any state-changing command.
 | P6 | Serving: the flags, the sampling profile for this family, the four API contracts, the DSML tool path | a served tool call, end to end, no shim |
 | P7 | Performance ledger: prefill and decode on the §2 prompts, cache reuse demonstrated | the ledger, published with its method |
 | Z | DONE 2026-10-10 (`f377e87`..`91dba0f`, §6.18): the install.sh startup contract: `--zchain` (the ② mount over the P4-7 stores + the P2/P3 Rust reader), `--posttrain` (③), `--mem-budget-mb` (the engine's L1 85 % gate; the Linux footprint watchdog is inert by the engine's own design, core_util.c:141-145), and the install.sh smoke on the v41 route | both sides booted exactly as install.sh boots; served ids byte-identical with the finance sidecar mounted; the smoke passes (all PASS 2026-10-10, §6.18/§6.19) |
+| P7b | The qwen38-derived serving candidates (2026-10-10, §6.21; reference `docs/ds41-qwen38-serve-lessons.md`): P2 the engram overlap (engine mirror), Q-1 the MTP draft shortlist, Q-2 the MTP prefix cache | each: the four parity gates green + a >= 2 % measured median gain on its phase; kill switch per item (P2 mirrors the engine, none needed) |
 
 P0 and P1 can start without further owner decisions.
 
@@ -1532,6 +1533,89 @@ the same boot: prompt ids, generated ids (8/8/39) and finish reasons
 identical.
 
 Unit: H complete
+
+## 6.20 Unit P: the engram io_uring read path (2026-10-10)
+
+Spec (6.17.8, unit G's speed reading): the port's `V41Feed::prepare` read
+one row per position per layer with two serial positioned reads each,
+~3.1 s on the G-2 gate's 354-token prompt; mirror the engine's io_uring
+channel so a round costs about one disk latency.
+
+Landed (`b7f5ad8`): `crates/ds4-core/src/uring.rs` mirrors
+`core_v41_ering.c` 1:1 with raw syscalls (no liburing, like the engine):
+`io_uring_setup` + SQ/CQ/SQE mmaps, one 2-block bounce slot per entry with
+the free-slot stack (`:82-88`), the push loop (`:89-112`), the GETEVENTS
+drain that keeps the queue full (`:122-144`), and the O_DIRECT
+aligned-superset read (`:96-108`). `v41_run.rs` keeps the engine's round
+shape per engram layer (`core_v41_engram.c:238-254`): hash, one request
+per plane per row, one submit, one wait, with the row-range refusal of
+err=1 (`:247`). The serial loop stays as the non-Linux fallback (named
+limit; the engine falls back to its thread pool there).
+
+Evidence (2026-10-10 ~20:10, Spark, source-built oracle
+`~/youngai-src/ds4-server` sha256 `ace08941...`, both sides on the
+canonical boot incl. the finance `--zchain` and `--mem-budget-mb 110000`):
+
+- `tests/ds41_chat_gate.sh`: PASS - prompt ids 354/354, generated ids and
+  the response message equal the engine's on the same chat+tools request.
+- Port prefill 354 tokens in 1.3 s (273.0 t/s) against the engine's
+  1.247 s - within 4.3% (was 4.5 s, 78.0 t/s; 6.17.8).
+- The port's host-gaps line: engram prep per decode round 2.608 ms (was
+  24.668 ms); verify->draft 8.88 ms, draft->verify 5.46 ms.
+- The engine's decode on the same request: 43.56 t/s.
+- Local: the ring unit test (100 unaligned reads, O_DIRECT and plain legs,
+  more requests than the queue depth, byte equality against plain reads)
+  plus the ds4-core lib suite 369/369.
+
+Recorded limits: the rounds are block-synchronous (every layer read before
+the block's GPU work starts) - the engine's own overlap structure is unit
+P2, 6.21; non-Linux keeps the serial path.
+
+Unit: P complete
+
+## 6.21 Unit P2 and the qwen38-derived candidates (2026-10-10)
+
+Owner question answered in `docs/ds41-qwen38-serve-lessons.md`: study the
+qwen38 route (already served by this repo) and take what makes ds41 fast
+the same way. Three candidates, in order; every source citation and every
+test lives in that document.
+
+P2 - the engram overlap (engine mirror, no doctrinal change). The engine
+prefetches at forward start and waits per layer, submitting the next
+round as each completes (`core_v41_forward.c:390`;
+`core_v41_engram.c:311-341`, `:344-379`; the fetch thread for rounds
+larger than the queue, `:119-150`); the port reads all layers
+synchronously (6.20). The qwen38 PLE's ready-row lease is the same
+principle: never let the GPU wait on the SSD. Change: an optional
+per-layer wait on `ds41_engram_feed` (`ds41_forward.h:41-53`), `prepare`
+submits round 0 only, the native waits per layer at the point of use
+(`ds4_ds41_forward.inc:440-466`), and big rounds go to a fetch thread.
+Gate P2-1: the four parity gates below + prefill not worse than 1.3 s at
+354 tokens + the 835-token long prompt (`tests/ds41-long-prompt.txt`)
+measured + the host-gaps line showing the engram prep out of the critical
+path. Fallback: the synchronous path when no ring (current behavior).
+
+Q-1 - the MTP compact draft vocabulary (named deviation, owner-gated).
+The qwen38 route scores a shortlist in the draft only (`ds4.c:26778-26845`
+and `:27368-27373`; +3.04%/+3.87% median decode with exact ids,
+`docs/qwen38-perf-2026-09-14.md`). For ds41 the draft head is
+full-vocabulary (`ds4_ds41_draft.inc:46,155,165`). Gate Q-1: emitted ids
+byte-identical on the sampling, wire and chat gates; the generate gate's
+spec leg gates on emitted ids with the `[dspark]` draft-id diff marked
+informational; a decode A/B >= 2% median (fresh processes, alternating
+pairs, clock medians). Kill switch `DS4_V41_MTP_FULL_VOCAB=1`.
+
+Q-2 - the MTP prefix-cache preparation (named deviation, owner-gated).
+The qwen38 route skips the draft prefix's discarded computation
+(`ds4.c:27536`; +0.90%/+2.55% median prefill with exact ids). The ds41
+counterpart is the draft arm/prefix path (`ds4_ds41_draft.inc:125-198`).
+Gate Q-2: same emitted-id gates; a prefill A/B (354- and 835-token
+prompts) >= 2% median. Kill switch `DS4_V41_MTP_FULL_PREFIX=1`.
+
+Parity gates for P2, Q-1 and Q-2 (Spark, source-built oracle, canonical
+boot): `tests/ds41_sampling_gate.sh`, `tests/ds41_wire_gate.sh`,
+`tests/ds41_chat_gate.sh`, and `tests/ds41_generate_gate.sh` with
+`DS41_FEED_DIGEST`.
 
 ## 7. Numerics contract
 
