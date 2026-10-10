@@ -1468,6 +1468,16 @@ as install.sh boots, modulo the gates' own trace instruments: `--cuda -m
 <gguf> --zchain <finance sidecar> --engram-dir <dir> --mem-budget-mb
 110000 --host 127.0.0.1 --port 8099`.
 
+Golden re-check (same evening): `tests/capture_ds41_golden.sh` re-run with
+the source-built CLI (`BIN=~/youngai-src/ds4`, `OUT=/tmp/golden_src`)
+reproduces the recorded golden set bit-for-bit — both variants, all five
+prompts: the `logits.bin` files are byte-identical to
+`~/youngai/model/golden`'s (cmp SAME on all ten) and the PPLs match
+(with `--zchain`: 112.0845 / 24.9582 / 7.2809 / 14.3524 / 876.7182; bare:
+46.8780 / 22.0679 / 9.5414 / 10.7011 / 6662.9080). The prebuilt-captured
+golden therefore stands under the source-built oracle; no re-capture
+needed.
+
 Gate Z-1 (both gates; the id readings are §6.19): PASS 19:21-19:38 —
 `tests/ds41_sampling_gate.sh` (cases A-D byte-identical) and
 `tests/ds41_wire_gate.sh` (anthropic + responses + smoke identical) both
