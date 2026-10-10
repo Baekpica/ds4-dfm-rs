@@ -238,6 +238,16 @@ Working rules for the Spark, non-negotiable:
   long runs are left visible rather than backgrounded.
 - The memory budget is the guard: the engine refuses to start above
   `--mem-budget-mb 110000`, so a test run must not hold another large model.
+- THE ORACLE IS THE SOURCE-BUILT ENGINE (owner rule, 2026-10-10 evening:
+  "the test for this version ARE NOT allowed to use these
+  [~/youngai/model/bin] cause this is not from this project").  Every gate
+  that uses the engine as its oracle must use the engine BUILT FROM THE
+  PINNED SOURCE, not the HuggingFace prebuilt binaries in
+  ~/youngai/model/bin: clone github.com/JLFN/YoungAi (or /data/YoungAi),
+  check out 3946dbcc360461fd6de5b64213bd619496094243, `make cuda-generic`
+  (= make -B ds4 ds4-server ... CUDA_ARCH=native, the engine's own Linux
+  recipe), and record the binary's sha256 with the evidence.  Runs against
+  the prebuilt binary are preliminary readings only.
 
 ## 6.5 P0 evidence (2026-10-08, the Spark)
 
