@@ -19,7 +19,10 @@ set -u
 ENG="$1" SRV="$2" MODEL="$3" ENGRAM="$4" PORT="$5"
 ZC="${6:-}"
 ZFLAG=""
-[ -n "$ZC" ] && ZFLAG="--zchain $ZC"
+# The canonical install.sh line: --zchain <sidecar> --mem-budget-mb 110000
+# (its BUDGET_MB).  The budget is inert for the ids; carrying it exercises
+# both sides' flag acceptance and the L1 load gate at boot.
+[ -n "$ZC" ] && ZFLAG="--zchain $ZC --mem-budget-mb 110000"
 LOG=/tmp/ds41_wire_gate
 
 fail() { echo "ds41 wire gate: FAIL ($1)"; exit 1; }
