@@ -46,6 +46,10 @@ boot_wait() { # <log> <pid> <name>
 }
 
 # ---- engine side (the oracle) ----
+# rm first: the redirect truncates only once the child runs, so a grep racing
+# that truncation would read the PREVIOUS run's log and pass boot_wait
+# instantly.
+rm -f "$LOG/eng.log" "$LOG/eng.trace"
 "$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/eng.trace" $ZFLAG > "$LOG/eng.log" 2>&1 &
 EPID=$!
 boot_wait "$LOG/eng.log" "$EPID" "engine server"
@@ -60,6 +64,7 @@ grep -q '"status"' "$LOG/eng.responses.json" || fail "engine responses response 
 kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
 
 # ---- port side: the same requests ----
+rm -f "$LOG/srv.log"
 "$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG > "$LOG/srv.log" 2>&1 &
 SPID=$!
 boot_wait "$LOG/srv.log" "$SPID" "port server"

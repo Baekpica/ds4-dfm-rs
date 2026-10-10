@@ -57,6 +57,11 @@ run_pair() { # <name> <extra flags...>
     name="$1"; shift
     eflags="$*"
     # ---- engine side (the oracle) ----
+    # rm first: the redirect truncates only once the child runs, so a grep
+    # racing that truncation would read the PREVIOUS run's log and pass
+    # boot_wait instantly (hit 2026-10-10 18:49: port "request A failed"
+    # while the server was still loading).
+    rm -f "$LOG/$name.eng.log" "$LOG/$name.eng.trace"
     "$ENG" -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" --trace "$LOG/$name.eng.trace" $ZFLAG $eflags > "$LOG/$name.eng.log" 2>&1 &
     EPID=$!
     boot_wait "$LOG/$name.eng.log" "$EPID" "engine server ($name)"
@@ -69,6 +74,7 @@ run_pair() { # <name> <extra flags...>
     kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
 
     # ---- port side: the same requests ----
+    rm -f "$LOG/$name.srv.log"
     "$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG $eflags > "$LOG/$name.srv.log" 2>&1 &
     SPID=$!
     boot_wait "$LOG/$name.srv.log" "$SPID" "port server ($name)"
