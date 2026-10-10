@@ -877,6 +877,22 @@ void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp) {
     ds4_engine_set_decode_sampling(&face);
 }
 
+void ds4_bridge_set_mem_budget_mb(int mb) { ds4_set_mem_budget_mb(mb); }
+
+int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd) {
+    if (!m || !m->engine) return 0;
+    return ds4_v41_zchain_gr_set(m->engine, il, data, n_expert, n_embd);
+}
+
+int ds4_bridge_v41_zchain_rb_set(ds4_bridge_model *m, uint32_t il, const float *delta, uint32_t n_expert) {
+    if (!m || !m->engine) return 0;
+    return ds4_v41_zchain_rb_set(m->engine, il, delta, n_expert);
+}
+
+void ds4_bridge_v41_zchain_rb_clear(void) {
+    ds4_v41_zchain_rb_clear();
+}
+
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,

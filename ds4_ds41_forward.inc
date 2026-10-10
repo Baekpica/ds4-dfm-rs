@@ -1186,6 +1186,27 @@ int ds4_v41_router_bias_ref(void *engine, uint32_t il, const void **map, uint64_
     return 1;
 }
 
+/* The zchain device-side mount (unit Z, ds41_forward.h): the three device
+ * writes the Rust reader drives, 1:1 with the engine's v41_amp_load loop
+ * (core_v41_amp.c:227-270).  The engine reads the files in C; production
+ * reads them on the Rust host (zchain.rs, P2/P3) and lands here. */
+int ds4_v41_zchain_gr_set(void *engine, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd) {
+    (void)engine;
+    if (!data || il >= DS4_N_LAYER) return 0;
+    return ds4_gpu_v41_set_gr_override(il, data, n_expert, n_embd);
+}
+
+int ds4_v41_zchain_rb_set(void *engine, uint32_t il, const float *delta, uint32_t n_expert) {
+    const void *map = NULL;
+    uint64_t size = 0, off = 0;
+    if (!delta || !ds4_v41_router_bias_ref(engine, il, &map, &size, &off)) return 0;
+    return ds4_gpu_v41_set_rb_override(map, size, off, delta, n_expert);
+}
+
+void ds4_v41_zchain_rb_clear(void) {
+    (void)ds4_gpu_v41_set_rb_override(NULL, 0, 0, NULL, 0);
+}
+
 int ds4_v41_engram_hash_ref(void *engine, ds41_engram_hash_ref *ref) {
     ds4_engine *e = (ds4_engine *)engine;
     if (!e || !ref) return 0;

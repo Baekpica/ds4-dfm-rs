@@ -1597,4 +1597,14 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
                                    uint32_t layer_start, uint32_t layer_end,
                                    char *err, size_t errlen);
 
+/* --mem-budget-mb (unit Z): the engine's process memory red line and the
+ * L1 pre-flight load gate (core_util.c:198-256).  mb <= 0 leaves the
+ * budget unset (the gate is a no-op, the engine's own default).  On Linux
+ * the footprint watchdog half is inert by the engine's own design
+ * (core_util.c:141-145); the L1 gate is the active half, called from the
+ * model open before any GPU buffer is bound. */
+void ds4_set_mem_budget_mb(int mb);
+uint64_t ds4_runtime_mem_budget_bytes(void);
+void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes);
+
 #endif

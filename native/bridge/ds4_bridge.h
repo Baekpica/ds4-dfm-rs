@@ -307,6 +307,20 @@ typedef struct {
     float dry_multiplier, dry_base; int32_t dry_allowed_length;
 } ds4_bridge_v41_sampling;
 void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp);
+/* --mem-budget-mb (unit Z): the engine's process memory red line and its
+ * L1 pre-flight load gate (core_util.c:198-256); call before opening the
+ * model.  mb <= 0 leaves the budget unset (no-op gate). */
+void ds4_bridge_set_mem_budget_mb(int mb);
+/* The V4.1 zchain sidecar mount (unit Z).  The engine mounts ② / ③ per
+ * state (v41_state_plugins, core_v41_state.c:77-87 -> v41_amp_load,
+ * core_v41_amp.c:227-270); the Rust reader (crates/ds4-core/src/zchain.rs,
+ * P2/P3) reads and merges the directories, and these three entries are the
+ * device side it drives: the layer's merged gain table, the layer's route
+ * bias, and the process-wide rb unload the engine performs before any rb
+ * mount (core_v41_amp.c:114).  All return 1 on success, 0 on refusal. */
+int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd);
+int ds4_bridge_v41_zchain_rb_set(ds4_bridge_model *m, uint32_t il, const float *delta, uint32_t n_expert);
+void ds4_bridge_v41_zchain_rb_clear(void);
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,

@@ -10295,6 +10295,51 @@ static DS4_MAYBE_UNUSED bool weights_model_map_spans(
     return spans->len != 0;
 }
 
+/* ---- --mem-budget-mb: the process memory red line (unit Z) -------------
+ * Ported from core_util.c:151-256 with the Linux behavior the engine
+ * actually has there (its own comment, core_util.c:141-145: "Linux/CUDA
+ * hosts rely on their own guards"): ds4_phys_footprint_bytes() returns 0
+ * and the pressure level reads normal, so the 90% footprint watchdog and
+ * the always-on pressure guard are inert on this platform — the engine
+ * starts the sampling thread anyway, the port does not.  What is active
+ * and ported here is the budget global and the L1 pre-flight gate
+ * (core_util.c:236-256): called once the resident byte total is known,
+ * before any GPU buffer is bound, and refuses the load when the planned
+ * resident crosses 85% of the budget.  The engine's AUTO offload verdict
+ * (core_engine_open.c:319-330) has no port counterpart: the port's
+ * residency is its own memgov plan. */
+static uint64_t g_mem_budget_bytes = 0;
+
+void ds4_set_mem_budget_mb(int mb) {
+    if (mb > 0) g_mem_budget_bytes = (uint64_t)mb * 1024ull * 1024ull;
+}
+
+uint64_t ds4_runtime_mem_budget_bytes(void) {
+    return g_mem_budget_bytes;
+}
+
+#define DS4_L1_GATE_FRAC 0.85   /* core_util.c:10 */
+#define DS4_GIB (1024.0 * 1024.0 * 1024.0)   /* core_internal.h:91 */
+
+void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
+    if (g_mem_budget_bytes == 0) return;
+    const uint64_t planned = resident_model_bytes + kv_and_scratch_bytes;
+    const uint64_t limit = (uint64_t)((double)g_mem_budget_bytes * DS4_L1_GATE_FRAC);
+    if (planned > limit) {
+        fprintf(stderr,
+                "\n[ds4-l1-gate] planned resident %.2f GiB (model %.2f + kv/scratch %.2f) "
+                "exceeds %.0f%% of the %.2f GiB budget -- refusing to load.\n",
+                (double)planned / DS4_GIB, (double)resident_model_bytes / DS4_GIB,
+                (double)kv_and_scratch_bytes / DS4_GIB,
+                DS4_L1_GATE_FRAC * 100.0, (double)g_mem_budget_bytes / DS4_GIB);
+        fflush(stderr);
+        _exit(137);
+    }
+    fprintf(stderr,
+            "ds4: L1 budget gate: planned resident %.2f GiB within %.2f GiB budget\n",
+            (double)planned / DS4_GIB, (double)g_mem_budget_bytes / DS4_GIB);
+}
+
 #ifndef DS4_NO_GPU
 #include "ds4_glm53_stream.inc"
 #endif
@@ -72346,6 +72391,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     load_end,
                     spans.len,
                     (double)span_bytes / 1073741824.0);
+            ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
             model_map_ok = ds4_gpu_set_model_map_spans(e->model.map,
                                                         e->model.size,
                                                         offsets,
@@ -72356,6 +72402,31 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             free(sizes);
             free(spans.v);
         } else {
+            /* --mem-budget-mb (unit Z): the engine's L1 pre-flight gate
+             * (core_util.c:236-256), before any GPU buffer is bound.  The
+             * engine's figure for the V4.1 artifact is its typed backbone
+             * spans, not the raw range: the vq blobs are not typed tensors,
+             * and the engine's own offload branch (forced for the blobs,
+             * core_engine_open.c:331-338) gates the 4.44 GiB backbone --
+             * measured on the Spark 2026-10-10 with install.sh's own
+             * --mem-budget-mb 110000: "L1 budget gate: planned resident
+             * 4.44 GiB within 107.42 GiB budget".  The port mirrors that
+             * figure so the gate fires on the same plans the engine's does.
+             * Other families keep the engine's default-branch figure (the
+             * tensor data range). */
+            if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) {
+                ds4_model_map_span_vec spans;
+                if (weights_model_map_spans(&e->weights, 0, UINT32_MAX, true, &spans)) {
+                    uint64_t resident = 0;
+                    for (uint32_t i = 0; i < spans.len; i++) {
+                        resident += spans.v[i].end - spans.v[i].off;
+                    }
+                    free(spans.v);
+                    ds4_l1_budget_gate(resident, 0);
+                }
+            } else {
+                ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
+            }
             model_map_ok = ds4_gpu_set_model_map_range(e->model.map,
                                                        e->model.size,
                                                        e->model.tensor_data_pos,

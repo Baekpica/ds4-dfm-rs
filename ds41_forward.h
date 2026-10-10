@@ -182,6 +182,18 @@ int ds4_v41_engram_meta(void *engine, int k, uint32_t *il, char *path, int path_
 int ds4_v41_shape(void *engine, uint32_t *n_layer, uint32_t *n_expert, uint32_t *n_embd);
 int ds4_v41_router_bias_ref(void *engine, uint32_t il, const void **map, uint64_t *size, uint64_t *offset);
 
+/* The zchain device-side mount (unit Z): the three device writes the engine's
+ * v41_amp_load performs per state (core_v41_amp.c:227-270) and the Rust
+ * reader (crates/ds4-core/src/zchain.rs, P2/P3) drives from the serving path.
+ * gr_set = the layer's merged [n_expert][n_embd] gain table
+ * (ds4_gpu_v41_set_gr_override); rb_set = the layer's route-bias delta
+ * (ds4_gpu_v41_set_rb_override after resolving the exp_probs_b tensor here);
+ * rb_clear = the process-wide unload the engine does before any rb mount
+ * (core_v41_amp.c:114).  Return 1 on success, 0 on refusal. */
+int ds4_v41_zchain_gr_set(void *engine, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd);
+int ds4_v41_zchain_rb_set(void *engine, uint32_t il, const float *delta, uint32_t n_expert);
+void ds4_v41_zchain_rb_clear(void);
+
 /* Engram hash reference (unit E): the four hash-constant tensors and the
  * scalar parameters, so the C generate harness can hash rows live (the engine
  * hashes per step; production owns this on the Rust host,
