@@ -80,14 +80,15 @@ kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
 EPID=""
 
 # ---- 2. the port, P2 protocol ----
+# The feed (and its protocol lines) opens at the first request, not at boot.
 rm -f "$LOG/p2.srv.log"
 "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG --host 127.0.0.1 > "$LOG/p2.srv.log" 2>&1 &
 SPID=$!
 boot_wait "$LOG/p2.srv.log" "$SPID" "port server (P2)"
 grep -q "V4.1 serving route" "$LOG/p2.srv.log" || fail "no V4.1 route line at boot (P2)"
+send P2 "$LOG/p2.resp.json"
 grep -q "io_uring" "$LOG/p2.srv.log" || fail "P2 boot did not open the io_uring ring"
 grep -q "synchronous protocol" "$LOG/p2.srv.log" && fail "P2 boot fell back to the synchronous protocol"
-send P2 "$LOG/p2.resp.json"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 SPID=""
 
@@ -96,8 +97,8 @@ rm -f "$LOG/sync.srv.log"
 DS41_FEED_SYNC=1 "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG --host 127.0.0.1 > "$LOG/sync.srv.log" 2>&1 &
 SPID=$!
 boot_wait "$LOG/sync.srv.log" "$SPID" "port server (sync)"
-grep -q "synchronous protocol (DS41_FEED_SYNC)" "$LOG/sync.srv.log" || fail "sync boot did not select the synchronous protocol"
 send sync "$LOG/sync.resp.json"
+grep -q "synchronous protocol (DS41_FEED_SYNC)" "$LOG/sync.srv.log" || fail "sync boot did not select the synchronous protocol"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 SPID=""
 
@@ -106,12 +107,12 @@ rm -f "$LOG/withhold.srv.log"
 DS41_FEED_WAIT_WITHHOLD=1 "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG --host 127.0.0.1 > "$LOG/withhold.srv.log" 2>&1 &
 SPID=$!
 boot_wait "$LOG/withhold.srv.log" "$SPID" "port server (withhold)"
-grep -q "withhold true" "$LOG/withhold.srv.log" || fail "withhold boot did not arm the hook"
 code=$(curl -sS -m 900 -o "$LOG/withhold.resp.json" -w '%{http_code}' \
     "http://127.0.0.1:$PORT/v1/chat/completions" \
     -H 'content-type: application/json' -d @"$LOG/req.json") \
   || fail "withhold request failed at the transport level"
 [ "$code" = "500" ] || fail "withhold control returned HTTP $code (expected 500)"
+grep -q "withhold true" "$LOG/withhold.srv.log" || fail "withhold boot did not arm the hook"
 grep -q "engram wait withheld" "$LOG/withhold.resp.json" \
   || fail "withhold control body does not name the withheld wait"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
