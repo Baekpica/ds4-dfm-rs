@@ -980,6 +980,9 @@ static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
             ok = v41_hc_half(e, st, &e->weights.layer[il], true) && v41_attention_kv_only(e, st, il);
             if (ok && ds4_gpu_flush_commands() == 0) ok = false;
             if (n >= 64u) fputc('\n', stderr);
+            /* U-A body-end marker: the CED return never reaches the [v41-prof] emitter below,
+             * so this block's exact end (edge included) prints here instead (probe only). */
+            if (g_ds4_v41_prof) fprintf(stderr, "[v41-prof] pos %u+%u total %.1f ms | ced edge %u\n", st->pos0, n, (now_sec() - t0) * 1e3, il);
             st->ced_done = 1;
             /* the edge layer and everything after it wrote no window ring this block: their earliest valid
              * position moves to the next block's start (the attention kernel clamps the window floor to it) */
@@ -1031,7 +1034,7 @@ static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
     if (g_ds4_v41_prof) {   /* per-layer ms: one glance shows which layer eats the time (engram L1/L14, sources L2/8/14/20) */
         if (ds4_gpu_flush_commands() == 0) return false;
         lt[DS4_N_LAYER] = now_sec() - tprev;
-        fprintf(stderr, "[v41-prof] pos %u+%u total %.1f ms | layers(ms):", st->pos0, n, (now_sec() - t0) * 1e3);
+        fprintf(stderr, "[v41-prof] pos %u+%u total %.1f ms | full | layers(ms):", st->pos0, n, (now_sec() - t0) * 1e3);
         for (uint32_t il = 0; il < DS4_N_LAYER; il++) fprintf(stderr, " %.1f", lt[il] * 1e3);
         fprintf(stderr, " | head %.1f\n", lt[DS4_N_LAYER] * 1e3);
     }
