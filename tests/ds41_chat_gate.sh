@@ -97,24 +97,47 @@ diff "$LOG.eng.prompt.ids" "$LOG.srv.prompt.ids" > "$LOG.prompt.diff" 2>&1 \
 diff "$LOG.eng.gen.ids" "$LOG.srv.gen.ids" > "$LOG.gen.diff" 2>&1 \
   || fail "the port's generated ids differ from the engine's (see $LOG.gen.diff)"
 
-# The response message (content + parsed tool_calls) must match too.  The
-# tool-call id is random per process (server_msgs.c random_tool_id), so drop it.
-jq -S '.choices[0].message | del(.tool_calls[]?.id)' "$LOG.eng.resp.json" > "$LOG.eng.msg.json"
-jq -S '.choices[0].message | del(.tool_calls[]?.id)' "$LOG.srv.resp.json" > "$LOG.srv.msg.json"
-diff "$LOG.eng.msg.json" "$LOG.srv.msg.json" > "$LOG.msg.diff" 2>&1 \
-  || fail "the port's response message differs from the engine's (see $LOG.msg.diff)"
-
-# finish_reason must match, and the answer must not be cut by the token cap.
-# On this artifact at greedy the model emits the tool call in a mixed tag
-# style; the engine's parser picks one style from the open tag
-# (server_dsml_parse.c:338) and the mix matches none, so the engine returns
-# the call as assistant text with finish=stop -- the port must say the same,
-# not repair it.
+# ---- the response message and the finish reason ----
+# When both sides parse the same way the messages must be byte-equal (modulo
+# the random tool-call id, server_msgs.c random_tool_id).  On this artifact
+# at greedy the model emits the call in a mixed tag style: the engine's
+# parser picks one style from the open tag (server_dsml_parse.c:338) and the
+# mix matches none, so the engine returns the call as assistant text with
+# finish=stop, while the port parses the mix into tool_calls (the named
+# deviation, plan 6.23, requested for open-grok 2026-10-10).  The ids above
+# already prove the token streams equal; the deviation branch checks the
+# parse: the port's content is the engine's text before the block, and every
+# parsed call's name and argument values occur inside the engine's text.
 efin=$(sed -n 's/.*"finish_reason":"\([^"]*\)".*/\1/p' "$LOG.eng.resp.json")
 sfin=$(sed -n 's/.*"finish_reason":"\([^"]*\)".*/\1/p' "$LOG.srv.resp.json")
-[ "$efin" = "$sfin" ] || fail "finish_reason differs (engine=$efin port=$sfin)"
+en=$(jq '.choices[0].message.tool_calls | length' "$LOG.eng.resp.json")
+sn=$(jq '.choices[0].message.tool_calls | length' "$LOG.srv.resp.json")
+if [ "$sn" -ge 1 ] && [ "$en" = "0" ]; then
+    [ "$efin" = "stop" ] || fail "engine finish_reason is $efin (expected stop: the mixed-style call as text)"
+    [ "$sfin" = "tool_calls" ] || fail "port finish_reason is $sfin (expected tool_calls: the tolerant parse, plan 6.23)"
+    ec=$(jq -r '.choices[0].message.content' "$LOG.eng.resp.json")
+    sc=$(jq -r '.choices[0].message.content' "$LOG.srv.resp.json")
+    case "$ec" in "$sc"*) ;; *) fail "the port's content is not the engine's text before the DSML block" ;; esac
+    i=0
+    while [ "$i" -lt "$sn" ]; do
+        name=$(jq -r ".choices[0].message.tool_calls[$i].function.name" "$LOG.srv.resp.json")
+        case "$ec" in *"name=\"$name\""*) ;; *) fail "call $i name '$name' is not in the engine's text block" ;; esac
+        jq -r ".choices[0].message.tool_calls[$i].function.arguments | fromjson | .[]" \
+            "$LOG.srv.resp.json" > "$LOG.call.$i.vals"
+        while IFS= read -r v; do
+            case "$ec" in *"$v"*) ;; *) fail "call $i value '$v' is not in the engine's text block" ;; esac
+        done < "$LOG.call.$i.vals"
+        i=$((i + 1))
+    done
+else
+    jq -S '.choices[0].message | del(.tool_calls[]?.id)' "$LOG.eng.resp.json" > "$LOG.eng.msg.json"
+    jq -S '.choices[0].message | del(.tool_calls[]?.id)' "$LOG.srv.resp.json" > "$LOG.srv.msg.json"
+    diff "$LOG.eng.msg.json" "$LOG.srv.msg.json" > "$LOG.msg.diff" 2>&1 \
+      || fail "the port's response message differs from the engine's (see $LOG.msg.diff)"
+    [ "$efin" = "$sfin" ] || fail "finish_reason differs (engine=$efin port=$sfin)"
+fi
 if [ "$efin" = "length" ]; then
     fail "the response hit the token cap (raise max_tokens in REQ)"
 fi
 
-echo "ds41 chat gate: PASS (prompt ids, generated ids and the response message equal the engine's on the same chat+tools request)"
+echo "ds41 chat gate: PASS (prompt ids and generated ids equal the engine's on the same chat+tools request; message equal, or the mixed-style call parsed into tool_calls per plan 6.23)"

@@ -1084,6 +1084,20 @@ test-ds41-chat: ds4-server
 	  sh tests/ds41_chat_gate.sh "$(ENG_SERVER)" ./ds4-server "$(MODEL)" "$(ENGRAM_DIR)" "$${PORT:-8478}" "$(ZCHAIN)"; \
 	fi
 
+# DeepSeek V4.1 (ds41) P2 long-prompt gate: the 835-token fixture as the
+# big-block case (each engram layer's round is 835 rows, over the ring depth
+# 512, so the fetch worker carries it) -- engine vs the port on P2 vs
+# DS41_FEED_SYNC=1, plus the DS41_FEED_WAIT_WITHHOLD=1 refusal control.
+#   make test-ds41-long ENG_SERVER=<engine ds4-server> MODEL=<gguf> \
+#        ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8479]
+.PHONY: test-ds41-long
+test-ds41-long: ds4-server
+	@if [ -z "$(ENG_SERVER)" ] || [ -z "$(MODEL)" ] || [ -z "$(ENGRAM_DIR)" ]; then \
+	  echo "usage: make test-ds41-long ENG_SERVER=<engine server> MODEL=<gguf> ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8479]"; \
+	else \
+	  sh tests/ds41_long_gate.sh "$(ENG_SERVER)" ./ds4-server "$(MODEL)" "$(ENGRAM_DIR)" "$${PORT:-8479}" "$(ZCHAIN)"; \
+	fi
+
 # The Rust host (./ds4) is the default binary, and the one the server shares.
 # It pins the shape and the tensor directory instead of parsing the GGUF, so its
 # load-time configuration is not the C validator's: this gate pins the two
