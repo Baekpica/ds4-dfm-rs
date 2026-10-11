@@ -1617,6 +1617,129 @@ boot): `tests/ds41_sampling_gate.sh`, `tests/ds41_wire_gate.sh`,
 `tests/ds41_chat_gate.sh`, and `tests/ds41_generate_gate.sh` with
 `DS41_FEED_DIGEST`.
 
+## 6.22 Unit P2 close: the engram overlap measured (2026-10-11)
+
+Commits: `c276943` (the split feed protocol), `bbf8bbe` + `e4f1be4` +
+`fb60666` (the long gate and its fixes). The window readings below ran
+against the source-built oracle (`~/youngai-src/ds4-server`) under the
+canonical boot, with the port binary built from `fb60666`.
+
+1. The 354-token A/B (chat gate, alternating legs, four runs):
+   decode P2 23.2 / 23.5 ms/token vs sync 23.8 / 23.7 (P2 ahead on
+   both pairs; medians 23.35 vs 23.75); prefill 1.3-1.4 s both
+   protocols; per-round engram prep 2.465 -> 0.232 ms in the A legs.
+2. The 835-token measurement (`tests/ds41-long-gate.sh`, prompt 839
+   tokens incl. the head): PASS. Prefill P2 2.1 s (342.8 t/s) vs sync
+   2.5 s (296.7 t/s); decode P2 32.4 t/s vs sync 31.5 t/s; engram
+   prep/round 0.100 vs 1.468 ms; prompt and generated ids equal to the
+   engine's on both protocols; the withhold control returns HTTP 500 and
+   the native refuses the engram layer as required. Logs:
+   `/tmp/win_long.log` (+ `/tmp/ds41_long_gate/`).
+3. The P2 close window (2026-10-11, operator's server stopped): chat
+   gate PASS (the mixed-style call parses into tool_calls), sampling gate
+   PASS (cases A-D byte-identical), wire gate PASS (anthropic +
+   responses + the install.sh smoke ids and finish reasons equal).
+4. Adoption: P2 is an engine mirror, no kill switch; the measured gain
+   (decode +2.9 % median at 839 tokens; engram prep out of the critical
+   path) meets the section 6.21 bar.
+
+## 6.23 The V4.1 tool path: mixed-style DSML served natively (2026-10-11)
+
+Commits: `21956c6` (the tolerant scan), `bc18803` (the SSE finish
+reconcile), `ad9a4ab` (the finish mapping), `6f4ceaa` (the wrapper-less
+hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
+(2026-10-11, uncommitted at this writing).
+
+0. Root cause, found upstream: the official V4.1 `encoding.py` spells the
+   DSML tags with the long prefix plus a space (`<｜DSML｜ calls>`,
+   `<｜DSML｜ invoke`, `<｜DSML｜ parameter`; the LONG `DSML` between two U+FF5C
+   bytes) and the V4.1 server had been rendering the V4 spelling in the
+   tool template, so the model was prompted with a form it never trained on
+   and drifted mid-block (the upstream fix `4294136`, issue #1). The
+   spaced port supersedes the old template for the V4.1 route.
+
+1. What failed, and why. The artifact emits the DSML tool block in a MIXED
+   spelling: the wrapper and invoke opens carry the fullwidth decoration
+   (U+FF5C, bytes EF BD 9C) while the parameter tags inside the same block
+   are plain (measured 2026-10-10). The engine's parser keys on one style
+   from the open tag (`server_dsml_parse.c:338`); the mix matches none, so
+   the engine returns the call as assistant text with finish=stop -- the
+   exact failure the tool shim exists for (`~/youngai/tool-shim/shim.py`)
+   and the reason an open-grok session on this model saw no tools at all
+   (owner report 2026-10-10). open-grok itself has no DSML path: the
+   sampler parses SSE tool_calls deltas only (the first delta carries
+   id+name, later deltas append arguments; `/data/open-grok/crates/codegen/
+   xai-grok-sampler`), so a clean tool call must come from the server. A
+   second failure surfaced the same night: the route's
+   unterminated-tool-call state is finish `error` (engine
+   `server_generate_v41.c:230-234`), and open-grok rejects unknown finish
+   variants outright ("serialization error: unknown variant `error`",
+   session `01a127a0` 23:17:34, updates.jsonl).
+
+2. The fixes (all scoped to the V4.1 route; other families untouched):
+   - `21956c6`: the tolerant fallback scan
+     (`crates/ds4-server/src/tools.rs:489`, `parse_dsml_tolerant`), run
+     only when the strict pass found no calls. It mirrors the shim's rules
+     (`shim.py:44-190`): normalize the decorated spellings (`:440`), scan
+     the three starts `["<tool_calls", "<calls>", "<invoke"]` (`:492-494`),
+     tolerate a missing closer (next invoke, wrapper close, EOF), accept a
+     bare `<parameter name=...>`, skip undeclared names, and coerce each
+     value to the declared schema type (`:595`). A value running to EOF
+     without a boundary is refused, so a truncated stream is never served
+     half an argument.
+   - `bc18803`: the SSE finish reconcile (`stream.rs` +
+     `tool_stream.rs`): the live stream had emitted the invoke name and
+     then failed on the plain parameter tag, so the finish's `emitted_any`
+     guard dropped the parsed calls and a streaming client held a
+     name-only call with finish_reason=tool_calls.
+     `partial_invoke_index()` gates an arguments-only delta for the
+     started index; later calls emit in full. Well-formed live streams
+     keep their exact bytes.
+   - `ad9a4ab`: the route's internal `error` finish is carried as `stop`
+     on all three client surfaces; the engine keeps its internal
+     distinction in its logs. The OpenAI finish_reason set has no `error`.
+   - `6f4ceaa`: the live start detector's DeepSeek candidates gained the
+     invoke spellings and the short `<...calls>` wrappers the shim
+     records (`shim.py:44-48`). Without them the artifact's wrapper-less
+     emission streamed as visible content while the finish still served
+     the calls (both at once; observed in session `01a127cf`).
+
+3. Tests and verification. Local: `--test tools` 22/22 (the captured mixed
+   block, the shim's variants, coercion, undeclared names, nested
+   parameters, the truncation refusal), `--test stream` 10/10 (the
+   bare-invoke block with the split-marker hold-back and the finish
+   reconcile), ds4-server lib green. Spark, on the deployed binary
+   (`install.sh start --domain code`): non-stream finish=tool_calls with
+   `get_weather {"city":"Stockholm"}`; stream: content deltas + one
+   complete tool_calls delta + finish=tool_calls. The chat gate now
+   encodes the parse (`bbf8bbe`): it checks the port's parsed call against
+   the engine's text block, because the port deliberately diverges from
+   the engine here -- this section is the named deviation. The
+   Anthropic/Responses surfaces share the machinery but were not re-gated
+   with tools.
+
+4. Open, recorded: a tool block emitted INSIDE a thinking section still
+   streams as reasoning_content (the reasoning arm has no tool detection,
+   mirroring the engine) -- watch it in real sessions. Thinking itself is
+   config-side: the open-grok ds4 model block gained
+   `supports_reasoning_effort = true` + `reasoning_effort = "high"`;
+   verified live (none -> no thinking per the engine default, high ->
+   reasoning_content).
+
+5. The render side verified against the official goldens (2026-10-11).
+   `crates/ds4-server/tests/render.rs` gained the engine's
+   `test_render_matches_official_spaced_dsml_tools` as
+   `dsml_v41_spaced_tools_match_official_encoding` (case1 = the official
+   repo's `encoding/tests/test_input_1.json`, byte-identical to its
+   `test_output_1.txt`; case2 adds parallel calls, a zero-parameter call,
+   json.dumps-shaped values, `<` and `&` inside a value, two adjacent tool
+   results merged into one <｜User｜>, and a schema with a \u escape).  Writing
+   the test exposed two byte defects in `9ade4fa`: the template's tag
+   literals had lost the `DSML` text between the U+FF5C pair (a display
+   artifact: `｜DSML｜` renders as a bare `｜`), and one think-tag spelling
+   had lost its angle brackets; both are corrected, and the spaced render
+   now matches the official goldens byte for byte (render 34/34).
+
 ## 7. Numerics contract
 
 - Device arithmetic and every format detail follow the C engine's code, and the

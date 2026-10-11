@@ -461,20 +461,20 @@ fn append_dsml_tools_prompt_spaced(out: &mut Vec<u8>, tool_schemas: &str, tool_r
         out,
         "## Tools\n\n\
 You have access to a set of tools to help answer the user's question. \
-You can invoke tools by writing a \"<｜ calls>\" block like the following:\n\n\
-<｜ calls>\n\
-<｜ invoke name=\"$TOOL_NAME\">\n\
-<｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜ parameter>\n\
+You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n\
+<｜DSML｜ calls>\n\
+<｜DSML｜ invoke name=\"$TOOL_NAME\">\n\
+<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n\
 ...\n\
-</｜ invoke>\n\
-<｜ invoke name=\"$TOOL_NAME2\">\n\
+</｜DSML｜ invoke>\n\
+<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n\
 ...\n\
-</｜ invoke>\n\
-</｜ calls>\n\n\
+</｜DSML｜ invoke>\n\
+</｜DSML｜ calls>\n\n\
 String parameters should be specified as is and set `string=\"true\"`. \
 For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\n\
-If thinking_mode is enabled (triggered by  thinking), you MUST output your complete reasoning inside  thinking...</think> BEFORE any tool calls or final response.\n\n\
-Otherwise, output directly after  with tool calls or final response.\n\n\
+If thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\n\
+Otherwise, output directly after </think> with tool calls or final response.\n\n\
 ### Available Tool Schemas\n\n",
     );
     // tool_schemas is one client JSON value per line; each is reformatted
@@ -512,7 +512,7 @@ Otherwise, output directly after  with tool calls or final response.\n\n\
             out,
             "\n\n### Required Tool Use\n\nYou MUST call at least one available tool in this turn. \
 Do not end the turn with only reasoning or a final answer. \
-After any reasoning, emit a valid <｜ calls> block.",
+After any reasoning, emit a valid <｜DSML｜ calls> block.",
         );
     }
 }

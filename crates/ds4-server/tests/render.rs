@@ -7,6 +7,10 @@ use ds4_server::{
     DSML_ASSISTANT, DSML_BOS, DSML_EOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_THINK_START,
     DSML_USER, THINK_HIGH_PREFIX, THINK_MAX_PREFIX, V41_THINK_HIGH_PREFIX,
 };
+use ds4_server::tools::{
+    DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
+    DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
+};
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -696,4 +700,232 @@ fn qwen4exp_tool_replay_uses_native_order_and_escape() {
     assert!(prompt.contains(
         "<|im_start|>user\n<tool_response>\nsunny&lt;/tool_response>today\n</tool_response><|im_end|>"
     ));
+}
+
+/// The engine's SPACED_TOOLS_HEAD (tests/server_tests_render_v41.c, 4294136):
+/// the official encoding.py TOOLS_TEMPLATE verbatim.  Built from the crate's
+/// tag constants, whose bytes are the engine's (od-verified); the think tags
+/// use the crate's DSML_THINK_START/DSML_THINK_END spellings.
+fn spaced_tools_head() -> String {
+    let mut s = String::new();
+    s.push_str("## Tools\n\n");
+    s.push_str("You have access to a set of tools to help answer the user's question. ");
+    s.push_str("You can invoke tools by writing a \"");
+    s.push_str(DSML_TOOL_CALLS_START_SPACED);
+    s.push_str("\" block like the following:\n\n");
+    s.push_str(DSML_TOOL_CALLS_START_SPACED);
+    s.push_str("\n");
+    s.push_str(DSML_INVOKE_START_SPACED);
+    s.push_str(" name=\"$TOOL_NAME\">\n");
+    s.push_str(DSML_PARAM_START_SPACED);
+    s.push_str(" name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE");
+    s.push_str(DSML_PARAM_END_SPACED);
+    s.push_str("\n...\n");
+    s.push_str(DSML_INVOKE_END_SPACED);
+    s.push_str("\n");
+    s.push_str(DSML_INVOKE_START_SPACED);
+    s.push_str(" name=\"$TOOL_NAME2\">\n...\n");
+    s.push_str(DSML_INVOKE_END_SPACED);
+    s.push_str("\n");
+    s.push_str(DSML_TOOL_CALLS_END_SPACED);
+    s.push_str("\n\n");
+    s.push_str("String parameters should be specified as is and set `string=\"true\"`. ");
+    s.push_str("For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\n");
+    s.push_str("If thinking_mode is enabled (triggered by ");
+    s.push_str(DSML_THINK_START);
+    s.push_str("), you MUST output your complete reasoning inside ");
+    s.push_str(DSML_THINK_START);
+    s.push_str("...");
+    s.push_str(DSML_THINK_END);
+    s.push_str(" BEFORE any tool calls or final response.\n\n");
+    s.push_str("Otherwise, output directly after ");
+    s.push_str(DSML_THINK_END);
+    s.push_str(" with tool calls or final response.\n\n");
+    s.push_str("### Available Tool Schemas\n\n");
+    s
+}
+
+const SPACED_TOOLS_TAIL: &str =
+    "\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n";
+
+fn assert_spaced_eq(got: Vec<u8>, want: &str) {
+    if got == want.as_bytes() {
+        return;
+    }
+    let at = got
+        .iter()
+        .zip(want.as_bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or(got.len().min(want.len()));
+    panic!(
+        "spaced render mismatch at byte {at}\n  want: {:?}\n  got:  {:?}",
+        &want.as_bytes()[at.min(want.len())..at.min(want.len()) + 120.min(want.len() - at.min(want.len()))],
+        &got[at.min(got.len())..at.min(got.len()) + 120.min(got.len() - at.min(got.len()))]
+    );
+}
+
+#[test]
+fn dsml_v41_spaced_tools_match_official_encoding() {
+    // The engine's golden byte test (tests/server_tests_render_v41.c, 4294136):
+    // case1 is the official repo's encoding/tests/test_input_1.json, byte-identical
+    // to its own test_output_1.txt; case2 adds parallel calls, a zero-parameter
+    // call, json.dumps-shaped values, "<" and "&" inside a value, two adjacent
+    // tool results merged into one <｜User｜>, and a schema carrying a \u escape.  A
+    // byte mismatch here is a bug in the spaced template.
+    let v41 = DsmlHead::V41 { system_token: true };
+
+    // case1: the official get_weather flow, THINK_HIGH.
+    let c1 = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "What's the weather like in Beijing?"),
+        ChatMsg {
+            role: "assistant".into(),
+            reasoning: "The user wants the weather in Beijing. I should call get_weather.".into(),
+            calls: vec![ToolCall {
+                id: "call1".into(),
+                name: "get_weather".into(),
+                arguments: r#"{"location": "Beijing", "unit": "celsius"}"#.into(),
+            }],
+            ..ChatMsg::default()
+        },
+        msg(
+            "tool",
+            r#"{"temperature": 22, "condition": "sunny", "humidity": 45}"#,
+        ),
+        msg_reason(
+            "assistant",
+            "The weather in Beijing is currently sunny with a temperature of 22\u{b0}C and 45% humidity.",
+            "Got the weather data. Let me format a nice response.",
+        ),
+    ];
+    let schemas1 = concat!(
+        r#"{"name":"get_weather","description":"Get the weather for a specific location","parameters":{"type":"object","properties":{"location":{"type":"string","description":"The city name"},"unit":{"type":"string","enum":["celsius","fahrenheit"],"description":"Temperature unit"}},"required":["location"]}}"#,
+        "\n",
+        r#"{"name":"search","description":"Search the web for information","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"num_results":{"type":"integer","description":"Number of results to return"}},"required":["query"]}}"#,
+    );
+    let mut want1 = String::new();
+    want1.push_str(DSML_BOS);
+    want1.push_str(DSML_SYSTEM_TOKEN);
+    want1.push_str(V41_THINK_HIGH_PREFIX);
+    want1.push_str("You are a helpful assistant.\n\n");
+    want1.push_str(&spaced_tools_head());
+    want1.push_str("{\"name\": \"get_weather\", \"description\": \"Get the weather for a specific location\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\", \"description\": \"The city name\"}, \"unit\": {\"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"], \"description\": \"Temperature unit\"}}, \"required\": [\"location\"]}}\n");
+    want1.push_str("{\"name\": \"search\", \"description\": \"Search the web for information\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Search query\"}, \"num_results\": {\"type\": \"integer\", \"description\": \"Number of results to return\"}}, \"required\": [\"query\"]}}");
+    want1.push_str(SPACED_TOOLS_TAIL);
+    want1.push_str(DSML_USER);
+    want1.push_str("What's the weather like in Beijing?");
+    want1.push_str(DSML_ASSISTANT);
+    want1.push_str(DSML_THINK_START);
+    want1.push_str("The user wants the weather in Beijing. I should call get_weather.");
+    want1.push_str(DSML_THINK_END);
+    want1.push_str("\n\n");
+    want1.push_str(DSML_TOOL_CALLS_START_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_INVOKE_START_SPACED);
+    want1.push_str(" name=\"get_weather\">\n");
+    want1.push_str(DSML_PARAM_START_SPACED);
+    want1.push_str(" name=\"location\" string=\"true\">Beijing");
+    want1.push_str(DSML_PARAM_END_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_PARAM_START_SPACED);
+    want1.push_str(" name=\"unit\" string=\"true\">celsius");
+    want1.push_str(DSML_PARAM_END_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_INVOKE_END_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_TOOL_CALLS_END_SPACED);
+    want1.push_str(DSML_EOS);
+    want1.push_str(DSML_USER);
+    want1.push_str(
+        "<tool_result>{\"temperature\": 22, \"condition\": \"sunny\", \"humidity\": 45}</tool_result>",
+    );
+    want1.push_str(DSML_ASSISTANT);
+    want1.push_str(DSML_THINK_START);
+    want1.push_str("Got the weather data. Let me format a nice response.");
+    want1.push_str(DSML_THINK_END);
+    want1.push_str(
+        "The weather in Beijing is currently sunny with a temperature of 22\u{b0}C and 45% humidity.",
+    );
+    want1.push_str(DSML_EOS);
+    assert_spaced_eq(
+        render_dsml_chat_choice_ex(&c1, schemas1, ThinkMode::High, ToolChoice::Auto, v41).unwrap(),
+        &want1,
+    );
+
+    // case2: parallel calls, a zero-parameter call, merged tool results, THINK_NONE.
+    let c2 = [
+        msg("system", "S"),
+        msg("user", "U"),
+        ChatMsg {
+            role: "assistant".into(),
+            calls: vec![
+                ToolCall {
+                    id: "call1".into(),
+                    name: "get_weather".into(),
+                    arguments: r#"{"location":"a<b & c","days":3,"opts":{"a":[1,2],"b":true}}"#
+                        .into(),
+                },
+                ToolCall {
+                    id: "call2".into(),
+                    name: "now".into(),
+                    arguments: "{}".into(),
+                },
+            ],
+            ..ChatMsg::default()
+        },
+        msg("tool", "R1"),
+        msg("tool", "R2"),
+        msg("user", "U2"),
+    ];
+    let schemas2 = "{\n  \"name\": \"get_weather\",\n  \"description\": \"Weather \\u00b0C\",\n  \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}\n}\n{\"name\":\"now\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}";
+    let mut want2 = String::new();
+    want2.push_str(DSML_BOS);
+    want2.push_str(DSML_SYSTEM_TOKEN);
+    want2.push_str("S\n\n");
+    want2.push_str(&spaced_tools_head());
+    want2.push_str("{\"name\": \"get_weather\", \"description\": \"Weather \u{b0}C\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}}\n");
+    want2.push_str("{\"name\": \"now\", \"parameters\": {\"type\": \"object\", \"properties\": {}}}");
+    want2.push_str(SPACED_TOOLS_TAIL);
+    want2.push_str(DSML_USER);
+    want2.push_str("U");
+    want2.push_str(DSML_ASSISTANT);
+    want2.push_str(DSML_THINK_END);
+    want2.push_str("\n\n");
+    want2.push_str(DSML_TOOL_CALLS_START_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_START_SPACED);
+    want2.push_str(" name=\"get_weather\">\n");
+    want2.push_str(DSML_PARAM_START_SPACED);
+    want2.push_str(" name=\"location\" string=\"true\">a<b & c");
+    want2.push_str(DSML_PARAM_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_PARAM_START_SPACED);
+    want2.push_str(" name=\"days\" string=\"false\">3");
+    want2.push_str(DSML_PARAM_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_PARAM_START_SPACED);
+    want2.push_str(" name=\"opts\" string=\"false\">{\"a\": [1, 2], \"b\": true}");
+    want2.push_str(DSML_PARAM_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_START_SPACED);
+    want2.push_str(" name=\"now\">\n");
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_TOOL_CALLS_END_SPACED);
+    want2.push_str(DSML_EOS);
+    want2.push_str(DSML_USER);
+    want2.push_str("<tool_result>R1</tool_result>");
+    want2.push_str("\n\n");
+    want2.push_str("<tool_result>R2</tool_result>");
+    want2.push_str("\n\n");
+    want2.push_str("U2");
+    want2.push_str(DSML_ASSISTANT);
+    want2.push_str(DSML_THINK_END);
+    assert_spaced_eq(
+        render_dsml_chat_choice_ex(&c2, schemas2, ThinkMode::None, ToolChoice::Auto, v41).unwrap(),
+        &want2,
+    );
 }
