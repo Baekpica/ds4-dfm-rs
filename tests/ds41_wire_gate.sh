@@ -13,6 +13,13 @@
 #      (model "deepseek-chat" = the alias that disables thinking,
 #      server_msgs.c:300-301; temperature 0, max_tokens 48, the finance
 #      question -- install.sh's own smoke)
+#   4  POST /v1/messages   the chat gate's weather+tool request, Anthropic shape
+#   5  POST /v1/responses  the same, in the Responses shape
+#      The tools legs: the engine's one-style parser rejects the artifact's
+#      mixed DSML block (serves it as text); the port parses it into the
+#      surface's own tool item (the named deviation, plan 6.23).  The ids
+#      must still be byte-identical, and the port's call must be traceable
+#      in the engine's text block.
 #
 # usage: ds41_wire_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port> [zchain_dir]
 #
@@ -42,6 +49,12 @@ cat > "$LOG/req.responses.json" <<'JSON'
 JSON
 cat > "$LOG/req.smoke.json" <<'JSON'
 {"model":"deepseek-chat","temperature":0,"max_tokens":48,"messages":[{"role":"user","content":"In one sentence, what is a price-to-earnings ratio?"}]}
+JSON
+cat > "$LOG/req.anthropic.tools.json" <<'JSON'
+{"max_tokens":96,"temperature":0,"reasoning_effort":"none","messages":[{"role":"user","content":"What is the weather in Paris? Use the tool."}],"tools":[{"name":"get_weather","description":"Get the weather for a city","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]}
+JSON
+cat > "$LOG/req.responses.tools.json" <<'JSON'
+{"input":"What is the weather in Paris? Use the tool.","max_output_tokens":96,"temperature":0,"reasoning":{"effort":"none"},"tools":[{"type":"function","name":"get_weather","description":"Get the weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]}
 JSON
 
 boot_wait() { # <log> <pid> <name>
@@ -74,6 +87,14 @@ curl -sS -m 900 "http://127.0.0.1:$PORT/v1/chat/completions" \
     -H 'content-type: application/json' -d @"$LOG/req.smoke.json" > "$LOG/eng.smoke.json" \
   || fail "engine smoke request failed"
 grep -q '"choices"' "$LOG/eng.smoke.json" || fail "engine smoke response has no choices"
+curl -sS -m 900 "http://127.0.0.1:$PORT/v1/messages" \
+    -H 'content-type: application/json' -d @"$LOG/req.anthropic.tools.json" > "$LOG/eng.anthropic.tools.json" \
+  || fail "engine anthropic tools request failed"
+grep -q '"stop_reason"' "$LOG/eng.anthropic.tools.json" || fail "engine anthropic tools response has no stop_reason"
+curl -sS -m 900 "http://127.0.0.1:$PORT/v1/responses" \
+    -H 'content-type: application/json' -d @"$LOG/req.responses.tools.json" > "$LOG/eng.responses.tools.json" \
+  || fail "engine responses tools request failed"
+grep -q '"status"' "$LOG/eng.responses.tools.json" || fail "engine responses tools response has no status"
 kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
 
 # ---- port side: the same requests ----
@@ -94,6 +115,14 @@ curl -sS -m 900 "http://127.0.0.1:$PORT/v1/chat/completions" \
     -H 'content-type: application/json' -d @"$LOG/req.smoke.json" > "$LOG/srv.smoke.json" \
   || fail "port smoke request failed"
 grep -q '"choices"' "$LOG/srv.smoke.json" || fail "port smoke response has no choices"
+curl -sS -m 900 "http://127.0.0.1:$PORT/v1/messages" \
+    -H 'content-type: application/json' -d @"$LOG/req.anthropic.tools.json" > "$LOG/srv.anthropic.tools.json" \
+  || fail "port anthropic tools request failed"
+grep -q '"stop_reason"' "$LOG/srv.anthropic.tools.json" || fail "port anthropic tools response has no stop_reason"
+curl -sS -m 900 "http://127.0.0.1:$PORT/v1/responses" \
+    -H 'content-type: application/json' -d @"$LOG/req.responses.tools.json" > "$LOG/srv.responses.tools.json" \
+  || fail "port responses tools request failed"
+grep -q '"status"' "$LOG/srv.responses.tools.json" || fail "port responses tools response has no status"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 
 # ---- per-request id extraction ----
@@ -134,6 +163,8 @@ check() { # <name> <request index>
 check anthropic 1
 check responses 2
 check smoke 3
+check anthropic-tools 4
+check responses-tools 5
 
 # ---- finish parity ----
 es=$(sed -n 's/.*"stop_reason":"\([^"]*\)".*/\1/p' "$LOG/eng.anthropic.json")
@@ -149,4 +180,56 @@ sfin=$(sed -n 's/.*"finish_reason":"\([^"]*\)".*/\1/p' "$LOG/srv.smoke.json")
 [ "$efin" = "$sfin" ] || fail "smoke finish_reason differs (engine=$efin port=$sfin)"
 [ "$efin" = "length" ] && fail "smoke response hit the token cap"
 
-echo "ds41 wire gate: PASS (anthropic + responses + the install.sh smoke: prompt ids, generated ids and finish reasons equal the engine's)"
+# ---- the tools legs (plan 6.23 item 8): the port's tool surface ----
+# At greedy the artifact emits the DSML block in the mixed style; the
+# engine's one-style parser rejects it (text, no tool item) and the port
+# parses it into the surface's own tool item (the named deviation).  A
+# pure-style emission parses on both sides and the surfaces must then
+# match modulo the random ids.  Either way the ids above are identical.
+et=$(jq '[.content[]? | select(.type=="tool_use")] | length' "$LOG/eng.anthropic.tools.json")
+st=$(jq '[.content[]? | select(.type=="tool_use")] | length' "$LOG/srv.anthropic.tools.json")
+[ "$st" -ge 1 ] || fail "anthropic tools: the port served no tool_use block"
+if [ "$et" = "0" ]; then
+    ssr=$(sed -n 's/.*"stop_reason":"\([^"]*\)".*/\1/p' "$LOG/srv.anthropic.tools.json")
+    [ "$ssr" = "tool_use" ] || fail "anthropic tools: port stop_reason is $ssr (expected tool_use)"
+    ec=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' "$LOG/eng.anthropic.tools.json")
+    jq -r '.content[] | select(.type=="tool_use") | .name' "$LOG/srv.anthropic.tools.json" > "$LOG/anthropic.tools.names"
+    while IFS= read -r name; do
+        case "$ec" in *"name=\"$name\""*) ;; *) fail "anthropic tools: call name '$name' is not in the engine's text block" ;; esac
+    done < "$LOG/anthropic.tools.names"
+    jq -r '.content[] | select(.type=="tool_use") | .input | .[]' "$LOG/srv.anthropic.tools.json" > "$LOG/anthropic.tools.vals"
+    while IFS= read -r v; do
+        case "$ec" in *"$v"*) ;; *) fail "anthropic tools: value '$v' is not in the engine's text block" ;; esac
+    done < "$LOG/anthropic.tools.vals"
+    echo "  anthropic-tools: ids identical; the mixed-style call parsed into tool_use (plan 6.23)"
+else
+    jq -S '[.content[] | select(.type=="tool_use") | {name, input}]' "$LOG/eng.anthropic.tools.json" > "$LOG/eng.anthropic.tools.msg"
+    jq -S '[.content[] | select(.type=="tool_use") | {name, input}]' "$LOG/srv.anthropic.tools.json" > "$LOG/srv.anthropic.tools.msg"
+    diff "$LOG/eng.anthropic.tools.msg" "$LOG/srv.anthropic.tools.msg" > "$LOG/anthropic.tools.msg.diff" 2>&1 \
+      || fail "anthropic tools: the port's tool_use blocks differ from the engine's (see $LOG/anthropic.tools.msg.diff)"
+    echo "  anthropic-tools: ids identical; both sides parsed the call"
+fi
+
+er=$(jq '[.output[]? | select(.type=="function_call")] | length' "$LOG/eng.responses.tools.json")
+sr=$(jq '[.output[]? | select(.type=="function_call")] | length' "$LOG/srv.responses.tools.json")
+[ "$sr" -ge 1 ] || fail "responses tools: the port served no function_call item"
+if [ "$er" = "0" ]; then
+    ec=$(jq -r '[.output[]? | select(.type=="message") | .content[]? | select(.type=="output_text") | .text] | join("")' "$LOG/eng.responses.tools.json")
+    jq -r '.output[] | select(.type=="function_call") | .name' "$LOG/srv.responses.tools.json" > "$LOG/responses.tools.names"
+    while IFS= read -r name; do
+        case "$ec" in *"name=\"$name\""*) ;; *) fail "responses tools: call name '$name' is not in the engine's text block" ;; esac
+    done < "$LOG/responses.tools.names"
+    jq -r '.output[] | select(.type=="function_call") | .arguments | fromjson | .[]' "$LOG/srv.responses.tools.json" > "$LOG/responses.tools.vals"
+    while IFS= read -r v; do
+        case "$ec" in *"$v"*) ;; *) fail "responses tools: value '$v' is not in the engine's text block" ;; esac
+    done < "$LOG/responses.tools.vals"
+    echo "  responses-tools: ids identical; the mixed-style call parsed into function_call (plan 6.23)"
+else
+    jq -S '[.output[] | select(.type=="function_call") | {name, arguments}]' "$LOG/eng.responses.tools.json" > "$LOG/eng.responses.tools.msg"
+    jq -S '[.output[] | select(.type=="function_call") | {name, arguments}]' "$LOG/srv.responses.tools.json" > "$LOG/srv.responses.tools.msg"
+    diff "$LOG/eng.responses.tools.msg" "$LOG/srv.responses.tools.msg" > "$LOG/responses.tools.msg.diff" 2>&1 \
+      || fail "responses tools: the port's function_call items differ from the engine's (see $LOG/responses.tools.msg.diff)"
+    echo "  responses-tools: ids identical; both sides parsed the call"
+fi
+
+echo "ds41 wire gate: PASS (anthropic + responses + the install.sh smoke + the two tools legs: prompt ids, generated ids equal the engine's; tool items parsed or traced to the engine's text)"
