@@ -67,7 +67,11 @@ fn e4m3_to_f32(x: u8) -> f32 {
 
 /// E8M0 scale byte -> f32, mirroring ds4_e8m0_to_f32 (ds4_fp8.h:46-50).
 fn e8m0_to_f32(e: u8) -> f32 {
-    let bits: u32 = if e == 0 { 0x0040_0000 } else { (e as u32) << 23 };
+    let bits: u32 = if e == 0 {
+        0x0040_0000
+    } else {
+        (e as u32) << 23
+    };
     f32::from_bits(bits)
 }
 
@@ -184,7 +188,11 @@ fn main() {
     let mut out_bytes: Vec<u8> = Vec::new();
     for (n, c) in cases.iter().enumerate() {
         // The round entry runs on the plain tensor's geometry.
-        let t = get(if c.entry == "grouped" { "grouped" } else { "plain" });
+        let t = get(if c.entry == "grouped" {
+            "grouped"
+        } else {
+            "plain"
+        });
         let (in_dim, out_dim) = if c.entry == "grouped" {
             (t.groups * t.gdim, t.groups * t.rank)
         } else {

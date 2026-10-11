@@ -123,9 +123,8 @@ pub type ds4_bridge_prefill_fn = Option<unsafe extern "C" fn(*mut c_void, i32, i
  * the pinned raw rows for the exact block the forward runs (dst[k] is engram
  * layer k's buffer); emit returns nonzero to stop; progress returns nonzero
  * to abort the prefill. */
-pub type ds4_bridge_v41_rows_fn = Option<
-    unsafe extern "C" fn(u32, *const i32, c_int, *const *mut u8, *mut c_void) -> c_int,
->;
+pub type ds4_bridge_v41_rows_fn =
+    Option<unsafe extern "C" fn(u32, *const i32, c_int, *const *mut u8, *mut c_void) -> c_int>;
 /* P2: the per-layer collect hook — the native forward calls it at each
  * engram layer (the engine's v41_ejob_wait call site, core_v41_engram.c:441)
  * and only then uploads the layer's rows; nonzero refuses the block. */
@@ -826,7 +825,11 @@ extern "C" {
     pub fn ds4_bridge_v41_set_graph(on: c_int);
     pub fn ds4_bridge_v41_set_emit_trace(on: c_int);
     pub fn ds4_bridge_v41_set_prof(on: c_int);
-    pub fn ds4_bridge_v41_last_spec_stats(rounds: *mut c_int, offered: *mut c_int, accepted: *mut c_int);
+    pub fn ds4_bridge_v41_last_spec_stats(
+        rounds: *mut c_int,
+        offered: *mut c_int,
+        accepted: *mut c_int,
+    );
     /* The per-request decode-sampling face (the engine's
      * ds4_engine_set_decode_sampling, core_v41_api.c:10-13).  NULL resets to
      * the all-zero face = bare argmax. */

@@ -53,7 +53,11 @@ fn e4m3_to_f32(x: u8) -> f32 {
 }
 
 fn e8m0_to_f32(e: u8) -> f32 {
-    let bits: u32 = if e == 0 { 0x0040_0000 } else { (e as u32) << 23 };
+    let bits: u32 = if e == 0 {
+        0x0040_0000
+    } else {
+        (e as u32) << 23
+    };
     f32::from_bits(bits)
 }
 
@@ -108,7 +112,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for p in 0..n_pos {
         for c in 0..cols {
             let r = ids[p * cols + c] as u64;
-            let row = shard.row(w.engram_weight_off[ei], w.engram_scale_off[ei], r, w.engram_head_dim)?;
+            let row = shard.row(
+                w.engram_weight_off[ei],
+                w.engram_scale_off[ei],
+                r,
+                w.engram_head_dim,
+            )?;
             raw.extend_from_slice(&row.weights);
             raw.extend_from_slice(&row.scale);
             for d in 0..hd {

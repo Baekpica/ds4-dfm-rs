@@ -8,9 +8,9 @@ use crate::tools::{
     dsml_attr, dsml_unescape_text, mint_tool_id, DSML_INVOKE_END, DSML_INVOKE_END_SHORT,
     DSML_INVOKE_END_SPACED, DSML_INVOKE_START, DSML_INVOKE_START_SHORT, DSML_INVOKE_START_SPACED,
     DSML_PARAM_END, DSML_PARAM_END_SHORT, DSML_PARAM_END_SPACED, DSML_PARAM_START,
-    DSML_PARAM_START_SHORT, DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SHORT,
-    DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START, DSML_TOOL_CALLS_START_SHORT,
-    DSML_TOOL_CALLS_START_SPACED,
+    DSML_PARAM_START_SHORT, DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END,
+    DSML_TOOL_CALLS_END_SHORT, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START,
+    DSML_TOOL_CALLS_START_SHORT, DSML_TOOL_CALLS_START_SPACED,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -383,16 +383,12 @@ fn emit_param_prefix<S: ToolSink>(
     sink.args_fragment(index, &frag)
 }
 
-fn emit_string_value<S: ToolSink>(
-    sink: &mut S,
-    index: i32,
-    syn: &DsmlSyntax,
-    text: &[u8],
-) -> bool {
+fn emit_string_value<S: ToolSink>(sink: &mut S, index: i32, syn: &DsmlSyntax, text: &[u8]) -> bool {
     if text.is_empty() {
         return true;
     }
-    let unescaped = crate::tools::dsml_value_unescape_syntax(syn.entity_values, syn.param_end, text);
+    let unescaped =
+        crate::tools::dsml_value_unescape_syntax(syn.entity_values, syn.param_end, text);
     let frag = json_escape_fragment(&unescaped);
     sink.args_fragment(index, &frag)
 }

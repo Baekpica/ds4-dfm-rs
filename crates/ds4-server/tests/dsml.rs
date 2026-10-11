@@ -137,7 +137,10 @@ fn stream_closes_on_spaced_wrapper() {
         tce = DSML_TOOL_CALLS_END_SPACED,
     );
     acc.feed(block.as_bytes(), &[]);
-    assert!(acc.saw_tool_start, "the spaced wrapper open must enter tool mode");
+    assert!(
+        acc.saw_tool_start,
+        "the spaced wrapper open must enter tool mode"
+    );
     assert!(
         acc.saw_tool_end,
         "the spaced wrapper close must close the block (the engine's find_any_tool_end walks all four syntaxes)"

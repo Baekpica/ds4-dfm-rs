@@ -111,8 +111,7 @@ pub use render::{
     render_solar_chat_ex, role_is_system, role_is_user_like, syntax_for_model_id,
     think_effort_prefix, tool_start_marker, DsmlHead, ModelSyntax, RenderError, DSML_ASSISTANT,
     DSML_BOS, DSML_EOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_THINK_START, DSML_USER,
-    THINK_HIGH_PREFIX, THINK_MAX_PREFIX,
-    V41_THINK_HIGH_PREFIX, V41_THINK_MAX_PREFIX,
+    THINK_HIGH_PREFIX, THINK_MAX_PREFIX, V41_THINK_HIGH_PREFIX, V41_THINK_MAX_PREFIX,
 };
 pub use retry::dump_script as retry_dump_script;
 pub use route::{

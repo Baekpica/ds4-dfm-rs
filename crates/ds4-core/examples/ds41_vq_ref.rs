@@ -45,9 +45,11 @@ struct Payload {
 }
 
 fn read_at(f: &mut File, off: u64, len: usize) -> Result<Vec<u8>, String> {
-    f.seek(SeekFrom::Start(off)).map_err(|e| format!("seek {off}: {e}"))?;
+    f.seek(SeekFrom::Start(off))
+        .map_err(|e| format!("seek {off}: {e}"))?;
     let mut v = vec![0u8; len];
-    f.read_exact(&mut v).map_err(|e| format!("read {len} B at {off}: {e}"))?;
+    f.read_exact(&mut v)
+        .map_err(|e| format!("read {len} B at {off}: {e}"))?;
     Ok(v)
 }
 
@@ -68,7 +70,9 @@ fn run(gguf: &str, abs: u64, expert: usize, outdir: &Path) -> Result<(), String>
     let hdr = read_at(&mut f, abs, 16)?;
     let ver = blob_ver(&hdr);
     if ver != 3 {
-        return Err(format!("blob ver {ver}: this gate covers the v3 artifact only"));
+        return Err(format!(
+            "blob ver {ver}: this gate covers the v3 artifact only"
+        ));
     }
     let nexp = blob_nexp(&hdr) as usize;
     let table = read_at(&mut f, abs + 16, nexp * 24)?;
@@ -93,7 +97,9 @@ fn run(gguf: &str, abs: u64, expert: usize, outdir: &Path) -> Result<(), String>
             cb_off = pay_cb;
             cb_len = nc as usize * 8;
         } else if pay_cb != cb_off {
-            return Err(format!("which {which}: cb_off {pay_cb} != layer codebook {cb_off}"));
+            return Err(format!(
+                "which {which}: cb_off {pay_cb} != layer codebook {cb_off}"
+            ));
         }
         let nidx = cols as usize / 8;
         let mrow = nidx * 12 / 8;
@@ -104,7 +110,13 @@ fn run(gguf: &str, abs: u64, expert: usize, outdir: &Path) -> Result<(), String>
         }
         len += 8; /* the payload tail pad */
         let bytes = read_at(&mut f, abs + off, len)?;
-        pays.push(Payload { which, nc, rows, cols, bytes });
+        pays.push(Payload {
+            which,
+            nc,
+            rows,
+            cols,
+            bytes,
+        });
     }
     if pays.is_empty() {
         return Err(format!("expert {expert}: no payloads"));
@@ -147,17 +159,29 @@ fn run(gguf: &str, abs: u64, expert: usize, outdir: &Path) -> Result<(), String>
         for &(_, _, row, n, col) in &group {
             for rr in row..row + n {
                 let d = (col % 8) as usize;
-                let v = m.codebook_word(m.index(rr as usize, (col / 8) as usize) as usize)[d] * m.gain(rr as usize);
+                let v = m.codebook_word(m.index(rr as usize, (col / 8) as usize) as usize)[d]
+                    * m.gain(rr as usize);
                 vals.push(v);
             }
         }
-        println!("which {}: rows={} cols={} nc={} probes={} values={}", p.which, p.rows, p.cols, p.nc,
-                 group.len(), group.iter().map(|g| g.3 as usize).sum::<usize>());
+        println!(
+            "which {}: rows={} cols={} nc={} probes={} values={}",
+            p.which,
+            p.rows,
+            p.cols,
+            p.nc,
+            group.len(),
+            group.iter().map(|g| g.3 as usize).sum::<usize>()
+        );
         lines.extend(group);
     }
 
     let mut pf = File::create(outdir.join("probes.txt")).map_err(|e| format!("probes.txt: {e}"))?;
-    writeln!(pf, "# e which row n col  (n consecutive rows at column col)").map_err(|e| e.to_string())?;
+    writeln!(
+        pf,
+        "# e which row n col  (n consecutive rows at column col)"
+    )
+    .map_err(|e| e.to_string())?;
     for &(e, w, row, n, col) in &lines {
         writeln!(pf, "{e} {w} {row} {n} {col}").map_err(|e| e.to_string())?;
     }
@@ -166,15 +190,22 @@ fn run(gguf: &str, abs: u64, expert: usize, outdir: &Path) -> Result<(), String>
     for v in &vals {
         rf.write_all(&v.to_le_bytes()).map_err(|e| e.to_string())?;
     }
-    println!("blob ver {ver} nexp {nexp} expert {expert}: {} probes, {} values -> {}", lines.len(), vals.len(),
-             outdir.display());
+    println!(
+        "blob ver {ver} nexp {nexp} expert {expert}: {} probes, {} values -> {}",
+        lines.len(),
+        vals.len(),
+        outdir.display()
+    );
     Ok(())
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     if args.len() != 5 {
-        eprintln!("usage: {} <gguf> <blob-abs-offset> <expert> <outdir>", args[0]);
+        eprintln!(
+            "usage: {} <gguf> <blob-abs-offset> <expert> <outdir>",
+            args[0]
+        );
         return ExitCode::from(2);
     }
     let abs: u64 = match args[2].parse() {

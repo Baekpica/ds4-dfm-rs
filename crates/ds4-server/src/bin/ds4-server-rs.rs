@@ -542,7 +542,9 @@ fn main() {
                         // branch's model.
                         cfg.engine_defaults = true;
                         if v41_flags.no_dspark && v41_flags.dspark {
-                            cli_error("ds4-server-rs: --no-dspark and --dspark are mutually exclusive");
+                            cli_error(
+                                "ds4-server-rs: --no-dspark and --dspark are mutually exclusive",
+                            );
                         }
                         v41_route = Some(ds4_server::V41ServeRoute {
                             model_path: std::path::PathBuf::from(path),
@@ -555,7 +557,11 @@ fn main() {
                             } else {
                                 None
                             },
-                            graph: if v41_flags.no_graph { Some(false) } else { None },
+                            graph: if v41_flags.no_graph {
+                                Some(false)
+                            } else {
+                                None
+                            },
                             verify_k: v41_flags.verify_k,
                             emit_trace: v41_flags.emit_trace,
                             prof: v41_flags.prof,

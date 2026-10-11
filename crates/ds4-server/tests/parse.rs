@@ -588,11 +588,13 @@ fn engine_defaults_think_and_sampling() {
         assert_eq!(chat(&body).think_mode, ThinkMode::High, "{name}");
     }
     assert_eq!(
-        chat(r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}"#).think_mode,
+        chat(r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}"#)
+            .think_mode,
         ThinkMode::Max
     );
     assert_eq!(
-        chat(r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}"#).think_mode,
+        chat(r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}"#)
+            .think_mode,
         ThinkMode::None
     );
     // A bare thinking flag: the engine's HIGH effort default.
@@ -614,7 +616,10 @@ fn engine_defaults_think_and_sampling() {
     );
     // min_p defaults to the engine's 0.0 on this scope; the port's own default
     // (0.05) stays for the other families.
-    assert_eq!(chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#).min_p, 0.0);
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#).min_p,
+        0.0
+    );
     assert_eq!(
         parse_chat_request(&env(), r#"{"messages":[{"role":"user","content":"hi"}]}"#)
             .unwrap()

@@ -1,15 +1,15 @@
 //! C↔Rust DSML no-tools render.
 
+use ds4_server::tools::{
+    DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
+    DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
+};
 use ds4_server::{
     render_chat, render_chat_choice, render_dsml_chat, render_dsml_chat_choice,
     render_dsml_chat_choice_ex, render_live_tool_tail, render_motif3_chat_ex, Api, ChatMsg,
     ChatPart, DsmlHead, ModelSyntax, ThinkMode, ToolCall, ToolChoice, ToolSchemaOrder,
     DSML_ASSISTANT, DSML_BOS, DSML_EOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_THINK_START,
     DSML_USER, THINK_HIGH_PREFIX, THINK_MAX_PREFIX, V41_THINK_HIGH_PREFIX,
-};
-use ds4_server::tools::{
-    DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
-    DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
 };
 
 use std::path::PathBuf;
@@ -129,16 +129,26 @@ fn dsml_v41_head_matches_official_encoding() {
     );
     assert_eq!(
         render(&with_sys, ThinkMode::High),
-        format!("{DSML_BOS}{DSML_SYSTEM_TOKEN}{V41_THINK_HIGH_PREFIX}{sys_tail}{DSML_THINK_START}").as_bytes()
+        format!("{DSML_BOS}{DSML_SYSTEM_TOKEN}{V41_THINK_HIGH_PREFIX}{sys_tail}{DSML_THINK_START}")
+            .as_bytes()
     );
     assert_eq!(
         render(&only_user, ThinkMode::High),
-        format!("{DSML_BOS}{DSML_SYSTEM_TOKEN}{V41_THINK_HIGH_PREFIX}{user_tail}{DSML_THINK_START}").as_bytes()
+        format!(
+            "{DSML_BOS}{DSML_SYSTEM_TOKEN}{V41_THINK_HIGH_PREFIX}{user_tail}{DSML_THINK_START}"
+        )
+        .as_bytes()
     );
     // The V4 tokenizer has no system token: BOS then the system body (V4 head).
     assert_eq!(
-        render_dsml_chat_choice_ex(&with_sys, "", ThinkMode::None, ToolChoice::Auto, DsmlHead::V4)
-            .unwrap(),
+        render_dsml_chat_choice_ex(
+            &with_sys,
+            "",
+            ThinkMode::None,
+            ToolChoice::Auto,
+            DsmlHead::V4
+        )
+        .unwrap(),
         format!("{DSML_BOS}{sys_tail}{DSML_THINK_END}").as_bytes()
     );
 }
@@ -759,7 +769,8 @@ fn assert_spaced_eq(got: Vec<u8>, want: &str) {
         .unwrap_or(got.len().min(want.len()));
     panic!(
         "spaced render mismatch at byte {at}\n  want: {:?}\n  got:  {:?}",
-        &want.as_bytes()[at.min(want.len())..at.min(want.len()) + 120.min(want.len() - at.min(want.len()))],
+        &want.as_bytes()
+            [at.min(want.len())..at.min(want.len()) + 120.min(want.len() - at.min(want.len()))],
         &got[at.min(got.len())..at.min(got.len()) + 120.min(got.len() - at.min(got.len()))]
     );
 }
@@ -884,7 +895,9 @@ fn dsml_v41_spaced_tools_match_official_encoding() {
     want2.push_str("S\n\n");
     want2.push_str(&spaced_tools_head());
     want2.push_str("{\"name\": \"get_weather\", \"description\": \"Weather \u{b0}C\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}}\n");
-    want2.push_str("{\"name\": \"now\", \"parameters\": {\"type\": \"object\", \"properties\": {}}}");
+    want2.push_str(
+        "{\"name\": \"now\", \"parameters\": {\"type\": \"object\", \"properties\": {}}}",
+    );
     want2.push_str(SPACED_TOOLS_TAIL);
     want2.push_str(DSML_USER);
     want2.push_str("U");

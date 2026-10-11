@@ -56,10 +56,8 @@ fn ds41_chat_takes_the_c_renderer_with_the_v41_head() {
     let rendered = engine.render_request(&parsed).unwrap();
     assert_eq!(
         rendered,
-        format!(
-            "{DSML_BOS}{DSML_SYSTEM_TOKEN}S{DSML_USER}U{DSML_ASSISTANT}{DSML_THINK_END}"
-        )
-        .as_bytes()
+        format!("{DSML_BOS}{DSML_SYSTEM_TOKEN}S{DSML_USER}U{DSML_ASSISTANT}{DSML_THINK_END}")
+            .as_bytes()
     );
     // The base V4 family keeps its own head: no system token.
     engine.model_id = ds4_core::Variant::Flash as i32;
@@ -2485,7 +2483,10 @@ fn v41_completion_pushes_the_script() {
     .unwrap();
     let response = String::from_utf8(out).unwrap();
     assert!(response.contains("Hello world"), "{response}");
-    assert!(response.contains("\"finish_reason\":\"stop\""), "{response}");
+    assert!(
+        response.contains("\"finish_reason\":\"stop\""),
+        "{response}"
+    );
     let runs = engine.runs.borrow();
     assert_eq!(runs.len(), 1);
     // The prompt reached the engine as the tokenized bytes, not the text.
@@ -2536,7 +2537,10 @@ fn v41_budget_stops_at_max_tokens() {
     )
     .unwrap();
     let response = String::from_utf8(out).unwrap();
-    assert!(response.contains("\"finish_reason\":\"length\""), "{response}");
+    assert!(
+        response.contains("\"finish_reason\":\"length\""),
+        "{response}"
+    );
     assert!(response.contains("\"ab\""), "{response}");
     assert!(!response.contains("abc"), "{response}");
     assert_eq!(result.timings.decode_tokens, 2);
@@ -2580,7 +2584,10 @@ fn v41_stop_string_truncates_and_stops() {
     let response = String::from_utf8(out).unwrap();
     assert!(response.contains("Hello"), "{response}");
     assert!(!response.contains(" world"), "{response}");
-    assert!(response.contains("\"finish_reason\":\"stop\""), "{response}");
+    assert!(
+        response.contains("\"finish_reason\":\"stop\""),
+        "{response}"
+    );
 }
 
 #[test]

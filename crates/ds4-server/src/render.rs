@@ -33,7 +33,8 @@ pub const THINK_MAX_PREFIX: &str = concat!(
 /// `DS4_REASONING_EFFORT_HIGH_PREFIX` / `DS4_REASONING_EFFORT_MAX_PREFIX`).
 /// The `THINK_*_PREFIX` pair above is the port's pre-2026-09-21 V4-era text
 /// and stays for the V4 head only.
-pub const V41_THINK_HIGH_PREFIX: &str = "Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
+pub const V41_THINK_HIGH_PREFIX: &str =
+    "Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
 pub const V41_THINK_MAX_PREFIX: &str = "Reasoning Effort: 100 (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
 
 /// The DSML prompt head a model writes. `V4` is the port's own C lineage
@@ -341,7 +342,10 @@ fn pyjson_write_str(s: &str, out: &mut String) {
 /// ends with the closing tag -- the newline joins belong to the caller.
 fn append_dsml_arg(out: &mut Vec<u8>, spaced: bool, arg: &crate::json::JsonArg) {
     let (param_start, param_end): (&[u8], &[u8]) = if spaced {
-        (DSML_PARAM_START_SPACED.as_bytes(), DSML_PARAM_END_SPACED.as_bytes())
+        (
+            DSML_PARAM_START_SPACED.as_bytes(),
+            DSML_PARAM_END_SPACED.as_bytes(),
+        )
     } else {
         (DSML_PARAM_START.as_bytes(), DSML_PARAM_END.as_bytes())
     };
@@ -379,7 +383,13 @@ fn append_dsml_arguments_from_json(
             }
         }
     }
-    let mut first = order.map(|o| o.prop.iter().any(|p| args.iter().any(|a| a.used && a.key == *p))).unwrap_or(false);
+    let mut first = order
+        .map(|o| {
+            o.prop
+                .iter()
+                .any(|p| args.iter().any(|a| a.used && a.key == *p))
+        })
+        .unwrap_or(false);
     for arg in &args {
         if arg.used {
             continue;
@@ -1309,7 +1319,13 @@ pub fn render_dsml_chat(
     tool_schemas: &str,
     think_mode: ThinkMode,
 ) -> Result<Vec<u8>, RenderError> {
-    render_dsml_chat_choice_ex(msgs, tool_schemas, think_mode, ToolChoice::Auto, DsmlHead::V4)
+    render_dsml_chat_choice_ex(
+        msgs,
+        tool_schemas,
+        think_mode,
+        ToolChoice::Auto,
+        DsmlHead::V4,
+    )
 }
 
 pub fn render_dsml_chat_choice(
@@ -1391,7 +1407,14 @@ pub fn render_dsml_chat_choice_ex(
         if role_is_system(&m.role) {
             continue;
         } else if m.role == "user" {
-            put(&mut out, if spaced && pending_assistant { "\n\n" } else { DSML_USER });
+            put(
+                &mut out,
+                if spaced && pending_assistant {
+                    "\n\n"
+                } else {
+                    DSML_USER
+                },
+            );
             put(&mut out, &m.content);
             pending_assistant = true;
             pending_tool_result = false;
@@ -2143,7 +2166,15 @@ pub fn render_chat_choice(
     think_mode: ThinkMode,
     tool_choice: ToolChoice,
 ) -> Result<Vec<u8>, RenderError> {
-    render_chat_choice_ex(syntax, msgs, tool_schemas, tool_orders, think_mode, tool_choice, DsmlHead::V4)
+    render_chat_choice_ex(
+        syntax,
+        msgs,
+        tool_schemas,
+        tool_orders,
+        think_mode,
+        tool_choice,
+        DsmlHead::V4,
+    )
 }
 
 pub fn render_chat_choice_ex(
@@ -2343,7 +2374,14 @@ pub fn render_live_tool_tail(
             }
             if pending_assistant {
                 put(&mut out, DSML_ASSISTANT);
-                put(&mut out, if think { DSML_THINK_START } else { DSML_THINK_END });
+                put(
+                    &mut out,
+                    if think {
+                        DSML_THINK_START
+                    } else {
+                        DSML_THINK_END
+                    },
+                );
             }
         }
         ModelSyntax::SolarOpen2 => {

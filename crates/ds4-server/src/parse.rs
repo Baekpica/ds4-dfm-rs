@@ -214,7 +214,11 @@ impl ParsedRequest {
             top_k: 0,
             temperature: env.default_temp,
             top_p: DEFAULT_TOP_P,
-            min_p: if env.engine_defaults { 0.0 } else { DEFAULT_MIN_P },
+            min_p: if env.engine_defaults {
+                0.0
+            } else {
+                DEFAULT_MIN_P
+            },
             seed: 0,
             frequency_penalty: 0.0,
             presence_penalty: 0.0,
@@ -2575,7 +2579,11 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults { ThinkMode::High } else { env.default_effort };
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
     let mut msgs = Vec::new();
     let mut images = Vec::new();
     let mut audios = Vec::new();
@@ -2762,7 +2770,13 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
     }
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort, env.engine_defaults);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     r.messages = msgs;
     r.images = images;
     r.audios = audios;
@@ -2784,7 +2798,11 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults { ThinkMode::High } else { env.default_effort };
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
 
     p.ws();
     if p.bump() != Some(b'{') {
@@ -2899,7 +2917,13 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     let Some(prompt) = prompt else {
         return Err("missing prompt".into());
     };
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort, env.engine_defaults);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     r.prompt_text = Some(prompt);
     r.finish_needs();
     Ok(r)
@@ -2917,7 +2941,11 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults { ThinkMode::High } else { env.default_effort };
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
     let mut msgs = Vec::new();
     let mut images = Vec::new();
     let mut system = None;
@@ -3078,7 +3106,13 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
     }
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort, env.engine_defaults);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     match anthropic_validate_tool_results(&msgs, &env.live_ids, &mut err) {
         Ok(live) => r.anthropic_requires_live_tool_state = live,
         Err(()) => return Err(err),
@@ -3104,7 +3138,11 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults { ThinkMode::High } else { env.default_effort };
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
     let mut msgs = Vec::new();
     let mut images = Vec::new();
     let mut loaded = String::new();
@@ -3284,7 +3322,13 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     if !prepare_tool_choice(&mut r, &mut combined, &mut orders, &mut err) {
         return Err(err);
     }
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort, env.engine_defaults);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     match responses_validate_tool_outputs(&msgs, r.think_mode, &env.live_ids, &mut err) {
         Ok((t, reason)) => {
             r.responses_requires_live_tool_state = t;

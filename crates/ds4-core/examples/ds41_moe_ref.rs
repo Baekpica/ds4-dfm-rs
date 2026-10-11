@@ -87,7 +87,13 @@ fn parse_cases(path: &str, in_dim: usize) -> Vec<Case> {
             "case" => {
                 it.next(); // index
                 let kind = it.next().unwrap().to_string();
-                let k = it.next().unwrap().strip_prefix("K=").unwrap().parse().unwrap();
+                let k = it
+                    .next()
+                    .unwrap()
+                    .strip_prefix("K=")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
                 cases.push(Case {
                     kind,
                     sel: Vec::with_capacity(k),
@@ -185,7 +191,15 @@ fn main() {
     if dump {
         std::fs::write("/tmp/ref_mid.bin", &mid_dump).unwrap();
         std::fs::write("/tmp/ref_part.bin", &part_dump).unwrap();
-        println!("ds41_moe_ref: dumped mid {} B, part {} B", mid_dump.len(), part_dump.len());
+        println!(
+            "ds41_moe_ref: dumped mid {} B, part {} B",
+            mid_dump.len(),
+            part_dump.len()
+        );
     }
-    println!("ds41_moe_ref: {} cases, {} values", cases.len(), out_bytes.len() / 4);
+    println!(
+        "ds41_moe_ref: {} cases, {} values",
+        cases.len(),
+        out_bytes.len() / 4
+    );
 }

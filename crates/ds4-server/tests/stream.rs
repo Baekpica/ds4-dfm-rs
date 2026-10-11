@@ -501,5 +501,8 @@ fn bare_invoke_block_holds_back_and_finishes_with_the_call() {
         out.contains("\"tool_calls\""),
         "the finish must emit the call: {out}"
     );
-    assert!(out.contains("web_fetch"), "the call name must be present: {out}");
+    assert!(
+        out.contains("web_fetch"),
+        "the call name must be present: {out}"
+    );
 }

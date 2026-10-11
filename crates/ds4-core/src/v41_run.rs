@@ -198,8 +198,8 @@ impl V41Feed {
         if let Some(dir) = engram_dir {
             wire.apply_engram_dir(dir);
         }
-        let Some(hash) = EngramHash::load(&g, &inv, &wire, identified.shape.n_vocab)
-            .map_err(asset_error)?
+        let Some(hash) =
+            EngramHash::load(&g, &inv, &wire, identified.shape.n_vocab).map_err(asset_error)?
         else {
             return Ok(None);
         };
@@ -691,7 +691,12 @@ impl FeedCore {
                     ));
                 }
                 let row = self.shards[k]
-                    .row(self.weight_off[k], self.scale_off[k], row_id as u64, self.head_dim)
+                    .row(
+                        self.weight_off[k],
+                        self.scale_off[k],
+                        row_id as u64,
+                        self.head_dim,
+                    )
                     .map_err(|e| e.to_string())?;
                 let slot = (i * self.cols as usize + c) * self.stride as usize;
                 unsafe {
@@ -879,7 +884,12 @@ struct ProgressTramp<'a> {
     progress: &'a mut dyn FnMut(&str, i32, i32) -> bool,
 }
 
-unsafe extern "C" fn progress_tramp(ud: *mut c_void, event: *const c_char, current: i32, total: i32) -> i32 {
+unsafe extern "C" fn progress_tramp(
+    ud: *mut c_void,
+    event: *const c_char,
+    current: i32,
+    total: i32,
+) -> i32 {
     if ud.is_null() {
         return 1;
     }
@@ -966,7 +976,9 @@ fn v41_mount_zchain(
             ds4_bridge_v41_zchain_rb_set(model.raw_ptr(), il as u32, delta.as_ptr(), geom.n_expert)
         };
         if ok == 0 {
-            return Err(asset_error(format!("V4.1 zchain: rb L{il:02} upload refused")));
+            return Err(asset_error(format!(
+                "V4.1 zchain: rb L{il:02} upload refused"
+            )));
         }
     }
     for (il, gr) in merged.gr.iter().enumerate() {
@@ -981,7 +993,9 @@ fn v41_mount_zchain(
             )
         };
         if ok == 0 {
-            return Err(asset_error(format!("V4.1 zchain: gr L{il:02} upload refused")));
+            return Err(asset_error(format!(
+                "V4.1 zchain: gr L{il:02} upload refused"
+            )));
         }
     }
     eprintln!(
@@ -989,7 +1003,11 @@ fn v41_mount_zchain(
         merged.n_gr_layers(),
         merged.n_rb_layers(),
         zchain.unwrap_or("(none)"),
-        if posttrain.is_some() { " + posttrain" } else { "" },
+        if posttrain.is_some() {
+            " + posttrain"
+        } else {
+            ""
+        },
     );
     Ok(())
 }
@@ -1047,7 +1065,10 @@ impl Model {
         // The tool-syntax greedy hook (the engine's v41_syntax_greedy,
         // c6e2706): the serve's closure; the tramp borrows it for the call's
         // duration only.  None leaves the native asking nobody (bare argmax).
-        let mut greedy_ctx = opts.greedy.as_mut().map(|g| GreedyTramp { greedy: &mut **g });
+        let mut greedy_ctx = opts
+            .greedy
+            .as_mut()
+            .map(|g| GreedyTramp { greedy: &mut **g });
         let greedy_fn = greedy_ctx
             .as_ref()
             .map(|_| greedy_tramp as unsafe extern "C" fn(*mut c_void, *const i32, u32) -> i32);

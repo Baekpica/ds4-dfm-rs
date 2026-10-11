@@ -54,7 +54,11 @@ fn e4m3_to_f32(x: u8) -> f32 {
 
 /// E8M0 scale byte -> f32, mirroring ds4_e8m0_to_f32.
 fn e8m0_to_f32(e: u8) -> f32 {
-    let bits: u32 = if e == 0 { 0x0040_0000 } else { (e as u32) << 23 };
+    let bits: u32 = if e == 0 {
+        0x0040_0000
+    } else {
+        (e as u32) << 23
+    };
     f32::from_bits(bits)
 }
 
@@ -76,9 +80,7 @@ fn main() {
     let cases = parse_cases(&args[1], hc * e);
     let rows = std::fs::read(&args[3]).expect("rows");
 
-    let rd = |off: usize| -> f32 {
-        f32::from_le_bytes(img[off..off + 4].try_into().unwrap())
-    };
+    let rd = |off: usize| -> f32 { f32::from_le_bytes(img[off..off + 4].try_into().unwrap()) };
 
     let mut out: Vec<u8> = Vec::new();
     for (n, c) in cases.iter().enumerate() {
@@ -94,14 +96,16 @@ fn main() {
                 let mut sk = 0f64;
                 let mut sd = 0f64;
                 for d in 0..e {
-                    let w = rd(q_off + (ci * e + d) * 4) as f64 * rd(k_off + (ci * e + d) * 4) as f64;
+                    let w =
+                        rd(q_off + (ci * e + d) * 4) as f64 * rd(k_off + (ci * e + d) * 4) as f64;
                     let hv = hrow[d] as f64;
                     let kv = krow[d] as f64;
                     sh += hv * hv;
                     sk += kv * kv;
                     sd += hv * w * kv;
                 }
-                let rstd = (1.0 / (sh / e as f64 + eps).sqrt()) * (1.0 / (sk / e as f64 + eps).sqrt());
+                let rstd =
+                    (1.0 / (sh / e as f64 + eps).sqrt()) * (1.0 / (sk / e as f64 + eps).sqrt());
                 let dot = sd * rstd / (e as f64).sqrt();
                 let mag = dot.abs().max(1e-6).sqrt();
                 let z = mag.copysign(dot);
@@ -112,9 +116,18 @@ fn main() {
                 }
             }
         }
-        println!("gate case {n} {} n={} -> {}x{}", c.kind, n_tok, n_tok * hc, e);
+        println!(
+            "gate case {n} {} n={} -> {}x{}",
+            c.kind,
+            n_tok,
+            n_tok * hc,
+            e
+        );
     }
-    std::fs::File::create(&args[2]).expect("ref out").write_all(&out).unwrap();
+    std::fs::File::create(&args[2])
+        .expect("ref out")
+        .write_all(&out)
+        .unwrap();
 
     // Rows: head_dim e4m3 bytes + head_dim/32 ue8m0 bytes per row.
     let hd = 256usize;
@@ -130,7 +143,10 @@ fn main() {
             rout.extend_from_slice(&v.to_le_bytes());
         }
     }
-    std::fs::File::create(&args[4]).expect("rows ref").write_all(&rout).unwrap();
+    std::fs::File::create(&args[4])
+        .expect("rows ref")
+        .write_all(&rout)
+        .unwrap();
     println!(
         "ds41_engram_ref: {} gate cases ({} values), {} rows ({} values)",
         cases.len(),

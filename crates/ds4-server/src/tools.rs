@@ -656,8 +656,7 @@ pub fn parse_dsml_tolerant(text: &[u8], orders: &[ToolSchemaOrder]) -> Option<Pa
         content,
         reasoning,
         calls,
-        raw_dsml: String::from_utf8_lossy(&text[orig_start..orig_end.max(orig_start)])
-            .into_owned(),
+        raw_dsml: String::from_utf8_lossy(&text[orig_start..orig_end.max(orig_start)]).into_owned(),
         ok: true,
         ..Default::default()
     })
@@ -713,12 +712,17 @@ fn dsml_tolerant_param(
             // A body that ends at EOF may be a truncated stream rather than
             // a model omission; drop the call instead of serving half an
             // argument.
-            let end = [b"</invoke" as &[u8], b"<invoke", b"</tool_calls", b"</calls"]
-                .iter()
-                .filter_map(|m| find_substr(&norm[value_start..], m))
-                .min()
-                .map(|rel| value_start + rel)
-                .unwrap_or(norm.len());
+            let end = [
+                b"</invoke" as &[u8],
+                b"<invoke",
+                b"</tool_calls",
+                b"</calls",
+            ]
+            .iter()
+            .filter_map(|m| find_substr(&norm[value_start..], m))
+            .min()
+            .map(|rel| value_start + rel)
+            .unwrap_or(norm.len());
             if end == norm.len() {
                 return false;
             }
@@ -740,18 +744,16 @@ fn dsml_tolerant_param(
             .filter(|f| f.is_finite())
             .map(|f| f.to_string().into_bytes()),
         Some("boolean") if value == b"true" || value == b"false" => Some(value.to_vec()),
-        Some("object") | Some("array") => json_value_is_complete(&String::from_utf8_lossy(value))
-            .map(|min| min.into_bytes()),
+        Some("object") | Some("array") => {
+            json_value_is_complete(&String::from_utf8_lossy(value)).map(|min| min.into_bytes())
+        }
         _ => None,
     };
     if let Some(v) = coerced {
         tool_call_json_args_add(out, pname.as_bytes(), &v, false);
         return true;
     }
-    let is_string = string_attr
-        .as_deref()
-        .map(|v| v == b"true")
-        .unwrap_or(true);
+    let is_string = string_attr.as_deref().map(|v| v == b"true").unwrap_or(true);
     if is_string {
         tool_call_json_args_add(out, pname.as_bytes(), value, true);
     } else if let Some(min) = json_value_is_complete(&String::from_utf8_lossy(value)) {

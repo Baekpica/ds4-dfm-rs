@@ -2883,7 +2883,9 @@ impl<W: Write> V41EmitState<'_, W> {
             self.finish = "stop";
             return false;
         }
-        if self.acc.track_tools && self.acc.saw_tool_end && self.req.chat_format == ChatFormat::DeepSeek
+        if self.acc.track_tools
+            && self.acc.saw_tool_end
+            && self.req.chat_format == ChatFormat::DeepSeek
         {
             self.finish = "tool_calls";
             return false;
@@ -2907,7 +2909,7 @@ impl<W: Write> V41EmitState<'_, W> {
         for i in 0..n as usize {
             let token = unsafe { *ahead.add(i) };
             if self.engine.token_is_stop(token) {
-                break;   /* the engine's own stop: the ahead run ends there */
+                break; /* the engine's own stop: the ahead run ends there */
             }
             match self.engine.token_text(token) {
                 Ok(piece) => pieces.push(piece),
@@ -3055,7 +3057,11 @@ fn generate_terminal_v41(
         seed: parsed.seed,
         freq_penalty: parsed.frequency_penalty,
         presence_penalty: parsed.presence_penalty,
-        dry_multiplier: if parsed.dry_set { parsed.dry_multiplier } else { 0.0 },
+        dry_multiplier: if parsed.dry_set {
+            parsed.dry_multiplier
+        } else {
+            0.0
+        },
         dry_base: if parsed.dry_set && parsed.dry_base > 1.0 {
             parsed.dry_base
         } else {
@@ -3143,8 +3149,7 @@ fn generate_terminal_v41(
     // the mix and returns the block as text; recover the calls with the
     // shim's tolerant scan.
     if parsed_gen.calls.is_empty() && parsed.kind == ReqKind::Chat && parsed.has_tools {
-        if let Some(tolerant) =
-            crate::tools::parse_dsml_tolerant(&st.acc.text, &parsed.tool_orders)
+        if let Some(tolerant) = crate::tools::parse_dsml_tolerant(&st.acc.text, &parsed.tool_orders)
         {
             parsed_gen = tolerant;
         }
@@ -4005,7 +4010,14 @@ impl DecodeIo for NativeDecode<'_> {
             posttrain: route.posttrain.as_deref(),
         };
         self.model
-            .v41_generate(&route.model_path, prompt, n_predict, &mut opts, emit, progress)
+            .v41_generate(
+                &route.model_path,
+                prompt,
+                n_predict,
+                &mut opts,
+                emit,
+                progress,
+            )
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 

@@ -460,8 +460,7 @@ mod imp {
                         } else {
                             unsafe {
                                 ptr::copy_nonoverlapping(
-                                    self.bounce
-                                        .add(slot * 2 * ERING_BLK + (q.off - a) as usize),
+                                    self.bounce.add(slot * 2 * ERING_BLK + (q.off - a) as usize),
                                     q.dst,
                                     q.len as usize,
                                 );
@@ -589,7 +588,11 @@ mod tests {
         assert_eq!(ring.cap(), cap);
 
         for direct_leg in [false, true] {
-            let Some(file) = (if direct_leg { direct.as_ref() } else { Some(&plain) }) else {
+            let Some(file) = (if direct_leg {
+                direct.as_ref()
+            } else {
+                Some(&plain)
+            }) else {
                 continue;
             };
             let fd = file.as_raw_fd();
