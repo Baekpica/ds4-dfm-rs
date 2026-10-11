@@ -113,8 +113,11 @@ code=$(curl -sS -m 900 -o "$LOG/withhold.resp.json" -w '%{http_code}' \
   || fail "withhold request failed at the transport level"
 [ "$code" = "500" ] || fail "withhold control returned HTTP $code (expected 500)"
 grep -q "withhold true" "$LOG/withhold.srv.log" || fail "withhold boot did not arm the hook"
-grep -q "engram wait withheld" "$LOG/withhold.resp.json" \
-  || fail "withhold control body does not name the withheld wait"
+# The Rust error text is collapsed by the bridge ("V4.1 generate failed"); the
+# native's own line is the refusal evidence: the layer's rows never arrived and
+# the forward refused instead of consuming stale rows.
+grep -q "feed wait failed" "$LOG/withhold.srv.log" \
+  || fail "withhold control did not refuse the engram layer (was the wait bypassed?)"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 SPID=""
 
@@ -179,4 +182,4 @@ echo "  prefill: P2 ${p2s}s ($(jq '.timings.prefill_tok_s' "$LOG/p2.resp.json") 
 echo "  engram prep/round: P2 ${p2prep} ms vs sync ${sprep} ms"
 echo "  decode: P2 $(jq '.timings.decode_tok_s' "$LOG/p2.resp.json") t/s vs sync $(jq '.timings.decode_tok_s' "$LOG/sync.resp.json") t/s"
 echo "  ids: prompt + generated equal to the engine's on both protocols"
-echo "  withhold control: HTTP 500 'engram wait withheld' as required"
+echo "  withhold control: HTTP 500, the native refused the engram layer as required"
