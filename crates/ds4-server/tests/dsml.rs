@@ -2,8 +2,8 @@
 
 use ds4_server::dsml_dump_script;
 use ds4_server::tools::{
-    DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED, DSML_PARAM_START_SPACED,
-    DSML_TOOL_CALLS_START_SPACED,
+    DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
+    DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
 };
 use ds4_server::{ChatFormat, SemAccum};
 use std::path::PathBuf;
@@ -117,4 +117,29 @@ fn syntax_greedy_spaced_dsml() {
         ),
         false
     ));
+}
+
+/// The stream marker scan must see the official spaced close: find_tool_end's
+/// DeepSeek candidate list carried the LONG / SHORT / PLAIN wrapper ends but
+/// not the SPACED one (found 2026-10-11 on the chat gate against the 221b9e2
+/// oracle: the live stream never closed the block, so the loop drew one extra
+/// token -- EOS -- after the wrapper; the engine stops at the tag, its
+/// find_any_tool_end walks all four syntaxes, server_dsml_parse.c:88-93).
+#[test]
+fn stream_closes_on_spaced_wrapper() {
+    let mut acc = SemAccum::init(true, true, false, ChatFormat::DeepSeek, b"");
+    let block = format!(
+        "Checking.\n\n{tcs} name=\"get_weather\">\n{ps} name=\"city\" string=\"true\">Paris{pe}\n{ie}\n{tce}",
+        tcs = DSML_TOOL_CALLS_START_SPACED,
+        ps = DSML_PARAM_START_SPACED,
+        pe = DSML_PARAM_END_SPACED,
+        ie = DSML_INVOKE_END_SPACED,
+        tce = DSML_TOOL_CALLS_END_SPACED,
+    );
+    acc.feed(block.as_bytes(), &[]);
+    assert!(acc.saw_tool_start, "the spaced wrapper open must enter tool mode");
+    assert!(
+        acc.saw_tool_end,
+        "the spaced wrapper close must close the block (the engine's find_any_tool_end walks all four syntaxes)"
+    );
 }

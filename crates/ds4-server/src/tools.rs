@@ -1882,6 +1882,13 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
                 DSML_TOOL_CALLS_END_SHORT.as_bytes(),
+                // The official spaced generation: the engine's
+                // find_any_tool_end walks all four syntaxes
+                // (server_dsml_parse.c:88-93).  Without the spaced close the
+                // live stream never closed a spaced block, so the loop drew
+                // one extra token (EOS) after the wrapper -- the engine stops
+                // at the tag (chat gate, 2026-10-11).
+                DSML_TOOL_CALLS_END_SPACED.as_bytes(),
                 b"</tool_calls>",
                 b"</tool_call>",
                 b"</dots_function_call>",
