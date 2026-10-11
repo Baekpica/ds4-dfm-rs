@@ -1823,9 +1823,41 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
    names (the engine's one-style parser rejects the artifact's mixed
    spelling while the port parses it -- the named deviation); a pure-style
    emission takes the parity branch and the surfaces must match modulo
-   ids. THE LIVE RUN IS PENDING: at writing time the deployed server was
-   serving live long-context traffic and the gate needs the Spark to
-   itself (it boots its own engine + port copies).
+   ids. LIVE RUN 2026-10-11 evening (the close window): PASS at the
+   second oracle (221b9e2); all five legs' ids byte-equal (8/8/39/47/47
+   generated); both tools legs took the PARITY branch -- both sides
+   parsed the call and the tool items matched modulo ids (0-byte msg
+   diffs). Log `/tmp/dsml_wire.log`, artifacts `/tmp/ds41_wire_gate/`.
+
+Unit close (2026-10-11 evening, the Spark window, operator go): both
+gates re-run at HEAD `ba41695` against the second oracle 221b9e2
+(`~/youngai-src-restructure/ds4-server`, built 10-11 10:03).  The port
+binary was built from a pinned `ba41695` worktree (`CUDA_ARCH := sm_121`)
+so the evidence is the committed tree, not the Spark checkout's
+uncommitted local work.
+
+- `tests/ds41_wire_gate.sh`: PASS -- five legs, prompt and generated ids
+  byte-equal (8/8/39/47/47 generated); the two tools legs on the parity
+  branch (both sides parsed the call; the tool items identical modulo
+  ids, msg diffs 0 bytes).  Log `/tmp/dsml_wire.log`, artifacts
+  `/tmp/ds41_wire_gate/`.
+- `tests/ds41_toolcall_gate.sh` (40 requests, default sampling): PASS --
+  40/40 id streams byte-equal; messages equal on all 35 both-call
+  requests; the recorded recovery class on [2 7 8 23]; tool_calls
+  engine 35/40 vs port 39/40.  Log `/tmp/dsml_toolcall3.log`,
+  artifacts `/tmp/ds41_toolcall_gate/`.
+- Coverage limit, stated: the pinned recovery class [2 7 8 23] is
+  EXEMPT from the message compare, so the bare-child binding (item 8,
+  `ed629c7`, requests 8/23) rests on the local unit tests alone -- no
+  gate run exercises it.  The thinking scope (item 9) is covered by its
+  route test and unit tests, not by this harness.
+- The operator's server was restarted after the gates
+  (`bash install.sh start --domain code --dir /home/leandro/youngai`;
+  SERVER_START_RC=0, ready 19:35:03 on 0.0.0.0:8000 domain code; the
+  deployed binary answers the tool probe: finish=tool_calls,
+  `get_weather {"city":"Paris"}`; log `/tmp/server_restart2.log`).
+
+Unit: DSML complete
 
 ## 6.24 Post-train port plan: the ③ producer, the JSONL upload, the apply (2026-10-11)
 
