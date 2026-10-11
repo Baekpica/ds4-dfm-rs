@@ -1649,7 +1649,8 @@ canonical boot, with the port binary built from `fb60666`.
 Commits: `21956c6` (the tolerant scan), `bc18803` (the SSE finish
 reconcile), `ad9a4ab` (the finish mapping), `6f4ceaa` (the wrapper-less
 hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
-(2026-10-11, uncommitted at this writing).
+(`2a3a4af`), the bare-child binding (`ed629c7`), the wire gate tools legs
+(`2b624e4`), the thinking scope (`c20594c`).
 
 0. Root cause, found upstream: the official V4.1 `encoding.py` spells the
    DSML tags with the long prefix plus a space (`<｜DSML｜ calls>`,
@@ -1721,7 +1722,10 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
 
 4. Open, recorded: a tool block emitted INSIDE a thinking section still
    streams as reasoning_content (the reasoning arm has no tool detection,
-   mirroring the engine) -- watch it in real sessions. Thinking itself is
+   mirroring the engine) -- watch it in real sessions. The finish half
+   was later found to DIVERGE from the engine (the tolerant fallback
+   served the call anyway, with a mangled split) and is fixed in item 9
+   (`c20594c`); the live arm still mirrors the engine. Thinking itself is
    config-side: the open-grok ds4 model block gained
    `supports_reasoning_effort = true` + `reasoning_effort = "high"`;
    verified live (none -> no thinking per the engine default, high ->
@@ -1779,6 +1783,49 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
    the recovery set, and the re-run passes end to end (log
    `/tmp/dsml_toolcall2.log`, artifacts `/tmp/ds41_toolcall_gate/`; the
    recovery set reproduced on the fresh run).
+
+8. The bare-child binding (`ed629c7`, 2026-10-11). The artifact sometimes
+   writes a parameter as a bare child element (a plain child tag carrying
+   the property name and the value; Spark tool-call gate requests 8/23),
+   and the scan broke on the first non-parameter token, recovering the
+   call with an empty object. The engine rejects the whole block there
+   (server_dsml_parse.c:365-369) and the shim binds only parameter tags
+   (shim.py:59-61), so binding a child is an extension of the tolerant
+   recovery: it fires only when the tag names a property the request's
+   schema declares for the tool, needs the matching close, rejects nested
+   tags, and coerces like a parameter; every other shape keeps the
+   pre-existing behavior. Tests: the captured block, an undeclared child
+   (stays `{}`), and the integer coercion. The reviewer confirmed the loop
+   cannot spin (the cursor advances only on success; review 5483336824).
+
+9. The thinking scope (`c20594c`, 2026-10-11). The tolerant fallback
+   scanned the whole text, so a mixed block INSIDE a closed thinking
+   section was served as tool_calls with a mangled content split (the
+   content kept the unclosed thinking prefix, the reasoning came back
+   empty) -- while the engine refuses exactly that class: with thinking
+   on, the tool search starts after the LAST think close, and a missing
+   close means no tool search at all (server_dsml_parse.c:291-316; "DSML
+   inside reasoning is just model text ... can make clients execute
+   something the assistant had not actually emitted as its post-thinking
+   action"). `parse_dsml_tolerant` now takes `require_thinking_closed` and
+   scopes like `parse_dsml_generated`; `generate_terminal_v41` passes the
+   request's think mode (the same expression the strict call uses). Tests:
+   inside closed (None), after closed (recovered, correct split), unclosed
+   (None), plus a ScriptedV41 route test (no tool_calls, finish stop).
+   The live arm still shows the block as reasoning (mirroring the engine);
+   the finish no longer contradicts it -- item 4's watch item is closed.
+
+10. The wire gate tools legs (`2b624e4`, 2026-10-11). The Anthropic
+   (/v1/messages) and Responses (/v1/responses) surfaces were never
+   re-gated with tools. Two greedy legs on the chat gate's weather
+   request: prompt and generated ids byte-equal; the port's tool item
+   (tool_use / function_call) must carry the call the engine's text block
+   names (the engine's one-style parser rejects the artifact's mixed
+   spelling while the port parses it -- the named deviation); a pure-style
+   emission takes the parity branch and the surfaces must match modulo
+   ids. THE LIVE RUN IS PENDING: at writing time the deployed server was
+   serving live long-context traffic and the gate needs the Spark to
+   itself (it boots its own engine + port copies).
 
 ## 6.24 Post-train port plan: the ③ producer, the JSONL upload, the apply (2026-10-11)
 
