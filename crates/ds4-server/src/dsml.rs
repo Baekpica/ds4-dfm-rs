@@ -7,10 +7,11 @@ use crate::route::ThinkMode;
 use crate::stream::ChatFormat;
 use crate::tool_stream::DsmlSyntax;
 use crate::tools::{
-    dsml_attr, DSML_INVOKE_END, DSML_INVOKE_END_SHORT, DSML_INVOKE_START, DSML_INVOKE_START_SHORT,
-    DSML_PARAM_END, DSML_PARAM_END_SHORT, DSML_PARAM_START, DSML_PARAM_START_SHORT,
-    DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SHORT, DSML_TOOL_CALLS_START,
-    DSML_TOOL_CALLS_START_SHORT,
+    dsml_attr, DSML_INVOKE_END, DSML_INVOKE_END_SHORT, DSML_INVOKE_END_SPACED, DSML_INVOKE_START,
+    DSML_INVOKE_START_SHORT, DSML_INVOKE_START_SPACED, DSML_PARAM_END, DSML_PARAM_END_SHORT,
+    DSML_PARAM_END_SPACED, DSML_PARAM_START, DSML_PARAM_START_SHORT, DSML_PARAM_START_SPACED,
+    DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SHORT, DSML_TOOL_CALLS_END_SPACED,
+    DSML_TOOL_CALLS_START, DSML_TOOL_CALLS_START_SHORT, DSML_TOOL_CALLS_START_SPACED,
 };
 
 pub const SAMPLE_OVERRIDE_NONE: i32 = 0;
@@ -55,7 +56,7 @@ enum TrackMode {
     Done,
 }
 
-const SYNTAXES: [DsmlSyntax; 3] = [
+const SYNTAXES: [DsmlSyntax; 4] = [
     DsmlSyntax {
         tool_calls_start: DSML_TOOL_CALLS_START.as_bytes(),
         tool_calls_end: DSML_TOOL_CALLS_END.as_bytes(),
@@ -63,6 +64,7 @@ const SYNTAXES: [DsmlSyntax; 3] = [
         invoke_end: DSML_INVOKE_END.as_bytes(),
         param_start: DSML_PARAM_START.as_bytes(),
         param_end: DSML_PARAM_END.as_bytes(),
+        entity_values: true,
     },
     DsmlSyntax {
         tool_calls_start: DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -71,6 +73,7 @@ const SYNTAXES: [DsmlSyntax; 3] = [
         invoke_end: DSML_INVOKE_END_SHORT.as_bytes(),
         param_start: DSML_PARAM_START_SHORT.as_bytes(),
         param_end: DSML_PARAM_END_SHORT.as_bytes(),
+        entity_values: true,
     },
     DsmlSyntax {
         tool_calls_start: b"<tool_calls>",
@@ -79,6 +82,18 @@ const SYNTAXES: [DsmlSyntax; 3] = [
         invoke_end: b"</invoke>",
         param_start: b"<parameter",
         param_end: b"</parameter>",
+        entity_values: true,
+    },
+    // The official V4.1 encoding.py spelling (4294136): the block name and the
+    // tag names open with a space (engine server_types.h DS4_*_SPACED).
+    DsmlSyntax {
+        tool_calls_start: DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END_SPACED.as_bytes(),
+        invoke_start: DSML_INVOKE_START_SPACED.as_bytes(),
+        invoke_end: DSML_INVOKE_END_SPACED.as_bytes(),
+        param_start: DSML_PARAM_START_SPACED.as_bytes(),
+        param_end: DSML_PARAM_END_SPACED.as_bytes(),
+        entity_values: false,
     },
 ];
 

@@ -31,6 +31,19 @@ pub const DSML_INVOKE_START_SHORT: &str = "<DSML｜invoke";
 pub const DSML_INVOKE_END_SHORT: &str = "</DSML｜invoke>";
 pub const DSML_PARAM_START_SHORT: &str = "<DSML｜parameter";
 pub const DSML_PARAM_END_SHORT: &str = "</DSML｜parameter>";
+/// The official V4.1 encoding.py spelling (the tokenizer generation that
+/// carries <｜System｜>): the block name and the tag names all open with a space --
+/// `<｜ calls>`, `<｜ invoke`, `<｜ parameter` (engine server_types.h
+/// DS4_TOOL_CALLS_START_SPACED, 4294136).  String values are written raw in
+/// this generation and are NOT entity-unescaped on the way back
+/// (server_dsml_stream.c dsml_value_unescape; only the render-side `&lt;`
+/// guard before the closing tag is restored).
+pub const DSML_TOOL_CALLS_START_SPACED: &str = "<｜ calls>";
+pub const DSML_TOOL_CALLS_END_SPACED: &str = "</｜ calls>";
+pub const DSML_INVOKE_START_SPACED: &str = "<｜ invoke";
+pub const DSML_INVOKE_END_SPACED: &str = "</｜ invoke>";
+pub const DSML_PARAM_START_SPACED: &str = "<｜ parameter";
+pub const DSML_PARAM_END_SPACED: &str = "</｜ parameter>";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedGenerated {
@@ -250,6 +263,7 @@ fn dsml_parse_nested_params_object(
     Some(out)
 }
 
+#[derive(Clone, Copy)]
 struct DsmlStyle {
     tool_calls_start: &'static [u8],
     tool_calls_end: &'static [u8],
@@ -257,6 +271,103 @@ struct DsmlStyle {
     invoke_end: &'static [u8],
     param_start: &'static [u8],
     param_end: &'static [u8],
+    /// The old generations write `&`/`<` in string values as XML entities and
+    /// the parse reverses them; the official spaced generation writes values
+    /// raw (engine server_dsml_stream.c dsml_value_unescape, 4294136).
+    entity_values: bool,
+}
+
+/// The engine's four spellings in its table's order (server_dsml_stream.c:5,
+/// dsml_syntaxes): long, short, plain, spaced.  Only the spaced generation
+/// differs on values (entity_values = false).
+const DSML_STYLES: [DsmlStyle; 4] = [
+    DsmlStyle {
+        tool_calls_start: DSML_TOOL_CALLS_START.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END.as_bytes(),
+        invoke_start: DSML_INVOKE_START.as_bytes(),
+        invoke_end: DSML_INVOKE_END.as_bytes(),
+        param_start: DSML_PARAM_START.as_bytes(),
+        param_end: DSML_PARAM_END.as_bytes(),
+        entity_values: true,
+    },
+    DsmlStyle {
+        tool_calls_start: DSML_TOOL_CALLS_START_SHORT.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END_SHORT.as_bytes(),
+        invoke_start: DSML_INVOKE_START_SHORT.as_bytes(),
+        invoke_end: DSML_INVOKE_END_SHORT.as_bytes(),
+        param_start: DSML_PARAM_START_SHORT.as_bytes(),
+        param_end: DSML_PARAM_END_SHORT.as_bytes(),
+        entity_values: true,
+    },
+    DsmlStyle {
+        tool_calls_start: b"<tool_calls>",
+        tool_calls_end: b"</tool_calls>",
+        invoke_start: b"<invoke",
+        invoke_end: b"</invoke>",
+        param_start: b"<parameter",
+        param_end: b"</parameter>",
+        entity_values: true,
+    },
+    DsmlStyle {
+        tool_calls_start: DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END_SPACED.as_bytes(),
+        invoke_start: DSML_INVOKE_START_SPACED.as_bytes(),
+        invoke_end: DSML_INVOKE_END_SPACED.as_bytes(),
+        param_start: DSML_PARAM_START_SPACED.as_bytes(),
+        param_end: DSML_PARAM_END_SPACED.as_bytes(),
+        entity_values: false,
+    },
+];
+
+/// The engine's `find_tool_block` (server_dsml_parse.c:66-82): among all four
+/// spellings take the earliest occurrence; the first pass only accepts a block
+/// preceded by "\n\n" (the template's separator) and returns the separator's
+/// position, the second accepts a bare marker -- prose quoting a tag mid-text
+/// must not steal the real tool block.
+fn dsml_find_block(search: &[u8], need_sep: bool) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for (si, sty) in DSML_STYLES.iter().enumerate() {
+        let mut from = 0;
+        while let Some(rel) = find_substr(&search[from..], sty.tool_calls_start) {
+            let pos = from + rel;
+            if need_sep && !(pos >= 2 && &search[pos - 2..pos] == b"\n\n") {
+                from = pos + 1;
+                continue;
+            }
+            let at = if need_sep { pos - 2 } else { pos };
+            if best.map_or(true, |(b, _)| at < b) {
+                best = Some((at, si));
+            }
+            break;
+        }
+    }
+    best
+}
+
+/// The engine's `dsml_value_unescape` (server_dsml_stream.c:37-53): the old
+/// generations reverse full XML entities; the spaced generation writes values
+/// raw and restores only the `&lt;` the renderer adds before a closing tag
+/// inside a value, so a value that genuinely contains "&lt;" keeps it.
+pub(crate) fn dsml_value_unescape_syntax(
+    entity_values: bool,
+    param_end: &[u8],
+    s: &[u8],
+) -> Vec<u8> {
+    if entity_values {
+        return dsml_unescape_text(s);
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < s.len() {
+        if s[i..].starts_with(b"&lt;") && s[i + 4..].starts_with(&param_end[1..]) {
+            out.push(b'<');
+            i += 4;
+        } else {
+            out.push(s[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
@@ -276,26 +387,9 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
         }
     }
     let search = &text[tool_search..];
-    let nl_full = format!("\n\n{DSML_TOOL_CALLS_START}");
-    let nl_short = format!("\n\n{DSML_TOOL_CALLS_START_SHORT}");
-    let styles: [(&[u8], i32); 6] = [
-        (nl_full.as_bytes(), 0),
-        (DSML_TOOL_CALLS_START.as_bytes(), 0),
-        (nl_short.as_bytes(), 2),
-        (DSML_TOOL_CALLS_START_SHORT.as_bytes(), 2),
-        (b"\n\n<tool_calls>", 1),
-        (b"<tool_calls>", 1),
-    ];
-    let mut start_rel = None;
-    let mut style = 0i32;
-    for (pat, st) in styles {
-        if let Some(i) = find_substr(search, pat) {
-            start_rel = Some(i);
-            style = st;
-            break;
-        }
-    }
-    let Some(rel) = start_rel else {
+    let Some((rel, style_idx)) =
+        dsml_find_block(search, true).or_else(|| dsml_find_block(search, false))
+    else {
         let (content, reasoning) = split_reasoning_content(text, text.len(), ChatFormat::DeepSeek);
         return Some(ParsedGenerated {
             content,
@@ -306,32 +400,7 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
     };
     let start = tool_search + rel;
     let content_len = trim_tool_separator_ws(text, 0, start);
-    let sty = match style {
-        1 => DsmlStyle {
-            tool_calls_start: b"<tool_calls>",
-            tool_calls_end: b"</tool_calls>",
-            invoke_start: b"<invoke",
-            invoke_end: b"</invoke>",
-            param_start: b"<parameter",
-            param_end: b"</parameter>",
-        },
-        2 => DsmlStyle {
-            tool_calls_start: DSML_TOOL_CALLS_START_SHORT.as_bytes(),
-            tool_calls_end: DSML_TOOL_CALLS_END_SHORT.as_bytes(),
-            invoke_start: DSML_INVOKE_START_SHORT.as_bytes(),
-            invoke_end: DSML_INVOKE_END_SHORT.as_bytes(),
-            param_start: DSML_PARAM_START_SHORT.as_bytes(),
-            param_end: DSML_PARAM_END_SHORT.as_bytes(),
-        },
-        _ => DsmlStyle {
-            tool_calls_start: DSML_TOOL_CALLS_START.as_bytes(),
-            tool_calls_end: DSML_TOOL_CALLS_END.as_bytes(),
-            invoke_start: DSML_INVOKE_START.as_bytes(),
-            invoke_end: DSML_INVOKE_END.as_bytes(),
-            param_start: DSML_PARAM_START.as_bytes(),
-            param_end: DSML_PARAM_END.as_bytes(),
-        },
-    };
+    let sty = DSML_STYLES[style_idx];
     let Some(p0) = find_substr(&text[start..], sty.tool_calls_start) else {
         return None;
     };
@@ -409,7 +478,7 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
                 .map(|v| v == b"true")
                 .unwrap_or(true);
             let value = if is_string {
-                dsml_unescape_text(raw)
+                dsml_value_unescape_syntax(sty.entity_values, sty.param_end, raw)
             } else {
                 raw.to_vec()
             };
@@ -438,7 +507,12 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
 /// (`~/youngai/tool-shim/shim.py:53-58`), written against this artifact's
 /// live output on 2026-10-07.
 fn dsml_normalize(text: &[u8]) -> (Vec<u8>, Vec<usize>) {
-    let pats: [(&[u8], &[u8]); 6] = [
+    let pats: [(&[u8], &[u8]); 8] = [
+        // The official spaced spelling folds onto the plain one -- `<\u{ff5c} calls>`
+        // -> `<calls>` (engine server_types.h DS4_*_SPACED); the bar+space pair
+        // never appears in the old generations, so the order is unambiguous.
+        (b"<\xef\xbd\x9c ", b"<"),
+        (b"</\xef\xbd\x9c ", b"</"),
         (b"<\xef\xbd\x9cDSML\xef\xbd\x9c", b"<"),
         (b"</\xef\xbd\x9cDSML\xef\xbd\x9c", b"</"),
         (b"<DSML\xef\xbd\x9c", b"<"),
@@ -1768,6 +1842,10 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
                 DSML_TOOL_CALLS_START_SHORT.as_bytes(),
+                // The official spaced generation (the trained spelling for the
+                // <｜System｜> tokenizer): `<｜ calls>` / `<｜ invoke`.
+                DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+                DSML_INVOKE_START_SPACED.as_bytes(),
                 b"<tool_calls>",
                 b"<tool_call>",
                 b"<dots_function_call>",

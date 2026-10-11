@@ -518,3 +518,69 @@ fn parse_dsml_tolerant_nests_parameters_like_the_shim() {
         .arguments
         .contains("\"url\":\"https://www.amazon.se\""));
 }
+
+const DSML_SPACED_START: &str = "<｜ calls>";
+const DSML_SPACED_END: &str = "</｜ calls>";
+const DSML_SPACED_INVOKE: &str = "<｜ invoke";
+const DSML_SPACED_INVOKE_END: &str = "</｜ invoke>";
+const DSML_SPACED_PARAM: &str = "<｜ parameter";
+const DSML_SPACED_PARAM_END: &str = "</｜ parameter>";
+
+/// The engine's `test_parse_spaced_dsml_tool_calls` vector (4294136): the
+/// official generation's block parses; values are raw (no entity unescape --
+/// "&lt;b&gt;" in the value stays exactly that).
+#[test]
+fn parse_dsml_spaced_official_block() {
+    let text = format!(
+        "Sure.\n\n{DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"bash\">\n\
+         {DSML_SPACED_PARAM} name=\"command\" string=\"true\">echo '&lt;b&gt;' && ls{DSML_SPACED_PARAM_END}\n\
+         {DSML_SPACED_PARAM} name=\"n\" string=\"false\">3{DSML_SPACED_PARAM_END}\n\
+         {DSML_SPACED_INVOKE_END}\n{DSML_SPACED_END}"
+    );
+    let p = parse_generated_message(
+        ModelSyntax::DeepSeek,
+        text.as_bytes(),
+        false,
+        ChatFormat::DeepSeek,
+        &[],
+    );
+    assert!(p.ok);
+    assert_eq!(p.content, b"Sure.");
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.calls[0].name, "bash");
+    assert_eq!(
+        p.calls[0].arguments,
+        "{\"command\": \"echo '&lt;b&gt;' && ls\", \"n\": 3}"
+    );
+    assert!(
+        p.raw_dsml.starts_with(&format!("\n\n{DSML_SPACED_START}")),
+        "raw_dsml must carry the separator: {:?}",
+        p.raw_dsml
+    );
+}
+
+/// The render-side `&lt;` guard before a closing tag inside a value is
+/// restored; a value that genuinely contains "&lt;" keeps it (the engine's
+/// dsml_value_unescape, server_dsml_stream.c:37-53).  The renderer writes
+/// "&lt;" + the closing tag minus its leading '<' (append_dsml_parameter_text).
+#[test]
+fn parse_dsml_spaced_value_guard_round_trip() {
+    let guard = format!("&lt;{}", &DSML_SPACED_PARAM_END[1..]);
+    let text = format!(
+        "ok\n\n{DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"write\">\n\
+         {DSML_SPACED_PARAM} name=\"body\" string=\"true\">x{guard}y &amp; z{DSML_SPACED_PARAM_END}\n\
+         {DSML_SPACED_INVOKE_END}\n{DSML_SPACED_END}"
+    );
+    let p = parse_generated_message(
+        ModelSyntax::DeepSeek,
+        text.as_bytes(),
+        false,
+        ChatFormat::DeepSeek,
+        &[],
+    );
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(
+        p.calls[0].arguments,
+        format!("{{\"body\": \"x{DSML_SPACED_PARAM_END}y &amp; z\"}}")
+    );
+}
