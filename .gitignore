@@ -19,6 +19,7 @@
 /tests/test_ling3vl_q5pair
 /tests/test_ds41_vq
 /tests/test_ds41_sample
+/tests/test_ds41_pick
 /tests/test_ds41_moe
 /tests/test_ds41_fp8
 /tests/test_ds41_engram

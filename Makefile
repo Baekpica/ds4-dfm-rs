@@ -935,6 +935,17 @@ tests/test_ds41_sample: tests/test_ds41_sample.cu ds4_gpu.h $(DS4_CUDA_CORE_OBJS
 test-ds41-sample: tests/test_ds41_sample
 	./tests/test_ds41_sample
 
+# V4.1 tool-syntax greedy pick gate (the engine's t_units.c
+# units_test_sample_pick_greedy_hook): model-free CPU vectors driven through
+# the DS4_TEST_HOOKS entry in ds4.c (the port's v41 state is private to that
+# TU), so this links ds4.c built with that switch.
+tests/test_ds41_pick: tests/test_ds41_pick.cu ds41_forward.h ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -DDS4_TEST_HOOKS -I. $(MMQ_INCLUDES) -o $@ tests/test_ds41_pick.cu ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS)) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-pick
+test-ds41-pick: tests/test_ds41_pick
+	./tests/test_ds41_pick
+
 # DeepSeek V4.1 (ds41) routed-MoE gate: the tensor-level entry (host blob
 # header read, range-resolved device pointer, the fused VQ worker) against the
 # Rust emulation (crates/ds4-core/examples/ds41_moe_ref.rs). onehot cases

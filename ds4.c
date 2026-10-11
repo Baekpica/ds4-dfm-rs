@@ -78937,4 +78937,30 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
 /* DSpark draft towers (P5/E1): the host side of core_v41_draft.c; same TU
  * (it calls the forward's statics and the graph entries). */
 #include "ds4_ds41_draft.inc"
+#ifdef DS4_TEST_HOOKS
+/* The engine's units_test_sample_pick_greedy_hook harness (t_units.c:230):
+ * drive v41_sample_pick with a dev_sample state over a hand-built slot/batch.
+ * The engine's test builds the state itself (core_internal.h carries the full
+ * struct); the port's state is private to this TU, so the vector enters here.
+ * The face goes through the public setter -- the port's pick reads the global
+ * g_decode_sampling (the engine's reads st->psamp; the port has no batch path
+ * to carry a per-request one, ds4_ds41_sample.inc). */
+int ds4_test_v41_sample_pick(const int32_t *slot, const int32_t *batch,
+                             uint32_t n, ds4_greedy_fn fn, void *ud,
+                             int32_t *want) {
+    if (!slot || !batch || !want || n == 0) { return 1; }
+    static ds4_v41_state st;   /* only dev_sample is read */
+    memset(&st, 0, sizeof st);
+    st.dev_sample = 1;
+    ds4_decode_sampling sp;
+    memset(&sp, 0, sizeof sp);
+    sp.temperature = 1.f;
+    sp.greedy_fn = fn;
+    sp.greedy_ud = ud;
+    ds4_engine_set_decode_sampling(&sp);
+    v41_sample_pick(&st, slot, batch, n, want);
+    ds4_engine_set_decode_sampling(NULL);
+    return 0;
+}
+#endif /* DS4_TEST_HOOKS */
 #endif /* DS4_NO_GPU */
