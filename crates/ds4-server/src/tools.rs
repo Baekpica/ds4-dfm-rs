@@ -38,12 +38,12 @@ pub const DSML_PARAM_END_SHORT: &str = "</DSML｜parameter>";
 /// this generation and are NOT entity-unescaped on the way back
 /// (server_dsml_stream.c dsml_value_unescape; only the render-side `&lt;`
 /// guard before the closing tag is restored).
-pub const DSML_TOOL_CALLS_START_SPACED: &str = "<｜ calls>";
-pub const DSML_TOOL_CALLS_END_SPACED: &str = "</｜ calls>";
-pub const DSML_INVOKE_START_SPACED: &str = "<｜ invoke";
-pub const DSML_INVOKE_END_SPACED: &str = "</｜ invoke>";
-pub const DSML_PARAM_START_SPACED: &str = "<｜ parameter";
-pub const DSML_PARAM_END_SPACED: &str = "</｜ parameter>";
+pub const DSML_TOOL_CALLS_START_SPACED: &str = "<｜DSML｜ calls>";
+pub const DSML_TOOL_CALLS_END_SPACED: &str = "</｜DSML｜ calls>";
+pub const DSML_INVOKE_START_SPACED: &str = "<｜DSML｜ invoke";
+pub const DSML_INVOKE_END_SPACED: &str = "</｜DSML｜ invoke>";
+pub const DSML_PARAM_START_SPACED: &str = "<｜DSML｜ parameter";
+pub const DSML_PARAM_END_SPACED: &str = "</｜DSML｜ parameter>";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedGenerated {
@@ -511,8 +511,8 @@ fn dsml_normalize(text: &[u8]) -> (Vec<u8>, Vec<usize>) {
         // The official spaced spelling folds onto the plain one -- `<\u{ff5c} calls>`
         // -> `<calls>` (engine server_types.h DS4_*_SPACED); the bar+space pair
         // never appears in the old generations, so the order is unambiguous.
-        (b"<\xef\xbd\x9c ", b"<"),
-        (b"</\xef\xbd\x9c ", b"</"),
+        (b"<\xef\xbd\x9cDSML\xef\xbd\x9c ", b"<"),
+        (b"</\xef\xbd\x9cDSML\xef\xbd\x9c ", b"</"),
         (b"<\xef\xbd\x9cDSML\xef\xbd\x9c", b"<"),
         (b"</\xef\xbd\x9cDSML\xef\xbd\x9c", b"</"),
         (b"<DSML\xef\xbd\x9c", b"<"),

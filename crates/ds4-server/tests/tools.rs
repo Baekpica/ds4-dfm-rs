@@ -519,12 +519,12 @@ fn parse_dsml_tolerant_nests_parameters_like_the_shim() {
         .contains("\"url\":\"https://www.amazon.se\""));
 }
 
-const DSML_SPACED_START: &str = "<｜ calls>";
-const DSML_SPACED_END: &str = "</｜ calls>";
-const DSML_SPACED_INVOKE: &str = "<｜ invoke";
-const DSML_SPACED_INVOKE_END: &str = "</｜ invoke>";
-const DSML_SPACED_PARAM: &str = "<｜ parameter";
-const DSML_SPACED_PARAM_END: &str = "</｜ parameter>";
+const DSML_SPACED_START: &str = "<｜DSML｜ calls>";
+const DSML_SPACED_END: &str = "</｜DSML｜ calls>";
+const DSML_SPACED_INVOKE: &str = "<｜DSML｜ invoke";
+const DSML_SPACED_INVOKE_END: &str = "</｜DSML｜ invoke>";
+const DSML_SPACED_PARAM: &str = "<｜DSML｜ parameter";
+const DSML_SPACED_PARAM_END: &str = "</｜DSML｜ parameter>";
 
 /// The engine's `test_parse_spaced_dsml_tool_calls` vector (4294136): the
 /// official generation's block parses; values are raw (no entity unescape --

@@ -7,6 +7,11 @@ use crate::json::{
 };
 use crate::parse::{ChatMsg, ChatPart, ToolCall, ToolChoice, ToolSchemaOrder};
 use crate::route::{think_mode_enabled, Api, ThinkMode};
+use crate::tools::{
+    DSML_PARAM_END, DSML_PARAM_END_SPACED, DSML_PARAM_START, DSML_PARAM_START_SPACED,
+    DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START,
+    DSML_TOOL_CALLS_START_SPACED,
+};
 
 pub(crate) mod inkling;
 
@@ -260,64 +265,147 @@ fn append_dsml_attr_escaped(out: &mut Vec<u8>, s: &str) {
     }
 }
 
-fn append_dsml_parameter_text(out: &mut Vec<u8>, s: &str) {
-    append_sentinel_escape(
-        out,
-        s.as_bytes(),
-        "</｜DSML｜parameter>".as_bytes(),
-        b"&lt;",
-    );
+fn append_dsml_parameter_text(out: &mut Vec<u8>, param_end: &[u8], s: &str) {
+    append_sentinel_escape(out, s.as_bytes(), param_end, b"&lt;");
 }
 
-fn append_dsml_json_literal(out: &mut Vec<u8>, s: &str) {
-    append_sentinel_escape(
-        out,
-        s.as_bytes(),
-        "</｜DSML｜parameter>".as_bytes(),
-        b"\\u003c",
-    );
+fn append_dsml_json_literal(out: &mut Vec<u8>, param_end: &[u8], s: &str) {
+    append_sentinel_escape(out, s.as_bytes(), param_end, b"\\u003c");
 }
 
-fn append_dsml_arg(out: &mut Vec<u8>, arg: &crate::json::JsonArg) {
-    put(out, "<｜DSML｜parameter name=\"");
+/// The engine's `json_pyfmt_raw_value` (server_buf.c pyjson_value /
+/// pyjson_string): the official generation serializes tool schemas and
+/// non-string parameters the way Python's json.dumps(ensure_ascii=False)
+/// does -- ", " and ": " separators, non-ASCII raw, only Python's escapes.
+/// Scalars keep their source digits (serde_json's arbitrary precision).
+fn pyjson_raw_value(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut out = String::new();
+    pyjson_write(&v, &mut out);
+    Some(out)
+}
+
+fn pyjson_write(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::Object(map) => {
+            out.push('{');
+            for (i, (k, val)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                pyjson_write_str(k, out);
+                out.push_str(": ");
+                pyjson_write(val, out);
+            }
+            out.push('}');
+        }
+        serde_json::Value::Array(arr) => {
+            out.push('[');
+            for (i, val) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                pyjson_write(val, out);
+            }
+            out.push(']');
+        }
+        serde_json::Value::String(s) => pyjson_write_str(s, out),
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+/// server_buf.c pyjson_string: Python's json.dumps string shape.
+fn pyjson_write_str(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// The engine's append_dsml_arg (server_dsml_render.c:121-141): the spaced
+/// generation (4294136) writes raw string values, serializes non-string
+/// parameters the way Python's json.dumps does (json_pyfmt_raw_value), and
+/// ends with the closing tag -- the newline joins belong to the caller.
+fn append_dsml_arg(out: &mut Vec<u8>, spaced: bool, arg: &crate::json::JsonArg) {
+    let (param_start, param_end): (&[u8], &[u8]) = if spaced {
+        (DSML_PARAM_START_SPACED.as_bytes(), DSML_PARAM_END_SPACED.as_bytes())
+    } else {
+        (DSML_PARAM_START.as_bytes(), DSML_PARAM_END.as_bytes())
+    };
+    out.extend_from_slice(param_start);
+    put(out, " name=\"");
     append_dsml_attr_escaped(out, &arg.key);
     put(out, "\" string=\"");
     put(out, if arg.is_string { "true" } else { "false" });
     put(out, "\">");
     if arg.is_string {
-        append_dsml_parameter_text(out, &arg.value);
+        append_dsml_parameter_text(out, param_end, &arg.value);
+    } else if spaced {
+        let py = pyjson_raw_value(&arg.value).unwrap_or_else(|| arg.value.clone());
+        append_dsml_json_literal(out, param_end, &py);
     } else {
-        append_dsml_json_literal(out, &arg.value);
+        append_dsml_json_literal(out, param_end, &arg.value);
     }
-    put(out, "</｜DSML｜parameter>\n");
+    out.extend_from_slice(param_end);
 }
 
 fn append_dsml_arguments_from_json(
     out: &mut Vec<u8>,
     json: &str,
     order: Option<&ToolSchemaOrder>,
-) -> bool {
+    spaced: bool,
+) -> i32 {
     let Some(mut args) = json_args_parse(json) else {
-        return false;
+        return -1;
     };
     if let Some(order) = order {
         for prop in &order.prop {
             if let Some(idx) = json_args_find_unused(&args, prop) {
-                append_dsml_arg(out, &args[idx]);
+                append_dsml_arg(out, spaced, &args[idx]);
                 args[idx].used = true;
             }
         }
     }
+    let mut first = order.map(|o| o.prop.iter().any(|p| args.iter().any(|a| a.used && a.key == *p))).unwrap_or(false);
     for arg in &args {
-        if !arg.used {
-            append_dsml_arg(out, arg);
+        if arg.used {
+            continue;
         }
+        if first {
+            out.push(b'\n');
+        }
+        first = true;
+        append_dsml_arg(out, spaced, arg);
     }
-    true
+    args.len() as i32
 }
 
-fn append_dsml_tools_prompt_text(out: &mut Vec<u8>, tool_schemas: &str, tool_required: bool) {
+fn append_dsml_tools_prompt_text(
+    out: &mut Vec<u8>,
+    tool_schemas: &str,
+    tool_required: bool,
+    spaced: bool,
+) {
     if tool_schemas.is_empty() {
+        return;
+    }
+    // The engine's dispatch (server_knowledge.c append_tools_prompt_text,
+    // 4294136): the official spaced generation takes its own template.
+    if spaced {
+        append_dsml_tools_prompt_spaced(out, tool_schemas, tool_required);
         return;
     }
     put(
@@ -359,7 +447,77 @@ After any reasoning, emit a valid <｜DSML｜tool_calls> block.",
     }
 }
 
-fn append_dsml_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg) {
+/// The engine's append_dsml_tool_calls_text (server_dsml_render.c:180-207):
+/// the spaced generation joins parameters and invokes with "\n" (the official
+/// encoding.py's "\n".join) and closes the block with "\n" + the tag; the
+/// old generations keep their per-line newlines byte for byte.
+/// The engine's append_tools_prompt_spaced (server_knowledge.c:106-150,
+/// 4294136): the official encoding.py TOOLS_TEMPLATE verbatim.  Every
+/// difference from the old template is training-distribution: "user's
+/// question", "specified as is", no entity-escape note, the schema in
+/// json.dumps shape, a single trailing "\n".
+fn append_dsml_tools_prompt_spaced(out: &mut Vec<u8>, tool_schemas: &str, tool_required: bool) {
+    put(
+        out,
+        "## Tools\n\n\
+You have access to a set of tools to help answer the user's question. \
+You can invoke tools by writing a \"<｜ calls>\" block like the following:\n\n\
+<｜ calls>\n\
+<｜ invoke name=\"$TOOL_NAME\">\n\
+<｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜ parameter>\n\
+...\n\
+</｜ invoke>\n\
+<｜ invoke name=\"$TOOL_NAME2\">\n\
+...\n\
+</｜ invoke>\n\
+</｜ calls>\n\n\
+String parameters should be specified as is and set `string=\"true\"`. \
+For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\n\
+If thinking_mode is enabled (triggered by  thinking), you MUST output your complete reasoning inside  thinking...</think> BEFORE any tool calls or final response.\n\n\
+Otherwise, output directly after  with tool calls or final response.\n\n\
+### Available Tool Schemas\n\n",
+    );
+    // tool_schemas is one client JSON value per line; each is reformatted
+    // to the json.dumps shape (server_knowledge.c append_tools_prompt_spaced).
+    let mut p = Json::new(tool_schemas);
+    let mut first = true;
+    loop {
+        p.ws();
+        if p.peek().is_none() {
+            break;
+        }
+        let before = p.i;
+        if let Some(one) = json_raw_value(&mut p) {
+            if !first {
+                put(out, "\n");
+            }
+            first = false;
+            let py = pyjson_raw_value(&one).unwrap_or(one);
+            put(out, &py);
+        } else {
+            if !first {
+                put(out, "\n");
+            }
+            first = false;
+            out.extend_from_slice(&tool_schemas.as_bytes()[before..]);
+            break;
+        }
+    }
+    put(
+        out,
+        "\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n",
+    );
+    if tool_required {
+        put(
+            out,
+            "\n\n### Required Tool Use\n\nYou MUST call at least one available tool in this turn. \
+Do not end the turn with only reasoning or a final answer. \
+After any reasoning, emit a valid <｜ calls> block.",
+        );
+    }
+}
+
+fn append_dsml_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg, spaced: bool) {
     if m.calls.is_empty() {
         return;
     }
@@ -367,22 +525,63 @@ fn append_dsml_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg) {
         put(out, &m.raw_dsml);
         return;
     }
-    put(out, "\n\n<｜DSML｜tool_calls>\n");
-    for tc in &m.calls {
-        put(out, "<｜DSML｜invoke name=\"");
+    let (calls_start, calls_end, invoke_start, invoke_end, param_start, param_end): (
+        &[u8],
+        &[u8],
+        &[u8],
+        &[u8],
+        &[u8],
+        &[u8],
+    ) = if spaced {
+        (
+            DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+            DSML_TOOL_CALLS_END_SPACED.as_bytes(),
+            b"<\xef\xbd\x9cDSML\xef\xbd\x9c invoke",
+            b"</\xef\xbd\x9cDSML\xef\xbd\x9c invoke>",
+            DSML_PARAM_START_SPACED.as_bytes(),
+            DSML_PARAM_END_SPACED.as_bytes(),
+        )
+    } else {
+        (
+            DSML_TOOL_CALLS_START.as_bytes(),
+            DSML_TOOL_CALLS_END.as_bytes(),
+            b"<\xef\xbd\x9cDSML\xef\xbd\x9cinvoke",
+            b"</\xef\xbd\x9cDSML\xef\xbd\x9cinvoke>",
+            DSML_PARAM_START.as_bytes(),
+            DSML_PARAM_END.as_bytes(),
+        )
+    };
+    put(out, "\n\n");
+    out.extend_from_slice(calls_start);
+    out.push(b'\n');
+    for (i, tc) in m.calls.iter().enumerate() {
+        if spaced && i > 0 {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(invoke_start);
+        put(out, " name=\"");
         append_dsml_attr_escaped(out, &tc.name);
         put(out, "\">\n");
-        if !append_dsml_arguments_from_json(out, &tc.arguments, None) {
-            put(
-                out,
-                "<｜DSML｜parameter name=\"arguments\" string=\"true\">",
-            );
-            append_dsml_parameter_text(out, &tc.arguments);
-            put(out, "</｜DSML｜parameter>\n");
+        let mut n = append_dsml_arguments_from_json(out, &tc.arguments, None, spaced);
+        if n < 0 {
+            out.extend_from_slice(param_start);
+            put(out, " name=\"arguments\" string=\"true\">");
+            append_dsml_parameter_text(out, param_end, &tc.arguments);
+            out.extend_from_slice(param_end);
+            n = 1;
         }
-        put(out, "</｜DSML｜invoke>\n");
+        if spaced || n > 0 {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(invoke_end);
+        if !spaced {
+            out.push(b'\n');
+        }
     }
-    put(out, "</｜DSML｜tool_calls>");
+    if spaced {
+        out.push(b'\n');
+    }
+    out.extend_from_slice(calls_end);
 }
 
 fn append_solar_tool_schema_blocks(out: &mut Vec<u8>, tool_schemas: &str) {
@@ -1131,13 +1330,19 @@ pub fn render_dsml_chat_choice_ex(
 ) -> Result<Vec<u8>, RenderError> {
     let think = think_mode_enabled(think_mode);
     let tool_context = chat_history_uses_tool_context(msgs, tool_schemas);
+    // The spaced generation (the official encoding.py, 4294136): tool
+    // instructions follow the system content (separated by "\n\n"), and
+    // adjacent user-side blocks share one <｜User｜> -- the old generations keep
+    // the schemas first and a fresh user turn per block.
+    let spaced = matches!(head, DsmlHead::V41 { system_token: true });
     let mut last_user_idx = -1i32;
     let mut system = Vec::new();
-    if !tool_schemas.is_empty() {
+    if !tool_schemas.is_empty() && !spaced {
         append_dsml_tools_prompt_text(
             &mut system,
             tool_schemas,
             tool_choice == ToolChoice::Required,
+            spaced,
         );
     }
     for m in msgs {
@@ -1148,6 +1353,17 @@ pub fn render_dsml_chat_choice_ex(
             put(&mut system, "\n\n");
         }
         put(&mut system, &m.content);
+    }
+    if !tool_schemas.is_empty() && spaced {
+        if !system.is_empty() {
+            put(&mut system, "\n\n");
+        }
+        append_dsml_tools_prompt_text(
+            &mut system,
+            tool_schemas,
+            tool_choice == ToolChoice::Required,
+            spaced,
+        );
     }
     for (i, m) in msgs.iter().enumerate() {
         if role_is_user_like(&m.role) {
@@ -1175,12 +1391,14 @@ pub fn render_dsml_chat_choice_ex(
         if role_is_system(&m.role) {
             continue;
         } else if m.role == "user" {
-            put(&mut out, DSML_USER);
+            put(&mut out, if spaced && pending_assistant { "\n\n" } else { DSML_USER });
             put(&mut out, &m.content);
             pending_assistant = true;
             pending_tool_result = false;
         } else if m.role == "tool" || m.role == "function" {
-            if !pending_tool_result {
+            if spaced && pending_assistant {
+                put(&mut out, "\n\n");
+            } else if !pending_tool_result {
                 put(&mut out, DSML_USER);
             }
             put(&mut out, "<tool_result>");
@@ -1204,7 +1422,7 @@ pub fn render_dsml_chat_choice_ex(
                 }
             }
             put(&mut out, &m.content);
-            append_dsml_tool_calls_text(&mut out, m);
+            append_dsml_tool_calls_text(&mut out, m, spaced);
             put(&mut out, DSML_EOS);
             pending_assistant = false;
             pending_tool_result = false;
@@ -2117,7 +2335,7 @@ pub fn render_live_tool_tail(
                         }
                     }
                     put(&mut out, &m.content);
-                    append_dsml_tool_calls_text(&mut out, m);
+                    append_dsml_tool_calls_text(&mut out, m, false);
                     put(&mut out, DSML_EOS);
                     pending_assistant = false;
                     pending_tool_result = false;
