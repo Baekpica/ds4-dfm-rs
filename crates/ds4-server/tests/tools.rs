@@ -519,6 +519,63 @@ fn parse_dsml_tolerant_nests_parameters_like_the_shim() {
         .contains("\"url\":\"https://www.amazon.se\""));
 }
 
+#[test]
+fn parse_dsml_tolerant_binds_a_bare_child_of_a_declared_property() {
+    // The artifact's bare-child shape (Spark tool-call gate requests 8/23,
+    // 2026-10-11): spaced opens, the property written as a plain child
+    // element, no wrapper close.  The engine rejects the block
+    // (server_dsml_parse.c:365-369) and the shim yields {} (shim.py:59-61);
+    // the schema declares `city`, so the recovery binds it (plan 6.23).
+    let orders = [ToolSchemaOrder {
+        name: "get_weather".into(),
+        prop: vec!["city".into()],
+        prop_type: vec!["string".into()],
+        ..Default::default()
+    }];
+    let text = format!(
+        "I'll check Tokyo's weather for you.\n\n{DSML_SPACED_START}\n\
+         {DSML_SPACED_INVOKE} name=\"get_weather\">\n\
+         <city>Tokyo</city>\n{DSML_SPACED_INVOKE_END}"
+    );
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.calls[0].name, "get_weather");
+    assert_eq!(p.calls[0].arguments, r#"{"city": "Tokyo"}"#);
+    assert_eq!(p.content, b"I'll check Tokyo's weather for you.");
+}
+
+#[test]
+fn parse_dsml_tolerant_keeps_an_undeclared_child_unbound() {
+    let orders = [ToolSchemaOrder {
+        name: "get_weather".into(),
+        prop: vec!["town".into()],
+        prop_type: vec!["string".into()],
+        ..Default::default()
+    }];
+    let text = format!(
+        "{DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"get_weather\">\n\
+         <city>Tokyo</city>\n{DSML_SPACED_INVOKE_END}"
+    );
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    assert_eq!(p.calls[0].arguments, "{}");
+}
+
+#[test]
+fn parse_dsml_tolerant_coerces_a_child_like_a_parameter() {
+    let orders = [ToolSchemaOrder {
+        name: "search".into(),
+        prop: vec!["limit".into()],
+        prop_type: vec!["integer".into()],
+        ..Default::default()
+    }];
+    let text = format!(
+        "{DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"search\">\n\
+         <limit>5</limit>\n{DSML_SPACED_INVOKE_END}"
+    );
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    assert_eq!(p.calls[0].arguments, r#"{"limit": 5}"#);
+}
+
 const DSML_SPACED_START: &str = "<｜DSML｜ calls>";
 const DSML_SPACED_END: &str = "</｜DSML｜ calls>";
 const DSML_SPACED_INVOKE: &str = "<｜DSML｜ invoke";

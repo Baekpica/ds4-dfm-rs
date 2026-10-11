@@ -614,7 +614,10 @@ pub fn parse_dsml_tolerant(text: &[u8], orders: &[ToolSchemaOrder]) -> Option<Pa
                 break;
             }
             if !norm[p..].starts_with(b"<parameter") {
-                break; // stray bytes end the invoke body; keep what parsed
+                if !dsml_tolerant_child_param(&norm, &mut p, &name, orders, &mut args) {
+                    break; // stray bytes end the invoke body; keep what parsed
+                }
+                continue;
             }
             if !dsml_tolerant_param(&norm, &mut p, &name, orders, &mut args) {
                 complete = false;
@@ -733,7 +736,29 @@ fn dsml_tolerant_param(
     let unescaped = dsml_unescape_text(raw);
     let value = trim_ascii_span(&unescaped);
     let declared = tool_schema_order_prop_type(tool_schema_orders_find(orders, tool), &pname);
-    let coerced = match declared {
+    let coerced = dsml_coerce_declared(declared, value);
+    if let Some(v) = coerced {
+        tool_call_json_args_add(out, pname.as_bytes(), &v, false);
+        return true;
+    }
+    let is_string = string_attr.as_deref().map(|v| v == b"true").unwrap_or(true);
+    if is_string {
+        tool_call_json_args_add(out, pname.as_bytes(), value, true);
+    } else if let Some(min) = json_value_is_complete(&String::from_utf8_lossy(value)) {
+        tool_call_json_args_add(out, pname.as_bytes(), min.as_bytes(), false);
+    } else {
+        // string="false" but not JSON: keep the text, never emit null.
+        tool_call_json_args_add(out, pname.as_bytes(), value, true);
+    }
+    true
+}
+
+/// The declared schema type wins over the DSML string hint (the shim's
+/// `coerce`, shim.py:79-111): a declared integer/number/boolean/object/array
+/// value is re-emitted as JSON of that type; a declared string or an
+/// unparseable value returns None and the caller keeps the raw text.
+fn dsml_coerce_declared(declared: Option<&str>, value: &[u8]) -> Option<Vec<u8>> {
+    match declared {
         Some("integer") => std::str::from_utf8(value)
             .ok()
             .and_then(|s| s.trim().parse::<i64>().ok())
@@ -748,19 +773,60 @@ fn dsml_tolerant_param(
             json_value_is_complete(&String::from_utf8_lossy(value)).map(|min| min.into_bytes())
         }
         _ => None,
-    };
-    if let Some(v) = coerced {
-        tool_call_json_args_add(out, pname.as_bytes(), &v, false);
-        return true;
     }
-    let is_string = string_attr.as_deref().map(|v| v == b"true").unwrap_or(true);
-    if is_string {
-        tool_call_json_args_add(out, pname.as_bytes(), value, true);
-    } else if let Some(min) = json_value_is_complete(&String::from_utf8_lossy(value)) {
-        tool_call_json_args_add(out, pname.as_bytes(), min.as_bytes(), false);
-    } else {
-        // string="false" but not JSON: keep the text, never emit null.
-        tool_call_json_args_add(out, pname.as_bytes(), value, true);
+}
+
+/// One bare child element of an invoke body (the model occasionally writes
+/// `<city>Tokyo</city>` instead of the parameter spelling; Spark tool-call
+/// gate requests 8/23, 2026-10-11).  The engine rejects the whole block on
+/// the first non-parameter token (server_dsml_parse.c:365-369) and the
+/// shim's scanner binds only parameter tags (shim.py:59-61), so binding a
+/// child is an extension of the tolerant recovery (plan 6.23): it fires
+/// only when the tag names a property the request's schema declares for
+/// this tool, and the value is coerced like a parameter.  Any other child
+/// keeps the pre-existing behavior (stray bytes end the invoke body).
+fn dsml_tolerant_child_param(
+    norm: &[u8],
+    p: &mut usize,
+    tool: &str,
+    orders: &[ToolSchemaOrder],
+    out: &mut Vec<u8>,
+) -> bool {
+    let rest = &norm[*p..];
+    if !rest.starts_with(b"<") || rest.starts_with(b"</") {
+        return false;
+    }
+    let Some(gt) = rest.iter().position(|&c| c == b'>') else {
+        return false;
+    };
+    let tag = &rest[1..gt];
+    // A bare child carries only its tag name; anything else is stray bytes.
+    if tag.is_empty() || tag.iter().any(|&c| !c.is_ascii_alphanumeric() && c != b'_') {
+        return false;
+    }
+    let pname = String::from_utf8_lossy(tag).into_owned();
+    let Some(declared) = tool_schema_order_prop_type(tool_schema_orders_find(orders, tool), &pname)
+    else {
+        return false; // undeclared child: keep the pre-existing recovery
+    };
+    let mut close = Vec::with_capacity(tag.len() + 3);
+    close.extend_from_slice(b"</");
+    close.extend_from_slice(tag);
+    close.push(b'>');
+    let value_start = *p + gt + 1;
+    let Some(rel) = find_substr(&norm[value_start..], &close) else {
+        return false;
+    };
+    let raw = &norm[value_start..value_start + rel];
+    if raw.contains(&b'<') {
+        return false; // a nested tag is not a value this rule binds
+    }
+    *p = value_start + rel + close.len();
+    let unescaped = dsml_unescape_text(raw);
+    let value = trim_ascii_span(&unescaped);
+    match dsml_coerce_declared(Some(declared), value) {
+        Some(v) => tool_call_json_args_add(out, pname.as_bytes(), &v, false),
+        None => tool_call_json_args_add(out, pname.as_bytes(), value, true),
     }
     true
 }
