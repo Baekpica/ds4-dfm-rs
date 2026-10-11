@@ -136,7 +136,11 @@ pub type ds4_bridge_v41_progress_fn =
 
 /* The decode-sampling face (native/bridge/ds4_bridge.h): the engine's
  * ds4_decode_sampling layout (ds4_v41_api.h:69-75).  All-zero = bare argmax;
- * a NULL pointer to the setter resets to that. */
+ * a NULL pointer to the setter resets to that.  greedy_fn/greedy_ud: the
+ * engine's tool-syntax greedy hook (the engine's c6e2706; the Rust host
+ * answers through the ds4-server accumulator). */
+pub type ds4_bridge_v41_greedy_fn =
+    Option<unsafe extern "C" fn(*mut c_void, *const i32, u32) -> c_int>;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ds4_bridge_v41_sampling {
@@ -150,6 +154,8 @@ pub struct ds4_bridge_v41_sampling {
     pub dry_multiplier: f32,
     pub dry_base: f32,
     pub dry_allowed_length: c_int,
+    pub greedy_fn: ds4_bridge_v41_greedy_fn,
+    pub greedy_ud: *mut c_void,
 }
 
 pub type ds4_bridge_backend = c_int;

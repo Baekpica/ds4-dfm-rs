@@ -426,8 +426,9 @@ static bool dg_wait(ds4_engine *e, ds4_v41_state *st, int32_t *next) {
     __sync_synchronize();
     /* Per-row pick (core_decode_graph.c:300): sampling assembles "accepted =>
      * the draft / rejected => the residual" from the four ints per row, argmax
-     * takes each slot's first int (core_v41_sample.c:17-22). */
-    v41_sample_pick(g->next, g->tokv, n, st->dev_sample, next);
+     * takes each slot's first int (core_v41_sample.c:17-22); the tool-syntax
+     * greedy hook reads the same face through the state (c6e2706). */
+    v41_sample_pick(st, g->next, g->tokv, n, next);
     dg_advance(st, n);
     if (n != 1u) g->bsteps++; else if (g->cur_pure) g->steps++; else g->k0steps++;
     return true;

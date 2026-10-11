@@ -140,10 +140,17 @@ void ds4_engine_v41_set_prof(int on);
  * the route would leave the user thinking speculation was on).  seed 0 =
  * clock (time ^ pid << 32 ^ clock, the V4 CLI's rule, core_v41_api.c:163-164).
  * NULL resets to the all-zero face (bare argmax). */
+/* The engine's greedy hook (ds4_v41_api.h:74-79):取每个 token 之前问一次
+ * greedy_fn(greedy_ud, ahead, n) —— "调用方已收到的文本后面再接 ahead[0..n)
+ * 这几个 token, 下一位是不是工具调用的协议语法(DSML 标签 / 参数头 / JSON 标点)",
+ * 非 0 = 这一位取 argmax(采样核的槽 [3]), 0 = 照采样. 跟着采样面走; NULL = 不问.
+ * 服务端的判定在 Rust(dsml.rs + SemAccum::syntax_greedy). */
+typedef int (*ds4_greedy_fn)(void *ud, const int32_t *ahead, uint32_t n);
 typedef struct {
     float temperature, top_p, min_p; int top_k; uint64_t seed;
     float freq_penalty, presence_penalty;
     float dry_multiplier, dry_base; int dry_allowed_length;
+    ds4_greedy_fn greedy_fn; void *greedy_ud;
 } ds4_decode_sampling;
 void ds4_engine_set_decode_sampling(const ds4_decode_sampling *sp);
 

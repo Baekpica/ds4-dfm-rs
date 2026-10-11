@@ -873,6 +873,7 @@ void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp) {
         .top_k = sp->top_k, .seed = sp->seed,
         .freq_penalty = sp->freq_penalty, .presence_penalty = sp->presence_penalty,
         .dry_multiplier = sp->dry_multiplier, .dry_base = sp->dry_base, .dry_allowed_length = sp->dry_allowed_length,
+        .greedy_fn = sp->greedy_fn, .greedy_ud = sp->greedy_ud,
     };
     ds4_engine_set_decode_sampling(&face);
 }

@@ -229,7 +229,7 @@ __global__ static void v41_sample_kernel(int32_t *out, const float *logits, cons
     /* Gumbel-max over the kept set: the full-distribution sample; the residual
      * sample (q: over max(0, p-q) / point mass: p minus d); and along the way
      * Z_K, and the numerators of p(d) and q(d). */
-    float gb = -INFINITY, gxb = -INFINITY, zk = 0.0f, md = 0.0f, mqd = 0.0f; int32_t gi = -1, gxi = -1; uint32_t nk = 0u;
+    float gb = -INFINITY, gxb = -INFINITY, zk = 0.0f, md = 0.0f, mqd = 0.0f; int32_t gi = -1, gxi = -1;
     for (uint32_t i = threadIdx.x; i < V; i += blockDim.x) {
         const float v = l[i];
         /* q(d) must be computed even outside p's kept set (the 09-29 selftest
@@ -239,7 +239,6 @@ __global__ static void v41_sample_kernel(int32_t *out, const float *logits, cons
          * K_p means p(d) = 0 => reject. */
         if (lq && (int32_t)i == d) { const float vq = lq[i]; mqd = (isfinite(vq) && v41_fkey(vq) >= cutq) ? expf((vq - Mq) * inv_T) : 0.0f; }
         if (!isfinite(v) || v41_fkey(v) < cut) continue;
-        nk++;
         const float m = expf((v - M) * inv_T);
         zk += m;
         if ((int32_t)i == d) md = m;
@@ -273,10 +272,6 @@ __global__ static void v41_sample_kernel(int32_t *out, const float *logits, cons
     const float ZK = v41_blk_sumf(sf, zk);
     const float MD = v41_blk_sumf(sf, md);     /* only one thread holds d's term, the sum is the value */
     const float MQD = v41_blk_sumf(sf, mqd);
-    if (threadIdx.x == 0) s_u64 = 0ull;
-    __syncthreads();
-    atomicAdd(&s_u64, (unsigned long long)nk);
-    __syncthreads();
     if (threadIdx.x == 0) {
         int32_t acc = 0;
         if (d >= 0) {
@@ -288,7 +283,7 @@ __global__ static void v41_sample_kernel(int32_t *out, const float *logits, cons
                 acc = (qd <= 0.0f || v41_u01(seed, p, (uint32_t)d, salt_a) < pd / qd) ? 1 : 0;
             } else acc = v41_u01(seed, p, (uint32_t)d, salt_a) < pd ? 1 : 0;
         }
-        o[0] = full; o[1] = acc; o[2] = resid >= 0 ? resid : full; o[3] = (int32_t)s_u64;
+        o[0] = full; o[1] = acc; o[2] = resid >= 0 ? resid : full; o[3] = Mi;   // [3] = the raw argmax (the tool-syntax greedy hook, c6e2706)
     }
 }
 

@@ -305,11 +305,15 @@ void ds4_bridge_v41_last_spec_stats(int *rounds, int *offered, int *accepted);
  * The engine's server sets this once per request before the generate
  * (server_generate_v41.c:409); the Rust host does the same through this
  * bridge.  The struct is laid out like ds4_decode_sampling, spelled out here
- * so the header stays self-contained for the Rust side. */
+ * so the header stays self-contained for the Rust side.  greedy_fn/greedy_ud:
+ * the engine's tool-syntax greedy hook (ds41_forward.h; the Rust host answers
+ * through the ds4-server accumulator). */
+typedef int (*ds4_bridge_v41_greedy_fn)(void *ud, const int32_t *ahead, uint32_t n);
 typedef struct {
     float temperature, top_p, min_p; int32_t top_k; uint64_t seed;
     float freq_penalty, presence_penalty;
     float dry_multiplier, dry_base; int32_t dry_allowed_length;
+    ds4_bridge_v41_greedy_fn greedy_fn; void *greedy_ud;
 } ds4_bridge_v41_sampling;
 void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp);
 /* --mem-budget-mb (unit Z): the engine's process memory red line and its

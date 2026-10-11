@@ -692,7 +692,7 @@ fn run_v41_one_shot(
     // The engine CLI's sampling face (cli_diag.c:44-50): --temp / --top-p /
     // --min-p / --seed from the flags (defaults 1.0 / 1.0 / 0.05 / 0), the
     // DRY trio (freq / presence have no CLI flags in the engine, they stay 0).
-    let opts = ds4_core::V41RunOptions {
+    let mut opts = ds4_core::V41RunOptions {
         engram_dir: args.engram_dir.as_deref(),
         no_engram: args.no_engram,
         dspark: Some(if args.no_dspark { 0 } else { 1 }),
@@ -715,6 +715,7 @@ fn run_v41_one_shot(
             dry_base: args.dry_base,
             dry_allowed_length: args.dry_allowed_length,
         }),
+        greedy: None,   /* the engine CLI has no tool-syntax hook (cli_diag.c:50 has none) */
         zchain: args.zchain.as_deref(),
         posttrain: args.posttrain.as_deref(),
     };
@@ -747,7 +748,7 @@ fn run_v41_one_shot(
         std::path::Path::new(model_path),
         &prompt,
         args.n_predict,
-        &opts,
+        &mut opts,
         &mut emit,
         &mut progress,
     );

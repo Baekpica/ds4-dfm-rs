@@ -2,7 +2,9 @@
 //! `ds4_server.c` at v0.6.5-dfm. DSML greedy / required-prefix sampling
 //! and corrective retry (`retry`) are host-owned.
 
-use crate::dsml::{DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy};
+use crate::dsml::{
+    dsml_decode_state_is_syntax, DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy,
+};
 use crate::json::{json_escape_bytes, json_minify_raw_value, json_raw_value, json_string, Json};
 use crate::parse::{ToolCall, ToolSchemaOrder};
 use crate::render::{
@@ -2211,6 +2213,23 @@ impl SemAccum {
                 self.thinking_inside = false;
             }
         }
+    }
+
+    /// The engine's v41_syntax_greedy (server_generate_v41.c): a COPY of the
+    /// tracker and the thinking state over the emitted text + the ahead pieces;
+    /// true = the next position is tool-call syntax, so the native takes the raw
+    /// argmax there.  The engine keeps that state in its native v41_gen; the
+    /// port's text lives here, so the caller supplies the ahead pieces and this
+    /// rebuilds the copy on a clone (the DSML tracker re-scans from the start,
+    /// the thinking scanner follows the same windows).  The request gate is the
+    /// engine's own: only a chat request with tools asks at all.
+    pub fn syntax_greedy(&self, ahead: &[Vec<u8>]) -> bool {
+        let mut probe = self.clone();
+        for piece in ahead {
+            probe.feed_thinking(piece);
+            probe.dsml.update(&probe.text);
+        }
+        !probe.thinking_inside && dsml_decode_state_is_syntax(probe.dsml.decode)
     }
 
     pub fn feed(&mut self, piece: &[u8], stops: &[String]) -> SemFeed {

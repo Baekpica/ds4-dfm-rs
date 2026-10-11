@@ -164,11 +164,21 @@ static uint8_t *ds4_decode_breakers(ds4_engine *e, uint32_t n_vocab) {
  * (i+1 < n), slot[1] is the accept flag -- accepted takes the draft (batch
  * [i+1], the verify batch's next row's input), rejected takes the residual
  * sample slot[2]; otherwise (pure decode, or the greedy route) slot[0] is the
- * pick.  The engine's expression, core_v41_sample.c:17-22. */
-static void v41_sample_pick(const int32_t *slot, const int32_t *batch, uint32_t n, int dev_sample, int32_t *want) {
+ * pick.  The engine's expression, core_v41_sample.c:17-22.
+ * The tool-syntax greedy hook (2026-10-11, the engine's c6e2706): under
+ * sampling, ask per position "is the next position tool-call syntax?" -- yes
+ * takes the raw argmax (the kernel's slot [3]); the question walks only the
+ * accepted prefix (the caller's text + batch[1..i]) and stops asking once the
+ * draft is not accepted (or at the last row).  argmax (temperature 0) never
+ * asks: its pick is already [0]. */
+static void v41_sample_pick(ds4_v41_state *st, const int32_t *slot, const int32_t *batch, uint32_t n, int32_t *want) {
+    const ds4_decode_sampling *sp = &g_decode_sampling;
+    bool ask = st->dev_sample && sp->greedy_fn;
     for (uint32_t i = 0; i < n; i++) {
         const int32_t *s = slot + 4u * i;
-        want[i] = (dev_sample && batch && i + 1u < n) ? (s[1] ? batch[i + 1u] : s[2]) : s[0];
+        if (ask && sp->greedy_fn(sp->greedy_ud, batch ? batch + 1 : NULL, i)) want[i] = s[3];
+        else want[i] = (st->dev_sample && batch && i + 1u < n) ? (s[1] ? batch[i + 1u] : s[2]) : s[0];
+        if (ask && !(batch && i + 1u < n && want[i] == batch[i + 1u])) ask = false;
     }
 }
 
@@ -190,7 +200,7 @@ static bool v41_device_next(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row0
                 !ds4_gpu_tensor_read(am, 0, &slot[4u * i], 4)) return false;
         }
     }
-    v41_sample_pick(slot, batch, n, st->dev_sample, want);
+    v41_sample_pick(st, slot, batch, n, want);
     return true;
 }
 
@@ -209,7 +219,11 @@ static bool v41_next_token(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row, 
     if (h && h->n && (sp->dry_multiplier > 0.f || sp->freq_penalty != 0.f || sp->presence_penalty != 0.f))
         ds4_decode_penalize(rowbuf, DS4_N_VOCAB, h->tok, h->n, h->brk, sp->freq_penalty, sp->presence_penalty,
                             sp->dry_multiplier, sp->dry_base, sp->dry_allowed_length);
-    *out = (int32_t)ds4_sample_logits(rowbuf, (int)DS4_N_VOCAB, sp->temperature, sp->top_k, sp->top_p, sp->min_p, rng);
+    /* The penalty route asks the same question as the pick (the engine's
+     * v41_next_token, c6e2706): at a tool-syntax position the sampler is asked
+     * with temperature 0, so the post-penalty argmax is the token. */
+    const float temp = (sp->greedy_fn && sp->greedy_fn(sp->greedy_ud, NULL, 0)) ? 0.f : sp->temperature;
+    *out = (int32_t)ds4_sample_logits(rowbuf, (int)DS4_N_VOCAB, temp, sp->top_k, sp->top_p, sp->min_p, rng);
     if (h && h->n < h->cap) h->tok[h->n++] = *out;
     return true;
 }

@@ -78,8 +78,9 @@ pub struct V41Sampling {
     pub dry_allowed_length: i32,
 }
 
-/// The per-run switches (the engine's CLI globals, `cli_diag.c:58`).
-#[derive(Clone, Debug)]
+/// The per-run switches (the engine's CLI globals, `cli_diag.c:58`).  No
+/// Clone/Debug derive: the greedy hook holds a `&mut dyn FnMut`, which neither
+/// implements.
 pub struct V41RunOptions<'a> {
     /// `--engram-dir`: the converter wrote the converting machine's absolute
     /// shard paths; the directory is swapped, the file name kept
@@ -104,6 +105,9 @@ pub struct V41RunOptions<'a> {
     /// `cli_diag.c:50`); None resets it to the all-zero face = bare argmax,
     /// so a run never inherits the previous request's face.
     pub sampling: Option<V41Sampling>,
+    /// The tool-syntax greedy hook (the engine's ds4_greedy_fn, c6e2706): the
+    /// serve's closure; the native asks once per position.  None = no hook.
+    pub greedy: Option<&'a mut dyn FnMut(*const i32, u32) -> bool>,
     /// `--zchain <dir>`: the ② anti-repair sidecar (install.sh's own
     /// spelling; the deployment's third file next to the GGUF).  The engine
     /// carries it to the per-state mount (`core_engine_open.c:120-124` ->
@@ -128,6 +132,7 @@ impl Default for V41RunOptions<'_> {
             emit_trace: false,
             prof: false,
             sampling: None,
+            greedy: None,
             zchain: None,
             posttrain: None,
         }
@@ -898,6 +903,25 @@ fn asset_error(e: impl std::fmt::Display) -> Error {
     }
 }
 
+/// The tool-syntax greedy hook (the engine's v41_syntax_greedy ud, c6e2706):
+/// the serve's closure; the native asks once per position through this tramp
+/// (the emitted text + the ahead tokens; nonzero = that position takes the raw
+/// argmax).  The closure lives in the caller's frame for the call's duration.
+struct GreedyTramp<'a> {
+    greedy: &'a mut dyn FnMut(*const i32, u32) -> bool,
+}
+
+unsafe extern "C" fn greedy_tramp(ud: *mut c_void, ahead: *const i32, n: u32) -> i32 {
+    if ud.is_null() {
+        return 0;
+    }
+    let t = &mut *(ud as *mut GreedyTramp<'_>);
+    match catch_unwind(AssertUnwindSafe(|| (t.greedy)(ahead, n))) {
+        Ok(true) => 1,
+        _ => 0,
+    }
+}
+
 /// Mount the ②/③ sidecar for one run (the engine's per-state
 /// `v41_state_plugins` -> `v41_amp_load`, `core_v41_state.c:77-87` /
 /// `core_v41_amp.c:227-270`): the process-wide rb table unloads first
@@ -1010,7 +1034,7 @@ impl Model {
         path: &Path,
         prompt: &[i32],
         n_predict: i32,
-        opts: &V41RunOptions<'_>,
+        opts: &mut V41RunOptions<'_>,
         emit: &mut dyn FnMut(i32) -> bool,
         progress: &mut dyn FnMut(&str, i32, i32) -> bool,
     ) -> Result<()> {
@@ -1020,6 +1044,16 @@ impl Model {
         if n_predict < 0 {
             return Err(asset_error("V4.1 n_predict is negative"));
         }
+        // The tool-syntax greedy hook (the engine's v41_syntax_greedy,
+        // c6e2706): the serve's closure; the tramp borrows it for the call's
+        // duration only.  None leaves the native asking nobody (bare argmax).
+        let mut greedy_ctx = opts.greedy.as_mut().map(|g| GreedyTramp { greedy: &mut **g });
+        let greedy_fn = greedy_ctx
+            .as_ref()
+            .map(|_| greedy_tramp as unsafe extern "C" fn(*mut c_void, *const i32, u32) -> i32);
+        let greedy_ud = greedy_ctx.as_mut().map_or(std::ptr::null_mut(), |t| {
+            t as *mut GreedyTramp<'_> as *mut c_void
+        });
         // The switches are process globals in the native (the engine's CLI
         // sets them before the run); set them here so every entry point lands
         // on the same knob.  None leaves the native default untouched.
@@ -1048,6 +1082,8 @@ impl Model {
                         dry_multiplier: s.dry_multiplier,
                         dry_base: s.dry_base,
                         dry_allowed_length: s.dry_allowed_length,
+                        greedy_fn,
+                        greedy_ud,
                     };
                     ds4_bridge_v41_set_sampling(&face);
                 }

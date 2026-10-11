@@ -47,6 +47,17 @@ impl DsmlDecodeState {
     }
 }
 
+/// The engine's dsml_decode_state_is_syntax (server_generate_v41.c): under
+/// sampling the tool-call syntax positions (the tag / parameter head / JSON
+/// punctuation) take the raw argmax while the string value body and the JSON
+/// string keep the request's draw.  True = greedy at this position.
+pub fn dsml_decode_state_is_syntax(state: DsmlDecodeState) -> bool {
+    !matches!(
+        state,
+        DsmlDecodeState::Outside | DsmlDecodeState::StringBody | DsmlDecodeState::JsonString
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrackMode {
     Search,

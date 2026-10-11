@@ -142,14 +142,17 @@ pub trait DecodeIo {
     /// (`ds4_engine_v41_generate_argmax`).  `sampling` is the per-request
     /// decode face (the engine's ds4_engine_set_decode_sampling,
     /// server_generate_v41.c:409); None resets to bare argmax.  `emit`
-    /// returns false to stop, `progress` returns false to abort the prefill.
-    /// Only an engine with a loaded v41 route answers; the default refuses
-    /// by name.
+    /// returns false to stop, `progress` returns false to abort the prefill;
+    /// `greedy` answers the tool-syntax greedy hook once per position (the
+    /// engine's v41_syntax_greedy, c6e2706): true = that position takes the
+    /// raw argmax.  Only an engine with a loaded v41 route answers; the
+    /// default refuses by name.
     fn v41_generate(
         &self,
         _prompt: &[i32],
         _n_predict: i32,
         _sampling: Option<ds4_core::V41Sampling>,
+        _greedy: &mut dyn FnMut(*const i32, u32) -> bool,
         _emit: &mut dyn FnMut(i32) -> bool,
         _progress: &mut dyn FnMut(&str, i32, i32) -> bool,
     ) -> Result<(), GenerateError> {
@@ -2888,6 +2891,32 @@ impl<W: Write> V41EmitState<'_, W> {
         true
     }
 
+    /// The engine's v41_syntax_greedy (server_generate_v41.c, c6e2706): under
+    /// sampling the tool-call syntax positions (the DSML tags / the parameter
+    /// head / the JSON punctuation) take the raw argmax while the string value
+    /// body and the JSON string keep the request's draw.  The engine rebuilds a
+    /// copy of the tracker and the thinking state over its emitted text + the
+    /// ahead tokens; the port's text lives here, so the accumulator answers
+    /// through SemAccum::syntax_greedy.  The request gate is the engine's own:
+    /// only a chat request with tools asks at all.
+    fn syntax_greedy(&mut self, ahead: *const i32, n: u32) -> bool {
+        if self.parsed.kind != ReqKind::Chat || !self.parsed.has_tools {
+            return false;
+        }
+        let mut pieces: Vec<Vec<u8>> = Vec::with_capacity(n as usize);
+        for i in 0..n as usize {
+            let token = unsafe { *ahead.add(i) };
+            if self.engine.token_is_stop(token) {
+                break;   /* the engine's own stop: the ahead run ends there */
+            }
+            match self.engine.token_text(token) {
+                Ok(piece) => pieces.push(piece),
+                Err(_) => break,
+            }
+        }
+        self.acc.syntax_greedy(&pieces)
+    }
+
     /// `v41_progress_cb` (server_generate_v41.c:22-32): the prefill
     /// keepalive (`: prefill`, the engine's 5 s interval) and the client
     /// probe; returning false aborts the prefill (the engine's nonzero
@@ -3043,7 +3072,15 @@ fn generate_terminal_v41(
         let mut progress = |event: &str, current: i32, total: i32| {
             state.borrow_mut().prefill_progress(event, current, total)
         };
-        engine.v41_generate(tokens, max_tokens, Some(sampling), &mut emit, &mut progress)
+        let mut greedy = |ahead: *const i32, n: u32| state.borrow_mut().syntax_greedy(ahead, n);
+        engine.v41_generate(
+            tokens,
+            max_tokens,
+            Some(sampling),
+            &mut greedy,
+            &mut emit,
+            &mut progress,
+        )
     };
     let mut st = state.into_inner();
 
@@ -3947,13 +3984,14 @@ impl DecodeIo for NativeDecode<'_> {
         prompt: &[i32],
         n_predict: i32,
         sampling: Option<ds4_core::V41Sampling>,
+        greedy: &mut dyn FnMut(*const i32, u32) -> bool,
         emit: &mut dyn FnMut(i32) -> bool,
         progress: &mut dyn FnMut(&str, i32, i32) -> bool,
     ) -> Result<(), GenerateError> {
         let route = self.v41.as_ref().ok_or(GenerateError::Unsupported(
             "V4.1 generation is not loaded on this engine",
         ))?;
-        let opts = ds4_core::V41RunOptions {
+        let mut opts = ds4_core::V41RunOptions {
             engram_dir: route.engram_dir.as_deref(),
             no_engram: route.no_engram,
             dspark: route.dspark,
@@ -3962,11 +4000,12 @@ impl DecodeIo for NativeDecode<'_> {
             emit_trace: route.emit_trace,
             prof: route.prof,
             sampling,
+            greedy: Some(greedy),
             zchain: route.zchain.as_deref(),
             posttrain: route.posttrain.as_deref(),
         };
         self.model
-            .v41_generate(&route.model_path, prompt, n_predict, &opts, emit, progress)
+            .v41_generate(&route.model_path, prompt, n_predict, &mut opts, emit, progress)
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 

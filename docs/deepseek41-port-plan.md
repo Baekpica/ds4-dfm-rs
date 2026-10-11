@@ -1740,6 +1740,22 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
    had lost its angle brackets; both are corrected, and the spaced render
    now matches the official goldens byte for byte (render 34/34).
 
+6. The sampling side ported (P3, the engine's c6e2706).  The kernel's
+   slot [3] now carries the raw argmax (`cuda/ds41_sample.cuh`, replacing
+   the reserved-set count), `v41_sample_pick` asks the face's greedy hook
+   per position (`ds4_ds41_sample.inc`: the caller's text + the accepted
+   prefix `batch[1..i]`; the asking stops once the draft is not accepted),
+   the single-row penalty route asks with temperature 0 (v41_next_token),
+   and the face (`ds4_decode_sampling` + the bridge mirror) carries
+   `greedy_fn`/`greedy_ud` down to the Rust accumulator
+   (`SemAccum::syntax_greedy` rebuilds the tracker copy and the thinking
+   state over the emitted text + the ahead tokens; `dsml_decode_state_is_syntax`
+   is the verdict).  The engine's vector
+   `test_syntax_greedy_spaced_dsml` is ported as
+   `syntax_greedy_spaced_dsml` in `tests/dsml.rs` (dsml 3/3).  The Spark
+   gates (the second oracle at 221b9e2, the chat/sampling re-run and the
+   20-40-call tool-call test) are the next step.
+
 ## 7. Numerics contract
 
 - Device arithmetic and every format detail follow the C engine's code, and the
