@@ -76,6 +76,11 @@
 #                      the sha256-pinned corpus the qwen campaign used)
 #   DS41_PERF_CAL_BYTES  calibration probe size in bytes (default 8192, about
 #                      2.4K tokens at the measured ratio)
+#   DS41_PERF_PORT_ARGS  extra arguments appended to the port boot line, e.g.
+#                      "--v41-prof" for per-layer ms and the full dspark lines
+#                      (crates/ds4-server/src/bin/ds4-server-rs.rs:255).  The
+#                      value is recorded in meta.txt so a profile run is
+#                      distinguishable from a clean one.
 #   DS41_PERF_NO_CLOCKS  set to 1 to skip the clocks.gr sampling
 #   DS41_PERF_NO_GGUF_SHA set to 1 to skip hashing the 113 GB gguf
 set -u
@@ -132,6 +137,7 @@ DFLAG=""
 [ -n "$DRAFT" ] && DFLAG="--mtp-draft $DRAFT"
 ZFLAG=""
 [ -n "$ZC" ] && ZFLAG="--zchain $ZC --mem-budget-mb 110000"
+PORT_EXTRA="${DS41_PERF_PORT_ARGS:-}"
 
 # ---------------------------------------------------------------- primitives
 
@@ -198,7 +204,7 @@ boot() { # <side> <tag>
         eng) "$ENG" --cuda -m "$MODEL" --engram-dir "$ENGRAM" --port "$PORT" \
                      $ZFLAG --host 127.0.0.1 >> "$SLOG" 2>&1 & ;;
         port) "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" \
-                     $DFLAG $ZFLAG --host 127.0.0.1 >> "$SLOG" 2>&1 & ;;
+                     $DFLAG $ZFLAG $PORT_EXTRA --host 127.0.0.1 >> "$SLOG" 2>&1 & ;;
         *) fail "unknown side $SIDE" ;;
     esac
     SRV_PID=$!
@@ -381,6 +387,7 @@ run_step() { # <side> <ctx-target> <run>
     echo "started $(date -Iseconds)"
     echo "sides $SIDES; ctx $CTXS; gen $GEN; runs $RUNS; draft ${DRAFT:-<route default>}"
     echo "port $PORT; sidecar ${ZC:-<none>}"
+    echo "port extra args: ${PORT_EXTRA:-<none>}"
     echo "corpus $CORPUS"
     echo "corpus sha256 $(sha256sum "$CORPUS" | awk '{print $1}')"
     echo "engine binary $ENG sha256 $(sha256sum "$ENG" | awk '{print $1}')"
