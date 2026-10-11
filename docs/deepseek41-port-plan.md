@@ -147,6 +147,7 @@ before any state-changing command.
 | P7 | Performance ledger: prefill and decode on the §2 prompts, cache reuse demonstrated | the ledger, published with its method |
 | Z | DONE 2026-10-10 (`f377e87`..`91dba0f`, §6.18): the install.sh startup contract: `--zchain` (the ② mount over the P4-7 stores + the P2/P3 Rust reader), `--posttrain` (③), `--mem-budget-mb` (the engine's L1 85 % gate; the Linux footprint watchdog is inert by the engine's own design, core_util.c:141-145), and the install.sh smoke on the v41 route | both sides booted exactly as install.sh boots; served ids byte-identical with the finance sidecar mounted; the smoke passes (all PASS 2026-10-10, §6.18/§6.19) |
 | P7b | The qwen38-derived serving candidates (2026-10-10, §6.21; reference `docs/ds41-qwen38-serve-lessons.md`): P2 the engram overlap (engine mirror), Q-1 the MTP draft shortlist, Q-2 the MTP prefix cache | each: the four parity gates green + a >= 2 % measured median gain on its phase; kill switch per item (P2 mirrors the engine, none needed) |
+| PT | Post-train (2026-10-11, §6.24): PT-1 the `ds4_posttrain` module + the JSONL upload surface (now, host-only), PT-2 the ③ amp apply (now), PT-3 the trainer + the backward family (after the port closes), PT-4 `posttrain_reward` (optional, legacy) | PT-1/PT-2: model-free + the `ds4-train` upload oracle on the Spark; PT-3: the engine's own checks + the wt2 gate |
 
 P0 and P1 can start without further owner decisions.
 
@@ -1755,6 +1756,84 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
    `syntax_greedy_spaced_dsml` in `tests/dsml.rs` (dsml 3/3).  The Spark
    gates (the second oracle at 221b9e2, the chat/sampling re-run and the
    20-40-call tool-call test) are the next step.
+
+## 6.24 Post-train port plan: the ③ producer, the JSONL upload, the apply (2026-10-11)
+
+The engine's post-train subsystem was read end to end at 221b9e2.  Pin
+drift first: `/data/YoungAi` at 3946dbc carries the OLDER `core_ptrain*`
+bodies (the 10-01 list/`.qa` format, last-layer-only defaults) and no
+studio; `/data/YoungAi-restructure` (221b9e2) is the "one JSONL, one
+command" tree -- cite the restructure for the trainer.
+`ds4_posttrain.c/.h` are byte-identical between the two trees.  The full
+research note (call tables, HTTP routes, formats, the 14-case corpus) is
+`misc/posttrain-research-2026-10-11.md`.
+
+What it is: one JSONL + one command.  `./ds4 --ptrain <cfg>`
+(`core_ptrain.c:178-348`) trains per-layer low-rank amps (`amp_Lnn.bin`,
+the ③) on top of the deployed ①② model against a top-K teacher
+(`core_ptrain_teacher.c`), Adam on `[layer_lo, layer_hi]` (validation
+requires `layer_hi == DS4_N_LAYER-1`), and writes f32 `{A[K][D],
+B[K][D]}` plus a `base.fnv` fingerprint of the ② directory (`pt_save_amp`,
+`core_ptrain_bwd.c:173-200`).  The studio (`ds4-train` + `web/studio.html`,
+`src/train/*`) wraps it: upload JSONL/documents, run the job (stop the
+model child, train, wt2 five-metric gate, restart), pick a ckpt, hot-swap
+②/③ on the live server.  At inference ③ mounts via `--posttrain`:
+`v41_amp_load` concatenates ② then ③ rows (cap 8192) and the forward tail
+applies `y += x·(B·A)` + bf16 round (`core_v41_amp.c:322-329`,
+`core_v41_forward.c:148-155`).
+
+The owner's three questions, answered:
+
+(a) `ds4_posttrain.c/.h` standalone: PORTABLE NOW -- pure closed-form
+    math (output-space 1-bit row scale, `ds4_posttrain.h:12-18`), no GPU,
+    no model, and no callers anywhere in the engine (`docs/clear.md:113`
+    schedules the module for deletion: zero references).  Porting it
+    preserves a validated formula (cos 0.55 -> ~0.70,
+    `gguf-tools/docs/ALGORITHM.md:57`; the header's own citation
+    `gguf-tools/go-onebit/ALGORITHM.md` is stale), not a live path.
+    Preserve exactly: `double` accumulation in `wx`-then-`bx` order,
+    `sign(0)=+1` via `< 0.0f` in both the bit fill and the accumulation,
+    `den <= 1e-30 -> 0` with the `mean|w|` fallback, the cosine
+    scale-cancel convention.
+
+(b) Tests for uploading training data as JSON: PORTABLE NOW, host-only.
+    The oracle is the studio's `api_upload` (`train_api.c:138-185`):
+    raw-body POST (not multipart), 64 MB cap (`TR_UPLOAD_MAX`,
+    `train_internal.h:34`), `kind=jsonl` stores the body byte-exact at
+    `gguf-tools/data/posttrain/<name>` after a per-line LOOSE check
+    (JSON object + contains "messages" or "text", `:155-158`); `kind=doc`
+    writes `chunks/<base>.txt` + regenerates `<dir>.text.jsonl`
+    (`rebuild_text_jsonl`, `:113-134`).  The trainer's reader
+    (`core_ptrain_data.c:193-260`) is STRICTER (field whitelist; rejects
+    `reward/mode/split`, duplicate roles, trailing bytes) and the port
+    must reproduce BOTH layers, not unify them.  The 14-case corpus and
+    the acceptance rules are in the research note, section 9.
+
+(c) LOADED and TRAINED: LOAD is half-done.  The port reads, merges and
+    fingerprints ②③ (`crates/ds4-core/src/sidecar.rs`, `zchain.rs`,
+    §6.6.4) and REFUSES the amp apply by name (`v41_run.rs:1013-1017`,
+    `amp_Lnn.bin ... not ported`).  The apply itself is small -- one GEMM
+    pair + bf16 round at the engine's forward tail -- and rides the P4-7
+    device stores (PT-2).  TRAINED is BLOCKED on the inference port
+    closing: it needs the whole GPU backward family (24 `ds4_gpu_bwd_*`
+    entries, `ds4_gpu_bwd.h` + the five `cuda_bwd_*.inc.cu` files) and
+    the port has no backward pass (`cuda/ds41_vq_prefill_mma.cuh:595-597`).
+    A hard dependency, not a scheduling preference.
+
+Unit split (each with its own gates):
+
+| unit | scope | gate |
+| --- | --- | --- |
+| PT-1 (now) | the `ds4_posttrain` module port + the upload surface (validate/store/list/preview, 64 MB cap) | model-free: module vs the C oracle on a captured fixture; upload vs `ds4-train` on the Spark (the 14-case corpus, byte-equal stored files) |
+| PT-2 (now) | the ③ apply: `ds4_gpu_v41_amp_apply_tensor` mirror + the forward-tail hook; lift the refusal when the merge carries amp | model-free parity vs a synthetic `amp_Lnn.bin`; the live gate the day a directory carries one (none on the Spark today, §6.14) |
+| PT-3 (after P4/P5 close) | the trainer (`core_ptrain*.c`) + the backward kernel family + the studio job/gate; assets: `hold.jsonl`, the wt2 anchor + `anchor_metrics` (release-pack externals) | packcheck/rccheck/hccheck/gradcheck, then the wt2 gate rule (`dpp >= -0.5`, `rel <= 0.03`, `train_gate.c:109`); memory floors re-measured on the Spark before adopting the engine's numbers |
+| PT-4 (optional) | `posttrain_reward` -- LEGACY (the 10-10 trainer dropped the reward loop; no studio consumer) | skip unless the owner wants it |
+
+Open items recorded: `hold.jsonl`'s producer is unverified (shipped by
+`release_pack.sh:24`, no in-tree generator); the studio's upload check is
+intentionally looser than the trainer's (preserve the split); the
+trainer's 3000 MB / 2500 MB floors are the engine's numbers -- re-measure
+before adopting (rule 20).
 
 ## 7. Numerics contract
 
