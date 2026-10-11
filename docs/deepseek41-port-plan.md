@@ -1753,9 +1753,32 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
    state over the emitted text + the ahead tokens; `dsml_decode_state_is_syntax`
    is the verdict).  The engine's vector
    `test_syntax_greedy_spaced_dsml` is ported as
-   `syntax_greedy_spaced_dsml` in `tests/dsml.rs` (dsml 3/3).  The Spark
-   gates (the second oracle at 221b9e2, the chat/sampling re-run and the
-   20-40-call tool-call test) are the next step.
+   `syntax_greedy_spaced_dsml` in `tests/dsml.rs` (dsml 3/3).
+
+7. The Spark gates at the second oracle (221b9e2; built in
+   `/home/leandro/youngai-src-restructure`, 2026-10-11).  Chat gate PASS:
+   both sides parse the spaced call, 47 ids byte-equal, both
+   finish=tool_calls.  Sampling gate PASS: cases A-D byte-identical.
+   The 40-request tool-call gate (seeds 1001-1040, default temperature):
+   40/40 id streams byte-equal, parsed messages identical on all 35
+   both-call requests, and the only finish divergences are the recorded
+   recovery class on requests 2, 7, 8, 23.  There the model ends the
+   block at the invoke close without the wrapper close and mixes the
+   spaced opens with plain parameter tags, so the engine reports an
+   unterminated tool call (finish=error, the call served as raw text;
+   `server_generate_v41.c:252-256`, engine log `saw_start=1 saw_end=0`)
+   while the port's tolerant fallback recovers it (2/7 with the full
+   arguments, 8/23 with an empty object -- the bare child element carries
+   a value the tolerant scan does not bind).  Request 13 (a plain wrapper
+   spelling with a JSON payload the model hallucinated) stops on both
+   sides: parity.  Tool-call counts: engine 35/40, port 39/40 (the
+   upstream c6e2706 40/40 was its own harness).  The gate script's first
+   run stopped at request 1 on an extraction artifact (the engine prints
+   a request's ids on one line, the port one per line) and its bars
+   assumed 40/40 on both sides; `157bf9a` folds the id streams and pins
+   the recovery set, and the re-run passes end to end (log
+   `/tmp/dsml_toolcall2.log`, artifacts `/tmp/ds41_toolcall_gate/`; the
+   recovery set reproduced on the fresh run).
 
 ## 6.24 Post-train port plan: the ③ producer, the JSONL upload, the apply (2026-10-11)
 
