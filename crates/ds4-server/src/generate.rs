@@ -3149,8 +3149,11 @@ fn generate_terminal_v41(
     // the mix and returns the block as text; recover the calls with the
     // shim's tolerant scan.
     if parsed_gen.calls.is_empty() && parsed.kind == ReqKind::Chat && parsed.has_tools {
-        if let Some(tolerant) = crate::tools::parse_dsml_tolerant(&st.acc.text, &parsed.tool_orders)
-        {
+        if let Some(tolerant) = crate::tools::parse_dsml_tolerant(
+            &st.acc.text,
+            &parsed.tool_orders,
+            think_mode_enabled(parsed.think_mode),
+        ) {
             parsed_gen = tolerant;
         }
     }

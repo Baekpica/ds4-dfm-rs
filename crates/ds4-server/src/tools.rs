@@ -562,12 +562,27 @@ fn dsml_clean_name(raw: &[u8]) -> String {
 /// emits a number as a quoted string).  Runs only as a fallback when the
 /// strict style match found no calls, so every other family's bytes stay
 /// identical; returns None when no calls can be reconstructed.
-pub fn parse_dsml_tolerant(text: &[u8], orders: &[ToolSchemaOrder]) -> Option<ParsedGenerated> {
+pub fn parse_dsml_tolerant(
+    text: &[u8],
+    orders: &[ToolSchemaOrder],
+    require_thinking_closed: bool,
+) -> Option<ParsedGenerated> {
     let (norm, map) = dsml_normalize(text);
+    // With thinking enabled the engine searches for a block only after the
+    // LAST think close: DSML inside reasoning is model text, never
+    // executable (server_dsml_parse.c:291-316), and a missing close means
+    // no tool search at all.  Mirror parse_dsml_generated's scope.
+    let search_from = if require_thinking_closed {
+        let end = think_end(ChatFormat::DeepSeek).as_bytes();
+        let last = find_last_substr(&norm, end)?;
+        last + end.len()
+    } else {
+        0
+    };
     let start = [
-        find_substr(&norm, b"<tool_calls"),
-        find_substr(&norm, b"<calls>"),
-        find_substr(&norm, b"<invoke"),
+        find_substr(&norm[search_from..], b"<tool_calls").map(|r| search_from + r),
+        find_substr(&norm[search_from..], b"<calls>").map(|r| search_from + r),
+        find_substr(&norm[search_from..], b"<invoke").map(|r| search_from + r),
     ]
     .into_iter()
     .flatten()

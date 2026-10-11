@@ -2,11 +2,16 @@
 
 use ds4_server::parse::{parse_request, ChatMsg, ChatPart, ImageMime, RequestImage, ToolCall};
 use ds4_server::route::WireSurface;
+use ds4_server::tools::{
+    DSML_INVOKE_END, DSML_INVOKE_START, DSML_PARAM_END, DSML_PARAM_START, DSML_TOOL_CALLS_END,
+    DSML_TOOL_CALLS_START,
+};
 use ds4_server::{
     generate_and_write, generation_blocked, handle_client_inner, render_prompt,
-    stop_list_find_from, ContStepper, DecodeIo, GenerateError, ParseEnv, ParsedRequest, ReqTimings,
-    ScriptedDecode, ScriptedStep, ServerConfig, ServerInner, ThinkMode, CREATED_TEST,
-    DSML_ASSISTANT, DSML_BOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_USER, TAPE_PLAIN,
+    stop_list_find_from, think_start, ChatFormat, ContStepper, DecodeIo, GenerateError, ParseEnv,
+    ParsedRequest, ReqTimings, ScriptedDecode, ScriptedStep, ServerConfig, ServerInner, ThinkMode,
+    CREATED_TEST, DSML_ASSISTANT, DSML_BOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_USER,
+    TAPE_PLAIN,
 };
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -1912,6 +1917,55 @@ fn scripted_dsml_tools_emit_tool_calls() {
         "{s}"
     );
     assert!(s.contains("ls"), "{s}");
+}
+
+#[test]
+fn dsml_inside_closed_thinking_is_not_a_tool_call() {
+    // The engine's rule (server_dsml_parse.c:291-316): with thinking on, a
+    // DSML block inside the reasoning section is model text, never a tool
+    // call -- the tool search starts after the last  response.  The route's
+    // tolerant fallback must scope the same way, or the finish serves a
+    // call the assistant never emitted as its post-thinking action.
+    let mut parsed = parse_request(
+        WireSurface::OpenaiChat,
+        &env(),
+        r#"{"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"},"max_tokens":64,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}"#,
+    )
+    .unwrap();
+    parsed.think_mode = ThinkMode::Low;
+    parsed.temperature = 0.0;
+    assert!(parsed.has_tools);
+
+    let think_open = think_start(ChatFormat::DeepSeek);
+    let text = format!(
+        "{think_open}the user wants the weather\n{}\n{} name=\"get_weather\">\n\
+         {} name=\"city\" string=\"true\">Paris{}\n{}\n{}\n\n</think>\n\nHello.",
+        DSML_TOOL_CALLS_START,
+        DSML_INVOKE_START,
+        DSML_PARAM_START,
+        DSML_PARAM_END,
+        DSML_INVOKE_END,
+        DSML_TOOL_CALLS_END
+    );
+    // ScriptedV41: the route must take generate_terminal_v41, the only
+    // path with the tolerant fallback (a plain scripted engine never
+    // reaches it and the test would pass vacuously).
+    let mut engine = ScriptedV41::new(&[(1, text.as_str()), (99, "")], 1 << 20);
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "chatcmpl-think-tools",
+        CREATED_TEST,
+        false,
+        64,
+        &mut out,
+    )
+    .unwrap();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.starts_with("HTTP/1.1 200 OK"), "{s}");
+    assert!(!s.contains("\"tool_calls\""), "{s}");
+    assert!(s.contains("\"finish_reason\":\"stop\""), "{s}");
 }
 
 #[test]

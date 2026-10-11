@@ -2,7 +2,8 @@
 
 use ds4_server::{
     append_tool_calls_json, assign_tool_ids, parse_dsml_tolerant, parse_generated_for_response,
-    parse_generated_message, ChatFormat, ModelSyntax, SemAccum, ToolCall, ToolSchemaOrder,
+    parse_generated_message, think_start, ChatFormat, ModelSyntax, SemAccum, ToolCall,
+    ToolSchemaOrder,
 };
 
 const DSML_START: &str = "<｜DSML｜tool_calls>";
@@ -420,7 +421,7 @@ fn parse_dsml_tolerant_parses_the_v41_mixed_block() {
     assert!(!strict.ok);
     assert!(strict.calls.is_empty());
 
-    let p = parse_dsml_tolerant(text.as_bytes(), &[]).expect("tolerant parse");
+    let p = parse_dsml_tolerant(text.as_bytes(), &[], false).expect("tolerant parse");
     assert_eq!(p.calls.len(), 1);
     assert_eq!(p.calls[0].name, "get_weather");
     assert_eq!(p.calls[0].arguments, r#"{"city": "Stockholm"}"#);
@@ -439,7 +440,7 @@ fn parse_dsml_tolerant_tolerates_the_shims_variants() {
          <parameter name=\"zone\">UTC</parameter>\n\
          </invoke>\n</\u{ff5c}DSML\u{ff5c}calls>"
     );
-    let p = parse_dsml_tolerant(short.as_bytes(), &[]).expect("short wrapper");
+    let p = parse_dsml_tolerant(short.as_bytes(), &[], false).expect("short wrapper");
     assert_eq!(p.calls[0].name, "get_time");
     assert_eq!(p.calls[0].arguments, r#"{"zone": "UTC"}"#);
     assert_eq!(p.content, b"working");
@@ -450,7 +451,7 @@ fn parse_dsml_tolerant_tolerates_the_shims_variants() {
          <parameter name=\"host\" string=\"true\">10.0.0.1</parameter>\n\
          </invoke>"
     );
-    let p = parse_dsml_tolerant(unclosed.as_bytes(), &[]).expect("unclosed wrapper");
+    let p = parse_dsml_tolerant(unclosed.as_bytes(), &[], false).expect("unclosed wrapper");
     assert_eq!(p.calls[0].name, "ping");
     assert_eq!(p.calls[0].arguments, r#"{"host": "10.0.0.1"}"#);
 
@@ -460,7 +461,7 @@ fn parse_dsml_tolerant_tolerates_the_shims_variants() {
         "{DSML_START}\n{DSML_INVOKE} name=\"bash\">\n\
          <parameter name=\"cmd\" string=\"true\">rm -rf /tmp/fo"
     );
-    assert!(parse_dsml_tolerant(truncated.as_bytes(), &[]).is_none());
+    assert!(parse_dsml_tolerant(truncated.as_bytes(), &[], false).is_none());
 }
 
 #[test]
@@ -477,7 +478,7 @@ fn parse_dsml_tolerant_coerces_to_the_declared_schema_type() {
          <parameter name=\"query\" string=\"true\">rtx 5090</parameter>\n\
          </invoke>\n{DSML_END}"
     );
-    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, false).expect("tolerant parse");
     assert_eq!(p.calls[0].arguments, r#"{"limit": 5, "query": "rtx 5090"}"#);
 }
 
@@ -493,7 +494,7 @@ fn parse_dsml_tolerant_skips_undeclared_names() {
          {DSML_INVOKE} name=\"declared\">\n\
          <parameter name=\"y\">2</parameter>\n</invoke>\n{DSML_END}"
     );
-    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, false).expect("tolerant parse");
     assert_eq!(p.calls.len(), 1);
     assert_eq!(p.calls[0].name, "declared");
 }
@@ -507,7 +508,7 @@ fn parse_dsml_tolerant_nests_parameters_like_the_shim() {
          </parameter>\n\
          </invoke>\n{DSML_END}"
     );
-    let p = parse_dsml_tolerant(text.as_bytes(), &[]).expect("tolerant parse");
+    let p = parse_dsml_tolerant(text.as_bytes(), &[], false).expect("tolerant parse");
     assert_eq!(p.calls[0].name, "use_tool");
     assert!(
         p.calls[0].arguments.contains("\"tool_input\": {"),
@@ -537,7 +538,7 @@ fn parse_dsml_tolerant_binds_a_bare_child_of_a_declared_property() {
          {DSML_SPACED_INVOKE} name=\"get_weather\">\n\
          <city>Tokyo</city>\n{DSML_SPACED_INVOKE_END}"
     );
-    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, false).expect("tolerant parse");
     assert_eq!(p.calls.len(), 1);
     assert_eq!(p.calls[0].name, "get_weather");
     assert_eq!(p.calls[0].arguments, r#"{"city": "Tokyo"}"#);
@@ -556,7 +557,7 @@ fn parse_dsml_tolerant_keeps_an_undeclared_child_unbound() {
         "{DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"get_weather\">\n\
          <city>Tokyo</city>\n{DSML_SPACED_INVOKE_END}"
     );
-    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, false).expect("tolerant parse");
     assert_eq!(p.calls[0].arguments, "{}");
 }
 
@@ -572,8 +573,80 @@ fn parse_dsml_tolerant_coerces_a_child_like_a_parameter() {
         "{DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"search\">\n\
          <limit>5</limit>\n{DSML_SPACED_INVOKE_END}"
     );
-    let p = parse_dsml_tolerant(text.as_bytes(), &orders).expect("tolerant parse");
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, false).expect("tolerant parse");
     assert_eq!(p.calls[0].arguments, r#"{"limit": 5}"#);
+}
+
+#[test]
+fn parse_dsml_tolerant_ignores_a_block_inside_closed_thinking() {
+    // The engine refuses DSML inside a closed reasoning section: with
+    // thinking on, the tool search starts after the LAST </think>
+    // (server_dsml_parse.c:291-316; "DSML inside reasoning is just model
+    // text ... 思考里的工具块不可执行").  Before the scope fix the fallback
+    // scanned the whole text and served the call with a mangled split.
+    let orders = [ToolSchemaOrder {
+        name: "get_weather".into(),
+        prop: vec!["city".into()],
+        prop_type: vec!["string".into()],
+        ..Default::default()
+    }];
+    let think_open = think_start(ChatFormat::DeepSeek);
+    let text = format!(
+        "{think_open}the user wants the weather; emit the tool now\n\
+         {DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"get_weather\">\n\
+         {DSML_SPACED_PARAM} name=\"city\" string=\"true\">Paris{DSML_SPACED_PARAM_END}\n\
+         {DSML_SPACED_INVOKE_END}\n{DSML_SPACED_END}\n\n</think>\n\nHello."
+    );
+    assert!(parse_dsml_tolerant(text.as_bytes(), &orders, true).is_none());
+    // Thinking off: the engine searches the whole text and the block counts.
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, false).expect("thinking off");
+    assert_eq!(p.calls[0].arguments, r#"{"city": "Paris"}"#);
+}
+
+#[test]
+fn parse_dsml_tolerant_recovers_a_block_after_closed_thinking() {
+    let orders = [ToolSchemaOrder {
+        name: "get_weather".into(),
+        prop: vec!["city".into()],
+        prop_type: vec!["string".into()],
+        ..Default::default()
+    }];
+    let think_open = think_start(ChatFormat::DeepSeek);
+    let text = format!(
+        "{think_open}check the weather tool</think>\n\nI'll check.\n\n\
+         {DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"get_weather\">\n\
+         {DSML_SPACED_PARAM} name=\"city\" string=\"true\">Paris{DSML_SPACED_PARAM_END}\n\
+         {DSML_SPACED_INVOKE_END}"
+    );
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, true).expect("tolerant parse");
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.calls[0].arguments, r#"{"city": "Paris"}"#);
+    assert_eq!(p.reasoning, b"check the weather tool");
+    assert!(
+        p.content.ends_with(b"I'll check."),
+        "{:?}",
+        String::from_utf8_lossy(&p.content)
+    );
+}
+
+#[test]
+fn parse_dsml_tolerant_refuses_a_block_in_unclosed_thinking() {
+    // No think close: the engine does no tool search at all -- the text is
+    // returned as reasoning with empty content (server_dsml_parse.c:299-313).
+    let orders = [ToolSchemaOrder {
+        name: "get_weather".into(),
+        prop: vec!["city".into()],
+        prop_type: vec!["string".into()],
+        ..Default::default()
+    }];
+    let think_open = think_start(ChatFormat::DeepSeek);
+    let text = format!(
+        "{think_open}I'll emit the tool inside the open thinking\n\
+         {DSML_SPACED_START}\n{DSML_SPACED_INVOKE} name=\"get_weather\">\n\
+         {DSML_SPACED_PARAM} name=\"city\" string=\"true\">Paris{DSML_SPACED_PARAM_END}\n\
+         {DSML_SPACED_INVOKE_END}\n{DSML_SPACED_END}"
+    );
+    assert!(parse_dsml_tolerant(text.as_bytes(), &orders, true).is_none());
 }
 
 const DSML_SPACED_START: &str = "<｜DSML｜ calls>";
