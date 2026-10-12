@@ -46,8 +46,13 @@ ZC="${5:-}"
 PFILE="${6:-speed-bench/promessi_sposi.txt}"
 NCH="${7:-12000}"
 N="${8:-48}"
-shift 8 2>/dev/null || true
-EXTRA="${*:-}"
+EXTRA=""
+# shift only when in range: dash exits 2 on `shift 8` with fewer than 8
+# positional parameters, and that killed this gate silently at launch.
+if [ "$#" -gt 8 ]; then
+    shift 8
+    EXTRA="$*"
+fi
 MIN=8
 
 ROOT="$(dirname "$0")/.."
