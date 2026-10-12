@@ -289,6 +289,10 @@ typedef int (*ds4_bridge_v41_rows_fn)(uint32_t pos0, const int32_t *tokens, int 
  * and only then uploads the layer's rows; NULL keeps the synchronous
  * protocol (prepare filled everything, the graph records no flag wait). */
 typedef int (*ds4_bridge_v41_wait_fn)(int k, void *ud);
+/* The cross-block prefetch hook: the chunk loop declares the next prefill
+ * block before running the current one (ds41_forward.h's
+ * ds41_engram_feed.prefetch_next); nonzero refuses the run. */
+typedef int (*ds4_bridge_v41_next_fn)(uint32_t pos0, const int32_t *tokens, int n, void *ud);
 typedef int (*ds4_bridge_v41_emit_fn)(int32_t token, void *ud);
 typedef int (*ds4_bridge_v41_progress_fn)(void *ud, const char *event, int32_t current, int32_t total);
 void ds4_bridge_v41_set_dspark(int mode);
@@ -335,6 +339,7 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             int no_engram, int verify_k,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
                             ds4_bridge_v41_wait_fn wait,
+                            ds4_bridge_v41_next_fn next,
                             ds4_bridge_v41_emit_fn emit, void *emit_ud,
                             ds4_bridge_v41_progress_fn progress, void *progress_ud,
                             char *err, size_t errlen);

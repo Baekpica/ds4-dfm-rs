@@ -654,8 +654,10 @@ void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int curr
 void ds4_set_mem_budget_mb(int mb) { (void)mb; }
 int ds4_v41_engram_count(void *engine) { (void)engine; return 0; }
 ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
-                                ds4_v41_wait_fn wait, void *wait_ud) {
+                                ds4_v41_wait_fn wait, void *wait_ud,
+                                ds4_v41_next_fn next, void *next_ud) {
     (void)engine; (void)n_prompt; (void)fn; (void)ud; (void)wait; (void)wait_ud;
+    (void)next; (void)next_ud;
     return NULL;
 }
 void ds4_v41_feed_close(ds4_v41_feed *f) { (void)f; }

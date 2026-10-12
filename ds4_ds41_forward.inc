@@ -76,6 +76,8 @@ struct ds4_v41_feed {
     void *ud;
     ds4_v41_wait_fn wait_fn;
     void *wait_ud;
+    ds4_v41_next_fn next_fn;
+    void *next_ud;
     void *raw[DS4_V41_MAX_ENGRAM];
     uint32_t n_layers, rows_cap;
 };
@@ -94,6 +96,13 @@ static int v41_feed_wait_tramp(int k, void *ud) {
     ds4_v41_feed *f = (ds4_v41_feed *)ud;
     return f->wait_fn ? f->wait_fn(k, f->wait_ud) : 0;
 }
+/* The cross-block prefetch's trampoline (ds41_forward.h): the chunk loop
+ * declares the next prefill block; the provider may read its first round
+ * during the current block's tail. */
+static int v41_feed_next_tramp(uint32_t pos0, const int *tokens, int n, void *ud) {
+    ds4_v41_feed *f = (ds4_v41_feed *)ud;
+    return f->next_fn ? f->next_fn(pos0, tokens, n, f->next_ud) : 0;
+}
 void ds4_v41_feed_close(ds4_v41_feed *f) {
     if (!f) return;
     for (uint32_t k = 0; k < DS4_V41_MAX_ENGRAM; k++) if (f->raw[k]) ds4_gpu_host_free(f->raw[k]);
@@ -101,7 +110,8 @@ void ds4_v41_feed_close(ds4_v41_feed *f) {
     free(f);
 }
 ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
-                                ds4_v41_wait_fn wait, void *wait_ud) {
+                                ds4_v41_wait_fn wait, void *wait_ud,
+                                ds4_v41_next_fn next, void *next_ud) {
     if (!engine || DS4_MODEL_VARIANT != DS4_VARIANT_V41 || g_ds4_v41.n_engram == 0) return NULL;
     const uint32_t cols = (g_ds4_v41.engram_max_ngram - 1u) * g_ds4_v41.engram_heads;
     const uint32_t stride = g_ds4_v41.engram_head_dim + g_ds4_v41.engram_head_dim / 32u;
@@ -111,6 +121,7 @@ ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, 
     if (!f) return NULL;
     f->fn = fn; f->ud = ud; f->rows_cap = cap; f->n_layers = g_ds4_v41.n_engram;
     f->wait_fn = wait; f->wait_ud = wait_ud;
+    f->next_fn = next; f->next_ud = next_ud;
     for (uint32_t k = 0; k < f->n_layers; k++) {
         f->raw[k] = ds4_gpu_host_alloc((uint64_t)cap * cols * stride);
         if (!f->raw[k]) { ds4_v41_feed_close(f); return NULL; }
@@ -118,6 +129,7 @@ ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, 
     }
     f->feed.prepare = v41_feed_tramp;
     f->feed.ud = f;
+    if (next) f->feed.prefetch_next = v41_feed_next_tramp;
     /* P2: the graph route's flag slots exist only for the async protocol
      * (the engine's J->flags, core_v41_engram.c:222-225). */
     if (wait) {
@@ -1045,11 +1057,30 @@ static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
  * least a window of positions (official SWA bounded replay); CED skips the
  * decoder segment of every block but the last. */
 static bool v41_forward(ds4_engine *e, ds4_v41_state *st, const int32_t *ids, uint32_t n);
-static bool v41_prefill_chunk(ds4_engine *e, ds4_v41_state *st, const int32_t *prompt, uint32_t np, uint32_t *c0, uint32_t cap) {
-    uint32_t nc = np - *c0 < cap ? np - *c0 : cap;
-    const uint32_t rest = np - *c0 - nc;
+/* The chunk loop's slice rule: the cap, then keep at least a window for the
+ * next block.  One rule, two users: the current chunk and the cross-block
+ * prefetch's declaration for the next one. */
+static uint32_t v41_chunk_nc(uint32_t np, uint32_t c0, uint32_t cap) {
+    uint32_t nc = np - c0 < cap ? np - c0 : cap;
+    const uint32_t rest = np - c0 - nc;
     if (rest > 0u && rest < DS4_N_SWA && nc > DS4_N_SWA) nc -= DS4_N_SWA - rest;
+    return nc;
+}
+static bool v41_prefill_chunk(ds4_engine *e, ds4_v41_state *st, const int32_t *prompt, uint32_t np, uint32_t *c0, uint32_t cap) {
+    const uint32_t nc = v41_chunk_nc(np, *c0, cap);
     st->ced_skip = (!g_ds4_v41_decoder_full && *c0 + nc < np) ? 1 : 0;
+    /* Cross-block prefetch (ds41_forward.h): declare the next chunk while
+     * this one still has compute to hide its first round.  A nonzero return
+     * is a provider error and refuses the run; "no prefetch right now" is
+     * 0, not a refusal. */
+    if (st->efeed && st->efeed->prefetch_next && *c0 + nc < np) {
+        const uint32_t c1 = *c0 + nc;
+        const uint32_t n1 = v41_chunk_nc(np, c1, cap);
+        if (st->efeed->prefetch_next(c1, prompt + c1, (int)n1, st->efeed->ud) != 0) {
+            fprintf(stderr, "ds4: [v41] engram prefetch declaration refused (pos0 %u n %u)\n", c1, n1);
+            return false;
+        }
+    }
     if (!v41_forward(e, st, prompt + *c0, nc)) return false;
     *c0 += nc;
     return true;

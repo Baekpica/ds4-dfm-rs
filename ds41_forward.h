@@ -70,6 +70,20 @@ typedef struct {
      * protocol).  Native-owned; the provider never touches it. */
     int32_t *flags;
     uint32_t graph_seq;   /* the arm sequence (native-owned; only grows, no ABA) */
+    /* The cross-block prefetch (the engine's v41_engram_prefetch_next,
+     * core_v41_engram.c:230 -- named there, never implemented): the chunk
+     * loop declares the NEXT prefill block (pos0, its token ids, n) right
+     * before running the current one, so a provider with a fetch worker can
+     * read the next block's FIRST round during the current block's tail
+     * (the ring is idle after this block's last round) and serve it at the
+     * next prepare.  Only the first round: the measured profile puts the
+     * stall at the first engram layer (L01 +0.4 s at 2048, every later
+     * layer 0.0-0.1 s), and the second round already hides behind the
+     * layers between L1 and L14.  Nonzero refuses the run (a provider
+     * error); "cannot prefetch right now" returns 0 and the next block
+     * simply runs without prefetch.  NULL = no prefetch (the score path,
+     * the C harness). */
+    int (*prefetch_next)(uint32_t pos0, const int *tokens, int n, void *ud);
 } ds41_engram_feed;
 
 /* Teacher-forced scoring of `ids` through an opened V4.1 engine.  Writes the
@@ -183,9 +197,12 @@ void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int curr
 typedef int (*ds4_v41_rows_fn)(uint32_t pos0, const int *tokens, int n, uint8_t *const *dst, void *ud);
 /* P2: the per-layer collect hook (see ds41_engram_feed.wait). */
 typedef int (*ds4_v41_wait_fn)(int k, void *ud);
+/* The cross-block prefetch hook (see ds41_engram_feed.prefetch_next). */
+typedef int (*ds4_v41_next_fn)(uint32_t pos0, const int *tokens, int n, void *ud);
 typedef struct ds4_v41_feed ds4_v41_feed;
 ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
-                                ds4_v41_wait_fn wait, void *wait_ud);
+                                ds4_v41_wait_fn wait, void *wait_ud,
+                                ds4_v41_next_fn next, void *next_ud);
 void ds4_v41_feed_close(ds4_v41_feed *f);
 const ds41_engram_feed *ds4_v41_feed_handle(const ds4_v41_feed *f);
 

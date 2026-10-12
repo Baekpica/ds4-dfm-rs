@@ -899,6 +899,7 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             int no_engram, int verify_k,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
                             ds4_bridge_v41_wait_fn wait,
+                            ds4_bridge_v41_next_fn next,
                             ds4_bridge_v41_emit_fn emit, void *emit_ud,
                             ds4_bridge_v41_progress_fn progress, void *progress_ud,
                             char *err, size_t errlen)
@@ -920,7 +921,7 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
     /* The pinned buffers exist only when the model has engram layers; a model
      * without them takes the NULL feed and never consults the provider. */
     if (!no_engram && ds4_v41_engram_count(m->engine) > 0) {
-        feed = ds4_v41_feed_open(m->engine, n_prompt, rows, rows_ud, wait, rows_ud);
+        feed = ds4_v41_feed_open(m->engine, n_prompt, rows, rows_ud, wait, rows_ud, next, rows_ud);
         if (!feed) {
             set_err(err, errlen, "V4.1 engram feed allocation failed");
             return 1;

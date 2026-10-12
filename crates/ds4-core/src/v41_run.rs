@@ -178,6 +178,13 @@ pub struct V41Feed {
     /// Sticky failure: once a round failed every later call fails loud (the
     /// engine's `J->err`; the run aborts on the first refusal either way).
     err: Option<String>,
+    /// The declared next prefill block (the chunk loop's `prefetch_next`):
+    /// the token range whose layer-0 rows the worker reads into the shadow
+    /// after this block's last round.
+    next: Option<(usize, usize)>,
+    /// `DS41_FEED_NO_PREFETCH` (diagnostic): declarations are ignored, bit
+    /// for bit the pre-prefetch behavior.
+    prefetch_off: bool,
     /// The controlled-delay gate hooks (the P2 review's test): delay each
     /// layer's collect/publication by N us (a slow disk), or refuse every
     /// wait (the native route must then fail loud, never consume stale rows).
@@ -244,12 +251,14 @@ impl V41Feed {
             cols,
             stride,
             hist: Vec::new(),
+            shadow: Vec::new(),
         }));
         let ctl = Arc::new((
             Mutex::new(Ctl {
                 go: false,
                 done: 0,
                 err: None,
+                pf: None,
             }),
             Condvar::new(),
         ));
@@ -296,6 +305,10 @@ impl V41Feed {
                 wait_delay_us, wait_withhold
             );
         }
+        let prefetch_off = std::env::var_os("DS41_FEED_NO_PREFETCH").is_some();
+        if prefetch_off && async_on {
+            eprintln!("ds4: [v41] engram cross-block prefetch off (DS41_FEED_NO_PREFETCH)");
+        }
         Ok(Some(Self {
             core,
             worker,
@@ -314,6 +327,8 @@ impl V41Feed {
             block_end: 0,
             bases: Vec::new(),
             err: None,
+            next: None,
+            prefetch_off,
             wait_delay_us,
             wait_withhold,
         }))
@@ -371,6 +386,18 @@ impl V41Feed {
         // constant (the kernel may return a different depth).
         self.io_mode =
             self.async_on && (tokens.len() as u64 * self.cols as u64 * 2u64) > self.ring_cap as u64;
+        // Consume a completed cross-block prefetch: the worker read this
+        // block's layer-0 rows into the shadow during the previous block's
+        // tail.  Only an oversize block can have one (the chunk loop
+        // declares prefill chunks only); a stale or mismatched shadow is
+        // dropped and the round runs normally.
+        let shadow_hit = {
+            let (m, _) = &*self.ctl;
+            let mut g = m.lock().unwrap();
+            let hit = self.io_mode && g.pf == Some((pos0, end));
+            g.pf = None;
+            hit
+        };
         {
             let mut c = self.core.lock().unwrap();
             c.splice_hist(start, tokens);
@@ -388,6 +415,13 @@ impl V41Feed {
             } else if !self.io_mode {
                 c.fill_round(0, start, end, dst[0])?;
             }
+            if shadow_hit {
+                // Hand the prefetched rows to the native's slot 0 (its own
+                // pinned buffer; the previous block's reads of it are done
+                // by the forward's per-block synchronize).
+                let bytes = tokens.len() * self.cols as usize * self.stride as usize;
+                unsafe { std::ptr::copy_nonoverlapping(c.shadow.as_ptr(), dst[0], bytes) };
+            }
         }
         if self.io_mode {
             {
@@ -402,6 +436,8 @@ impl V41Feed {
                 end,
                 bases: self.bases.clone(),
                 n_eng: self.n_layers,
+                first: usize::from(shadow_hit),
+                next: self.next.take(),
             };
             let sent = self
                 .worker
@@ -413,13 +449,14 @@ impl V41Feed {
                 return Err("engram fetch worker is gone".into());
             }
         }
+        self.next = None;
         for k in 0..self.n_layers {
             if !self.async_on {
                 self.started[k] = true;
                 self.joined[k] = true;
             } else if self.io_mode {
                 self.started[k] = true;
-                self.joined[k] = false;
+                self.joined[k] = shadow_hit && k == 0;
             } else {
                 self.started[k] = k == 0;
                 self.joined[k] = false;
@@ -516,6 +553,51 @@ impl V41Feed {
         Ok(())
     }
 
+    /// The cross-block prefetch declaration (the engine's
+    /// `v41_engram_prefetch_next`, named at `core_v41_engram.c:230` and
+    /// never implemented there): the chunk loop declares the NEXT prefill
+    /// block before running the current one.  The declared block's tokens
+    /// are spliced into the history here (the n-gram window reads them;
+    /// consecutive blocks cover disjoint ranges, so a later block's tokens
+    /// never change an earlier block's hash), and `prepare` chains the
+    /// worker into reading the declared block's layer-0 round into the
+    /// shadow after the current block's last round -- the ring is idle from
+    /// there to the block end.  Only the first round is prefetched: the
+    /// measured profile puts the stall at the first engram layer (L01
+    /// +0.4 s at 2048, every later layer 0.0-0.1 s), and the second round
+    /// already hides behind the layers between L1 and L14.
+    ///
+    /// A provider that cannot prefetch right now (the synchronous protocol,
+    /// the kill switch, a block larger than the shadow) returns Ok and the
+    /// next block simply runs without prefetch; Err is the sticky failure
+    /// path and stops the run.
+    pub fn prefetch_next(
+        &mut self,
+        pos0: u32,
+        tokens: &[i32],
+    ) -> std::result::Result<(), String> {
+        if let Some(e) = &self.err {
+            return Err(e.clone());
+        }
+        if !self.async_on || self.prefetch_off || tokens.is_empty() {
+            return Ok(());
+        }
+        let start = pos0 as usize;
+        let end = start + tokens.len();
+        let need = tokens.len() * self.cols as usize * self.stride as usize;
+        let mut c = self.core.lock().unwrap();
+        if c.shadow.len() < need {
+            if !c.shadow.is_empty() {
+                return Ok(()); // never grow: the worker may be mid-write
+            }
+            c.shadow.resize(need, 0);
+        }
+        c.splice_hist(start, tokens);
+        drop(c);
+        self.next = Some((start, end));
+        Ok(())
+    }
+
     /// The engine's prefetch retire (`core_v41_engram.c:313-319`): the
     /// previous block's rounds must be done before the history and the
     /// request vector are touched again -- a completion indexes the resident
@@ -592,6 +674,14 @@ struct FeedCore {
     cols: u32,
     stride: u32,
     hist: Vec<i32>,
+    /// The cross-block prefetch buffer: one block's layer-0 rows in the
+    /// native slot layout `[n][cols][stride]`, filled by the worker during
+    /// the previous block's tail and copied into the native's slot 0 at the
+    /// next prepare.  Sized once, at the first declaration, and never grown:
+    /// only the last chunk is smaller than the cap, so no later block can
+    /// need more, and a grow could move the buffer under the worker's
+    /// in-flight reads.
+    shadow: Vec<u8>,
 }
 
 impl FeedCore {
@@ -720,16 +810,26 @@ struct Ctl {
     go: bool,
     done: u32,
     err: Option<String>,
+    /// The shadow holds the layer-0 rows of the block whose `(pos0, end)`
+    /// this is (a completed cross-block prefetch, waiting for its prepare).
+    pf: Option<(u32, usize)>,
 }
 
 /// One oversize block for the worker (the engine's per-layer round loop,
-/// `core_v41_engram.c:128-150`).
+/// `core_v41_engram.c:128-150`), optionally followed by the declared next
+/// block's layer-0 round into the shadow (the cross-block prefetch).
 enum FeedCmd {
     Rounds {
         start: usize,
         end: usize,
         bases: Vec<usize>,
         n_eng: usize,
+        /// The first layer the worker runs: 1 when the shadow already holds
+        /// layer 0 for this block (prepare copied it into the native slot).
+        first: usize,
+        /// The declared next block's token range: after this block's last
+        /// round the worker reads its layer-0 rows into the shadow.
+        next: Option<(usize, usize)>,
     },
     Stop,
 }
@@ -743,6 +843,8 @@ struct Worker {
 /// layer, hash + submit (`fill_round`) then collect (`collect`), publish the
 /// layer's completion bit; on failure publish every bit with the error kept
 /// so the waiters stop (`:136-141`).  A panic becomes the same error shape.
+/// After the block's last round the declared next block's layer-0 round is
+/// chained into the shadow (the cross-block prefetch).
 fn worker_loop(
     core: Arc<Mutex<FeedCore>>,
     ctl: Arc<(Mutex<Ctl>, Condvar)>,
@@ -753,17 +855,19 @@ fn worker_loop(
             Ok(c) => c,
             Err(_) => break,
         };
-        let (start, end, bases, n_eng) = match cmd {
+        let (start, end, bases, n_eng, first, next) = match cmd {
             FeedCmd::Rounds {
                 start,
                 end,
                 bases,
                 n_eng,
-            } => (start, end, bases, n_eng),
+                first,
+                next,
+            } => (start, end, bases, n_eng, first, next),
             FeedCmd::Stop => break,
         };
         let mut failed = false;
-        for ei in 0..n_eng {
+        for ei in first..n_eng {
             let r = catch_unwind(AssertUnwindSafe(|| {
                 let mut c = core.lock().unwrap();
                 c.fill_round(ei as u32, start, end, bases[ei] as *mut u8)
@@ -788,6 +892,30 @@ fn worker_loop(
             drop(g);
             if failed {
                 break;
+            }
+        }
+        if !failed {
+            if let Some((ns, ne)) = next {
+                let r = catch_unwind(AssertUnwindSafe(|| {
+                    let mut c = core.lock().unwrap();
+                    let base = c.shadow.as_mut_ptr();
+                    c.fill_round(0, ns, ne, base).and_then(|_| c.collect())
+                }))
+                .unwrap_or_else(|_| Err("engram fetch worker panicked".into()));
+                let (m, cv) = &*ctl;
+                let mut g = m.lock().unwrap();
+                match r {
+                    Ok(()) => {
+                        g.pf = Some((ns as u32, ne));
+                    }
+                    Err(e) => {
+                        if g.err.is_none() {
+                            g.err = Some(format!("cross-block prefetch: {e}"));
+                        }
+                    }
+                }
+                cv.notify_all();
+                drop(g);
             }
         }
         let (m, cv) = &*ctl;
@@ -859,6 +987,25 @@ unsafe extern "C" fn wait_tramp(k: i32, ud: *mut c_void) -> i32 {
     }
     let t = &mut *(ud as *mut FeedTramp<'_>);
     match catch_unwind(AssertUnwindSafe(|| t.feed.wait_layer(k as u32))) {
+        Ok(Ok(())) => 0,
+        _ => 1,
+    }
+}
+
+/// The cross-block prefetch hook: the chunk loop declares the next prefill
+/// block before running the current one; the feed reads its layer-0 round
+/// during the current block's tail.  Same convention as prepare: nonzero
+/// refuses the run (a provider error); "cannot prefetch right now" is Ok.
+unsafe extern "C" fn next_tramp(pos0: u32, tokens: *const i32, n: i32, ud: *mut c_void) -> i32 {
+    if ud.is_null() || n < 0 || tokens.is_null() {
+        return 1;
+    }
+    if n == 0 {
+        return 0;
+    }
+    let t = &mut *(ud as *mut FeedTramp<'_>);
+    let tokens = std::slice::from_raw_parts(tokens, n as usize);
+    match catch_unwind(AssertUnwindSafe(|| t.feed.prefetch_next(pos0, tokens))) {
         Ok(Ok(())) => 0,
         _ => 1,
     }
@@ -1128,20 +1275,23 @@ impl Model {
         });
         // The wait hook is installed only for the async protocol (P2); the
         // synchronous feed leaves it NULL and the native keeps the old path.
-        let (rows_fn, wait_fn, rows_ud): (
+        // The prefetch hook rides the same condition: without the worker
+        // there is no ring to chain the next block's round into.
+        let (rows_fn, wait_fn, next_fn, rows_ud): (
             ds4_sys::ds4_bridge_v41_rows_fn,
             ds4_sys::ds4_bridge_v41_wait_fn,
+            ds4_sys::ds4_bridge_v41_next_fn,
             *mut c_void,
         ) = match feed_tramp.as_mut() {
             Some(t) => {
                 let ud = t as *mut FeedTramp<'_> as *mut c_void;
                 if t.feed.async_protocol() {
-                    (Some(rows_tramp), Some(wait_tramp), ud)
+                    (Some(rows_tramp), Some(wait_tramp), Some(next_tramp), ud)
                 } else {
-                    (Some(rows_tramp), None, ud)
+                    (Some(rows_tramp), None, None, ud)
                 }
             }
-            None => (None, None, std::ptr::null_mut()),
+            None => (None, None, None, std::ptr::null_mut()),
         };
         let mut emit_tramp_state = EmitTramp { emit };
         let mut progress_tramp_state = ProgressTramp { progress };
@@ -1157,6 +1307,7 @@ impl Model {
                 rows_fn,
                 rows_ud,
                 wait_fn,
+                next_fn,
                 Some(emit_tramp),
                 &mut emit_tramp_state as *mut EmitTramp<'_> as *mut c_void,
                 Some(progress_tramp),
