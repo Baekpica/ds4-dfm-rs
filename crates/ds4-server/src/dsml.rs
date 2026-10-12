@@ -345,18 +345,6 @@ fn find_lit_bounded(s: &[u8], lit: &[u8]) -> Option<usize> {
     s.windows(lit.len()).position(|w| w == lit)
 }
 
-fn raw_suffix_partial_lit(raw: &[u8], lit: &[u8], min_len: usize) -> bool {
-    if raw.is_empty() || lit.is_empty() {
-        return false;
-    }
-    let max = raw.len().min(lit.len() - 1);
-    for n in min_len..=max {
-        if raw[raw.len() - n..] == lit[..n] {
-            return true;
-        }
-    }
-    false
-}
 
 /// The engine's bare-parameter aliases (f302be7, server_dsml_parse.c:5-47): a
 /// decorated or spaced block also accepts the plain spellings, because the

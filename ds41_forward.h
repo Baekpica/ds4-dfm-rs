@@ -151,6 +151,15 @@ int ds4_engine_v41_last_reused(void);
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np);
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash);
 
+/* The disk half (item 4): the payload export/import the bridge exposes to
+ * the host store (ds4_ds41_kvreuse.inc defines them).  export writes the
+ * in-memory checkpoint's payload to a host-named path; import loads it back
+ * at a byte offset with the token array the store's text block carried (the
+ * native memcmp in the restore stays the authority). */
+int v41_kvreuse_export(const char *path);
+int v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
+                       const int32_t *tokens, uint32_t n);
+
 /* ---- the decode-sampling face (unit H) -------------------------------------
  * The engine's ds4_engine_set_decode_sampling (core_v41_api.c:10-13, the
  * struct at ds4_v41_api.h:69-75; semantics documented there and in

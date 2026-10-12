@@ -436,6 +436,7 @@ static bool dg_wait(ds4_engine *e, ds4_v41_state *st, int32_t *next) {
 
 static bool v41_graph_launch(ds4_engine *e, ds4_v41_state *st, int32_t tok, int after_draft) { return dg_launch(e, st, &tok, 1u, !after_draft); }
 static bool v41_graph_wait(ds4_engine *e, ds4_v41_state *st, int32_t *next_tok) { return dg_wait(e, st, next_tok); }
+__attribute__((unused))   /* the ported engine step (core_decode_graph.c); the batch path calls launch/wait directly */
 static bool v41_graph_step(ds4_engine *e, ds4_v41_state *st, int32_t tok, int32_t *next_tok) {
     return v41_graph_launch(e, st, tok, 0) && v41_graph_wait(e, st, next_tok);
 }

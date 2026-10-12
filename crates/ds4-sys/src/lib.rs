@@ -146,7 +146,7 @@ pub type ds4_bridge_v41_progress_fn =
 pub type ds4_bridge_v41_greedy_fn =
     Option<unsafe extern "C" fn(*mut c_void, *const i32, u32) -> c_int>;
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ds4_bridge_v41_sampling {
     pub temperature: f32,
     pub top_p: f32,

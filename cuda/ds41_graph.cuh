@@ -153,7 +153,7 @@ static void ds41_graph_node_dump(cudaGraph_t graph, const char *prefix) {
             const char *nm = "?";
             if (cudaGraphKernelNodeGetParams(nodes[i], &kp) == cudaSuccess) { (void)cudaFuncGetName(&nm, kp.func); }
             else { (void)cudaGetLastError(); }
-            fprintf(f, "%zu\tkernel\t%s\tg%ux%ux%u b%ux%ux%u s%zu\n", i, nm,
+            fprintf(f, "%zu\tkernel\t%s\tg%ux%ux%u b%ux%ux%u s%u\n", i, nm,
                     kp.gridDim.x, kp.gridDim.y, kp.gridDim.z,
                     kp.blockDim.x, kp.blockDim.y, kp.blockDim.z, kp.sharedMemBytes);
         } else if (t == cudaGraphNodeTypeMemcpy) {

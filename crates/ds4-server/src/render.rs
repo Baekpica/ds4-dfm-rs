@@ -508,7 +508,6 @@ Otherwise, output directly after </think> with tool calls or final response.\n\n
             if !first {
                 put(out, "\n");
             }
-            first = false;
             out.extend_from_slice(&tool_schemas.as_bytes()[before..]);
             break;
         }

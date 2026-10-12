@@ -5,7 +5,7 @@ use crate::json::json_escape_bytes;
 use crate::parse::ToolCall;
 use crate::stream::utf8_stream_safe_len;
 use crate::tools::{
-    dsml_attr, dsml_unescape_text, mint_tool_id, DSML_INVOKE_END, DSML_INVOKE_END_SHORT,
+    dsml_attr, mint_tool_id, DSML_INVOKE_END, DSML_INVOKE_END_SHORT,
     DSML_INVOKE_END_SPACED, DSML_INVOKE_START, DSML_INVOKE_START_SHORT, DSML_INVOKE_START_SPACED,
     DSML_PARAM_END, DSML_PARAM_END_SHORT, DSML_PARAM_END_SPACED, DSML_PARAM_START,
     DSML_PARAM_START_SHORT, DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END,

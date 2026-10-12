@@ -527,6 +527,7 @@ static int v41_draft_launch(ds4_engine *e, ds4_v41_state *main_st, ds4_v41_draft
     dr->pending = 0;
     return 2;
 }
+__attribute__((unused))   /* the ported engine step (core_v41_draft.c:418-420); the run loop calls launch/wait directly */
 static bool v41_draft_step(ds4_engine *e, ds4_v41_state *main_st, ds4_v41_draft *dr, int32_t tok, uint32_t pos_main) {
     const int r = v41_draft_launch(e, main_st, dr, tok, pos_main);
     return r == 2 || (r == 1 && v41_draft_wait(dr));   /* core_v41_draft.c:418-420 */
@@ -979,7 +980,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
              * of stalling the GPU (nsys measured 1.26 ms idle there).  A
              * stopping round does not send.  A launch that returns 0 is marked
              * too: the round top must not retry it. */
-            bool cont = spec && produced + a < n_predict && tok_next != ds4_token_eos(e) && st.n_past + 1 <= st.ctx;
+            bool cont = spec && produced + a < (uint32_t)n_predict && tok_next != ds4_token_eos(e) && st.n_past + 1 <= st.ctx;
             for (uint32_t i = 0; cont && i < a; i++) if (batch[i + 1u] == ds4_token_eos(e)) cont = false;
             if (cont) {
                 t_dl0 = now_sec(); dr.t_launched = 0.0;
