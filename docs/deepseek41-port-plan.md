@@ -2021,6 +2021,65 @@ along the boundary the port already has:
 Rollback: `--no-kv-reuse` at runtime, and the commits themselves (one
 module plus wiring; a revert restores today's behavior exactly).
 
+### The disk half (item 4, 2026-10-12): cross-process checkpoints
+
+Why: the U-B checkpoint is process state; every server restart re-prefills
+the whole prompt (the measured 2.4 s full re-prefill at 2048 against the
+engine's 0.5 s suffix class).  A disk store makes turn 2 of a FRESH process
+pay only the suffix.  The engine has NO disk KV (`server_generate_v41.c`'s
+header lists it as not-implemented), so the reference is upstream ds4's
+store discipline (`ds4_kvstore.c/h`, `ds4_prompt_prefix.c/h`,
+`--kv-disk-dir` / `--kv-disk-space-mb`, `DS4_KVSTORE_DEFAULT_MB 4096`,
+eviction score with a 6 h hit half-life) with the port's own payload -- the
+19.8 MB `K` blob.
+
+Format (versioned, little-endian, one file per checkpoint under `<dir>`):
+a fixed 48-byte header (magic `D41K` + version, model id, the KV-format
+class byte -- FP8-primary against F32 must not cross-load, reason, tokens,
+hits, ctx, created_at, last_used, payload_bytes, the mount digest), then the
+token block `n x 4`, the meta block (per-layer `ng_src`/`cpend`/`win_from`,
+`mainh_end`/`mainh_n`, `K.bytes`), the per-layer device spans in fixed order
+(win `SWA` rows; `ckv` `ng_src`; `idk` `ng_src`; `cpk`/`cps` `cpend` rows),
+and the logits row `V x 4`.  Atomic write (tmp + rename); a short or
+mismatched file is a miss, never a half checkpoint.
+
+Native (`ds4_ds41_kvreuse.inc`): `export(path, reason)` writes the blob only
+when `K.valid` (device spans read through the tensor read API); `import(path)`
+validates the header and sizes and loads into `K`, leaving the existing
+restore path the only authority (it re-runs the memcmp).  `--no-kv-reuse`
+disables both halves; `K.valid` stays the gate.
+
+Host (`crates/ds4-core/src/v41_kvdisk.rs` + `v41_run.rs` + `generate.rs`): a
+store opened at server/CLI start when `--kv-disk-dir` is set (budget =
+`--kv-disk-space-mb`, default 4096 as upstream).  An in-memory index (path,
+tokens, model/quant/ctx, mount, hits, last_used, size) built by scanning the
+directory at open; `find(prompt)` = the longest exact token-prefix match
+(upstream's discipline, never a fuzzy hit); before the run: import; after the
+run: export (0 = nothing saved) and then evict to budget + enforce
+`min_tokens` (no tiny checkpoints).  The V4.1 serving row
+(`serving.rs:651-664`) flips disk none -> disk with the store's effective
+limits; the flags already parse.
+
+Named deviations: (a) the key is the token sequence (the native restore's
+authority) with the mount digest in the header, not upstream's rendered-text
+sha -- the render is a host-side concern here and the engine's reuse matches
+tokens; (b) the payload is the V4.1 checkpoint blob, not upstream's ds4 KV
+format -- the store discipline is what ports; (c) the engine has no disk KV,
+so the gates are the port's own (below), not engine goldens.
+
+Gate (`tests/ds41_kv_disk_gate.sh`, the U-B gate split across processes):
+process A: P, N tokens, exit; process B (fresh): P+t1 -> `reuse |P| of
+|P+t1|`, suffix-only prefill, ids and `DS41_GEN_LOGITS` rows bit-equal to the
+single-process cell; process C: same prompt as B -> reuse n of n bit-for-bit.
+Negatives: different prompt = cold; mount digest change = file ignored;
+truncated file = cold, no crash; over-budget = eviction leaves the newest;
+`--no-kv-reuse` = no store and no load.  Acceptance: the gate PASSes on the
+Spark; the fresh-process turn 2 at 2048 drops from 2.4 s to the suffix
+class; the four parity gates stay green; `cargo test` and the parity
+null-stubs build stay green.
+
+Rollback: `--no-kv-reuse`; delete the directory; the commits.
+
 ## 7. Numerics contract
 
 - Device arithmetic and every format detail follow the C engine's code, and the
