@@ -19,7 +19,7 @@ tokenizer/media processing and output protocol work outside input grammar.
 
 The `ds41` family is a port of the DeepSeek V4.1 Flash engine kept at
 `/data/YoungAi` (READ-ONLY reference, pinned at commit
-`3946dbcc360461fd6de5b64213bd619496094243`). Every ported function mirrors
+`7fb26cc332d740416792204a29c7d13d2986caf5`). Every ported function mirrors
 that engine with file:line citations, every deviation is named and measured
 against it, and `/data/YoungAi` is the source of truth for ds41 behavior —
 not the upstream ds4 tree, not any summary, comment, or memory note. Read
