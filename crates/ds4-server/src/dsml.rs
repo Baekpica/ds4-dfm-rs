@@ -345,7 +345,6 @@ fn find_lit_bounded(s: &[u8], lit: &[u8]) -> Option<usize> {
     s.windows(lit.len()).position(|w| w == lit)
 }
 
-
 /// The engine's bare-parameter aliases (f302be7, server_dsml_parse.c:5-47): a
 /// decorated or spaced block also accepts the plain spellings, because the
 /// artifact mixes them inside one block (decorated invoke, bare parameters).
