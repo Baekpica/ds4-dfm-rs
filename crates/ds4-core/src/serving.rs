@@ -652,7 +652,10 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
     // comes from the model metadata and --ctx is rejected.  Speculation is
     // embedded in the artifact and greedy-only (the sampling path is a
     // recorded gap).  The requested/effective/qualified report and every
-    // refusal below come from these supports.
+    // refusal below come from these supports.  U-B's KV prefix reuse lives
+    // inside the native run (one prompt-end checkpoint, automatic), not on
+    // this plan surface, so the row deliberately keeps reuse none: a
+    // request cannot select or observe it through the serving plan.
     if variant == Variant::DeepSeek41Flash {
         return ServingCaps {
             family,
@@ -2502,7 +2505,7 @@ fn measured_limits(
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
         Variant::DeepSeek41Flash => {
-            "greedy single-request speculation (embedded towers, decode graph on) passed the Spark gates (56-token and 1,100-token byte-identical runs, [dspark] traces equal to the engine); banks, prefix reuse, disk KV, snapshots and the sampling profile are not present on this path; context is the model metadata, --ctx is rejected"
+            "greedy single-request speculation (embedded towers, decode graph on) passed the Spark gates (56-token and 1,100-token byte-identical runs, [dspark] traces equal to the engine); banks, disk KV, snapshots and the sampling profile are not present on this path; the native run reuses the previous prompt's prefix through one prompt-end checkpoint (unit U-B, --no-kv-reuse disables it) and reports it as usage cached tokens, while the serving layer keeps no reuse plan; context is the model metadata, --ctx is rejected"
         }
         Variant::NaiveN05Flash => {
             "main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified"

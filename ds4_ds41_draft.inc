@@ -773,7 +773,11 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
         if (g_ds4_v41_emit_trace) for (uint32_t i = 0; i < np; i++) fprintf(stderr, "[ptok] %u %d\n", i, prompt[i]);
         const double t0 = now_sec();
         bool ok = true, aborted = false;
-        for (uint32_t c0 = 0; ok && c0 < np;) {
+        /* The KV prefix reuse (core_v41_api.c:179): the fresh state takes the
+         * previous request's prompt-end checkpoint when this prompt starts
+         * with it, and the chunk loop then starts at that position. */
+        const uint32_t reused = v41_kvreuse_restore(&st, prompt, np);
+        for (uint32_t c0 = reused; ok && c0 < np;) {
             ok = v41_prefill_chunk(e, &st, prompt, np, &c0, cap);
             /* The engine's per-chunk progress hook (core_v41_api.c:187-194):
              * nonzero = the caller wants out (the server's client-gone check),
@@ -786,7 +790,13 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
             }
         }
         if (!ok || aborted) break;
-        fprintf(stderr, "[v41] prefill %u token %.1fs (%.1f t/s)\n", np, now_sec() - t0, (double)np / (now_sec() - t0 + 1e-9));
+        /* Decode mutates the ring, the remainder rows and the group counts, so
+         * the checkpoint is taken here (core_v41_api.c:192), after a clean
+         * prefill and before the first token.  An identical prompt just
+         * restored its own checkpoint and is not re-saved. */
+        if (reused < np) v41_kvreuse_save(&st, prompt, np);
+        const double t1 = now_sec();
+        fprintf(stderr, "[v41] prefill %u token %.1fs (%.1f t/s)\n", np - reused, t1 - t0, (double)(np - reused) / (t1 - t0 + 1e-9));
         /* The sampling account (core_v41_api.c:192-196), one line per request. */
         if (sampling) fprintf(stderr, "[v41] decode sampling (%s) temp %.2f top_p %.2f min_p %.2f top_k %d seed %llu%s dry %.2f/%.2f/%d freq %.2f presence %.2f\n",
                               dev_sample ? "device kernel" : "host penalty route",

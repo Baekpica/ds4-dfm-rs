@@ -251,6 +251,7 @@ fn main() {
                     .unwrap_or_else(|| usage());
             }
             "--no-graph" => v41_flags.no_graph = true,
+            "--no-kv-reuse" => v41_flags.no_kv_reuse = true,
             "--emit-trace" => v41_flags.emit_trace = true,
             "--v41-prof" => v41_flags.prof = true,
             // Unit Z: the sidecar mount the deployment boots with
@@ -565,12 +566,14 @@ fn main() {
                             verify_k: v41_flags.verify_k,
                             emit_trace: v41_flags.emit_trace,
                             prof: v41_flags.prof,
+                            no_kv_reuse: v41_flags.no_kv_reuse,
                             zchain: v41_flags.zchain.clone(),
                             posttrain: v41_flags.posttrain.clone(),
                         });
                         eprintln!(
-                            "ds4-server-rs: V4.1 serving route: context {} (model metadata deepseek4.context_length; whole-prompt prefill per request, no KV reuse)",
-                            cfg.ctx
+                            "ds4-server-rs: V4.1 serving route: context {} (model metadata deepseek4.context_length; KV prefix reuse {}, --no-kv-reuse disables)",
+                            cfg.ctx,
+                            if v41_flags.no_kv_reuse { "off" } else { "on" }
                         );
                     } else if v41_flags.given() {
                         eprintln!(
@@ -916,6 +919,7 @@ struct V41Flags {
     no_graph: bool,
     emit_trace: bool,
     prof: bool,
+    no_kv_reuse: bool,
     zchain: Option<String>,
     posttrain: Option<String>,
 }
@@ -930,6 +934,7 @@ impl V41Flags {
             || self.no_graph
             || self.emit_trace
             || self.prof
+            || self.no_kv_reuse
             || self.zchain.is_some()
             || self.posttrain.is_some()
     }

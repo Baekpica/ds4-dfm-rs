@@ -139,6 +139,18 @@ void ds4_engine_v41_set_graph(int on);
 void ds4_engine_v41_set_emit_trace(int on);
 void ds4_engine_v41_set_prof(int on);
 
+/* ---- U-B: the V4.1 KV prefix reuse (core_v41_kvreuse.c, a8e878a) -----------
+ * The engine's own switches and accessors.  --no-kv-reuse lands 0 on
+ * ds4_engine_v41_set_kv_reuse (server_config.c's spelling); last_reused is
+ * what the server reports as usage cached_tokens (core_v41_kvreuse.c:28,
+ * server_generate_v41.c:99-102).  v41_kvreuse_peek is the port's read-only
+ * seam for the host-side engram history (ds4_ds41_kvreuse.inc);
+ * v41_kvreuse_note_mount replaces the engine's switch_plugins drop. */
+void ds4_engine_v41_set_kv_reuse(int on);
+int ds4_engine_v41_last_reused(void);
+uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np);
+void v41_kvreuse_note_mount(int has_mount, uint64_t hash);
+
 /* ---- the decode-sampling face (unit H) -------------------------------------
  * The engine's ds4_engine_set_decode_sampling (core_v41_api.c:10-13, the
  * struct at ds4_v41_api.h:69-75; semantics documented there and in

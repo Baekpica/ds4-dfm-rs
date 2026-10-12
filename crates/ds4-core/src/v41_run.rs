@@ -19,10 +19,11 @@ use std::path::Path;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 use ds4_sys::{
-    ds4_bridge_v41_generate, ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_set_dspark,
-    ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof,
-    ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear,
-    ds4_bridge_v41_zchain_rb_set,
+    ds4_bridge_v41_generate, ds4_bridge_v41_kvreuse_last_reused, ds4_bridge_v41_kvreuse_note_mount,
+    ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set, ds4_bridge_v41_last_spec_stats,
+    ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph,
+    ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set,
+    ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
 };
 
 use crate::engram::{EngramHash, EngramShard};
@@ -54,6 +55,14 @@ pub fn v41_last_spec_stats() -> (i32, i32, i32) {
         ds4_bridge_v41_last_spec_stats(&mut rounds, &mut offered, &mut accepted);
     }
     (rounds, offered, accepted)
+}
+
+/// The last V4.1 run's restored token count (U-B): the engine's
+/// `ds4_engine_v41_last_reused` (`core_v41_kvreuse.c:28`), which its server
+/// reports as usage `cached_tokens` (`server_generate_v41.c:99-102`).  0 when
+/// the request prefilled from token 0.
+pub fn v41_kvreuse_last_reused() -> i32 {
+    unsafe { ds4_bridge_v41_kvreuse_last_reused() }
 }
 
 /// The decode-sampling face for one V4.1 run (the engine's
@@ -99,6 +108,12 @@ pub struct V41RunOptions<'a> {
     pub emit_trace: bool,
     /// `--v41-prof`: per-layer ms and the full `[dspark]` lines.
     pub prof: bool,
+    /// `--no-kv-reuse` (U-B): lands 0 on the native's
+    /// `ds4_engine_v41_set_kv_reuse` (the engine's server_config spelling);
+    /// None leaves the native default (1, on).  The reference is
+    /// `core_v41_kvreuse.c`; a cache hit must not change emitted ids, so the
+    /// kill switch exists per unit policy.
+    pub kv_reuse: Option<bool>,
     /// The per-request sampling face (`ds4_engine_set_decode_sampling`,
     /// `core_v41_api.c:10-13`).  Some = set it before the run (the engine's
     /// server and CLI always do, `server_generate_v41.c:409` /
@@ -131,6 +146,7 @@ impl Default for V41RunOptions<'_> {
             verify_k: 0,
             emit_trace: false,
             prof: false,
+            kv_reuse: None,
             sampling: None,
             greedy: None,
             zchain: None,
@@ -356,6 +372,16 @@ impl V41Feed {
             self.err = Some(e.clone());
         }
         r
+    }
+
+    /// U-B: seed the token history with a reused prompt prefix (the engine's
+    /// `memcpy(st->hist, K.tok, K.n*4)`, `core_v41_kvreuse.c:118`).  The
+    /// suffix's first block starts at the checkpoint position, so its n-gram
+    /// window reads back into the prefix; the restore has already verified
+    /// these tokens are this prompt's prefix.
+    pub fn seed_prefix(&mut self, tokens: &[i32]) {
+        let mut c = self.core.lock().unwrap();
+        c.splice_hist(0, tokens);
     }
 
     fn prepare_inner(
@@ -1093,6 +1119,25 @@ unsafe extern "C" fn greedy_tramp(ud: *mut c_void, ahead: *const i32, n: u32) ->
 /// carries one).  The refusal fires before any device write, so a failed
 /// mount never leaves a half-mounted process (the engine mounts rb/gr
 /// first and fails at the amp read; the request outcome is the same).
+/// U-B's amplifier identity: FNV-1a-style folding over a float slice's bytes,
+/// 8 bytes a step.  The native drops the KV checkpoint when the folded
+/// identity of the mounted set changes (see `v41_mount_zchain`); a
+/// deterministic change detector, not a standard FNV stream.
+fn kv_mount_fold_f32s(h: &mut u64, data: &[f32]) {
+    // SAFETY: every bit pattern of f32 is a valid read as bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
+    let mut chunks = bytes.chunks_exact(8);
+    for c in &mut chunks {
+        let w = u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
+        *h ^= w;
+        *h = h.wrapping_mul(0x100000001b3);
+    }
+    for &b in chunks.remainder() {
+        *h ^= u64::from(b);
+        *h = h.wrapping_mul(0x100000001b3);
+    }
+}
+
 fn v41_mount_zchain(
     model: &Model,
     path: &Path,
@@ -1101,6 +1146,9 @@ fn v41_mount_zchain(
 ) -> Result<()> {
     if zchain.is_none() && posttrain.is_none() {
         unsafe { ds4_bridge_v41_zchain_rb_clear() };
+        // The naked base is a mount state of its own (U-B): the KV checkpoint
+        // was computed with whatever amplifier was mounted before.
+        unsafe { ds4_bridge_v41_kvreuse_note_mount(0, 0) };
         return Ok(());
     }
     let g = GgufFile::open(path).map_err(asset_error)?;
@@ -1145,6 +1193,26 @@ fn v41_mount_zchain(
             )));
         }
     }
+    // U-B: the checkpoint's KV was computed with the mounted amplifier, so the
+    // native drops it when this identity changes (the engine's switch_plugins
+    // drop, core_v41_state.c:111; the port mounts the same set per run, so
+    // content identity stands in for the switch event).
+    let mut digest: u64 = 0xcbf29ce484222325;
+    for (il, layer) in merged.rb.iter().enumerate() {
+        digest ^= ((il as u64) << 32) | 1;
+        digest = digest.wrapping_mul(0x100000001b3);
+        if let Some(rb) = layer {
+            kv_mount_fold_f32s(&mut digest, rb);
+        }
+    }
+    for (il, layer) in merged.gr.iter().enumerate() {
+        digest ^= ((il as u64) << 32) | 2;
+        digest = digest.wrapping_mul(0x100000001b3);
+        if let Some(gr) = layer {
+            kv_mount_fold_f32s(&mut digest, &gr.factor);
+        }
+    }
+    unsafe { ds4_bridge_v41_kvreuse_note_mount(1, digest) };
     eprintln!(
         "ds4: [v41] zchain mount: gr={} rb={} amp=0 from {}{}",
         merged.n_gr_layers(),
@@ -1234,6 +1302,10 @@ impl Model {
             }
             ds4_bridge_v41_set_emit_trace(i32::from(opts.emit_trace));
             ds4_bridge_v41_set_prof(i32::from(opts.prof));
+            // U-B: --no-kv-reuse only; None leaves the native default (on).
+            if let Some(on) = opts.kv_reuse {
+                ds4_bridge_v41_kvreuse_set(i32::from(on));
+            }
             // The sampling face is per request (the engine's server sets it
             // right before the generate, server_generate_v41.c:409); None
             // resets it, so a run never inherits the previous request's face.
@@ -1267,6 +1339,20 @@ impl Model {
         } else {
             V41Feed::open(path, opts.engram_dir)?
         };
+        // U-B's host seam (ds4_ds41_kvreuse.inc): the native checkpoint owns
+        // the reuse decision, but the engram history lives here, and the hash
+        // reads back three positions, so the feed is seeded with the tokens
+        // the restore will adopt (the engine's st->hist memcpy,
+        // core_v41_kvreuse.c:118).  The native restore re-runs the memcmp, so
+        // a stale peek only ever seeds this prompt's own prefix.
+        if let Some(f) = feed.as_mut() {
+            let reused = unsafe {
+                ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32)
+            };
+            if reused > 0 {
+                f.seed_prefix(&prompt[..reused as usize]);
+            }
+        }
         // The tramp borrows the feed for the duration of the call only; the
         // native never retains the pointer past it (ds4_bridge.h).
         let mut feed_tramp = feed.as_mut().map(|f| FeedTramp {

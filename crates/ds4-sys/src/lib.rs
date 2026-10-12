@@ -830,6 +830,13 @@ extern "C" {
     pub fn ds4_bridge_v41_set_graph(on: c_int);
     pub fn ds4_bridge_v41_set_emit_trace(on: c_int);
     pub fn ds4_bridge_v41_set_prof(on: c_int);
+    /* The V4.1 KV prefix reuse (U-B): --no-kv-reuse, the last run's restored
+     * token count, the peek that seeds the host-side engram history, and the
+     * mounted-amplifier identity the native drops the checkpoint on. */
+    pub fn ds4_bridge_v41_kvreuse_set(on: c_int);
+    pub fn ds4_bridge_v41_kvreuse_last_reused() -> c_int;
+    pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int) -> u32;
+    pub fn ds4_bridge_v41_kvreuse_note_mount(has_mount: c_int, hash: u64);
     pub fn ds4_bridge_v41_last_spec_stats(
         rounds: *mut c_int,
         offered: *mut c_int,

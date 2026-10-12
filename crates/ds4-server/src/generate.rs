@@ -166,6 +166,13 @@ pub trait DecodeIo {
     fn v41_last_spec_stats(&self) -> (i32, i32, i32) {
         (0, 0, 0)
     }
+    /// The last V4.1 run's restored token count (U-B; the engine's
+    /// `ds4_engine_v41_last_reused`, core_v41_kvreuse.c:28), reported as usage
+    /// `cached_tokens` (server_generate_v41.c:99-102).  Zero on engines
+    /// without the route.
+    fn v41_kvreuse_last_reused(&self) -> i32 {
+        0
+    }
     fn template(&self) -> Option<&ds4_core::chat_template::Template> {
         None
     }
@@ -2971,8 +2978,9 @@ fn generate_terminal_v41(
     let syntax = syntax_for_model_id(engine.model_id());
     let mut req = stream_req_from_parsed(parsed, engine.model_id());
     // v41_gen_begin (:342-345): the budget clamps to the metadata context
-    // (the only context source; --ctx is refused at boot), and there is no
-    // prefix cache on this route — every token is a write.
+    // (the only context source; --ctx is refused at boot), and the request
+    // starts as an all-write claim -- the KV reuse's own split replaces it
+    // after the run (U-B, below).
     let mut max_tokens = decode_budget(parsed.max_tokens_set, parsed.max_tokens, default_tokens);
     let room = engine.ctx() - prompt_n;
     if max_tokens > room {
@@ -2981,6 +2989,8 @@ fn generate_terminal_v41(
     if max_tokens < 0 {
         max_tokens = 0;
     }
+    // v41_gen_begin (:342-345): the route starts with no reuse claimed; the
+    // native's restored count replaces both after the run (U-B, below).
     req.cache_read_tokens = 0;
     req.cache_write_tokens = prompt_n;
     let mut w = Writer::new(created);
@@ -3110,6 +3120,14 @@ fn generate_terminal_v41(
         return Err(GenerateError::Streamed(message));
     }
 
+    // The KV prefix reuse's own split (U-B; core_v41_kvreuse.c:28): the native
+    // knows at prefill end how much of this prompt came from the checkpoint,
+    // and the engine reports exactly that as usage cached/cache_write tokens
+    // (server_generate_v41.c:99-102).  Engines without the route answer 0.
+    let kv_reused = engine.v41_kvreuse_last_reused().clamp(0, prompt_n);
+    st.req.cache_read_tokens = kv_reused;
+    st.req.cache_write_tokens = prompt_n - kv_reused;
+
     let completion = st.acc.completion;
     let mut finish = terminal_finish(st.finish);
     // v41_finish (:230-235): an unterminated tool call is an error on this
@@ -3184,7 +3202,7 @@ fn generate_terminal_v41(
         finish = "stop";
     }
     st.req.timings.prefill_tokens = prompt_n;
-    st.req.timings.prefill_cached = 0;
+    st.req.timings.prefill_cached = kv_reused;
     st.req.timings.decode_tokens = completion;
     // The engine's speculation account is the round count
     // (`ds4_engine_v41_last_spec_stats`, core_v41_api.c:41-46); the sink's
@@ -3204,7 +3222,7 @@ fn generate_terminal_v41(
                 prefill_ms: t_first.duration_since(t0).as_secs_f64() * 1e3,
                 decode_ms: Instant::now().duration_since(t_first).as_secs_f64() * 1e3,
                 prefill_tokens: prompt_n,
-                prefill_cached: 0,
+                prefill_cached: kv_reused,
                 decode_tokens: completion,
                 decode_steps,
             };
@@ -3811,6 +3829,9 @@ pub struct V41ServeRoute {
     pub verify_k: i32,
     pub emit_trace: bool,
     pub prof: bool,
+    /// `--no-kv-reuse` (U-B): disable the V4.1 KV prefix reuse
+    /// (`ds4_engine_v41_set_kv_reuse`); the route's default is on.
+    pub no_kv_reuse: bool,
     /// `--zchain` / `--posttrain` (unit Z): the ②/③ sidecar directories
     /// the Rust mount reads per run (the engine's per-state v41_amp_load,
     /// core_v41_amp.c:227-270).
@@ -4016,6 +4037,7 @@ impl DecodeIo for NativeDecode<'_> {
             verify_k: route.verify_k,
             emit_trace: route.emit_trace,
             prof: route.prof,
+            kv_reuse: if route.no_kv_reuse { Some(false) } else { None },
             sampling,
             greedy: Some(greedy),
             zchain: route.zchain.as_deref(),
@@ -4035,6 +4057,10 @@ impl DecodeIo for NativeDecode<'_> {
 
     fn v41_last_spec_stats(&self) -> (i32, i32, i32) {
         ds4_core::v41_last_spec_stats()
+    }
+
+    fn v41_kvreuse_last_reused(&self) -> i32 {
+        ds4_core::v41_kvreuse_last_reused()
     }
 
     fn template(&self) -> Option<&ds4_core::chat_template::Template> {

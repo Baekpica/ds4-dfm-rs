@@ -1937,6 +1937,90 @@ intentionally looser than the trainer's (preserve the split); the
 trainer's 3000 MB / 2500 MB floors are the engine's numbers -- re-measure
 before adopting (rule 20).
 
+## 6.25 Unit U-B: V4.1 KV prefix reuse (2026-10-12)
+
+Reference: `/data/YoungAi` at `7fb26cc332d740416792204a29c7d13d2986caf5`.
+The mechanism is `src/core/core_v41_kvreuse.c` (a8e878a, 2026-10-11), wired
+by `core_v41_api.c:179-192` (restore before the chunk loop, `c0 = reused`,
+save after a clean prefill when `reused < np`, the `np - reused` prefill
+line) and dropped by `ds4_engine_v41_switch_plugins`
+(`core_v41_state.c:95/:111`).  Measured on the rebuilt oracle: two-turn
+cell at 2048, turn 2 prefills 145 tokens in 0.5 s (2149/2294 reused;
+`docs/ds41-perf-2026-10-11.md`, "Engine-side KV prefix reuse cell"),
+against the port's 2.4 s full re-prefill.  The port mirrors it 1:1, split
+along the boundary the port already has:
+
+1. Native checkpoint module -- new `ds4_ds41_kvreuse.inc` (included by
+   `ds4.c` after `ds4_ds41_graph.inc`, before `ds4_ds41_draft.inc`),
+   mirroring `core_v41_kvreuse.c` 1:1 with per-line citations: the same
+   process-global `K` (valid/n/tok/tok_cap/bytes; per-layer
+   ckv/idk/win/cpk/cps tensors + mainh/logits; ng_src/cpend/win_from;
+   mainh_end/mainh_n), the same `ensure` (1.5x growth, content not kept)
+   and `cp` (`ds4_gpu_tensor_copy`), the same save/restore buffer set and
+   guards (`K.n > np`, `K.n > st->ctx`, `memcmp` of the prompt tokens,
+   copy failure = this request prefills cold, save only if
+   `reused < np`), and the same logits-row save (`V*4` B at
+   `last_logit_row`; an identical prompt restores it to row 0 and
+   prefills nothing).  The state already carries every buffer
+   (`ds4_ds41_forward.inc:153-252`); the win copy is the first `DS4_N_SWA`
+   rows, the cpre copy the head `cpend` rows, exactly the engine's spans.
+2. Run-loop wiring -- `ds4_v41_generate_argmax`
+   (`ds4_ds41_draft.inc:769-789`): `reused = v41_kvreuse_restore(...)`
+   before the chunk loop, the loop starts at `c0 = reused`, the save runs
+   after a clean prefill, and the prefill line prints `np - reused` (the
+   engine's shape verbatim; the suffix chunks from the checkpoint
+   position, the engine's named FP caveat).
+3. Engram history -- the port's token history is host-side
+   (`v41_run.rs` `V41Feed`/`FeedCore.hist`; the native state has no
+   `hist`), and the hash looks back 3 tokens across the checkpoint
+   boundary (`core_v41_kvreuse.c:118`).  The engine memcpy's `K.tok` into
+   `st->hist`; the port reproduces the same content through a read-only
+   peek (`v41_kvreuse_peek`): the Rust host seeds the feed's history with
+   `prompt[0..reused)` before the native call, and the native restore
+   re-runs the memcmp.  NAMED DEVIATION: same content, different seam
+   (the port's history lives in the Rust feed).
+4. Reporting -- native `ds4_engine_v41_last_reused`
+   (`core_v41_kvreuse.c:28`); the bridge carries set/last_reused/peek; the
+   server sets `cache_read_tokens = reused`, `cache_write_tokens =
+   prompt_n - reused` (today hardcoded 0/prompt_n,
+   `generate.rs:2984-2985`) and `timings.prefill_cached`; the usage
+   builders (`stream.rs:470-494`) already print those fields.  The V4.1
+   route has no monitor surface, so the native's `[v41] KV reuse` stderr
+   line is the trace half (the engine's monitor/trace writes are not
+   ported -- named deviation).
+5. Switch -- `--no-kv-reuse` (the engine's spelling, `server_config.c`)
+   in the server's `V41Flags` -> `V41RunOptions.kv_reuse` -> the native
+   setter; default ON.
+6. Plugin hot-swap -- the engine drops the checkpoint on
+   `switch_plugins` because the KV was computed with the old amplifier;
+   the port re-mounts the sidecar per run (`v41_mount_zchain`), so the
+   drop fires when the mounted set CHANGES: the mount folds an FNV-1a
+   digest over the merged rb/gr data and the native drops on a different
+   (has_mount, digest).  NAMED DEVIATION: content identity instead of the
+   engine's switch event.
+7. Gate -- `tests/ds41_kv_reuse_gate.sh`, the engine's
+   `gguf-tools/scripts/kv_reuse_gate.sh` protocol on the port's wire:
+   A1 (P, 1 token) / A (P, N) / B (P+t1, N-1) / C (same prompt as B), all
+   in one server process (the checkpoint is process state).  B's ids and
+   whole-row fingerprints must equal A's steps 1.., C must report
+   `reuse n of n` and match B bit-for-bit; tokens alone are not the gate
+   (the engine's mutation test).  The port's rows come from
+   `DS41_GEN_LOGITS` (raw f32 rows per emitted position; ids = each row's
+   argmax), which makes the row comparison byte-exact -- stricter than
+   the engine's weighted sum.  Requests carry `frequency_penalty 1e-30`
+   (the penalty arm: 1e-30 moves no fp32 logit and disables speculation,
+   the engine's own trick); the raw completions wire renders the prompt
+   untemplated (`render_prompt_ex`, `generate.rs:1279`), so P+T1
+   tokenizes the engine's way.
+8. Acceptance -- (a) the gate PASSes on the Spark; (b) the measured cell:
+   port turn 2 at 2048 drops from 2.4 s to a suffix-only prefill (the
+   engine's 0.5 s class); (c) the four parity gates (fresh single-turn
+   prompts) stay green -- a cache hit must not change emitted ids;
+   (d) `cargo test` and the parity null-stubs build stay green.
+
+Rollback: `--no-kv-reuse` at runtime, and the commits themselves (one
+module plus wiring; a revert restores today's behavior exactly).
+
 ## 7. Numerics contract
 
 - Device arithmetic and every format detail follow the C engine's code, and the

@@ -299,6 +299,15 @@ void ds4_bridge_v41_set_dspark(int mode);
 void ds4_bridge_v41_set_graph(int on);
 void ds4_bridge_v41_set_emit_trace(int on);
 void ds4_bridge_v41_set_prof(int on);
+/* The V4.1 KV prefix reuse (U-B, core_v41_kvreuse.c): the --no-kv-reuse
+ * switch, the last run's restored token count (the server's usage
+ * cached_tokens), the read-only peek that seeds the host-side engram history
+ * before the run, and the mounted-amplifier identity the native drops the
+ * checkpoint on (the engine's switch_plugins stand-in). */
+void ds4_bridge_v41_kvreuse_set(int on);
+int ds4_bridge_v41_kvreuse_last_reused(void);
+uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n);
+void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
 /* The last v41 run's speculation account (the engine's
  * ds4_engine_v41_last_spec_stats, core_v41_api.c:41-46): rounds/offered/
  * accepted, cleared by the next generate entry.  Any pointer may be NULL. */

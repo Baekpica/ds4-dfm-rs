@@ -78934,6 +78934,9 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
 /* Decode-step CUDA graph orchestration (E3): the port of core_decode_graph.c;
  * same TU (it calls the forward's statics). */
 #include "ds4_ds41_graph.inc"
+/* V4.1 KV prefix reuse (U-B): the port of core_v41_kvreuse.c; same TU (the
+ * generate entry calls its restore/save, the bridge its set/last_reused/peek). */
+#include "ds4_ds41_kvreuse.inc"
 /* DSpark draft towers (P5/E1): the host side of core_v41_draft.c; same TU
  * (it calls the forward's statics and the graph entries). */
 #include "ds4_ds41_draft.inc"
