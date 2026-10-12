@@ -456,18 +456,6 @@ fn param_open_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
         || (bare_param_alias(syn) && raw_partial_lit(raw, pos, BARE_PARAM_START))
 }
 
-/// The close at `pos` in either spelling; returns the matched length
-/// (f302be7's dsml_param_close_len).
-fn param_close_len(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> usize {
-    if raw_full_lit(raw, pos, syn.param_end) {
-        return syn.param_end.len();
-    }
-    if bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_END) {
-        return BARE_PARAM_END.len();
-    }
-    0
-}
-
 /// The earliest close from `from` in either spelling: (offset, length)
 /// (f302be7's dsml_param_close_find takes the earlier of the two).
 fn param_close_find(syn: &DsmlSyntax, raw: &[u8], from: usize) -> Option<(usize, usize)> {
