@@ -16,3 +16,9 @@ directly.
 gen_tokens: usage.completion_tokens (the port's timings block carries no
 decode_tokens; the first sweep run read the wrong field, so the column was
 backfilled from the saved response files, cross-checked against the timings).
+dips note (verified against the CSV): the two decode dips (29.9 @28672, 28.7
+@34816) track tok_per_step (1.91 and 2.33 against 2.78 typical) -- MTP
+draft-acceptance variance from per-frontier content.  28672 is pure
+acceptance (implied step rate 15.6/s, in band); 34816 also has a slower step
+rate (12.3/s against ~14.4-15.3).  Prefill and ttft at both rows are in
+band, so this is not interleave contamination.
