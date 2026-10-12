@@ -5282,6 +5282,20 @@ void ds4_gpu_decode_graph_free(void *exec);
  * addresses (the engine's ds4_gpu_v41_scratch_generation). */
 uint64_t ds4_gpu_v41_scratch_generation(void);
 
+/* Side-stream fork (the engine's cuda_lifecycle.inc.cu:332-388; the port's
+ * implementation sits in ds4_cuda.cu next to the capture-stream routing).
+ * mark records the fork event on the current main stream and returns 0 (the
+ * caller falls back to serial) while a capture is active without a side
+ * stream yet, or when DS41_NO_SIDE_STREAM is set (the kill switch); begin
+ * waits the fork on the side stream and routes ds4_current_stream() onto it;
+ * main switches back keeping the fork; join records the join event on the
+ * side stream and waits it on the main.  Call sites: v41_moe and v41_attn_in
+ * (ds4_ds41_forward.inc), the engine's conditions exactly. */
+int ds4_gpu_side_mark(void);
+int ds4_gpu_side_begin(void);
+int ds4_gpu_side_main(void);
+int ds4_gpu_side_join(void);
+
 /* DeepSeek V4.1 forward primitives (P4-4).  The q4_K skeleton family
  * (cuda/ds41_q4k.cuh), the dense GEMVs and elementwise kernels
  * (cuda/ds41_dense.cuh), the hyper-connection family (cuda/ds41_hc.cuh) and

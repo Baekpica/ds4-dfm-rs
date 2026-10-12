@@ -741,23 +741,31 @@ static bool v41_attention_kv_only(ds4_engine *e, ds4_v41_state *st, uint32_t il)
 
 /* ---- attention, three segments (core_v41_attn.c:286-364) ----
  * in: projections (q path + window kv); cache: window / compressor / indexer
- * / sparse attention / ring commit; out: output projections.  The engine
- * forks the kv branch onto a side stream at n <= 8; the port runs the same
- * ops serially (named deviation, identical arithmetic). */
+ * / sparse attention / ring commit; out: output projections.  The kv branch
+ * forks onto the side stream at n <= 8 (core_v41_attn.c:290-308): both
+ * branches only share-read xn/pos and write disjoint tensors, so the kv
+ * GEMV + rms + rope + act_quant hide behind q_b; the ring copy in
+ * v41_attn_cache lands on the main stream after the join. */
 static bool v41_attn_in(ds4_engine *e, ds4_v41_state *st, uint32_t il) {
     const ds4_model *m = &e->model; const ds4_layer_weights *l = &e->weights.layer[il];
     const uint32_t n = st->n, E = DS4_N_EMBD, HD = DS4_N_HEAD_DIM, NH = DS4_N_HEAD, Q = DS4_N_LORA_Q;
     const uint32_t ratio = ds4_layer_compress_ratio(il);
+    /* the towers run v41_draft_attention, so the engine's condition has no
+     * draft term (core_v41_attn.c:296); n > 8 prefill shares scratch and
+     * stays serial */
+    const int fork = n <= DS4_V41_GEMV_MAX_TOK && ds4_gpu_side_mark() && ds4_gpu_side_begin();
     /* window kv: wkv -> bf16 -> kv_norm -> rope(last 64 dims) -> fp8 act_quant(32 blocks) -> window rows [SWA, SWA+n) */
     if (!v41_tproj(m, st->kv, l->attn_kv, E, HD, st->xn, n, 1) ||
         !ds4_gpu_v41_rms_norm_tensor(st->kvn, st->kv, m->map, m->size, l->attn_kv_a_norm->abs_offset, HD, n, DS4_RMS_EPS) ||
         !v41_rope(st->kvn, st->pos, n, 1, HD, ratio, false) ||
-        !ds4_gpu_v41_act_quant_fp8_tensor(st->kvn, n, HD, 32)) return false;
+        !ds4_gpu_v41_act_quant_fp8_tensor(st->kvn, n, HD, 32)) { if (fork) (void)ds4_gpu_side_join(); return false; }
+    if (fork) (void)ds4_gpu_side_main();
     /* q path: q_a -> bf16 -> q_norm -> q_b -> bf16 -> rope(absolute position) */
     if (!v41_tproj(m, st->qr, l->attn_q_a, E, Q, st->xn, n, 1) ||
         !ds4_gpu_v41_rms_norm_tensor(st->qrn, st->qr, m->map, m->size, l->attn_q_a_norm->abs_offset, Q, n, DS4_RMS_EPS) ||
         !v41_tproj(m, st->q, l->attn_q_b, Q, (uint64_t)NH * HD, st->qrn, n, 1) ||
-        !v41_rope(st->q, st->pos, n, NH, HD, ratio, false)) return false;
+        !v41_rope(st->q, st->pos, n, NH, HD, ratio, false)) { if (fork) (void)ds4_gpu_side_join(); return false; }
+    if (fork && !ds4_gpu_side_join()) return false;
     return true;
 }
 
@@ -842,7 +850,11 @@ static bool v41_hc_half(ds4_engine *e, ds4_v41_state *st, const ds4_layer_weight
 /* MoE (official MoE.forward): router f32/bf16 by tensor type -> routed VQ
  * experts -> shared expert (fp8/fp4) -> bf16.  At n <= 8 the routed partials
  * stay in the worker scratch and the tail entry folds them with the shared
- * expert in one launch (the engine's tail path). */
+ * expert in one launch (the engine's tail path).  The shared expert forks
+ * onto the side stream there (core_v41_forward.c:83-92): it only share-reads
+ * xn with the router + routed segment, whose latency then hides behind the
+ * shared GEMVs; the towers share scratch and never fork, and n > 8 prefill
+ * GEMM shares bf16 scratch, so both stay serial (the engine's conditions). */
 static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_state *st, uint32_t il) {
     const uint32_t n = st->n, E = DS4_N_EMBD, FF = DS4_N_FF_EXP;
     /* Decode small batches fold the routed partials into the shared expert in
@@ -852,6 +864,14 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
      * (core_v41_forward.c:78-80). */
     const uint32_t NE = st->draft ? g_ds4_v41.mtp_experts : DS4_N_EXPERT;
     const uint32_t KU = st->draft ? g_ds4_v41.mtp_used : DS4_N_EXPERT_USED;
+    const int fork = tail && ds4_gpu_side_mark() && ds4_gpu_side_begin();
+    if (fork) {
+        if (!v41_tproj(m, st->sg, l->ffn_gate_shexp, E, FF, st->xn, n, 1) ||
+            !v41_tproj(m, st->su, l->ffn_up_shexp, E, FF, st->xn, n, 1) ||
+            !ds4_gpu_v41_swiglu_tensor(st->sh, st->sg, st->su, n, FF, DS4_SWIGLU_CLAMP_EXP) ||
+            !v41_tproj(m, st->so, l->ffn_down_shexp, FF, E, st->sh, n, 1)) { (void)ds4_gpu_side_join(); return false; }
+        (void)ds4_gpu_side_main();
+    }
     /* router gate: bf16 on the main layers, f32 on the towers (two converter plans) */
     if (l->ffn_gate_inp->type == DS4_TENSOR_F32) {
         if (!ds4_gpu_v41_matmul_f32_tensor(st->glog, m->map, m->size, l->ffn_gate_inp->abs_offset, E, NE, st->xn, n)) return false;
@@ -874,10 +894,11 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
     } else if (!ds4_gpu_v41_routed_moe_tensor(tail ? NULL : st->routed, m->map, m->size, l->ffn_exps_vq->abs_offset, l->ffn_exps_vq->bytes,
                                        E, FF, E, st->sel, st->rw, DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, st->xn, il, n)) return false;
     /* shared expert: w1/w3 -> bf16 -> swiglu(clamp) -> bf16 -> w2 -> bf16 */
-    if (!v41_tproj(m, st->sg, l->ffn_gate_shexp, E, FF, st->xn, n, 1) ||
-        !v41_tproj(m, st->su, l->ffn_up_shexp, E, FF, st->xn, n, 1) ||
-        !ds4_gpu_v41_swiglu_tensor(st->sh, st->sg, st->su, n, FF, DS4_SWIGLU_CLAMP_EXP) ||
-        !v41_tproj(m, st->so, l->ffn_down_shexp, FF, E, st->sh, n, 1)) return false;
+    if (fork) { if (!ds4_gpu_side_join()) return false; }
+    else if (!v41_tproj(m, st->sg, l->ffn_gate_shexp, E, FF, st->xn, n, 1) ||
+             !v41_tproj(m, st->su, l->ffn_up_shexp, E, FF, st->xn, n, 1) ||
+             !ds4_gpu_v41_swiglu_tensor(st->sh, st->sg, st->su, n, FF, DS4_SWIGLU_CLAMP_EXP) ||
+             !v41_tproj(m, st->so, l->ffn_down_shexp, FF, E, st->sh, n, 1)) return false;
     if (tail) {   /* decode batch: reduce + add + bf16 round in one launch (same order, bit-identical) */
         if (!ds4_gpu_v41_moe_tail_tensor(st->y, st->so, st->rw, n, DS4_N_EXPERT_USED, E)) return false;
     } else {

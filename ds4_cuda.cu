@@ -498,16 +498,107 @@ static cudaStream_t g_model_upload_stream;
  * every non-capture code path. */
 static thread_local cudaStream_t t_ds4_capture_stream = (cudaStream_t)0;
 
+/* Side-stream fork override (the engine's g_cur_stream, cuda_lifecycle.inc.cu:
+ * 332-388): non-zero only between side_begin and side_main/side_join.  It is
+ * separate from t_ds4_capture_stream so ds4_capture_set_stream cannot clobber
+ * an active fork; side_main/join restore the routing by clearing this one. */
+static thread_local cudaStream_t t_ds4_side_stream = (cudaStream_t)0;
+
 static inline void ds4_capture_set_stream(cudaStream_t s) {
     t_ds4_capture_stream = s;
 }
 
 static inline cudaStream_t ds4_current_stream(void) {
-    return t_ds4_capture_stream;
+    return t_ds4_side_stream ? t_ds4_side_stream : t_ds4_capture_stream;
 }
 
 static inline int ds4_capture_active(void) {
     return t_ds4_capture_stream != (cudaStream_t)0;
+}
+
+/* --------------------------------------------------------------------
+ * Side-stream fork (cuda_lifecycle.inc.cu:332-388 in the engine).
+ *
+ * One nonblocking side stream + two disable-timing events overlap an
+ * independent half of a layer with the other half: the MoE shared expert
+ * beside the router + routed MoE (core_v41_forward.c:83-92) and the
+ * attention kv branch beside the q branch (core_v41_attn.c:290-308).
+ * mark records the fork event on the current main stream; begin waits it on
+ * the side stream and routes ds4_current_stream() there; main switches back
+ * keeping the fork; join records the join event on the side stream and
+ * waits it on the main.
+ *
+ * Port adaptation, named: the engine's main stream is cudaStreamPerThread
+ * (it compiles -default-stream per-thread); the port's is ds4_current_stream
+ * -- the legacy default stream (0) eager, the dedicated capture stream
+ * under a capture.  The event pair is required on both: a nonblocking side
+ * stream neither joins the legacy stream's implicit synchronization nor the
+ * capture's, so inside a capture the record/wait calls become the graph's
+ * dependency edges.  Resources are created outside capture only; mark
+ * refuses (serial fallback for that round) while a capture is active
+ * without a side stream yet, as the engine's cudaStreamIsCapturing check
+ * does.
+ */
+static cudaStream_t g_side_stream = (cudaStream_t)0;
+static cudaEvent_t g_side_fork_ev = (cudaEvent_t)0, g_side_join_ev = (cudaEvent_t)0;
+static thread_local int t_ds4_side_active = 0;
+
+static void side_stream_ensure(void) {
+    if (g_side_stream) return;
+    if (cudaStreamCreateWithFlags(&g_side_stream, cudaStreamNonBlocking) != cudaSuccess) {
+        g_side_stream = (cudaStream_t)0; (void)cudaGetLastError(); return;
+    }
+    if (cudaEventCreateWithFlags(&g_side_fork_ev, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&g_side_join_ev, cudaEventDisableTiming) != cudaSuccess) {
+        g_side_fork_ev = (cudaEvent_t)0; g_side_join_ev = (cudaEvent_t)0;
+        (void)cudaStreamDestroy(g_side_stream); g_side_stream = (cudaStream_t)0;
+        (void)cudaGetLastError();
+    }
+}
+
+static int side_stream_disabled(void) {
+    static int off = -1;   /* DS41_NO_SIDE_STREAM=1: kill switch (the engine's --no-side-stream) */
+    if (off < 0) off = getenv("DS41_NO_SIDE_STREAM") ? 1 : 0;
+    return off;
+}
+
+extern "C" int ds4_gpu_side_mark(void) {
+    if (side_stream_disabled()) return 0;
+    if (!g_side_stream || !g_side_fork_ev) {
+        if (ds4_capture_active()) return 0;
+        side_stream_ensure();
+        if (!g_side_stream) return 0;
+    }
+    if (cudaEventRecord(g_side_fork_ev, ds4_current_stream()) != cudaSuccess) {
+        (void)cudaGetLastError(); return 0;
+    }
+    return 1;
+}
+
+extern "C" int ds4_gpu_side_begin(void) {
+    if (!g_side_stream || !g_side_fork_ev) return 0;
+    if (cudaStreamWaitEvent(g_side_stream, g_side_fork_ev, 0) != cudaSuccess) {
+        (void)cudaGetLastError(); return 0;
+    }
+    t_ds4_side_stream = g_side_stream;
+    t_ds4_side_active = 1;
+    return 1;
+}
+
+extern "C" int ds4_gpu_side_main(void) {
+    t_ds4_side_stream = (cudaStream_t)0;
+    return 1;
+}
+
+extern "C" int ds4_gpu_side_join(void) {
+    t_ds4_side_stream = (cudaStream_t)0;
+    if (!t_ds4_side_active) return 1;
+    t_ds4_side_active = 0;
+    if (cudaEventRecord(g_side_join_ev, g_side_stream) != cudaSuccess ||
+        cudaStreamWaitEvent(ds4_current_stream(), g_side_join_ev, 0) != cudaSuccess) {
+        (void)cudaGetLastError(); return 0;
+    }
+    return 1;
 }
 
 /* Step 7 task #34: stream selector for MMQ wrapper calls.
