@@ -127,6 +127,44 @@ at the 2048 cell (alternating A/B against `5666002e`).  Full record:
 (r6)".  Keep/drop call: keep -- no regression on any frontier, and the
 port's decode graph is now structurally the engine's.
 
+## Open: the engine curve (the compare chart's missing half)
+
+The compare chart (`speed-bench/ds41_engine_vs_fork_compare.png` + `.svg`,
+rendered by `speed-bench/mk_engine_vs_fork_chart.py`) draws the fork's full
+22-frontier sweep but the engine as its two measured cells only: decode
+43.78 t/s at 2048 (the r5 window) and prefill 1042.0 t/s at 8192 (the U-A
+A/B).  The engine's curve has never been swept; drawing a line for it would
+invent data.  Operator-requested 2026-10-12, parked on the Spark window.
+
+To complete it, sweep the engine with the perf harness over the same
+frontiers:
+
+    DS41_PERF_SIDES=engine DS41_PERF_OUT=/tmp/ds41_eng_sweep \
+      sh tests/ds41_perf_sweep.sh \
+        /home/leandro/youngai-src-restructure/ds4-server \
+        /home/leandro/ds4-dfm-rs/ds4-server \
+        /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf \
+        /home/leandro/youngai/deepseek-engram 8099 \
+        /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative-grrb-law_fit_n15360-engine \
+        2048,4096,8192,16384,24576,32768,40960,45056 128
+
+Cost: the harness boots a fresh process per cell (~170 s margin), so the
+eight frontiers above run about 30 minutes and all 22 about 75; the box
+must be free (the model's 105.75 GiB residency cannot coexist with a
+second load).  The engine reports prefill and decode through its server
+log -- the harness parses it there; the engine has no ttft or tokens/step
+on the wire.  Its medians land in `$OUT/medians.tsv`: turn-1 prefill t/s is
+column 3, turn-1 decode t/s column 4.  Convert and re-render:
+
+    awk -F'\t' 'BEGIN{print "ctx_tokens,prefill_tps,gen_tps"}
+                $1=="eng"{print $2","$3","$4}' $OUT/medians.tsv > engine.csv
+    python3 speed-bench/mk_engine_vs_fork_chart.py \
+        speed-bench/gb10_spark_ds41_1e7d8f24.csv --engine-csv engine.csv \
+        -o speed-bench/ds41_engine_vs_fork_compare
+
+The harness itself is `tests/ds41_perf_sweep.sh` (committed, byte-identical
+to the Spark's /tmp copy as of 2026-10-12).
+
 ## Provenance
 
 - `speed-bench/gb10_spark_ds41_862fd9a6.csv` (the 22 rows above),
