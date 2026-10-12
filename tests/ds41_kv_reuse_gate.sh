@@ -164,13 +164,16 @@ req_c() {
 }
 
 # The row size is derived, never assumed: one row per emitted token plus the
-# trailing step's row (the last round computes the next token before the loop
-# ends), so size == 4*V*(emitted+1).
-row_v() { # <rows-file> <ids-file> :)
+# initial prefill pick's row; a run that ends on EOS dumps one fewer (its own
+# row is the last).  row_size() accepts exactly those two readings.
+row_size() { # <rows-file> <ids-file> <V>
     n=$(wc -l < "$2" | tr -d ' ')
     sz=$(wc -c < "$1" | tr -d ' ')
-    [ "$n" -gt 0 ] || { echo 0; return; }
-    echo $(( sz / (4 * (n + 1)) ))
+    [ "$n" -gt 0 ] || return 1
+    per=$((4 * $3))
+    [ $((sz % per)) -eq 0 ] || return 1
+    r=$((sz / per))
+    [ "$r" = "$n" ] || [ "$r" = "$((n + 1))" ]
 }
 
 row_cmp() { # <fileA> <idxA> <fileB> <idxB> <rowbytes>
@@ -190,11 +193,18 @@ n_b=$(wc -l < "$LOG/b.ids" | tr -d ' ')
 n_c=$(wc -l < "$LOG/c.ids" | tr -d ' ')
 [ "$n_a" -ge 8 ] && [ "$n_b" -ge 8 ] || fail "too few tokens emitted (A $n_a, B $n_b); raise the token count"
 
-v_a=$(row_v "$LOG/a.rows" "$LOG/a.ids")
-v_b=$(row_v "$LOG/b.rows" "$LOG/b.ids")
-v_c=$(row_v "$LOG/c.rows" "$LOG/c.ids")
-[ "$v_a" -gt 1000 ] || fail "implausible row size from A ($v_a)"
-[ "$v_a" = "$v_b" ] && [ "$v_a" = "$v_c" ] || fail "row sizes disagree (A $v_a, B $v_b, C $v_c); the dump and the emitted counts do not line up"
+v_a=0
+sz_a=$(wc -c < "$LOG/a.rows" | tr -d ' ')
+for cand in $((sz_a / (4 * (n_a + 1)))) $((sz_a / (4 * n_a))); do
+    [ "$cand" -gt 1000 ] || continue
+    if row_size "$LOG/a.rows" "$LOG/a.ids" "$cand"; then
+        v_a=$cand
+        break
+    fi
+done
+[ "$v_a" -gt 0 ] || fail "A's dump does not line up with its emitted count -- speculation likely ran (the penalty arm must be engaged: frequency_penalty non-zero; do not boot with --dspark)"
+row_size "$LOG/b.rows" "$LOG/b.ids" "$v_a" || fail "B's dump does not line up with its emitted count (V=$v_a)"
+row_size "$LOG/c.rows" "$LOG/c.ids" "$v_a" || fail "C's dump does not line up with its emitted count (V=$v_a)"
 rowbytes=$((4 * v_a))
 
 rb=$(cat "$LOG/b.reuse")
