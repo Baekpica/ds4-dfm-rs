@@ -129,6 +129,55 @@ static int ds41_graph_pdl_edges(cudaGraph_t graph) {
     return n;
 }
 
+/* Node-level dump for the decode-capture diff (DS41_GRAPH_NODE_DUMP=<prefix>):
+ * one line per captured node -- sequence, kind, kernel name, launch geometry --
+ * so the port's verify capture can be diffed against the engine's node by node
+ * (docs/ds41-perf-2026-10-11.md, "The decode regime, resolved": 1788-1792
+ * against 1460-1464).  Debug only: nothing is written unless the variable is
+ * set, and captures are one-off per bucket. */
+static void ds41_graph_node_dump(cudaGraph_t graph, const char *prefix) {
+    static unsigned seq = 0;
+    char path[512];
+    snprintf(path, sizeof path, "%s.%u.txt", prefix, seq++);
+    FILE *f = fopen(path, "w");
+    if (!f) { return; }
+    size_t nn = 0;
+    if (cudaGraphGetNodes(graph, NULL, &nn) != cudaSuccess || nn == 0) { (void)cudaGetLastError(); fclose(f); return; }
+    cudaGraphNode_t *nodes = (cudaGraphNode_t *)malloc(nn * sizeof *nodes);
+    if (!nodes || cudaGraphGetNodes(graph, nodes, &nn) != cudaSuccess) { (void)cudaGetLastError(); free(nodes); fclose(f); return; }
+    for (size_t i = 0; i < nn; i++) {
+        cudaGraphNodeType t = cudaGraphNodeTypeEmpty;
+        if (cudaGraphNodeGetType(nodes[i], &t) != cudaSuccess) { (void)cudaGetLastError(); }
+        if (t == cudaGraphNodeTypeKernel) {
+            cudaKernelNodeParams kp; memset(&kp, 0, sizeof kp);
+            const char *nm = "?";
+            if (cudaGraphKernelNodeGetParams(nodes[i], &kp) == cudaSuccess) { (void)cudaFuncGetName(&nm, kp.func); }
+            else { (void)cudaGetLastError(); }
+            fprintf(f, "%zu\tkernel\t%s\tg%ux%ux%u b%ux%ux%u s%zu\n", i, nm,
+                    kp.gridDim.x, kp.gridDim.y, kp.gridDim.z,
+                    kp.blockDim.x, kp.blockDim.y, kp.blockDim.z, kp.sharedMemBytes);
+        } else if (t == cudaGraphNodeTypeMemcpy) {
+            cudaMemcpy3DParms mp; memset(&mp, 0, sizeof mp);
+            unsigned long long bytes = 0;
+            if (cudaGraphMemcpyNodeGetParams(nodes[i], &mp) == cudaSuccess) {
+                bytes = (unsigned long long)mp.extent.width * (mp.extent.height ? mp.extent.height : 1u) *
+                        (mp.extent.depth ? mp.extent.depth : 1u);
+            } else { (void)cudaGetLastError(); }
+            fprintf(f, "%zu\tmemcpy\t%llu\n", i, bytes);
+        } else if (t == cudaGraphNodeTypeMemset) {
+            fprintf(f, "%zu\tmemset\n", i);
+        } else if (t == cudaGraphNodeTypeHost) {
+            fprintf(f, "%zu\thost\n", i);
+        } else if (t == cudaGraphNodeTypeGraph) {
+            fprintf(f, "%zu\tsubgraph\n", i);
+        } else {
+            fprintf(f, "%zu\tother%d\n", i, (int)t);
+        }
+    }
+    free(nodes);
+    fclose(f);
+}
+
 extern "C" void *ds4_gpu_decode_graph_capture_end(void) {
     ds4_capture_set_stream((cudaStream_t)0);   /* restore on every exit: a leaked routing misdirects later eager launches */
     cudaGraph_t graph = NULL;
@@ -141,6 +190,8 @@ extern "C" void *ds4_gpu_decode_graph_capture_end(void) {
     }
     size_t n_nodes = 0;
     (void)cudaGraphGetNodes(graph, NULL, &n_nodes);
+    const char *dump = getenv("DS41_GRAPH_NODE_DUMP");
+    if (dump && *dump) { ds41_graph_node_dump(graph, dump); }
     const int n_pdl = ds41_graph_pdl_edges(graph);
     if (n_pdl < 0) { (void)cudaGraphDestroy(graph); return NULL; }
     cudaGraphExec_t exec = NULL;
