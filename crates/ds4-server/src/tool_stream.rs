@@ -245,10 +245,12 @@ impl DsmlToolStream {
                         self.state = DsmlToolState::BetweenInvokes;
                         continue;
                     }
-                    if raw_partial_any(raw, self.parse_pos, syn.invoke_end, syn.param_start) {
+                    if raw_partial_lit(raw, self.parse_pos, syn.invoke_end)
+                        || param_open_partial(&syn, raw, self.parse_pos)
+                    {
                         return true;
                     }
-                    if raw_full_lit(raw, self.parse_pos, syn.param_start) {
+                    if param_open_full(&syn, raw, self.parse_pos) {
                         let before = self.parse_pos;
                         let before_state = self.state;
                         if !self.start_param(sink, raw) {
@@ -262,8 +264,8 @@ impl DsmlToolStream {
                     return self.fail();
                 }
                 DsmlToolState::ParamValue => {
-                    if let Some(end) = find_lit_bounded(&raw[self.parse_pos..], syn.param_end) {
-                        if !self.finish_param(sink, raw, self.parse_pos + end) {
+                    if let Some((end, end_len)) = param_close_find(&syn, raw, self.parse_pos) {
+                        if !self.finish_param(sink, raw, self.parse_pos + end, end_len) {
                             return false;
                         }
                         continue;
@@ -272,6 +274,7 @@ impl DsmlToolStream {
                         raw,
                         self.parse_pos,
                         syn.param_end,
+                        bare_param_alias(&syn).then_some(BARE_PARAM_END),
                         self.param_is_string,
                         syn.entity_values,
                     );
@@ -322,11 +325,14 @@ impl DsmlToolStream {
             return true;
         };
         let tag = &raw[self.parse_pos..self.parse_pos + rel + 1];
-        let (Some(name), Some(is_string)) = (dsml_attr(tag, "name"), dsml_attr(tag, "string"))
-        else {
+        let Some(name) = dsml_attr(tag, "name") else {
             return self.fail();
         };
-        let string_value = is_string == b"true";
+        // A bare parameter carries no string attribute; the engine defaults
+        // it to string, matching the final parser (f302be7).
+        let string_value = dsml_attr(tag, "string")
+            .map(|v| v == b"true")
+            .unwrap_or(true);
         if !emit_param_prefix(sink, self.index, &name, string_value, self.first_param) {
             return false;
         }
@@ -337,7 +343,13 @@ impl DsmlToolStream {
         true
     }
 
-    fn finish_param<S: ToolSink>(&mut self, sink: &mut S, raw: &[u8], value_end: usize) -> bool {
+    fn finish_param<S: ToolSink>(
+        &mut self,
+        sink: &mut S,
+        raw: &[u8],
+        value_end: usize,
+        end_len: usize,
+    ) -> bool {
         let syn = self.syn.unwrap();
         if value_end > self.parse_pos {
             let ok = if self.param_is_string {
@@ -352,7 +364,7 @@ impl DsmlToolStream {
         if self.param_is_string && !sink.args_fragment(self.index, b"\"") {
             return false;
         }
-        self.parse_pos = value_end + syn.param_end.len();
+        self.parse_pos = value_end + end_len;
         self.state = DsmlToolState::BetweenParams;
         true
     }
@@ -417,6 +429,59 @@ fn raw_partial_any(raw: &[u8], pos: usize, a: &[u8], b: &[u8]) -> bool {
     raw_partial_lit(raw, pos, a) || raw_partial_lit(raw, pos, b)
 }
 
+/// The engine's bare-alias rule (f302be7, server_dsml_parse.c
+/// dsml_param_open_len/close_len): the quantized artifact, with a system
+/// text and the tool instructions in context, writes the parameter tags
+/// bare -- `<parameter name="x">v</parameter>` -- while the wrapper and
+/// invoke opens stay DSML (fable5.md, 10-11/10-12; measured 5/5 with a
+/// Chinese system, 0/5 without).  A syntax whose own spelling is not
+/// already the bare one accepts the bare form as an alias.  The open alias
+/// keeps the trailing space: `<parameters>` is not an open tag.  The
+/// engine routed the final parse, the live streams, and the KV syntax
+/// tracking through the same entry points; these are those entry points.
+const BARE_PARAM_START: &[u8] = b"<parameter ";
+const BARE_PARAM_END: &[u8] = b"</parameter>";
+
+fn bare_param_alias(syn: &DsmlSyntax) -> bool {
+    syn.param_start != &b"<parameter"[..]
+}
+
+fn param_open_full(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
+    raw_full_lit(raw, pos, syn.param_start)
+        || (bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_START))
+}
+
+fn param_open_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
+    raw_partial_lit(raw, pos, syn.param_start)
+        || (bare_param_alias(syn) && raw_partial_lit(raw, pos, BARE_PARAM_START))
+}
+
+/// The close at `pos` in either spelling; returns the matched length
+/// (f302be7's dsml_param_close_len).
+fn param_close_len(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> usize {
+    if raw_full_lit(raw, pos, syn.param_end) {
+        return syn.param_end.len();
+    }
+    if bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_END) {
+        return BARE_PARAM_END.len();
+    }
+    0
+}
+
+/// The earliest close from `from` in either spelling: (offset, length)
+/// (f302be7's dsml_param_close_find takes the earlier of the two).
+fn param_close_find(syn: &DsmlSyntax, raw: &[u8], from: usize) -> Option<(usize, usize)> {
+    let own = find_lit_bounded(&raw[from..], syn.param_end).map(|r| (r, syn.param_end.len()));
+    if !bare_param_alias(syn) {
+        return own;
+    }
+    let bare = find_lit_bounded(&raw[from..], BARE_PARAM_END).map(|r| (r, BARE_PARAM_END.len()));
+    match (own, bare) {
+        (Some(a), Some(b)) => Some(if b.0 < a.0 { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
 fn find_lit_bounded(s: &[u8], lit: &[u8]) -> Option<usize> {
     if lit.is_empty() {
         return Some(0);
@@ -464,16 +529,11 @@ fn dsml_entity_stream_safe_len(
     limit
 }
 
-fn tool_param_value_stream_safe_len(
-    raw: &[u8],
-    start: usize,
-    param_end: &[u8],
-    is_string: bool,
-    entity_values: bool,
-) -> usize {
+/// A chunk tail that is a proper prefix of `close` is held back; the hold
+/// runs once per accepted spelling (f302be7's close_partial).
+fn partial_close_hold(raw: &[u8], start: usize, close: &[u8]) -> usize {
     let raw_len = raw.len();
-    let mut limit = raw_len;
-    let end_len = param_end.len();
+    let end_len = close.len();
     let scan = if raw_len > start + end_len {
         raw_len - end_len
     } else {
@@ -485,10 +545,25 @@ fn tool_param_value_stream_safe_len(
         }
         let marker = i - 1;
         let tail = raw_len - marker;
-        if tail < end_len && raw[marker..].starts_with(&param_end[..tail]) {
-            limit = marker;
+        if tail < end_len && raw[marker..].starts_with(&close[..tail]) {
+            return marker;
         }
         break;
+    }
+    raw_len
+}
+
+fn tool_param_value_stream_safe_len(
+    raw: &[u8],
+    start: usize,
+    param_end: &[u8],
+    param_end_alias: Option<&[u8]>,
+    is_string: bool,
+    entity_values: bool,
+) -> usize {
+    let mut limit = partial_close_hold(raw, start, param_end);
+    if let Some(alias) = param_end_alias {
+        limit = limit.min(partial_close_hold(raw, start, alias));
     }
     if is_string {
         limit = dsml_entity_stream_safe_len(raw, start, limit, param_end, entity_values);

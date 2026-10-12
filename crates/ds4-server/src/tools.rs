@@ -586,7 +586,12 @@ pub fn parse_dsml_tolerant(
     ]
     .into_iter()
     .flatten()
-    .min()?;
+    .min();
+    // No wrapper or invoke anywhere: the artifact's tool-name-root shape is
+    // the only remaining candidate (dsml_tolerant_tool_root_scan).
+    let Some(start) = start else {
+        return dsml_tolerant_tool_root_scan(text, &norm, &map, orders, search_from);
+    };
     let mut p = start;
     if norm[p..].starts_with(b"<tool_calls") || norm[p..].starts_with(b"<calls") {
         let gt = norm[p..].iter().position(|&c| c == b'>')?;
@@ -670,6 +675,109 @@ pub fn parse_dsml_tolerant(
     let content_len = trim_tool_separator_ws(text, 0, orig_start);
     let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::DeepSeek);
     let orig_end = if p < norm.len() { map[p] } else { text.len() };
+    Some(ParsedGenerated {
+        content,
+        reasoning,
+        calls,
+        raw_dsml: String::from_utf8_lossy(&text[orig_start..orig_end.max(orig_start)]).into_owned(),
+        ok: true,
+        ..Default::default()
+    })
+}
+
+/// The artifact's tool-name-root shape (Spark session 01a13136, 2026-10-12,
+/// bytes captured from the open-grok transcript): the call opens with the
+/// TOOL NAME as the root element and the parameters as plain children --
+/// `<search_tool>\n<query>..</query>\n<limit>8</limit>\n</search_tool>` --
+/// with no wrapper and no invoke anywhere.  The engine keys every arm on
+/// the wrapper/invoke opens (server_dsml_parse.c find_tool_block) and the
+/// shim's scanner on the same starts (shim.py:492-494), so the whole block
+/// falls back to assistant text and the calls never run.  Extension of the
+/// same recovery (plan 6.23, the named deviation): a root is bound only
+/// when its tag names a tool the request's schema declares, every child
+/// goes through the bare-child binding (declared property, matching close,
+/// schema coercion), and the close must match the root; every other shape
+/// keeps the pre-existing behavior.
+fn dsml_tolerant_tool_root_scan(
+    text: &[u8],
+    norm: &[u8],
+    map: &[usize],
+    orders: &[ToolSchemaOrder],
+    from: usize,
+) -> Option<ParsedGenerated> {
+    let mut calls = Vec::new();
+    let mut p = from;
+    let mut first = None;
+    let mut last = 0;
+    while p < norm.len() {
+        // The earliest declared-tool root tag from here wins; a tag naming
+        // no declared tool is model text and stays untouched.
+        let mut best: Option<(usize, &ToolSchemaOrder, &str)> = None;
+        for o in orders {
+            for n in [o.name.as_str(), o.wire_name.as_str()] {
+                if n.is_empty() {
+                    continue;
+                }
+                let mut open = Vec::with_capacity(n.len() + 2);
+                open.extend_from_slice(b"<");
+                open.extend_from_slice(n.as_bytes());
+                open.push(b'>');
+                if let Some(rel) = find_substr(&norm[p..], &open) {
+                    let at = p + rel;
+                    if best.as_ref().map_or(true, |(b, _, _)| at < *b) {
+                        best = Some((at, o, n));
+                    }
+                }
+            }
+        }
+        let Some((at, o, n)) = best else { break };
+        let mut q = at + n.len() + 2;
+        let mut args = Vec::new();
+        loop {
+            q = skip_ws(norm, q);
+            if q >= norm.len() || norm[q..].starts_with(b"</") {
+                break;
+            }
+            if !dsml_tolerant_child_param(norm, &mut q, &o.name, orders, &mut args) {
+                break;
+            }
+        }
+        let mut close = Vec::with_capacity(n.len() + 3);
+        close.extend_from_slice(b"</");
+        close.extend_from_slice(n.as_bytes());
+        close.push(b'>');
+        if !norm[q..].starts_with(&close) {
+            // No matching close: not a complete call; the bytes stay model
+            // text and the scan resumes after this tag.
+            p = at + 1;
+            continue;
+        }
+        q += close.len();
+        if first.is_none() {
+            first = Some(at);
+        }
+        last = q;
+        let mut wrapped = vec![b'{'];
+        wrapped.extend_from_slice(&args);
+        wrapped.push(b'}');
+        calls.push(ToolCall {
+            name: o.name.clone(),
+            arguments: String::from_utf8_lossy(&wrapped).into_owned(),
+            ..Default::default()
+        });
+        p = q;
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    let orig_start = map[first?];
+    let content_len = trim_tool_separator_ws(text, 0, orig_start);
+    let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::DeepSeek);
+    let orig_end = if last < norm.len() {
+        map[last]
+    } else {
+        text.len()
+    };
     Some(ParsedGenerated {
         content,
         reasoning,

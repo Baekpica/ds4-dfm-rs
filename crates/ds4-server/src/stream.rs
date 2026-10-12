@@ -312,6 +312,22 @@ pub fn text_stream_safe_limit(
     if raw_len <= start {
         return raw_len;
     }
+    let mut raw_len = raw_len;
+    if !final_ {
+        // The tail may be the first half of the close marker cut between two
+        // tokens: hold it back until the next token proves it (f302be7,
+        // server_anthropic_stream.c:100-108).
+        let lit = think_end(format).as_bytes();
+        for k in (1..lit.len()).rev() {
+            if raw_len - start >= k && raw[raw_len - k..raw_len] == lit[..k] {
+                raw_len -= k;
+                break;
+            }
+        }
+        if raw_len <= start {
+            return start;
+        }
+    }
     let mut limit = raw_len;
     if has_tools {
         if let Some(rel) = find_tool_start(&raw[start..], format) {
@@ -340,6 +356,25 @@ pub fn text_stream_safe_limit(
         }
     }
     utf8_stream_safe_len(raw, start, limit, final_)
+}
+
+/// A stray close marker in the body (f302be7, server_anthropic_stream.c:86-97):
+/// in non-thinking mode the prompt already closed thinking, yet the artifact
+/// sometimes samples one more close marker ahead of its narration.  The final
+/// parse moves that narration into reasoning; a stream cannot retract bytes it
+/// already pushed, so it never pushes the marker itself.  A marker after a
+/// tool start belongs to the tool block and does not count.
+fn text_stream_stray(raw: &[u8], pos: usize, has_tools: bool, format: ChatFormat) -> Option<usize> {
+    let rest = raw.get(pos..)?;
+    let rel = find_substr(rest, 0, think_end(format).as_bytes())?;
+    if has_tools {
+        if let Some(trel) = find_tool_start(rest, format) {
+            if trel < rel {
+                return None;
+            }
+        }
+    }
+    Some(pos + rel)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -851,6 +886,14 @@ pub fn openai_sse_stream_update(
         return true;
     }
     if st.mode == OpenaiMode::Text {
+        // Never push a stray close marker; push the narration before it
+        // (f302be7, server_anthropic_stream.c:200-206).
+        while let Some(cut) = text_stream_stray(raw, st.emit_pos, r.has_tools, r.chat_format) {
+            if cut > st.emit_pos {
+                sse_chat_delta_n(w, r, id, "content", &raw[st.emit_pos..cut]);
+            }
+            st.emit_pos = cut + think_end(r.chat_format).len();
+        }
         let tool = if r.has_tools {
             find_tool_start(&raw[st.emit_pos..], r.chat_format).map(|rel| st.emit_pos + rel)
         } else {
@@ -1232,6 +1275,18 @@ pub fn anthropic_sse_stream_update(
         return true;
     }
     if st.mode == AnthMode::Text {
+        // Never push a stray close marker; push the narration before it
+        // (f302be7, server_anthropic_stream.c:200-206).
+        while let Some(cut) = text_stream_stray(raw, st.emit_pos, r.has_tools, r.chat_format) {
+            if cut > st.emit_pos {
+                if !anthropic_sse_open_block(w, st, AnthBlock::Text) {
+                    return false;
+                }
+                anthropic_sse_delta_live(w, st, AnthBlock::Text, &raw[st.emit_pos..cut]);
+                st.sent_text = true;
+            }
+            st.emit_pos = cut + think_end(r.chat_format).len();
+        }
         let tool = if r.has_tools {
             find_tool_start(&raw[st.emit_pos..], r.chat_format).map(|rel| st.emit_pos + rel)
         } else {

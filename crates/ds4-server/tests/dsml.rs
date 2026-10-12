@@ -5,7 +5,7 @@ use ds4_server::tools::{
     DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
     DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
 };
-use ds4_server::{ChatFormat, SemAccum};
+use ds4_server::{dsml_decode_state_for_text, ChatFormat, DsmlDecodeState, SemAccum};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -144,5 +144,24 @@ fn stream_closes_on_spaced_wrapper() {
     assert!(
         acc.saw_tool_end,
         "the spaced wrapper close must close the block (the engine's find_any_tool_end walks all four syntaxes)"
+    );
+}
+
+/// The artifact mixes spellings inside one block (f302be7, 2026-10-11): the
+/// spaced block carrying bare parameter tags.  The tracker must take the bare
+/// open and close as parameter boundaries and reach Outside at the block end;
+/// before the aliases it stopped at Structural, holding the block open.
+#[test]
+fn tracker_accepts_bare_parameter_tags() {
+    let block = format!(
+        "{tcs}\n{is} name=\"a\">\n<parameter name=\"x\" string=\"true\">v</parameter>\n{ie}\n{tce}",
+        tcs = DSML_TOOL_CALLS_START_SPACED,
+        is = DSML_INVOKE_START_SPACED,
+        ie = DSML_INVOKE_END_SPACED,
+        tce = DSML_TOOL_CALLS_END_SPACED,
+    );
+    assert_eq!(
+        dsml_decode_state_for_text(block.as_bytes()),
+        DsmlDecodeState::Outside
     );
 }

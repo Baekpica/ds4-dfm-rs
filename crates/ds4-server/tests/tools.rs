@@ -578,6 +578,52 @@ fn parse_dsml_tolerant_coerces_a_child_like_a_parameter() {
 }
 
 #[test]
+fn parse_dsml_tolerant_binds_a_tool_name_root_with_bare_children() {
+    // The artifact's tool-name-root shape (Spark session 01a13136,
+    // 2026-10-12, bytes captured from the open-grok transcript): the call
+    // opens with the TOOL NAME as the root element and the parameters as
+    // plain children, with no wrapper and no invoke anywhere --
+    //   <search_tool>
+    //   <query>..</query>
+    //   <limit>8</limit>
+    //   </search_tool>
+    // The engine keys every arm on the wrapper/invoke opens
+    // (server_dsml_parse.c find_tool_block) and the shim's scanner on the
+    // same starts (shim.py:492-494), so the whole block falls back to
+    // assistant text and the calls never run.  The tolerant recovery binds
+    // it (plan 6.23, the named deviation): the root must name a declared
+    // tool, every child goes through the bare-child binding, the close
+    // must match the root.
+    let orders = [ToolSchemaOrder {
+        name: "search_tool".into(),
+        prop: vec!["query".into(), "limit".into()],
+        prop_type: vec!["string".into(), "integer".into()],
+        ..Default::default()
+    }];
+    let text = "\n\n<search_tool>\n\
+        <query>health-second-opinion-mcp search_literature differential_diagnosis corpus_stats</query>\n\
+        <limit>8</limit>\n\
+        </search_tool>\n\n\
+        <search_tool>\n\
+        <query>ebook-knowledge query_book</query>\n\
+        <limit>3</limit>\n\
+        </search_tool>\n\nWait for results.";
+    let p = parse_dsml_tolerant(text.as_bytes(), &orders, false).expect("tolerant parse");
+    assert_eq!(p.calls.len(), 2);
+    assert_eq!(p.calls[0].name, "search_tool");
+    assert_eq!(
+        p.calls[0].arguments,
+        r#"{"query": "health-second-opinion-mcp search_literature differential_diagnosis corpus_stats", "limit": 8}"#
+    );
+    assert_eq!(p.calls[1].name, "search_tool");
+    assert_eq!(
+        p.calls[1].arguments,
+        r#"{"query": "ebook-knowledge query_book", "limit": 3}"#
+    );
+    assert_eq!(p.content, b"");
+}
+
+#[test]
 fn parse_dsml_tolerant_ignores_a_block_inside_closed_thinking() {
     // The engine refuses DSML inside a closed reasoning section: with
     // thinking on, the tool search starts after the LAST </think>

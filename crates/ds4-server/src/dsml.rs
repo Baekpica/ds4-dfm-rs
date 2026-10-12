@@ -161,13 +161,14 @@ impl DsmlDecodeTracker {
             if self.mode == TrackMode::StringBody {
                 let syn = self.syn.unwrap();
                 while self.pos < raw.len() {
-                    if raw_full_lit(raw, self.pos, syn.param_end) {
-                        self.pos += syn.param_end.len();
+                    let end_len = param_close_len(&syn, raw, self.pos);
+                    if end_len > 0 {
+                        self.pos += end_len;
                         self.mode = TrackMode::Structural;
                         self.decode = DsmlDecodeState::Structural;
                         break;
                     }
-                    if raw_partial_lit_min(raw, self.pos, syn.param_end, 2) {
+                    if param_close_partial(&syn, raw, self.pos, 2) {
                         self.decode = DsmlDecodeState::Structural;
                         return;
                     }
@@ -182,13 +183,14 @@ impl DsmlDecodeTracker {
                 let syn = self.syn.unwrap();
                 while self.pos < raw.len() {
                     if !self.json_in_string {
-                        if raw_full_lit(raw, self.pos, syn.param_end) {
-                            self.pos += syn.param_end.len();
+                        let end_len = param_close_len(&syn, raw, self.pos);
+                        if end_len > 0 {
+                            self.pos += end_len;
                             self.mode = TrackMode::Structural;
                             self.decode = DsmlDecodeState::Structural;
                             break;
                         }
-                        if raw_partial_lit_min(raw, self.pos, syn.param_end, 2) {
+                        if param_close_partial(&syn, raw, self.pos, 2) {
                             self.decode = DsmlDecodeState::Structural;
                             return;
                         }
@@ -247,7 +249,7 @@ impl DsmlDecodeTracker {
                         }
                     }
                 }
-                if raw_full_lit(raw, self.pos, syn.param_start) {
+                if param_open_full(&syn, raw, self.pos) {
                     let tag_start = self.pos;
                     let Some(rel) = raw[self.pos..].iter().position(|&c| c == b'>') else {
                         self.decode = DsmlDecodeState::Structural;
@@ -270,8 +272,8 @@ impl DsmlDecodeTracker {
                 if raw_partial_lit(raw, self.pos, syn.tool_calls_end)
                     || raw_partial_lit(raw, self.pos, syn.invoke_start)
                     || raw_partial_lit(raw, self.pos, syn.invoke_end)
-                    || raw_partial_lit(raw, self.pos, syn.param_start)
-                    || raw_partial_lit(raw, self.pos, syn.param_end)
+                    || param_open_partial(&syn, raw, self.pos)
+                    || param_close_partial(&syn, raw, self.pos, 1)
                 {
                     self.decode = DsmlDecodeState::Structural;
                     return;
@@ -356,11 +358,77 @@ fn raw_suffix_partial_lit(raw: &[u8], lit: &[u8], min_len: usize) -> bool {
     false
 }
 
+/// The engine's bare-parameter aliases (f302be7, server_dsml_parse.c:5-47): a
+/// decorated or spaced block also accepts the plain spellings, because the
+/// artifact mixes them inside one block (decorated invoke, bare parameters).
+/// The plain syntax already is the bare form, so the alias never stacks on it.
+/// The open alias carries the trailing space: "<parameters>" is not an open.
+const BARE_PARAM_START: &[u8] = b"<parameter ";
+const BARE_PARAM_END: &[u8] = b"</parameter>";
+
+fn bare_param_alias(syn: &DsmlSyntax) -> bool {
+    syn.param_start != &b"<parameter"[..]
+}
+
+fn param_open_full(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
+    raw_full_lit(raw, pos, syn.param_start)
+        || (bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_START))
+}
+
+fn param_open_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
+    raw_partial_lit(raw, pos, syn.param_start)
+        || (bare_param_alias(syn) && raw_partial_lit(raw, pos, BARE_PARAM_START))
+}
+
+/// Length of the close at pos in either spelling (f302be7,
+/// server_dsml_parse.c:31-38); 0 when neither matches.
+fn param_close_len(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> usize {
+    if raw_full_lit(raw, pos, syn.param_end) {
+        return syn.param_end.len();
+    }
+    if bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_END) {
+        return BARE_PARAM_END.len();
+    }
+    0
+}
+
+fn param_close_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize, min_len: usize) -> bool {
+    raw_partial_lit_min(raw, pos, syn.param_end, min_len)
+        || (bare_param_alias(syn) && raw_partial_lit_min(raw, pos, BARE_PARAM_END, min_len))
+}
+
+/// Earliest close in either spelling from `from`, as (offset, len)
+/// (f302be7, server_dsml_parse.c:42-47).
+fn param_close_find(syn: &DsmlSyntax, raw: &[u8], from: usize) -> Option<(usize, usize)> {
+    let rest = &raw[from..];
+    let own = find_lit_bounded(rest, syn.param_end).map(|r| (r, syn.param_end.len()));
+    if !bare_param_alias(syn) {
+        return own;
+    }
+    let bare = find_lit_bounded(&rest[..own.map_or(rest.len(), |(r, _)| r)], BARE_PARAM_END)
+        .map(|r| (r, BARE_PARAM_END.len()));
+    bare.or(own)
+}
+
+/// The buffer tail is a proper prefix of either close spelling (>= min_len
+/// bytes): the stream holds it back until the next token proves it (f302be7,
+/// server_dsml_stream.c:104-110).
+fn raw_suffix_partial_close(syn: &DsmlSyntax, raw: &[u8], min_len: usize) -> bool {
+    let mut n = min_len;
+    while n <= raw.len() && n < 32 {
+        if param_close_partial(syn, raw, raw.len() - n, min_len) {
+            return true;
+        }
+        n += 1;
+    }
+    false
+}
+
 fn dsml_decode_scan_json_param(raw: &[u8], mut pos: usize, syn: DsmlSyntax) -> DsmlDecodeState {
     let mut in_string = false;
     let mut escaped = false;
     while pos < raw.len() {
-        if !in_string && raw_full_lit(raw, pos, syn.param_end) {
+        if !in_string && param_close_len(&syn, raw, pos) > 0 {
             return DsmlDecodeState::Structural;
         }
         let c = raw[pos];
@@ -377,7 +445,7 @@ fn dsml_decode_scan_json_param(raw: &[u8], mut pos: usize, syn: DsmlSyntax) -> D
             in_string = true;
         }
     }
-    if !in_string && raw_suffix_partial_lit(raw, syn.param_end, 2) {
+    if !in_string && raw_suffix_partial_close(&syn, raw, 2) {
         return DsmlDecodeState::Structural;
     }
     if in_string {
@@ -418,7 +486,7 @@ pub fn dsml_decode_state_for_text(raw: &[u8]) -> DsmlDecodeState {
                 }
             }
         }
-        if raw_full_lit(raw, pos, syn.param_start) {
+        if param_open_full(&syn, raw, pos) {
             let tag_start = pos;
             let Some(rel) = raw[pos..].iter().position(|&c| c == b'>') else {
                 return DsmlDecodeState::Structural;
@@ -427,25 +495,25 @@ pub fn dsml_decode_state_for_text(raw: &[u8]) -> DsmlDecodeState {
             let string_value = dsml_attr_is_string_true(raw, tag_start, tag_end);
             pos = tag_end;
             if string_value {
-                match find_lit_bounded(&raw[pos..], syn.param_end) {
+                match param_close_find(&syn, raw, pos) {
                     None => {
-                        if raw_suffix_partial_lit(raw, syn.param_end, 2) {
+                        if raw_suffix_partial_close(&syn, raw, 2) {
                             return DsmlDecodeState::Structural;
                         }
                         return DsmlDecodeState::StringBody;
                     }
-                    Some(end) => {
-                        pos += end + syn.param_end.len();
+                    Some((end, end_len)) => {
+                        pos += end + end_len;
                         continue;
                     }
                 }
             }
             let json_state = dsml_decode_scan_json_param(raw, pos, syn);
             if json_state == DsmlDecodeState::Structural {
-                match find_lit_bounded(&raw[pos..], syn.param_end) {
+                match param_close_find(&syn, raw, pos) {
                     None => return DsmlDecodeState::Structural,
-                    Some(end) => {
-                        pos += end + syn.param_end.len();
+                    Some((end, end_len)) => {
+                        pos += end + end_len;
                         continue;
                     }
                 }
