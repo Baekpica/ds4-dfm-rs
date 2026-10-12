@@ -51,17 +51,20 @@
 #      byte-identical, so a side that reuses KV reports
 #      prefill_cached_tokens ~= the turn-1 context while a side that does not
 #      re-prefills the whole thing.  That difference, not the per-token rate,
-#      is what an agent session feels.  The V4.1 route has neither prefix reuse
-#      nor disk KV (docs/serving-capabilities.md:69;
-#      /data/YoungAi-restructure/src/server/server_generate_v41.c:8).
+#      is what an agent session feels.  The PORT's V4.1 route has neither
+#      prefix reuse nor disk KV (docs/serving-capabilities.md:69); the engine
+#      oracle gained prefix reuse 2026-10-12 (a8e878a, core_v41_kvreuse.c) and
+#      reports it in its usage block, while disk KV stays unimplemented on
+#      both (/data/YoungAi/src/server/server_generate_v41.c:8).
 #
 # The corpus is Italian prose, so the characters-per-token ratio is measured,
 # not assumed: one calibration probe runs in the first boot of the sweep and is
 # reused for every side and step (it is a property of the text and the
 # tokenizer, not of the server).  The probe reads its token count from the
 # port's response timings (crates/ds4-server/src/stream.rs:363-380) or from the
-# engine's own prefill progress total (server_checkpoint.c:69), because the
-# engine has no usage block on the chat wire.
+# engine's own prefill progress total (server_checkpoint.c:69); the engine's
+# usage block also carries prompt_tokens and, since the reuse, cached_tokens
+# (server_http.c:343-345).
 #
 # Recorded per request: ttft, prefill tokens and t/s, decode t/s, tokens per
 # step (the acceptance proxy = decode_tokens/decode_steps), the engram prep
@@ -278,7 +281,13 @@ prep_ms() { sed -n 's/.*engram prep \([0-9.]*\).*/\1/p' "$1" | tail -1; }
 host_gaps_line() { sed -n 's/.*\(\[v41\] host gaps\/round:.*\)/\1/p' "$1" | tail -1; }
 eng_prefill_tps() { sed -n 's/.*chunk [0-9]*\/[0-9]* ([0-9.]*%) chunk=[0-9.]* t\/s avg=\([0-9.]*\) t\/s.*/\1/p' "$1" | tail -1; }
 eng_decode_tps() { sed -n 's/.*decoding chunk=[0-9.]* t\/s avg=\([0-9.]*\) t\/s.*/\1/p' "$1" | tail -1; }
-eng_cached() { sed -n 's/.*ctx=\([0-9]*\)\.\.[0-9]*:[0-9]*.*/\1/p' "$1" | tail -1; }
+# The engine's cached count comes from the response usage block.  Its log's
+# ctx span is built with cached=0 at request begin
+# (server_generate_v41.c:362), so it can never show a reuse hit (measured
+# 2026-10-12: span 0 against usage cached_tokens 2149).
+eng_cached() { # <resp-json>
+    jq -r '.usage.prompt_tokens_details.cached_tokens // empty' "$1" 2>/dev/null
+}
 
 # One record as a single JSON object.  Empty readings become null, so a missing
 # number is visible as null in the summary instead of being silently zero.
@@ -370,12 +379,12 @@ run_step() { # <side> <ctx-target> <run>
         t2_tps=$(jq -r '.timings.tok_per_step // empty' "$LOG/$RUN_SIDE.t2.resp.json")
     else
         t1_ttft=""
-        t1_pfc=$(eng_cached "$T1_LOG")
+        t1_pfc=$(eng_cached "$LOG/$RUN_SIDE.t1.resp.json")
         t1_pftps=$(eng_prefill_tps "$T1_LOG")
         t1_dctps=$(eng_decode_tps "$T1_LOG")
         t1_tps=""
         t2_ttft=""
-        t2_pfc=$(eng_cached "$LOG/${RUN_SIDE}_t2_${RUN_CTX}.req.log")
+        t2_pfc=$(eng_cached "$LOG/$RUN_SIDE.t2.resp.json")
         t2_pftps=$(eng_prefill_tps "$LOG/${RUN_SIDE}_t2_${RUN_CTX}.req.log")
         t2_dctps=$(eng_decode_tps "$LOG/${RUN_SIDE}_t2_${RUN_CTX}.req.log")
         t2_tps=""
