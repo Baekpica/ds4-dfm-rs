@@ -1829,6 +1829,37 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
    parsed the call and the tool items matched modulo ids (0-byte msg
    diffs). Log `/tmp/dsml_wire.log`, artifacts `/tmp/ds41_wire_gate/`.
 
+11. The tool-name-root arm + the f302be7 parity (`5df1817`, 2026-10-12).
+    The operator's Spark session 01a13136 (open-grok, system text + the
+    official tool instructions) returned the artifact's call as content
+    with no tool_calls; the raw bytes (hex-verified) were
+    `<search_tool><query>..</query><limit>8</limit></search_tool>` --
+    the tool name as the root element, bare children, no wrapper, no
+    invoke. The tolerant scan had no arm for it, so the block fell back
+    to content and the calls never ran. The scan now binds a root that
+    names a declared tool whose children name declared properties (the
+    item 8 guards: matching close, no nested tags, schema coercion).
+    This is a NAMED extension: the engine has no arm for the shape, its
+    parse keys on the tool_calls wrapper (server_dsml_parse.c:124-126,
+    :387-389), and the peer's probes (no system message) stayed 4/4
+    clean while the engine's own record names the drift (system text +
+    official tool instructions -> the model's first choice at the
+    parameter open is bare; Chinese system 5/5, English 2/5, no system
+    0/5). Mirrored in the same commit, read first-hand: the bare
+    parameter open/close aliases through one entry set in the live tool
+    stream and the KV decode tracker (server_dsml_parse.c:5-47; the
+    `<parameters>` exclusion via the trailing space; the plain syntax
+    never stacks the alias), the missing string attribute read as
+    string (server_dsml_stream.c:97), and the stray close marker
+    suppressed from the OpenAI and Anthropic text streams with the
+    split-marker tail held back (server_anthropic_stream.c:86-108,
+    :200-206). Tests: the captured session bytes byte-for-byte, the
+    spaced block with bare tags (tracker), the stray marker on both
+    surfaces + the partial hold (stream). The root form still streams
+    as content LIVE until the finish reconcile serves the calls -- the
+    engine has no live arm for it either; a live projection would be
+    new machinery, not parity.
+
 Unit close (2026-10-11 evening, the Spark window, operator go): both
 gates re-run at HEAD `ba41695` against the second oracle 221b9e2
 (`~/youngai-src-restructure/ds4-server`, built 10-11 10:03).  The port
