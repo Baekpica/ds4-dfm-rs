@@ -308,6 +308,15 @@ void ds4_bridge_v41_kvreuse_set(int on);
 int ds4_bridge_v41_kvreuse_last_reused(void);
 uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n);
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
+/* The disk half (item 4): the payload export/import the Rust store drives
+ * (crates/ds4-kv, v41_disk.rs).  export writes the checkpoint payload (meta
+ * + spans + logits; the store's text block carries the tokens) to a
+ * host-named path, 1 = written; import loads it back from (path, offset,
+ * bytes) plus the token block the caller matched, 1 = loaded.  Both are
+ * gated by --no-kv-reuse and K.valid. */
+int ds4_bridge_v41_kvreuse_export(const char *path);
+int ds4_bridge_v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
+                                  const int32_t *tokens, uint32_t n);
 /* The last v41 run's speculation account (the engine's
  * ds4_engine_v41_last_spec_stats, core_v41_api.c:41-46): rounds/offered/
  * accepted, cleared by the next generate entry.  Any pointer may be NULL. */

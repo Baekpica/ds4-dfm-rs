@@ -837,6 +837,16 @@ extern "C" {
     pub fn ds4_bridge_v41_kvreuse_last_reused() -> c_int;
     pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int) -> u32;
     pub fn ds4_bridge_v41_kvreuse_note_mount(has_mount: c_int, hash: u64);
+    /* The disk half (item 4): the payload export/import the Rust store
+     * (crates/ds4-kv) drives; both are gated by --no-kv-reuse and K.valid. */
+    pub fn ds4_bridge_v41_kvreuse_export(path: *const c_char) -> c_int;
+    pub fn ds4_bridge_v41_kvreuse_import(
+        path: *const c_char,
+        offset: u64,
+        bytes: u64,
+        tokens: *const i32,
+        n: u32,
+    ) -> c_int;
     pub fn ds4_bridge_v41_last_spec_stats(
         rounds: *mut c_int,
         offered: *mut c_int,

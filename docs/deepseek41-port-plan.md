@@ -2033,48 +2033,73 @@ store discipline (`ds4_kvstore.c/h`, `ds4_prompt_prefix.c/h`,
 eviction score with a 6 h hit half-life) with the port's own payload -- the
 19.8 MB `K` blob.
 
-Format (versioned, little-endian, one file per checkpoint under `<dir>`):
-a fixed 48-byte header (magic `D41K` + version, model id, the KV-format
-class byte -- FP8-primary against F32 must not cross-load, reason, tokens,
-hits, ctx, created_at, last_used, payload_bytes, the mount digest), then the
-token block `n x 4`, the meta block (per-layer `ng_src`/`cpend`/`win_from`,
-`mainh_end`/`mainh_n`, `K.bytes`), the per-layer device spans in fixed order
-(win `SWA` rows; `ckv` `ng_src`; `idk` `ng_src`; `cpk`/`cps` `cpend` rows),
-and the logits row `V x 4`.  Atomic write (tmp + rename); a short or
-mismatched file is a miss, never a half checkpoint.
+AMENDED 2026-10-12, before the first commit of this half (the operator's
+"do we need to port the kvstore or can we use what we already have"): the
+store is NOT new code.
+`crates/ds4-kv` already IS the port ("File format, SHA key, eviction, and
+prefix lookup match `ds4_kvstore.c` at `v0.6.3-dfm`.  Payload bytes stay
+opaque", `lib.rs:1-3`), the server already opens it from `--kv-disk-dir` /
+`--kv-disk-space-mb` (`bin/ds4-server-rs.rs`, `kv.open()`) and drives the
+session route through `SerialKvIo::save_payload` / `load_payload_range` /
+`write_payload_file` (`generate.rs`).  The first shape (a standalone D41K
+file the native wrote whole) is dropped as duplication: the native writes
+and reads only the PAYLOAD; the store owns the file, the name, the budget
+and the eviction.  What remains the V4.1 caller's mapping is below.
 
-Native (`ds4_ds41_kvreuse.inc`): `export(path, reason)` writes the blob only
-when `K.valid` (device spans read through the tensor read API); `import(path)`
-validates the header and sizes and loads into `K`, leaving the existing
-restore path the only authority (it re-runs the memcmp).  `--no-kv-reuse`
-disables both halves; `K.valid` stays the gate.
+Payload (little-endian, after the store's header + text block): a meta block
+(per-layer `ng_src`/`cpend`/`win_from` u32 x L, `mainh_end` i64, `mainh_n`
+u32, `mainh_bytes` u64, checkpoint bytes u64), then the per-layer device
+spans in one fixed order (`v41_kvreuse_walk`: win `SWA` rows; `ckv`
+`ng_src x 288`; `idk` `ng_src x 72`; `cpk`/`cps` `cpend` rows each), then
+`mainh` and the logits row `V x 4`.  The token block stays OUT of the
+payload: the store's text block is the token array (LE i32), so the store's
+byte-prefix match is an exact token-prefix match, and the import takes the
+tokens from the caller -- the restore's memcmp stays the only authority.
+The store's header carries model id (the catalog variant byte), quant class
+(4: the FP4-nibble + E4M3 packed KV, one of `ds4_kvstore_quant_bits_supported`'s
+classes), ctx, dates and hits; the artifact identity rides the store's own
+`bind_identity`; the 12-byte caller trailer carries the payload ABI, the
+packed-KV class and the mount digest (the amplifier identity, which the
+store cannot know; the session route already uses trailers the same way).
 
-Host (`crates/ds4-core/src/v41_kvdisk.rs` + `v41_run.rs` + `generate.rs`): a
-store opened at server/CLI start when `--kv-disk-dir` is set (budget =
-`--kv-disk-space-mb`, default 4096 as upstream).  An in-memory index (path,
-tokens, model/quant/ctx, mount, hits, last_used, size) built by scanning the
-directory at open; `find(prompt)` = the longest exact token-prefix match
-(upstream's discipline, never a fuzzy hit); before the run: import; after the
-run: export (0 = nothing saved) and then evict to budget + enforce
-`min_tokens` (no tiny checkpoints).  The V4.1 serving row
-(`serving.rs:651-664`) flips disk none -> disk with the store's effective
-limits; the flags already parse.
+Native (`ds4_ds41_kvreuse.inc`): `v41_kvreuse_export(path)` writes the
+payload only when `K.valid` and `K.n` (device spans through the tensor read
+API; the file is removed on a failure); `v41_kvreuse_import(path, offset,
+bytes, tokens, n)` validates the meta against the state allocation formulas
+(corruption fences), requires the computed payload size to equal the store's
+`payload_bytes` BEFORE copying anything, then loads into `K` and takes the
+tokens -- a failed import leaves `K` invalid (never half; the request
+prefills cold, like a failed save).  `--no-kv-reuse` gates both; `K.valid`
+stays the gate.  The restore gained one guard: an imported `mainh` span must
+hold at least the fresh state's own length.
 
-Named deviations: (a) the key is the token sequence (the native restore's
-authority) with the mount digest in the header, not upstream's rendered-text
-sha -- the render is a host-side concern here and the engine's reuse matches
-tokens; (b) the payload is the V4.1 checkpoint blob, not upstream's ds4 KV
-format -- the store discipline is what ports; (c) the engine has no disk KV,
-so the gates are the port's own (below), not engine goldens.
+Host: the `V41KvDisk` trait in `crates/ds4-core/src/v41_run.rs` (`find`
+answers the best candidate strictly longer than the in-memory prefix; `store`
+stages the native export through the store), so ds4-core stays
+store-agnostic; the implementation is `crates/ds4-server/src/v41_disk.rs`
+over the `KvStore` the server already owns (the field became a `RefCell`:
+the V4.1 route runs under the DecodeIo callbacks' shared borrow).  The find
+runs after the mount (that is where the digest is computed), the import only
+when strictly longer than the in-memory checkpoint, the store after the run
+only when the checkpoint is exactly this prompt (`peek == np`); an entry
+under the same text with a stale mount digest is discarded before the write
+(the store's reuse fast path would rewrite only the trailer, keeping the old
+mount's KV).  `--no-kv-reuse` turns the whole handle off, not just the
+native gate.  The V4.1 serving row flips disk none -> `Present` (present,
+not qualified: the gate runs on the Spark), and `resolve_disk` accepts the
+V4.1 route without a session snapshot -- its disk is the native checkpoint,
+not a `ds4_session` snapshot.
 
 Gate (`tests/ds41_kv_disk_gate.sh`, the U-B gate split across processes):
-process A: P, N tokens, exit; process B (fresh): P+t1 -> `reuse |P| of
-|P+t1|`, suffix-only prefill, ids and `DS41_GEN_LOGITS` rows bit-equal to the
-single-process cell; process C: same prompt as B -> reuse n of n bit-for-bit.
-Negatives: different prompt = cold; mount digest change = file ignored;
-truncated file = cold, no crash; over-budget = eviction leaves the newest;
-`--no-kv-reuse` = no store and no load.  Acceptance: the gate PASSes on the
-Spark; the fresh-process turn 2 at 2048 drops from 2.4 s to the suffix
+A1 + A in one process (P -> 1 token -> t1; P -> N; the export runs at each
+request's prefill end), B a FRESH process (P+t1 -> `reuse |P| of |P+t1|`,
+suffix 1, ids and `DS41_GEN_LOGITS` rows bit-equal to A shifted by one), C a
+FRESH process (the same prompt -> reuse n of n bit-for-bit), then four
+negatives, each a fresh process: D an unrelated prompt (cold), E a truncated
+store copy (cold, HTTP 200), F `--no-kv-reuse` (cold, no new file), G a
+1 MiB budget (200, no new file).  The store's default `min_tokens` is 512,
+so the gate boots `--kv-cache-min-tokens 8`.  Acceptance: the gate PASSes on
+the Spark; the fresh-process turn 2 at 2048 drops from 2.4 s to the suffix
 class; the four parity gates stay green; `cargo test` and the parity
 null-stubs build stay green.
 

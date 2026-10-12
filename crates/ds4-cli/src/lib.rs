@@ -704,6 +704,9 @@ fn run_v41_one_shot(
          * (U-B; engine core_v41_kvreuse.c); the CLI has no --no-kv-reuse
          * switch (the server has one), so the option keeps its default. */
         kv_reuse: None,
+        /* The disk half (item 4) is the server's (--kv-disk-dir opens the
+         * store there); the CLI has no store and leaves it off. */
+        kv_disk: None,
         sampling: Some(ds4_core::V41Sampling {
             temperature: args.temp,
             top_p: args.top_p,

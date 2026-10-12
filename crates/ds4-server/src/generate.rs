@@ -3800,7 +3800,11 @@ pub struct NativeDecode<'a> {
     model: &'a ds4_core::Model,
     vocab: Option<&'a ds4_core::Vocab>,
     session: Option<ds4_core::Session<'a>>,
-    store: Option<KvStore>,
+    /// The KVC disk store, when `--kv-disk-dir` opened one.  A RefCell so
+    /// the V4.1 route (a `&self` DecodeIo method, the callbacks hold the
+    /// engine shared for the run) can still drive it; the serial path uses
+    /// get_mut.
+    store: Option<RefCell<KvStore>>,
     session_disk_storable: bool,
     thinking_visible: Option<ThinkingVisibleCheckpoint>,
     tool_memory: ToolMemory,
@@ -3880,7 +3884,7 @@ impl<'a> NativeDecode<'a> {
     }
 
     pub fn with_store(mut self, store: KvStore) -> Self {
-        self.store = Some(store);
+        self.store = Some(RefCell::new(store));
         self
     }
 
@@ -3905,9 +3909,9 @@ impl<'a> NativeDecode<'a> {
             tool_replay,
         );
         self.session()?;
-        let (session, store, checkpoint, tool_memory) = (
+        let (session, mut store, checkpoint, tool_memory) = (
             &mut self.session,
-            &mut self.store,
+            self.store.as_mut().map(RefCell::get_mut),
             &self.thinking_visible,
             &self.tool_memory,
         );
@@ -3931,7 +3935,7 @@ impl<'a> NativeDecode<'a> {
         let result = if reuse_off {
             disk_sync_prompt_impl(
                 &mut io,
-                store.as_mut(),
+                store.as_deref_mut(),
                 model_id,
                 quant_bits,
                 prompt,
@@ -3945,7 +3949,7 @@ impl<'a> NativeDecode<'a> {
         } else if self.model.chat_template().is_some() {
             disk_sync_template(
                 &mut io,
-                store.as_mut(),
+                store.as_deref_mut(),
                 model_id,
                 quant_bits,
                 prompt,
@@ -3955,7 +3959,7 @@ impl<'a> NativeDecode<'a> {
         } else if tool_replay {
             disk_sync_tool_replay(
                 &mut io,
-                store.as_mut(),
+                store.as_deref_mut(),
                 model_id,
                 quant_bits,
                 prompt,
@@ -3965,7 +3969,7 @@ impl<'a> NativeDecode<'a> {
         } else {
             disk_sync_prompt(
                 &mut io,
-                store.as_mut(),
+                store.as_deref_mut(),
                 model_id,
                 quant_bits,
                 prompt,
@@ -4029,6 +4033,21 @@ impl DecodeIo for NativeDecode<'_> {
         let route = self.v41.as_ref().ok_or(GenerateError::Unsupported(
             "V4.1 generation is not loaded on this engine",
         ))?;
+        // The disk half (item 4): the store, when --kv-disk-dir opened one.
+        // The RefCell borrow is held for the whole run; nothing else touches
+        // the store during it (the callbacks reach V41EmitState only).
+        // --no-kv-reuse disables both halves here, not only the native gate,
+        // so no find runs and no failure line can print.
+        let model_id = u8::try_from(self.model.model_id()).ok();
+        let ctx = u32::try_from(self.ctx()).unwrap_or(0);
+        let mut store_guard;
+        let mut disk = match (self.store.as_ref(), model_id, route.no_kv_reuse) {
+            (Some(cell), Some(id), false) if ctx > 0 => {
+                store_guard = cell.borrow_mut();
+                Some(crate::v41_disk::V41Disk::new(&mut store_guard, id, ctx))
+            }
+            _ => None,
+        };
         let mut opts = ds4_core::V41RunOptions {
             engram_dir: route.engram_dir.as_deref(),
             no_engram: route.no_engram,
@@ -4038,6 +4057,7 @@ impl DecodeIo for NativeDecode<'_> {
             emit_trace: route.emit_trace,
             prof: route.prof,
             kv_reuse: if route.no_kv_reuse { Some(false) } else { None },
+            kv_disk: disk.as_mut().map(|d| d as &mut dyn ds4_core::V41KvDisk),
             sampling,
             greedy: Some(greedy),
             zchain: route.zchain.as_deref(),
@@ -4103,7 +4123,7 @@ impl DecodeIo for NativeDecode<'_> {
     }
 
     fn kv_store_mut(&mut self) -> Option<&mut KvStore> {
-        self.store.as_mut()
+        self.store.as_mut().map(RefCell::get_mut)
     }
 
     fn tokenize_text(&self, text: &str) -> Result<Vec<i32>, GenerateError> {
@@ -4342,7 +4362,8 @@ impl DecodeIo for NativeDecode<'_> {
             return;
         };
         if let Some(store) = &self.store {
-            self.tool_memory.restore_store(store, model_id, messages);
+            self.tool_memory
+                .restore_store(&store.borrow(), model_id, messages);
         }
         self.tool_memory.attach(messages);
     }
@@ -4373,9 +4394,11 @@ impl DecodeIo for NativeDecode<'_> {
             return Ok(());
         };
         let vocab = self.vocab.unwrap_or_else(|| self.model.vocab());
-        let (Some(session), Some(store), tool_memory) =
-            (&mut self.session, &mut self.store, &self.tool_memory)
-        else {
+        let (Some(session), Some(store), tool_memory) = (
+            &mut self.session,
+            self.store.as_mut().map(RefCell::get_mut),
+            &self.tool_memory,
+        ) else {
             return Ok(());
         };
         let mut io = NativeSerialKvIo {
@@ -4402,7 +4425,7 @@ impl DecodeIo for NativeDecode<'_> {
         let vocab = self.vocab.unwrap_or_else(|| self.model.vocab());
         let (Some(session), Some(store), checkpoint, tool_memory) = (
             &mut self.session,
-            &mut self.store,
+            self.store.as_mut().map(RefCell::get_mut),
             &self.thinking_visible,
             &self.tool_memory,
         ) else {

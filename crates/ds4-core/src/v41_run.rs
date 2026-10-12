@@ -19,7 +19,8 @@ use std::path::Path;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 use ds4_sys::{
-    ds4_bridge_v41_generate, ds4_bridge_v41_kvreuse_last_reused, ds4_bridge_v41_kvreuse_note_mount,
+    ds4_bridge_v41_generate, ds4_bridge_v41_kvreuse_export, ds4_bridge_v41_kvreuse_import,
+    ds4_bridge_v41_kvreuse_last_reused, ds4_bridge_v41_kvreuse_note_mount,
     ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set, ds4_bridge_v41_last_spec_stats,
     ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph,
     ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set,
@@ -87,6 +88,46 @@ pub struct V41Sampling {
     pub dry_allowed_length: i32,
 }
 
+/// The V4.1 disk half's host seam (item 4): the checkpoint store lives in
+/// the Rust host (crates/ds4-kv, the port of ds4_kvstore.c), so the run
+/// reaches it through this trait -- the same shape as `greedy`, which keeps
+/// ds4-core store-agnostic.  The native owns the payload and the token
+/// memcmp; the host owns the file, the budget and the eviction.
+pub struct V41KvHit {
+    /// The store entry's file.
+    pub path: std::path::PathBuf,
+    /// The payload range inside it (the store's envelope).
+    pub offset: u64,
+    pub bytes: u64,
+    /// The matched token prefix (the store entry's token count).
+    pub tokens: u32,
+}
+
+pub trait V41KvDisk {
+    /// The longest token-prefix candidate strictly longer than `have` (the
+    /// in-memory checkpoint's own prefix), already validated against the
+    /// current mount digest and the payload ABI/class.  None = no candidate.
+    fn find(&mut self, tokens: &[i32], digest: u64, have: u32) -> Option<V41KvHit>;
+    /// Stage the native payload export (`save` writes it to a path the store
+    /// owns) into a store entry.  Called only when the in-memory checkpoint
+    /// is exactly this prompt; a failed `save` must leave no entry behind.
+    fn store(&mut self, tokens: &[i32], digest: u64, save: &mut dyn FnMut(&Path) -> bool);
+}
+
+/// A NUL-terminated copy of a path for the bridge calls; None on an interior
+/// NUL (never for a real path).
+fn c_path(path: &Path) -> Option<std::ffi::CString> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::CString::new(path.as_os_str().as_bytes()).ok()
+    }
+    #[cfg(not(unix))]
+    {
+        std::ffi::CString::new(path.to_str()?).ok()
+    }
+}
+
 /// The per-run switches (the engine's CLI globals, `cli_diag.c:58`).  No
 /// Clone/Debug derive: the greedy hook holds a `&mut dyn FnMut`, which neither
 /// implements.
@@ -114,6 +155,10 @@ pub struct V41RunOptions<'a> {
     /// `core_v41_kvreuse.c`; a cache hit must not change emitted ids, so the
     /// kill switch exists per unit policy.
     pub kv_reuse: Option<bool>,
+    /// The V4.1 disk half (item 4): the KVC store handle when
+    /// `--kv-disk-dir` opened one (crates/ds4-kv); None turns both halves
+    /// off.  The native gates them on --no-kv-reuse and K.valid as well.
+    pub kv_disk: Option<&'a mut dyn V41KvDisk>,
     /// The per-request sampling face (`ds4_engine_set_decode_sampling`,
     /// `core_v41_api.c:10-13`).  Some = set it before the run (the engine's
     /// server and CLI always do, `server_generate_v41.c:409` /
@@ -147,6 +192,7 @@ impl Default for V41RunOptions<'_> {
             emit_trace: false,
             prof: false,
             kv_reuse: None,
+            kv_disk: None,
             sampling: None,
             greedy: None,
             zchain: None,
@@ -1139,13 +1185,13 @@ fn v41_mount_zchain(
     path: &Path,
     zchain: Option<&str>,
     posttrain: Option<&str>,
-) -> Result<()> {
+) -> Result<u64> {
     if zchain.is_none() && posttrain.is_none() {
         unsafe { ds4_bridge_v41_zchain_rb_clear() };
         // The naked base is a mount state of its own (U-B): the KV checkpoint
         // was computed with whatever amplifier was mounted before.
         unsafe { ds4_bridge_v41_kvreuse_note_mount(0, 0) };
-        return Ok(());
+        return Ok(0);
     }
     let g = GgufFile::open(path).map_err(asset_error)?;
     let shape = identify_file(&g).map_err(asset_error)?.shape;
@@ -1158,7 +1204,7 @@ fn v41_mount_zchain(
     // Unreachable with a directory given (load answers None only for two
     // Nones); kept total rather than panicking.
     let Some(merged) = merged else {
-        return Ok(());
+        return Ok(0);
     };
     unsafe { ds4_bridge_v41_zchain_rb_clear() };
     for (il, delta) in merged.rb.iter().enumerate() {
@@ -1220,7 +1266,7 @@ fn v41_mount_zchain(
             ""
         },
     );
-    Ok(())
+    Ok(digest)
 }
 
 /// The load-and-refuse half of the mount, split out so it is unit-testable
@@ -1328,8 +1374,36 @@ impl Model {
         }
         // The ②/③ sidecar mount lands before the native call, exactly like
         // the engine's per-state mount inside the generate (the device
-        // tables are process-level; the forward reads them).
-        v41_mount_zchain(self, path, opts.zchain, opts.posttrain)?;
+        // tables are process-level; the forward reads them).  Its digest is
+        // the mount identity the disk half's trailer carries.
+        let digest = v41_mount_zchain(self, path, opts.zchain, opts.posttrain)?;
+        // The disk half (item 4): the find runs after the mount so the
+        // candidate's trailer is checked against THIS run's amplifier
+        // identity; only a candidate strictly longer than the in-memory
+        // checkpoint is imported (a shorter one would regress the reuse K
+        // already gives).  The store's match only selects -- the native
+        // import re-validates sizes and the restore re-runs the token memcmp.
+        if let Some(disk) = opts.kv_disk.as_mut() {
+            let have = unsafe { ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32) };
+            if let Some(hit) = disk.find(prompt, digest, have) {
+                if let Some(cpath) = c_path(&hit.path) {
+                    let ok = unsafe {
+                        ds4_bridge_v41_kvreuse_import(
+                            cpath.as_ptr(),
+                            hit.offset,
+                            hit.bytes,
+                            prompt.as_ptr(),
+                            hit.tokens,
+                        )
+                    };
+                    if ok == 0 {
+                        eprintln!(
+                            "ds4: [v41] KV disk checkpoint did not load; the request continues without it"
+                        );
+                    }
+                }
+            }
+        }
         let mut feed = if opts.no_engram {
             None
         } else {
@@ -1397,6 +1471,25 @@ impl Model {
                 err.len(),
             )
         };
+        // The disk export (item 4): only when the in-memory checkpoint is
+        // exactly this prompt -- the native save runs at this prompt's
+        // prefill end, so K.n == np means K is this request's checkpoint
+        // (peek returns K.n under the same memcmp the restore uses).  A
+        // decode abort does not invalidate it; a prefill abort leaves the
+        // previous, shorter checkpoint and stores nothing.  The store's own
+        // reuse check skips an entry already current.
+        if let Some(disk) = opts.kv_disk.as_mut() {
+            let have = unsafe { ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32) };
+            if have == prompt.len() as u32 {
+                let mut save = |p: &Path| -> bool {
+                    match c_path(p) {
+                        Some(c) => unsafe { ds4_bridge_v41_kvreuse_export(c.as_ptr()) != 0 },
+                        None => false,
+                    }
+                };
+                disk.store(prompt, digest, &mut save);
+            }
+        }
         if rc != 0 {
             return Err(crate::fail(rc, &err));
         }
