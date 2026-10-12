@@ -28,6 +28,16 @@
 # (docs/qwen38-benchmark-reference.md:56-84 -- independent frontiers, 128 greedy
 # outputs, interleaved runs, medians).
 #
+# --v41-prof IS A PREFILL-ONLY INSTRUMENT (learned the hard way, 2026-10-12):
+# it disables the decode graph path by design (v41_graph_allowed /
+# v41_graph_batch_ready require !g_ds4_v41_prof, ds4_ds41_graph.inc:145-157)
+# and adds a ds4_gpu_flush_commands() after every layer
+# (ds4_ds41_forward.inc:1005), so a decode measured under it runs eager and
+# per-layer flushed -- the port read 39 t/s against the engine's graphed 43.9
+# until a no-prof cell showed 42.2.  Prefill is unaffected on both sides
+# (n >= 64 flushes per layer either way), so prefill cells may keep the flag;
+# NEVER take decode numbers from a --v41-prof run.
+#
 # PROTOCOL DIFFERENCE, stated so no one reads these as qwen numbers: the qwen
 # card sweep is 32 frontiers per cell; the ds41 servers expose no frontier
 # surface, so one prompt per context is the closest analog.  The shape is kept
