@@ -342,13 +342,19 @@ extern "C" int ds4_gpu_v41_matmul_q4k_tensor(ds4_gpu_tensor *out, const void *mo
     if (!out || !x || !g_cublas_ready || n_tok == 0) return 0;
     if (x->bytes < (uint64_t)n_tok * in_dim * 4 || out->bytes < (uint64_t)n_tok * out_dim * 4) return 0;
     if (n_tok <= V41_GEMV_MAX_TOK) {
-        if (!v41_q4k_gemv(model_map, model_size, weight_offset, in_dim, out_dim, (const float *)x->ptr, (uint32_t)in_dim,
-                          (float *)out->ptr, (uint32_t)out_dim, n_tok, 1u, 0u, 0u, round_out, "v41 q4k gemv")) return 0;
-    } else if (!v41_q4k_gemm(model_map, model_size, weight_offset, in_dim, out_dim, (const float *)x->ptr,
-                             (float *)out->ptr, n_tok, 1u, (uint32_t)in_dim, (uint32_t)out_dim, round_out, "v41 q4k gemm")) {
+        /* The GEMV finish folds round_out in (engine cuda_v41_q4k.inc.cu:402-403
+         * returns straight from this arm) -- no second round launch.  This arm
+         * used to fall through to the trailing round below, rounding an
+         * already-bf16 buffer with one extra kernel per site (328 per decode
+         * step; the node diff against the engine, docs/ds41-perf-2026-10-11.md). */
+        return v41_q4k_gemv(model_map, model_size, weight_offset, in_dim, out_dim, (const float *)x->ptr, (uint32_t)in_dim,
+                            (float *)out->ptr, (uint32_t)out_dim, n_tok, 1u, 0u, 0u, round_out, "v41 q4k gemv");
+    }
+    if (!v41_q4k_gemm(model_map, model_size, weight_offset, in_dim, out_dim, (const float *)x->ptr,
+                      (float *)out->ptr, n_tok, 1u, (uint32_t)in_dim, (uint32_t)out_dim, round_out, "v41 q4k gemm")) {
         return 0;
     }
-    return round_out ? ds4_gpu_v41_round_bf16_tensor(out, (uint64_t)n_tok * out_dim) : 1;
+    return round_out ? ds4_gpu_v41_round_bf16_tensor(out, (uint64_t)n_tok * out_dim) : 1;   /* GEMM arm only (engine :410-412) */
 }
 extern "C" int ds4_gpu_v41_grouped_matmul_q4k_tensor(ds4_gpu_tensor *low, const void *model_map, uint64_t model_size,
                                                      uint64_t weight_offset, uint32_t n_groups, uint64_t group_dim,
@@ -358,13 +364,15 @@ extern "C" int ds4_gpu_v41_grouped_matmul_q4k_tensor(ds4_gpu_tensor *low, const 
     if (heads->bytes < (uint64_t)n_tok * in_all * 4 || low->bytes < (uint64_t)n_tok * out_all * 4) return 0;
     if (n_tok <= V41_GEMV_MAX_TOK) {
         if (group_dim % V41_Q4K_BLK) return 0;
-        if (!v41_q4k_gemv(model_map, model_size, weight_offset, group_dim, rank, (const float *)heads->ptr, (uint32_t)in_all,
-                          (float *)low->ptr, (uint32_t)out_all, n_tok, n_groups, (uint32_t)group_dim, (uint32_t)rank, round_out, "v41 wo_a q4k gemv")) return 0;
-    } else if (!v41_q4k_gemm(model_map, model_size, weight_offset, group_dim, rank, (const float *)heads->ptr,
-                             (float *)low->ptr, n_tok, n_groups, (uint32_t)in_all, (uint32_t)out_all, round_out, "v41 wo_a q4k gemm")) {
+        /* Same early return as the single-group entry (engine :423-425). */
+        return v41_q4k_gemv(model_map, model_size, weight_offset, group_dim, rank, (const float *)heads->ptr, (uint32_t)in_all,
+                            (float *)low->ptr, (uint32_t)out_all, n_tok, n_groups, (uint32_t)group_dim, (uint32_t)rank, round_out, "v41 wo_a q4k gemv");
+    }
+    if (!v41_q4k_gemm(model_map, model_size, weight_offset, group_dim, rank, (const float *)heads->ptr,
+                      (float *)low->ptr, n_tok, n_groups, (uint32_t)in_all, (uint32_t)out_all, round_out, "v41 wo_a q4k gemm")) {
         return 0;
     }
-    return round_out ? ds4_gpu_v41_round_bf16_tensor(low, (uint64_t)n_tok * out_all) : 1;
+    return round_out ? ds4_gpu_v41_round_bf16_tensor(low, (uint64_t)n_tok * out_all) : 1;   /* GEMM arm only */
 }
 extern "C" int ds4_gpu_v41_embed_q4k_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *tokens, const void *model_map,
                                             uint64_t model_size, uint64_t weight_offset, uint64_t n_vocab,
