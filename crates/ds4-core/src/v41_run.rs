@@ -597,11 +597,7 @@ impl V41Feed {
     /// the kill switch, a block larger than the shadow) returns Ok and the
     /// next block simply runs without prefetch; Err is the sticky failure
     /// path and stops the run.
-    pub fn prefetch_next(
-        &mut self,
-        pos0: u32,
-        tokens: &[i32],
-    ) -> std::result::Result<(), String> {
+    pub fn prefetch_next(&mut self, pos0: u32, tokens: &[i32]) -> std::result::Result<(), String> {
         if let Some(e) = &self.err {
             return Err(e.clone());
         }
@@ -1346,9 +1342,8 @@ impl Model {
         // core_v41_kvreuse.c:118).  The native restore re-runs the memcmp, so
         // a stale peek only ever seeds this prompt's own prefix.
         if let Some(f) = feed.as_mut() {
-            let reused = unsafe {
-                ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32)
-            };
+            let reused =
+                unsafe { ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32) };
             if reused > 0 {
                 f.seed_prefix(&prompt[..reused as usize]);
             }
