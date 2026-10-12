@@ -141,11 +141,11 @@ frontiers:
 
     DS41_PERF_SIDES=engine DS41_PERF_OUT=/tmp/ds41_eng_sweep \
       sh tests/ds41_perf_sweep.sh \
-        /home/leandro/youngai-src-restructure/ds4-server \
-        /home/leandro/ds4-dfm-rs/ds4-server \
-        /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf \
-        /home/leandro/youngai/deepseek-engram 8099 \
-        /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative-grrb-law_fit_n15360-engine \
+        $HOME/youngai-src-restructure/ds4-server \
+        $HOME/ds4-dfm-rs/ds4-server \
+        $HOME/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf \
+        $HOME/youngai/deepseek-engram 8099 \
+        $HOME/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative-grrb-law_fit_n15360-engine \
         2048,4096,8192,16384,24576,32768,40960,45056 128
 
 Cost: the harness boots a fresh process per cell (~170 s margin), so the

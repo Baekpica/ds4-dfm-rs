@@ -464,14 +464,14 @@ fn context_length_is_required_and_range_checked() {
 #[test]
 fn engram_dir_override_keeps_only_the_file_name() {
     let mut w = artifact_wire();
-    w.apply_engram_dir("/home/leandro/youngai/deepseek-engram");
+    w.apply_engram_dir("/srv/engram");
     assert_eq!(
         w.engram_table_path[0],
-        "/home/leandro/youngai/deepseek-engram/model-00047-of-00048.safetensors"
+        "/srv/engram/model-00047-of-00048.safetensors"
     );
     assert_eq!(
         w.engram_table_path[1],
-        "/home/leandro/youngai/deepseek-engram/model-00048-of-00048.safetensors"
+        "/srv/engram/model-00048-of-00048.safetensors"
     );
 }
 

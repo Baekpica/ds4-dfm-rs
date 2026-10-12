@@ -43,7 +43,7 @@ post-training solvers are the C toolchain's job), no re-quantization.
 ## 2. The artifact, as measured
 
 Read over the gvfs mount of the Spark
-(`/run/user/1000/gvfs/sftp:host=192.168.1.91,user=leandro/home/leandro/youngai/model`) (v).
+(`/run/user/1000/gvfs/sftp:host=192.168.1.91,user=<user>$HOME/youngai/model`) (v).
 
 | item | value |
 | --- | --- |
@@ -51,7 +51,7 @@ Read over the gvfs mount of the Spark
 | base sha256 | `9469cfa9ff47c5b9f1e2bbf31b4226ef11b4de9ddb92a0c7641c4a9b623e4654` (`SHA256SUMS`; every part also hashed) |
 | sidecars | five domain dirs `…-grrb-{vqfin41_vqhalf_a_n8192,code_fit_n15360,law_fit_n15360,med_fit_n15360,sci_fit_n15360}-engine`, each `gr_Lnn.bin` (1,044,492 B) + `rb_Lnn.bin` + `manifest.txt` |
 | post-train | `posttrain-experimental-20260924/`: `gr_L39.bin` + `base.fnv` (20 B) |
-| engram | not in the artifact: two official shards, read in place via `--engram-dir`. Present on the Spark at `/home/leandro/youngai/deepseek-engram`: `model-00047-of-00048.safetensors` 101,535,150,936 B and `model-00048-of-00048.safetensors` 101,537,926,640 B (190 GB, measured over sftp 2026-10-08) |
+| engram | not in the artifact: two official shards, read in place via `--engram-dir`. Present on the Spark at `$HOME/youngai/deepseek-engram`: `model-00047-of-00048.safetensors` 101,535,150,936 B and `model-00048-of-00048.safetensors` 101,537,926,640 B (190 GB, measured over sftp 2026-10-08) |
 | bins | `bin/ds4`, `bin/ds4-server`, built on the Spark with `make cuda-spark` |
 
 Engine invocation the port must be able to reproduce (artifact README §3, §7):
@@ -261,10 +261,10 @@ Frozen inputs, all measured:
 
 | item | value |
 | --- | --- |
-| engine binary | `/home/leandro/youngai/model/bin/ds4`, sha256 `c03be9b4ac5de52b197b3740ba6ec60001b7454b7ab5d0f111cda3f3fee8a7f5` |
+| engine binary | `$HOME/youngai/model/bin/ds4`, sha256 `c03be9b4ac5de52b197b3740ba6ec60001b7454b7ab5d0f111cda3f3fee8a7f5` |
 | artifact | sha256 `9469cfa9ff47c5b9f1e2bbf31b4226ef11b4de9ddb92a0c7641c4a9b623e4654`, recomputed by the capture script and equal to the `SHA256SUMS` assembled line |
-| engram | `--engram-dir /home/leandro/youngai/deepseek-engram`, two shards, 190 GB |
-| golden set | `/home/leandro/youngai/model/golden/`, MANIFEST with every hash |
+| engram | `--engram-dir $HOME/youngai/deepseek-engram`, two shards, 190 GB |
+| golden set | `$HOME/youngai/model/golden/`, MANIFEST with every hash |
 
 Segment PPL of the five prompts (with engram): p1 112.0845 (S=8), p2 24.9582
 (S=11), p3 7.2809 (S=7), p4 14.3524 (S=18), p5 876.7182 (S=7, Chinese). The
@@ -1760,7 +1760,7 @@ hold-back), `9ade4fa` (the spaced render), the render byte fix + goldens
    `syntax_greedy_spaced_dsml` in `tests/dsml.rs` (dsml 3/3).
 
 7. The Spark gates at the second oracle (221b9e2; built in
-   `/home/leandro/youngai-src-restructure`, 2026-10-11).  Chat gate PASS:
+   `$HOME/youngai-src-restructure`, 2026-10-11).  Chat gate PASS:
    both sides parse the spaced call, 47 ids byte-equal, both
    finish=tool_calls.  Sampling gate PASS: cases A-D byte-identical.
    The 40-request tool-call gate (seeds 1001-1040, default temperature):
@@ -1852,7 +1852,7 @@ uncommitted local work.
   gate run exercises it.  The thinking scope (item 9) is covered by its
   route test and unit tests, not by this harness.
 - The operator's server was restarted after the gates
-  (`bash install.sh start --domain code --dir /home/leandro/youngai`;
+  (`bash install.sh start --domain code --dir $HOME/youngai`;
   SERVER_START_RC=0, ready 19:35:03 on 0.0.0.0:8000 domain code; the
   deployed binary answers the tool probe: finish=tool_calls,
   `get_weather {"city":"Paris"}`; log `/tmp/server_restart2.log`).
