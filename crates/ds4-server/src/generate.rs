@@ -3186,7 +3186,16 @@ fn generate_terminal_v41(
     st.req.timings.prefill_tokens = prompt_n;
     st.req.timings.prefill_cached = 0;
     st.req.timings.decode_tokens = completion;
-    st.req.timings.decode_steps = st.decode_steps;
+    // The engine's speculation account is the round count
+    // (`ds4_engine_v41_last_spec_stats`, core_v41_api.c:41-46); the sink's
+    // per-token counter is not a step counter -- a speculative run advances
+    // several tokens per round, and counting tokens made tok_per_step read
+    // 1.00 on a run that moved 2.8 tokens per round (2026-10-12).  The
+    // timing block below rebuilds the whole struct, so both writes take
+    // this one value.
+    let (rounds, _, _) = engine.v41_last_spec_stats();
+    let decode_steps = if rounds > 0 { rounds } else { st.decode_steps };
+    st.req.timings.decode_steps = decode_steps;
     if completion > 0 {
         if let Some(t_first) = st.first_tok {
             st.req.timings = ReqTimings {
@@ -3197,7 +3206,7 @@ fn generate_terminal_v41(
                 prefill_tokens: prompt_n,
                 prefill_cached: 0,
                 decode_tokens: completion,
-                decode_steps: st.decode_steps,
+                decode_steps,
             };
         }
     }
