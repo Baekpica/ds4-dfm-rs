@@ -113,6 +113,20 @@ drives the other families.
   re-run this sweep on the new build and diff against
   `speed-bench/gb10_spark_ds41_862fd9a6.csv`.
 
+## The r6 comparison (2026-10-12)
+
+The first porting unit through this contract is the side-stream forks
+(commit `cb970ef`, build `1e7d8f24`): the same 22 frontiers, boot mode,
+same corpus, same 128 greedy tokens.  Against the baseline: prefill at or
+above on every frontier (+1.4% at 2048, +0.3% median), decode median
+41.20 -> 41.70 t/s, the dips unchanged in character (acceptance
+variance).  The mechanism's real effect sits in the verify phase of the
+decode round, which this sweep does not isolate: 57.3 -> 56.3 ms medians
+at the 2048 cell (alternating A/B against `5666002e`).  Full record:
+`docs/ds41-perf-2026-10-11.md`, section "The side-stream forks ported
+(r6)".  Keep/drop call: keep -- no regression on any frontier, and the
+port's decode graph is now structurally the engine's.
+
 ## Provenance
 
 - `speed-bench/gb10_spark_ds41_862fd9a6.csv` (the 22 rows above),
@@ -121,3 +135,7 @@ drives the other families.
   `33b3468` (the dips note) on `feat/ds41-optimize-2`.
 - Window: started 2026-10-12T14:26:32+02:00, stopped 14:35:20+02:00;
   524 s of requests.  Attach mode on the live server.
+- The r6 build's sweep: `speed-bench/gb10_spark_ds41_1e7d8f24.csv`
+  (+ `.csv.meta.txt`, `_ts.svg`), boot mode on the same server shape,
+  window finished 2026-10-12T16:01:44+02:00, boot_s 76.2, clock median
+  2405 MHz.
