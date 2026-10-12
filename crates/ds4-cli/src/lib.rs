@@ -700,6 +700,10 @@ fn run_v41_one_shot(
         verify_k: args.dspark_verify,
         emit_trace: args.emit_trace,
         prof: args.v41_prof,
+        /* The V4.1 KV prefix reuse is on by default inside the native run
+         * (U-B; engine core_v41_kvreuse.c); the CLI has no --no-kv-reuse
+         * switch (the server has one), so the option keeps its default. */
+        kv_reuse: None,
         sampling: Some(ds4_core::V41Sampling {
             temperature: args.temp,
             top_p: args.top_p,
