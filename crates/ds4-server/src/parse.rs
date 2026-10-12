@@ -2844,6 +2844,22 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
             json_number(&mut p).map(|v| r.top_p = v as f32).is_some()
         } else if key == "min_p" {
             json_number(&mut p).map(|v| r.min_p = v as f32).is_some()
+        } else if key == "frequency_penalty" || key == "presence_penalty" {
+            // The engine's completions wire has both, same meaning as the chat
+            // wire (server_parse_completion.c:108-115: "以前这里没解析, 传了被
+            // 静默丢掉" -- unparsed meant silently dropped; fixed in a8e878a,
+            // the KV-reuse commit whose gate sends frequency_penalty 1e-30 to
+            // take the host penalty route).
+            let is_freq = key == "frequency_penalty";
+            json_number(&mut p)
+                .map(|v| {
+                    if is_freq {
+                        r.frequency_penalty = v as f32;
+                    } else {
+                        r.presence_penalty = v as f32;
+                    }
+                })
+                .is_some()
         } else if key == "top_k" {
             json_int(&mut p).map(|v| r.top_k = v).is_some()
         } else if key == "seed" {
