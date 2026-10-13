@@ -10,6 +10,9 @@ recorded benchmark numbers.
 [JLFN](https://github.com/JLFN) ported DeepSeek V4.1 Flash serving to
 `ds4-dfm-rs` in [PR #80](https://github.com/Baekpica/ds4-dfm-rs/pull/80),
 from the [YoungAi engine](https://github.com/fodelf/YoungAi/tree/7fb26cc332d740416792204a29c7d13d2986caf5).
+The vision tower and its serving surfaces (2026-10-13) continue the port on
+`feat/optimize`, open toward `main` as
+[PR #83](https://github.com/Baekpica/ds4-dfm-rs/pull/83).
 The VQ GGUF and GR/RB sidecars are distributed by
 [YoungAi](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash);
 the original model and Engram weights come from
@@ -21,8 +24,12 @@ per-unit evidence are in the [port plan](deepseek41-port-plan.md); the engine
 function inventory is in the [port inventory](deepseek41-port-inventory.md).
 Every number and bound below is taken from a record in this repository, read
 first-hand: the plan, the [prefill/decode report](ds41-perf-2026-10-11.md), the
-[speed sweep](ds41-speed-bench-2026-10-12.md), the [serving contract](serving-capabilities.md)
-and its source `crates/ds4-core/src/serving.rs`.
+[speed sweep](ds41-speed-bench-2026-10-12.md), the
+[64K](benchmarks/ds41-spark-64k-2026-10-13/README.md) and
+[warm-path](benchmarks/ds41-warmpath-2026-10-13/README.md) campaigns, the
+[vision record](benchmarks/ds41-vision-2026-10-13/README.md), the
+[serving contract](serving-capabilities.md) and its source
+`crates/ds4-core/src/serving.rs`.
 
 The [October 13 review qualification](benchmarks/ds41-spark-review-2026-10-13/README.md)
 records fresh Engram-on source parity and the full 2K–40K screenshot sweep at
@@ -39,6 +46,14 @@ to pay. Holding the sidecar mount and the engram open per process takes
 warm-prefix TTFT from 190.9 to 15.1 ms on the 54-token prose case and from 265.7
 to 99.1 ms on the 10.4k-token one, with the cold first request and decode both
 unchanged or better.
+
+The [vision record](benchmarks/ds41-vision-2026-10-13/README.md) carries the
+tower's golden gate: the engine's own fixtures and thresholds, run on the Spark
+against Spark-minted goldens, pass on three images (tower row cosine mean
+0.9996-0.9999, min 0.990-0.994; both PNGs transcribe bit-exact, the JPEG moves
+4.0 pixel-levels); text output is byte-identical with and without the sidecar,
+and one image request answered identically through the OpenAI, Anthropic and
+Responses surfaces.
 
 ## Artifact and host identity
 
@@ -146,6 +161,14 @@ adds a bounded 3,725/3,726-token disk-restart gate with exact output/logits and
 four negative controls. That result does not promote every artifact, sampling
 mode or context in the generic capability table.
 
+Image input is the model's own tower, not a generic media path: with
+`--vision-gguf <sidecar>` the DSML render writes one placeholder per image in
+the client's block order and the tower embeds those rows; an Anthropic
+`tool_result` whose content is a block array carries images the same way (the
+MCP screenshot loop). Without the sidecar an image request is refused with
+HTTP 400 by name; a head without a V4.1 placeholder refuses a tool-result
+image by name as well.
+
 The native run keeps one prompt-end KV checkpoint and reuses the previous
 prompt's prefix automatically (unit U-B, `--no-kv-reuse` disables it); it is
 reported as usage cached tokens. `--prefix-reuse off` disables both live and
@@ -159,14 +182,14 @@ does not store the sampler's position slot. This avoids an inherited
 uninitialized-state read. Greedy and penalty sampling retain full-prompt hits;
 device sampling still reuses a prefix when a suffix forward fills those slots.
 
-`/v1/completions` follows the common Rust raw-continuation contract. The pinned
-YoungAi server adds a chat frame by default; use its `raw: true` request field
-for equivalent source inputs. Chat completions use the family template.
+`/v1/completions` follows the common Rust raw-continuation contract; chat
+completions use the family template.
 
-Server flags (engine spellings, `crates/ds4-server/src/bin/ds4-server-rs.rs:241-263`):
+Server flags (engine spellings, `crates/ds4-server/src/bin/ds4-server-rs.rs:245-267`):
 `--engram-dir`, `--v41-no-engram`, `--no-dspark` / `--dspark`, `--dspark-verify`,
 `--no-graph`, `--no-kv-reuse`, `--emit-trace`, `--v41-prof`, `--zchain`,
-`--posttrain`. The boot line prints the resolved context and the KV-reuse state.
+`--posttrain`, and `--vision-gguf` (the tower sidecar, `:93`). The boot line
+prints the resolved context and the KV-reuse state.
 The common `--mtp-mode off|auto|on` controls the same embedded drafter.
 `--mtp-draft` cannot change its trained block size; an external `--mtp` path
 is refused. `--dspark-verify` selects a verification width within that block.
@@ -193,6 +216,13 @@ noted, all recorded in the port plan:
   through `cuda/ds41_sample.cuh`), the wire gate (`/v1/messages`,
   `/v1/responses`, the smoke request), the chat gate and the DSML tool path
   (port plan §6.16-§6.19, §6.23).
+- Vision (V-0..V-6, 2026-10-13): the tower sidecar load and its hard
+  name/shape checks, the GPU tower forward (`cuda/ds41_vision.cuh`), the Rust
+  preprocessing (`crates/ds4-core/src/v41_media.rs`), the image-set build and
+  the prefill injection seam (`ds4_ds41_vision.inc`), the DSML placeholder, the
+  three image surfaces, and images inside tool results. The engine's golden
+  gate passes on three fixtures with Spark-minted goldens; the record is
+  [the vision gate](benchmarks/ds41-vision-2026-10-13/README.md).
 - Engram read path (unit P): `io_uring` round reads (`crates/ds4-core/src/uring.rs`),
   then the cross-block prefetch (below).
 - KV prefix reuse (unit U-B): the in-process checkpoint gated
@@ -203,8 +233,11 @@ noted, all recorded in the port plan:
 
 Gate scripts live in `tests/` as `ds41_*_gate.sh`
 (`generate`, `serving`, `sampling`, `wire`, `chat`, `graph`, `kv_reuse`,
-`kv_disk`, `long`, `toolcall`, `serving_http`) plus the perf sweep
-`ds41_perf_sweep.sh`.
+`kv_disk`, `long`, `toolcall`, `serving_http`), the vision gate
+`ds41_vision_gate_spark.sh` (the engine's Spark script, ported) with its
+fixture generator `tools/vision_golden.py`, the image-surface probe
+`ds41_api_image_probe.py`, the perf sweep `ds41_perf_sweep.sh` and the vision
+sweep `speed-bench/ds41_vision_sweep.sh`.
 
 Not present on this path, and refused or absent by name: banks and snapshots
 (no `ds4_session`), partial prefix reuse, the per-family sampling
@@ -296,11 +329,14 @@ the candidates and gates are port plan §6.21.
   against the qwen38 records, which also quote a different driver/CUDA.
 - No broad task-quality or long-context accuracy claim follows from these
   inference and throughput checks.
+- The vision path has no performance record yet: the sweep harness is
+  committed (`speed-bench/ds41_vision_sweep.sh`) and its record is pending.
 - The October 11 cell campaign did not reach 32K or 64K; the later October 12
   sweep reached 45,315 prompt tokens. Its 47,104-65,536 frontiers remain open.
   The cell campaign left a ~40-50 ms setup residual and cold first-block terms open.
-- The port is served on the `ds41` branch and is not in a release ledger; the
-  gates above are this repository's own recordings.
+- The port is served on the `feat/optimize` line (branch `feat/ds41-vision`
+  carries the same head) and is not in a release ledger; it is open toward
+  `main` as PR #83, and the gates above are this repository's own recordings.
 
 ## Evidence index
 
@@ -308,6 +344,10 @@ Read first-hand before a new candidate:
 
 - [Port plan](deepseek41-port-plan.md) and [port inventory](deepseek41-port-inventory.md)
 - [Five-case benchmark, 2026-10-13](benchmarks/ds41-spark-2026-10-13/README.md)
+- [Review qualification, 2026-10-13](benchmarks/ds41-spark-review-2026-10-13/README.md)
+- [64K campaign, 2026-10-13](benchmarks/ds41-spark-64k-2026-10-13/README.md)
+- [Warm-path campaign, 2026-10-13](benchmarks/ds41-warmpath-2026-10-13/README.md)
+- [Vision gate, 2026-10-13](benchmarks/ds41-vision-2026-10-13/README.md)
 - [Prefill/decode report, 2026-10-11](ds41-perf-2026-10-11.md)
 - [Speed sweep, 2026-10-12](ds41-speed-bench-2026-10-12.md)
 - [Post-train plan](ds41-posttrain-plan.md)
