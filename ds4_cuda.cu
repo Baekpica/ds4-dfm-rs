@@ -1125,6 +1125,38 @@ static int cuda_model_range_publish(const cuda_model_range &nr) {
     return 1;
 }
 
+/* memgov D1b-1: is [off, off+bytes) already device-resident?  True iff the
+ * UNION of the live same-tier ranges covers it -- coverage is a property of
+ * the union, never of one range.  A weight-server import coalesces at the
+ * OWNER's range boundaries, which are not the plan's unit boundaries, so a
+ * canonical unit can be tiled by two imported ranges; under the old
+ * containment test such a unit read as "not covered", the eager pass copied
+ * bytes the process already held, and the funnel refused the re-publication
+ * as same-tier double residency (a hard boot abort).  exact_hit keeps the
+ * ALREADY_READY reading: one range covering the whole interval and starting
+ * exactly at it. */
+static int cuda_model_unit_device_covered(const void *model_map, uint64_t off,
+                                          uint64_t bytes, int *exact_hit) {
+    if (exact_hit) *exact_hit = 0;
+    if (bytes == 0 || off + bytes < off) return 0;
+    const uint64_t end = off + bytes;
+    uint64_t cur = off;
+    while (cur < end) {
+        uint64_t next = cur;
+        for (const cuda_model_range &r : g_model_ranges) {
+            if (r.host_base != model_map || r.host_registered) continue;
+            if (r.offset > cur) continue;           /* starts past what is left */
+            const uint64_t r_end = r.offset + r.bytes;
+            if (r_end <= cur) continue;             /* ends at or before the cursor */
+            if (r_end > next) next = r_end;
+            if (exact_hit && r.offset == off && r_end >= end) *exact_hit = 1;
+        }
+        if (next == cur) return 0;                  /* a hole: not covered */
+        cur = next;
+    }
+    return 1;
+}
+
 static int cuda_derived_range_publish(const cuda_derived_range &nr) {
     if (nr.source_bytes == 0 ||
         nr.source_offset + nr.source_bytes < nr.source_offset)
@@ -3744,16 +3776,9 @@ static const char *cuda_model_range_ptr_from_fd(
             cuda_resunit_note_n(src, DS4_RESUNIT_EXPERT_COLD_BY_POLICY, 1);
             return cuda_model_direct_fallback_ptr(model_map, offset);
         }
-        int covered = 0;
-        for (const cuda_model_range &r : g_model_ranges) {
-            if (r.host_base != model_map || r.host_registered) continue;
-            if (r.offset <= u->src_off &&
-                r.offset + r.bytes >= u->src_off + u->src_bytes) {
-                covered = 1;
-                break;
-            }
-        }
-        if (covered) continue;
+        if (cuda_model_unit_device_covered(model_map, u->src_off, u->src_bytes,
+                                           NULL))
+            continue;
         /* memgov D2-2: the lazy miss is the same governed decision as
          * the eager unit.  Post-freeze the ENGINE_BOOT lease holds the
          * boot absolute (resident >= any range-scoped proposal, so the
@@ -6910,16 +6935,14 @@ extern "C" int ds4_gpu_materialize_model_plan(const void *model_map,
             failed = 1;
             continue;
         }
-        int covered = 0, exact_hit = 0;
-        for (const cuda_model_range &r : g_model_ranges) {
-            if (r.host_base != model_map || r.host_registered) continue;
-            if (r.offset <= u->src_off &&
-                r.offset + r.bytes >= u->src_off + u->src_bytes) {
-                covered = 1;
-                exact_hit = (r.offset == u->src_off);
-                break;
-            }
-        }
+        /* memgov D1b-1: device-resident bytes are never re-copied.  Union
+         * coverage, not containment: an import boot's ranges tile the map at
+         * the owner's boundaries, so a unit straddling two of them is
+         * already served and must take the SATISFIED_IMPORT outcome, not a
+         * copy the funnel then refuses. */
+        int exact_hit = 0;
+        const int covered = cuda_model_unit_device_covered(
+            model_map, u->src_off, u->src_bytes, &exact_hit);
         if (covered) {
             counts[exact_hit ? DS4_RESUNIT_ALREADY_READY
                              : DS4_RESUNIT_SATISFIED_IMPORT]++;
