@@ -22,6 +22,13 @@
 #      server started and stopped here); the production model process is
 #      stopped by the caller before the window (this script refuses to run
 #      while one is up).
+#   5. the 400 without the sidecar (port addition for the record): the server
+#      started without --vision-gguf answers a ds41 image request with HTTP
+#      400 and the message that names the sidecar.
+#   6. the admission line (port addition for the record): a prefill whose 2x
+#      peak exceeds MemAvailable is refused with the serving admission's
+#      line (v41_run.rs:1875-1889, the engine's server_sched_v41.c:58), not
+#      attempted.
 #
 # usage: ds41_vision_gate_spark.sh [main gguf] [vision gguf] [zchain dir]
 # Memory: every model run loads the ~110 GB model once (~100 s); the script
@@ -48,6 +55,16 @@ mkdir -p "$OUT"
 
 die() { echo "GATE FAIL: $*" | tee -a "$OUT/gate.log"; exit 1; }
 log() { echo "$*" | tee -a "$OUT/gate.log"; }
+
+wait_server() {  # $1 pid, $2 log: wait for /v1/models, die if it exits or never comes up
+    local i
+    for i in $(seq 1 180); do
+        curl -sf -m 3 "http://127.0.0.1:$SEE_PORT/v1/models" >/dev/null && return 0
+        kill -0 "$1" 2>/dev/null || die "the server exited while loading (see $2)"
+        sleep 5
+    done
+    die "the server did not come up (see $2)"
+}
 
 [ -f "$MAIN" ] || die "main GGUF missing: $MAIN"
 [ -f "$VIS" ] || die "vision sidecar missing: $VIS"
@@ -113,12 +130,7 @@ log "== 3. see an image (server on 127.0.0.1:$SEE_PORT)"
     --mem-budget-mb "$BUD" --host 127.0.0.1 --port "$SEE_PORT" > "$OUT/see_server.log" 2>&1 &
 SEE_PID=$!
 trap 'kill "$SEE_PID" 2>/dev/null' EXIT
-for i in $(seq 1 180); do
-    curl -sf -m 3 "http://127.0.0.1:$SEE_PORT/v1/models" >/dev/null && break
-    kill -0 "$SEE_PID" 2>/dev/null || die "the server exited while loading (see $OUT/see_server.log)"
-    sleep 5
-done
-curl -sf -m 3 "http://127.0.0.1:$SEE_PORT/v1/models" >/dev/null || die "the server did not come up (see $OUT/see_server.log)"
+wait_server "$SEE_PID" "$OUT/see_server.log"
 
 for img in review-market-panel.png bug.jpeg homer.png; do
     [ -f "$IMG_DIR/$img" ] || continue
@@ -151,5 +163,49 @@ done
 kill "$SEE_PID" 2>/dev/null
 wait "$SEE_PID" 2>/dev/null
 trap - EXIT
+
+# ---- 5. 400 without the sidecar (port addition for the record) ----
+log "== 5. 400 without the sidecar (server on 127.0.0.1:$SEE_PORT)"
+"$SERVER" --cuda -m "$MAIN" --zchain "$ZCH" "${ZC[@]}" \
+    --mem-budget-mb "$BUD" --host 127.0.0.1 --port "$SEE_PORT" > "$OUT/no_sidecar_server.log" 2>&1 &
+SEE_PID=$!
+trap 'kill "$SEE_PID" 2>/dev/null' EXIT
+wait_server "$SEE_PID" "$OUT/no_sidecar_server.log"
+python3 - "$SEE_PORT" "$IMG_DIR/review-market-panel.png" <<'PY' | tee -a "$OUT/gate.log"
+import base64, json, sys, urllib.error, urllib.request
+port, img = sys.argv[1], sys.argv[2]
+base = f"http://127.0.0.1:{port}"
+mid = json.load(urllib.request.urlopen(base + "/v1/models"))["data"][0]["id"]
+b64 = base64.b64encode(open(img, "rb").read()).decode()
+body = json.dumps({
+    "model": mid, "temperature": 0, "max_tokens": 16,
+    "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
+    ]}],
+}).encode()
+req = urllib.request.Request(base + "/v1/chat/completions", body, {"Content-Type": "application/json"})
+try:
+    resp = urllib.request.urlopen(req, timeout=120)
+    print(f"step 5: HTTP {resp.status} (expected 400)")
+    print(resp.read().decode()[:300])
+except urllib.error.HTTPError as e:
+    print(f"step 5: HTTP {e.code}")
+    print(e.read().decode()[:300])
+PY
+kill "$SEE_PID" 2>/dev/null
+wait "$SEE_PID" 2>/dev/null
+trap - EXIT
+
+# ---- 6. the admission line (port addition for the record) ----
+# A prefill whose 2x peak exceeds MemAvailable is refused with the serving
+# admission's line (v41_run.rs:1875-1889, the engine's server_sched_v41.c:58),
+# not attempted.  200k ids make the peak far exceed what is left once the
+# model is resident.
+log "== 6. admission line (200k-token prefill)"
+python3 -c "print(' '.join(['100'] * 200000))" > "$OUT/admission_ids.txt"
+"$BIN" "${COMMON[@]}" --gen-ids "$OUT/admission_ids.txt" -n 1 --temp 0 > "$OUT/admission.txt" 2>&1
+log "step 6: exit $?"
+grep -E 'prefill needs' "$OUT/admission.txt" | tee -a "$OUT/gate.log"
 
 log "[gate] done, artifacts in $OUT"
