@@ -37250,6 +37250,10 @@ struct ds4_vocab {
     int tool_schema_start_id;
     int tool_schema_end_id;
     int dsml_id;
+    /* <｜deepseek_image｜> (V4.1, deepseek4.image_token_id): the image
+     * placeholder the render writes per image; -1 when the vocab has none
+     * (core_bpe.c:337). */
+    int image_id;
     /* dots3-note closes each role with its own marker instead of one
      * end-of-turn token, and its EOS is <|endofassistant|>, so the literal
      * "<|endoftext|>" needs a dedicated id that is not the EOS. */
@@ -39059,6 +39063,7 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
     vocab->arg_value_end_id = -1;
     vocab->tool_schema_start_id = -1;
     vocab->tool_schema_end_id = -1;
+    vocab->image_id = -1;
     vocab->dots3_endofsystem_id = -1;
     vocab->dots3_endofuser_id = -1;
     vocab->dots3_endoftext_id = -1;
@@ -39348,6 +39353,10 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
     vocab->latent_pad_id = -1;
     vocab->latent_end_id = -1;
     vocab->dsml_id = vocab_lookup(vocab, "｜DSML｜");
+    /* Optional (core_bpe.c:337): the V4 tokenizer has no <｜deepseek_image｜>.
+     * The tokenizer.ggml.tokens list is the source; this string lookup matches
+     * the V4.1 vocab's token 129264. */
+    vocab->image_id = vocab_lookup_optional(vocab, "<｜deepseek_image｜>");
 }
 
 /* Host already ran vocab_load.  Copy borrowed token/merge strings and
@@ -39418,6 +39427,7 @@ static void model_apply_host_vocab(ds4_vocab *vocab) {
     vocab->tool_schema_start_id = h->tool_schema_start_id;
     vocab->tool_schema_end_id = h->tool_schema_end_id;
     vocab->dsml_id = h->dsml_id;
+    vocab->image_id = h->image_id;
     vocab->dots3_endofsystem_id = h->dots3_endofsystem_id;
     vocab->dots3_endofuser_id = h->dots3_endofuser_id;
     vocab->dots3_endoftext_id = h->dots3_endoftext_id;
@@ -39823,6 +39833,7 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
         {"<|tool_arg:value|>",      vocab->arg_value_start_id},
         {"<|tool_arg:end|>",        vocab->arg_value_end_id},
         {"｜DSML｜",                vocab->dsml_id},
+        {"<｜deepseek_image｜>",    vocab->image_id},
     };
 
     for (size_t i = 0; i < sizeof(specials) / sizeof(specials[0]); i++) {

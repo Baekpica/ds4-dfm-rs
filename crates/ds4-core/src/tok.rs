@@ -122,6 +122,10 @@ pub struct Vocab {
     pub tool_schema_start_id: i32,
     pub tool_schema_end_id: i32,
     pub dsml_id: i32,
+    /// `<｜deepseek_image｜>` (V4.1, id 129264): the image placeholder the
+    /// server writes per image and the prefill expands into a span; -1 when
+    /// the vocab has none (core_bpe.c:337).
+    pub image_id: i32,
     pub dots3_endofsystem_id: i32,
     pub dots3_endofuser_id: i32,
     pub dots3_endoftext_id: i32,
@@ -325,6 +329,7 @@ impl Vocab {
             tool_schema_start_id: -1,
             tool_schema_end_id: -1,
             dsml_id: 0,
+            image_id: -1,
             dots3_endofsystem_id: -1,
             dots3_endofuser_id: -1,
             dots3_endoftext_id: -1,
@@ -616,6 +621,10 @@ impl Vocab {
                 self.latent_pad_id = -1;
                 self.latent_end_id = -1;
                 self.dsml_id = self.lookup("｜DSML｜")?;
+                // The image placeholder is optional (core_bpe.c:337): the V4
+                // tokenizer has no <｜deepseek_image｜>, the V4.1 one does
+                // (deepseek4.image_token_id, 129264).
+                self.image_id = self.lookup_opt("<｜deepseek_image｜>");
             }
         }
         Ok(())
@@ -2526,6 +2535,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         (b"<|tool_arg:value|>", vocab.arg_value_start_id),
         (b"<|tool_arg:end|>", vocab.arg_value_end_id),
         ("｜DSML｜".as_bytes(), vocab.dsml_id),
+        ("<｜deepseek_image｜>".as_bytes(), vocab.image_id),
     ];
     for (text, token) in specials {
         if *token < 0 {

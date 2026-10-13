@@ -143,6 +143,7 @@ typedef struct {
     int32_t tool_schema_start_id;
     int32_t tool_schema_end_id;
     int32_t dsml_id;
+    int32_t image_id;   /* <｜deepseek_image｜> (V4.1); -1 when absent */
     int32_t dots3_endofsystem_id;
     int32_t dots3_endofuser_id;
     int32_t dots3_endoftext_id;

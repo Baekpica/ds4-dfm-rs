@@ -986,6 +986,7 @@ fn pack_host_vocab(v: &Vocab) -> FfiVocab {
         tool_schema_start_id: v.tool_schema_start_id,
         tool_schema_end_id: v.tool_schema_end_id,
         dsml_id: v.dsml_id,
+        image_id: v.image_id,
         dots3_endofsystem_id: v.dots3_endofsystem_id,
         dots3_endofuser_id: v.dots3_endofuser_id,
         dots3_endoftext_id: v.dots3_endoftext_id,

@@ -515,6 +515,7 @@ pub struct ds4_host_vocab {
     pub tool_schema_start_id: i32,
     pub tool_schema_end_id: i32,
     pub dsml_id: i32,
+    pub image_id: i32,
     pub dots3_endofsystem_id: i32,
     pub dots3_endofuser_id: i32,
     pub dots3_endoftext_id: i32,
