@@ -163,6 +163,40 @@ typedef ds41_engram_feed v41_engram_feed;
  * subset).  Dropped from the engine's struct: tsave, graph, snap_*, mainh/draft,
  * amp*, samp/spec_q, eg_* counters, eshard/ejob (host pread is outside),
  * n_direct*. */
+/* One image's preprocessing + span (core_v41_vision.c / core_v41_api.h).  The
+ * patches are host memory, freed after the tower forward; row0 is the first
+ * embed row in the request's embd; sig is fnv1a64 over the image bytes (the KV
+ * identity). */
+/* The per-layer image-row router bias (uploaded by the vision file, included
+ * later); the router in v41_moe reads it when the block carries image rows. */
+extern ds4_gpu_tensor *g_v41_bias_vl[DS4_MAX_LAYER];
+
+typedef struct {
+    float   *patches;
+    uint32_t n_vit_h, n_vit_w, n_llm_h, n_llm_w;
+    uint32_t n_tok;              /* span length = n_llm_h*(n_llm_w+1)+2 */
+    uint32_t row0, start;
+    uint64_t sig;
+} v41_image;
+
+/* A request's whole image set (core_v41_api.h ds4_v41_images): the expanded
+ * prompt's per-position row map/signature, and the span embeddings built by the
+ * tower.  Attached to the prefill state and dropped after it. */
+struct ds4_v41_images {
+    uint32_t n;
+    v41_image *img;
+    uint32_t n_rows;             /* total embd rows */
+    uint32_t np;                 /* expanded prompt positions */
+    int32_t *row_of;             /* [np] embd row per position, -1 = text */
+    uint64_t *sig_of;            /* [np] image signature per position, 0 = text */
+    ds4_gpu_tensor *embd;        /* [n_rows][E] built span embeddings */
+    int encoded;
+};
+
+/* Defined in ds4_ds41_vision.inc (included after this file): run the tower once
+ * for the request and build the span embeddings into imgs->embd. */
+bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs);
+
 typedef struct {
     uint32_t cap_tok, ctx;      /* max tokens per block / position capacity */
     uint32_t n_past;            /* positions already committed */
@@ -197,6 +231,16 @@ typedef struct {
     const v41_engram_feed *efeed;    /* caller-supplied rows (hash + pread are host work) */
     int egraph_uploaded;        /* capture pass: bitmask — layer ei's flag wait + upload are in the graph (core_v41.h:126) */
     int no_engram;              /* compare-only mode: skip the engram layers */
+    /* Vision (2026-10-13): himg[ctx] flags image-span positions (the engram hash
+     * lookback stops at them, official NgramHashState DEAD); vimg is the request's
+     * image set (read only inside one prefill block; decode / draft clones always
+     * see NULL); vrows[i] is this block's row index into vimg->embd (-1 = text),
+     * vrows_on = this block has an image row (cleared at block end,
+     * core_v41_forward.c:400-414). */
+    uint8_t *himg;
+    struct ds4_v41_images *vimg;
+    ds4_gpu_tensor *vrows;
+    int vrows_on;
     /* Draft towers (P5/E1, core_v41.h:64-167): the same struct doubles as the
      * tower state when draft is set — layer ids are tower indices, no engram,
      * no compressed KV/indexer, and the window holds main_x projections pushed
@@ -272,6 +316,7 @@ static void v41_alloc_dense(ds4_v41_state *st, uint32_t cap, uint32_t logits_row
     const uint64_t E = DS4_N_EMBD, HC = DS4_N_HC, FF = DS4_N_FF_EXP, NE = DS4_N_EXPERT, K = DS4_N_EXPERT_USED;
     const uint64_t mix = 2 * HC + HC * HC;
     st->tok = v41_alloc((uint64_t)cap * 4, ok);          st->pos = v41_alloc((uint64_t)cap * 4, ok);
+    st->vrows = v41_alloc((uint64_t)cap * 4, ok);        /* vision: per-block row map (unread without images) */
     st->hc = v41_alloc((uint64_t)cap * HC * E * 4, ok);  st->hc2 = v41_alloc((uint64_t)cap * HC * E * 4, ok);
     st->mix = v41_alloc((uint64_t)cap * mix * 4, ok);    st->pre = v41_alloc((uint64_t)cap * HC * 4, ok);
     st->post = v41_alloc((uint64_t)cap * HC * 4, ok);    st->comb = v41_alloc((uint64_t)cap * HC * HC * 4, ok);
@@ -314,7 +359,7 @@ static void v41_free_list(ds4_gpu_tensor ***list, size_t n) {
 }
 #define V41_FREE(...) do { ds4_gpu_tensor **l_[] = { __VA_ARGS__ }; v41_free_list(l_, sizeof(l_) / sizeof(l_[0])); } while (0)
 static void v41_free_dense(ds4_v41_state *st) {
-    V41_FREE(&st->tok, &st->pos, &st->hc, &st->hc2, &st->mix, &st->pre, &st->post, &st->comb, &st->pre_mix, &st->x, &st->xn, &st->attn_out,
+    V41_FREE(&st->tok, &st->pos, &st->vrows, &st->hc, &st->hc2, &st->mix, &st->pre, &st->post, &st->comb, &st->pre_mix, &st->x, &st->xn, &st->attn_out,
              &st->glog, &st->sel, &st->rw, &st->routed, &st->sg, &st->su, &st->sh, &st->so, &st->y, &st->logits, &st->xlast);
 }
 static void v41_free_attn(ds4_v41_state *st) {
@@ -339,6 +384,10 @@ static bool v41_state_alloc(ds4_v41_state *st, uint32_t cap, uint32_t ctx, uint3
     v41_alloc_attn_rows(st, cap, &ok);
     v41_alloc_attn_cache(st, cap, &ok);
     st->wintmp = v41_alloc(SWA * HD * 4, &ok);
+    /* Vision: himg[ctx] flags image-span positions for the engram lookback
+     * (core_v41_state.c:127).  Allocated unconditionally (1 byte/position). */
+    st->himg = xmalloc_zeroed((size_t)ctx, 1);
+    if (!st->himg) ok = false;
     /* core_v41_state.c:104-108: the main-hidden ring exists only when the
      * model carries draft towers (and its target layers are known). */
     if (g_ds4_v41.mtp_towers && g_ds4_v41.n_mtp_target) {
@@ -381,6 +430,7 @@ static void v41_state_free(ds4_v41_state *st) {
         V41_FREE(&st->snap_win[il], &st->snap_cpre_kv[il], &st->snap_cpre_sc[il]);
         if (st->posg_pin[il]) { ds4_gpu_host_free(st->posg_pin[il]); st->posg_pin[il] = NULL; }
     }
+    free(st->himg); st->himg = NULL;
 }
 
 /* core_v41_state.c:195-229, minus the graph-capture branch: the score scratch
@@ -537,7 +587,11 @@ static bool v41_engram_rows(ds4_engine *e, ds4_v41_state *st, uint32_t il) {
         FILE *df = fopen(p, "w");
         if (df) { for (uint32_t q = 0; q < n; q++) for (uint32_t c = 0; c < cols; c++) fprintf(df, "%lld%c", (long long)fd->rows[ei][(size_t)q * cols + c], c + 1 == cols ? '\n' : ' '); fclose(df); }
     }
-    return ds4_gpu_v41_engram_rows_tensor(st->erows, st->eraw[ei], n * cols, HD) != 0;
+    if (!ds4_gpu_v41_engram_rows_tensor(st->erows, st->eraw[ei], n * cols, HD)) return false;
+    /* Image positions get no engram contribution (official engram_mask;
+     * core_v41_engram.c:460): zeroing the rows makes wkv 0, so the gate adds 0. */
+    if (st->vrows_on) return ds4_gpu_v41_rows_zero_tensor(st->erows, st->vrows, n, (uint32_t)in_dim) != 0;
+    return true;
 }
 
 static bool v41_engram_apply(ds4_engine *e, ds4_v41_state *st, uint32_t il) {
@@ -886,7 +940,11 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
     if (l->ffn_gate_inp->type == DS4_TENSOR_F32) {
         if (!ds4_gpu_v41_matmul_f32_tensor(st->glog, m->map, m->size, l->ffn_gate_inp->abs_offset, E, NE, st->xn, n)) { goto fork_fail; }
     } else if (!ds4_gpu_v41_matmul_bf16_tensor(st->glog, m->map, m->size, l->ffn_gate_inp->abs_offset, E, NE, st->xn, n)) { goto fork_fail; }
-    if (!ds4_gpu_v41_router_tensor(st->sel, st->rw, st->glog, m->map, m->size, l->ffn_exp_probs_b->abs_offset, n, NE,
+    /* Image positions pick experts with bias_vl (official Gate.bias_vl); the
+     * draft tower and any block without images pass NULL = all-text. */
+    const bool vl = st->vrows_on && !st->draft;
+    if (!ds4_gpu_v41_router_tensor(st->sel, st->rw, st->glog, m->map, m->size, l->ffn_exp_probs_b->abs_offset,
+                                   vl ? g_v41_bias_vl[il] : NULL, vl ? st->vrows : NULL, n, NE,
                                    KU, DS4_EXPERT_WEIGHT_SCALE)) { goto fork_fail; }
     if (st->draft) {
         /* The two on-disk tower expert forms (core_v41_forward.c:108-120).
@@ -1018,6 +1076,10 @@ static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
     const uint32_t n = st->n, E = DS4_N_EMBD;
     st->ced_done = 0;
     bool ok = v41_embed(&e->model, st->x, st->tok, e->weights.token_embd, DS4_N_VOCAB, n, E) != 0;
+    /* Image span positions take the visual embeddings over the word embeddings
+     * (official merge_image_embeddings: after embed, before the hc expansion);
+     * only an image-bearing prefill block turns this on. */
+    if (ok && st->vrows_on) ok = ds4_gpu_v41_row_select_tensor(st->x, st->vimg->embd, st->vrows, n, E) != 0;
     if (ok) ok = ds4_gpu_v41_expand_hc_tensor(st->hc, st->x, E, DS4_N_HC, n) != 0;
     const double t0 = now_sec();
     double lt[DS4_N_LAYER + 1], tprev = t0;
@@ -1135,6 +1197,30 @@ static bool v41_forward(ds4_engine *e, ds4_v41_state *st, const int32_t *ids, ui
         free(pos);
         if (!ok) return false;
     }
+    /* Vision: map this block's positions to vimg->embd rows and run the tower
+     * once (all images together) before the first block; afterwards each block
+     * only fetches rows by position.  himg records image positions like hist
+     * does, so the engram hash lookback can stop at them; vrows_on is cleared at
+     * block end so the decode step and clones never see it
+     * (core_v41_forward.c:388-404). */
+    st->vrows_on = 0;
+    if (st->vimg && !st->draft) {
+        if (!v41_vision_encode(e, st->vimg)) return false;
+        int32_t *rows = xmalloc((size_t)n * 4);
+        int any = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            const uint32_t p = st->pos0 + i;
+            rows[i] = p < st->vimg->np ? st->vimg->row_of[p] : -1;
+            st->himg[p] = rows[i] >= 0;
+            any |= rows[i] >= 0;
+        }
+        const bool okr = !any || ds4_gpu_tensor_write(st->vrows, 0, rows, (uint64_t)n * 4);
+        free(rows);
+        if (!okr) return false;
+        st->vrows_on = any;
+    } else if (st->himg) {
+        memset(st->himg + st->pos0, 0, n);
+    }
     float *pm = xmalloc((size_t)n * DS4_N_HC * 4);   /* pre_mix = one-hot on lane 0 */
     for (uint32_t i = 0; i < n * DS4_N_HC; i++) pm[i] = (i % DS4_N_HC) == 0 ? 1.0f : 0.0f;
     const bool okpm = ds4_gpu_tensor_write(st->pre_mix, 0, pm, (uint64_t)n * DS4_N_HC * 4) != 0;
@@ -1151,7 +1237,9 @@ static bool v41_forward(ds4_engine *e, ds4_v41_state *st, const int32_t *ids, ui
         return false;
     }
     if (ds4_gpu_begin_commands() == 0) return false;
-    if (!v41_forward_body(e, st)) return false;
+    const bool body_ok = v41_forward_body(e, st);
+    st->vrows_on = 0;   /* image rows belong to this block only */
+    if (!body_ok) return false;
     if (ds4_gpu_end_commands() == 0 || ds4_gpu_synchronize() == 0) return false;
     /* The main-hidden ring's accounting (core_v41_forward.c:391-400): continue
      * the run when this block touches the previous one, restart it otherwise

@@ -5420,6 +5420,7 @@ void ds4_gpu_v41_set_indexer_mma(int on);
  * consults its table by bias_offset when a layer is mounted. */
 int ds4_gpu_v41_router_tensor(ds4_gpu_tensor *selected, ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits,
         const void *model_map, uint64_t model_size, uint64_t bias_offset,
+        const ds4_gpu_tensor *bias_vl, const ds4_gpu_tensor *vl_rows,
         uint32_t n_tok, uint32_t n_expert, uint32_t topk, float route_scale);
 int ds4_gpu_v41_swiglu_tensor(ds4_gpu_tensor *h, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
         uint32_t n_tok, uint32_t mid, float limit);

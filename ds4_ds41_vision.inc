@@ -17,13 +17,14 @@
 #define V41_VIS_RMS_EPS 1e-6f   /* official vision.py RMSNorm(dim, eps=1e-6); not in config.json, so pinned at the consumer */
 
 /* Per-layer image-row router bias (blk.N.exp_probs_b_vl) -> device tensors, one
- * upload of 40 x 384 f32 (~61 KB) and then resident (core_v41_vision.c:132-146). */
-static ds4_gpu_tensor *g_v41_bias_vl[DS4_MAX_LAYER];
+ * upload of 40 x 384 f32 (~61 KB) and then resident (core_v41_vision.c:132-146).
+ * Declared in ds4_ds41_forward.inc (the router in v41_moe reads it). */
+ds4_gpu_tensor *g_v41_bias_vl[DS4_MAX_LAYER];
 
 /* One image's tower activations: residual stream x[n][D], aligner output al[n_llm][E]. */
 typedef struct { ds4_gpu_tensor *x, *al; uint32_t n, nh, nw, n_llm; } v41_vact;
-/* One image as the tower consumes it (preprocessing output). */
-typedef struct { const float *patches; uint32_t n_vit_h, n_vit_w, n_llm_h, n_llm_w; } v41_vis_image;
+/* The image element type (v41_image) is declared in ds4_ds41_forward.inc,
+ * which is included before this file. */
 
 /* The file that holds the tower weights: the --vision-gguf sidecar.  vis_layers
  * is set only by v41_load_vision_metadata on that sidecar, so >0 means it is
@@ -79,7 +80,7 @@ static bool v41_vis_residual(ds4_gpu_tensor *x, const ds4_gpu_tensor *y, uint64_
 /* Run the whole tower for a batch of images: block-major (weights read once)
  * with images inner (core_v41_vision.c:57-114).  A[i].al is the aligner output
  * [n_llm][E]; on failure every A[i].al is freed and NULL. */
-static bool v41_vis_run_images(ds4_engine *e, const v41_vis_image *im, uint32_t n_img, v41_vact *A) {
+static bool v41_vis_run_images(ds4_engine *e, const v41_image *im, uint32_t n_img, v41_vact *A) {
     const ds4_v41_cfg *v = &g_ds4_v41;
     const ds4_v41_vision_weights *V = &e->weights.v41_vision;
     const ds4_model *vm = v41_vision_model(e);
@@ -161,10 +162,10 @@ float *v41_vision_run(ds4_engine *e, const float *patches, uint32_t n_vit_h, uin
                       uint32_t *n_llm_h, uint32_t *n_llm_w) {
     const ds4_v41_cfg *v = &g_ds4_v41;
     if (!v->vis_layers) { fprintf(stderr, "ds4: this GGUF has no vision tower\n"); return NULL; }
-    v41_vis_image im; memset(&im, 0, sizeof im);
+    v41_image im; memset(&im, 0, sizeof im);
     im.n_vit_h = n_vit_h; im.n_vit_w = n_vit_w;
     im.n_llm_h = (n_vit_h + v->vis_ds - 1) / v->vis_ds; im.n_llm_w = (n_vit_w + v->vis_ds - 1) / v->vis_ds;
-    im.patches = patches;
+    im.patches = (float *)patches;   /* v41_image owns it for the free in vis_run_images */
     v41_vact A; memset(&A, 0, sizeof A);
     if (!v41_vis_run_images(e, &im, 1, &A)) return NULL;
     const uint64_t E = DS4_N_EMBD;
@@ -189,6 +190,52 @@ static bool v41_vis_bias_vl_upload(ds4_engine *e) {
         g_v41_bias_vl[il] = d;
     }
     return true;
+}
+
+/* Run the tower once for a whole request and lay the span rows into
+ * imgs->embd: per image, image_start, then n_llm_h rows of n_llm_w aligner rows
+ * each followed by image_newline, then image_end (official
+ * merge_image_embeddings; core_v41_vision.c:149-178).  Encoded once, before the
+ * first prefill block. */
+bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs) {
+    if (!imgs || imgs->encoded) return true;
+    const ds4_v41_cfg *v = &g_ds4_v41;
+    const ds4_v41_vision_weights *V = &e->weights.v41_vision;
+    if (!v->vis_layers) { fprintf(stderr, "ds4: [v41] this GGUF has no vision tower, cannot take images\n"); return false; }
+    const uint64_t E = DS4_N_EMBD, rowb = E * 4;
+    const ds4_model *vm = v41_vision_model(e);
+    bool ok = v41_vis_bias_vl_upload(e);
+    if (ok && !imgs->embd) imgs->embd = v41_alloc((uint64_t)imgs->n_rows * rowb, &ok);
+    v41_vact *A = xmalloc_zeroed(imgs->n ? imgs->n : 1, sizeof *A);
+    if (ok) ok = v41_vis_run_images(e, imgs->img, imgs->n, A);
+    const float *vs = (const float *)tensor_data(vm, V->image_start);
+    const float *ve = (const float *)tensor_data(vm, V->image_end);
+    const float *vn = (const float *)tensor_data(vm, V->image_newline);
+    for (uint32_t i = 0; ok && i < imgs->n; i++) {
+        v41_image *im = &imgs->img[i];
+        uint64_t k = im->row0;
+        ok = ds4_gpu_tensor_write(imgs->embd, k++ * rowb, vs, rowb) != 0;
+        for (uint32_t gi = 0; ok && gi < im->n_llm_h; gi++) {
+            ok = ds4_gpu_tensor_copy(imgs->embd, k * rowb, A[i].al, (uint64_t)gi * im->n_llm_w * rowb,
+                                     (uint64_t)im->n_llm_w * rowb) != 0;
+            k += im->n_llm_w;
+            if (ok) ok = ds4_gpu_tensor_write(imgs->embd, k++ * rowb, vn, rowb) != 0;
+        }
+        if (ok) ok = ds4_gpu_tensor_write(imgs->embd, k++ * rowb, ve, rowb) != 0;
+        if (ok && k != (uint64_t)im->row0 + im->n_tok) {
+            fprintf(stderr, "ds4: [v41] image span row count does not balance\n"); ok = false;
+        }
+        if (ok) fprintf(stderr, "[v41] image %u: %ux%u patch -> %ux%u token (span %u)\n",
+                        i, im->n_vit_h, im->n_vit_w, im->n_llm_h, im->n_llm_w, im->n_tok);
+    }
+    for (uint32_t i = 0; i < imgs->n; i++) {
+        if (A[i].al) { ds4_gpu_tensor_free(A[i].al); }
+        if (imgs->img[i].patches) { free(imgs->img[i].patches); imgs->img[i].patches = NULL; }
+    }
+    free(A);
+    if (ok && !ds4_gpu_synchronize()) ok = false;
+    imgs->encoded = ok ? 1 : 0;
+    return ok;
 }
 
 #endif /* !DS4_NO_GPU */
