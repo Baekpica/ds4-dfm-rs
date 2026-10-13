@@ -82,6 +82,9 @@ entry) states:
 - Threshold basis from the same record: the official code's own bf16 vs f32
   on img.jpeg, row cos min 0.926 (row 746) / mean 0.99927; panel 0.986 /
   0.99979.
+- The port's own run of the same comparison (this repo's generator, torch
+  2.14.1+cu130, RTX 4070 SUPER, 2026-10-13): panel bf16 vs f32 row cos min
+  0.9688 (row 389) / mean 0.99977, patch max diff 0.0.
 - Text invariance gate: byte-identical with and without `--vision-gguf`
   (temp 0, 64 tokens); the see-an-image answers matched the pictures.
 
