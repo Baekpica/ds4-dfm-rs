@@ -578,7 +578,12 @@ fn main() {
                         // apply to the engine's own model set -- exactly this
                         // branch's model.
                         cfg.engine_defaults = true;
-                        v41_route = Some(resolve_v41_route(path, &v41_flags, &plan, vision_path.as_deref()));
+                        v41_route = Some(resolve_v41_route(
+                            path,
+                            &v41_flags,
+                            &plan,
+                            vision_path.as_deref(),
+                        ));
                         eprintln!(
                             "ds4-server-rs: V4.1 route: ctx={} MTP={} verify={} prefix_reuse={}",
                             cfg.ctx,

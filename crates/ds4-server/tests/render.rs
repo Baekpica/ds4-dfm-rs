@@ -984,8 +984,8 @@ fn dsml_v41_places_tool_result_images_inside_the_envelope() {
         ],
         ..ChatMsg::default()
     };
-    let out = render_dsml_chat_choice_ex(&[plain], "", ThinkMode::None, ToolChoice::Auto, v41)
-        .unwrap();
+    let out =
+        render_dsml_chat_choice_ex(&[plain], "", ThinkMode::None, ToolChoice::Auto, v41).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(&format!("before{DSML_IMAGE}after")));
 }

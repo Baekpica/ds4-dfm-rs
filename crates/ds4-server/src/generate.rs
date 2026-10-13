@@ -57,7 +57,9 @@ pub enum GenerateError {
     /// before any work, never by silently dropping part of the input.
     BadRequest(&'static str),
     Unsupported(&'static str),
-    ContinuationHold { retry_after: i32 },
+    ContinuationHold {
+        retry_after: i32,
+    },
     Engine(String),
     Streamed(String),
     Io,
@@ -1227,8 +1229,8 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
     if parsed.images.is_empty() {
         return None;
     }
-    let v41 = syntax == ModelSyntax::DeepSeek
-        && model_id == ds4_core::Variant::DeepSeek41Flash as i32;
+    let v41 =
+        syntax == ModelSyntax::DeepSeek && model_id == ds4_core::Variant::DeepSeek41Flash as i32;
     let image_gate = match syntax {
         ModelSyntax::Glm53
         | ModelSyntax::Inkling
@@ -1240,9 +1242,9 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         // sidecar is open is checked in prepare_serial_prompt, which knows
         // the engine (the 400 lives there, 80296d3).
         ModelSyntax::DeepSeek if v41 => None,
-        _ => Some(
-            "image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo",
-        ),
+        _ => {
+            Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo")
+        }
     };
     if image_gate.is_some() {
         return image_gate;

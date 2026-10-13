@@ -60,9 +60,9 @@ pub struct V41Golden {
     pub e: u32,
     pub best_w: u32,
     pub best_h: u32,
-    pub rgb: Vec<u8>,       // [best_h][best_w][3], after PIL pad
-    pub patches: Vec<f32>,  // [n_vit][pp]
-    pub embeds: Vec<f32>,   // [n_llm][e]
+    pub rgb: Vec<u8>,      // [best_h][best_w][3], after PIL pad
+    pub patches: Vec<f32>, // [n_vit][pp]
+    pub embeds: Vec<f32>,  // [n_llm][e]
 }
 
 impl V41Golden {
@@ -77,10 +77,14 @@ impl V41Golden {
     /// Read and validate a VGLD file.  Bad magic/version or a short read
     /// refuse by name, the two failure shapes the engine has (gate :50-52).
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path).map_err(|e| {
-            gate_error(format!("vision golden {}: {e}", path.display()))
-        })?;
-        let bad = || gate_error(format!("vision golden {}: bad magic or version", path.display()));
+        let bytes = std::fs::read(path)
+            .map_err(|e| gate_error(format!("vision golden {}: {e}", path.display())))?;
+        let bad = || {
+            gate_error(format!(
+                "vision golden {}: bad magic or version",
+                path.display()
+            ))
+        };
         if bytes.len() < VGLD_HEADER_BYTES || &bytes[0..4] != VGLD_MAGIC {
             return Err(bad());
         }
@@ -413,7 +417,9 @@ mod tests {
     ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(VGLD_MAGIC);
-        for v in [1u32, w, h, n_vit_h, n_vit_w, n_llm_h, n_llm_w, pp, e, best_w, best_h, 0] {
+        for v in [
+            1u32, w, h, n_vit_h, n_vit_w, n_llm_h, n_llm_w, pp, e, best_w, best_h, 0,
+        ] {
             out.extend_from_slice(&v.to_le_bytes());
         }
         out.extend(std::iter::repeat_n(7u8, (best_w * best_h * 3) as usize));
@@ -433,11 +439,7 @@ mod tests {
     #[test]
     fn golden_reader_reads_the_engine_format() {
         let path = temp_path("read");
-        std::fs::write(
-            &path,
-            golden_bytes(1024, 768, 4, 3, 2, 1, 12, 5, 56, 42),
-        )
-        .unwrap();
+        std::fs::write(&path, golden_bytes(1024, 768, 4, 3, 2, 1, 12, 5, 56, 42)).unwrap();
         let g = V41Golden::read(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert_eq!((g.w, g.h), (1024, 768));

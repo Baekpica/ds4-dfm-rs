@@ -338,8 +338,9 @@ fn probe_v41_vision_sidecar(path: &str) -> Result<()> {
         _ => {
             return Err(Error {
                 code: 1,
-                message: "--vision-gguf file has no deepseek4.vision.block_count (not a vision tower)"
-                    .into(),
+                message:
+                    "--vision-gguf file has no deepseek4.vision.block_count (not a vision tower)"
+                        .into(),
             })
         }
     }

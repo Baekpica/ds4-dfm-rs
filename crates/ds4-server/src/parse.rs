@@ -8,8 +8,8 @@ use crate::json::{
     json_bool, json_content, json_escape, json_int, json_number, json_raw_value, json_skip_value,
     json_string, Json,
 };
-use crate::render::DSML_IMAGE;
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
+use crate::render::DSML_IMAGE;
 use crate::route::{
     compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
 };

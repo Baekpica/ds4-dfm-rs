@@ -382,11 +382,18 @@ pub fn patches(bytes: &[u8], cfg: &V41VisionConfig) -> Result<V41Patches> {
     let (w, h) = (img.width(), img.height());
     let plan = plan(w, h, cfg).ok_or_else(|| Error {
         code: 1,
-        message: format!("image {w}x{h} does not fit the {}-token size budget", cfg.max_tokens),
+        message: format!(
+            "image {w}x{h} does not fit the {}-token size budget",
+            cfg.max_tokens
+        ),
     })?;
     let px = resize_pad(img.as_raw(), w, h, plan.best_w, plan.best_h);
     let p = cfg.patch as usize;
-    let (nh, nw, bw) = (plan.n_vit_h as usize, plan.n_vit_w as usize, plan.best_w as usize);
+    let (nh, nw, bw) = (
+        plan.n_vit_h as usize,
+        plan.n_vit_w as usize,
+        plan.best_w as usize,
+    );
     let pp = p * p;
     let mut out = vec![0f32; nh * nw * 3 * pp];
     for i in 0..nh {
@@ -463,7 +470,11 @@ impl V41Images {
                 patches: p.patches,
             });
         }
-        let total = tokens.len() + images.iter().map(|im| im.plan.span_tokens() as usize - 1).sum::<usize>();
+        let total = tokens.len()
+            + images
+                .iter()
+                .map(|im| im.plan.span_tokens() as usize - 1)
+                .sum::<usize>();
         let mut out_tokens = Vec::with_capacity(total);
         let mut row_of = Vec::with_capacity(total);
         let mut n_rows = 0u32;
@@ -589,7 +600,10 @@ mod tests {
             .expect("encode png");
         let out = patches(&png, &c).expect("patch");
         let pp = (c.patch * c.patch) as usize;
-        assert_eq!(out.patches.len(), out.plan.n_vit_h as usize * out.plan.n_vit_w as usize * 3 * pp);
+        assert_eq!(
+            out.patches.len(),
+            out.plan.n_vit_h as usize * out.plan.n_vit_w as usize * 3 * pp
+        );
         assert!(out.patches.iter().all(|&v| (-1.0..=1.0).contains(&v)));
     }
 
