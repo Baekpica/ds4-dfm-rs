@@ -40,6 +40,20 @@ LOG=/tmp/ds41_wire_gate
 
 fail() { echo "ds41 wire gate: FAIL ($1)"; exit 1; }
 
+EPID=""
+SPID=""
+cleanup() {
+    if [ -n "$EPID" ]; then
+        kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
+        EPID=""
+    fi
+    if [ -n "$SPID" ]; then
+        kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
+        SPID=""
+    fi
+}
+trap cleanup EXIT
+
 mkdir -p "$LOG"
 cat > "$LOG/req.anthropic.json" <<'JSON'
 {"max_tokens":48,"temperature":0,"reasoning_effort":"none","messages":[{"role":"user","content":"Name three colors."}]}
@@ -96,13 +110,14 @@ curl -sS -m 900 "http://127.0.0.1:$PORT/v1/responses" \
   || fail "engine responses tools request failed"
 grep -q '"status"' "$LOG/eng.responses.tools.json" || fail "engine responses tools response has no status"
 kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
+EPID=""
 
 # ---- port side: the same requests ----
 rm -f "$LOG/srv.log"
 "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG --host 127.0.0.1 > "$LOG/srv.log" 2>&1 &
 SPID=$!
 boot_wait "$LOG/srv.log" "$SPID" "port server"
-grep -q "V4.1 serving route" "$LOG/srv.log" || fail "no V4.1 route line at boot"
+grep -q "V4.1 route:" "$LOG/srv.log" || fail "no V4.1 route line at boot"
 curl -sS -m 900 "http://127.0.0.1:$PORT/v1/messages" \
     -H 'content-type: application/json' -d @"$LOG/req.anthropic.json" > "$LOG/srv.anthropic.json" \
   || fail "port anthropic request failed"
@@ -124,6 +139,7 @@ curl -sS -m 900 "http://127.0.0.1:$PORT/v1/responses" \
   || fail "port responses tools request failed"
 grep -q '"status"' "$LOG/srv.responses.tools.json" || fail "port responses tools response has no status"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
+SPID=""
 
 # ---- per-request id extraction ----
 # Engine: one "===== request <id>" .. block per request; "prompt:"/"generated:"

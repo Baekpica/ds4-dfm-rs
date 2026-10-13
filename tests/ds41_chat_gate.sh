@@ -75,7 +75,7 @@ while [ $i -lt 400 ]; do
     sleep 2; i=$((i + 1))
 done
 grep -q "listening on" "$LOG.srv.log" || fail "port server did not start listening"
-grep -q "V4.1 serving route" "$LOG.srv.log" || fail "no V4.1 route line at boot"
+grep -q "V4.1 route:" "$LOG.srv.log" || fail "no V4.1 route line at boot"
 
 curl -sS -m 600 "http://127.0.0.1:$PORT/v1/chat/completions" \
     -H 'content-type: application/json' -d @"$REQ" > "$LOG.srv.resp.json" \

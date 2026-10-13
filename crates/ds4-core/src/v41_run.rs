@@ -28,6 +28,7 @@ use ds4_sys::{
 };
 
 use crate::engram::{EngramHash, EngramShard};
+use crate::sidecar::{FNV_PRIME, FNV_SEED};
 use crate::uring::Req;
 use crate::{
     identify_file, Error, GgufFile, Model, Result, TensorInventory, V41Wire, V41Zchain, ZchainGeom,
@@ -253,6 +254,7 @@ pub struct V41Feed {
     /// Read once at open, so a run is one configuration.
     wait_delay_us: Option<u64>,
     wait_withhold: bool,
+    sources: Vec<EngramSource>,
 }
 
 impl V41Feed {
@@ -273,8 +275,13 @@ impl V41Feed {
             return Ok(None);
         };
         let mut shards = Vec::with_capacity(wire.engram_layers.len());
+        let mut sources = Vec::with_capacity(wire.engram_layers.len());
         for path in &wire.engram_table_path {
             let shard = EngramShard::open(Path::new(path)).map_err(asset_error)?;
+            sources.push(EngramSource {
+                path: std::fs::canonicalize(path).map_err(asset_error)?,
+                metadata: shard.metadata().map_err(asset_error)?,
+            });
             shards.push(shard);
         }
         let head_dim = wire.engram_head_dim;
@@ -393,6 +400,7 @@ impl V41Feed {
             prefetch_off,
             wait_delay_us,
             wait_withhold,
+            sources,
         }))
     }
 
@@ -711,6 +719,43 @@ impl V41Feed {
             .map_or(true, |w| w.join.as_ref().map_or(true, |h| h.is_finished()))
     }
 
+    /// End every write before the bridge frees its pinned destinations. Stop
+    /// queues behind the active round; joining also covers a failed layer wait.
+    fn drain(&mut self) -> std::result::Result<(), String> {
+        let mut error = self.err.clone();
+        if let Some(mut worker) = self.worker.take() {
+            let _ = worker.tx.send(FeedCmd::Stop);
+            if let Some(join) = worker.join.take() {
+                if join.join().is_err() && error.is_none() {
+                    error = Some("engram fetch worker panicked during drain".into());
+                }
+            }
+        }
+        let (ctl, _) = &*self.ctl;
+        let ctl = ctl.lock().unwrap_or_else(|poison| poison.into_inner());
+        if error.is_none() {
+            error = ctl.err.clone();
+        }
+        drop(ctl);
+
+        // Small/synchronous rounds have no worker. Their io_uring destinations
+        // have the same lifetime, and a refusal may have skipped collect.
+        let mut core = self
+            .core
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(ring) = core.ring.as_mut() {
+            if !ring.wait() && error.is_none() {
+                error = Some("engram io_uring drain failed".into());
+            }
+        }
+        self.joined.fill(true);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// Whether the native side should install the wait hook (the async
     /// protocol); false keeps the synchronous `prepare` (no ring, the
     /// `DS41_FEED_SYNC` kill switch, or a worker that failed to start).
@@ -995,27 +1040,7 @@ fn worker_loop(
 
 impl Drop for V41Feed {
     fn drop(&mut self) {
-        if self.worker.is_none() {
-            return;
-        }
-        // Finish any in-flight block before the thread goes: the pinned
-        // buffers it writes die with the native feed right after this.
-        {
-            let (m, cv) = &*self.ctl;
-            let mut g = m.lock().unwrap();
-            while g.go {
-                if self.worker_is_dead() {
-                    break;
-                }
-                g = cv.wait(g).unwrap();
-            }
-        }
-        if let Some(w) = &mut self.worker {
-            let _ = w.tx.send(FeedCmd::Stop);
-            if let Some(h) = w.join.take() {
-                let _ = h.join();
-            }
-        }
+        let _ = self.drain();
     }
 }
 
@@ -1057,6 +1082,20 @@ unsafe extern "C" fn wait_tramp(k: i32, ud: *mut c_void) -> i32 {
     match catch_unwind(AssertUnwindSafe(|| t.feed.wait_layer(k as u32))) {
         Ok(Ok(())) => 0,
         _ => 1,
+    }
+}
+
+unsafe extern "C" fn drain_tramp(ud: *mut c_void) -> i32 {
+    if ud.is_null() {
+        return 1;
+    }
+    let t = &mut *(ud as *mut FeedTramp<'_>);
+    match catch_unwind(AssertUnwindSafe(|| t.feed.drain())) {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) => 1,
+        // Unwinding does not prove the writer ended. Do not let the bridge
+        // release its destinations after an incomplete drain.
+        Err(_) => std::process::abort(),
     }
 }
 
@@ -1154,13 +1193,13 @@ unsafe extern "C" fn greedy_tramp(ud: *mut c_void, ahead: *const i32, n: u32) ->
 /// gain table land on the device (rb before gr, the engine's order at
 /// `:228-230`).  The files are read and merged by the P2/P3 Rust reader
 /// (`zchain.rs`); the device writes are the P4-7 stores.  No directories =
-/// the engine's naked base: only the rb unload (`core_v41_state.c:78`).
+/// bare execution: unload RB and GR before applying the requested tables.
+/// This closes the oracle's omission when a gain layer disappears on a switch.
 ///
 /// A directory carrying `amp_Lnn.bin` is refused by name: the low-rank
 /// apply is not ported (the recorded §6.14 limit; no Spark directory
-/// carries one).  The refusal fires before any device write, so a failed
-/// mount never leaves a half-mounted process (the engine mounts rb/gr
-/// first and fails at the amp read; the request outcome is the same).
+/// carries one). File validation precedes device writes; a failed upload
+/// aborts the run, and the next mount clears all tables before retrying.
 /// U-B's amplifier identity: FNV-1a-style folding over a float slice's bytes,
 /// 8 bytes a step.  The native drops the KV checkpoint when the folded
 /// identity of the mounted set changes (see `v41_mount_zchain`); a
@@ -1168,51 +1207,146 @@ unsafe extern "C" fn greedy_tramp(ud: *mut c_void, ahead: *const i32, n: u32) ->
 fn kv_mount_fold_f32s(h: &mut u64, data: &[f32]) {
     // SAFETY: every bit pattern of f32 is a valid read as bytes.
     let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
-    let mut chunks = bytes.chunks_exact(8);
+    kv_fold_bytes(h, bytes);
+}
+
+fn kv_fold_bytes(h: &mut u64, data: &[u8]) {
+    let mut chunks = data.chunks_exact(8);
     for c in &mut chunks {
         let w = u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
         *h ^= w;
-        *h = h.wrapping_mul(0x100000001b3);
+        *h = h.wrapping_mul(FNV_PRIME);
     }
     for &b in chunks.remainder() {
         *h ^= u64::from(b);
-        *h = h.wrapping_mul(0x100000001b3);
+        *h = h.wrapping_mul(FNV_PRIME);
     }
 }
 
-fn v41_mount_zchain(
-    model: &Model,
-    path: &Path,
-    zchain: Option<&str>,
-    posttrain: Option<&str>,
-) -> Result<u64> {
-    if zchain.is_none() && posttrain.is_none() {
-        unsafe { ds4_bridge_v41_zchain_rb_clear() };
-        // The naked base is a mount state of its own (U-B): the KV checkpoint
-        // was computed with whatever amplifier was mounted before.
-        unsafe { ds4_bridge_v41_kvreuse_note_mount(0, 0) };
-        return Ok(0);
-    }
-    let g = GgufFile::open(path).map_err(asset_error)?;
-    let shape = identify_file(&g).map_err(asset_error)?.shape;
+fn v41_mount_zchain(model: &Model, zchain: Option<&str>, posttrain: Option<&str>) -> Result<u64> {
+    let shape = model.shape();
     let geom = ZchainGeom {
         n_layer: shape.n_layer,
         n_expert: shape.n_expert,
         n_embd: shape.n_embd,
     };
     let merged = zchain_load_for_run(zchain, posttrain, geom)?;
-    // Unreachable with a directory given (load answers None only for two
-    // Nones); kept total rather than panicking.
+    let digest = apply_zchain(merged.as_ref(), geom, |write| match write {
+        MountWrite::ClearRb => {
+            unsafe { ds4_bridge_v41_zchain_rb_clear() };
+            true
+        }
+        MountWrite::Bias(il, data) => unsafe {
+            ds4_bridge_v41_zchain_rb_set(model.raw_ptr(), il, data.as_ptr(), geom.n_expert) != 0
+        },
+        MountWrite::Gain(il, data) => unsafe {
+            ds4_bridge_v41_zchain_gr_set(
+                model.raw_ptr(),
+                il,
+                data.map_or(std::ptr::null(), |data| data.as_ptr()),
+                geom.n_expert,
+                geom.n_embd,
+            ) != 0
+        },
+    })?;
+    if let Some(merged) = merged {
+        eprintln!(
+            "ds4: [v41] zchain mount: gr={} rb={} amp=0 from {}{}",
+            merged.n_gr_layers(),
+            merged.n_rb_layers(),
+            zchain.unwrap_or("(none)"),
+            if posttrain.is_some() {
+                " + posttrain"
+            } else {
+                ""
+            },
+        );
+    }
+    Ok(digest)
+}
+
+#[derive(Clone, Copy)]
+enum EngramMode {
+    On,
+    Off,
+}
+
+struct EngramSource {
+    path: std::path::PathBuf,
+    metadata: std::fs::Metadata,
+}
+
+fn kv_state_digest(digest: u64, mode: EngramMode, sources: &[EngramSource]) -> Result<u64> {
+    const KV_STATE_DOMAIN: &[u8] = b"v41-kv-state-v1";
+    let mut digest = if digest == 0 { FNV_SEED } else { digest };
+    kv_fold_bytes(&mut digest, KV_STATE_DOMAIN);
+    match mode {
+        EngramMode::Off => {
+            kv_fold_bytes(&mut digest, b"disabled");
+            return Ok(digest);
+        }
+        EngramMode::On => kv_fold_bytes(&mut digest, b"enabled"),
+    }
+    // Local file-stat identity avoids reading two enormous Engram tables.
+    // The stamp comes from the open shard, so it identifies the actual source.
+    #[cfg(unix)]
+    {
+        use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+        for source in sources {
+            let path = source.path.as_os_str().as_bytes();
+            kv_fold_bytes(&mut digest, &(path.len() as u64).to_le_bytes());
+            kv_fold_bytes(&mut digest, path);
+            let m = &source.metadata;
+            for field in [
+                m.dev(),
+                m.ino(),
+                m.len(),
+                m.mtime() as u64,
+                m.mtime_nsec() as u64,
+                m.ctime() as u64,
+                m.ctime_nsec() as u64,
+            ] {
+                kv_fold_bytes(&mut digest, &field.to_le_bytes());
+            }
+        }
+        Ok(digest)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = sources;
+        Err(asset_error(
+            "V4.1 Engram checkpoint identity requires Unix file metadata",
+        ))
+    }
+}
+
+enum MountWrite<'a> {
+    ClearRb,
+    Bias(u32, &'a [f32]),
+    Gain(u32, Option<&'a [f32]>),
+}
+
+/// The mount order is shared by the native writes and the model-free device
+/// mock. Loading/validating files finishes before any table changes.
+fn apply_zchain(
+    merged: Option<&V41Zchain>,
+    geom: ZchainGeom,
+    mut write: impl FnMut(MountWrite<'_>) -> bool,
+) -> Result<u64> {
+    write(MountWrite::ClearRb);
+    for il in 0..geom.n_layer {
+        if !write(MountWrite::Gain(il, None)) {
+            return Err(asset_error(format!(
+                "V4.1 zchain: gr L{il:02} unload refused"
+            )));
+        }
+    }
     let Some(merged) = merged else {
         return Ok(0);
     };
-    unsafe { ds4_bridge_v41_zchain_rb_clear() };
     for (il, delta) in merged.rb.iter().enumerate() {
         let Some(delta) = delta else { continue };
-        let ok = unsafe {
-            ds4_bridge_v41_zchain_rb_set(model.raw_ptr(), il as u32, delta.as_ptr(), geom.n_expert)
-        };
-        if ok == 0 {
+        if !write(MountWrite::Bias(il as u32, delta)) {
             return Err(asset_error(format!(
                 "V4.1 zchain: rb L{il:02} upload refused"
             )));
@@ -1220,16 +1354,7 @@ fn v41_mount_zchain(
     }
     for (il, gr) in merged.gr.iter().enumerate() {
         let Some(gr) = gr else { continue };
-        let ok = unsafe {
-            ds4_bridge_v41_zchain_gr_set(
-                model.raw_ptr(),
-                il as u32,
-                gr.factor.as_ptr(),
-                geom.n_expert,
-                geom.n_embd,
-            )
-        };
-        if ok == 0 {
+        if !write(MountWrite::Gain(il as u32, Some(&gr.factor))) {
             return Err(asset_error(format!(
                 "V4.1 zchain: gr L{il:02} upload refused"
             )));
@@ -1239,33 +1364,21 @@ fn v41_mount_zchain(
     // native drops it when this identity changes (the engine's switch_plugins
     // drop, core_v41_state.c:111; the port mounts the same set per run, so
     // content identity stands in for the switch event).
-    let mut digest: u64 = 0xcbf29ce484222325;
+    let mut digest: u64 = FNV_SEED;
     for (il, layer) in merged.rb.iter().enumerate() {
         digest ^= ((il as u64) << 32) | 1;
-        digest = digest.wrapping_mul(0x100000001b3);
+        digest = digest.wrapping_mul(FNV_PRIME);
         if let Some(rb) = layer {
             kv_mount_fold_f32s(&mut digest, rb);
         }
     }
     for (il, layer) in merged.gr.iter().enumerate() {
         digest ^= ((il as u64) << 32) | 2;
-        digest = digest.wrapping_mul(0x100000001b3);
+        digest = digest.wrapping_mul(FNV_PRIME);
         if let Some(gr) = layer {
             kv_mount_fold_f32s(&mut digest, &gr.factor);
         }
     }
-    unsafe { ds4_bridge_v41_kvreuse_note_mount(1, digest) };
-    eprintln!(
-        "ds4: [v41] zchain mount: gr={} rb={} amp=0 from {}{}",
-        merged.n_gr_layers(),
-        merged.n_rb_layers(),
-        zchain.unwrap_or("(none)"),
-        if posttrain.is_some() {
-            " + posttrain"
-        } else {
-            ""
-        },
-    );
     Ok(digest)
 }
 
@@ -1373,12 +1486,27 @@ impl Model {
             }
         }
         // The ②/③ sidecar mount lands before the native call, exactly like
-        // the engine's per-state mount inside the generate (the device
-        // tables are process-level; the forward reads them).  Its digest is
-        // the mount identity the disk half's trailer carries.
-        let digest = v41_mount_zchain(self, path, opts.zchain, opts.posttrain)?;
+        // the engine's per-state mount inside the generate. Checkpoints also
+        // bind the Engram mode and the actual opened sources, before any peek
+        // or disk import; equal prompt tokens alone are insufficient.
+        let mut feed = if opts.no_engram {
+            None
+        } else {
+            V41Feed::open(path, opts.engram_dir)?
+        };
+        let sidecar = v41_mount_zchain(self, opts.zchain, opts.posttrain)?;
+        let digest = kv_state_digest(
+            sidecar,
+            if opts.no_engram {
+                EngramMode::Off
+            } else {
+                EngramMode::On
+            },
+            feed.as_ref().map_or(&[], |feed| &feed.sources),
+        )?;
+        unsafe { ds4_bridge_v41_kvreuse_note_mount(1, digest) };
         // The disk half (item 4): the find runs after the mount so the
-        // candidate's trailer is checked against THIS run's amplifier
+        // candidate's trailer is checked against THIS run's state
         // identity; only a candidate strictly longer than the in-memory
         // checkpoint is imported (a shorter one would regress the reuse K
         // already gives).  The store's match only selects -- the native
@@ -1404,11 +1532,6 @@ impl Model {
                 }
             }
         }
-        let mut feed = if opts.no_engram {
-            None
-        } else {
-            V41Feed::open(path, opts.engram_dir)?
-        };
         // U-B's host seam (ds4_ds41_kvreuse.inc): the native checkpoint owns
         // the reuse decision, but the engram history lives here, and the hash
         // reads back three positions, so the feed is seeded with the tokens
@@ -1463,6 +1586,9 @@ impl Model {
                 rows_ud,
                 wait_fn,
                 next_fn,
+                feed_tramp
+                    .as_ref()
+                    .map(|_| drain_tramp as unsafe extern "C" fn(*mut c_void) -> i32),
                 Some(emit_tramp),
                 &mut emit_tramp_state as *mut EmitTramp<'_> as *mut c_void,
                 Some(progress_tramp),
@@ -1548,6 +1674,115 @@ mod tests {
     #[test]
     fn no_dirs_answers_none() {
         assert!(zchain_load_for_run(None, None, GEOM).unwrap().is_none());
+    }
+
+    fn mock_mount(merged: Option<&V41Zchain>, gains: &mut [Option<Vec<f32>>]) -> u64 {
+        apply_zchain(merged, GEOM, |write| {
+            if let MountWrite::Gain(il, data) = write {
+                gains[il as usize] = data.map(|data| data.to_vec());
+            }
+            true
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn mount_switch_clears_old_gains() {
+        let a = tmpdir("switch-a");
+        let b = tmpdir("switch-b");
+        std::fs::write(a.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        std::fs::write(b.join("gr_L01.bin"), gr_f32(4, 2)).unwrap();
+        let a = zchain_load_for_run(a.to_str(), None, GEOM).unwrap();
+        let b = zchain_load_for_run(b.to_str(), None, GEOM).unwrap();
+        let mut gains = vec![None; GEOM.n_layer as usize];
+        mock_mount(a.as_ref(), &mut gains);
+        mock_mount(b.as_ref(), &mut gains);
+        assert!(
+            gains[0].is_none(),
+            "old mount's absent layer remained active"
+        );
+        assert!(gains[1].is_some());
+    }
+
+    #[test]
+    fn bare_mount_clears_all_gains() {
+        let dir = tmpdir("bare-switch");
+        std::fs::write(dir.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        let mounted = zchain_load_for_run(dir.to_str(), None, GEOM).unwrap();
+        let mut gains = vec![None; GEOM.n_layer as usize];
+        mock_mount(mounted.as_ref(), &mut gains);
+        assert_eq!(mock_mount(None, &mut gains), 0);
+        assert!(
+            gains.iter().all(Option::is_none),
+            "bare digest kept mounted gains"
+        );
+    }
+
+    #[test]
+    fn engram_mode_changes_state_key() {
+        let dir = tmpdir("engram-mode");
+        let source = dir.join("source.safetensors");
+        std::fs::write(&source, b"engram").unwrap();
+        let sources = [source_stamp(&source)];
+        let enabled = kv_state_digest(7, EngramMode::On, &sources).unwrap();
+        let disabled = kv_state_digest(7, EngramMode::Off, &sources).unwrap();
+        assert_ne!(
+            enabled, disabled,
+            "Engram-disabled requests reused enabled KV"
+        );
+    }
+
+    #[test]
+    fn engram_source_changes_key() {
+        let dir = tmpdir("engram-source");
+        let a = dir.join("a.safetensors");
+        let b = dir.join("b.safetensors");
+        std::fs::write(&a, b"engram-a").unwrap();
+        std::fs::write(&b, b"engram-b").unwrap();
+        let before = kv_state_digest(7, EngramMode::On, &[source_stamp(&a)]).unwrap();
+        assert_eq!(
+            before,
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&a)]).unwrap()
+        );
+        assert_ne!(
+            before,
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&b)]).unwrap(),
+            "a different source path reused old Engram KV"
+        );
+        std::fs::rename(b, &a).unwrap();
+        assert_ne!(
+            before,
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&a)]).unwrap(),
+            "a replaced source reused old Engram KV"
+        );
+    }
+
+    #[test]
+    fn opened_source_keeps_its_stamp() {
+        let dir = tmpdir("open-source");
+        let path = dir.join("source.safetensors");
+        let replacement = dir.join("replacement.safetensors");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::write(&replacement, b"new").unwrap();
+        let shard = EngramShard::open(&path).unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        let opened = EngramSource {
+            path: path.canonicalize().unwrap(),
+            metadata: shard.metadata().unwrap(),
+        };
+        assert_ne!(
+            kv_state_digest(7, EngramMode::On, &[opened]).unwrap(),
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&path)]).unwrap(),
+            "checkpoint identity followed the pathname instead of its open source"
+        );
+    }
+
+    fn source_stamp(path: &Path) -> EngramSource {
+        let shard = EngramShard::open(path).unwrap();
+        EngramSource {
+            path: path.canonicalize().unwrap(),
+            metadata: shard.metadata().unwrap(),
+        }
     }
 
     #[test]

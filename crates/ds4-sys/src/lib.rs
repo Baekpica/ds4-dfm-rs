@@ -134,6 +134,9 @@ pub type ds4_bridge_v41_wait_fn = Option<unsafe extern "C" fn(c_int, *mut c_void
  * ds41_engram_feed.prefetch_next); nonzero refuses the run. */
 pub type ds4_bridge_v41_next_fn =
     Option<unsafe extern "C" fn(u32, *const i32, c_int, *mut c_void) -> c_int>;
+/* Join/drain all provider writes before native buffers are released, even
+ * after a forward error. Nonzero reports failure after writes have ended. */
+pub type ds4_bridge_v41_drain_fn = Option<unsafe extern "C" fn(*mut c_void) -> c_int>;
 pub type ds4_bridge_v41_emit_fn = Option<unsafe extern "C" fn(i32, *mut c_void) -> c_int>;
 pub type ds4_bridge_v41_progress_fn =
     Option<unsafe extern "C" fn(*mut c_void, *const c_char, i32, i32) -> c_int>;
@@ -889,6 +892,7 @@ extern "C" {
         rows_ud: *mut c_void,
         wait: ds4_bridge_v41_wait_fn,
         next: ds4_bridge_v41_next_fn,
+        drain: ds4_bridge_v41_drain_fn,
         emit: ds4_bridge_v41_emit_fn,
         emit_ud: *mut c_void,
         progress: ds4_bridge_v41_progress_fn,

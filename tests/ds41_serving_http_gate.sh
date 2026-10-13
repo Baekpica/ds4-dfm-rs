@@ -16,7 +16,7 @@
 #               (the requests are serialized, so the log's [emit] block at
 #               this point is exactly this request's)
 #   stream      POST /v1/completions (stream): SSE data deltas + [DONE]
-#   refusals    --ctx on a V4.1 model and --zchain are refused by name
+#   refusals    --ctx on a V4.1 model and --mtp-draft are refused by name
 #
 # usage: ds41_serving_http_gate.sh <server> <cli> <gguf> <engram_dir> <port> <prompt> <n>
 set -u
@@ -39,6 +39,7 @@ grep -o '\[emit\] [0-9]* [0-9]*' "$LOG.cli.log" | sed 's/\[emit\] //' > "$LOG.cl
 [ -s "$LOG.cli.emit" ] || fail "CLI run printed no [emit] lines"
 
 # ---- boot (the model load takes ~2.5 min; poll the listener line) ----
+rm -f "$LOG.server.log"
 "$SRV" -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace --no-dspark > "$LOG.server.log" 2>&1 &
 SRV_PID=$!
 trap 'kill $SRV_PID 2>/dev/null; wait $SRV_PID 2>/dev/null' EXIT
@@ -50,7 +51,7 @@ while [ $i -lt 300 ]; do
     sleep 2; i=$((i + 1))
 done
 grep -q "listening on" "$LOG.server.log" || fail "server did not start listening"
-grep -q "V4.1 serving route" "$LOG.server.log" || fail "no V4.1 route line at boot (ctx from metadata?)"
+grep -q "V4.1 route:" "$LOG.server.log" || fail "no V4.1 route line at boot (ctx from metadata?)"
 
 # ---- /v1/models ----
 curl -sS -m 30 "http://127.0.0.1:$PORT/v1/models" > "$LOG.models.json" 2>&1 \
@@ -89,9 +90,9 @@ rc=$?
 [ "$rc" -ne 0 ] || fail "negative control (--ctx on V4.1) PASSED (blind gate)"
 grep -q -- "--ctx is refused" "$LOG.ctx.log" || fail "--ctx: not refused by name"
 
-"$SRV" -m "$MODEL" --zchain /tmp > "$LOG.zchain.log" 2>&1
+"$SRV" -m "$MODEL" --mtp-draft 1 > "$LOG.mtp-draft.log" 2>&1
 rc=$?
-[ "$rc" -ne 0 ] || fail "negative control (--zchain) PASSED (blind gate)"
-grep -q -- "--zchain is not supported" "$LOG.zchain.log" || fail "--zchain: not refused by name"
+[ "$rc" -ne 0 ] || fail "negative control (--mtp-draft) PASSED (blind gate)"
+grep -q -- "V4.1 --mtp-draft cannot change the artifact's draft block" "$LOG.mtp-draft.log" || fail "--mtp-draft: not refused by name"
 
-echo "ds41 http gate: PASS (CLI reference, boot + /v1/models, non-stream and stream completions, the served ids equal the CLI's on the same prompt, --ctx and --zchain refused by name)"
+echo "ds41 http gate: PASS (CLI reference, boot + /v1/models, non-stream and stream completions, the served ids equal the CLI's on the same prompt, --ctx and --mtp-draft refused by name)"

@@ -81,7 +81,8 @@ note() { echo "ds41 KV disk gate: $1"; }
 SRV_PID=""
 SLOG=""
 stop() {
-    [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
+    [ -n "$SRV_PID" ] || return 0
+    kill "$SRV_PID" 2>/dev/null
     wait "$SRV_PID" 2>/dev/null
     SRV_PID=""
 }
@@ -109,7 +110,7 @@ boot() { # <name> <kvdir> <rows-file> [extra...]
     : > "$SLOG"
     DS41_GEN_LOGITS="$rows" "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" \
         $ZFLAG --emit-trace --kv-disk-dir "$kvdir" --kv-cache-min-tokens "$MIN" \
-        "$@" --host 127.0.0.1 >> "$SLOG" 2>&1 &
+        $EXTRA "$@" --host 127.0.0.1 >> "$SLOG" 2>&1 &
     SRV_PID=$!
     i=0
     while [ "$i" -lt 900 ]; do
@@ -139,7 +140,7 @@ row_size() { # <rows-file> <ids-file> <V>
     per=$((4 * $3))
     [ $((sz % per)) -eq 0 ] || return 1
     r=$((sz / per))
-    [ "$r" = "$n" ] || [ "$r" = "$((n + 1))" ]
+    [ "$r" = "$n" ]
 }
 
 row_cmp() { # <fileA> <idxA> <fileB> <idxB> <rowbytes>
@@ -153,6 +154,7 @@ one_request() { # <slice-name> <prompt-file> <max-tokens>
     code=$(request "$2" "$3" "$LOG/$1.json") || fail "$1 transport"
     [ "$code" = "200" ] || fail "$1 HTTP $code"
     slice_from "$off" "$LOG/$1.log"
+    ids_of "$LOG/$1.log" > "$LOG/$1.ids"
 }
 
 # ---------------------------------------------------------- A: the reference
@@ -187,13 +189,12 @@ n_b=$(wc -l < "$LOG/b.ids" | tr -d ' ')
 
 v_a=0
 sz_a=$(wc -c < "$LOG/a.rows.snap" | tr -d ' ')
-for cand in $((sz_a / (4 * (n_a + 1)))) $((sz_a / (4 * n_a))); do
-    [ "$cand" -gt 1000 ] || continue
-    if row_size "$LOG/a.rows.snap" "$LOG/a.ids" "$cand"; then
-        v_a=$cand
-        break
-    fi
-done
+# Pure penalty decode writes one full row per emitted token. Trying n+1
+# first can infer a false vocabulary width when both divisions are exact.
+if [ $((sz_a % (4 * n_a))) -eq 0 ]; then
+    v_a=$((sz_a / (4 * n_a)))
+fi
+[ "$v_a" -gt 1000 ] || v_a=0
 [ "$v_a" -gt 0 ] || fail "A's dump does not line up with its emitted count -- speculation likely ran (the penalty arm must be engaged: frequency_penalty non-zero; do not boot with --dspark)"
 row_size "$LOG/b.rows" "$LOG/b.ids" "$v_a" || fail "B's dump does not line up with its emitted count (V=$v_a)"
 rowbytes=$((4 * v_a))

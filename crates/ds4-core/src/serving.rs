@@ -646,28 +646,20 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 }
 
 pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
-    // V4.1 (ds41) rides the DeepSeek4 family but has none of the V4 session
-    // surface: the engine's own server note is "no ds4_session -- no KV
-    // reuse, no disk KV, no concurrent batch" (server_main.c:29-40), context
-    // comes from the model metadata and --ctx is rejected.  Speculation is
-    // embedded in the artifact and greedy-only (the sampling path is a
-    // recorded gap).  The requested/effective/qualified report and every
-    // refusal below come from these supports.  U-B's KV prefix reuse lives
-    // inside the native run (one prompt-end checkpoint, automatic), not on
-    // this plan surface, so the row deliberately keeps reuse none: a
-    // request cannot select or observe it through the serving plan.  The
-    // disk half (item 4) is the same checkpoint through the KVC disk store
-    // when --kv-disk-dir is set -- present, not qualified (the gate runs on
-    // the Spark) -- and it is not a session snapshot, so the snapshot
-    // column stays none.
+    // V4.1 has no ds4_session, but its native prompt-end checkpoint provides
+    // exact prefix reuse and KVC disk restoration. Common off|exact|auto
+    // controls select that checkpoint; partial forks, banks and session
+    // snapshots remain unavailable. Reuse and disk support await live gates.
+    // Embedded speculation retains its recorded greedy qualification; the
+    // context comes from model metadata, and --ctx is refused.
     if variant == Variant::DeepSeek41Flash {
         return ServingCaps {
             family,
             variant,
             banks: BankLane::Serial,
             bank_support: Support::None,
-            reuse: ReuseKind::None,
-            reuse_support: Support::None,
+            reuse: ReuseKind::Exact,
+            reuse_support: Support::Present,
             disk: Support::Present,
             snapshot: Support::None,
             mtp: MtpKind::Embedded,
@@ -1132,6 +1124,17 @@ pub fn resolve_plan(
         }
     }
     let (mtp_mode, mtp_draft) = match mtp_mode {
+        mode if caps.variant == Variant::DeepSeek41Flash => {
+            // Towers draft the artifact's fixed block; the native scheduler
+            // chooses verification width per round, not a common draft count.
+            if req.mtp_draft.is_some() {
+                issues.push(error(
+                    "mtp_draft_unsupported",
+                    "V4.1 --mtp-draft cannot change the artifact's draft block; use --dspark-verify to pin verification",
+                ));
+            }
+            (mode, None)
+        }
         MtpMode::Off => (MtpMode::Off, None),
         _ if caps.family == ModelFamily::IQuestQ1 && draft > crate::iquest::DRAFT_SLOTS as i32 => {
             issues.push(error(
@@ -2422,6 +2425,10 @@ fn resolve_disk(
     if !want {
         return false;
     }
+    if caps.variant == Variant::DeepSeek41Flash && req.prefix_reuse == PrefixReuse::Off {
+        // Disk and live reuse consume the same native prefix checkpoint.
+        return false;
+    }
     // The V4.1 disk is the native KV prefix checkpoint (item 4), not a
     // session snapshot: the snapshot column stays none for it by design.
     let snapshot_ok = caps.snapshot != Support::None || caps.variant == Variant::DeepSeek41Flash;
@@ -2512,7 +2519,7 @@ fn measured_limits(
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
         Variant::DeepSeek41Flash => {
-            "greedy single-request speculation (embedded towers, decode graph on) passed the Spark gates (56-token and 1,100-token byte-identical runs, [dspark] traces equal to the engine); banks, snapshots and the sampling profile are not present on this path; the native run reuses the previous prompt's prefix through one prompt-end checkpoint (unit U-B, --no-kv-reuse disables it) and reports it as usage cached tokens, while the serving layer keeps no reuse plan; the same checkpoint crosses processes through the KVC disk store when --kv-disk-dir is set (item 4; present, not qualified -- the gate runs on the Spark); context is the model metadata, --ctx is rejected"
+            "recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are present, unqualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected"
         }
         Variant::NaiveN05Flash => {
             "main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified"
@@ -3786,9 +3793,8 @@ mod tests {
 
     #[test]
     fn v41_serving_contract_refuses_what_it_lacks() {
-        // The engine's own V4.1 limits (server_main.c:29-40): one request at a
-        // time, no KV reuse, no disk KV, no snapshots; speculation embedded
-        // and greedy-only.  A default request boots and stays serial.
+        // The native prompt-end checkpoint is exact reuse; it provides no
+        // continuous banks, partial checkpoint forks or session snapshots.
         let p = plan(
             ServingRequest::default(),
             ModelFamily::DeepSeek4,
@@ -3796,7 +3802,7 @@ mod tests {
         );
         assert!(!p.has_errors(), "{:?}", p.issues);
         assert_eq!(p.effective.max_seqs, 1);
-        assert_eq!(p.effective.prefix_reuse, ReuseKind::None);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
 
         // Forced unsupported settings are refused by name, never silently
         // ignored (the AGENTS.md serving contract).
@@ -3811,19 +3817,20 @@ mod tests {
         assert!(p.issues.iter().any(|i| i.code == "banks_unsupported"));
         let p = plan(
             ServingRequest {
-                prefix_reuse: PrefixReuse::Exact,
+                prefix_reuse: PrefixReuse::Partial,
                 ..ServingRequest::default()
             },
             ModelFamily::DeepSeek4,
             Variant::DeepSeek41Flash,
         );
-        assert!(p.issues.iter().any(|i| i.code == "reuse_unsupported"));
+        assert!(p.issues.iter().any(|i| i.code == "partial_unsupported"));
 
         // The caps row itself, requested/effective/qualified in one place.
         let caps = serving_caps(ModelFamily::DeepSeek4, Variant::DeepSeek41Flash);
         assert_eq!(caps.banks, BankLane::Serial);
         assert_eq!(caps.bank_support, Support::None);
-        assert_eq!(caps.reuse, ReuseKind::None);
+        assert_eq!(caps.reuse, ReuseKind::Exact);
+        assert_eq!(caps.reuse_support, Support::Present);
         assert_eq!(caps.disk, Support::Present);
         assert_eq!(caps.snapshot, Support::None);
         assert_eq!(caps.mtp, MtpKind::Embedded);
@@ -3846,6 +3853,76 @@ mod tests {
         assert!(!p.has_errors(), "{:?}", p.issues);
         assert!(p.effective.disk);
         assert_eq!(p.qualified.disk, Support::Present);
+    }
+
+    #[test]
+    fn v41_draft_scheduler_no_width() {
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::DeepSeek4,
+            Variant::DeepSeek41Flash,
+        );
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.mtp_mode, MtpMode::Auto);
+        assert_eq!(p.effective.mtp_draft, None);
+        assert_eq!(
+            p.to_json()["effective"]["mtp_draft"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn v41_draft_request_is_refused() {
+        for mode in [MtpMode::Off, MtpMode::Auto, MtpMode::On] {
+            let p = plan(
+                ServingRequest {
+                    mtp_mode: mode,
+                    mtp_draft: Some(2),
+                    ..ServingRequest::default()
+                },
+                ModelFamily::DeepSeek4,
+                Variant::DeepSeek41Flash,
+            );
+            assert!(p.has_errors());
+            assert!(p
+                .issues
+                .iter()
+                .any(|issue| issue.code == "mtp_draft_unsupported"));
+            assert_eq!(p.effective.mtp_draft, None);
+        }
+    }
+
+    #[test]
+    fn v41_prefix_controls() {
+        for (request, effective, qualified, fork) in [
+            (PrefixReuse::Auto, ReuseKind::Exact, Support::Present, "1"),
+            (PrefixReuse::Exact, ReuseKind::Exact, Support::Present, "1"),
+            (PrefixReuse::Off, ReuseKind::None, Support::None, "0"),
+        ] {
+            let p = plan(
+                ServingRequest {
+                    prefix_reuse: request,
+                    kv_disk_dir: Some("/tmp/v41-kv".into()),
+                    ..ServingRequest::default()
+                },
+                ModelFamily::DeepSeek4,
+                Variant::DeepSeek41Flash,
+            );
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.requested.prefix_reuse, request);
+            assert_eq!(p.effective.prefix_reuse, effective);
+            assert_eq!(p.qualified.prefix_reuse, qualified);
+            assert_eq!(p.effective.disk, request != PrefixReuse::Off);
+            assert_eq!(p.qualified.disk, qualified);
+            assert!(p
+                .env_overrides()
+                .iter()
+                .any(|(key, value)| { key == "DS4_SERVER_FORK" && value == fork }));
+            assert!(p
+                .env_overrides()
+                .iter()
+                .any(|(key, value)| { key == "DS4_SERVER_FORK_PARTIAL" && value == "0" }));
+        }
     }
 
     #[test]

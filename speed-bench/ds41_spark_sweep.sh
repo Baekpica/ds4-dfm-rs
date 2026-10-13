@@ -18,15 +18,10 @@
 # speed-bench/promessi_sposi.txt fixture (sha256 recorded), temperature 0,
 # reasoning_effort none, 128 generated tokens per frontier, contexts
 # 2048..65536 step 2048 by default.  The prompt at each frontier is the same
-# corpus slice grown by one step, so with the V4.1 KV prefix reuse on (the
-# route default, unit U-B) every frontier after the first reuses the
-# previous prompt's checkpoint: prefill_tokens reads the step and
-# prefill_tps the suffix rate -- the same incremental semantics as the
-# historical ds4-bench CSVs -- while prefill_cached_tokens records the
-# reuse.  The calibration and the first frontier are full prefills.  A build
-# without the reuse (the pinned pre-campaign binary) boots in boot mode and
-# reads full-context prefill_tokens per row; compare the two CSVs with
-# plot_speed.py or side by side.
+# corpus slice grown by one step. Single-turn chat renders do not extend
+# the previous prompt's checkpoint, so these rows measure full prefill.
+# prefill_cached_tokens records any actual reuse; interpret each row from
+# that counter rather than assuming incremental-prefill semantics.
 #
 # usage:
 #   boot mode (fresh process; the box must be free):

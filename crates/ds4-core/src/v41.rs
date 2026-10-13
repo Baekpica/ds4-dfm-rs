@@ -29,6 +29,8 @@ pub const V41_MAX_ENGRAM: usize = 4;
 pub const MTP_MAX_TOWERS: u32 = 4;
 /// `DS4_MTP_MAX_EXPERTS` (`ds4_internal.h:55`); the real count is metadata.
 pub const MTP_MAX_EXPERTS: u32 = 256;
+// Native draft and verify buffers hold at most eight drafts plus one token.
+const MTP_MAX_BLOCK: u32 = 8;
 /// V4.1 compression ratios are 0/1/2 (`core_validate.c:31-37`).
 pub const V41_MAX_COMPRESS_RATIO: u32 = 2;
 
@@ -71,6 +73,7 @@ pub enum V41WireError {
     KvSourceNotIndexSource(u32),
     EngramRowsMismatch,
     TowerLimit,
+    DraftBlockLimit,
 }
 
 impl V41WireError {
@@ -89,6 +92,7 @@ impl V41WireError {
             }
             V41WireError::EngramRowsMismatch => "v41-engram-rows-mismatch".into(),
             V41WireError::TowerLimit => "v41-tower-limit".into(),
+            V41WireError::DraftBlockLimit => "v41-draft-block-limit".into(),
         }
     }
 }
@@ -188,7 +192,7 @@ impl V41Wire {
     /// stays off and the engine warns instead of guessing a default.
     pub fn mtp_armed(&self) -> bool {
         self.mtp_towers > 0
-            && self.mtp_block.is_some()
+            && self.mtp_block.is_some_and(|block| block > 0)
             && self.mtp_used.is_some()
             && self.mtp_noise_id.is_some()
             && self.mtp_markov_rank.is_some()
@@ -397,6 +401,11 @@ impl V41Wire {
         } else {
             (None, None, None, None)
         };
+        // Reject before block+1 arithmetic or fixed native verify buffers.
+        // Zero retains the older artifact's explicitly unarmed route.
+        if mtp_block.is_some_and(|block| block > MTP_MAX_BLOCK) {
+            return Err(V41WireError::DraftBlockLimit);
+        }
         let mtp_have = mtp_block.is_some()
             && mtp_used.is_some()
             && mtp_noise_id.is_some()

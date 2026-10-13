@@ -51,8 +51,11 @@ NS_LO_MAX=$(grep -o "1-row graph captured: position bucket \[[0-9]*" "$LOG.nospe
 DS41_VERIFY_K="$VK" "$H" "$MODEL" "$IDS" "$ENGLOG_SPEC" "$N" $ARGS > "$LOG.spec.log" 2>&1 \
   || fail "spec run exited nonzero (see $LOG.spec.log)"
 grep -q "DS41 generate gate: PASS" "$LOG.spec.log" || fail "spec run did not PASS (ids vs the engine golden)"
-grep -o '\[dspark\] .*' "$ENGLOG_SPEC" | sed 's/[[:space:]]*$//' > "$LOG.eng.dspark"
-grep -o '\[dspark\] .*' "$LOG.spec.log" | sed 's/[[:space:]]*$//' > "$LOG.port.dspark"
+# The oracle may run once after its final output; only earlier rounds contribute.
+LAST_EMIT=$(grep -o '\[emit\] [0-9]* [0-9]*' "$ENGLOG_SPEC" | tail -1 | awk '{print $2}')
+[ -n "$LAST_EMIT" ] || fail "the spec golden has no final emitted position"
+grep -o '\[dspark\] .*' "$ENGLOG_SPEC" | sed 's/[[:space:]]*$//' | awk -v last="$LAST_EMIT" '$3 < last' > "$LOG.eng.dspark"
+grep -o '\[dspark\] .*' "$LOG.spec.log" | sed 's/[[:space:]]*$//' | awk -v last="$LAST_EMIT" '$3 < last' > "$LOG.port.dspark"
 [ -s "$LOG.eng.dspark" ] || fail "the spec golden has no [dspark] lines"
 diff "$LOG.eng.dspark" "$LOG.port.dspark" > "$LOG.dspark.diff" 2>&1 \
   || fail "the spec [dspark] trace differs (see $LOG.dspark.diff)"

@@ -41,8 +41,14 @@ fail() { echo "ds41 long gate: FAIL ($1)"; exit 1; }
 EPID=""
 SPID=""
 cleanup() {
-    [ -n "$EPID" ] && kill "$EPID" 2>/dev/null
-    [ -n "$SPID" ] && kill "$SPID" 2>/dev/null
+    if [ -n "$EPID" ]; then
+        kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
+        EPID=""
+    fi
+    if [ -n "$SPID" ]; then
+        kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
+        SPID=""
+    fi
 }
 trap cleanup EXIT
 
@@ -85,10 +91,11 @@ rm -f "$LOG/p2.srv.log"
 "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG --host 127.0.0.1 > "$LOG/p2.srv.log" 2>&1 &
 SPID=$!
 boot_wait "$LOG/p2.srv.log" "$SPID" "port server (P2)"
-grep -q "V4.1 serving route" "$LOG/p2.srv.log" || fail "no V4.1 route line at boot (P2)"
+grep -q "V4.1 route:" "$LOG/p2.srv.log" || fail "no V4.1 route line at boot (P2)"
 send P2 "$LOG/p2.resp.json"
-grep -q "io_uring" "$LOG/p2.srv.log" || fail "P2 boot did not open the io_uring ring"
+grep -q "engram rows: io_uring (" "$LOG/p2.srv.log" || fail "P2 boot did not open the io_uring ring"
 grep -q "synchronous protocol" "$LOG/p2.srv.log" && fail "P2 boot fell back to the synchronous protocol"
+grep -q "engram fetch thread refused to start" "$LOG/p2.srv.log" && fail "P2 fetch worker did not start"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 SPID=""
 

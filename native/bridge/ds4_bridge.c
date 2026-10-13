@@ -914,6 +914,7 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
                             ds4_bridge_v41_wait_fn wait,
                             ds4_bridge_v41_next_fn next,
+                            ds4_bridge_v41_drain_fn drain,
                             ds4_bridge_v41_emit_fn emit, void *emit_ud,
                             ds4_bridge_v41_progress_fn progress, void *progress_ud,
                             char *err, size_t errlen)
@@ -932,6 +933,10 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
         set_err(err, errlen, "n_predict is negative");
         return 1;
     }
+    if ((rows || wait || next) && !drain) {
+        set_err(err, errlen, "V4.1 engram provider requires a drain hook");
+        return 1;
+    }
     /* The pinned buffers exist only when the model has engram layers; a model
      * without them takes the NULL feed and never consults the provider. */
     if (!no_engram && ds4_v41_engram_count(m->engine) > 0) {
@@ -946,10 +951,17 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
                                            no_engram, verify_k,
                                            ds4_v41_feed_handle(feed), emit, emit_ud);
     ds4_engine_v41_set_progress(NULL, NULL);
+    /* A failed layer wait can return while the host still fills pinned rows.
+     * Drain on every result while those destinations remain alive. */
+    const int drain_rc = feed && drain ? drain(rows_ud) : 0;
     ds4_v41_feed_close(feed);
     if (rc != 0) {
         set_err(err, errlen, "V4.1 generate failed");
         return rc;
+    }
+    if (drain_rc != 0) {
+        set_err(err, errlen, "V4.1 engram provider drain failed");
+        return drain_rc;
     }
     return 0;
 }

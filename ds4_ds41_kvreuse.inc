@@ -153,10 +153,11 @@ static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int32_t *prompt, ui
             ok = v41_kvreuse_cp(st->cpre_kv[il], K.cpk[il], (uint64_t)K.cpend[il] * rowb) &&
                  v41_kvreuse_cp(st->cpre_sc[il], K.cps[il], (uint64_t)K.cpend[il] * rowb);
     }
-    if (ok && st->mainh && K.mainh) {
-        /* The disk import can carry a mainh span from another build; the copy
-         * length is the fresh state's own, so the source must hold at least it. */
-        ok = ds4_gpu_tensor_bytes(K.mainh) >= ds4_gpu_tensor_bytes(st->mainh) &&
+    if (ok && st->mainh) {
+        /* Capacity can include an older checkpoint's tail. Only the saved
+         * span belongs to this checkpoint, even when the allocation is larger. */
+        ok = K.mainh && K.mainh_bytes >= ds4_gpu_tensor_bytes(st->mainh) &&
+             ds4_gpu_tensor_bytes(K.mainh) >= ds4_gpu_tensor_bytes(st->mainh) &&
              v41_kvreuse_cp(st->mainh, K.mainh, ds4_gpu_tensor_bytes(st->mainh));
     }
     if (ok && K.n == np) {   /* identical prompt: the logits row lands at row 0, nothing is prefilled */
@@ -339,6 +340,7 @@ static bool v41_kvreuse_import_span(void *ud, ds4_gpu_tensor **slot, uint64_t by
 int v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
                        const int32_t *tokens, uint32_t n) {
     if (!g_v41_kv_reuse || !path || !tokens || !n) return 0;
+    if (n > g_ds4_v41.ctx) { return 0; }
     const uint64_t meta = (uint64_t)DS4_N_LAYER * V41_KVREUSE_META_ROW_BYTES + V41_KVREUSE_META_TAIL_BYTES;
     if (bytes < meta) return 0;
     uint32_t ng[DS4_MAX_LAYER] = {0}, cp[DS4_MAX_LAYER] = {0}, wf[DS4_MAX_LAYER] = {0};
@@ -350,27 +352,33 @@ int v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
     bool ok = fseeko(fp, (off_t)offset, SEEK_SET) == 0 && fread(mb, 1, (size_t)meta, fp) == (size_t)meta;
     if (ok) {
         const uint8_t *p = mb;
-        const uint64_t mainh_cap = (uint64_t)DS4_N_SWA *
-            (g_ds4_v41.n_mtp_target ? g_ds4_v41.n_mtp_target : 1u) * DS4_N_EMBD * 4;
+        const uint64_t mainh_bytes_expected = g_ds4_v41.mtp_towers && g_ds4_v41.n_mtp_target
+            ? (uint64_t)DS4_N_SWA * g_ds4_v41.n_mtp_target * DS4_N_EMBD * 4u : 0u;
         for (uint32_t il = 0; il < DS4_N_LAYER && ok; il++) {
             ng[il] = v41_kv_get_le32(p); p += 4;
             cp[il] = v41_kv_get_le32(p); p += 4;
             wf[il] = v41_kv_get_le32(p); p += 4;
-            /* Corruption fences: the caps are the state allocation formulas
-             * (ds4_ds41_forward.inc:346-353), so a corrupt meta can never ask
-             * the restore to copy past a state buffer.  A non-source layer
-             * (ratio 0) must carry no groups. */
+            /* Source counters cover the whole prompt: CED still compresses
+             * its final KV source. Reused layers own no groups or remainder,
+             * even when their attention uses a positive compression ratio. */
             const uint32_t ratio = ds4_layer_compress_ratio(il);
-            const uint32_t ng_cap = ratio ? (uint32_t)((uint64_t)g_ds4_v41.ctx / ratio + 2) : 0;
-            if (ng[il] > ng_cap) ok = false;
-            if (cp[il] > ratio) ok = false;
-            if (wf[il] > g_ds4_v41.ctx) ok = false;
+            const bool source = g_ds4_v41.is_kv_source[il] != 0;
+            const uint32_t ng_expected = source && ratio ? n / ratio : 0u;
+            const uint32_t cp_expected = source && ratio > 1u ? n % ratio : 0u;
+            if (source && !ratio) { ok = false; }
+            if (ng[il] != ng_expected || cp[il] != cp_expected || wf[il] > n) { ok = false; }
         }
         mainh_end = v41_kv_get_le64(p); p += 8;
         mainh_n = v41_kv_get_le32(p); p += 4;
         mainh_bytes = v41_kv_get_le64(p); p += 8;
         ck_bytes = v41_kv_get_le64(p); p += 8;
-        if (mainh_bytes > mainh_cap) ok = false;
+        /* A saved ring is always complete. Accepting a shorter span can
+         * expose stale bytes when K reuses a larger allocation. Its live
+         * rows must also describe a run ending at this prompt's frontier. */
+        if (mainh_bytes != mainh_bytes_expected || mainh_n > DS4_N_SWA || mainh_n > n) { ok = false; }
+        if (!mainh_bytes_expected && mainh_n) { ok = false; }
+        if (mainh_bytes_expected &&
+            (mainh_n ? mainh_end != (uint64_t)n - 1u : mainh_end != UINT64_MAX)) { ok = false; }
     }
     free(mb);
     if (ok && v41_kvreuse_payload_bytes(ng, cp, mainh_bytes) != bytes) ok = false;

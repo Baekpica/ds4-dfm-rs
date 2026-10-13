@@ -277,6 +277,14 @@ impl EngramShard {
         self.size
     }
 
+    /// Bind checkpoint identity to the file this feed actually reads, even
+    /// if its pathname is replaced after open.
+    pub(crate) fn metadata(&self) -> Result<std::fs::Metadata, EngramError> {
+        self.file
+            .metadata()
+            .map_err(|e| EngramError::Io(e.to_string()))
+    }
+
     pub fn is_direct(&self) -> bool {
         self.dio
     }

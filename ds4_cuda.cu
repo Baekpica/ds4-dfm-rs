@@ -1271,6 +1271,31 @@ static int cuda_model_unit_device_covered(const void *model_map, uint64_t off,
     return 1;
 }
 
+#ifdef DS4_TEST_HOOKS
+enum ds4_test_range_tier { DS4_TEST_RANGE_DEVICE, DS4_TEST_RANGE_HOST };
+
+/* Model-free fixtures use the real publication and coverage paths. */
+extern "C" void ds4_test_range_reset(void) {
+    g_model_ranges.clear();
+    g_model_range_by_offset.clear();
+}
+
+extern "C" int ds4_test_range_add(const void *map, uint64_t off,
+                                    uint64_t bytes, ds4_test_range_tier tier) {
+    cuda_model_range r = {};
+    r.host_base = map;
+    r.offset = off;
+    r.bytes = bytes;
+    r.host_registered = tier == DS4_TEST_RANGE_HOST;
+    return cuda_model_range_publish(r);
+}
+
+extern "C" int ds4_test_range_covered(const void *map, uint64_t off,
+                                        uint64_t bytes, int *exact_hit) {
+    return cuda_model_unit_device_covered(map, off, bytes, exact_hit);
+}
+#endif
+
 static int cuda_derived_range_publish(const cuda_derived_range &nr) {
     if (nr.source_bytes == 0 ||
         nr.source_offset + nr.source_bytes < nr.source_offset)
@@ -3977,11 +4002,15 @@ static int cuda_unit_materialize_copy(const void *model_map,
     char *dev = cuda_vq_blob_build_aligned(model_map, map_size, u->src_off,
                                            u->src_bytes, NULL, what, &flat);
     if (dev) {
-        /* The aligned build bypasses the staged pipeline, so its source-page
-         * drop is the engine's whole-span MADV_DONTNEED (cuda_modelmap.inc.cu:
-         * 330-343) instead of the pipeline's per-chunk discard. */
-        if (direct_discard)
+        /* YoungAi cuda_modelmap.inc.cu:330-343 drops the copied mapping.
+         * Also evict its file cache, as the flat pipeline does: MADV_DONTNEED
+         * alone leaves a second weight copy charged to the UMA cgroup. */
+        if (direct_discard) {
             cuda_model_discard_source_pages(model_map, map_size, u->src_off, u->src_bytes);
+            if (model_map == g_model_fd_host_base) {
+                cuda_model_drop_file_pages(u->src_off, u->src_bytes);
+            }
+        }
     } else {
         if (!flat) return DS4_RESUNIT_FAILED;
         dev = cuda_vmm_arena_alloc(model_map, u->src_bytes, what);
@@ -5556,6 +5585,29 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
                         "(%.2f GiB mmap left unpinned; weights served from device VMM)\n",
                         (double)model_size / 1073741824.0);
             }
+            return 1;
+        }
+    }
+
+    /* YoungAi src/cuda/cuda_modelmap.inc.cu:78-85 skips registration for
+     * explicit cache caps. Here the existing unified eager budget suffices:
+     * avoid registering the whole mmap before copying and discarding its
+     * pages, which can exhaust HMM page-table/reclaim memory during boot.
+     * Keep partial, lazy and mapped policies on their registered fallback. */
+    const uint64_t cache_limit = cuda_model_cache_limit_bytes();
+    if (cuda_weight_env().cache_limit_unified &&
+        model_src >= 0 && model_src < DS4_MSRC_MAX &&
+        g_model_srcs.v[model_src].residency == DS4_RESIDENCY_EAGER_DEVICE &&
+        g_model_range_bytes <= cache_limit &&
+        model_size <= cache_limit - g_model_range_bytes) {
+        int reg_dev = 0, integrated = 0;
+        if (cudaGetDevice(&reg_dev) == cudaSuccess &&
+            cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, reg_dev) == cudaSuccess &&
+            integrated && cuda_model_coherent_host_access(reg_dev)) {
+            fprintf(stderr,
+                    "ds4: CUDA unified eager copy: skipping full host registration "
+                    "(%.2f GiB mmap staged within the existing cache budget)\n",
+                    (double)model_size / 1073741824.0);
             return 1;
         }
     }

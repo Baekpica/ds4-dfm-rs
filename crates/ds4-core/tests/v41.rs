@@ -335,6 +335,48 @@ fn wire_matches_the_artifacts_wiring() {
     assert!(w.tower_uses_blob(&inv, 2));
 }
 
+fn wire_mtp_block(block: u32) -> Result<V41Wire, V41WireError> {
+    let g = artifact_gguf_mtp(
+        "mtp-block.gguf",
+        KV_SOURCES,
+        INDEX_SOURCES,
+        COMPRESS_RATIOS,
+        Some(block),
+        Some(3),
+        Some(128_799),
+        Some(256),
+        Some(&[37, 38, 39]),
+        Some(1_048_576),
+    );
+    V41Wire::load(&g, &shape())
+}
+
+#[test]
+fn wire_mtp_block_bounds() {
+    assert!(wire_mtp_block(9).is_err(), "accepted block 9");
+}
+
+#[test]
+fn wire_rejects_mtp_block_wrap() {
+    assert!(wire_mtp_block(u32::MAX).is_err(), "accepted wrapping block");
+}
+
+#[test]
+fn wire_mtp_block_accepts() {
+    for block in [1, 5, 8] {
+        let wire = wire_mtp_block(block).expect("bounded draft block");
+        assert_eq!(wire.mtp_block, Some(block));
+        assert!(wire.mtp_armed());
+    }
+}
+
+#[test]
+fn zero_mtp_block_is_unarmed() {
+    let wire = wire_mtp_block(0).expect("zero block retains unarmed compatibility");
+    assert_eq!(wire.mtp_block, Some(0));
+    assert!(!wire.mtp_armed());
+}
+
 #[test]
 fn draft_parameters_arm_only_when_complete() {
     // A GGUF converted before the draft parameters existed: the towers bind

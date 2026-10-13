@@ -31,9 +31,6 @@
 
 /* --v41-chunk (core_v41.h:25): the prefill block size; 0 in the CLI = this. */
 #define DS4_V41_CHUNK 2048u
-/* ds4_gpu_v41.h:277: one draft block's width; the index scratch prepare keys
- * its decode row floor off it (1 + block + 1). */
-#define DS4_MTP_MAX_BLOCK 8u
 /* ds4_gpu_v41.h:265: the largest token count the fused GEMV decode path
  * takes; the same value as V41_GEMV_MAX_TOK in the CUDA TU. */
 #define DS4_V41_GEMV_MAX_TOK 8u
@@ -64,6 +61,19 @@ static void *g_v41_progress_ud;
 void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int current, int total), void *ud) {
     g_v41_progress = cb;
     g_v41_progress_ud = ud;
+}
+
+static uint32_t v41_gen_cap(const ds4_engine *e, uint32_t np) {
+    uint32_t cap = DS4_V41_CHUNK < np ? DS4_V41_CHUNK : np;
+    /* A short prompt still needs the armed tower's full verification batch.
+     * The main state and pinned feed share this bound; real context wins. */
+    if (v41_dspark_mode() && g_ds4_v41.mtp_towers && g_ds4_v41.mtp_block && g_ds4_v41.n_mtp_target &&
+        e->weights.v41_towers.main_proj && e->weights.v41_towers.markov_embd && e->weights.v41_towers.confidence) {
+        const uint32_t width = 1u + g_ds4_v41.mtp_block;
+        if (cap < width) { cap = width; }
+    }
+    if (cap > g_ds4_v41.ctx) { cap = g_ds4_v41.ctx; }
+    return cap;
 }
 
 /* The Rust host's rows provider (ds41_forward.h): pinned raw buffers owned
@@ -116,7 +126,7 @@ ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, 
     const uint32_t cols = (g_ds4_v41.engram_max_ngram - 1u) * g_ds4_v41.engram_heads;
     const uint32_t stride = g_ds4_v41.engram_head_dim + g_ds4_v41.engram_head_dim / 32u;
     const uint32_t np = n_prompt > 0 ? (uint32_t)n_prompt : 1u;
-    const uint32_t cap = DS4_V41_CHUNK < np ? DS4_V41_CHUNK : np;   /* the generate entry's own cap */
+    const uint32_t cap = v41_gen_cap((const ds4_engine *)engine, np);
     ds4_v41_feed *f = calloc(1, sizeof *f);
     if (!f) return NULL;
     f->fn = fn; f->ud = ud; f->rows_cap = cap; f->n_layers = g_ds4_v41.n_engram;
@@ -874,10 +884,10 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
     }
     /* router gate: bf16 on the main layers, f32 on the towers (two converter plans) */
     if (l->ffn_gate_inp->type == DS4_TENSOR_F32) {
-        if (!ds4_gpu_v41_matmul_f32_tensor(st->glog, m->map, m->size, l->ffn_gate_inp->abs_offset, E, NE, st->xn, n)) return false;
-    } else if (!ds4_gpu_v41_matmul_bf16_tensor(st->glog, m->map, m->size, l->ffn_gate_inp->abs_offset, E, NE, st->xn, n)) return false;
+        if (!ds4_gpu_v41_matmul_f32_tensor(st->glog, m->map, m->size, l->ffn_gate_inp->abs_offset, E, NE, st->xn, n)) { goto fork_fail; }
+    } else if (!ds4_gpu_v41_matmul_bf16_tensor(st->glog, m->map, m->size, l->ffn_gate_inp->abs_offset, E, NE, st->xn, n)) { goto fork_fail; }
     if (!ds4_gpu_v41_router_tensor(st->sel, st->rw, st->glog, m->map, m->size, l->ffn_exp_probs_b->abs_offset, n, NE,
-                                   KU, DS4_EXPERT_WEIGHT_SCALE)) return false;
+                                   KU, DS4_EXPERT_WEIGHT_SCALE)) { goto fork_fail; }
     if (st->draft) {
         /* The two on-disk tower expert forms (core_v41_forward.c:108-120).
          * Blob: the main fused decode kernel with layer = DS4_N_LAYER + tower
@@ -892,7 +902,7 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
         } else if (!ds4_gpu_v41_mtp_moe_tensor(st->routed, m->map, il, st->tower_exp_off[il], E, FF, E, st->sel, st->rw,
                                                NE, KU, DS4_SWIGLU_CLAMP_EXP, st->xn, n)) return false;
     } else if (!ds4_gpu_v41_routed_moe_tensor(tail ? NULL : st->routed, m->map, m->size, l->ffn_exps_vq->abs_offset, l->ffn_exps_vq->bytes,
-                                       E, FF, E, st->sel, st->rw, DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, st->xn, il, n)) return false;
+                                       E, FF, E, st->sel, st->rw, DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, st->xn, il, n)) { goto fork_fail; }
     /* shared expert: w1/w3 -> bf16 -> swiglu(clamp) -> bf16 -> w2 -> bf16 */
     if (fork) { if (!ds4_gpu_side_join()) return false; }
     else if (!v41_tproj(m, st->sg, l->ffn_gate_shexp, E, FF, st->xn, n, 1) ||
@@ -907,6 +917,12 @@ static bool v41_moe(const ds4_model *m, const ds4_layer_weights *l, ds4_v41_stat
         if (!ds4_gpu_v41_round_bf16_tensor(st->y, (uint64_t)n * E)) return false;
     }
     return true;
+
+fork_fail:
+    /* Main submission failed while the independent shared branch still owns
+     * request buffers. Join before the caller releases or retries the state. */
+    if (fork) { (void)ds4_gpu_side_join(); }
+    return false;
 }
 
 static void v41_dump_rows(const ds4_v41_state *st, const ds4_gpu_tensor *t, const char *kind, uint32_t il, uint64_t rowf) {
@@ -1188,6 +1204,100 @@ static bool v41_spec_snapshot(ds4_v41_state *st, uint32_t n) {
     return ok;
 }
 
+static bool v41_restore_match(const ds4_gpu_tensor *got, uint64_t goff,
+                               const ds4_gpu_tensor *snap, uint64_t soff,
+                               uint8_t *buf, uint64_t rowb, const char *lane,
+                               uint32_t il, uint32_t row) {
+    const uint64_t gb = got ? ds4_gpu_tensor_bytes(got) : 0u;
+    const uint64_t sb = snap ? ds4_gpu_tensor_bytes(snap) : 0u;
+    if (!got || !snap || goff > gb || rowb > gb - goff || soff > sb || rowb > sb - soff ||
+        !ds4_gpu_tensor_read(got, goff, buf, rowb) ||
+        !ds4_gpu_tensor_read(snap, soff, buf + rowb, rowb)) {
+        fprintf(stderr, "ds4: [v41] rollback check FAIL: %s L%u row %u readback (%llu bytes)\n",
+                lane, il, row, (unsigned long long)rowb);
+        return false;
+    }
+    if (memcmp(buf, buf + rowb, (size_t)rowb) != 0) {
+        fprintf(stderr, "ds4: [v41] rollback check FAIL: %s L%u row %u byte mismatch\n", lane, il, row);
+        return false;
+    }
+    return true;
+}
+
+/* Check restore plumbing against this verify's own snapshots. N>1 accepted
+ * values may depend on rejected drafts through MoE FP; that is not the
+ * reference here. Run after verify wait, outside capture, and read exactly
+ * one full tensor row into each bounded lane. */
+static bool v41_rollback_check(const ds4_v41_state *st, uint32_t keep, uint32_t mainh_before) {
+    const uint64_t rowb = (uint64_t)DS4_N_HEAD_DIM * sizeof(float);
+    const uint64_t np = (uint64_t)st->snap_past + keep;
+    if (!ds4_gpu_synchronize()) {
+        fprintf(stderr, "ds4: [v41] rollback check FAIL: synchronization\n");
+        return false;
+    }
+    if (!keep || keep > st->snap_n || st->snap_n > DS4_MTP_MAX_BLOCK + 1u ||
+        (uint64_t)st->snap_past + st->snap_n > st->ctx || st->n_past != np || st->snap_on) {
+        fprintf(stderr, "ds4: [v41] rollback check FAIL: frontier past %u expected %llu, keep %u/%u\n",
+                st->n_past, (unsigned long long)np, keep, st->snap_n);
+        return false;
+    }
+    if (st->mainh) {
+        /* Verify wrote snap_n new rows. Rejected cells also overwrote old
+         * history, so rollback shortens the run instead of restoring a full ring. */
+        const uint32_t dropped = st->snap_n - keep;
+        const uint32_t expected = mainh_before > dropped ? mainh_before - dropped : 0u;
+        if (!st->mainh_cap || st->mainh_cap > DS4_N_SWA || mainh_before > st->mainh_cap ||
+            mainh_before < st->snap_n || st->mainh_n != expected || st->mainh_n > np ||
+            st->mainh_end != (int64_t)np - 1) {
+            fprintf(stderr, "ds4: [v41] rollback check FAIL: mainh count %u expected %u, end %lld expected %lld\n",
+                    st->mainh_n, expected, (long long)st->mainh_end, (long long)np - 1);
+            return false;
+        }
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (!g_ds4_v41.is_kv_source[il]) { continue; }
+        const uint32_t ratio = ds4_layer_compress_ratio(il);
+        if (!ratio || st->ng_src[il] != np / ratio || st->cpend[il] != np % ratio ||
+            (ratio > 1u && st->snap_cpend[il] != st->snap_past % ratio)) {
+            fprintf(stderr, "ds4: [v41] rollback check FAIL: source L%u groups %u pending %u ratio %u at %llu\n",
+                    il, st->ng_src[il], st->cpend[il], ratio, (unsigned long long)np);
+            return false;
+        }
+    }
+    uint8_t *buf = malloc((size_t)(2u * rowb));
+    if (!buf) {
+        fprintf(stderr, "ds4: [v41] rollback check FAIL: readback allocation\n");
+        return false;
+    }
+    uint32_t windows = 0, pending = 0;
+    bool ok = true;
+    for (uint32_t il = 0; il < DS4_N_LAYER && ok; il++) {
+        for (uint32_t i = keep; i < st->snap_n && ok; i++) {
+            const uint64_t cell = ((uint64_t)st->snap_past + i) % DS4_N_SWA;
+            ok = v41_restore_match(st->win[il], cell * rowb, st->snap_win[il], (uint64_t)i * rowb,
+                                    buf, rowb, "window", il, i);
+            windows += ok;
+        }
+        if (!ok || !g_ds4_v41.is_kv_source[il]) { continue; }
+        const uint32_t pend = st->cpend[il];
+        const uint64_t first = (uint64_t)st->snap_cpend[il] + keep - pend;
+        for (uint32_t i = 0; i < pend && ok; i++) {
+            const uint64_t src = (first + i) * rowb, dst = (uint64_t)i * rowb;
+            ok = v41_restore_match(st->cpre_kv[il], dst, st->snap_cpre_kv[il], src,
+                                    buf, rowb, "cpre_kv", il, i) &&
+                 v41_restore_match(st->cpre_sc[il], dst, st->snap_cpre_sc[il], src,
+                                    buf, rowb, "cpre_sc", il, i);
+            pending += ok;
+        }
+    }
+    free(buf);
+    if (ok) {
+        fprintf(stderr, "ds4: [v41] rollback check PASS: pos %llu keep %u/%u, %u window rows, %u pending rows, mainh %u\n",
+                (unsigned long long)np, keep, st->snap_n, windows, pending, st->mainh_n);
+    }
+    return ok;
+}
+
 /* keep = accepted positions in this batch (including the confirmed head).
  * Three things (core_v41_forward.c:267-296): (1) the window ring — batch rows
  * [keep, n) were committed by the layers and overwrote real rows from 128
@@ -1202,6 +1312,7 @@ static bool v41_spec_snapshot(ds4_v41_state *st, uint32_t n) {
  * history. */
 static bool v41_spec_rollback(ds4_v41_state *st, uint32_t keep) {
     if (!st->snap_on) return false;
+    const uint32_t mainh_before = st->mainh_n;
     const uint64_t rowb = (uint64_t)DS4_N_HEAD_DIM * 4;
     const uint32_t pos0 = st->snap_past, np = pos0 + keep;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
@@ -1228,6 +1339,8 @@ static bool v41_spec_rollback(ds4_v41_state *st, uint32_t keep) {
         st->mainh_n = st->mainh_n > dropped ? st->mainh_n - dropped : 0;
         st->mainh_end = (int64_t)np - 1;
     }
+    const char *check = getenv("DS41_ROLLBACK_CHECK");
+    if (check && strcmp(check, "0") != 0) { return v41_rollback_check(st, keep, mainh_before); }
     return true;
 }
 
@@ -1287,7 +1400,8 @@ int ds4_v41_router_bias_ref(void *engine, uint32_t il, const void **map, uint64_
  * reads them on the Rust host (zchain.rs, P2/P3) and lands here. */
 int ds4_v41_zchain_gr_set(void *engine, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd) {
     (void)engine;
-    if (!data || il >= DS4_N_LAYER) return 0;
+    if (DS4_MODEL_VARIANT != DS4_VARIANT_V41 || il >= DS4_N_LAYER) { return 0; }
+    /* NULL clears a previous mount's gains through the same backend setter. */
     return ds4_gpu_v41_set_gr_override(il, data, n_expert, n_embd);
 }
 

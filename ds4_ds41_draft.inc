@@ -680,7 +680,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
     if ((uint64_t)ctx > need) ctx = (uint32_t)need;
     const int room = ctx > np ? (int)(ctx - np) : 0;
     if (n_predict > room) n_predict = room;
-    const uint32_t cap = DS4_V41_CHUNK < np ? DS4_V41_CHUNK : np;
+    const uint32_t cap = v41_gen_cap(e, np);
     ds4_v41_state st;
     if (!v41_state_alloc(&st, cap, ctx, DS4_MTP_MAX_BLOCK + 2u)) return 1;
     st.head_last_only = 1;
@@ -849,7 +849,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
              * of a shape stays direct (it builds every lazy allocation;
              * capture must not allocate), then one launch per step.  Emit
              * rides on the graph: launch, emit, wait. */
-            if (!draft_now && v41_graph_ready(&st) && tok != ds4_token_eos(e) && st.n_past + 1u <= st.ctx) {
+            if (produced < n_predict && !draft_now && v41_graph_ready(&st) && tok != ds4_token_eos(e) && st.n_past + 1u <= st.ctx) {
                 int32_t nt = 0;
                 const double ts0 = now_sec();
                 if (!v41_graph_launch(e, &st, (int32_t)tok, 0)) { rc = 1; break; }
@@ -867,7 +867,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                 continue;
             }
             if (emit && emit((int)tok, ud) != 0) break;   /* the CLI's EOS convention: nonzero = stop */
-            if ((int)tok == ds4_token_eos(e)) break;      /* the engine's own check when emit does not stop */
+            if (produced >= n_predict || (int)tok == ds4_token_eos(e)) { break; }
             if (st.n_past + 1u > st.ctx) { fprintf(stderr, "[v41] context full %u\n", st.ctx); break; }
             /* ---- one round (core_v41_api.c:272-390) ---- */
             uint32_t k = 0;
@@ -895,6 +895,9 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                                               : v41_draft_pick_k(dr.host_conf, dr.block, &sched_val, &cal);
                 if (!verify_k && sched_val < 1.0f) spec_skipped++;   /* predicted not to repay even the draft */
                 k = dr.block < use ? dr.block : use;
+                /* Only positions inside the real context can be verified. */
+                const uint32_t room_k = st.ctx - st.n_past - 1u;
+                if (k > room_k) { k = room_k; }
                 for (uint32_t i = 0; i < k; i++) batch[i + 1u] = dr.host_ids[i + 1u];
             }
             const uint32_t nb = 1u + k;

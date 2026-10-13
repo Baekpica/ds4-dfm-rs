@@ -63,8 +63,11 @@ if [ -n "$ENGLOG_SPEC" ]; then
     || fail "spec run exited nonzero (see $LOG.spec.log)"
   grep -q "DS41 generate gate: PASS" "$LOG.spec.log" || fail "spec run did not PASS"
   grep -q "harness history vs golden: 0 mismatches" "$LOG.spec.log" || fail "spec run: the feed history drifted from the golden"
-  grep -o '\[dspark\] .*' "$ENGLOG_SPEC" | sed 's/[[:space:]]*$//' > "$LOG.eng.dspark"
-  grep -o '\[dspark\] .*' "$LOG.spec.log" | sed 's/[[:space:]]*$//' > "$LOG.port.dspark"
+  # The oracle may run once after its final output; only earlier rounds contribute.
+  LAST_EMIT=$(grep -o '\[emit\] [0-9]* [0-9]*' "$ENGLOG_SPEC" | tail -1 | awk '{print $2}')
+  [ -n "$LAST_EMIT" ] || fail "the spec golden has no final emitted position"
+  grep -o '\[dspark\] .*' "$ENGLOG_SPEC" | sed 's/[[:space:]]*$//' | awk -v last="$LAST_EMIT" '$3 < last' > "$LOG.eng.dspark"
+  grep -o '\[dspark\] .*' "$LOG.spec.log" | sed 's/[[:space:]]*$//' | awk -v last="$LAST_EMIT" '$3 < last' > "$LOG.port.dspark"
   [ -s "$LOG.eng.dspark" ] || fail "the spec golden has no [dspark] lines (captured with --emit-trace?)"
   [ -s "$LOG.port.dspark" ] || fail "the port printed no [dspark] lines (g_ds4_v41_prof set?)"
   diff "$LOG.eng.dspark" "$LOG.port.dspark" > "$LOG.dspark.diff" 2>&1 \

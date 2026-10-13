@@ -31,6 +31,20 @@ LOG=/tmp/ds41_sampling_gate
 
 fail() { echo "ds41 sampling gate: FAIL ($1)"; exit 1; }
 
+EPID=""
+SPID=""
+cleanup() {
+    if [ -n "$EPID" ]; then
+        kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
+        EPID=""
+    fi
+    if [ -n "$SPID" ]; then
+        kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
+        SPID=""
+    fi
+}
+trap cleanup EXIT
+
 mkdir -p "$LOG"
 cat > "$LOG/req.A.json" <<'JSON'
 {"messages":[{"role":"user","content":"Name three colors."}],"max_tokens":48,"temperature":0.7,"seed":12345,"reasoning_effort":"none"}
@@ -72,13 +86,14 @@ run_pair() { # <name> <extra flags...>
         grep -q '"finish_reason"' "$LOG/$name.eng.$c.json" || fail "engine response $c has no finish_reason"
     done
     kill "$EPID" 2>/dev/null; wait "$EPID" 2>/dev/null
+    EPID=""
 
     # ---- port side: the same requests ----
     rm -f "$LOG/$name.srv.log"
     "$SRV" --cuda -m "$MODEL" --port "$PORT" --engram-dir "$ENGRAM" --emit-trace $ZFLAG $eflags --host 127.0.0.1 > "$LOG/$name.srv.log" 2>&1 &
     SPID=$!
     boot_wait "$LOG/$name.srv.log" "$SPID" "port server ($name)"
-    grep -q "V4.1 serving route" "$LOG/$name.srv.log" || fail "no V4.1 route line at boot ($name)"
+    grep -q "V4.1 route:" "$LOG/$name.srv.log" || fail "no V4.1 route line at boot ($name)"
     for c in $CASES; do
         curl -sS -m 900 "http://127.0.0.1:$PORT/v1/chat/completions" \
             -H 'content-type: application/json' -d @"$LOG/req.$c.json" > "$LOG/$name.srv.$c.json" \
@@ -86,6 +101,7 @@ run_pair() { # <name> <extra flags...>
         grep -q '"finish_reason"' "$LOG/$name.srv.$c.json" || fail "port response $c has no finish_reason"
     done
     kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
+    SPID=""
 
     # ---- per-request id extraction ----
     # Engine: one "===== request <id>" .. "===== end request" block per

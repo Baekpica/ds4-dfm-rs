@@ -19,9 +19,9 @@
  * --rows-ref <prefix>: an INDEPENDENT reference for the engram rows the feed
  * delivers at every position — the score dump's `<prefix>.erows_Lnn.txt` over
  * the full prompt+emitted sequence (n <= 64, one block: core_v41_score.c:36).
- * The gate pin is N=56 with the 8-token prompt, so positions 8..63 cover all
- * 56 emitted steps; a longer run's tail would be silently ungated, and the
- * harness refuses that (the coverage print + the verdict).  The comparison is
+ * The gate pin is N=56 with the 8-token prompt: decode consumes positions
+ * 8..62; the last output is not another input. Short references are refused
+ * before generation. The comparison is
  * only meaningful while the port still matches the golden (the reference rows
  * are for the golden history), so the check stops at the first id divergence
  * and says so.
@@ -333,7 +333,7 @@ static void print_ref_summary(const gen_feed *g) {
         const engram_layer &L = g->layers[k];
         if (L.ref.empty()) { continue; }
         any = 1;
-        printf("row reference L%02u: prompt %llu/%u, emitted %llu checked, %llu skipped (draft/golden), %llu mismatches\n",
+        printf("row reference L%02u: prompt %llu/%u, decode inputs %llu checked, %llu skipped (draft/golden), %llu mismatches\n",
                L.il, (unsigned long long)L.ref_prompt, g->np, (unsigned long long)L.ref_emit,
                (unsigned long long)L.ref_skip, (unsigned long long)L.ref_bad);
     }
@@ -342,11 +342,12 @@ static void print_ref_summary(const gen_feed *g) {
            (unsigned long long)g->hist_bad, g->hist_first_bad < 0 ? "none" : std::to_string((long)g->hist_first_bad).c_str());
 }
 
-/* The history's final state must equal the accepted (golden) sequence: the
- * rows are hashed from this history, so a maintenance bug here is exactly the
- * E0 class — invisible to every device instrument. */
+/* Compare every required input. The final emitted token is a decision whose
+ * row need not be fed once generation stops. Earlier output rows are live
+ * decode history, so corrupting one must still fail. */
 static void hist_vs_golden(gen_feed *g, size_t emitted) {
-    for (size_t i = 0; i < (size_t)g->np + emitted && i < g->gold_hist.size(); i++) {
+    const size_t needed = (size_t)g->np + (emitted > 0 ? emitted - 1u : 0u);
+    for (size_t i = 0; i < needed && i < g->gold_hist.size(); i++) {
         if (g->hist[i] == g->gold_hist[i]) { continue; }
         g->hist_bad++;
         if (g->hist_first_bad < 0) { g->hist_first_bad = (int64_t)i; }
@@ -461,7 +462,7 @@ int main(int argc, char **argv) {
          * for the check) and a short file is named SHORT — the tail would
          * otherwise be silently ungated. */
         if (rows_ref) {
-            const uint64_t need = (uint64_t)g.np + (uint64_t)gids.size();
+            const uint64_t need = (uint64_t)g.np + (gids.empty() ? 0u : (uint64_t)gids.size() - 1u);
             for (uint32_t k = 0; k < g.layers.size(); k++) {
                 engram_layer &L = g.layers[k];
                 char rp[4600];
@@ -474,9 +475,10 @@ int main(int argc, char **argv) {
                 if (L.ref.empty() || L.ref.size() % L.cols != 0) { fprintf(stderr, "harness: %s: %zu values are not a multiple of cols %u\n", rp, L.ref.size(), L.cols); return 2; }
                 L.ref_lines = L.ref.size() / L.cols;
                 L.ref_first_bad = -1;
-                printf("row reference L%02u: %s (%llu lines; the run needs %llu = %u prompt + %zu emitted)%s\n",
-                       L.il, rp, (unsigned long long)L.ref_lines, (unsigned long long)need, g.np, gids.size(),
+                printf("row reference L%02u: %s (%llu lines; the run needs %llu = %u prompt + %zu decode inputs)%s\n",
+                       L.il, rp, (unsigned long long)L.ref_lines, (unsigned long long)need, g.np, gids.empty() ? 0u : gids.size() - 1u,
                        L.ref_lines < need ? "  -- SHORT: the tail is NOT covered" : "");
+                if (L.ref_lines < need) { return 2; }
             }
         }
         /* No initial prompt fill: the prefill block's prepare does it (and
@@ -577,7 +579,7 @@ int main(int argc, char **argv) {
     print_ref_summary(&g);
     /* The verdict: ids match, positions contiguous, the row reference shows no
      * mismatch over everything comparable (its prompt coverage must be full),
-     * and the final history equals the golden sequence.  A check narrower than
+     * and consumed history equals the golden sequence. A check narrower than
      * the claim is how the next wrong-index bug survives it. */
     uint64_t ref_bad = 0;
     int ref_short = 0;

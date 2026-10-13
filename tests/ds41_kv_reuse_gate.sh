@@ -46,8 +46,12 @@ ZC="${5:-}"
 PFILE="${6:-speed-bench/promessi_sposi.txt}"
 NCH="${7:-12000}"
 N="${8:-48}"
-shift 8 2>/dev/null || true
-EXTRA="${*:-}"
+EXTRA=""
+# dash exits on an out-of-range shift even when followed by || true.
+if [ "$#" -gt 8 ]; then
+    shift 8
+    EXTRA="$*"
+fi
 
 ROOT="$(dirname "$0")/.."
 OUT="${DS41_GATE_OUT:-/tmp/ds41_kv_reuse_gate}"
@@ -163,9 +167,8 @@ req_c() {
     prefill_line "$LOG/c.log" > "$LOG/c.prefill"
 }
 
-# The row size is derived, never assumed: one row per emitted token plus the
-# initial prefill pick's row; a run that ends on EOS dumps one fewer (its own
-# row is the last).  row_size() accepts exactly those two readings.
+# Pure penalty decode writes one full row per emitted token, including EOS.
+# The final emitted token does not launch an unused next forward.
 row_size() { # <rows-file> <ids-file> <V>
     n=$(wc -l < "$2" | tr -d ' ')
     sz=$(wc -c < "$1" | tr -d ' ')
@@ -173,7 +176,7 @@ row_size() { # <rows-file> <ids-file> <V>
     per=$((4 * $3))
     [ $((sz % per)) -eq 0 ] || return 1
     r=$((sz / per))
-    [ "$r" = "$n" ] || [ "$r" = "$((n + 1))" ]
+    [ "$r" = "$n" ]
 }
 
 row_cmp() { # <fileA> <idxA> <fileB> <idxB> <rowbytes>
@@ -195,13 +198,11 @@ n_c=$(wc -l < "$LOG/c.ids" | tr -d ' ')
 
 v_a=0
 sz_a=$(wc -c < "$LOG/a.rows" | tr -d ' ')
-for cand in $((sz_a / (4 * (n_a + 1)))) $((sz_a / (4 * n_a))); do
-    [ "$cand" -gt 1000 ] || continue
-    if row_size "$LOG/a.rows" "$LOG/a.ids" "$cand"; then
-        v_a=$cand
-        break
-    fi
-done
+# An n+1 candidate can divide exactly at the wrong vocabulary width.
+if [ $((sz_a % (4 * n_a))) -eq 0 ]; then
+    v_a=$((sz_a / (4 * n_a)))
+fi
+[ "$v_a" -gt 1000 ] || v_a=0
 [ "$v_a" -gt 0 ] || fail "A's dump does not line up with its emitted count -- speculation likely ran (the penalty arm must be engaged: frequency_penalty non-zero; do not boot with --dspark)"
 row_size "$LOG/b.rows" "$LOG/b.ids" "$v_a" || fail "B's dump does not line up with its emitted count (V=$v_a)"
 row_size "$LOG/c.rows" "$LOG/c.ids" "$v_a" || fail "C's dump does not line up with its emitted count (V=$v_a)"

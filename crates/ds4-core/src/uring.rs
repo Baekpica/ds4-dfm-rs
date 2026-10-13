@@ -62,6 +62,9 @@ mod imp {
     const IORING_OFF_CQ_RING: i64 = 0x8000000;
     const IORING_OFF_SQES: i64 = 0x10000000;
     const IORING_FEAT_SINGLE_MMAP: u32 = 1;
+    const IORING_REGISTER_SYNC_CANCEL: u32 = 24;
+    const IORING_ASYNC_CANCEL_ALL: u32 = 1;
+    const IORING_ASYNC_CANCEL_ANY: u32 = 1 << 2;
 
     const PROT_READ: i32 = 1;
     const PROT_WRITE: i32 = 2;
@@ -140,6 +143,21 @@ mod imp {
         flags: u32,
     }
 
+    /// Linux io_uring_sync_cancel_reg (64 bytes). No timeout: destinations
+    /// must remain alive until cancellation ends, not until a deadline expires.
+    #[repr(C)]
+    #[derive(Default)]
+    struct SyncCancel {
+        addr: u64,
+        fd: i32,
+        flags: u32,
+        seconds: i64,
+        nanoseconds: i64,
+        opcode: u8,
+        pad: [u8; 7],
+        pad2: [u64; 3],
+    }
+
     extern "C" {
         fn syscall(num: c_long, ...) -> c_long;
         fn mmap(
@@ -152,6 +170,85 @@ mod imp {
         ) -> *mut std::ffi::c_void;
         fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
         fn close(fd: i32) -> i32;
+    }
+
+    #[cfg(test)]
+    #[derive(Clone, Copy)]
+    enum EnterFault {
+        None,
+        Partial,
+        WaitError,
+        SubmitError,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static ENTER_FAULT: std::cell::Cell<EnterFault> = const {
+            std::cell::Cell::new(EnterFault::None)
+        };
+    }
+
+    fn enter(fd: i32, count: u32, minimum: u32, flags: u32) -> c_long {
+        #[cfg(test)]
+        let count = {
+            let fault = ENTER_FAULT.with(|fault| fault.get());
+            match fault {
+                EnterFault::Partial if count > 1 => 1,
+                EnterFault::WaitError if flags & IORING_ENTER_GETEVENTS != 0 => {
+                    ENTER_FAULT.with(|fault| fault.set(EnterFault::None));
+                    unsafe { *libc::__errno_location() = libc::EIO };
+                    return -1;
+                }
+                EnterFault::SubmitError if count > 0 => {
+                    ENTER_FAULT.with(|fault| fault.set(EnterFault::None));
+                    let _ = enter(fd, count.min(1), minimum, flags);
+                    unsafe { *libc::__errno_location() = libc::EIO };
+                    return -1;
+                }
+                _ => count,
+            }
+        };
+        unsafe {
+            syscall(
+                libc::SYS_io_uring_enter as c_long,
+                fd as c_long,
+                count as c_long,
+                minimum as c_long,
+                flags as c_long,
+                ptr::null::<std::ffi::c_void>(),
+                0,
+            )
+        }
+    }
+
+    /// The upstream liburing register_sync_cancel contract (Linux >= 6.0):
+    /// cancel all accepted reads inline, independent of a failed enter syscall.
+    fn cancel_all(fd: i32) -> bool {
+        let cancel = SyncCancel {
+            flags: IORING_ASYNC_CANCEL_ALL | IORING_ASYNC_CANCEL_ANY,
+            seconds: -1,
+            nanoseconds: -1,
+            ..SyncCancel::default()
+        };
+        loop {
+            let rc = unsafe {
+                syscall(
+                    libc::SYS_io_uring_register as c_long,
+                    fd as c_long,
+                    IORING_REGISTER_SYNC_CANCEL as c_long,
+                    &cancel as *const SyncCancel,
+                    1,
+                )
+            };
+            if rc >= 0 {
+                return true;
+            }
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::ENOENT) => return true,
+                _ => return false,
+            }
+        }
     }
 
     fn mmap_fd(fd: i32, len: usize, off: i64) -> Option<*mut u8> {
@@ -201,6 +298,7 @@ mod imp {
         done: u32,
         inflight: u32,
         err: bool,
+        broken: bool,
     }
 
     // The ring is a single-owner object (the engine's ejob is too): raw
@@ -224,6 +322,12 @@ mod imp {
                 )
             } as i32;
             if fd < 0 {
+                return None;
+            }
+            // Without synchronous cancellation an enter error could leave
+            // writes into a freed native buffer. Older kernels use preads.
+            if !cancel_all(fd) {
+                unsafe { close(fd) };
                 return None;
             }
             let cap = p.sq_entries;
@@ -325,6 +429,7 @@ mod imp {
                 done: 0,
                 inflight: 0,
                 err: false,
+                broken: false,
             })
         }
 
@@ -340,7 +445,7 @@ mod imp {
         /// `v41_ering_submit` (`core_v41_ering.c:114-118`): a submit while a
         /// previous round is still in flight is a caller-order bug, refused.
         pub fn submit(&mut self) -> bool {
-            if self.inflight != 0 {
+            if self.inflight != 0 || self.broken {
                 return false;
             }
             self.submitted = 0;
@@ -392,23 +497,47 @@ mod imp {
                 return true;
             }
             unsafe { (*self.sq_tail).store(tail, Ordering::Release) };
-            let rc = unsafe {
-                syscall(
-                    libc::SYS_io_uring_enter as c_long,
-                    self.fd as c_long,
-                    pushed as c_long,
-                    0,
-                    0,
-                    ptr::null::<std::ffi::c_void>(),
-                    0,
-                )
-            };
-            rc >= 0
+            let mut remaining = pushed;
+            while remaining > 0 {
+                let rc = enter(self.fd, remaining, 0, 0);
+                if rc < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return self.fail();
+                }
+                if rc == 0 || rc as u64 > remaining as u64 {
+                    return self.fail();
+                }
+                remaining -= rc as u32;
+            }
+            true
+        }
+
+        /// Stop unconsumed SQEs, then cancel accepted reads before reporting
+        /// failure. The poisoned ring cannot replay their stale completions.
+        fn fail(&mut self) -> bool {
+            self.err = true;
+            self.broken = true;
+            let head = unsafe { (*self.sq_head).load(Ordering::Acquire) };
+            unsafe { (*self.sq_tail).store(head, Ordering::Release) };
+            if !cancel_all(self.fd) {
+                // open proved this API exists. Returning now would permit a
+                // provider to free memory still writable by the kernel.
+                eprintln!("ds4: engram io_uring cancellation failed; cannot release live buffers");
+                unsafe { libc::abort() };
+            }
+            self.inflight = 0;
+            self.done = self.reqs.len() as u32;
+            false
         }
 
         /// `v41_ering_wait` (`core_v41_ering.c:122-144`): drain completions,
         /// keep the queue full, copy direct reads out of their slots.
         pub fn wait(&mut self) -> bool {
+            if self.broken {
+                return false;
+            }
             while self.done < self.reqs.len() as u32 {
                 if self.submitted < self.reqs.len() as u32 && self.nfree > 0 && !self.push() {
                     self.err = true;
@@ -417,26 +546,14 @@ mod imp {
                 if self.inflight == 0 {
                     // Nothing in flight and nothing pushable = the slot
                     // accounting is broken; never spin forever (:126).
-                    self.err = true;
-                    break;
+                    return self.fail();
                 }
-                let rc = unsafe {
-                    syscall(
-                        libc::SYS_io_uring_enter as c_long,
-                        self.fd as c_long,
-                        0,
-                        1,
-                        IORING_ENTER_GETEVENTS,
-                        ptr::null::<std::ffi::c_void>(),
-                        0,
-                    )
-                };
+                let rc = enter(self.fd, 0, 1, IORING_ENTER_GETEVENTS);
                 if rc < 0 {
                     if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                         continue;
                     }
-                    self.err = true;
-                    break;
+                    return self.fail();
                 }
                 let cq_head = unsafe { &*self.cq_head };
                 let cq_tail = unsafe { &*self.cq_tail };
@@ -483,6 +600,9 @@ mod imp {
 
     impl Drop for Ring {
         fn drop(&mut self) {
+            if self.inflight != 0 {
+                self.fail();
+            }
             unsafe {
                 munmap(self.sqes as *mut _, self.sqes_sz);
                 if !self.single_map {
@@ -494,6 +614,102 @@ mod imp {
                     std::alloc::Layout::from_size_align(self.bounce_sz, ERING_BLK).unwrap();
                 std::alloc::dealloc(self.bounce, layout);
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod fault_tests {
+        use super::*;
+        use std::io::Write;
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+        #[test]
+        fn partial_enter_keeps_all_reads() {
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                ENTER_FAULT.with(|fault| fault.set(EnterFault::Partial));
+                let file = std::fs::File::open("/dev/zero").unwrap();
+                let mut output = [[1u8; 8]; 4];
+                let Some(mut ring) = super::super::test_ring(4) else {
+                    tx.send(None).unwrap();
+                    return;
+                };
+                for row in &mut output {
+                    ring.reqs_mut().push(Req {
+                        fd: file.as_raw_fd(),
+                        direct: false,
+                        len: row.len() as u32,
+                        off: 0,
+                        dst: row.as_mut_ptr(),
+                    });
+                }
+                let ok = ring.submit() && ring.wait();
+                tx.send(Some((ok, output))).unwrap();
+            });
+            let Some((ok, output)) = rx
+                .recv_timeout(TEST_TIMEOUT)
+                .expect("partial submission left reads permanently in flight")
+            else {
+                return;
+            };
+            assert!(ok);
+            assert_eq!(output, [[0u8; 8]; 4]);
+        }
+
+        #[test]
+        fn failed_wait_cancels_write() {
+            failed_enter_drains(EnterFault::WaitError);
+        }
+
+        #[test]
+        fn failed_submit_drains_writes() {
+            failed_enter_drains(EnterFault::SubmitError);
+        }
+
+        fn failed_enter_drains(fault: EnterFault) {
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let read = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+            let mut write = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+            let mut output = [0u8; 1];
+            let Some(mut ring) = super::super::test_ring(4) else {
+                return;
+            };
+            ring.reqs_mut().push(Req {
+                fd: read.as_raw_fd(),
+                direct: false,
+                len: 1,
+                off: 0,
+                dst: output.as_mut_ptr(),
+            });
+            let ok = match fault {
+                EnterFault::SubmitError => {
+                    ENTER_FAULT.with(|value| value.set(fault));
+                    ring.submit()
+                }
+                _ => {
+                    assert!(ring.submit());
+                    ENTER_FAULT.with(|value| value.set(fault));
+                    ring.wait()
+                }
+            };
+            let (tx, rx) = mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                rx.recv_timeout(TEST_TIMEOUT).unwrap();
+                write.write_all(&[7]).unwrap();
+            });
+            assert!(!ok);
+            let pending = ring.inflight;
+            // Keep the failed fixture's destination alive until the original
+            // code's outstanding pipe read finishes; assert the earlier state.
+            tx.send(()).unwrap();
+            let _ = ring.wait();
+            writer.join().unwrap();
+            assert_eq!(pending, 0, "failed wait returned with a live writer");
         }
     }
 }
@@ -525,6 +741,20 @@ mod imp {
 }
 
 pub use imp::Ring;
+
+#[cfg(all(test, target_os = "linux"))]
+fn test_ring(cap: u32) -> Option<Ring> {
+    let ring = Ring::open(cap);
+    if ring.is_none() {
+        const REQUIRE_URING: &str = "DS41_REQUIRE_URING_TESTS";
+        assert!(
+            std::env::var_os(REQUIRE_URING).is_none(),
+            "io_uring required by {REQUIRE_URING}"
+        );
+        eprintln!("uring test skipped: kernel or sandbox refused safe io_uring");
+    }
+    ring
+}
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
@@ -584,7 +814,10 @@ mod tests {
         }
 
         let cap = 8u32;
-        let mut ring = Ring::open(cap).expect("io_uring unavailable");
+        let Some(mut ring) = test_ring(cap) else {
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
         assert_eq!(ring.cap(), cap);
 
         for direct_leg in [false, true] {

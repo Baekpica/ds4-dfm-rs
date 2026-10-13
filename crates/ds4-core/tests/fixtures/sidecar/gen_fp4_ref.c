@@ -4,7 +4,8 @@
  * (/data/YoungAi src/common/ds4_quantfmt.c:28-40), and `ds4_e8m0_to_f32` /
  * `ds4_fp4_nibble_to_f32` come from the vendored ds4_fp8.h next to this file.
  * The sidecar loader decodes gr and amp payloads with this format; the Rust
- * `deq_fp4x32` must reproduce every block bit for bit.
+ * `deq_fp4x32` must reproduce non-NaN results bit for bit. Arithmetic NaN
+ * sign and payload are target-dependent; compare those by classification.
  *
  *   cc -O2 -I. gen_fp4_ref.c -o gen_fp4_ref && ./gen_fp4_ref
  *

@@ -23,8 +23,7 @@
 #                        the verify-batch graph walked with reuse, and the
 #                        engine's own byte-identity rule on the port's own
 #                        runs (spec ids == non-spec ids);
-#   negatives            a text prompt without --gen-ids and --temp > 0 must
-#                        both be refused by name (exit nonzero + message).
+#   negative             a text prompt without --gen-ids is refused by name.
 #
 # usage: ds41_serving_gate.sh <ds4-binary> <gguf> <ids> <englog> <n> <engram_dir> [<englog_spec> [<verify_k>]]
 set -u
@@ -100,8 +99,11 @@ if [ -n "$ENGLOG_SPEC" ]; then
     # the engine's own rule: temperature-0 spec and non-spec emit the same ids
     diff "$LOG.nodspark.emit" "$LOG.spec.emit" > /dev/null \
       || fail "the port's own runs disagree: spec ids != non-spec ids (the engine's byte-identity rule)"
-    grep -o '\[dspark\] .*' "$ENGLOG_SPEC" | sed 's/[[:space:]]*$//' > "$LOG.eng.dspark"
-    grep -o '\[dspark\] .*' "$LOG.spec.log" | sed 's/[[:space:]]*$//' > "$LOG.port.dspark"
+    # The oracle may run once after its final output; only earlier rounds contribute.
+    LAST_EMIT=$(grep -o '\[emit\] [0-9]* [0-9]*' "$ENGLOG_SPEC" | tail -1 | awk '{print $2}')
+    [ -n "$LAST_EMIT" ] || fail "the spec golden has no final emitted position"
+    grep -o '\[dspark\] .*' "$ENGLOG_SPEC" | sed 's/[[:space:]]*$//' | awk -v last="$LAST_EMIT" '$3 < last' > "$LOG.eng.dspark"
+    grep -o '\[dspark\] .*' "$LOG.spec.log" | sed 's/[[:space:]]*$//' | awk -v last="$LAST_EMIT" '$3 < last' > "$LOG.port.dspark"
     [ -s "$LOG.eng.dspark" ] || fail "the spec golden has no [dspark] lines (captured with --emit-trace?)"
     [ -s "$LOG.port.dspark" ] || fail "the port printed no [dspark] lines (--emit-trace wired?)"
     diff "$LOG.eng.dspark" "$LOG.port.dspark" > "$LOG.dspark.diff" 2>&1 \
@@ -113,15 +115,10 @@ if [ -n "$ENGLOG_SPEC" ]; then
     [ "$SP_ROUNDS" -gt "$SP_CAPS" ] || fail "spec run: no batch graph reuse (rounds=$SP_ROUNDS captures=$SP_CAPS)"
 fi
 
-# ---- negative controls: the two named refusals ----
+# ---- negative control: the named refusal ----
 "$BIN" -m "$MODEL" -p "hello" -n 4 --temp 0 > "$LOG.noids.log" 2>&1
 rc=$?
 [ "$rc" -ne 0 ] || fail "negative control (text prompt without --gen-ids) PASSED (blind gate)"
 grep -q "runs on --gen-ids" "$LOG.noids.log" || fail "text prompt without --gen-ids: not refused by name"
 
-"$BIN" -m "$MODEL" -p "hello" --engram-dir "$ENGRAM" --gen-ids "$IDS" -n 4 --temp 0.5 > "$LOG.temp.log" 2>&1
-rc=$?
-[ "$rc" -ne 0 ] || fail "negative control (--temp 0.5) PASSED (blind gate)"
-grep -q "V4.1 sampling is not ported" "$LOG.temp.log" || fail "--temp 0.5: not refused by name"
-
-echo "ds41 serving gate: positive PASS (default + no-graph + no-dspark + spec, [emit] ids and positions equal to the engine golden, [dspark] trace identical, n=1 and batch graphs walked with reuse), negative controls FAIL as required"
+echo "ds41 serving gate: positive PASS (default + no-graph + no-dspark + spec, [emit] ids and positions equal to the engine golden, contributing [dspark] trace identical, n=1 and batch graphs walked with reuse), negative control FAIL as required"

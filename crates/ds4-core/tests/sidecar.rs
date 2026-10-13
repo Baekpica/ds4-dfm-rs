@@ -25,15 +25,42 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 #[test]
-fn fp4_decode_matches_the_engine_bit_for_bit() {
+fn fp4_decode_matches_engine() {
     let blocks = include_bytes!("fixtures/sidecar/fp4_blocks.bin");
     let want = include_bytes!("fixtures/sidecar/fp4_ref.f32");
     let got = deq_fp4x32(blocks);
     assert_eq!(got.len() * 4, want.len());
     for (i, (g, w)) in got.iter().zip(want.chunks_exact(4)).enumerate() {
         let w = f32::from_le_bytes(w.try_into().unwrap());
+        // Zero times an infinite scale produces NaN; arithmetic NaN bits are
+        // not portable. Every other result, including signed zero, is exact.
+        if w.is_nan() {
+            assert!(g.is_nan(), "value {i}");
+            continue;
+        }
         assert_eq!(g.to_bits(), w.to_bits(), "value {i}");
     }
+}
+
+#[test]
+fn fp4_exceptional_scale_values() {
+    let mut block = [0u8; 17];
+    block[..16].fill(0x80); // Positive and negative zero.
+    block[16] = 127;
+    let got = deq_fp4x32(&block);
+    for pair in got.chunks_exact(2) {
+        assert_eq!(pair[0].to_bits(), 0.0f32.to_bits());
+        assert_eq!(pair[1].to_bits(), (-0.0f32).to_bits());
+    }
+
+    // The engine interprets scale byte 255 as +Inf. Preserve its exceptional
+    // arithmetic, without imposing one target's NaN sign or payload.
+    block[0] = 0x91; // Positive and negative 0.5.
+    block[16] = 255;
+    let got = deq_fp4x32(&block);
+    assert_eq!(got[0].to_bits(), f32::INFINITY.to_bits());
+    assert_eq!(got[1].to_bits(), f32::NEG_INFINITY.to_bits());
+    assert!(got[2..].iter().all(|v| v.is_nan()));
 }
 
 fn put_i32(buf: &mut Vec<u8>, v: i32) {

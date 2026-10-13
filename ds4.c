@@ -1169,6 +1169,8 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 #define DS4_V41_MAX_ENGRAM 4
 #define DS4_MTP_MAX_TOWERS  4    /* engine bound; the real count is metadata */
 #define DS4_MTP_MAX_EXPERTS 256  /* engine bound; the real count is metadata */
+/* Fixed draft/verify buffers hold one real token plus this many drafts. */
+#define DS4_MTP_MAX_BLOCK 8u
 typedef struct {
     int      active;
     uint32_t ctx;                            /* deepseek4.context_length (1048576) */
@@ -2639,6 +2641,9 @@ static void model_apply_host_v41_wiring(const ds4_host_shape *s) {
     }
     if (s->v41_mtp_towers > DS4_MTP_MAX_TOWERS || s->v41_mtp_experts > DS4_MTP_MAX_EXPERTS) {
         ds4_die("V4.1 host shape has an invalid tower/expert count");
+    }
+    if (s->v41_mtp_block > DS4_MTP_MAX_BLOCK) {
+        ds4_die("V4.1 host draft block exceeds fixed verification buffers");
     }
     memset(v, 0, sizeof *v);
     v->active = 1;
@@ -7280,6 +7285,9 @@ static void v41_load_wiring(const ds4_model *m) {
                          model_get_u32(m, "deepseek4.mtp.expert_used_count", &used) &&
                          model_get_u32(m, "deepseek4.mtp.noise_token_id", &noise) &&
                          model_get_u32(m, "deepseek4.mtp.markov_rank", &rank);
+        if (blk > DS4_MTP_MAX_BLOCK) {
+            ds4_die("V4.1 metadata draft block exceeds fixed verification buffers");
+        }
         int32_t tids[DS4_MTP_MAX_TOWERS * 2];
         const uint32_t nt = have ? v41_arr_i32(m, "deepseek4.mtp.target_layers", tids, DS4_MTP_MAX_TOWERS * 2) : 0;
         if (have && nt) {

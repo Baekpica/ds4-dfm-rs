@@ -84,7 +84,7 @@ rm -f "$LOG.srv.log"
 SPID=$!
 trap 'kill $SPID 2>/dev/null; wait $SPID 2>/dev/null' EXIT
 boot_wait "$LOG.srv.log" "$SPID" "port server"
-grep -q "V4.1 serving route" "$LOG.srv.log" || fail "no V4.1 route line at boot"
+grep -q "V4.1 route:" "$LOG.srv.log" || fail "no V4.1 route line at boot"
 fire srv "http://127.0.0.1:$PORT" "$LOG.srv.log" "$SPID"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 trap - EXIT

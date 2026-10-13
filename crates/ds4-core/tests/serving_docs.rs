@@ -12,3 +12,13 @@ fn serving_docs_match_runtime() {
         "run cargo run -q -p ds4-core --example serving_docs > docs/serving-capabilities.md"
     );
 }
+
+#[test]
+fn v41_checkpoint_is_unqualified() {
+    let rendered = serving_docs::render();
+    assert!(rendered.contains(
+        "| DeepSeek V4.1 Flash | serial / none | exact / unverified | unverified | none |"
+    ));
+    assert!(rendered.contains("--prefix-reuse off|exact|auto"));
+    assert!(!rendered.contains("serving layer keeps no reuse plan"));
+}
