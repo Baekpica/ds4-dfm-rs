@@ -17,6 +17,7 @@ use std::os::raw::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use ds4_sys::{
     ds4_bridge_v41_generate, ds4_bridge_v41_kvreuse_export, ds4_bridge_v41_kvreuse_import,
@@ -202,6 +203,85 @@ impl Default for V41RunOptions<'_> {
     }
 }
 
+/// The process-level asset caches (KU-1, 2026-10-13).
+///
+/// The engine opens the sidecar and the engram ONCE, when it opens the model
+/// (`core_engine_open.c:120-124` -> `ds4_engine_v41_set_amp_dir`; the engram
+/// shards at `core_v41_engram.c:218`), and every later request only generates.
+/// The port re-did both on every request, which put the sidecar's read, its
+/// device upload and its digest, plus a fresh engram open (GGUF, inventory,
+/// wire, hash tables, shards, ring), on the first-token path of every decode -
+/// the measured ~100 ms the port's warm floor carried over the engine's.
+///
+/// These caches hold what each open produced, keyed by the artifact identity:
+/// a matching request reuses them, and any other key - or
+/// `DS41_NO_SETUP_CACHE=1`, the A/B's control arm - recomputes them.  The
+/// bare-base key still clears the sidecar, exactly as it did per request.
+#[derive(Clone, PartialEq, Eq)]
+struct MountKey {
+    model: usize,
+    zchain: Option<String>,
+    posttrain: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FeedKey {
+    gguf: String,
+    engram_dir: Option<String>,
+}
+
+/// The file-derived half of an open engram feed: everything that does not
+/// depend on the prompt.  The engine keeps this for the life of its state.
+#[derive(Clone)]
+struct EngramAssets {
+    core: Arc<Mutex<FeedCore>>,
+    has_ring: bool,
+    ring_cap: u32,
+    cols: u32,
+    stride: u32,
+    n_layers: usize,
+    /// The opened shard identities.  A hit must carry them: the checkpoint
+    /// identity folds the engram mode and these sources in
+    /// (`kv_state_digest`), so a hit without them would mint a different
+    /// identity than the cold open did.
+    sources: Vec<EngramSource>,
+}
+
+static ENGRAM_FEED: Mutex<Option<(FeedKey, EngramAssets)>> = Mutex::new(None);
+static ZCHAIN_MOUNTED: Mutex<Option<(MountKey, i32, u64)>> = Mutex::new(None);
+
+impl EngramAssets {
+    /// Take a built feed's asset half, for the cache.
+    fn of(feed: &V41Feed) -> Self {
+        Self {
+            core: Arc::clone(&feed.core),
+            has_ring: feed.has_ring,
+            ring_cap: feed.ring_cap,
+            cols: feed.cols,
+            stride: feed.stride,
+            n_layers: feed.n_layers,
+            sources: feed.sources.clone(),
+        }
+    }
+}
+
+fn setup_cache_on() -> bool {
+    std::env::var_os("DS41_NO_SETUP_CACHE").is_none()
+}
+
+/// Phase timings for the request prelude, `DS41_PHASE_LOG=1`.  The native
+/// logs its own phases; this covers the host's, which is where the port's
+/// warm floor lives.
+fn phase_log(on: bool, what: &str, since: Instant) {
+    if on {
+        eprintln!(
+            "ds4: [v41] host phase {}: {:.1} ms",
+            what,
+            since.elapsed().as_secs_f64() * 1e3
+        );
+    }
+}
+
 /// The engram rows provider: the hash tables and one open shard per engram
 /// layer, plus the token history the n-gram window reads.
 ///
@@ -261,7 +341,124 @@ impl V41Feed {
     /// Open the feed from the artifact: the wire (with the `--engram-dir`
     /// rewrite), the four hash-constant tensors, and the shards.  None when
     /// the model carries no engram layers (the forward then takes no feed).
+    /// Open the feed, or hand this request the one the last request opened.
+    /// A hit skips the file work and rebuilds only the per-request state.
     pub fn open(path: &Path, engram_dir: Option<&str>) -> Result<Option<Self>> {
+        let key = FeedKey {
+            gguf: path.to_string_lossy().into_owned(),
+            engram_dir: engram_dir.map(str::to_owned),
+        };
+        if setup_cache_on() {
+            let hit = ENGRAM_FEED
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|(cached, _)| *cached == key)
+                .map(|(_, assets)| assets.clone());
+            if let Some(assets) = hit {
+                eprintln!("ds4: [v41] engram rows: open cached (assets already open)");
+                return Ok(Some(Self::from_assets(assets)));
+            }
+        }
+        // A miss builds the whole open; its product is what the next request
+        // with the same artifacts reuses.
+        let feed = Self::open_uncached(path, engram_dir)?;
+        if setup_cache_on() {
+            if let Some(f) = &feed {
+                *ENGRAM_FEED.lock().unwrap() = Some((key, EngramAssets::of(f)));
+            }
+        }
+        Ok(feed)
+    }
+
+    /// The per-request state around an already-open asset set: the control
+    /// block, the fetch worker, and a token history this prompt owns.  The
+    /// engine's feed is per state, so its history starts empty at each open;
+    /// clearing here is that same reset.  The shadow prefetch buffer is kept:
+    /// it is overwritten before any read (its own comment above).
+    fn from_assets(a: EngramAssets) -> Self {
+        a.core.lock().unwrap().hist.clear();
+        let mut async_on = a.has_ring && std::env::var_os("DS41_FEED_SYNC").is_none();
+        let ctl = Arc::new((
+            Mutex::new(Ctl {
+                go: false,
+                done: 0,
+                err: None,
+                pf: None,
+            }),
+            Condvar::new(),
+        ));
+        let worker = if async_on {
+            let (tx, rx) = mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("ds41-engram-fetch".into())
+                .spawn({
+                    let core = Arc::clone(&a.core);
+                    let ctl = Arc::clone(&ctl);
+                    move || worker_loop(core, ctl, rx)
+                });
+            match spawned {
+                Ok(join) => Some(Worker {
+                    tx,
+                    join: Some(join),
+                }),
+                Err(_) => {
+                    eprintln!(
+                        "ds4: [v41] engram fetch thread refused to start; main-thread rounds"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if worker.is_none() {
+            async_on = false;
+        }
+        let wait_delay_us = std::env::var("DS41_FEED_WAIT_DELAY_US")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&us| us > 0);
+        let wait_withhold = std::env::var_os("DS41_FEED_WAIT_WITHHOLD").is_some();
+        if wait_delay_us.is_some() || wait_withhold {
+            eprintln!(
+                "ds4: [v41] engram wait test hooks: delay {:?} us, withhold {}",
+                wait_delay_us, wait_withhold
+            );
+        }
+        let prefetch_off = std::env::var_os("DS41_FEED_NO_PREFETCH").is_some();
+        if prefetch_off && async_on {
+            eprintln!("ds4: [v41] engram cross-block prefetch off (DS41_FEED_NO_PREFETCH)");
+        }
+        Self {
+            core: a.core,
+            worker,
+            ctl,
+            async_on,
+            has_ring: a.has_ring,
+            ring_cap: a.ring_cap,
+            cols: a.cols,
+            stride: a.stride,
+            n_layers: a.n_layers,
+            sources: a.sources.clone(),
+            io_mode: false,
+            prev_worker: false,
+            started: vec![false; a.n_layers],
+            joined: vec![false; a.n_layers],
+            block_start: 0,
+            block_end: 0,
+            bases: Vec::new(),
+            err: None,
+            next: None,
+            prefetch_off,
+            wait_delay_us,
+            wait_withhold,
+        }
+    }
+
+    /// The asset half of the open, unchanged: this is the file work the cache
+    /// above stores.
+    fn open_uncached(path: &Path, engram_dir: Option<&str>) -> Result<Option<Self>> {
         let g = GgufFile::open(path).map_err(asset_error)?;
         let inv = TensorInventory::open(path).map_err(asset_error)?;
         let identified = identify_file(&g).map_err(asset_error)?;
@@ -1224,6 +1421,27 @@ fn kv_fold_bytes(h: &mut u64, data: &[u8]) {
 }
 
 fn v41_mount_zchain(model: &Model, zchain: Option<&str>, posttrain: Option<&str>) -> Result<u64> {
+    // KU-1: the mount's product is device state, and nothing else in the
+    // process changes it, so a request with the same artifact key reuses the
+    // mount.  The caller still notes the per-request state identity, which
+    // folds this mount digest together with the engram sources.
+    let key = MountKey {
+        model: model.raw_ptr() as usize,
+        zchain: zchain.map(str::to_owned),
+        posttrain: posttrain.map(str::to_owned),
+    };
+    if setup_cache_on() {
+        let hit = ZCHAIN_MOUNTED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(cached, _, _)| *cached == key)
+            .map(|(_, mode, digest)| (*mode, *digest));
+        if let Some((mode, digest)) = hit {
+            eprintln!("ds4: [v41] zchain mount: cached (identity {mode}/{digest})");
+            return Ok(digest);
+        }
+    }
     let shape = model.shape();
     let geom = ZchainGeom {
         n_layer: shape.n_layer,
@@ -1231,6 +1449,7 @@ fn v41_mount_zchain(model: &Model, zchain: Option<&str>, posttrain: Option<&str>
         n_embd: shape.n_embd,
     };
     let merged = zchain_load_for_run(zchain, posttrain, geom)?;
+    let mounted = merged.is_some();
     let digest = apply_zchain(merged.as_ref(), geom, |write| match write {
         MountWrite::ClearRb => {
             unsafe { ds4_bridge_v41_zchain_rb_clear() };
@@ -1262,6 +1481,11 @@ fn v41_mount_zchain(model: &Model, zchain: Option<&str>, posttrain: Option<&str>
             },
         );
     }
+    // KU-1: store the mount the next request with this key will reuse.  The
+    // naked base (digest 0) is a mount state of its own and is cached too.
+    if setup_cache_on() {
+        *ZCHAIN_MOUNTED.lock().unwrap() = Some((key, i32::from(mounted), digest));
+    }
     Ok(digest)
 }
 
@@ -1271,6 +1495,7 @@ enum EngramMode {
     Off,
 }
 
+#[derive(Clone)]
 struct EngramSource {
     path: std::path::PathBuf,
     metadata: std::fs::Metadata,
@@ -1489,12 +1714,21 @@ impl Model {
         // the engine's per-state mount inside the generate. Checkpoints also
         // bind the Engram mode and the actual opened sources, before any peek
         // or disk import; equal prompt tokens alone are insufficient.
+        //
+        // KU-1: both opens are cached per process, so the phase log is what
+        // shows their cost; a hit prints its own cached line instead.
+        let phases = std::env::var_os("DS41_PHASE_LOG").is_some();
+        let t_prelude = Instant::now();
+        let t_feed = Instant::now();
         let mut feed = if opts.no_engram {
             None
         } else {
             V41Feed::open(path, opts.engram_dir)?
         };
+        phase_log(phases, "engram feed open", t_feed);
+        let t_mount = Instant::now();
         let sidecar = v41_mount_zchain(self, opts.zchain, opts.posttrain)?;
+        phase_log(phases, "sidecar mount", t_mount);
         let digest = kv_state_digest(
             sidecar,
             if opts.no_engram {
@@ -1571,6 +1805,7 @@ impl Model {
             }
             None => (None, None, None, std::ptr::null_mut()),
         };
+        phase_log(phases, "host prelude (mount + open + seed)", t_prelude);
         let mut emit_tramp_state = EmitTramp { emit };
         let mut progress_tramp_state = ProgressTramp { progress };
         let mut err = [0u8; 512];
