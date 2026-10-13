@@ -17,7 +17,7 @@
 #
 #   bash install.sh                  check the machine, check the artifact
 #                                    files, build the port, start it on
-#                                    127.0.0.1:8000 and run the same smoke
+#                                    0.0.0.0:8000 and run the same smoke
 #                                    test the reference install.sh runs
 #   bash install.sh --domain code    the same, serving with the coding sidecar
 #                                    (domains: finance, code, law, medicine,
@@ -32,7 +32,7 @@
 #                      own mapping (its install.sh sidecar_of, lines 41-48)
 #   --posttrain        also load the experimental post-training file
 #                      (finance only, the reference's own constraint)
-#   --host ADDR        listen address (default 127.0.0.1)
+#   --host ADDR        listen address (default 0.0.0.0)
 #   --port N           listen port (default 8000)
 #   --no-build         do not run `make ds4-server` even if the binary is stale
 #   --no-start         install/check only
@@ -70,7 +70,7 @@ START_FLOOR_MB=100000   # engine install.sh START_FLOOR_MB
 RUN_FLOOR_MB=10000      # engine install.sh RUN_FLOOR_MB
 KILL_MB=2500            # engine install.sh KILL_MB
 
-CMD="install"; DIR="$HOME/youngai"; HOST="127.0.0.1"; PORT=8000; DOMAIN="finance"
+CMD="install"; DIR="$HOME/youngai"; HOST="0.0.0.0"; PORT=8000; DOMAIN="finance"
 WITH_PT=0; START=1; BUILD=1
 while [ $# -gt 0 ]; do
     case "$1" in
