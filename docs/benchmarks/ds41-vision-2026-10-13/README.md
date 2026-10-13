@@ -58,9 +58,9 @@ invariance, see-an-image through the port's server, no leftovers):
 
 | Fixture | Source | Golden | State |
 | --- | --- | --- | --- |
-| review-market-panel.png | engine tree root; also this repo, `tests/fixtures/vision/` | `tests/fixtures/vision/golden_panel.bin` | not run yet (Spark window) |
-| bug.jpeg | engine tree root; also this repo, `tests/fixtures/vision/` | `tests/fixtures/vision/golden_bug.bin` | not run yet (Spark window); the engine's own gate used img.jpeg (its author's image, not in the engine repo), this repo's jpeg fixture is the engine tree's bug.jpeg |
-| homer.png (190x390) | owner-provided, `tests/fixtures/vision/homer.png` | `tests/fixtures/vision/golden_homer.bin`, mint with the generator | end-to-end picture (5); its plan is 392x784 pad, 56x28 patch, 19x10 token, span 211 (probed against `v41_media::plan` 2026-10-13) |
+| review-market-panel.png | engine tree root; also this repo, `tests/fixtures/vision/` | `tests/fixtures/vision/golden_panel.bin` (Spark-minted) | run 2026-10-13: ok |
+| bug.jpeg | engine tree root; also this repo, `tests/fixtures/vision/` | `tests/fixtures/vision/golden_bug.bin` (Spark-minted) | run 2026-10-13: ok; the engine's own gate used img.jpeg (its author's image, not in the engine repo), this repo's jpeg fixture is the engine tree's bug.jpeg |
+| homer.png (190x390) | owner-provided, `tests/fixtures/vision/homer.png` | `tests/fixtures/vision/golden_homer.bin` (Spark-minted) | run 2026-10-13: ok; plan 392x784 pad, 56x28 patch, 19x10 token, span 211 |
 
 ## Engine side (quoted from the engine's own record, 2026-10-13)
 
@@ -117,32 +117,72 @@ survives in the model/bin backups (all three checked 2026-10-13).
 - The gate itself needs the model and runs only on the Spark (owner rule
   2026-10-10); everything above is model-free evidence.
 
-## Spark window (pending, owner-gated)
+## Port side, verified on the Spark (2026-10-13)
 
-To fill, on the Spark tree, without disturbing the live server:
+The window ran on the reference Spark (GB10) against the deployed artifacts
+(base `vq8sh14-q4k-mtpnative`, the `grrb-code_fit_n15360-engine` directory,
+the n-gram shards, sidecar `DeepSeek-V4.1-Flash.vision.gguf` 971,066,016 B,
+sha256 `b50974c405aafbd941f8e8767cf90231b522aa4f2fcb506eaea68fbf8b409af5`).
+Build `make cuda-spark` at `6c959f82`: `./ds4` sha256 `0d141bae...`, `./ds4-server`
+sha256 `cf7f5af0...`. The goldens were minted on that same machine (torch
+2.14.1+cu130 on the GB10, `tools/vision_golden.py`), so plan, patches and
+tower compare on one device, the engine's own convention. Runner
+`bash tests/ds41_vision_gate_spark.sh`; raw outputs under the gate dir it
+prints.
 
-1. The engine side: quoted above from the engine's own record; our Spark's
-   engine binary predates the vision commits, so the engine side is not
-   re-runnable there.
-2. The port side: `bash tests/ds41_vision_gate_spark.sh` (golden gate on
-   every fixture that has a golden, text invariance, see-an-image; raw
-   outputs under the gate dir it prints), plus `homer.png` end-to-end.
-   Before it runs, the goldens must be minted on a machine that has the
-   original HF directory (torch + the vision./aligner. shards), then copied
-   to `tests/fixtures/vision/`.
-3. The sidecar sha256 (`DeepSeek-V4.1-Flash.vision.gguf`, 971,066,016 B):
-   b50974c405aafbd941f8e8767cf90231b522aa4f2fcb506eaea68fbf8b409af5 (taken
-   on the Spark 2026-10-13; matches the engine's own HF push record) and the
-   build shas of both sides (base GGUF sha256 already recorded in
-   `docs/deepseek41-flash.md`).
-4. Acceptance list: the port gate exits 0 on both fixtures; text byte
-   identity with and without `--vision-gguf`; the 400 path with the sidecar
-   absent; the admission line when the peak does not fit.
+| Fixture | plan | pixels | patches | tower (golden patches) | verdict |
+| --- | --- | --- | --- | --- | --- |
+| review-market-panel.png | 1200x665 -> pad 1204x672, patch 48x86, token 16x29 (matches) | 0/2,427,264 differ | 0/2,427,264 differ, max 0.0 | 464x5120, row cos mean 0.999804 min 0.990113 (row 97), max abs diff 0.01953 | ok |
+| bug.jpeg | 1080x2414 -> pad 840x1876, patch 134x60, token 45x20 (matches) | 116,398/4,727,520 differ, max 4 | 116,398/4,727,520 differ, max 0.03125 (4.0 pixel-levels) | 900x5120, mean 0.999881 min 0.993775 (row 159), max abs diff 0.02100 | ok |
+| homer.png | 190x390 -> pad 392x784, patch 56x28, token 19x10 (matches) | 0/921,984 differ | 0/921,984 differ, max 0.0 | 190x5120, mean 0.999624 min 0.990381 (row 48), max abs diff 0.02051 | ok |
+
+Both PNGs transcribe bit-exact; the JPEG moves 4.0 pixel-levels at its worst
+element, the same class the engine's record gives its img.jpeg. The panel's
+numbers land where the engine's own record puts its panel run (mean 0.999804,
+min 0.990, row 97, max abs diff 0.0195).
+
+Text invariance (step 2): byte-identical with and without `--vision-gguf`
+(temp 0, 64 greedy tokens, the prompt tokenized once with `--dump-tokens`).
+The answer as-is begins: "Marginal cost is the additional cost incurred by
+producing one more unit of a product or service."
+
+See an image (step 3, the port's server, one greedy request per fixture,
+answers printed raw and judged against the pictures):
+
+- review-market-panel.png (502 prompt tokens, 200 completion) lists the
+  panel's own headings: `QTTerminal`, `A股交易系统`, `复盘分析`, `大盘数据 ·
+  涨跌家数真实判断 · 资金曲线模拟 · 自选股胜率统计 · 偏差归因`, `时间筛选` /
+  `全部时间`, matching the engine's recorded reading.
+- homer.png (231 prompt, 59 completion): "Homer Simpson ... holding a pink
+  donut with sprinkles in his right hand ... There is no text or numbers
+  visible in this image." Checked against the fixture: correct.
+- bug.jpeg (967 prompt, 200 completion): read as a dense vertical Chinese
+  text column, which it is.
+
+The 400 without the sidecar (step 5): HTTP 400, `{"error":{"message":"image
+input requires the DeepSeek V4.1 vision sidecar (--vision-gguf)","type":
+"invalid_request_error"}}`.
+
+The image surfaces (live, one server, temperature 0): the same image request
+through OpenAI `/v1/chat/completions`, Anthropic `/v1/messages` and Responses
+`/v1/responses` (`input_image`) answered byte-identical, 231 prompt and 59
+completion each (`tests/ds41_api_image_probe.py`: 3/3 surfaces, identical).
+
+Admission (step 6, still open): a 200,000-token prefill was not refused --
+the peak fits and the prefill ran on the free box, so the refusal line needs
+a longer prompt or memory pressure. The cell stays open.
+
+The dev-box-minted goldens (the run before this one) are kept as the
+cross-device finding: the port's tower against them read min 0.942181 on the
+panel (row 389, FAIL), while the two official-torch goldens (RTX 4070 SUPER
+vs GB10, same code and weights) differ by min 0.938248 on that same row. The
+dip is the official implementation's own cross-device bf16 noise, which is
+why the engine mints its goldens on the machine that runs the tower.
 
 ## Limits
 
-- The port gate has not been run against a model yet: this record's port
-  section is unit evidence only until the Spark window fills the results.
+- The admission cell (step 6) is open: a 200,000-token prefill fits the free
+  box and runs, so the refusal line has not been captured yet.
 - The engine's gate ran on the engine author's machine; its outputs are
   quoted from the engine's record (above), not re-run here.
 - The (2) pixel line is a named port addition (report only); the engine has
