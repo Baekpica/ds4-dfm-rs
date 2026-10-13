@@ -219,8 +219,10 @@ See [architecture](docs/rust-migration/ARCHITECTURE.md) and
 | [Documentation index](docs/README.md) | Find current guides, releases and dated reports |
 | [Serving contract](docs/serving-contract.md) | Options, resolved plans, owner/worker and reuse |
 | [Model families](docs/ds4-dfm-model-families.md) | Artifacts, media, context and state limits |
+| [DeepSeek V4.1 Flash (ds41)](docs/deepseek41-flash.md) | Artifact, 40-layer shape, serving contract, gates and recorded benchmarks |
 | [Chat templates](docs/chat-templates.md) | Official assets and continuation |
 | [Performance](docs/performance.md) | Representative results and measurement conditions |
+| [Qwen benchmark reference](docs/qwen38-benchmark-reference.md) | Consolidated Qwen limits, protocols, campaign numbers and optimization target |
 | [Memory guard](docs/host-memory-guard.md) | Large-model admission and operational limits |
 | [Changelog](CHANGELOG.md) | Independent and inherited release history |
 
