@@ -81,6 +81,21 @@ C restored the identical prompt whole (3726/3726) and matched B bit for bit.
 The cache re-notes the same mount digest, so the KV checkpoint's identity is
 unchanged. `cargo test -p ds4-core --lib v41_run` is 4/4.
 
+## Deployed check
+
+After the A/B, the same binary was deployed the way the box serves: the build
+was copied into `<dir>/model/bin/ds4-server` and started with
+`bash install.sh start --domain code` (START-RC=0, `ready:
+http://127.0.0.1:8000/v1, domain code`). The live instance then answered the
+19-token probe with full reuse and server `ttft_ms` 7.5 / 7.3 ms warm (302.5 ms
+cold, which carries the one-time mount) against 171-185 ms warm on the
+campaign build that was serving before this unit.
+
+Note the deploy order: the install action refreshes the release pack, and that
+pack carries the published `ds4-server`, so a locally built server has to be
+copied into `<dir>/model/bin/` after an install and before `start` (the start
+action downloads nothing and refuses a binary whose help lacks `--engram-dir`).
+
 ## Limits
 
 - Sequential, not interleaved: both servers hold the model, so they ran one
