@@ -228,14 +228,74 @@ bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs) {
         if (ok) fprintf(stderr, "[v41] image %u: %ux%u patch -> %ux%u token (span %u)\n",
                         i, im->n_vit_h, im->n_vit_w, im->n_llm_h, im->n_llm_w, im->n_tok);
     }
+    /* Patches are the Rust host's (borrowed for the run): the native frees only
+     * the tower's own device tensors, never imgs->img[i].patches. */
     for (uint32_t i = 0; i < imgs->n; i++) {
         if (A[i].al) { ds4_gpu_tensor_free(A[i].al); }
-        if (imgs->img[i].patches) { free(imgs->img[i].patches); imgs->img[i].patches = NULL; }
     }
     free(A);
     if (ok && !ds4_gpu_synchronize()) ok = false;
     imgs->encoded = ok ? 1 : 0;
     return ok;
+}
+
+/* ---- the request image set: build / free / peak account (ds41_forward.h) ----
+ *
+ * 1:1 with the engine's ds4_v41_images_prepare minus the decode+preprocess the
+ * Rust host owns (core_v41_vision.c:186-218): the prompt is already expanded
+ * and row_of already maps each position to its embed row.  The per-image span
+ * length and row0 the engine computes in its expansion loop (:200-204) are
+ * recomputed here so the struct is self-consistent. */
+struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows) {
+    if (n < 0 || np == 0u) return NULL;
+    struct ds4_v41_images *S = xcalloc(1, sizeof *S);
+    S->img = xcalloc((size_t)(n > 0 ? n : 1), sizeof(v41_image));
+    S->n = (uint32_t)n;
+    S->np = np;
+    S->n_rows = n_rows;
+    S->row_of = xmalloc((size_t)np * 4);
+    memcpy(S->row_of, row_of, (size_t)np * 4);
+    /* sig_of stays NULL: image identity is folded into the Rust KV mount
+     * digest, which drops the native checkpoint on a change (the engine's
+     * per-position sig, core_v41_kvreuse.c:99-129, is not ported). */
+    S->sig_of = NULL;
+    uint32_t row0 = 0;
+    for (int i = 0; i < n; i++) {
+        v41_image *im = &S->img[i];
+        im->patches = (float *)in[i].patches;
+        im->n_vit_h = in[i].n_vit_h; im->n_vit_w = in[i].n_vit_w;
+        im->n_llm_h = in[i].n_llm_h; im->n_llm_w = in[i].n_llm_w;
+        im->n_tok = im->n_llm_h * (im->n_llm_w + 1u) + 2u;   /* core_v41_vision.c:200 */
+        im->row0 = row0; row0 += im->n_tok;
+    }
+    return S;
+}
+
+void ds4_v41_images_free(struct ds4_v41_images *S) {
+    if (!S) return;
+    free(S->img); free(S->row_of); free(S->sig_of);   /* patches are the host's, not freed */
+    if (S->embd) ds4_gpu_tensor_free(S->embd);
+    free(S);
+}
+
+/* Prefill extra peak for the serving admission account: the largest image's
+ * tower activations + the 192 MB attention scratch + the weight-staging slot +
+ * every span's embed rows (core_v41_vision.c:229-241). */
+uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S) {
+    if (!S) return 0;
+    const ds4_v41_cfg *v = &g_ds4_v41;
+    const uint64_t D = v->vis_dim, I = v->vis_inter, R = v->vis_ds, E = DS4_N_EMBD, PP = 3u * v->vis_patch * v->vis_patch;
+    uint64_t peak = 0, xs = 0;
+    for (uint32_t i = 0; i < S->n; i++) {
+        const uint64_t n = (uint64_t)S->img[i].n_vit_h * S->img[i].n_vit_w;
+        const uint64_t nl = (uint64_t)S->img[i].n_llm_h * S->img[i].n_llm_w;
+        const uint64_t b = n * (PP + 4 * D + 3 * D + 2 * I + I) * 4 + n * 3 * D * 2 + nl * (D * R * R + 2 * E) * 4 + (192ull << 20);
+        if (b > peak) peak = b;
+        xs += n * D * 4 + nl * E * 4;   /* each image's residual stream and output live at once */
+    }
+    const uint64_t wstage = (D * 3 * D + D * D + D * 2 * I + I * D + D * R * R * E + E * E) * 2;
+    return peak + xs + wstage + (uint64_t)S->n_rows * E * 4;
 }
 
 #endif /* !DS4_NO_GPU */

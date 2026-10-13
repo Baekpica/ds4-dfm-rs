@@ -356,9 +356,27 @@ void ds4_bridge_set_mem_budget_mb(int mb);
 int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd);
 int ds4_bridge_v41_zchain_rb_set(ds4_bridge_model *m, uint32_t il, const float *delta, uint32_t n_expert);
 void ds4_bridge_v41_zchain_rb_clear(void);
+/* The request's images (the engine's ds4_v41_images, core_v41.h:409-417).  The
+ * Rust host owns preprocessing (crates/ds4-core/src/v41_media.rs) and the
+ * prompt expansion: patches is the f32 [n_vit_h*n_vit_w][3*patch*patch] on the
+ * bf16 grid the tower consumes, row_of maps the expanded prompt's positions to
+ * embed rows (-1 = text), and n_rows is the sum of the span lengths.  Every
+ * pointer is borrowed for the duration of the call only; NULL = a text request
+ * (no tower, byte-identical to before). */
+typedef struct {
+    const float *patches;
+    uint32_t n_vit_h, n_vit_w, n_llm_h, n_llm_w;
+} ds4_bridge_v41_image;
+typedef struct {
+    const ds4_bridge_v41_image *img;
+    int n;
+    const int32_t *row_of;
+    uint32_t np, n_rows;
+} ds4_bridge_v41_images;
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,
+                            const ds4_bridge_v41_images *images,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
                             ds4_bridge_v41_wait_fn wait,
                             ds4_bridge_v41_next_fn next,

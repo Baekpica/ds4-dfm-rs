@@ -165,6 +165,29 @@ pub struct ds4_bridge_v41_sampling {
     pub greedy_ud: *mut c_void,
 }
 
+/* The request's images (native/bridge/ds4_bridge.h; the engine's
+ * ds4_v41_images, core_v41.h:409-417).  The Rust host owns preprocessing and
+ * prompt expansion; patches and row_of are borrowed for the duration of the
+ * generate call only.  A text request passes a NULL pointer. */
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_v41_image {
+    pub patches: *const f32,
+    pub n_vit_h: u32,
+    pub n_vit_w: u32,
+    pub n_llm_h: u32,
+    pub n_llm_w: u32,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_v41_images {
+    pub img: *const ds4_bridge_v41_image,
+    pub n: c_int,
+    pub row_of: *const i32,
+    pub np: u32,
+    pub n_rows: u32,
+}
+
 pub type ds4_bridge_backend = c_int;
 
 pub const DS4_BRIDGE_BACKEND_CUDA: ds4_bridge_backend = 0;
@@ -888,6 +911,7 @@ extern "C" {
         n_predict: c_int,
         no_engram: c_int,
         verify_k: c_int,
+        images: *const ds4_bridge_v41_images,
         rows: ds4_bridge_v41_rows_fn,
         rows_ud: *mut c_void,
         wait: ds4_bridge_v41_wait_fn,

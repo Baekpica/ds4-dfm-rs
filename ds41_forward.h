@@ -94,6 +94,45 @@ typedef struct {
 int ds4_v41_score_ids(void *engine, const int *ids, int n_ids, const char *out_path,
                       int no_engram, int chunk, const ds41_engram_feed *feed);
 
+/* ---- Vision (2026-10-13): the request's image set -------------------------
+ *
+ * The engine's ds4_v41_images_prepare (core_v41_vision.c:186-218) does three
+ * things: decode+preprocess each image into patches, build the request's image
+ * struct, and expand the prompt.  The port splits that: the Rust host owns
+ * preprocessing (crates/ds4-core/src/v41_media.rs) AND the prompt expansion
+ * (the renderer), so the native only assembles the struct from the
+ * already-computed patches and the expanded prompt's per-position row map.
+ *
+ * ds4_v41_image_src is one image's Rust output: patches are the host f32
+ * [n_vit_h*n_vit_w][3*patch*patch] on the bf16 grid the tower consumes (
+ * core_v41_image.c:150-172), borrowed for the run (the native never frees
+ * them).  The span length n_tok = n_llm_h*(n_llm_w+1)+2 and the row0 offsets
+ * are the native's own account (core_v41_vision.c:200-204).  The per-image
+ * identity (core_v41_vision.c:198/182 fnv1a64) is not carried here: the port
+ * enforces image identity by folding the fingerprint into the Rust KV mount
+ * digest, which drops the native checkpoint on a change (see ds41_forward.h
+ * note on ds4_v41_images_build and crates/ds4-core/src/v41_run.rs
+ * kv_state_digest). */
+typedef struct {
+    const float *patches;         /* [n_vit_h*n_vit_w][3*patch*patch], borrowed */
+    uint32_t n_vit_h, n_vit_w;    /* ViT patch grid */
+    uint32_t n_llm_h, n_llm_w;    /* aligner (LLM) token grid */
+} ds4_v41_image_src;
+
+/* struct ds4_v41_images is defined in ds4_ds41_forward.inc (native TU only);
+ * the bridge holds it opaquely. */
+struct ds4_v41_images;
+
+/* Build the image set: copies row_of (expanded prompt: position -> embed row,
+ * -1 = text), takes the patches borrowed, and computes each span's n_tok/row0.
+ * n_rows = sum of span lengths.  NULL when n < 0 or np == 0. */
+struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows);
+void ds4_v41_images_free(struct ds4_v41_images *S);
+/* The prefill's extra peak for the serving admission account, mirroring the
+ * engine's ds4_v41_images_bytes (core_v41_vision.c:229-241). */
+uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S);
+
 /* Greedy generate (the engine's ds4_engine_v41_generate_argmax,
  * core_v41_api.c:426-470 + the round drive :175-425): prompt prefill in
  * chunks, then n=1 decode steps with device argmax.  emit is called per
@@ -111,7 +150,8 @@ int ds4_v41_score_ids(void *engine, const int *ids, int n_ids, const char *out_p
  * block the forward runs (see ds41_engram_feed), or the caller pre-fills slot
  * 0 per step and sets pos0 (the E0-hardened protocol). */
 int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n_predict, int no_engram,
-                            int verify_k, const ds41_engram_feed *feed, int (*emit)(int token, void *ud), void *ud);
+                            int verify_k, struct ds4_v41_images *imgs, const ds41_engram_feed *feed,
+                            int (*emit)(int token, void *ud), void *ud);
 
 /* --v41-prof (defined in the CUDA TU, ds4_ds41_gpu.cuh): per-layer ms and the
  * per-round `[dspark]` trace lines (the engine's core_v41_api.c:346-357).  The

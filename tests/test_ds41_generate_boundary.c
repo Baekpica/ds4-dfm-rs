@@ -53,6 +53,7 @@ static uint32_t g_snap_past, g_alloc_cap, g_peak_block;
 typedef struct { int unused; } v41_sched;
 
 static void *xmalloc(size_t bytes) { return malloc(bytes); }
+static void *xmalloc_zeroed(size_t n, size_t size) { return calloc(n, size); }
 static double now_sec(void) { return (double)clock() / CLOCKS_PER_SEC; }
 ds4_gpu_tensor *ds4_gpu_tensor_alloc(uint64_t bytes) {
     ds4_gpu_tensor *t = calloc(1, sizeof *t);
@@ -119,6 +120,11 @@ static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
     return true;
 }
 static int v41_dspark_mode(void) { return g_spec; }
+/* The vision tower is native code the harness does not compile; the extracted
+ * v41_forward calls it only when the state carries an image set (never here). */
+static bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs) {
+    (void)e; (void)imgs; return true;
+}
 #include "ds41_boundary_feed.inc"
 #include "ds41_boundary_forward.inc"
 
@@ -190,7 +196,7 @@ static int run_case(uint32_t np, int predict, uint32_t ctx, int spec, int pad) {
     g_expected = expected;
     ds4_v41_feed *feed = ds4_v41_feed_open(&engine, (int)np, rows, NULL, NULL, NULL, NULL, NULL);
     if (!feed) { return 1; }
-    const int rc = ds4_v41_generate_argmax(&engine, prompt, (int)np, predict, 0, 5, &feed->feed, emit, NULL);
+    const int rc = ds4_v41_generate_argmax(&engine, prompt, (int)np, predict, 0, 5, NULL, &feed->feed, emit, NULL);
     const uint32_t feed_cap = feed->rows_cap;
     ds4_v41_feed_close(feed);
     const int graph_ok = !g_graph || (g_launches == expected - 1 && g_waits == g_launches && !g_graph_pending);

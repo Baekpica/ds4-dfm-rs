@@ -1817,6 +1817,7 @@ impl Model {
                 n_predict,
                 i32::from(opts.no_engram),
                 opts.verify_k,
+                std::ptr::null(),   // vision images: wired in the next unit
                 rows_fn,
                 rows_ud,
                 wait_fn,

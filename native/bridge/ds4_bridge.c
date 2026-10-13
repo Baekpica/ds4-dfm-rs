@@ -908,9 +908,28 @@ void ds4_bridge_v41_zchain_rb_clear(void) {
     ds4_v41_zchain_rb_clear();
 }
 
+/* Assemble the native image set from the Rust-preprocessed patches
+ * (ds41_forward.h ds4_v41_images_build).  NULL on allocation failure or an
+ * empty set; the caller only builds when images->n > 0. */
+static struct ds4_v41_images *v41_bridge_images_build(const ds4_bridge_v41_images *images) {
+    ds4_v41_image_src *src = malloc((size_t)images->n * sizeof *src);
+    if (!src) return NULL;
+    for (int i = 0; i < images->n; i++) {
+        src[i].patches = images->img[i].patches;
+        src[i].n_vit_h = images->img[i].n_vit_h;
+        src[i].n_vit_w = images->img[i].n_vit_w;
+        src[i].n_llm_h = images->img[i].n_llm_h;
+        src[i].n_llm_w = images->img[i].n_llm_w;
+    }
+    struct ds4_v41_images *S = ds4_v41_images_build(src, images->n, images->row_of, images->np, images->n_rows);
+    free(src);
+    return S;
+}
+
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,
+                            const ds4_bridge_v41_images *images,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
                             ds4_bridge_v41_wait_fn wait,
                             ds4_bridge_v41_next_fn next,
@@ -947,9 +966,23 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
         }
     }
     ds4_engine_v41_set_progress(progress, progress_ud);
+    /* Vision: assemble the native image set from the Rust-preprocessed patches;
+     * a text request passes images == NULL and stays byte-identical. */
+    struct ds4_v41_images *imgs = NULL;
+    if (images && images->n > 0) {
+        imgs = v41_bridge_images_build(images);
+        if (!imgs) {
+            ds4_engine_v41_set_progress(NULL, NULL);
+            if (feed && drain) { (void)drain(rows_ud); }
+            ds4_v41_feed_close(feed);
+            set_err(err, errlen, "V4.1 image set build failed");
+            return 1;
+        }
+    }
     const int rc = ds4_v41_generate_argmax(m->engine, prompt, n_prompt, n_predict,
-                                           no_engram, verify_k,
+                                           no_engram, verify_k, imgs,
                                            ds4_v41_feed_handle(feed), emit, emit_ud);
+    ds4_v41_images_free(imgs);
     ds4_engine_v41_set_progress(NULL, NULL);
     /* A failed layer wait can return while the host still fills pinned rows.
      * Drain on every result while those destinations remain alive. */

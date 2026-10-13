@@ -666,12 +666,23 @@ const ds41_engram_feed *ds4_v41_feed_handle(const ds4_v41_feed *f) {
     return NULL;
 }
 int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n_predict,
-                            int no_engram, int verify_k, const ds41_engram_feed *feed,
+                            int no_engram, int verify_k, struct ds4_v41_images *imgs,
+                            const ds41_engram_feed *feed,
                             int (*emit)(int token, void *ud), void *ud) {
     (void)engine; (void)prompt; (void)n_prompt; (void)n_predict; (void)no_engram;
-    (void)verify_k; (void)feed; (void)emit; (void)ud;
+    (void)verify_k; (void)imgs; (void)feed; (void)emit; (void)ud;
     return 1;
 }
+/* The vision image set: the null engine takes no images, so build refuses and
+ * the others are inert (the real GPU-side definitions live in
+ * ds4_ds41_vision.inc). */
+struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows) {
+    (void)in; (void)n; (void)row_of; (void)np; (void)n_rows;
+    return NULL;
+}
+void ds4_v41_images_free(struct ds4_v41_images *S) { (void)S; }
+uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S) { (void)S; return 0; }
 void ds4_engine_v41_set_kv_reuse(int on) { (void)on; }
 int ds4_engine_v41_last_reused(void) { return 0; }
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np) { (void)prompt; (void)np; return 0; }

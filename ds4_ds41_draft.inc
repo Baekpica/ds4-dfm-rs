@@ -668,7 +668,7 @@ void ds4_engine_v41_last_spec_stats(int *rounds, int *offered, int *accepted) {
  * scheduler.  Named limits: sampling and the penalties are not ported (their
  * unit); no_engram mirrors the engine's --v41-no-engram. */
 int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n_predict, int no_engram, int verify_k,
-                            const ds41_engram_feed *feed, int (*emit)(int token, void *ud), void *ud) {
+                            struct ds4_v41_images *imgs, const ds41_engram_feed *feed, int (*emit)(int token, void *ud), void *ud) {
     ds4_engine *e = (ds4_engine *)engine;
     if (!e || !prompt || n_prompt < 1 || DS4_MODEL_VARIANT != DS4_VARIANT_V41) return 1;
     const uint32_t np = (uint32_t)n_prompt;
@@ -778,6 +778,11 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
          * previous request's prompt-end checkpoint when this prompt starts
          * with it, and the chunk loop then starts at that position. */
         const uint32_t reused = v41_kvreuse_restore(&st, prompt, np);
+        /* Vision (core_v41_api.c:181): the prefill blocks overlay the visual
+         * span embeddings by position (v41_forward_body); the tower runs once,
+         * in the first block.  Cleared right after the prefill
+         * (core_v41_api.c:193) so decode / draft clones never see it. */
+        st.vimg = imgs;
         for (uint32_t c0 = reused; ok && c0 < np;) {
             ok = v41_prefill_chunk(e, &st, prompt, np, &c0, cap);
             /* The engine's per-chunk progress hook (core_v41_api.c:187-194):
@@ -790,6 +795,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                 break;
             }
         }
+        st.vimg = NULL;
         if (!ok || aborted) break;
         /* Decode mutates the ring, the remainder rows and the group counts, so
          * the checkpoint is taken here (core_v41_api.c:192), after a clean

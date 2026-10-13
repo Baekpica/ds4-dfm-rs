@@ -47,15 +47,26 @@ void ds4_engine_v41_set_progress(int (*cb)(void *, const char *, int, int), void
 
 int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt,
                            int n_predict, int no_engram, int verify_k,
+                           struct ds4_v41_images *imgs,
                            const ds41_engram_feed *feed,
                            int (*emit)(int, void *), void *emit_ud) {
     (void)engine; (void)prompt; (void)n_prompt; (void)n_predict;
-    (void)no_engram; (void)verify_k; (void)feed; (void)emit; (void)emit_ud;
+    (void)no_engram; (void)verify_k; (void)imgs; (void)feed; (void)emit; (void)emit_ud;
     pending = 1;
     /* The failed layer wait deliberately leaves an in-flight row writer. */
     assert(provider_wait(0, provider_ud) != 0);
     return run_rc;
 }
+
+/* The bridge references the vision image set even when a request passes none;
+ * this stub keeps the teardown gate link-clean. */
+struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows) {
+    (void)in; (void)n; (void)row_of; (void)np; (void)n_rows;
+    return NULL;
+}
+void ds4_v41_images_free(struct ds4_v41_images *S) { (void)S; }
+uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S) { (void)S; return 0; }
 
 static int wait_rows(int layer, void *ud) {
     (void)layer; (void)ud;
@@ -77,7 +88,7 @@ int main(void) {
         for (drain_rc = 0; drain_rc <= 1; drain_rc++) {
             closed = drain_calls = 0;
             const int rc = ds4_bridge_v41_generate(&model, prompt, 1, 1,
-                0, 0, NULL, NULL, wait_rows, NULL, drain_rows, NULL, NULL, NULL, NULL,
+                0, 0, NULL, NULL, NULL, wait_rows, NULL, drain_rows, NULL, NULL, NULL, NULL,
                 err, sizeof err);
             assert(closed == 1);
             assert(drain_calls == 1);
@@ -86,7 +97,7 @@ int main(void) {
     }
     closed = drain_calls = 0;
     const int rc = ds4_bridge_v41_generate(&model, prompt, 1, 1,
-        0, 0, NULL, NULL, wait_rows, NULL, NULL, NULL, NULL, NULL, NULL,
+        0, 0, NULL, NULL, NULL, wait_rows, NULL, NULL, NULL, NULL, NULL, NULL,
         err, sizeof err);
     assert(rc != 0 && "an asynchronous provider requires a drain hook");
     assert(closed == 0);
