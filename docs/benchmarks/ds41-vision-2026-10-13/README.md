@@ -6,7 +6,7 @@ official `inference/{image_processor,vision}.py` code and the BF16 originals
 (PIL preprocessing plus the aligner rows), and both engines compare their
 preprocessing and their tower against it. This record carries both sides: the
 engine's gate (`./ds4 --image ... --vision-golden ...`) and the port's
-(`ds4-rs --vision-gguf ... --image ... --vision-golden ...`).
+(`./ds4 --vision-gguf ... --image ... --vision-golden ...`).
 
 Fixture format (little endian, `src/core/core_v41_vision_gate.c:3-5`):
 
@@ -39,22 +39,55 @@ Engine (on the Spark tree, `gguf-tools/scripts/vision_gate_spark.sh` step 1):
 
 Port (this tree; the gate runs instead of generating):
 
-    ds4-rs --cuda -m <base>.gguf --zchain <domain dir> --mem-budget-mb 110000 \
+    ./ds4 --cuda -m <base>.gguf --zchain <zchain dir> --mem-budget-mb 110000 \
         --no-dspark --vision-gguf <vision.gguf> --image <img> \
         --vision-golden <golden>.bin
 
-Fixture generator (engine tree, outside this repo by rule 14):
+Fixture generator (this repo, `tools/vision_golden.py`: the port's copy of
+the engine's tool, translated to English; fixture generation only):
 
-    ~/v41env/bin/python tools/vision_golden.py --hf <hf dir> --image <img> \
-        --out <golden>.bin
+    python3 tools/vision_golden.py --hf <hf dir> --image <img> --out <golden>.bin
+
+Gate runner (this repo, `tests/ds41_vision_gate_spark.sh`: the port of the
+engine's `gguf-tools/scripts/vision_gate_spark.sh`; golden gate, text
+invariance, see-an-image through the port's server, no leftovers):
+
+    bash tests/ds41_vision_gate_spark.sh [main gguf] [vision gguf] [zchain dir]
 
 ## Fixtures
 
 | Fixture | Source | Golden | State |
 | --- | --- | --- | --- |
-| review-market-panel.png | engine gate dir, on the Spark | `gguf/v41/vision/golden_panel.bin` (engine tree) | not run yet (Spark window) |
-| img.jpeg | engine gate dir, on the Spark | `gguf/v41/vision/golden_img.bin` (engine tree) | not run yet (Spark window) |
-| homer.png (190x390) | owner-provided, `misc/vision-test/homer.png` | none yet; mint with the generator | end-to-end picture (5); its plan is 392x784 pad, 56x28 patch, 19x10 token, span 211 (probed against `v41_media::plan` 2026-10-13) |
+| review-market-panel.png | engine tree root; also this repo, `tests/fixtures/vision/` | `tests/fixtures/vision/golden_panel.bin` | not run yet (Spark window) |
+| bug.jpeg | engine tree root; also this repo, `tests/fixtures/vision/` | `tests/fixtures/vision/golden_bug.bin` | not run yet (Spark window); the engine's own gate used img.jpeg (its author's image, not in the engine repo), this repo's jpeg fixture is the engine tree's bug.jpeg |
+| homer.png (190x390) | owner-provided, `tests/fixtures/vision/homer.png` | `tests/fixtures/vision/golden_homer.bin`, mint with the generator | end-to-end picture (5); its plan is 392x784 pad, 56x28 patch, 19x10 token, span 211 (probed against `v41_media::plan` 2026-10-13) |
+
+## Engine side (quoted from the engine's own record, 2026-10-13)
+
+The engine's own gate ran on the engine author's machine; its artifacts
+(`gguf/v41/vision/gate_1013_1113` and `gate_1013_1134`) live in the engine
+tree, not in this repo. The engine's record (fable5.md, the 10-13 vision
+entry) states:
+
+- panel PNG: size account identical (1204x672 / 48x86 / 16x29); patches
+  0/2,427,264 elements differ (its PIL transcription is bit-exact); tower
+  (golden patches in, its aligner rows out) row cos min 0.990, max diff
+  0.0195; after the per-block weight-copy change: mean 0.999804 / min 0.990
+  (row 97).
+- img.jpeg: size account identical; patches 4% of elements differ by at most
+  3.2 levels (stb vs libjpeg IDCT/chroma upsampling, not a transcription
+  error); tower row cos min 0.973 (row 747) / mean 0.999696; end-to-end (its
+  own patches) row cos min 0.787 (row 584, JPEG decode difference; report
+  only).
+- Threshold basis from the same record: the official code's own bf16 vs f32
+  on img.jpeg, row cos min 0.926 (row 746) / mean 0.99927; panel 0.986 /
+  0.99979.
+- Text invariance gate: byte-identical with and without `--vision-gguf`
+  (temp 0, 64 tokens); the see-an-image answers matched the pictures.
+
+Our Spark cannot re-run the engine side: its engine tree sits at fc54d1e
+(before the eight vision commits) and no vision-capable engine binary
+survives in the model/bin backups (all three checked 2026-10-13).
 
 ## Port side, verified on the dev box (2026-10-13)
 
@@ -62,6 +95,12 @@ Fixture generator (engine tree, outside this repo by rule 14):
   checks, the two thresholds) with the native tower entry
   (`ds4_bridge_v41_vision_run`, `ds4_bridge_v41_has_vision`) and the CLI
   flags (`--vision-gguf`, `--image`, `--vision-golden`).
+- The window's own files are in this tree: the fixtures under
+  `tests/fixtures/vision/`, the golden generator `tools/vision_golden.py`
+  (the engine's tool, translated) and the gate runner
+  `tests/ds41_vision_gate_spark.sh` (the engine's script, ported to the
+  port's entries: `--gen-ids` for the text step, the server for the
+  see-an-image step).
 - Unit evidence: `cargo test -p ds4-core --lib v41_golden` 4 pass (reader
   round-trip of the engine format, bad magic/version/short reads, the row
   statistics formula, single-row negation); the full
@@ -79,13 +118,19 @@ Fixture generator (engine tree, outside this repo by rule 14):
 
 To fill, on the Spark tree, without disturbing the live server:
 
-1. The engine side: its own gate outputs from
-   `gguf/v41/vision/gate_<time>/` (`golden_panel.txt`, `golden_img.txt`) and
-   the two golden fixtures' hashes.
-2. The port side: the same two fixtures through `ds4-rs`, plus `homer.png`
-   end-to-end (a golden minted with the generator, or the (5) line only).
-3. The sidecar sha256 (`DeepSeek-V4.1-Flash.vision.gguf`, 971,066,016 B) and
-   the build shas of both sides (base GGUF sha256 already recorded in
+1. The engine side: quoted above from the engine's own record; our Spark's
+   engine binary predates the vision commits, so the engine side is not
+   re-runnable there.
+2. The port side: `bash tests/ds41_vision_gate_spark.sh` (golden gate on
+   every fixture that has a golden, text invariance, see-an-image; raw
+   outputs under the gate dir it prints), plus `homer.png` end-to-end.
+   Before it runs, the goldens must be minted on a machine that has the
+   original HF directory (torch + the vision./aligner. shards), then copied
+   to `tests/fixtures/vision/`.
+3. The sidecar sha256 (`DeepSeek-V4.1-Flash.vision.gguf`, 971,066,016 B):
+   b50974c405aafbd941f8e8767cf90231b522aa4f2fcb506eaea68fbf8b409af5 (taken
+   on the Spark 2026-10-13; matches the engine's own HF push record) and the
+   build shas of both sides (base GGUF sha256 already recorded in
    `docs/deepseek41-flash.md`).
 4. Acceptance list: the port gate exits 0 on both fixtures; text byte
    identity with and without `--vision-gguf`; the 400 path with the sidecar
@@ -95,7 +140,10 @@ To fill, on the Spark tree, without disturbing the live server:
 
 - The port gate has not been run against a model yet: this record's port
   section is unit evidence only until the Spark window fills the results.
-- The engine's own gate run predates this record; its outputs live in the
-  engine tree and are quoted as-is when the window opens.
+- The engine's gate ran on the engine author's machine; its outputs are
+  quoted from the engine's record (above), not re-run here.
 - The (2) pixel line is a named port addition (report only); the engine has
   no counterpart line, so the two sides' outputs differ there by design.
+- The port's CLI one-shot image request is not ported (it answers "not
+  ported yet"); the see-an-image step drives the port's server, which is the
+  port's production image entry.
