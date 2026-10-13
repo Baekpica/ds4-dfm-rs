@@ -142,6 +142,14 @@ static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int32_t *prompt, ui
     g_v41_kvreuse_last_reused = 0;
     if (!g_v41_kv_reuse || !K.valid || K.n > np || K.n > st->ctx ||
         memcmp(K.tok, prompt, (size_t)K.n * 4)) return 0;
+    /* Named deviation from core_v41_kvreuse.c:109 at 7fb26cc: its full hit
+     * restores logits but leaves the sampler's position slot uninitialized
+     * (cuda_v41_sample.inc.cu:158-160). Refill sampled full hits until the
+     * checkpoint carries that state; a suffix writes it through forward. */
+    if (st->dev_sample && K.n == np) {
+        fprintf(stderr, "[v41] sampled full-prefix hit: cold prefill for sampler state\n");
+        return 0;
+    }
     const uint64_t rowb = (uint64_t)DS4_N_HEAD_DIM * 4;
     bool ok = true;
     for (uint32_t il = 0; il < DS4_N_LAYER && ok; il++) {

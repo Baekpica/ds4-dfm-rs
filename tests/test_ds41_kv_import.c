@@ -28,6 +28,7 @@ typedef struct {
     uint32_t ng_src[DS4_MAX_LAYER], cpend[DS4_MAX_LAYER], win_from[DS4_MAX_LAYER];
     uint32_t ctx, n_past, mainh_n, last_logit_row;
     int64_t mainh_end;
+    int dev_sample;
 } ds4_v41_state;
 
 static struct {
@@ -168,6 +169,21 @@ int main(void) {
     }
     printf("restored state and bytes: %s\n", restored ? "PASS" : "FAIL");
     failures += !restored;
+
+    /* The checkpoint has logits but no sampler position. A full hit must
+     * prefill again; a suffix still writes its own positions before sampling. */
+    st.dev_sample = 1;
+    st.n_past = 0;
+    memset(st.logits->data, 0x3c, (size_t)st.logits->bytes);
+    int sample_cold = v41_kvreuse_restore(&st, tokens, n) == 0u &&
+        st.n_past == 0u && g_v41_kvreuse_last_reused == 0 && filled(st.logits, 0x3c);
+    printf("sampled full hit is cold: %s\n", sample_cold ? "PASS" : "FAIL");
+    failures += !sample_cold;
+    const int32_t extended[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    int sample_suffix = v41_kvreuse_restore(&st, extended, n + 1u) == n;
+    printf("sampled suffix retains prefix: %s\n", sample_suffix ? "PASS" : "FAIL");
+    failures += !sample_suffix;
+    st.dev_sample = 0;
     const size_t tail = DS4_N_LAYER * V41_KVREUSE_META_ROW_BYTES;
     memcpy(mut, blob, bytes);
     v41_kv_put_le64(mut + tail, UINT64_MAX);
