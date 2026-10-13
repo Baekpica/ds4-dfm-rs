@@ -79112,6 +79112,7 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
  * Guarded out of CPU-only builds; ds4_v41_score_ids is the C gate driver. */
 #ifndef DS4_NO_GPU
 #include "ds4_ds41_forward.inc"
+#include "ds4_ds41_vision.inc"   /* vision unit: the DeepSeek-ViT + aligner host forward, after v41_alloc */
 /* Decode sampling (unit H): the pick fork, the device readback arms and the
  * host penalty route (the engine's core_v41_sample.c + core_decode_penalty.c).
  * Between the forward and the graph: the graph's wait calls v41_sample_pick. */
