@@ -19,6 +19,7 @@ Metal and other accelerator paths require their own checks.
 
 [Families](#integrated-families) · [Qwen](#qwen-release-scope) ·
 [GLM](#glm-53-flash-release-scope) · [K2](#k2-horizon-375b-release-scope) ·
+[V4.1](#deepseek-v41-flash-release-scope) ·
 [Reuse](#partial-prefix-reuse) · [Limits](#current-limits) ·
 [Historical evidence](model-family-history.md)
 
@@ -53,6 +54,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | Family | Shape selected from | Native state/runtime |
 |---|---|---|
 | DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph |
+| [DeepSeek V4.1 Flash](deepseek41-flash.md) | `general.architecture=deepseek4` (V4.1 variant) | VQ routed experts, source-layer compressor/indexer KV, engram tables and three embedded MTP towers; serial lane |
 | Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV |
 | K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV |
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings |
@@ -389,6 +391,39 @@ checkpoints, disk KV and an external DSpark sidecar. Main-only buffered
 retrieval and disk continuation passed at 256K/two banks and 512K/one bank.
 DSpark acceleration remains unqualified; see the guide's commands and gates.
 
+## DeepSeek V4.1 Flash release scope
+
+[DeepSeek V4.1 Flash](deepseek41-flash.md) shares the `deepseek4` architecture
+selector but selects its own 40-layer shape
+([`SHAPE_V41_FLASH`](../crates/ds4-core/src/shape.rs)). Its artifact is the
+`vq8sh14-q4k-mtpnative` GGUF: routed-expert weights are 8-dimensional vector
+quantization (DQVL v3, 13-bit) in one `ffn_exps_vq.blob` per layer rather than
+per-expert tensors; the sidecar, post-train and engram mounts are optional; and
+three embedded MTP towers carry the draft. The executable plan and per-unit
+evidence are in the [port plan](deepseek41-port-plan.md).
+
+The family is served on the serial lane; there is no `ds4_session`:
+
+- banks, snapshots and a selectable prefix-reuse plan are absent and refused by
+  name, including `--max-seqs` above 1;
+- context is the model metadata `deepseek4.context_length`, never `--ctx`;
+- embedded MTP is qualified: greedy single-request speculation with the decode
+  graph on passed the Spark gates with emitted ids and `[dspark]` traces equal
+  to the engine golden;
+- the native run reuses the previous prompt's prefix through one prompt-end
+  checkpoint (`--no-kv-reuse` disables it) and reports it as usage cached
+  tokens; the same checkpoint crosses processes through the KVC disk store when
+  `--kv-disk-dir` is set (`present`, not qualified);
+- sampling is request-driven; a per-family sampling profile is not adopted, and
+  there is no settable prefill chunk yet.
+
+Recorded on GB10 (see the [guide](deepseek41-flash.md)): a five-case benchmark
+reads 31.1-65.4 t/s decode, tracking content (prose lower, code and table
+higher), and a 22-frontier prose sweep reaches a 1,201.9 t/s prefill peak with
+40.0-43.7 t/s decode on that corpus; a cross-block engram prefetch A/B adds
++15.5% on the prefill line rate at 8,192. The family is served on the `ds41`
+branch and is not yet in a release ledger.
+
 ## Common serving surface
 
 Every family uses the same `ds4-server` [HTTP surfaces](ds4-api-surface-matrix.md).
@@ -552,6 +587,11 @@ and [host memory guard](host-memory-guard.md). Preserve unrelated owners and wor
 
 ## Current limits
 
+- DeepSeek V4.1 Flash is served on the `ds41` branch on the serial lane: no
+  continuous banks, snapshots or a selectable prefix-reuse plan; context comes
+  only from the metadata (1,048,576) and `--ctx` is rejected. Its recorded gates
+  and benchmark numbers are in the [guide](deepseek41-flash.md); the port is not
+  yet in a release ledger.
 - dots3-note is text-only, with serial default and explicit bank/MTP paths
   described [above](#dots3-serving). The source 524,288-token metadata is
   preserved. Historical 262,144-context allocation and short 4K server checks
