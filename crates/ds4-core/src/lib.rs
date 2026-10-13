@@ -48,6 +48,8 @@ mod tensors;
 mod tok;
 mod uring;
 mod v41;
+#[allow(dead_code)] // wired into the ds41 push route by the tower-injection phase
+mod v41_media;
 mod v41_run;
 mod validate;
 mod vq;
