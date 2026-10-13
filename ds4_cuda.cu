@@ -28,6 +28,7 @@
 #include <string>
 #include <new>
 #include <mutex>
+#include <algorithm>
 
 #include "cuda/mmq/ds4_mmq.h"
 #include "cuda/mmq/ds4_repack.h"
@@ -35,6 +36,7 @@
 #include "ds4_model_catalog.h" /* memgov D1a-4: unit tables for range stamps */
 #include "ds4_weight_identity.h" /* rider #48: manifest content fingerprint */
 #include "ds4_mem_gov.h"      /* memgov D0b: epoch protocol primitives */
+#include "ds41_vq_fmt.h"      /* DQVL blob header/slot helpers for the vq-align copy */
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -314,6 +316,27 @@ static int cuda_model_coherent_host_access(int device) {
                                   device) == cudaSuccess && host_tables;
 }
 
+/* Unified-memory host (GB10/Grace-class), the engine's predicate verbatim
+ * (src/cuda/cuda_internal.cuh:27-37): ATS host page tables OR an integrated
+ * device.  Governs the cache-budget rule below and the eager copy mode. */
+static int cuda_unified_memory_host(void) {
+    static int v = -1;
+    if (v < 0) {
+        int dev = 0, ats = 0, integ = 0;
+        (void)cudaGetDevice(&dev);
+        if (cudaDeviceGetAttribute(&ats, cudaDevAttrPageableMemoryAccessUsesHostPageTables, dev) != cudaSuccess) {
+            (void)cudaGetLastError();
+            ats = 0;
+        }
+        if (cudaDeviceGetAttribute(&integ, cudaDevAttrIntegrated, dev) != cudaSuccess) {
+            (void)cudaGetLastError();
+            integ = 0;
+        }
+        v = (ats || integ) ? 1 : 0;
+    }
+    return v;
+}
+
 static int cuda_model_map_needs_device_copy(const void *model_map) {
     const int src = cuda_mem_src_index(model_map);
     return src >= 0 && src < DS4_MSRC_MAX &&
@@ -475,16 +498,107 @@ static cudaStream_t g_model_upload_stream;
  * every non-capture code path. */
 static thread_local cudaStream_t t_ds4_capture_stream = (cudaStream_t)0;
 
+/* Side-stream fork override (the engine's g_cur_stream, cuda_lifecycle.inc.cu:
+ * 332-388): non-zero only between side_begin and side_main/side_join.  It is
+ * separate from t_ds4_capture_stream so ds4_capture_set_stream cannot clobber
+ * an active fork; side_main/join restore the routing by clearing this one. */
+static thread_local cudaStream_t t_ds4_side_stream = (cudaStream_t)0;
+
 static inline void ds4_capture_set_stream(cudaStream_t s) {
     t_ds4_capture_stream = s;
 }
 
 static inline cudaStream_t ds4_current_stream(void) {
-    return t_ds4_capture_stream;
+    return t_ds4_side_stream ? t_ds4_side_stream : t_ds4_capture_stream;
 }
 
 static inline int ds4_capture_active(void) {
     return t_ds4_capture_stream != (cudaStream_t)0;
+}
+
+/* --------------------------------------------------------------------
+ * Side-stream fork (cuda_lifecycle.inc.cu:332-388 in the engine).
+ *
+ * One nonblocking side stream + two disable-timing events overlap an
+ * independent half of a layer with the other half: the MoE shared expert
+ * beside the router + routed MoE (core_v41_forward.c:83-92) and the
+ * attention kv branch beside the q branch (core_v41_attn.c:290-308).
+ * mark records the fork event on the current main stream; begin waits it on
+ * the side stream and routes ds4_current_stream() there; main switches back
+ * keeping the fork; join records the join event on the side stream and
+ * waits it on the main.
+ *
+ * Port adaptation, named: the engine's main stream is cudaStreamPerThread
+ * (it compiles -default-stream per-thread); the port's is ds4_current_stream
+ * -- the legacy default stream (0) eager, the dedicated capture stream
+ * under a capture.  The event pair is required on both: a nonblocking side
+ * stream neither joins the legacy stream's implicit synchronization nor the
+ * capture's, so inside a capture the record/wait calls become the graph's
+ * dependency edges.  Resources are created outside capture only; mark
+ * refuses (serial fallback for that round) while a capture is active
+ * without a side stream yet, as the engine's cudaStreamIsCapturing check
+ * does.
+ */
+static cudaStream_t g_side_stream = (cudaStream_t)0;
+static cudaEvent_t g_side_fork_ev = (cudaEvent_t)0, g_side_join_ev = (cudaEvent_t)0;
+static thread_local int t_ds4_side_active = 0;
+
+static void side_stream_ensure(void) {
+    if (g_side_stream) return;
+    if (cudaStreamCreateWithFlags(&g_side_stream, cudaStreamNonBlocking) != cudaSuccess) {
+        g_side_stream = (cudaStream_t)0; (void)cudaGetLastError(); return;
+    }
+    if (cudaEventCreateWithFlags(&g_side_fork_ev, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&g_side_join_ev, cudaEventDisableTiming) != cudaSuccess) {
+        g_side_fork_ev = (cudaEvent_t)0; g_side_join_ev = (cudaEvent_t)0;
+        (void)cudaStreamDestroy(g_side_stream); g_side_stream = (cudaStream_t)0;
+        (void)cudaGetLastError();
+    }
+}
+
+static int side_stream_disabled(void) {
+    static int off = -1;   /* DS41_NO_SIDE_STREAM=1: kill switch (the engine's --no-side-stream) */
+    if (off < 0) off = getenv("DS41_NO_SIDE_STREAM") ? 1 : 0;
+    return off;
+}
+
+extern "C" int ds4_gpu_side_mark(void) {
+    if (side_stream_disabled()) return 0;
+    if (!g_side_stream || !g_side_fork_ev) {
+        if (ds4_capture_active()) return 0;
+        side_stream_ensure();
+        if (!g_side_stream) return 0;
+    }
+    if (cudaEventRecord(g_side_fork_ev, ds4_current_stream()) != cudaSuccess) {
+        (void)cudaGetLastError(); return 0;
+    }
+    return 1;
+}
+
+extern "C" int ds4_gpu_side_begin(void) {
+    if (!g_side_stream || !g_side_fork_ev) return 0;
+    if (cudaStreamWaitEvent(g_side_stream, g_side_fork_ev, 0) != cudaSuccess) {
+        (void)cudaGetLastError(); return 0;
+    }
+    t_ds4_side_stream = g_side_stream;
+    t_ds4_side_active = 1;
+    return 1;
+}
+
+extern "C" int ds4_gpu_side_main(void) {
+    t_ds4_side_stream = (cudaStream_t)0;
+    return 1;
+}
+
+extern "C" int ds4_gpu_side_join(void) {
+    t_ds4_side_stream = (cudaStream_t)0;
+    if (!t_ds4_side_active) return 1;
+    t_ds4_side_active = 0;
+    if (cudaEventRecord(g_side_join_ev, g_side_stream) != cudaSuccess ||
+        cudaStreamWaitEvent(ds4_current_stream(), g_side_join_ev, 0) != cudaSuccess) {
+        (void)cudaGetLastError(); return 0;
+    }
+    return 1;
 }
 
 /* Step 7 task #34: stream selector for MMQ wrapper calls.
@@ -1581,6 +1695,11 @@ typedef struct {
     int ipc_manifest;           /* DS4_CUDA_WEIGHT_IPC_MANIFEST set */
     /* budgets + staging geometry (need-fit logic stays at the callers) */
     uint64_t cache_limit_bytes; /* WEIGHT_CACHE_LIMIT_GB: 24 GiB default; present-unparseable = 0 (disables) */
+    uint8_t cache_limit_unified; /* the limit came from the unified-memory rule
+                                    (platform default, no env override): the
+                                    eager pass is budgeted for a whole-model
+                                    device copy, so its source pages are
+                                    dropped as they land (engine rule) */
     uint64_t copy_chunk_bytes;  /* MODEL_COPY_CHUNK_MB: 64 MiB default, 16..4096 MiB clamp */
     uint64_t arena_chunk_mb;    /* WEIGHT_ARENA_CHUNK_MB: 1792 default, 256..8192 clamp */
     uint64_t vmm_chunk_mb;      /* VMM_ARENA_CHUNK_MB: 0 = match request, else 64..4096 clamp */
@@ -1616,14 +1735,26 @@ static cuda_weight_env_t cuda_weight_env_read(void) {
     e.vmm_arena_off = vmm && vmm[0] == '0' && vmm[1] == '\0';
     e.ipc_manifest = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST") != NULL;
     {
-        /* Default cap protects against OOM on UMA systems where a full
+        /* Default cap protects against OOM on DISCRETE systems where a full
          * ~80 GiB model would otherwise duplicate the mmap'd host pages
-         * into HBM-backed cudaMalloc allocations and exhaust the 121 GiB
-         * UMA pool.  24 GiB comfortably covers attn projections +
+         * into HBM-backed cudaMalloc allocations and exhaust the VRAM
+         * pool.  24 GiB comfortably covers attn projections +
          * embedding + output head + shared FFN; routed MoE experts
          * (~65 GiB, only top-K active per token) fall back to the
          * UVA-mapped pointer for cold lookups.  Tune up via
-         * DS4_CUDA_WEIGHT_CACHE_LIMIT_GB on hosts with more budget. */
+         * DS4_CUDA_WEIGHT_CACHE_LIMIT_GB on hosts with more budget.
+         *
+         * Unified memory (GB10-class) takes the engine's rule instead
+         * (src/cuda/cuda_q8_repack_1.inc.cu:399-417, the 2026-09-15
+         * single.md S1 change): registered-host page-table reads measured
+         * ~185 GB/s vs 255 for device copies, and each copied span's source
+         * pages are dropped as it lands, so the budget is total physical
+         * minus an 8 GiB headroom for KV/scratch/context and the whole
+         * model device-resides.  The flat 24 GiB line starves this shape:
+         * the V4.1 artifact's ~96 GiB of VQ expert blobs stayed on the
+         * reclaimable mapping, measured 2026-10-09 as 3-13 s forwards
+         * (engine: 0.1 s) with run-to-run corruption (cudaHostRegisterMapped
+         * does NOT mlock on GB10; see ds4_gpu_mem_observe's note). */
         uint64_t gb = 0;
         const char *env = getenv("DS4_CUDA_WEIGHT_CACHE_LIMIT_GB");
         if (env && env[0]) {
@@ -1631,6 +1762,16 @@ static cuda_weight_env_t cuda_weight_env_read(void) {
             unsigned long long v = strtoull(env, &end, 10);
             if (end != env) gb = (uint64_t)v;
             e.cache_limit_bytes = gb * 1073741824ull;
+        } else if (cuda_unified_memory_host()) {
+            const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
+            const uint64_t total = (uint64_t)sysconf(_SC_PHYS_PAGES) * page;
+            const uint64_t headroom = 8ull * 1073741824ull;
+            if (total > headroom * 2u) {
+                e.cache_limit_bytes = total - headroom;
+                e.cache_limit_unified = 1;
+            } else {
+                e.cache_limit_bytes = 24ull * 1073741824ull;
+            }
         } else {
             e.cache_limit_bytes = 24ull * 1073741824ull;
         }
@@ -3676,6 +3817,145 @@ extern "C" int ds4_gpu_residency_failures_read(int role, int stage,
     return 0;
 }
 
+/* Port of the engine's cuda_vq_align.inc.cu (3946dbc, whole file): boot-time
+ * device copy of a VQ expert blob with each payload relocated so its bitstream
+ * start lands 128 B aligned in the DEVICE copy only.
+ *
+ * Why: the expert kernels read the bitstream as whole 384 B blocks (lane j
+ * takes words j / j+32 / j+64; 32 lanes = exactly 128 B per load), but v3
+ * payloads are only 8 B aligned on disk, so most bitstream starts straddle two
+ * 128 B lines.  The engine measured the aligned copy ~16% faster on the Spark
+ * (124-130 vs 146-153 us per layer, real-kernel microbench), and the same
+ * geometry is what its "[vq-align] ... device copy" boot log reports.  Only
+ * the device copy's layout changes — the host mapping is untouched, the
+ * payload bytes are copied verbatim, and every device-side consumer
+ * (v41_vq_open and the decode kernels) reads the rewritten slot table, so the
+ * output is byte-identical by construction.
+ *
+ * Preconditions (any miss falls back to the caller's flat copy — relocating
+ * the slot table without rewriting it would decode fake weights silently):
+ * the span is exactly one VQ blob (the unit compiler never merges a blob
+ * with neighbors, DS4_TCAT_VQ_BLOB — the engine's "自成一段" rule,
+ * core_model_map.c:113-115; a mixed span would serve its other tensors from
+ * displaced offsets, measured 2026-10-09: the mtp.2 blob + trailing tensors
+ * merged into one unit and the head's output_norm read the relocated tail),
+ * v3 blob only (v2 payloads carry their own codebook), every payload carries
+ * the DQV3 magic, slot offsets distinct and inside the blob, and each
+ * payload's codebook (cb_off, nc*8 B) wholly inside the prefix before the
+ * first payload (the prefix is copied as-is, cb_off is never rewritten).
+ *
+ * Deviation from the engine, named: the engine flags the span as a blob from
+ * the tensor NAME (`_exps_vq.`, core_model_map.c:184) before calling; this
+ * port stamps that name check as the unit trait and re-validates the header
+ * at the unit-copy boundary, where no name crosses (a non-blob unit would
+ * have to pass every check above, including per-payload DQV3 magics).
+ *
+ * Returns the device pointer (the caller publishes the range), NULL with
+ * *flat=1 when not applicable (caller flat-copies), NULL with *flat=0 on a
+ * real alloc/copy failure (the engine's contract: cuda_vq_align.inc.cu:19). */
+static char *cuda_vq_blob_build_aligned(const void *model_map, uint64_t model_size,
+                                        uint64_t offset, uint64_t bytes,
+                                        uint64_t *total_out, const char *what, int *flat) {
+    *flat = 1;
+    if (getenv("DS4_CUDA_NO_VQ_ALIGN") != NULL) return NULL;   /* kill switch: flat copy */
+    if (!model_map || bytes == 0 || offset > model_size || bytes > model_size - offset) return NULL;
+    const uint8_t *hb = (const uint8_t *)model_map + offset;
+    if (!ds4vq_blob_ok(hb, (size_t)bytes)) return NULL;
+    if (ds4vq_blob_ver(hb) != 3u) return NULL;   /* the align was only measured for v3 */
+
+    const uint32_t ns = ds4vq_blob_nexp(hb) * 3u;
+    std::vector<std::pair<uint64_t, uint32_t> > pl;   /* (original offset, slot) */
+    for (uint32_t k = 0; k < ns; k++) {
+        const uint64_t o = ds4vq_slot(hb, (int)(k / 3u), (int)(k % 3u));
+        if (!o) continue;
+        if (o + 32u > bytes) {
+            fprintf(stderr, "ds4: [vq-align] %s slot %u out of blob, flat copy\n", what, k);
+            return NULL;
+        }
+        pl.push_back(std::make_pair(o, k));
+    }
+    if (pl.empty()) return NULL;
+    std::sort(pl.begin(), pl.end());
+
+    const uint64_t first = pl[0].first;
+    if (first < 16u + (uint64_t)ns * 8u) {
+        fprintf(stderr, "ds4: [vq-align] %s first payload overlaps the slot table, flat copy\n", what);
+        return NULL;
+    }
+
+    std::vector<uint64_t> noff(pl.size());
+    uint64_t cur = first;
+    for (size_t i = 0; i < pl.size(); i++) {
+        const uint8_t *p = hb + pl[i].first;
+        uint32_t mg, rows;
+        uint16_t nc;
+        uint64_t cbo;
+        memcpy(&mg, p, 4); memcpy(&nc, p + 6, 2); memcpy(&rows, p + 8, 4); memcpy(&cbo, p + 24, 8);
+        if (mg != DS4VQ_MAT3_MAGIC || (i && pl[i].first == pl[i - 1].first) ||
+            cbo + (uint64_t)nc * 8u > first) {
+            fprintf(stderr, "ds4: [vq-align] %s slot %u fails a relocation precondition, flat copy\n",
+                    what, pl[i].second);
+            return NULL;
+        }
+        /* Smallest new start >= cur with (start + 32 + rows*2) % 128 == 0:
+         * the bitstream (payload + 32 + row gains) begins line-aligned. */
+        const uint64_t lead = (32u + (uint64_t)rows * 2u) & 127u;
+        cur += ((128u - lead) - cur) & 127u;
+        noff[i] = cur;
+        cur += (i + 1 < pl.size() ? pl[i + 1].first : bytes) - pl[i].first;   /* original span verbatim */
+    }
+    const uint64_t total = cur;
+    *flat = 0;
+
+    /* Build the relocated image in a PAGEABLE host buffer and upload it in one
+     * cudaMemcpy.  The engine copies payload-by-payload straight from the map
+     * (cuda_vq_align.inc.cu:66-73); that path wedged the GB10 copy engine when
+     * the source pages were not resident (measured 2026-10-09: 100% user-space
+     * spin in the CUDA sync, idle GPU, boot frozen at 32.5 GiB) because the
+     * DMA reads a cold registered mapping directly.  The pageable upload is
+     * the standard driver-staged path and is immune to that.  Named deviation. */
+    uint8_t *img = (uint8_t *)malloc((size_t)total);
+    if (!img) {
+        fprintf(stderr, "ds4: [vq-align] %s host image alloc %.2f MiB failed\n", what, (double)total / 1048576.0);
+        return NULL;
+    }
+    memset(img, 0, (size_t)total);   /* padding is never read; zeroed for determinism */
+    memcpy(img, hb, (size_t)first);
+    for (size_t i = 0; i < pl.size(); i++) {
+        const uint64_t n = (i + 1 < pl.size() ? pl[i + 1].first : bytes) - pl[i].first;
+        memcpy(img + noff[i], hb + pl[i].first, (size_t)n);
+    }
+    /* Slot table written LAST: the prefix copy above carried the old table. */
+    std::vector<uint64_t> tab((size_t)ns);
+    memcpy(tab.data(), hb + 16, (size_t)ns * 8u);
+    for (size_t i = 0; i < pl.size(); i++) tab[pl[i].second] = noff[i];
+    memcpy(img + 16, tab.data(), (size_t)ns * 8u);
+
+    char *d = cuda_vmm_arena_alloc(model_map, total, what);
+    if (!d) d = cuda_model_arena_alloc(model_map, total, what);
+    if (!d) {
+        fprintf(stderr, "ds4: [vq-align] %s alloc %.2f MiB failed\n", what, (double)total / 1048576.0);
+        free(img);
+        return NULL;
+    }
+    const cudaError_t err = cudaMemcpy(d, img, (size_t)total, cudaMemcpyHostToDevice);
+    free(img);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "ds4: [vq-align] %s upload failed: %s\n", what, cudaGetErrorString(err));
+        (void)cudaGetLastError();
+        return NULL;
+    }
+
+    static uint32_t s_done = 0;
+    if (s_done++ == 0) {
+        fprintf(stderr, "ds4: [vq-align] %s: %zu payloads relocated to 128 B bitstream alignment "
+                        "(device copy, +%.1f KB)\n",
+                what, pl.size(), (double)(total - bytes) / 1024.0);
+    }
+    if (total_out) *total_out = total;
+    return d;
+}
+
 /* Copy ONE funded unit into an arena carve and publish it.  Failure
  * leaves any carve behind (bump arenas cannot un-carve) — the census
  * already holds it as arena slack: the transactional-residue rule, same
@@ -3686,12 +3966,31 @@ extern "C" int ds4_gpu_residency_failures_read(int role, int stage,
 static int cuda_unit_materialize_copy(const void *model_map,
                                       const ds4_phys_unit *u,
                                       int direct_discard, const char *what) {
-    char *dev = cuda_vmm_arena_alloc(model_map, u->src_bytes, what);
-    if (!dev) dev = cuda_model_arena_alloc(model_map, u->src_bytes, what);
-    if (!dev) return DS4_RESUNIT_FAILED;
-    if (!cuda_stage_copy_to_dev(model_map, u->src_off, u->src_bytes, dev,
-                                direct_discard, what))
-        return DS4_RESUNIT_FAILED;
+    const int msrc = cuda_mem_src_index(model_map);
+    const uint64_t map_size = msrc >= 0 && msrc < DS4_MSRC_MAX
+        ? g_model_srcs.v[msrc].map_len : g_model_registered_size;
+
+    /* VQ expert blobs take the engine's aligned device copy; every other
+     * unit (and any blob whose relocation preconditions miss) takes the
+     * staged flat pipeline below. */
+    int flat = 1;
+    char *dev = cuda_vq_blob_build_aligned(model_map, map_size, u->src_off,
+                                           u->src_bytes, NULL, what, &flat);
+    if (dev) {
+        /* The aligned build bypasses the staged pipeline, so its source-page
+         * drop is the engine's whole-span MADV_DONTNEED (cuda_modelmap.inc.cu:
+         * 330-343) instead of the pipeline's per-chunk discard. */
+        if (direct_discard)
+            cuda_model_discard_source_pages(model_map, map_size, u->src_off, u->src_bytes);
+    } else {
+        if (!flat) return DS4_RESUNIT_FAILED;
+        dev = cuda_vmm_arena_alloc(model_map, u->src_bytes, what);
+        if (!dev) dev = cuda_model_arena_alloc(model_map, u->src_bytes, what);
+        if (!dev) return DS4_RESUNIT_FAILED;
+        if (!cuda_stage_copy_to_dev(model_map, u->src_off, u->src_bytes, dev,
+                                    direct_discard, what))
+            return DS4_RESUNIT_FAILED;
+    }
     /* memgov D2-2: a claimed promotion path; the funnel's post-freeze
      * tripwire keys on the marker (no early return between set and
      * clear: publish is the next call). */
@@ -6902,9 +7201,18 @@ extern "C" int ds4_gpu_materialize_model_plan(const void *model_map,
         : cuda_model_cache_limit_bytes();
     /* Coupled source mode (see cuda_stage_copy_to_dev): default buffered
      * + no discard = the pre-D1b boot's page-cache shape; the env flips
-     * eager to O_DIRECT + discard (the F4 measured mode). */
+     * eager to O_DIRECT + discard (the F4 measured mode).
+     *
+     * The unified-memory budget (cache_limit_unified) turns the drop on by
+     * default: the plan is then budgeted for a whole-model device copy, and
+     * without dropping the source pages the boot holds both copies at full
+     * size — the engine measured exactly that shape stalling the load on a
+     * 121 GB GB10 ("系统忙于回收, 加载阶段直接卡死", cuda_q8_repack_1.inc.cu:
+     * 406-413), which is why its copy path MADV_DONTNEEDs each span as it
+     * lands (cuda_modelmap.inc.cu:330-343). */
     const int direct_discard =
         cuda_model_map_needs_device_copy(model_map) ||
+        cuda_weight_env().cache_limit_unified ||
         getenv("DS4_CUDA_EAGER_SOURCE_DISCARD") != NULL;
     uint64_t counts[DS4_RESUNIT__COUNT] = {0};
     uint32_t promote = 0, funded = 0, unfunded = 0;
@@ -49060,3 +49368,4 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_step37_vision_gpu.cuh"
 #include "ds4_qwen35_gpu.cuh"
 #include "cuda/qwen35_attn_gdn.cuh"
+#include "ds4_ds41_gpu.cuh"

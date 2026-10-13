@@ -2,7 +2,7 @@
 //! structured messages and tool values; model Jinja owns input grammar.
 
 use ds4_core::chat_template::{ChatOptions, Template};
-use ds4_core::ChatThinkMode;
+use ds4_core::{ChatThinkMode, Variant};
 use serde_json::{json, Value};
 
 use crate::generate::GenerateError;
@@ -13,12 +13,23 @@ pub(crate) fn render_model(
     template: Option<&Template>,
     model_id: i32,
     parsed: &ParsedRequest,
+    system_token: &str,
 ) -> Result<Vec<u8>, GenerateError> {
     if let Some(template) = template {
         return render(template, model_id, parsed);
     }
-    if model_id == 0 || parsed.kind == ReqKind::Completion {
-        return crate::generate::render_prompt(parsed, model_id);
+    // The C-rendered DSML families ship no chat template — the engine's own
+    // renderer is their input grammar (server_parse_chat.c:205) — so the base
+    // V4 family (Flash) and V4.1 (DeepSeek41Flash) take render_prompt directly.
+    if model_id == Variant::Flash as i32
+        || model_id == Variant::DeepSeek41Flash as i32
+        || parsed.kind == ReqKind::Completion
+    {
+        return crate::generate::render_prompt_ex(
+            parsed,
+            model_id,
+            crate::render::dsml_head(model_id, system_token),
+        );
     }
     Err(input_error(
         "missing chat_template.jinja or tokenizer.chat_template",

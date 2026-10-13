@@ -113,7 +113,7 @@ endif
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
-        pq2-0-test test-qwen35-rows \
+        pq2-0-test test-qwen35-rows test-ds41-vq test-ds41-moe test-ds41-fp8 test-ds41-engram test-ds41-forward \
         rust-bridge ds4-rs ds4-bench-rs ds4-agent-rs ds4-server-rs test-kv-parity test-web-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-agent-parity test-session-parity
 
 ifeq ($(UNAME_S),Darwin)
@@ -314,7 +314,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
+ds4.o: ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h ds41_forward.h ds41_kvfmt.h ds4_ds41_forward.inc vendor/stb_image.h ds4_ds41_sample.inc ds4_ds41_graph.inc ds4_ds41_draft.inc
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
@@ -800,7 +800,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc ds4_iquest_stub.inc $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h
+ds4_cuda.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_ds41_gpu.cuh ds41_vq_fmt.h cuda/ds41_primitives.cuh cuda/ds41_vq_row.cuh cuda/ds41_vq_probe.cuh cuda/ds41_vq_decode.cuh cuda/ds41_vq_group.cuh cuda/ds41_vq_persist.cuh cuda/ds41_vq_launch.cuh cuda/ds41_vq_prefill.cuh cuda/ds41_vq_prefill_fused.cuh cuda/ds41_vq_prefill_mma.cuh cuda/ds41_fp8blk.cuh cuda/ds41_engram.cuh cuda/ds41_q4k.cuh cuda/ds41_dense.cuh cuda/ds41_hc.cuh cuda/ds41_attn.cuh cuda/ds41_attn_mma.cuh cuda/ds41_indexer.cuh cuda/ds41_router.cuh cuda/ds41_draft.cuh cuda/ds41_graph.cuh cuda/ds41_sample.cuh ds41_kvfmt.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -910,6 +910,204 @@ tests/test_qwen35_cuda: tests/test_qwen35_cuda.cu ds4_cuda_test_hooks.o $(filter
 .PHONY: test-qwen35-cuda
 test-qwen35-cuda: tests/test_qwen35_cuda
 	./tests/test_qwen35_cuda
+
+# DeepSeek V4.1 (ds41) VQ expert decode gate: the device row probe against an
+# independent host oracle, bit-exact (v3 fixtures carry their own ref.f32; v2
+# is checked against ds4vq_dequant_f32 inside the test). Fixtures and the
+# generator live in tests/fixtures/ds41/vq.
+tests/test_ds41_vq: tests/test_ds41_vq.cu ds4_gpu.h ds41_vq_fmt.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_vq.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-vq
+test-ds41-vq: tests/test_ds41_vq
+	./tests/test_ds41_vq tests/fixtures/ds41/vq/v3_13b.blob tests/fixtures/ds41/vq/v3_13b.probes.txt tests/fixtures/ds41/vq/v3_13b.ref.f32
+	./tests/test_ds41_vq tests/fixtures/ds41/vq/v3_12b.blob tests/fixtures/ds41/vq/v3_12b.probes.txt tests/fixtures/ds41/vq/v3_12b.ref.f32
+	./tests/test_ds41_vq tests/fixtures/ds41/vq/v2_12b.blob tests/fixtures/ds41/vq/v2_12b.probes.txt
+	./tests/test_ds41_vq tests/fixtures/ds41/vq/v2_11b.blob tests/fixtures/ds41/vq/v2_11b.probes.txt
+
+# V4.1 device sampling gate (the engine's tests/cuda_sample_selftest.c): the
+# kernel's marginal distributions (full / point-mass / distribution draft),
+# the accept rates and one launch's determinism.  Device only, no fixtures.
+tests/test_ds41_sample: tests/test_ds41_sample.cu ds4_gpu.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_sample.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-sample
+test-ds41-sample: tests/test_ds41_sample
+	./tests/test_ds41_sample
+
+# V4.1 tool-syntax greedy pick gate (the engine's t_units.c
+# units_test_sample_pick_greedy_hook): model-free CPU vectors driven through
+# the DS4_TEST_HOOKS entry in ds4.c (the port's v41 state is private to that
+# TU), so this links ds4.c built with that switch.
+tests/test_ds41_pick: tests/test_ds41_pick.cu ds41_forward.h ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -DDS4_TEST_HOOKS -I. $(MMQ_INCLUDES) -o $@ tests/test_ds41_pick.cu ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS)) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-pick
+test-ds41-pick: tests/test_ds41_pick
+	./tests/test_ds41_pick
+
+# DeepSeek V4.1 (ds41) routed-MoE gate: the tensor-level entry (host blob
+# header read, range-resolved device pointer, the fused VQ worker) against the
+# Rust emulation (crates/ds4-core/examples/ds41_moe_ref.rs). onehot cases
+# bit-exact, random cases within the recorded tolerance. The reference is
+# checked in; regenerate with:
+#   python3 tests/fixtures/ds41/vq/gen_moe.py
+#   cargo run -p ds4-core --release --example ds41_moe_ref -- \
+#     tests/fixtures/ds41/vq/moe.blob tests/fixtures/ds41/vq/moe.cases.txt \
+#     tests/fixtures/ds41/vq/moe.ref.f32
+tests/test_ds41_moe: tests/test_ds41_moe.cu ds4_gpu.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_moe.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-moe
+test-ds41-moe: tests/test_ds41_moe
+	./tests/test_ds41_moe tests/fixtures/ds41/vq/moe.blob tests/fixtures/ds41/vq/moe.cases.txt tests/fixtures/ds41/vq/moe.ref.f32
+
+# DeepSeek V4.1 (ds41) fp8_32x32 gate: the tower/engram-wkv entries
+# (plain, round-out, grouped) against the Rust emulation
+# (crates/ds4-core/examples/ds41_fp8_ref.rs). onehot cases bit-exact, dense
+# cases within the recorded tolerance. The reference is checked in; regenerate
+# with:
+#   python3 tests/fixtures/ds41/fp8/gen_fp8.py
+#   cargo run -p ds4-core --release --example ds41_fp8_ref -- \
+#     tests/fixtures/ds41/fp8/fp8.img tests/fixtures/ds41/fp8/fp8.cases.txt \
+#     tests/fixtures/ds41/fp8/fp8.ref.f32
+tests/test_ds41_fp8: tests/test_ds41_fp8.cu ds4_gpu.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_fp8.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-fp8
+test-ds41-fp8: tests/test_ds41_fp8
+	./tests/test_ds41_fp8 tests/fixtures/ds41/fp8/fp8.img tests/fixtures/ds41/fp8/fp8.cases.txt tests/fixtures/ds41/fp8/fp8.ref.f32
+
+# DeepSeek V4.1 (ds41) engram gate: the gate kernel and the row dequant
+# against the Rust emulation (crates/ds4-core/examples/ds41_engram_ref.rs),
+# plus the read path's device primitives (pinned alloc, zero-copy upload,
+# spin-flag wait). The reference is checked in; regenerate with:
+#   python3 tests/fixtures/ds41/engram/gen_engram.py
+#   cargo run -p ds4-core --release --example ds41_engram_ref -- \
+#     tests/fixtures/ds41/engram/engram.img tests/fixtures/ds41/engram/engram.cases.txt \
+#     tests/fixtures/ds41/engram/engram.ref.f32 tests/fixtures/ds41/engram/rows.bin \
+#     tests/fixtures/ds41/engram/rows.ref.f32
+tests/test_ds41_engram: tests/test_ds41_engram.cu ds4_gpu.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_engram.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-engram
+test-ds41-engram: tests/test_ds41_engram
+	./tests/test_ds41_engram tests/fixtures/ds41/engram/engram.img tests/fixtures/ds41/engram/engram.cases.txt tests/fixtures/ds41/engram/engram.ref.f32 tests/fixtures/ds41/engram/rows.bin tests/fixtures/ds41/engram/rows.ref.f32
+
+# DeepSeek V4.1 (ds41) forward trace gate (P4-4): the port's score entry
+# against a golden set captured by tests/capture_ds41_golden.sh on the Spark.
+# The golden must be the BARE variant (NO_ZCHAIN=1): the default capture ran
+# --zchain, which this port's forward does not apply yet. Artifact- and
+# Spark-only, so the runner takes the paths from the environment:
+#   make test-ds41-forward MODEL=<gguf> GOLDEN=<golden dir> \
+#        [ENGRAM_DIR=<shard dir>] [NAMES="p1 p2 p3 p5"]
+tests/test_ds41_forward: tests/test_ds41_forward.cu ds4_gpu.h ds41_forward.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_forward.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-forward
+test-ds41-forward: tests/test_ds41_forward
+	@if [ -z "$(MODEL)" ] || [ -z "$(GOLDEN)" ]; then \
+	  echo "usage: make test-ds41-forward MODEL=<gguf> GOLDEN=<golden dir> [ENGRAM_DIR=<dir>] [ZCHAIN=<dir>] [NAMES=\"p1 p2 p3 p5\"] [OUT=/tmp/p44]"; \
+	else \
+	  ./tests/test_ds41_forward "$(MODEL)" "$(GOLDEN)" "$${OUT:-/tmp/p44}" \
+	    $${ENGRAM_DIR:+--engram-dir "$(ENGRAM_DIR)"} $${ZCHAIN:+--zchain "$(ZCHAIN)"} $(NAMES); \
+	fi
+
+# DeepSeek V4.1 (ds41) greedy-generate gate (unit E): the port's generate
+# entry against the engine's own --emit-trace captures, in both modes
+# (non-spec and spec with the [dspark] trace diff), with the independent row
+# reference over the full prompt+emitted sequence (--rows-ref, the score dump
+# over those exact ids; the pin is NPRED=56 with the 8-token prompt so every
+# emitted position has a reference).  The runner also runs the two required
+# failing negative controls (see tests/ds41_generate_gate.sh).
+# Artifact- and Spark-only, so the runner takes the paths from the environment:
+#   make test-ds41-generate MODEL=<gguf> IDS=<ids file> ENGLOG=<engine log> \
+#        ENGRAM_DIR=<shard dir> ROWS_REF=<score dump prefix> \
+#        [ENGLOG_SPEC=<engine --dspark-verify log>] [VK=5] [NPRED=56]
+tests/test_ds41_generate: tests/test_ds41_generate.cu ds4_gpu.h ds41_forward.h $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ds41_generate.cu $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+.PHONY: test-ds41-generate
+test-ds41-generate: tests/test_ds41_generate
+	@if [ -z "$(MODEL)" ] || [ -z "$(IDS)" ] || [ -z "$(ENGLOG)" ] || [ -z "$(ENGRAM_DIR)" ] || [ -z "$(ROWS_REF)" ]; then \
+	  echo "usage: make test-ds41-generate MODEL=<gguf> IDS=<ids file> ENGLOG=<engine --emit-trace log> ENGRAM_DIR=<shard dir> ROWS_REF=<score dump prefix> [ENGLOG_SPEC=<engine --dspark-verify log>] [VK=5] [NPRED=56]"; \
+	else \
+	  sh tests/ds41_generate_gate.sh ./tests/test_ds41_generate "$(MODEL)" "$(IDS)" "$(ENGLOG)" "$${NPRED:-56}" "$(ENGRAM_DIR)" "$(ROWS_REF)" "$(ENGLOG_SPEC)" "$${VK:-5}"; \
+	fi
+
+# Long-run decode-graph gate (E3 phase 2): a run long enough to cross the
+# 1024-position bucket (the n=1 and verify-batch graphs must re-capture and
+# replay on both sides) and to open the draft graphs (pos0 >= the 128 window).
+# Needs the two engine goldens; the capture commands are in the script header:
+#   make test-ds41-graph MODEL=<gguf> IDS=<ids file> \
+#        ENGLOG=<engine --no-dspark log> ENGLOG_SPEC=<engine --dspark-verify log> \
+#        ENGRAM_DIR=<shard dir> [VK=5] [NPRED=1100]
+.PHONY: test-ds41-graph
+test-ds41-graph: tests/test_ds41_generate
+	@if [ -z "$(MODEL)" ] || [ -z "$(IDS)" ] || [ -z "$(ENGLOG)" ] || [ -z "$(ENGLOG_SPEC)" ] || [ -z "$(ENGRAM_DIR)" ]; then \
+	  echo "usage: make test-ds41-graph MODEL=<gguf> IDS=<ids file> ENGLOG=<engine --no-dspark log> ENGLOG_SPEC=<engine --dspark-verify log> ENGRAM_DIR=<shard dir> [VK=5] [NPRED=1100]"; \
+	else \
+	  sh tests/ds41_graph_gate.sh ./tests/test_ds41_generate "$(MODEL)" "$(IDS)" "$(ENGLOG)" "$(ENGLOG_SPEC)" "$${NPRED:-1100}" "$(ENGRAM_DIR)" "$${VK:-5}"; \
+	fi
+
+# DeepSeek V4.1 (ds41) Rust serving gate (unit F, P5.4): the Rust host
+# (./ds4, the --gen-ids route) against the engine's own --emit-trace captures,
+# in four modes (default, --no-graph, --no-dspark, --dspark-verify <k>) with
+# the [emit] position+id instrument as the comparison, plus the two required
+# failing negative controls (see tests/ds41_serving_gate.sh).
+# Artifact- and Spark-only, so the runner takes the paths from the environment:
+#   make test-ds41-serving MODEL=<gguf> IDS=<ids file> ENGLOG=<engine log> \
+#        ENGRAM_DIR=<shard dir> [ENGLOG_SPEC=<engine --dspark-verify log>] \
+#        [VK=5] [NPRED=56]
+.PHONY: test-ds41-serving
+test-ds41-serving: ds4
+	@if [ -z "$(MODEL)" ] || [ -z "$(IDS)" ] || [ -z "$(ENGLOG)" ] || [ -z "$(ENGRAM_DIR)" ]; then \
+	  echo "usage: make test-ds41-serving MODEL=<gguf> IDS=<ids file> ENGLOG=<engine --emit-trace log> ENGRAM_DIR=<shard dir> [ENGLOG_SPEC=<engine --dspark-verify log>] [VK=5] [NPRED=56]"; \
+	else \
+	  sh tests/ds41_serving_gate.sh ./ds4 "$(MODEL)" "$(IDS)" "$(ENGLOG)" "$${NPRED:-56}" "$(ENGRAM_DIR)" "$(ENGLOG_SPEC)" "$${VK:-5}"; \
+	fi
+
+# DeepSeek V4.1 (ds41) HTTP serving gate (unit F, P5.5): boots ds4-server on
+# the artifact and drives the push route over HTTP (non-stream + stream),
+# proving the served ids equal the CLI's on the same prompt text; plus the
+# boot refusals (--ctx, --zchain).  Artifact- and Spark-only:
+#   make test-ds41-serving-http MODEL=<gguf> ENGRAM_DIR=<shard dir> \
+#        [PORT=8477] [PROMPT="The capital of France is"] [NPRED=16]
+.PHONY: test-ds41-serving-http
+test-ds41-serving-http: ds4 ds4-server
+	@if [ -z "$(MODEL)" ] || [ -z "$(ENGRAM_DIR)" ]; then \
+	  echo "usage: make test-ds41-serving-http MODEL=<gguf> ENGRAM_DIR=<shard dir> [PORT=8477] [PROMPT=\"The capital of France is\"] [NPRED=16]"; \
+	else \
+	  sh tests/ds41_serving_http_gate.sh ./ds4-server ./ds4 "$(MODEL)" "$(ENGRAM_DIR)" "$${PORT:-8477}" "$${PROMPT:-The capital of France is}" "$${NPRED:-16}"; \
+	fi
+
+# DeepSeek V4.1 (ds41) chat gate (unit G): the served chat prompt and its ids
+# must equal the ENGINE's on the same chat+tools request.  The engine server
+# --trace dumps the rendered prompt text and both id lists (server_trace.c:222);
+# the port server --emit-trace prints the same ids ([ptok] + [emit]).
+#   make test-ds41-chat ENG_SERVER=<engine ds4-server> MODEL=<gguf> \
+#        ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8478]
+.PHONY: test-ds41-chat
+test-ds41-chat: ds4-server
+	@if [ -z "$(ENG_SERVER)" ] || [ -z "$(MODEL)" ] || [ -z "$(ENGRAM_DIR)" ]; then \
+	  echo "usage: make test-ds41-chat ENG_SERVER=<engine server> MODEL=<gguf> ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8478]"; \
+	else \
+	  sh tests/ds41_chat_gate.sh "$(ENG_SERVER)" ./ds4-server "$(MODEL)" "$(ENGRAM_DIR)" "$${PORT:-8478}" "$(ZCHAIN)"; \
+	fi
+
+# DeepSeek V4.1 (ds41) P2 long-prompt gate: the 835-token fixture as the
+# big-block case (each engram layer's round is 835 rows, over the ring depth
+# 512, so the fetch worker carries it) -- engine vs the port on P2 vs
+# DS41_FEED_SYNC=1, plus the DS41_FEED_WAIT_WITHHOLD=1 refusal control.
+#   make test-ds41-long ENG_SERVER=<engine ds4-server> MODEL=<gguf> \
+#        ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8479]
+.PHONY: test-ds41-long
+test-ds41-long: ds4-server
+	@if [ -z "$(ENG_SERVER)" ] || [ -z "$(MODEL)" ] || [ -z "$(ENGRAM_DIR)" ]; then \
+	  echo "usage: make test-ds41-long ENG_SERVER=<engine server> MODEL=<gguf> ENGRAM_DIR=<shard dir> [ZCHAIN=<sidecar dir>] [PORT=8479]"; \
+	else \
+	  sh tests/ds41_long_gate.sh "$(ENG_SERVER)" ./ds4-server "$(MODEL)" "$(ENGRAM_DIR)" "$${PORT:-8479}" "$(ZCHAIN)"; \
+	fi
 
 # The Rust host (./ds4) is the default binary, and the one the server shares.
 # It pins the shape and the tensor directory instead of parsing the GGUF, so its

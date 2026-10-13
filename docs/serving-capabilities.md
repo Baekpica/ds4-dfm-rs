@@ -20,6 +20,7 @@ The request's effective and qualified plan remains authoritative.
 |---|---|---|---|---|---|
 | DeepSeek V4 Flash | persistent / qualified | exact / qualified | qualified | qualified | DeepSeek / bank / qualified |
 | DeepSeek V4 Pro | persistent / qualified | exact / qualified | qualified | qualified | DeepSeek / bank / qualified |
+| DeepSeek V4.1 Flash | serial / none | none / none | unverified | none | Embedded / serial / qualified |
 | Solar Open2 250B | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 | Motif-3 | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 | K-EXAONE 236B A23B | persistent / qualified | partial / unverified | qualified | qualified | None / none / none |
@@ -44,6 +45,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 |---|---:|---:|---:|---:|---|
 | DeepSeek V4 Flash | — | — | — | — | `DS4_METAL_PREFILL_CHUNK` |
 | DeepSeek V4 Pro | — | — | — | — | `DS4_METAL_PREFILL_CHUNK` |
+| DeepSeek V4.1 Flash | — | — | 1 | — | — |
 | Solar Open2 250B | — | — | — | — | `DS4_METAL_PREFILL_CHUNK` |
 | Motif-3 | 262144 | — | — | — | `DS4_MOTIF3_PREFILL_CHUNK` |
 | K-EXAONE 236B A23B | — | — | — | — | `DS4_EXAONE_PREFILL_CHUNK` |
@@ -64,6 +66,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 
 ## Qualification notes
 
+- **DeepSeek V4.1 Flash:** greedy single-request speculation (embedded towers, decode graph on) passed the Spark gates (56-token and 1,100-token byte-identical runs, [dspark] traces equal to the engine); banks, snapshots and the sampling profile are not present on this path; the native run reuses the previous prompt's prefix through one prompt-end checkpoint (unit U-B, --no-kv-reuse disables it) and reports it as usage cached tokens, while the serving layer keeps no reuse plan; the same checkpoint crosses processes through the KVC disk store when --kv-disk-dir is set (item 4; present, not qualified -- the gate runs on the Spark); context is the model metadata, --ctx is rejected.
 - **K-EXAONE 236B A23B:** exact reuse qualified; LLLG partial checkpoints await live qualification.
 - **dots3-note-prev:** text banks, local-window partial reuse and serial MTP are present but unqualified.
 - **Qwen3.8-Flash-Next:** common UX baseline; configured values and verified combinations differ.

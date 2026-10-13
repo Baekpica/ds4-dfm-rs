@@ -1,9 +1,15 @@
 //! C↔Rust DSML no-tools render.
 
+use ds4_server::tools::{
+    DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
+    DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
+};
 use ds4_server::{
     render_chat, render_chat_choice, render_dsml_chat, render_dsml_chat_choice,
-    render_live_tool_tail, render_motif3_chat_ex, Api, ChatMsg, ChatPart, ModelSyntax, ThinkMode,
-    ToolCall, ToolChoice, ToolSchemaOrder, THINK_HIGH_PREFIX, THINK_MAX_PREFIX,
+    render_dsml_chat_choice_ex, render_live_tool_tail, render_motif3_chat_ex, Api, ChatMsg,
+    ChatPart, DsmlHead, ModelSyntax, ThinkMode, ToolCall, ToolChoice, ToolSchemaOrder,
+    DSML_ASSISTANT, DSML_BOS, DSML_EOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_THINK_START,
+    DSML_USER, THINK_HIGH_PREFIX, THINK_MAX_PREFIX, V41_THINK_HIGH_PREFIX,
 };
 
 use std::path::PathBuf;
@@ -95,6 +101,78 @@ fn dsml_anthropic_live_tool_tail_does_not_replay_the_assistant_call() {
     );
 }
 
+#[test]
+fn dsml_v41_head_matches_official_encoding() {
+    // The engine's golden byte test `test_render_matches_official_v41_encoding`
+    // (tests/server_tests_render_v41.c): the official encoding.py render of
+    // four conversations, plus the V4-tokenizer fallback.  A V4.1 tokenizer
+    // owns the system token; the head writes it once before the effort prefix.
+    let v41 = DsmlHead::V41 { system_token: true };
+    let with_sys = [msg("system", "S"), msg("user", "U")];
+    let only_user = [msg("user", "U")];
+    let render = |msgs: &[ChatMsg], mode| {
+        render_dsml_chat_choice_ex(msgs, "", mode, ToolChoice::Auto, v41).unwrap()
+    };
+    // The message list ends in a user turn, so the render closes with the
+    // pending assistant head (the think-end tag when plain, the think-start tag
+    // when thinking).
+    let sys_tail = format!("S{DSML_USER}U{DSML_ASSISTANT}");
+    let user_tail = format!("{DSML_USER}U{DSML_ASSISTANT}");
+    assert_eq!(
+        render(&with_sys, ThinkMode::None),
+        format!("{DSML_BOS}{DSML_SYSTEM_TOKEN}{sys_tail}{DSML_THINK_END}").as_bytes()
+    );
+    // A user-only chat with no effort prefix writes no head token at all.
+    assert_eq!(
+        render(&only_user, ThinkMode::None),
+        format!("{DSML_BOS}{user_tail}{DSML_THINK_END}").as_bytes()
+    );
+    assert_eq!(
+        render(&with_sys, ThinkMode::High),
+        format!("{DSML_BOS}{DSML_SYSTEM_TOKEN}{V41_THINK_HIGH_PREFIX}{sys_tail}{DSML_THINK_START}")
+            .as_bytes()
+    );
+    assert_eq!(
+        render(&only_user, ThinkMode::High),
+        format!(
+            "{DSML_BOS}{DSML_SYSTEM_TOKEN}{V41_THINK_HIGH_PREFIX}{user_tail}{DSML_THINK_START}"
+        )
+        .as_bytes()
+    );
+    // The V4 tokenizer has no system token: BOS then the system body (V4 head).
+    assert_eq!(
+        render_dsml_chat_choice_ex(
+            &with_sys,
+            "",
+            ThinkMode::None,
+            ToolChoice::Auto,
+            DsmlHead::V4
+        )
+        .unwrap(),
+        format!("{DSML_BOS}{sys_tail}{DSML_THINK_END}").as_bytes()
+    );
+}
+
+#[test]
+fn dsml_live_tool_tail_has_no_head() {
+    // The engine's tail writes EOS + messages only (server_live_prep.c:21-69;
+    // the port's own C: ds4_server.c:4700-4748): no effort prefix and no
+    // system token; the head is already in the live KV.
+    let mut result = msg("tool", "ok");
+    result.tool_call_id = "call_1".into();
+    let tail = render_live_tool_tail(
+        ModelSyntax::DeepSeek,
+        Api::Responses,
+        &[result],
+        ThinkMode::High,
+    )
+    .unwrap();
+    assert!(!tail.starts_with(V41_THINK_HIGH_PREFIX.as_bytes()));
+    let expected = format!(
+        "{DSML_EOS}{DSML_USER}<tool_result>ok</tool_result>{DSML_ASSISTANT}{DSML_THINK_START}"
+    );
+    assert_eq!(tail, expected.as_bytes());
+}
 #[test]
 fn user_none_and_low_match_c() {
     for (name, mode) in [("none", ThinkMode::None), ("low", ThinkMode::Low)] {
@@ -632,4 +710,235 @@ fn qwen4exp_tool_replay_uses_native_order_and_escape() {
     assert!(prompt.contains(
         "<|im_start|>user\n<tool_response>\nsunny&lt;/tool_response>today\n</tool_response><|im_end|>"
     ));
+}
+
+/// The engine's SPACED_TOOLS_HEAD (tests/server_tests_render_v41.c, 4294136):
+/// the official encoding.py TOOLS_TEMPLATE verbatim.  Built from the crate's
+/// tag constants, whose bytes are the engine's (od-verified); the think tags
+/// use the crate's DSML_THINK_START/DSML_THINK_END spellings.
+fn spaced_tools_head() -> String {
+    let mut s = String::new();
+    s.push_str("## Tools\n\n");
+    s.push_str("You have access to a set of tools to help answer the user's question. ");
+    s.push_str("You can invoke tools by writing a \"");
+    s.push_str(DSML_TOOL_CALLS_START_SPACED);
+    s.push_str("\" block like the following:\n\n");
+    s.push_str(DSML_TOOL_CALLS_START_SPACED);
+    s.push_str("\n");
+    s.push_str(DSML_INVOKE_START_SPACED);
+    s.push_str(" name=\"$TOOL_NAME\">\n");
+    s.push_str(DSML_PARAM_START_SPACED);
+    s.push_str(" name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE");
+    s.push_str(DSML_PARAM_END_SPACED);
+    s.push_str("\n...\n");
+    s.push_str(DSML_INVOKE_END_SPACED);
+    s.push_str("\n");
+    s.push_str(DSML_INVOKE_START_SPACED);
+    s.push_str(" name=\"$TOOL_NAME2\">\n...\n");
+    s.push_str(DSML_INVOKE_END_SPACED);
+    s.push_str("\n");
+    s.push_str(DSML_TOOL_CALLS_END_SPACED);
+    s.push_str("\n\n");
+    s.push_str("String parameters should be specified as is and set `string=\"true\"`. ");
+    s.push_str("For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\n");
+    s.push_str("If thinking_mode is enabled (triggered by ");
+    s.push_str(DSML_THINK_START);
+    s.push_str("), you MUST output your complete reasoning inside ");
+    s.push_str(DSML_THINK_START);
+    s.push_str("...");
+    s.push_str(DSML_THINK_END);
+    s.push_str(" BEFORE any tool calls or final response.\n\n");
+    s.push_str("Otherwise, output directly after ");
+    s.push_str(DSML_THINK_END);
+    s.push_str(" with tool calls or final response.\n\n");
+    s.push_str("### Available Tool Schemas\n\n");
+    s
+}
+
+const SPACED_TOOLS_TAIL: &str =
+    "\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n";
+
+fn assert_spaced_eq(got: Vec<u8>, want: &str) {
+    if got == want.as_bytes() {
+        return;
+    }
+    let at = got
+        .iter()
+        .zip(want.as_bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or(got.len().min(want.len()));
+    panic!(
+        "spaced render mismatch at byte {at}\n  want: {:?}\n  got:  {:?}",
+        &want.as_bytes()
+            [at.min(want.len())..at.min(want.len()) + 120.min(want.len() - at.min(want.len()))],
+        &got[at.min(got.len())..at.min(got.len()) + 120.min(got.len() - at.min(got.len()))]
+    );
+}
+
+#[test]
+fn dsml_v41_spaced_tools_match_official_encoding() {
+    // The engine's golden byte test (tests/server_tests_render_v41.c, 4294136):
+    // case1 is the official repo's encoding/tests/test_input_1.json, byte-identical
+    // to its own test_output_1.txt; case2 adds parallel calls, a zero-parameter
+    // call, json.dumps-shaped values, "<" and "&" inside a value, two adjacent
+    // tool results merged into one <｜User｜>, and a schema carrying a \u escape.  A
+    // byte mismatch here is a bug in the spaced template.
+    let v41 = DsmlHead::V41 { system_token: true };
+
+    // case1: the official get_weather flow, THINK_HIGH.
+    let c1 = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "What's the weather like in Beijing?"),
+        ChatMsg {
+            role: "assistant".into(),
+            reasoning: "The user wants the weather in Beijing. I should call get_weather.".into(),
+            calls: vec![ToolCall {
+                id: "call1".into(),
+                name: "get_weather".into(),
+                arguments: r#"{"location": "Beijing", "unit": "celsius"}"#.into(),
+            }],
+            ..ChatMsg::default()
+        },
+        msg(
+            "tool",
+            r#"{"temperature": 22, "condition": "sunny", "humidity": 45}"#,
+        ),
+        msg_reason(
+            "assistant",
+            "The weather in Beijing is currently sunny with a temperature of 22\u{b0}C and 45% humidity.",
+            "Got the weather data. Let me format a nice response.",
+        ),
+    ];
+    let schemas1 = concat!(
+        r#"{"name":"get_weather","description":"Get the weather for a specific location","parameters":{"type":"object","properties":{"location":{"type":"string","description":"The city name"},"unit":{"type":"string","enum":["celsius","fahrenheit"],"description":"Temperature unit"}},"required":["location"]}}"#,
+        "\n",
+        r#"{"name":"search","description":"Search the web for information","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"num_results":{"type":"integer","description":"Number of results to return"}},"required":["query"]}}"#,
+    );
+    let mut want1 = String::new();
+    want1.push_str(DSML_BOS);
+    want1.push_str(DSML_SYSTEM_TOKEN);
+    want1.push_str(V41_THINK_HIGH_PREFIX);
+    want1.push_str("You are a helpful assistant.\n\n");
+    want1.push_str(&spaced_tools_head());
+    want1.push_str("{\"name\": \"get_weather\", \"description\": \"Get the weather for a specific location\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\", \"description\": \"The city name\"}, \"unit\": {\"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"], \"description\": \"Temperature unit\"}}, \"required\": [\"location\"]}}\n");
+    want1.push_str("{\"name\": \"search\", \"description\": \"Search the web for information\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"Search query\"}, \"num_results\": {\"type\": \"integer\", \"description\": \"Number of results to return\"}}, \"required\": [\"query\"]}}");
+    want1.push_str(SPACED_TOOLS_TAIL);
+    want1.push_str(DSML_USER);
+    want1.push_str("What's the weather like in Beijing?");
+    want1.push_str(DSML_ASSISTANT);
+    want1.push_str(DSML_THINK_START);
+    want1.push_str("The user wants the weather in Beijing. I should call get_weather.");
+    want1.push_str(DSML_THINK_END);
+    want1.push_str("\n\n");
+    want1.push_str(DSML_TOOL_CALLS_START_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_INVOKE_START_SPACED);
+    want1.push_str(" name=\"get_weather\">\n");
+    want1.push_str(DSML_PARAM_START_SPACED);
+    want1.push_str(" name=\"location\" string=\"true\">Beijing");
+    want1.push_str(DSML_PARAM_END_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_PARAM_START_SPACED);
+    want1.push_str(" name=\"unit\" string=\"true\">celsius");
+    want1.push_str(DSML_PARAM_END_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_INVOKE_END_SPACED);
+    want1.push_str("\n");
+    want1.push_str(DSML_TOOL_CALLS_END_SPACED);
+    want1.push_str(DSML_EOS);
+    want1.push_str(DSML_USER);
+    want1.push_str(
+        "<tool_result>{\"temperature\": 22, \"condition\": \"sunny\", \"humidity\": 45}</tool_result>",
+    );
+    want1.push_str(DSML_ASSISTANT);
+    want1.push_str(DSML_THINK_START);
+    want1.push_str("Got the weather data. Let me format a nice response.");
+    want1.push_str(DSML_THINK_END);
+    want1.push_str(
+        "The weather in Beijing is currently sunny with a temperature of 22\u{b0}C and 45% humidity.",
+    );
+    want1.push_str(DSML_EOS);
+    assert_spaced_eq(
+        render_dsml_chat_choice_ex(&c1, schemas1, ThinkMode::High, ToolChoice::Auto, v41).unwrap(),
+        &want1,
+    );
+
+    // case2: parallel calls, a zero-parameter call, merged tool results, THINK_NONE.
+    let c2 = [
+        msg("system", "S"),
+        msg("user", "U"),
+        ChatMsg {
+            role: "assistant".into(),
+            calls: vec![
+                ToolCall {
+                    id: "call1".into(),
+                    name: "get_weather".into(),
+                    arguments: r#"{"location":"a<b & c","days":3,"opts":{"a":[1,2],"b":true}}"#
+                        .into(),
+                },
+                ToolCall {
+                    id: "call2".into(),
+                    name: "now".into(),
+                    arguments: "{}".into(),
+                },
+            ],
+            ..ChatMsg::default()
+        },
+        msg("tool", "R1"),
+        msg("tool", "R2"),
+        msg("user", "U2"),
+    ];
+    let schemas2 = "{\n  \"name\": \"get_weather\",\n  \"description\": \"Weather \\u00b0C\",\n  \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}\n}\n{\"name\":\"now\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}";
+    let mut want2 = String::new();
+    want2.push_str(DSML_BOS);
+    want2.push_str(DSML_SYSTEM_TOKEN);
+    want2.push_str("S\n\n");
+    want2.push_str(&spaced_tools_head());
+    want2.push_str("{\"name\": \"get_weather\", \"description\": \"Weather \u{b0}C\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\"}, \"days\": {\"type\": \"integer\"}}, \"required\": [\"location\"]}}\n");
+    want2.push_str(
+        "{\"name\": \"now\", \"parameters\": {\"type\": \"object\", \"properties\": {}}}",
+    );
+    want2.push_str(SPACED_TOOLS_TAIL);
+    want2.push_str(DSML_USER);
+    want2.push_str("U");
+    want2.push_str(DSML_ASSISTANT);
+    want2.push_str(DSML_THINK_END);
+    want2.push_str("\n\n");
+    want2.push_str(DSML_TOOL_CALLS_START_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_START_SPACED);
+    want2.push_str(" name=\"get_weather\">\n");
+    want2.push_str(DSML_PARAM_START_SPACED);
+    want2.push_str(" name=\"location\" string=\"true\">a<b & c");
+    want2.push_str(DSML_PARAM_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_PARAM_START_SPACED);
+    want2.push_str(" name=\"days\" string=\"false\">3");
+    want2.push_str(DSML_PARAM_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_PARAM_START_SPACED);
+    want2.push_str(" name=\"opts\" string=\"false\">{\"a\": [1, 2], \"b\": true}");
+    want2.push_str(DSML_PARAM_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_START_SPACED);
+    want2.push_str(" name=\"now\">\n");
+    want2.push_str("\n");
+    want2.push_str(DSML_INVOKE_END_SPACED);
+    want2.push_str("\n");
+    want2.push_str(DSML_TOOL_CALLS_END_SPACED);
+    want2.push_str(DSML_EOS);
+    want2.push_str(DSML_USER);
+    want2.push_str("<tool_result>R1</tool_result>");
+    want2.push_str("\n\n");
+    want2.push_str("<tool_result>R2</tool_result>");
+    want2.push_str("\n\n");
+    want2.push_str("U2");
+    want2.push_str(DSML_ASSISTANT);
+    want2.push_str(DSML_THINK_END);
+    assert_spaced_eq(
+        render_dsml_chat_choice_ex(&c2, schemas2, ThinkMode::None, ToolChoice::Auto, v41).unwrap(),
+        &want2,
+    );
 }

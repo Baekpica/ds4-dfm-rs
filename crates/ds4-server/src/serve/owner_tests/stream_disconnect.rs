@@ -54,6 +54,7 @@ fn parse_env() -> ParseEnv {
         default_effort: ThinkMode::None,
         default_temp: 0.0,
         live_ids: Vec::new(),
+        engine_defaults: false,
     }
 }
 

@@ -1,11 +1,12 @@
 //! C↔Rust four-surface stream projectors (tape oracle, no model).
 
 use ds4_server::{
-    anthropic_final_response, final_response, openai_sse_finish_live, openai_sse_stream_update,
-    openai_stream_start, project_anthropic_thinking, project_openai_chat_thinking,
-    project_openai_chat_utf8, project_openai_completion, project_responses_thinking,
-    responses_final_response, utf8_stream_safe_len, ChatFormat, ModelSyntax, ReqKind, StreamReq,
-    ThinkBlock, ThinkMode, ToolCall, Writer, CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
+    anthropic_final_response, anthropic_sse_start_live, anthropic_sse_stream_update,
+    final_response, openai_sse_finish_live, openai_sse_stream_update, openai_stream_start,
+    project_anthropic_thinking, project_openai_chat_thinking, project_openai_chat_utf8,
+    project_openai_completion, project_responses_thinking, responses_final_response, think_end,
+    utf8_stream_safe_len, ChatFormat, ModelSyntax, ReqKind, StreamReq, ThinkBlock, ThinkMode,
+    ToolCall, Writer, CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
 };
 
 use std::path::PathBuf;
@@ -424,4 +425,294 @@ fn buffered_finals_match_c() {
     assert!(out.contains("\"object\":\"response\""));
     assert!(out.contains("\"status\":\"completed\""));
     assert!(out.contains("Hello world."));
+}
+
+#[test]
+fn bare_invoke_block_holds_back_and_finishes_with_the_call() {
+    // The V4.1 artifact dropped the wrapper in a live open-grok session
+    // (01a127cf, 2026-10-11): the block opened straight with <invoke>, the
+    // live start detector missed it, and the markup streamed as visible
+    // content while the finish still served the call.  The detector now
+    // knows the invoke spellings; the block must be held back and the call
+    // emitted at the finish.
+    let raw = b"Here you go.\n\n<invoke name=\"web_fetch\">\n\
+        <parameter name=\"url\">https://example.com</parameter>\n\
+        </invoke>\n</tool_calls>";
+    let r = StreamReq {
+        think_mode: ThinkMode::None,
+        has_tools: true,
+        chat_format: ChatFormat::DeepSeek,
+        syntax: ModelSyntax::DeepSeek,
+        ..Default::default()
+    };
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    // "Here you go." streams as one delta; a chunk ending mid-marker is
+    // held back; the full text holds the block in suppress mode.
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        &raw[..12],
+        false,
+    ));
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        &raw[..17],
+        false,
+    ));
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        raw,
+        false,
+    ));
+    let calls = [ToolCall {
+        name: "web_fetch".into(),
+        arguments: r#"{"url": "https://example.com"}"#.into(),
+        ..Default::default()
+    }];
+    assert!(openai_sse_finish_live(
+        &mut w,
+        &r,
+        "chatcmpl_bare",
+        &mut st,
+        raw,
+        "tool_calls",
+        12,
+        20,
+        &calls,
+    ));
+    let out = String::from_utf8(w.out).unwrap();
+    assert!(
+        !out.contains("<invoke"),
+        "the invoke markup leaked as content: {out}"
+    );
+    assert!(
+        out.contains("Here you go."),
+        "the pre-block text must stream: {out}"
+    );
+    assert!(
+        out.contains("\"tool_calls\""),
+        "the finish must emit the call: {out}"
+    );
+    assert!(
+        out.contains("web_fetch"),
+        "the call name must be present: {out}"
+    );
+}
+
+const SPACED_CALLS_START: &str = "<\u{ff5c}DSML\u{ff5c} calls>";
+const SPACED_CALLS_END: &str = "</\u{ff5c}DSML\u{ff5c} calls>";
+const SPACED_INVOKE_START: &str = "<\u{ff5c}DSML\u{ff5c} invoke";
+const SPACED_INVOKE_END: &str = "</\u{ff5c}DSML\u{ff5c} invoke>";
+
+#[test]
+fn bare_parameter_close_finishes_the_value_live() {
+    // The artifact's deep-night shape (fable5.md, 10-11 late night; engine
+    // f302be7): the parameter close goes bare while the wrapper and invoke
+    // opens stay DSML.  Before the alias the live stream found no close and
+    // pushed the rest of the block -- the closing tag and the next invoke
+    // included -- as the first argument's value; the engine's assistant
+    // looped five steps on a tag-laden query (fable5.md:11081).
+    let raw = format!(
+        "Checking.\n\n{SPACED_CALLS_START}\n\
+         {SPACED_INVOKE_START} name=\"web_search\">\n\
+         <parameter name=\"query\" string=\"true\">DGX Spark lowest price</parameter>\n\
+         {SPACED_INVOKE_END}\n\
+         {SPACED_INVOKE_START} name=\"web_search\">\n\
+         <parameter name=\"query\" string=\"true\">DGX Spark second</parameter>\n\
+         {SPACED_INVOKE_END}\n\
+         {SPACED_CALLS_END}"
+    );
+    let r = StreamReq {
+        think_mode: ThinkMode::None,
+        has_tools: true,
+        chat_format: ChatFormat::DeepSeek,
+        syntax: ModelSyntax::DeepSeek,
+        ..Default::default()
+    };
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_bareclose",
+        &mut st,
+        raw.as_bytes(),
+        false,
+    ));
+    let calls = [
+        ToolCall {
+            name: "web_search".into(),
+            arguments: r#"{"query": "DGX Spark lowest price"}"#.into(),
+            ..Default::default()
+        },
+        ToolCall {
+            name: "web_search".into(),
+            arguments: r#"{"query": "DGX Spark second"}"#.into(),
+            ..Default::default()
+        },
+    ];
+    assert!(openai_sse_finish_live(
+        &mut w,
+        &r,
+        "chatcmpl_bareclose",
+        &mut st,
+        raw.as_bytes(),
+        "tool_calls",
+        10,
+        40,
+        &calls,
+    ));
+    let out = String::from_utf8(w.out).unwrap();
+    assert!(
+        !out.contains("</parameter>"),
+        "the bare close leaked into a value: {out}"
+    );
+    assert!(
+        out.contains("DGX Spark lowest price"),
+        "the first value must stream: {out}"
+    );
+    assert!(
+        out.contains("DGX Spark second"),
+        "the second value must stream: {out}"
+    );
+}
+
+#[test]
+fn parameter_without_string_attr_streams_as_string() {
+    // Engine f302be7: a bare parameter carries no string attribute and the
+    // engine defaults it to string (matching the final parser).  Before the
+    // alias the live stream failed the call at the parameter open.
+    let raw = format!(
+        "go\n\n{SPACED_CALLS_START}\n\
+         {SPACED_INVOKE_START} name=\"web_search\">\n\
+         <parameter name=\"query\">DGX Spark</parameter>\n\
+         {SPACED_INVOKE_END}\n\
+         {SPACED_CALLS_END}"
+    );
+    let r = StreamReq {
+        think_mode: ThinkMode::None,
+        has_tools: true,
+        chat_format: ChatFormat::DeepSeek,
+        syntax: ModelSyntax::DeepSeek,
+        ..Default::default()
+    };
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_nostring",
+        &mut st,
+        raw.as_bytes(),
+        false,
+    ));
+    let calls = [ToolCall {
+        name: "web_search".into(),
+        arguments: r#"{"query": "DGX Spark"}"#.into(),
+        ..Default::default()
+    }];
+    assert!(openai_sse_finish_live(
+        &mut w,
+        &r,
+        "chatcmpl_nostring",
+        &mut st,
+        raw.as_bytes(),
+        "tool_calls",
+        10,
+        20,
+        &calls,
+    ));
+    let out = String::from_utf8(w.out).unwrap();
+    assert!(out.contains("query"), "the parameter must stream: {out}");
+    assert!(out.contains("DGX Spark"), "the value must stream: {out}");
+}
+
+/// f302be7 (2026-10-11): in non-thinking mode the artifact sometimes samples
+/// one more close marker ahead of its narration.  The stream pushes the
+/// narration but never the marker itself; a marker tail cut between two tokens
+/// is held back until the next chunk proves it.
+#[test]
+fn stray_close_marker_never_streams_as_content() {
+    let marker = think_end(ChatFormat::DeepSeek);
+    let prefix = "Let me check the price.";
+    let suffix = "Actually, first the specs.";
+    let raw = format!("{prefix}{marker}{suffix}");
+    let r = StreamReq {
+        think_mode: ThinkMode::None,
+        has_tools: true,
+        chat_format: ChatFormat::DeepSeek,
+        syntax: ModelSyntax::DeepSeek,
+        ..Default::default()
+    };
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    // A chunk ending mid-marker holds the partial back.
+    let head = &raw[..prefix.len() + 5];
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_stray",
+        &mut st,
+        head.as_bytes(),
+        false,
+    ));
+    let mid = String::from_utf8(w.out.clone()).unwrap();
+    assert!(mid.contains(prefix), "the narration must stream: {mid}");
+    assert!(
+        !mid.contains(&marker[..5]),
+        "a partial marker leaked: {mid}"
+    );
+    // The completed marker is skipped; the narration after it streams.
+    assert!(openai_sse_stream_update(
+        &mut w,
+        &r,
+        "chatcmpl_stray",
+        &mut st,
+        raw.as_bytes(),
+        true,
+    ));
+    let out = String::from_utf8(w.out).unwrap();
+    assert!(out.contains(prefix), "{out}");
+    assert!(out.contains(suffix), "{out}");
+    assert!(!out.contains(marker), "the marker leaked: {out}");
+}
+
+/// The same stray-marker suppression on the anthropic surface (f302be7,
+/// server_anthropic_stream.c:200-206).
+#[test]
+fn anthropic_stray_close_marker_never_streams_as_content() {
+    let marker = think_end(ChatFormat::DeepSeek);
+    let prefix = "Let me check the price.";
+    let suffix = "Actually, first the specs.";
+    let raw = format!("{prefix}{marker}{suffix}");
+    let r = StreamReq {
+        think_mode: ThinkMode::None,
+        has_tools: true,
+        chat_format: ChatFormat::DeepSeek,
+        syntax: ModelSyntax::DeepSeek,
+        ..Default::default()
+    };
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = anthropic_sse_start_live(&mut w, &r, "job", 2);
+    assert!(anthropic_sse_stream_update(
+        &mut w,
+        &r,
+        "job",
+        &mut st,
+        raw.as_bytes(),
+        true,
+    ));
+    let out = String::from_utf8(w.out).unwrap();
+    assert!(out.contains(prefix), "{out}");
+    assert!(out.contains(suffix), "{out}");
+    assert!(!out.contains(marker), "the marker leaked: {out}");
 }

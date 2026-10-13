@@ -5,10 +5,12 @@ use crate::json::json_escape_bytes;
 use crate::parse::ToolCall;
 use crate::stream::utf8_stream_safe_len;
 use crate::tools::{
-    dsml_attr, dsml_unescape_text, mint_tool_id, DSML_INVOKE_END, DSML_INVOKE_END_SHORT,
-    DSML_INVOKE_START, DSML_INVOKE_START_SHORT, DSML_PARAM_END, DSML_PARAM_END_SHORT,
-    DSML_PARAM_START, DSML_PARAM_START_SHORT, DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SHORT,
-    DSML_TOOL_CALLS_START, DSML_TOOL_CALLS_START_SHORT,
+    dsml_attr, mint_tool_id, DSML_INVOKE_END, DSML_INVOKE_END_SHORT, DSML_INVOKE_END_SPACED,
+    DSML_INVOKE_START, DSML_INVOKE_START_SHORT, DSML_INVOKE_START_SPACED, DSML_PARAM_END,
+    DSML_PARAM_END_SHORT, DSML_PARAM_END_SPACED, DSML_PARAM_START, DSML_PARAM_START_SHORT,
+    DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SHORT,
+    DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START, DSML_TOOL_CALLS_START_SHORT,
+    DSML_TOOL_CALLS_START_SPACED,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,9 +30,14 @@ pub struct DsmlSyntax {
     pub invoke_end: &'static [u8],
     pub param_start: &'static [u8],
     pub param_end: &'static [u8],
+    /// Old generations write `&`/`<` in string values as XML entities (the
+    /// stream holds back a chunk tail that would split one); the official
+    /// spaced generation writes values raw and its only escape is the render
+    /// guard (engine server_dsml_stream.c dsml_value_unescape / :384-406).
+    pub entity_values: bool,
 }
 
-pub const DSML_SYNTAXES: [DsmlSyntax; 3] = [
+pub const DSML_SYNTAXES: [DsmlSyntax; 4] = [
     DsmlSyntax {
         tool_calls_start: DSML_TOOL_CALLS_START.as_bytes(),
         tool_calls_end: DSML_TOOL_CALLS_END.as_bytes(),
@@ -38,6 +45,7 @@ pub const DSML_SYNTAXES: [DsmlSyntax; 3] = [
         invoke_end: DSML_INVOKE_END.as_bytes(),
         param_start: DSML_PARAM_START.as_bytes(),
         param_end: DSML_PARAM_END.as_bytes(),
+        entity_values: true,
     },
     DsmlSyntax {
         tool_calls_start: DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -46,6 +54,7 @@ pub const DSML_SYNTAXES: [DsmlSyntax; 3] = [
         invoke_end: DSML_INVOKE_END_SHORT.as_bytes(),
         param_start: DSML_PARAM_START_SHORT.as_bytes(),
         param_end: DSML_PARAM_END_SHORT.as_bytes(),
+        entity_values: true,
     },
     DsmlSyntax {
         tool_calls_start: b"<tool_calls>",
@@ -54,6 +63,17 @@ pub const DSML_SYNTAXES: [DsmlSyntax; 3] = [
         invoke_end: b"</invoke>",
         param_start: b"<parameter",
         param_end: b"</parameter>",
+        entity_values: true,
+    },
+    // The official V4.1 encoding.py spelling (4294136).
+    DsmlSyntax {
+        tool_calls_start: DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END_SPACED.as_bytes(),
+        invoke_start: DSML_INVOKE_START_SPACED.as_bytes(),
+        invoke_end: DSML_INVOKE_END_SPACED.as_bytes(),
+        param_start: DSML_PARAM_START_SPACED.as_bytes(),
+        param_end: DSML_PARAM_END_SPACED.as_bytes(),
+        entity_values: false,
     },
 ];
 
@@ -150,6 +170,20 @@ impl DsmlToolStream {
         }
     }
 
+    /// A call whose name went on the wire but whose arguments did not: the
+    /// live stream started this invoke and then failed mid-block on the
+    /// V4.1 artifact's mixed tag spellings (docs 6.23).  The finish
+    /// completes this index with an arguments-only delta -- the client
+    /// merges deltas by index.  None when the live stream finished
+    /// cleanly, emitted no call, or already streamed part of the
+    /// arguments (nothing safe to append).
+    pub fn partial_invoke_index(&self) -> Option<i32> {
+        if !self.emitted_any || self.state == DsmlToolState::Done || self.args_open {
+            return None;
+        }
+        Some(self.index)
+    }
+
     fn fail(&mut self) -> bool {
         self.active = false;
         self.state = DsmlToolState::Error;
@@ -211,10 +245,12 @@ impl DsmlToolStream {
                         self.state = DsmlToolState::BetweenInvokes;
                         continue;
                     }
-                    if raw_partial_any(raw, self.parse_pos, syn.invoke_end, syn.param_start) {
+                    if raw_partial_lit(raw, self.parse_pos, syn.invoke_end)
+                        || param_open_partial(&syn, raw, self.parse_pos)
+                    {
                         return true;
                     }
-                    if raw_full_lit(raw, self.parse_pos, syn.param_start) {
+                    if param_open_full(&syn, raw, self.parse_pos) {
                         let before = self.parse_pos;
                         let before_state = self.state;
                         if !self.start_param(sink, raw) {
@@ -228,8 +264,8 @@ impl DsmlToolStream {
                     return self.fail();
                 }
                 DsmlToolState::ParamValue => {
-                    if let Some(end) = find_lit_bounded(&raw[self.parse_pos..], syn.param_end) {
-                        if !self.finish_param(sink, raw, self.parse_pos + end) {
+                    if let Some((end, end_len)) = param_close_find(&syn, raw, self.parse_pos) {
+                        if !self.finish_param(sink, raw, self.parse_pos + end, end_len) {
                             return false;
                         }
                         continue;
@@ -238,11 +274,13 @@ impl DsmlToolStream {
                         raw,
                         self.parse_pos,
                         syn.param_end,
+                        bare_param_alias(&syn).then_some(BARE_PARAM_END),
                         self.param_is_string,
+                        syn.entity_values,
                     );
                     if limit > self.parse_pos {
                         let ok = if self.param_is_string {
-                            emit_string_value(sink, self.index, &raw[self.parse_pos..limit])
+                            emit_string_value(sink, self.index, &syn, &raw[self.parse_pos..limit])
                         } else {
                             sink.args_fragment(self.index, &raw[self.parse_pos..limit])
                         };
@@ -287,11 +325,14 @@ impl DsmlToolStream {
             return true;
         };
         let tag = &raw[self.parse_pos..self.parse_pos + rel + 1];
-        let (Some(name), Some(is_string)) = (dsml_attr(tag, "name"), dsml_attr(tag, "string"))
-        else {
+        let Some(name) = dsml_attr(tag, "name") else {
             return self.fail();
         };
-        let string_value = is_string == b"true";
+        // A bare parameter carries no string attribute; the engine defaults
+        // it to string, matching the final parser (f302be7).
+        let string_value = dsml_attr(tag, "string")
+            .map(|v| v == b"true")
+            .unwrap_or(true);
         if !emit_param_prefix(sink, self.index, &name, string_value, self.first_param) {
             return false;
         }
@@ -302,11 +343,17 @@ impl DsmlToolStream {
         true
     }
 
-    fn finish_param<S: ToolSink>(&mut self, sink: &mut S, raw: &[u8], value_end: usize) -> bool {
+    fn finish_param<S: ToolSink>(
+        &mut self,
+        sink: &mut S,
+        raw: &[u8],
+        value_end: usize,
+        end_len: usize,
+    ) -> bool {
         let syn = self.syn.unwrap();
         if value_end > self.parse_pos {
             let ok = if self.param_is_string {
-                emit_string_value(sink, self.index, &raw[self.parse_pos..value_end])
+                emit_string_value(sink, self.index, &syn, &raw[self.parse_pos..value_end])
             } else {
                 sink.args_fragment(self.index, &raw[self.parse_pos..value_end])
             };
@@ -317,7 +364,7 @@ impl DsmlToolStream {
         if self.param_is_string && !sink.args_fragment(self.index, b"\"") {
             return false;
         }
-        self.parse_pos = value_end + syn.param_end.len();
+        self.parse_pos = value_end + end_len;
         self.state = DsmlToolState::BetweenParams;
         true
     }
@@ -348,11 +395,12 @@ fn emit_param_prefix<S: ToolSink>(
     sink.args_fragment(index, &frag)
 }
 
-fn emit_string_value<S: ToolSink>(sink: &mut S, index: i32, text: &[u8]) -> bool {
+fn emit_string_value<S: ToolSink>(sink: &mut S, index: i32, syn: &DsmlSyntax, text: &[u8]) -> bool {
     if text.is_empty() {
         return true;
     }
-    let unescaped = dsml_unescape_text(text);
+    let unescaped =
+        crate::tools::dsml_value_unescape_syntax(syn.entity_values, syn.param_end, text);
     let frag = json_escape_fragment(&unescaped);
     sink.args_fragment(index, &frag)
 }
@@ -381,6 +429,47 @@ fn raw_partial_any(raw: &[u8], pos: usize, a: &[u8], b: &[u8]) -> bool {
     raw_partial_lit(raw, pos, a) || raw_partial_lit(raw, pos, b)
 }
 
+/// The engine's bare-alias rule (f302be7, server_dsml_parse.c
+/// dsml_param_open_len/close_len): the quantized artifact, with a system
+/// text and the tool instructions in context, writes the parameter tags
+/// bare -- `<parameter name="x">v</parameter>` -- while the wrapper and
+/// invoke opens stay DSML (fable5.md, 10-11/10-12; measured 5/5 with a
+/// Chinese system, 0/5 without).  A syntax whose own spelling is not
+/// already the bare one accepts the bare form as an alias.  The open alias
+/// keeps the trailing space: `<parameters>` is not an open tag.  The
+/// engine routed the final parse, the live streams, and the KV syntax
+/// tracking through the same entry points; these are those entry points.
+const BARE_PARAM_START: &[u8] = b"<parameter ";
+const BARE_PARAM_END: &[u8] = b"</parameter>";
+
+fn bare_param_alias(syn: &DsmlSyntax) -> bool {
+    syn.param_start != &b"<parameter"[..]
+}
+
+fn param_open_full(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
+    raw_full_lit(raw, pos, syn.param_start)
+        || (bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_START))
+}
+
+fn param_open_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
+    raw_partial_lit(raw, pos, syn.param_start)
+        || (bare_param_alias(syn) && raw_partial_lit(raw, pos, BARE_PARAM_START))
+}
+
+/// The earliest close from `from` in either spelling: (offset, length)
+/// (f302be7's dsml_param_close_find takes the earlier of the two).
+fn param_close_find(syn: &DsmlSyntax, raw: &[u8], from: usize) -> Option<(usize, usize)> {
+    let own = find_lit_bounded(&raw[from..], syn.param_end).map(|r| (r, syn.param_end.len()));
+    if !bare_param_alias(syn) {
+        return own;
+    }
+    let bare = find_lit_bounded(&raw[from..], BARE_PARAM_END).map(|r| (r, BARE_PARAM_END.len()));
+    match (own, bare) {
+        (Some(a), Some(b)) => Some(if b.0 < a.0 { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
 fn find_lit_bounded(s: &[u8], lit: &[u8]) -> Option<usize> {
     if lit.is_empty() {
         return Some(0);
@@ -388,9 +477,25 @@ fn find_lit_bounded(s: &[u8], lit: &[u8]) -> Option<usize> {
     s.windows(lit.len()).position(|w| w == lit)
 }
 
-fn dsml_entity_stream_safe_len(raw: &[u8], start: usize, limit: usize) -> usize {
+/// The engine's `dsml_entity_stream_safe_len` (server_dsml_stream.c:384-406):
+/// a chunk tail that would split an escape sequence is held back.  The old
+/// generations' escapes are the XML entities; the spaced generation writes
+/// values raw and its only escape is the render guard "&lt;" + the closing
+/// tag minus its leading '<' (dsml_value_unescape builds the same sentinel).
+fn dsml_entity_stream_safe_len(
+    raw: &[u8],
+    start: usize,
+    limit: usize,
+    param_end: &[u8],
+    entity_values: bool,
+) -> usize {
     const ENTS: &[&[u8]] = &[b"&amp;", b"&lt;", b"&gt;", b"&quot;", b"&apos;"];
-    let max_ent = 6;
+    let sentinel = [b"&lt;", &param_end[1..]].concat();
+    let (list, max_ent): (&[&[u8]], usize) = if entity_values {
+        (ENTS, 6)
+    } else {
+        (&[sentinel.as_slice()], sentinel.len())
+    };
     let scan = if limit > start + max_ent {
         limit - max_ent
     } else {
@@ -402,7 +507,7 @@ fn dsml_entity_stream_safe_len(raw: &[u8], start: usize, limit: usize) -> usize 
         }
         let amp = i - 1;
         let tail = limit - amp;
-        for ent in ENTS {
+        for ent in list {
             if tail < ent.len() && raw[amp..].starts_with(&ent[..tail]) {
                 return amp;
             }
@@ -412,15 +517,11 @@ fn dsml_entity_stream_safe_len(raw: &[u8], start: usize, limit: usize) -> usize 
     limit
 }
 
-fn tool_param_value_stream_safe_len(
-    raw: &[u8],
-    start: usize,
-    param_end: &[u8],
-    is_string: bool,
-) -> usize {
+/// A chunk tail that is a proper prefix of `close` is held back; the hold
+/// runs once per accepted spelling (f302be7's close_partial).
+fn partial_close_hold(raw: &[u8], start: usize, close: &[u8]) -> usize {
     let raw_len = raw.len();
-    let mut limit = raw_len;
-    let end_len = param_end.len();
+    let end_len = close.len();
     let scan = if raw_len > start + end_len {
         raw_len - end_len
     } else {
@@ -432,13 +533,28 @@ fn tool_param_value_stream_safe_len(
         }
         let marker = i - 1;
         let tail = raw_len - marker;
-        if tail < end_len && raw[marker..].starts_with(&param_end[..tail]) {
-            limit = marker;
+        if tail < end_len && raw[marker..].starts_with(&close[..tail]) {
+            return marker;
         }
         break;
     }
+    raw_len
+}
+
+fn tool_param_value_stream_safe_len(
+    raw: &[u8],
+    start: usize,
+    param_end: &[u8],
+    param_end_alias: Option<&[u8]>,
+    is_string: bool,
+    entity_values: bool,
+) -> usize {
+    let mut limit = partial_close_hold(raw, start, param_end);
+    if let Some(alias) = param_end_alias {
+        limit = limit.min(partial_close_hold(raw, start, alias));
+    }
     if is_string {
-        limit = dsml_entity_stream_safe_len(raw, start, limit);
+        limit = dsml_entity_stream_safe_len(raw, start, limit, param_end, entity_values);
     }
     utf8_stream_safe_len(raw, start, limit, false)
 }

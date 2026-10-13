@@ -1,0 +1,66 @@
+The invention of the transistor is usually dated to December 1947, when
+John Bardeen and Walter Brattain, working under William Shockley at Bell
+Telephone Laboratories, demonstrated a point-contact device that could
+amplify an electrical signal using a piece of germanium. The achievement
+was the culmination of decades of work on vacuum tubes, crystal detectors,
+and the physics of semiconductors, and it opened a path that the industry
+followed for the rest of the century. Within a few years the point-contact
+design gave way to the junction transistor, which was easier to manufacture
+and far more reliable, and by the middle of the 1950s several companies
+were producing transistors in quantity for radios, computers, and military
+equipment.
+
+The next great step was integration. In 1958 Jack Kilby at Texas
+Instruments built a circuit in which several components were formed on a
+single piece of semiconductor material, and shortly afterward Robert Noyce
+at Fairchild Semiconductor devised a practical method of connecting those
+components with a layer of metal deposited on the surface of the chip.
+These two ideas together defined the integrated circuit, and the
+manufacturing process that grew out of them made it possible to place
+thousands, then millions, then billions of transistors on a single die.
+The pace of that growth was noticed early: in 1965 Gordon Moore observed
+that the number of components per chip was doubling at a regular interval,
+and his observation, later named Moore's law, became both a description of
+the industry and a target that the industry organized itself to meet.
+
+Making that progress real required advances in many separate fields. The
+growth of pure silicon crystals, the oxidation of silicon surfaces, the
+patterning of materials with light-sensitive polymers, the implantation of
+dopant ions, and the deposition of thin films of metal and insulator all
+had to be understood and controlled to extraordinary precision. Each
+generation of technology demanded cleaner rooms, purer chemicals, and more
+exact optical systems, and the capital cost of a fabrication plant rose
+with every generation. Even so, the economic reward for building smaller
+and faster devices was so large that the investment continued for decades
+without interruption.
+
+Design methods changed as well. In the early years engineers drew
+transistor circuits by hand and verified them with physical models and
+breadboards. As the number of devices on a chip grew, that approach became
+impossible, and computer programs took over both the simulation of
+circuits and the layout of masks. Hardware description languages allowed a
+designer to describe behavior rather than geometry, and synthesis tools
+converted those descriptions into networks of gates. The result was that a
+single engineer could command millions of transistors without ever
+touching the details of their physical construction.
+
+The consequences reached far beyond electronics. Cheap computation
+transformed communication, medicine, finance, transportation, and
+entertainment, and it changed the daily habits of billions of people. It
+also created new problems: the energy consumed by large computing systems,
+the difficulty of keeping software secure, the concentration of
+manufacturing in a small number of regions, and the question of how to
+share the benefits of automation fairly. None of these problems has a
+simple answer, and each of them is now the subject of serious study in
+universities, governments, and industry.
+
+Looking back, the transistor story is a reminder that a single invention
+rarely stands alone. It depends on earlier science, on tools that did not
+exist when the idea was formed, and on institutions willing to fund work
+whose value would not be known for many years. The people who built the
+first devices could not have predicted the shape of the industry that
+followed, and yet the principles they established, careful measurement,
+honest reporting of results, and steady improvement of the process, remain
+the foundation of the field today. Students who enter the discipline now
+inherit both the achievements and the unsolved questions, and the work
+ahead is at least as demanding as the work that came before.

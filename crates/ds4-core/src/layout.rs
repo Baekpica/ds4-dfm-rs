@@ -13,7 +13,8 @@ use crate::bind::{
     DSPARK_N_LAYER,
 };
 use crate::shape::{shape_for_variant, ModelFamily, Shape, Variant};
-use crate::tensors::{tensor_type_name, TensorInfo};
+use crate::tensors::{tensor_type_name, TensorInfo, TensorInventory};
+use crate::v41::V41Wire;
 
 const T_F32: u32 = 0;
 const T_F16: u32 = 1;
@@ -32,6 +33,9 @@ const T_IQ1_M: u32 = 29;
 const T_I32: u32 = 26;
 const T_I64: u32 = 27;
 const T_BF16: u32 = 30;
+const T_VQBLOB: u32 = 42;
+const T_FP4X32: u32 = 43;
+const T_FP8_32X32: u32 = 44;
 const T_PQ2_0: u32 = 142;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +55,19 @@ pub enum TypeClass {
     QwenMtpRouted,
     GlmDense,
     GlmRouted,
+    /// V4.1 main skeleton: fp4x32 or q4_K, nothing else (`expect_skel`,
+    /// core_bind_v41.c:36-39).
+    V41Skel,
+    /// V4.1 tower dense projection: what `v41_tproj` dispatches on
+    /// (core_v41_attn.c:206-214) - fp8_32x32, q4_K, else fp4x32.
+    V41Dense,
+    /// V4.1 expert blob: one DQVL container per layer. Its single dim is the
+    /// byte size, which differs per layer, so only the ndim is checked; the
+    /// engine binds on presence alone (core_bind_v41.c:87).
+    V41Blob,
+    /// A V4.1 tensor the engine checks neither type nor dims for (the shared
+    /// draft heads, core_bind_v41.c:137-145); the ndim is still checked.
+    V41Ndim,
 }
 
 impl TypeClass {
@@ -71,6 +88,10 @@ impl TypeClass {
             TypeClass::QwenMtpRouted => "qwen-mtp-routed".into(),
             TypeClass::GlmDense => "glm-dense".into(),
             TypeClass::GlmRouted => "glm-routed".into(),
+            TypeClass::V41Skel => "v41-skel".into(),
+            TypeClass::V41Dense => "v41-dense".into(),
+            TypeClass::V41Blob => "v41-blob".into(),
+            TypeClass::V41Ndim => "v41-ndim".into(),
         }
     }
 
@@ -201,6 +222,10 @@ fn type_ok(class: TypeClass, typ: u32) -> bool {
         TypeClass::QwenPlain => typ == T_F32 || typ == T_BF16,
         TypeClass::QwenMtpRouted => typ == T_Q8_0 || typ == T_BF16,
         TypeClass::GlmDense => typ == T_BF16 || typ == T_Q8_0 || typ == T_Q4_K || typ == T_Q4_0,
+        TypeClass::V41Skel => typ == T_FP4X32 || typ == T_Q4_K,
+        TypeClass::V41Dense => typ == T_FP8_32X32 || typ == T_Q4_K || typ == T_FP4X32,
+        TypeClass::V41Blob => typ == T_VQBLOB,
+        TypeClass::V41Ndim => true,
     }
 }
 
@@ -234,6 +259,12 @@ fn dims_match(spec: &LayoutSpec, t: &TensorInfo) -> Result<(), LayoutError> {
                 return Ok(());
             }
             Err(LayoutError::Dim(spec.name.clone()))
+        }
+        TypeClass::V41Blob | TypeClass::V41Ndim => {
+            if t.ndim != spec.ndim {
+                return Err(LayoutError::Ndim(spec.name.clone()));
+            }
+            Ok(())
         }
         _ => {
             if t.ndim != spec.ndim {
@@ -2742,6 +2773,663 @@ fn expected_deepseek(shape: &Shape) -> Vec<LayoutSpec> {
     out
 }
 
+/// V4.1's expected table (`weights_bind_v41` and its `expect` calls,
+/// core_bind_v41.c:149-203). It cannot be shape-only: the compressor and
+/// indexer names follow the metadata wire's source layers and the towers'
+/// expert form follows the inventory, exactly like the bind arm. Where the
+/// engine checks neither type nor dims (the shared draft heads,
+/// core_bind_v41.c:137-145) and the wire lacks the metadata to derive a
+/// dimension, the spec falls back to `V41Ndim` rather than inventing one.
+pub fn expected_layouts_v41(
+    shape: &Shape,
+    wire: &V41Wire,
+    inventory: &TensorInventory,
+) -> Vec<LayoutSpec> {
+    let mut out = Vec::new();
+    let e = shape.n_embd as u64;
+    let v = shape.n_vocab as u64;
+    let hc = shape.n_hc as u64;
+    let hc_dim = e * hc;
+    let hc_mix = 2 * hc + hc * hc;
+    let hd = shape.n_head_dim as u64;
+    let q_dim = shape.n_head as u64 * hd;
+    let lq = shape.n_lora_q as u64;
+    let out_low = shape.n_out_group as u64 * shape.n_lora_o as u64;
+    let grp_in = hd * (shape.n_head / shape.n_out_group) as u64;
+    let ff = shape.n_ff_exp as u64;
+    let ie = shape.n_indexer_head as u64;
+    let id = shape.n_indexer_head_dim as u64;
+    let n_expert = shape.n_expert as u64;
+    let ngram = wire.engram_max_ngram as u64;
+    let eheads = wire.engram_heads as u64;
+    let ehd = wire.engram_head_dim as u64;
+    let n_engram = wire.engram_layers.len() as u64;
+
+    spec(
+        &mut out,
+        "token_embd.weight",
+        TypeClass::V41Skel,
+        2,
+        [e, v, 0, 0],
+    );
+    spec(
+        &mut out,
+        "output_norm.weight",
+        TypeClass::Exact(T_F32),
+        1,
+        [e, 0, 0, 0],
+    );
+    spec(
+        &mut out,
+        "output.weight",
+        TypeClass::V41Skel,
+        2,
+        [e, v, 0, 0],
+    );
+    if n_engram != 0 {
+        spec(
+            &mut out,
+            "engram.token_map",
+            TypeClass::Exact(T_I32),
+            1,
+            [v, 0, 0, 0],
+        );
+        spec(
+            &mut out,
+            "engram.multipliers",
+            TypeClass::Exact(T_I64),
+            2,
+            [ngram, n_engram, 0, 0],
+        );
+        spec(
+            &mut out,
+            "engram.offsets",
+            TypeClass::Exact(T_I64),
+            2,
+            [(ngram - 1) * eheads, n_engram, 0, 0],
+        );
+        // The engine's own comment states the layout: I64
+        // [heads][ngram-1][n_engram] (core_bind_v41.c:159).
+        spec(
+            &mut out,
+            "engram.primes",
+            TypeClass::Exact(T_I64),
+            3,
+            [eheads, ngram - 1, n_engram, 0],
+        );
+    }
+
+    for il in 0..shape.n_layer {
+        specf(
+            &mut out,
+            "blk.%u.hc_attn_fn.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            2,
+            [hc_dim, hc_mix, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.hc_attn_scale.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [3, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.hc_attn_base.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [hc_mix, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_norm.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_q_a.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [e, lq, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_q_a_norm.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [lq, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_q_b.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [lq, q_dim, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_kv.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [e, hd, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_kv_a_norm.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [hd, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_sinks.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [shape.n_head as u64, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_output_a.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [grp_in, out_low, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.attn_output_b.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [out_low, e, 0, 0],
+        );
+        if wire.is_kv_source[il as usize] {
+            specf(
+                &mut out,
+                "blk.%u.attn_compressor_kv.weight",
+                il,
+                TypeClass::Exact(T_BF16),
+                2,
+                [e, hd, 0, 0],
+            );
+            if wire.compress_ratios[il as usize] > 1 {
+                specf(
+                    &mut out,
+                    "blk.%u.attn_compressor_gate.weight",
+                    il,
+                    TypeClass::Exact(T_BF16),
+                    2,
+                    [e, hd, 0, 0],
+                );
+            }
+            specf(
+                &mut out,
+                "blk.%u.attn_compressor_norm.weight",
+                il,
+                TypeClass::Exact(T_F32),
+                1,
+                [hd, 0, 0, 0],
+            );
+            specf(
+                &mut out,
+                "blk.%u.indexer.wk.weight",
+                il,
+                TypeClass::Exact(T_BF16),
+                2,
+                [hd, id, 0, 0],
+            );
+            specf(
+                &mut out,
+                "blk.%u.indexer.k_norm.weight",
+                il,
+                TypeClass::Exact(T_F32),
+                1,
+                [id, 0, 0, 0],
+            );
+        }
+        if wire.is_index_source[il as usize] {
+            specf(
+                &mut out,
+                "blk.%u.indexer.attn_q_b.weight",
+                il,
+                TypeClass::V41Skel,
+                2,
+                [lq, ie * id, 0, 0],
+            );
+            specf(
+                &mut out,
+                "blk.%u.indexer.proj.weight",
+                il,
+                TypeClass::Exact(T_BF16),
+                2,
+                [e, ie, 0, 0],
+            );
+        }
+        specf(
+            &mut out,
+            "blk.%u.hc_ffn_fn.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            2,
+            [hc_dim, hc_mix, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.hc_ffn_scale.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [3, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.hc_ffn_base.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [hc_mix, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.ffn_norm.weight",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.ffn_gate_inp.weight",
+            il,
+            TypeClass::Exact(T_BF16),
+            2,
+            [e, n_expert, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.exp_probs_b.bias",
+            il,
+            TypeClass::Exact(T_F32),
+            1,
+            [n_expert, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.ffn_exps_vq.blob",
+            il,
+            TypeClass::V41Blob,
+            1,
+            [0, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.ffn_gate_shexp.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [e, ff, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.ffn_up_shexp.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [e, ff, 0, 0],
+        );
+        specf(
+            &mut out,
+            "blk.%u.ffn_down_shexp.weight",
+            il,
+            TypeClass::V41Skel,
+            2,
+            [ff, e, 0, 0],
+        );
+        if wire.engram_index_of[il as usize] >= 0 {
+            specf(
+                &mut out,
+                "blk.%u.engram_wkv.weight",
+                il,
+                TypeClass::Exact(T_FP8_32X32),
+                2,
+                [(ngram - 1) * eheads * ehd, e * (hc + 1), 0, 0],
+            );
+            specf(
+                &mut out,
+                "blk.%u.engram_q.weight",
+                il,
+                TypeClass::Exact(T_F32),
+                2,
+                [e, hc, 0, 0],
+            );
+            specf(
+                &mut out,
+                "blk.%u.engram_k.weight",
+                il,
+                TypeClass::Exact(T_F32),
+                2,
+                [e, hc, 0, 0],
+            );
+        }
+    }
+
+    for t in 0..wire.mtp_towers {
+        let ne = wire.mtp_experts as u64;
+        specf(
+            &mut out,
+            "mtp.%u.hc_attn_fn.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            2,
+            [hc_dim, hc_mix, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.hc_attn_scale.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [3, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.hc_attn_base.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [hc_mix, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_norm.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_q_a.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [e, lq, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_q_a_norm.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [lq, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_q_b.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [lq, q_dim, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_kv.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [e, hd, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_kv_a_norm.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [hd, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_sinks.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [shape.n_head as u64, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_output_a.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [grp_in, out_low, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.attn_output_b.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [out_low, e, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.hc_ffn_fn.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            2,
+            [hc_dim, hc_mix, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.hc_ffn_scale.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [3, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.hc_ffn_base.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [hc_mix, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.ffn_norm.weight",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.ffn_gate_inp.weight",
+            t,
+            TypeClass::Exact(T_BF16),
+            2,
+            [e, ne, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.exp_probs_b.bias",
+            t,
+            TypeClass::Exact(T_F32),
+            1,
+            [ne, 0, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.ffn_gate_shexp.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [e, ff, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.ffn_up_shexp.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [e, ff, 0, 0],
+        );
+        specf(
+            &mut out,
+            "mtp.%u.ffn_down_shexp.weight",
+            t,
+            TypeClass::V41Dense,
+            2,
+            [ff, e, 0, 0],
+        );
+        if wire.tower_uses_blob(inventory, t) {
+            specf(
+                &mut out,
+                "mtp.%u.ffn_exps_vq.blob",
+                t,
+                TypeClass::V41Blob,
+                1,
+                [0, 0, 0, 0],
+            );
+            continue;
+        }
+        // The per-expert form is fp4x32 only: the draft MoE kernel has no
+        // type dispatch (cuda_v41_draft.inc.cu:4,12).
+        for exp in 0..wire.mtp_experts {
+            spec(
+                &mut out,
+                format!("mtp.{t}.ffn_exp.{exp}.gate.weight"),
+                TypeClass::Exact(T_FP4X32),
+                2,
+                [e, ff, 0, 0],
+            );
+            spec(
+                &mut out,
+                format!("mtp.{t}.ffn_exp.{exp}.up.weight"),
+                TypeClass::Exact(T_FP4X32),
+                2,
+                [e, ff, 0, 0],
+            );
+            spec(
+                &mut out,
+                format!("mtp.{t}.ffn_exp.{exp}.down.weight"),
+                TypeClass::Exact(T_FP4X32),
+                2,
+                [ff, e, 0, 0],
+            );
+        }
+    }
+
+    if wire.mtp_towers != 0 {
+        // One main_proj row block per target layer; the artifact measures
+        // three targets and three towers (tests/fixtures/v41).
+        let n_target = if wire.mtp_targets.is_empty() {
+            wire.mtp_towers as u64
+        } else {
+            wire.mtp_targets.len() as u64
+        };
+        spec(
+            &mut out,
+            "mtp.main_proj.weight",
+            TypeClass::V41Dense,
+            2,
+            [e * n_target, e, 0, 0],
+        );
+        spec(
+            &mut out,
+            "mtp.main_norm.weight",
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+        match wire.mtp_markov_rank {
+            Some(rank) => {
+                let r = u64::from(rank);
+                spec(
+                    &mut out,
+                    "mtp.markov_embd.weight",
+                    TypeClass::Exact(T_BF16),
+                    2,
+                    [r, v, 0, 0],
+                );
+                spec(
+                    &mut out,
+                    "mtp.markov_head.weight",
+                    TypeClass::Exact(T_BF16),
+                    2,
+                    [r, v, 0, 0],
+                );
+                spec(
+                    &mut out,
+                    "mtp.confidence.weight",
+                    TypeClass::Exact(T_BF16),
+                    2,
+                    [e + r, 1, 0, 0],
+                );
+            }
+            None => {
+                spec(
+                    &mut out,
+                    "mtp.markov_embd.weight",
+                    TypeClass::V41Ndim,
+                    2,
+                    [0, 0, 0, 0],
+                );
+                spec(
+                    &mut out,
+                    "mtp.markov_head.weight",
+                    TypeClass::V41Ndim,
+                    2,
+                    [0, 0, 0, 0],
+                );
+                spec(
+                    &mut out,
+                    "mtp.confidence.weight",
+                    TypeClass::V41Ndim,
+                    2,
+                    [0, 0, 0, 0],
+                );
+            }
+        }
+        spec(
+            &mut out,
+            "mtp.out_norm.weight",
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+    }
+    out
+}
+
+/// V4.1's layout gate: the same wire and inventory the bind resolved from.
+/// No gate/up pair check - the routed experts are one blob per layer.
+pub fn validate_layouts_v41(
+    plan: &BindPlan,
+    wire: &V41Wire,
+    inventory: &TensorInventory,
+) -> Result<(), LayoutError> {
+    let by_name = plan_by_name(plan);
+    expect_specs(
+        &expected_layouts_v41(&plan.shape, wire, inventory),
+        &by_name,
+    )
+}
+
 fn deepseek_block(out: &mut Vec<LayoutSpec>, prefix: &str, shape: &Shape) {
     let e = shape.n_embd as u64;
     let hc = shape.n_hc as u64;
@@ -3088,6 +3776,8 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::Dots3Note => expected_dots3(shape),
         ModelFamily::SolarOpen2 => expected_solar(shape),
         ModelFamily::ExaoneMoe => expected_exaone(shape),
+        // V4.1 is not shape-only; it resolves through
+        // `expected_layouts_v41` with the metadata wire.
         ModelFamily::DeepSeek4 => expected_deepseek(shape),
     }
 }

@@ -115,6 +115,16 @@ pub struct ParseEnv {
     pub default_temp: f32,
     /// LIVE call ids for this surface at parse time (C `*_live_has_call_id`).
     pub live_ids: Vec<String>,
+    /// The engine's request-omitted defaults for its own model set (unit H):
+    /// thinking OFF unless asked (server_msgs.c request_init), reasoning
+    /// effort HIGH when a bare thinking flag asks for it, min_p 0.0
+    /// (ds4.h:54-56) and the engine's effort-name collapse
+    /// (`think_mode_from_enabled`, server_msgs.c:186-189: everything non-zero
+    /// below max is HIGH).  True only for the V4.1 (ds41) family in this
+    /// port: the engine's parse is shared across its DeepSeek models, but the
+    /// other families keep the port's own wire vocabulary (their references
+    /// are their own stacks, not this engine).
+    pub engine_defaults: bool,
 }
 
 impl Default for ParseEnv {
@@ -125,6 +135,7 @@ impl Default for ParseEnv {
             default_effort: ThinkMode::Low,
             default_temp: default_temperature(),
             live_ids: Vec::new(),
+            engine_defaults: false,
         }
     }
 }
@@ -150,6 +161,19 @@ pub struct ParsedRequest {
     pub top_p: f32,
     pub min_p: f32,
     pub seed: u64,
+    /// OpenAI frequency / presence penalties (the engine parses both,
+    /// server_parse_chat.c:91-104 and server_parse_responses.c:328-334); any
+    /// non-zero value takes the V4.1 host penalty route.
+    pub frequency_penalty: f32,
+    pub presence_penalty: f32,
+    /// DRY (llama.cpp's sequence repetition penalty; the engine parses the
+    /// three keys, server_parse_chat.c:119-127): dry_set = dry_multiplier
+    /// appeared; base / allowed_length fall back to 1.75 / 2 at face build
+    /// (server_generate_v41.c:363-365).
+    pub dry_multiplier: f32,
+    pub dry_base: f32,
+    pub dry_allowed_length: i32,
+    pub dry_set: bool,
     pub stream: bool,
     pub stream_include_usage: bool,
     pub return_token_ids: bool,
@@ -190,8 +214,18 @@ impl ParsedRequest {
             top_k: 0,
             temperature: env.default_temp,
             top_p: DEFAULT_TOP_P,
-            min_p: DEFAULT_MIN_P,
+            min_p: if env.engine_defaults {
+                0.0
+            } else {
+                DEFAULT_MIN_P
+            },
             seed: 0,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: 0.0,
+            dry_allowed_length: 0,
+            dry_set: false,
             stream: false,
             stream_include_usage: false,
             return_token_ids: false,
@@ -2504,9 +2538,34 @@ fn parse_responses_input(
     Some(msgs)
 }
 
-fn apply_think(r: &mut ParsedRequest, got: bool, mut enabled: bool, effort: ThinkMode) {
+fn apply_think(
+    r: &mut ParsedRequest,
+    got: bool,
+    mut enabled: bool,
+    effort: ThinkMode,
+    engine_defaults: bool,
+) {
     enabled = apply_think_aliases(r, got, enabled);
-    r.think_mode = think_mode_from_enabled(enabled, effort);
+    r.think_mode = if engine_defaults {
+        engine_think_mode(enabled, effort)
+    } else {
+        think_mode_from_enabled(enabled, effort)
+    };
+}
+
+/// The engine's `think_mode_from_enabled` (server_msgs.c:186-189): nothing
+/// below max survives above zero -- DS4 exposes only HIGH and MAX, so low /
+/// medium / minimal collapse to HIGH ("callers that need *no* reasoning must
+/// use none instead", the engine's own comment) and a bare thinking flag
+/// with the engine's HIGH default means HIGH.
+fn engine_think_mode(enabled: bool, effort: ThinkMode) -> ThinkMode {
+    if !enabled || effort == ThinkMode::None {
+        ThinkMode::None
+    } else if effort == ThinkMode::Max {
+        ThinkMode::Max
+    } else {
+        ThinkMode::High
+    }
 }
 
 pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, String> {
@@ -2515,8 +2574,16 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     let mut p = Json::new(body);
     let mut got_messages = false;
     let mut got_thinking = false;
-    let mut thinking_enabled = true;
-    let mut reasoning_effort = env.default_effort;
+    // The engine's request-omitted defaults (server_parse_chat.c:16-17 and
+    // the other parsers' same pair): thinking OFF unless a flag asks, effort
+    // HIGH.  Only the engine's own model set takes them (unit H,
+    // ParseEnv::engine_defaults); other families keep the port's defaults.
+    let mut thinking_enabled = !env.engine_defaults;
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
     let mut msgs = Vec::new();
     let mut images = Vec::new();
     let mut audios = Vec::new();
@@ -2584,6 +2651,30 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
             json_number(&mut p).map(|v| r.top_p = v as f32).is_some()
         } else if key == "min_p" {
             json_number(&mut p).map(|v| r.min_p = v as f32).is_some()
+        } else if key == "frequency_penalty" {
+            json_number(&mut p)
+                .map(|v| r.frequency_penalty = v as f32)
+                .is_some()
+        } else if key == "presence_penalty" {
+            json_number(&mut p)
+                .map(|v| r.presence_penalty = v as f32)
+                .is_some()
+        } else if key == "dry_multiplier" || key == "dry_base" || key == "dry_allowed_length" {
+            // DRY, llama.cpp's names (server_parse_chat.c:119-127): the
+            // multiplier appearing marks dry_set; base / allowed_length fall
+            // back to 1.75 / 2 at face build (server_generate_v41.c:363-365).
+            json_number(&mut p)
+                .map(|v| {
+                    if key == "dry_multiplier" {
+                        r.dry_multiplier = v as f32;
+                        r.dry_set = true;
+                    } else if key == "dry_base" {
+                        r.dry_base = v as f32;
+                    } else {
+                        r.dry_allowed_length = v as i32;
+                    }
+                })
+                .is_some()
         } else if key == "top_k" {
             json_int(&mut p).map(|v| r.top_k = v).is_some()
         } else if key == "seed" {
@@ -2613,9 +2704,21 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
             match parse_reasoning_effort_value(&mut p) {
                 Ok(Some(e)) => {
                     reasoning_effort = e;
+                    // The engine (server_parse_chat.c:157-165): the OpenAI
+                    // effort field alone is the client asking for thinking --
+                    // got_thinking set, enabled = effort != none.
+                    got_thinking = true;
+                    thinking_enabled = e != ThinkMode::None;
                     true
                 }
-                Ok(None) => true,
+                Ok(None) => {
+                    // "null": the effort stays at its default and the key
+                    // still counts as an explicit ask (the engine's
+                    // parse_reasoning_effort_value returns true unchanged).
+                    got_thinking = true;
+                    thinking_enabled = reasoning_effort != ThinkMode::None;
+                    true
+                }
                 Err(_) => false,
             }
         } else if key == "think" || key == "enable_thinking" {
@@ -2667,7 +2770,13 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
     }
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     r.messages = msgs;
     r.images = images;
     r.audios = audios;
@@ -2684,8 +2793,16 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     let mut p = Json::new(body);
     let mut prompt = None;
     let mut got_thinking = false;
-    let mut thinking_enabled = true;
-    let mut reasoning_effort = env.default_effort;
+    // The engine's request-omitted defaults (server_parse_chat.c:16-17 and
+    // the other parsers' same pair): thinking OFF unless a flag asks, effort
+    // HIGH.  Only the engine's own model set takes them (unit H,
+    // ParseEnv::engine_defaults); other families keep the port's defaults.
+    let mut thinking_enabled = !env.engine_defaults;
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
 
     p.ws();
     if p.bump() != Some(b'{') {
@@ -2727,6 +2844,22 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
             json_number(&mut p).map(|v| r.top_p = v as f32).is_some()
         } else if key == "min_p" {
             json_number(&mut p).map(|v| r.min_p = v as f32).is_some()
+        } else if key == "frequency_penalty" || key == "presence_penalty" {
+            // The engine's completions wire has both, same meaning as the chat
+            // wire (server_parse_completion.c:108-115: "以前这里没解析, 传了被
+            // 静默丢掉" -- unparsed meant silently dropped; fixed in a8e878a,
+            // the KV-reuse commit whose gate sends frequency_penalty 1e-30 to
+            // take the host penalty route).
+            let is_freq = key == "frequency_penalty";
+            json_number(&mut p)
+                .map(|v| {
+                    if is_freq {
+                        r.frequency_penalty = v as f32;
+                    } else {
+                        r.presence_penalty = v as f32;
+                    }
+                })
+                .is_some()
         } else if key == "top_k" {
             json_int(&mut p).map(|v| r.top_k = v).is_some()
         } else if key == "seed" {
@@ -2800,7 +2933,13 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     let Some(prompt) = prompt else {
         return Err("missing prompt".into());
     };
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     r.prompt_text = Some(prompt);
     r.finish_needs();
     Ok(r)
@@ -2813,8 +2952,16 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     let mut p = Json::new(body);
     let mut got_messages = false;
     let mut got_thinking = false;
-    let mut thinking_enabled = true;
-    let mut reasoning_effort = env.default_effort;
+    // The engine's request-omitted defaults (server_parse_chat.c:16-17 and
+    // the other parsers' same pair): thinking OFF unless a flag asks, effort
+    // HIGH.  Only the engine's own model set takes them (unit H,
+    // ParseEnv::engine_defaults); other families keep the port's defaults.
+    let mut thinking_enabled = !env.engine_defaults;
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
     let mut msgs = Vec::new();
     let mut images = Vec::new();
     let mut system = None;
@@ -2913,6 +3060,12 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                 Ok(e) => {
                     if let Some(v) = e {
                         reasoning_effort = v;
+                        // The engine (server_parse_anthropic_req.c:178-183):
+                        // an effort-only ask turns thinking on (high/max) or
+                        // off (none); an explicit thinking field still wins.
+                        if !got_thinking {
+                            thinking_enabled = reasoning_effort != ThinkMode::None;
+                        }
                     }
                     true
                 }
@@ -2929,6 +3082,9 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
             match parse_reasoning_effort_value(&mut p) {
                 Ok(Some(e)) => {
                     reasoning_effort = e;
+                    if !got_thinking {
+                        thinking_enabled = reasoning_effort != ThinkMode::None;
+                    }
                     true
                 }
                 Ok(None) => true,
@@ -2966,7 +3122,13 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
     }
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     match anthropic_validate_tool_results(&msgs, &env.live_ids, &mut err) {
         Ok(live) => r.anthropic_requires_live_tool_state = live,
         Err(()) => return Err(err),
@@ -2987,8 +3149,16 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     let mut p = Json::new(body);
     let mut got_input = false;
     let mut got_thinking = false;
-    let mut thinking_enabled = true;
-    let mut reasoning_effort = env.default_effort;
+    // The engine's request-omitted defaults (server_parse_chat.c:16-17 and
+    // the other parsers' same pair): thinking OFF unless a flag asks, effort
+    // HIGH.  Only the engine's own model set takes them (unit H,
+    // ParseEnv::engine_defaults); other families keep the port's defaults.
+    let mut thinking_enabled = !env.engine_defaults;
+    let mut reasoning_effort = if env.engine_defaults {
+        ThinkMode::High
+    } else {
+        env.default_effort
+    };
     let mut msgs = Vec::new();
     let mut images = Vec::new();
     let mut loaded = String::new();
@@ -3085,6 +3255,14 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                 .is_some()
         } else if key == "top_p" {
             json_number(&mut p).map(|v| r.top_p = v as f32).is_some()
+        } else if key == "frequency_penalty" {
+            json_number(&mut p)
+                .map(|v| r.frequency_penalty = v as f32)
+                .is_some()
+        } else if key == "presence_penalty" {
+            json_number(&mut p)
+                .map(|v| r.presence_penalty = v as f32)
+                .is_some()
         } else if key == "stream" {
             json_bool(&mut p).map(|v| r.stream = v).is_some()
         } else if key == "reasoning" {
@@ -3095,10 +3273,11 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
             ) {
                 Some(seen) => {
                     if seen {
+                        // The engine (server_parse_responses.c:363-370): an
+                        // explicit effort is the client opting into thinking
+                        // control -- got_thinking set, enabled = effort != none.
                         got_thinking = true;
-                        if reasoning_effort == ThinkMode::None {
-                            thinking_enabled = false;
-                        }
+                        thinking_enabled = reasoning_effort != ThinkMode::None;
                     }
                     true
                 }
@@ -3159,7 +3338,13 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     if !prepare_tool_choice(&mut r, &mut combined, &mut orders, &mut err) {
         return Err(err);
     }
-    apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
+    apply_think(
+        &mut r,
+        got_thinking,
+        thinking_enabled,
+        reasoning_effort,
+        env.engine_defaults,
+    );
     match responses_validate_tool_outputs(&msgs, r.think_mode, &env.live_ids, &mut err) {
         Ok((t, reason)) => {
             r.responses_requires_live_tool_state = t;

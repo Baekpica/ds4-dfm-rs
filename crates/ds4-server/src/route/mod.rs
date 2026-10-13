@@ -344,7 +344,14 @@ mod eos_policy_tests {
     }
 }
 
-/// Exact names from `parse_reasoning_effort_name`. Aliases round down.
+/// The shared wire vocabulary (low/medium/minimal are their own level here:
+/// other families' templates consume Low).  The engine's own collapse --
+/// everything non-zero below max is HIGH (server_msgs.c:194-215) -- is applied
+/// for the engine's model set by `engine_think_mode` in parse.rs, so a ds41
+/// request nets exactly the engine's mapping without changing what the other
+/// families may send.  "off" is a port extension (the engine rejects unknown
+/// names, "off" included); recorded divergence, not reachable for ds41's net
+/// mode except as none-vs-400.
 pub fn parse_reasoning_effort_name(s: &str) -> Option<ThinkMode> {
     match s {
         "max" => Some(ThinkMode::Max),

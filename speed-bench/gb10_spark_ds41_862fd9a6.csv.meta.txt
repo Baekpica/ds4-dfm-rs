@@ -1,0 +1,24 @@
+ds41 speed sweep (speed-bench standard)
+started 2026-10-12T14:26:32+02:00
+mode attach
+server /proc/150554/exe -> $HOME/ds4-dfm-rs/ds4-server sha256 862fd9a6732a2ade032c455e807330e0b29947d51f69e41db43189b253ff2fa9
+cmdline $HOME/ds4-dfm-rs/ds4-server --cuda -m $HOME/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf --zchain $HOME/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative-grrb-code_fit_n15360-engine --engram-dir $HOME/youngai/deepseek-engram --mem-budget-mb 110000 --host 0.0.0.0 --port 8000
+ctx 2048 4096 6144 8192 10240 12288 14336 16384 18432 20480 22528 24576 26624 28672 30720 32768 34816 36864 38912 40960 43008 45056 47104 49152 51200 53248 55296 57344 59392 61440 63488 65536 ; gen 128; port extra args: <none>
+corpus $HOME/ds4-dfm-rs/speed-bench/promessi_sposi.txt sha256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
+stopped 2026-10-12T14:35:20+02:00 (operator: enough info; frontiers past 45056 not run)
+csv gb10_spark_ds41_862fd9a6.csv (22 rows, ctx 2048..45056, 524 s of requests)
+clock median over all samples 2405 MHz (521 samples, range 2346..2457)
+reuse note: every row is a full prefill -- a single-turn frontier render never
+extends the previous prompt (the chat-template suffix breaks the checkpoint
+prefix relation), so prefill_cached_tokens is 0 and prefill_tokens reads the
+full context.  The pinned pre-campaign binary on the same shape compares
+directly.
+gen_tokens: usage.completion_tokens (the port's timings block carries no
+decode_tokens; the first sweep run read the wrong field, so the column was
+backfilled from the saved response files, cross-checked against the timings).
+dips note (verified against the CSV): the two decode dips (29.9 @28672, 28.7
+@34816) track tok_per_step (1.91 and 2.33 against 2.78 typical) -- MTP
+draft-acceptance variance from per-frontier content.  28672 is pure
+acceptance (implied step rate 15.6/s, in band); 34816 also has a slower step
+rate (12.3/s against ~14.4-15.3).  Prefill and ttft at both rows are in
+band, so this is not interleave contamination.

@@ -36605,6 +36605,23 @@ static void test_unit_compiler_properties(void) {
         TEST_ASSERT(ds4_units_verify(ts, 4, &p, u, nu) == 0);
     }
 
+    /* VQ blob never merges: 0-gap neighbors on either side stay their own
+     * units (the aligned device copy relocates the blob's payloads; a mixed
+     * span would serve its other tensors from displaced offsets). */
+    {
+        const ds4_unit_tensor_in ts[] = {
+            {0, 100, 0, 1},
+            {100, 1000, DS4_TCAT_VQ_BLOB, 1},   /* 0-gap blob         */
+            {1100, 100, 0, 1},                  /* 0-gap tail tensor  */
+        };
+        ds4_phys_unit u[3];
+        const int nu = ds4_units_compile(ts, 3, &p, u);
+        TEST_ASSERT(nu == 3);
+        TEST_ASSERT(u[1].src_off == 100 && u[1].src_bytes == 1000 && u[1].n_tensors == 1);
+        TEST_ASSERT(u[2].src_off == 1100 && u[2].n_tensors == 1);
+        TEST_ASSERT(ds4_units_verify(ts, 3, &p, u, nu) == 0);
+    }
+
     /* Slice exclusion: inactive tensors join no unit; actives on both
      * sides stay covered. */
     {

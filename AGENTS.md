@@ -15,6 +15,20 @@ The [v0.1.2 ledger](docs/releases/v0.1.2.md) records shared Jinja qualification.
 New families use [official input templates](docs/chat-templates.md); keep
 tokenizer/media processing and output protocol work outside input grammar.
 
+## DeepSeek V4.1 (ds41) — the port's reference is /data/YoungAi
+
+The `ds41` family is a port of the DeepSeek V4.1 Flash engine kept at
+`/data/YoungAi` (READ-ONLY reference, pinned at commit
+`7fb26cc332d740416792204a29c7d13d2986caf5`). Every ported function mirrors
+that engine with file:line citations, every deviation is named and measured
+against it, and `/data/YoungAi` is the source of truth for ds41 behavior —
+not the upstream ds4 tree, not any summary, comment, or memory note. Read
+the engine source (and its own records: `bug.md`, `fable5.md`, `speed.md`,
+`mtp*.md`, `log.md`) before changing, explaining, or planning anything the
+port covers. Never modify `/data/YoungAi`; a behavior question is answered
+by its code, and when the port and the engine disagree, the engine wins and
+the port is fixed.
+
 ## New model-family serving contract
 
 - Keep serving commands, flags, and client-visible behavior common across

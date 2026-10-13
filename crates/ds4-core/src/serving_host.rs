@@ -417,6 +417,13 @@ pub fn fill_quote_facts(
             let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
             (cache, scratch + deepseek_cpu_prefill(s, ctx, scratch), 0, 0)
         }
+        // V4.1 (ds41) has no session and no prefix reuse at all: the route
+        // allocates its state per request (the engine compresses cfg to what
+        // the route can deliver and boots, server_main.c:25-40), so no
+        // persistent bank, graph or MTP state is priced — charging the V4
+        // session's 1M-context bank would refuse a boot the engine serves.
+        // The only family row with reuse None.
+        (ModelFamily::DeepSeek4, Some(_)) if caps.reuse == ReuseKind::None => (0, 0, 0, 0),
         (ModelFamily::DeepSeek4, Some(s)) => {
             // The shared graph owns its own caches before bank slabs are fitted.
             let mut scratch = deepseek_graph_bytes(s, ctx, native);

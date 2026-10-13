@@ -21,8 +21,8 @@ use crate::dsml::{SampleOverride, SamplePolicy};
 #[cfg(any(feature = "native", test))]
 use crate::generate::thinking_visible_key;
 use crate::generate::{
-    prepare_required_prefixes, render_prompt, responses_ids, stream_req_from_parsed, GenerateError,
-    GenerateOutcome,
+    prepare_required_prefixes, render_prompt_ex, responses_ids, stream_req_from_parsed,
+    GenerateError, GenerateOutcome,
 };
 use crate::parse::{EosPolicy, ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
@@ -1476,8 +1476,17 @@ pub trait ContSource {
 /// the native feature (tests supply a scripted implementation).
 pub trait ContExec {
     fn model_id(&self) -> i32;
+    /// C `ds4_chat_system_token()` (core_engine_api.c:94-96): "" when the
+    /// loaded vocab has no <｜System｜> (the V4 fallback).
+    fn chat_system_token(&self) -> &'static str {
+        ""
+    }
     fn render_request(&self, parsed: &ParsedRequest) -> Result<Vec<u8>, GenerateError> {
-        render_prompt(parsed, self.model_id())
+        render_prompt_ex(
+            parsed,
+            self.model_id(),
+            crate::render::dsml_head(self.model_id(), self.chat_system_token()),
+        )
     }
     fn restore_chat(&self, _parsed: &mut ParsedRequest) -> Result<(), GenerateError> {
         Ok(())
@@ -2428,7 +2437,12 @@ mod native {
         }
 
         fn render_request(&self, parsed: &ParsedRequest) -> Result<Vec<u8>, GenerateError> {
-            crate::chat_input::render_model(self.template, self.model_id, parsed)
+            crate::chat_input::render_model(
+                self.template,
+                self.model_id,
+                parsed,
+                self.vocab.chat_system_token(),
+            )
         }
         fn identity(&self) -> Option<(u8, u8, u32)> {
             crate::generate::kv_identity(self.model_id, self.quant_bits, self.ctx)

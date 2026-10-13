@@ -269,6 +269,98 @@ int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t *accepted,
                                        int32_t accepted_cap,
                                        char *err, size_t errlen);
+
+/* ---- V4.1 (ds41) run surface (P5) -----------------------------------------
+ * The engine's single-request server path IS the one-shot generate with two
+ * callbacks (server_generate_v41.c:412-414 sets the prefill progress hook and
+ * calls ds4_engine_v41_generate_argmax with v41_emit); this is that same
+ * surface across the bridge, so it is the family's decode entry, not a new
+ * category.  The Rust host hashes and preads the engram rows
+ * (crates/ds4-core/src/engram.rs); the native owns the pinned buffers and
+ * hands the rows provider the exact block the forward is about to run.  All
+ * callbacks run on the calling thread; emit returning nonzero stops the
+ * generate (the CLI's EOS convention) and progress returning nonzero aborts
+ * the prefill.  The switches mirror the engine's CLI globals (cli_diag.c:58):
+ * dspark mode 0 off / 1 default on / 2 explicit --dspark. */
+typedef int (*ds4_bridge_v41_rows_fn)(uint32_t pos0, const int32_t *tokens, int n,
+                                      uint8_t *const *dst, void *ud);
+/* P2: the per-layer collect hook (the engine's v41_ejob_wait call site,
+ * core_v41_engram.c:441) — the native forward calls it at each engram layer
+ * and only then uploads the layer's rows; NULL keeps the synchronous
+ * protocol (prepare filled everything, the graph records no flag wait). */
+typedef int (*ds4_bridge_v41_wait_fn)(int k, void *ud);
+/* The cross-block prefetch hook: the chunk loop declares the next prefill
+ * block before running the current one (ds41_forward.h's
+ * ds41_engram_feed.prefetch_next); nonzero refuses the run. */
+typedef int (*ds4_bridge_v41_next_fn)(uint32_t pos0, const int32_t *tokens, int n, void *ud);
+typedef int (*ds4_bridge_v41_emit_fn)(int32_t token, void *ud);
+typedef int (*ds4_bridge_v41_progress_fn)(void *ud, const char *event, int32_t current, int32_t total);
+void ds4_bridge_v41_set_dspark(int mode);
+void ds4_bridge_v41_set_graph(int on);
+void ds4_bridge_v41_set_emit_trace(int on);
+void ds4_bridge_v41_set_prof(int on);
+/* The V4.1 KV prefix reuse (U-B, core_v41_kvreuse.c): the --no-kv-reuse
+ * switch, the last run's restored token count (the server's usage
+ * cached_tokens), the read-only peek that seeds the host-side engram history
+ * before the run, and the mounted-amplifier identity the native drops the
+ * checkpoint on (the engine's switch_plugins stand-in). */
+void ds4_bridge_v41_kvreuse_set(int on);
+int ds4_bridge_v41_kvreuse_last_reused(void);
+uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n);
+void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
+/* The disk half (item 4): the payload export/import the Rust store drives
+ * (crates/ds4-kv, v41_disk.rs).  export writes the checkpoint payload (meta
+ * + spans + logits; the store's text block carries the tokens) to a
+ * host-named path, 1 = written; import loads it back from (path, offset,
+ * bytes) plus the token block the caller matched, 1 = loaded.  Both are
+ * gated by --no-kv-reuse and K.valid. */
+int ds4_bridge_v41_kvreuse_export(const char *path);
+int ds4_bridge_v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
+                                  const int32_t *tokens, uint32_t n);
+/* The last v41 run's speculation account (the engine's
+ * ds4_engine_v41_last_spec_stats, core_v41_api.c:41-46): rounds/offered/
+ * accepted, cleared by the next generate entry.  Any pointer may be NULL. */
+void ds4_bridge_v41_last_spec_stats(int *rounds, int *offered, int *accepted);
+/* The per-request decode-sampling face (the engine's
+ * ds4_engine_set_decode_sampling, core_v41_api.c:10-13; the struct and its
+ * semantics at ds41_forward.h).  All-zero = bare argmax; NULL resets to that.
+ * The engine's server sets this once per request before the generate
+ * (server_generate_v41.c:409); the Rust host does the same through this
+ * bridge.  The struct is laid out like ds4_decode_sampling, spelled out here
+ * so the header stays self-contained for the Rust side.  greedy_fn/greedy_ud:
+ * the engine's tool-syntax greedy hook (ds41_forward.h; the Rust host answers
+ * through the ds4-server accumulator). */
+typedef int (*ds4_bridge_v41_greedy_fn)(void *ud, const int32_t *ahead, uint32_t n);
+typedef struct {
+    float temperature, top_p, min_p; int32_t top_k; uint64_t seed;
+    float freq_penalty, presence_penalty;
+    float dry_multiplier, dry_base; int32_t dry_allowed_length;
+    ds4_bridge_v41_greedy_fn greedy_fn; void *greedy_ud;
+} ds4_bridge_v41_sampling;
+void ds4_bridge_v41_set_sampling(const ds4_bridge_v41_sampling *sp);
+/* --mem-budget-mb (unit Z): the engine's process memory red line and its
+ * L1 pre-flight load gate (core_util.c:198-256); call before opening the
+ * model.  mb <= 0 leaves the budget unset (no-op gate). */
+void ds4_bridge_set_mem_budget_mb(int mb);
+/* The V4.1 zchain sidecar mount (unit Z).  The engine mounts ② / ③ per
+ * state (v41_state_plugins, core_v41_state.c:77-87 -> v41_amp_load,
+ * core_v41_amp.c:227-270); the Rust reader (crates/ds4-core/src/zchain.rs,
+ * P2/P3) reads and merges the directories, and these three entries are the
+ * device side it drives: the layer's merged gain table, the layer's route
+ * bias, and the process-wide rb unload the engine performs before any rb
+ * mount (core_v41_amp.c:114).  All return 1 on success, 0 on refusal. */
+int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd);
+int ds4_bridge_v41_zchain_rb_set(ds4_bridge_model *m, uint32_t il, const float *delta, uint32_t n_expert);
+void ds4_bridge_v41_zchain_rb_clear(void);
+int ds4_bridge_v41_generate(ds4_bridge_model *m,
+                            const int32_t *prompt, int n_prompt, int n_predict,
+                            int no_engram, int verify_k,
+                            ds4_bridge_v41_rows_fn rows, void *rows_ud,
+                            ds4_bridge_v41_wait_fn wait,
+                            ds4_bridge_v41_next_fn next,
+                            ds4_bridge_v41_emit_fn emit, void *emit_ud,
+                            ds4_bridge_v41_progress_fn progress, void *progress_ud,
+                            char *err, size_t errlen);
 int ds4_bridge_session_eval_layer_slice(ds4_bridge_session *s,
                                         const int32_t *tokens,
                                         uint32_t n_tokens,

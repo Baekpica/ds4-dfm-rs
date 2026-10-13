@@ -44,6 +44,17 @@ pub struct ShadowArgs {
     pub mtp_draft: i32,
     pub mtp_margin: f32,
     pub dspark: Option<String>,
+    pub gen_ids: Option<String>,
+    pub engram_dir: Option<String>,
+    pub zchain: Option<String>,
+    pub posttrain: Option<String>,
+    pub mem_budget_mb: Option<i32>,
+    pub no_engram: bool,
+    pub no_dspark: bool,
+    pub dspark_verify: i32,
+    pub no_graph: bool,
+    pub emit_trace: bool,
+    pub v41_prof: bool,
     pub backend: Backend,
     pub ctx: i32,
     pub ctx_set: bool,
@@ -62,7 +73,11 @@ pub struct ShadowArgs {
     pub temp: f32,
     pub top_p: f32,
     pub min_p: f32,
+    pub min_p_set: bool,
     pub seed: u64,
+    pub dry_multiplier: f32,
+    pub dry_base: f32,
+    pub dry_allowed_length: i32,
     pub lifecycle_only: bool,
     pub identify: bool,
     pub inventory: bool,
@@ -95,6 +110,17 @@ impl Default for ShadowArgs {
             mtp_draft: 1,
             mtp_margin: 3.0,
             dspark: None,
+            gen_ids: None,
+            engram_dir: None,
+            zchain: None,
+            posttrain: None,
+            mem_budget_mb: None,
+            no_engram: false,
+            no_dspark: false,
+            dspark_verify: 0,
+            no_graph: false,
+            emit_trace: false,
+            v41_prof: false,
             backend: default_backend(),
             ctx: 32768,
             ctx_set: false,
@@ -113,7 +139,11 @@ impl Default for ShadowArgs {
             temp: 1.0,
             top_p: 1.0,
             min_p: 0.05,
+            min_p_set: false,
             seed: 0,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
             lifecycle_only: false,
             identify: false,
             inventory: false,
@@ -176,6 +206,41 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
             "--dspark" => {
                 parsed.dspark = Some(require_value(&arg, iter.next())?);
             }
+            /* V4.1 (ds41) run flags: the engine's own spellings (cli_opts.c).
+             * --gen-ids is the family's run input -- its chat rendering is not
+             * ported yet, so text prompts are refused by name on that path.
+             * The engine's bare --dspark (mode 2) collides with this CLI's
+             * V4-era --dspark <gguf> sidecar flag; mode 2 == mode 1 for a
+             * greedy-only engine, so --no-dspark and the default are the two
+             * reachable modes here. */
+            "--gen-ids" => {
+                parsed.gen_ids = Some(require_value(&arg, iter.next())?);
+            }
+            "--engram-dir" => {
+                parsed.engram_dir = Some(require_value(&arg, iter.next())?);
+            }
+            /* Unit Z: the deployment's sidecar spelling (install.sh boots
+             * with --zchain <domain dir> [--posttrain <dir>]). */
+            "--zchain" => {
+                parsed.zchain = Some(require_value(&arg, iter.next())?);
+            }
+            "--posttrain" => {
+                parsed.posttrain = Some(require_value(&arg, iter.next())?);
+            }
+            /* Unit Z: the engine's process red line (core_util.c:198-200);
+             * install.sh boots the server with 110000. */
+            "--mem-budget-mb" => {
+                let v = require_value(&arg, iter.next())?;
+                parsed.mem_budget_mb = Some(parse_i32(&arg, &v)?);
+            }
+            "--v41-no-engram" => parsed.no_engram = true,
+            "--no-dspark" => parsed.no_dspark = true,
+            "--dspark-verify" => {
+                parsed.dspark_verify = parse_i32(&arg, &require_value(&arg, iter.next())?)?;
+            }
+            "--no-graph" => parsed.no_graph = true,
+            "--emit-trace" => parsed.emit_trace = true,
+            "--v41-prof" => parsed.v41_prof = true,
             "--backend" => {
                 parsed.backend = parse_backend(&require_value(&arg, iter.next())?)?;
             }
@@ -208,10 +273,23 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
             "--min-p" => {
                 let v = require_value(&arg, iter.next())?;
                 parsed.min_p = parse_f32_range(&arg, &v, 0.0, 1.0)?;
+                parsed.min_p_set = true;
             }
             "--seed" => {
                 let v = require_value(&arg, iter.next())?;
                 parsed.seed = parse_positive_u64(&arg, &v)?;
+            }
+            "--dry-multiplier" => {
+                let v = require_value(&arg, iter.next())?;
+                parsed.dry_multiplier = parse_f32_range(&arg, &v, 0.0, 100.0)?;
+            }
+            "--dry-base" => {
+                let v = require_value(&arg, iter.next())?;
+                parsed.dry_base = parse_f32_range(&arg, &v, 0.0, 100.0)?;
+            }
+            "--dry-allowed-length" => {
+                let v = require_value(&arg, iter.next())?;
+                parsed.dry_allowed_length = parse_positive_i32(&arg, &v)?;
             }
             "--think" => parsed.nothink = false,
             "--nothink" => parsed.nothink = true,
@@ -594,6 +672,113 @@ fn run_chat_turn(
         repl::interrupt_clear();
     }
     Ok(())
+}
+
+/// V4.1 (ds41) one-shot: the engine's `--gen-ids` run through
+/// `ds4_bridge_v41_generate` (the same one-shot entry the engine's server
+/// calls, `server_generate_v41.c:414`), with the host engram feed.
+fn run_v41_one_shot(
+    model: &ds4_core::Model,
+    args: &ShadowArgs,
+    model_path: &str,
+) -> Result<i32, String> {
+    use std::io::Write;
+
+    let ids_path = args.gen_ids.as_deref().ok_or_else(|| {
+        "ds4-rs: the V4.1 family runs on --gen-ids <file> (raw token ids; its chat rendering is not ported yet)"
+            .to_string()
+    })?;
+    let prompt = read_ids_file(ids_path)?;
+    // The engine CLI's sampling face (cli_diag.c:44-50): --temp / --top-p /
+    // --min-p / --seed from the flags (defaults 1.0 / 1.0 / 0.05 / 0), the
+    // DRY trio (freq / presence have no CLI flags in the engine, they stay 0).
+    let mut opts = ds4_core::V41RunOptions {
+        engram_dir: args.engram_dir.as_deref(),
+        no_engram: args.no_engram,
+        dspark: Some(if args.no_dspark { 0 } else { 1 }),
+        graph: Some(!args.no_graph),
+        verify_k: args.dspark_verify,
+        emit_trace: args.emit_trace,
+        prof: args.v41_prof,
+        /* The V4.1 KV prefix reuse is on by default inside the native run
+         * (U-B; engine core_v41_kvreuse.c); the CLI has no --no-kv-reuse
+         * switch (the server has one), so the option keeps its default. */
+        kv_reuse: None,
+        /* The disk half (item 4) is the server's (--kv-disk-dir opens the
+         * store there); the CLI has no store and leaves it off. */
+        kv_disk: None,
+        sampling: Some(ds4_core::V41Sampling {
+            temperature: args.temp,
+            top_p: args.top_p,
+            // The engine CLI's min_p default is 0.0 (DS4_DEFAULT_MIN_P,
+            // ds4.h:56); the port CLI's shared default is 0.05 for the other
+            // families, so the v41 path takes 0.0 unless --min-p was given.
+            min_p: if args.min_p_set { args.min_p } else { 0.0 },
+            top_k: 0,
+            seed: args.seed,
+            freq_penalty: 0.0,
+            presence_penalty: 0.0,
+            dry_multiplier: args.dry_multiplier,
+            dry_base: args.dry_base,
+            dry_allowed_length: args.dry_allowed_length,
+        }),
+        greedy: None, /* the engine CLI has no tool-syntax hook (cli_diag.c:50 has none) */
+        zchain: args.zchain.as_deref(),
+        posttrain: args.posttrain.as_deref(),
+    };
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut printer = TokenPrinter::new(model.family(), false);
+    let mut write_err: Option<String> = None;
+    let mut emit = |token: i32| -> bool {
+        if model.token_is_stop(token) {
+            return false;
+        }
+        let piece = match model.token_text(token) {
+            Ok(piece) => piece,
+            Err(e) => {
+                write_err = Some(e.to_string());
+                return false;
+            }
+        };
+        if let Err(e) = printer
+            .write_token(&mut out, token, &piece)
+            .and_then(|_| out.flush())
+        {
+            write_err = Some(e.to_string());
+            return false;
+        }
+        true
+    };
+    let mut progress = |_event: &str, _current: i32, _total: i32| true;
+    let rc = model.v41_generate(
+        std::path::Path::new(model_path),
+        &prompt,
+        args.n_predict,
+        &mut opts,
+        &mut emit,
+        &mut progress,
+    );
+    if let Some(e) = write_err {
+        return Err(e);
+    }
+    rc.map_err(|e| e.to_string())?;
+    Ok(0)
+}
+
+fn read_ids_file(path: &str) -> Result<Vec<i32>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("ds4-rs: {path}: {e}"))?;
+    let ids: Vec<i32> = text
+        .split_whitespace()
+        .map(|v| {
+            v.parse::<i32>()
+                .map_err(|_| format!("ds4-rs: {path}: not an integer: {v}"))
+        })
+        .collect::<Result<_, _>>()?;
+    if ids.is_empty() {
+        return Err(format!("ds4-rs: {path}: no token ids"));
+    }
+    Ok(ids)
 }
 
 fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Result<i32, String> {
@@ -1274,6 +1459,11 @@ pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
         None
     };
     let mtp_opts = mtp_open_options(&args, embedded_family)?;
+    // --mem-budget-mb (unit Z): the engine's L1 load gate reads the budget
+    // at open (core_util.c:238-256); arm it before the model open.
+    if let Some(mb) = args.mem_budget_mb {
+        ds4_core::set_mem_budget_mb(mb);
+    }
     let model = match native_dist.as_ref() {
         Some(config) => ds4_core::Model::open_distributed_options(
             model_path,
@@ -1296,6 +1486,14 @@ pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
         ),
     }
     .map_err(|e| e.to_string())?;
+
+    /* V4.1 (ds41): no ds4_session exists for this family -- the run IS the
+     * engine's one-shot generate with the host engram feed (v41_run.rs).  The
+     * family's chat rendering is not ported yet, so the run input is the raw
+     * token ids (the engine's --gen-ids). */
+    if model.shape().variant == ds4_core::Variant::DeepSeek41Flash {
+        return run_v41_one_shot(&model, &args, model_path);
+    }
 
     if worker {
         model.boot_prewarm();
@@ -1978,6 +2176,41 @@ mod tests {
         assert!(use_naive_spec(0.0, parsed.dspark.as_deref(), 6));
         assert!(!use_naive_spec(0.5, parsed.dspark.as_deref(), 6));
         assert!(!use_naive_spec(0.0, None, 6));
+    }
+
+    #[test]
+    fn v41_run_flags_parse() {
+        let parsed = parse_args(args(&[
+            "--gen-ids",
+            "p1.ids",
+            "--engram-dir",
+            "/mnt/engram",
+            "--zchain",
+            "/mnt/sidecar",
+            "--posttrain",
+            "/mnt/posttrain",
+            "--mem-budget-mb",
+            "110000",
+            "--no-dspark",
+            "--dspark-verify",
+            "5",
+            "--no-graph",
+            "--emit-trace",
+            "--v41-prof",
+            "--v41-no-engram",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.gen_ids.as_deref(), Some("p1.ids"));
+        assert_eq!(parsed.engram_dir.as_deref(), Some("/mnt/engram"));
+        assert_eq!(parsed.zchain.as_deref(), Some("/mnt/sidecar"));
+        assert_eq!(parsed.posttrain.as_deref(), Some("/mnt/posttrain"));
+        assert_eq!(parsed.mem_budget_mb, Some(110000));
+        assert!(parsed.no_dspark);
+        assert_eq!(parsed.dspark_verify, 5);
+        assert!(parsed.no_graph);
+        assert!(parsed.emit_trace);
+        assert!(parsed.v41_prof);
+        assert!(parsed.no_engram);
     }
 
     #[test]

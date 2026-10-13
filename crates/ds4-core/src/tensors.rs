@@ -94,9 +94,26 @@ const GGUF_TYPES: [Option<(&'static str, u32, u32)>; 31] = [
 const PQ2_0_TYPE: u32 = 142;
 const PQ2_0_TYPE_INFO: (&str, u32, u32) = ("pq2_0", 128, 34);
 
+/// DeepSeek V4.1 block types, ids 40-44 in the C engine's own table
+/// (`src/core/core_gguf.c:89-104`). Above the standard table, like PQ2_0.
+/// `vqblob` is opaque bytes (a `DQVL` container, shape = [nbytes]); its
+/// geometry lives in `vq.rs`. `fp8_32x32` is one e4m3 plane plus a
+/// ceil(rows/32)*ceil(cols/32) ue8m0 plane, so 1024 elements per 1025 bytes.
+const DS41_TYPES: [(u32, &str, u32, u32); 5] = [
+    (40, "go1b", 256, 34),
+    (41, "go2b", 256, 68),
+    (42, "vqblob", 1, 1),
+    (43, "fp4x32", 32, 17),
+    (44, "fp8_32x32", 1024, 1025),
+];
+
 fn gguf_type(typ: u32) -> Option<(&'static str, u32, u32)> {
     if typ == PQ2_0_TYPE {
         return Some(PQ2_0_TYPE_INFO);
+    }
+    if let Some((_, name, block_elems, block_bytes)) = DS41_TYPES.iter().find(|(id, ..)| *id == typ)
+    {
+        return Some((name, *block_elems, *block_bytes));
     }
     GGUF_TYPES.get(typ as usize).copied().flatten()
 }

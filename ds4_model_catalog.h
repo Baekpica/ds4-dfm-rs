@@ -43,7 +43,13 @@ enum {
     DS4_TCAT_ROUTED_EXPERT     = 1u << 0,
     DS4_TCAT_ARTIFACT_REPLACED = 1u << 1,
     DS4_TCAT_ARTIFACT_ADDITIVE = 1u << 2,
-    DS4_TCAT_OPTIONAL          = 1u << 3
+    DS4_TCAT_OPTIONAL          = 1u << 3,
+    /* A fused VQ expert blob (`*_exps_vq.blob`): the engine's is_blob stamp
+     * (core_model_map.c:184).  Never merged with neighbors (its span is
+     * "自成一段", core_model_map.c:113-115): the aligned device copy rewrites
+     * the blob's own slot table and relocates every payload, so any other
+     * tensor in the span would be served from displaced device offsets. */
+    DS4_TCAT_VQ_BLOB           = 1u << 4
 };
 
 static inline int ds4_tcat_has_suffix(const char *name, uint64_t len,
@@ -140,6 +146,10 @@ static inline uint32_t ds4_tensor_catalog_classify(const char *name,
 
     if (ds4_tcat_has_suffix(name, name_len, ".exp_probs_b.bias"))
         traits |= DS4_TCAT_OPTIONAL;
+
+    /* Engine is_blob (core_model_map.c:184): substring `_exps_vq.`. */
+    if (ds4_tcat_contains(name, name_len, "_exps_vq."))
+        traits |= DS4_TCAT_VQ_BLOB;
 
     return traits;
 }
@@ -261,7 +271,12 @@ static inline int ds4_units_compile(const ds4_unit_tensor_in *ts, uint32_t n,
                                           : DS4_UALLOC_CUDAMALLOC)
                 : DS4_UALLOC_NONE;
         ds4_phys_unit *u = nu > 0 ? &units[nu - 1] : 0;
-        const int mergeable = u != 0 &&
+        /* VQ blobs never merge (see DS4_TCAT_VQ_BLOB): neither into the open
+         * unit nor as the unit's next member.  Members are contiguous
+         * (checked last), so ts[i-1] is the open unit's last tensor. */
+        const int blob_here = (ts[i].traits & DS4_TCAT_VQ_BLOB) != 0;
+        const int blob_prev = i > 0 && (ts[i - 1].traits & DS4_TCAT_VQ_BLOB) != 0;
+        const int mergeable = u != 0 && !blob_here && !blob_prev &&
             u->policy == pol && u->allocator == alloc &&
             ts[i].off >= u->src_off + u->src_bytes &&
             ts[i].off - (u->src_off + u->src_bytes) <= p->merge_gap &&

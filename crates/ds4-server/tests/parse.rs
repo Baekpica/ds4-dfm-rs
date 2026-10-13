@@ -47,6 +47,7 @@ fn env() -> ParseEnv {
         default_effort: ds4_server::ThinkMode::Low,
         default_temp: ds4_server::default_temperature(),
         live_ids: Vec::new(),
+        engine_defaults: false,
     }
 }
 
@@ -557,4 +558,80 @@ fn audio_image_budget_preflight() {
         rust_parse("chat", &body.to_string()).unwrap_err(),
         "media exceeds 20 MiB request limit"
     );
+}
+
+/// Unit H: the engine's request-omitted parse defaults and effort-name
+/// collapse for its own model set (ParseEnv::engine_defaults, set by the
+/// server bin only on the V4.1 route).  References: server_parse_chat.c:16-17
+/// (thinking OFF, effort HIGH), server_msgs.c:194-215 (everything non-zero
+/// below max collapses to HIGH), ds4.h:54-56 (temp 1.0 / top_p 1.0 / min_p
+/// 0.0), server_parse_chat.c:91-127 (penalties + DRY).
+#[test]
+fn engine_defaults_think_and_sampling() {
+    use ds4_server::ThinkMode;
+    let eng = ParseEnv {
+        engine_defaults: true,
+        ..env()
+    };
+    let chat = |body: &str| parse_chat_request(&eng, body).unwrap();
+
+    // Nothing sent: thinking OFF.
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#).think_mode,
+        ThinkMode::None
+    );
+    // The engine's collapse: low / medium / minimal / xhigh / high -> HIGH.
+    for name in ["low", "medium", "minimal", "xhigh", "high"] {
+        let body = format!(
+            r#"{{"messages":[{{"role":"user","content":"hi"}}],"reasoning_effort":"{name}"}}"#
+        );
+        assert_eq!(chat(&body).think_mode, ThinkMode::High, "{name}");
+    }
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}"#)
+            .think_mode,
+        ThinkMode::Max
+    );
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}"#)
+            .think_mode,
+        ThinkMode::None
+    );
+    // A bare thinking flag: the engine's HIGH effort default.
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}"#)
+            .think_mode,
+        ThinkMode::High
+    );
+    // The reasoner alias alone asks for thinking (server_msgs.c:304-306).
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}],"model":"deepseek-reasoner"}"#)
+            .think_mode,
+        ThinkMode::High
+    );
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}"#)
+            .think_mode,
+        ThinkMode::None
+    );
+    // min_p defaults to the engine's 0.0 on this scope; the port's own default
+    // (0.05) stays for the other families.
+    assert_eq!(
+        chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#).min_p,
+        0.0
+    );
+    assert_eq!(
+        parse_chat_request(&env(), r#"{"messages":[{"role":"user","content":"hi"}]}"#)
+            .unwrap()
+            .min_p,
+        0.05
+    );
+    // The penalties and DRY land on the request.
+    let r = chat(
+        r#"{"messages":[{"role":"user","content":"hi"}],"frequency_penalty":0.5,"presence_penalty":-0.2,"dry_multiplier":0.8}"#,
+    );
+    assert_eq!(r.frequency_penalty, 0.5);
+    assert_eq!(r.presence_penalty, -0.2);
+    assert!(r.dry_set);
+    assert_eq!(r.dry_multiplier, 0.8);
 }

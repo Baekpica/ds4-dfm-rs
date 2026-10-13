@@ -55,6 +55,9 @@ fn main() {
     let mut kv = DiskKvArgs::default();
     let mut expected_plan: Option<ExpectedPlan> = None;
     let mut dist = DistArgs::default();
+    let mut ctx_set = false;
+    let mut v41_flags = V41Flags::default();
+    let mut mem_budget_mb: Option<i32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if dist
@@ -193,6 +196,7 @@ fn main() {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or_else(|| usage());
                 serve_req.ctx = cfg.ctx;
+                ctx_set = true;
             }
             "-t" | "--threads" => {
                 n_threads = args
@@ -218,6 +222,45 @@ fn main() {
                 let raw = args.next().unwrap_or_else(|| usage());
                 cfg.apply_mem_floor_gb(&raw);
                 serve_req.mem_floor_gb = cfg.mem_floor_gb;
+            }
+            // Unit Z: the engine's process red line (core_util.c:198-200);
+            // install.sh boots with --mem-budget-mb 110000.  Armed before
+            // the model open so the L1 gate sees it.
+            "--mem-budget-mb" => {
+                mem_budget_mb = Some(
+                    args.next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                );
+            }
+            // DeepSeek V4.1 (ds41) run surface — the engine's own spellings
+            // (cli_opts.c:258-395).  They bind only when the opened model is
+            // V4.1; the boot below refuses --ctx for V4.1 (the context comes
+            // only from the metadata) and names the flags when the model is
+            // not V4.1.  --zchain is not ported on this route.
+            "--engram-dir" => {
+                v41_flags.engram_dir = Some(args.next().unwrap_or_else(|| usage()));
+            }
+            "--v41-no-engram" => v41_flags.no_engram = true,
+            "--no-dspark" => v41_flags.no_dspark = true,
+            "--dspark" => v41_flags.dspark = true,
+            "--dspark-verify" => {
+                v41_flags.verify_k = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| usage());
+            }
+            "--no-graph" => v41_flags.no_graph = true,
+            "--no-kv-reuse" => v41_flags.no_kv_reuse = true,
+            "--emit-trace" => v41_flags.emit_trace = true,
+            "--v41-prof" => v41_flags.prof = true,
+            // Unit Z: the sidecar mount the deployment boots with
+            // (install.sh: --zchain <domain sidecar> [--posttrain <dir>]).
+            "--zchain" => {
+                v41_flags.zchain = Some(args.next().unwrap_or_else(|| usage()));
+            }
+            "--posttrain" => {
+                v41_flags.posttrain = Some(args.next().unwrap_or_else(|| usage()));
             }
             "-h" | "--help" => usage(),
             other => {
@@ -274,6 +317,16 @@ fn main() {
     let ident = model_path
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
+    // V4.1 (ds41): the context comes only from the metadata
+    // (core_validate_v41.c:51-53) — refuse --ctx before the model load, not
+    // after it (the engine refuses it at parse time, cli_opts.c:285-293).
+    if ctx_set
+        && ident
+            .as_ref()
+            .is_some_and(|id| id.shape.variant == ds4_core::Variant::DeepSeek41Flash)
+    {
+        cli_error("ds4-server-rs: V4.1 context comes from the model metadata (deepseek4.context_length); --ctx is refused");
+    }
     // Auto admission needs the requested workload before any cache is sized.
     let mut preflight_options = model_options.clone();
     preflight_options.push(ModelOpenOption::ServingBudget(serve_req.clone()));
@@ -439,6 +492,12 @@ fn main() {
         CacheIdentity::capture(Path::new(path), &sidecars, &settings)
             .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")))
     });
+    // --mem-budget-mb (unit Z) arms the engine's L1 load gate; it must be
+    // set before the model open reads it (core_util.c:238-256).
+    if let Some(mb) = mem_budget_mb {
+        ds4_core::set_mem_budget_mb(mb);
+    }
+    let mut v41_route: Option<ds4_server::V41ServeRoute> = None;
     let model = match model_path.as_deref() {
         Some(path) => {
             let opened = match native_dist.as_ref() {
@@ -466,6 +525,60 @@ fn main() {
                 Ok(m) => {
                     if cfg.eos_policy != EosPolicy::Default && m.vocab().eos_id < 0 {
                         cli_error("EOS policy requires a model EOS token");
+                    }
+                    // V4.1 (ds41): no ds4_session exists for the family, so
+                    // the serving path is the engine's push route
+                    // (server_generate_v41.c) and the context comes only
+                    // from the metadata (core_validate_v41.c:51-53) —
+                    // --ctx is refused, never silently ignored.
+                    if let Some(ctx) = m.v41_ctx() {
+                        if ctx_set {
+                            cli_error("ds4-server-rs: V4.1 context comes from the model metadata (deepseek4.context_length); --ctx is refused");
+                        }
+                        cfg.ctx = ctx as i32;
+                        serve_req.ctx = cfg.ctx;
+                        // Unit H: the engine's request-omitted parse defaults
+                        // (thinking off unless asked, effort HIGH, min_p 0.0)
+                        // apply to the engine's own model set -- exactly this
+                        // branch's model.
+                        cfg.engine_defaults = true;
+                        if v41_flags.no_dspark && v41_flags.dspark {
+                            cli_error(
+                                "ds4-server-rs: --no-dspark and --dspark are mutually exclusive",
+                            );
+                        }
+                        v41_route = Some(ds4_server::V41ServeRoute {
+                            model_path: std::path::PathBuf::from(path),
+                            engram_dir: v41_flags.engram_dir.clone(),
+                            no_engram: v41_flags.no_engram,
+                            dspark: if v41_flags.no_dspark {
+                                Some(0)
+                            } else if v41_flags.dspark {
+                                Some(2)
+                            } else {
+                                None
+                            },
+                            graph: if v41_flags.no_graph {
+                                Some(false)
+                            } else {
+                                None
+                            },
+                            verify_k: v41_flags.verify_k,
+                            emit_trace: v41_flags.emit_trace,
+                            prof: v41_flags.prof,
+                            no_kv_reuse: v41_flags.no_kv_reuse,
+                            zchain: v41_flags.zchain.clone(),
+                            posttrain: v41_flags.posttrain.clone(),
+                        });
+                        eprintln!(
+                            "ds4-server-rs: V4.1 serving route: context {} (model metadata deepseek4.context_length; KV prefix reuse {}, --no-kv-reuse disables)",
+                            cfg.ctx,
+                            if v41_flags.no_kv_reuse { "off" } else { "on" }
+                        );
+                    } else if v41_flags.given() {
+                        eprintln!(
+                            "ds4-server-rs: warning: V4.1 flags given but the model is not V4.1; they are ignored"
+                        );
                     }
                     cfg.have_engine = true;
                     Some(m)
@@ -705,6 +818,9 @@ fn main() {
         let mut engine = NativeDecode::new(model, cfg.ctx)
             .with_vocab(model.vocab())
             .with_prefix_reuse(reuse);
+        if let Some(route) = v41_route.take() {
+            engine = engine.with_v41_route(route);
+        }
         if let Some(store) = kv_store {
             engine = engine.with_store(store);
         }
@@ -788,6 +904,40 @@ fn apply_host_quote(
 fn cli_error(message: &str) -> ! {
     eprintln!("{message}");
     std::process::exit(2);
+}
+
+/// The DeepSeek V4.1 run switches the server accepts (the engine's
+/// cli_opts.c:258-395 spellings).  They bind only when the opened model is
+/// V4.1; otherwise the boot warns and ignores them.
+#[derive(Default)]
+struct V41Flags {
+    engram_dir: Option<String>,
+    no_engram: bool,
+    no_dspark: bool,
+    dspark: bool,
+    verify_k: i32,
+    no_graph: bool,
+    emit_trace: bool,
+    prof: bool,
+    no_kv_reuse: bool,
+    zchain: Option<String>,
+    posttrain: Option<String>,
+}
+
+impl V41Flags {
+    fn given(&self) -> bool {
+        self.engram_dir.is_some()
+            || self.no_engram
+            || self.no_dspark
+            || self.dspark
+            || self.verify_k != 0
+            || self.no_graph
+            || self.emit_trace
+            || self.prof
+            || self.no_kv_reuse
+            || self.zchain.is_some()
+            || self.posttrain.is_some()
+    }
 }
 
 fn usage() -> ! {
