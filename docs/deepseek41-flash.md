@@ -33,6 +33,13 @@ sweeps, separate Prefill/Decode tables and a graph crediting JLFN's
 DeepSeek V4.1 port. It reaches 66,608 actual input tokens; median run means are
 1,039.65 prefill / 38.17 decode tok/s on the unchanged runtime.
 
+The [warm-path campaign](benchmarks/ds41-warmpath-2026-10-13/README.md) measures
+what a full-prefill sweep cannot see: the per-request asset prelude the port used
+to pay. Holding the sidecar mount and the engram open per process takes
+warm-prefix TTFT from 190.9 to 15.1 ms on the 54-token prose case and from 265.7
+to 99.1 ms on the 10.4k-token one, with the cold first request and decode both
+unchanged or better.
+
 ## Artifact and host identity
 
 Recorded in the port plan §2, measured over the Spark mount. The base is

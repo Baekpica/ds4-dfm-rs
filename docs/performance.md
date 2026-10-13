@@ -160,6 +160,19 @@ embedded MTP. Clock range remains 300–2200 MHz; request-clock medians were
 
 ![DeepSeek V4.1 Flash prefill and decode on one DGX Spark](benchmarks/ds41-spark-64k-2026-10-13/throughput.png)
 
+The warm path is measured separately, because the cache that holds the sidecar
+mount and the engram open across requests is invisible to a zero-reuse sweep.
+The [warm-path campaign](benchmarks/ds41-warmpath-2026-10-13/README.md) runs the
+author's five-case HTTP suite on the archived case bytes and reads warm-prefix
+TTFT at **190.9 → 15.1 ms** on the 54-token prose case, 196.7 → 17.3 and
+194.1 → 14.1 ms on the other short cases, and 265.7 → 99.1 and 273.4 → 99.5 ms
+on the two long ones (medians; 45 samples over three passes against the archived
+pre-change pass). Cold first-touch TTFT improves as well (0.657 → 0.427 s on the
+same prose case) and decode stays at parity, so the warm cell is not bought with
+a slower cold path or slower decode.
+
+![DeepSeek V4.1 warm path: cache off against cache on](benchmarks/ds41-warmpath-2026-10-13/bench-compare.png)
+
 [JLFN](https://github.com/JLFN) ported DeepSeek V4.1 Flash serving to
 `ds4-dfm-rs` ([#80](https://github.com/Baekpica/ds4-dfm-rs/pull/80)), using the
 [YoungAi engine](https://github.com/fodelf/YoungAi) and

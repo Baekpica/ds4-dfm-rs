@@ -55,9 +55,9 @@ fell from 996.1 / 268.2 / 220.4 (cold / warm / warm) to 1072.2 / 13.4 / 9.7.
 
 Command lines (the engine first, then the port, one at a time on this box):
 
-    /home/leandro/youngai-src-restructure/ds4-server --cuda -m <gguf> \
+    <engine checkout>/ds4-server --cuda -m <gguf> \
         --zchain <engine dir> --engram-dir <engram> --host 0.0.0.0 --port 8098
-    /home/leandro/ds4-dfm-rs/ds4-server --cuda -m <gguf> \
+    <port checkout>/ds4-server --cuda -m <gguf> \
         --zchain <engine dir> --engram-dir <engram> --mem-budget-mb 110000 \
         --host 0.0.0.0 --port 8000
     python3 tests/ds41_http_suite.py --url http://127.0.0.1:8098 \
@@ -70,7 +70,7 @@ Builds: port `ds4-server` sha256
 the Spark from `2fb144b` plus the KU-1 patch (commit `9bf2847`); engine
 `ds4-server` sha256
 `48ecd223ddc4ec7ef8e851d6b2877dd7a52d883e73de50e1e6abfffb07b336f5`, built from
-`/home/leandro/youngai-src-restructure` at `fc54d1e1e4feb056a3dc4fd7204876bc435c8e4b`.
+the engine checkout at `fc54d1e1e4feb056a3dc4fd7204876bc435c8e4b`.
 
 ## Correctness
 
@@ -105,6 +105,10 @@ action downloads nothing and refuses a binary whose help lacks `--engram-dir`).
 - Cases are character budgets, not the archived case bytes (only their
   `prompt_sha` survived), so this record does not reproduce the archived table
   case for case - it measures both engines on identical bytes in one window.
+  Corrected 2026-10-13: the archived bytes did survive - `suite.py` and its
+  `cases.json` were found on the serving box, so the [warm-path
+  campaign](../ds41-warmpath-2026-10-13/README.md) re-runs on them and this
+  record's own byte recipe stays what its `prompt_sha` column documents.
 - The port's cold prose_short (1.206 s against the engine's 0.843 s) carries
   the one-time mount: the engine pays it at boot, the port on its first
   request. Boot-to-first-token is correspondingly cheaper for the port. Moving

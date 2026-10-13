@@ -1,0 +1,16 @@
+engine,case,rep,cache,prompt_tokens,completion_tokens,ttft_s,total_s,sse_deltas,prefill_tps,decode_tps,e2e_tps,finish,prompt_sha
+ds4-dfm-rs,prose_short,0,cold,54,512,0.4272,14.6414,512,126.4,35.95,34.97,length,c55f11e5ab6295a5
+ds4-dfm-rs,prose_short,1,warm,54,512,0.0208,14.3093,512,2602.2,35.76,35.78,length,c55f11e5ab6295a5
+ds4-dfm-rs,prose_short,2,warm,54,512,0.0111,14.4041,512,4859.5,35.50,35.55,length,c55f11e5ab6295a5
+ds4-dfm-rs,code_short,0,cold,54,512,0.4095,9.9795,510,131.9,53.40,51.31,length,e791a3e572806a31
+ds4-dfm-rs,code_short,1,warm,54,512,0.0116,9.5776,510,4649.8,53.42,53.46,length,e791a3e572806a31
+ds4-dfm-rs,code_short,2,warm,54,512,0.0188,9.5621,510,2864.8,53.55,53.54,length,e791a3e572806a31
+ds4-dfm-rs,table_short,0,cold,43,512,0.3720,8.1957,512,115.6,65.31,62.47,length,9e2049a005deec0c
+ds4-dfm-rs,table_short,1,warm,43,512,0.0191,7.8572,512,2255.3,65.19,65.16,length,9e2049a005deec0c
+ds4-dfm-rs,table_short,2,warm,43,512,0.0145,7.8419,512,2965.3,65.28,65.29,length,9e2049a005deec0c
+ds4-dfm-rs,prose_long,0,cold,10356,32,7.9568,8.9010,32,1301.5,32.83,3.60,length,1a220de99d8928d5
+ds4-dfm-rs,prose_long,1,warm,10356,32,0.0974,1.0541,32,106276.3,32.40,30.36,length,1a220de99d8928d5
+ds4-dfm-rs,prose_long,2,warm,10356,32,0.1008,1.0565,32,102783.9,32.44,30.29,length,1a220de99d8928d5
+ds4-dfm-rs,table_long,0,cold,10377,256,8.0010,12.3391,256,1297.0,58.78,20.75,length,8a03aff2d1070268
+ds4-dfm-rs,table_long,1,warm,10377,256,0.0968,4.4477,256,107170.4,58.61,57.56,length,8a03aff2d1070268
+ds4-dfm-rs,table_long,2,warm,10377,256,0.1030,4.4516,256,100754.6,58.64,57.51,length,8a03aff2d1070268

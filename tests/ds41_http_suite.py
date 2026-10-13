@@ -12,6 +12,14 @@ Provenance
   archived table case for case. Read the recorded table as the motivation for
   the unit, and this harness's own run as the measurement.
 
+Correction (2026-10-13, same day)
+  The claim above that the case bytes are gone is wrong: suite.py and its
+  cases.json were found on the serving box (ya-bench/ beside the model), with the
+  archived prompt_sha256 values inside. The warm-path campaign
+  (docs/benchmarks/ds41-warmpath-2026-10-13/) reuses both, so its numbers sit on
+  the archived bytes; this harness stays as the self-contained runner that needs
+  only a live endpoint.
+
 Protocol (the recorded one, kept so the numbers stay comparable in shape)
   Five cases over three content types at two prompt lengths; one streamed
   /v1/chat/completions request per case, temperature 0, greedy, three samples

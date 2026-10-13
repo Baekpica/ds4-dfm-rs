@@ -133,7 +133,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [session state](releases/bonsai-session-2026-09-30.md),
   [CUDA graph](releases/bonsai-cuda-graph-2026-09-30.md),
   [CPU reference](releases/bonsai-cpu-reference-2026-09-30.md).
-- **DeepSeek V4.1:** [2K–64K Prefill/Decode tables and graph, October 13](benchmarks/ds41-spark-64k-2026-10-13/README.md),
+- **DeepSeek V4.1:** [warm-path campaign: the asset-open cache, October 13](benchmarks/ds41-warmpath-2026-10-13/README.md),
+  [2K–64K Prefill/Decode tables and graph, October 13](benchmarks/ds41-spark-64k-2026-10-13/README.md),
   [capped-clock sweep and review qualification, October 13](benchmarks/ds41-spark-review-2026-10-13/README.md),
   [five-case benchmark, October 13](benchmarks/ds41-spark-2026-10-13/README.md),
   [prefill/decode, October 11](ds41-perf-2026-10-11.md),
