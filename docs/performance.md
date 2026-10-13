@@ -149,22 +149,33 @@ long-context serving; use the [family guide](naive-n05-flash.md) for those limit
 
 ## DeepSeek V4.1
 
-DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and the
-`grrb-code_fit_n15360-engine` sidecar recorded **1,058.8 prefill / 41.9 decode**
-at the 8K frontier: 8,449 actual input tokens and 128 generated tokens.
-The [October 13 review qualification](benchmarks/ds41-spark-review-2026-10-13/README.md)
-uses one fresh Rust server on GB10, cold KV per request, automatic embedded MTP,
-default graphs, temperature 0 and reasoning off. Observed clocks were
-2,184–2,190 MHz within the unchanged 300–2,200 MHz range.
+DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and
+`grrb-code_fit_n15360-engine` recorded **1,039.65 prefill / 38.17 decode**
+in the [October 13 2K–64K campaign](benchmarks/ds41-spark-64k-2026-10-13/README.md).
+These are medians of three run means across 32 frontiers, using three fresh
+Rust-server processes on one DGX Spark / GB10. Each request prefills its full
+prompt with zero KV reuse and generates 128 greedy tokens with automatic
+embedded MTP. Clock range remains 300–2200 MHz; request-clock medians were
+2,184–2,190 MHz.
 
-![DeepSeek V4.1 capped-clock sweep and supplied reference](benchmarks/ds41-spark-review-2026-10-13/throughput.svg)
+![DeepSeek V4.1 Flash prefill and decode on one DGX Spark](benchmarks/ds41-spark-64k-2026-10-13/throughput.png)
 
-The 20-frontier sweep reaches 40,960 (41,121 actual input tokens), with 128
-outputs at each point. Decode median is 41.0 tok/s; the final point records
-1,070.6 prefill / 39.9 decode. Each point is one sample. The screenshot's higher
-clocks make it a reference, not a matched A/B comparison. The linked report
-separately records source parity, serving gates, memory policy and limits;
-throughput does not qualify 64K, 1M context or concurrent banks.
+[JLFN](https://github.com/JLFN) ported DeepSeek V4.1 Flash serving to
+`ds4-dfm-rs` ([#80](https://github.com/Baekpica/ds4-dfm-rs/pull/80)), using the
+[YoungAi engine](https://github.com/fodelf/YoungAi) and
+[VQ model artifacts](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash).
+Curves show per-frontier medians; bands retain the observed min–max. The
+[Prefill and Decode tables](benchmarks/ds41-spark-64k-2026-10-13/tables.md)
+list all 96 samples and actual input counts. The 64K frontier has
+66,608 actual input tokens and records
+**969.5 prefill / 39.8 decode** at the median.
+
+The graph follows the Qwen card's presentation, but Qwen uses incremental
+prefill and this sweep uses full prompt prefill. They are separate workloads.
+The [earlier review qualification](benchmarks/ds41-spark-review-2026-10-13/README.md)
+retains source parity, serving gates and the supplied 40K screenshot comparison.
+This campaign establishes throughput on the recorded serial corpus, without
+extending broad long-context quality, 1M throughput or concurrent-bank claims.
 
 ## Bonsai
 

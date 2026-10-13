@@ -431,7 +431,11 @@ higher), and a 22-frontier prose sweep reaches a 1,201.9 t/s prefill peak with
 records 1,058.8 prefill / 41.9 decode at the 8K frontier with code GR, Engram
 and automatic MTP under the 300–2200 MHz clock range. Its 20 cold-KV requests
 reach 41,121 actual prompt tokens; these results remain separate from the
-earlier measurements. The family is not yet in a release ledger.
+earlier measurements. A subsequent
+[three-run 2K–64K campaign](benchmarks/ds41-spark-64k-2026-10-13/README.md)
+reaches 66,608 actual input tokens
+with 128 outputs and zero reused tokens per request; its tables retain
+every sample. The family is not yet in a release ledger.
 
 ## Common serving surface
 

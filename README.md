@@ -48,12 +48,17 @@ documented whole-model results are omitted.
 | GLM-5.3 Flash Uncensored mixed quant | 137.31 | 14.70 | [8K + 64, raw owner, SSD/MTP off](docs/glm53-uncensored.md#measured-performance) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
-| DeepSeek V4.1 Flash VQ + code GR | 1,058.8 | 41.9 | [8K frontier + 128, cold KV, MTP auto](docs/performance.md#deepseek-v41) |
+| DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
 | Prism Bonsai 2 27B PQ2_0 | 1,023.3 | 17.50–18.00 | [2,140 + 64, RTX 4070 SUPER](docs/performance.md#bonsai) |
 
 ![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)
 
 *Qwen on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#qwen).*
+
+![DeepSeek V4.1 Flash prefill and decode on one DGX Spark](docs/benchmarks/ds41-spark-64k-2026-10-13/throughput.png)
+
+*DeepSeek-v4.1-Flash on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#deepseek-v41).*
+*DeepSeek V4.1 Flash ported to ds4-dfm-rs by [JLFN](https://github.com/JLFN) ([#80](https://github.com/Baekpica/ds4-dfm-rs/pull/80)), using [YoungAi's VQ model artifacts](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash).*
 
 The [performance guide](docs/performance.md) collects these references and the
 other published curves. The [release ledgers](docs/README.md#release-ledgers)
@@ -146,6 +151,7 @@ collection. Feature and context limits remain specific to each artifact.
 | Model | GGUF architecture | Artifact | Runtime guide / scope |
 |---|---|---|---|
 | DeepSeek V4 Flash / PRO | `deepseek4` | [antirez GGUF](https://huggingface.co/antirez/deepseek-v4-gguf/tree/main) | Flash live oracle, DeepSeek MTP and DSpark |
+| DeepSeek V4.1 Flash | `deepseek4` (V4.1 shape) | [YoungAi VQ GGUF + GR/RB sidecars](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash) + [DeepSeek Engram](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash) | [Port by JLFN (#80)](https://github.com/Baekpica/ds4-dfm-rs/pull/80); [serial CUDA, embedded MTP and limits](docs/deepseek41-flash.md) |
 | Solar Open2 250B | `solar-open2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/Solar-Open2-250B-Mixed-Quant-GGUF) | KDA/GQA state and persistent banks |
 | K-EXAONE 236B A23B | `exaone-moe` | [Baekpica mixed quant](https://huggingface.co/Baekpica/K-EXAONE-236B-A23B-Mixed-Quant-GGUF) | LLLG KV; [partial reuse limits](docs/ds4-dfm-model-families.md#partial-prefix-reuse) |
 | Motif-3 | `motif3` | [Baekpica mixed quant](https://huggingface.co/Baekpica/Motif-3-Mixed-Quant-GGUF) | Latent KV, SWA rings and persistent banks |
