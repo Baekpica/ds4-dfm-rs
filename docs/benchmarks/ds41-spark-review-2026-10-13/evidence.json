@@ -1,0 +1,648 @@
+{
+  "runtime_commit": "80443f15193330d858cf7b1fd8d2d06afe29749e",
+  "measured_checkout": "b5c7120c65ea1e13e0afe51b3247f2d335d7bc1e + review fixes committed unchanged as 80443f15",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "615.71.09",
+    "cuda_compiler": "13.3.73",
+    "cuda_compiler_path": "/usr/local/cuda/bin/nvcc",
+    "port_cuda_flags": "-O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1",
+    "source_cuda_flags": "-O3 -g -lineinfo --use_fast_math -arch=native -default-stream per-thread",
+    "requested_clocks_mhz": [
+      300,
+      2200
+    ],
+    "observed_sweep_clocks_mhz": [
+      2184,
+      2190
+    ],
+    "actual_build_log": "scratch/vq-pr80-81/vq-source-release-build.log",
+    "actual_source_build_log": "scratch/vq-pr80-81/oracle-build.log",
+    "server_sha256": "ab31fb5c9f066ea28acd195113fd963abb7d0ead09fbcd3280e59846d39bdf80",
+    "note": "Actual compiler commands override earlier shorthand CUDA_ARCH=sm_121 invocation labels; actual port SASS target sm_121a. No rebuild or numerical setting change."
+  },
+  "performance": {
+    "ok": true,
+    "frontiers": 20,
+    "total_generated_tokens": 2560,
+    "prefill_tps_range": [
+      777.8,
+      1120.6
+    ],
+    "decode_tps_range": [
+      28.5,
+      42.5
+    ],
+    "decode_median": 41.0,
+    "reference_decode_median": 41.45,
+    "median_prefill_ratio": 0.9345016095183656,
+    "median_decode_ratio": 0.9928390757451464,
+    "clock_mhz_range": [
+      2184.0,
+      2190.0
+    ],
+    "min_available_gib": 6.3112030029296875,
+    "max_psi_full_avg10": 0.0,
+    "cgroup_events": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0
+    },
+    "comparisons": [
+      {
+        "frontier": 2048,
+        "actual_prompt": 2149,
+        "prefill_tps": 777.8,
+        "reference_prefill_tps": 852.6,
+        "prefill_ratio": 0.9122683556181093,
+        "decode_tps": 42.5,
+        "reference_decode_tps": 43.7,
+        "decode_ratio": 0.9725400457665904,
+        "clock_mhz": 2184.0
+      },
+      {
+        "frontier": 4096,
+        "actual_prompt": 4268,
+        "prefill_tps": 945.2,
+        "reference_prefill_tps": 1038.3,
+        "prefill_ratio": 0.9103342001348359,
+        "decode_tps": 41.8,
+        "reference_decode_tps": 41.5,
+        "decode_ratio": 1.0072289156626506,
+        "clock_mhz": 2187.0
+      },
+      {
+        "frontier": 6144,
+        "actual_prompt": 6398,
+        "prefill_tps": 1017.6,
+        "reference_prefill_tps": 1105.1,
+        "prefill_ratio": 0.9208216450999911,
+        "decode_tps": 41.9,
+        "reference_decode_tps": 41.3,
+        "decode_ratio": 1.0145278450363195,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 8192,
+        "actual_prompt": 8449,
+        "prefill_tps": 1058.8,
+        "reference_prefill_tps": 1146.9,
+        "prefill_ratio": 0.9231842357659777,
+        "decode_tps": 41.9,
+        "reference_decode_tps": 42.6,
+        "decode_ratio": 0.9835680751173709,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 10240,
+        "actual_prompt": 10487,
+        "prefill_tps": 1087.8,
+        "reference_prefill_tps": 1171.7,
+        "prefill_ratio": 0.9283946402662797,
+        "decode_tps": 42.1,
+        "reference_decode_tps": 42.4,
+        "decode_ratio": 0.9929245283018868,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 12288,
+        "actual_prompt": 12541,
+        "prefill_tps": 1098.0,
+        "reference_prefill_tps": 1184.4,
+        "prefill_ratio": 0.9270516717325227,
+        "decode_tps": 41.1,
+        "reference_decode_tps": 41.4,
+        "decode_ratio": 0.9927536231884059,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 14336,
+        "actual_prompt": 14516,
+        "prefill_tps": 1113.7,
+        "reference_prefill_tps": 1197.8,
+        "prefill_ratio": 0.929787944565036,
+        "decode_tps": 31.5,
+        "reference_decode_tps": 41.6,
+        "decode_ratio": 0.7572115384615384,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 16384,
+        "actual_prompt": 16546,
+        "prefill_tps": 1119.3,
+        "reference_prefill_tps": 1201.9,
+        "prefill_ratio": 0.9312754804892253,
+        "decode_tps": 41.4,
+        "reference_decode_tps": 41.6,
+        "decode_ratio": 0.9951923076923076,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 18432,
+        "actual_prompt": 18537,
+        "prefill_tps": 1120.6,
+        "reference_prefill_tps": 1201.0,
+        "prefill_ratio": 0.9330557868442964,
+        "decode_tps": 41.8,
+        "reference_decode_tps": 41.5,
+        "decode_ratio": 1.0072289156626506,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 20480,
+        "actual_prompt": 20573,
+        "prefill_tps": 1119.9,
+        "reference_prefill_tps": 1198.8,
+        "prefill_ratio": 0.9341841841841843,
+        "decode_tps": 41.0,
+        "reference_decode_tps": 41.6,
+        "decode_ratio": 0.985576923076923,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 22528,
+        "actual_prompt": 22609,
+        "prefill_tps": 1115.8,
+        "reference_prefill_tps": 1193.6,
+        "prefill_ratio": 0.9348190348525469,
+        "decode_tps": 40.6,
+        "reference_decode_tps": 41.5,
+        "decode_ratio": 0.9783132530120482,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 24576,
+        "actual_prompt": 24651,
+        "prefill_tps": 1115.3,
+        "reference_prefill_tps": 1190.1,
+        "prefill_ratio": 0.9371481388118645,
+        "decode_tps": 33.7,
+        "reference_decode_tps": 41.1,
+        "decode_ratio": 0.8199513381995134,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 26624,
+        "actual_prompt": 26665,
+        "prefill_tps": 1110.6,
+        "reference_prefill_tps": 1184.5,
+        "prefill_ratio": 0.9376108062473617,
+        "decode_tps": 41.0,
+        "reference_decode_tps": 40.5,
+        "decode_ratio": 1.0123456790123457,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 28672,
+        "actual_prompt": 28691,
+        "prefill_tps": 1107.0,
+        "reference_prefill_tps": 1181.0,
+        "prefill_ratio": 0.9373412362404742,
+        "decode_tps": 41.6,
+        "reference_decode_tps": 29.9,
+        "decode_ratio": 1.3913043478260871,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 30720,
+        "actual_prompt": 30712,
+        "prefill_tps": 1031.0,
+        "reference_prefill_tps": 1097.7,
+        "prefill_ratio": 0.9392365855880477,
+        "decode_tps": 40.9,
+        "reference_decode_tps": 40.4,
+        "decode_ratio": 1.0123762376237624,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 32768,
+        "actual_prompt": 32749,
+        "prefill_tps": 1029.6,
+        "reference_prefill_tps": 1095.8,
+        "prefill_ratio": 0.9395875159700675,
+        "decode_tps": 40.4,
+        "reference_decode_tps": 41.5,
+        "decode_ratio": 0.9734939759036144,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 34816,
+        "actual_prompt": 34846,
+        "prefill_tps": 1090.2,
+        "reference_prefill_tps": 1158.6,
+        "prefill_ratio": 0.9409632314862767,
+        "decode_tps": 28.5,
+        "reference_decode_tps": 28.7,
+        "decode_ratio": 0.9930313588850175,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 36864,
+        "actual_prompt": 36948,
+        "prefill_tps": 1084.2,
+        "reference_prefill_tps": 1152.3,
+        "prefill_ratio": 0.9409008070814893,
+        "decode_tps": 40.4,
+        "reference_decode_tps": 41.0,
+        "decode_ratio": 0.9853658536585366,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 38912,
+        "actual_prompt": 38975,
+        "prefill_tps": 1077.5,
+        "reference_prefill_tps": 1144.0,
+        "prefill_ratio": 0.9418706293706294,
+        "decode_tps": 40.7,
+        "reference_decode_tps": 40.0,
+        "decode_ratio": 1.0175,
+        "clock_mhz": 2190.0
+      },
+      {
+        "frontier": 40960,
+        "actual_prompt": 41121,
+        "prefill_tps": 1070.6,
+        "reference_prefill_tps": 1135.3,
+        "prefill_ratio": 0.9430106579758654,
+        "decode_tps": 39.9,
+        "reference_decode_tps": 40.2,
+        "decode_ratio": 0.9925373134328357,
+        "clock_mhz": 2190.0
+      }
+    ],
+    "scope": "Fresh default VMM server, Engram + coding GR, default MTP/graphs, greedy128, all full prompts;20screenshot frontiers only",
+    "limitations": [
+      "Reference uses2398-2450MHz, local2184-2190MHz; no linear clock correction is a measured result.",
+      "Reference image reports decode token count0; its rates are screenshot observations, not verified raw usage.",
+      "Model metadata1048576 and screenshot configured65536 are not qualified by this40960-frontier run."
+    ]
+  },
+  "proof_reports": {
+    "engram-long-qualified.json": "811d0d4c9948a773ed097378461ade6c7d5701aa735e865298d9a99650dd615f",
+    "engram-chat-short-port-headroom2-report.json": "b0ede17c0a803b42ecbebfd185b4e572f06283b4a0baef270b9391a3eb77aad9",
+    "engram-source-token-comparison.json": "99eefa84e77498d62b758126dbdd4ab89dacae6eb9f005319ec20b947f36d354",
+    "engram-screenshot-sweep-report.json": "18ea57727017b40bdc1962b11101747c2a2a0c8e95c3ef36a1d3a682a0f1252e",
+    "engram-verified.json": "bdcb696f974c75135d2366e9187fb93fdd76262906242906d88af1e8ec4212ee",
+    "score-validation/engram-pairs-report.json": "bdcc44b54fabba0a87f24c74dbca55b95c295cece25527e679c31a7cdd49b4aa",
+    "score-validation/engram-hc-report.json": "ccfc757893ff0045b09027a6e12aa5e1c8843c94eee49ac23a5e30bbc97a276f",
+    "engram-port-api/report.json": "de7b53466fc8b3af3708b04123acfaaf2dfb9a5c76dfef0c94d26d1231b2587d",
+    "engram-kv-api-run.stage.log": "24ab50ec413b13debeb60aaa29d46c7403d38100dafc042ffd15d9f4834f9e09",
+    "engram-disk-run.stage.log": "ea234e151d868497bfc887825497bdf94f92f261aa847d64b7ce6e58b5627b35",
+    "engram-api-chat-paired-report.json": "9bec0e102b537dd978766a04068ec7f6bca10efb94c72180833b45a588763bc3",
+    "engram-chat-sse-paired-report.json": "39a1604c529fe35f8377a36dc92c5833c1e1b471e1c8d06309fed2b8371ee00d",
+    "engram-reference-default-recovered-report.json": "c7310f61b64c42c9744e3a853f162713c73c250266c338a07aa0a2e4772496ce",
+    "source-trace-recovery.json": "d9f656580b2de430a4fda551f22dd13327afab686ef4eb9f3ebc63a6184df517",
+    "engram-api-paired-report.json": "59f738a049b41267b525c3b39e763e5752cd4b7bd5384f43826c62affbbc5b65",
+    "engram-reference-off-report.json": "b60e15f03b6daa75b41a7fea15b860671c275dccc694a0f1d161cb72bb7cc580",
+    "sampled-kv-red.log": "a56aab2a0363a5e087929c94f35ee330b2379f4ca65436ce21069ee2af1284d4",
+    "sampled-kv-green.log": "6cdd31b694383338cd6c02a4b742ae5b812db432f83d9b02880cdb212ed976df",
+    "ci-serving-docs-green.log": "648725c7aa186a1e04623bb02908b43ec1f1366611774537f202e838521c2614",
+    "engram-sampling-raw-paired-report.json": "f8e19e3a67bc6c58e84bbb82434516399263983a4e25c65b223ed82082a04098",
+    "engram-sampling-raw-runs/raw-wire.json": "f582cc0f704425e68a7b6a119e92d7d365af85e3c96cb88ad5196aafe9aef6e8",
+    "engram-sampling-raw-runs/results.json": "012259f84754136e2c498979b43a0921ab1e7ba33398a291378c05b2db74caa1",
+    "engram-sync-paired-report.json": "33462a0a16214365328dba93b52c8a51881e9dc5d7ed8301b6122ea46fb23cad",
+    "engram-feed-repeat-report.json": "407cee2a3335716d70e99a6e1133ed168e10b0eaae3a44c29a63f8ab17e6c2bc",
+    "engram-feed-controls/results.json": "8be9b86820ccf6df24b05e55a198c06085f5566774d5f6c311844da11bef8801",
+    "final-controls/results.json": "af170dc8d86ae83268852311632bd6c4075247f53ccb73661a6ca697d7fd9ce8",
+    "final-controls/binaries.json": "dd7e0a6f0953adabb0e8ab8d121acc2f797e590033faca5a15b1b954cea46e05",
+    "kernel-review.json": "05b41f6fed17efcc0d88f5e795733bc1aa5dab20d9dc96b252ce0e4349fbae9e",
+    "final-controls-kernel.jsonl": "66e42a599f37838097a9db3fc183bf3c0ae8e2060c56fcff3a20c0cadf562313"
+  },
+  "scope": "Frozen 2K-40K performance and full numerical/generation proof, bounded live/disk KV and HTTP proof, plus final sampled-cache and feed controls. No general 64K/1M or concurrency qualification.",
+  "paired_scores": {
+    "cases": 10,
+    "rows": 102,
+    "vocab": 129280,
+    "layers": 40,
+    "binary_files_byte_exact": 830,
+    "logit_floats": 13186560,
+    "xy_floats": 41779200,
+    "engram_hc_floats": 4177920,
+    "argmax_and_nll_exact": true,
+    "rust_engram_rows_exact": true
+  },
+  "port_api": {
+    "status": "PASS",
+    "checks": [
+      "models_metadata",
+      "completion_normal_sse",
+      "answer_finance",
+      "answer_python",
+      "answer_chinese",
+      "tool_start",
+      "tool_continuation"
+    ],
+    "fault_stats": {
+      "before": {
+        "stats.body.memory.census_faults": 0,
+        "stats.body.memory.observation.errors": 0,
+        "stats.body.governor.faults": 0,
+        "stats.body.governor.decisions.fault": 0
+      },
+      "after": {
+        "stats.body.memory.census_faults": 0,
+        "stats.body.memory.observation.errors": 0,
+        "stats.body.governor.faults": 0,
+        "stats.body.governor.decisions.fault": 0
+      },
+      "availability": "observed",
+      "deltas": {
+        "stats.body.memory.census_faults": 0,
+        "stats.body.memory.observation.errors": 0,
+        "stats.body.governor.faults": 0,
+        "stats.body.governor.decisions.fault": 0
+      },
+      "note": "Only actual numeric JSON counters are reported; raw /metrics is retained even when it is text."
+    },
+    "tool_continuation_reused_prefix": 292,
+    "tool_continuation_prompt": 371,
+    "health_http_status": 404,
+    "stats_http_status": 200
+  },
+  "memory_prefix_gate": {
+    "prompt_tokens": 3725,
+    "extension_tokens": 1,
+    "full_reuse_tokens": 3726,
+    "verified_output_rows": 47,
+    "rows_byte_exact": true
+  },
+  "latest_runtime_commit": "6450313189adcccf0dba29489f0a33a3c388f95e",
+  "runtime_commit_scope": "80443f15 is the frozen throughput and full parity build. 64503131 adds a sampled full-hit checkpoint fallback; cold/greedy paths are unchanged. Its live proof is recorded separately.",
+  "disk_prefix_gate": {
+    "fresh_boots": 7,
+    "ok": true,
+    "prompt_tokens": 3725,
+    "extension_tokens": 1,
+    "full_reuse_tokens": 3726,
+    "verified_output_rows": 47,
+    "rows_byte_exact": true,
+    "negative_controls": [
+      "disjoint prompt",
+      "truncated store",
+      "reuse disabled",
+      "1 MiB store budget"
+    ],
+    "min_available_gib": 7.232,
+    "max_psi_full_avg10": 0.04,
+    "payload_exit_codes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "guard_exit_note": "75 follows the test-requested stop; no memory or PSI trip"
+  },
+  "failed_comparisons_retained": {
+    "engram-api-paired-report.json": "Source completion default uses chat frame; Rust common completion uses raw prompt. Six chat/tool cases pass. Raw=true comparison is separate.",
+    "engram-reference-off-report.json": "A and C match; B exposes inherited full-hit sampler position omission. 64503131 uses cold prefill for device-sampled full hits."
+  },
+  "final_binaries": {
+    "ds4": "329881afe29aecce17fa626502f166ef63729bc54486b822afe3eb39aca614b5",
+    "ds4-server": "e43f03de0e0a675e0f04eed11d96c24c168640300c5ff10ea6b2033499ab750a",
+    "ds4.o": "60de86726077b0be797574b7f4dd17bea5d059e05b2950558ed7de64e9819e5f",
+    "ds4_cuda.o": "cbddb0b128bb0aaa909e9dd5dde8ba1f9c3738777e06f8741b4bd623c95675af"
+  },
+  "final_build_source": "64503131 runtime plus generated-document commit 4be54e7d",
+  "runtime_ci": {
+    "head": "4be54e7def54772985f98a40397e106236351f2a",
+    "status": "SUCCESS",
+    "url": "https://github.com/Baekpica/ds4-dfm-rs/actions/runs/38375032889",
+    "includes": "format, clippy, host parity, serialized workspace, model-free V41 lifecycle/state, native serving checks"
+  },
+  "ci_staging_failure": {
+    "run": 38374343824,
+    "test": "serving_docs_match_runtime",
+    "cause": "Generated serving-capabilities.md was omitted from runtime commit; included in 4be54e7d.",
+    "focused_green": "ci-serving-docs-green.log"
+  },
+  "sampled_checkpoint_and_raw_completion": {
+    "ok": true,
+    "runtime_commit": "64503131",
+    "server_sha256": "e43f03de0e0a675e0f04eed11d96c24c168640300c5ff10ea6b2033499ab750a",
+    "source_reference": "7fb26cc, no-dspark and no-kv-reuse",
+    "cases": [
+      {
+        "name": "raw-completion-normal",
+        "errors": [],
+        "prompt_equal": true,
+        "generated_equal": true,
+        "prompt_tokens": [
+          4,
+          4
+        ],
+        "generated_tokens": [
+          48,
+          48
+        ],
+        "trace_sha256": [
+          "3e959f94f1ff47bfcf91b1c26b617008078fafea2e35dc7081b48fafee93043e",
+          "eb360652f4a87fae6b27ba05c761087c5cc3d4cc8233e748a93043ebbc1e79de"
+        ]
+      },
+      {
+        "name": "raw-completion-stream",
+        "errors": [],
+        "prompt_equal": true,
+        "generated_equal": true,
+        "prompt_tokens": [
+          4,
+          4
+        ],
+        "generated_tokens": [
+          48,
+          48
+        ],
+        "trace_sha256": [
+          "9efe452d869f2d6a1de1a5f47481bf4b5fe8784cc7b7b278c2d52f6f5c2eb64d",
+          "113444c9fe11dc60e6cf41f45cafd9cdcb0e1c17c3334c883e375d2555d774b1"
+        ]
+      },
+      {
+        "name": "sampling-A",
+        "errors": [],
+        "prompt_equal": true,
+        "generated_equal": true,
+        "prompt_tokens": [
+          8,
+          8
+        ],
+        "generated_tokens": [
+          8,
+          8
+        ],
+        "trace_sha256": [
+          "fe27dea31ac28dbf5551da45385fa222bf698d2cd9e36b9ba6183f661c78835e",
+          "081aab3b2b54230329861a1fa53b805bf220699b81cd9c6bbc8324bdfed6b3fd"
+        ],
+        "message_equal": true
+      },
+      {
+        "name": "sampling-B",
+        "errors": [],
+        "prompt_equal": true,
+        "generated_equal": true,
+        "prompt_tokens": [
+          8,
+          8
+        ],
+        "generated_tokens": [
+          8,
+          8
+        ],
+        "trace_sha256": [
+          "dff6b5759669d02394a692b0f9a2909c95c49ce317444721c9170974072fae33",
+          "092b3a1ab26d3f40f0e436dca2ae74221d5751dd2e02144f20f36722ec09089f"
+        ],
+        "message_equal": true
+      },
+      {
+        "name": "sampling-C",
+        "errors": [],
+        "prompt_equal": true,
+        "generated_equal": true,
+        "prompt_tokens": [
+          8,
+          8
+        ],
+        "generated_tokens": [
+          11,
+          11
+        ],
+        "trace_sha256": [
+          "d8eaf7c7f947d157b474d060deccf8ba493e1abcbb487df4ae85468c0a70c7c5",
+          "7453a7af3650eb0681a6f2f1923aeb072b3eec3d80b2d2fa705fcd987c1be82d"
+        ],
+        "message_equal": true
+      }
+    ],
+    "repeated_default_and_explicit_1_0_equal": true,
+    "actual_sampled_full_hit_fallbacks": 4,
+    "raw_normal_and_sse_equal": true,
+    "common_mem_floor_gb": 2,
+    "mtp_mode": "off"
+  },
+  "feed_controls": [
+    {
+      "mode": "sync",
+      "started": 1791883618.3535328,
+      "boot_seconds": 218.247168302536,
+      "mtp_rounds": [
+        23,
+        25
+      ],
+      "ok": true,
+      "faults": {
+        "memory.census_faults": 0,
+        "memory.observation.errors": 0,
+        "governor.faults": 0,
+        "governor.decisions.fault": 0
+      },
+      "cache_unchanged": true,
+      "server_exit": 75,
+      "ended": 1791883846.3940036
+    },
+    {
+      "mode": "withhold",
+      "started": 1791883846.3949718,
+      "boot_seconds": 220.208491563797,
+      "ok": true,
+      "faults": {
+        "memory.census_faults": 0,
+        "memory.observation.errors": 0,
+        "governor.faults": 0,
+        "governor.decisions.fault": 0
+      },
+      "cache_unchanged": true,
+      "server_exit": 75,
+      "ended": 1791884070.0285783
+    }
+  ],
+  "kernel_audit": {
+    "range_utc": [
+      "2026-10-13 08:05:24",
+      "2026-10-13 09:35:30"
+    ],
+    "allocation_messages": [
+      {
+        "time": 1791879082.151091,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source full"
+        ]
+      },
+      {
+        "time": 1791879254.066842,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source full"
+        ]
+      },
+      {
+        "time": 1791879257.016234,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source full"
+        ]
+      },
+      {
+        "time": 1791879295.588869,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source full"
+        ]
+      },
+      {
+        "time": 1791880984.827829,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source default"
+        ]
+      },
+      {
+        "time": 1791880985.025291,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source default"
+        ]
+      },
+      {
+        "time": 1791881175.616823,
+        "message": "NVRM: --- last print repeated 9 times ---",
+        "active_source_runs": [
+          "source off"
+        ]
+      },
+      {
+        "time": 1791881175.617191,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source off"
+        ]
+      },
+      {
+        "time": 1791883407.935687,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source cold sampling"
+        ]
+      },
+      {
+        "time": 1791883474.567065,
+        "message": "NVRM: GPU0 nvCheckOkFailedNoLog: Check failed: Out of memory [NV_ERR_NO_MEMORY] (0x00000051) returned from _memdescAllocInternal(pMemDesc) @ mem_desc.c:1348",
+        "active_source_runs": [
+          "source cold sampling"
+        ]
+      }
+    ],
+    "all_during_source_processes": true,
+    "xid_oom_kill_or_page_allocation_failure": [],
+    "rust_process_allocation_messages": 0,
+    "note": "Source diagnostic runs completed successfully; allocator messages and repeated-print summaries are retained rather than reported as zero driver errors."
+  }
+}

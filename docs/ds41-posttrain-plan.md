@@ -4,8 +4,10 @@ Owner request (2026-10-13): "posttrain complete, no web GUI and no web chat —
 I want to be able to send an HTTP POST to it instead", and on scope: "it must
 be fully ported except there is no webchat".
 
-This document is the plan. `ds4-dfm-rs-handoff.md` carries the same plan in its
-executable form (section 3) and is the session carrier.
+This is the contributor's separate post-train proposal, not an implemented
+serving capability or an approval to change the inference reference pin.
+The contributor's local `ds4-dfm-rs-handoff.md` is not part of this repository;
+this document carries the proposal for review.
 
 ---
 
@@ -253,10 +255,9 @@ floors for serving).
 
 ## 7. Gate ladder
 
-1. Model-free, on the dev box: the parsers, the merge/apply math, the backward
-   kernels' finite differences, the HTTP route parity. No GPU, no model.
+1. CPU/model-free: parsers, merge math and HTTP route parity.
 2. Spark, model-free: build (`make cuda-spark`, `make ds4-server`) and the
-   native kernel self-tests.
+   native kernel self-tests, including device apply and backward finite differences.
 3. Spark, live: the trainer's own checks (`packcheck`, `rccheck`, `hccheck`,
    `gradcheck`), the 10-minute probe material, then a real run with the three
    readouts, then the wt2 two-arm gate.

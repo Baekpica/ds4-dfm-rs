@@ -133,7 +133,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [session state](releases/bonsai-session-2026-09-30.md),
   [CUDA graph](releases/bonsai-cuda-graph-2026-09-30.md),
   [CPU reference](releases/bonsai-cpu-reference-2026-09-30.md).
-- **DeepSeek V4.1:** [five-case benchmark, October 13](benchmarks/ds41-spark-2026-10-13/README.md),
+- **DeepSeek V4.1:** [capped-clock sweep and review qualification, October 13](benchmarks/ds41-spark-review-2026-10-13/README.md),
+  [five-case benchmark, October 13](benchmarks/ds41-spark-2026-10-13/README.md),
   [prefill/decode, October 11](ds41-perf-2026-10-11.md),
   [speed sweep, October 12](ds41-speed-bench-2026-10-12.md),
   [raw 22-frontier CSV](../speed-bench/gb10_spark_ds41_862fd9a6.csv),

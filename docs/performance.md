@@ -147,6 +147,25 @@ The [September 30 index-packing pair](benchmarks/naive-2026-09-30/index-pack.md)
 remains historical. These results do not qualify DSpark acceleration or
 long-context serving; use the [family guide](naive-n05-flash.md) for those limits.
 
+## DeepSeek V4.1
+
+DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and the
+`grrb-code_fit_n15360-engine` sidecar recorded **1,058.8 prefill / 41.9 decode**
+at the 8K frontier: 8,449 actual input tokens and 128 generated tokens.
+The [October 13 review qualification](benchmarks/ds41-spark-review-2026-10-13/README.md)
+uses one fresh Rust server on GB10, cold KV per request, automatic embedded MTP,
+default graphs, temperature 0 and reasoning off. Observed clocks were
+2,184–2,190 MHz within the unchanged 300–2,200 MHz range.
+
+![DeepSeek V4.1 capped-clock sweep and supplied reference](benchmarks/ds41-spark-review-2026-10-13/throughput.svg)
+
+The 20-frontier sweep reaches 40,960 (41,121 actual input tokens), with 128
+outputs at each point. Decode median is 41.0 tok/s; the final point records
+1,070.6 prefill / 39.9 decode. Each point is one sample. The screenshot's higher
+clocks make it a reference, not a matched A/B comparison. The linked report
+separately records source parity, serving gates, memory policy and limits;
+throughput does not qualify 64K, 1M context or concurrent banks.
+
 ## Bonsai
 
 Prism Bonsai 2 27B PQ2_0's [September 30 prefill evidence](releases/bonsai-perf-2026-09-30.md#evidence)

@@ -69,9 +69,10 @@ Keep these shapes when a candidate is measured:
   docs/qwen38-prefill-2026-09-06.md:195-205).
 - 2026-09-14 candidate protocol: independent 8192/65536 frontiers, 128
   generated tokens, three alternating A/B pairs per frontier, graphs-clock
-  medians recorded, adoption threshold >=2% end-to-end on the target phase
+  medians recorded, historical adoption threshold >=2% end-to-end on the target phase
   with no repeatable >2% loss on the other principal metric
-  (docs/qwen38-perf-2026-09-14.md:18-21).
+  (docs/qwen38-perf-2026-09-14.md:18-21). This describes that campaign; current
+  repository policy has no fixed percentage floor.
 - Production server shape: the canonical two-bank command (196,608 configured
   context, DS4_QWEN_BATCH=1, 8192-token chunks, 2048 MiB PLE cache, 16 page
   workers, --mtp-draft 2), fresh disk-KV directories per binary, thinking
@@ -132,8 +133,8 @@ Qwen headline rate: the Qwen route's headline speed is mostly its architecture
 (6B active MoE, GDN linear attention, QSA sparse attention); it cannot be
 bolted onto a trained V4.1, and absolute numbers across the two families are
 not comparable because contexts and active parameters differ
-(docs/ds41-qwen38-serve-lessons.md:12-20). Transfer, with the campaign's
-adoption bar and parity gates, only the serving machinery around the
+(docs/ds41-qwen38-serve-lessons.md:12-20). Evaluate with current repository
+adoption rules and family parity gates the serving machinery around the
 off-accelerator n-gram table plus two MTP optimizations.
 
 ## Transferable pieces
@@ -144,13 +145,14 @@ off-accelerator n-gram table plus two MTP optimizations.
    round, a dedicated fetch thread for rounds larger than the queue, and a
    pinned flag per layer so captured decode waits on host read completion
    (`core_v41_forward.c:390`; `core_v41_engram.c:311-341`, `:344-379`,
-   `:119-150`, `:259-281`). The port has not ported that overlap: its feed's
-   prepare runs every layer's round to completion before the block's GPU work
-   starts (`crates/ds4-core/src/v41_run.rs` prepare -> prepare_round, the
-   feed contract `ds41_forward.h:41-53`, called at `ds4_ds41_forward.inc:1038`,
-   consumed per layer at `:440-466`). At 354 tokens the synchronous shape
-   costs 1.3 s against the engine's 1.247 s, and the gap grows with block size
-   (docs/ds41-qwen38-serve-lessons.md:21-72). The Qwen lease itself is the
+   `:119-150`, `:259-281`). The early study measured a synchronous port feed
+   at 1.3 s against the engine's 1.247 s for 354 tokens
+   (docs/ds41-qwen38-serve-lessons.md:21-72). That gap is historical:
+   `V41Feed` now submits asynchronously, waits per layer and prefetches the
+   next block in `crates/ds4-core/src/v41_run.rs`. It retains a synchronous
+   fallback and diagnostic switches; recorded cross-block A/B evidence is in
+   [the ds41 guide](deepseek41-flash.md#recorded-performance).
+   The Qwen lease itself is the
    same principle: the gather consumes only rows whose pages are resident and
    a tile ends early at a loading row (`ds4_ple.h:205-221`,
    `cuda/qwen38_ple.cu:27-35`).
@@ -167,10 +169,10 @@ off-accelerator n-gram table plus two MTP optimizations.
    `DS4_N_VOCAB`, `core_v41_draft.c:277`). A ds41 shortlist shrinks only the
    draft's scoring head and its argmax; the verify and target output stay
    full-vocabulary. Doctrinal status: a named deviation, because the engine
-   has no shortlist, so the [dspark] trace will differ by design; the generate
-   gate's spec leg treats that diff as informational and gates on emitted ids
-   instead. Kill switch `DS4_V41_MTP_FULL_VOCAB` (mirroring the qwen38 pair).
-   Report acceptance and speed together
+   has no shortlist. This is an unimplemented proposal, including the proposed
+   `DS4_V41_MTP_FULL_VOCAB` switch. It would change the [dspark] trace; any
+   adoption needs explicit trace and carried-state gates as well as emitted
+   ids. Report acceptance and speed together
    (docs/ds41-qwen38-serve-lessons.md:94-111;
    docs/qwen38-perf-2026-09-14.md:38-53).
 3. The MTP prefix-cache preparation (Q-2). An MTP prefix consumes shifted
@@ -183,8 +185,9 @@ off-accelerator n-gram table plus two MTP optimizations.
    counterpart is the port's draft arm and prefix path
    (`ds4_ds41_draft.inc:125-198`, citing `core_v41_draft.c:94-175`): skip the
    parts of the draft prefix whose outputs are discarded and keep the verify's
-   carried spec_q path (`ds4_ds41_draft.inc:58-59`) intact. Kill switch
-   `DS4_V41_MTP_FULL_PREFIX` (docs/ds41-qwen38-serve-lessons.md:120-140).
+   carried spec_q path (`ds4_ds41_draft.inc:58-59`) intact. This is also an
+   unimplemented proposal; `DS4_V41_MTP_FULL_PREFIX` is a proposed switch
+   (docs/ds41-qwen38-serve-lessons.md:120-140).
 4. The parity gates and adoption bar. Gates that must stay green, on the
    Spark with the source-built engine oracle and canonical boot:
    `tests/ds41_sampling_gate.sh` (cases A-D byte-identical),
@@ -193,8 +196,10 @@ off-accelerator n-gram table plus two MTP optimizations.
    message), `tests/ds41_generate_gate.sh` with `DS41_FEED_DIGEST` (feed bytes
    on device must equal the host digest). Protocol for every candidate: fresh
    processes, alternating A/B pairs, graphics-clock medians recorded, adoption
-   bar >=2% end to end on the target phase with no repeatable >2% loss on the
-   other, and exact ids/logits parity required
+   requires a reproducible end-to-end gain beyond noise while preserving the
+   family's numerical contract and avoiding meaningful regressions. Report
+   resource costs and both prefill and decode; no fixed percentage floor applies.
+   The cited study's 2% screen is historical, not current policy
    (docs/ds41-qwen38-serve-lessons.md:145-179;
    docs/qwen38-perf-2026-09-14.md:18-21).
 

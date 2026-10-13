@@ -10,9 +10,8 @@ not qualify a new build. The engine's side of the same run is not carried here.
 
 ## Protocol
 
-- Host: DGX Spark GB10. The outputs do not record the driver, CUDA version or
-  clocks; the family guide's other records put this shape at driver 580.142 /
-  CUDA 13.0.
+- Host: DGX Spark GB10. These outputs do not record the driver, CUDA version
+  or clocks; another campaign's environment cannot fill those gaps.
 - Same base GGUF and the same coding sidecar on both sides of the run,
   temperature 0, greedy, single stream, 3 samples per case.
 - Five cases across three content types at two prompt lengths. `decode t/s` is
@@ -32,11 +31,15 @@ not qualify a new build. The engine's side of the same run is not carried here.
 | prose_long | 10356 | 32 | 31.08 | 1286.0 | 265.7 | 25.15 |
 | table_long | 10377 | 256 | 59.14 | 1283.4 | 273.4 | 55.77 |
 
-Decode spans 31.1-65.4 t/s across the five cases. The spread is draft
-acceptance: repetitive code and table content accepts more drafts per round than
-prose, so decode is faster there. Prefill at ~10.4k tokens reads 1286 and 1283
+Decode spans 31.1-65.4 t/s across the five cases. Draft acceptance may explain
+the content-dependent spread, but these CSVs contain no acceptance counters.
+Prefill at ~10.4k tokens reads 1286 and 1283
 t/s; the short-case cold prefill (82-91 t/s) is a 43-54-token prompt and is a
 latency number, not a throughput one.
+
+The CSV prefill values match prompt tokens divided by TTFT after rounding.
+They include first-token latency; the frontier sweep instead reports the
+server's prefill timer. These rates are different measurements.
 
 ## Files
 

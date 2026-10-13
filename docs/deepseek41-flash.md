@@ -2,8 +2,8 @@
 
 DeepSeek V4.1 Flash is the family the `ds41` port brings to this tree: a
 40-layer mixture-of-experts model whose routed-expert weights are 8-dimensional
-vector quantization, served from one base GGUF plus optional sidecar, engram and
-post-train directories. This is the family's model guide: the artifact contract,
+vector quantization, served from one base GGUF and the original Engram tables,
+with optional sidecar and post-train directories. This is the family's model guide: the artifact contract,
 the shape this tree binds, the serving surface, the gates that back it and the
 recorded benchmark numbers.
 
@@ -15,6 +15,10 @@ Every number and bound below is taken from a record in this repository, read
 first-hand: the plan, the [prefill/decode report](ds41-perf-2026-10-11.md), the
 [speed sweep](ds41-speed-bench-2026-10-12.md), the [serving contract](serving-capabilities.md)
 and its source `crates/ds4-core/src/serving.rs`.
+
+The [October 13 review qualification](benchmarks/ds41-spark-review-2026-10-13/README.md)
+records fresh Engram-on source parity and the full 2K–40K screenshot sweep at
+300–2200 MHz. Decode median is 41.0 tok/s; 40K prefill is 1,070.6 tok/s.
 
 ## Artifact and host identity
 
@@ -29,8 +33,12 @@ Recorded in the port plan §2, measured over the Spark mount. The base is
 | post-train | `posttrain-experimental-20260924/`: `gr_L39.bin` + `base.fnv` (20 B) |
 | engram | not in the artifact: two official shards read in place via `--engram-dir`, `model-00047-of-00048.safetensors` 101,535,150,936 B and `model-00048-of-00048.safetensors` 101,537,926,640 B |
 
-Host and environment for the recorded runs: NVIDIA GB10 (DGX Spark), driver
-580.142, CUDA 13.0 (docs/ds41-perf-2026-10-11.md:5-7). Corpus:
+`--v41-no-engram` is a diagnostic that removes the Engram contribution.
+Results with it do not qualify the complete model's quality or performance.
+
+The October 11 report records NVIDIA GB10 (DGX Spark), driver 580.142 and
+CUDA 13.0 (docs/ds41-perf-2026-10-11.md:5-7). The five-case record omits its
+driver, CUDA version and clocks. Corpus for the frontier sweep:
 `speed-bench/promessi_sposi.txt`, SHA-256
 `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f`, the same
 fixture the other campaigns use.
@@ -40,6 +48,11 @@ Boot line the port is driven with (docs/ds41-speed-bench-2026-10-12.md:17-20):
     ./ds4-server --cuda -m <base>.gguf --zchain <domain sidecar> \
         --engram-dir <shards_dir> --mem-budget-mb 110000 \
         [--posttrain <dir>] --host <addr> --port <port>
+
+The fresh resident run used the [host memory guard](host-memory-guard.md)
+with a 2 GiB reserve and `--psi-full-limit 0`: stalls are recorded, while
+the available-memory floor and cgroup limits remain enforced. The model's
+`--mem-budget-mb` does not configure that external host reserve.
 
 ## The model: shape and tensor contract
 
@@ -77,8 +90,9 @@ per-expert gate/up/down tensors) and the shared experts.
   `ffn_exps_vq.blob`, plus five shared heads; the towers' metadata expert count
   is 128 (the main MoE stays at 384 top-6).
 
-The routed-expert blob is DQVL v3 at 13 bits (measured on the artifact; the
-decode family is `cuda/ds41_vq_*.cuh`). Loader closure on the real file: the
+The routed-expert blobs use DQVL v3 with mixed index widths: inspected layer 0
+payloads use 13 bits and layer 14 payloads use 12 bits. The decode family is
+`cuda/ds41_vq_*.cuh`. Loader closure on the real file: the
 inspector prints `identify`, `validate: ok`, `layout: ok` and
 `bind: slots=1000 bound=1000 required-missing=0` (port plan §6.6.1).
 
@@ -94,7 +108,7 @@ from `ServingCaps` (`crates/ds4-core/src/serving.rs:663-684`).
 | property | value |
 | --- | --- |
 | banks | serial / none |
-| prefix reuse (plan surface) | none / none |
+| prefix reuse (plan surface) | exact / present; auto, exact and off controls |
 | disk KV | present, not qualified (`--kv-disk-dir`) |
 | snapshots | none |
 | MTP | embedded, qualified |
@@ -103,17 +117,35 @@ from `ServingCaps` (`crates/ds4-core/src/serving.rs:663-684`).
 | context cap | none — the runtime context is the model metadata |
 | qualified context / banks | none / 1 |
 
+The [review report](benchmarks/ds41-spark-review-2026-10-13/README.md#serving-evidence)
+adds a bounded 3,725/3,726-token disk-restart gate with exact output/logits and
+four negative controls. That result does not promote every artifact, sampling
+mode or context in the generic capability table.
+
 The native run keeps one prompt-end KV checkpoint and reuses the previous
 prompt's prefix automatically (unit U-B, `--no-kv-reuse` disables it); it is
-reported as usage cached tokens and is not selectable through the serving plan.
-`--max-seqs > 1` and prefix reuse are refused by name
+reported as usage cached tokens. `--prefix-reuse off` disables both live and
+disk reuse; auto and exact select the prompt-end checkpoint. Partial reuse and
+`--max-seqs > 1` are refused by name
 (`v41_serving_contract_refuses_what_it_lacks`). The per-family sampling profile
 is not adopted on this path: sampling is request-driven.
+
+For device sampling, an identical prompt is prefilled again: the checkpoint
+does not store the sampler's position slot. This avoids an inherited
+uninitialized-state read. Greedy and penalty sampling retain full-prompt hits;
+device sampling still reuses a prefix when a suffix forward fills those slots.
+
+`/v1/completions` follows the common Rust raw-continuation contract. The pinned
+YoungAi server adds a chat frame by default; use its `raw: true` request field
+for equivalent source inputs. Chat completions use the family template.
 
 Server flags (engine spellings, `crates/ds4-server/src/bin/ds4-server-rs.rs:241-263`):
 `--engram-dir`, `--v41-no-engram`, `--no-dspark` / `--dspark`, `--dspark-verify`,
 `--no-graph`, `--no-kv-reuse`, `--emit-trace`, `--v41-prof`, `--zchain`,
 `--posttrain`. The boot line prints the resolved context and the KV-reuse state.
+The common `--mtp-mode off|auto|on` controls the same embedded drafter.
+`--mtp-draft` cannot change its trained block size; an external `--mtp` path
+is refused. `--dspark-verify` selects a verification width within that block.
 Native knobs: `DS4_V41_CHUNK`, `DS4_V41_CKV_BYTES`, `DS4_V41_IDXK_BYTES`,
 `DS4_V41_MAX_ENGRAM`, `DS4_V41_GEMV_MAX_TOK`, `DS4_V41_DRAFT_GROWS`,
 `DS4_V41_MKCACHE_SLOTS`. There is no settable prefill chunk on the port yet
@@ -151,7 +183,7 @@ Gate scripts live in `tests/` as `ds41_*_gate.sh`
 `ds41_perf_sweep.sh`.
 
 Not present on this path, and refused or absent by name: banks and snapshots
-(no `ds4_session`), a selectable prefix-reuse plan, the per-family sampling
+(no `ds4_session`), partial prefix reuse, the per-family sampling
 profile, and `--v41-chunk`. The remaining open item against the engine is the
 decode residual (~4% of wall, in the verify step; docs/ds41-perf-2026-10-11.md
 "Limits and open boundaries").
@@ -160,9 +192,10 @@ decode residual (~4% of wall, in the verify step; docs/ds41-perf-2026-10-11.md
 
 Two recorded campaigns on the same GB10 shape. Cross-day wall comparisons on
 this host are not valid; only same-window A/B or a matched binary pair is.
-Decode speed here is mostly draft acceptance, so it tracks content: the prose
-corpus sits at 40-44 t/s, while code and table content reaches the mid-50s to
-mid-60s, and both campaigns reproduce that shape.
+Decode varies with content and draft acceptance. The prose sweep sits near
+40-44 t/s, while the five-case record reaches the mid-50s to mid-60s on code
+and tables; that record lacks acceptance counters, so it cannot establish the
+cause of the spread.
 
 Five-case benchmark
 ([ds41-spark-2026-10-13](benchmarks/ds41-spark-2026-10-13/README.md), DGX Spark
@@ -219,8 +252,9 @@ headline rate of another family: those are different architectures and different
 active parameters, so the numbers are not comparable. What transfers from the
 qwen38 route is the serving machinery around the off-accelerator table plus the
 two MTP optimizations, each as a measured candidate with a kill switch and the
-repo's adoption bar (fresh processes, alternating A/B pairs, >= 2% median gain
-on the target phase with exact ids/logits parity). The detailed study is
+repo's adoption bar: fresh matched processes, a reproducible end-to-end gain
+beyond noise, and the family's numerical contract. There is no fixed percentage
+floor; report memory, work and performance costs in both phases. The detailed study is
 [what the qwen38 serving path teaches the ds41 route](ds41-qwen38-serve-lessons.md);
 the candidates and gates are port plan §6.21.
 
@@ -238,8 +272,9 @@ the candidates and gates are port plan §6.21.
   against the qwen38 records, which also quote a different driver/CUDA.
 - No broad task-quality or long-context accuracy claim follows from these
   inference and throughput checks.
-- 32K and 64K cells are not reached; the block accounting leaves a ~40-50 ms
-  per-request setup residual and the cold first-block terms open.
+- The October 11 cell campaign did not reach 32K or 64K; the later October 12
+  sweep reached 45,315 prompt tokens. Its 47,104-65,536 frontiers remain open.
+  The cell campaign left a ~40-50 ms setup residual and cold first-block terms open.
 - The port is served on the `ds41` branch and is not in a release ledger; the
   gates above are this repository's own recordings.
 
