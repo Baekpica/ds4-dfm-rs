@@ -30,7 +30,7 @@ is the 128 GB NVIDIA DGX Spark / GB10. Support is specific to the
 The native paths are tuned for prefill and decode on the reference hardware.
 These are recorded examples in **tokens/second**, with different workloads;
 the row links explain the artifact, hardware and measurement. Models without
-readily documented paired results are omitted.
+documented whole-model results are omitted.
 
 | Model / artifact | Prefill | Decode | Workload / evidence |
 |---|---:|---:|---|
@@ -48,6 +48,7 @@ readily documented paired results are omitted.
 | GLM-5.3 Flash Uncensored mixed quant | 137.31 | 14.70 | [8K + 64, raw owner, SSD/MTP off](docs/glm53-uncensored.md#measured-performance) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
+| DeepSeek V4.1 Flash VQ + code GR | 1,058.8 | 41.9 | [8K frontier + 128, cold KV, MTP auto](docs/performance.md#deepseek-v41) |
 | Prism Bonsai 2 27B PQ2_0 | 1,023.3 | 17.50–18.00 | [2,140 + 64, RTX 4070 SUPER](docs/performance.md#bonsai) |
 
 ![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)
@@ -219,8 +220,10 @@ See [architecture](docs/rust-migration/ARCHITECTURE.md) and
 | [Documentation index](docs/README.md) | Find current guides, releases and dated reports |
 | [Serving contract](docs/serving-contract.md) | Options, resolved plans, owner/worker and reuse |
 | [Model families](docs/ds4-dfm-model-families.md) | Artifacts, media, context and state limits |
+| [DeepSeek V4.1 Flash (ds41)](docs/deepseek41-flash.md) | Artifact, 40-layer shape, serving contract, gates and recorded benchmarks |
 | [Chat templates](docs/chat-templates.md) | Official assets and continuation |
 | [Performance](docs/performance.md) | Representative results and measurement conditions |
+| [Qwen benchmark reference](docs/qwen38-benchmark-reference.md) | Consolidated Qwen limits, protocols, campaign numbers and optimization target |
 | [Memory guard](docs/host-memory-guard.md) | Large-model admission and operational limits |
 | [Changelog](CHANGELOG.md) | Independent and inherited release history |
 

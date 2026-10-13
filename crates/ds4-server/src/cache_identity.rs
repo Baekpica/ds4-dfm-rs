@@ -52,12 +52,24 @@ pub struct CacheIdentity {
 
 impl CacheIdentity {
     pub fn capture(model: &Path, sidecars: &[&Path], settings: &str) -> Result<Self, String> {
-        let roots: Vec<_> = std::iter::once(model)
-            .chain(sidecars.iter().copied())
-            .map(|path| Input::weights(path.to_owned()))
-            .collect();
+        Self::capture_with_sources(model, sidecars, &[], settings)
+    }
+
+    /// Bind non-GGUF inference inputs without reading their full contents.
+    pub fn capture_with_sources(
+        model: &Path,
+        sidecars: &[&Path],
+        sources: &[&Path],
+        settings: &str,
+    ) -> Result<Self, String> {
+        let roots = root_inputs(model, sidecars, sources);
         let roots_before = snapshot(&roots)?;
-        let mut inputs = Vec::new();
+        // Engram shards are raw safetensors, not GGUF catalogs. Bind their
+        // file identity alongside the enumerated model inputs.
+        let mut inputs: Vec<_> = sources
+            .iter()
+            .map(|path| Input::weights((*path).to_owned()))
+            .collect();
         for path in std::iter::once(model).chain(sidecars.iter().copied()) {
             let inventory = TensorInventory::open(path).map_err(|e| e.to_string())?;
             inputs.extend(
@@ -107,6 +119,14 @@ impl CacheIdentity {
             &settings,
         ))
     }
+}
+
+fn root_inputs(model: &Path, sidecars: &[&Path], sources: &[&Path]) -> Vec<Input> {
+    std::iter::once(model)
+        .chain(sidecars.iter().copied())
+        .chain(sources.iter().copied())
+        .map(|path| Input::weights(path.to_owned()))
+        .collect()
 }
 
 fn digest(files: &Value, settings: &str) -> [u8; 32] {
@@ -180,20 +200,38 @@ fn snapshot(inputs: &[Input]) -> Result<Value, String> {
 }
 
 fn state_env() -> BTreeMap<String, Vec<u8>> {
-    std::env::vars_os().filter_map(|(key, value)| {
-        Some((key.into_string().ok()?, value.as_encoded_bytes().to_vec()))
-    }).filter(|(key, _)| {
-        (key.starts_with("DS4_") || key == "CUDA_VISIBLE_DEVICES" || key == "NVIDIA_TF32_OVERRIDE")
-            // Keep native compute/KV/RoPE controls, including DS4_CONT_MTP_*
-            // and DS4_CONT_DSPARK. Only these two continuous scheduling keys
-            // are redundant with the normalized effective schedule in finish.
-            && !key.starts_with("DS4_CUDA_WEIGHT_IPC")
-            && !key.starts_with("DS4_SERVER_")
-            && !key.starts_with("DS4_MEM")
-            && !matches!(key.as_str(), "DS4_CONT_PREFILL_CHUNK" | "DS4_CONT_PREFILL_CHUNK_LIVE"
-                | "DS4_SESSION_LAZY_GRAPH" | "DS4_SESSION_GRAPH_FIT"
-                | "DS4_NO_BOOT_PREWARM" | "DS4_BOOT_PREWARM" | "DS4_GOV_TRACE")
-    }).collect()
+    std::env::vars_os()
+        .filter_map(|(key, value)| {
+            Some((key.into_string().ok()?, value.as_encoded_bytes().to_vec()))
+        })
+        .filter(|(key, _)| binds_env(key))
+        .collect()
+}
+
+fn binds_env(key: &str) -> bool {
+    let native = key.starts_with("DS4_")
+        || key.starts_with("DS41_")
+        || matches!(key, "CUDA_VISIBLE_DEVICES" | "NVIDIA_TF32_OVERRIDE");
+    if !native {
+        return false;
+    }
+
+    // Bind compute/KV/RoPE controls. Omit deployment, normalized scheduling
+    // and output destinations, which do not alter the saved state.
+    !key.starts_with("DS4_CUDA_WEIGHT_IPC")
+        && !key.starts_with("DS4_SERVER_")
+        && !key.starts_with("DS4_MEM")
+        && !matches!(
+            key,
+            "DS4_CONT_PREFILL_CHUNK"
+                | "DS4_CONT_PREFILL_CHUNK_LIVE"
+                | "DS4_SESSION_LAZY_GRAPH"
+                | "DS4_SESSION_GRAPH_FIT"
+                | "DS4_NO_BOOT_PREWARM"
+                | "DS4_BOOT_PREWARM"
+                | "DS4_GOV_TRACE"
+                | "DS41_GEN_LOGITS"
+        )
 }
 
 fn runtime_inputs() -> Result<Vec<Input>, String> {
@@ -283,6 +321,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn v41_dump_keeps_cache() {
+        let identity = |path: &str| {
+            let env: BTreeMap<_, _> = [("DS41_GEN_LOGITS", path), ("DS41_ROW_SHIFT", "1")]
+                .into_iter()
+                .filter(|(key, _)| binds_env(key))
+                .collect();
+            digest(&Value::Null, &format!("env={env:?}"))
+        };
+        assert_eq!(identity("a.rows"), identity("b.rows"));
+        assert!(binds_env("DS41_ROW_SHIFT"));
+    }
+
+    #[test]
+    fn engram_sources_bind_identity() {
+        let dir = std::env::temp_dir().join(format!("ds4-cache-engram-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        let shard = dir.join("engram.safetensors");
+        fs::write(&model, b"model").unwrap();
+        fs::File::create(&shard)
+            .unwrap()
+            .set_len(SMALL_MAX + 1)
+            .unwrap();
+
+        let inputs = root_inputs(&model, &[], &[&shard]);
+        assert_eq!(
+            inputs.len(),
+            2,
+            "Engram must be an inference identity input"
+        );
+        let before = snapshot(&inputs).unwrap();
+        assert_eq!(before, snapshot(&inputs).unwrap());
+        let replacement = dir.join("replacement");
+        fs::File::create(&replacement)
+            .unwrap()
+            .set_len(SMALL_MAX + 1)
+            .unwrap();
+        fs::rename(replacement, &shard).unwrap();
+        assert_ne!(before, snapshot(&inputs).unwrap());
+        assert_ne!(before, snapshot(&root_inputs(&model, &[], &[])).unwrap());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn continuous_inference_controls_change_identity() {
         for (key, before, after) in [
             ("DS4_CONT_MTP_DEPTH", Some("1"), Some("2")),
@@ -290,6 +373,7 @@ mod tests {
             ("DS4_CONT_MTP_BATCH_DRAFT", None, Some("1")),
             ("DS4_CONT_DSPARK", Some("0"), Some("1")),
             ("DS4_CONT_MTP_DRAFT_PROBE", None, Some("1")),
+            ("DS41_ROW_SHIFT", None, Some("1")),
         ] {
             let old = std::env::var_os(key);
             let fingerprint = |value: Option<&str>| {

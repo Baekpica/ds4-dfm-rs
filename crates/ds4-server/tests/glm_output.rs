@@ -33,6 +33,7 @@ fn orders(properties: Value) -> Vec<ToolSchemaOrder> {
         default_effort: ds4_server::ThinkMode::None,
         default_temp: ds4_server::default_temperature(),
         live_ids: Vec::new(),
+        engine_defaults: false,
     };
     let request = json!({"messages":[{"role":"user","content":"Use inspect."}],
         "tools":[{"type":"function","function":{"name":"inspect",

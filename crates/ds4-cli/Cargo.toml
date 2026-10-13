@@ -54,6 +54,10 @@ name = "iquest_perf_verify"
 required-features = ["native"]
 
 [[example]]
+name = "ds41_boundary_verify"
+required-features = ["native"]
+
+[[example]]
 name = "glm53_state_gate"
 required-features = ["native"]
 

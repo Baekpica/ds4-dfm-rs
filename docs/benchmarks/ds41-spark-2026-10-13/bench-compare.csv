@@ -1,0 +1,6 @@
+case,engine,decode_tps_median,decode_tps_min,decode_tps_max,prefill_tps_cold,ttft_cold_s,ttft_warm_ms,e2e_tps_median,prompt_tokens,completion_tokens
+prose_short,ds4-dfm-rs,36.26,36.19,36.27,82.1,0.657,190.9,35.75,54,512
+code_short,ds4-dfm-rs,54.33,54.02,54.45,91.4,0.591,196.6,53.03,54,512
+table_short,ds4-dfm-rs,65.41,65.36,65.57,79.1,0.544,194.1,63.88,43,512
+prose_long,ds4-dfm-rs,31.08,30.97,31.15,1286.0,8.053,265.7,25.15,10356,32
+table_long,ds4-dfm-rs,59.14,59.01,59.42,1283.4,8.086,273.4,55.77,10377,256

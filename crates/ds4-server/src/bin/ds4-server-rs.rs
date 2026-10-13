@@ -55,6 +55,9 @@ fn main() {
     let mut kv = DiskKvArgs::default();
     let mut expected_plan: Option<ExpectedPlan> = None;
     let mut dist = DistArgs::default();
+    let mut ctx_set = false;
+    let mut v41_flags = V41Flags::default();
+    let mut mem_budget_mb: Option<i32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if dist
@@ -193,6 +196,7 @@ fn main() {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or_else(|| usage());
                 serve_req.ctx = cfg.ctx;
+                ctx_set = true;
             }
             "-t" | "--threads" => {
                 n_threads = args
@@ -218,6 +222,45 @@ fn main() {
                 let raw = args.next().unwrap_or_else(|| usage());
                 cfg.apply_mem_floor_gb(&raw);
                 serve_req.mem_floor_gb = cfg.mem_floor_gb;
+            }
+            // Unit Z: the engine's process red line (core_util.c:198-200);
+            // install.sh boots with --mem-budget-mb 110000.  Armed before
+            // the model open so the L1 gate sees it.
+            "--mem-budget-mb" => {
+                mem_budget_mb = Some(
+                    args.next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                );
+            }
+            // DeepSeek V4.1 (ds41) run surface — the engine's own spellings
+            // (cli_opts.c:258-395).  They bind only when the opened model is
+            // V4.1; the boot below refuses --ctx for V4.1 (the context comes
+            // only from the metadata) and names the flags when the model is
+            // not V4.1.  --zchain is not ported on this route.
+            "--engram-dir" => {
+                v41_flags.engram_dir = Some(args.next().unwrap_or_else(|| usage()));
+            }
+            "--v41-no-engram" => v41_flags.no_engram = true,
+            "--no-dspark" => v41_flags.no_dspark = true,
+            "--dspark" => v41_flags.dspark = true,
+            "--dspark-verify" => {
+                v41_flags.verify_k = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| usage());
+            }
+            "--no-graph" => v41_flags.no_graph = true,
+            "--no-kv-reuse" => v41_flags.no_kv_reuse = true,
+            "--emit-trace" => v41_flags.emit_trace = true,
+            "--v41-prof" => v41_flags.prof = true,
+            // Unit Z: the sidecar mount the deployment boots with
+            // (install.sh: --zchain <domain sidecar> [--posttrain <dir>]).
+            "--zchain" => {
+                v41_flags.zchain = Some(args.next().unwrap_or_else(|| usage()));
+            }
+            "--posttrain" => {
+                v41_flags.posttrain = Some(args.next().unwrap_or_else(|| usage()));
             }
             "-h" | "--help" => usage(),
             other => {
@@ -274,6 +317,44 @@ fn main() {
     let ident = model_path
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
+    // V4.1 (ds41): the context comes only from the metadata
+    // (core_validate_v41.c:51-53) — refuse --ctx before the model load, not
+    // after it (the engine refuses it at parse time, cli_opts.c:285-293).
+    if ctx_set
+        && ident
+            .as_ref()
+            .is_some_and(|id| id.shape.variant == ds4_core::Variant::DeepSeek41Flash)
+    {
+        cli_error("ds4-server-rs: V4.1 context comes from the model metadata (deepseek4.context_length); --ctx is refused");
+    }
+    let v41_wire = ident
+        .as_ref()
+        .filter(|id| id.shape.variant == ds4_core::Variant::DeepSeek41Flash)
+        .map(|id| {
+            let path = model_path.as_deref().unwrap();
+            let gguf = GgufFile::open(Path::new(path))
+                .unwrap_or_else(|error| cli_error(&format!("V4.1 GGUF: {error}")));
+            let mut wire = ds4_core::V41Wire::load(&gguf, &id.shape)
+                .unwrap_or_else(|error| cli_error(&format!("V4.1 metadata: {error}")));
+            let draft_block = wire
+                .mtp_armed()
+                .then_some(wire.mtp_block)
+                .flatten()
+                .filter(|block| *block > 0);
+            let native_default = if std::env::var_os("DS41_NO_DSPARK").is_some() {
+                MtpMode::Off
+            } else {
+                MtpMode::Auto
+            };
+            v41_request(&v41_flags, &mut serve_req, draft_block, native_default)
+                .unwrap_or_else(|error| cli_error(&format!("ds4-server-rs: {error}")));
+            if let Some(dir) = v41_flags.engram_dir.as_deref() {
+                wire.apply_engram_dir(dir);
+            }
+            cfg.ctx = wire.ctx as i32;
+            serve_req.ctx = cfg.ctx;
+            wire
+        });
     // Auto admission needs the requested workload before any cache is sized.
     let mut preflight_options = model_options.clone();
     preflight_options.push(ModelOpenOption::ServingBudget(serve_req.clone()));
@@ -435,10 +516,20 @@ fn main() {
     let cache_identity = model_path.as_deref().filter(|_| kv_store.is_some()).map(|path| {
         let sidecars: Vec<_> = [mtp_path.as_deref(), vision_path.as_deref(), dspark_path.as_deref()]
             .into_iter().flatten().map(Path::new).collect();
-        let settings = format!("backend={backend:?};threads={n_threads};options={model_options:?};dist={native_dist:?}");
-        CacheIdentity::capture(Path::new(path), &sidecars, &settings)
+        let sources = engram_sources(
+            v41_wire.as_ref().map_or(&[], |wire| wire.engram_table_path.as_slice()),
+            &v41_flags,
+        );
+        let settings = format!("backend={backend:?};threads={n_threads};options={model_options:?};dist={native_dist:?};v41={v41_flags:?}");
+        CacheIdentity::capture_with_sources(Path::new(path), &sidecars, &sources, &settings)
             .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")))
     });
+    // --mem-budget-mb (unit Z) arms the engine's L1 load gate; it must be
+    // set before the model open reads it (core_util.c:238-256).
+    if let Some(mb) = mem_budget_mb {
+        ds4_core::set_mem_budget_mb(mb);
+    }
+    let mut v41_route: Option<ds4_server::V41ServeRoute> = None;
     let model = match model_path.as_deref() {
         Some(path) => {
             let opened = match native_dist.as_ref() {
@@ -466,6 +557,35 @@ fn main() {
                 Ok(m) => {
                     if cfg.eos_policy != EosPolicy::Default && m.vocab().eos_id < 0 {
                         cli_error("EOS policy requires a model EOS token");
+                    }
+                    // V4.1 (ds41): no ds4_session exists for the family, so
+                    // the serving path is the engine's push route
+                    // (server_generate_v41.c) and the context comes only
+                    // from the metadata (core_validate_v41.c:51-53) —
+                    // --ctx is refused, never silently ignored.
+                    if let Some(ctx) = m.v41_ctx() {
+                        if ctx_set {
+                            cli_error("ds4-server-rs: V4.1 context comes from the model metadata (deepseek4.context_length); --ctx is refused");
+                        }
+                        cfg.ctx = ctx as i32;
+                        serve_req.ctx = cfg.ctx;
+                        // Unit H: the engine's request-omitted parse defaults
+                        // (thinking off unless asked, effort HIGH, min_p 0.0)
+                        // apply to the engine's own model set -- exactly this
+                        // branch's model.
+                        cfg.engine_defaults = true;
+                        v41_route = Some(resolve_v41_route(path, &v41_flags, &plan));
+                        eprintln!(
+                            "ds4-server-rs: V4.1 route: ctx={} MTP={} verify={} prefix_reuse={}",
+                            cfg.ctx,
+                            plan.effective.mtp_mode.as_str(),
+                            v41_flags.verify_k,
+                            plan.effective.prefix_reuse.as_str(),
+                        );
+                    } else if v41_flags.given() {
+                        eprintln!(
+                            "ds4-server-rs: warning: V4.1 flags given but the model is not V4.1; they are ignored"
+                        );
                     }
                     cfg.have_engine = true;
                     Some(m)
@@ -705,6 +825,9 @@ fn main() {
         let mut engine = NativeDecode::new(model, cfg.ctx)
             .with_vocab(model.vocab())
             .with_prefix_reuse(reuse);
+        if let Some(route) = v41_route.take() {
+            engine = engine.with_v41_route(route);
+        }
         if let Some(store) = kv_store {
             engine = engine.with_store(store);
         }
@@ -788,6 +911,344 @@ fn apply_host_quote(
 fn cli_error(message: &str) -> ! {
     eprintln!("{message}");
     std::process::exit(2);
+}
+
+/// The DeepSeek V4.1 run switches the server accepts (the engine's
+/// cli_opts.c:258-395 spellings).  They bind only when the opened model is
+/// V4.1; otherwise the boot warns and ignores them.
+#[derive(Default, Debug)]
+struct V41Flags {
+    engram_dir: Option<String>,
+    no_engram: bool,
+    no_dspark: bool,
+    dspark: bool,
+    verify_k: i32,
+    no_graph: bool,
+    emit_trace: bool,
+    prof: bool,
+    no_kv_reuse: bool,
+    zchain: Option<String>,
+    posttrain: Option<String>,
+}
+
+impl V41Flags {
+    fn given(&self) -> bool {
+        self.engram_dir.is_some()
+            || self.no_engram
+            || self.no_dspark
+            || self.dspark
+            || self.verify_k != 0
+            || self.no_graph
+            || self.emit_trace
+            || self.prof
+            || self.no_kv_reuse
+            || self.zchain.is_some()
+            || self.posttrain.is_some()
+    }
+}
+
+fn resolve_v41_route(
+    path: &str,
+    flags: &V41Flags,
+    plan: &ds4_core::ResolvedPlan,
+) -> ds4_server::V41ServeRoute {
+    ds4_server::V41ServeRoute {
+        model_path: std::path::PathBuf::from(path),
+        engram_dir: flags.engram_dir.clone(),
+        no_engram: flags.no_engram,
+        dspark: Some(match plan.effective.mtp_mode {
+            MtpMode::Off => 0,
+            MtpMode::Auto => 1,
+            MtpMode::On => 2,
+        }),
+        graph: flags.no_graph.then_some(false),
+        verify_k: flags.verify_k,
+        emit_trace: flags.emit_trace,
+        prof: flags.prof,
+        no_kv_reuse: plan.effective.prefix_reuse == ds4_core::ReuseKind::None,
+        zchain: flags.zchain.clone(),
+        posttrain: flags.posttrain.clone(),
+    }
+}
+
+fn v41_request(
+    flags: &V41Flags,
+    req: &mut ServingRequest,
+    draft_block: Option<u32>,
+    native_default: MtpMode,
+) -> Result<(), String> {
+    if flags.no_dspark && flags.dspark {
+        return Err("--no-dspark and --dspark are mutually exclusive".into());
+    }
+    if req.mtp_draft.is_some() {
+        // The artifact fixes the draft block; verify_k controls verification,
+        // not allocation or the number of tokens the towers draft.
+        return Err("V4.1 --mtp-draft cannot change the artifact's draft block; use --dspark-verify to pin verification".into());
+    }
+    if req.mtp_path.is_some() {
+        return Err("V4.1 uses embedded MTP towers; --mtp sidecars are unsupported".into());
+    }
+    if (flags.no_dspark && req.mtp_mode == MtpMode::On)
+        || (flags.dspark && req.mtp_mode == MtpMode::Off)
+    {
+        return Err("V4.1 DSpark alias conflicts with --mtp-mode".into());
+    }
+    if flags.no_kv_reuse && !matches!(req.prefix_reuse, PrefixReuse::Auto | PrefixReuse::Off) {
+        return Err("--no-kv-reuse conflicts with --prefix-reuse".into());
+    }
+    if flags.verify_k < 0 {
+        return Err("--dspark-verify wants zero (automatic) or a positive count".into());
+    }
+    if flags.no_dspark {
+        req.mtp_mode = MtpMode::Off;
+    } else if flags.dspark {
+        req.mtp_mode = MtpMode::On;
+    }
+    if req.mtp_mode == MtpMode::Auto && native_default == MtpMode::Off {
+        req.mtp_mode = MtpMode::Off;
+    }
+    if flags.no_kv_reuse {
+        req.prefix_reuse = PrefixReuse::Off;
+    }
+    if draft_block.is_none() {
+        if req.mtp_mode == MtpMode::On {
+            return Err("V4.1 artifact has no armed embedded MTP towers".into());
+        }
+        req.mtp_mode = MtpMode::Off;
+    }
+    if flags.verify_k == 0 {
+        return Ok(());
+    }
+    if req.mtp_mode == MtpMode::Off {
+        return Err("--dspark-verify requires enabled MTP".into());
+    }
+    if flags.verify_k as u32 > draft_block.unwrap_or(0) {
+        return Err("--dspark-verify exceeds the artifact's draft block".into());
+    }
+    Ok(())
+}
+
+fn engram_sources<'a>(paths: &'a [String], flags: &V41Flags) -> Vec<&'a Path> {
+    if flags.no_engram {
+        return Vec::new();
+    }
+    paths.iter().map(Path::new).collect()
+}
+
+#[cfg(test)]
+mod v41_controls {
+    use super::*;
+    use ds4_core::{ModelFamily, ReuseKind, Variant};
+
+    fn plan(req: &ServingRequest) -> ds4_core::ResolvedPlan {
+        let caps = ds4_core::serving_caps(ModelFamily::DeepSeek4, Variant::DeepSeek41Flash);
+        resolve_plan(req, Some(caps), &EngineFacts::default())
+    }
+
+    #[test]
+    fn engram_selection_identity() {
+        let paths = vec![
+            "/metadata/shard-a.safetensors".into(),
+            "/override/shard-b.safetensors".into(),
+        ];
+        assert_eq!(
+            engram_sources(&paths, &V41Flags::default()),
+            vec![Path::new(&paths[0]), Path::new(&paths[1])]
+        );
+        let flags = V41Flags {
+            no_engram: true,
+            ..V41Flags::default()
+        };
+        assert!(engram_sources(&paths, &flags).is_empty());
+        assert!(format!("{flags:?}").contains("no_engram: true"));
+    }
+
+    #[test]
+    fn common_modes_reach_route() {
+        for (mode, native) in [(MtpMode::Off, 0), (MtpMode::On, 2)] {
+            let req = ServingRequest {
+                mtp_mode: mode,
+                ..ServingRequest::default()
+            };
+            let plan = plan(&req);
+            assert!(!plan.has_errors());
+            assert_eq!(
+                resolve_v41_route("model.gguf", &V41Flags::default(), &plan).dspark,
+                Some(native)
+            );
+        }
+    }
+
+    #[test]
+    fn reuse_off_reaches_route() {
+        let req = ServingRequest {
+            prefix_reuse: PrefixReuse::Off,
+            ..ServingRequest::default()
+        };
+        let plan = plan(&req);
+        assert_eq!(plan.effective.prefix_reuse, ReuseKind::None);
+        assert!(resolve_v41_route("model.gguf", &V41Flags::default(), &plan).no_kv_reuse);
+    }
+
+    #[test]
+    fn aliases_match_report() {
+        let mut req = ServingRequest::default();
+        let flags = V41Flags {
+            no_dspark: true,
+            no_kv_reuse: true,
+            ..V41Flags::default()
+        };
+        v41_request(&flags, &mut req, Some(3), MtpMode::Auto).unwrap();
+        assert_eq!(req.mtp_mode, MtpMode::Off);
+        assert_eq!(req.prefix_reuse, PrefixReuse::Off);
+        let resolved = plan(&req);
+        let route = resolve_v41_route("model.gguf", &flags, &resolved);
+        assert_eq!(route.dspark, Some(0));
+        assert!(route.no_kv_reuse);
+        assert_eq!(resolved.effective.mtp_mode, MtpMode::Off);
+    }
+
+    #[test]
+    fn defaults_keep_native_reuse() {
+        let req = ServingRequest::default();
+        let plan = plan(&req);
+        assert_eq!(plan.effective.prefix_reuse, ReuseKind::Exact);
+        assert_eq!(plan.effective.mtp_mode, MtpMode::Auto);
+        assert_eq!(plan.effective.mtp_draft, None);
+        assert_eq!(
+            resolve_v41_route("model.gguf", &V41Flags::default(), &plan).dspark,
+            Some(1)
+        );
+        assert!(!resolve_v41_route("model.gguf", &V41Flags::default(), &plan).no_kv_reuse);
+    }
+
+    #[test]
+    fn reject_discarded_draft() {
+        let mut req = ServingRequest {
+            mtp_draft: Some(2),
+            ..ServingRequest::default()
+        };
+        assert!(v41_request(&V41Flags::default(), &mut req, Some(3), MtpMode::Auto).is_err());
+    }
+
+    #[test]
+    fn reject_conflicting_controls() {
+        let flags = V41Flags {
+            dspark: true,
+            ..V41Flags::default()
+        };
+        let mut req = ServingRequest {
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        assert!(v41_request(&flags, &mut req, Some(3), MtpMode::Auto).is_err());
+        let flags = V41Flags {
+            no_dspark: true,
+            ..V41Flags::default()
+        };
+        req.mtp_mode = MtpMode::On;
+        assert!(v41_request(&flags, &mut req, Some(3), MtpMode::Auto).is_err());
+        let flags = V41Flags {
+            no_kv_reuse: true,
+            ..V41Flags::default()
+        };
+        req = ServingRequest {
+            prefix_reuse: PrefixReuse::Exact,
+            ..ServingRequest::default()
+        };
+        assert!(v41_request(&flags, &mut req, Some(3), MtpMode::Auto).is_err());
+    }
+
+    #[test]
+    fn verify_is_bounded_and_active() {
+        for verify_k in [-1, 4] {
+            let flags = V41Flags {
+                verify_k,
+                ..V41Flags::default()
+            };
+            assert!(v41_request(
+                &flags,
+                &mut ServingRequest::default(),
+                Some(3),
+                MtpMode::Auto
+            )
+            .is_err());
+        }
+        let flags = V41Flags {
+            no_dspark: true,
+            verify_k: 1,
+            ..V41Flags::default()
+        };
+        assert!(v41_request(
+            &flags,
+            &mut ServingRequest::default(),
+            Some(3),
+            MtpMode::Auto
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn exact_reuse_only() {
+        let mut req = ServingRequest {
+            prefix_reuse: PrefixReuse::Exact,
+            ..ServingRequest::default()
+        };
+        assert!(!plan(&req).has_errors());
+        req.prefix_reuse = PrefixReuse::Partial;
+        assert!(plan(&req)
+            .issues
+            .iter()
+            .any(|issue| issue.code == "partial_unsupported"));
+    }
+
+    #[test]
+    fn verify_alias_preserves_pin() {
+        let flags = V41Flags {
+            dspark: true,
+            verify_k: 3,
+            ..V41Flags::default()
+        };
+        let mut req = ServingRequest::default();
+        v41_request(&flags, &mut req, Some(3), MtpMode::Off).unwrap();
+        let resolved = plan(&req);
+        let route = resolve_v41_route("model.gguf", &flags, &resolved);
+        assert_eq!(resolved.effective.mtp_mode, MtpMode::On);
+        assert_eq!(route.dspark, Some(2));
+        assert_eq!(route.verify_k, 3);
+    }
+
+    #[test]
+    fn reuse_off_disables_disk() {
+        let req = ServingRequest {
+            prefix_reuse: PrefixReuse::Off,
+            kv_disk_dir: Some("/tmp/v41-kv".into()),
+            ..ServingRequest::default()
+        };
+        assert!(!plan(&req).effective.disk);
+    }
+
+    #[test]
+    fn auto_honors_native_disable() {
+        let mut req = ServingRequest::default();
+        v41_request(&V41Flags::default(), &mut req, Some(3), MtpMode::Off).unwrap();
+        assert_eq!(req.mtp_mode, MtpMode::Off);
+        req.mtp_mode = MtpMode::On;
+        v41_request(&V41Flags::default(), &mut req, Some(3), MtpMode::Off).unwrap();
+        assert_eq!(req.mtp_mode, MtpMode::On);
+    }
+
+    #[test]
+    fn force_needs_towers() {
+        let mut req = ServingRequest {
+            mtp_mode: MtpMode::On,
+            ..ServingRequest::default()
+        };
+        assert!(v41_request(&V41Flags::default(), &mut req, None, MtpMode::Auto).is_err());
+        req.mtp_mode = MtpMode::Auto;
+        v41_request(&V41Flags::default(), &mut req, None, MtpMode::Auto).unwrap();
+        assert_eq!(req.mtp_mode, MtpMode::Off);
+    }
 }
 
 fn usage() -> ! {

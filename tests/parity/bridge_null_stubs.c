@@ -4,6 +4,7 @@
 #include "ds4.h"
 #include "ds4_distributed.h"
 #include "native/bridge/ds4_host_load.h"
+#include "ds41_forward.h"   /* the V4.1 run surface (P5): the bridge references it */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -628,3 +629,69 @@ int ds4_dist_run(ds4_engine *engine, const ds4_dist_options *opt,
     bridge_dist_run_ctx = gen->ctx_size;
     return bridge_dist_run_result;
 }
+
+/* ---- V4.1 (ds41) run surface (ds41_forward.h) -----------------------------
+ * The bridge's ds4_bridge_v41_* entries reference these (unit F onward:
+ * the switches, the sampling face, the feed, the zchain mount).  The null
+ * oracle never calls a ds4_bridge_v41_* entry, so the stubs only need to
+ * link; they stay inert if a future oracle does call one (the generate
+ * entry returns its failure code, the feed opens to NULL). */
+
+void ds4_engine_v41_set_dspark(int mode) { (void)mode; }
+void ds4_engine_v41_set_graph(int on) { (void)on; }
+void ds4_engine_v41_set_emit_trace(int on) { (void)on; }
+void ds4_engine_v41_set_prof(int on) { (void)on; }
+void ds4_engine_v41_last_spec_stats(int *rounds, int *offered, int *accepted) {
+    if (rounds) *rounds = 0;
+    if (offered) *offered = 0;
+    if (accepted) *accepted = 0;
+}
+void ds4_engine_set_decode_sampling(const ds4_decode_sampling *sp) { (void)sp; }
+void ds4_engine_v41_set_progress(int (*cb)(void *ud, const char *event, int current, int total),
+                                 void *ud) {
+    (void)cb; (void)ud;
+}
+void ds4_set_mem_budget_mb(int mb) { (void)mb; }
+int ds4_v41_engram_count(void *engine) { (void)engine; return 0; }
+ds4_v41_feed *ds4_v41_feed_open(void *engine, int n_prompt, ds4_v41_rows_fn fn, void *ud,
+                                ds4_v41_wait_fn wait, void *wait_ud,
+                                ds4_v41_next_fn next, void *next_ud) {
+    (void)engine; (void)n_prompt; (void)fn; (void)ud; (void)wait; (void)wait_ud;
+    (void)next; (void)next_ud;
+    return NULL;
+}
+void ds4_v41_feed_close(ds4_v41_feed *f) { (void)f; }
+const ds41_engram_feed *ds4_v41_feed_handle(const ds4_v41_feed *f) {
+    (void)f;
+    return NULL;
+}
+int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n_predict,
+                            int no_engram, int verify_k, const ds41_engram_feed *feed,
+                            int (*emit)(int token, void *ud), void *ud) {
+    (void)engine; (void)prompt; (void)n_prompt; (void)n_predict; (void)no_engram;
+    (void)verify_k; (void)feed; (void)emit; (void)ud;
+    return 1;
+}
+void ds4_engine_v41_set_kv_reuse(int on) { (void)on; }
+int ds4_engine_v41_last_reused(void) { return 0; }
+uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np) { (void)prompt; (void)np; return 0; }
+void v41_kvreuse_note_mount(int has_mount, uint64_t hash) { (void)has_mount; (void)hash; }
+/* The disk half (item 4): the null engine owns no checkpoint, so export has
+ * nothing to write and import is a miss -- the real early returns at
+ * ds4_ds41_kvreuse.inc:301 and :340. */
+int v41_kvreuse_export(const char *path) { (void)path; return 0; }
+int v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
+                       const int32_t *tokens, uint32_t n) {
+    (void)path; (void)offset; (void)bytes; (void)tokens; (void)n;
+    return 0;
+}
+int ds4_v41_zchain_gr_set(void *engine, uint32_t il, const float *data, uint32_t n_expert,
+                          uint32_t n_embd) {
+    (void)engine; (void)il; (void)data; (void)n_expert; (void)n_embd;
+    return 0;
+}
+int ds4_v41_zchain_rb_set(void *engine, uint32_t il, const float *delta, uint32_t n_expert) {
+    (void)engine; (void)il; (void)delta; (void)n_expert;
+    return 0;
+}
+void ds4_v41_zchain_rb_clear(void) {}

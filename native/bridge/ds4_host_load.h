@@ -26,11 +26,67 @@ static inline void ds4_host_set_err(char *err, size_t errlen, const char *msg)
 
 /* Host-selected shape.  When installed, ds4_engine_open applies the pinned
  * C literal + compress table and skips config_validate_model.  The C
- * CLI/server leave this NULL.  variant matches ds4_variant / Rust Variant. */
+ * CLI/server leave this NULL.  variant matches ds4_variant / Rust Variant.
+ * The v41_* block is the DeepSeek V4.1 wiring (variant 16): borrowed arrays,
+ * n_layer long except v41_engram_layers (v41_n_engram entries), valid for
+ * the open call.  The Rust host fills them from V41Wire::load, which mirrors
+ * the engine's v41_load_metadata (core_validate_v41.c:46-154); the native
+ * stores them in g_ds4_v41 and never re-reads the metadata on this path.
+ * Other variants leave every v41_* field NULL/0. */
 typedef struct {
     uint32_t variant;
     uint32_t n_compress;
     const uint32_t *compress; /* borrowed; DeepSeek only */
+    /* V4.1 wiring */
+    const uint8_t *v41_kv_source;            /* per layer: compresses, holds compressed KV */
+    const uint8_t *v41_index_source;         /* per layer: runs the indexer */
+    const int16_t *v41_kv_source_of;         /* per layer: nearest source, -1 = none */
+    const int16_t *v41_index_source_of;
+    const int16_t *v41_engram_index_of;      /* per layer: engram index, -1 = none */
+    uint32_t v41_n_engram;
+    const int32_t *v41_engram_layers;        /* metadata order */
+    uint32_t v41_engram_max_ngram;
+    uint32_t v41_engram_heads;
+    uint32_t v41_engram_head_dim;
+    uint32_t v41_engram_pad;
+    int32_t v41_candidate_source_layer;
+    int32_t v41_candidate_topk_blocks;
+    int32_t v41_candidate_block_size;
+    uint32_t v41_mtp_towers;
+    uint32_t v41_mtp_experts;
+    /* P4-3: the engram table on disk.  Per engram layer (v41_n_engram
+     * entries): the row count, the two plane offsets inside that layer's
+     * shard, and the shard path (NUL-terminated, shorter than the native
+     * 1024-byte buffer).  Borrowed for the open call; all four NULL when
+     * n_engram is 0, and the native then leaves its engram arrays zeroed.
+     * The Rust host fills these from V41Wire; the native copies without
+     * re-checking readability (the host owns the --engram-dir rewrite). */
+    const uint64_t *v41_engram_rows;
+    const uint64_t *v41_engram_weight_off;
+    const uint64_t *v41_engram_scale_off;
+    const char *const *v41_engram_table_path;
+    /* P5: the draft parameters (core_validate_v41.c:91-110; the C GGUF path
+     * parses the same five keys in v41_load_wiring).  They arm the drafter:
+     * without them the towers bind but speculation stays off.  block == 0
+     * means "not armed" (no towers, or the GGUF predates the parameters) and
+     * every other draft field is then ignored; the native prints the engine's
+     * warning when towers > 0.  When block != 0, n_mtp_target >= 1 and
+     * mtp_target (borrowed, DS4_MTP_MAX_TOWERS*2 entries max) is required. */
+    uint32_t v41_mtp_block;
+    uint32_t v41_mtp_used;
+    uint32_t v41_mtp_noise_id;
+    uint32_t v41_mtp_markov_rank;
+    uint32_t v41_n_mtp_target;
+    const int16_t *v41_mtp_target;
+    /* P5.4: the context length and the engram vocab pair.  The C GGUF path
+     * reads all three as required keys (v41_load_wiring; core_validate_v41.c
+     * :51-53, :152-153); without ctx the native generate entry and the state
+     * alloc refuse ("no deepseek4.context_length"), so the Rust host must
+     * carry it.  The vocab pair has no native reader yet but the C path
+     * fills it; the host shape must not leave it zero. */
+    uint32_t v41_ctx;
+    uint32_t v41_engram_vocab;
+    uint32_t v41_engram_cvocab;
 } ds4_host_shape;
 
 void ds4_host_shape_install(const ds4_host_shape *s);

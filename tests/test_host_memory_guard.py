@@ -74,6 +74,52 @@ class HostMemoryGuardTest(unittest.TestCase):
             stat = pathlib.Path(f"/proc/{marker.read_text()}/stat")
             self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
 
+    def test_pressure_limit_validation(self):
+        command = ["--log", "/unused", "--", "true"]
+        self.assertEqual(guard.parse_args(command).psi_full_limit, 20)
+        for limit in ("0", "90", "100"):
+            args = guard.parse_args(["--psi-full-limit", limit, *command])
+            self.assertEqual(args.psi_full_limit, float(limit))
+        for limit in ("-1", "100.1", "nan", "inf"):
+            with self.subTest(limit=limit), self.assertRaises(SystemExit):
+                guard.parse_args(["--psi-full-limit", limit, *command])
+
+    def test_pressure_policy_and_floor(self):
+        # Inject pressure readings, but launch and clean up real cgroup payloads.
+        cases = ((0, 2, 7), (90, 2, guard.GUARD_EXIT),
+                 (0, 1.99, guard.GUARD_EXIT))
+        for limit, available, expected in cases:
+            with self.subTest(limit=limit, available=available), \
+                 tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                marker = root / "pid"
+                log = root / "guard.jsonl"
+                payload = (
+                    "import os,pathlib,time,sys; "
+                    f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
+                    "time.sleep(1.2); sys.exit(7)"
+                )
+                args = guard.parse_args(["--max-gib", "0.25", "--high-gib", "0.2",
+                    "--reserve-gib", "2", "--trip-gib", "2",
+                    "--psi-full-limit", str(limit), "--poll-seconds", "0.02",
+                    "--grace-seconds", "0.1", "--timeout", "5",
+                    "--log", str(log), "--", sys.executable, "-c", payload])
+                sample = lambda: {"available_gib": available if marker.exists() else 3,
+                                  "psi_full_avg10": 95 if marker.exists() else 85}
+                self.assertEqual(guard.run_guard(args, sample), expected)
+                events = [json.loads(line) for line in log.read_text().splitlines()]
+                self.assertEqual(events[0]["psi_full_limit"], limit)
+                if expected == 7:
+                    self.assertFalse(any(row["event"] == "terminate" for row in events))
+                    self.assertTrue(any(row["event"] == "sample" and
+                                        row["psi_full_avg10"] == 95 for row in events))
+                else:
+                    reason = "floor crossed" if available < 2 else "memory stalls"
+                    self.assertTrue(any(row["event"] == "terminate" and
+                                        reason in row["reason"] for row in events))
+                stat = pathlib.Path(f"/proc/{marker.read_text()}/stat")
+                self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+
     def test_missing_cgroup_kill_uses_pidfds(self):
         scopes = set()
         write_text = pathlib.Path.write_text

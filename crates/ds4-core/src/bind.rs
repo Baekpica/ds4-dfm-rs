@@ -7,6 +7,7 @@
 
 use crate::shape::{shape_for_variant, ModelFamily, Shape, Variant};
 use crate::tensors::{tensor_type_name, TensorInfo, TensorInventory, MAX_DIMS};
+use crate::v41::V41Wire;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindNeed {
@@ -699,6 +700,147 @@ fn bind_deepseek_layer(out: &mut Vec<BindName>, shape: &Shape, il: u32) {
     }
 }
 
+/// V4.1 layer names (`weights_bind_v41`, core_bind_v41.c:53-97). Three
+/// differences from V4: the skeleton may be fp4x32 or q4_K, routed experts
+/// are one `ffn_exps_vq.blob` per layer (the gate/up/down tensors do not
+/// exist), and the compressor/indexer names sit on the metadata's source
+/// layers with no `attn_compressor_ape` at all (ratio 1 has no gate).
+fn bind_v41_layer(out: &mut Vec<BindName>, wire: &V41Wire, il: u32) {
+    for suffix in [
+        "hc_attn_fn.weight",
+        "hc_attn_scale.weight",
+        "hc_attn_base.weight",
+        "attn_norm.weight",
+        "attn_q_a.weight",
+        "attn_q_a_norm.weight",
+        "attn_q_b.weight",
+        "attn_kv.weight",
+        "attn_kv_a_norm.weight",
+        "attn_sinks.weight",
+        "attn_output_a.weight",
+        "attn_output_b.weight",
+    ] {
+        reqf(out, &format!("blk.%u.{suffix}"), il);
+    }
+    if wire.is_kv_source[il as usize] {
+        reqf(out, "blk.%u.attn_compressor_kv.weight", il);
+        reqf(out, "blk.%u.attn_compressor_norm.weight", il);
+        if wire.compress_ratios[il as usize] > 1 {
+            reqf(out, "blk.%u.attn_compressor_gate.weight", il);
+        }
+        reqf(out, "blk.%u.indexer.wk.weight", il);
+        reqf(out, "blk.%u.indexer.k_norm.weight", il);
+    }
+    if wire.is_index_source[il as usize] {
+        reqf(out, "blk.%u.indexer.attn_q_b.weight", il);
+        reqf(out, "blk.%u.indexer.proj.weight", il);
+    }
+    for suffix in [
+        "hc_ffn_fn.weight",
+        "hc_ffn_scale.weight",
+        "hc_ffn_base.weight",
+        "ffn_norm.weight",
+        "ffn_gate_inp.weight",
+        "exp_probs_b.bias",
+        "ffn_exps_vq.blob",
+        "ffn_gate_shexp.weight",
+        "ffn_up_shexp.weight",
+        "ffn_down_shexp.weight",
+    ] {
+        reqf(out, &format!("blk.%u.{suffix}"), il);
+    }
+    if wire.engram_index_of[il as usize] >= 0 {
+        reqf(out, "blk.%u.engram_wkv.weight", il);
+        reqf(out, "blk.%u.engram_q.weight", il);
+        reqf(out, "blk.%u.engram_k.weight", il);
+    }
+}
+
+/// V4.1 draft towers and the shared heads (core_bind_v41.c:101-145). A tower
+/// mirrors a layer without engram or compressed KV; its experts are either
+/// one VQ blob or per-expert FP4 tensors, and the engine probes the blob
+/// first, requiring the per-expert set only when it is absent
+/// (core_bind_v41.c:126-134). The form is an inventory fact, so the catalog
+/// resolves it here rather than declaring both.
+fn bind_v41_mtp(out: &mut Vec<BindName>, wire: &V41Wire, inventory: &TensorInventory) {
+    for t in 0..wire.mtp_towers {
+        for suffix in [
+            "hc_attn_fn.weight",
+            "hc_attn_scale.weight",
+            "hc_attn_base.weight",
+            "attn_norm.weight",
+            "attn_q_a.weight",
+            "attn_q_a_norm.weight",
+            "attn_q_b.weight",
+            "attn_kv.weight",
+            "attn_kv_a_norm.weight",
+            "attn_sinks.weight",
+            "attn_output_a.weight",
+            "attn_output_b.weight",
+            "hc_ffn_fn.weight",
+            "hc_ffn_scale.weight",
+            "hc_ffn_base.weight",
+            "ffn_norm.weight",
+            "ffn_gate_inp.weight",
+            "exp_probs_b.bias",
+            "ffn_gate_shexp.weight",
+            "ffn_up_shexp.weight",
+            "ffn_down_shexp.weight",
+        ] {
+            reqf(out, &format!("mtp.%u.{suffix}"), t);
+        }
+        if wire.tower_uses_blob(inventory, t) {
+            reqf(out, "mtp.%u.ffn_exps_vq.blob", t);
+            continue;
+        }
+        for e in 0..wire.mtp_experts {
+            for suffix in ["gate.weight", "up.weight", "down.weight"] {
+                reqf(out, &format!("mtp.%u.ffn_exp.{e}.{suffix}"), t);
+            }
+        }
+    }
+    if wire.mtp_towers != 0 {
+        for name in [
+            "mtp.main_proj.weight",
+            "mtp.main_norm.weight",
+            "mtp.markov_embd.weight",
+            "mtp.markov_head.weight",
+            "mtp.confidence.weight",
+            "mtp.out_norm.weight",
+        ] {
+            req(out, name);
+        }
+    }
+}
+
+/// The V4.1 main-model catalog. Unlike every other family this cannot be
+/// derived from the shape alone: which layers compress, which run the
+/// indexer, where engram lives and how many towers exist all come from the
+/// metadata wire (`V41Wire::load`). `bind_names` keeps returning the V4
+/// catalog for the shape-only callers, so V4.1 must resolve through
+/// `BindPlan::resolve_v41`.
+pub fn bind_names_v41(shape: &Shape, wire: &V41Wire, inventory: &TensorInventory) -> Vec<BindName> {
+    let mut out = Vec::new();
+    req(&mut out, "token_embd.weight");
+    req(&mut out, "output_norm.weight");
+    req(&mut out, "output.weight");
+    if !wire.engram_layers.is_empty() {
+        for name in [
+            "engram.token_map",
+            "engram.multipliers",
+            "engram.primes",
+            "engram.offsets",
+        ] {
+            req(&mut out, name);
+        }
+    }
+    for il in 0..shape.n_layer {
+        bind_v41_layer(&mut out, wire, il);
+    }
+    bind_v41_mtp(&mut out, wire, inventory);
+    out
+}
+
 pub const DSPARK_N_LAYER: u32 = 3;
 pub const DSPARK_MARKOV_RANK: u32 = 256;
 
@@ -1001,6 +1143,12 @@ impl BindPlan {
 
     pub fn resolve(shape: Shape, inventory: &TensorInventory) -> Self {
         Self::resolve_names(shape, bind_names(&shape), inventory)
+    }
+
+    /// V4.1 resolves through the metadata wire: the source-layer conditionals
+    /// and the tower expert form are not shape facts (core_bind_v41.c:41).
+    pub fn resolve_v41(shape: Shape, wire: &V41Wire, inventory: &TensorInventory) -> Self {
+        Self::resolve_names(shape, bind_names_v41(&shape, wire, inventory), inventory)
     }
 
     pub fn resolve_mtp(shape: Shape, inventory: &TensorInventory) -> Self {

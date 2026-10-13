@@ -8,6 +8,16 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## DeepSeek V4.1 rollback diagnostic
+
+`DS41_ROLLBACK_CHECK=1` synchronizes after every speculative rollback and
+checks source counts/positions, the shortened main-hidden ring, and restored
+window/pending rows byte-for-byte against that verify's own snapshots.
+Readback errors or mismatches fail generation. Unset or `0` is off.
+This checks eager and captured restore plumbing, not rejected-draft value
+invariance; N>1 MoE FP can affect accepted cache values. Its readbacks alter
+timing, so use it for correctness gates and disable it for speed measurements.
+
 ## Naive sparse attention
 
 `DS4_NAIVE_DECODE_SCORES=0` restores the one-row two-pass QK walk.
@@ -655,7 +665,16 @@ The bandwidth figure is informational; we don't tier on it.
   ms/tok with the walk vs 73-74 without. The whole-system re-measurement
   under serving load is the D3-1 rent gate (speed-bench/rent_gate.sh),
   which selects the release default. Promotion budget cap stays
-  `DS4_CUDA_WEIGHT_CACHE_LIMIT_GB` (default 24).
+  `DS4_CUDA_WEIGHT_CACHE_LIMIT_GB`: default 24 GiB on discrete hosts,
+  physical RAM minus 8 GiB on unified hosts. With that unified default,
+  a coherent integrated GPU skips whole-mmap registration when an eager
+  source fits entirely in the remaining cache budget. The existing unit
+  copies discard source pages as they land; this avoids HMM registration
+  and reclaim pressure while retaining the budget. Explicit caps, partial
+  fits, lazy and mapped policies retain their registration paths.
+  Aligned VQ copies also discard the copied source file cache after dropping
+  the mmap pages; otherwise both copies count against the UMA cgroup during
+  loading. `DS4_CUDA_KEEP_MODEL_PAGES` retains both for diagnosis.
 
 - Range-lookup fix note (no env var; 2026-07-02): `cuda_model_range_ptr` now
   resolves device-resident HBM cache copies in a first pass before the

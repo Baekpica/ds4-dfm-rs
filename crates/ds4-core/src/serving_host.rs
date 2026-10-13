@@ -417,6 +417,13 @@ pub fn fill_quote_facts(
             let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
             (cache, scratch + deepseek_cpu_prefill(s, ctx, scratch), 0, 0)
         }
+        // V4.1 allocates generation state and its prefix checkpoint on actual
+        // requests, not V4 session banks at the metadata context. This boot
+        // quote covers mapped weights and headroom; request-state fit remains
+        // separate. Prefix reuse support must not select a different allocator.
+        (ModelFamily::DeepSeek4, Some(_)) if caps.variant == Variant::DeepSeek41Flash => {
+            (0, 0, 0, 0)
+        }
         (ModelFamily::DeepSeek4, Some(s)) => {
             // The shared graph owns its own caches before bank slabs are fitted.
             let mut scratch = deepseek_graph_bytes(s, ctx, native);
@@ -884,7 +891,14 @@ fn slice_holds(name: &str, slice: WeightSlice) -> bool {
 }
 
 pub fn host_available_bytes(backend: Backend) -> u64 {
-    let avail = meminfo_available();
+    host_available_bytes_with(meminfo_available(), backend)
+}
+
+/// Price a backend from one host availability reading. Split from the public
+/// entry so a caller can price several backends from the SAME reading:
+/// /proc/meminfo MemAvailable drifts between reads, so two independent reads
+/// are not equal even when both quote RAM.
+fn host_available_bytes_with(avail: u64, backend: Backend) -> u64 {
     match backend {
         Backend::Cuda => quote_device(avail, crate::serving_cuda::device()),
         Backend::Metal | Backend::Cpu => avail,
@@ -4396,14 +4410,14 @@ exit 1
             std::env::var("PATH").unwrap_or_default()
         );
         let _path = EnvGuard::set("PATH", &path);
-        let cpu = host_available_bytes(Backend::Cpu);
-        let metal = host_available_bytes(Backend::Metal);
+        // One MemAvailable reading feeds both backends. Two independent reads
+        // drift apart mid-test (CI runners especially), which is what made
+        // this test flaky; the quote itself is deterministic.
         let avail = meminfo_available();
+        let cpu = host_available_bytes_with(avail, Backend::Cpu);
+        let metal = host_available_bytes_with(avail, Backend::Metal);
         assert_eq!(cpu, metal);
-        assert!(
-            cpu.abs_diff(avail) < MIB,
-            "CPU {cpu} vs MemAvailable {avail}"
-        );
+        assert_eq!(cpu, avail);
         assert!(cpu > 512 * MIB);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4763,6 +4777,43 @@ exit 1
                     bank
                 );
             }
+        }
+    }
+
+    #[test]
+    fn v41_boot_quote_has_no_session() {
+        let _env = lock_test_env();
+        let _fit = EnvGuard::set(SESSION_FIT_ENV, "0");
+        let shape = crate::shape_for_variant(Variant::DeepSeek41Flash);
+        let caps = serving_caps(shape.family, shape.variant);
+        let host = QuoteHost {
+            available_bytes: 14 * GIB,
+            ..qwen_host(None)
+        };
+        for prefix_reuse in [PrefixReuse::Auto, PrefixReuse::Exact, PrefixReuse::Off] {
+            let req = ServingRequest {
+                ctx: 1_048_576,
+                prefix_reuse,
+                mem_floor_gb: 4,
+                ..ServingRequest::default()
+            };
+            let mut facts = fill_family(shape.family, shape.variant, shape, &req, host);
+            assert_eq!(
+                facts.per_bank_bytes,
+                Some(0),
+                "V4.1 has no V4 session banks"
+            );
+            assert_eq!(facts.scratch_bytes, Some(0));
+            assert_eq!(facts.mtp_state_bytes, Some(0));
+            assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert!(plan.may_listen(), "{:?}", plan.issues);
+            assert_eq!(plan.quote.unwrap().total, host.weights_bytes + 4 * GIB);
+            facts.host_available_bytes = Some(host.available_bytes - 1);
+            assert!(resolve_plan(&req, Some(caps), &facts)
+                .issues
+                .iter()
+                .any(|issue| issue.code == "quote_overflow"));
         }
     }
 

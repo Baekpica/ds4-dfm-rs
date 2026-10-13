@@ -12,6 +12,7 @@ mod batch;
 mod bind;
 pub mod chat_template;
 mod dots3_mtp;
+mod engram;
 mod gguf;
 mod glm_mtp;
 mod identify;
@@ -37,6 +38,7 @@ mod serving_host;
 mod session;
 mod shape;
 mod sibling;
+mod sidecar;
 mod spec;
 mod ssd;
 mod ssd_quote;
@@ -44,7 +46,12 @@ mod step37;
 mod step37_mtp;
 mod tensors;
 mod tok;
+mod uring;
+mod v41;
+mod v41_run;
 mod validate;
+mod vq;
+mod zchain;
 
 pub use batch::{
     cont_sample_token, qwen_image_pixel_hash, qwen_image_probe, BankSnapshot, BatchCtx, ContAdmit,
@@ -52,7 +59,7 @@ pub use batch::{
     StaticBatchResult, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
 };
 pub use bind::{
-    bind_dspark_names, bind_mtp_names, bind_names, catalog_from_bind_name,
+    bind_dspark_names, bind_mtp_names, bind_names, bind_names_v41, catalog_from_bind_name,
     dots3_layer_is_full_attention, dump_bind_check_oracle, dump_bind_dspark_shape,
     dump_bind_lookup_tapes, dump_bind_match_oracle, dump_bind_mtp_shape, dump_bind_names,
     dump_bind_names_shape, dump_bind_names_variant, dump_bind_support, expected_compress_ratio,
@@ -60,15 +67,16 @@ pub use bind::{
     BindError, BindName, BindNeed, BindPlan, BindSlot, HostBindLook, SupportCatalog,
     DSPARK_MARKOV_RANK, DSPARK_N_LAYER, HOST_BIND_MISS,
 };
+pub use engram::{EngramError, EngramHash, EngramRow, EngramShard, EDIO_ALIGN};
 pub use gguf::{GgufError, GgufFile};
 pub use identify::{dump_parse, identify_file, identify_gguf, Identified, IdentifyError};
 pub use iquest::{IQuestCache, IQuestPlan};
 pub use layout::{
     dump_expected_dspark_shape, dump_expected_layouts, dump_expected_layouts_shape,
     dump_expected_layouts_variant, dump_expected_mtp_shape, dump_expected_support,
-    dump_layout_check_tapes, expected_dspark_layouts, expected_layouts, expected_mtp_layouts,
-    validate_dspark_layouts, validate_layouts, validate_mtp_layouts, validate_support_layouts,
-    LayoutError, LayoutSpec, TypeClass,
+    dump_layout_check_tapes, expected_dspark_layouts, expected_layouts, expected_layouts_v41,
+    expected_mtp_layouts, validate_dspark_layouts, validate_layouts, validate_layouts_v41,
+    validate_mtp_layouts, validate_support_layouts, LayoutError, LayoutSpec, TypeClass,
 };
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
@@ -119,6 +127,11 @@ pub use shape::{
     SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
 pub use sibling::{probe_dspark_sidecar, probe_mtp_sidecar, probe_vision_sidecar, SiblingAttach};
+pub use sidecar::{
+    check_base_fnv, deq_fp4x32, e8m0_to_f32, fp4_nibble_to_f32, gr_dir_fnv, AmpSidecar,
+    BaseFingerprint, GrSidecar, RbSidecar, SidecarError, AMP_MAX_RANK, FNV_PRIME, FNV_SEED,
+    TYPE_F16, TYPE_F32, TYPE_FP4X32,
+};
 pub use spec::{snapshot_spec, SpecMetrics};
 pub use ssd::check_ssd_options;
 pub use ssd_quote::probe_ssd_quote;
@@ -129,10 +142,21 @@ pub use tensors::{
     TensorInfo, TensorInventory,
 };
 pub use tok::{dump_cmd, dump_vocab_apply_tapes, ChatThinkMode, TokError, Vocab};
+pub use v41::{
+    V41Wire, V41WireError, MTP_MAX_EXPERTS, MTP_MAX_TOWERS, V41_MAX_COMPRESS_RATIO, V41_MAX_ENGRAM,
+};
+pub use v41_run::{
+    set_mem_budget_mb, v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvDisk, V41KvHit,
+    V41RunOptions, V41Sampling,
+};
 pub use validate::{
     dump_validate, host_compress_ratios, validate_file, validate_gguf, validate_qwen_inventory,
     ValidateError,
 };
+pub use vq::{
+    blob_nexp, blob_ok, blob_slot, blob_ver, e4m3fn_to_f32, f16_to_f32, VqError, VqMatrix,
+};
+pub use zchain::{load_dirs, AmpMerge, GrMerge, V41Zchain, ZchainGeom};
 
 use std::ffi::CString;
 use std::marker::PhantomData;
@@ -656,6 +680,10 @@ pub struct Model {
     vision_ready: bool,
     mtp_draft_tokens: i32,
     runtime_budget: Option<ServingRequest>,
+    /// `deepseek4.context_length` for a V4.1 artifact (the engine's only
+    /// context source, `core_validate_v41.c:51-53`); None for every other
+    /// family.  The server boots its ctx from here.
+    v41_ctx: Option<u32>,
     _distributed: Option<FfiDistributed>,
     _not_send: PhantomData<*const ()>,
 }
@@ -1139,6 +1167,47 @@ fn pack_sibling_ffi(attach: &SiblingAttach) -> Result<FfiSupport> {
 //   model_id / routed_quant_bits
 // MOVE later (production already left):
 //   ds4_bridge_model_run_distributed_worker -> assemble_worker (oracle FFI)
+/// The bind plan for an artifact, resolved and validated: every family goes
+/// from the shape alone except V4.1, whose source-layer conditionals, engram
+/// layers and tower expert form come from the `deepseek4.*` metadata wire
+/// (`V41Wire::load`, `bind_names_v41`, `expected_layouts_v41`). The wire is
+/// returned so `Model::open` can fill the native host-shape ABI from the
+/// same load (the compress table is metadata truth for V4.1, not the V4
+/// formula `host_compress_ratios` derives).
+fn open_bind_plan(
+    g: &GgufFile,
+    shape: Shape,
+    inventory: &TensorInventory,
+) -> Result<(BindPlan, Option<V41Wire>)> {
+    let wire = if shape.variant == Variant::DeepSeek41Flash {
+        Some(V41Wire::load(g, &shape).map_err(|e| Error {
+            code: 1,
+            message: format!("v41 wire failed: {}", e.token()),
+        })?)
+    } else {
+        None
+    };
+    let plan = match &wire {
+        Some(w) => BindPlan::resolve_v41(shape, w, inventory),
+        None => BindPlan::resolve(shape, inventory),
+    };
+    if let Some(name) = plan.missing_required().first() {
+        return Err(Error {
+            code: 1,
+            message: format!("required tensor is missing: {name}"),
+        });
+    }
+    let layout = match &wire {
+        Some(w) => validate_layouts_v41(&plan, w, inventory),
+        None => validate_layouts(&plan),
+    };
+    layout.map_err(|e| Error {
+        code: 1,
+        message: format!("layout failed: {}", e.token()),
+    })?;
+    Ok((plan, wire))
+}
+
 /// Everything `Model::open` checks before it touches the device: identify,
 /// family validation, vocab, chat template, tensor inventory, required
 /// tensors and layouts. `--check-config` runs it so an artifact that cannot
@@ -1193,17 +1262,8 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
             message: e.to_string(),
         })?;
     }
-    let bind_plan = BindPlan::resolve(identified.shape, &inventory);
-    if let Some(name) = bind_plan.missing_required().first() {
-        return Err(Error {
-            code: 1,
-            message: format!("required tensor is missing: {name}"),
-        });
-    }
-    validate_layouts(&bind_plan).map_err(|e| Error {
-        code: 1,
-        message: format!("layout failed: {}", e.token()),
-    })
+    open_bind_plan(&g, identified.shape, &inventory).map(|_| ())?;
+    Ok(())
 }
 
 fn glm_runtime_req(req: &ServingRequest, ctx: i32, banks: MaxSeqs) -> ServingRequest {
@@ -1428,16 +1488,6 @@ impl Model {
         })?;
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
         let mut ffi_vocab = pack_host_vocab(&vocab);
-        let compress = host_compress_ratios(&identified.shape);
-        let ffi_shape = ds4_host_shape {
-            variant: identified.shape.variant as u32,
-            n_compress: compress.len() as u32,
-            compress: if compress.is_empty() {
-                ptr::null()
-            } else {
-                compress.as_ptr()
-            },
-        };
         let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
             code: 1,
             message: format!("tensor inventory failed: {}", e.token()),
@@ -1500,17 +1550,152 @@ impl Model {
             req.ssd_streaming_cache_bytes =
                 (tuning.ssd_streaming_cache_bytes != 0).then_some(tuning.ssd_streaming_cache_bytes);
         }
-        let bind_plan = BindPlan::resolve(identified.shape, &inventory);
-        if let Some(name) = bind_plan.missing_required().first() {
-            return Err(Error {
-                code: 1,
-                message: format!("required tensor is missing: {name}"),
-            });
-        }
-        validate_layouts(&bind_plan).map_err(|e| Error {
-            code: 1,
-            message: format!("layout failed: {}", e.token()),
-        })?;
+        let (bind_plan, v41_wire) = open_bind_plan(&g, identified.shape, &inventory)?;
+        // Host-shape ABI.  V4.1 carries its wiring over the ABI (the native
+        // stores it in g_ds4_v41 and never re-reads the metadata); the
+        // compress table is metadata truth for V4.1, the V4 formula
+        // otherwise.  All pointers borrow locals that outlive the open call.
+        let compress: Vec<u32> = match &v41_wire {
+            Some(w) => w.compress_ratios.clone(),
+            None => host_compress_ratios(&identified.shape),
+        };
+        let v41_kv_source: Vec<u8> = v41_wire
+            .as_ref()
+            .map(|w| w.is_kv_source.iter().map(|&b| u8::from(b)).collect())
+            .unwrap_or_default();
+        let v41_index_source: Vec<u8> = v41_wire
+            .as_ref()
+            .map(|w| w.is_index_source.iter().map(|&b| u8::from(b)).collect())
+            .unwrap_or_default();
+        let v41_engram_layers: Vec<i32> = v41_wire
+            .as_ref()
+            .map(|w| w.engram_layers.iter().map(|&v| v as i32).collect())
+            .unwrap_or_default();
+        // P4-3: the engram table wiring the native cannot re-read (the host
+        // ABI path never touches the metadata).  The shard paths are Rust
+        // Strings in the wire; the ABI carries NUL-terminated pointers that
+        // borrow these CStrings through the open call.
+        let v41_engram_rows: Vec<u64> = v41_wire
+            .as_ref()
+            .map(|w| w.engram_rows.clone())
+            .unwrap_or_default();
+        let v41_engram_weight_off: Vec<u64> = v41_wire
+            .as_ref()
+            .map(|w| w.engram_weight_off.clone())
+            .unwrap_or_default();
+        let v41_engram_scale_off: Vec<u64> = v41_wire
+            .as_ref()
+            .map(|w| w.engram_scale_off.clone())
+            .unwrap_or_default();
+        let v41_engram_paths: Vec<CString> = match v41_wire.as_ref() {
+            Some(w) => w
+                .engram_table_path
+                .iter()
+                .map(|p| cstring_path(p))
+                .collect::<Result<Vec<_>>>()?,
+            None => Vec::new(),
+        };
+        let v41_engram_path_ptrs: Vec<*const c_char> =
+            v41_engram_paths.iter().map(|p| p.as_ptr()).collect();
+        // P5: the draft parameters arm the drafter on the native side
+        // (core_validate_v41.c:91-110).  Unarmed (no towers, or an incomplete
+        // parameter set) carries zeros/NULL, and the native then prints the
+        // engine's warning when the towers are there.
+        let v41_mtp = v41_wire.as_ref().filter(|w| w.mtp_armed());
+        let v41_mtp_target: Vec<i16> = v41_mtp
+            .map(|w| w.mtp_targets.iter().map(|&t| t as i16).collect())
+            .unwrap_or_default();
+        let ffi_shape = ds4_host_shape {
+            variant: identified.shape.variant as u32,
+            n_compress: compress.len() as u32,
+            compress: if compress.is_empty() {
+                ptr::null()
+            } else {
+                compress.as_ptr()
+            },
+            v41_kv_source: if v41_kv_source.is_empty() {
+                ptr::null()
+            } else {
+                v41_kv_source.as_ptr()
+            },
+            v41_index_source: if v41_index_source.is_empty() {
+                ptr::null()
+            } else {
+                v41_index_source.as_ptr()
+            },
+            v41_kv_source_of: v41_wire
+                .as_ref()
+                .map(|w| w.kv_source_of.as_ptr())
+                .unwrap_or(ptr::null()),
+            v41_index_source_of: v41_wire
+                .as_ref()
+                .map(|w| w.index_source_of.as_ptr())
+                .unwrap_or(ptr::null()),
+            v41_engram_index_of: v41_wire
+                .as_ref()
+                .map(|w| w.engram_index_of.as_ptr())
+                .unwrap_or(ptr::null()),
+            v41_n_engram: v41_wire
+                .as_ref()
+                .map(|w| w.engram_layers.len() as u32)
+                .unwrap_or(0),
+            v41_engram_layers: if v41_engram_layers.is_empty() {
+                ptr::null()
+            } else {
+                v41_engram_layers.as_ptr()
+            },
+            v41_engram_max_ngram: v41_wire.as_ref().map(|w| w.engram_max_ngram).unwrap_or(0),
+            v41_engram_heads: v41_wire.as_ref().map(|w| w.engram_heads).unwrap_or(0),
+            v41_engram_head_dim: v41_wire.as_ref().map(|w| w.engram_head_dim).unwrap_or(0),
+            v41_engram_pad: v41_wire.as_ref().map(|w| w.engram_pad).unwrap_or(0),
+            v41_candidate_source_layer: v41_wire
+                .as_ref()
+                .map(|w| w.candidate_source_layer)
+                .unwrap_or(0),
+            v41_candidate_topk_blocks: v41_wire
+                .as_ref()
+                .map(|w| w.candidate_topk_blocks)
+                .unwrap_or(0),
+            v41_candidate_block_size: v41_wire
+                .as_ref()
+                .map(|w| w.candidate_block_size)
+                .unwrap_or(0),
+            v41_mtp_towers: v41_wire.as_ref().map(|w| w.mtp_towers).unwrap_or(0),
+            v41_mtp_experts: v41_wire.as_ref().map(|w| w.mtp_experts).unwrap_or(0),
+            v41_engram_rows: if v41_engram_rows.is_empty() {
+                ptr::null()
+            } else {
+                v41_engram_rows.as_ptr()
+            },
+            v41_engram_weight_off: if v41_engram_weight_off.is_empty() {
+                ptr::null()
+            } else {
+                v41_engram_weight_off.as_ptr()
+            },
+            v41_engram_scale_off: if v41_engram_scale_off.is_empty() {
+                ptr::null()
+            } else {
+                v41_engram_scale_off.as_ptr()
+            },
+            v41_engram_table_path: if v41_engram_path_ptrs.is_empty() {
+                ptr::null()
+            } else {
+                v41_engram_path_ptrs.as_ptr()
+            },
+            v41_mtp_block: v41_mtp.and_then(|w| w.mtp_block).unwrap_or(0),
+            v41_mtp_used: v41_mtp.and_then(|w| w.mtp_used).unwrap_or(0),
+            v41_mtp_noise_id: v41_mtp.and_then(|w| w.mtp_noise_id).unwrap_or(0),
+            v41_mtp_markov_rank: v41_mtp.and_then(|w| w.mtp_markov_rank).unwrap_or(0),
+            v41_n_mtp_target: v41_mtp_target.len() as u32,
+            v41_mtp_target: if v41_mtp_target.is_empty() {
+                ptr::null()
+            } else {
+                v41_mtp_target.as_ptr()
+            },
+            v41_ctx: v41_wire.as_ref().map(|w| w.ctx).unwrap_or(0),
+            v41_engram_vocab: v41_wire.as_ref().map(|w| w.engram_vocab).unwrap_or(0),
+            v41_engram_cvocab: v41_wire.as_ref().map(|w| w.engram_cvocab).unwrap_or(0),
+        };
         let mut ffi_plan = pack_bind_plan(&bind_plan, &inventory)?;
         let mut ffi_bind = pack_host_bind_map(&bind_plan)?;
         let mut ffi_dir = pack_tensor_dir(&inventory)?;
@@ -1631,6 +1816,7 @@ impl Model {
             vision_ready: tuning.vision_path.is_some(),
             mtp_draft_tokens: tuning.mtp_draft_tokens,
             runtime_budget,
+            v41_ctx: v41_wire.as_ref().map(|w| w.ctx),
             _distributed: ffi_distributed,
             _not_send: PhantomData,
         })
@@ -1638,6 +1824,13 @@ impl Model {
 
     pub fn family(&self) -> ModelFamily {
         self.family
+    }
+
+    /// `deepseek4.context_length` of a V4.1 artifact (None for other
+    /// families): the server's ctx comes only from here (`--ctx` is refused
+    /// for V4.1, core_validate_v41.c:51-53).
+    pub fn v41_ctx(&self) -> Option<u32> {
+        self.v41_ctx
     }
 
     pub fn inventory(&self) -> &TensorInventory {

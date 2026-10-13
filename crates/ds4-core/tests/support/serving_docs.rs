@@ -6,9 +6,10 @@ use std::fmt::Write as _;
 
 // Only catalog membership is listed here. Every capability and bound comes
 // from the same policy used by admission and ds4-perf serving-controls.
-const VARIANTS: [Variant; 15] = [
+const VARIANTS: [Variant; 16] = [
     Variant::Flash,
     Variant::Pro,
+    Variant::DeepSeek41Flash,
     Variant::SolarOpen2_250B,
     Variant::Motif3,
     Variant::Kexaone236B,

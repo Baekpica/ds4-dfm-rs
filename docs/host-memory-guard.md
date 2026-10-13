@@ -29,7 +29,24 @@ scope. It refuses launch at memory PSI full stalls of 20% or higher.
 During execution, it sends SIGTERM when the trip floor is crossed or PSI full
 stalls reach 20%, then SIGKILL after one second. CUDA allocation/reclaim can
 stall with substantial `MemAvailable`; the PSI trigger is independent of
-the available-memory floor.
+the available-memory floor. `--psi-full-limit PERCENT` changes this threshold
+for both launch and execution. Use `--psi-full-limit 0` to record PSI without
+refusing or stopping a reclaim-heavy model load. The memory floor, cgroup
+limits, deadline and cleanup still apply; system-level OOM policies are separate.
+
+For a dedicated resident-model run with a 2 GiB host reserve:
+
+```sh
+python3 tools/host_memory_guard.py \
+  --max-gib 128 --high-gib 128 --reserve-gib 2 --trip-gib 2 \
+  --psi-full-limit 0 --timeout 0 \
+  --log scratch/resident.memory.jsonl -- ./ds4-server <server arguments>
+```
+
+The effective ceiling remains available memory minus 2 GiB, capped at the
+requested maximum; `MemoryHigh` starts reclaim up to 1 GiB below that ceiling.
+The watchdog stops the scope when host `MemAvailable` drops below 2 GiB.
+
 Only that job's scope is targeted, including profiler descendants that
 create a separate process session. A filesystem cgroup kill is the fallback
 if the user service manager does not respond. It never directly kills a

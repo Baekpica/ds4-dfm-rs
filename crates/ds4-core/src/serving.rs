@@ -646,6 +646,36 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 }
 
 pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
+    // V4.1 has no ds4_session, but its native prompt-end checkpoint provides
+    // exact prefix reuse and KVC disk restoration. Common off|exact|auto
+    // controls select that checkpoint; partial forks, banks and session
+    // snapshots remain unavailable. Reuse and disk support await live gates.
+    // Embedded speculation retains its recorded greedy qualification; the
+    // context comes from model metadata, and --ctx is refused.
+    if variant == Variant::DeepSeek41Flash {
+        return ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::Exact,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::None,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Qualified,
+            spec_lane: SpecLane::Serial,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            // No session cap exists; the runtime context IS the model
+            // metadata (deepseek4.context_length), never a --ctx constant.
+            ctx_max: None,
+            qualified_ctx: None,
+            qualified_banks: Some(1),
+            qualified_prompt: None,
+            media_serial: false,
+        };
+    }
     if variant == Variant::K2Horizon375B {
         return ServingCaps {
             family,
@@ -1094,6 +1124,17 @@ pub fn resolve_plan(
         }
     }
     let (mtp_mode, mtp_draft) = match mtp_mode {
+        mode if caps.variant == Variant::DeepSeek41Flash => {
+            // Towers draft the artifact's fixed block; the native scheduler
+            // chooses verification width per round, not a common draft count.
+            if req.mtp_draft.is_some() {
+                issues.push(error(
+                    "mtp_draft_unsupported",
+                    "V4.1 --mtp-draft cannot change the artifact's draft block; use --dspark-verify to pin verification",
+                ));
+            }
+            (mode, None)
+        }
         MtpMode::Off => (MtpMode::Off, None),
         _ if caps.family == ModelFamily::IQuestQ1 && draft > crate::iquest::DRAFT_SLOTS as i32 => {
             issues.push(error(
@@ -1417,6 +1458,7 @@ impl ServingCaps {
             Variant::Qwen35_27B => "qwen35",
             Variant::NaiveN05Flash => "naive_n05_flash",
             Variant::IQuestQ1 => "iquest_q1",
+            Variant::DeepSeek41Flash => "deepseek4-v41-flash",
         }
     }
 }
@@ -1575,6 +1617,12 @@ impl ResolvedPlan {
     }
 
     fn native_prefill_env(&self) -> Option<&'static str> {
+        // V4.1 has no settable prefill chunk in the port yet (the engine's
+        // --v41-chunk is a recorded gap); the DeepSeek4 family default
+        // (DS4_METAL_PREFILL_CHUNK) would mislead.
+        if self.variant == Some(Variant::DeepSeek41Flash) {
+            return None;
+        }
         match self.family {
             Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
             Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
@@ -2377,7 +2425,14 @@ fn resolve_disk(
     if !want {
         return false;
     }
-    if caps.disk == Support::None || caps.snapshot == Support::None {
+    if caps.variant == Variant::DeepSeek41Flash && req.prefix_reuse == PrefixReuse::Off {
+        // Disk and live reuse consume the same native prefix checkpoint.
+        return false;
+    }
+    // The V4.1 disk is the native KV prefix checkpoint (item 4), not a
+    // session snapshot: the snapshot column stays none for it by design.
+    let snapshot_ok = caps.snapshot != Support::None || caps.variant == Variant::DeepSeek41Flash;
+    if caps.disk == Support::None || !snapshot_ok {
         issues.push(error(
             "disk_unsupported",
             format!("{} session snapshots are unsupported", caps.variant_name()),
@@ -2463,6 +2518,9 @@ fn measured_limits(
 
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
+        Variant::DeepSeek41Flash => {
+            "recorded Spark gates cover greedy single-request embedded speculation with decode graphs (56-token and 1,100-token byte-identical runs and matching engine traces); the sampling profile is not qualified; the artifact fixes the draft block and verification width is scheduled per round (--mtp-draft is unsupported; --dspark-verify pins verification); native prompt-end exact prefix reuse and its KVC disk checkpoint are present, unqualified; --prefix-reuse off|exact|auto controls live and disk reuse (--no-kv-reuse aliases off); partial reuse, banks and session snapshots are unavailable; context comes from model metadata, --ctx is rejected"
+        }
         Variant::NaiveN05Flash => {
             "main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified"
         }
@@ -3731,6 +3789,140 @@ mod tests {
         assert!(p.effective.disk);
         assert_eq!(p.qualified.disk, Support::Present);
         assert!(p.issues.iter().any(|i| i.code == "disk_unverified"));
+    }
+
+    #[test]
+    fn v41_serving_contract_refuses_what_it_lacks() {
+        // The native prompt-end checkpoint is exact reuse; it provides no
+        // continuous banks, partial checkpoint forks or session snapshots.
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::DeepSeek4,
+            Variant::DeepSeek41Flash,
+        );
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 1);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+
+        // Forced unsupported settings are refused by name, never silently
+        // ignored (the AGENTS.md serving contract).
+        let p = plan(
+            ServingRequest {
+                max_seqs: MaxSeqs::Fixed(2),
+                ..ServingRequest::default()
+            },
+            ModelFamily::DeepSeek4,
+            Variant::DeepSeek41Flash,
+        );
+        assert!(p.issues.iter().any(|i| i.code == "banks_unsupported"));
+        let p = plan(
+            ServingRequest {
+                prefix_reuse: PrefixReuse::Partial,
+                ..ServingRequest::default()
+            },
+            ModelFamily::DeepSeek4,
+            Variant::DeepSeek41Flash,
+        );
+        assert!(p.issues.iter().any(|i| i.code == "partial_unsupported"));
+
+        // The caps row itself, requested/effective/qualified in one place.
+        let caps = serving_caps(ModelFamily::DeepSeek4, Variant::DeepSeek41Flash);
+        assert_eq!(caps.banks, BankLane::Serial);
+        assert_eq!(caps.bank_support, Support::None);
+        assert_eq!(caps.reuse, ReuseKind::Exact);
+        assert_eq!(caps.reuse_support, Support::Present);
+        assert_eq!(caps.disk, Support::Present);
+        assert_eq!(caps.snapshot, Support::None);
+        assert_eq!(caps.mtp, MtpKind::Embedded);
+        assert_eq!(caps.mtp_support, Support::Qualified);
+        assert_eq!(caps.spec_lane, SpecLane::Serial);
+        assert_eq!(caps.ctx_max, None);
+        assert_eq!(caps.qualified_banks, Some(1));
+
+        // Item 4: the V4.1 disk half is the native KV prefix checkpoint, not
+        // a session snapshot -- --kv-disk-dir resolves (present, not
+        // qualified), and a request without it stays off.
+        let p = plan(
+            ServingRequest {
+                kv_disk_dir: Some("/tmp/v41-kv".into()),
+                ..ServingRequest::default()
+            },
+            ModelFamily::DeepSeek4,
+            Variant::DeepSeek41Flash,
+        );
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert!(p.effective.disk);
+        assert_eq!(p.qualified.disk, Support::Present);
+    }
+
+    #[test]
+    fn v41_draft_scheduler_no_width() {
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::DeepSeek4,
+            Variant::DeepSeek41Flash,
+        );
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.mtp_mode, MtpMode::Auto);
+        assert_eq!(p.effective.mtp_draft, None);
+        assert_eq!(
+            p.to_json()["effective"]["mtp_draft"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn v41_draft_request_is_refused() {
+        for mode in [MtpMode::Off, MtpMode::Auto, MtpMode::On] {
+            let p = plan(
+                ServingRequest {
+                    mtp_mode: mode,
+                    mtp_draft: Some(2),
+                    ..ServingRequest::default()
+                },
+                ModelFamily::DeepSeek4,
+                Variant::DeepSeek41Flash,
+            );
+            assert!(p.has_errors());
+            assert!(p
+                .issues
+                .iter()
+                .any(|issue| issue.code == "mtp_draft_unsupported"));
+            assert_eq!(p.effective.mtp_draft, None);
+        }
+    }
+
+    #[test]
+    fn v41_prefix_controls() {
+        for (request, effective, qualified, fork) in [
+            (PrefixReuse::Auto, ReuseKind::Exact, Support::Present, "1"),
+            (PrefixReuse::Exact, ReuseKind::Exact, Support::Present, "1"),
+            (PrefixReuse::Off, ReuseKind::None, Support::None, "0"),
+        ] {
+            let p = plan(
+                ServingRequest {
+                    prefix_reuse: request,
+                    kv_disk_dir: Some("/tmp/v41-kv".into()),
+                    ..ServingRequest::default()
+                },
+                ModelFamily::DeepSeek4,
+                Variant::DeepSeek41Flash,
+            );
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.requested.prefix_reuse, request);
+            assert_eq!(p.effective.prefix_reuse, effective);
+            assert_eq!(p.qualified.prefix_reuse, qualified);
+            assert_eq!(p.effective.disk, request != PrefixReuse::Off);
+            assert_eq!(p.qualified.disk, qualified);
+            assert!(p
+                .env_overrides()
+                .iter()
+                .any(|(key, value)| { key == "DS4_SERVER_FORK" && value == fork }));
+            assert!(p
+                .env_overrides()
+                .iter()
+                .any(|(key, value)| { key == "DS4_SERVER_FORK_PARTIAL" && value == "0" }));
+        }
     }
 
     #[test]

@@ -38,6 +38,12 @@ jobs:
           make test-agent-parity
       - name: Serialized workspace tests
         run: cargo test --workspace --locked -- --test-threads=1
+      - name: Model-free V41 lifecycle and state
+        run: |
+          make test-model-registration test-vq-source-release test-ds41-bridge-lifetime \
+            test-ds41-kv-import test-ds41-moe-fork test-ds41-gr-forward \
+            test-ds41-boundary test-ds41-history test-ds41-trace \
+            test-ds41-kv-rows test-ds41-rollback
       - name: IQuest evidence comparator
         run: cargo test -p ds4-cli --example iquest_perf_verify --features native --locked
       - name: PLE storage formats

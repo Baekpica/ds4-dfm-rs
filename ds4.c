@@ -60,6 +60,7 @@
 
 #ifndef DS4_NO_GPU
 #include "ds4_gpu.h"
+#include "ds41_forward.h"
 #endif
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
@@ -392,6 +393,9 @@ typedef enum {
     DS4_VARIANT_QWEN35_27B      = 14,
     DS4_VARIANT_NAIVE_N05_FLASH = 13,
     DS4_VARIANT_IQUEST_Q1       = 15,
+    /* DeepSeek V4.1 Flash; 16 mirrors the Rust Variant::DeepSeek41Flash
+     * (crates/ds4-core/src/shape.rs:97). */
+    DS4_VARIANT_V41             = 16,
 } ds4_variant;
 
 typedef struct {
@@ -705,6 +709,50 @@ static const ds4_shape DS4_SHAPE_PRO = {
     .rms_eps = DS4_DEFAULT_RMS_EPS,
     .hc_eps = DS4_DEFAULT_HC_EPS,
     .expert_weight_scale = 2.5f,
+    .swiglu_clamp_exp = DS4_DEFAULT_SWIGLU_CLAMP_EXP,
+    .rope_freq_base = DS4_DEFAULT_ROPE_FREQ_BASE,
+    .rope_scale_factor = DS4_DEFAULT_ROPE_SCALE_FACTOR,
+    .rope_yarn_beta_fast = DS4_DEFAULT_ROPE_YARN_BETA_FAST,
+    .rope_yarn_beta_slow = DS4_DEFAULT_ROPE_YARN_BETA_SLOW,
+    .compress_rope_freq_base = DS4_DEFAULT_COMPRESS_ROPE_FREQ_BASE,
+    .rope_orig_ctx = DS4_DEFAULT_ROPE_ORIG_CTX,
+};
+
+/* DeepSeek V4.1 Flash (core_shape_select.c:81-114). 40 layers / 5120 / 384
+ * experts top-6 / q_lora 1280 / ff 2304 / indexer 32 heads; rms_eps 1e-20 is
+ * the official config's real value, not a typo.  It differs from V4 Flash in
+ * wiring, not dimensions: the compress ratios, source layers and engram
+ * layers are metadata (loaded into g_ds4_v41), and n_hash_layer drops to 0. */
+static const ds4_shape DS4_SHAPE_V41_FLASH = {
+    .name = "DeepSeek V4.1 Flash",
+    .family = DS4_MODEL_FAMILY_DEEPSEEK4,
+    .variant = DS4_VARIANT_V41,
+    .n_layer = 40,
+    .n_embd = 5120,
+    .n_vocab = 129280,
+    .n_head = 64,
+    .n_head_kv = 1,
+    .n_head_dim = 512,
+    .n_value_dim = 512,
+    .n_rot = 64,
+    .n_out_group = 8,
+    .n_lora_q = 1280,
+    .n_lora_o = 1024,
+    .n_expert = 384,
+    .n_expert_used = 6,
+    .n_expert_shared = 1,
+    .n_ff_exp = 2304,
+    .n_hash_layer = 0,
+    .n_swa = 128,
+    .n_indexer_head = 32,
+    .n_indexer_head_dim = 128,
+    .n_indexer_top_k = 512,
+    .n_hc = 4,
+    .n_hc_sinkhorn_iter = 20,
+    .use_rope = true,
+    .rms_eps = 1.0e-20f,
+    .hc_eps = DS4_DEFAULT_HC_EPS,
+    .expert_weight_scale = 1.5f,
     .swiglu_clamp_exp = DS4_DEFAULT_SWIGLU_CLAMP_EXP,
     .rope_freq_base = DS4_DEFAULT_ROPE_FREQ_BASE,
     .rope_scale_factor = DS4_DEFAULT_ROPE_SCALE_FACTOR,
@@ -1109,6 +1157,42 @@ static ds4_shape g_ds4_shape = {
 };
 
 static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
+
+/* DeepSeek V4.1 wiring (mirror of the engine's ds4_v41_cfg,
+ * src/core/ds4_internal.h:57-82).  V4.1 differs from V4 in wiring, not
+ * dimensions: only the kv source layers compress and hold compressed KV
+ * (the rest read the nearest earlier source layer), only index source layers
+ * run the indexer, engram lives on a few layers, and the compress ratios are
+ * metadata truth instead of a formula.  Filled from the host shape ABI
+ * (Rust host) or the GGUF metadata (C host); the forward looks it up per
+ * layer, so it cannot stay a metadata scan. */
+#define DS4_V41_MAX_ENGRAM 4
+#define DS4_MTP_MAX_TOWERS  4    /* engine bound; the real count is metadata */
+#define DS4_MTP_MAX_EXPERTS 256  /* engine bound; the real count is metadata */
+/* Fixed draft/verify buffers hold one real token plus this many drafts. */
+#define DS4_MTP_MAX_BLOCK 8u
+typedef struct {
+    int      active;
+    uint32_t ctx;                            /* deepseek4.context_length (1048576) */
+    uint8_t  is_kv_source[DS4_MAX_LAYER];
+    int16_t  kv_source_of[DS4_MAX_LAYER];    /* nearest source, -1 = no compression */
+    uint8_t  is_index_source[DS4_MAX_LAYER];
+    int16_t  index_source_of[DS4_MAX_LAYER];
+    int32_t  candidate_source_layer;         /* two-level topk switch layer, <0 = none */
+    int32_t  candidate_topk_blocks, candidate_block_size;
+    uint32_t n_engram;
+    int32_t  engram_layer[DS4_V41_MAX_ENGRAM];
+    int16_t  engram_index_of[DS4_MAX_LAYER];
+    uint64_t engram_rows[DS4_V41_MAX_ENGRAM], engram_weight_off[DS4_V41_MAX_ENGRAM], engram_scale_off[DS4_V41_MAX_ENGRAM];
+    char     engram_table_path[DS4_V41_MAX_ENGRAM][1024];
+    uint32_t engram_max_ngram, engram_heads, engram_head_dim, engram_vocab, engram_cvocab, engram_pad;
+    uint32_t mtp_towers, mtp_experts;        /* draft towers, 0 = none in this GGUF */
+    uint32_t mtp_used, mtp_block, mtp_noise_id, mtp_markov_rank;
+    int16_t  mtp_target[DS4_MTP_MAX_TOWERS * 2];
+    int16_t  mtp_target_slot[DS4_MAX_LAYER];
+    uint32_t n_mtp_target;
+} ds4_v41_cfg;
+static ds4_v41_cfg g_ds4_v41;
 
 #define DS4_MODEL_SHAPE_NAME          (g_ds4_shape.name)
 #define DS4_MODEL_FAMILY              (g_ds4_shape.family)
@@ -2271,6 +2355,17 @@ static const gguf_type_info gguf_types[] = {
     [28] = {"f64",      1,   8},
     [29] = {"iq1_m",  256,  56},
     [30] = {"bf16",     1,   2},
+    /* DeepSeek V4.1 block types, ids 40-44 in the C engine's own table
+     * (core_gguf.c:89-104).  go1b/go2b are the strict 1/2-bit routed expert
+     * forms; vqblob is opaque bytes (a DQVL container, shape=[nbytes]);
+     * fp4x32 is the V4.1 skeleton (E2M1 nibbles + ue8m0/32); fp8_32x32 is
+     * the engram wkv format (rows*cols e4m3 plus one ue8m0 per 32x32 tile,
+     * so 1024 elements = 1025 bytes). */
+    [40] = {"go1b",   256,  34},
+    [41] = {"go2b",   256,  68},
+    [42] = {"vqblob",  1,   1},
+    [43] = {"fp4x32", 32,  17},
+    [44] = {"fp8_32x32", 1024, 1025},
     /* Prism-private ternary type: 128 weights per 34-byte block, one fp16
      * scale then 32 two-bit code bytes.  Only the qwen35 (Bonsai) family
      * declares it; the CUDA side reads it through the vendored mmq kernels. */
@@ -2297,6 +2392,12 @@ enum {
     DS4_TENSOR_IQ1_M    = 29,
     DS4_TENSOR_BF16     = 30,
     DS4_TENSOR_MXFP4    = 39,
+    /* DeepSeek V4.1 (core_gguf.c:89-104). */
+    DS4_TENSOR_GO1B     = 40,
+    DS4_TENSOR_GO2B     = 41,
+    DS4_TENSOR_VQBLOB   = 42,
+    DS4_TENSOR_FP4X32   = 43,
+    DS4_TENSOR_FP8_32X32 = 44,
     DS4_TENSOR_PQ2_0    = 142,
 };
 
@@ -2502,6 +2603,131 @@ void ds4_host_dspark_bind_map_clear(void) {
     g_host_dspark_bind_map = NULL;
 }
 
+static void v41_report_wiring(int with_rows) {
+    int nk = 0, ni = 0;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        nk += g_ds4_v41.is_kv_source[il];
+        ni += g_ds4_v41.is_index_source[il];
+    }
+    fprintf(stderr, "ds4: V4.1 wiring: kv sources %d / index sources %d / candidate L%d (%d blocks x %d) / engram %u layers",
+            nk, ni, g_ds4_v41.candidate_source_layer, g_ds4_v41.candidate_topk_blocks, g_ds4_v41.candidate_block_size,
+            g_ds4_v41.n_engram);
+    /* The row counts ride both loaders since P4-3 (metadata and the host
+     * ABI); with_rows stays explicit so a caller that has not copied them
+     * yet cannot print zeros as if they were read. */
+    if (with_rows) {
+        fprintf(stderr, " (%llu+%llu rows on disk)\n",
+                (unsigned long long)(g_ds4_v41.n_engram > 0 ? g_ds4_v41.engram_rows[0] : 0),
+                (unsigned long long)(g_ds4_v41.n_engram > 1 ? g_ds4_v41.engram_rows[1] : 0));
+    } else {
+        fprintf(stderr, "\n");
+    }
+}
+
+/* V4.1 wiring over the host ABI: the Rust host already loaded and validated
+ * it (V41Wire::load mirrors v41_load_metadata, core_validate_v41.c:46-154),
+ * so the native only bounds-checks and copies.  A count without its array is
+ * a bridge bug, not an artifact property. */
+static void model_apply_host_v41_wiring(const ds4_host_shape *s) {
+    ds4_v41_cfg *v = &g_ds4_v41;
+
+    if (!s->v41_kv_source || !s->v41_index_source || !s->v41_kv_source_of ||
+        !s->v41_index_source_of || !s->v41_engram_index_of) {
+        ds4_die("V4.1 host shape is missing its wiring arrays");
+    }
+    if (s->v41_n_engram > DS4_V41_MAX_ENGRAM ||
+        (s->v41_n_engram > 0 && !s->v41_engram_layers)) {
+        ds4_die("V4.1 host shape has an invalid engram layer list");
+    }
+    if (s->v41_mtp_towers > DS4_MTP_MAX_TOWERS || s->v41_mtp_experts > DS4_MTP_MAX_EXPERTS) {
+        ds4_die("V4.1 host shape has an invalid tower/expert count");
+    }
+    if (s->v41_mtp_block > DS4_MTP_MAX_BLOCK) {
+        ds4_die("V4.1 host draft block exceeds fixed verification buffers");
+    }
+    memset(v, 0, sizeof *v);
+    v->active = 1;
+    /* Context comes only from the metadata (deepseek4.context_length): no
+     * default and no --ctx (core_validate_v41.c:51-53); the generate entry
+     * and the state alloc refuse a zero, so an empty shape field is a bridge
+     * bug, not an artifact property. */
+    if (s->v41_ctx == 0) {
+        ds4_die("V4.1 host shape carries no context length (deepseek4.context_length)");
+    }
+    v->ctx = s->v41_ctx;
+    memcpy(v->is_kv_source, s->v41_kv_source, DS4_N_LAYER);
+    memcpy(v->is_index_source, s->v41_index_source, DS4_N_LAYER);
+    memcpy(v->kv_source_of, s->v41_kv_source_of, DS4_N_LAYER * sizeof(v->kv_source_of[0]));
+    memcpy(v->index_source_of, s->v41_index_source_of, DS4_N_LAYER * sizeof(v->index_source_of[0]));
+    memcpy(v->engram_index_of, s->v41_engram_index_of, DS4_N_LAYER * sizeof(v->engram_index_of[0]));
+    v->n_engram = s->v41_n_engram;
+    for (uint32_t i = 0; i < v->n_engram; i++) {
+        if (s->v41_engram_layers[i] < 0 || (uint32_t)s->v41_engram_layers[i] >= DS4_N_LAYER) {
+            ds4_die("V4.1 host shape has an engram layer id out of range");
+        }
+        v->engram_layer[i] = s->v41_engram_layers[i];
+    }
+    v->engram_max_ngram = s->v41_engram_max_ngram;
+    v->engram_heads     = s->v41_engram_heads;
+    v->engram_head_dim  = s->v41_engram_head_dim;
+    v->engram_pad       = s->v41_engram_pad;
+    v->engram_vocab     = s->v41_engram_vocab;
+    v->engram_cvocab    = s->v41_engram_cvocab;
+    v->candidate_source_layer = s->v41_candidate_source_layer;
+    v->candidate_topk_blocks  = s->v41_candidate_topk_blocks;
+    v->candidate_block_size   = s->v41_candidate_block_size;
+    v->mtp_towers  = s->v41_mtp_towers;
+    v->mtp_experts = s->v41_mtp_experts;
+    /* P5: the draft parameters arm the drafter (core_validate_v41.c:91-110;
+     * the GGUF path parses the same keys at v41_load_wiring).  block == 0 =
+     * unarmed: either no towers, or a GGUF that predates the parameters --
+     * the engine's own warning, one token at a time.  The slot table must be
+     * -1 everywhere before the targets land (the memset above left zeros,
+     * and mtp_target_slot >= 0 gates the mainh capture in v41_layer). */
+    for (uint32_t i = 0; i < DS4_MAX_LAYER; i++) v->mtp_target_slot[i] = -1;
+    if (s->v41_mtp_block != 0) {
+        if (s->v41_n_mtp_target == 0 || s->v41_n_mtp_target > DS4_MTP_MAX_TOWERS * 2u ||
+            !s->v41_mtp_target) {
+            ds4_die("V4.1 host shape carries a draft block without its target layers");
+        }
+        v->mtp_block = s->v41_mtp_block;
+        v->mtp_used = s->v41_mtp_used;
+        v->mtp_noise_id = s->v41_mtp_noise_id;
+        v->mtp_markov_rank = s->v41_mtp_markov_rank;
+        v->n_mtp_target = s->v41_n_mtp_target;
+        for (uint32_t i = 0; i < v->n_mtp_target; i++) {
+            const int16_t t = s->v41_mtp_target[i];
+            if (t < 0 || t >= (int16_t)DS4_N_LAYER) {
+                ds4_die("V4.1 host shape has an mtp target layer out of range");
+            }
+            v->mtp_target[i] = t;
+            v->mtp_target_slot[t] = (int16_t)i;
+        }
+    } else if (s->v41_mtp_towers) {
+        fprintf(stderr, "ds4: [v41] this GGUF carries the towers but not the draft parameters (block_size/target_layers), so speculative decode stays unarmed\n");
+    }
+    /* P4-3: the engram table wiring (rows, plane offsets, shard path).  A
+     * count without its arrays is a bridge bug, not an artifact property
+     * (same rule as the wiring arrays above). */
+    if (v->n_engram > 0 &&
+        (!s->v41_engram_rows || !s->v41_engram_weight_off ||
+         !s->v41_engram_scale_off || !s->v41_engram_table_path)) {
+        ds4_die("V4.1 host shape is missing its engram table wiring");
+    }
+    for (uint32_t i = 0; i < v->n_engram; i++) {
+        const char *p = s->v41_engram_table_path[i];
+        const size_t plen = p ? strlen(p) : 0;
+        if (plen == 0 || plen >= sizeof v->engram_table_path[i]) {
+            ds4_die("V4.1 host shape has an invalid engram table path");
+        }
+        v->engram_rows[i] = s->v41_engram_rows[i];
+        v->engram_weight_off[i] = s->v41_engram_weight_off[i];
+        v->engram_scale_off[i] = s->v41_engram_scale_off[i];
+        memcpy(v->engram_table_path[i], p, plen + 1);
+    }
+    v41_report_wiring(1);
+}
+
 /* Host already ran config_validate.  Apply the pinned literal + the
  * verified DeepSeek compress table so CUDA bind sees the same globals. */
 static void model_apply_host_shape(void) {
@@ -2557,6 +2783,9 @@ static void model_apply_host_shape(void) {
     case DS4_VARIANT_QWEN35_27B:
         g_ds4_shape = DS4_SHAPE_QWEN35;
         break;
+    case DS4_VARIANT_V41:
+        g_ds4_shape = DS4_SHAPE_V41_FLASH;
+        break;
     default:
         ds4_die("unsupported");
     }
@@ -2570,6 +2799,7 @@ static void model_apply_host_shape(void) {
     } else if (s->n_compress != 0) {
         ds4_die("data-mismatch");
     }
+    if (s->variant == DS4_VARIANT_V41) model_apply_host_v41_wiring(s);
 }
 
 static void model_free_owned_tensor_names(ds4_model *m) {
@@ -3610,6 +3840,63 @@ static void model_summary(const ds4_model *m) {
 
 }
 
+/* Host-path bind census (diagnostic; DS4_HOST_BIND_CENSUS=1).  Counts the
+ * native's own name resolutions during one V4.1 weights_bind window so the
+ * Spark gate can compare them with the Rust plan's line ("bind: slots=1000
+ * bound=1000 required-missing=0").  `slots` is the plan's own count;
+ * `resolved` is the number of DISTINCT plan entries the native asked for and
+ * found (a bitset, so duplicates cannot inflate it).  Off by default: with
+ * the env unset every hook is one cached-getenv branch. */
+static uint64_t g_census_asks, g_census_bound, g_census_optmiss, g_census_reqmiss, g_census_fallback;
+static uint8_t *g_census_seen;     /* bitset over plan entries */
+static uint32_t g_census_seen_n;
+
+static int bind_census_enabled(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("DS4_HOST_BIND_CENSUS") != NULL;
+    return on;
+}
+
+static void bind_census_begin(void) {
+    free(g_census_seen); g_census_seen = NULL; g_census_seen_n = 0;
+    g_census_asks = g_census_bound = g_census_optmiss = g_census_reqmiss = g_census_fallback = 0;
+    if (!bind_census_enabled() || !g_host_bind_map) return;
+    g_census_seen_n = g_host_bind_map->n;
+    g_census_seen = calloc((g_census_seen_n + 7u) / 8u, 1);
+}
+
+static void bind_census_bound_entry(const char *name) {
+    if (!bind_census_enabled()) return;
+    g_census_asks++;
+    g_census_bound++;
+    if (!g_census_seen) return;
+    for (uint32_t i = 0; i < g_census_seen_n; i++) {
+        if (strcmp(g_host_bind_map->v[i].name, name) == 0) {
+            g_census_seen[i >> 3] |= (uint8_t)(1u << (i & 7u));
+            break;
+        }
+    }
+}
+
+static void bind_census_end(void) {
+    if (!bind_census_enabled()) return;
+    uint64_t resolved = 0;
+    for (uint32_t i = 0; i < g_census_seen_n; i++) {
+        resolved += (uint64_t)((g_census_seen[i >> 3] >> (i & 7u)) & 1u);
+    }
+    if (g_host_bind_map) {
+        fprintf(stderr, "ds4: bind census: slots=%u resolved=%llu bound=%llu required-missing=%llu optional-missing=%llu asks=%llu fallback=%llu\n",
+                g_host_bind_map->n, (unsigned long long)resolved, (unsigned long long)g_census_bound,
+                (unsigned long long)g_census_reqmiss, (unsigned long long)g_census_optmiss,
+                (unsigned long long)g_census_asks, (unsigned long long)g_census_fallback);
+    } else {
+        fprintf(stderr, "ds4: bind census: bound=%llu required-missing=%llu optional-missing=%llu asks=%llu (no host plan)\n",
+                (unsigned long long)g_census_bound, (unsigned long long)g_census_reqmiss,
+                (unsigned long long)g_census_optmiss, (unsigned long long)g_census_asks);
+    }
+    free(g_census_seen); g_census_seen = NULL; g_census_seen_n = 0;
+}
+
 static ds4_tensor *model_find_tensor(const ds4_model *m, const char *name) {
     if (g_host_bind_map) {
         uint32_t idx = DS4_HOST_BIND_MISS;
@@ -3618,22 +3905,32 @@ static ds4_tensor *model_find_tensor(const ds4_model *m, const char *name) {
                                       (uint32_t)m->n_tensors, &idx,
                                       herr, sizeof herr);
         if (rc == 0) {
-            if (idx == DS4_HOST_BIND_MISS) return NULL;
+            if (idx == DS4_HOST_BIND_MISS) {
+                if (bind_census_enabled()) g_census_asks++, g_census_optmiss++;
+                return NULL;
+            }
+            bind_census_bound_entry(name);
             return &m->tensors[idx];
         }
         if (rc != 2) {
-            if (strncmp(herr, "missing ", 8) == 0) return NULL;
+            if (strncmp(herr, "missing ", 8) == 0) {
+                if (bind_census_enabled()) g_census_asks++, g_census_reqmiss++;
+                return NULL;
+            }
             ds4_die(herr);
         }
         /* unknown: MTP/DSpark sibling names stay on the C walk */
+        if (bind_census_enabled()) g_census_fallback++;
     }
     const size_t len = strlen(name);
     for (uint64_t i = 0; i < m->n_tensors; i++) {
         if (m->tensors[i].name.len == len &&
             memcmp(m->tensors[i].name.ptr, name, len) == 0) {
+            if (!g_host_bind_map) bind_census_bound_entry(name);
             return &m->tensors[i];
         }
     }
+    if (!g_host_bind_map && bind_census_enabled()) g_census_asks++, g_census_optmiss++;
     return NULL;
 }
 
@@ -4912,6 +5209,9 @@ typedef struct {
     ds4_tensor *attn_compressor_norm;
     ds4_tensor *indexer_attn_q_b;
     ds4_tensor *indexer_attn_k;
+    /* V4.1 renamed the indexer key projection to indexer.wk (the engine's
+     * V4.1 arm binds l->indexer_wk; core_bind_v41.c:76). */
+    ds4_tensor *indexer_wk;
     ds4_tensor *indexer_k_norm;
     ds4_tensor *indexer_k_norm_b;
     ds4_tensor *indexer_proj;
@@ -4993,6 +5293,13 @@ typedef struct {
     ds4_tensor *lin_alpha;
     ds4_tensor *lin_norm;
     ds4_tensor *lin_out;
+    /* DeepSeek V4.1 engram gate, only on the engram layers (ids from
+     * metadata; core_bind_v41.c:94-98), and the routed experts' single VQ
+     * blob (the per-expert gate/up/down tensors do not exist in V4.1). */
+    ds4_tensor *engram_wkv;
+    ds4_tensor *engram_q;
+    ds4_tensor *engram_k;
+    ds4_tensor *ffn_exps_vq;
 } ds4_layer_weights;
 
 /* Source-interleaved Inkling weights have distinct dense/routed/shared
@@ -5013,6 +5320,26 @@ typedef struct {
     ds4_tensor *image_norm[INKLING_IMAGE_STAGES];
     ds4_tensor *audio_embed, *audio_norm;
 } ds4_inkling_weights;
+
+/* DeepSeek V4.1 draft towers (mirror of the engine's ds4_draft_tower_weights,
+ * src/core/core_draft_tower_types.h:13-32).  The three mtp.N.* blocks live in
+ * the same GGUF as the base model and mirror a layer's set, minus engram and
+ * compressed KV; their experts are one VQ blob or per-expert fp4x32 tensors
+ * (never both; the artifact uses blobs).  Bound here so the V4.1 bind asks
+ * for every name the host plan holds; the draft machinery itself is P5. */
+typedef struct {
+    ds4_layer_weights tower[DS4_MTP_MAX_TOWERS];
+    ds4_tensor *exp_gate[DS4_MTP_MAX_TOWERS][DS4_MTP_MAX_EXPERTS];
+    ds4_tensor *exp_up[DS4_MTP_MAX_TOWERS][DS4_MTP_MAX_EXPERTS];
+    ds4_tensor *exp_down[DS4_MTP_MAX_TOWERS][DS4_MTP_MAX_EXPERTS];
+    ds4_tensor *exps_vq[DS4_MTP_MAX_TOWERS];
+    ds4_tensor *main_proj;
+    ds4_tensor *main_norm;
+    ds4_tensor *markov_embd;
+    ds4_tensor *markov_head;
+    ds4_tensor *confidence;
+    ds4_tensor *out_norm;
+} ds4_v41_tower_weights;
 
 /* All eight draft blocks live in the sidecar; embedding/head stay shared
  * with the target. These pointers borrow the sidecar model's mapping. */
@@ -5054,6 +5381,13 @@ typedef struct {
     ds4_tensor *step37_rope_freqs;
     ds4_layer_weights iquest_mtp;
     ds4_tensor *iquest_eh, *iquest_enorm, *iquest_hnorm, *iquest_mtp_norm;
+    /* DeepSeek V4.1: engram hash constants, engram layer triples and the
+     * three draft towers bound from the base GGUF (no output_hc_*). */
+    ds4_tensor *engram_token_map;
+    ds4_tensor *engram_multipliers;
+    ds4_tensor *engram_primes;
+    ds4_tensor *engram_offsets;
+    ds4_v41_tower_weights v41_towers;
 } ds4_weights;
 
 typedef struct {
@@ -6789,6 +7123,17 @@ static void ds4_select_shape_from_metadata(
         g_ds4_shape = DS4_SHAPE_PRO;
         return;
     }
+    if (ds4_shape_matches_metadata(&DS4_SHAPE_V41_FLASH,
+                                   n_layer, n_embd, n_vocab, n_head, n_head_kv,
+                                   n_head_dim, n_value_dim, n_rot, n_lora_q,
+                                   n_lora_o, n_out_group, n_expert,
+                                   n_expert_used, n_ff_exp, n_expert_shared,
+                                   n_hash_layer, n_swa, n_indexer_head,
+                                   n_indexer_head_dim, n_indexer_top_k, n_hc,
+                                   n_hc_sinkhorn_iter)) {
+        g_ds4_shape = DS4_SHAPE_V41_FLASH;
+        return;
+    }
 
     fprintf(stderr,
             "ds4: unsupported DeepSeek4 shape: layers=%u embd=%u heads=%u "
@@ -6829,6 +7174,16 @@ static void validate_compress_ratio_metadata(const ds4_model *m) {
             got = (uint32_t)v;
         }
 
+        /* V4.1: the ratios are the official config's per-layer truth (0/1/2),
+         * no formula to check against (core_validate.c:31-37). */
+        if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) {
+            if (got > 2u) {
+                fprintf(stderr, "ds4: V4.1 compression ratio at layer %u must be 0/1/2, got %u\n", il, got);
+                exit(1);
+            }
+            g_ds4_compress_ratios[il] = got;
+            continue;
+        }
         const uint32_t expected = ds4_expected_layer_compress_ratio(il);
         if (got != expected) {
             fprintf(stderr,
@@ -6838,6 +7193,152 @@ static void validate_compress_ratio_metadata(const ds4_model *m) {
         }
         g_ds4_compress_ratios[il] = got;
     }
+}
+
+/* V4.1 wiring load (core_validate_v41.c:46-154 v41_load_metadata).  The keys
+ * are the converter's transcription of the official config; a missing key is
+ * a hard stop, never a default.  The host path fills the same struct from
+ * the host shape ABI instead of re-reading the metadata.  Not stored here:
+ * swiglu_limit (the engine copies DS4_SWIGLU_CLAMP_EXP into its cfg; the
+ * native reads it from the shape literal) and the engram table paths' swap
+ * directory (a serving flag, P4-3). */
+static uint32_t v41_arr_i32(const ds4_model *m, const char *key, int32_t *out, uint32_t cap) {
+    ds4_array_ref arr;
+    if (!model_get_array(m, key, &arr) || (arr.type != GGUF_VALUE_INT32 && arr.type != GGUF_VALUE_UINT32)) {
+        fprintf(stderr, "ds4: V4.1 required int32 array key is missing: %s\n", key);
+        exit(1);
+    }
+    if (arr.len > cap) ds4_die("V4.1 metadata array longer than capacity");
+    ds4_cursor c = cursor_at(m, arr.data_pos);
+    for (uint64_t i = 0; i < arr.len; i++) if (!cursor_read(&c, &out[i], 4)) ds4_die(c.error);
+    return (uint32_t)arr.len;
+}
+
+static uint32_t v41_arr_u64(const ds4_model *m, const char *key, uint64_t *out, uint32_t cap) {
+    ds4_array_ref arr;
+    if (!model_get_array(m, key, &arr) || arr.type != GGUF_VALUE_UINT64) {
+        fprintf(stderr, "ds4: V4.1 required uint64 array key is missing: %s\n", key);
+        exit(1);
+    }
+    if (arr.len > cap) ds4_die("V4.1 metadata array longer than capacity");
+    ds4_cursor c = cursor_at(m, arr.data_pos);
+    for (uint64_t i = 0; i < arr.len; i++) if (!cursor_u64(&c, &out[i])) ds4_die(c.error);
+    return (uint32_t)arr.len;
+}
+
+static uint64_t v41_req_u64(const ds4_model *m, const char *key) {
+    uint64_t v = 0;
+    if (!model_get_u64_compat(m, key, &v)) { fprintf(stderr, "ds4: V4.1 required key is missing: %s\n", key); exit(1); }
+    return v;
+}
+
+static void v41_load_wiring(const ds4_model *m) {
+    ds4_v41_cfg *v = &g_ds4_v41;
+    memset(v, 0, sizeof *v);
+    v->active = 1;
+    /* Context comes only from the metadata (deepseek4.context_length <- HF
+     * max_position_embeddings): no default, no cap constant, no --ctx. */
+    const uint64_t ctx = v41_req_u64(m, "deepseek4.context_length");
+    if (ctx == 0 || ctx > UINT32_MAX) ds4_die("V4.1 deepseek4.context_length is invalid");
+    v->ctx = (uint32_t)ctx;
+    for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
+        v->kv_source_of[il] = -1; v->index_source_of[il] = -1; v->engram_index_of[il] = -1;
+        v->mtp_target_slot[il] = -1;
+    }
+    int32_t ids[DS4_MAX_LAYER];
+    uint32_t n = v41_arr_i32(m, "deepseek4.attention.kv_source_layers", ids, DS4_MAX_LAYER);
+    for (uint32_t i = 0; i < n; i++) {
+        if (ids[i] < 0 || (uint32_t)ids[i] >= DS4_N_LAYER) ds4_die("kv_source_layers out of range");
+        v->is_kv_source[ids[i]] = 1;
+    }
+    n = v41_arr_i32(m, "deepseek4.attention.index_source_layers", ids, DS4_MAX_LAYER);
+    for (uint32_t i = 0; i < n; i++) {
+        if (ids[i] < 0 || (uint32_t)ids[i] >= DS4_N_LAYER) ds4_die("index_source_layers out of range");
+        v->is_index_source[ids[i]] = 1;
+    }
+    /* Wiring: a compressing layer reads the nearest source at or before it
+     * (the official SharedAttentionRuntime writes one slot at the source and
+     * later layers read the same slot, core_validate_v41.c:69-83). */
+    int16_t last_kv = -1, last_idx = -1;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (v->is_kv_source[il]) last_kv = (int16_t)il;
+        if (v->is_index_source[il]) last_idx = (int16_t)il;
+        if (ds4_layer_compress_ratio(il) == 0) continue;
+        if (last_kv < 0 || last_idx < 0) {
+            fprintf(stderr, "ds4: V4.1 layer %u compresses but has no kv/index source before it\n", il);
+            exit(1);
+        }
+        v->kv_source_of[il] = last_kv;
+        v->index_source_of[il] = last_idx;
+        if (v->is_kv_source[il] && !v->is_index_source[il])
+            ds4_die("V4.1: a kv source layer must also be an index source (indexer keys come from its latent)");
+    }
+    /* Draft towers are optional: a GGUF converted before they existed carries
+     * none and the engine decodes one token at a time (core_validate_v41.c:85-90). */
+    if (!model_get_u32(m, "deepseek4.mtp.tower_count", &v->mtp_towers)) v->mtp_towers = 0;
+    if (!model_get_u32(m, "deepseek4.mtp.expert_count", &v->mtp_experts)) v->mtp_experts = 0;
+    if (v->mtp_towers > DS4_MTP_MAX_TOWERS || v->mtp_experts > DS4_MTP_MAX_EXPERTS)
+        ds4_die("mtp tower/expert count over engine limit");
+    if (v->mtp_towers) {
+        uint32_t blk = 0, used = 0, noise = 0, rank = 0;
+        const int have = model_get_u32(m, "deepseek4.mtp.block_size", &blk) &&
+                         model_get_u32(m, "deepseek4.mtp.expert_used_count", &used) &&
+                         model_get_u32(m, "deepseek4.mtp.noise_token_id", &noise) &&
+                         model_get_u32(m, "deepseek4.mtp.markov_rank", &rank);
+        if (blk > DS4_MTP_MAX_BLOCK) {
+            ds4_die("V4.1 metadata draft block exceeds fixed verification buffers");
+        }
+        int32_t tids[DS4_MTP_MAX_TOWERS * 2];
+        const uint32_t nt = have ? v41_arr_i32(m, "deepseek4.mtp.target_layers", tids, DS4_MTP_MAX_TOWERS * 2) : 0;
+        if (have && nt) {
+            v->mtp_block = blk; v->mtp_used = used; v->mtp_noise_id = noise; v->mtp_markov_rank = rank;
+            v->n_mtp_target = nt;
+            for (uint32_t i = 0; i < nt; i++) {
+                if (tids[i] < 0 || (uint32_t)tids[i] >= DS4_N_LAYER) ds4_die("mtp target layer out of range");
+                v->mtp_target[i] = (int16_t)tids[i];
+                v->mtp_target_slot[tids[i]] = (int16_t)i;
+            }
+        } else {
+            fprintf(stderr, "ds4: [v41] this GGUF carries the towers but not the draft parameters (block_size/target_layers), so speculative decode stays unarmed\n");
+        }
+    }
+    v->candidate_source_layer = (int32_t)required_u32(m, "deepseek4.attention.candidate.source_layer");
+    v->candidate_topk_blocks = (int32_t)required_u32(m, "deepseek4.attention.candidate.topk_blocks");
+    v->candidate_block_size = (int32_t)required_u32(m, "deepseek4.attention.candidate.block_size");
+
+    n = v41_arr_i32(m, "deepseek4.engram.layer_ids", ids, DS4_V41_MAX_ENGRAM);
+    v->n_engram = n;
+    uint64_t rows[DS4_V41_MAX_ENGRAM];
+    if (v41_arr_u64(m, "deepseek4.engram.num_embeddings", rows, DS4_V41_MAX_ENGRAM) != n)
+        ds4_die("engram.num_embeddings count != engram.layer_ids count");
+    for (uint32_t i = 0; i < n; i++) {
+        if (ids[i] < 0 || (uint32_t)ids[i] >= DS4_N_LAYER) ds4_die("engram layer id out of range");
+        v->engram_layer[i] = ids[i];
+        v->engram_index_of[ids[i]] = (int16_t)i;
+        v->engram_rows[i] = rows[i];
+        char key[96]; ds4_str s;
+        snprintf(key, sizeof key, "deepseek4.engram.%u.table_path", i);
+        if (!model_get_string(m, key, &s) || s.len == 0 || s.len >= sizeof v->engram_table_path[i]) {
+            fprintf(stderr, "ds4: V4.1 required key is missing: %s\n", key); exit(1);
+        }
+        memcpy(v->engram_table_path[i], s.ptr, s.len); v->engram_table_path[i][s.len] = 0;
+        /* The table opens at the first forward and loading takes minutes;
+         * warn now so the first request is not the discovery.  Warn only:
+         * the --score-ids no-engram path never reads the table. */
+        if (access(v->engram_table_path[i], R_OK) != 0)
+            fprintf(stderr, "ds4: engram table %u not readable at %s (the converter's path; point it at the shard directory when serving)\n",
+                    i, v->engram_table_path[i]);
+        snprintf(key, sizeof key, "deepseek4.engram.%u.weight_offset", i); v->engram_weight_off[i] = v41_req_u64(m, key);
+        snprintf(key, sizeof key, "deepseek4.engram.%u.scale_offset", i);  v->engram_scale_off[i]  = v41_req_u64(m, key);
+    }
+    v->engram_max_ngram = required_u32(m, "deepseek4.engram.max_ngram_size");
+    v->engram_heads     = required_u32(m, "deepseek4.engram.head_count");
+    v->engram_head_dim  = required_u32(m, "deepseek4.engram.head_dim");
+    v->engram_vocab     = required_u32(m, "deepseek4.engram.vocab_size");
+    v->engram_cvocab    = required_u32(m, "deepseek4.engram.compressed_vocab_size");
+    v->engram_pad       = required_u32(m, "deepseek4.engram.pad_id_compressed");
+
+    v41_report_wiring(1);
 }
 
 static void config_expect_f32(const char *name, float got, float expected);
@@ -7457,6 +7958,9 @@ static void config_validate_deepseek4_model(const ds4_model *m) {
     config_expect_f32("hyper_connection.epsilon", hc_eps, DS4_HC_EPS);
     const bool expert_weight_norm = required_bool(m, "deepseek4.expert_weights_norm");
     config_expect_bool("expert_weights_norm", expert_weight_norm, true);
+
+    memset(&g_ds4_v41, 0, sizeof g_ds4_v41);
+    if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) v41_load_wiring(m);
 }
 
 static void config_validate_motif3_model(const ds4_model *m) {
@@ -9234,6 +9738,210 @@ static void weights_bind_qwen35(ds4_weights *w, const ds4_model *m) {
     if (!g_host_bind_map) weights_validate_layout(w, m);
 }
 
+/* ---- DeepSeek V4.1 bind and layout (core_bind_v41.c:41-202) ----
+ *
+ * Three differences from V4: the skeleton is fp4x32 or q4_K, the routed
+ * experts are one blk.L.ffn_exps_vq.blob per layer (the per-expert tensors do
+ * not exist), and the compressor/indexer names sit on the metadata's source
+ * layers with no attn_compressor_ape at all (ratio 1 has no gate).  There is
+ * no output_hc_*: the head reuses the last ffn_pre.  The draft towers mirror
+ * a layer's set minus engram and compressed KV; their experts are one blob or
+ * per-expert fp4x32 (the bind probes the blob first). */
+
+/* The engine's expect_skel: accept q4_K or fp4x32 and nothing else.  The
+ * type passthrough makes a third type fail the ordinary type check. */
+static void v41_expect_skel(const ds4_tensor *t, uint32_t ndim, uint64_t d0, uint64_t d1) {
+    if (!t) return;
+    tensor_expect_layout(t, t->type == DS4_TENSOR_Q4_K ? DS4_TENSOR_Q4_K : DS4_TENSOR_FP4X32,
+                         ndim, d0, d1, 0);
+}
+
+static void weights_validate_v41_layout(const ds4_weights *w) {
+    const ds4_v41_cfg *v = &g_ds4_v41;
+    const uint64_t E = DS4_N_EMBD;
+    const uint64_t hc_dim = E * DS4_N_HC;
+    const uint64_t mix = 2u * DS4_N_HC + (uint64_t)DS4_N_HC * DS4_N_HC;
+    const uint64_t q_dim = (uint64_t)DS4_N_HEAD * DS4_N_HEAD_DIM;
+    const uint64_t out_low = (uint64_t)DS4_N_OUT_GROUP * DS4_N_LORA_O;
+    const uint64_t grp_in = (uint64_t)DS4_N_HEAD_DIM * (DS4_N_HEAD / DS4_N_OUT_GROUP);
+
+    v41_expect_skel(w->token_embd, 2, E, DS4_N_VOCAB);
+    tensor_expect_optional(w->output_norm, DS4_TENSOR_F32, 1, E, 0, 0);
+    v41_expect_skel(w->output, 2, E, DS4_N_VOCAB);
+    if (v->n_engram) {
+        tensor_expect_optional(w->engram_token_map, DS4_TENSOR_I32, 1, DS4_N_VOCAB, 0, 0);
+        tensor_expect_optional(w->engram_multipliers, DS4_TENSOR_I64, 2, v->engram_max_ngram, v->n_engram, 0);
+        tensor_expect_optional(w->engram_offsets, DS4_TENSOR_I64, 2,
+                               (uint64_t)(v->engram_max_ngram - 1) * v->engram_heads, v->n_engram, 0);
+        if (!w->engram_primes || w->engram_primes->type != DS4_TENSOR_I64 || w->engram_primes->ndim != 3)
+            ds4_die("V4.1 engram.primes must be I64 [heads][ngram-1][n_engram]");
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        const uint32_t ratio = ds4_layer_compress_ratio(il);
+
+        tensor_expect_optional(l->hc_attn_fn, DS4_TENSOR_F32, 2, hc_dim, mix, 0);
+        tensor_expect_optional(l->hc_attn_scale, DS4_TENSOR_F32, 1, 3, 0, 0);
+        tensor_expect_optional(l->hc_attn_base, DS4_TENSOR_F32, 1, mix, 0, 0);
+        tensor_expect_optional(l->attn_norm, DS4_TENSOR_F32, 1, E, 0, 0);
+        v41_expect_skel(l->attn_q_a, 2, E, DS4_N_LORA_Q);
+        tensor_expect_optional(l->attn_q_a_norm, DS4_TENSOR_F32, 1, DS4_N_LORA_Q, 0, 0);
+        v41_expect_skel(l->attn_q_b, 2, DS4_N_LORA_Q, q_dim);
+        v41_expect_skel(l->attn_kv, 2, E, DS4_N_HEAD_DIM);
+        tensor_expect_optional(l->attn_kv_a_norm, DS4_TENSOR_F32, 1, DS4_N_HEAD_DIM, 0, 0);
+        tensor_expect_optional(l->attn_sinks, DS4_TENSOR_F32, 1, DS4_N_HEAD, 0, 0);
+        v41_expect_skel(l->attn_output_a, 2, grp_in, out_low);
+        v41_expect_skel(l->attn_output_b, 2, out_low, E);
+        if (v->is_kv_source[il]) {
+            tensor_expect_optional(l->attn_compressor_kv, DS4_TENSOR_BF16, 2, E, DS4_N_HEAD_DIM, 0);
+            if (ratio > 1) tensor_expect_optional(l->attn_compressor_gate, DS4_TENSOR_BF16, 2, E, DS4_N_HEAD_DIM, 0);
+            tensor_expect_optional(l->attn_compressor_norm, DS4_TENSOR_F32, 1, DS4_N_HEAD_DIM, 0, 0);
+            tensor_expect_optional(l->indexer_wk, DS4_TENSOR_BF16, 2, DS4_N_HEAD_DIM, DS4_N_INDEXER_HEAD_DIM, 0);
+            tensor_expect_optional(l->indexer_k_norm, DS4_TENSOR_F32, 1, DS4_N_INDEXER_HEAD_DIM, 0, 0);
+        }
+        if (v->is_index_source[il]) {
+            v41_expect_skel(l->indexer_attn_q_b, 2, DS4_N_LORA_Q,
+                            (uint64_t)DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM);
+            tensor_expect_optional(l->indexer_proj, DS4_TENSOR_BF16, 2, E, DS4_N_INDEXER_HEAD, 0);
+        }
+        tensor_expect_optional(l->hc_ffn_fn, DS4_TENSOR_F32, 2, hc_dim, mix, 0);
+        tensor_expect_optional(l->hc_ffn_scale, DS4_TENSOR_F32, 1, 3, 0, 0);
+        tensor_expect_optional(l->hc_ffn_base, DS4_TENSOR_F32, 1, mix, 0, 0);
+        tensor_expect_optional(l->ffn_norm, DS4_TENSOR_F32, 1, E, 0, 0);
+        tensor_expect_optional(l->ffn_gate_inp, DS4_TENSOR_BF16, 2, E, DS4_N_EXPERT, 0);
+        tensor_expect_optional(l->ffn_exp_probs_b, DS4_TENSOR_F32, 1, DS4_N_EXPERT, 0, 0);
+        v41_expect_skel(l->ffn_gate_shexp, 2, E, DS4_N_FF_EXP);
+        v41_expect_skel(l->ffn_up_shexp, 2, E, DS4_N_FF_EXP);
+        v41_expect_skel(l->ffn_down_shexp, 2, DS4_N_FF_EXP, E);
+        if (v->engram_index_of[il] >= 0) {
+            tensor_expect_optional(l->engram_wkv, DS4_TENSOR_FP8_32X32, 2,
+                                   (uint64_t)(v->engram_max_ngram - 1) * v->engram_heads * v->engram_head_dim,
+                                   E * (DS4_N_HC + 1), 0);
+            tensor_expect_optional(l->engram_q, DS4_TENSOR_F32, 2, E, DS4_N_HC, 0);
+            tensor_expect_optional(l->engram_k, DS4_TENSOR_F32, 2, E, DS4_N_HC, 0);
+        }
+    }
+    /* The engine checks nothing for the towers' dims (core_bind_v41.c has no
+     * expect for them); presence was required at bind. */
+    fprintf(stderr, "ds4: [v41] layout ok (skel q4_K/fp4x32, %u layers, %u towers)\n",
+            DS4_N_LAYER, v->mtp_towers);
+}
+
+static void weights_bind_v41(ds4_weights *w, const ds4_model *m) {
+    const ds4_v41_cfg *v = &g_ds4_v41;
+
+    if (!v->active) ds4_die("weights_bind_v41 called without V4.1 wiring");
+    bind_census_begin();
+    w->token_embd  = required_tensor(m, "token_embd.weight");
+    w->output_norm = required_tensor(m, "output_norm.weight");
+    w->output      = required_tensor(m, "output.weight");
+    w->engram_token_map   = model_find_tensor(m, "engram.token_map");
+    w->engram_multipliers = model_find_tensor(m, "engram.multipliers");
+    w->engram_primes      = model_find_tensor(m, "engram.primes");
+    w->engram_offsets     = model_find_tensor(m, "engram.offsets");
+    if (v->n_engram && !(w->engram_token_map && w->engram_multipliers && w->engram_primes && w->engram_offsets))
+        ds4_die("V4.1 engram hash constant tensors missing (engram.token_map/multipliers/primes/offsets)");
+
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        ds4_layer_weights *l = &w->layer[il];
+        const uint32_t ratio = ds4_layer_compress_ratio(il);
+
+        l->hc_attn_fn      = required_tensorf(m, "blk.%u.hc_attn_fn.weight", il);
+        l->hc_attn_scale   = required_tensorf(m, "blk.%u.hc_attn_scale.weight", il);
+        l->hc_attn_base    = required_tensorf(m, "blk.%u.hc_attn_base.weight", il);
+        l->attn_norm       = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+        l->attn_q_a        = required_tensorf(m, "blk.%u.attn_q_a.weight", il);
+        l->attn_q_a_norm   = required_tensorf(m, "blk.%u.attn_q_a_norm.weight", il);
+        l->attn_q_b        = required_tensorf(m, "blk.%u.attn_q_b.weight", il);
+        l->attn_kv         = required_tensorf(m, "blk.%u.attn_kv.weight", il);
+        l->attn_kv_a_norm  = required_tensorf(m, "blk.%u.attn_kv_a_norm.weight", il);
+        l->attn_sinks      = required_tensorf(m, "blk.%u.attn_sinks.weight", il);
+        l->attn_output_a   = required_tensorf(m, "blk.%u.attn_output_a.weight", il);
+        l->attn_output_b   = required_tensorf(m, "blk.%u.attn_output_b.weight", il);
+        if (v->is_kv_source[il]) {
+            l->attn_compressor_kv   = required_tensorf(m, "blk.%u.attn_compressor_kv.weight", il);
+            l->attn_compressor_norm = required_tensorf(m, "blk.%u.attn_compressor_norm.weight", il);
+            if (ratio > 1) {
+                l->attn_compressor_gate = required_tensorf(m, "blk.%u.attn_compressor_gate.weight", il);
+            }
+            l->indexer_wk     = required_tensorf(m, "blk.%u.indexer.wk.weight", il);
+            l->indexer_k_norm = required_tensorf(m, "blk.%u.indexer.k_norm.weight", il);
+        }
+        if (v->is_index_source[il]) {
+            l->indexer_attn_q_b = required_tensorf(m, "blk.%u.indexer.attn_q_b.weight", il);
+            l->indexer_proj     = required_tensorf(m, "blk.%u.indexer.proj.weight", il);
+        }
+        l->hc_ffn_fn       = required_tensorf(m, "blk.%u.hc_ffn_fn.weight", il);
+        l->hc_ffn_scale    = required_tensorf(m, "blk.%u.hc_ffn_scale.weight", il);
+        l->hc_ffn_base     = required_tensorf(m, "blk.%u.hc_ffn_base.weight", il);
+        l->ffn_norm        = required_tensorf(m, "blk.%u.ffn_norm.weight", il);
+        l->ffn_gate_inp    = required_tensorf(m, "blk.%u.ffn_gate_inp.weight", il);
+        l->ffn_exp_probs_b = required_tensorf(m, "blk.%u.exp_probs_b.bias", il);
+        l->ffn_exps_vq     = required_tensorf(m, "blk.%u.ffn_exps_vq.blob", il);
+        l->ffn_gate_exps   = NULL;
+        l->ffn_up_exps     = NULL;
+        l->ffn_down_exps   = NULL;
+        l->ffn_gate_shexp  = required_tensorf(m, "blk.%u.ffn_gate_shexp.weight", il);
+        l->ffn_up_shexp    = required_tensorf(m, "blk.%u.ffn_up_shexp.weight", il);
+        l->ffn_down_shexp  = required_tensorf(m, "blk.%u.ffn_down_shexp.weight", il);
+        if (v->engram_index_of[il] >= 0) {
+            l->engram_wkv = required_tensorf(m, "blk.%u.engram_wkv.weight", il);
+            l->engram_q   = required_tensorf(m, "blk.%u.engram_q.weight", il);
+            l->engram_k   = required_tensorf(m, "blk.%u.engram_k.weight", il);
+        }
+    }
+
+    /* Draft towers, in the base GGUF (core_bind_v41.c:101-146). */
+    for (uint32_t T = 0; T < v->mtp_towers; T++) {
+        ds4_layer_weights *t = &w->v41_towers.tower[T];
+        t->hc_attn_fn      = required_tensorf(m, "mtp.%u.hc_attn_fn.weight", T);
+        t->hc_attn_scale   = required_tensorf(m, "mtp.%u.hc_attn_scale.weight", T);
+        t->hc_attn_base    = required_tensorf(m, "mtp.%u.hc_attn_base.weight", T);
+        t->attn_norm       = required_tensorf(m, "mtp.%u.attn_norm.weight", T);
+        t->attn_q_a        = required_tensorf(m, "mtp.%u.attn_q_a.weight", T);
+        t->attn_q_a_norm   = required_tensorf(m, "mtp.%u.attn_q_a_norm.weight", T);
+        t->attn_q_b        = required_tensorf(m, "mtp.%u.attn_q_b.weight", T);
+        t->attn_kv         = required_tensorf(m, "mtp.%u.attn_kv.weight", T);
+        t->attn_kv_a_norm  = required_tensorf(m, "mtp.%u.attn_kv_a_norm.weight", T);
+        t->attn_sinks      = required_tensorf(m, "mtp.%u.attn_sinks.weight", T);
+        t->attn_output_a   = required_tensorf(m, "mtp.%u.attn_output_a.weight", T);
+        t->attn_output_b   = required_tensorf(m, "mtp.%u.attn_output_b.weight", T);
+        t->hc_ffn_fn       = required_tensorf(m, "mtp.%u.hc_ffn_fn.weight", T);
+        t->hc_ffn_scale    = required_tensorf(m, "mtp.%u.hc_ffn_scale.weight", T);
+        t->hc_ffn_base     = required_tensorf(m, "mtp.%u.hc_ffn_base.weight", T);
+        t->ffn_norm        = required_tensorf(m, "mtp.%u.ffn_norm.weight", T);
+        t->ffn_gate_inp    = required_tensorf(m, "mtp.%u.ffn_gate_inp.weight", T);
+        t->ffn_exp_probs_b = required_tensorf(m, "mtp.%u.exp_probs_b.bias", T);
+        t->ffn_gate_shexp  = required_tensorf(m, "mtp.%u.ffn_gate_shexp.weight", T);
+        t->ffn_up_shexp    = required_tensorf(m, "mtp.%u.ffn_up_shexp.weight", T);
+        t->ffn_down_shexp  = required_tensorf(m, "mtp.%u.ffn_down_shexp.weight", T);
+        /* Two on-disk expert forms, never both: one VQ blob (this artifact)
+         * or per-expert fp4x32 tensors (core_bind_v41.c:126-134). */
+        char bn[96];
+        snprintf(bn, sizeof bn, "mtp.%u.ffn_exps_vq.blob", T);
+        w->v41_towers.exps_vq[T] = model_find_tensor(m, bn);
+        if (!w->v41_towers.exps_vq[T]) {
+            for (uint32_t e = 0; e < v->mtp_experts; e++) {
+                char nm[96];
+                snprintf(nm, sizeof nm, "mtp.%u.ffn_exp.%u.gate.weight", T, e); w->v41_towers.exp_gate[T][e] = required_tensor(m, nm);
+                snprintf(nm, sizeof nm, "mtp.%u.ffn_exp.%u.up.weight", T, e);   w->v41_towers.exp_up[T][e]   = required_tensor(m, nm);
+                snprintf(nm, sizeof nm, "mtp.%u.ffn_exp.%u.down.weight", T, e); w->v41_towers.exp_down[T][e] = required_tensor(m, nm);
+            }
+        }
+    }
+    if (v->mtp_towers) {
+        w->v41_towers.main_proj   = required_tensor(m, "mtp.main_proj.weight");
+        w->v41_towers.main_norm   = required_tensor(m, "mtp.main_norm.weight");
+        w->v41_towers.markov_embd = required_tensor(m, "mtp.markov_embd.weight");
+        w->v41_towers.markov_head = required_tensor(m, "mtp.markov_head.weight");
+        w->v41_towers.confidence  = required_tensor(m, "mtp.confidence.weight");
+        w->v41_towers.out_norm    = required_tensor(m, "mtp.out_norm.weight");
+    }
+
+    if (!g_host_bind_map) weights_validate_v41_layout(w);
+    bind_census_end();
+}
+
 static void weights_bind(
         ds4_weights     *w,
         const ds4_model *m,
@@ -9328,6 +10036,10 @@ static void weights_bind(
         }
         w->dots3_token_embd_mtp = required_tensor(m, "token_embd_mtp.weight");
         if (!g_host_bind_map) weights_validate_layout(w, m);
+        return;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK4 && DS4_MODEL_VARIANT == DS4_VARIANT_V41) {
+        weights_bind_v41(w, m);
         return;
     }
     w->token_embd       = required_tensor(m, "token_embd.weight");
@@ -9589,6 +10301,51 @@ static DS4_MAYBE_UNUSED bool weights_model_map_spans(
     }
     spans->len = out;
     return spans->len != 0;
+}
+
+/* ---- --mem-budget-mb: the process memory red line (unit Z) -------------
+ * Ported from core_util.c:151-256 with the Linux behavior the engine
+ * actually has there (its own comment, core_util.c:141-145: "Linux/CUDA
+ * hosts rely on their own guards"): ds4_phys_footprint_bytes() returns 0
+ * and the pressure level reads normal, so the 90% footprint watchdog and
+ * the always-on pressure guard are inert on this platform — the engine
+ * starts the sampling thread anyway, the port does not.  What is active
+ * and ported here is the budget global and the L1 pre-flight gate
+ * (core_util.c:236-256): called once the resident byte total is known,
+ * before any GPU buffer is bound, and refuses the load when the planned
+ * resident crosses 85% of the budget.  The engine's AUTO offload verdict
+ * (core_engine_open.c:319-330) has no port counterpart: the port's
+ * residency is its own memgov plan. */
+static uint64_t g_mem_budget_bytes = 0;
+
+void ds4_set_mem_budget_mb(int mb) {
+    if (mb > 0) g_mem_budget_bytes = (uint64_t)mb * 1024ull * 1024ull;
+}
+
+uint64_t ds4_runtime_mem_budget_bytes(void) {
+    return g_mem_budget_bytes;
+}
+
+#define DS4_L1_GATE_FRAC 0.85   /* core_util.c:10 */
+#define DS4_GIB (1024.0 * 1024.0 * 1024.0)   /* core_internal.h:91 */
+
+void ds4_l1_budget_gate(uint64_t resident_model_bytes, uint64_t kv_and_scratch_bytes) {
+    if (g_mem_budget_bytes == 0) return;
+    const uint64_t planned = resident_model_bytes + kv_and_scratch_bytes;
+    const uint64_t limit = (uint64_t)((double)g_mem_budget_bytes * DS4_L1_GATE_FRAC);
+    if (planned > limit) {
+        fprintf(stderr,
+                "\n[ds4-l1-gate] planned resident %.2f GiB (model %.2f + kv/scratch %.2f) "
+                "exceeds %.0f%% of the %.2f GiB budget -- refusing to load.\n",
+                (double)planned / DS4_GIB, (double)resident_model_bytes / DS4_GIB,
+                (double)kv_and_scratch_bytes / DS4_GIB,
+                DS4_L1_GATE_FRAC * 100.0, (double)g_mem_budget_bytes / DS4_GIB);
+        fflush(stderr);
+        _exit(137);
+    }
+    fprintf(stderr,
+            "ds4: L1 budget gate: planned resident %.2f GiB within %.2f GiB budget\n",
+            (double)planned / DS4_GIB, (double)g_mem_budget_bytes / DS4_GIB);
 }
 
 #ifndef DS4_NO_GPU
@@ -18378,6 +19135,14 @@ static bool metal_graph_matmul_plain_tensor(
         uint64_t                out_dim,
         const ds4_gpu_tensor *x,
         uint64_t                n_tok);
+static bool plain_graph_matmul_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_model        *model,
+        const ds4_tensor       *w,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok);
 
 /* One decode HC stage (attn or ffn side): rms_norm_plain(flat_hc) ->
  * hc fn matmul (hc_mix) -> sinkhorn split + weighted residual sum (+ fused
@@ -18509,10 +19274,13 @@ static bool metal_graph_encode_decode_layer_impl(
     const uint32_t group_dim = DS4_N_HEAD_DIM * group_heads;
     const uint32_t rank = DS4_N_LORA_O;
     const uint32_t shared_dim = (uint32_t)layer->ffn_gate_shexp->dim[1];
-    const uint64_t expert_in_dim = layer->ffn_gate_exps->dim[0];
-    const uint64_t expert_mid_dim = layer->ffn_gate_exps->dim[1];
-    const uint64_t down_in_dim = layer->ffn_down_exps->dim[0];
-    const uint64_t routed_out_dim = layer->ffn_down_exps->dim[1];
+    /* V4.1 routes through one VQ blob per layer; the per-expert tensors do
+     * not exist, so its dims come from the shape (E -> FF -> E). */
+    const bool v41 = DS4_MODEL_VARIANT == DS4_VARIANT_V41;
+    const uint64_t expert_in_dim = v41 ? DS4_N_EMBD : layer->ffn_gate_exps->dim[0];
+    const uint64_t expert_mid_dim = v41 ? DS4_N_FF_EXP : layer->ffn_gate_exps->dim[1];
+    const uint64_t down_in_dim = v41 ? DS4_N_FF_EXP : layer->ffn_down_exps->dim[0];
+    const uint64_t routed_out_dim = v41 ? DS4_N_EMBD : layer->ffn_down_exps->dim[1];
     const bool compressed = ds4_layer_compress_ratio(il) != 0;
     const float freq_base = layer_rope_freq_base(il);
     const float freq_scale = layer_rope_freq_scale(il);
@@ -19387,9 +20155,9 @@ static bool metal_graph_encode_decode_layer_impl(
     if (ok) {
         metal_graph_debug_dump_tensor("ffn_norm", g->ffn_norm, DS4_N_EMBD, il, pos);
     }
-    const uint64_t gate_row_bytes = routed_expert_row_bytes(layer->ffn_gate_exps);
+    const uint64_t gate_row_bytes = v41 ? 0u : routed_expert_row_bytes(layer->ffn_gate_exps);
     const uint64_t gate_expert_bytes = expert_mid_dim * gate_row_bytes;
-    const uint64_t down_row_bytes = routed_expert_row_bytes(layer->ffn_down_exps);
+    const uint64_t down_row_bytes = v41 ? 0u : routed_expert_row_bytes(layer->ffn_down_exps);
     const uint64_t down_expert_bytes = routed_out_dim * down_row_bytes;
     if (ok) ok = metal_graph_decode_router(g, model, layer, token);
     DS4_METAL_PROFILE_DECODE_STAGE("router");
@@ -19399,7 +20167,21 @@ static bool metal_graph_encode_decode_layer_impl(
         metal_graph_debug_dump_i32_tensor("ffn_moe_topk", g->router_selected, DS4_N_EXPERT_USED, il, pos);
         metal_graph_debug_dump_tensor("ffn_moe_weights_scaled", g->router_weights, DS4_N_EXPERT_USED, il, pos);
     }
-    if (ok) ok = ds4_gpu_routed_moe_one_tensor(g->routed_out,
+    if (ok && v41) {
+        /* V4.1 routed experts: one VQ blob per layer through the fused ds41
+         * worker (engine: ds4_gpu_v41_routed_moe_tensor, cuda_v41_3.inc.cu). */
+        ok = ds4_gpu_v41_routed_moe_tensor(g->routed_out,
+                                             model->map, model->size,
+                                             layer->ffn_exps_vq->abs_offset,
+                                             layer->ffn_exps_vq->bytes,
+                                             (uint32_t)expert_in_dim,
+                                             (uint32_t)down_in_dim,
+                                             (uint32_t)routed_out_dim,
+                                             g->router_selected, g->router_weights,
+                                             DS4_N_EXPERT,
+                                             DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->ffn_norm,
+                                             il, 1) != 0;
+    } else if (ok) ok = ds4_gpu_routed_moe_one_tensor(g->routed_out,
                                                  g->routed_gate,
                                                  g->routed_up,
                                                  g->routed_mid,
@@ -19438,8 +20220,18 @@ static bool metal_graph_encode_decode_layer_impl(
     }
     const bool fuse_shared_gate_up =
         !g->quality &&
-        getenv("DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION") == NULL;
-    if (ok && fuse_shared_gate_up) {
+        getenv("DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION") == NULL &&
+        !v41;
+    if (ok && v41) {
+        /* V4.1's shared expert is fp4x32/q4_K, not Q8_0; the type-dispatched
+         * plain matmul serves the skeleton (plain_graph_matmul_tensor). */
+        ok = plain_graph_matmul_tensor(g->shared_gate, model, layer->ffn_gate_shexp,
+                                       DS4_N_EMBD, shared_dim, g->ffn_norm, 1) &&
+             plain_graph_matmul_tensor(g->shared_up, model, layer->ffn_up_shexp,
+                                       DS4_N_EMBD, shared_dim, g->ffn_norm, 1) &&
+             ds4_gpu_swiglu_tensor(g->shared_mid, g->shared_gate, g->shared_up,
+                                   shared_dim, DS4_SWIGLU_CLAMP_EXP, 1.0f) != 0;
+    } else if (ok && fuse_shared_gate_up) {
         ok = ds4_gpu_shared_gate_up_swiglu_q8_0_tensor(g->shared_gate,
                                                          g->shared_up,
                                                          g->shared_mid,
@@ -19466,8 +20258,11 @@ static bool metal_graph_encode_decode_layer_impl(
     DS4_METAL_PROFILE_DECODE_STAGE("shared_gate_up");
     const bool keep_ffn_out = metal_graph_needs_ffn_out(g, il, pos);
     const bool fuse_shared_down_hc =
-        !keep_ffn_out && !metal_graph_use_reference_shared_down_hc();
-    if (ok && fuse_shared_down_hc) {
+        !keep_ffn_out && !metal_graph_use_reference_shared_down_hc() && !v41;
+    if (ok && v41) {
+        ok = plain_graph_matmul_tensor(g->shared_out, model, layer->ffn_down_shexp,
+                                       shared_dim, DS4_N_EMBD, g->shared_mid, 1);
+    } else if (ok && fuse_shared_down_hc) {
         ok = ds4_gpu_shared_down_hc_expand_q8_0_tensor(g->after_ffn_hc,
                                                          g->shared_out,
                                                          model->map,
@@ -70847,6 +71642,13 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
         getenv("DS4_METAL_GRAPH_DUMP_PREFIX") != NULL ||
         getenv("DS4_NO_BOOT_PREWARM") != NULL)
         return;
+    /* V4.1 (ds41) has no session graph to warm: the engine's server never
+     * prewarms (no boot_prewarm anywhere in its tree) and this warmup's
+     * ring / token-tile dispatch machinery segfaults on the v41 artifact
+     * (measured on the Spark 2026-10-10: SIGSEGV, exit 139, right after the
+     * plan note; the same boot reaches "listening on" under
+     * DS4_NO_BOOT_PREWARM=1). */
+    if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) return;
     e->boot_prewarm_done = true;
     const double warm_t0 = now_sec();
     /* memgov D0b-3 (S8): prewarm allocates by design (post-placement
@@ -71597,6 +72399,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     load_end,
                     spans.len,
                     (double)span_bytes / 1073741824.0);
+            ds4_l1_budget_gate(span_bytes, 0);   /* core_engine_open.c:449 */
             model_map_ok = ds4_gpu_set_model_map_spans(e->model.map,
                                                         e->model.size,
                                                         offsets,
@@ -71607,6 +72410,31 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             free(sizes);
             free(spans.v);
         } else {
+            /* --mem-budget-mb (unit Z): the engine's L1 pre-flight gate
+             * (core_util.c:236-256), before any GPU buffer is bound.  The
+             * engine's figure for the V4.1 artifact is its typed backbone
+             * spans, not the raw range: the vq blobs are not typed tensors,
+             * and the engine's own offload branch (forced for the blobs,
+             * core_engine_open.c:331-338) gates the 4.44 GiB backbone --
+             * measured on the Spark 2026-10-10 with install.sh's own
+             * --mem-budget-mb 110000: "L1 budget gate: planned resident
+             * 4.44 GiB within 107.42 GiB budget".  The port mirrors that
+             * figure so the gate fires on the same plans the engine's does.
+             * Other families keep the engine's default-branch figure (the
+             * tensor data range). */
+            if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) {
+                ds4_model_map_span_vec spans;
+                if (weights_model_map_spans(&e->weights, 0, UINT32_MAX, true, &spans)) {
+                    uint64_t resident = 0;
+                    for (uint32_t i = 0; i < spans.len; i++) {
+                        resident += spans.v[i].end - spans.v[i].off;
+                    }
+                    free(spans.v);
+                    ds4_l1_budget_gate(resident, 0);
+                }
+            } else {
+                ds4_l1_budget_gate(e->model.size - e->model.tensor_data_pos, 0);
+            }
             model_map_ok = ds4_gpu_set_model_map_range(e->model.map,
                                                        e->model.size,
                                                        e->model.tensor_data_pos,
@@ -78102,3 +78930,48 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
     if (errlen) { snprintf(err, errlen, "IQuest-Q1 requires CUDA"); } return 1;
 }
 #endif
+
+/* DeepSeek V4.1 native forward (P4-4): the eager single-state score path.
+ * Guarded out of CPU-only builds; ds4_v41_score_ids is the C gate driver. */
+#ifndef DS4_NO_GPU
+#include "ds4_ds41_forward.inc"
+/* Decode sampling (unit H): the pick fork, the device readback arms and the
+ * host penalty route (the engine's core_v41_sample.c + core_decode_penalty.c).
+ * Between the forward and the graph: the graph's wait calls v41_sample_pick. */
+#include "ds4_ds41_sample.inc"
+/* Decode-step CUDA graph orchestration (E3): the port of core_decode_graph.c;
+ * same TU (it calls the forward's statics). */
+#include "ds4_ds41_graph.inc"
+/* V4.1 KV prefix reuse (U-B): the port of core_v41_kvreuse.c; same TU (the
+ * generate entry calls its restore/save, the bridge its set/last_reused/peek). */
+#include "ds4_ds41_kvreuse.inc"
+/* DSpark draft towers (P5/E1): the host side of core_v41_draft.c; same TU
+ * (it calls the forward's statics and the graph entries). */
+#include "ds4_ds41_draft.inc"
+#ifdef DS4_TEST_HOOKS
+/* The engine's units_test_sample_pick_greedy_hook harness (t_units.c:230):
+ * drive v41_sample_pick with a dev_sample state over a hand-built slot/batch.
+ * The engine's test builds the state itself (core_internal.h carries the full
+ * struct); the port's state is private to this TU, so the vector enters here.
+ * The face goes through the public setter -- the port's pick reads the global
+ * g_decode_sampling (the engine's reads st->psamp; the port has no batch path
+ * to carry a per-request one, ds4_ds41_sample.inc). */
+int ds4_test_v41_sample_pick(const int32_t *slot, const int32_t *batch,
+                             uint32_t n, ds4_greedy_fn fn, void *ud,
+                             int32_t *want) {
+    if (!slot || !batch || !want || n == 0) { return 1; }
+    static ds4_v41_state st;   /* only dev_sample is read */
+    memset(&st, 0, sizeof st);
+    st.dev_sample = 1;
+    ds4_decode_sampling sp;
+    memset(&sp, 0, sizeof sp);
+    sp.temperature = 1.f;
+    sp.greedy_fn = fn;
+    sp.greedy_ud = ud;
+    ds4_engine_set_decode_sampling(&sp);
+    v41_sample_pick(&st, slot, batch, n, want);
+    ds4_engine_set_decode_sampling(NULL);
+    return 0;
+}
+#endif /* DS4_TEST_HOOKS */
+#endif /* DS4_NO_GPU */

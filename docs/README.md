@@ -38,6 +38,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Qwen](ds4-dfm-model-families.md#qwen-release-scope) | Q5, images, owner/cache setup and YaRN |
 | [Qwen derivatives](ds4-dfm-model-families.md#qwen-derivatives) | Uncensored, Swift and Darwin artifact-specific evidence |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |
+| [Qwen benchmark reference](qwen38-benchmark-reference.md) | Consolidated source limits, protocols, campaign numbers, candidate adoption and optimization target |
 | [GLM](ds4-dfm-model-families.md#glm-53-flash-release-scope) | Q2 + vision; recorded serial 2K qualification |
 | [GLM Uncensored](glm53-uncensored.md) | Mixed recipe, SSD/bank contracts and current verification boundaries |
 | [K2](ds4-dfm-model-families.md#k2-horizon-375b-release-scope) | MQ87, IFM tools, one-bank serving and disk limits |
@@ -50,6 +51,10 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [MiMo MOPD](ds4-dfm-model-families.md#mimo-mopd) | Separate artifact, text performance and DFlash boundaries |
 | [Naive](naive-n05-flash.md) | MQ87, banks, disk KV, long-context gates and drafter limits |
 | [IQuest-Q1](iquest-q1.md) | Canonical mixed weights, hybrid Q8 KV, embedded MTP and pending Spark gates |
+| [DeepSeek V4.1 Flash](ds4-dfm-model-families.md#deepseek-v41-flash-release-scope) | Serial lane, metadata context, sidecar/engram mounts and the embedded MTP contract |
+| [DeepSeek V4.1 Flash (ds41)](deepseek41-flash.md) | Artifact, 40-layer shape, serving contract, gates and recorded benchmarks |
+| [DeepSeek V4.1 Flash (plan)](deepseek41-port-plan.md) | Proposal: the vq8sh14 artifact, the C engine as source of truth, the gap inventory and the golden-set gate |
+| [DeepSeek V4.1 post-train (plan)](ds41-posttrain-plan.md) | The ③ producer, judge, apply and supervising HTTP API: units, ports and gates |
 
 ## Development
 
@@ -86,6 +91,7 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [September 7 prefill](qwen38-prefill-2026-09-07.md),
   [September 7 image/text/agent](qwen38-image-2026-09-07.md),
   [September 14 draft/prefix](qwen38-perf-2026-09-14.md),
+  [benchmark reference](qwen38-benchmark-reference.md),
   [October 2 Darwin images](qwen-vision-2026-10-02.md) and
   [follow-up rounds](qwen-vision-followup-2026-10-02.md).
 - **Solar:** [September 7](solar-open2-optimization-2026-09-07.md),
@@ -127,6 +133,13 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [session state](releases/bonsai-session-2026-09-30.md),
   [CUDA graph](releases/bonsai-cuda-graph-2026-09-30.md),
   [CPU reference](releases/bonsai-cpu-reference-2026-09-30.md).
+- **DeepSeek V4.1:** [capped-clock sweep and review qualification, October 13](benchmarks/ds41-spark-review-2026-10-13/README.md),
+  [five-case benchmark, October 13](benchmarks/ds41-spark-2026-10-13/README.md),
+  [prefill/decode, October 11](ds41-perf-2026-10-11.md),
+  [speed sweep, October 12](ds41-speed-bench-2026-10-12.md),
+  [raw 22-frontier CSV](../speed-bench/gb10_spark_ds41_862fd9a6.csv),
+  [r6 build CSV](../speed-bench/gb10_spark_ds41_1e7d8f24.csv),
+  [engine/fork compare chart](../speed-bench/ds41_engine_vs_fork_compare.png).
 
 ### Migration and inherited history
 

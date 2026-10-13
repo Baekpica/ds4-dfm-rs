@@ -2,7 +2,9 @@
 //! `ds4_server.c` at v0.6.5-dfm. DSML greedy / required-prefix sampling
 //! and corrective retry (`retry`) are host-owned.
 
-use crate::dsml::{DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy};
+use crate::dsml::{
+    dsml_decode_state_is_syntax, DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy,
+};
 use crate::json::{json_escape_bytes, json_minify_raw_value, json_raw_value, json_string, Json};
 use crate::parse::{ToolCall, ToolSchemaOrder};
 use crate::render::{
@@ -31,6 +33,19 @@ pub const DSML_INVOKE_START_SHORT: &str = "<DSML｜invoke";
 pub const DSML_INVOKE_END_SHORT: &str = "</DSML｜invoke>";
 pub const DSML_PARAM_START_SHORT: &str = "<DSML｜parameter";
 pub const DSML_PARAM_END_SHORT: &str = "</DSML｜parameter>";
+/// The official V4.1 encoding.py spelling (the tokenizer generation that
+/// carries <｜System｜>): the block name and the tag names all open with a space --
+/// `<｜ calls>`, `<｜ invoke`, `<｜ parameter` (engine server_types.h
+/// DS4_TOOL_CALLS_START_SPACED, 4294136).  String values are written raw in
+/// this generation and are NOT entity-unescaped on the way back
+/// (server_dsml_stream.c dsml_value_unescape; only the render-side `&lt;`
+/// guard before the closing tag is restored).
+pub const DSML_TOOL_CALLS_START_SPACED: &str = "<｜DSML｜ calls>";
+pub const DSML_TOOL_CALLS_END_SPACED: &str = "</｜DSML｜ calls>";
+pub const DSML_INVOKE_START_SPACED: &str = "<｜DSML｜ invoke";
+pub const DSML_INVOKE_END_SPACED: &str = "</｜DSML｜ invoke>";
+pub const DSML_PARAM_START_SPACED: &str = "<｜DSML｜ parameter";
+pub const DSML_PARAM_END_SPACED: &str = "</｜DSML｜ parameter>";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedGenerated {
@@ -250,6 +265,7 @@ fn dsml_parse_nested_params_object(
     Some(out)
 }
 
+#[derive(Clone, Copy)]
 struct DsmlStyle {
     tool_calls_start: &'static [u8],
     tool_calls_end: &'static [u8],
@@ -257,6 +273,103 @@ struct DsmlStyle {
     invoke_end: &'static [u8],
     param_start: &'static [u8],
     param_end: &'static [u8],
+    /// The old generations write `&`/`<` in string values as XML entities and
+    /// the parse reverses them; the official spaced generation writes values
+    /// raw (engine server_dsml_stream.c dsml_value_unescape, 4294136).
+    entity_values: bool,
+}
+
+/// The engine's four spellings in its table's order (server_dsml_stream.c:5,
+/// dsml_syntaxes): long, short, plain, spaced.  Only the spaced generation
+/// differs on values (entity_values = false).
+const DSML_STYLES: [DsmlStyle; 4] = [
+    DsmlStyle {
+        tool_calls_start: DSML_TOOL_CALLS_START.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END.as_bytes(),
+        invoke_start: DSML_INVOKE_START.as_bytes(),
+        invoke_end: DSML_INVOKE_END.as_bytes(),
+        param_start: DSML_PARAM_START.as_bytes(),
+        param_end: DSML_PARAM_END.as_bytes(),
+        entity_values: true,
+    },
+    DsmlStyle {
+        tool_calls_start: DSML_TOOL_CALLS_START_SHORT.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END_SHORT.as_bytes(),
+        invoke_start: DSML_INVOKE_START_SHORT.as_bytes(),
+        invoke_end: DSML_INVOKE_END_SHORT.as_bytes(),
+        param_start: DSML_PARAM_START_SHORT.as_bytes(),
+        param_end: DSML_PARAM_END_SHORT.as_bytes(),
+        entity_values: true,
+    },
+    DsmlStyle {
+        tool_calls_start: b"<tool_calls>",
+        tool_calls_end: b"</tool_calls>",
+        invoke_start: b"<invoke",
+        invoke_end: b"</invoke>",
+        param_start: b"<parameter",
+        param_end: b"</parameter>",
+        entity_values: true,
+    },
+    DsmlStyle {
+        tool_calls_start: DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+        tool_calls_end: DSML_TOOL_CALLS_END_SPACED.as_bytes(),
+        invoke_start: DSML_INVOKE_START_SPACED.as_bytes(),
+        invoke_end: DSML_INVOKE_END_SPACED.as_bytes(),
+        param_start: DSML_PARAM_START_SPACED.as_bytes(),
+        param_end: DSML_PARAM_END_SPACED.as_bytes(),
+        entity_values: false,
+    },
+];
+
+/// The engine's `find_tool_block` (server_dsml_parse.c:66-82): among all four
+/// spellings take the earliest occurrence; the first pass only accepts a block
+/// preceded by "\n\n" (the template's separator) and returns the separator's
+/// position, the second accepts a bare marker -- prose quoting a tag mid-text
+/// must not steal the real tool block.
+fn dsml_find_block(search: &[u8], need_sep: bool) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for (si, sty) in DSML_STYLES.iter().enumerate() {
+        let mut from = 0;
+        while let Some(rel) = find_substr(&search[from..], sty.tool_calls_start) {
+            let pos = from + rel;
+            if need_sep && !(pos >= 2 && &search[pos - 2..pos] == b"\n\n") {
+                from = pos + 1;
+                continue;
+            }
+            let at = if need_sep { pos - 2 } else { pos };
+            if best.map_or(true, |(b, _)| at < b) {
+                best = Some((at, si));
+            }
+            break;
+        }
+    }
+    best
+}
+
+/// The engine's `dsml_value_unescape` (server_dsml_stream.c:37-53): the old
+/// generations reverse full XML entities; the spaced generation writes values
+/// raw and restores only the `&lt;` the renderer adds before a closing tag
+/// inside a value, so a value that genuinely contains "&lt;" keeps it.
+pub(crate) fn dsml_value_unescape_syntax(
+    entity_values: bool,
+    param_end: &[u8],
+    s: &[u8],
+) -> Vec<u8> {
+    if entity_values {
+        return dsml_unescape_text(s);
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < s.len() {
+        if s[i..].starts_with(b"&lt;") && s[i + 4..].starts_with(&param_end[1..]) {
+            out.push(b'<');
+            i += 4;
+        } else {
+            out.push(s[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
@@ -276,26 +389,9 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
         }
     }
     let search = &text[tool_search..];
-    let nl_full = format!("\n\n{DSML_TOOL_CALLS_START}");
-    let nl_short = format!("\n\n{DSML_TOOL_CALLS_START_SHORT}");
-    let styles: [(&[u8], i32); 6] = [
-        (nl_full.as_bytes(), 0),
-        (DSML_TOOL_CALLS_START.as_bytes(), 0),
-        (nl_short.as_bytes(), 2),
-        (DSML_TOOL_CALLS_START_SHORT.as_bytes(), 2),
-        (b"\n\n<tool_calls>", 1),
-        (b"<tool_calls>", 1),
-    ];
-    let mut start_rel = None;
-    let mut style = 0i32;
-    for (pat, st) in styles {
-        if let Some(i) = find_substr(search, pat) {
-            start_rel = Some(i);
-            style = st;
-            break;
-        }
-    }
-    let Some(rel) = start_rel else {
+    let Some((rel, style_idx)) =
+        dsml_find_block(search, true).or_else(|| dsml_find_block(search, false))
+    else {
         let (content, reasoning) = split_reasoning_content(text, text.len(), ChatFormat::DeepSeek);
         return Some(ParsedGenerated {
             content,
@@ -306,32 +402,7 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
     };
     let start = tool_search + rel;
     let content_len = trim_tool_separator_ws(text, 0, start);
-    let sty = match style {
-        1 => DsmlStyle {
-            tool_calls_start: b"<tool_calls>",
-            tool_calls_end: b"</tool_calls>",
-            invoke_start: b"<invoke",
-            invoke_end: b"</invoke>",
-            param_start: b"<parameter",
-            param_end: b"</parameter>",
-        },
-        2 => DsmlStyle {
-            tool_calls_start: DSML_TOOL_CALLS_START_SHORT.as_bytes(),
-            tool_calls_end: DSML_TOOL_CALLS_END_SHORT.as_bytes(),
-            invoke_start: DSML_INVOKE_START_SHORT.as_bytes(),
-            invoke_end: DSML_INVOKE_END_SHORT.as_bytes(),
-            param_start: DSML_PARAM_START_SHORT.as_bytes(),
-            param_end: DSML_PARAM_END_SHORT.as_bytes(),
-        },
-        _ => DsmlStyle {
-            tool_calls_start: DSML_TOOL_CALLS_START.as_bytes(),
-            tool_calls_end: DSML_TOOL_CALLS_END.as_bytes(),
-            invoke_start: DSML_INVOKE_START.as_bytes(),
-            invoke_end: DSML_INVOKE_END.as_bytes(),
-            param_start: DSML_PARAM_START.as_bytes(),
-            param_end: DSML_PARAM_END.as_bytes(),
-        },
-    };
+    let sty = DSML_STYLES[style_idx];
     let Some(p0) = find_substr(&text[start..], sty.tool_calls_start) else {
         return None;
     };
@@ -409,7 +480,7 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
                 .map(|v| v == b"true")
                 .unwrap_or(true);
             let value = if is_string {
-                dsml_unescape_text(raw)
+                dsml_value_unescape_syntax(sty.entity_values, sty.param_end, raw)
             } else {
                 raw.to_vec()
             };
@@ -425,6 +496,462 @@ fn parse_dsml_generated(text: &[u8], require_thinking_closed: bool) -> Option<Pa
             ..Default::default()
         });
     }
+}
+
+/// Collapse every decorated DSML spelling to the plain tag set, keeping a
+/// per-byte map back into the original text.
+///
+/// The V4.1 artifact decorates the wrapper and invoke opens with U+FF5C
+/// (｜, EF BD 9C) but leaves the parameter tags plain inside the same block
+/// (measured 2026-10-10; docs/deepseek41-port-plan.md 6.23), so the strict
+/// one-style parse rejects a call the model considers complete.  The six
+/// replacements mirror the tool shim's `normalize`
+/// (`~/youngai/tool-shim/shim.py:53-58`), written against this artifact's
+/// live output on 2026-10-07.
+fn dsml_normalize(text: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let pats: [(&[u8], &[u8]); 8] = [
+        // The official spaced spelling folds onto the plain one -- `<\u{ff5c} calls>`
+        // -> `<calls>` (engine server_types.h DS4_*_SPACED); the bar+space pair
+        // never appears in the old generations, so the order is unambiguous.
+        (b"<\xef\xbd\x9cDSML\xef\xbd\x9c ", b"<"),
+        (b"</\xef\xbd\x9cDSML\xef\xbd\x9c ", b"</"),
+        (b"<\xef\xbd\x9cDSML\xef\xbd\x9c", b"<"),
+        (b"</\xef\xbd\x9cDSML\xef\xbd\x9c", b"</"),
+        (b"<DSML\xef\xbd\x9c", b"<"),
+        (b"</DSML\xef\xbd\x9c", b"</"),
+        (b"<\xef\xbd\x9c", b"<"),
+        (b"</\xef\xbd\x9c", b"</"),
+    ];
+    let mut out = Vec::with_capacity(text.len());
+    let mut map = Vec::with_capacity(text.len());
+    let mut i = 0;
+    'outer: while i < text.len() {
+        for (pat, rep) in pats {
+            if text[i..].starts_with(pat) {
+                for &b in rep {
+                    out.push(b);
+                    map.push(i);
+                }
+                i += pat.len();
+                continue 'outer;
+            }
+        }
+        out.push(text[i]);
+        map.push(i);
+        i += 1;
+    }
+    (out, map)
+}
+
+/// The model sometimes prefixes names with `$`; the shim strips it
+/// (shim.py:132, :185) along with surrounding whitespace.
+fn dsml_clean_name(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw)
+        .trim()
+        .trim_start_matches('$')
+        .to_string()
+}
+
+/// Tolerant DSML scan for the V4.1 route (docs/deepseek41-port-plan.md 6.23).
+///
+/// Mirrors the tool shim's scanner (`~/youngai/tool-shim/shim.py:44-190`),
+/// built against this artifact's live output: normalize the decorated
+/// spellings, key the scan on `<invoke>`, tolerate a missing closer or a
+/// bare `<parameter name=...>`, skip undeclared tool names, and coerce each
+/// value to the type the request's schema declares (the model regularly
+/// emits a number as a quoted string).  Runs only as a fallback when the
+/// strict style match found no calls, so every other family's bytes stay
+/// identical; returns None when no calls can be reconstructed.
+pub fn parse_dsml_tolerant(
+    text: &[u8],
+    orders: &[ToolSchemaOrder],
+    require_thinking_closed: bool,
+) -> Option<ParsedGenerated> {
+    let (norm, map) = dsml_normalize(text);
+    // With thinking enabled the engine searches for a block only after the
+    // LAST think close: DSML inside reasoning is model text, never
+    // executable (server_dsml_parse.c:291-316), and a missing close means
+    // no tool search at all.  Mirror parse_dsml_generated's scope.
+    let search_from = if require_thinking_closed {
+        let end = think_end(ChatFormat::DeepSeek).as_bytes();
+        let last = find_last_substr(&norm, end)?;
+        last + end.len()
+    } else {
+        0
+    };
+    let start = [
+        find_substr(&norm[search_from..], b"<tool_calls").map(|r| search_from + r),
+        find_substr(&norm[search_from..], b"<calls>").map(|r| search_from + r),
+        find_substr(&norm[search_from..], b"<invoke").map(|r| search_from + r),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    // No wrapper or invoke anywhere: the artifact's tool-name-root shape is
+    // the only remaining candidate (dsml_tolerant_tool_root_scan).
+    let Some(start) = start else {
+        return dsml_tolerant_tool_root_scan(text, &norm, &map, orders, search_from);
+    };
+    let mut p = start;
+    if norm[p..].starts_with(b"<tool_calls") || norm[p..].starts_with(b"<calls") {
+        let gt = norm[p..].iter().position(|&c| c == b'>')?;
+        p += gt + 1;
+    }
+    let mut calls = Vec::new();
+    loop {
+        p = skip_ws(&norm, p);
+        if p >= norm.len()
+            || norm[p..].starts_with(b"</tool_calls")
+            || norm[p..].starts_with(b"</calls")
+        {
+            break;
+        }
+        if !norm[p..].starts_with(b"<invoke") {
+            let Some(rel) = find_substr(&norm[p..], b"<invoke") else {
+                break;
+            };
+            p += rel;
+        }
+        let Some(gt) = norm[p..].iter().position(|&c| c == b'>') else {
+            break;
+        };
+        let tag = &norm[p..=p + gt];
+        let Some(raw_name) = dsml_attr(tag, "name") else {
+            break;
+        };
+        let name = dsml_clean_name(&raw_name);
+        p += gt + 1;
+        let mut args = Vec::new();
+        let mut complete = true;
+        loop {
+            p = skip_ws(&norm, p);
+            if p >= norm.len()
+                || norm[p..].starts_with(b"</invoke")
+                || norm[p..].starts_with(b"<invoke")
+                || norm[p..].starts_with(b"</tool_calls")
+                || norm[p..].starts_with(b"</calls")
+            {
+                break;
+            }
+            if !norm[p..].starts_with(b"<parameter") {
+                if !dsml_tolerant_child_param(&norm, &mut p, &name, orders, &mut args) {
+                    break; // stray bytes end the invoke body; keep what parsed
+                }
+                continue;
+            }
+            if !dsml_tolerant_param(&norm, &mut p, &name, orders, &mut args) {
+                complete = false;
+                break;
+            }
+        }
+        if norm[p..].starts_with(b"</invoke") {
+            if let Some(gt) = norm[p..].iter().position(|&c| c == b'>') {
+                p += gt + 1;
+            }
+        }
+        if !complete {
+            break; // a truncated argument: drop this call and stop
+        }
+        // An undeclared name is skipped, declared siblings survive (the
+        // shim's `allowed` check).
+        let declared =
+            orders.is_empty() || orders.iter().any(|o| o.name == name || o.wire_name == name);
+        if !declared {
+            continue;
+        }
+        let mut wrapped = vec![b'{'];
+        wrapped.extend_from_slice(&args);
+        wrapped.push(b'}');
+        calls.push(ToolCall {
+            name,
+            arguments: String::from_utf8_lossy(&wrapped).into_owned(),
+            ..Default::default()
+        });
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    let orig_start = map[start];
+    let content_len = trim_tool_separator_ws(text, 0, orig_start);
+    let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::DeepSeek);
+    let orig_end = if p < norm.len() { map[p] } else { text.len() };
+    Some(ParsedGenerated {
+        content,
+        reasoning,
+        calls,
+        raw_dsml: String::from_utf8_lossy(&text[orig_start..orig_end.max(orig_start)]).into_owned(),
+        ok: true,
+        ..Default::default()
+    })
+}
+
+/// The artifact's tool-name-root shape (Spark session 01a13136, 2026-10-12,
+/// bytes captured from the open-grok transcript): the call opens with the
+/// TOOL NAME as the root element and the parameters as plain children --
+/// `<search_tool>\n<query>..</query>\n<limit>8</limit>\n</search_tool>` --
+/// with no wrapper and no invoke anywhere.  The engine keys every arm on
+/// the wrapper/invoke opens (server_dsml_parse.c find_tool_block) and the
+/// shim's scanner on the same starts (shim.py:492-494), so the whole block
+/// falls back to assistant text and the calls never run.  Extension of the
+/// same recovery (plan 6.23, the named deviation): a root is bound only
+/// when its tag names a tool the request's schema declares, every child
+/// goes through the bare-child binding (declared property, matching close,
+/// schema coercion), and the close must match the root; every other shape
+/// keeps the pre-existing behavior.
+fn dsml_tolerant_tool_root_scan(
+    text: &[u8],
+    norm: &[u8],
+    map: &[usize],
+    orders: &[ToolSchemaOrder],
+    from: usize,
+) -> Option<ParsedGenerated> {
+    let mut calls = Vec::new();
+    let mut p = from;
+    let mut first = None;
+    let mut last = 0;
+    while p < norm.len() {
+        // The earliest declared-tool root tag from here wins; a tag naming
+        // no declared tool is model text and stays untouched.
+        let mut best: Option<(usize, &ToolSchemaOrder, &str)> = None;
+        for o in orders {
+            for n in [o.name.as_str(), o.wire_name.as_str()] {
+                if n.is_empty() {
+                    continue;
+                }
+                let mut open = Vec::with_capacity(n.len() + 2);
+                open.extend_from_slice(b"<");
+                open.extend_from_slice(n.as_bytes());
+                open.push(b'>');
+                if let Some(rel) = find_substr(&norm[p..], &open) {
+                    let at = p + rel;
+                    if best.as_ref().map_or(true, |(b, _, _)| at < *b) {
+                        best = Some((at, o, n));
+                    }
+                }
+            }
+        }
+        let Some((at, o, n)) = best else { break };
+        let mut q = at + n.len() + 2;
+        let mut args = Vec::new();
+        loop {
+            q = skip_ws(norm, q);
+            if q >= norm.len() || norm[q..].starts_with(b"</") {
+                break;
+            }
+            if !dsml_tolerant_child_param(norm, &mut q, &o.name, orders, &mut args) {
+                break;
+            }
+        }
+        let mut close = Vec::with_capacity(n.len() + 3);
+        close.extend_from_slice(b"</");
+        close.extend_from_slice(n.as_bytes());
+        close.push(b'>');
+        if !norm[q..].starts_with(&close) {
+            // No matching close: not a complete call; the bytes stay model
+            // text and the scan resumes after this tag.
+            p = at + 1;
+            continue;
+        }
+        q += close.len();
+        if first.is_none() {
+            first = Some(at);
+        }
+        last = q;
+        let mut wrapped = vec![b'{'];
+        wrapped.extend_from_slice(&args);
+        wrapped.push(b'}');
+        calls.push(ToolCall {
+            name: o.name.clone(),
+            arguments: String::from_utf8_lossy(&wrapped).into_owned(),
+            ..Default::default()
+        });
+        p = q;
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    let orig_start = map[first?];
+    let content_len = trim_tool_separator_ws(text, 0, orig_start);
+    let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::DeepSeek);
+    let orig_end = if last < norm.len() {
+        map[last]
+    } else {
+        text.len()
+    };
+    Some(ParsedGenerated {
+        content,
+        reasoning,
+        calls,
+        raw_dsml: String::from_utf8_lossy(&text[orig_start..orig_end.max(orig_start)]).into_owned(),
+        ok: true,
+        ..Default::default()
+    })
+}
+
+/// One `<parameter>` of the tolerant scan, with the shim's coercion rules.
+/// The value goes through the declared schema type first (integer, number,
+/// boolean, object, array); a string= hint or a plain string is the
+/// fallback.  Nested trees keep the strict parser's rule: no string
+/// attribute and the value starts with a nested `<parameter`.
+fn dsml_tolerant_param(
+    norm: &[u8],
+    p: &mut usize,
+    tool: &str,
+    orders: &[ToolSchemaOrder],
+    out: &mut Vec<u8>,
+) -> bool {
+    let Some(gt) = norm[*p..].iter().position(|&c| c == b'>') else {
+        return false;
+    };
+    let tag = &norm[*p..=*p + gt];
+    let Some(raw_name) = dsml_attr(tag, "name") else {
+        return false;
+    };
+    let pname = dsml_clean_name(&raw_name);
+    let string_attr = dsml_attr(tag, "string");
+    let value_start = *p + gt + 1;
+
+    let after_ws = skip_ws(norm, value_start);
+    if string_attr.is_none() && norm[after_ws..].starts_with(b"<parameter") {
+        let mut np = after_ws;
+        if let Some(obj) =
+            dsml_parse_nested_params_object(norm, &mut np, b"<parameter", b"</parameter>")
+        {
+            np = skip_ws(norm, np);
+            if norm[np..].starts_with(b"</parameter>") {
+                np += b"</parameter>".len();
+            }
+            *p = np;
+            tool_call_json_args_add(out, pname.as_bytes(), &obj, false);
+            return true;
+        }
+    }
+
+    let (raw, next) = match find_substr(&norm[value_start..], b"</parameter>") {
+        Some(rel) => (
+            &norm[value_start..value_start + rel],
+            value_start + rel + b"</parameter>".len(),
+        ),
+        None => {
+            // Missing closer: the value runs to the end of the invoke body
+            // (the shim's lookahead: </invoke>|<invoke|</tool_calls>|EOF).
+            // A body that ends at EOF may be a truncated stream rather than
+            // a model omission; drop the call instead of serving half an
+            // argument.
+            let end = [
+                b"</invoke" as &[u8],
+                b"<invoke",
+                b"</tool_calls",
+                b"</calls",
+            ]
+            .iter()
+            .filter_map(|m| find_substr(&norm[value_start..], m))
+            .min()
+            .map(|rel| value_start + rel)
+            .unwrap_or(norm.len());
+            if end == norm.len() {
+                return false;
+            }
+            (&norm[value_start..end], end)
+        }
+    };
+    *p = next;
+    let unescaped = dsml_unescape_text(raw);
+    let value = trim_ascii_span(&unescaped);
+    let declared = tool_schema_order_prop_type(tool_schema_orders_find(orders, tool), &pname);
+    let coerced = dsml_coerce_declared(declared, value);
+    if let Some(v) = coerced {
+        tool_call_json_args_add(out, pname.as_bytes(), &v, false);
+        return true;
+    }
+    let is_string = string_attr.as_deref().map(|v| v == b"true").unwrap_or(true);
+    if is_string {
+        tool_call_json_args_add(out, pname.as_bytes(), value, true);
+    } else if let Some(min) = json_value_is_complete(&String::from_utf8_lossy(value)) {
+        tool_call_json_args_add(out, pname.as_bytes(), min.as_bytes(), false);
+    } else {
+        // string="false" but not JSON: keep the text, never emit null.
+        tool_call_json_args_add(out, pname.as_bytes(), value, true);
+    }
+    true
+}
+
+/// The declared schema type wins over the DSML string hint (the shim's
+/// `coerce`, shim.py:79-111): a declared integer/number/boolean/object/array
+/// value is re-emitted as JSON of that type; a declared string or an
+/// unparseable value returns None and the caller keeps the raw text.
+fn dsml_coerce_declared(declared: Option<&str>, value: &[u8]) -> Option<Vec<u8>> {
+    match declared {
+        Some("integer") => std::str::from_utf8(value)
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .map(|n| n.to_string().into_bytes()),
+        Some("number") => std::str::from_utf8(value)
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|f| f.is_finite())
+            .map(|f| f.to_string().into_bytes()),
+        Some("boolean") if value == b"true" || value == b"false" => Some(value.to_vec()),
+        Some("object") | Some("array") => {
+            json_value_is_complete(&String::from_utf8_lossy(value)).map(|min| min.into_bytes())
+        }
+        _ => None,
+    }
+}
+
+/// One bare child element of an invoke body (the model occasionally writes
+/// `<city>Tokyo</city>` instead of the parameter spelling; Spark tool-call
+/// gate requests 8/23, 2026-10-11).  The engine rejects the whole block on
+/// the first non-parameter token (server_dsml_parse.c:365-369) and the
+/// shim's scanner binds only parameter tags (shim.py:59-61), so binding a
+/// child is an extension of the tolerant recovery (plan 6.23): it fires
+/// only when the tag names a property the request's schema declares for
+/// this tool, and the value is coerced like a parameter.  Any other child
+/// keeps the pre-existing behavior (stray bytes end the invoke body).
+fn dsml_tolerant_child_param(
+    norm: &[u8],
+    p: &mut usize,
+    tool: &str,
+    orders: &[ToolSchemaOrder],
+    out: &mut Vec<u8>,
+) -> bool {
+    let rest = &norm[*p..];
+    if !rest.starts_with(b"<") || rest.starts_with(b"</") {
+        return false;
+    }
+    let Some(gt) = rest.iter().position(|&c| c == b'>') else {
+        return false;
+    };
+    let tag = &rest[1..gt];
+    // A bare child carries only its tag name; anything else is stray bytes.
+    if tag.is_empty() || tag.iter().any(|&c| !c.is_ascii_alphanumeric() && c != b'_') {
+        return false;
+    }
+    let pname = String::from_utf8_lossy(tag).into_owned();
+    let Some(declared) = tool_schema_order_prop_type(tool_schema_orders_find(orders, tool), &pname)
+    else {
+        return false; // undeclared child: keep the pre-existing recovery
+    };
+    let mut close = Vec::with_capacity(tag.len() + 3);
+    close.extend_from_slice(b"</");
+    close.extend_from_slice(tag);
+    close.push(b'>');
+    let value_start = *p + gt + 1;
+    let Some(rel) = find_substr(&norm[value_start..], &close) else {
+        return false;
+    };
+    let raw = &norm[value_start..value_start + rel];
+    if raw.contains(&b'<') {
+        return false; // a nested tag is not a value this rule binds
+    }
+    *p = value_start + rel + close.len();
+    let unescaped = dsml_unescape_text(raw);
+    let value = trim_ascii_span(&unescaped);
+    match dsml_coerce_declared(Some(declared), value) {
+        Some(v) => tool_call_json_args_add(out, pname.as_bytes(), &v, false),
+        None => tool_call_json_args_add(out, pname.as_bytes(), value, true),
+    }
+    true
 }
 
 fn parse_hermes_tool_call_json(json: &str) -> Option<ToolCall> {
@@ -1508,9 +2035,26 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
                 DSML_TOOL_CALLS_START_SHORT.as_bytes(),
+                // The official spaced generation (the trained spelling for the
+                // <｜System｜> tokenizer): `<｜ calls>` / `<｜ invoke`.
+                DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+                DSML_INVOKE_START_SPACED.as_bytes(),
                 b"<tool_calls>",
                 b"<tool_call>",
                 b"<dots_function_call>",
+                // The V4.1 artifact sometimes drops the wrapper entirely and
+                // opens straight with an invoke (observed 2026-10-11,
+                // open-grok session 01a127cf), and the shim records a short
+                // `<...calls>` wrapper (~/youngai/tool-shim/shim.py:44-48).
+                // Without these the live stream never enters tool mode, so
+                // the block streams as visible content while the
+                // finish-level tolerant parse still serves the calls.
+                DSML_INVOKE_START.as_bytes(),
+                DSML_INVOKE_START_SHORT.as_bytes(),
+                b"<invoke",
+                b"<\xef\xbd\x9cDSML\xef\xbd\x9ccalls>",
+                b"<DSML\xef\xbd\x9ccalls>",
+                b"<calls>",
             ];
             cands.iter().filter_map(|p| find_substr(s, p)).min()
         }
@@ -1529,6 +2073,13 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
                 DSML_TOOL_CALLS_END_SHORT.as_bytes(),
+                // The official spaced generation: the engine's
+                // find_any_tool_end walks all four syntaxes
+                // (server_dsml_parse.c:88-93).  Without the spaced close the
+                // live stream never closed a spaced block, so the loop drew
+                // one extra token (EOS) after the wrapper -- the engine stops
+                // at the tag (chat gate, 2026-10-11).
+                DSML_TOOL_CALLS_END_SPACED.as_bytes(),
                 b"</tool_calls>",
                 b"</tool_call>",
                 b"</dots_function_call>",
@@ -1860,6 +2411,23 @@ impl SemAccum {
                 self.thinking_inside = false;
             }
         }
+    }
+
+    /// The engine's v41_syntax_greedy (server_generate_v41.c): a COPY of the
+    /// tracker and the thinking state over the emitted text + the ahead pieces;
+    /// true = the next position is tool-call syntax, so the native takes the raw
+    /// argmax there.  The engine keeps that state in its native v41_gen; the
+    /// port's text lives here, so the caller supplies the ahead pieces and this
+    /// rebuilds the copy on a clone (the DSML tracker re-scans from the start,
+    /// the thinking scanner follows the same windows).  The request gate is the
+    /// engine's own: only a chat request with tools asks at all.
+    pub fn syntax_greedy(&self, ahead: &[Vec<u8>]) -> bool {
+        let mut probe = self.clone();
+        for piece in ahead {
+            probe.feed_thinking(piece);
+            probe.dsml.update(&probe.text);
+        }
+        !probe.thinking_inside && dsml_decode_state_is_syntax(probe.dsml.decode)
     }
 
     pub fn feed(&mut self, piece: &[u8], stops: &[String]) -> SemFeed {

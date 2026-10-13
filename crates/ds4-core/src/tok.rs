@@ -177,6 +177,17 @@ impl Vocab {
         self.token_to_id.get(text.as_bytes()).copied().unwrap_or(-1)
     }
 
+    /// C `ds4_chat_system_token()` (core_engine_api.c:94-96): the DSML prompt
+    /// head token, empty when the loaded vocab has no <｜System｜> (the V4
+    /// fallback, core_bpe.c:332-333).  Only the DeepSeek4 family reads it.
+    pub fn chat_system_token(&self) -> &'static str {
+        if self.family == ModelFamily::DeepSeek4 && self.system_id >= 0 {
+            "<｜System｜>"
+        } else {
+            ""
+        }
+    }
+
     pub fn load(g: &GgufFile, family: ModelFamily) -> Result<Self, TokError> {
         let qwen_input = family == ModelFamily::Qwen4Exp && qwen4exp::enabled(g)?;
         let is_k2_horizon = family == ModelFamily::ExaoneMoe
@@ -578,7 +589,11 @@ impl Vocab {
                 self.eos_id = self.lookup("<｜end▁of▁sentence｜>")?;
                 self.user_id = self.lookup("<｜User｜>")?;
                 self.assistant_id = self.lookup("<｜Assistant｜>")?;
-                self.system_id = -1;
+                // The DSML system token is optional (core_bpe.c:332): the V4
+                // tokenizer has no <｜System｜>, the V4.1 one does (id 128799,
+                // the same id as the MTP noise token). The renderer writes it
+                // only when the loaded vocab owns it (core_engine_api.c:94-96).
+                self.system_id = self.lookup_opt("<｜System｜>");
                 self.start_of_turn_id = -1;
                 self.end_of_turn_id = -1;
                 self.tool_id = -1;
@@ -2484,6 +2499,9 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         (b"<|tool:end|>", vocab.tool_schema_end_id),
         ("<｜User｜>".as_bytes(), vocab.user_id),
         ("<｜Assistant｜>".as_bytes(), vocab.assistant_id),
+        // V4.1 tokenizer only; -1 is skipped and the text is cut as
+        // ordinary chars (core_bpe.c:360).
+        ("<｜System｜>".as_bytes(), vocab.system_id),
         (b"<think>", vocab.think_start_id),
         (b"</think>", vocab.think_end_id),
         (b"<|think:start|>", vocab.think_start_id),

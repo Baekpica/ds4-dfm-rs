@@ -67,6 +67,12 @@ pub struct ServerConfig {
     pub listen_port: u16,
     pub model_id: String,
     pub model_name: String,
+    /// The engine's request-omitted parse defaults for its own model set
+    /// (unit H): thinking off unless asked, effort HIGH, min_p 0.0, and the
+    /// effort-name collapse -- see ParseEnv::engine_defaults.  The bin sets
+    /// this only when the model is V4.1 (the v41 route branch); every other
+    /// family keeps the port's wire vocabulary and defaults.
+    pub engine_defaults: bool,
     pub ctx: i32,
     pub default_tokens: i32,
     pub eos_policy: EosPolicy,
@@ -167,6 +173,7 @@ impl Default for ServerConfig {
             listen_port: 8000,
             model_id: "ds4".into(),
             model_name: "ds4".into(),
+            engine_defaults: false,
             ctx: 8192,
             default_tokens: 393216,
             eos_policy: EosPolicy::Default,
@@ -1241,6 +1248,7 @@ fn prepare_client(
                 default_effort: ThinkMode::Low,
                 default_temp: crate::parse::default_temperature(),
                 live_ids,
+                engine_defaults: cfg.engine_defaults,
             };
             let body = std::str::from_utf8(&req.body).unwrap_or("");
             match parse_request(surf, &env, body) {
@@ -3537,6 +3545,7 @@ mod owner_tests {
             default_effort: ThinkMode::None,
             default_temp: 0.0,
             live_ids: Vec::new(),
+            engine_defaults: false,
         };
         let mut parsed = parse_request(
             WireSurface::Anthropic,
@@ -3642,6 +3651,7 @@ mod owner_tests {
             default_effort: ThinkMode::None,
             default_temp: 0.0,
             live_ids: Vec::new(),
+            engine_defaults: false,
         };
         let parsed = parse_request(
             WireSurface::Anthropic,
@@ -3696,6 +3706,7 @@ mod owner_tests {
             default_effort: ThinkMode::None,
             default_temp: 0.0,
             live_ids: Vec::new(),
+            engine_defaults: false,
         };
         let body = format!(r#"{{"prompt":"{prompt}","max_tokens":0}}"#);
         let parsed = parse_request(WireSurface::OpenaiCompletion, &env, &body).unwrap();

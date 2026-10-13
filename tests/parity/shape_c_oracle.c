@@ -37,6 +37,9 @@ typedef enum {
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
     DS4_VARIANT_GLM53_FLASH = 7,
     DS4_VARIANT_K2_HORIZON_375B = 8,
+    /* value 16 mirrors the Rust enum (15 is IQuestQ1 upstream); the C engine
+     * spells the same table DS4_SHAPE_V41_FLASH (core_shape_select.c:81) */
+    DS4_VARIANT_V41 = 16,
 } ds4_variant;
 
 typedef struct {
@@ -166,6 +169,48 @@ static const ds4_shape DS4_SHAPE_PRO = {
     .rms_eps = DS4_DEFAULT_RMS_EPS,
     .hc_eps = DS4_DEFAULT_HC_EPS,
     .expert_weight_scale = 2.5f,
+    .swiglu_clamp_exp = DS4_DEFAULT_SWIGLU_CLAMP_EXP,
+    .rope_freq_base = DS4_DEFAULT_ROPE_FREQ_BASE,
+    .rope_scale_factor = DS4_DEFAULT_ROPE_SCALE_FACTOR,
+    .rope_yarn_beta_fast = DS4_DEFAULT_ROPE_YARN_BETA_FAST,
+    .rope_yarn_beta_slow = DS4_DEFAULT_ROPE_YARN_BETA_SLOW,
+    .compress_rope_freq_base = DS4_DEFAULT_COMPRESS_ROPE_FREQ_BASE,
+    .rope_orig_ctx = DS4_DEFAULT_ROPE_ORIG_CTX,
+};
+
+/* DeepSeek V4.1 Flash, transcribed from the engine's DS4_SHAPE_V41_FLASH
+ * (core_shape_select.c:81-114). Unset fields are zero in C, as they are in
+ * the Rust const. */
+static const ds4_shape DS4_SHAPE_V41_FLASH = {
+    .name = "DeepSeek V4.1 Flash",
+    .family = DS4_MODEL_FAMILY_DEEPSEEK4,
+    .variant = DS4_VARIANT_V41,
+    .n_layer = 40,
+    .n_embd = 5120,
+    .n_vocab = 129280,
+    .n_head = 64,
+    .n_head_kv = 1,
+    .n_head_dim = 512,
+    .n_value_dim = 512,
+    .n_rot = 64,
+    .n_out_group = 8,
+    .n_lora_q = 1280,
+    .n_lora_o = 1024,
+    .n_expert = 384,
+    .n_expert_used = 6,
+    .n_expert_shared = 1,
+    .n_ff_exp = 2304,
+    .n_hash_layer = 0,
+    .n_swa = 128,
+    .n_indexer_head = 32,
+    .n_indexer_head_dim = 128,
+    .n_indexer_top_k = 512,
+    .n_hc = 4,
+    .n_hc_sinkhorn_iter = 20,
+    .use_rope = true,
+    .rms_eps = 1.0e-20f,
+    .hc_eps = DS4_DEFAULT_HC_EPS,
+    .expert_weight_scale = 1.5f,
     .swiglu_clamp_exp = DS4_DEFAULT_SWIGLU_CLAMP_EXP,
     .rope_freq_base = DS4_DEFAULT_ROPE_FREQ_BASE,
     .rope_scale_factor = DS4_DEFAULT_ROPE_SCALE_FACTOR,
@@ -546,6 +591,16 @@ static const char *select_name(const ds4_shape *probe)
                       probe->n_indexer_top_k, probe->n_hc, probe->n_hc_sinkhorn_iter)) {
         return DS4_SHAPE_PRO.name;
     }
+    if (shape_matches(&DS4_SHAPE_V41_FLASH,
+                      probe->n_layer, probe->n_embd, probe->n_vocab, probe->n_head,
+                      probe->n_head_kv, probe->n_head_dim, probe->n_value_dim,
+                      probe->n_rot, probe->n_lora_q, probe->n_lora_o,
+                      probe->n_out_group, probe->n_expert, probe->n_expert_used,
+                      probe->n_ff_exp, probe->n_expert_shared, probe->n_hash_layer,
+                      probe->n_swa, probe->n_indexer_head, probe->n_indexer_head_dim,
+                      probe->n_indexer_top_k, probe->n_hc, probe->n_hc_sinkhorn_iter)) {
+        return DS4_SHAPE_V41_FLASH.name;
+    }
     return "unsupported";
 }
 
@@ -578,8 +633,10 @@ int main(void)
     dump_shape("QWEN38", &DS4_SHAPE_QWEN38_FLASH_NEXT);
     dump_shape("GLM53", &DS4_SHAPE_GLM53_FLASH);
     dump_shape("K2HORIZON", &DS4_SHAPE_K2_HORIZON_375B);
+    dump_shape("V41", &DS4_SHAPE_V41_FLASH);
     printf("SELECT\tflash\t%s\n", select_name(&DS4_SHAPE_FLASH));
     printf("SELECT\tpro\t%s\n", select_name(&DS4_SHAPE_PRO));
+    printf("SELECT\tv41\t%s\n", select_name(&DS4_SHAPE_V41_FLASH));
     miss = DS4_SHAPE_FLASH;
     miss.n_layer = 1;
     printf("SELECT\tmiss\t%s\n", select_name(&miss));

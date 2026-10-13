@@ -44,6 +44,8 @@ def parse_args(argv=None):
     parser.add_argument("--high-gib", type=float, default=21)
     parser.add_argument("--reserve-gib", type=float, default=12)
     parser.add_argument("--trip-gib", type=float, help="watchdog floor; defaults to reserve, use a lower floor for a stable owner")
+    parser.add_argument("--psi-full-limit", type=float, default=PSI_FULL_LIMIT,
+                        help="memory full avg10 percent; 0 records PSI without refusing or stopping the job")
     parser.add_argument("--poll-seconds", type=float, default=0.1)
     parser.add_argument("--grace-seconds", type=float, default=1)
     parser.add_argument("--timeout", type=float, default=1800, help="seconds; 0 keeps monitoring a server indefinitely")
@@ -60,6 +62,8 @@ def parse_args(argv=None):
             parser.error(f"{name.replace('_', '-')} must be finite and positive")
     if not math.isfinite(args.trip_gib) or not 0 < args.trip_gib <= args.reserve_gib:
         parser.error("trip-gib must be positive and no greater than reserve-gib")
+    if not math.isfinite(args.psi_full_limit) or not 0 <= args.psi_full_limit <= 100:
+        parser.error("psi-full-limit must be finite and between 0 and 100")
     if not math.isfinite(args.timeout) or args.timeout < 0:
         parser.error("timeout must be finite and nonnegative")
     if not args.command:
@@ -158,7 +162,7 @@ def run_guard(args, read_memory=None):
 
         try:
             before = read_memory()
-            if before["psi_full_avg10"] >= PSI_FULL_LIMIT:
+            if args.psi_full_limit and before["psi_full_avg10"] >= args.psi_full_limit:
                 raise ValueError("sustained host memory stalls before launch")
             maximum, high = memory_limits(before["available_gib"], args.max_gib,
                                           args.high_gib, args.reserve_gib)
@@ -170,10 +174,11 @@ def run_guard(args, read_memory=None):
             print(f"host-memory-guard: refused: {error}", file=sys.stderr, flush=True)
             return GUARD_EXIT
         record("start", **before, max_gib=maximum, high_gib=high,
-               reserve_gib=args.reserve_gib, trip_gib=args.trip_gib, command=args.command)
+               reserve_gib=args.reserve_gib, trip_gib=args.trip_gib,
+               psi_full_limit=args.psi_full_limit, command=args.command)
         print(f"host-memory-guard: available={before['available_gib']:.2f} GiB, "
               f"scope max/high={maximum:.2f}/{high:.2f}, reserve={args.reserve_gib:.2f}, "
-              f"trip={args.trip_gib:.2f}", flush=True)
+              f"trip={args.trip_gib:.2f}, PSI limit={args.psi_full_limit:g}% (0=record only)", flush=True)
         command = ["systemd-run", "--user", "--scope", "--slice=ds4guard.slice", "--quiet", f"--unit={unit}",
                    "-p", f"MemoryMax={int(maximum * GIB)}",
                    "-p", f"MemoryHigh={int(high * GIB)}", "-p", "MemorySwapMax=0",
@@ -193,9 +198,9 @@ def run_guard(args, read_memory=None):
                     reason = "watchdog received a stop signal"
                 elif snapshot["available_gib"] < args.trip_gib:
                     reason = "host memory watchdog floor crossed"
-                # CUDA allocation/reclaim can stall while MemAvailable is high.
-                # Stop this scope before oomd selects another user application.
-                elif snapshot["psi_full_avg10"] >= PSI_FULL_LIMIT:
+                # Allow reclaim-heavy loading to use PSI as telemetry only;
+                # the available-memory floor and cgroup limits remain active.
+                elif args.psi_full_limit and snapshot["psi_full_avg10"] >= args.psi_full_limit:
                     reason = "sustained host memory stalls"
                 elif args.timeout and now - start >= args.timeout:
                     reason = "job deadline exceeded"

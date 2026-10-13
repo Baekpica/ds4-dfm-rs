@@ -119,6 +119,52 @@ pub struct ds4_bridge_batch_ctx {
 
 pub type ds4_bridge_prefill_fn = Option<unsafe extern "C" fn(*mut c_void, i32, i32)>;
 
+/* V4.1 (ds41) callbacks (native/bridge/ds4_bridge.h): the rows provider fills
+ * the pinned raw rows for the exact block the forward runs (dst[k] is engram
+ * layer k's buffer); emit returns nonzero to stop; progress returns nonzero
+ * to abort the prefill. */
+pub type ds4_bridge_v41_rows_fn =
+    Option<unsafe extern "C" fn(u32, *const i32, c_int, *const *mut u8, *mut c_void) -> c_int>;
+/* P2: the per-layer collect hook — the native forward calls it at each
+ * engram layer (the engine's v41_ejob_wait call site, core_v41_engram.c:441)
+ * and only then uploads the layer's rows; nonzero refuses the block. */
+pub type ds4_bridge_v41_wait_fn = Option<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>;
+/* The cross-block prefetch hook: the chunk loop declares the next prefill
+ * block before running the current one (ds41_forward.h's
+ * ds41_engram_feed.prefetch_next); nonzero refuses the run. */
+pub type ds4_bridge_v41_next_fn =
+    Option<unsafe extern "C" fn(u32, *const i32, c_int, *mut c_void) -> c_int>;
+/* Join/drain all provider writes before native buffers are released, even
+ * after a forward error. Nonzero reports failure after writes have ended. */
+pub type ds4_bridge_v41_drain_fn = Option<unsafe extern "C" fn(*mut c_void) -> c_int>;
+pub type ds4_bridge_v41_emit_fn = Option<unsafe extern "C" fn(i32, *mut c_void) -> c_int>;
+pub type ds4_bridge_v41_progress_fn =
+    Option<unsafe extern "C" fn(*mut c_void, *const c_char, i32, i32) -> c_int>;
+
+/* The decode-sampling face (native/bridge/ds4_bridge.h): the engine's
+ * ds4_decode_sampling layout (ds4_v41_api.h:69-75).  All-zero = bare argmax;
+ * a NULL pointer to the setter resets to that.  greedy_fn/greedy_ud: the
+ * engine's tool-syntax greedy hook (the engine's c6e2706; the Rust host
+ * answers through the ds4-server accumulator). */
+pub type ds4_bridge_v41_greedy_fn =
+    Option<unsafe extern "C" fn(*mut c_void, *const i32, u32) -> c_int>;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ds4_bridge_v41_sampling {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub min_p: f32,
+    pub top_k: c_int,
+    pub seed: u64,
+    pub freq_penalty: f32,
+    pub presence_penalty: f32,
+    pub dry_multiplier: f32,
+    pub dry_base: f32,
+    pub dry_allowed_length: c_int,
+    pub greedy_fn: ds4_bridge_v41_greedy_fn,
+    pub greedy_ud: *mut c_void,
+}
+
 pub type ds4_bridge_backend = c_int;
 
 pub const DS4_BRIDGE_BACKEND_CUDA: ds4_bridge_backend = 0;
@@ -354,6 +400,45 @@ pub struct ds4_host_shape {
     pub variant: u32,
     pub n_compress: u32,
     pub compress: *const u32,
+    /* DeepSeek V4.1 wiring; mirrors native/bridge/ds4_host_load.h.  Borrowed,
+     * valid for the open call; NULL/0 for every other variant. */
+    pub v41_kv_source: *const u8,
+    pub v41_index_source: *const u8,
+    pub v41_kv_source_of: *const i16,
+    pub v41_index_source_of: *const i16,
+    pub v41_engram_index_of: *const i16,
+    pub v41_n_engram: u32,
+    pub v41_engram_layers: *const i32,
+    pub v41_engram_max_ngram: u32,
+    pub v41_engram_heads: u32,
+    pub v41_engram_head_dim: u32,
+    pub v41_engram_pad: u32,
+    pub v41_candidate_source_layer: i32,
+    pub v41_candidate_topk_blocks: i32,
+    pub v41_candidate_block_size: i32,
+    pub v41_mtp_towers: u32,
+    pub v41_mtp_experts: u32,
+    /* P4-3: per-engram-layer table wiring (row count, the two plane offsets
+     * in the shard, the shard path).  Borrowed for the open call. */
+    pub v41_engram_rows: *const u64,
+    pub v41_engram_weight_off: *const u64,
+    pub v41_engram_scale_off: *const u64,
+    pub v41_engram_table_path: *const *const c_char,
+    /* P5: the draft parameters; block == 0 = the drafter stays unarmed and
+     * the rest is ignored.  v41_mtp_target is borrowed, v41_n_mtp_target
+     * entries. */
+    pub v41_mtp_block: u32,
+    pub v41_mtp_used: u32,
+    pub v41_mtp_noise_id: u32,
+    pub v41_mtp_markov_rank: u32,
+    pub v41_n_mtp_target: u32,
+    pub v41_mtp_target: *const i16,
+    /* P5.4: context length + the engram vocab pair (deepseek4.context_length,
+     * .engram.vocab_size, .engram.compressed_vocab_size; the native refuses
+     * ctx == 0). */
+    pub v41_ctx: u32,
+    pub v41_engram_vocab: u32,
+    pub v41_engram_cvocab: u32,
 }
 
 #[repr(C)]
@@ -737,6 +822,81 @@ extern "C" {
         eos_token: i32,
         accepted: *mut i32,
         accepted_cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    /* V4.1 (ds41) run surface (P5): the engine's one-shot generate with the
+     * prefill-progress and emit callbacks, plus the three process switches.
+     * All callbacks run on the calling thread. */
+    pub fn ds4_bridge_v41_set_dspark(mode: c_int);
+    pub fn ds4_bridge_v41_set_graph(on: c_int);
+    pub fn ds4_bridge_v41_set_emit_trace(on: c_int);
+    pub fn ds4_bridge_v41_set_prof(on: c_int);
+    /* The V4.1 KV prefix reuse (U-B): --no-kv-reuse, the last run's restored
+     * token count, the peek that seeds the host-side engram history, and the
+     * mounted-amplifier identity the native drops the checkpoint on. */
+    pub fn ds4_bridge_v41_kvreuse_set(on: c_int);
+    pub fn ds4_bridge_v41_kvreuse_last_reused() -> c_int;
+    pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int) -> u32;
+    pub fn ds4_bridge_v41_kvreuse_note_mount(has_mount: c_int, hash: u64);
+    /* The disk half (item 4): the payload export/import the Rust store
+     * (crates/ds4-kv) drives; both are gated by --no-kv-reuse and K.valid. */
+    pub fn ds4_bridge_v41_kvreuse_export(path: *const c_char) -> c_int;
+    pub fn ds4_bridge_v41_kvreuse_import(
+        path: *const c_char,
+        offset: u64,
+        bytes: u64,
+        tokens: *const i32,
+        n: u32,
+    ) -> c_int;
+    pub fn ds4_bridge_v41_last_spec_stats(
+        rounds: *mut c_int,
+        offered: *mut c_int,
+        accepted: *mut c_int,
+    );
+    /* The per-request decode-sampling face (the engine's
+     * ds4_engine_set_decode_sampling, core_v41_api.c:10-13).  NULL resets to
+     * the all-zero face = bare argmax. */
+    pub fn ds4_bridge_v41_set_sampling(sp: *const ds4_bridge_v41_sampling);
+    /* --mem-budget-mb (unit Z): the engine's budget global + L1 load gate
+     * (core_util.c:198-256); call before opening the model. */
+    pub fn ds4_bridge_set_mem_budget_mb(mb: c_int);
+    /* The V4.1 zchain sidecar mount (unit Z): the device side the Rust
+     * reader (zchain.rs, P2/P3) drives, 1:1 with v41_amp_load's per-state
+     * writes (core_v41_amp.c:227-270).  All return 1 on success, 0 on
+     * refusal; rb_clear is the engine's process-wide unload first
+     * (core_v41_amp.c:114). */
+    pub fn ds4_bridge_v41_zchain_gr_set(
+        m: *mut ds4_bridge_model,
+        il: u32,
+        data: *const f32,
+        n_expert: u32,
+        n_embd: u32,
+    ) -> c_int;
+    pub fn ds4_bridge_v41_zchain_rb_set(
+        m: *mut ds4_bridge_model,
+        il: u32,
+        delta: *const f32,
+        n_expert: u32,
+    ) -> c_int;
+    pub fn ds4_bridge_v41_zchain_rb_clear();
+    pub fn ds4_bridge_v41_generate(
+        m: *mut ds4_bridge_model,
+        prompt: *const i32,
+        n_prompt: c_int,
+        n_predict: c_int,
+        no_engram: c_int,
+        verify_k: c_int,
+        rows: ds4_bridge_v41_rows_fn,
+        rows_ud: *mut c_void,
+        wait: ds4_bridge_v41_wait_fn,
+        next: ds4_bridge_v41_next_fn,
+        drain: ds4_bridge_v41_drain_fn,
+        emit: ds4_bridge_v41_emit_fn,
+        emit_ud: *mut c_void,
+        progress: ds4_bridge_v41_progress_fn,
+        progress_ud: *mut c_void,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;
