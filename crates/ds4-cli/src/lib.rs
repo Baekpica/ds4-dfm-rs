@@ -48,6 +48,14 @@ pub struct ShadowArgs {
     pub engram_dir: Option<String>,
     pub zchain: Option<String>,
     pub posttrain: Option<String>,
+    /// The `--vision-gguf` sidecar (the ds41 tower's weights); also the
+    /// server's spelling, one native open slot for every family.
+    pub vision: Option<String>,
+    /// `--image` (repeatable, the engine's parser shape); only the golden
+    /// gate consumes it until the one-shot image request is ported.
+    pub images: Vec<String>,
+    /// `--vision-golden <VGLD>`: run the tower gate instead of generating.
+    pub vision_golden: Option<String>,
     pub mem_budget_mb: Option<i32>,
     pub no_engram: bool,
     pub no_dspark: bool,
@@ -114,6 +122,9 @@ impl Default for ShadowArgs {
             engram_dir: None,
             zchain: None,
             posttrain: None,
+            vision: None,
+            images: Vec::new(),
+            vision_golden: None,
             mem_budget_mb: None,
             no_engram: false,
             no_dspark: false,
@@ -226,6 +237,18 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
             }
             "--posttrain" => {
                 parsed.posttrain = Some(require_value(&arg, iter.next())?);
+            }
+            /* The ds41 vision tower (cli_opts.c:352-354): --vision-gguf is the
+             * reference install.sh name for the sidecar, --image is the gate's
+             * picture, --vision-golden its fixture. */
+            "--vision" | "--vision-gguf" => {
+                parsed.vision = Some(require_value(&arg, iter.next())?);
+            }
+            "--image" => {
+                parsed.images.push(require_value(&arg, iter.next())?);
+            }
+            "--vision-golden" => {
+                parsed.vision_golden = Some(require_value(&arg, iter.next())?);
             }
             /* Unit Z: the engine's process red line (core_util.c:198-200);
              * install.sh boots the server with 110000. */
@@ -672,6 +695,33 @@ fn run_chat_turn(
         repl::interrupt_clear();
     }
     Ok(())
+}
+
+/// The engine's `--vision-golden` gate (cli_main.c:193-195): one `--image`
+/// and the VGLD fixture through the model's own tower
+/// (core_v41_vision_gate.c:44-94, ported in ds4_core::v41_golden).  Exit 0
+/// when every gating check passes, 1 on a failed verdict; a missing tower or
+/// an unreadable fixture is an error by name, the engine's early returns.
+fn run_v41_vision_golden(
+    model: &ds4_core::Model,
+    args: &ShadowArgs,
+    golden: &str,
+) -> Result<i32, String> {
+    if args.images.len() != 1 {
+        return Err("ds4-rs: --vision-golden takes exactly one --image".into());
+    }
+    let vision_path = args.vision.as_deref().ok_or_else(|| {
+        "ds4-rs: --vision-golden needs --vision-gguf <sidecar> (the tower weights)".to_string()
+    })?;
+    let meta = ds4_core::v41_media::V41VisionMeta::read(vision_path).map_err(|e| e.to_string())?;
+    let ok = model
+        .v41_vision_golden(
+            &meta,
+            std::path::Path::new(&args.images[0]),
+            std::path::Path::new(golden),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(if ok { 0 } else { 1 })
 }
 
 /// V4.1 (ds41) one-shot: the engine's `--gen-ids` run through
@@ -1459,7 +1509,12 @@ pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
     } else {
         None
     };
-    let mtp_opts = mtp_open_options(&args, embedded_family)?;
+    let mut mtp_opts = mtp_open_options(&args, embedded_family)?;
+    // --vision-gguf: the ds41 tower's sidecar rides the same open slot every
+    // family uses (the server's ModelOpenOption::Vision, ds4-server-rs.rs:93).
+    if let Some(path) = args.vision.as_deref() {
+        mtp_opts.push(ds4_core::ModelOpenOption::Vision(path.to_string()));
+    }
     // --mem-budget-mb (unit Z): the engine's L1 load gate reads the budget
     // at open (core_util.c:238-256); arm it before the model open.
     if let Some(mb) = args.mem_budget_mb {
@@ -1487,6 +1542,18 @@ pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
         ),
     }
     .map_err(|e| e.to_string())?;
+
+    /* The engine's --vision-golden gate (cli_main.c:193-195): a run mode of
+     * its own, before any generate; exactly one --image names the picture. */
+    if let Some(golden) = args.vision_golden.as_deref() {
+        return run_v41_vision_golden(&model, &args, golden);
+    }
+    if !args.images.is_empty() {
+        return Err(
+            "ds4-rs: --image needs --vision-golden (the one-shot image request is not ported yet)"
+                .into(),
+        );
+    }
 
     /* V4.1 (ds41): no ds4_session exists for this family -- the run IS the
      * engine's one-shot generate with the host engram feed (v41_run.rs).  The
@@ -2212,6 +2279,30 @@ mod tests {
         assert!(parsed.emit_trace);
         assert!(parsed.v41_prof);
         assert!(parsed.no_engram);
+    }
+
+    #[test]
+    fn v41_vision_gate_flags_parse() {
+        let parsed = parse_args(args(&[
+            "--vision-gguf",
+            "s.gguf",
+            "--image",
+            "a.png",
+            "--image",
+            "b.jpeg",
+            "--vision-golden",
+            "g.bin",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.vision.as_deref(), Some("s.gguf"));
+        assert_eq!(parsed.images, ["a.png", "b.jpeg"]);
+        assert_eq!(parsed.vision_golden.as_deref(), Some("g.bin"));
+
+        // The server's alternate spelling rides the same slot.
+        let parsed = parse_args(args(&["--vision", "s.gguf"])).unwrap();
+        assert_eq!(parsed.vision.as_deref(), Some("s.gguf"));
+        assert!(parsed.images.is_empty());
+        assert!(parsed.vision_golden.is_none());
     }
 
     #[test]

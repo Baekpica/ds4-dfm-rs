@@ -943,6 +943,25 @@ uint64_t ds4_bridge_v41_images_bytes(const ds4_bridge_v41_images *images) {
     return bytes;
 }
 
+/* The golden gate's tower entry (core_v41_vision_gate.c:45/80): has_vision is
+ * the loaded tower's presence; vision_run is one patch set through the tower,
+ * rows malloc'd native-side (see ds4_bridge.h). */
+int ds4_bridge_v41_has_vision(ds4_bridge_model *m) {
+    if (!m || !m->engine) return 0;
+    return ds4_v41_has_vision(m->engine);
+}
+
+float *ds4_bridge_v41_vision_run(ds4_bridge_model *m, const float *patches,
+                                 uint32_t n_vit_h, uint32_t n_vit_w,
+                                 uint32_t *n_llm_h, uint32_t *n_llm_w) {
+    if (!m || !m->engine || !patches) return NULL;
+    return v41_vision_run(m->engine, patches, n_vit_h, n_vit_w, n_llm_h, n_llm_w);
+}
+
+void ds4_bridge_v41_vision_rows_free(float *rows) {
+    free(rows);
+}
+
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,

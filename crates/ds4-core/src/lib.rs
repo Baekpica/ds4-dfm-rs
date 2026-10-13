@@ -48,6 +48,7 @@ mod tensors;
 mod tok;
 mod uring;
 mod v41;
+pub mod v41_golden;
 pub mod v41_media;
 mod v41_run;
 mod validate;

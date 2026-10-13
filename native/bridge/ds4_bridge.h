@@ -379,6 +379,17 @@ typedef struct {
  * compares 2x their sum against MemAvailable. */
 uint64_t ds4_bridge_v41_prefill_bytes(ds4_bridge_model *m, int n_prompt);
 uint64_t ds4_bridge_v41_images_bytes(const ds4_bridge_v41_images *images);
+/* The golden gate's tower entry (the engine's v41_vision_run,
+ * core_v41_vision.c:116-131, called by core_v41_vision_gate.c:80):
+ * has_vision is the gate's upfront check (:45); vision_run returns malloc'd
+ * aligner rows [n_llm_h*n_llm_w][DS4_N_EMBD] for one patch set (NULL when the
+ * model carries no tower or the forward fails), freed with vision_rows_free
+ * so malloc/free stay on the native side of the boundary. */
+int ds4_bridge_v41_has_vision(ds4_bridge_model *m);
+float *ds4_bridge_v41_vision_run(ds4_bridge_model *m, const float *patches,
+                                 uint32_t n_vit_h, uint32_t n_vit_w,
+                                 uint32_t *n_llm_h, uint32_t *n_llm_w);
+void ds4_bridge_v41_vision_rows_free(float *rows);
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,

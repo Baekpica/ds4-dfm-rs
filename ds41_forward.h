@@ -133,6 +133,22 @@ void ds4_v41_images_free(struct ds4_v41_images *S);
  * engine's ds4_v41_images_bytes (core_v41_vision.c:229-241). */
 uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S);
 
+/* The loaded tower's presence (the engine's ds4_engine_v41_has_vision,
+ * core_v41_vision.c:181): vis_layers is set only by v41_load_vision_metadata
+ * on a --vision-gguf sidecar, so 0 means a text-only open. */
+int ds4_v41_has_vision(void *engine);
+
+/* The tower on one patch set (the engine's v41_vision_run,
+ * core_v41_vision.c:116-131): returns malloc'd aligner rows
+ * [n_llm_h*n_llm_w][DS4_N_EMBD] for the golden gate
+ * (core_v41_vision_gate.c:80) and any caller that wants rows outside a
+ * request; NULL when the model carries no tower or the forward fails.  The
+ * caller frees the rows with free().  patches are n_vit_h*n_vit_w rows of
+ * 3*patch*patch f32 on the bf16 grid; n_llm_h/n_llm_w receive the aligner
+ * grid (n_vit / downsample, rounded up). */
+float *v41_vision_run(void *engine, const float *patches, uint32_t n_vit_h, uint32_t n_vit_w,
+                      uint32_t *n_llm_h, uint32_t *n_llm_w);
+
 /* The prefill peak bytes for `n_prompt` positions (the engine's
  * ds4_v41_req_prefill_bytes, core_v41_req.c:298-305): the serving admission
  * starts a prefill only when MemAvailable covers twice this plus the images

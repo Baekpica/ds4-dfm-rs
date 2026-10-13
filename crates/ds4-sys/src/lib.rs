@@ -908,6 +908,17 @@ extern "C" {
     /* The serving admission's byte account (server_sched_v41.c:58). */
     pub fn ds4_bridge_v41_prefill_bytes(m: *mut ds4_bridge_model, n_prompt: c_int) -> u64;
     pub fn ds4_bridge_v41_images_bytes(images: *const ds4_bridge_v41_images) -> u64;
+    /* The golden gate's tower entry (core_v41_vision_gate.c:45/80). */
+    pub fn ds4_bridge_v41_has_vision(m: *mut ds4_bridge_model) -> c_int;
+    pub fn ds4_bridge_v41_vision_run(
+        m: *mut ds4_bridge_model,
+        patches: *const f32,
+        n_vit_h: u32,
+        n_vit_w: u32,
+        n_llm_h: *mut u32,
+        n_llm_w: *mut u32,
+    ) -> *mut f32;
+    pub fn ds4_bridge_v41_vision_rows_free(rows: *mut f32);
     pub fn ds4_bridge_v41_generate(
         m: *mut ds4_bridge_model,
         prompt: *const i32,

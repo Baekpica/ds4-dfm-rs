@@ -155,11 +155,20 @@ static bool v41_vis_run_images(ds4_engine *e, const v41_image *im, uint32_t n_im
     return ok;
 }
 
+/* The loaded tower's presence (the engine's ds4_engine_v41_has_vision,
+ * core_v41_vision.c:181).  vis_layers is set only by v41_load_vision_metadata
+ * on a --vision-gguf sidecar, so a text-only open answers 0. */
+int ds4_v41_has_vision(void *engine) {
+    (void)engine;
+    return g_ds4_v41.vis_layers > 0;
+}
+
 /* One image through the tower -> malloc'd aligner rows [n_llm][E], row-major
  * (core_v41_vision.c:116-131).  Entry for the golden gate and the caller that
  * lays out the span. */
-float *v41_vision_run(ds4_engine *e, const float *patches, uint32_t n_vit_h, uint32_t n_vit_w,
+float *v41_vision_run(void *engine, const float *patches, uint32_t n_vit_h, uint32_t n_vit_w,
                       uint32_t *n_llm_h, uint32_t *n_llm_w) {
+    ds4_engine *e = engine;
     const ds4_v41_cfg *v = &g_ds4_v41;
     if (!v->vis_layers) { fprintf(stderr, "ds4: this GGUF has no vision tower\n"); return NULL; }
     v41_image im; memset(&im, 0, sizeof im);
