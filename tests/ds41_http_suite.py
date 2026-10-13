@@ -13,10 +13,10 @@ Provenance
   the unit, and this harness's own run as the measurement.
 
 Protocol (the recorded one, kept so the numbers stay comparable in shape)
-  Five cases over three content types at two prompt lengths; POST /v1/completions
-  per case, temperature 0, greedy, one stream; three samples per case, where
-  rep 0 is cold and reps 1..2 repeat the identical bytes so they ride the
-  prefix-reuse checkpoint. The CSV columns are the contract that
+  Five cases over three content types at two prompt lengths; one streamed
+  /v1/chat/completions request per case, temperature 0, greedy, three samples
+  per case, where rep 0 is cold and reps 1..2 repeat the identical bytes so
+  they ride the prefix-reuse checkpoint. The CSV columns are the contract that
   /data/YoungAi/bench/summarize.py reads:
       engine,case,rep,cache,prompt_tokens,completion_tokens,ttft_s,total_s,
       sse_deltas,prefill_tps,decode_tps,e2e_tps,finish,prompt_sha
@@ -24,6 +24,17 @@ Protocol (the recorded one, kept so the numbers stay comparable in shape)
   server_ttft_ms, server_prefill_ms, cached_tokens (the server's own reuse
   account), reuse_line (the native's [v41] KV reuse line, when the server log
   is given). Column order leaves the canonical fifteen first and in order.
+
+  The wire is the CHAT one on purpose: a /v1/completions request renders its
+  prompt untemplated and the ds41 artifact answers such a prompt with an
+  immediate stop (measured 2026-10-13: 0 tokens, finish "stop"), so a raw
+  completion cannot carry the recorded 512-token cases. The recorded harness's
+  own wire is unknown; this is the shape that generates.
+
+  stream_options.include_usage is requested because the port emits the usage
+  block only when asked (stream.rs:594, sse_usage_chunk), and the columns
+  above need the server's own token counts. If a server answers without usage,
+  prompt_tokens stays 0 and decode_tps falls back to the delta count.
 
   Derived fields follow the recorded arithmetic: prefill_tps = prompt/ttft_s,
   decode_tps = (completion-1)/(total-ttft_s), e2e_tps = completion/total_s.
@@ -135,10 +146,11 @@ def post_stream(url, prompt, max_tokens, timeout, key, penalty, model):
     """One streamed completion. Returns the sample's measurements."""
     parsed = urllib.parse.urlsplit(url)
     body = {
-        "prompt": prompt,
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
     if penalty:
         body["frequency_penalty"] = 1e-30
@@ -152,7 +164,7 @@ def post_stream(url, prompt, max_tokens, timeout, key, penalty, model):
         headers["Authorization"] = "Bearer " + key
 
     t0 = time.perf_counter()
-    conn.request("POST", "/v1/completions", payload, headers)
+    conn.request("POST", "/v1/chat/completions", payload, headers)
     resp = conn.getresponse()
     if resp.status != 200:
         detail = resp.read(400).decode("utf-8", "replace")
