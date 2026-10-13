@@ -1261,6 +1261,9 @@ Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-
          [--kv-cache-boundary-trim-tokens N]\n\
          [--kv-cache-boundary-align-tokens N]\n\
          [--kv-cache-reject-different-quant]\n\
+         V4.1 (ds41): --zchain DIR [--posttrain DIR] [--engram-dir DIR] [--v41-no-engram]\n\
+         [--dspark] [--no-dspark] [--dspark-verify K] [--no-graph] [--no-kv-reuse] [--v41-prof]\n\
+         [--emit-trace] [--mem-budget-mb N]\n\
          Distributed: [--role coordinator|worker] [--layers A:B] [--listen HOST PORT] [--coordinator HOST PORT]\n\
          [--dist-prefill-chunk N] [--dist-prefill-window N] [--dist-activation-bits N] [--dist-replay-check] [--debug]"
     );
