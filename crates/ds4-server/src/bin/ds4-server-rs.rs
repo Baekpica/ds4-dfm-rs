@@ -578,7 +578,7 @@ fn main() {
                         // apply to the engine's own model set -- exactly this
                         // branch's model.
                         cfg.engine_defaults = true;
-                        v41_route = Some(resolve_v41_route(path, &v41_flags, &plan));
+                        v41_route = Some(resolve_v41_route(path, &v41_flags, &plan, vision_path.as_deref()));
                         eprintln!(
                             "ds4-server-rs: V4.1 route: ctx={} MTP={} verify={} prefix_reuse={}",
                             cfg.ctx,
@@ -969,6 +969,7 @@ fn resolve_v41_route(
     path: &str,
     flags: &V41Flags,
     plan: &ds4_core::ResolvedPlan,
+    vision_path: Option<&str>,
 ) -> ds4_server::V41ServeRoute {
     ds4_server::V41ServeRoute {
         model_path: std::path::PathBuf::from(path),
@@ -986,6 +987,12 @@ fn resolve_v41_route(
         no_kv_reuse: plan.effective.prefix_reuse == ds4_core::ReuseKind::None,
         zchain: flags.zchain.clone(),
         posttrain: flags.posttrain.clone(),
+        // The V4.1 tower geometry + placeholder id, read from the sidecar the
+        // probe already validated; the request expands the placeholder with it.
+        vision: vision_path.map(|p| {
+            ds4_core::v41_media::V41VisionMeta::read(p)
+                .unwrap_or_else(|error| cli_error(&format!("--vision-gguf: {error}")))
+        }),
     }
 }
 
@@ -1091,7 +1098,7 @@ mod v41_controls {
             let plan = plan(&req);
             assert!(!plan.has_errors());
             assert_eq!(
-                resolve_v41_route("model.gguf", &V41Flags::default(), &plan).dspark,
+                resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).dspark,
                 Some(native)
             );
         }
@@ -1105,7 +1112,7 @@ mod v41_controls {
         };
         let plan = plan(&req);
         assert_eq!(plan.effective.prefix_reuse, ReuseKind::None);
-        assert!(resolve_v41_route("model.gguf", &V41Flags::default(), &plan).no_kv_reuse);
+        assert!(resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).no_kv_reuse);
     }
 
     #[test]
@@ -1120,7 +1127,7 @@ mod v41_controls {
         assert_eq!(req.mtp_mode, MtpMode::Off);
         assert_eq!(req.prefix_reuse, PrefixReuse::Off);
         let resolved = plan(&req);
-        let route = resolve_v41_route("model.gguf", &flags, &resolved);
+        let route = resolve_v41_route("model.gguf", &flags, &resolved, None);
         assert_eq!(route.dspark, Some(0));
         assert!(route.no_kv_reuse);
         assert_eq!(resolved.effective.mtp_mode, MtpMode::Off);
@@ -1134,10 +1141,10 @@ mod v41_controls {
         assert_eq!(plan.effective.mtp_mode, MtpMode::Auto);
         assert_eq!(plan.effective.mtp_draft, None);
         assert_eq!(
-            resolve_v41_route("model.gguf", &V41Flags::default(), &plan).dspark,
+            resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).dspark,
             Some(1)
         );
-        assert!(!resolve_v41_route("model.gguf", &V41Flags::default(), &plan).no_kv_reuse);
+        assert!(!resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).no_kv_reuse);
     }
 
     #[test]
@@ -1230,7 +1237,7 @@ mod v41_controls {
         let mut req = ServingRequest::default();
         v41_request(&flags, &mut req, Some(3), MtpMode::Off).unwrap();
         let resolved = plan(&req);
-        let route = resolve_v41_route("model.gguf", &flags, &resolved);
+        let route = resolve_v41_route("model.gguf", &flags, &resolved, None);
         assert_eq!(resolved.effective.mtp_mode, MtpMode::On);
         assert_eq!(route.dspark, Some(2));
         assert_eq!(route.verify_k, 3);

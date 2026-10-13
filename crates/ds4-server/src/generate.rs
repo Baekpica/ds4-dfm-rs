@@ -152,6 +152,7 @@ pub trait DecodeIo {
         _prompt: &[i32],
         _n_predict: i32,
         _sampling: Option<ds4_core::V41Sampling>,
+        _images: Option<&ds4_core::v41_media::V41Images>,
         _greedy: &mut dyn FnMut(*const i32, u32) -> bool,
         _emit: &mut dyn FnMut(i32) -> bool,
         _progress: &mut dyn FnMut(&str, i32, i32) -> bool,
@@ -159,6 +160,12 @@ pub trait DecodeIo {
         Err(GenerateError::Unsupported(
             "V4.1 generation is not loaded on this engine",
         ))
+    }
+    /// The V4.1 vision tower's geometry and placeholder id, read from the
+    /// `--vision-gguf` sidecar (`core_validate_v41.c:48-66`); None on an engine
+    /// with no sidecar, so a request never expands a placeholder it cannot run.
+    fn v41_vision(&self) -> Option<ds4_core::v41_media::V41VisionMeta> {
+        None
     }
     /// The last V4.1 run's speculation account (rounds, offered, accepted;
     /// the engine's `ds4_engine_v41_last_spec_stats`, core_v41_api.c:41-46).
@@ -1975,6 +1982,22 @@ fn prepare_media(
     if !parsed.videos.is_empty() {
         return Err(GenerateError::Unsupported("video input requires MiMo"));
     }
+    // V4.1 owns its tower as a sidecar and expands the <｜deepseek_image｜>
+    // placeholder in the push route (generate_terminal_v41), not here: this
+    // seam probes session-based encoders.  Pass the tokens through untouched.
+    if engine.model_id() == ds4_core::Variant::DeepSeek41Flash as i32 {
+        if !parsed.audios.is_empty() {
+            return Err(GenerateError::Unsupported(
+                "audio input is not supported by DeepSeek V4.1",
+            ));
+        }
+        return Ok(MediaPrompt {
+            tokens,
+            vision: Vec::new(),
+            audios: Vec::new(),
+            videos: Vec::new(),
+        });
+    }
     const GLM_IMAGE_TOKEN: i32 = 154854;
     const INKLING_IMAGE_TOKEN: i32 = 200054;
     const STEP_IMAGE_TOKEN: i32 = 128001;
@@ -2956,6 +2979,37 @@ impl<W: Write> V41EmitState<'_, W> {
 /// thinking checkpoints (all session-addressed), and no tool-memory write
 /// (the port's tool memory is wired to the session store this route never
 /// creates; the engine's v41 path keeps its own).
+/// Expand the V4.1 prompt for its images: each `<｜deepseek_image｜>` placeholder
+/// becomes its span and each image is preprocessed (the engine's
+/// `ds4_v41_images_prepare`, core_v41_vision.c:186-218).  None when the engine
+/// has no vision sidecar or the request carries no image, so a text request
+/// never touches the tower and stays byte-identical.
+fn expand_v41_images(
+    engine: &dyn DecodeIo,
+    parsed: &ParsedRequest,
+    tokens: &[i32],
+) -> Result<Option<ds4_core::v41_media::V41Images>, GenerateError> {
+    let Some(meta) = engine.v41_vision() else {
+        return Ok(None);
+    };
+    if parsed.images.is_empty() {
+        return Ok(None);
+    }
+    // The images in prompt order: the renderer wrote one placeholder per image
+    // part in message/part order, so collect the bytes the same way.
+    let mut order: Vec<&[u8]> = Vec::with_capacity(parsed.images.len());
+    for m in &parsed.messages {
+        for part in &m.parts {
+            if let ChatPart::Image(idx) = part {
+                order.push(parsed.images[*idx].data.as_ref());
+            }
+        }
+    }
+    let imgs = ds4_core::v41_media::V41Images::expand(tokens, &order, &meta)
+        .map_err(|e| GenerateError::Engine(e.to_string()))?;
+    Ok(Some(imgs))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn generate_terminal_v41(
     engine: &mut dyn DecodeIo,
@@ -2970,7 +3024,13 @@ fn generate_terminal_v41(
     stop_requested: Option<fn() -> bool>,
     out: &mut impl Write,
 ) -> Result<(GenerateOutcome, Vec<u8>), GenerateError> {
-    let prompt_n = tokens.len() as i32;
+    // Vision (V4.1): expand each <｜deepseek_image｜> placeholder into its span
+    // and preprocess the images before anything sizes the prompt (the engine's
+    // ds4_v41_images_prepare, core_v41_vision.c:186-218).  A text request, or
+    // an engine with no --vision-gguf sidecar, keeps the tokens untouched.
+    let images = expand_v41_images(engine, parsed, tokens)?;
+    let prompt_tokens: &[i32] = images.as_ref().map_or(tokens, |i| &i.tokens);
+    let prompt_n = prompt_tokens.len() as i32;
     if prompt_n < 1 {
         // v41_gen_begin (:325): an empty prompt never reaches the engine.
         return Err(GenerateError::Engine("empty prompt".into()));
@@ -3090,9 +3150,10 @@ fn generate_terminal_v41(
         };
         let mut greedy = |ahead: *const i32, n: u32| state.borrow_mut().syntax_greedy(ahead, n);
         engine.v41_generate(
-            tokens,
+            prompt_tokens,
             max_tokens,
             Some(sampling),
+            images.as_ref(),
             &mut greedy,
             &mut emit,
             &mut progress,
@@ -3841,6 +3902,9 @@ pub struct V41ServeRoute {
     /// core_v41_amp.c:227-270).
     pub zchain: Option<String>,
     pub posttrain: Option<String>,
+    /// The `--vision-gguf` sidecar's tower geometry and placeholder id
+    /// (core_validate_v41.c:48-66); None = text-only serving.
+    pub vision: Option<ds4_core::v41_media::V41VisionMeta>,
 }
 
 #[cfg(feature = "native")]
@@ -4026,6 +4090,7 @@ impl DecodeIo for NativeDecode<'_> {
         prompt: &[i32],
         n_predict: i32,
         sampling: Option<ds4_core::V41Sampling>,
+        images: Option<&ds4_core::v41_media::V41Images>,
         greedy: &mut dyn FnMut(*const i32, u32) -> bool,
         emit: &mut dyn FnMut(i32) -> bool,
         progress: &mut dyn FnMut(&str, i32, i32) -> bool,
@@ -4062,6 +4127,7 @@ impl DecodeIo for NativeDecode<'_> {
             greedy: Some(greedy),
             zchain: route.zchain.as_deref(),
             posttrain: route.posttrain.as_deref(),
+            images,
         };
         self.model
             .v41_generate(
@@ -4081,6 +4147,10 @@ impl DecodeIo for NativeDecode<'_> {
 
     fn v41_kvreuse_last_reused(&self) -> i32 {
         ds4_core::v41_kvreuse_last_reused()
+    }
+
+    fn v41_vision(&self) -> Option<ds4_core::v41_media::V41VisionMeta> {
+        self.v41.as_ref().and_then(|r| r.vision)
     }
 
     fn template(&self) -> Option<&ds4_core::chat_template::Template> {

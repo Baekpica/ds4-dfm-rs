@@ -695,6 +695,7 @@ fn run_v41_one_shot(
     let mut opts = ds4_core::V41RunOptions {
         engram_dir: args.engram_dir.as_deref(),
         no_engram: args.no_engram,
+        images: None,
         dspark: Some(if args.no_dspark { 0 } else { 1 }),
         graph: Some(!args.no_graph),
         verify_k: args.dspark_verify,

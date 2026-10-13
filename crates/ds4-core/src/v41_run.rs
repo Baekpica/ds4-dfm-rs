@@ -181,6 +181,12 @@ pub struct V41RunOptions<'a> {
     /// `base.fnv`-gated third file; finance-only in the deployment,
     /// install.sh).  Merged with ② exactly as `core_v41_amp.c:227-270`.
     pub posttrain: Option<&'a str>,
+    /// The request's images (the engine's `ds4_v41_images`, core_v41.h:409):
+    /// the Rust host preprocesses and expands the prompt, then borrows this in
+    /// for the run.  None = a text request (the prefill never touches the
+    /// sidecar).  The image identity is folded into the KV digest separately
+    /// (see `kv_state_digest`).
+    pub images: Option<&'a crate::v41_media::V41Images>,
 }
 
 impl Default for V41RunOptions<'_> {
@@ -199,6 +205,7 @@ impl Default for V41RunOptions<'_> {
             greedy: None,
             zchain: None,
             posttrain: None,
+            images: None,
         }
     }
 }
@@ -1501,10 +1508,22 @@ struct EngramSource {
     metadata: std::fs::Metadata,
 }
 
-fn kv_state_digest(digest: u64, mode: EngramMode, sources: &[EngramSource]) -> Result<u64> {
+fn kv_state_digest(
+    digest: u64,
+    mode: EngramMode,
+    sources: &[EngramSource],
+    image_fold: u64,
+) -> Result<u64> {
     const KV_STATE_DOMAIN: &[u8] = b"v41-kv-state-v1";
     let mut digest = if digest == 0 { FNV_SEED } else { digest };
     kv_fold_bytes(&mut digest, KV_STATE_DOMAIN);
+    // The request's images (2026-10-13): two prompts with the same placeholder
+    // tokens but different images must not share KV.  Folded only when present,
+    // so text-only identities (fold 0) are unchanged.
+    if image_fold != 0 {
+        kv_fold_bytes(&mut digest, b"v41-images");
+        kv_fold_bytes(&mut digest, &image_fold.to_le_bytes());
+    }
     match mode {
         EngramMode::Off => {
             kv_fold_bytes(&mut digest, b"disabled");
@@ -1737,6 +1756,7 @@ impl Model {
                 EngramMode::On
             },
             feed.as_ref().map_or(&[], |feed| &feed.sources),
+            opts.images.map_or(0, |i| i.image_fold),
         )?;
         unsafe { ds4_bridge_v41_kvreuse_note_mount(1, digest) };
         // The disk half (item 4): the find runs after the mount so the
@@ -1809,6 +1829,34 @@ impl Model {
         let mut emit_tramp_state = EmitTramp { emit };
         let mut progress_tramp_state = ProgressTramp { progress };
         let mut err = [0u8; 512];
+        // Vision: build the bridge image view from the prepared set (borrowed
+        // for the call).  Empty = a text request; pass NULL.
+        let bridge_raw: Vec<ds4_sys::ds4_bridge_v41_image> = match opts.images {
+            Some(imgs) => imgs
+                .images
+                .iter()
+                .map(|im| ds4_sys::ds4_bridge_v41_image {
+                    patches: im.patches.as_ptr(),
+                    n_vit_h: im.plan.n_vit_h,
+                    n_vit_w: im.plan.n_vit_w,
+                    n_llm_h: im.plan.n_llm_h,
+                    n_llm_w: im.plan.n_llm_w,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let bridge_images = ds4_sys::ds4_bridge_v41_images {
+            img: bridge_raw.as_ptr(),
+            n: bridge_raw.len() as i32,
+            row_of: opts.images.map_or(std::ptr::null(), |i| i.row_of.as_ptr()),
+            np: opts.images.map_or(0, |i| i.np),
+            n_rows: opts.images.map_or(0, |i| i.n_rows),
+        };
+        let images_ptr: *const ds4_sys::ds4_bridge_v41_images = if bridge_raw.is_empty() {
+            std::ptr::null()
+        } else {
+            &bridge_images
+        };
         let rc = unsafe {
             ds4_bridge_v41_generate(
                 self.raw_ptr(),
@@ -1817,7 +1865,7 @@ impl Model {
                 n_predict,
                 i32::from(opts.no_engram),
                 opts.verify_k,
-                std::ptr::null(),   // vision images: wired in the next unit
+                images_ptr,
                 rows_fn,
                 rows_ud,
                 wait_fn,
@@ -1997,8 +2045,8 @@ mod tests {
         let source = dir.join("source.safetensors");
         std::fs::write(&source, b"engram").unwrap();
         let sources = [source_stamp(&source)];
-        let enabled = kv_state_digest(7, EngramMode::On, &sources).unwrap();
-        let disabled = kv_state_digest(7, EngramMode::Off, &sources).unwrap();
+        let enabled = kv_state_digest(7, EngramMode::On, &sources, 0).unwrap();
+        let disabled = kv_state_digest(7, EngramMode::Off, &sources, 0).unwrap();
         assert_ne!(
             enabled, disabled,
             "Engram-disabled requests reused enabled KV"
@@ -2012,20 +2060,20 @@ mod tests {
         let b = dir.join("b.safetensors");
         std::fs::write(&a, b"engram-a").unwrap();
         std::fs::write(&b, b"engram-b").unwrap();
-        let before = kv_state_digest(7, EngramMode::On, &[source_stamp(&a)]).unwrap();
+        let before = kv_state_digest(7, EngramMode::On, &[source_stamp(&a)], 0).unwrap();
         assert_eq!(
             before,
-            kv_state_digest(7, EngramMode::On, &[source_stamp(&a)]).unwrap()
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&a)], 0).unwrap()
         );
         assert_ne!(
             before,
-            kv_state_digest(7, EngramMode::On, &[source_stamp(&b)]).unwrap(),
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&b)], 0).unwrap(),
             "a different source path reused old Engram KV"
         );
         std::fs::rename(b, &a).unwrap();
         assert_ne!(
             before,
-            kv_state_digest(7, EngramMode::On, &[source_stamp(&a)]).unwrap(),
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&a)], 0).unwrap(),
             "a replaced source reused old Engram KV"
         );
     }
@@ -2044,8 +2092,8 @@ mod tests {
             metadata: shard.metadata().unwrap(),
         };
         assert_ne!(
-            kv_state_digest(7, EngramMode::On, &[opened]).unwrap(),
-            kv_state_digest(7, EngramMode::On, &[source_stamp(&path)]).unwrap(),
+            kv_state_digest(7, EngramMode::On, &[opened], 0).unwrap(),
+            kv_state_digest(7, EngramMode::On, &[source_stamp(&path)], 0).unwrap(),
             "checkpoint identity followed the pathname instead of its open source"
         );
     }

@@ -18,15 +18,63 @@
 use crate::{Error, Result};
 use image::RgbImage;
 
-/// The V4.1 vision-tower geometry, read from the sidecar's `deepseek4.vision.*`
-/// metadata (`core_validate_v41.c:48-66`). Carried as data because the tower
-/// config is metadata truth, not a compile-time constant.
+/// The vision-tower geometry and the placeholder id, read from the sidecar's
+/// `deepseek4.vision.*` / `deepseek4.image_token_id` metadata
+/// (`core_validate_v41.c:48-66`).  Carried as data because the tower config
+/// is metadata truth, not a compile-time constant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct V41VisionConfig {
     pub patch: u32,      // deepseek4.vision.patch_size (14)
     pub downsample: u32, // deepseek4.vision.downsample_ratio (3)
     pub max_tokens: u32, // deepseek4.vision.max_image_tokens (1024)
     pub min_pixels: u32, // deepseek4.vision.min_pixels (295936)
+}
+
+/// The sidecar geometry plus the image placeholder token id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct V41VisionMeta {
+    pub config: V41VisionConfig,
+    pub image_token_id: i32,
+}
+
+impl V41VisionMeta {
+    /// Read the four vision keys and the placeholder id from the sidecar
+    /// (`v41_load_vision_metadata`, core_validate_v41.c:48-66).  Errors name
+    /// the missing key so a wrong file is a plan line, not a boot crash.
+    pub fn read(path: &str) -> Result<Self> {
+        let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+            code: 1,
+            message: format!("vision sidecar open failed: {e}"),
+        })?;
+        let missing = |key: &str| Error {
+            code: 1,
+            message: format!("vision sidecar has no {key}"),
+        };
+        let patch = g
+            .get_u32("deepseek4.vision.patch_size")
+            .ok_or_else(|| missing("deepseek4.vision.patch_size"))?;
+        let downsample = g
+            .get_u32("deepseek4.vision.downsample_ratio")
+            .ok_or_else(|| missing("deepseek4.vision.downsample_ratio"))?;
+        let max_tokens = g
+            .get_u32("deepseek4.vision.max_image_tokens")
+            .ok_or_else(|| missing("deepseek4.vision.max_image_tokens"))?;
+        let min_pixels = g
+            .get_u32("deepseek4.vision.min_pixels")
+            .ok_or_else(|| missing("deepseek4.vision.min_pixels"))?;
+        let image_token_id = g
+            .get_u32("deepseek4.image_token_id")
+            .ok_or_else(|| missing("deepseek4.image_token_id"))?;
+        Ok(V41VisionMeta {
+            config: V41VisionConfig {
+                patch,
+                downsample,
+                max_tokens,
+                min_pixels,
+            },
+            image_token_id: image_token_id as i32,
+        })
+    }
 }
 
 /// The padded grid and the LLM token grid for one image (`core_v41_image.c:25`).
@@ -361,6 +409,110 @@ pub fn patches(bytes: &[u8], cfg: &V41VisionConfig) -> Result<V41Patches> {
     })
 }
 
+/// A request's prepared images: the expanded prompt's row map and the
+/// per-image ViT patches, borrowed into the bridge for one generate call
+/// (the engine's `ds4_v41_images`).
+pub struct V41Images {
+    pub images: Vec<V41Image>,
+    /// The expanded prompt tokens (each placeholder replaced by its span).
+    pub tokens: Vec<i32>,
+    /// [np] embed row per expanded-prompt position, -1 = text.
+    pub row_of: Vec<i32>,
+    /// Expanded prompt length.
+    pub np: u32,
+    /// Sum of span lengths (embed rows).
+    pub n_rows: u32,
+    /// An order-sensitive FNV-1a fingerprint of the image bytes
+    /// (`core_v41_vision.c:182`), 0 when there are no images.  Folded into the
+    /// KV state digest so two prompts with the same placeholder tokens but
+    /// different images cannot share KV.
+    pub image_fold: u64,
+}
+
+pub struct V41Image {
+    pub plan: V41ImagePlan,
+    pub patches: Vec<f32>, // [n_vit_h*n_vit_w][3*patch*patch]
+}
+
+impl V41Images {
+    /// Expand the tokenized prompt: each image placeholder becomes its span,
+    /// and every image is preprocessed (`ds4_v41_images_prepare`,
+    /// core_v41_vision.c:186-218).  `image_bytes` are the decoded images in
+    /// prompt order; a placeholder/image count mismatch is refused.
+    pub fn expand(
+        tokens: &[i32],
+        image_bytes: &[&[u8]],
+        meta: &V41VisionMeta,
+    ) -> Result<V41Images> {
+        let pid = meta.image_token_id;
+        let n_ph = tokens.iter().filter(|&&t| t == pid).count();
+        if n_ph != image_bytes.len() {
+            return Err(Error {
+                code: 1,
+                message: format!(
+                    "prompt has {n_ph} image placeholder(s) but {} image(s) were sent",
+                    image_bytes.len()
+                ),
+            });
+        }
+        let mut images = Vec::with_capacity(image_bytes.len());
+        for bytes in image_bytes {
+            let p = patches(bytes, &meta.config)?;
+            images.push(V41Image {
+                plan: p.plan,
+                patches: p.patches,
+            });
+        }
+        let total = tokens.len() + images.iter().map(|im| im.plan.span_tokens() as usize - 1).sum::<usize>();
+        let mut out_tokens = Vec::with_capacity(total);
+        let mut row_of = Vec::with_capacity(total);
+        let mut n_rows = 0u32;
+        let mut idx = 0usize;
+        for &t in tokens {
+            if t != pid {
+                out_tokens.push(t);
+                row_of.push(-1);
+                continue;
+            }
+            let span = images[idx].plan.span_tokens();
+            for j in 0..span {
+                out_tokens.push(pid);
+                row_of.push((n_rows + j) as i32);
+            }
+            n_rows += span;
+            idx += 1;
+        }
+        let image_fold = if image_bytes.is_empty() {
+            0
+        } else {
+            // The engine's fnv1a64 seed (core_v41_vision.c:182); the length
+            // between images keeps [ab],[c] distinct from [a],[bc].
+            const FNV_SEED: u64 = 1469598103934665603;
+            const FNV_PRIME: u64 = 1099511628211;
+            let mut h = FNV_SEED;
+            for bytes in image_bytes {
+                for &b in *bytes {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(FNV_PRIME);
+                }
+                for &b in (bytes.len() as u64).to_le_bytes().iter() {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(FNV_PRIME);
+                }
+            }
+            h
+        };
+        Ok(V41Images {
+            images,
+            np: out_tokens.len() as u32,
+            tokens: out_tokens,
+            row_of,
+            n_rows,
+            image_fold,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +591,45 @@ mod tests {
         let pp = (c.patch * c.patch) as usize;
         assert_eq!(out.patches.len(), out.plan.n_vit_h as usize * out.plan.n_vit_w as usize * 3 * pp);
         assert!(out.patches.iter().all(|&v| (-1.0..=1.0).contains(&v)));
+    }
+
+    #[test]
+    fn expand_replaces_placeholders_with_the_span() {
+        let c = cfg();
+        let meta = V41VisionMeta {
+            config: c,
+            image_token_id: 129264,
+        };
+        let img = RgbImage::from_pixel(100, 80, image::Rgb([200, 100, 50]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode png");
+        // prompt: [10, PLACEHOLDER, 11]
+        let tokens = [10, meta.image_token_id, 11];
+        let out = V41Images::expand(&tokens, &[png.as_slice()], &meta).expect("expand");
+        let span = out.images[0].plan.span_tokens();
+        assert_eq!(out.np as usize, 2 + span as usize);
+        assert_eq!(out.n_rows, span);
+        assert_eq!(out.row_of.len(), out.np as usize);
+        assert_eq!(out.row_of[0], -1);
+        assert_eq!(out.row_of[1], 0);
+        assert_eq!(out.row_of[span as usize], (span - 1) as i32); // last image row
+        assert_eq!(out.row_of[span as usize + 1], -1); // the trailing text token
+        let plan = out.images[0].plan;
+        assert_eq!(
+            out.images[0].patches.len(),
+            plan.n_vit_h as usize * plan.n_vit_w as usize * 3 * (c.patch * c.patch) as usize
+        );
+        assert_ne!(out.image_fold, 0, "an image request folds its bytes");
+    }
+
+    #[test]
+    fn expand_refuses_a_placeholder_count_mismatch() {
+        let meta = V41VisionMeta {
+            config: cfg(),
+            image_token_id: 129264,
+        };
+        assert!(V41Images::expand(&[10, 129264], &[], &meta).is_err());
     }
 }
