@@ -7,6 +7,14 @@ with optional sidecar and post-train directories. This is the family's model gui
 the shape this tree binds, the serving surface, the gates that back it and the
 recorded benchmark numbers.
 
+[JLFN](https://github.com/JLFN) ported DeepSeek V4.1 Flash serving to
+`ds4-dfm-rs` in [PR #80](https://github.com/Baekpica/ds4-dfm-rs/pull/80),
+from the [YoungAi engine](https://github.com/fodelf/YoungAi/tree/7fb26cc332d740416792204a29c7d13d2986caf5).
+The VQ GGUF and GR/RB sidecars are distributed by
+[YoungAi](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash);
+the original model and Engram weights come from
+[DeepSeek](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash).
+
 It is not live state. It retains the recorded host, artifact, binary hashes and
 workload, and it does not qualify a new build. The executable plan and its
 per-unit evidence are in the [port plan](deepseek41-port-plan.md); the engine
@@ -19,6 +27,11 @@ and its source `crates/ds4-core/src/serving.rs`.
 The [October 13 review qualification](benchmarks/ds41-spark-review-2026-10-13/README.md)
 records fresh Engram-on source parity and the full 2K–40K screenshot sweep at
 300–2200 MHz. Decode median is 41.0 tok/s; 40K prefill is 1,070.6 tok/s.
+
+The [subsequent 2K–64K campaign](benchmarks/ds41-spark-64k-2026-10-13/README.md) adds three fresh full-prefill
+sweeps, separate Prefill/Decode tables and a graph crediting JLFN's
+DeepSeek V4.1 port. It reaches 66,608 actual input tokens; median run means are
+1,039.65 prefill / 38.17 decode tok/s on the unchanged runtime.
 
 ## Artifact and host identity
 
