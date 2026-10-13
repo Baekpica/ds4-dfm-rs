@@ -1225,24 +1225,45 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         return Some("audio input requires Inkling or MiMo");
     }
     if parsed.images.is_empty() {
-        None
-    } else {
-        match syntax {
-            ModelSyntax::Glm53
-            | ModelSyntax::Inkling
-            | ModelSyntax::Step37
-            | ModelSyntax::Ling3Vl
-            | ModelSyntax::Mimo2 => None,
-            ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
-            // V4.1 carries its own vision tower as a sidecar; whether that
-            // sidecar is open is checked in prepare_serial_prompt, which knows
-            // the engine (the 400 lives there, 80296d3).
-            ModelSyntax::DeepSeek if model_id == ds4_core::Variant::DeepSeek41Flash as i32 => None,
-            _ => Some(
-                "image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo",
-            ),
-        }
+        return None;
     }
+    let v41 = syntax == ModelSyntax::DeepSeek
+        && model_id == ds4_core::Variant::DeepSeek41Flash as i32;
+    let image_gate = match syntax {
+        ModelSyntax::Glm53
+        | ModelSyntax::Inkling
+        | ModelSyntax::Step37
+        | ModelSyntax::Ling3Vl
+        | ModelSyntax::Mimo2 => None,
+        ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
+        // V4.1 carries its own vision tower as a sidecar; whether that
+        // sidecar is open is checked in prepare_serial_prompt, which knows
+        // the engine (the 400 lives there, 80296d3).
+        ModelSyntax::DeepSeek if v41 => None,
+        _ => Some(
+            "image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo",
+        ),
+    };
+    if image_gate.is_some() {
+        return image_gate;
+    }
+    // A head that admits images may still not place one inside a tool result:
+    // that placement exists in the DSML V4.1 render only (render.rs
+    // append_dsml_user_content).  Every other head renders tool results from
+    // the ToolResult part, which carries the plain text (parse.rs
+    // json_tool_result_content), so the image could never reach its prompt.
+    // Fail closed instead of letting the media expansion reject it later.
+    if !v41
+        && parsed.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, ChatPart::ToolResult { .. }))
+                && m.parts.iter().any(|p| matches!(p, ChatPart::Image(_)))
+        })
+    {
+        return Some("images inside a tool result are supported only by DeepSeek V4.1 Flash");
+    }
+    None
 }
 
 pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {

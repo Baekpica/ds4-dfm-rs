@@ -1,5 +1,6 @@
 //! C↔Rust four-surface JSON parsers (tokenize/render stay C).
 
+use ds4_server::render::DSML_IMAGE;
 use ds4_server::{
     generation_blocked, parse_anthropic_request, parse_chat_request, parse_completion_request,
     parse_request, parse_responses_request, ChatPart, ImageMime, ParseEnv, ParsedRequest,
@@ -450,6 +451,140 @@ fn image_input_rejects_remote_urls_wrong_magic_and_non_user_roles() {
     assert_eq!(
         rust_parse("chat", &assistant).unwrap_err(),
         "images are allowed only in user messages"
+    );
+}
+
+#[test]
+fn anthropic_tool_result_content_blocks_carry_images() {
+    // The engine's test_anthropic_tool_result_mcp_blocks
+    // (tests/server_tests_replay.c:65): the real MCP loop replays an assistant
+    // tool_use plus a user tool_result whose content is a block array, and a
+    // screenshot-style MCP tool returns pixels inside it.
+    const PNG: &str = concat!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
+        "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    );
+    // The replaying assistant turn plus the tool_result block under test.
+    let mcp_replay = |id: &str, block: &str| {
+        format!(
+            r#"{{"messages":[{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"screenshot","input":{{}}}}]}},{{"role":"user","content":[{block}]}}]}}"#
+        )
+    };
+
+    // Legacy string content renders byte-identically, including is_error:false.
+    let string_form = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_01",
+            r#"{"type":"tool_result","tool_use_id":"toolu_01","is_error":false,"content":"ok"}"#,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        string_form.messages[1].content,
+        "<tool_result>ok</tool_result>"
+    );
+    assert_eq!(
+        string_form.messages[1].parts,
+        [ChatPart::ToolResult {
+            id: "toolu_01".into(),
+            content: "ok".into(),
+        }]
+    );
+    assert_eq!(string_form.messages[1].tool_call_ids, ["toolu_01"]);
+
+    // Block array: text + image + text in client order.  The image registers
+    // like a user-message image; the placeholder sits where the block sits in
+    // the content the DSML head renders, while the ToolResult part keeps the
+    // plain text the other heads read.
+    let mixed = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_02",
+            &format!(
+                r#"{{"type":"tool_result","tool_use_id":"toolu_02","content":[{{"type":"text","text":"shot:"}},{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{PNG}"}}}},{{"type":"text","text":"done"}}]}}"#
+            ),
+        ),
+    )
+    .unwrap();
+    assert_eq!(mixed.images.len(), 1);
+    assert_eq!(mixed.images[0].mime, ImageMime::Png);
+    assert_eq!(
+        mixed.messages[1].content,
+        format!("<tool_result>shot:{DSML_IMAGE}done</tool_result>")
+    );
+    assert_eq!(
+        mixed.messages[1].parts,
+        [
+            ChatPart::Image(0),
+            ChatPart::ToolResult {
+                id: "toolu_02".into(),
+                content: "shot:done".into(),
+            },
+        ]
+    );
+    assert_eq!(mixed.messages[1].tool_call_ids, ["toolu_02"]);
+    assert_ne!(mixed.needs & NEED_IMAGE, 0);
+    // The V4.1 head (variant 16) admits it.  A head that refuses images keeps
+    // its own message; a head that admits them but cannot place one inside a
+    // tool result (it renders the plain ToolResult part) is refused by name.
+    assert_eq!(generation_blocked(&mixed, 16), None);
+    assert_eq!(
+        generation_blocked(&mixed, 0),
+        Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo")
+    );
+    assert_eq!(
+        generation_blocked(&mixed, 7),
+        Some("images inside a tool result are supported only by DeepSeek V4.1 Flash")
+    );
+
+    // is_error:true surfaces as an explicit marker inside the envelope; a
+    // text-only tool_result never needs pixels and renders as before.
+    let errored = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_03",
+            r#"{"type":"tool_result","tool_use_id":"toolu_03","content":"exit status 1","is_error":true}"#,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        errored.messages[1].content,
+        "<tool_result>[tool_error] exit status 1</tool_result>"
+    );
+    let text_only = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_04",
+            r#"{"type":"tool_result","tool_use_id":"toolu_04","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}"#,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        text_only.messages[1].content,
+        "<tool_result>ab</tool_result>"
+    );
+    assert!(text_only.images.is_empty());
+
+    // Fail closed: an image the server cannot deliver rejects the request
+    // instead of silently vanishing.
+    let url_source = mcp_replay(
+        "toolu_05",
+        r#"{"type":"tool_result","tool_use_id":"toolu_05","content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}"#,
+    );
+    assert_eq!(
+        rust_parse("anthropic", &url_source).unwrap_err(),
+        "Anthropic image source must use base64 data"
+    );
+    let wrong_magic = mcp_replay(
+        "toolu_06",
+        &format!(
+            r#"{{"type":"tool_result","tool_use_id":"toolu_06","content":[{{"type":"image","source":{{"type":"base64","media_type":"image/jpeg","data":"{PNG}"}}}}]}}"#
+        ),
+    );
+    assert_eq!(
+        rust_parse("anthropic", &wrong_magic).unwrap_err(),
+        "image bytes do not match declared media type"
     );
 }
 

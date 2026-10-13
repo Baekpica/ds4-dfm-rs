@@ -1,5 +1,6 @@
 //! C↔Rust DSML no-tools render.
 
+use ds4_server::render::DSML_IMAGE;
 use ds4_server::tools::{
     DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
     DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
@@ -941,4 +942,50 @@ fn dsml_v41_spaced_tools_match_official_encoding() {
         render_dsml_chat_choice_ex(&c2, schemas2, ThinkMode::None, ToolChoice::Auto, v41).unwrap(),
         &want2,
     );
+}
+
+#[test]
+fn dsml_v41_places_tool_result_images_inside_the_envelope() {
+    // A tool_result whose content carried an image reaches the renderer with
+    // the envelope and the placeholder already written into the content in the
+    // client's block order (parse.rs json_tool_result_content; the engine's
+    // text-level render, server_parse_tools.c:330).  The user body must write
+    // that content -- running the parts loop instead would drop the envelope.
+    let v41 = DsmlHead::V41 { system_token: true };
+    let tool_result = ChatMsg {
+        role: "user".into(),
+        content: format!("<tool_result>shot:{DSML_IMAGE}done</tool_result>"),
+        parts: vec![
+            ChatPart::Image(0),
+            ChatPart::ToolResult {
+                id: "toolu_02".into(),
+                content: "shot:done".into(),
+            },
+        ],
+        tool_call_ids: vec!["toolu_02".into()],
+        ..ChatMsg::default()
+    };
+    let out =
+        render_dsml_chat_choice_ex(&[tool_result], "", ThinkMode::None, ToolChoice::Auto, v41)
+            .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains(&format!("<tool_result>shot:{DSML_IMAGE}done</tool_result>")));
+    assert_eq!(text.matches(DSML_IMAGE).count(), 1);
+
+    // A plain user image still renders from the parts, placeholder where the
+    // part sits (the content carries no placeholder for this shape).
+    let plain = ChatMsg {
+        role: "user".into(),
+        content: "beforeafter".into(),
+        parts: vec![
+            ChatPart::Text("before".into()),
+            ChatPart::Image(0),
+            ChatPart::Text("after".into()),
+        ],
+        ..ChatMsg::default()
+    };
+    let out = render_dsml_chat_choice_ex(&[plain], "", ThinkMode::None, ToolChoice::Auto, v41)
+        .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains(&format!("before{DSML_IMAGE}after")));
 }

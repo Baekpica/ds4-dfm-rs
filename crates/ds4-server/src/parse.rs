@@ -8,6 +8,7 @@ use crate::json::{
     json_bool, json_content, json_escape, json_int, json_number, json_raw_value, json_skip_value,
     json_string, Json,
 };
+use crate::render::DSML_IMAGE;
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
 use crate::route::{
     compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
@@ -1207,6 +1208,128 @@ fn parse_anthropic_image_source(p: &mut Json<'_>) -> Option<(String, String, Str
     ))
 }
 
+/// Anthropic `tool_result.content`: a bare string, null, or an array of content
+/// blocks.  The engine's `json_tool_result_content` (server_parse_tools.c:330):
+/// text blocks concatenate exactly like the legacy string path, so rendered
+/// bytes stay stable and existing disk-KV prefixes keep matching; image blocks
+/// -- browser/screenshot MCP tools -- register through the same path
+/// user-message images use, with the image placeholder left where the block
+/// sits in the client's order (the engine's text-level render,
+/// server_parse_tools.c:290).  Only pixels fail closed: an undeliverable image
+/// rejects the request, never silently vanishes; text-bearing blocks of other
+/// types keep their text.
+///
+/// Returns (rendered, plain).  The DSML render writes `rendered`, the text with
+/// the placeholders it can place; every other head reads the ToolResult part,
+/// which carries `plain`: they have no way to place a V4.1 placeholder, and a
+/// leaked DSML token would be worse than the image staying out of their text
+/// (their tool results keep rendering exactly as before).
+fn json_tool_result_content(
+    p: &mut Json<'_>,
+    msg: &mut ChatMsg,
+    images: &mut Vec<RequestImage>,
+    err: &mut String,
+) -> Option<(String, String)> {
+    p.ws();
+    if p.peek() == Some(b'"') {
+        let text = json_string(p)?;
+        return Some((text.clone(), text));
+    }
+    if p.lit("null") {
+        return Some((String::new(), String::new()));
+    }
+    if p.peek() != Some(b'[') {
+        if !json_skip_value(p) {
+            return None;
+        }
+        return Some((String::new(), String::new()));
+    }
+    p.i += 1;
+    let mut rendered = String::new();
+    let mut plain = String::new();
+    p.ws();
+    while p.peek().is_some() && p.peek() != Some(b']') {
+        if p.peek() == Some(b'"') {
+            let text = json_string(p)?;
+            rendered.push_str(&text);
+            plain.push_str(&text);
+        } else if p.peek() == Some(b'{') {
+            p.i += 1;
+            let mut typ = None;
+            let mut text = None;
+            let mut source = None;
+            p.ws();
+            while p.peek().is_some() && p.peek() != Some(b'}') {
+                let key = json_string(p)?;
+                p.ws();
+                if p.bump() != Some(b':') {
+                    return None;
+                }
+                if key == "type" {
+                    typ = json_string(p);
+                    if typ.is_none() {
+                        return None;
+                    }
+                } else if key == "text" {
+                    text = json_string(p);
+                    if text.is_none() {
+                        return None;
+                    }
+                } else if key == "source" {
+                    source = parse_anthropic_image_source(p);
+                    if source.is_none() {
+                        return None;
+                    }
+                } else if !json_skip_value(p) {
+                    return None;
+                }
+                p.ws();
+                if p.peek() == Some(b',') {
+                    p.i += 1;
+                }
+                p.ws();
+            }
+            if p.bump() != Some(b'}') {
+                return None;
+            }
+            if typ.as_deref() == Some("image") {
+                let Some((source_type, media_type, data)) = source else {
+                    *err = "Anthropic image source must use base64 data".into();
+                    return None;
+                };
+                if source_type != "base64" || media_type.is_empty() || data.is_empty() {
+                    *err = "Anthropic image source must use base64 data".into();
+                    return None;
+                }
+                match add_image_base64(images, &[], &[], &media_type, &data) {
+                    Ok(index) => {
+                        msg.parts.push(ChatPart::Image(index));
+                        rendered.push_str(DSML_IMAGE);
+                    }
+                    Err(error) => {
+                        *err = error;
+                        return None;
+                    }
+                }
+            } else if let Some(t) = text {
+                rendered.push_str(&t);
+                plain.push_str(&t);
+            }
+        } else if !json_skip_value(p) {
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    if p.bump() != Some(b']') {
+        return None;
+    }
+    Some((rendered, plain))
+}
+
 fn parse_anthropic_content_block(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
@@ -1223,6 +1346,8 @@ fn parse_anthropic_content_block(
     let mut name = None;
     let mut input = None;
     let mut tool_result = None;
+    let mut tool_result_plain = None;
+    let mut result_is_error = false;
     let mut source = None;
     p.ws();
     while p.peek().is_some() && p.peek() != Some(b'}') {
@@ -1264,9 +1389,17 @@ fn parse_anthropic_content_block(
                 return false;
             }
         } else if key == "content" {
-            tool_result = json_content(p);
-            if tool_result.is_none() {
-                return false;
+            match json_tool_result_content(p, msg, images, err) {
+                Some((rendered, plain)) => {
+                    tool_result = Some(rendered);
+                    tool_result_plain = Some(plain);
+                }
+                None => return false,
+            }
+        } else if key == "is_error" {
+            match json_bool(p) {
+                Some(value) => result_is_error = value,
+                None => return false,
             }
         } else if key == "source" {
             source = parse_anthropic_image_source(p);
@@ -1311,17 +1444,25 @@ fn parse_anthropic_content_block(
             });
         }
         Some("tool_result") => {
-            // Keep original bytes before the legacy encoder escapes XML.
+            let text = tool_result.unwrap_or_default();
+            // Keep original bytes before the legacy encoder escapes XML.  The
+            // part carries the plain text (no V4.1 placeholder): it is what the
+            // non-DSML heads render.
             msg.parts.push(ChatPart::ToolResult {
                 id: id.clone().unwrap_or_default(),
-                content: tool_result.clone().unwrap_or_default(),
+                content: tool_result_plain.take().unwrap_or_default(),
             });
             if let Some(ref i) = id {
                 add_tool_call_id(msg, i);
             }
             let mut b = msg.content.clone();
             b.push_str("<tool_result>");
-            append_tool_result_text(&mut b, tool_result.as_deref().unwrap_or(""));
+            // A failed tool's payload is often empty or short; the flag itself
+            // is the signal (the engine's [tool_error] marker, log.md 2026-07-12).
+            if result_is_error {
+                b.push_str("[tool_error] ");
+            }
+            append_tool_result_text(&mut b, &text);
             b.push_str("</tool_result>");
             msg.content = b;
         }

@@ -1325,7 +1325,15 @@ pub fn append_tool_result_text(out: &mut Vec<u8>, s: &[u8]) {
 fn append_dsml_user_content(out: &mut Vec<u8>, m: &ChatMsg, head: DsmlHead) {
     let has_image = matches!(head, DsmlHead::V41 { .. })
         && m.parts.iter().any(|p| matches!(p, ChatPart::Image(_)));
-    if !has_image {
+    // A tool-result message keeps its content: the envelope and the image
+    // placeholders were written into it at parse time in the client's block
+    // order (the engine's text-level render, server_parse_tools.c:330), so
+    // the parts loop must not run for it.
+    let has_tool_result = m
+        .parts
+        .iter()
+        .any(|p| matches!(p, ChatPart::ToolResult { .. }));
+    if !has_image || has_tool_result {
         put(out, &m.content);
         return;
     }
