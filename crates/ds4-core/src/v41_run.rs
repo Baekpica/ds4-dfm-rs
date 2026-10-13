@@ -1856,6 +1856,43 @@ impl Model {
         }
         Ok(())
     }
+
+    /// KU-2: pay the V4.1 asset opens for the artifacts the first request will
+    /// use, so request one does not.  The engine pays both at model open
+    /// (`core_engine_open.c:120-124` -> `ds4_engine_v41_set_amp_dir`; the
+    /// engram shards at `core_v41_engram.c:218`); the port pays them inside
+    /// request one, which is the one cell the engine still wins.
+    ///
+    /// Both calls are the prelude's own (`v41_mount_zchain`, `V41Feed::open`),
+    /// with the same arguments, so the caches fill with the keys request one
+    /// will look up.  `DS41_NO_SETUP_CACHE=1` disables the whole thing: with
+    /// the caches off there is nothing to fill, and the work would be paid
+    /// twice.
+    pub fn v41_prewarm(
+        &self,
+        path: &Path,
+        zchain: Option<&str>,
+        posttrain: Option<&str>,
+        engram_dir: Option<&str>,
+        no_engram: bool,
+    ) -> Result<()> {
+        if !setup_cache_on() {
+            return Ok(());
+        }
+        let phases = std::env::var_os("DS41_PHASE_LOG").is_some();
+        let t_mount = Instant::now();
+        v41_mount_zchain(self, zchain, posttrain)?;
+        phase_log(phases, "prewarm sidecar mount", t_mount);
+        if !no_engram {
+            let t_feed = Instant::now();
+            // Only the asset half is wanted here; the returned feed is the
+            // per-request state, and ENGRAM_FEED keeps the half that lasts.
+            let feed = V41Feed::open(path, engram_dir)?;
+            drop(feed);
+            phase_log(phases, "prewarm engram feed open", t_feed);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -2054,5 +2091,23 @@ mod tests {
             "expected the engine's empty-plugin refusal, got: {}",
             err.message
         );
+    }
+
+    /// The prewarm runs only when the caches are consulted at all: with
+    /// `DS41_NO_SETUP_CACHE=1` the same opens would be paid twice (once here,
+    /// once in request one), which is the behaviour KU-2 must not introduce.
+    #[test]
+    fn prewarm_gate_follows_the_kill_switch() {
+        let prior = std::env::var_os("DS41_NO_SETUP_CACHE");
+        std::env::set_var("DS41_NO_SETUP_CACHE", "1");
+        assert!(
+            !setup_cache_on(),
+            "the kill switch must close the prewarm gate"
+        );
+        match prior {
+            Some(value) => std::env::set_var("DS41_NO_SETUP_CACHE", value),
+            None => std::env::remove_var("DS41_NO_SETUP_CACHE"),
+        }
+        assert!(setup_cache_on(), "an unset switch must open the gate");
     }
 }

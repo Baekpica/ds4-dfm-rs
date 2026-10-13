@@ -766,6 +766,20 @@ fn main() {
     }
     if let Some(ref model) = model {
         model.boot_prewarm();
+        // KU-2: the V4.1 route pays its asset opens (sidecar mount, engram
+        // feed) inside request one unless they are paid here.  A failure must
+        // not stop serving: the request path still opens them itself.
+        if let Some(route) = &v41_route {
+            if let Err(error) = model.v41_prewarm(
+                &route.model_path,
+                route.zchain.as_deref(),
+                route.posttrain.as_deref(),
+                route.engram_dir.as_deref(),
+                route.no_engram,
+            ) {
+                eprintln!("ds4-server-rs: V4.1 prewarm skipped: {error}");
+            }
+        }
     }
     if let (Some(identity), Some(store)) = (cache_identity, kv_store.as_mut()) {
         let effective = &cfg.serving_plan.as_ref().unwrap_or(&plan).effective;
