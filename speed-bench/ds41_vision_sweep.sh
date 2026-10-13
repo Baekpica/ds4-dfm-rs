@@ -140,9 +140,12 @@ boot_server() {
     SLOG="$OUT/server.log"
     rm -f "$SLOG"
     B_T0=$(now)
+    # Bind all interfaces (install.sh's own default) so a LAN client can reach
+    # the booted server; the URL stays 127.0.0.1 (0.0.0.0 is a bind address,
+    # not a connect destination).
     "$SRV" --cuda -m "$MODEL" --zchain "$ZC" --mem-budget-mb 110000 \
            --engram-dir "$ENGRAM" --vision-gguf "$VIS" \
-           --host 127.0.0.1 --port "$PORT" >> "$SLOG" 2>&1 &
+           --host 0.0.0.0 --port "$PORT" >> "$SLOG" 2>&1 &
     SRV_PID=$!
     i=0
     while [ "$i" -lt "$BOOT_TRIES" ]; do
