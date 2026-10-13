@@ -53,6 +53,9 @@ use crate::tools::{assign_tool_ids, parse_generated_for_response, SemAccum};
 
 #[derive(Debug)]
 pub enum GenerateError {
+    /// The request cannot be served as asked (HTTP 400): the engine answers it
+    /// before any work, never by silently dropping part of the input.
+    BadRequest(&'static str),
     Unsupported(&'static str),
     ContinuationHold { retry_after: i32 },
     Engine(String),
@@ -63,6 +66,7 @@ pub enum GenerateError {
 impl std::fmt::Display for GenerateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            GenerateError::BadRequest(s) => f.write_str(s),
             GenerateError::Unsupported(s) => f.write_str(s),
             GenerateError::ContinuationHold { .. } => {
                 f.write_str("batch capacity is reserved for live tool continuations")
@@ -1230,6 +1234,10 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
             | ModelSyntax::Ling3Vl
             | ModelSyntax::Mimo2 => None,
             ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
+            // V4.1 carries its own vision tower as a sidecar; whether that
+            // sidecar is open is checked in prepare_serial_prompt, which knows
+            // the engine (the 400 lives there, 80296d3).
+            ModelSyntax::DeepSeek if model_id == ds4_core::Variant::DeepSeek41Flash as i32 => None,
             _ => Some(
                 "image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo",
             ),
@@ -2276,6 +2284,17 @@ pub(crate) fn prepare_serial_prompt(
     if let Some(msg) = generation_blocked(parsed, engine.model_id()) {
         return Err(GenerateError::Unsupported(msg));
     }
+    // V4.1 images are served by the model's own tower, which is a sidecar
+    // (--vision-gguf).  A request that carries an image while no tower is open
+    // is refused with a 400 before any work, never silently dropped (80296d3).
+    if engine.model_id() == ds4_core::Variant::DeepSeek41Flash as i32
+        && !parsed.images.is_empty()
+        && engine.v41_vision().is_none()
+    {
+        return Err(GenerateError::BadRequest(
+            "image input requires the DeepSeek V4.1 vision sidecar (--vision-gguf)",
+        ));
+    }
 
     let mut parsed = parsed.clone();
     engine.restore_chat(&mut parsed)?;
@@ -2990,6 +3009,15 @@ fn expand_v41_images(
     tokens: &[i32],
 ) -> Result<Option<ds4_core::v41_media::V41Images>, GenerateError> {
     let Some(meta) = engine.v41_vision() else {
+        // No sidecar: an image request is refused by name, never silently
+        // dropped (the engine's 400, 80296d3: "image_url 进不了 sink 时改为
+        // 400, 不再静默丢图").  prepare_serial_prompt answers this first; this
+        // guard is the backstop for a caller that skipped the preflight.
+        if !parsed.images.is_empty() {
+            return Err(GenerateError::BadRequest(
+                "image input requires the DeepSeek V4.1 vision sidecar (--vision-gguf)",
+            ));
+        }
         return Ok(None);
     };
     if parsed.images.is_empty() {
