@@ -25,12 +25,16 @@ typedef struct {
 typedef struct {
     uint32_t n;
     int draft;
+    /* Vision seam v41_moe reads (ds4_ds41_forward.inc:288-291). */
+    ds4_gpu_tensor *vrows;
+    int vrows_on;
     ds4_gpu_tensor *sg, *su, *sh, *so, *xn, *glog, *sel, *rw, *routed, *y;
     const ds4_tensor *tower_exps_vq[4];
     const uint64_t *tower_exp_off[4];
 } ds4_v41_state;
 
 static struct { uint32_t mtp_experts, mtp_used; } g_ds4_v41 = {4u, 2u};
+static ds4_gpu_tensor *g_v41_bias_vl[DS4_N_LAYER];  /* ds4_ds41_vision.inc:22 */
 static int g_steps, g_fail_step, g_fork_enabled, g_active, g_joins, g_begins;
 
 static int step_ok(void) { return ++g_steps != g_fail_step; }
