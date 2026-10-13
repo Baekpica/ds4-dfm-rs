@@ -218,6 +218,12 @@ pub fn probe_vision_sidecar(
             message: "Inkling uses embedded image/audio weights".into(),
         });
     }
+    // DeepSeek V4.1 takes its OWN vision tower as a sidecar (--vision-gguf),
+    // not an external encoder: admit it here and validate the deepseek4.vision.*
+    // block the native open requires.
+    if shape.variant == crate::Variant::DeepSeek41Flash {
+        return probe_v41_vision_sidecar(path);
+    }
     let takes_encoder = matches!(
         shape.family,
         ModelFamily::Glm53 | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2
@@ -310,6 +316,57 @@ pub fn probe_vision_sidecar(
     }
     Ok(())
 }
+
+/// DeepSeek V4.1 vision-tower sidecar (--vision-gguf): a deepseek4 GGUF that
+/// carries the deepseek4.vision.* block the native open requires
+/// (core_validate_v41.c:48-66) plus the per-layer blk.N.exp_probs_b_vl and
+/// v.* / mm.* tensors. A file without the block is not a tower; the native
+/// open exits, so refuse it here where it is a plan line, not a boot crash.
+fn probe_v41_vision_sidecar(path: &str) -> Result<()> {
+    let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("vision open failed: {e}"),
+    })?;
+    if g.get_string("general.architecture") != Some(V41_ARCH) {
+        return Err(Error {
+            code: 1,
+            message: "--vision-gguf file is not a DeepSeek V4.1 sidecar".into(),
+        });
+    }
+    match g.get_u32("deepseek4.vision.block_count") {
+        Some(n) if n > 0 => {}
+        _ => {
+            return Err(Error {
+                code: 1,
+                message: "--vision-gguf file has no deepseek4.vision.block_count (not a vision tower)"
+                    .into(),
+            })
+        }
+    }
+    for key in V41_VISION_KEYS {
+        if g.get_u32(key).is_none() {
+            return Err(Error {
+                code: 1,
+                message: format!("vision sidecar is missing {key}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The deepseek4.vision.* keys v41_load_vision_metadata requires once
+/// deepseek4.vision.block_count is present (core_validate_v41.c:48-66).
+const V41_ARCH: &[u8] = b"deepseek4";
+const V41_VISION_KEYS: [&str; 8] = [
+    "deepseek4.vision.embedding_length",
+    "deepseek4.vision.attention.head_count",
+    "deepseek4.vision.feed_forward_length",
+    "deepseek4.vision.patch_size",
+    "deepseek4.vision.downsample_ratio",
+    "deepseek4.vision.max_image_tokens",
+    "deepseek4.vision.min_pixels",
+    "deepseek4.image_token_id",
+];
 
 pub(crate) struct SiblingPaths<'a> {
     pub mtp: Option<&'a str>,

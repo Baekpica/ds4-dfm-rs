@@ -1167,6 +1167,7 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
  * (Rust host) or the GGUF metadata (C host); the forward looks it up per
  * layer, so it cannot stay a metadata scan. */
 #define DS4_V41_MAX_ENGRAM 4
+#define DS4_V41_MAX_VIS_LAYERS 64   /* engine bound (DS4_VIS_MAX_LAYERS); real count is metadata */
 #define DS4_MTP_MAX_TOWERS  4    /* engine bound; the real count is metadata */
 #define DS4_MTP_MAX_EXPERTS 256  /* engine bound; the real count is metadata */
 /* Fixed draft/verify buffers hold one real token plus this many drafts. */
@@ -1191,6 +1192,15 @@ typedef struct {
     int16_t  mtp_target[DS4_MTP_MAX_TOWERS * 2];
     int16_t  mtp_target_slot[DS4_MAX_LAYER];
     uint32_t n_mtp_target;
+    /* Vision tower (DeepSeek-ViT + aligner; core_validate_v41.c:48-66).  All
+     * zero when the file carries no deepseek4.vision.block_count (the plain
+     * text GGUF, or a sidecar that is not a vision tower): the engine then
+     * refuses image requests but serves text unchanged.  Vis_* come from the
+     * sidecar's own metadata (--vision-gguf), never the base GGUF. */
+    uint32_t vis_layers;                     /* deepseek4.vision.block_count, 0 = no tower */
+    uint32_t vis_dim, vis_heads, vis_inter, vis_patch, vis_ds, vis_max_tok, vis_min_px;
+    int32_t  image_token_id;                 /* deepseek4.image_token_id (129264), the prompt placeholder */
+    float    vis_theta;                      /* deepseek4.vision.rope.freq_base */
 } ds4_v41_cfg;
 static ds4_v41_cfg g_ds4_v41;
 
@@ -5246,6 +5256,11 @@ typedef struct {
     ds4_tensor *ffn_down;
     ds4_tensor *ffn_gate_inp;
     ds4_tensor *ffn_exp_probs_b;
+    /* DeepSeek V4.1: a second router bias for IMAGE rows (blk.N.exp_probs_b_vl,
+     * core_v41_vision.c vis_bias_vl_upload).  It rides the --vision-gguf
+     * sidecar, not the base GGUF; NULL on every other family and on a text-only
+     * V4.1 open. */
+    ds4_tensor *ffn_exp_probs_b_vl;
     ds4_tensor *ffn_gate_exps;
     ds4_tensor *ffn_up_exps;
     ds4_tensor *ffn_down_exps;
@@ -5341,6 +5356,23 @@ typedef struct {
     ds4_tensor *out_norm;
 } ds4_v41_tower_weights;
 
+/* DeepSeek V4.1 vision tower (DeepSeek-ViT + aligner; mirror of the engine's
+ * ds4_vision_weights, src/core/core_vision_types.h:8-19).  Bound from the
+ * --vision-gguf sidecar (core_bind_vision.c).  All BF16 matrices, f32
+ * vectors; the three learned delimiter vectors and the 40 per-layer router
+ * biases (blk.N.exp_probs_b_vl.bias) ride the same sidecar. */
+typedef struct {
+    ds4_tensor *norm1, *qkv_w, *qkv_b, *o_w, *o_b, *norm2, *up_w, *down_w;
+} ds4_v41_vision_block_weights;
+
+typedef struct {
+    ds4_tensor *patch_w, *patch_b;                   /* v.patch_embd: [3*p*p -> dim] + bias */
+    ds4_v41_vision_block_weights blk[DS4_V41_MAX_VIS_LAYERS];
+    ds4_tensor *out_norm;                            /* v.output_norm */
+    ds4_tensor *mm0_w, *mm0_b, *mm1_w, *mm1_b;       /* aligner mm.0/mm.1: w1 [dim*r*r -> E] / w2 [E -> E] */
+    ds4_tensor *image_start, *image_end, *image_newline;   /* three learned delimiters [E] */
+} ds4_v41_vision_weights;
+
 /* All eight draft blocks live in the sidecar; embedding/head stay shared
  * with the target. These pointers borrow the sidecar model's mapping. */
 typedef struct {
@@ -5388,6 +5420,7 @@ typedef struct {
     ds4_tensor *engram_primes;
     ds4_tensor *engram_offsets;
     ds4_v41_tower_weights v41_towers;
+    ds4_v41_vision_weights v41_vision;   /* DeepSeek-ViT + aligner, from --vision-gguf */
 } ds4_weights;
 
 typedef struct {
@@ -7341,6 +7374,37 @@ static void v41_load_wiring(const ds4_model *m) {
     v41_report_wiring(1);
 }
 
+/* Vision tower metadata (mirror of the engine's v41_load_vision_metadata,
+ * core_validate_v41.c:48-66).  OPTIONAL: a file without
+ * deepseek4.vision.block_count (or with 0) has no tower, so vis_layers stays 0
+ * and the engine refuses image requests while serving text unchanged.  With a
+ * block count present all seven keys are required -- the engine never guesses
+ * a dimension (a wrong guess does not error, it just answers about the image
+ * wrongly).  vm is the file that holds the vision tensors: the --vision-gguf
+ * sidecar.  The base GGUF carries no vision metadata in this port. */
+static void v41_load_vision_metadata(const ds4_model *vm) {
+    ds4_v41_cfg *v = &g_ds4_v41;
+    uint32_t nl = 0;
+    if (!model_get_u32(vm, "deepseek4.vision.block_count", &nl) || !nl) return;
+    if (nl > DS4_V41_MAX_VIS_LAYERS) ds4_die("deepseek4.vision.block_count over engine limit");
+    v->vis_layers  = nl;
+    v->vis_dim     = required_u32(vm, "deepseek4.vision.embedding_length");
+    v->vis_heads   = required_u32(vm, "deepseek4.vision.attention.head_count");
+    v->vis_inter   = required_u32(vm, "deepseek4.vision.feed_forward_length");
+    v->vis_patch   = required_u32(vm, "deepseek4.vision.patch_size");
+    v->vis_ds      = required_u32(vm, "deepseek4.vision.downsample_ratio");
+    v->vis_max_tok = required_u32(vm, "deepseek4.vision.max_image_tokens");
+    v->vis_min_px  = required_u32(vm, "deepseek4.vision.min_pixels");
+    v->image_token_id = (int32_t)required_u32(vm, "deepseek4.image_token_id");
+    float theta = 0.f;
+    if (!model_get_f32_compat(vm, "deepseek4.vision.rope.freq_base", &theta) || !(theta > 0.f))
+        ds4_die("deepseek4.vision.rope.freq_base is missing");
+    v->vis_theta = theta;
+    if (!v->vis_dim || !v->vis_heads || v->vis_dim % v->vis_heads || !v->vis_inter ||
+        !v->vis_patch || !v->vis_ds || !v->vis_max_tok)
+        ds4_die("deepseek4.vision.* is invalid");
+}
+
 static void config_expect_f32(const char *name, float got, float expected);
 
 static void validate_swiglu_clamp_metadata(const ds4_model *m) {
@@ -9003,6 +9067,91 @@ static void glm53_vision_weights_bind(
     }
 }
 #endif
+
+/* Hard shape/type check for a vision tensor (mirror of the engine's vexpect,
+ * core_bind_vision.c:9-22).  The message names the tensor; a mismatch exits
+ * rather than warns, because a wrong type/dim is a silent wrong-lda read that
+ * produces plausible-looking garbage embeddings, not an error. */
+static void v41_vexpect(const ds4_tensor *t, uint32_t type, uint32_t ndim, uint64_t d0, uint64_t d1) {
+    if (!t) return;
+    if (t->type != type) {
+        fprintf(stderr, "ds4: vision tensor %.*s type %s, expected %s\n",
+                (int)t->name.len, t->name.ptr, tensor_type_name(t->type), tensor_type_name(type));
+        exit(1);
+    }
+    const uint64_t want[2] = { d0, d1 };
+    if (t->ndim != ndim) {
+        fprintf(stderr, "ds4: vision tensor %.*s rank %u, expected %u\n",
+                (int)t->name.len, t->name.ptr, t->ndim, ndim);
+        exit(1);
+    }
+    for (uint32_t i = 0; i < ndim; i++) {
+        if (t->dim[i] != want[i]) {
+            fprintf(stderr, "ds4: vision tensor %.*s dim[%u]=%" PRIu64 ", expected %" PRIu64 "\n",
+                    (int)t->name.len, t->name.ptr, i, t->dim[i], want[i]);
+            exit(1);
+        }
+    }
+}
+
+/* DeepSeek V4.1 vision tower bind (mirror of the engine's weights_bind_vision,
+ * core_bind_vision.c:31-83).  Names are the converter's v.* / mm.* plus the
+ * per-layer blk.N.exp_probs_b_vl.bias; the sidecar's own metadata already
+ * validated the dims, but every tensor is re-checked here (a wrong type/dim
+ * exits).  Called only when g_ds4_v41.vis_layers > 0, with m = the sidecar. */
+static void v41_vision_bind(ds4_weights *w, const ds4_model *m) {
+    const ds4_v41_cfg *v = &g_ds4_v41;
+    ds4_v41_vision_weights *V = &w->v41_vision;
+    memset(V, 0, sizeof *V);
+    if (!v->vis_layers) return;
+    const uint64_t D = v->vis_dim, P = v->vis_patch, I = v->vis_inter, R = v->vis_ds, E = DS4_N_EMBD;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {   /* per-layer image-row router bias, rides the sidecar */
+        char nm[64];
+        snprintf(nm, sizeof nm, "blk.%u.exp_probs_b_vl.bias", il);
+        ds4_tensor *t = required_tensor(m, nm);
+        v41_vexpect(t, DS4_TENSOR_F32, 1, DS4_N_EXPERT, 0);
+        w->layer[il].ffn_exp_probs_b_vl = t;
+    }
+    V->patch_w = required_tensor(m, "v.patch_embd.weight");
+    V->patch_b = required_tensor(m, "v.patch_embd.bias");
+    V->out_norm = required_tensor(m, "v.output_norm.weight");
+    V->mm0_w = required_tensor(m, "mm.0.weight"); V->mm0_b = required_tensor(m, "mm.0.bias");
+    V->mm1_w = required_tensor(m, "mm.1.weight"); V->mm1_b = required_tensor(m, "mm.1.bias");
+    V->image_start = required_tensor(m, "v.image_start.weight");
+    V->image_end = required_tensor(m, "v.image_end.weight");
+    V->image_newline = required_tensor(m, "v.image_newline.weight");
+    for (uint32_t il = 0; il < v->vis_layers; il++) {
+        ds4_v41_vision_block_weights *b = &V->blk[il];
+        b->norm1 = required_tensorf(m, "v.blk.%u.attn_norm.weight", il);
+        b->qkv_w = required_tensorf(m, "v.blk.%u.attn_qkv.weight", il);
+        b->qkv_b = required_tensorf(m, "v.blk.%u.attn_qkv.bias", il);
+        b->o_w = required_tensorf(m, "v.blk.%u.attn_output.weight", il);
+        b->o_b = required_tensorf(m, "v.blk.%u.attn_output.bias", il);
+        b->norm2 = required_tensorf(m, "v.blk.%u.ffn_norm.weight", il);
+        b->up_w = required_tensorf(m, "v.blk.%u.ffn_gate_up.weight", il);
+        b->down_w = required_tensorf(m, "v.blk.%u.ffn_down.weight", il);
+        v41_vexpect(b->norm1, DS4_TENSOR_F32, 1, D, 0);
+        v41_vexpect(b->qkv_w, DS4_TENSOR_BF16, 2, D, 3 * D);
+        v41_vexpect(b->qkv_b, DS4_TENSOR_F32, 1, 3 * D, 0);
+        v41_vexpect(b->o_w, DS4_TENSOR_BF16, 2, D, D);
+        v41_vexpect(b->o_b, DS4_TENSOR_F32, 1, D, 0);
+        v41_vexpect(b->norm2, DS4_TENSOR_F32, 1, D, 0);
+        v41_vexpect(b->up_w, DS4_TENSOR_BF16, 2, D, 2 * I);
+        v41_vexpect(b->down_w, DS4_TENSOR_BF16, 2, I, D);
+    }
+    v41_vexpect(V->patch_w, DS4_TENSOR_BF16, 2, 3 * P * P, D);
+    v41_vexpect(V->patch_b, DS4_TENSOR_F32, 1, D, 0);
+    v41_vexpect(V->out_norm, DS4_TENSOR_F32, 1, D, 0);
+    v41_vexpect(V->mm0_w, DS4_TENSOR_BF16, 2, D * R * R, E);
+    v41_vexpect(V->mm0_b, DS4_TENSOR_F32, 1, E, 0);
+    v41_vexpect(V->mm1_w, DS4_TENSOR_BF16, 2, E, E);
+    v41_vexpect(V->mm1_b, DS4_TENSOR_F32, 1, E, 0);
+    v41_vexpect(V->image_start, DS4_TENSOR_F32, 1, E, 0);
+    v41_vexpect(V->image_end, DS4_TENSOR_F32, 1, E, 0);
+    v41_vexpect(V->image_newline, DS4_TENSOR_F32, 1, E, 0);
+    fprintf(stderr, "ds4: [v41] vision tower wired (--vision-gguf sidecar): %u blocks x dim %u, patch %u, %ux%u downsample, <= %u tokens/image, placeholder id %d\n",
+            v->vis_layers, v->vis_dim, v->vis_patch, v->vis_ds, v->vis_ds, v->vis_max_tok, v->image_token_id);
+}
 
 static void weights_bind_motif3_layer(
         ds4_layer_weights *l,
@@ -71996,20 +72145,40 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     }
 #ifndef DS4_NO_GPU
     if (opt->vision_path && opt->vision_path[0]) {
-        if ((DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 &&
+        /* V4.1 takes the sidecar as the model's own vision tower (--vision-gguf
+         * in the reference install.sh); the other families take it as their
+         * external encoder (--vision).  Both arrive on the same open slot. */
+        const bool v41_sidecar = DS4_MODEL_VARIANT == DS4_VARIANT_V41;
+        if ((!v41_sidecar &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_LING3VL &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2) ||
             e->backend != DS4_BACKEND_CUDA ||
             opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice) {
             fprintf(stderr,
-                    "ds4: --vision requires one full GLM-5.3, Step, Ling or MiMo CUDA model\n");
+                    "ds4: --vision/--vision-gguf requires one full V4.1, GLM-5.3, Step, Ling or MiMo CUDA model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
         }
         model_open(&e->vision_model, opt->vision_path, true, false);
-        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        if (v41_sidecar) {
+            /* The sidecar carries the DeepSeek-ViT + aligner and the per-layer
+             * image-row router bias (blk.N.exp_probs_b_vl).  Its own metadata
+             * must name the tower: a --vision-gguf read on a file with no
+             * deepseek4.vision.* is a hard error, not a silent text-only open
+             * (core_engine_open.c:55-64). */
+            v41_load_vision_metadata(&e->vision_model);
+            if (!g_ds4_v41.vis_layers) {
+                fprintf(stderr, "ds4: --vision-gguf %s has no deepseek4.vision.* metadata (not a vision sidecar)\n",
+                        opt->vision_path);
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            v41_vision_bind(&e->weights, &e->vision_model);
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
             ling3vl_vision_bind(&e->ling3vl_vision_weights, &e->vision_model);
@@ -72034,7 +72203,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 e->vision_end_token != 154831)
                 ds4_die("unexpected GLM-5.3 vision token IDs");
         }
-        e->vision_ready = true;
+        /* vision_ready arms the OTHER families' session-based vision path; the
+         * V4.1 push route has no session, so its presence is g_ds4_v41.vis_layers
+         * instead (setting vision_ready here would let a session path reach for
+         * a family encoder that does not exist). */
+        if (!v41_sidecar) {
+            e->vision_ready = true;
+        } else {
+            e->vision_image_token = (int)g_ds4_v41.image_token_id;
+        }
         fprintf(stderr, "ds4: vision encoder loaded: %s\n",
                 opt->vision_path);
     }

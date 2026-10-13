@@ -90,7 +90,11 @@ fn main() {
                 }
                 model_path = Some(path);
             }
-            "--vision" => {
+            "--vision" | "--vision-gguf" => {
+                // "--vision" is the external encoder for GLM-5.3/Step/Ling/MiMo;
+                // "--vision-gguf" is the reference install.sh name for the V4.1
+                // model's own tower sidecar.  Both ride one native open slot;
+                // the native open picks the family from the loaded variant.
                 let path = args.next().unwrap_or_else(|| usage());
                 vision_path = Some(path.clone());
                 model_options.push(ModelOpenOption::Vision(path));
@@ -1267,7 +1271,7 @@ mod v41_controls {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--vision-gguf GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
          [--ssd-streaming] [--ssd-streaming-cache-experts auto|N|GB] [--ssd-streaming-cold]\n\
          [--ignore-eos-in-reasoning] [--ignore-eos]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\
