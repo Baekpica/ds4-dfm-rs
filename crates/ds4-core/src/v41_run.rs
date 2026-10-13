@@ -20,12 +20,13 @@ use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use ds4_sys::{
-    ds4_bridge_v41_generate, ds4_bridge_v41_kvreuse_export, ds4_bridge_v41_kvreuse_import,
-    ds4_bridge_v41_kvreuse_last_reused, ds4_bridge_v41_kvreuse_note_mount,
-    ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set, ds4_bridge_v41_last_spec_stats,
-    ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph,
-    ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set,
-    ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
+    ds4_bridge_v41_generate, ds4_bridge_v41_images_bytes, ds4_bridge_v41_kvreuse_export,
+    ds4_bridge_v41_kvreuse_import, ds4_bridge_v41_kvreuse_last_reused,
+    ds4_bridge_v41_kvreuse_note_mount, ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set,
+    ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes, ds4_bridge_v41_set_dspark,
+    ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof,
+    ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear,
+    ds4_bridge_v41_zchain_rb_set,
 };
 
 use crate::engram::{EngramHash, EngramShard};
@@ -1502,6 +1503,20 @@ enum EngramMode {
     Off,
 }
 
+/// Linux MemAvailable in MB (the engine's mem_available_mb,
+/// server_sched_v41.c:22-29); None when /proc/meminfo cannot be read, which
+/// leaves the admission open.  A negative value is not possible here.
+fn mem_available_mb() -> Option<i64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let kb: i64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb / 1024);
+        }
+    }
+    None
+}
+
 #[derive(Clone)]
 struct EngramSource {
     path: std::path::PathBuf,
@@ -1857,6 +1872,22 @@ impl Model {
         } else {
             &bridge_images
         };
+        // The serving admission (server_sched_v41.c:58): start the prefill only
+        // when MemAvailable covers twice its peak (the engine's margin for
+        // backend scratch and the index draft's transient); otherwise refuse
+        // this request rather than risk an OOM.
+        {
+            let peak = unsafe { ds4_bridge_v41_prefill_bytes(self.raw_ptr(), prompt.len() as i32) }
+                + unsafe { ds4_bridge_v41_images_bytes(images_ptr) };
+            let peak_mb = peak >> 20;
+            if let Some(avail_mb) = mem_available_mb() {
+                if avail_mb >= 0 && (avail_mb as u64) < 2u64 * peak_mb {
+                    return Err(asset_error(&format!(
+                        "prefill needs {peak_mb} MB peak (admission 2x), only {avail_mb} MB available"
+                    )));
+                }
+            }
+        }
         let rc = unsafe {
             ds4_bridge_v41_generate(
                 self.raw_ptr(),

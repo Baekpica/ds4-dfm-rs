@@ -926,6 +926,23 @@ static struct ds4_v41_images *v41_bridge_images_build(const ds4_bridge_v41_image
     return S;
 }
 
+/* The serving admission's byte account (server_sched_v41.c:58): the prefill
+ * peak for a prompt plus the image set's own peak, both engine-side formulas.
+ * images_bytes builds the native set only to measure it and frees it again. */
+uint64_t ds4_bridge_v41_prefill_bytes(ds4_bridge_model *m, int n_prompt) {
+    if (!m || !m->engine) return 0;
+    return ds4_v41_prefill_bytes(m->engine, n_prompt);
+}
+
+uint64_t ds4_bridge_v41_images_bytes(const ds4_bridge_v41_images *images) {
+    if (!images || images->n <= 0) return 0;
+    struct ds4_v41_images *S = v41_bridge_images_build(images);
+    if (!S) return 0;
+    const uint64_t bytes = ds4_v41_images_bytes(S);
+    ds4_v41_images_free(S);
+    return bytes;
+}
+
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,

@@ -905,6 +905,9 @@ extern "C" {
         n_expert: u32,
     ) -> c_int;
     pub fn ds4_bridge_v41_zchain_rb_clear();
+    /* The serving admission's byte account (server_sched_v41.c:58). */
+    pub fn ds4_bridge_v41_prefill_bytes(m: *mut ds4_bridge_model, n_prompt: c_int) -> u64;
+    pub fn ds4_bridge_v41_images_bytes(images: *const ds4_bridge_v41_images) -> u64;
     pub fn ds4_bridge_v41_generate(
         m: *mut ds4_bridge_model,
         prompt: *const i32,

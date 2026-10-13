@@ -133,6 +133,12 @@ void ds4_v41_images_free(struct ds4_v41_images *S);
  * engine's ds4_v41_images_bytes (core_v41_vision.c:229-241). */
 uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S);
 
+/* The prefill peak bytes for `n_prompt` positions (the engine's
+ * ds4_v41_req_prefill_bytes, core_v41_req.c:298-305): the serving admission
+ * starts a prefill only when MemAvailable covers twice this plus the images
+ * (server_sched_v41.c:58). */
+uint64_t ds4_v41_prefill_bytes(void *engine, int n_prompt);
+
 /* Greedy generate (the engine's ds4_engine_v41_generate_argmax,
  * core_v41_api.c:426-470 + the round drive :175-425): prompt prefill in
  * chunks, then n=1 decode steps with device argmax.  emit is called per

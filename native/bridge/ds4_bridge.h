@@ -373,6 +373,12 @@ typedef struct {
     const int32_t *row_of;
     uint32_t np, n_rows;
 } ds4_bridge_v41_images;
+/* The serving admission's byte account (server_sched_v41.c:58): the prefill
+ * peak for a prompt, plus the image set's own peak.  Both are engine-side
+ * formulas (ds4_v41_req_prefill_bytes / ds4_v41_images_bytes); the caller
+ * compares 2x their sum against MemAvailable. */
+uint64_t ds4_bridge_v41_prefill_bytes(ds4_bridge_model *m, int n_prompt);
+uint64_t ds4_bridge_v41_images_bytes(const ds4_bridge_v41_images *images);
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,

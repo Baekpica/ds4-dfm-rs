@@ -76,6 +76,54 @@ static uint32_t v41_gen_cap(const ds4_engine *e, uint32_t np) {
     return cap;
 }
 
+/* ---- The serving admission's byte account (core_v41_req.c:277-305) ----
+ * Same terms as the allocations above; changing one requires changing the
+ * other.  Named deviations: the port's vision row map (vrows, 4 B/row) is
+ * counted here but not in the engine's formula (which predates the vision
+ * unit), and the cap comes from v41_gen_cap, so an armed draft tower's wider
+ * verification batch is included.  The backend's own scratch is not on the
+ * account: the server admits with a 2x margin (server_sched_v41.c:58). */
+static uint64_t v41_bytes_rows(uint32_t cap, uint32_t logits_rows, int with_attn) {
+    const uint64_t E = DS4_N_EMBD, HC = DS4_N_HC, FF = DS4_N_FF_EXP, NE = DS4_N_EXPERT, K = DS4_N_EXPERT_USED;
+    const uint64_t mix = 2 * HC + HC * HC;
+    const uint64_t HD = DS4_N_HEAD_DIM, NH = DS4_N_HEAD, Q = DS4_N_LORA_Q, IH = DS4_N_INDEXER_HEAD, IK = DS4_N_INDEXER_HEAD_DIM;
+    const uint64_t low = (uint64_t)DS4_N_OUT_GROUP * DS4_N_LORA_O;
+    uint64_t per = 8 + 4 + 2 * HC * E * 4 + mix * 4 + 3 * HC * 4 + HC * HC * 4 + 3 * E * 4 + NE * 4 + K * 8 + E * 4 + 3 * FF * 4 + 2 * E * 4;
+    if (with_attn) per += 4 + 2 * Q * 4 + 2 * NH * HD * 4 + 6 * HD * 4 + IK * 4 + IH * IK * 4 + IH * 4 + (uint64_t)DS4_N_INDEXER_TOP_K * 4 + low * 4;
+    return per * cap + (uint64_t)logits_rows * DS4_N_VOCAB * 4 + E * 4;
+}
+static uint64_t v41_bytes_kv(uint32_t ctx, uint32_t cap) {
+    const uint64_t HD = DS4_N_HEAD_DIM, SWA = DS4_N_SWA, E = DS4_N_EMBD;
+    uint64_t b = (uint64_t)DS4_N_LAYER * (SWA + cap) * HD * 4 + (uint64_t)ctx * 4;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (!g_ds4_v41.is_kv_source[il]) continue;
+        const uint32_t ratio = ds4_layer_compress_ratio(il);
+        if (!ratio) continue;
+        b += ((uint64_t)ctx / ratio + 2) * (DS4_V41_CKV_BYTES + DS4_V41_IDXK_BYTES);
+        if (ratio > 1) b += 2 * (ratio + (uint64_t)cap) * HD * 4;
+    }
+    if (g_ds4_v41.mtp_block && g_ds4_v41.n_mtp_target) b += (uint64_t)DS4_N_SWA * g_ds4_v41.n_mtp_target * E * 4;
+    return b;
+}
+
+/* The prefill's peak bytes for `n_prompt` positions (the engine's
+ * ds4_v41_req_prefill_bytes, core_v41_req.c:298-305). */
+uint64_t ds4_v41_prefill_bytes(void *engine, int n_prompt) {
+    const ds4_engine *e = (const ds4_engine *)engine;
+    const uint32_t np = n_prompt > 0 ? (uint32_t)n_prompt : 1u;
+    const uint32_t cap = v41_gen_cap(e, np);
+    uint64_t b = v41_bytes_rows(cap, DS4_MTP_MAX_BLOCK + 2u, 1) + v41_bytes_kv(g_ds4_v41.ctx, cap);
+    if (g_ds4_v41.n_engram) {
+        const ds4_v41_cfg *v = &g_ds4_v41;
+        const uint64_t cols = (uint64_t)(v->engram_max_ngram - 1) * v->engram_heads, HD = v->engram_head_dim;
+        b += (uint64_t)cap * (v->n_engram * cols * (HD + HD / 32) + cols * HD * 4 + (DS4_N_HC + 1) * DS4_N_EMBD * 4);
+    }
+    uint64_t ng = 1; while (ng < np) ng <<= 1;   /* the index draft doubles in powers of two (v41_index_scratch_prepare) */
+    const uint64_t bs = g_ds4_v41.candidate_block_size > 0 ? (uint64_t)g_ds4_v41.candidate_block_size : 1u;
+    b += (uint64_t)(cap / 32u + DS4_MTP_MAX_BLOCK + 2u) * ng * 4u + (uint64_t)cap * ((ng + bs - 1) / bs);
+    return b;
+}
+
 /* The Rust host's rows provider (ds41_forward.h): pinned raw buffers owned
  * here, the caller fills them through the trampoline.  The cap matches the
  * generate entry's prefill cap; a larger block is refused (a cap drift must

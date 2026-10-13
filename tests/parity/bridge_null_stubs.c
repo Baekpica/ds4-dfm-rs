@@ -683,6 +683,7 @@ struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
 }
 void ds4_v41_images_free(struct ds4_v41_images *S) { (void)S; }
 uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S) { (void)S; return 0; }
+uint64_t ds4_v41_prefill_bytes(void *engine, int n_prompt) { (void)engine; (void)n_prompt; return 0; }
 void ds4_engine_v41_set_kv_reuse(int on) { (void)on; }
 int ds4_engine_v41_last_reused(void) { return 0; }
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np) { (void)prompt; (void)np; return 0; }
