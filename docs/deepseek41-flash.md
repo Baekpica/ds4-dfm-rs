@@ -52,9 +52,13 @@ Recorded in the port plan §2, measured over the Spark mount. The base is
 | sidecars | five domain dirs `…-grrb-{vqfin41_vqhalf_a_n8192,code_fit_n15360,law_fit_n15360,med_fit_n15360,sci_fit_n15360}-engine`, each `gr_Lnn.bin` (1,044,492 B) + `rb_Lnn.bin` + `manifest.txt` |
 | post-train | `posttrain-experimental-20260924/`: `gr_L39.bin` + `base.fnv` (20 B) |
 | engram | not in the artifact: two official shards read in place via `--engram-dir`, `model-00047-of-00048.safetensors` 101,535,150,936 B and `model-00048-of-00048.safetensors` 101,537,926,640 B |
+| vision | the model's own tower sidecar `DeepSeek-V4.1-Flash.vision.gguf`, 971,066,016 B, via `--vision-gguf`: DeepSeek-ViT (32 blocks, 1024-dim, 16 heads, patch 14, downsample 3) + the 2-layer aligner + the three delimiter rows + 40 per-layer `exp_probs_b_vl` router biases |
 
 `--v41-no-engram` is a diagnostic that removes the Engram contribution.
 Results with it do not qualify the complete model's quality or performance.
+The vision sidecar is optional: without it the family serves text unchanged,
+and an image request is refused with HTTP 400 by name rather than answered
+without the picture.
 
 The October 11 report records NVIDIA GB10 (DGX Spark), driver 580.142 and
 CUDA 13.0 (docs/ds41-perf-2026-10-11.md:5-7). The five-case record omits its

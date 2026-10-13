@@ -54,7 +54,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | Family | Shape selected from | Native state/runtime |
 |---|---|---|
 | DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph |
-| [DeepSeek V4.1 Flash](deepseek41-flash.md) | `general.architecture=deepseek4` (V4.1 variant) | VQ routed experts, source-layer compressor/indexer KV, engram tables and three embedded MTP towers; serial lane |
+| [DeepSeek V4.1 Flash](deepseek41-flash.md) | `general.architecture=deepseek4` (V4.1 variant) | VQ routed experts, source-layer compressor/indexer KV, engram tables, three embedded MTP towers and the model's own ViT vision tower behind --vision-gguf; serial lane |
 | Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV |
 | K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV |
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings |
