@@ -891,7 +891,14 @@ fn slice_holds(name: &str, slice: WeightSlice) -> bool {
 }
 
 pub fn host_available_bytes(backend: Backend) -> u64 {
-    let avail = meminfo_available();
+    host_available_bytes_with(meminfo_available(), backend)
+}
+
+/// Price a backend from one host availability reading. Split from the public
+/// entry so a caller can price several backends from the SAME reading:
+/// /proc/meminfo MemAvailable drifts between reads, so two independent reads
+/// are not equal even when both quote RAM.
+fn host_available_bytes_with(avail: u64, backend: Backend) -> u64 {
     match backend {
         Backend::Cuda => quote_device(avail, crate::serving_cuda::device()),
         Backend::Metal | Backend::Cpu => avail,
@@ -4403,14 +4410,14 @@ exit 1
             std::env::var("PATH").unwrap_or_default()
         );
         let _path = EnvGuard::set("PATH", &path);
-        let cpu = host_available_bytes(Backend::Cpu);
-        let metal = host_available_bytes(Backend::Metal);
+        // One MemAvailable reading feeds both backends. Two independent reads
+        // drift apart mid-test (CI runners especially), which is what made
+        // this test flaky; the quote itself is deterministic.
         let avail = meminfo_available();
+        let cpu = host_available_bytes_with(avail, Backend::Cpu);
+        let metal = host_available_bytes_with(avail, Backend::Metal);
         assert_eq!(cpu, metal);
-        assert!(
-            cpu.abs_diff(avail) < MIB,
-            "CPU {cpu} vs MemAvailable {avail}"
-        );
+        assert_eq!(cpu, avail);
         assert!(cpu > 512 * MIB);
         let _ = std::fs::remove_dir_all(&dir);
     }
