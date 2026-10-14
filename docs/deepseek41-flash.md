@@ -172,6 +172,14 @@ into that text at parse time). Without the sidecar an image request is refused
 with HTTP 400 by name; a head without a V4.1 placeholder refuses a tool-result
 image by name as well.
 
+Live on the Spark, 2026-10-14 (`ds4-server` sha256 `090490ac516dba0f1f9cce306`…,
+built from `6e660b0`): a tool-role message carrying a block-array image answers
+200 and the tower reads it -- `vision tower: 1 image(s) 3.18s`, `image 0: 56x28
+patch -> 19x10 token (span 211)`, `prefill 267 token`, against 56 prompt tokens
+for the same conversation without the image. A user-message image and the
+Anthropic `tool_result` shape answer 200 as before, and an `http://` image stays
+400.
+
 The native run keeps one prompt-end KV checkpoint and reuses the previous
 prompt's prefix automatically (unit U-B, `--no-kv-reuse` disables it); it is
 reported as usage cached tokens. `--prefix-reuse off` disables both live and
