@@ -468,6 +468,7 @@ test-ds41-kv-import: tests/test_ds41_kv_import
 
 test-ds41-vision-gate:
 	python3 tests/test_ds41_images.py
+	python3 tests/test_ds41_vision_stage.py
 	python3 tests/test_ds41_vision_gate.py
 
 tests/test_ds41_bridge_lifetime: tests/test_ds41_bridge_lifetime.c native/bridge/ds4_bridge.c native/bridge/ds4_bridge.h

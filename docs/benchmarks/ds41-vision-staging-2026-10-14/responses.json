@@ -1,0 +1,119 @@
+[
+  {
+    "case": "small-same",
+    "content": "This image shows a cartoon character, Homer Simpson, standing against a black background. He is holding a pink donut with sprinkles in his right hand, near his face, and appears to be looking at it. He is wearing a white short-sleeved shirt, light blue pants, and dark gray shoes. There",
+    "usage": {
+      "prompt_tokens": 226,
+      "completion_tokens": 64,
+      "total_tokens": 290,
+      "prompt_tokens_details": {
+        "cached_tokens": 226,
+        "cache_write_tokens": 0
+      }
+    }
+  },
+  {
+    "case": "append-base",
+    "content": "This image shows a cartoon character, Homer Simpson, standing against a black background. He is holding a pink donut with sprinkles in his right hand, near his face, and appears to be looking at it. He is wearing a white short-sleeved shirt, light blue pants, and dark gray shoes. There",
+    "usage": {
+      "prompt_tokens": 226,
+      "completion_tokens": 64,
+      "total_tokens": 290,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 226
+      }
+    }
+  },
+  {
+    "case": "small",
+    "content": "This image shows a cartoon character, Homer Simpson, standing against a black background. He is holding a pink donut with sprinkles in his right hand, near his face, and appears to be looking at it. He is wearing a white short-sleeved shirt, light blue pants, and dark gray shoes. There",
+    "usage": {
+      "prompt_tokens": 226,
+      "completion_tokens": 64,
+      "total_tokens": 290,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 226
+      }
+    }
+  },
+  {
+    "case": "text-short",
+    "content": "Sunlight contains all colors, but blue light scatters more easily than other colors because it has shorter wavelengths. When sunlight enters the atmosphere, the blue wavelengths are scattered in all directions by air molecules, making the sky appear blue to our eyes.",
+    "usage": {
+      "prompt_tokens": 14,
+      "completion_tokens": 49,
+      "total_tokens": 63,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 14
+      }
+    }
+  },
+  {
+    "case": "four",
+    "content": "The first image shows a cartoon character, Homer Simpson, standing and holding a pink donut with sprinkles in his right hand. He wears a white polo shirt, light blue pants, and dark gray shoes. No visible text or numbers are present in this image.\n\nThe second image is a screenshot of a stock market analysis",
+    "usage": {
+      "prompt_tokens": 1866,
+      "completion_tokens": 64,
+      "total_tokens": 1930,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 1866
+      }
+    }
+  },
+  {
+    "case": "append-image",
+    "content": "The image provided is a screenshot of a document containing a large block of text. The text appears to be a list of sentences or phrases, likely from a language learning or grammar exercise, given the repetitive structure and the presence of numbered items like \"Sentence 5\".\n\nHere is a description of the visible text and numbers in",
+    "usage": {
+      "prompt_tokens": 1247,
+      "completion_tokens": 64,
+      "total_tokens": 1311,
+      "prompt_tokens_details": {
+        "cached_tokens": 226,
+        "cache_write_tokens": 1021
+      }
+    }
+  },
+  {
+    "case": "small-follow",
+    "content": "Homer Simpson's right hand, holding the pink donut, has four fingers and a thumb, and a few small sprinkle crumbs are falling from the donut near his hand.",
+    "usage": {
+      "prompt_tokens": 300,
+      "completion_tokens": 36,
+      "total_tokens": 336,
+      "prompt_tokens_details": {
+        "cached_tokens": 226,
+        "cache_write_tokens": 74
+      }
+    }
+  },
+  {
+    "case": "text-long",
+    "content": "Based on the excerpt provided, here is a summary of its contents:\n\nThe passage describes a series of official decrees (called \"grida\") issued by various Spanish governors of the State of Milan between 1593 and 1632, all aimed at eliminating the \"bravi\" (a class of armed ruffians",
+    "usage": {
+      "prompt_tokens": 2591,
+      "completion_tokens": 64,
+      "total_tokens": 2655,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 2591
+      }
+    }
+  },
+  {
+    "case": "four-follow",
+    "content": "Based on the provided images:\n\n**Image 1 (Homer Simpson):** Contains **no visible text or numbers**. It is purely an illustration of the character holding a donut.\n\n**Image 2 (Text block):** Contains **extensive visible text and numbers**. It appears to be a technical or analytical document",
+    "usage": {
+      "prompt_tokens": 1939,
+      "completion_tokens": 64,
+      "total_tokens": 2003,
+      "prompt_tokens_details": {
+        "cached_tokens": 1866,
+        "cache_write_tokens": 73
+      }
+    }
+  }
+]

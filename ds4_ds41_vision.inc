@@ -15,6 +15,7 @@
 #ifndef DS4_NO_GPU
 
 #define V41_VIS_RMS_EPS 1e-6f   /* official vision.py RMSNorm(dim, eps=1e-6); not in config.json, so pinned at the consumer */
+#define V41_VIS_STAGE_BYTES (8ull << 20)
 
 /* Per-layer image-row router bias (blk.N.exp_probs_b_vl) -> device tensors, one
  * upload of 40 x 384 f32 (~61 KB) and then resident (core_v41_vision.c:132-146).
@@ -35,13 +36,27 @@ static const ds4_model *v41_vision_model(const ds4_engine *e) {
 
 /* Copy a sidecar tensor's bytes into a temporary device tensor, reusing the
  * slot when it is already big enough (the 32 blocks share shapes)
- * (core_v41_vision.c:21-27). */
-static bool v41_vis_stage(const ds4_model *vm, const ds4_tensor *t, ds4_gpu_tensor **slot) {
-    if (!t) return false;
+ * (core_v41_vision.c:21-27). Port deviation: one bounded pinned window avoids
+ * pageable mmap uploads; weights, device slots and arithmetic stay unchanged. */
+static bool v41_vis_stage(const ds4_model *vm, const ds4_tensor *t,
+                          ds4_gpu_tensor **slot, void *stage) {
+    if (!t) { return false; }
     if (*slot && ds4_gpu_tensor_bytes(*slot) < t->bytes) { ds4_gpu_tensor_free(*slot); *slot = NULL; }
     bool ok = true;
-    if (!*slot) *slot = v41_alloc(t->bytes, &ok);
-    return ok && *slot && ds4_gpu_tensor_write(*slot, 0, tensor_data(vm, t), t->bytes) != 0;
+    if (!*slot) { *slot = v41_alloc(t->bytes, &ok); }
+    if (!ok || !*slot) { return false; }
+
+    const uint8_t *source = tensor_data(vm, t);
+    if (!stage) { return ds4_gpu_tensor_write(*slot, 0, source, t->bytes) != 0; }
+    for (uint64_t offset = 0; offset < t->bytes;) {
+        const uint64_t remaining = t->bytes - offset;
+        const uint64_t bytes = remaining < V41_VIS_STAGE_BYTES ? remaining : V41_VIS_STAGE_BYTES;
+        memcpy(stage, source + offset, (size_t)bytes);
+        /* Pinned H2D writes finish before the host reuses this window. */
+        if (!ds4_gpu_tensor_write(*slot, offset, stage, bytes)) { return false; }
+        offset += bytes;
+    }
+    return true;
 }
 static ds4_gpu_tensor *v41_vis_grow(ds4_gpu_tensor **t, uint64_t bytes, bool *ok) {
     if (*t && ds4_gpu_tensor_bytes(*t) >= bytes) return *t;
@@ -111,17 +126,26 @@ static bool v41_vis_run_images(ds4_engine *e, const v41_image *im, uint32_t n_im
         A[i].al = v41_alloc((uint64_t)A[i].n_llm * E * 4, &ok);
     }
     const double t0 = now_sec();
+    /* Keep YoungAi's request-only residency policy (core_v41_vision.c:57-114).
+     * Allocation failure and the diagnostic switch use the original uploads. */
+    void *stage = NULL;
+    const char *stage_mode = "direct";
+    const char *pinned = getenv("DS41_VISION_PINNED");
+    if (ok && (!pinned || strcmp(pinned, "0") != 0)) {
+        stage = ds4_gpu_host_alloc(V41_VIS_STAGE_BYTES);
+        stage_mode = stage ? "pinned" : "fallback";
+    }
     /* patch_embed */
-    if (ok) ok = v41_vis_stage(vm, V->patch_w, &w[8]) && v41_vis_stage(vm, V->patch_b, &w[9]);
+    if (ok) { ok = v41_vis_stage(vm, V->patch_w, &w[8], stage) && v41_vis_stage(vm, V->patch_b, &w[9], stage); }
     for (uint32_t i = 0; ok && i < n_img; i++)
         ok = ds4_gpu_tensor_write(pat, 0, im[i].patches, (uint64_t)A[i].n * PP * 4) != 0 &&
              v41_vis_proj(A[i].x, w[8], w[9], PP, D, pat, A[i].n);
     /* vis_layers blocks: per block the weights are read once, then each image */
     for (uint32_t il = 0; ok && il < v->vis_layers; il++) {
         const ds4_v41_vision_block_weights *b = &V->blk[il];
-        ok = v41_vis_stage(vm, b->norm1, &w[0]) && v41_vis_stage(vm, b->qkv_w, &w[1]) && v41_vis_stage(vm, b->qkv_b, &w[2]) &&
-             v41_vis_stage(vm, b->o_w, &w[3]) && v41_vis_stage(vm, b->o_b, &w[4]) && v41_vis_stage(vm, b->norm2, &w[5]) &&
-             v41_vis_stage(vm, b->up_w, &w[6]) && v41_vis_stage(vm, b->down_w, &w[7]);
+        ok = v41_vis_stage(vm, b->norm1, &w[0], stage) && v41_vis_stage(vm, b->qkv_w, &w[1], stage) && v41_vis_stage(vm, b->qkv_b, &w[2], stage) &&
+             v41_vis_stage(vm, b->o_w, &w[3], stage) && v41_vis_stage(vm, b->o_b, &w[4], stage) && v41_vis_stage(vm, b->norm2, &w[5], stage) &&
+             v41_vis_stage(vm, b->up_w, &w[6], stage) && v41_vis_stage(vm, b->down_w, &w[7], stage);
         for (uint32_t i = 0; ok && i < n_img; i++) {
             const uint32_t n = A[i].n; ds4_gpu_tensor *x = A[i].x;
             ok = ds4_gpu_v41_rms_norm_dev_tensor(xn, x, w[0], D, n, V41_VIS_RMS_EPS) &&
@@ -138,8 +162,10 @@ static bool v41_vis_run_images(ds4_engine *e, const v41_image *im, uint32_t n_im
         }
     }
     /* norm -> aligner (r x r pixel re-arrange -> Linear -> GELU -> Linear) */
-    if (ok) ok = v41_vis_stage(vm, V->out_norm, &w[0]) && v41_vis_stage(vm, V->mm0_w, &w[6]) && v41_vis_stage(vm, V->mm0_b, &w[2]) &&
-                 v41_vis_stage(vm, V->mm1_w, &w[7]) && v41_vis_stage(vm, V->mm1_b, &w[4]);
+    if (ok) {
+        ok = v41_vis_stage(vm, V->out_norm, &w[0], stage) && v41_vis_stage(vm, V->mm0_w, &w[6], stage) && v41_vis_stage(vm, V->mm0_b, &w[2], stage) &&
+             v41_vis_stage(vm, V->mm1_w, &w[7], stage) && v41_vis_stage(vm, V->mm1_b, &w[4], stage);
+    }
     for (uint32_t i = 0; ok && i < n_img; i++)
         ok = ds4_gpu_v41_rms_norm_dev_tensor(xn, A[i].x, w[0], D, A[i].n, V41_VIS_RMS_EPS) &&
              ds4_gpu_v41_vision_unfold_tensor(unf, xn, A[i].nh, A[i].nw, D, R) &&
@@ -150,13 +176,14 @@ static bool v41_vis_run_images(ds4_engine *e, const v41_image *im, uint32_t n_im
     ds4_gpu_tensor *scr[] = { pat, xn, qkv, o, gu, hm, unf, a1 };
     v41_vis_free_list(scr, sizeof scr / sizeof scr[0]); v41_vis_free_list(w, sizeof w / sizeof w[0]);
     for (uint32_t i = 0; i < n_img; i++) { if (A[i].x) { ds4_gpu_tensor_free(A[i].x); } A[i].x = NULL; }
+    if (stage) { ds4_gpu_host_free(stage); }
     v41_vis_drop_pages(vm);
     if (!ok) {
         fprintf(stderr, "ds4: [v41] vision tower forward failed (%u image(s))\n", n_img);
         for (uint32_t i = 0; i < n_img; i++) { if (A[i].al) { ds4_gpu_tensor_free(A[i].al); A[i].al = NULL; } }
     } else {
-        fprintf(stderr, "[v41] vision tower: %u image(s) %.2fs (weights read per block from the sidecar, freed after)\n",
-                n_img, now_sec() - t0);
+        fprintf(stderr, "[v41] vision tower: %u image(s) %.2fs (staging=%s; weights read per block from the sidecar, freed after)\n",
+                n_img, now_sec() - t0, stage_mode);
     }
     return ok;
 }
@@ -357,7 +384,7 @@ void ds4_v41_images_free(struct ds4_v41_images *S) {
 }
 
 /* Prefill extra peak for the serving admission account: the largest image's
- * tower activations + the 192 MB attention scratch + the weight-staging slot +
+ * tower activations + the 192 MB attention scratch + weight slots/pinned window +
  * every span's embed rows (core_v41_vision.c:229-241). */
 uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S) {
     if (!S) return 0;
@@ -372,7 +399,7 @@ uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S) {
         xs += n * D * 4 + nl * E * 4;   /* each image's residual stream and output live at once */
     }
     const uint64_t wstage = (D * 3 * D + D * D + D * 2 * I + I * D + D * R * R * E + E * E) * 2;
-    return peak + xs + wstage + (uint64_t)S->n_rows * E * 4;
+    return peak + xs + wstage + (uint64_t)S->n_rows * E * 4 + V41_VIS_STAGE_BYTES;
 }
 
 #endif /* !DS4_NO_GPU */

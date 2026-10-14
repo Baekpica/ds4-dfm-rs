@@ -1,0 +1,9 @@
+{
+  "window_bytes": 8388608,
+  "tower_weight_tensors": 263,
+  "extra_explicit_cpu_copy_bytes_per_tower": 970924032,
+  "direct_weight_writes": 263,
+  "pinned_weight_writes": 312,
+  "device_weight_shapes": "unchanged",
+  "excluded": "Image boundary embeddings and resident router biases do not use this window; same block weights shared by all images in the request."
+}

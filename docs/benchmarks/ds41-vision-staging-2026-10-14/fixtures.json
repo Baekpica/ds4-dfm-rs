@@ -1,0 +1,42 @@
+[
+  {
+    "file": "tests/fixtures/vision/homer.png",
+    "sha256": "8f5cf6e8415a7f15af07e6e0f5429b736dd49e9ade559795fd7e91930734b4a0",
+    "bytes": 46631,
+    "width": 190,
+    "height": 390
+  },
+  {
+    "file": "tests/fixtures/vision/bug.jpeg",
+    "sha256": "09dc731b544bc66abdb0d38d825bfcf3e5d56d4ea80150bf27aa2cfb6e3321d5",
+    "bytes": 1786521,
+    "width": 1080,
+    "height": 2414
+  },
+  {
+    "file": "tests/fixtures/vision/review-market-panel.png",
+    "sha256": "9c734674461513891ee7e37d0a42039313844f95d2a5a692255700465f5b62e4",
+    "bytes": 101735,
+    "width": 1200,
+    "height": 665
+  },
+  {
+    "file": "tests/fixtures/qwen-images/photo.jpg",
+    "sha256": "a48278513a38768ff92247972e60bc873eb361a8527cb8686a3e19c3ae1bdf9d",
+    "bytes": 45846,
+    "width": 512,
+    "height": 507
+  },
+  {
+    "file": "tests/fixtures/qwen-images/large.png",
+    "sha256": "cc206e54cf33a4d81d0a1ad9599175c6b8dc8b163a27213a094345b24f7e536f",
+    "bytes": 81850,
+    "width": 1920,
+    "height": 1080
+  },
+  {
+    "file": "speed-bench/promessi_sposi.txt",
+    "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+    "bytes": 1329139
+  }
+]

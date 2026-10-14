@@ -1,0 +1,7 @@
+left,right,skip_left_rows,scope,status
+text-direct,text-pinned,0,tokens_and_all_logits,PASS
+base-direct,base-pinned,0,tokens_and_all_logits,PASS
+four-direct,four-pinned,0,tokens_and_all_logits,PASS
+follow-direct,follow-pinned,0,tokens_and_all_logits,PASS
+append-direct,append-pinned,0,tokens_and_all_logits,PASS
+base-pinned,base-fixed5-pinned,0,tokens_only,PASS

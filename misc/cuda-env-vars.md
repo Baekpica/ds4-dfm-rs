@@ -8,6 +8,15 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## DeepSeek V4.1 vision transfers
+
+`DS41_VISION_PINNED=0` restores direct pageable uploads from the vision
+sidecar. By default, one 8 MiB pinned host window stages the same weight bytes
+into the existing device slots. The window is freed after each tower call;
+text-only and fully reused image prefixes never allocate it. Pin allocation
+failure falls back to direct uploads. Admission includes the window's size.
+This changes no weight residency policy, tensor order or arithmetic.
+
 ## DeepSeek V4.1 rollback diagnostic
 
 `DS41_ROLLBACK_CHECK=1` synchronizes after every speculative rollback and

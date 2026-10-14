@@ -1,0 +1,328 @@
+[
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "document-extra",
+    "http": 200,
+    "ttft_s": 1.8212820750050014,
+    "wall_s": 3.584252438005933,
+    "usage": {
+      "prompt_tokens": 497,
+      "completion_tokens": 64,
+      "total_tokens": 561,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 497
+      }
+    },
+    "timings": {},
+    "content": "\u8fd9\u662f\u4e00\u5f20\u540d\u4e3a **QTTerminal** \u7684\u80a1\u7968\u590d\u76d8\u5206\u6790\u7cfb\u7edf\u754c\u9762\u622a\u56fe\u3002\u754c\u9762\u9876\u90e8\u6709\u5bfc\u822a\u680f\uff0c\u5de6\u4fa7\u6709\u529f\u80fd\u56fe\u6807\uff0c\u4e3b\u4f53\u533a\u57df\u5c55\u793a\u4e86\u201c\u590d\u76d8\u5206\u6790\u201d\u7684\u8be6\u7ec6\u6570\u636e\u3002\n\n**\u53ef\u89c1\u6587\u672c\u548c\u6570\u5b57\u4e3b\u8981\u5305\u62ec\uff1a**\n\n*   **\u9876\u90e8\u5bfc\u822a\u680f\uff1a** \u5de6\u4fa7\u6709 **QTTerminal",
+    "start_unix_s": 1791979860.9740336,
+    "end_unix_s": 1791979864.5582876,
+    "prefill": [
+      497.0,
+      1.8,
+      277.8
+    ],
+    "vision": [
+      1.0,
+      0.81
+    ],
+    "native_decode_ms_per_token": 26.5,
+    "vision_staging": [
+      "pinned"
+    ],
+    "client_decode_tps": 35.73514411936073
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "large-follow",
+    "http": 200,
+    "ttft_s": 0.4460431219995371,
+    "wall_s": 1.8234208580033737,
+    "usage": {
+      "prompt_tokens": 1057,
+      "completion_tokens": 47,
+      "total_tokens": 1104,
+      "prompt_tokens_details": {
+        "cached_tokens": 983,
+        "cache_write_tokens": 74
+      }
+    },
+    "timings": {},
+    "content": "The colored status blocks are arranged horizontally, with the yellow \"Queued 12\" block on the left, the blue \"Running 7\" block in the center, and the red \"Failed 3\" block on the right.",
+    "start_unix_s": 1791979878.0211573,
+    "end_unix_s": 1791979879.8445797,
+    "prefill": [
+      74.0,
+      0.4,
+      188.3
+    ],
+    "native_decode_ms_per_token": 28.4,
+    "vision_staging": [],
+    "client_decode_tps": 33.39679363008948
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "large",
+    "http": 200,
+    "ttft_s": 4.7401808080030605,
+    "wall_s": 6.2706822190011735,
+    "usage": {
+      "prompt_tokens": 983,
+      "completion_tokens": 64,
+      "total_tokens": 1047,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 983
+      }
+    },
+    "timings": {},
+    "content": "Based on the image provided, here is a brief description of what is visible:\n\n**Header Section:**\nAt the top of the image, there is a dark blue banner with white text that reads:\n**\"PROJECT ATLAS | Task dashboard\"**\n\n**Status Indicators (Colored Blocks):**\nBelow the header,",
+    "start_unix_s": 1791979871.7499146,
+    "end_unix_s": 1791979878.020599,
+    "prefill": [
+      983.0,
+      4.7,
+      209.7
+    ],
+    "vision": [
+      1.0,
+      2.98
+    ],
+    "native_decode_ms_per_token": 22.6,
+    "vision_staging": [
+      "pinned"
+    ],
+    "client_decode_tps": 41.16298067240245
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "eight",
+    "http": 200,
+    "ttft_s": 12.219493169999623,
+    "wall_s": 14.066990112994972,
+    "usage": {
+      "prompt_tokens": 3717,
+      "completion_tokens": 64,
+      "total_tokens": 3781,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 3717
+      }
+    },
+    "timings": {},
+    "content": "The images provided consist of three distinct visual elements:\n\n1.  **The Simpsons Character (Homer Simpson):** Two identical images show the cartoon character Homer Simpson. He is depicted standing, wearing his signature white polo shirt, blue pants, and black shoes. In his right hand, he holds a pink don",
+    "start_unix_s": 1791979838.0709696,
+    "end_unix_s": 1791979852.1379623,
+    "prefill": [
+      3717.0,
+      12.0,
+      309.4
+    ],
+    "vision": [
+      8.0,
+      7.24
+    ],
+    "native_decode_ms_per_token": 28.2,
+    "vision_staging": [
+      "pinned"
+    ],
+    "client_decode_tps": 34.10019174259527
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "natural-photo-follow",
+    "http": 200,
+    "ttft_s": 0.3838967859992408,
+    "wall_s": 2.123477155000728,
+    "usage": {
+      "prompt_tokens": 273,
+      "completion_tokens": 64,
+      "total_tokens": 337,
+      "prompt_tokens_details": {
+        "cached_tokens": 199,
+        "cache_write_tokens": 74
+      }
+    },
+    "timings": {},
+    "content": "The image shows a full-disk view of Earth centered roughly on the Indian Ocean. Visible land includes eastern Africa and Madagascar, the Arabian Peninsula and parts of the Middle East at the top, and portions of Asia and Australia near the edges. The oceans appear deep blue, with extensive white cloud cover, including swirling storm-like",
+    "start_unix_s": 1791979869.625471,
+    "end_unix_s": 1791979871.7489502,
+    "prefill": [
+      74.0,
+      0.4,
+      202.9
+    ],
+    "native_decode_ms_per_token": 27.4,
+    "vision_staging": [],
+    "client_decode_tps": 36.21563057541387
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "screenshot-extra",
+    "http": 200,
+    "ttft_s": 4.435039497002435,
+    "wall_s": 6.397438192005211,
+    "usage": {
+      "prompt_tokens": 962,
+      "completion_tokens": 64,
+      "total_tokens": 1026,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 962
+      }
+    },
+    "timings": {},
+    "content": "The image consists of a dense, continuous block of Chinese text arranged in a single paragraph-like structure. The text appears to be a formal document or narrative, written in standard simplified Chinese characters. There are no images, illustrations, or graphical elements present\u2014only text. The content includes references to various entities such as \"\u4e94",
+    "start_unix_s": 1791979852.1479824,
+    "end_unix_s": 1791979858.5454228,
+    "prefill": [
+      962.0,
+      4.3,
+      221.3
+    ],
+    "vision": [
+      1.0,
+      2.7
+    ],
+    "native_decode_ms_per_token": 30.8,
+    "vision_staging": [
+      "pinned"
+    ],
+    "client_decode_tps": 32.10356802643047
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "natural-photo",
+    "http": 200,
+    "ttft_s": 0.7874076110019814,
+    "wall_s": 2.8528510659962194,
+    "usage": {
+      "prompt_tokens": 199,
+      "completion_tokens": 64,
+      "total_tokens": 263,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 199
+      }
+    },
+    "timings": {},
+    "content": "This is a satellite-style image of Earth centered on the Indian Ocean and surrounding continents. Visible land areas include eastern Africa (with Madagascar), parts of the Middle East/Arabian Peninsula at the top, and portions of Asia and Australia toward the edges. The oceans are deep blue, with extensive white cloud formations, especially swirling",
+    "start_unix_s": 1791979866.7721376,
+    "end_unix_s": 1791979869.6249902,
+    "prefill": [
+      199.0,
+      0.8,
+      258.5
+    ],
+    "vision": [
+      1.0,
+      0.25
+    ],
+    "native_decode_ms_per_token": 31.9,
+    "vision_staging": [
+      "pinned"
+    ],
+    "client_decode_tps": 30.501924343494434
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "document-extra-follow",
+    "http": 200,
+    "ttft_s": 0.3995938810039661,
+    "wall_s": 2.212501591006003,
+    "usage": {
+      "prompt_tokens": 572,
+      "completion_tokens": 64,
+      "total_tokens": 636,
+      "prompt_tokens_details": {
+        "cached_tokens": 497,
+        "cache_write_tokens": 75
+      }
+    },
+    "timings": {},
+    "content": "\u754c\u9762\u9876\u90e8\u53f3\u4fa7\u663e\u793a **\u201cA\u80a1\u4ea4\u6613\u7cfb\u7edf\u201d**\uff0c\u5e76\u914d\u6709\u8bbe\u7f6e\u3001\u901a\u77e5\u548c\u7528\u6237\u56fe\u6807\u3002\u4e3b\u4f53\u533a\u57df\u6807\u9898\u4e3a **\u201c\u590d\u76d8\u5206\u6790\u201d**\uff0c\u526f\u6807\u9898\u8bf4\u660e\u529f\u80fd\u6db5\u76d6 **\u201c\u5927\u76d8\u6570\u636e \u00b7 \u6da8\u8dcc\u5bb6\u6570\u771f\u5b9e\u5224\u65ad \u00b7 \u8d44\u91d1\u66f2\u7ebf\u6a21\u62df \u00b7 \u81ea\u9009\u80a1\u80dc\u7387\u7edf\u8ba1 \u00b7",
+    "start_unix_s": 1791979864.5588465,
+    "end_unix_s": 1791979866.7713494,
+    "prefill": [
+      75.0,
+      0.4,
+      200.4
+    ],
+    "native_decode_ms_per_token": 28.3,
+    "vision_staging": [],
+    "client_decode_tps": 34.750803723996086
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "five",
+    "http": 200,
+    "ttft_s": 9.713767663997714,
+    "wall_s": 11.252150606000214,
+    "usage": {
+      "prompt_tokens": 2813,
+      "completion_tokens": 64,
+      "total_tokens": 2877,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 2813
+      }
+    },
+    "timings": {},
+    "content": "**Image 1 (Homer Simpson):**\nA cartoon illustration of Homer Simpson from *The Simpsons*. He is standing, holding a pink frosted donut with sprinkles in his right hand near his mouth. He wears his signature white polo shirt, blue pants, and black shoes. No visible text or",
+    "start_unix_s": 1791979826.8025534,
+    "end_unix_s": 1791979838.054706,
+    "prefill": [
+      2813.0,
+      9.5,
+      295.2
+    ],
+    "vision": [
+      5.0,
+      6.28
+    ],
+    "native_decode_ms_per_token": 23.9,
+    "vision_staging": [
+      "pinned"
+    ],
+    "client_decode_tps": 40.952092148131506
+  },
+  {
+    "pair": 3,
+    "mode": "on",
+    "case": "screenshot-extra-follow",
+    "http": 200,
+    "ttft_s": 0.45248682399687823,
+    "wall_s": 2.4242814289973467,
+    "usage": {
+      "prompt_tokens": 1036,
+      "completion_tokens": 64,
+      "total_tokens": 1100,
+      "prompt_tokens_details": {
+        "cached_tokens": 962,
+        "cache_write_tokens": 74
+      }
+    },
+    "timings": {},
+    "content": "The text is arranged in a single, dense paragraph with no line breaks or spacing between sections, making it appear as one continuous block of Chinese characters. It includes specific numerical references such as \"5\", \"7\", \"10\", \"11\", \"15\", \"20\", \"25\", \"30\", \"35\",",
+    "start_unix_s": 1791979858.5491116,
+    "end_unix_s": 1791979860.9733949,
+    "prefill": [
+      74.0,
+      0.4,
+      196.2
+    ],
+    "native_decode_ms_per_token": 29.9,
+    "vision_staging": [],
+    "client_decode_tps": 31.950589498638493
+  }
+]

@@ -1,0 +1,29 @@
+{
+  "native_source_unchanged": "2c63ee48b7ce83fff4eb80df6d92625aff42d1045f0431afecbfc2c04f2fca6e",
+  "initial_run_status": "FAIL: shortened raw image prompt emitted EOS at output 1/32 in direct control; not counted as a passed image case",
+  "initial_prompt_ids_sha256": "6ca1f0a436a1682586a6610dd7f0876de95fc7364b28aef8e5e7638131cfbb8e",
+  "resumed_prompt_ids_sha256": "eba799ea0352297a6935122571f7cf1af760fead963ea550401783531f821d4b",
+  "correction": "Restore prior qualified base/follow/append prompt wording; label four-image prompt. Keep EOS and full-logit extent assertions.",
+  "model_opens": 2,
+  "new_generations": 17,
+  "inherited_generations": 2,
+  "inherited_goldens": 3,
+  "failed_generation_excluded": 1,
+  "source_object_manifest_config_and_receipt_hashes_checked": true,
+  "resume_telemetry": {
+    "passed": true,
+    "errors": [],
+    "samples": 234,
+    "max_gap_s": 1.0473909378051758,
+    "covers_process": true,
+    "clock_range_mhz": [
+      305,
+      2197
+    ]
+  },
+  "resume_cleanup": {
+    "guard_exit": 0,
+    "gpu_owners": []
+  },
+  "inherited_scope": "Long captured/eager, disk-restart, tool protocol and Rust host gates from merged PR83; their paths are unchanged, not rerun."
+}

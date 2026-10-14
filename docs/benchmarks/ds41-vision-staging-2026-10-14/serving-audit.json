@@ -1,0 +1,197 @@
+{
+  "passed": true,
+  "requests": 64,
+  "fresh_processes": 6,
+  "runs": [
+    {
+      "pair": 1,
+      "mode": "off",
+      "requests": 9,
+      "telemetry": {
+        "passed": true,
+        "errors": [],
+        "max_gap_s": 1.0606844425201416,
+        "covers_requests": true,
+        "samples": 254
+      },
+      "cleanup": {
+        "guard_exit": 75,
+        "gpu_owners": [],
+        "port_open": false,
+        "intentional_shutdown": true
+      },
+      "request_sha256": {
+        "small-same": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "append-base": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "small": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "text-short": "bdac4ef4bea6e19a00c1ae16a86b56560227dbe9908972df9c67459193c04a7f",
+        "four": "296aa06b32cb7b3e4396de8a652156cd304b3835a00db1da97034fd7dba68f3c",
+        "append-image": "c5f914c01a9392b777fef999f21a692ebd210e9cf74c47661730438cc34d8b41",
+        "small-follow": "513a0ca8e87d24696b694c4af3b2b4ffda107b3118c8d316e57bbe6c54af62dd",
+        "text-long": "10afd9cdbc09665a02d91613db31844ac2130306648684be6a3d07b180c564ef",
+        "four-follow": "e0c99e5fb2b88b4590b57b97226c5d4b42d67dce99059a08b4b4791463c6ff9c"
+      },
+      "native_log_sha256": "b43dd6383c1bb62477b5c322c77549661669dc37de78ed39b47f2674027f5c16"
+    },
+    {
+      "pair": 1,
+      "mode": "on",
+      "requests": 9,
+      "telemetry": {
+        "passed": true,
+        "errors": [],
+        "max_gap_s": 1.0556395053863525,
+        "covers_requests": true,
+        "samples": 189
+      },
+      "cleanup": {
+        "guard_exit": 75,
+        "gpu_owners": [],
+        "port_open": false,
+        "intentional_shutdown": true
+      },
+      "request_sha256": {
+        "small-same": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "append-base": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "small": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "text-short": "bdac4ef4bea6e19a00c1ae16a86b56560227dbe9908972df9c67459193c04a7f",
+        "four": "296aa06b32cb7b3e4396de8a652156cd304b3835a00db1da97034fd7dba68f3c",
+        "append-image": "c5f914c01a9392b777fef999f21a692ebd210e9cf74c47661730438cc34d8b41",
+        "small-follow": "513a0ca8e87d24696b694c4af3b2b4ffda107b3118c8d316e57bbe6c54af62dd",
+        "text-long": "10afd9cdbc09665a02d91613db31844ac2130306648684be6a3d07b180c564ef",
+        "four-follow": "e0c99e5fb2b88b4590b57b97226c5d4b42d67dce99059a08b4b4791463c6ff9c"
+      },
+      "native_log_sha256": "0bdc612905ee3722dc542e81115521bf5378472f9cbdc646f8ce7c167d5133bb"
+    },
+    {
+      "pair": 2,
+      "mode": "off",
+      "requests": 9,
+      "telemetry": {
+        "passed": true,
+        "errors": [],
+        "max_gap_s": 1.0664560794830322,
+        "covers_requests": true,
+        "samples": 340
+      },
+      "cleanup": {
+        "guard_exit": 75,
+        "gpu_owners": [],
+        "port_open": false,
+        "intentional_shutdown": true
+      },
+      "request_sha256": {
+        "small-same": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "append-base": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "small": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "text-short": "bdac4ef4bea6e19a00c1ae16a86b56560227dbe9908972df9c67459193c04a7f",
+        "four": "296aa06b32cb7b3e4396de8a652156cd304b3835a00db1da97034fd7dba68f3c",
+        "append-image": "c5f914c01a9392b777fef999f21a692ebd210e9cf74c47661730438cc34d8b41",
+        "small-follow": "513a0ca8e87d24696b694c4af3b2b4ffda107b3118c8d316e57bbe6c54af62dd",
+        "text-long": "10afd9cdbc09665a02d91613db31844ac2130306648684be6a3d07b180c564ef",
+        "four-follow": "e0c99e5fb2b88b4590b57b97226c5d4b42d67dce99059a08b4b4791463c6ff9c"
+      },
+      "native_log_sha256": "ac223692ab7eeb5ffa73a30bef91fe111e127c97218bc5166a18dd409c111d43"
+    },
+    {
+      "pair": 2,
+      "mode": "on",
+      "requests": 9,
+      "telemetry": {
+        "passed": true,
+        "errors": [],
+        "max_gap_s": 1.0452988147735596,
+        "covers_requests": true,
+        "samples": 192
+      },
+      "cleanup": {
+        "guard_exit": 75,
+        "gpu_owners": [],
+        "port_open": false,
+        "intentional_shutdown": true
+      },
+      "request_sha256": {
+        "small-same": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "append-base": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "small": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "text-short": "bdac4ef4bea6e19a00c1ae16a86b56560227dbe9908972df9c67459193c04a7f",
+        "four": "296aa06b32cb7b3e4396de8a652156cd304b3835a00db1da97034fd7dba68f3c",
+        "append-image": "c5f914c01a9392b777fef999f21a692ebd210e9cf74c47661730438cc34d8b41",
+        "small-follow": "513a0ca8e87d24696b694c4af3b2b4ffda107b3118c8d316e57bbe6c54af62dd",
+        "text-long": "10afd9cdbc09665a02d91613db31844ac2130306648684be6a3d07b180c564ef",
+        "four-follow": "e0c99e5fb2b88b4590b57b97226c5d4b42d67dce99059a08b4b4791463c6ff9c"
+      },
+      "native_log_sha256": "c614e94139de7380ee6d4b4890fdf51628dccbbd0be52cddcf7dc39a5ee076b5"
+    },
+    {
+      "pair": 3,
+      "mode": "off",
+      "requests": 9,
+      "telemetry": {
+        "passed": true,
+        "errors": [],
+        "max_gap_s": 1.0652484893798828,
+        "covers_requests": true,
+        "samples": 435
+      },
+      "cleanup": {
+        "guard_exit": 75,
+        "gpu_owners": [],
+        "port_open": false,
+        "intentional_shutdown": true
+      },
+      "request_sha256": {
+        "small-same": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "append-base": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "small": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "text-short": "bdac4ef4bea6e19a00c1ae16a86b56560227dbe9908972df9c67459193c04a7f",
+        "four": "296aa06b32cb7b3e4396de8a652156cd304b3835a00db1da97034fd7dba68f3c",
+        "append-image": "c5f914c01a9392b777fef999f21a692ebd210e9cf74c47661730438cc34d8b41",
+        "small-follow": "513a0ca8e87d24696b694c4af3b2b4ffda107b3118c8d316e57bbe6c54af62dd",
+        "text-long": "10afd9cdbc09665a02d91613db31844ac2130306648684be6a3d07b180c564ef",
+        "four-follow": "e0c99e5fb2b88b4590b57b97226c5d4b42d67dce99059a08b4b4791463c6ff9c"
+      },
+      "native_log_sha256": "993820c5f8f752ea4a80a41d5a0ec5b5bbc96b8503967c763d6777567dd002c3"
+    },
+    {
+      "pair": 3,
+      "mode": "on",
+      "requests": 19,
+      "telemetry": {
+        "passed": true,
+        "errors": [],
+        "max_gap_s": 1.0615379810333252,
+        "covers_requests": true,
+        "samples": 238
+      },
+      "cleanup": {
+        "guard_exit": 75,
+        "gpu_owners": [],
+        "port_open": false,
+        "intentional_shutdown": true
+      },
+      "request_sha256": {
+        "small-same": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "document-extra": "a13647753521b68ebb739e5bdbcff484f3eb54fed6d3e26e577501fc0fc2087d",
+        "append-base": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "small": "3ed374e6e34fa957a14591cae93d996099e297370bd5e1fa1d75d984576bfce0",
+        "large-follow": "0649c19d7b4b561b8f424e3069466a5eb50be10b82629b74cd8c386445f39847",
+        "large": "1a452a3f5bd10ffc78c10f6834f35f54ace0b36833e129c07252b46be08644b3",
+        "text-short": "bdac4ef4bea6e19a00c1ae16a86b56560227dbe9908972df9c67459193c04a7f",
+        "eight": "193127f41b02575f0fec38596431f042486fd60200c6e61cb5b9310b4ef97f33",
+        "four": "296aa06b32cb7b3e4396de8a652156cd304b3835a00db1da97034fd7dba68f3c",
+        "natural-photo-follow": "ddfe2a142590e7f7ef117a846526c2cc96468ca40db7ad37f75a34ecbd1ae98b",
+        "append-image": "c5f914c01a9392b777fef999f21a692ebd210e9cf74c47661730438cc34d8b41",
+        "small-follow": "513a0ca8e87d24696b694c4af3b2b4ffda107b3118c8d316e57bbe6c54af62dd",
+        "screenshot-extra": "8db54050891e8fc0608d183f4118dcc0d57e07e48b8627e98ef9184069a1c697",
+        "text-long": "10afd9cdbc09665a02d91613db31844ac2130306648684be6a3d07b180c564ef",
+        "natural-photo": "701b7844c7e6dfb57ada5f856efaaea78d22228d2fda4f58d0ddae33b2c6f551",
+        "document-extra-follow": "8cd94ed36eb9309e5d5c5c85541749a215d97f34df6639830cf54de31f966020",
+        "five": "2b5fdfe0c0ac733510c84aa5a1cda41e5be932d4cb66bef2d5f42bfaffe67dfa",
+        "screenshot-extra-follow": "484173bdd323be1fe7fc0a3f350ff0f545c6db8d0239895e6d60f46b436dbd77",
+        "four-follow": "e0c99e5fb2b88b4590b57b97226c5d4b42d67dce99059a08b4b4791463c6ff9c"
+      },
+      "native_log_sha256": "e3aaa7d37bb7ac538288cd65844e003bce9882e7356ae0cca251e024e9c56b4e"
+    }
+  ]
+}

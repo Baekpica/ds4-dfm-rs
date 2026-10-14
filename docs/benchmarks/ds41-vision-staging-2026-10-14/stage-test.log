@@ -1,0 +1,26 @@
+vision source sha256=2c63ee48b7ce83fff4eb80df6d92625aff42d1045f0431afecbfc2c04f2fca6e stage_api=staged-4arg
+[v41] vision tower: 2 image(s) 1.00s (staging=pinned; weights read per block from the sidecar, freed after)
+[v41] vision tower: 2 image(s) 1.00s (staging=fallback; weights read per block from the sidecar, freed after)
+ds4: [v41] vision tower forward failed (2 image(s))
+[v41] vision tower: 2 image(s) 1.00s (staging=pinned; weights read per block from the sidecar, freed after)
+[v41] vision tower: 2 image(s) 1.00s (staging=pinned; weights read per block from the sidecar, freed after)
+[v41] vision tower: 2 image(s) 1.00s (staging=pinned; weights read per block from the sidecar, freed after)
+[v41] vision tower: 2 image(s) 1.00s (staging=direct; weights read per block from the sidecar, freed after)
+[v41] vision tower: 2 image(s) 1.00s (staging=pinned; weights read per block from the sidecar, freed after)
+[v41] vision tower: 2 image(s) 1.00s (staging=fallback; weights read per block from the sidecar, freed after)
+PASS: staged multi-chunk/tail bytes match source
+PASS: staged copy uses only bounded pinned writes
+PASS: NULL staging retains direct byte-exact transfer
+PASS: failed chunk aborts the transfer
+PASS: two-image tower succeeds and frees temporary tensors
+PASS: one request owns one 8MiB pinned window
+PASS: pin allocation is included in tower timing
+PASS: all tower weights use the request's pinned window
+PASS: pin allocation failure retains a working direct path
+PASS: tower write failure frees outputs and pinned storage
+PASS: repeated requests release each pinned window
+PASS: disabled staging never allocates pinned memory
+PASS: next request can re-enable bounded staging
+PASS: admission charges one window per image request, none for NULL
+PASS: disabled and allocation-fallback budgets remain conservative
+vision staging: 0 failure(s), no GPU/model loaded

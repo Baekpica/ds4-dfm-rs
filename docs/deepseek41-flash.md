@@ -398,9 +398,9 @@ the candidates and gates are port plan §6.21.
   sweep stopped at 45,315 prompt tokens; the head sweep closes the range to a
   nominal 65,536. The cell campaign left a ~40-50 ms setup residual and cold
   first-block terms open.
-- The port is served on the `feat/optimize` line (branch `feat/ds41-vision`
-  carries the same head) and is not in a release ledger; it is open toward
-  `main` as PR #83, and the gates above are this repository's own recordings.
+- [PR #83](https://github.com/Baekpica/ds4-dfm-rs/pull/83) merged into `main`
+  at `a5e9a626`. The gates above retain their recorded build and workload
+  scope; merging does not extend release qualification.
 
 ## Evidence index
 
@@ -414,6 +414,7 @@ Read first-hand before a new candidate:
 - [Vision gate, 2026-10-13](benchmarks/ds41-vision-2026-10-13/README.md)
 - [Head campaign (suite + 2K-64K), 2026-10-14](benchmarks/ds41-spark-head-2026-10-14/README.md)
 - [Vision performance, 2026-10-14](benchmarks/ds41-spark-vision-2026-10-14/README.md)
+- [Vision weight staging A/B and multi-image gates, 2026-10-14](benchmarks/ds41-vision-staging-2026-10-14/README.md)
 - [Prefill/decode report, 2026-10-11](ds41-perf-2026-10-11.md)
 - [Speed sweep, 2026-10-12](ds41-speed-bench-2026-10-12.md)
 - [Post-train plan](ds41-posttrain-plan.md)
