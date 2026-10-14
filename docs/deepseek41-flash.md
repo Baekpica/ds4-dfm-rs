@@ -247,38 +247,50 @@ decode residual (~4% of wall, in the verify step; docs/ds41-perf-2026-10-11.md
 
 ## Recorded performance
 
-Two recorded campaigns on the same GB10 shape. Cross-day wall comparisons on
-this host are not valid; only same-window A/B or a matched binary pair is.
-Decode varies with content and draft acceptance. The prose sweep sits near
-40-44 t/s, while the five-case record reaches the mid-50s to mid-60s on code
-and tables; that record lacks acceptance counters, so it cannot establish the
-cause of the spread.
+The head campaign
+([ds41-spark-head-2026-10-14](benchmarks/ds41-spark-head-2026-10-14/README.md))
+is the current record for this line: the author's five-case suite and the
+2K-64K frontier sweep on head `ae40aa1d`; the vision surface has its own
+[record](benchmarks/ds41-spark-vision-2026-10-14/README.md). The older
+campaigns below stay as history for their builds. Cross-day wall comparisons
+on this host are not valid; only same-window A/B or a matched binary pair is.
+Decode varies with content and draft acceptance, so read it per workload.
 
-Five-case benchmark
-([ds41-spark-2026-10-13](benchmarks/ds41-spark-2026-10-13/README.md), DGX Spark
-GB10, same GGUF and coding sidecar, temperature 0, greedy, single stream, median
-of 3, port checkout `2fb144b`):
+Five-case suite, head `ae40aa1d`
+([record](benchmarks/ds41-spark-head-2026-10-14/README.md), DGX Spark GB10,
+temperature 0, greedy, single stream, medians over three fresh-process passes;
+the boots had the vision sidecar wired and the cached warm path runs by
+default):
 
 | case | prompt tok | decode t/s | cold prefill t/s | warm TTFT ms |
 | --- | ---: | ---: | ---: | ---: |
-| prose_short | 54 | 36.26 | 82.1 | 190.9 |
-| code_short | 54 | 54.33 | 91.4 | 196.6 |
-| table_short | 43 | 65.41 | 79.1 | 194.1 |
-| prose_long | 10356 | 31.08 | 1286.0 | 265.7 |
-| table_long | 10377 | 59.14 | 1283.4 | 273.4 |
+| prose_short | 54 | 36.17 | 79.5 | 18.1 |
+| code_short | 54 | 54.10 | 135.6 | 13.5 |
+| table_short | 43 | 65.85 | 119.2 | 15.4 |
+| prose_long | 10356 | 32.67 | 1311.4 | 91.2 |
+| table_long | 10377 | 58.98 | 1307.6 | 92.7 |
 
-Recorded decode therefore spans 31.1-65.4 t/s across content; the short-case
-cold prefill (82-91 t/s) is a 43-54-token prompt and is a latency number, not a
+The cached warm path moved warm TTFT from the 190-273 ms of the earlier
+`2fb144b` five-case record
+([ds41-spark-2026-10-13](benchmarks/ds41-spark-2026-10-13/README.md), decode
+36.26 / 54.33 / 65.41 / 31.08 / 59.14 t/s and cold prefill 82.1 / 91.4 / 79.1 /
+1286.0 / 1283.4 t/s) to 13-93 ms; decode is unchanged within noise. The
+short-case cold prefill is a 43-54-token prompt and is a latency number, not a
 throughput one.
 
-22-frontier prose sweep (docs/ds41-speed-bench-2026-10-12.md,
-`speed-bench/gb10_spark_ds41_862fd9a6.csv`, corpus promessi_sposi, 128 greedy
-tokens, clock median 2405 MHz): prefill ramps from 852.6 t/s at the cold first
-request to a 1201.9 t/s peak at 18537, holds ~1170-1200 to 26624 and ends at
-1117.9 t/s at 45315; decode is 40.0-43.7 t/s on this prose corpus with
-speculation live (`tok_per_step` 2.67-2.91, about 1.8 accepted drafts per
-round). The two decode dips (29.9 at 28672, 28.7 at 34816) track
-draft-acceptance variance, not interleave.
+2K-64K frontier sweep, head `ae40aa1d`
+([record](benchmarks/ds41-spark-head-2026-10-14/README.md), corpus
+promessi_sposi, 128 greedy tokens, one complete 32-frontier pass on a fresh
+unguarded boot, clock median 2405 MHz): prefill ramps from 944.1 t/s at 2,149
+tokens to a 1,222.4 t/s peak at 16,546, holds 1,107-1,110 through 32,749-49,440
+and ends at 1,036.2 t/s at 66,608 tokens; decode spans 29.3-43.5 t/s across the
+32 frontiers with speculation live (the dips track draft-acceptance variance).
+The earlier October 12 22-frontier sweep
+(docs/ds41-speed-bench-2026-10-12.md, `speed-bench/gb10_spark_ds41_862fd9a6.csv`)
+covered 2,294-45,315 prompt tokens at the same 2405 MHz clock median: 852.6 t/s
+at the cold first request, a 1201.9 t/s peak at 18537, 1117.9 t/s at 45315, and
+decode 40.0-43.7 t/s with `tok_per_step` 2.67-2.91. Its two decode dips (29.9 at
+28672, 28.7 at 34816) track draft-acceptance variance, not interleave.
 
 2026-10-11 prefill/decode cells (docs/ds41-perf-2026-10-11.md), same prose
 corpus: the line rate is the server's own `[v41] prefill` timing; decode is
@@ -322,18 +334,27 @@ the candidates and gates are port plan §6.21.
   extend the previous prompt), so `prefill_cached_tokens` reads 0 there and the
   turn-2 reuse path is measured separately.
 - Decode is content-dependent (draft acceptance), so read it per workload: the
-  five-case record spans 31.1-65.4 t/s and the prose sweep 40.0-43.7. The
-  five-case benchmark ran on a different build (`2fb144b`) than the sweep.
-- Clock medians in the ds41 records (2405, and 2434-2447 in the cells) sit above
-  the documented 300-2200 MHz user-managed range; reconcile before comparing
+  head suite spans 32.7-65.9 t/s and the head sweep 29.3-43.5; the older
+  records span 31.1-65.4 (`2fb144b` five-case) and 40.0-43.7 (prose sweep), on
+  their own builds.
+- Clock medians in the ds41 records (2401-2444 across the head campaign's
+  passes, 2405 in the October 12 sweep, 2434-2447 in the cells) sit above the
+  documented 300-2200 MHz user-managed range; reconcile before comparing
   against the qwen38 records, which also quote a different driver/CUDA.
 - No broad task-quality or long-context accuracy claim follows from these
   inference and throughput checks.
-- The vision path has no performance record yet: the sweep harness is
-  committed (`speed-bench/ds41_vision_sweep.sh`) and its record is pending.
-- The October 11 cell campaign did not reach 32K or 64K; the later October 12
-  sweep reached 45,315 prompt tokens. Its 47,104-65,536 frontiers remain open.
-  The cell campaign left a ~40-50 ms setup residual and cold first-block terms open.
+- The vision path's performance record is
+  [ds41-spark-vision-2026-10-14](benchmarks/ds41-spark-vision-2026-10-14/README.md):
+  one vision boot, three attach passes. Image TTFT is 4.0-7.7 s, dominated by
+  the tower (3.4-6.1 s per image; the sidecar weights are read per block and
+  freed after each image); image rows report 57-126 t/s prefill including the
+  tower and 32.5-43.1 t/s decode, and the text brackets reach 525-576 t/s
+  prefill. The request build needed a fix for images past the kernel's
+  per-argument limit (commit `3c06770`).
+- The October 11 cell campaign did not reach 32K or 64K and the October 12
+  sweep stopped at 45,315 prompt tokens; the head sweep closes the range to a
+  nominal 65,536. The cell campaign left a ~40-50 ms setup residual and cold
+  first-block terms open.
 - The port is served on the `feat/optimize` line (branch `feat/ds41-vision`
   carries the same head) and is not in a release ledger; it is open toward
   `main` as PR #83, and the gates above are this repository's own recordings.
@@ -348,6 +369,8 @@ Read first-hand before a new candidate:
 - [64K campaign, 2026-10-13](benchmarks/ds41-spark-64k-2026-10-13/README.md)
 - [Warm-path campaign, 2026-10-13](benchmarks/ds41-warmpath-2026-10-13/README.md)
 - [Vision gate, 2026-10-13](benchmarks/ds41-vision-2026-10-13/README.md)
+- [Head campaign (suite + 2K-64K), 2026-10-14](benchmarks/ds41-spark-head-2026-10-14/README.md)
+- [Vision performance, 2026-10-14](benchmarks/ds41-spark-vision-2026-10-14/README.md)
 - [Prefill/decode report, 2026-10-11](ds41-perf-2026-10-11.md)
 - [Speed sweep, 2026-10-12](ds41-speed-bench-2026-10-12.md)
 - [Post-train plan](ds41-posttrain-plan.md)

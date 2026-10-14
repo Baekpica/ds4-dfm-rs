@@ -1,0 +1,26 @@
+[2026-10-14T06:05:57+02:00] PART1 suite start
+[2026-10-14T06:05:57+02:00] suite pass 1: boot
+[2026-10-14T06:08:10+02:00] suite pass 1: booted in 133s; running suite
+[2026-10-14T06:10:17+02:00] suite pass 1: done; stopping server
+[2026-10-14T06:10:24+02:00] suite pass 2: boot
+[2026-10-14T06:12:36+02:00] suite pass 2: booted in 132s; running suite
+[2026-10-14T06:14:44+02:00] suite pass 2: done; stopping server
+[2026-10-14T06:14:51+02:00] suite pass 3: boot
+[2026-10-14T06:17:01+02:00] suite pass 3: booted in 130s; running suite
+[2026-10-14T06:19:09+02:00] suite pass 3: done; stopping server
+[2026-10-14T06:19:16+02:00] PART1 suite end
+[2026-10-14T06:19:16+02:00] PART2 frontier start
+[2026-10-14T06:19:16+02:00] frontier run 1: start
+[2026-10-14T06:29:40+02:00] frontier run 1: exit 1
+[2026-10-14T06:29:50+02:00] frontier run 2: start
+[2026-10-14T06:29:50+02:00] frontier run 2: exit 1
+[2026-10-14T06:31:03+02:00] frontier run 3: start
+[2026-10-14T06:40:02+02:00] frontier run 3: exit 1
+[2026-10-14T06:40:12+02:00] PART2 frontier end
+[2026-10-14T06:40:12+02:00] PART3 vision start
+[2026-10-14T06:40:12+02:00] vision run 1: start (NO_GGUF_SHA=0)
+[2026-10-14T06:41:22+02:00] vision run 1: exit 1
+[2026-10-14T06:42:35+02:00] vision run 2: start (NO_GGUF_SHA=1)
+[2026-10-14T06:44:51+02:00] vision run 2: exit 1
+[2026-10-14T06:45:03+02:00] vision run 3: start (NO_GGUF_SHA=1)
+[2026-10-14T06:47:05+02:00] vision run 3: exit 137
