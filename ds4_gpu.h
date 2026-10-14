@@ -5320,6 +5320,21 @@ int ds4_gpu_v41_embed_fp4x32_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *t
         uint64_t model_size, uint64_t weight_offset, uint32_t n_vocab, uint32_t n_tok, uint32_t n_embd);
 int ds4_gpu_v41_rms_norm_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const void *model_map,
         uint64_t model_size, uint64_t weight_offset, uint32_t dim, uint32_t n_tok, float eps);
+/* Vision tower (DeepSeek-ViT + aligner; engine ds4_gpu_v41.h / cuda_v41_vision.inc.cu).
+ * The two "dev_tensor" entries take their weights from a temporary device tensor
+ * (the tower streams them off the --vision-gguf sidecar per block, core_v41_vision.c). */
+int ds4_gpu_v41_matmul_bf16_dev_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *W,
+        uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, uint32_t n_tok);
+int ds4_gpu_v41_rms_norm_dev_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *w,
+        uint32_t dim, uint32_t n_tok, float eps);
+int ds4_gpu_v41_vision_bias_add_tensor(ds4_gpu_tensor *x, const ds4_gpu_tensor *bias, uint32_t n_tok, uint32_t dim);
+int ds4_gpu_v41_vision_rope_tensor(ds4_gpu_tensor *qkv, uint32_t n_tok, uint32_t n_w, uint32_t n_head, uint32_t head_dim, float theta);
+int ds4_gpu_v41_dense_attn_tensor(ds4_gpu_tensor *o, const ds4_gpu_tensor *qkv, uint32_t n_tok, uint32_t n_head, uint32_t head_dim);
+int ds4_gpu_v41_swiglu_pair_tensor(ds4_gpu_tensor *h, const ds4_gpu_tensor *gu, uint32_t n_tok, uint32_t mid);
+int ds4_gpu_v41_gelu_tensor(ds4_gpu_tensor *x, uint64_t n);
+int ds4_gpu_v41_vision_unfold_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t n_h, uint32_t n_w, uint32_t dim, uint32_t r);
+int ds4_gpu_v41_row_select_tensor(ds4_gpu_tensor *x, const ds4_gpu_tensor *src, const ds4_gpu_tensor *rows, uint32_t n_tok, uint32_t dim);
+int ds4_gpu_v41_rows_zero_tensor(ds4_gpu_tensor *x, const ds4_gpu_tensor *rows, uint32_t n_tok, uint32_t dim);
 int ds4_gpu_v41_add_tensor(ds4_gpu_tensor *a, const ds4_gpu_tensor *b, uint64_t n);
 int ds4_gpu_v41_scale_round_tensor(ds4_gpu_tensor *x, uint64_t n, float s);
 int ds4_gpu_v41_expand_hc_tensor(ds4_gpu_tensor *hc, const ds4_gpu_tensor *x, uint32_t n_embd, uint32_t n_hc, uint32_t n_tok);
@@ -5405,6 +5420,7 @@ void ds4_gpu_v41_set_indexer_mma(int on);
  * consults its table by bias_offset when a layer is mounted. */
 int ds4_gpu_v41_router_tensor(ds4_gpu_tensor *selected, ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits,
         const void *model_map, uint64_t model_size, uint64_t bias_offset,
+        const ds4_gpu_tensor *bias_vl, const ds4_gpu_tensor *vl_rows,
         uint32_t n_tok, uint32_t n_expert, uint32_t topk, float route_scale);
 int ds4_gpu_v41_swiglu_tensor(ds4_gpu_tensor *h, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
         uint32_t n_tok, uint32_t mid, float limit);

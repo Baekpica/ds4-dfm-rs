@@ -1,6 +1,7 @@
 /* The production generate/forward/feed functions run unchanged. Bounded host
  * tensors replace CUDA, and a deterministic rejection keeps every frontier
  * reachable without numerical inference or a model fixture. */
+#define _POSIX_C_SOURCE 200809L
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,9 +51,12 @@ static void *g_v41_progress_ud;
 static int g_spec, g_pad_state, g_emitted, g_expected, g_body_calls;
 static int g_graph, g_graph_pending, g_launches, g_waits;
 static uint32_t g_snap_past, g_alloc_cap, g_peak_block;
+static uint32_t g_vision_first;
+static int g_vision_calls;
 typedef struct { int unused; } v41_sched;
 
 static void *xmalloc(size_t bytes) { return malloc(bytes); }
+static void *xmalloc_zeroed(size_t n, size_t size) { return calloc(n, size); }
 static double now_sec(void) { return (double)clock() / CLOCKS_PER_SEC; }
 ds4_gpu_tensor *ds4_gpu_tensor_alloc(uint64_t bytes) {
     ds4_gpu_tensor *t = calloc(1, sizeof *t);
@@ -90,6 +94,7 @@ static void v41_alloc_dense(ds4_v41_state *st, uint32_t cap, uint32_t rows, bool
     st->cap_tok = g_pad_state && cap < 6u ? 6u : cap;
     st->tok = ds4_gpu_tensor_alloc(st->cap_tok * 4u);
     st->pos = ds4_gpu_tensor_alloc(st->cap_tok * 4u);
+    st->vrows = ds4_gpu_tensor_alloc(st->cap_tok * 4u);
     st->pre_mix = ds4_gpu_tensor_alloc(st->cap_tok * DS4_N_HC * 4u);
     st->logits = ds4_gpu_tensor_alloc((uint64_t)rows * DS4_N_VOCAB * 4u);
     *ok = st->tok && st->pos && st->pre_mix && st->logits;
@@ -104,6 +109,7 @@ static ds4_gpu_tensor *v41_alloc(uint64_t bytes, bool *ok) {
 }
 static void v41_state_free(ds4_v41_state *st) {
     ds4_gpu_tensor_free(st->tok); ds4_gpu_tensor_free(st->pos);
+    ds4_gpu_tensor_free(st->vrows);
     ds4_gpu_tensor_free(st->pre_mix); ds4_gpu_tensor_free(st->logits);
     ds4_gpu_tensor_free(st->wintmp); ds4_gpu_tensor_free(st->mainh);
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) { ds4_gpu_tensor_free(st->win[il]); }
@@ -119,6 +125,15 @@ static bool v41_forward_body(ds4_engine *e, ds4_v41_state *st) {
     return true;
 }
 static int v41_dspark_mode(void) { return g_spec; }
+/* Keep the real forward's dispatch and row mapping; replace only tower math. */
+static bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs, uint32_t first_row) {
+    if (imgs->encoded) { return true; }
+    g_vision_first = first_row;
+    g_vision_calls++;
+    imgs->row_base = first_row;
+    imgs->encoded = 1;
+    return true;
+}
 #include "ds41_boundary_feed.inc"
 #include "ds41_boundary_forward.inc"
 
@@ -135,8 +150,8 @@ static uint32_t v41_draft_pick_k(const float *conf, uint32_t block, float *val, 
 static void v41_sched_cost(v41_sched *cal, uint32_t n, double ms) {}
 static void v41_sched_draft_cost(v41_sched *cal, double ms) {}
 static void v41_sched_observe(v41_sched *cal, const float *conf, bool accepted) {}
-static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int *ids, uint32_t n) { return 0; }
-static void v41_kvreuse_save(ds4_v41_state *st, const int *ids, uint32_t n) {}
+static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int *ids, uint32_t n, const uint64_t *sig) { return 0; }
+static void v41_kvreuse_save(ds4_v41_state *st, const int *ids, uint32_t n, const uint64_t *sig) {}
 static bool v41_next_token(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row, float *buf, uint64_t *rng, v41_hist *hist, int32_t *tok) { *tok = 1; return true; }
 static bool v41_device_next(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row, uint32_t n, const int32_t *batch, int32_t *want) {
     for (uint32_t i = 0; i < n; i++) { want[i] = 1; }
@@ -190,7 +205,7 @@ static int run_case(uint32_t np, int predict, uint32_t ctx, int spec, int pad) {
     g_expected = expected;
     ds4_v41_feed *feed = ds4_v41_feed_open(&engine, (int)np, rows, NULL, NULL, NULL, NULL, NULL);
     if (!feed) { return 1; }
-    const int rc = ds4_v41_generate_argmax(&engine, prompt, (int)np, predict, 0, 5, &feed->feed, emit, NULL);
+    const int rc = ds4_v41_generate_argmax(&engine, prompt, (int)np, predict, 0, 5, NULL, &feed->feed, emit, NULL);
     const uint32_t feed_cap = feed->rows_cap;
     ds4_v41_feed_close(feed);
     const int graph_ok = !g_graph || (g_launches == expected - 1 && g_waits == g_launches && !g_graph_pending);
@@ -203,10 +218,41 @@ static int run_case(uint32_t np, int predict, uint32_t ctx, int spec, int pad) {
     return 0;
 }
 
+static int vision_suffix(void) {
+    ds4_engine engine = {0};
+    const int32_t ids[] = {1};
+    int32_t row_of[] = {-1, 0, 1, -1, 2, 3, -1};
+    struct ds4_v41_images images = {.np = 7u, .n_rows = 4u, .row_of = row_of};
+    g_ds4_v41.ctx = 16u;
+    g_ds4_v41.n_engram = 0;
+    g_expected = 16; g_emitted = 0; g_pad_state = 0;
+    g_vision_calls = 0;
+    ds4_v41_state st;
+    bool ok = v41_state_alloc(&st, 1u, 16u, 1u);
+    st.vimg = &images;
+    st.n_past = 3u;  /* The first image's rows already live in restored KV. */
+    unsetenv("DS41_VISION_REENCODE");
+    ok = ok && v41_forward(&engine, &st, ids, 1u) && g_vision_calls == 0;
+    ok = ok && v41_forward(&engine, &st, ids, 1u) && g_vision_calls == 1 && g_vision_first == 2u;
+    ok = ok && ((int32_t *)st.vrows->data)[0] == 0 && st.himg[4] == 1;
+    ok = ok && v41_forward(&engine, &st, ids, 1u) && g_vision_calls == 1;
+    ok = ok && ((int32_t *)st.vrows->data)[0] == 1 && st.himg[5] == 1;
+    ok = ok && v41_forward(&engine, &st, ids, 1u) && g_vision_calls == 1 && st.himg[6] == 0;
+
+    /* The diagnostic control retains the original full-tower work. */
+    st.n_past = 3u; images.encoded = 0; g_vision_calls = 0;
+    setenv("DS41_VISION_REENCODE", "1", 1);
+    ok = ok && v41_forward(&engine, &st, ids, 1u) && g_vision_calls == 1 && g_vision_first == 0u;
+    unsetenv("DS41_VISION_REENCODE");
+    v41_state_free(&st);
+    printf("vision suffix dispatch and row mapping: %s\n", ok ? "PASS" : "FAIL");
+    return !ok;
+}
+
 int main(void) {
     const uint32_t prompts[] = {1u, 2u, 5u, 6u};
     const int outputs[] = {1, 16};
-    int failures = 0, cases = 0;
+    int failures = vision_suffix(), cases = 1;
     for (uint32_t p = 0; p < 4u; p++) {
         for (uint32_t n = 0; n < 2u; n++) {
             for (int spec = 0; spec <= 1; spec++) {

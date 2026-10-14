@@ -2023,6 +2023,10 @@ fn settle_generation_result<W: TerminalSink>(
         Ok(_) => Settlement::COMPLETED,
         Err(GenerateError::Io) => Settlement::CANCELED,
         Err(GenerateError::Streamed(_)) => Settlement::FAILED,
+        Err(GenerateError::BadRequest(msg)) => {
+            write_generation_error(cfg, job, out, 400, msg, None);
+            Settlement::FAILED
+        }
         Err(GenerateError::Unsupported(msg)) => {
             write_generation_error(cfg, job, out, 503, msg, None);
             Settlement::FAILED

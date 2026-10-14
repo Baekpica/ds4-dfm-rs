@@ -1,0 +1,5 @@
+{"i": 0, "cmd": ["cargo", "fmt", "--all", "--check"], "exit": 0}
+{"i": 1, "cmd": ["cargo", "clippy", "--workspace", "--all-targets", "--locked"], "exit": 0}
+{"i": 2, "cmd": ["make", "-j1", "test-kv-parity", "test-web-parity", "test-dist-parity", "test-server-parity", "test-catalog-parity", "test-tokenizer-parity", "test-session-parity", "test-agent-parity", "test-ds41-bridge-lifetime", "test-ds41-kv-import", "test-ds41-boundary", "test-ds41-vision-gate"], "exit": 0}
+{"i": 3, "cmd": ["cargo", "test", "--workspace", "--locked", "--", "--test-threads=1"], "exit": 0}
+{"i": 4, "cmd": ["cargo", "check", "--workspace", "--all-targets", "--locked"], "exit": 0}

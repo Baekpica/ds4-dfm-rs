@@ -94,6 +94,67 @@ typedef struct {
 int ds4_v41_score_ids(void *engine, const int *ids, int n_ids, const char *out_path,
                       int no_engram, int chunk, const ds41_engram_feed *feed);
 
+/* ---- Vision (2026-10-13): the request's image set -------------------------
+ *
+ * The engine's ds4_v41_images_prepare (core_v41_vision.c:186-218) does three
+ * things: decode+preprocess each image into patches, build the request's image
+ * struct, and expand the prompt.  The port splits that: the Rust host owns
+ * preprocessing (crates/ds4-core/src/v41_media.rs) AND the prompt expansion
+ * (the renderer), so the native only assembles the struct from the
+ * already-computed patches and the expanded prompt's per-position row map.
+ *
+ * ds4_v41_image_src is one image's Rust output: patches are the host f32
+ * [n_vit_h*n_vit_w][3*patch*patch] on the bf16 grid the tower consumes (
+ * core_v41_image.c:150-172), borrowed for the run (the native never frees
+ * them).  The span length n_tok = n_llm_h*(n_llm_w+1)+2 and the row0 offsets
+ * are the native's own account (core_v41_vision.c:200-204). Image identity is
+ * carried by the expanded prompt's sig_of map, alongside row_of. */
+typedef struct {
+    const float *patches;         /* [n_vit_h*n_vit_w][3*patch*patch], borrowed */
+    uint64_t patches_len;         /* f32 elements, checked against the loaded tower */
+    uint32_t n_vit_h, n_vit_w;    /* ViT patch grid */
+    uint32_t n_llm_h, n_llm_w;    /* aligner (LLM) token grid */
+} ds4_v41_image_src;
+
+/* struct ds4_v41_images is defined in ds4_ds41_forward.inc (native TU only);
+ * the bridge holds it opaquely. */
+struct ds4_v41_images;
+
+/* Build the image set: copies row_of (expanded prompt: position -> embed row,
+ * -1 = text), takes the patches borrowed, and computes each span's n_tok/row0.
+ * n_rows = sum of span lengths. NULL for an empty or malformed set, including
+ * a patch extent or grid that disagrees with the loaded tower. */
+struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows, const uint64_t *sig_of);
+void ds4_v41_images_free(struct ds4_v41_images *S);
+/* The prefill's extra peak for the serving admission account, mirroring the
+ * engine's ds4_v41_images_bytes (core_v41_vision.c:229-241). */
+uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S);
+
+/* The loaded tower's presence (the engine's ds4_engine_v41_has_vision,
+ * core_v41_vision.c:181): vis_layers is set only by v41_load_vision_metadata
+ * on a --vision-gguf sidecar, so 0 means a text-only open. */
+int ds4_v41_has_vision(void *engine);
+
+/* The tower on one patch set (the engine's v41_vision_run,
+ * core_v41_vision.c:116-131): returns malloc'd aligner rows
+ * [n_llm_h*n_llm_w][DS4_N_EMBD] for the golden gate
+ * (core_v41_vision_gate.c:80) and any caller that wants rows outside a
+ * request; NULL when the model carries no tower or the forward fails.  The
+ * caller frees the rows with free().  patches are n_vit_h*n_vit_w rows of
+ * 3*patch*patch f32 on the bf16 grid; patches_len counts those elements and
+ * must match the loaded tower. n_llm_h/n_llm_w receive the aligner grid
+ * (n_vit / downsample, rounded up). */
+float *v41_vision_run(void *engine, const float *patches, uint64_t patches_len,
+                      uint32_t n_vit_h, uint32_t n_vit_w,
+                      uint32_t *n_llm_h, uint32_t *n_llm_w);
+
+/* The prefill peak bytes for `n_prompt` positions (the engine's
+ * ds4_v41_req_prefill_bytes, core_v41_req.c:298-305): the serving admission
+ * starts a prefill only when MemAvailable covers twice this plus the images
+ * (server_sched_v41.c:58). */
+uint64_t ds4_v41_prefill_bytes(void *engine, int n_prompt);
+
 /* Greedy generate (the engine's ds4_engine_v41_generate_argmax,
  * core_v41_api.c:426-470 + the round drive :175-425): prompt prefill in
  * chunks, then n=1 decode steps with device argmax.  emit is called per
@@ -111,7 +172,8 @@ int ds4_v41_score_ids(void *engine, const int *ids, int n_ids, const char *out_p
  * block the forward runs (see ds41_engram_feed), or the caller pre-fills slot
  * 0 per step and sets pos0 (the E0-hardened protocol). */
 int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n_predict, int no_engram,
-                            int verify_k, const ds41_engram_feed *feed, int (*emit)(int token, void *ud), void *ud);
+                            int verify_k, struct ds4_v41_images *imgs, const ds41_engram_feed *feed,
+                            int (*emit)(int token, void *ud), void *ud);
 
 /* --v41-prof (defined in the CUDA TU, ds4_ds41_gpu.cuh): per-layer ms and the
  * per-round `[dspark]` trace lines (the engine's core_v41_api.c:346-357).  The
@@ -148,7 +210,7 @@ void ds4_engine_v41_set_prof(int on);
  * v41_kvreuse_note_mount replaces the engine's switch_plugins drop. */
 void ds4_engine_v41_set_kv_reuse(int on);
 int ds4_engine_v41_last_reused(void);
-uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np);
+uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np, const uint64_t *sig);
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash);
 
 /* The disk half (item 4): the payload export/import the bridge exposes to

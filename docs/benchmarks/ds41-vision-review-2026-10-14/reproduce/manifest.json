@@ -1,0 +1,34 @@
+{
+  "pr83-review/run_gpu.py": {
+    "target": "scratch/pr83-review/run_gpu.py",
+    "sha256": "400383e9c380a09a3bf6a3796c0d46fcd415d649c9ede25d4bdbf732f80e139a"
+  },
+  "pr83-review/vision-gate/vision_gate.rs": {
+    "target": "scratch/pr83-review/vision-gate/vision_gate.rs",
+    "sha256": "63642a2305534cfe9a9f6f8fb88cef6fe8475ec34840d291bc6586779072d43d"
+  },
+  "pr83-review/vision-gate/harness.mk": {
+    "target": "scratch/pr83-review/vision-gate/harness.mk",
+    "sha256": "cb961866993bb48701a4c978f8639aa8a626bd1dc8283ccc11a45b89be86e8ef"
+  },
+  "pr83-review/vision-gate/prepare.py": {
+    "target": "scratch/pr83-review/vision-gate/prepare.py",
+    "sha256": "af1324789715ffd536c09bed3d7325fd3779df9e37f93a6ac3e79aa7d8a8e5a7"
+  },
+  "pr83-review/vision-gate/audit.py": {
+    "target": "scratch/pr83-review/vision-gate/audit.py",
+    "sha256": "8acfbd4bbbb7db4abfaabd2711be24e4e08cb4f1c121a7fa74599383b965998b"
+  },
+  "pr83-review/api-gate/run.py": {
+    "target": "scratch/pr83-review/api-gate/run.py",
+    "sha256": "a831c18d2d17f50c2319562d616b604b59538a18e22f5fc1590382c9777dc681"
+  },
+  "vq-pr80-81/port-long-batch/freeze.py": {
+    "target": "scratch/vq-pr80-81/port-long-batch/freeze.py",
+    "sha256": "37ae2091739e08fbe54fc781e66a2a1e9c568e068718bc4d6c99c54a853e30e7"
+  },
+  "vq-pr80-81/live-fixtures/long-context-essay.ids": {
+    "target": "scratch/vq-pr80-81/live-fixtures/long-context-essay.ids",
+    "sha256": "52a9bddec631ad1e6bf55f0e1061eaca0d78d4fa04c7c961a117e2d1b799540a"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "status": "PASS",
+  "errors": [],
+  "generations": 11,
+  "server_loads": 2,
+  "vocab": 129280,
+  "binary_sha256": "de922fe78aac1cee2eb37b900a4886791ce1df7fabcda2476d8d97f4a4036feb",
+  "comparisons": [
+    {
+      "name": "disk-restart-exact",
+      "status": "PASS",
+      "request_bytes": true,
+      "expanded_prompt": true,
+      "returned_tokens": true,
+      "native_tokens": true,
+      "all_logits": true,
+      "returned_choices": true
+    }
+  ],
+  "scope": "Two-load image disk restore plus Chat/Anthropic/Responses tool-image contracts; timings include logits readback, no speed or broad image-quality claim."
+}

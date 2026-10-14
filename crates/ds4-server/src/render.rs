@@ -86,6 +86,10 @@ pub const DSML_EOS: &str = "<｜end▁of▁sentence｜>";
 pub const DSML_THINK_START: &str = "\u{3c}think\u{3e}";
 pub const DSML_THINK_END: &str = "\u{3c}/think\u{3e}";
 pub const DSML_TOOL_CALLS: &str = "<｜DSML｜tool_calls>";
+/// The V4.1 image placeholder the server writes per image (`core_bpe.c:365`
+/// image token, id `deepseek4.image_token_id` 129264); the prefill expands it
+/// into the span (`ds4_v41_images_prepare`).
+pub const DSML_IMAGE: &str = "<｜deepseek_image｜>";
 pub const MOTIF_TOOL_CALLS: &str = "<tool_call>";
 pub const EXAONE_TOOL_CALLS: &str = "<tool_call>";
 pub const DOTS3_TOOL_CALLS: &str = "<dots_function_call>";
@@ -1313,6 +1317,35 @@ pub fn append_tool_result_text(out: &mut Vec<u8>, s: &[u8]) {
 }
 
 /// Byte-for-byte `render_dsml_chat_prompt_text_choice`.
+/// The DSML user body.  The V4.1 head lays one `<｜deepseek_image｜>` per image
+/// part where the image sits in the message (the engine's text-level render,
+/// server_parse_tools.c:290); the prefill expands each into a span.  Every
+/// other case writes the flat content byte for byte, so text-only prompts are
+/// unchanged (images never reach the V4 head: they are refused earlier).
+fn append_dsml_user_content(out: &mut Vec<u8>, m: &ChatMsg, head: DsmlHead) {
+    let has_image = matches!(head, DsmlHead::V41 { .. })
+        && m.parts.iter().any(|p| matches!(p, ChatPart::Image(_)));
+    // A tool-result message keeps its content: the envelope and the image
+    // placeholders were written into it at parse time in the client's block
+    // order (the engine's text-level render, server_parse_tools.c:330), so
+    // the parts loop must not run for it.
+    let has_tool_result = m
+        .parts
+        .iter()
+        .any(|p| matches!(p, ChatPart::ToolResult { .. }));
+    if !has_image || has_tool_result {
+        put(out, &m.content);
+        return;
+    }
+    for part in &m.parts {
+        match part {
+            ChatPart::Text(text) => put(out, text),
+            ChatPart::Image(_) => put(out, DSML_IMAGE),
+            _ => {}
+        }
+    }
+}
+
 pub fn render_dsml_chat(
     msgs: &[ChatMsg],
     tool_schemas: &str,
@@ -1414,7 +1447,7 @@ pub fn render_dsml_chat_choice_ex(
                     DSML_USER
                 },
             );
-            put(&mut out, &m.content);
+            append_dsml_user_content(&mut out, m, head);
             pending_assistant = true;
             pending_tool_result = false;
         } else if m.role == "tool" || m.role == "function" {

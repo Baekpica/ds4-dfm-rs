@@ -1,0 +1,16 @@
+{
+  "repo": "wenzhouwu/YoungAi-DeepSeek-V4.1-Flash",
+  "revision": "5d89e9ca59452ec191121ebe5ce2a998191648e0",
+  "file": {
+    "rfilename": "DeepSeek-V4.1-Flash.vision.gguf",
+    "blobId": "5af8372bf65896a663e519ad1ac500f1388b2a7f",
+    "size": 971066016,
+    "lfs": {
+      "sha256": "b50974c405aafbd941f8e8767cf90231b522aa4f2fcb506eaea68fbf8b409af5",
+      "size": 971066016,
+      "pointerSize": 134
+    }
+  },
+  "local_directory": "/home/sunghoon/workspace/ds4-exaone/models/YoungAi-DeepSeek-V4.1-Flash",
+  "sha256_verified_against_lfs": true
+}

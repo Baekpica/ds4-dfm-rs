@@ -1,5 +1,6 @@
 //! C↔Rust four-surface JSON parsers (tokenize/render stay C).
 
+use ds4_server::render::DSML_IMAGE;
 use ds4_server::{
     generation_blocked, parse_anthropic_request, parse_chat_request, parse_completion_request,
     parse_request, parse_responses_request, ChatPart, ImageMime, ParseEnv, ParsedRequest,
@@ -447,9 +448,145 @@ fn image_input_rejects_remote_urls_wrong_magic_and_non_user_roles() {
     let assistant = format!(
         r#"{{"messages":[{{"role":"assistant","content":[{{"type":"image_url","image_url":"data:image/png;base64,{PNG}"}}]}}]}}"#
     );
+    // An assistant image stays a parse error.  A tool/function image does not
+    // (the MCP loop; see openai_tool_message_carries_the_image_placeholder).
     assert_eq!(
         rust_parse("chat", &assistant).unwrap_err(),
-        "images are allowed only in user messages"
+        "images are allowed only in user messages or tool results"
+    );
+}
+
+#[test]
+fn anthropic_tool_result_content_blocks_carry_images() {
+    // The engine's test_anthropic_tool_result_mcp_blocks
+    // (tests/server_tests_replay.c:65): the real MCP loop replays an assistant
+    // tool_use plus a user tool_result whose content is a block array, and a
+    // screenshot-style MCP tool returns pixels inside it.
+    const PNG: &str = concat!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
+        "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    );
+    // The replaying assistant turn plus the tool_result block under test.
+    let mcp_replay = |id: &str, block: &str| {
+        format!(
+            r#"{{"messages":[{{"role":"assistant","content":[{{"type":"tool_use","id":"{id}","name":"screenshot","input":{{}}}}]}},{{"role":"user","content":[{block}]}}]}}"#
+        )
+    };
+
+    // Legacy string content renders byte-identically, including is_error:false.
+    let string_form = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_01",
+            r#"{"type":"tool_result","tool_use_id":"toolu_01","is_error":false,"content":"ok"}"#,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        string_form.messages[1].content,
+        "<tool_result>ok</tool_result>"
+    );
+    assert_eq!(
+        string_form.messages[1].parts,
+        [ChatPart::ToolResult {
+            id: "toolu_01".into(),
+            content: "ok".into(),
+        }]
+    );
+    assert_eq!(string_form.messages[1].tool_call_ids, ["toolu_01"]);
+
+    // Block array: text + image + text in client order.  The image registers
+    // like a user-message image; the placeholder sits where the block sits in
+    // the content the DSML head renders, while the ToolResult part keeps the
+    // plain text the other heads read.
+    let mixed = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_02",
+            &format!(
+                r#"{{"type":"tool_result","tool_use_id":"toolu_02","content":[{{"type":"text","text":"shot:"}},{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{PNG}"}}}},{{"type":"text","text":"done"}}]}}"#
+            ),
+        ),
+    )
+    .unwrap();
+    assert_eq!(mixed.images.len(), 1);
+    assert_eq!(mixed.images[0].mime, ImageMime::Png);
+    assert_eq!(
+        mixed.messages[1].content,
+        format!("<tool_result>shot:{DSML_IMAGE}done</tool_result>")
+    );
+    assert_eq!(
+        mixed.messages[1].parts,
+        [
+            ChatPart::Image(0),
+            ChatPart::ToolResult {
+                id: "toolu_02".into(),
+                content: "shot:done".into(),
+            },
+        ]
+    );
+    assert_eq!(mixed.messages[1].tool_call_ids, ["toolu_02"]);
+    assert_ne!(mixed.needs & NEED_IMAGE, 0);
+    // The V4.1 head (variant 16) admits it.  A head that refuses images keeps
+    // its own message; a head that admits them but cannot place one inside a
+    // tool result (it renders the plain ToolResult part) is refused by name.
+    assert_eq!(generation_blocked(&mixed, 16), None);
+    assert_eq!(
+        generation_blocked(&mixed, 0),
+        Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo")
+    );
+    assert_eq!(
+        generation_blocked(&mixed, 7),
+        Some("images inside a tool result are supported only by DeepSeek V4.1 Flash")
+    );
+
+    // is_error:true surfaces as an explicit marker inside the envelope; a
+    // text-only tool_result never needs pixels and renders as before.
+    let errored = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_03",
+            r#"{"type":"tool_result","tool_use_id":"toolu_03","content":"exit status 1","is_error":true}"#,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        errored.messages[1].content,
+        "<tool_result>[tool_error] exit status 1</tool_result>"
+    );
+    let text_only = rust_parse(
+        "anthropic",
+        &mcp_replay(
+            "toolu_04",
+            r#"{"type":"tool_result","tool_use_id":"toolu_04","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}"#,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        text_only.messages[1].content,
+        "<tool_result>ab</tool_result>"
+    );
+    assert!(text_only.images.is_empty());
+
+    // Fail closed: an image the server cannot deliver rejects the request
+    // instead of silently vanishing.
+    let url_source = mcp_replay(
+        "toolu_05",
+        r#"{"type":"tool_result","tool_use_id":"toolu_05","content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}"#,
+    );
+    assert_eq!(
+        rust_parse("anthropic", &url_source).unwrap_err(),
+        "Anthropic image source must use base64 data"
+    );
+    let wrong_magic = mcp_replay(
+        "toolu_06",
+        &format!(
+            r#"{{"type":"tool_result","tool_use_id":"toolu_06","content":[{{"type":"image","source":{{"type":"base64","media_type":"image/jpeg","data":"{PNG}"}}}}]}}"#
+        ),
+    );
+    assert_eq!(
+        rust_parse("anthropic", &wrong_magic).unwrap_err(),
+        "image bytes do not match declared media type"
     );
 }
 
@@ -634,4 +771,211 @@ fn engine_defaults_think_and_sampling() {
     assert_eq!(r.presence_penalty, -0.2);
     assert!(r.dry_set);
     assert_eq!(r.dry_multiplier, 0.8);
+}
+
+#[test]
+fn openai_tool_message_carries_the_image_placeholder() {
+    // The real MCP loop on the Chat Completions surface: an assistant turn
+    // calls a screenshot tool, and the tool-role message's content is a block
+    // array whose image block is the pixels.  The image registers like a
+    // user-message image, and the placeholder lands in that message's content
+    // in client block order, because that content is what the DSML render
+    // writes inside its <tool_result> envelope.
+    const PNG: &str = concat!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
+        "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    );
+    let body = format!(
+        r#"{{"messages":[{{"role":"assistant","content":"","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"shot","arguments":"{{}}"}}}}]}},{{"role":"tool","tool_call_id":"c1","content":[{{"type":"text","text":"shot:"}},{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{PNG}"}}}},{{"type":"text","text":"done"}}]}}]}}"#
+    );
+    let parsed = rust_parse("chat", &body).unwrap();
+    assert_eq!(parsed.images.len(), 1);
+    assert_eq!(parsed.images[0].mime, ImageMime::Png);
+    assert_eq!(parsed.messages[1].role, "tool");
+    assert_eq!(parsed.messages[1].content, format!("shot:{DSML_IMAGE}done"));
+    assert_eq!(
+        parsed.messages[1].parts,
+        [
+            ChatPart::Text("shot:".into()),
+            ChatPart::Image(0),
+            ChatPart::Text("done".into()),
+        ]
+    );
+    assert_ne!(parsed.needs & NEED_IMAGE, 0);
+    // The V4.1 head admits it; a head that admits images but cannot place one
+    // inside a tool result is refused by name rather than leaking the token.
+    assert_eq!(generation_blocked(&parsed, 16), None);
+    assert_eq!(
+        generation_blocked(&parsed, 7),
+        Some("images inside a tool result are supported only by DeepSeek V4.1 Flash")
+    );
+}
+
+mod v41_media {
+    use super::*;
+    use serde_json::{json, Value};
+
+    const PNG: &str = concat!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
+        "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    );
+
+    fn image(surface: &str, data: &str) -> Value {
+        match surface {
+            "chat" => {
+                json!({"type":"image_url","image_url":format!("data:image/png;base64,{data}")})
+            }
+            "responses" => {
+                json!({"type":"input_image","image_url":format!("data:image/png;base64,{data}")})
+            }
+            "anthropic" => {
+                json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":data}})
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn request(surface: &str, blocks: Vec<Value>) -> Value {
+        let messages = json!([{"role":"user","content":blocks}]);
+        if surface == "responses" {
+            json!({"input":messages})
+        } else {
+            json!({"messages":messages})
+        }
+    }
+
+    fn parse(surface: &str, body: &Value) -> Result<ParsedRequest, String> {
+        let mut env = env();
+        env.engine_defaults = true;
+        let body = body.to_string();
+        match surface {
+            "chat" => parse_chat_request(&env, &body),
+            "anthropic" => parse_anthropic_request(&env, &body),
+            "responses" => parse_responses_request(&env, &body),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mixed_tool_image_order() {
+        let nested = json!({"type":"tool_result","tool_use_id":"c1","content":[
+            {"type":"text","text":"nested:"},image("anthropic", PNG),
+            {"type":"text","text":":end"}
+        ]});
+        let outer = image("anthropic", PNG);
+        for (blocks, want) in [
+            (
+                vec![outer.clone(), nested.clone()],
+                format!("{DSML_IMAGE}<tool_result>nested:{DSML_IMAGE}:end</tool_result>"),
+            ),
+            (
+                vec![nested, outer],
+                format!("<tool_result>nested:{DSML_IMAGE}:end</tool_result>{DSML_IMAGE}"),
+            ),
+        ] {
+            let body = json!({"messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"shot","input":{}}]},
+                {"role":"user","content":blocks}
+            ]});
+            let parsed = parse("anthropic", &body).unwrap();
+            let rendered =
+                String::from_utf8(ds4_server::render_prompt(&parsed, 16).unwrap()).unwrap();
+            assert_eq!(parsed.images.len(), 2);
+            assert!(rendered.contains(&want), "{rendered}");
+            assert_eq!(rendered.matches(DSML_IMAGE).count(), 2);
+            assert_eq!(
+                parsed.messages[1]
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ChatPart::Image(index) => Some(*index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                [0, 1]
+            );
+        }
+    }
+
+    #[test]
+    fn responses_tool_images() {
+        for (call, output) in [
+            ("function_call", "function_call_output"),
+            ("custom_tool_call", "custom_tool_call_output"),
+        ] {
+            let body = json!({"reasoning":{"effort":"none"},"input":[
+                {"type":call,"call_id":"c1","name":"shot","arguments":"{}"},
+                {"type":output,"call_id":"c1","output":[
+                    {"type":"input_text","text":"before:"},image("responses", PNG),
+                    {"type":"input_text","text":":after"}
+                ]}
+            ]});
+            let parsed = parse("responses", &body).unwrap();
+            assert_eq!(parsed.images.len(), 1);
+            assert_eq!(
+                parsed.messages[1].content,
+                format!("before:{DSML_IMAGE}:after")
+            );
+            assert_eq!(generation_blocked(&parsed, 16), None);
+            assert!(generation_blocked(&parsed, 7)
+                .unwrap()
+                .contains("tool result"));
+            let rendered =
+                String::from_utf8(ds4_server::render_prompt(&parsed, 16).unwrap()).unwrap();
+            assert!(rendered.contains(&format!(
+                "<tool_result>before:{DSML_IMAGE}:after</tool_result>"
+            )));
+        }
+    }
+
+    #[test]
+    fn multi_image_admission() {
+        for surface in ["chat", "anthropic", "responses"] {
+            for count in [5, 8] {
+                let body = request(surface, vec![image(surface, PNG); count]);
+                let parsed = parse(surface, &body).unwrap();
+                assert_eq!(parsed.images.len(), count, "{surface}");
+                assert!(rust_parse(surface, &body.to_string()).is_err(), "{surface}");
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_media_stays_bounded() {
+        let audio =
+            json!({"type":"input_audio","input_audio":{"format":"wav","data":"UklGRgAAAABXQVZF"}});
+        for first in [true, false] {
+            let mut blocks = vec![image("chat", PNG); 4];
+            blocks.insert(if first { 0 } else { blocks.len() }, audio.clone());
+            assert!(parse("chat", &request("chat", blocks)).is_err());
+        }
+    }
+
+    #[test]
+    fn image_bytes_stay_bounded() {
+        let limit = 10 * 1024 * 1024;
+        let mut data = "iVBORw0KGgoA".to_string();
+        data.push_str(&"AAAA".repeat((limit - 9) / 3));
+        data.push_str("AA==");
+        let too_large = "AAAA".repeat(limit / 3 + 1);
+        for surface in ["chat", "anthropic", "responses"] {
+            let body = request(surface, vec![image(surface, &too_large)]);
+            assert_eq!(
+                parse(surface, &body).unwrap_err(),
+                "media exceeds 10 MiB decoded limit"
+            );
+            let body = request(
+                surface,
+                vec![
+                    image(surface, &data),
+                    image(surface, &data),
+                    image(surface, PNG),
+                ],
+            );
+            assert_eq!(
+                parse(surface, &body).unwrap_err(),
+                "media exceeds 20 MiB request limit"
+            );
+        }
+    }
 }

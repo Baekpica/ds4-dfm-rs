@@ -861,9 +861,9 @@ void ds4_bridge_v41_set_emit_trace(int on) { ds4_engine_v41_set_emit_trace(on); 
 void ds4_bridge_v41_set_prof(int on) { ds4_engine_v41_set_prof(on); }
 void ds4_bridge_v41_kvreuse_set(int on) { ds4_engine_v41_set_kv_reuse(on); }
 int ds4_bridge_v41_kvreuse_last_reused(void) { return ds4_engine_v41_last_reused(); }
-uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n) {
+uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_t *sig) {
     if (!prompt || n < 1) return 0;
-    return v41_kvreuse_peek(prompt, (uint32_t)n);
+    return v41_kvreuse_peek(prompt, (uint32_t)n, sig);
 }
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash) {
     v41_kvreuse_note_mount(has_mount, hash);
@@ -908,9 +908,68 @@ void ds4_bridge_v41_zchain_rb_clear(void) {
     ds4_v41_zchain_rb_clear();
 }
 
+/* Assemble the native image set from the Rust-preprocessed patches
+ * (ds41_forward.h ds4_v41_images_build).  NULL on allocation failure or an
+ * empty set; the caller only builds when images->n > 0. */
+static struct ds4_v41_images *v41_bridge_images_build(const ds4_bridge_v41_images *images) {
+    if (!images || images->n <= 0 || !images->img || !images->row_of || !images->sig_of ||
+        (uint64_t)images->n > SIZE_MAX / sizeof(ds4_v41_image_src)) { return NULL; }
+    ds4_v41_image_src *src = malloc((size_t)images->n * sizeof *src);
+    if (!src) return NULL;
+    for (int i = 0; i < images->n; i++) {
+        src[i].patches = images->img[i].patches;
+        src[i].patches_len = images->img[i].patches_len;
+        src[i].n_vit_h = images->img[i].n_vit_h;
+        src[i].n_vit_w = images->img[i].n_vit_w;
+        src[i].n_llm_h = images->img[i].n_llm_h;
+        src[i].n_llm_w = images->img[i].n_llm_w;
+    }
+    struct ds4_v41_images *S = ds4_v41_images_build(src, images->n, images->row_of, images->np, images->n_rows, images->sig_of);
+    free(src);
+    return S;
+}
+
+/* The serving admission's byte account (server_sched_v41.c:58): the prefill
+ * peak for a prompt plus the image set's own peak, both engine-side formulas.
+ * images_bytes builds the native set only to measure it and frees it again. */
+uint64_t ds4_bridge_v41_prefill_bytes(ds4_bridge_model *m, int n_prompt) {
+    if (!m || !m->engine) return 0;
+    return ds4_v41_prefill_bytes(m->engine, n_prompt);
+}
+
+uint64_t ds4_bridge_v41_images_bytes(const ds4_bridge_v41_images *images) {
+    if (!images || images->n <= 0) return 0;
+    struct ds4_v41_images *S = v41_bridge_images_build(images);
+    if (!S) return 0;
+    const uint64_t bytes = ds4_v41_images_bytes(S);
+    ds4_v41_images_free(S);
+    return bytes;
+}
+
+/* The golden gate's tower entry (core_v41_vision_gate.c:45/80): has_vision is
+ * the loaded tower's presence; vision_run is one patch set through the tower,
+ * rows malloc'd native-side (see ds4_bridge.h). */
+int ds4_bridge_v41_has_vision(ds4_bridge_model *m) {
+    if (!m || !m->engine) return 0;
+    return ds4_v41_has_vision(m->engine);
+}
+
+float *ds4_bridge_v41_vision_run(ds4_bridge_model *m, const float *patches,
+                                 uint64_t patches_len,
+                                 uint32_t n_vit_h, uint32_t n_vit_w,
+                                 uint32_t *n_llm_h, uint32_t *n_llm_w) {
+    if (!m || !m->engine || !patches) return NULL;
+    return v41_vision_run(m->engine, patches, patches_len, n_vit_h, n_vit_w, n_llm_h, n_llm_w);
+}
+
+void ds4_bridge_v41_vision_rows_free(float *rows) {
+    free(rows);
+}
+
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,
+                            const ds4_bridge_v41_images *images,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
                             ds4_bridge_v41_wait_fn wait,
                             ds4_bridge_v41_next_fn next,
@@ -933,6 +992,10 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
         set_err(err, errlen, "n_predict is negative");
         return 1;
     }
+    if (images && (images->n <= 0 || images->np != (uint32_t)n_prompt)) {
+        set_err(err, errlen, "invalid V4.1 image count or prompt length");
+        return 1;
+    }
     if ((rows || wait || next) && !drain) {
         set_err(err, errlen, "V4.1 engram provider requires a drain hook");
         return 1;
@@ -947,9 +1010,23 @@ int ds4_bridge_v41_generate(ds4_bridge_model *m,
         }
     }
     ds4_engine_v41_set_progress(progress, progress_ud);
+    /* Vision: assemble the native image set from the Rust-preprocessed patches;
+     * a text request passes images == NULL and stays byte-identical. */
+    struct ds4_v41_images *imgs = NULL;
+    if (images && images->n > 0) {
+        imgs = v41_bridge_images_build(images);
+        if (!imgs) {
+            ds4_engine_v41_set_progress(NULL, NULL);
+            if (feed && drain) { (void)drain(rows_ud); }
+            ds4_v41_feed_close(feed);
+            set_err(err, errlen, "V4.1 image set build failed");
+            return 1;
+        }
+    }
     const int rc = ds4_v41_generate_argmax(m->engine, prompt, n_prompt, n_predict,
-                                           no_engram, verify_k,
+                                           no_engram, verify_k, imgs,
                                            ds4_v41_feed_handle(feed), emit, emit_ud);
+    ds4_v41_images_free(imgs);
     ds4_engine_v41_set_progress(NULL, NULL);
     /* A failed layer wait can return while the host still fills pinned rows.
      * Drain on every result while those destinations remain alive. */

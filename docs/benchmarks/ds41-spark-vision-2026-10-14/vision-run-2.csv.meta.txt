@@ -1,0 +1,18 @@
+ds41 vision sweep (speed-bench standard)
+started 2026-10-14T07:00:58+02:00
+mode attach
+server /proc/268885/exe -> /home/leandro/ds4-dfm-rs/ds4-server sha256 534958311c347a9900d92b0a64ce4258746f258cbdff81f5966f1e543628f76b
+cmdline ./ds4-server --cuda -m /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf --zchain /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative-grrb-code_fit_n15360-engine --mem-budget-mb 110000 --engram-dir /home/leandro/youngai/deepseek-engram --vision-gguf /home/leandro/youngai/model/DeepSeek-V4.1-Flash.vision.gguf --host 0.0.0.0 --port 8099 
+prompt "What is in this image? List all the text and numbers you can see."; gen 128; text targets 500 950
+fixtures /home/leandro/ds4-dfm-rs/tests/fixtures/vision
+fixture review-market-panel.png sha256 9c734674461513891ee7e37d0a42039313844f95d2a5a692255700465f5b62e4
+fixture bug.jpeg sha256 09dc731b544bc66abdb0d38d825bfcf3e5d56d4ea80150bf27aa2cfb6e3321d5
+fixture homer.png sha256 8f5cf6e8415a7f15af07e6e0f5429b736dd49e9ade559795fd7e91930734b4a0
+corpus /home/leandro/ds4-dfm-rs/speed-bench/promessi_sposi.txt sha256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
+csv /home/leandro/ds4-dfm-rs/misc/bench-head/vision-bench/vision-run-2.csv (5 rows)
+clock median over all samples 2431 MHz
+boot_s n/a
+reuse: prefill_cached_tokens per row shows what the checkpoint restored
+       (0 = full prefill; single-turn renders do not extend the previous
+       prompt).  Image rows: ctx_tokens is the actual rendered prompt.
+finished 2026-10-14T07:01:38+02:00

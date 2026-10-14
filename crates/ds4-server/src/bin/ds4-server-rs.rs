@@ -90,7 +90,11 @@ fn main() {
                 }
                 model_path = Some(path);
             }
-            "--vision" => {
+            "--vision" | "--vision-gguf" => {
+                // "--vision" is the external encoder for GLM-5.3/Step/Ling/MiMo;
+                // "--vision-gguf" is the reference install.sh name for the V4.1
+                // model's own tower sidecar.  Both ride one native open slot;
+                // the native open picks the family from the loaded variant.
                 let path = args.next().unwrap_or_else(|| usage());
                 vision_path = Some(path.clone());
                 model_options.push(ModelOpenOption::Vision(path));
@@ -574,7 +578,12 @@ fn main() {
                         // apply to the engine's own model set -- exactly this
                         // branch's model.
                         cfg.engine_defaults = true;
-                        v41_route = Some(resolve_v41_route(path, &v41_flags, &plan));
+                        v41_route = Some(resolve_v41_route(
+                            path,
+                            &v41_flags,
+                            &plan,
+                            vision_path.as_deref(),
+                        ));
                         eprintln!(
                             "ds4-server-rs: V4.1 route: ctx={} MTP={} verify={} prefix_reuse={}",
                             cfg.ctx,
@@ -766,6 +775,20 @@ fn main() {
     }
     if let Some(ref model) = model {
         model.boot_prewarm();
+        // KU-2: the V4.1 route pays its asset opens (sidecar mount, engram
+        // feed) inside request one unless they are paid here.  A failure must
+        // not stop serving: the request path still opens them itself.
+        if let Some(route) = &v41_route {
+            if let Err(error) = model.v41_prewarm(
+                &route.model_path,
+                route.zchain.as_deref(),
+                route.posttrain.as_deref(),
+                route.engram_dir.as_deref(),
+                route.no_engram,
+            ) {
+                eprintln!("ds4-server-rs: V4.1 prewarm skipped: {error}");
+            }
+        }
     }
     if let (Some(identity), Some(store)) = (cache_identity, kv_store.as_mut()) {
         let effective = &cfg.serving_plan.as_ref().unwrap_or(&plan).effective;
@@ -951,6 +974,7 @@ fn resolve_v41_route(
     path: &str,
     flags: &V41Flags,
     plan: &ds4_core::ResolvedPlan,
+    vision_path: Option<&str>,
 ) -> ds4_server::V41ServeRoute {
     ds4_server::V41ServeRoute {
         model_path: std::path::PathBuf::from(path),
@@ -968,6 +992,12 @@ fn resolve_v41_route(
         no_kv_reuse: plan.effective.prefix_reuse == ds4_core::ReuseKind::None,
         zchain: flags.zchain.clone(),
         posttrain: flags.posttrain.clone(),
+        // The V4.1 tower geometry + placeholder id, read from the sidecar the
+        // probe already validated; the request expands the placeholder with it.
+        vision: vision_path.map(|p| {
+            ds4_core::v41_media::V41VisionMeta::read(p)
+                .unwrap_or_else(|error| cli_error(&format!("--vision-gguf: {error}")))
+        }),
     }
 }
 
@@ -1073,7 +1103,7 @@ mod v41_controls {
             let plan = plan(&req);
             assert!(!plan.has_errors());
             assert_eq!(
-                resolve_v41_route("model.gguf", &V41Flags::default(), &plan).dspark,
+                resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).dspark,
                 Some(native)
             );
         }
@@ -1087,7 +1117,7 @@ mod v41_controls {
         };
         let plan = plan(&req);
         assert_eq!(plan.effective.prefix_reuse, ReuseKind::None);
-        assert!(resolve_v41_route("model.gguf", &V41Flags::default(), &plan).no_kv_reuse);
+        assert!(resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).no_kv_reuse);
     }
 
     #[test]
@@ -1102,7 +1132,7 @@ mod v41_controls {
         assert_eq!(req.mtp_mode, MtpMode::Off);
         assert_eq!(req.prefix_reuse, PrefixReuse::Off);
         let resolved = plan(&req);
-        let route = resolve_v41_route("model.gguf", &flags, &resolved);
+        let route = resolve_v41_route("model.gguf", &flags, &resolved, None);
         assert_eq!(route.dspark, Some(0));
         assert!(route.no_kv_reuse);
         assert_eq!(resolved.effective.mtp_mode, MtpMode::Off);
@@ -1116,10 +1146,10 @@ mod v41_controls {
         assert_eq!(plan.effective.mtp_mode, MtpMode::Auto);
         assert_eq!(plan.effective.mtp_draft, None);
         assert_eq!(
-            resolve_v41_route("model.gguf", &V41Flags::default(), &plan).dspark,
+            resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).dspark,
             Some(1)
         );
-        assert!(!resolve_v41_route("model.gguf", &V41Flags::default(), &plan).no_kv_reuse);
+        assert!(!resolve_v41_route("model.gguf", &V41Flags::default(), &plan, None).no_kv_reuse);
     }
 
     #[test]
@@ -1212,7 +1242,7 @@ mod v41_controls {
         let mut req = ServingRequest::default();
         v41_request(&flags, &mut req, Some(3), MtpMode::Off).unwrap();
         let resolved = plan(&req);
-        let route = resolve_v41_route("model.gguf", &flags, &resolved);
+        let route = resolve_v41_route("model.gguf", &flags, &resolved, None);
         assert_eq!(resolved.effective.mtp_mode, MtpMode::On);
         assert_eq!(route.dspark, Some(2));
         assert_eq!(route.verify_k, 3);
@@ -1253,7 +1283,7 @@ mod v41_controls {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--vision-gguf GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
          [--ssd-streaming] [--ssd-streaming-cache-experts auto|N|GB] [--ssd-streaming-cold]\n\
          [--ignore-eos-in-reasoning] [--ignore-eos]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\
@@ -1261,6 +1291,9 @@ Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-
          [--kv-cache-boundary-trim-tokens N]\n\
          [--kv-cache-boundary-align-tokens N]\n\
          [--kv-cache-reject-different-quant]\n\
+         V4.1 (ds41): --zchain DIR [--posttrain DIR] [--engram-dir DIR] [--v41-no-engram]\n\
+         [--dspark] [--no-dspark] [--dspark-verify K] [--no-graph] [--no-kv-reuse] [--v41-prof]\n\
+         [--emit-trace] [--mem-budget-mb N]\n\
          Distributed: [--role coordinator|worker] [--layers A:B] [--listen HOST PORT] [--coordinator HOST PORT]\n\
          [--dist-prefill-chunk N] [--dist-prefill-window N] [--dist-activation-bits N] [--dist-replay-check] [--debug]"
     );

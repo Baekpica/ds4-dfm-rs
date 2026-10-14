@@ -1,0 +1,327 @@
+{
+  "passes": 3,
+  "rows": [
+    {
+      "tag": "review-market-panel.png",
+      "kind": "image",
+      "image": "review-market-panel.png",
+      "patch": "48x86",
+      "token_grid": "16x29",
+      "span": 482,
+      "tower_s": {
+        "median": 4.0,
+        "min": 3.9,
+        "max": 4.08,
+        "samples": [
+          4.08,
+          3.9,
+          4.0
+        ]
+      },
+      "ctx_tokens": {
+        "median": 502.0,
+        "min": 502.0,
+        "max": 502.0,
+        "samples": [
+          502.0,
+          502.0,
+          502.0
+        ]
+      },
+      "prefill_tps": {
+        "median": 100.3,
+        "min": 99.0,
+        "max": 102.9,
+        "samples": [
+          99.0,
+          102.9,
+          100.3
+        ]
+      },
+      "gen_tps": {
+        "median": 43.1,
+        "min": 42.8,
+        "max": 43.5,
+        "samples": [
+          42.8,
+          43.1,
+          43.5
+        ]
+      },
+      "first_token_sec": {
+        "median": 5.0165,
+        "min": 4.8904,
+        "max": 5.0878,
+        "samples": [
+          5.0878,
+          4.8904,
+          5.0165
+        ]
+      }
+    },
+    {
+      "tag": "bug.jpeg",
+      "kind": "image",
+      "image": "bug.jpeg",
+      "patch": "134x60",
+      "token_grid": "45x20",
+      "span": 947,
+      "tower_s": {
+        "median": 6.06,
+        "min": 5.67,
+        "max": 6.07,
+        "samples": [
+          5.67,
+          6.07,
+          6.06
+        ]
+      },
+      "ctx_tokens": {
+        "median": 967.0,
+        "min": 967.0,
+        "max": 967.0,
+        "samples": [
+          967.0,
+          967.0,
+          967.0
+        ]
+      },
+      "prefill_tps": {
+        "median": 126.2,
+        "min": 125.9,
+        "max": 133.3,
+        "samples": [
+          133.3,
+          126.2,
+          125.9
+        ]
+      },
+      "gen_tps": {
+        "median": 32.5,
+        "min": 32.4,
+        "max": 32.6,
+        "samples": [
+          32.6,
+          32.5,
+          32.4
+        ]
+      },
+      "first_token_sec": {
+        "median": 7.7248,
+        "min": 7.3207,
+        "max": 7.7475,
+        "samples": [
+          7.3207,
+          7.7248,
+          7.7475
+        ]
+      }
+    },
+    {
+      "tag": "homer.png",
+      "kind": "image",
+      "image": "homer.png",
+      "patch": "56x28",
+      "token_grid": "19x10",
+      "span": 211,
+      "tower_s": {
+        "median": 3.43,
+        "min": 3.34,
+        "max": 3.46,
+        "samples": [
+          3.46,
+          3.34,
+          3.43
+        ]
+      },
+      "ctx_tokens": {
+        "median": 231.0,
+        "min": 231.0,
+        "max": 231.0,
+        "samples": [
+          231.0,
+          231.0,
+          231.0
+        ]
+      },
+      "prefill_tps": {
+        "median": 57.4,
+        "min": 56.7,
+        "max": 58.3,
+        "samples": [
+          56.7,
+          58.3,
+          57.4
+        ]
+      },
+      "gen_tps": {
+        "median": 38.5,
+        "min": 34.4,
+        "max": 38.6,
+        "samples": [
+          38.6,
+          34.4,
+          38.5
+        ]
+      },
+      "first_token_sec": {
+        "median": 4.0291,
+        "min": 3.9638,
+        "max": 4.0807,
+        "samples": [
+          4.0807,
+          3.9638,
+          4.0291
+        ]
+      }
+    },
+    {
+      "tag": "text 556 tok",
+      "kind": "text",
+      "image": "-",
+      "ctx_tokens": {
+        "median": 556.0,
+        "min": 556.0,
+        "max": 556.0,
+        "samples": [
+          556.0,
+          556.0,
+          556.0
+        ]
+      },
+      "prefill_tps": {
+        "median": 525.0,
+        "min": 524.9,
+        "max": 530.7,
+        "samples": [
+          530.7,
+          525.0,
+          524.9
+        ]
+      },
+      "gen_tps": {
+        "median": 44.5,
+        "min": 44.5,
+        "max": 44.5,
+        "samples": [
+          44.5,
+          44.5,
+          44.5
+        ]
+      },
+      "first_token_sec": {
+        "median": 1.06,
+        "min": 1.0485,
+        "max": 1.0602,
+        "samples": [
+          1.0485,
+          1.06,
+          1.0602
+        ]
+      }
+    },
+    {
+      "tag": "text 1038 tok",
+      "kind": "text",
+      "image": "-",
+      "ctx_tokens": {
+        "median": 1038.0,
+        "min": 1038.0,
+        "max": 1038.0,
+        "samples": [
+          1038.0,
+          1038.0,
+          1038.0
+        ]
+      },
+      "prefill_tps": {
+        "median": 576.2,
+        "min": 574.2,
+        "max": 577.0,
+        "samples": [
+          576.2,
+          574.2,
+          577.0
+        ]
+      },
+      "gen_tps": {
+        "median": 30.1,
+        "min": 29.9,
+        "max": 30.2,
+        "samples": [
+          29.9,
+          30.2,
+          30.1
+        ]
+      },
+      "first_token_sec": {
+        "median": 1.8031,
+        "min": 1.8005,
+        "max": 1.8091,
+        "samples": [
+          1.8031,
+          1.8091,
+          1.8005
+        ]
+      }
+    }
+  ],
+  "tower_lines": [
+    4.08,
+    5.67,
+    3.46,
+    3.9,
+    6.07,
+    3.34,
+    4.0,
+    6.06,
+    3.43
+  ],
+  "plan_lines": [
+    {
+      "patch": "48x86",
+      "token_grid": "16x29",
+      "span": 482
+    },
+    {
+      "patch": "134x60",
+      "token_grid": "45x20",
+      "span": 947
+    },
+    {
+      "patch": "56x28",
+      "token_grid": "19x10",
+      "span": 211
+    },
+    {
+      "patch": "48x86",
+      "token_grid": "16x29",
+      "span": 482
+    },
+    {
+      "patch": "134x60",
+      "token_grid": "45x20",
+      "span": 947
+    },
+    {
+      "patch": "56x28",
+      "token_grid": "19x10",
+      "span": 211
+    },
+    {
+      "patch": "48x86",
+      "token_grid": "16x29",
+      "span": 482
+    },
+    {
+      "patch": "134x60",
+      "token_grid": "45x20",
+      "span": 947
+    },
+    {
+      "patch": "56x28",
+      "token_grid": "19x10",
+      "span": 211
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "kernel_start_ns": 11782103125,
+  "kernel_end_ns": 62206983483,
+  "kernel_duration_ns": 257801756,
+  "kernel_count": 1816,
+  "tower_memcpy_after_first_kernel": [
+    [
+      1,
+      525,
+      1944327680,
+      49832867279
+    ],
+    [
+      2,
+      1,
+      3891200,
+      18718209
+    ]
+  ],
+  "note": "Two tower passes. Capture also includes tail of base load; interval filter omits first patch-embed weight/patch transfers. Profiler wall is not performance evidence."
+}

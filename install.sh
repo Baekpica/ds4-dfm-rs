@@ -17,8 +17,14 @@
 #
 #   bash install.sh                  check the machine, check the artifact
 #                                    files, build the port, start it on
-#                                    127.0.0.1:8000 and run the same smoke
-#                                    test the reference install.sh runs
+#                                    0.0.0.0:8000 and run the same smoke
+#                                    test the reference install.sh runs.
+#                                    If model/DeepSeek-V4.1-Flash.vision.gguf
+#                                    is present, images (OpenAI image_url /
+#                                    Anthropic image blocks, as data: URLs) go
+#                                    through the model's own vision tower
+#                                    (bin/ds4-server --vision-gguf; read from
+#                                    disk when an image arrives, not resident)
 #   bash install.sh --domain code    the same, serving with the coding sidecar
 #                                    (domains: finance, code, law, medicine,
 #                                    science, none; finance is the default)
@@ -32,7 +38,7 @@
 #                      own mapping (its install.sh sidecar_of, lines 41-48)
 #   --posttrain        also load the experimental post-training file
 #                      (finance only, the reference's own constraint)
-#   --host ADDR        listen address (default 127.0.0.1)
+#   --host ADDR        listen address (default 0.0.0.0)
 #   --port N           listen port (default 8000)
 #   --no-build         do not run `make ds4-server` even if the binary is stale
 #   --no-start         install/check only
@@ -48,6 +54,10 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 GGUF="DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf"
+# The vision tower ships as its own file so the 40 base parts stay byte-identical.
+# An install made before it was published simply has no such file: the server then
+# starts without it and rejects image requests (HTTP 400).
+VISION="DeepSeek-V4.1-Flash.vision.gguf"
 SHARDS=(model-00047-of-00048.safetensors model-00048-of-00048.safetensors)
 SHARD_BYTES=(101535150936 101537926640)
 POSTTRAIN="posttrain-experimental-20260924"
@@ -70,7 +80,7 @@ START_FLOOR_MB=100000   # engine install.sh START_FLOOR_MB
 RUN_FLOOR_MB=10000      # engine install.sh RUN_FLOOR_MB
 KILL_MB=2500            # engine install.sh KILL_MB
 
-CMD="install"; DIR="$HOME/youngai"; HOST="127.0.0.1"; PORT=8000; DOMAIN="finance"
+CMD="install"; DIR="$HOME/youngai"; HOST="0.0.0.0"; PORT=8000; DOMAIN="finance"
 WITH_PT=0; START=1; BUILD=1
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -162,8 +172,18 @@ start() {
     local zc=() pt=()
     [ -n "$SIDECAR" ] && zc=(--zchain "$MODEL/$SIDECAR")
     [ "$WITH_PT" = 1 ] && pt=(--posttrain "$MODEL/$POSTTRAIN")
-    say "starting ./ds4-server on $HOST:$PORT, domain $DOMAIN (loading takes ~2 minutes; log: $LOG)"
-    nohup "$REPO/ds4-server" --cuda -m "$MODEL/$GGUF" "${zc[@]}" --engram-dir "$ENGRAM" "${pt[@]}" \
+    # Vision tower: pass --vision-gguf only when the sidecar is present AND the
+    # built server knows the flag.  Capture --help into a variable and match with
+    # a case, never `| grep -q`: SIGPIPE under pipefail makes a good binary look
+    # bad (the reference install.sh's own lesson, hf_install.sh:243-246).
+    local help vis=()
+    help=$("$REPO/ds4-server" --help 2>&1)
+    if [ -s "$MODEL/$VISION" ]; then
+        case "$help" in *--vision-gguf*) ;; *) die "ds4-server predates the vision tower: rebuild with 'make ds4-server'";; esac
+        vis=(--vision-gguf "$MODEL/$VISION")
+    fi
+    say "starting ./ds4-server on $HOST:$PORT, domain $DOMAIN${vis:+, images on} (loading takes ~2 minutes; log: $LOG)"
+    nohup "$REPO/ds4-server" --cuda -m "$MODEL/$GGUF" "${zc[@]}" --engram-dir "$ENGRAM" "${vis[@]}" "${pt[@]}" \
         --mem-budget-mb "$BUDGET_MB" --host "$HOST" --port "$PORT" >"$LOG" 2>&1 </dev/null &
     echo $! >"$PIDF"; echo "domain $DOMAIN on $HOST:$PORT" >"$INFOF"
     # The engine install.sh's watchdog, inline in the child: two consecutive

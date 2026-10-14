@@ -225,14 +225,14 @@ extern "C" int ds4_gpu_v41_matmul_bf16_skip_tensor(ds4_gpu_tensor *out, const vo
     return v41_bf16_gemv(W, in_dim, out_dim, (const float *)x->ptr, (float *)out->ptr, n_tok, "v41 bf16 gemv(skip)",
                          (const int32_t *)skip->ptr);
 }
-extern "C" int ds4_gpu_v41_matmul_bf16_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
-                                              uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim,
-                                              const ds4_gpu_tensor *x, uint32_t n_tok) {
-    if (!out || !x || !g_cublas_ready || n_tok == 0) return 0;
-    const uint64_t wbytes = in_dim * out_dim * 2;
-    if (weight_offset > model_size || wbytes > model_size - weight_offset) return 0;
-    const __nv_bfloat16 *W = (const __nv_bfloat16 *)cuda_model_range_ptr(model_map, weight_offset, wbytes, "v41 bf16 w");
-    if (!W) return 0;
+/* Shared GEMM/GEMV body (the engine's v41_bf16_matmul_ptr, cuda_v41_1.inc.cu:
+ * 302-316): W is already a device-readable pointer -- in the model mapping for
+ * the trunk, or the vision tower's per-image device copy.  Split out so
+ * ds4_gpu_v41_matmul_bf16_dev_tensor (cuda/ds41_vision.cuh) shares it, exactly
+ * as the engine split it for the vision unit. */
+static int v41_bf16_matmul_ptr(const __nv_bfloat16 *W, uint64_t in_dim, uint64_t out_dim,
+                               const ds4_gpu_tensor *x, ds4_gpu_tensor *out, uint32_t n_tok) {
+    if (!out || !x || !W || !g_cublas_ready || n_tok == 0) return 0;
     if (n_tok <= V41_GEMV_MAX_TOK && (in_dim % 256u) == 0u)
         return v41_bf16_gemv(W, in_dim, out_dim, (const float *)x->ptr, (float *)out->ptr, n_tok, "v41 bf16 gemv", NULL);
     /* Prefill (cuda_v41_1.inc.cu:308-330): activations to bf16 (they already
@@ -250,6 +250,16 @@ extern "C" int ds4_gpu_v41_matmul_bf16_tensor(ds4_gpu_tensor *out, const void *m
                                      W, CUDA_R_16BF, (int)in_dim, xb, CUDA_R_16BF, (int)in_dim, &beta,
                                      (float *)out->ptr, CUDA_R_32F, (int)out_dim, CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
     return cublas_ok(st, "v41 bf16 gemm");
+}
+extern "C" int ds4_gpu_v41_matmul_bf16_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+                                              uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim,
+                                              const ds4_gpu_tensor *x, uint32_t n_tok) {
+    if (!out || !x || !g_cublas_ready || n_tok == 0) return 0;
+    const uint64_t wbytes = in_dim * out_dim * 2;
+    if (weight_offset > model_size || wbytes > model_size - weight_offset) return 0;
+    const __nv_bfloat16 *W = (const __nv_bfloat16 *)cuda_model_range_ptr(model_map, weight_offset, wbytes, "v41 bf16 w");
+    if (!W) return 0;
+    return v41_bf16_matmul_ptr(W, in_dim, out_dim, x, out, n_tok);
 }
 
 /* ---- embedding row fetch, fp4x32 arm (cuda_v41_1.inc.cu:365-391) ----

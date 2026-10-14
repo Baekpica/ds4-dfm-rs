@@ -1,0 +1,12 @@
+name,phase,surface,status,http,prompt,cached,emitted,finish,image_runs,vision_encoded,vocab,logit_rows,logits_sha256,native_prefill_s,wall_s
+disk-cold,server-a,chat,PASS,200,219,0,32,length,1,1,129280,32,24d8c4143176550009d59ba4bf0f070c24df71eced6e7c4565f06e3aba31329e,74.0,75.1718178939991
+ordered-cold,server-a,chat,PASS,200,396,0,32,length,2,2,129280,32,bfc92bc13b888a74d2b8e3a6c7cdd3bfba08fbcab8a26599b97a239b49a83dde,74.4,75.55062335800176
+disk-restart-hit,server-b,chat,PASS,200,219,219,32,length,1,0,129280,32,24d8c4143176550009d59ba4bf0f070c24df71eced6e7c4565f06e3aba31329e,0.0,1.11731121000048
+changed-image-miss,server-b,chat,PASS,200,219,0,32,length,1,1,129280,32,a09fa9cd65475b67561a37a8e252fc4c111ac3df5539f3197937204e75d6269f,80.6,81.7172407659964
+reordered-images-miss,server-b,chat,PASS,200,396,0,32,length,2,2,129280,32,985448ef5a9199995a09095bb59a6171f7c6edece97d093fa41e808c169e151f,80.8,81.9379289080025
+chat-image-tool-call,server-b,chat,PASS,200,528,0,34,tool_calls,1,1,129280,34,068c53f56df58ed78ab30f0e681a1c0694d12450f5e1e00c320213fdb3ab021f,80.5,81.74851225099701
+chat-tool-image-follow,server-b,chat,PASS,200,734,0,64,length,2,2,129280,64,905943da7e626443a9ec7cc7c7c6375392e8706f4c9849b46adba9c9c0058415,81.4,83.64231445400219
+anthropic-outer-then-tool,server-b,anthropic,PASS,200,416,0,30,end_turn,2,2,129280,30,347c74b059dc5c41ade1ab4b9cf4b88499331e40c040680694fadf5c70bcd6af,80.5,81.59356300299987
+anthropic-tool-then-outer,server-b,anthropic,PASS,200,416,0,46,end_turn,2,2,129280,46,8fdb15377dfb14d80c38ab412b7f969ac84508031d339564b813d7b9f7d42de3,72.9,74.53060208700481
+responses-tool-image,server-b,responses,PASS,200,236,0,46,completed,1,1,129280,46,5b5f9a29242e2efdac0074554dae15a33a003aeefe96b0a290aadb85a1b053d2,72.2,73.78644703300233
+responses-tool-image-extension,server-b,responses,PASS,200,509,236,64,incomplete,2,1,129280,64,4177a9c1fd9d8f1d4ea7e0bee4b59aba797364018ea540c621992f8966d7b487,72.5,74.67344016500283

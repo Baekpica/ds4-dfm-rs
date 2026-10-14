@@ -1,0 +1,15 @@
+  prose_short-0: prompt=54 completion=512 ttft=0.675s total=14.871s decode=36.0 t/s
+  prose_short-1: prompt=54 completion=512 ttft=0.011s total=14.145s decode=36.15 t/s
+  prose_short-2: prompt=54 completion=512 ttft=0.018s total=14.145s decode=36.17 t/s
+  code_short-0: prompt=54 completion=512 ttft=0.398s total=9.833s decode=54.16 t/s
+  code_short-1: prompt=54 completion=512 ttft=0.012s total=9.499s decode=53.87 t/s
+  code_short-2: prompt=54 completion=512 ttft=0.015s total=9.517s decode=53.78 t/s
+  table_short-0: prompt=43 completion=512 ttft=0.355s total=8.115s decode=65.85 t/s
+  table_short-1: prompt=43 completion=512 ttft=0.019s total=7.787s decode=65.78 t/s
+  table_short-2: prompt=43 completion=512 ttft=0.014s total=7.795s decode=65.67 t/s
+  prose_long-0: prompt=10356 completion=32 ttft=8.033s total=8.976s decode=32.88 t/s
+  prose_long-1: prompt=10356 completion=32 ttft=0.094s total=1.043s decode=32.67 t/s
+  prose_long-2: prompt=10356 completion=32 ttft=0.085s total=1.033s decode=32.69 t/s
+  table_long-0: prompt=10377 completion=256 ttft=7.966s total=12.286s decode=59.03 t/s
+  table_long-1: prompt=10377 completion=256 ttft=0.092s total=4.414s decode=59.0 t/s
+  table_long-2: prompt=10377 completion=256 ttft=0.088s total=4.416s decode=58.92 t/s

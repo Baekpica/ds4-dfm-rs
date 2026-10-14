@@ -165,6 +165,31 @@ pub struct ds4_bridge_v41_sampling {
     pub greedy_ud: *mut c_void,
 }
 
+/* The request's images (native/bridge/ds4_bridge.h; the engine's
+ * ds4_v41_images, core_v41.h:409-417).  The Rust host owns preprocessing and
+ * prompt expansion; patches and row_of are borrowed for the duration of the
+ * generate call only.  A text request passes a NULL pointer. */
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_v41_image {
+    pub patches: *const f32,
+    pub patches_len: u64,
+    pub n_vit_h: u32,
+    pub n_vit_w: u32,
+    pub n_llm_h: u32,
+    pub n_llm_w: u32,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_v41_images {
+    pub img: *const ds4_bridge_v41_image,
+    pub n: c_int,
+    pub row_of: *const i32,
+    pub sig_of: *const u64,
+    pub np: u32,
+    pub n_rows: u32,
+}
+
 pub type ds4_bridge_backend = c_int;
 
 pub const DS4_BRIDGE_BACKEND_CUDA: ds4_bridge_backend = 0;
@@ -492,6 +517,7 @@ pub struct ds4_host_vocab {
     pub tool_schema_start_id: i32,
     pub tool_schema_end_id: i32,
     pub dsml_id: i32,
+    pub image_id: i32,
     pub dots3_endofsystem_id: i32,
     pub dots3_endofuser_id: i32,
     pub dots3_endoftext_id: i32,
@@ -838,7 +864,7 @@ extern "C" {
      * mounted-amplifier identity the native drops the checkpoint on. */
     pub fn ds4_bridge_v41_kvreuse_set(on: c_int);
     pub fn ds4_bridge_v41_kvreuse_last_reused() -> c_int;
-    pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int) -> u32;
+    pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int, sig: *const u64) -> u32;
     pub fn ds4_bridge_v41_kvreuse_note_mount(has_mount: c_int, hash: u64);
     /* The disk half (item 4): the payload export/import the Rust store
      * (crates/ds4-kv) drives; both are gated by --no-kv-reuse and K.valid. */
@@ -881,6 +907,21 @@ extern "C" {
         n_expert: u32,
     ) -> c_int;
     pub fn ds4_bridge_v41_zchain_rb_clear();
+    /* The serving admission's byte account (server_sched_v41.c:58). */
+    pub fn ds4_bridge_v41_prefill_bytes(m: *mut ds4_bridge_model, n_prompt: c_int) -> u64;
+    pub fn ds4_bridge_v41_images_bytes(images: *const ds4_bridge_v41_images) -> u64;
+    /* The golden gate's tower entry (core_v41_vision_gate.c:45/80). */
+    pub fn ds4_bridge_v41_has_vision(m: *mut ds4_bridge_model) -> c_int;
+    pub fn ds4_bridge_v41_vision_run(
+        m: *mut ds4_bridge_model,
+        patches: *const f32,
+        patches_len: u64,
+        n_vit_h: u32,
+        n_vit_w: u32,
+        n_llm_h: *mut u32,
+        n_llm_w: *mut u32,
+    ) -> *mut f32;
+    pub fn ds4_bridge_v41_vision_rows_free(rows: *mut f32);
     pub fn ds4_bridge_v41_generate(
         m: *mut ds4_bridge_model,
         prompt: *const i32,
@@ -888,6 +929,7 @@ extern "C" {
         n_predict: c_int,
         no_engram: c_int,
         verify_k: c_int,
+        images: *const ds4_bridge_v41_images,
         rows: ds4_bridge_v41_rows_fn,
         rows_ud: *mut c_void,
         wait: ds4_bridge_v41_wait_fn,

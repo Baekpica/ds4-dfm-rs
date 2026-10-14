@@ -1,0 +1,151 @@
+{
+  "campaign": "ds41 warm path - the asset-open cache (sidecar mount and engram open, held per process)",
+  "date": "2026-10-13",
+  "protocol": {
+    "suite": "suite.py (the author's five-case HTTP harness), --reps 3",
+    "cases": "cases.json, the five archived cases with their prompt_sha256",
+    "endpoint": "http://127.0.0.1:8000/v1 (client on the box) and the box's LAN address:8000/v1 (client on another machine, sensitivity check)",
+    "wire": "/v1/chat/completions, stream, stream_options.include_usage",
+    "model": "DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative",
+    "temperature": 0,
+    "reasoning": "none",
+    "mtp": "automatic embedded",
+    "concurrency": 1,
+    "reuse": "enabled; rep 0 of each case is the first request that sends those bytes, reps 1-2 repeat them",
+    "engram": "enabled",
+    "sidecar": "grrb-code_fit_n15360-engine",
+    "passes": 3,
+    "samples": 45,
+    "server_processes": 1,
+    "server_restarts": 0,
+    "server_process": "pid 217789, started 2026-10-13 14:55, <port checkout>/ds4-server --cuda -m <gguf> --zchain <sidecar> --engram-dir <engram> --mem-budget-mb 110000 --host 0.0.0.0 --port 8000",
+    "note": "The three passes ran against one live server process, the instance the owner serves, so no stop/start was taken. A fresh process per pass is what the published campaign does; the cold cell here is therefore one sample per pass on the same process, and the warm cell pools six samples."
+  },
+  "source_commit": "96780cb2aa54d34c88201ac2d4cad4e53c54844d",
+  "source_branch": "feat/optimize",
+  "source_tree": "three rebuilt test fixture binaries modified (crates/ds4-core/tests/fixtures/{engram,sidecar,vq}/gen_*_ref), as on the box before this campaign",
+  "binaries": {
+    "ds4-server": "dd46b778fbb1d4d5815ccf9c27d06036487636be2fa35ca00a53e0f22f822593",
+    "ds4": "c883b91dea142b0e5445c68a01deb19c300c76028c5b7576c4103d0b978a6d86",
+    "ds4.o": "13dd2a07539f4638d4963dce4d0b5b5a5cd1330dd3691af24df0d73b3b578a61",
+    "ds4_cuda.o": "8407e2c76cc269ff24da7f2a5055fab6a3f17b6c230bc220c0995d07d1916b44",
+    "sizes_bytes": {
+      "ds4-server": 68680312,
+      "ds4": 65846272,
+      "ds4.o": 15527248,
+      "ds4_cuda.o": 26311216
+    }
+  },
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "580.142",
+    "kernel": "6.17.0-1014-nvidia",
+    "cuda_compiler": "13.0.88",
+    "max_sm_clock_mhz": 3003,
+    "observed_sm_clock_mhz": {
+      "min": 2281,
+      "median": 2372,
+      "max": 2418
+    }
+  },
+  "artifact_evidence": "../ds41-spark-review-2026-10-13/README.md#model-and-source",
+  "instruments_sha256": {
+    "suite.py": "86e946f46a3bee6dc4052dded7150d1cc6f92b5bfe42a8035b708040e3d5cf67",
+    "cases.json": "d3c0d84b0ea92ef50caa3963f1343b069281f9cf18faf4b5e4e984683b7ecb64",
+    "summarize.py": "5f5b0e71b5f0a9eed6637018dedfae5970bd1d3d50e25dfdd8b7e7da1ee459f3"
+  },
+  "reused_author_tooling": {
+    "suite.py": "copied verbatim from the serving box's bench directory (ya-bench/suite.py) and run unmodified",
+    "cases.json": "copied verbatim from the serving box's bench directory (ya-bench/cases.json); these are the archived case bytes, so the prompts hash to the same prompt_sha256 the earlier published run recorded",
+    "summarize.py": "copied from /data/YoungAi/bench/summarize.py and run with three documented edits: the engines list names this campaign's two arms, the color map follows it, and the chart title names this campaign. The computations are unchanged.",
+    "mkreport.py / mkpdf.py": "not run: the PDF chain paginates a rendered screenshot (report-fullpage.png) that this campaign did not produce"
+  },
+  "arms": {
+    "ds4-dfm-rs-before": {
+      "source": "archived-before.csv, the ds4-dfm-rs rows of /data/YoungAi/bench/results-raw.csv, filename sha256 717a4ef85249c744065d13f5fc8478b59be5ea1c21fcef0907ed455f46474220",
+      "recorded": "2026-10-13T06:45-06:53+02:00, before the asset-open cache landed (441b6e0, 09:10)",
+      "client": "on the box",
+      "passes": 1,
+      "samples": 15
+    },
+    "ds4-dfm-rs-after": {
+      "source": "run-1.csv, run-2.csv, run-3.csv (this campaign)",
+      "build": "96780cb",
+      "client": "on the box",
+      "passes": 3,
+      "samples": 45,
+      "window": "2026-10-13T17:13-17:20+02:00"
+    }
+  },
+  "secondary_client_pass": {
+    "purpose": "sensitivity check that the client's location does not carry the warm cell",
+    "source": "run-lan-1.csv, run-lan-2.csv, run-lan-3.csv (client on another machine over the LAN)",
+    "window": "2026-10-13T17:06-17:12+02:00",
+    "samples": 45
+  },
+  "telemetry": {
+    "on_box_window": {
+      "started": "2026-10-13T17:13:19+02:00",
+      "ended": "2026-10-13T17:20:35+02:00",
+      "samples": 421,
+      "sm_clock_mhz": {
+        "min": 2281,
+        "median": 2372,
+        "max": 2418
+      },
+      "minimum_available_gib": 6.85,
+      "maximum_psi_full_avg10": 0.0,
+      "cgroup_memory_events": "not readable through this shell"
+    },
+    "lan_window": {
+      "started": "2026-10-13T17:06:53+02:00",
+      "ended": "2026-10-13T17:12:48+02:00",
+      "samples": 343,
+      "sm_clock_mhz": {
+        "min": 2281,
+        "median": 2366,
+        "max": 2418
+      },
+      "minimum_available_gib": 6.86,
+      "maximum_psi_full_avg10": 0.0
+    },
+    "sampler": "telemetry.sh, one sample per second; the raw files stay on the box (~/warmpath-telemetry.txt, ~/warmpath-telemetry2.txt)"
+  },
+  "kernel_audit": {
+    "command": [
+      "journalctl",
+      "-k",
+      "--since",
+      "2026-10-13 17:05:30",
+      "--until",
+      "2026-10-13 17:20:30",
+      "--no-pager"
+    ],
+    "sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+    "lines": 1,
+    "output": "-- No entries --",
+    "matched_errors": [],
+    "error_pattern": "NV_ERR|NVRM: Xid|out of memory|oom-kill|Killed process|CUDA error",
+    "note": "the kernel journal holds no line at all for the campaign window; the pattern cannot match, and the receipt records that rather than implying a silent pass"
+  },
+  "plot_environment": {
+    "python": "3.13.5",
+    "matplotlib": "3.11.1",
+    "numpy": "2.5.1"
+  },
+  "attribution": {
+    "port_author": "JLFN",
+    "port_target": "Baekpica/ds4-dfm-rs",
+    "port_pull_request": "https://github.com/Baekpica/ds4-dfm-rs/pull/83",
+    "source_engine": "https://github.com/fodelf/YoungAi/tree/7fb26cc332d740416792204a29c7d13d2986caf5",
+    "vq_artifacts": "https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash/tree/84b86701456f4e4b357e41340b3b88914f51834d",
+    "base_and_engram": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/5254448103b6254fc646dacbca1cbbf20e9216c1"
+  },
+  "limits": [
+    "No server restart: all three passes ran against one live process, so the first request of each case in each pass is cold only because the process holds one saved checkpoint and it had moved on. A restart-per-pass campaign would separate per-process boot state from steady state.",
+    "The before arm is an archived pass (one process, one pass) recorded earlier the same day, and its clocks were not sampled. The after arm boosted to 2281-2418 MHz, above the 300-2200 MHz range the published campaign records; the box is not clock-locked today. The warm-cell improvement (2.7x-13.8x) is far larger than the clock difference can explain, but cross-record absolute comparisons are not valid.",
+    "Client-side timing: ttft is measured at the client from request send to first content delta. The on-box client adds no network hop; the LAN pass adds about one millisecond.",
+    "One serial stream, no concurrency, one text workload of five cases.",
+    "Decode is reported for parity, not as an improvement; the two short cells read 1-2% lower after than before, which is inside the spread between windows on this box."
+  ]
+}

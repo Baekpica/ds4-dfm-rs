@@ -58,6 +58,7 @@ typedef struct {
 #include "cuda/ds41_draft.cuh"    /* P5/E1: the DSpark draft towers (dense MoE, mainh ring, markov rows/cache) */
 #include "cuda/ds41_graph.cuh"    /* E3: the decode-step CUDA graph primitives (capture/launch/free, PDL edges) */
 #include "cuda/ds41_sample.cuh"   /* unit H: the device sampling kernel (Gumbel-max + speculative rejection), the engine's cuda_v41_sample.inc.cu */
+#include "cuda/ds41_vision.cuh"   /* vision unit: the DeepSeek-ViT + aligner primitives (engine cuda_v41_vision.inc.cu); needs bf16 matmul ptr + round_bf16 from the files above */
 
 /* Raw decode entry for tests and the P4-2 forward wiring: all pointers are
  * device pointers; `nc` and `ver` come from the blob header (ds4vq_blob_nexp /

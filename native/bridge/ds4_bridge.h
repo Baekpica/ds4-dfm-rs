@@ -310,7 +310,7 @@ void ds4_bridge_v41_set_prof(int on);
  * checkpoint on (the engine's switch_plugins stand-in). */
 void ds4_bridge_v41_kvreuse_set(int on);
 int ds4_bridge_v41_kvreuse_last_reused(void);
-uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n);
+uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_t *sig);
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
 /* The disk half (item 4): the payload export/import the Rust store drives
  * (crates/ds4-kv, v41_disk.rs).  export writes the checkpoint payload (meta
@@ -356,9 +356,47 @@ void ds4_bridge_set_mem_budget_mb(int mb);
 int ds4_bridge_v41_zchain_gr_set(ds4_bridge_model *m, uint32_t il, const float *data, uint32_t n_expert, uint32_t n_embd);
 int ds4_bridge_v41_zchain_rb_set(ds4_bridge_model *m, uint32_t il, const float *delta, uint32_t n_expert);
 void ds4_bridge_v41_zchain_rb_clear(void);
+/* The request's images (the engine's ds4_v41_images, core_v41.h:409-417).  The
+ * Rust host owns preprocessing (crates/ds4-core/src/v41_media.rs) and the
+ * prompt expansion: patches is the f32 [n_vit_h*n_vit_w][3*patch*patch] on the
+ * bf16 grid the tower consumes, row_of maps the expanded prompt's positions to
+ * embed rows (-1 = text), and n_rows is the sum of the span lengths.  Every
+ * pointer is borrowed for the duration of the call only; NULL = a text request
+ * (no tower, byte-identical to before). */
+typedef struct {
+    const float *patches;
+    uint64_t patches_len; /* f32 elements */
+    uint32_t n_vit_h, n_vit_w, n_llm_h, n_llm_w;
+} ds4_bridge_v41_image;
+typedef struct {
+    const ds4_bridge_v41_image *img;
+    int n;
+    const int32_t *row_of;
+    const uint64_t *sig_of;
+    uint32_t np, n_rows;
+} ds4_bridge_v41_images;
+/* The serving admission's byte account (server_sched_v41.c:58): the prefill
+ * peak for a prompt, plus the image set's own peak.  Both are engine-side
+ * formulas (ds4_v41_req_prefill_bytes / ds4_v41_images_bytes); the caller
+ * compares 2x their sum against MemAvailable. */
+uint64_t ds4_bridge_v41_prefill_bytes(ds4_bridge_model *m, int n_prompt);
+uint64_t ds4_bridge_v41_images_bytes(const ds4_bridge_v41_images *images);
+/* The golden gate's tower entry (the engine's v41_vision_run,
+ * core_v41_vision.c:116-131, called by core_v41_vision_gate.c:80):
+ * has_vision is the gate's upfront check (:45); vision_run returns malloc'd
+ * aligner rows [n_llm_h*n_llm_w][DS4_N_EMBD] for one patch set (NULL when the
+ * model carries no tower, the patch extent is invalid, or the forward fails),
+ * freed with vision_rows_free. patches_len counts f32 elements. */
+int ds4_bridge_v41_has_vision(ds4_bridge_model *m);
+float *ds4_bridge_v41_vision_run(ds4_bridge_model *m, const float *patches,
+                                 uint64_t patches_len,
+                                 uint32_t n_vit_h, uint32_t n_vit_w,
+                                 uint32_t *n_llm_h, uint32_t *n_llm_w);
+void ds4_bridge_v41_vision_rows_free(float *rows);
 int ds4_bridge_v41_generate(ds4_bridge_model *m,
                             const int32_t *prompt, int n_prompt, int n_predict,
                             int no_engram, int verify_k,
+                            const ds4_bridge_v41_images *images,
                             ds4_bridge_v41_rows_fn rows, void *rows_ud,
                             ds4_bridge_v41_wait_fn wait,
                             ds4_bridge_v41_next_fn next,

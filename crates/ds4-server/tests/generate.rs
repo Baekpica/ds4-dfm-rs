@@ -2463,6 +2463,7 @@ impl DecodeIo for ScriptedV41 {
         prompt: &[i32],
         n_predict: i32,
         _sampling: Option<ds4_core::V41Sampling>,
+        _images: Option<&ds4_core::v41_media::V41Images>,
         _greedy: &mut dyn FnMut(*const i32, u32) -> bool,
         emit: &mut dyn FnMut(i32) -> bool,
         progress: &mut dyn FnMut(&str, i32, i32) -> bool,

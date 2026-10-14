@@ -1,0 +1,22 @@
+[2026-10-14T06:05:57+02:00] campaign start
+ae40aa1d docs(ds41): refresh the guide for the vision port
+ M crates/ds4-core/tests/fixtures/engram/gen_engram_ref
+ M crates/ds4-core/tests/fixtures/sidecar/gen_fp4_ref
+ M crates/ds4-core/tests/fixtures/vq/gen_v2_ref
+?? build-vision.log
+?? docs/benchmarks/ds41-vision-2026-10-13/gate_1013_2042/
+?? docs/benchmarks/ds41-vision-2026-10-13/gate_1013_2059/
+?? ds41v.bundle
+?? ds41v2.bundle
+?? ds41v3.bundle
+?? ds41v4.bundle
+?? ds41v5.bundle
+?? gate-run.log
+?? gate-run2.log
+534958311c347a9900d92b0a64ce4258746f258cbdff81f5966f1e543628f76b  ds4-server
+86e946f46a3bee6dc4052dded7150d1cc6f92b5bfe42a8035b708040e3d5cf67  docs/benchmarks/ds41-warmpath-2026-10-13/suite.py
+d3c0d84b0ea92ef50caa3963f1343b069281f9cf18faf4b5e4e984683b7ecb64  docs/benchmarks/ds41-warmpath-2026-10-13/cases.json
+f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f  speed-bench/promessi_sposi.txt
+NVIDIA GB10, 580.142, 3003 MHz
+Build cuda_13.0.r13.0/compiler.36424714_0
+6.17.0-1014-nvidia

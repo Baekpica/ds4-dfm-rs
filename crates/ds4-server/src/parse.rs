@@ -9,6 +9,7 @@ use crate::json::{
     json_string, Json,
 };
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
+use crate::render::DSML_IMAGE;
 use crate::route::{
     compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
 };
@@ -286,6 +287,32 @@ const CHAT_IMAGE_MAX_COUNT: usize = 4;
 const CHAT_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
 const CHAT_IMAGE_TOTAL_MAX: usize = 20 * 1024 * 1024;
 
+struct ImageInputs {
+    items: Vec<RequestImage>,
+    bytes: usize,
+    count_limit: Option<usize>,
+}
+
+impl ImageInputs {
+    fn new(env: &ParseEnv) -> Self {
+        Self {
+            items: Vec::new(),
+            bytes: 0,
+            // YoungAi server_parse_tools.c:289 grows the image list; ds41
+            // checks expanded context and memory. Other families keep four.
+            count_limit: (!env.engine_defaults).then_some(CHAT_IMAGE_MAX_COUNT),
+        }
+    }
+}
+
+impl std::ops::Deref for ImageInputs {
+    type Target = [RequestImage];
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
 fn base64_value(c: u8) -> Option<u32> {
     match c {
         b'A'..=b'Z' => Some((c - b'A') as u32),
@@ -356,7 +383,7 @@ fn media_bytes(images: &[RequestImage], audios: &[RequestAudio], videos: &[Reque
 }
 
 fn add_image_base64(
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &[RequestAudio],
     videos: &[RequestVideo],
     mime_type: &str,
@@ -367,10 +394,15 @@ fn add_image_base64(
         "image/jpeg" => ImageMime::Jpeg,
         _ => return Err(format!("unsupported image media type: {mime_type}")),
     };
-    if media_count(images, audios, videos) >= CHAT_IMAGE_MAX_COUNT {
+    let limit = if audios.is_empty() && videos.is_empty() {
+        images.count_limit
+    } else {
+        Some(CHAT_IMAGE_MAX_COUNT)
+    };
+    if limit.is_some_and(|n| media_count(images, audios, videos) >= n) {
         return Err("at most 4 media inputs are supported".into());
     }
-    let total = media_bytes(images, audios, videos);
+    let total = images.bytes + media_bytes(&[], audios, videos);
     if total > CHAT_IMAGE_TOTAL_MAX {
         return Err("media exceeds 20 MiB request limit".into());
     }
@@ -383,7 +415,8 @@ fn add_image_base64(
         return Err("image bytes do not match declared media type".into());
     }
     let index = images.len();
-    images.push(RequestImage {
+    images.bytes += data.len();
+    images.items.push(RequestImage {
         mime,
         data: data.into(),
     });
@@ -391,7 +424,7 @@ fn add_image_base64(
 }
 
 fn add_image_data_uri(
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &[RequestAudio],
     videos: &[RequestVideo],
     uri: &str,
@@ -463,7 +496,8 @@ fn validate_audio_refs(
     audios: &[RequestAudio],
     videos: &[RequestVideo],
 ) -> Result<(), String> {
-    if media_count(images, audios, videos) > CHAT_IMAGE_MAX_COUNT
+    if ((!audios.is_empty() || !videos.is_empty())
+        && media_count(images, audios, videos) > CHAT_IMAGE_MAX_COUNT)
         || media_bytes(images, audios, videos) > CHAT_IMAGE_TOTAL_MAX
     {
         return Err("media exceeds the 4 input or 20 MiB request limit".into());
@@ -507,8 +541,14 @@ fn validate_image_references(msgs: &[ChatMsg], images: &[RequestImage]) -> Resul
             let ChatPart::Image(index) = part else {
                 continue;
             };
-            if msg.role != "user" {
-                return Err("images are allowed only in user messages".into());
+            // The engine's render treats user, tool and function as the same
+            // user-like body (server_dsml_render.c:218-221 role_is_user_like),
+            // so a V4.1 tool result may carry pixels -- the MCP screenshot
+            // loop.  A head that admits images but cannot place one inside a
+            // tool result is refused by name in generation_blocked; a
+            // system/assistant image stays a parse error.
+            if !matches!(msg.role.as_str(), "user" | "tool" | "function") {
+                return Err("images are allowed only in user messages or tool results".into());
             }
             let Some(slot) = seen.get_mut(*index) else {
                 return Err("invalid image reference".into());
@@ -520,6 +560,45 @@ fn validate_image_references(msgs: &[ChatMsg], images: &[RequestImage]) -> Resul
         return Err("unreferenced image payload".into());
     }
     Ok(())
+}
+
+/// A tool/function message is rendered by its content, wrapped in the
+/// `<tool_result>` envelope, so an image block has to leave its placeholder in
+/// that text, in client block order.  The engine writes it into the same
+/// buffer at parse time (`server_parse_tools.c:289` through
+/// `mm_image_source_to_text`; the Chat Completions content sink at
+/// `server_buf.c:232`).  A user message gets its placeholder from the parts at
+/// render time instead, so the text a non-DSML head renders never carries the
+/// token.  A tool_result that already rendered its envelope (the Anthropic
+/// path writes both the envelope and the placeholder into the content) is left
+/// alone.
+fn write_tool_image_placeholders(msg: &mut ChatMsg) {
+    if !matches!(msg.role.as_str(), "tool" | "function") {
+        return;
+    }
+    if msg
+        .parts
+        .iter()
+        .any(|part| matches!(part, ChatPart::ToolResult { .. }))
+    {
+        return;
+    }
+    if !msg
+        .parts
+        .iter()
+        .any(|part| matches!(part, ChatPart::Image(_)))
+    {
+        return;
+    }
+    let mut rendered = String::with_capacity(msg.content.len() + DSML_IMAGE.len());
+    for part in &msg.parts {
+        match part {
+            ChatPart::Text(text) => rendered.push_str(text),
+            ChatPart::Image(_) => rendered.push_str(DSML_IMAGE),
+            _ => {}
+        }
+    }
+    msg.content = rendered;
 }
 
 fn validate_video_refs(msgs: &[ChatMsg], videos: &[RequestVideo]) -> Result<(), String> {
@@ -933,7 +1012,7 @@ fn parse_chat_image_url(p: &mut Json<'_>) -> Option<String> {
 fn parse_openai_message_content(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &mut Vec<RequestAudio>,
     videos: &mut Vec<RequestVideo>,
     err: &mut String,
@@ -1081,7 +1160,7 @@ fn parse_openai_message_content(
 
 fn parse_messages(
     p: &mut Json<'_>,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &mut Vec<RequestAudio>,
     videos: &mut Vec<RequestVideo>,
     err: &mut String,
@@ -1139,6 +1218,7 @@ fn parse_messages(
         if msg.role.is_empty() {
             msg.role = "user".into();
         }
+        write_tool_image_placeholders(&mut msg);
         msgs.push(msg);
         p.ws();
         if p.peek() == Some(b',') {
@@ -1207,10 +1287,132 @@ fn parse_anthropic_image_source(p: &mut Json<'_>) -> Option<(String, String, Str
     ))
 }
 
+/// Anthropic `tool_result.content`: a bare string, null, or an array of content
+/// blocks.  The engine's `json_tool_result_content` (server_parse_tools.c:330):
+/// text blocks concatenate exactly like the legacy string path, so rendered
+/// bytes stay stable and existing disk-KV prefixes keep matching; image blocks
+/// -- browser/screenshot MCP tools -- register through the same path
+/// user-message images use, with the image placeholder left where the block
+/// sits in the client's order (the engine's text-level render,
+/// server_parse_tools.c:290).  Only pixels fail closed: an undeliverable image
+/// rejects the request, never silently vanishes; text-bearing blocks of other
+/// types keep their text.
+///
+/// Returns (rendered, plain).  The DSML render writes `rendered`, the text with
+/// the placeholders it can place; every other head reads the ToolResult part,
+/// which carries `plain`: they have no way to place a V4.1 placeholder, and a
+/// leaked DSML token would be worse than the image staying out of their text
+/// (their tool results keep rendering exactly as before).
+fn json_tool_result_content(
+    p: &mut Json<'_>,
+    msg: &mut ChatMsg,
+    images: &mut ImageInputs,
+    err: &mut String,
+) -> Option<(String, String)> {
+    p.ws();
+    if p.peek() == Some(b'"') {
+        let text = json_string(p)?;
+        return Some((text.clone(), text));
+    }
+    if p.lit("null") {
+        return Some((String::new(), String::new()));
+    }
+    if p.peek() != Some(b'[') {
+        if !json_skip_value(p) {
+            return None;
+        }
+        return Some((String::new(), String::new()));
+    }
+    p.i += 1;
+    let mut rendered = String::new();
+    let mut plain = String::new();
+    p.ws();
+    while p.peek().is_some() && p.peek() != Some(b']') {
+        if p.peek() == Some(b'"') {
+            let text = json_string(p)?;
+            rendered.push_str(&text);
+            plain.push_str(&text);
+        } else if p.peek() == Some(b'{') {
+            p.i += 1;
+            let mut typ = None;
+            let mut text = None;
+            let mut source = None;
+            p.ws();
+            while p.peek().is_some() && p.peek() != Some(b'}') {
+                let key = json_string(p)?;
+                p.ws();
+                if p.bump() != Some(b':') {
+                    return None;
+                }
+                if key == "type" {
+                    typ = json_string(p);
+                    if typ.is_none() {
+                        return None;
+                    }
+                } else if key == "text" {
+                    text = json_string(p);
+                    if text.is_none() {
+                        return None;
+                    }
+                } else if key == "source" {
+                    source = parse_anthropic_image_source(p);
+                    if source.is_none() {
+                        return None;
+                    }
+                } else if !json_skip_value(p) {
+                    return None;
+                }
+                p.ws();
+                if p.peek() == Some(b',') {
+                    p.i += 1;
+                }
+                p.ws();
+            }
+            if p.bump() != Some(b'}') {
+                return None;
+            }
+            if typ.as_deref() == Some("image") {
+                let Some((source_type, media_type, data)) = source else {
+                    *err = "Anthropic image source must use base64 data".into();
+                    return None;
+                };
+                if source_type != "base64" || media_type.is_empty() || data.is_empty() {
+                    *err = "Anthropic image source must use base64 data".into();
+                    return None;
+                }
+                match add_image_base64(images, &[], &[], &media_type, &data) {
+                    Ok(index) => {
+                        msg.parts.push(ChatPart::Image(index));
+                        rendered.push_str(DSML_IMAGE);
+                    }
+                    Err(error) => {
+                        *err = error;
+                        return None;
+                    }
+                }
+            } else if let Some(t) = text {
+                rendered.push_str(&t);
+                plain.push_str(&t);
+            }
+        } else if !json_skip_value(p) {
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    if p.bump() != Some(b']') {
+        return None;
+    }
+    Some((rendered, plain))
+}
+
 fn parse_anthropic_content_block(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> bool {
     if p.bump() != Some(b'{') {
@@ -1223,6 +1425,8 @@ fn parse_anthropic_content_block(
     let mut name = None;
     let mut input = None;
     let mut tool_result = None;
+    let mut tool_result_plain = None;
+    let mut result_is_error = false;
     let mut source = None;
     p.ws();
     while p.peek().is_some() && p.peek() != Some(b'}') {
@@ -1264,9 +1468,17 @@ fn parse_anthropic_content_block(
                 return false;
             }
         } else if key == "content" {
-            tool_result = json_content(p);
-            if tool_result.is_none() {
-                return false;
+            match json_tool_result_content(p, msg, images, err) {
+                Some((rendered, plain)) => {
+                    tool_result = Some(rendered);
+                    tool_result_plain = Some(plain);
+                }
+                None => return false,
+            }
+        } else if key == "is_error" {
+            match json_bool(p) {
+                Some(value) => result_is_error = value,
+                None => return false,
             }
         } else if key == "source" {
             source = parse_anthropic_image_source(p);
@@ -1311,17 +1523,25 @@ fn parse_anthropic_content_block(
             });
         }
         Some("tool_result") => {
-            // Keep original bytes before the legacy encoder escapes XML.
+            let text = tool_result.unwrap_or_default();
+            // Keep original bytes before the legacy encoder escapes XML.  The
+            // part carries the plain text (no V4.1 placeholder): it is what the
+            // non-DSML heads render.
             msg.parts.push(ChatPart::ToolResult {
                 id: id.clone().unwrap_or_default(),
-                content: tool_result.clone().unwrap_or_default(),
+                content: tool_result_plain.take().unwrap_or_default(),
             });
             if let Some(ref i) = id {
                 add_tool_call_id(msg, i);
             }
             let mut b = msg.content.clone();
             b.push_str("<tool_result>");
-            append_tool_result_text(&mut b, tool_result.as_deref().unwrap_or(""));
+            // A failed tool's payload is often empty or short; the flag itself
+            // is the signal (the engine's [tool_error] marker, log.md 2026-07-12).
+            if result_is_error {
+                b.push_str("[tool_error] ");
+            }
+            append_tool_result_text(&mut b, &text);
             b.push_str("</tool_result>");
             msg.content = b;
         }
@@ -1340,7 +1560,7 @@ fn parse_anthropic_content_block(
 fn parse_anthropic_content(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> bool {
     p.ws();
@@ -1355,6 +1575,7 @@ fn parse_anthropic_content(
         return json_skip_value(p);
     }
     p.i += 1;
+    let mut image_offsets = Vec::new();
     p.ws();
     while p.peek().is_some() && p.peek() != Some(b']') {
         if p.peek() == Some(b'"') {
@@ -1364,8 +1585,13 @@ fn parse_anthropic_content(
                 return false;
             }
         } else if p.peek() == Some(b'{') {
+            let offset = msg.content.len();
+            let parts_before = msg.parts.len();
             if !parse_anthropic_content_block(p, msg, images, err) {
                 return false;
+            }
+            if matches!(&msg.parts[parts_before..], [ChatPart::Image(_)]) {
+                image_offsets.push(offset);
             }
         } else if !json_skip_value(p) {
             return false;
@@ -1376,12 +1602,35 @@ fn parse_anthropic_content(
         }
         p.ws();
     }
-    p.bump() == Some(b']')
+    if p.bump() != Some(b']') {
+        return false;
+    }
+    // Mixed tool messages use flat DSML content. Preserve top-level images
+    // there too, in block order (YoungAi server_parse_tools.c:281-290).
+    if image_offsets.is_empty()
+        || !msg
+            .parts
+            .iter()
+            .any(|p| matches!(p, ChatPart::ToolResult { .. }))
+    {
+        return true;
+    }
+    let mut rendered =
+        String::with_capacity(msg.content.len() + image_offsets.len() * DSML_IMAGE.len());
+    let mut from = 0;
+    for offset in image_offsets {
+        rendered.push_str(&msg.content[from..offset]);
+        rendered.push_str(DSML_IMAGE);
+        from = offset;
+    }
+    rendered.push_str(&msg.content[from..]);
+    msg.content = rendered;
+    true
 }
 
 fn parse_anthropic_messages(
     p: &mut Json<'_>,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> Option<Vec<ChatMsg>> {
     p.ws();
@@ -1425,6 +1674,7 @@ fn parse_anthropic_messages(
         if msg.role.is_empty() {
             msg.role = "user".into();
         }
+        write_tool_image_placeholders(&mut msg);
         msgs.push(msg);
         p.ws();
         if p.peek() == Some(b',') {
@@ -2080,7 +2330,7 @@ fn responses_validate_tool_outputs(
 
 fn parse_responses_content_array_mm(
     p: &mut Json<'_>,
-    mut images: Option<&mut Vec<RequestImage>>,
+    mut images: Option<&mut ImageInputs>,
     err: &mut String,
 ) -> Option<(String, Vec<ChatPart>)> {
     p.ws();
@@ -2244,7 +2494,7 @@ fn parse_responses_input(
     p: &mut Json<'_>,
     loaded: &mut String,
     orders: &mut Vec<ToolSchemaOrder>,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> Option<Vec<ChatMsg>> {
     p.ws();
@@ -2268,6 +2518,7 @@ fn parse_responses_input(
         let mut item_id = None;
         let mut arguments = None;
         let mut output = None;
+        let mut output_parts = Vec::new();
         let mut input_str = None;
         let mut summary = None;
         let mut action = None;
@@ -2307,7 +2558,9 @@ fn parse_responses_input(
             } else if key == "output" {
                 p.ws();
                 output = if p.peek() == Some(b'[') {
-                    Some(parse_responses_content_array(p)?)
+                    let (text, parts) = parse_responses_content_array_mm(p, Some(images), err)?;
+                    output_parts = parts;
+                    Some(text)
                 } else if p.peek() == Some(b'"') {
                     Some(json_string(p)?)
                 } else {
@@ -2382,6 +2635,7 @@ fn parse_responses_input(
             if msg.role == "assistant" && !pending.is_empty() {
                 msg.reasoning = std::mem::take(&mut pending);
             }
+            write_tool_image_placeholders(&mut msg);
             msgs.push(msg);
         } else if t == "function_call" || t == "custom_tool_call" {
             let args = arguments
@@ -2421,11 +2675,13 @@ fn parse_responses_input(
             let mut msg = ChatMsg {
                 role: "tool".into(),
                 content: output.take().unwrap_or_default(),
+                parts: output_parts,
                 ..Default::default()
             };
             if let Some(id) = call_id.as_deref().or(item_id.as_deref()) {
                 add_tool_call_id(&mut msg, id);
             }
+            write_tool_image_placeholders(&mut msg);
             msgs.push(msg);
         } else if t == "reasoning" {
             if let Some(s) = summary.as_deref() {
@@ -2585,7 +2841,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         env.default_effort
     };
     let mut msgs = Vec::new();
-    let mut images = Vec::new();
+    let mut images = ImageInputs::new(env);
     let mut audios = Vec::new();
     let mut videos = Vec::new();
     let mut tool_schemas = String::new();
@@ -2763,9 +3019,6 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     validate_image_references(&msgs, &images)?;
     validate_audio_refs(&msgs, &images, &audios, &videos)?;
     validate_video_refs(&msgs, &videos)?;
-    if images.len() + audios.len() + videos.len() > CHAT_IMAGE_MAX_COUNT {
-        return Err("at most 4 media inputs are supported".into());
-    }
     r.has_tool_results = chat_history_has_pending_tool_results(&msgs);
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
@@ -2778,7 +3031,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         env.engine_defaults,
     );
     r.messages = msgs;
-    r.images = images;
+    r.images = images.items;
     r.audios = audios;
     r.videos = videos;
     r.tool_schemas = tool_schemas;
@@ -2963,7 +3216,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         env.default_effort
     };
     let mut msgs = Vec::new();
-    let mut images = Vec::new();
+    let mut images = ImageInputs::new(env);
     let mut system = None;
     let mut tool_schemas = String::new();
     let mut orders = Vec::new();
@@ -3135,7 +3388,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     }
     r.live_call_ids = crate::cont::live_tool_result_ids(Api::Anthropic, &msgs);
     r.messages = msgs;
-    r.images = images;
+    r.images = images.items;
     r.tool_schemas = tool_schemas;
     r.tool_orders = orders;
     r.finish_needs();
@@ -3160,7 +3413,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         env.default_effort
     };
     let mut msgs = Vec::new();
-    let mut images = Vec::new();
+    let mut images = ImageInputs::new(env);
     let mut loaded = String::new();
     let mut orders = Vec::new();
     let mut instructions = None;
@@ -3354,7 +3607,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     }
     r.live_call_ids = crate::cont::live_tool_result_ids(Api::Responses, &msgs);
     r.messages = msgs;
-    r.images = images;
+    r.images = images.items;
     r.tool_schemas = combined;
     r.tool_orders = orders;
     r.finish_needs();

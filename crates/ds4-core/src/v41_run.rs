@@ -17,14 +17,16 @@ use std::os::raw::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use ds4_sys::{
-    ds4_bridge_v41_generate, ds4_bridge_v41_kvreuse_export, ds4_bridge_v41_kvreuse_import,
-    ds4_bridge_v41_kvreuse_last_reused, ds4_bridge_v41_kvreuse_note_mount,
-    ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set, ds4_bridge_v41_last_spec_stats,
-    ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph,
-    ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set,
-    ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
+    ds4_bridge_v41_generate, ds4_bridge_v41_images_bytes, ds4_bridge_v41_kvreuse_export,
+    ds4_bridge_v41_kvreuse_import, ds4_bridge_v41_kvreuse_last_reused,
+    ds4_bridge_v41_kvreuse_note_mount, ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set,
+    ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes, ds4_bridge_v41_set_dspark,
+    ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof,
+    ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear,
+    ds4_bridge_v41_zchain_rb_set,
 };
 
 use crate::engram::{EngramHash, EngramShard};
@@ -108,11 +110,17 @@ pub trait V41KvDisk {
     /// The longest token-prefix candidate strictly longer than `have` (the
     /// in-memory checkpoint's own prefix), already validated against the
     /// current mount digest and the payload ABI/class.  None = no candidate.
-    fn find(&mut self, tokens: &[i32], digest: u64, have: u32) -> Option<V41KvHit>;
+    fn find(&mut self, tokens: &[i32], sig: &[u64], digest: u64, have: u32) -> Option<V41KvHit>;
     /// Stage the native payload export (`save` writes it to a path the store
     /// owns) into a store entry.  Called only when the in-memory checkpoint
     /// is exactly this prompt; a failed `save` must leave no entry behind.
-    fn store(&mut self, tokens: &[i32], digest: u64, save: &mut dyn FnMut(&Path) -> bool);
+    fn store(
+        &mut self,
+        tokens: &[i32],
+        sig: &[u64],
+        digest: u64,
+        save: &mut dyn FnMut(&Path) -> bool,
+    );
 }
 
 /// A NUL-terminated copy of a path for the bridge calls; None on an interior
@@ -180,6 +188,12 @@ pub struct V41RunOptions<'a> {
     /// `base.fnv`-gated third file; finance-only in the deployment,
     /// install.sh).  Merged with ② exactly as `core_v41_amp.c:227-270`.
     pub posttrain: Option<&'a str>,
+    /// The request's images (the engine's `ds4_v41_images`, core_v41.h:409):
+    /// the Rust host preprocesses and expands the prompt, then borrows this in
+    /// for the run.  None = a text request (the prefill never touches the
+    /// sidecar).  The image identity is folded into the KV digest separately
+    /// (see `kv_state_digest`).
+    pub images: Option<&'a crate::v41_media::V41Images>,
 }
 
 impl Default for V41RunOptions<'_> {
@@ -198,7 +212,98 @@ impl Default for V41RunOptions<'_> {
             greedy: None,
             zchain: None,
             posttrain: None,
+            images: None,
         }
+    }
+}
+
+/// The process-level asset caches (KU-1, 2026-10-13).
+///
+/// The engine opens the sidecar and the engram ONCE, when it opens the model
+/// (`core_engine_open.c:120-124` -> `ds4_engine_v41_set_amp_dir`; the engram
+/// shards at `core_v41_engram.c:218`), and every later request only generates.
+/// The port re-did both on every request, which put the sidecar's read, its
+/// device upload and its digest, plus a fresh engram open (GGUF, inventory,
+/// wire, hash tables, shards, ring), on the first-token path of every decode -
+/// the measured ~100 ms the port's warm floor carried over the engine's.
+///
+/// These caches hold what each open produced, keyed by the artifact identity:
+/// a matching request reuses them, and any other key - or
+/// `DS41_NO_SETUP_CACHE=1`, the A/B's control arm - recomputes them.  The
+/// bare-base key still clears the sidecar, exactly as it did per request.
+#[derive(Clone, PartialEq, Eq)]
+struct MountKey {
+    model: usize,
+    zchain: Option<String>,
+    posttrain: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FeedKey {
+    gguf: String,
+    engram_dir: Option<String>,
+}
+
+/// The file-derived half of an open engram feed: everything that does not
+/// depend on the prompt.  The engine keeps this for the life of its state.
+#[derive(Clone)]
+struct EngramAssets {
+    core: Arc<Mutex<FeedCore>>,
+    has_ring: bool,
+    ring_cap: u32,
+    cols: u32,
+    stride: u32,
+    n_layers: usize,
+    /// The opened shard identities.  A hit must carry them: the checkpoint
+    /// identity folds the engram mode and these sources in
+    /// (`kv_state_digest`), so a hit without them would mint a different
+    /// identity than the cold open did.
+    sources: Vec<EngramSource>,
+}
+
+static ENGRAM_FEED: Mutex<Option<(FeedKey, EngramAssets)>> = Mutex::new(None);
+static ZCHAIN_MOUNTED: Mutex<Option<(MountKey, i32, u64)>> = Mutex::new(None);
+
+pub(crate) fn clear_setup_cache() {
+    // The next model may reuse this native address. Its device mounts and
+    // opened Engram sources must be established again, even at the same path.
+    *ZCHAIN_MOUNTED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = None;
+    *ENGRAM_FEED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = None;
+}
+
+impl EngramAssets {
+    /// Take a built feed's asset half, for the cache.
+    fn of(feed: &V41Feed) -> Self {
+        Self {
+            core: Arc::clone(&feed.core),
+            has_ring: feed.has_ring,
+            ring_cap: feed.ring_cap,
+            cols: feed.cols,
+            stride: feed.stride,
+            n_layers: feed.n_layers,
+            sources: feed.sources.clone(),
+        }
+    }
+}
+
+fn setup_cache_on() -> bool {
+    std::env::var_os("DS41_NO_SETUP_CACHE").is_none()
+}
+
+/// Phase timings for the request prelude, `DS41_PHASE_LOG=1`.  The native
+/// logs its own phases; this covers the host's, which is where the port's
+/// warm floor lives.
+fn phase_log(on: bool, what: &str, since: Instant) {
+    if on {
+        eprintln!(
+            "ds4: [v41] host phase {}: {:.1} ms",
+            what,
+            since.elapsed().as_secs_f64() * 1e3
+        );
     }
 }
 
@@ -261,7 +366,128 @@ impl V41Feed {
     /// Open the feed from the artifact: the wire (with the `--engram-dir`
     /// rewrite), the four hash-constant tensors, and the shards.  None when
     /// the model carries no engram layers (the forward then takes no feed).
+    /// Open the feed, or hand this request the one the last request opened.
+    /// A hit skips the file work and rebuilds only the per-request state.
     pub fn open(path: &Path, engram_dir: Option<&str>) -> Result<Option<Self>> {
+        let key = FeedKey {
+            gguf: path.to_string_lossy().into_owned(),
+            engram_dir: engram_dir.map(str::to_owned),
+        };
+        if setup_cache_on() {
+            let hit = ENGRAM_FEED
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|(cached, _)| *cached == key)
+                .map(|(_, assets)| assets.clone());
+            if let Some(assets) = hit {
+                eprintln!("ds4: [v41] engram rows: open cached (assets already open)");
+                return Ok(Some(Self::from_assets(assets)));
+            }
+        }
+        // A miss builds the whole open; its product is what the next request
+        // with the same artifacts reuses.
+        let feed = Self::open_uncached(path, engram_dir)?;
+        if setup_cache_on() {
+            if let Some(f) = &feed {
+                *ENGRAM_FEED.lock().unwrap() = Some((key, EngramAssets::of(f)));
+            }
+        }
+        Ok(feed)
+    }
+
+    /// The per-request state around an already-open asset set: the control
+    /// block, the fetch worker, and a token history this prompt owns.  The
+    /// engine's feed is per state, so its history starts empty at each open;
+    /// clearing here is that same reset.  The shadow prefetch buffer is kept:
+    /// it is overwritten before any read (its own comment above).
+    fn from_assets(a: EngramAssets) -> Self {
+        {
+            let mut core = a.core.lock().unwrap();
+            core.hist.clear();
+            core.image_mask.clear();
+        }
+        let mut async_on = a.has_ring && std::env::var_os("DS41_FEED_SYNC").is_none();
+        let ctl = Arc::new((
+            Mutex::new(Ctl {
+                go: false,
+                done: 0,
+                err: None,
+                pf: None,
+            }),
+            Condvar::new(),
+        ));
+        let worker = if async_on {
+            let (tx, rx) = mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("ds41-engram-fetch".into())
+                .spawn({
+                    let core = Arc::clone(&a.core);
+                    let ctl = Arc::clone(&ctl);
+                    move || worker_loop(core, ctl, rx)
+                });
+            match spawned {
+                Ok(join) => Some(Worker {
+                    tx,
+                    join: Some(join),
+                }),
+                Err(_) => {
+                    eprintln!(
+                        "ds4: [v41] engram fetch thread refused to start; main-thread rounds"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if worker.is_none() {
+            async_on = false;
+        }
+        let wait_delay_us = std::env::var("DS41_FEED_WAIT_DELAY_US")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&us| us > 0);
+        let wait_withhold = std::env::var_os("DS41_FEED_WAIT_WITHHOLD").is_some();
+        if wait_delay_us.is_some() || wait_withhold {
+            eprintln!(
+                "ds4: [v41] engram wait test hooks: delay {:?} us, withhold {}",
+                wait_delay_us, wait_withhold
+            );
+        }
+        let prefetch_off = std::env::var_os("DS41_FEED_NO_PREFETCH").is_some();
+        if prefetch_off && async_on {
+            eprintln!("ds4: [v41] engram cross-block prefetch off (DS41_FEED_NO_PREFETCH)");
+        }
+        Self {
+            core: a.core,
+            worker,
+            ctl,
+            async_on,
+            has_ring: a.has_ring,
+            ring_cap: a.ring_cap,
+            cols: a.cols,
+            stride: a.stride,
+            n_layers: a.n_layers,
+            sources: a.sources.clone(),
+            io_mode: false,
+            prev_worker: false,
+            started: vec![false; a.n_layers],
+            joined: vec![false; a.n_layers],
+            block_start: 0,
+            block_end: 0,
+            bases: Vec::new(),
+            err: None,
+            next: None,
+            prefetch_off,
+            wait_delay_us,
+            wait_withhold,
+        }
+    }
+
+    /// The asset half of the open, unchanged: this is the file work the cache
+    /// above stores.
+    fn open_uncached(path: &Path, engram_dir: Option<&str>) -> Result<Option<Self>> {
         let g = GgufFile::open(path).map_err(asset_error)?;
         let inv = TensorInventory::open(path).map_err(asset_error)?;
         let identified = identify_file(&g).map_err(asset_error)?;
@@ -320,6 +546,7 @@ impl V41Feed {
             cols,
             stride,
             hist: Vec::new(),
+            image_mask: Vec::new(),
             shadow: Vec::new(),
         }));
         let ctl = Arc::new((
@@ -787,6 +1014,9 @@ struct FeedCore {
     cols: u32,
     stride: u32,
     hist: Vec<i32>,
+    // Request positions are fixed before asynchronous prefetch starts. Draft
+    // and decode positions beyond this mask remain ordinary text.
+    image_mask: Vec<u8>,
     /// The cross-block prefetch buffer: one block's layer-0 rows in the
     /// native slot layout `[n][cols][stride]`, filled by the worker during
     /// the previous block's tail and copied into the native's slot 0 at the
@@ -830,7 +1060,9 @@ impl FeedCore {
         reqs.clear();
         reqs.reserve((end - start) * self.cols as usize * 2);
         for (i, p) in (start..end).enumerate() {
-            let rows = self.hash.rows(&self.hist, p as i64, ei);
+            let rows = self
+                .hash
+                .rows_masked(&self.hist, &self.image_mask, p as i64, ei);
             for (c, &row_id) in rows.iter().enumerate() {
                 if row_id < 0 || row_id as u64 >= self.rows[k] {
                     return Err(format!(
@@ -885,7 +1117,9 @@ impl FeedCore {
     ) -> std::result::Result<(), String> {
         let k = ei as usize;
         for (i, p) in (start..end).enumerate() {
-            let rows = self.hash.rows(&self.hist, p as i64, ei);
+            let rows = self
+                .hash
+                .rows_masked(&self.hist, &self.image_mask, p as i64, ei);
             for (c, &row_id) in rows.iter().enumerate() {
                 if row_id < 0 || row_id as u64 >= self.rows[k] {
                     return Err(format!(
@@ -1224,6 +1458,27 @@ fn kv_fold_bytes(h: &mut u64, data: &[u8]) {
 }
 
 fn v41_mount_zchain(model: &Model, zchain: Option<&str>, posttrain: Option<&str>) -> Result<u64> {
+    // KU-1: the mount's product is device state, and nothing else in the
+    // process changes it, so a request with the same artifact key reuses the
+    // mount.  The caller still notes the per-request state identity, which
+    // folds this mount digest together with the engram sources.
+    let key = MountKey {
+        model: model.raw_ptr() as usize,
+        zchain: zchain.map(str::to_owned),
+        posttrain: posttrain.map(str::to_owned),
+    };
+    if setup_cache_on() {
+        let hit = ZCHAIN_MOUNTED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(cached, _, _)| *cached == key)
+            .map(|(_, mode, digest)| (*mode, *digest));
+        if let Some((mode, digest)) = hit {
+            eprintln!("ds4: [v41] zchain mount: cached (identity {mode}/{digest})");
+            return Ok(digest);
+        }
+    }
     let shape = model.shape();
     let geom = ZchainGeom {
         n_layer: shape.n_layer,
@@ -1231,6 +1486,10 @@ fn v41_mount_zchain(model: &Model, zchain: Option<&str>, posttrain: Option<&str>
         n_embd: shape.n_embd,
     };
     let merged = zchain_load_for_run(zchain, posttrain, geom)?;
+    let mounted = merged.is_some();
+    // Validation leaves the old mount intact; device writes may clear it
+    // before an upload fails. Cache only a successfully completed mount.
+    *ZCHAIN_MOUNTED.lock().unwrap() = None;
     let digest = apply_zchain(merged.as_ref(), geom, |write| match write {
         MountWrite::ClearRb => {
             unsafe { ds4_bridge_v41_zchain_rb_clear() };
@@ -1262,6 +1521,11 @@ fn v41_mount_zchain(model: &Model, zchain: Option<&str>, posttrain: Option<&str>
             },
         );
     }
+    // KU-1: store the mount the next request with this key will reuse.  The
+    // naked base (digest 0) is a mount state of its own and is cached too.
+    if setup_cache_on() {
+        *ZCHAIN_MOUNTED.lock().unwrap() = Some((key, i32::from(mounted), digest));
+    }
     Ok(digest)
 }
 
@@ -1271,6 +1535,21 @@ enum EngramMode {
     Off,
 }
 
+/// Linux MemAvailable in MB (the engine's mem_available_mb,
+/// server_sched_v41.c:22-29); None when /proc/meminfo cannot be read, which
+/// leaves the admission open.  A negative value is not possible here.
+fn mem_available_mb() -> Option<i64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let kb: i64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb / 1024);
+        }
+    }
+    None
+}
+
+#[derive(Clone)]
 struct EngramSource {
     path: std::path::PathBuf,
     metadata: std::fs::Metadata,
@@ -1280,6 +1559,8 @@ fn kv_state_digest(digest: u64, mode: EngramMode, sources: &[EngramSource]) -> R
     const KV_STATE_DOMAIN: &[u8] = b"v41-kv-state-v1";
     let mut digest = if digest == 0 { FNV_SEED } else { digest };
     kv_fold_bytes(&mut digest, KV_STATE_DOMAIN);
+    // Image identity is position-specific, separately checked by native KV
+    // and disk keys. A suffix image must not invalidate a safe text prefix.
     match mode {
         EngramMode::Off => {
             kv_fold_bytes(&mut digest, b"disabled");
@@ -1432,6 +1713,9 @@ impl Model {
         if n_predict < 0 {
             return Err(asset_error("V4.1 n_predict is negative"));
         }
+        if let Some(images) = opts.images {
+            images.validate(prompt)?;
+        }
         // The tool-syntax greedy hook (the engine's v41_syntax_greedy,
         // c6e2706): the serve's closure; the tramp borrows it for the call's
         // duration only.  None leaves the native asking nobody (bare argmax).
@@ -1489,12 +1773,33 @@ impl Model {
         // the engine's per-state mount inside the generate. Checkpoints also
         // bind the Engram mode and the actual opened sources, before any peek
         // or disk import; equal prompt tokens alone are insufficient.
+        //
+        // KU-1: both opens are cached per process, so the phase log is what
+        // shows their cost; a hit prints its own cached line instead.
+        let phases = std::env::var_os("DS41_PHASE_LOG").is_some();
+        let t_prelude = Instant::now();
+        let t_feed = Instant::now();
         let mut feed = if opts.no_engram {
             None
         } else {
             V41Feed::open(path, opts.engram_dir)?
         };
+        let signatures = opts.images.map_or(&[][..], |i| i.sig_of.as_slice());
+        let sig_ptr = if signatures.is_empty() {
+            std::ptr::null()
+        } else {
+            signatures.as_ptr()
+        };
+        if let Some(f) = &feed {
+            let mut core = f.core.lock().unwrap();
+            core.image_mask.clear();
+            core.image_mask
+                .extend(signatures.iter().map(|&sig| u8::from(sig != 0)));
+        }
+        phase_log(phases, "engram feed open", t_feed);
+        let t_mount = Instant::now();
         let sidecar = v41_mount_zchain(self, opts.zchain, opts.posttrain)?;
+        phase_log(phases, "sidecar mount", t_mount);
         let digest = kv_state_digest(
             sidecar,
             if opts.no_engram {
@@ -1512,8 +1817,10 @@ impl Model {
         // already gives).  The store's match only selects -- the native
         // import re-validates sizes and the restore re-runs the token memcmp.
         if let Some(disk) = opts.kv_disk.as_mut() {
-            let have = unsafe { ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32) };
-            if let Some(hit) = disk.find(prompt, digest, have) {
+            let have = unsafe {
+                ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32, sig_ptr)
+            };
+            if let Some(hit) = disk.find(prompt, signatures, digest, have) {
                 if let Some(cpath) = c_path(&hit.path) {
                     let ok = unsafe {
                         ds4_bridge_v41_kvreuse_import(
@@ -1539,8 +1846,9 @@ impl Model {
         // core_v41_kvreuse.c:118).  The native restore re-runs the memcmp, so
         // a stale peek only ever seeds this prompt's own prefix.
         if let Some(f) = feed.as_mut() {
-            let reused =
-                unsafe { ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32) };
+            let reused = unsafe {
+                ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32, sig_ptr)
+            };
             if reused > 0 {
                 f.seed_prefix(&prompt[..reused as usize]);
             }
@@ -1571,9 +1879,56 @@ impl Model {
             }
             None => (None, None, None, std::ptr::null_mut()),
         };
+        phase_log(phases, "host prelude (mount + open + seed)", t_prelude);
         let mut emit_tramp_state = EmitTramp { emit };
         let mut progress_tramp_state = ProgressTramp { progress };
         let mut err = [0u8; 512];
+        // Vision: build the bridge image view from the prepared set (borrowed
+        // for the call).  Empty = a text request; pass NULL.
+        let bridge_raw: Vec<ds4_sys::ds4_bridge_v41_image> = match opts.images {
+            Some(imgs) => imgs
+                .images
+                .iter()
+                .map(|im| ds4_sys::ds4_bridge_v41_image {
+                    patches: im.patches.as_ptr(),
+                    patches_len: im.patches.len() as u64,
+                    n_vit_h: im.plan.n_vit_h,
+                    n_vit_w: im.plan.n_vit_w,
+                    n_llm_h: im.plan.n_llm_h,
+                    n_llm_w: im.plan.n_llm_w,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let bridge_images = ds4_sys::ds4_bridge_v41_images {
+            img: bridge_raw.as_ptr(),
+            n: bridge_raw.len() as i32,
+            row_of: opts.images.map_or(std::ptr::null(), |i| i.row_of.as_ptr()),
+            sig_of: sig_ptr,
+            np: opts.images.map_or(0, |i| i.np),
+            n_rows: opts.images.map_or(0, |i| i.n_rows),
+        };
+        let images_ptr: *const ds4_sys::ds4_bridge_v41_images = if bridge_raw.is_empty() {
+            std::ptr::null()
+        } else {
+            &bridge_images
+        };
+        // The serving admission (server_sched_v41.c:58): start the prefill only
+        // when MemAvailable covers twice its peak (the engine's margin for
+        // backend scratch and the index draft's transient); otherwise refuse
+        // this request rather than risk an OOM.
+        {
+            let peak = unsafe { ds4_bridge_v41_prefill_bytes(self.raw_ptr(), prompt.len() as i32) }
+                + unsafe { ds4_bridge_v41_images_bytes(images_ptr) };
+            let peak_mb = peak >> 20;
+            if let Some(avail_mb) = mem_available_mb() {
+                if avail_mb >= 0 && (avail_mb as u64) < 2u64 * peak_mb {
+                    return Err(asset_error(&format!(
+                        "prefill needs {peak_mb} MB peak (admission 2x), only {avail_mb} MB available"
+                    )));
+                }
+            }
+        }
         let rc = unsafe {
             ds4_bridge_v41_generate(
                 self.raw_ptr(),
@@ -1582,6 +1937,7 @@ impl Model {
                 n_predict,
                 i32::from(opts.no_engram),
                 opts.verify_k,
+                images_ptr,
                 rows_fn,
                 rows_ud,
                 wait_fn,
@@ -1605,7 +1961,9 @@ impl Model {
         // previous, shorter checkpoint and stores nothing.  The store's own
         // reuse check skips an entry already current.
         if let Some(disk) = opts.kv_disk.as_mut() {
-            let have = unsafe { ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32) };
+            let have = unsafe {
+                ds4_bridge_v41_kvreuse_peek(prompt.as_ptr(), prompt.len() as i32, sig_ptr)
+            };
             if have == prompt.len() as u32 {
                 let mut save = |p: &Path| -> bool {
                     match c_path(p) {
@@ -1613,11 +1971,48 @@ impl Model {
                         None => false,
                     }
                 };
-                disk.store(prompt, digest, &mut save);
+                disk.store(prompt, signatures, digest, &mut save);
             }
         }
         if rc != 0 {
             return Err(crate::fail(rc, &err));
+        }
+        Ok(())
+    }
+
+    /// KU-2: pay the V4.1 asset opens for the artifacts the first request will
+    /// use, so request one does not.  The engine pays both at model open
+    /// (`core_engine_open.c:120-124` -> `ds4_engine_v41_set_amp_dir`; the
+    /// engram shards at `core_v41_engram.c:218`); the port pays them inside
+    /// request one, which is the one cell the engine still wins.
+    ///
+    /// Both calls are the prelude's own (`v41_mount_zchain`, `V41Feed::open`),
+    /// with the same arguments, so the caches fill with the keys request one
+    /// will look up.  `DS41_NO_SETUP_CACHE=1` disables the whole thing: with
+    /// the caches off there is nothing to fill, and the work would be paid
+    /// twice.
+    pub fn v41_prewarm(
+        &self,
+        path: &Path,
+        zchain: Option<&str>,
+        posttrain: Option<&str>,
+        engram_dir: Option<&str>,
+        no_engram: bool,
+    ) -> Result<()> {
+        if !setup_cache_on() {
+            return Ok(());
+        }
+        let phases = std::env::var_os("DS41_PHASE_LOG").is_some();
+        let t_mount = Instant::now();
+        v41_mount_zchain(self, zchain, posttrain)?;
+        phase_log(phases, "prewarm sidecar mount", t_mount);
+        if !no_engram {
+            let t_feed = Instant::now();
+            // Only the asset half is wanted here; the returned feed is the
+            // per-request state, and ENGRAM_FEED keeps the half that lasts.
+            let feed = V41Feed::open(path, engram_dir)?;
+            drop(feed);
+            phase_log(phases, "prewarm engram feed open", t_feed);
         }
         Ok(())
     }
@@ -1626,6 +2021,61 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[derive(Default)]
+    struct MountMock {
+        gains: Vec<Option<Vec<f32>>>,
+        writes: usize,
+        fail_upload: Option<u32>,
+    }
+
+    static MOUNT_DEVICE: Mutex<MountMock> = Mutex::new(MountMock {
+        gains: Vec::new(),
+        writes: 0,
+        fail_upload: None,
+    });
+
+    #[export_name = "ds4_bridge_v41_zchain_gr_set"]
+    unsafe extern "C" fn mock_gr_set(
+        _: *mut ds4_sys::ds4_bridge_model,
+        il: u32,
+        data: *const f32,
+        n_expert: u32,
+        n_embd: u32,
+    ) -> i32 {
+        let mut device = MOUNT_DEVICE.lock().unwrap();
+        device.writes += 1;
+        if il as usize >= device.gains.len()
+            || n_expert != GEOM.n_expert
+            || n_embd != GEOM.n_embd
+            || (!data.is_null() && device.fail_upload == Some(il))
+        {
+            return 0;
+        }
+        device.gains[il as usize] = if data.is_null() {
+            None
+        } else {
+            Some(unsafe { std::slice::from_raw_parts(data, (n_expert * n_embd) as usize) }.to_vec())
+        };
+        1
+    }
+
+    #[export_name = "ds4_bridge_v41_zchain_rb_clear"]
+    extern "C" fn mock_rb_clear() {
+        MOUNT_DEVICE.lock().unwrap().writes += 1;
+    }
+
+    #[export_name = "ds4_bridge_v41_zchain_rb_set"]
+    extern "C" fn mock_rb_set(
+        _: *mut ds4_sys::ds4_bridge_model,
+        _: u32,
+        _: *const f32,
+        _: u32,
+    ) -> i32 {
+        0 // These fixtures carry gain tables only.
+    }
 
     /// Synthetic sidecar files (the layouts the readers check,
     /// `core_v41_amp.c:44-84` / `:193-220`).
@@ -1670,6 +2120,204 @@ mod tests {
         n_expert: 4,
         n_embd: 2,
     };
+
+    fn drop_fixture(path: &Path) -> Model {
+        use crate::{Backend, BindPlan, ModelFamily, Variant, Vocab};
+
+        let tokens = [
+            "<｜begin▁of▁sentence｜>",
+            "<｜end▁of▁sentence｜>",
+            "<｜User｜>",
+            "<｜Assistant｜>",
+            "<think>",
+            "</think>",
+            "｜DSML｜",
+        ];
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&2u64.to_le_bytes());
+        for (key, values) in [
+            ("tokenizer.ggml.tokens", tokens.as_slice()),
+            ("tokenizer.ggml.merges", [].as_slice()),
+        ] {
+            bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(key.as_bytes());
+            bytes.extend_from_slice(&crate::gguf::GGUF_VALUE_ARRAY.to_le_bytes());
+            bytes.extend_from_slice(&crate::gguf::GGUF_VALUE_STRING.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            for value in values {
+                bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(value.as_bytes());
+            }
+        }
+        std::fs::write(path, bytes).unwrap();
+        let inventory = TensorInventory::open(path).unwrap();
+        let bind_plan = BindPlan {
+            shape: crate::shape_for_variant(Variant::DeepSeek41Flash),
+            slots: Vec::new(),
+            n_shards: 1,
+            data_pos: inventory.data_pos,
+            alignment: inventory.alignment,
+            page: inventory.page,
+        };
+        Model {
+            raw: std::ptr::NonNull::dangling(),
+            family: ModelFamily::DeepSeek4,
+            backend: Backend::Cuda,
+            inventory,
+            bind_plan,
+            mtp: None,
+            dspark: None,
+            vocab: Vocab::load_path(path, ModelFamily::DeepSeek4).unwrap(),
+            chat_template: None,
+            vision_ready: false,
+            mtp_draft_tokens: 0,
+            runtime_budget: None,
+            v41_ctx: Some(4096),
+            _distributed: None,
+            _not_send: std::marker::PhantomData,
+        }
+    }
+
+    #[test]
+    fn model_drop_evicts_assets() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tmpdir("model-drop");
+        // The native free is stubbed by lib.rs tests. Reusing the same handle
+        // reproduces allocator address reuse without loading device weights.
+        for _ in 0..2 {
+            let model = drop_fixture(&dir.join("tiny.gguf"));
+            let core = Arc::new(Mutex::new(FeedCore {
+                ring: None,
+                hash: EngramHash {
+                    token_map: Vec::new(),
+                    multipliers: Vec::new(),
+                    primes: Vec::new(),
+                    offsets: Vec::new(),
+                    max_ngram: 2,
+                    heads: 1,
+                    pad: 0,
+                    n_vocab: 0,
+                },
+                shards: Vec::new(),
+                weight_off: Vec::new(),
+                scale_off: Vec::new(),
+                rows: Vec::new(),
+                head_dim: 0,
+                cols: 0,
+                stride: 0,
+                hist: Vec::new(),
+                image_mask: Vec::new(),
+                shadow: Vec::new(),
+            }));
+            let weak = Arc::downgrade(&core);
+            *ENGRAM_FEED.lock().unwrap() = Some((
+                FeedKey {
+                    gguf: "old-model.gguf".into(),
+                    engram_dir: None,
+                },
+                EngramAssets {
+                    core,
+                    has_ring: false,
+                    ring_cap: 0,
+                    cols: 0,
+                    stride: 0,
+                    n_layers: 0,
+                    sources: Vec::new(),
+                },
+            ));
+            *ZCHAIN_MOUNTED.lock().unwrap() = Some((
+                MountKey {
+                    model: model.raw_ptr() as usize,
+                    zchain: Some("mounted".into()),
+                    posttrain: None,
+                },
+                1,
+                42,
+            ));
+            drop(model);
+            assert!(
+                ZCHAIN_MOUNTED.lock().unwrap().is_none(),
+                "closed model left a cached device mount for its next handle owner"
+            );
+            assert!(
+                weak.upgrade().is_none(),
+                "closed model kept its cached Engram sources alive"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn mount_fixture(dir: &Path) -> Model {
+        let mut model = drop_fixture(&dir.join("tiny.gguf"));
+        model.bind_plan.shape.n_layer = GEOM.n_layer;
+        model.bind_plan.shape.n_expert = GEOM.n_expert;
+        model.bind_plan.shape.n_embd = GEOM.n_embd;
+        *ZCHAIN_MOUNTED.lock().unwrap() = None;
+        *MOUNT_DEVICE.lock().unwrap() = MountMock {
+            gains: vec![None; GEOM.n_layer as usize],
+            ..MountMock::default()
+        };
+        model
+    }
+
+    #[test]
+    fn failed_mount_reloads_old() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tmpdir("mount-failure");
+        let a = dir.join("a");
+        let b = dir.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        std::fs::write(b.join("gr_L01.bin"), gr_f32(4, 2)).unwrap();
+        let model = mount_fixture(&dir);
+        let digest = v41_mount_zchain(&model, a.to_str(), None).unwrap();
+        let expected = MOUNT_DEVICE.lock().unwrap().gains.clone();
+        MOUNT_DEVICE.lock().unwrap().fail_upload = Some(1);
+
+        let error = v41_mount_zchain(&model, b.to_str(), None).unwrap_err();
+        assert!(error.message.contains("gr L01 upload refused"));
+        let invalidated = ZCHAIN_MOUNTED.lock().unwrap().is_none();
+        let writes = MOUNT_DEVICE.lock().unwrap().writes;
+        MOUNT_DEVICE.lock().unwrap().fail_upload = None;
+
+        // B cleared A before its upload failed. Retrying A must restore its
+        // device tables, not return A's stale cached identity.
+        assert_eq!(v41_mount_zchain(&model, a.to_str(), None).unwrap(), digest);
+        let (actual, retried) = {
+            let device = MOUNT_DEVICE.lock().unwrap();
+            (device.gains.clone(), device.writes > writes)
+        };
+        assert_eq!(actual, expected, "retry used a stale mount cache hit");
+        assert!(retried, "retry did not upload the original gain table");
+        assert!(invalidated, "failed mutation retained a cache identity");
+        drop(model);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_mount_keeps_cache() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tmpdir("mount-validation");
+        let a = dir.join("a");
+        let invalid = dir.join("invalid");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&invalid).unwrap();
+        std::fs::write(a.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        let model = mount_fixture(&dir);
+        let digest = v41_mount_zchain(&model, a.to_str(), None).unwrap();
+        let writes = MOUNT_DEVICE.lock().unwrap().writes;
+
+        let error = v41_mount_zchain(&model, invalid.to_str(), None).unwrap_err();
+        assert!(error.message.contains("zchain-empty"));
+        assert_eq!(MOUNT_DEVICE.lock().unwrap().writes, writes);
+        assert_eq!(v41_mount_zchain(&model, a.to_str(), None).unwrap(), digest);
+        assert_eq!(MOUNT_DEVICE.lock().unwrap().writes, writes);
+        drop(model);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn no_dirs_answers_none() {
@@ -1819,5 +2467,24 @@ mod tests {
             "expected the engine's empty-plugin refusal, got: {}",
             err.message
         );
+    }
+
+    /// The prewarm runs only when the caches are consulted at all: with
+    /// `DS41_NO_SETUP_CACHE=1` the same opens would be paid twice (once here,
+    /// once in request one), which is the behaviour KU-2 must not introduce.
+    #[test]
+    fn prewarm_gate_follows_the_kill_switch() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap();
+        let prior = std::env::var_os("DS41_NO_SETUP_CACHE");
+        std::env::set_var("DS41_NO_SETUP_CACHE", "1");
+        assert!(
+            !setup_cache_on(),
+            "the kill switch must close the prewarm gate"
+        );
+        match prior {
+            Some(value) => std::env::set_var("DS41_NO_SETUP_CACHE", value),
+            None => std::env::remove_var("DS41_NO_SETUP_CACHE"),
+        }
+        assert!(setup_cache_on(), "an unset switch must open the gate");
     }
 }

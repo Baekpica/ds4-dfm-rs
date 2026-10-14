@@ -335,3 +335,300 @@ be mounted. That signal is `pick.txt` being empty.
    The one thing the research cannot settle is ownership: is the port's
    training corpus the operator's existing material (finance `review_v2`), or
    does the port ship its own?
+
+## 10. Unit specs (detail)
+
+Moved verbatim from `ds4-dfm-rs-handoff.md` section 3 on 2026-10-13, when the
+handoff's next-unit plan rotated to the warm-path/prefix-reuse line (branch
+`feat/ds41-optimize-kv-reuse`). The ladder PT-0 .. PT-8 is unchanged: the
+handoff carries only the unit under execution, this appendix carries the full
+post-train spec so a rotation never loses it. The line is PARKED, not dropped -
+docs/ds41-posttrain-plan.md remains its durable plan.
+
+The unit ladder is PT-0 .. PT-8 (docs/ds41-posttrain-plan.md section 4). Order
+is forced only where a dependency exists: PT-0 -> PT-1 -> PT-3 -> PT-4 -> PT-7's
+job thread. PT-2, PT-5, PT-6, PT-7a (the model-free HTTP surface) and PT-8 are
+independent.
+
+THE FIRST UNIT IS PT-0. Full spec follows.
+
+PT-0 - forward archive (tsave) + the backward declaration surface
+
+Goal: make the native forward able to record what the backward pass needs,
+without changing any serving behaviour, and land the contract the trainer will
+compile against.
+
+Read first (engine, /data/YoungAi at fc54d1e):
+- src/core/core_v41.h:62-66 - the v41_tsave struct and the state's `tsave`
+  pointer ("NULL = inference").
+- src/core/core_ptrain.h:145 - the trainer's own pt_run.save.
+- src/core/core_v41_attn.c:132-133 - the only consumer today: the frozen
+  selection replay for the gradient check.
+- src/core/core_ptrain_layer.c:102-146 (pt_layer_recompute) - what the
+  recompute reads back: the archived bf16 hc_in per layer, or the tokens at L0.
+- src/core/core_ptrain_bwd.c:136-165 - the exit segment (head, rms_norm,
+  hc_pre, hc_post, amp) and the multi-layer walk entry.
+- src/core/core_ptrain_layer.c:349-372 (pt_layers_bwd) - hi -> lo walk with
+  ds4_gpu_bwd_wcache(1/0) around recompute+backward.
+- port: ds4_ds41_forward.inc (the V4.1 layer loop and state: the line 153 note
+  that tsave/graph/snap_*/mainh were dropped), ds41_forward.h (the public V4.1
+  native surface - the seam to extend), ds4_gpu.h (where device entries are
+  declared), cuda/ds41_*.cuh + ds4_ds41_gpu.cuh:39-60 (the include contract).
+
+Scope, exactly:
+1. Reintroduce the archive in the port's V4.1 native state: per-layer entry
+   activations (the engine's pre-context `hc` rows, recorded in the bf16 the
+   engine records), the engram gate input for the engram layers, the
+   compressor remainder for the boundary layers, and the per-sample selections
+   (topk / idx) when replay is on. Allocation is TRAINING-ONLY: it must be
+   allocated only when a native flag asks for it (the port holds that flag on
+   the state the trainer creates), so the serving path's memory profile and
+   decode graphs do not move. This is PT-0's whole risk.
+2. Declare the backward contract: add the 24 ds4_gpu_bwd_* entry declarations
+   to ds4_gpu.h, mirroring src/core/ds4_gpu_bwd.h one for one (names, argument
+   order, semantics comment with the engine's line). Definitions arrive in
+   PT-1; this unit lands declarations plus, if needed, stub-free compile
+   guards so nothing links against an undefined symbol yet. Do not invent
+   entries the engine does not have.
+3. Add the archive's probe surface to ds41_forward.h (a read-only getter for
+   one layer's archived entry rows plus the archive's shape), so the gate below
+   is runnable without the trainer.
+4. tests/test_ds41_ptrain.cu skeleton: the C harness pattern the port already
+   uses (see tests/test_ds41_forward.cu); PT-0 puts the archive check in it.
+
+Gate for PT-0 (model-free on the dev box, then one Spark run):
+- Compile: `make ds4-c` and the harness target; `cargo build --workspace
+  --all-targets` (full workspace, the recorded lesson).
+- The archive-vs-dump parity: the port's score entry already writes
+  <out>.x_Lnn.bin / .y_Lnn.bin / .hce_Lnn.bin and .erows_Lnn.txt for n <= 64
+  (ds41_forward.h:4-8 - the engine's own capture protocol). Run the same ids
+  with the archive on and assert the archived per-layer entry rows equal the
+  dumped rows byte for byte, layer by layer, and that the erows agree. This is
+  the port's own oracle; no engine binary is needed for it.
+- Serving non-regression: with the archive off, the byte-identical score run
+  and the greedy generate run must be unchanged (same logits file hash, same
+  tokens).
+
+Evidence to record: the command lines, the harness output, the score-run
+hashes, and the per-layer parity count (n layers x rows compared).
+
+Commit shape: `feat(ds41): archive the V4.1 forward for training` (<= 50
+chars), body naming the engine lines and the parity result.
+
+Rollback: single commit on this branch; the archive is inert when off.
+
+PT-1 - the backward kernel family (the largest single unit)
+Read: src/gpu bwd contract src/core/ds4_gpu_bwd.h (all 24 entries, with their
+declaration lines), and the definitions at src/cuda/cuda_bwd_dense.inc.cu
+(49/89/200/259/282/307/340/351/383/403/420/425/434), cuda_bwd_attn.inc.cu
+(252/290), cuda_bwd_hc.inc.cu (102), cuda_bwd_moe.inc.cu (19/54/77/126/132),
+cuda_bwd_comp.inc.cu (33/70), cuda_bwd_vq.inc.cu (288 is in cuda_v41_q4k).
+The include order is a contract: engine ds4_cuda.cu:104-109 includes dense,
+comp, attn, hc, vq, moe, with the stated constraints (dense after
+v41_q4k/gemv_highprec; comp before attn; moe after vq_row/vq_prefill/bwd_vq).
+Port target: cuda/ds41_bwd_{dense,comp,attn,hc,vq,moe}.cuh, included from
+ds4_ds41_gpu.cuh AFTER cuda/ds41_sample.cuh (line 60), in that order, with the
+same per-file provenance header the other cuda/ds41_*.cuh files carry.
+Numerics contract (engine-stated, ds4_gpu_bwd.h:21-22): f32 row-major [n][dim],
+bf16 module-boundary rounding = straight-through.
+Gate: a model-free finite-difference self-test per entry (tests/test_ds41_bwd.cu)
+- the engine's own screening philosophy: cuBLAS switches algorithm with row
+count, so cross-path bitwise comparison is meaningless and the
+finite-difference ratio is the only oracle (core_ptrain_diag.c:159-162). Then,
+in-model, the trainer's built-in gradcheck/hccheck/rccheck/packcheck (PT-3).
+Commit: `feat(ds41): port the post-train backward kernels`.
+
+PT-2 - the ③ apply at the forward tail
+Read: core_v41_amp.c (the loader's per-layer read :194-223, v41_amp_load
+:223-270 with the K <= 8192 concat, v41_amp_apply :322-329), core_v41_forward.c
+:148-155 (the tail: MoE output, round_bf16, tsave->moe_in, v41_amp_hook,
+return v41_amp_apply) and :149 (the towers' own apply). The dense kernel is
+cuda_v41_4.inc.cu:321 (two cuBLAS Sgemm); the small-batch arm (n <= 8) is
+cuda_draft_attn.inc.cu:418-443.
+Port scope: a device store for the merged amp rows (the Rust reader already
+merges: zchain.rs merge_amp, AMP_MAX_RANK = 8192, base.fnv gate), the apply
+kernel mirroring the engine's, the round_bf16 the engine applies, and the tail
+hook in ds4_ds41_forward.inc at the engine's own position. Then lift the
+refusal in crates/ds4-core/src/v41_run.rs (the error string "V4.1 zchain
+carries amp_Lnn.bin; the low-rank amplifier apply is not ported") and keep the
+existing unit test that names amp_Lnn.bin, retargeted to the new positive path.
+Gate: model-free device-apply vs a CPU reference on a synthetic amp_Lnn.bin
+(f32 and fp4x32 type tags), plus the live check that with A = 0 the run is
+bit-identical to no-amp, and that a directory carrying an amp_Lnn.bin loads and
+serves. Note: no Spark directory carries one today, so the live half is
+synthetic - say so in the commit.
+Commit: `feat(ds41): apply the post-train amp at the forward tail`.
+
+PT-3 - the trainer core
+Read (all at /data/YoungAi fc54d1e): src/core/core_ptrain.h (the cfg struct and
+the whole contract in its comments), core_ptrain.c (the run entry
+ds4_engine_ptrain, the pre-warm + memory floor, the check chain, the epoch loop,
+pt_opt_step), core_ptrain_data.c (pt_cfg_load, pt_parse_line, pt_data_load,
+the FNV hold-out rule, chat rendering both sides), core_ptrain_teacher.c (the
+top-K teacher, the prefix snapshots, the <file>.teacher.bin cache format
+PTK2), core_ptrain_bwd.c (pt_run_alloc: A=0, B ~ N(0, std^2), the init overlay
+and base.fnv verify; pt_save_amp), core_ptrain_layer.c (recompute + per-layer
+backward + the compressor/engram reverse), core_ptrain_pack.c (the
+PT_PACK_MAX = 8 batch pack), core_ptrain_probe.c (the greedy probes and the new
+收口 stop probe), core_ptrain_diag.c (diag/packcheck), core_ptrain_expand.c
+(the multi-form expansion, default expand=4), core_ptrain_onpolicy.c (step 2:
+sample N, teacher-score the sampled tokens, same KL kernel), and the design doc
+docs/posttrain.md (one round, two steps, three metrics).
+Port scope: new native files ds4_ds41_ptrain*.inc (one per engine file, same
+names, same order) included by ds4.c after ds4_ds41_kvreuse.inc; a new native
+surface header ds41_ptrain.h (pattern: ds41_forward.h) with a run entry, a
+progress callback and an abort; and a `--ptrain <cfg>` route in crates/ds4-cli
+(the Rust host parses the flag and hands the cfg path over; the native prints
+its own progress lines as the engine does).
+Gate: (a) model-free parser parity on the 14-case corpus in
+misc/posttrain-research-2026-10-11.md section 9 - the studio's check is
+deliberately LOOSER than the trainer's and the port must preserve both, not
+unify them; (b) the trainer's own checks on the Spark (packcheck=1, rccheck,
+hccheck, gradcheck=1) - each exits after checking; (c) a 10-minute probe-
+material run (see assets) with sample_n=0 and no eval=, asserting step 0 is
+bit-comparable to the engine on the same material, then with eval= and
+sample_n, asserting the three readouts appear.
+Commit: `feat(ds41): port the ③ post-train trainer`.
+
+PT-4 - the judge (score route + anchor_metrics + the gate rule)
+Read: src/cli/cli_diag.c:91-131 (run_score_ids: ids file, >= 2 tokens,
+ds4_engine_v41_score_ids to a .bin, "needs the graph session backend"),
+src/core/core_v41_score.c, train_gate.c (the two arms, TR_GATE_NTOK = 512,
+the pick rule and the 10-11 revision: ①② select, ③ only reports drift),
+gguf-tools/bench/anchor_metrics.c (the five metrics).
+Port scope: the host route --score-ids/--score-out in ds4-cli over the EXISTING
+native ds4_v41_score_ids (ds41_forward.h:94); anchor_metrics ported as a native
+tool in gguf-tools/bench/ (the engine shells out to the C binary; keep that, so
+the numbers stay comparable); the gate rule and pick.txt in the supervisor.
+Gate: anchor_metrics vs the engine's binary on identical .bin inputs (bit-equal
+text output); then a live two-arm scoring on the wt2 512-token material.
+Commit: `feat(ds41): port the post-train judge and the round gate`.
+
+PT-5 - ds4_zfinetune (DQZ2 ③ merge) + ds4_loss
+Read: ds4_zfinetune.c (zf_concat_payload, zf_zmod_from_payload,
+zf_take_rte, ds4_zfinetune_merge) and ds4_loss.c/.h (the four calibration
+losses). Neither exists in the port (grep: no zfinetune, no ds4_loss).
+Gate: merge parity on a fixture pair (bit-equal merged DQZ2 bytes), loss parity
+vs the C module on captured float arrays.
+Commit: `feat(ds41): port the finetune merge and the four losses`.
+
+PT-6 - ds4_posttrain (the closed-form 1-bit module)
+Read: ds4_posttrain.h:12-18 (the formula), .c:15-33 (row_scale), :36-42
+(quant_row), :45-62 (the cosine with the scale-cancelling convention).
+Preserve exactly: double accumulation in wx-then-bx order, sign(0) = +1 via
+`< 0.0f` in both the bit fill and the accumulation, den <= 1e-30 -> 0 with the
+mean|w| fallback, and no packing in the module. Honest note to carry in the
+commit: the module has ZERO callers in the engine and is slated for deletion
+there (docs/clear.md:113); this preserves a validated formula, not a live path.
+Gate: bit/ULP parity against the C module on the engine's own anisotropic
+fixture (the recorded unit test: output-space MSE 3697 vs the 8106 generic
+baseline, docs/log.md:672).
+Commit: `feat(ds41): port the closed-form 1-bit row scale`.
+
+PT-7 - the supervisor and the HTTP API (no HTML, no chat page)
+Read: src/train/train_internal.h (the whole contract in its comments - read it
+in full; it is 225 lines and it IS the spec), train_main.c, train_http.c,
+train_api.c (the router and the upload contract), train_models.c, train_job.c,
+train_gate.c, train_model.c, train_child.c, train_ctl.c, train_runs.c,
+train_gate.c, train_auth.c, train_keys.c, train_net.c, train_frp.c,
+train_frps.c, train_sshtun.c, train_tunnel.c, train_cert.c, train_exec.c,
+train_proxy.c.
+Port scope: a new crate with a `ds4-train` binary (Rust) that mirrors the
+routes, the status codes, the JSON shapes and the error strings - the route
+table is docs/ds41-posttrain-plan.md section 5; the ONLY removals are the page
+routes (/ /index.html /studio /train chat.html monitor.html logo.jpg and the
+page half of the static route). Keep the byte-proxy of /v1/*, /monitor,
+/metrics, /api/models/plugins, /api/models/list; keep auth, API keys, frp
+tunnel, cert; keep the job thread (stop model -> train -> gate -> restart), the
+child spawn/watchdog (TR_WD_KILL_MB), the /proc instance lock over the busy
+binary list, serve_pick.txt, and the shared routes on ds4-server with the
+serving=1 refusals plus the live plugin hook.
+Sub-unit PT-7a (independent, model-free, can go first): the API surface with
+every model-touching operation stubbed, gated on route/JSON parity against the
+engine's ds4-train binary.
+Gate: PT-7a - the 14-case upload corpus plus every route's shape (status code,
+content-type, JSON keys, error strings) compared request for request against
+the engine's ds4-train; PT-7b - the full cycle on the Spark, driven ONLY by
+HTTP POST/GET through the main port, exactly as
+gguf-tools/scripts/studio_posttrain_probe.sh does (copy that script into the
+port's gguf-tools/scripts/, it is 71 lines and it is the acceptance harness).
+Commit: `feat(ds41): add the ds4-train supervisor and HTTP API`.
+
+PT-8 - legacy completeness (owner said "fully ported")
+Read: gguf-tools/bench/posttrain_reward.c (the stock/market scorers, the
+PR_COST = 0.002, rc 2 = INVALID not 0, and the -DPOSTTRAIN_REWARD_TEST fixture
+with hand-computed answers) and its consumers in
+gguf-tools/scripts/z_nightly_spark.sh (stage_reward / stage_sample /
+stage_solve3 -> v41_amp_run --adv-list).
+Record in the commit that this pipeline is LEGACY: the 10-10 trainer dropped
+the reward loop (core_ptrain.h:10) and the studio has no consumer.
+Gate: the tool's own self-test mode plus a parity run on the recorded fixture.
+Commit: `feat(ds41): port the legacy post-train reward scorer`.
+
+Out of scope, named so nothing is silently missing: the ①/② producers
+(gguf-tools/amp/zlayer*, ds4quant_*, amp_solve*, v41_*_solve*). The ② sidecar
+READER is already ported; these are the quantizer/solver tools and the request
+was ③. The max_seqs lanes scheduler and --v41-chunk remain the serving
+campaign's open items, not part of this line.
+
+Assets the trainer and the gate need (research 2026-10-13; NOTHING here is in
+either tree, in git, or on this box - verified by reading both worktrees and by
+find over /data and $HOME):
+- hold material: gguf-tools/data/posttrain/hold.jsonl. 63 general questions
+  (hold/questions.txt) + the deployed model's own answers, converted from
+  review_v2's hold_general.*.qa (fable5.md:9328, :10637). The studio HARD-FAILS
+  without it (train_job.c:71-72). It ships in the release pack
+  (release_pack.sh:24) and is NOT in git (fable5.md:10760: "只在 spark(不进
+  git)").
+- probe material: gguf-tools/data/posttrain/xlang/ - kvc_train 26 rows (the KV
+  file's 48-byte KVC header rule written in Python/Go/Rust, 4 questions each,
+  plus 14 Chinese/English "explain the rule" rows) and kvc_eval_js 5 rows (the
+  same four things in JS/TS, the held-out language). Hand-written by the engine
+  session (fable5.md:10896, :10907); the engine itself judged the 26-row case
+  too thin to set defaults on.
+- facts material: youngai_facts.jsonl (36 rows = 12 project facts x 3
+  phrasings) with its 13-question probe file, its 2-form training file (24) and
+  its eval holdout (12) (fable5.md:10800, :10979).
+- large corpus: review_v2 (the finance replay, 1326 questions + 63 hold)
+  (fable5.md:10648).
+- gate assets: gguf/go-onebit/g7/wt2.ids (regen_ids.sh:34) and the 265 MB FP
+  teacher anchor gguf/v41judge/teacher_g7_wt2_n512.bin (needs the HF factory
+  weights; release_pack.sh:13 says a pack consumer cannot produce it).
+- path contract: the studio's data dir is $ROOT/gguf-tools/data/posttrain and
+  the run output $ROOT/gguf/v41/posttrain/kd-<name>-L<layers>-lr<lr>-e<epochs>
+  -MMDDHHMM (train_ctl.c:14-20, train_job.c:79), with the fixed hold path at
+  train_job.c:71. The port tree has NO gguf/ and no gguf-tools/data/ today.
+Decision for the owner (the one thing this research cannot settle): is the
+port's training corpus the operator's existing material, or does the port ship
+its own? Recommended default: reuse the Spark's hold.jsonl (an artifact, not
+code), author fresh probe material per docs/posttrain.md section 4.1, and keep
+a tiny hand-written jsonl for the sample_n=0/no-eval= bit-identical smoke.
+
+Ladder: (1) model-free on the dev box; (2) Spark, model-free build + native
+self-tests; (3) Spark, live - the trainer's own checks, then the probe material,
+then a real run with the three readouts, then the wt2 two-arm gate; (4) the
+full HTTP cycle; (5) CI green with a full-workspace compile run locally first.
+### Reference map (engine -> port), post-train line
+
+Moved verbatim from the handoff section 4 on 2026-10-13 with the unit specs
+above.
+
+
+- ③ producer: src/core/core_ptrain*.c -> ds4_ds41_ptrain*.inc + ds41_ptrain.h
+  + `--ptrain` in crates/ds4-cli.
+- ③ apply: src/core/core_v41_amp.c + core_v41_forward.c:148-155 ->
+  ds4_ds41_forward.inc tail + a cuda/ds41_*.cuh kernel; reader already in
+  crates/ds4-core/src/zchain.rs + sidecar.rs.
+- ③ format: amp_Lnn.bin header <i32 D><i32 K><i32 ty> then A[K][D], B[K][D]
+  f32 row-major, plus base.fnv "%016llx %u" of the ② directory
+  (core_ptrain_bwd.c:173-200); the port's reader matches (sidecar.rs:252-299,
+  zchain.rs check_base_fnv).
+- judge: src/cli/cli_diag.c:91-131 + gguf-tools/bench/anchor_metrics.c.
+- studio: src/train/* -> the new ds4-train crate (minus the HTML).
+- design doc: docs/posttrain.md (one round, two steps, three metrics).
+- full research note: misc/posttrain-research-2026-10-11.md (396 lines: call
+  tables, HTTP routes, formats, the 14-case corpus, the feasibility matrix).
+  CAVEAT: its section 0 and parts of section 2 were written against
+  /data/YoungAi-restructure (221b9e2, the OLDER trainer) and against
+  /data/YoungAi at 3946dbc. Re-read every cited engine file at the current pin
+  before implementing from it.

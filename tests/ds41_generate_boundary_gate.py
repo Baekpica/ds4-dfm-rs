@@ -33,6 +33,13 @@ def structure(source: str, name: str) -> str:
     return source[start:end]
 
 
+def named_struct(source: str, name: str) -> str:
+    """A plain `struct NAME { ... };` (no typedef), e.g. ds4_v41_images."""
+    start = source.index(f"struct {name} {{")
+    end = source.index("};", start) + 2
+    return source[start:end]
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     forward_path = root / "ds4_ds41_forward.inc"
@@ -43,6 +50,8 @@ def main() -> int:
         temp = Path(directory)
         (temp / "ds41_boundary_types.inc").write_text(
             "typedef ds41_engram_feed v41_engram_feed;\n"
+            + structure(forward, "v41_image") + "\n"
+            + named_struct(forward, "ds4_v41_images") + "\n"
             + structure(forward, "ds4_v41_state") + "\n"
             + structure(draft, "ds4_v41_draft") + "\n"
             + forward[forward.index("struct ds4_v41_feed {") : forward.index("static int v41_feed_tramp")]

@@ -1,0 +1,15 @@
+ds41 speed sweep (speed-bench standard)
+started 2026-10-14T07:09:06+02:00
+mode attach
+server /proc/271150/exe -> /home/leandro/ds4-dfm-rs/ds4-server sha256 534958311c347a9900d92b0a64ce4258746f258cbdff81f5966f1e543628f76b
+cmdline ./ds4-server --cuda -m /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf --port 8099 --engram-dir /home/leandro/youngai/deepseek-engram --zchain /home/leandro/youngai/model/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative-grrb-code_fit_n15360-engine --mem-budget-mb 110000 --mem-floor-gb 2 --no-update-check --host 127.0.0.1 
+ctx 2048 4096 6144 8192 10240 12288 14336 16384 18432 20480 22528 24576 26624 28672 30720 32768 34816 36864 38912 40960 43008 45056 47104 49152 51200 53248 55296 57344 59392 61440 63488 65536 ; gen 128; port extra args: <none>
+corpus /home/leandro/ds4-dfm-rs/speed-bench/promessi_sposi.txt sha256 f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f
+csv /home/leandro/ds4-dfm-rs/misc/bench-head/text-bench/frontier-run-1.csv (32 rows)
+clock median over all samples 2405 MHz
+boot_s n/a
+reuse: route default (on unless the boot line passed --no-kv-reuse);
+       prefill_cached_tokens per row shows what the checkpoint restored
+       (0 = full prefill -- single-turn renders do not extend the
+       previous prompt, so this sweep reads full-context prefill_tokens)
+finished 2026-10-14T07:27:12+02:00

@@ -48,6 +48,8 @@ mod tensors;
 mod tok;
 mod uring;
 mod v41;
+pub mod v41_golden;
+pub mod v41_media;
 mod v41_run;
 mod validate;
 mod vq;
@@ -984,6 +986,7 @@ fn pack_host_vocab(v: &Vocab) -> FfiVocab {
         tool_schema_start_id: v.tool_schema_start_id,
         tool_schema_end_id: v.tool_schema_end_id,
         dsml_id: v.dsml_id,
+        image_id: v.image_id,
         dots3_endofsystem_id: v.dots3_endofsystem_id,
         dots3_endofuser_id: v.dots3_endofuser_id,
         dots3_endoftext_id: v.dots3_endoftext_id,
@@ -2244,6 +2247,9 @@ fn drop_model_native(raw: NonNull<ds4_bridge_model>) {
 
 impl Drop for Model {
     fn drop(&mut self) {
+        if self.shape().variant == Variant::DeepSeek41Flash {
+            v41_run::clear_setup_cache();
+        }
         drop_model_native(self.raw);
     }
 }
