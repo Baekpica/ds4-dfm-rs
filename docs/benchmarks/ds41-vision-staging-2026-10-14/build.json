@@ -1,0 +1,25 @@
+{
+  "head": "a5e9a62664510cbc8198f30e54886a81e31f7476",
+  "files": {
+    "ds4_ds41_vision.inc": "2c63ee48b7ce83fff4eb80df6d92625aff42d1045f0431afecbfc2c04f2fca6e",
+    "Makefile": "39f6641566a993d0fac77a292d9fd1e13d2a4c2d45b40125e5b7b8494ddd5a29",
+    "misc/cuda-env-vars.md": "ef46e43abf04980803243666c5d4813d07190e763914e5e922ea02586b8e0fb1",
+    "tests/test_ds41_vision_stage.c": "5881ca97c2c7a494c2c89938e1e5b56abc8227640b3ba83e7b843e581c1fcf53",
+    "tests/test_ds41_vision_stage.py": "0dfa4f834b3b2a0b0bb504b2a76b22236753391232dd121f5d3f3847e5c5ad5d"
+  },
+  "reuse": "No Rust/ABI/CUDA-kernel changes; prior host/API/long-context capture gates reusable only for those unchanged paths.",
+  "binaries": {
+    "cli-candidate": "18452492cf58644a7f2e1aef88a07598e522696443bde9b9ea6bc7cfdd43f35a",
+    "server-candidate": "fa37d6d3884d8a68463823af35403f144ec0719d25f71817288058bf5f83bbdc",
+    "staging_gate_initial": "779ea4097f9a4b21fabd2726bc25b12dfd1dd75dc04a9334ff207f4d05736301",
+    "staging_gate_resume": "4ed9439036c7c76810b3724c08769de0704c1840e7b6a5ff2927a99660cfa9bc"
+  },
+  "build": "make cuda-spark; CUDA13.4.92 sm_121a; build-candidate.log exit0",
+  "gate_resume_inputs": {
+    "staging_gate": "4ed9439036c7c76810b3724c08769de0704c1840e7b6a5ff2927a99660cfa9bc",
+    "staging_gate.rs": "70abb5af30fcef2d2b71258ba2ea753e1cda72828dc34b3c9fe5e4e61f374fc2",
+    "staging_audit.py": "4a67b9717a69306dec6a01db6f6020abf9bbe946089f8b89183197d1e8739f2a",
+    "qualify.py": "ff3544069e6978ab7a074a32278c3b654936ca38dca1dbd859368a9ab5e5c1bc",
+    "frozen-inputs.json": "162e2d50753c69198736c2ec56c2b45da6bd4c7b4a14ed9c31679b16718bdca5"
+  }
+}

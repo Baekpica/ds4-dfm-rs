@@ -1,0 +1,78 @@
+{
+  "advised": {
+    "direct": {
+      "samples": 6,
+      "transfer_total_s": {
+        "min": 4.691492721,
+        "median": 5.2234830635,
+        "max": 5.906774697
+      },
+      "cpu_median_s": 0.0,
+      "h2d_median_s": 5.22327824,
+      "resident_range": [
+        0,
+        0
+      ],
+      "exact_bytes": true
+    },
+    "pinned": {
+      "samples": 6,
+      "transfer_total_s": {
+        "min": 0.834060927,
+        "median": 0.9190438649999999,
+        "max": 0.968837348
+      },
+      "cpu_median_s": 0.8946868195,
+      "h2d_median_s": 0.019196331,
+      "resident_range": [
+        0,
+        0
+      ],
+      "exact_bytes": true
+    },
+    "speedup": 5.683605823863478
+  },
+  "warm": {
+    "direct": {
+      "samples": 6,
+      "transfer_total_s": {
+        "min": 0.034249666,
+        "median": 0.034886243,
+        "max": 0.035364587
+      },
+      "cpu_median_s": 0.0,
+      "h2d_median_s": 0.034800475,
+      "resident_range": [
+        823148544,
+        823148544
+      ],
+      "exact_bytes": true
+    },
+    "pinned": {
+      "samples": 6,
+      "transfer_total_s": {
+        "min": 0.050664844,
+        "median": 0.051208584,
+        "max": 0.051620158
+      },
+      "cpu_median_s": 0.030467132,
+      "h2d_median_s": 0.016443860999999997,
+      "resident_range": [
+        823148544,
+        823148544
+      ],
+      "exact_bytes": true
+    },
+    "speedup": 0.6812577164797213
+  },
+  "resources": {
+    "window_bytes": 8388608,
+    "same_device_bytes": 25690112,
+    "staged_bytes": 822083584,
+    "direct_copies": 128,
+    "pinned_copies": 160,
+    "added_explicit_cpu_copy_bytes": 822083584
+  },
+  "scope": "4 matrices per block x32; no main-model memory or kernels; sync and every-byte verification per tensor; verification excluded from transfer total; 2 fresh processes/mode/cache and3 repetitions/process",
+  "harness_note": "First direct-advised process completed exit0 with3exact samples. Driver then failed parsing guard stdout prefix. Resumed after parser-only correction, reusing receipt and unchanged probe inputs; no samples repeated or discarded."
+}

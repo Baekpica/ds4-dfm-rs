@@ -134,6 +134,7 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [CUDA graph](releases/bonsai-cuda-graph-2026-09-30.md),
   [CPU reference](releases/bonsai-cpu-reference-2026-09-30.md).
 - **DeepSeek V4.1:** [vision review: image KV, tools and bounded numerical gates, October 14](benchmarks/ds41-vision-review-2026-10-14/README.md),
+  [vision weight staging: paired TTFT, decode costs and multi-image gates, October 14](benchmarks/ds41-vision-staging-2026-10-14/README.md),
   [warm-path campaign: the asset-open cache, October 13](benchmarks/ds41-warmpath-2026-10-13/README.md),
   [2K–64K Prefill/Decode tables and graph, October 13](benchmarks/ds41-spark-64k-2026-10-13/README.md),
   [capped-clock sweep and review qualification, October 13](benchmarks/ds41-spark-review-2026-10-13/README.md),
