@@ -989,3 +989,31 @@ fn dsml_v41_places_tool_result_images_inside_the_envelope() {
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(&format!("before{DSML_IMAGE}after")));
 }
+
+#[test]
+fn dsml_v41_writes_a_tool_message_image_inside_its_envelope() {
+    // The Chat Completions MCP loop: the image arrives in a tool-role message
+    // whose content is a block array, so parse.rs writes the placeholder into
+    // that content in client block order and this render wraps the content in
+    // its <tool_result> envelope.  The envelope text is the only place the
+    // V4.1 head can put the placeholder for a tool result (the engine's
+    // render, server_dsml_render.c:409-414), so the image must reach the
+    // prompt here or it is silently dropped.
+    let v41 = DsmlHead::V41 { system_token: true };
+    let tool = ChatMsg {
+        role: "tool".into(),
+        content: format!("shot:{DSML_IMAGE}done"),
+        parts: vec![
+            ChatPart::Text("shot:".into()),
+            ChatPart::Image(0),
+            ChatPart::Text("done".into()),
+        ],
+        tool_call_id: "c1".into(),
+        ..ChatMsg::default()
+    };
+    let out =
+        render_dsml_chat_choice_ex(&[tool], "", ThinkMode::None, ToolChoice::Auto, v41).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains(&format!("<tool_result>shot:{DSML_IMAGE}done</tool_result>")));
+    assert_eq!(text.matches(DSML_IMAGE).count(), 1);
+}

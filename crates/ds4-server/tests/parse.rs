@@ -448,9 +448,11 @@ fn image_input_rejects_remote_urls_wrong_magic_and_non_user_roles() {
     let assistant = format!(
         r#"{{"messages":[{{"role":"assistant","content":[{{"type":"image_url","image_url":"data:image/png;base64,{PNG}"}}]}}]}}"#
     );
+    // An assistant image stays a parse error.  A tool/function image does not
+    // (the MCP loop; see openai_tool_message_carries_the_image_placeholder).
     assert_eq!(
         rust_parse("chat", &assistant).unwrap_err(),
-        "images are allowed only in user messages"
+        "images are allowed only in user messages or tool results"
     );
 }
 
@@ -769,4 +771,42 @@ fn engine_defaults_think_and_sampling() {
     assert_eq!(r.presence_penalty, -0.2);
     assert!(r.dry_set);
     assert_eq!(r.dry_multiplier, 0.8);
+}
+
+#[test]
+fn openai_tool_message_carries_the_image_placeholder() {
+    // The real MCP loop on the Chat Completions surface: an assistant turn
+    // calls a screenshot tool, and the tool-role message's content is a block
+    // array whose image block is the pixels.  The image registers like a
+    // user-message image, and the placeholder lands in that message's content
+    // in client block order, because that content is what the DSML render
+    // writes inside its <tool_result> envelope.
+    const PNG: &str = concat!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
+        "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    );
+    let body = format!(
+        r#"{{"messages":[{{"role":"assistant","content":"","tool_calls":[{{"id":"c1","type":"function","function":{{"name":"shot","arguments":"{{}}"}}}}]}},{{"role":"tool","tool_call_id":"c1","content":[{{"type":"text","text":"shot:"}},{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{PNG}"}}}},{{"type":"text","text":"done"}}]}}]}}"#
+    );
+    let parsed = rust_parse("chat", &body).unwrap();
+    assert_eq!(parsed.images.len(), 1);
+    assert_eq!(parsed.images[0].mime, ImageMime::Png);
+    assert_eq!(parsed.messages[1].role, "tool");
+    assert_eq!(parsed.messages[1].content, format!("shot:{DSML_IMAGE}done"));
+    assert_eq!(
+        parsed.messages[1].parts,
+        [
+            ChatPart::Text("shot:".into()),
+            ChatPart::Image(0),
+            ChatPart::Text("done".into()),
+        ]
+    );
+    assert_ne!(parsed.needs & NEED_IMAGE, 0);
+    // The V4.1 head admits it; a head that admits images but cannot place one
+    // inside a tool result is refused by name rather than leaking the token.
+    assert_eq!(generation_blocked(&parsed, 16), None);
+    assert_eq!(
+        generation_blocked(&parsed, 7),
+        Some("images inside a tool result are supported only by DeepSeek V4.1 Flash")
+    );
 }

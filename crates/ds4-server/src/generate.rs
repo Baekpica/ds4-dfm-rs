@@ -1251,16 +1251,22 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
     }
     // A head that admits images may still not place one inside a tool result:
     // that placement exists in the DSML V4.1 render only (render.rs
-    // append_dsml_user_content).  Every other head renders tool results from
-    // the ToolResult part, which carries the plain text (parse.rs
-    // json_tool_result_content), so the image could never reach its prompt.
-    // Fail closed instead of letting the media expansion reject it later.
+    // append_dsml_user_content for the Anthropic tool_result, and the tool
+    // branch for a Chat Completions tool/function message).  Every other head
+    // renders tool results from the ToolResult part, which carries the plain
+    // text (parse.rs json_tool_result_content), so the image could never reach
+    // its prompt.  Fail closed instead of letting the media expansion reject
+    // it later, or letting the placeholder token leak into a head that cannot
+    // place it.  Two shapes carry a tool image: the Anthropic tool_result (an
+    // image on a user message that has a ToolResult part) and a Chat
+    // Completions tool/function message.
     if !v41
         && parsed.messages.iter().any(|m| {
-            m.parts
-                .iter()
-                .any(|p| matches!(p, ChatPart::ToolResult { .. }))
-                && m.parts.iter().any(|p| matches!(p, ChatPart::Image(_)))
+            m.parts.iter().any(|p| matches!(p, ChatPart::Image(_)))
+                && (m.role != "user"
+                    || m.parts
+                        .iter()
+                        .any(|p| matches!(p, ChatPart::ToolResult { .. })))
         })
     {
         return Some("images inside a tool result are supported only by DeepSeek V4.1 Flash");

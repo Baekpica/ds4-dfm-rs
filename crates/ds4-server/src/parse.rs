@@ -508,8 +508,14 @@ fn validate_image_references(msgs: &[ChatMsg], images: &[RequestImage]) -> Resul
             let ChatPart::Image(index) = part else {
                 continue;
             };
-            if msg.role != "user" {
-                return Err("images are allowed only in user messages".into());
+            // The engine's render treats user, tool and function as the same
+            // user-like body (server_dsml_render.c:218-221 role_is_user_like),
+            // so a V4.1 tool result may carry pixels -- the MCP screenshot
+            // loop.  A head that admits images but cannot place one inside a
+            // tool result is refused by name in generation_blocked; a
+            // system/assistant image stays a parse error.
+            if !matches!(msg.role.as_str(), "user" | "tool" | "function") {
+                return Err("images are allowed only in user messages or tool results".into());
             }
             let Some(slot) = seen.get_mut(*index) else {
                 return Err("invalid image reference".into());
@@ -521,6 +527,45 @@ fn validate_image_references(msgs: &[ChatMsg], images: &[RequestImage]) -> Resul
         return Err("unreferenced image payload".into());
     }
     Ok(())
+}
+
+/// A tool/function message is rendered by its content, wrapped in the
+/// `<tool_result>` envelope, so an image block has to leave its placeholder in
+/// that text, in client block order.  The engine writes it into the same
+/// buffer at parse time (`server_parse_tools.c:289` through
+/// `mm_image_source_to_text`; the Chat Completions content sink at
+/// `server_buf.c:232`).  A user message gets its placeholder from the parts at
+/// render time instead, so the text a non-DSML head renders never carries the
+/// token.  A tool_result that already rendered its envelope (the Anthropic
+/// path writes both the envelope and the placeholder into the content) is left
+/// alone.
+fn write_tool_image_placeholders(msg: &mut ChatMsg) {
+    if !matches!(msg.role.as_str(), "tool" | "function") {
+        return;
+    }
+    if msg
+        .parts
+        .iter()
+        .any(|part| matches!(part, ChatPart::ToolResult { .. }))
+    {
+        return;
+    }
+    if !msg
+        .parts
+        .iter()
+        .any(|part| matches!(part, ChatPart::Image(_)))
+    {
+        return;
+    }
+    let mut rendered = String::with_capacity(msg.content.len() + DSML_IMAGE.len());
+    for part in &msg.parts {
+        match part {
+            ChatPart::Text(text) => rendered.push_str(text),
+            ChatPart::Image(_) => rendered.push_str(DSML_IMAGE),
+            _ => {}
+        }
+    }
+    msg.content = rendered;
 }
 
 fn validate_video_refs(msgs: &[ChatMsg], videos: &[RequestVideo]) -> Result<(), String> {
@@ -1140,6 +1185,7 @@ fn parse_messages(
         if msg.role.is_empty() {
             msg.role = "user".into();
         }
+        write_tool_image_placeholders(&mut msg);
         msgs.push(msg);
         p.ws();
         if p.peek() == Some(b',') {
@@ -1566,6 +1612,7 @@ fn parse_anthropic_messages(
         if msg.role.is_empty() {
             msg.role = "user".into();
         }
+        write_tool_image_placeholders(&mut msg);
         msgs.push(msg);
         p.ws();
         if p.peek() == Some(b',') {
@@ -2523,6 +2570,7 @@ fn parse_responses_input(
             if msg.role == "assistant" && !pending.is_empty() {
                 msg.reasoning = std::mem::take(&mut pending);
             }
+            write_tool_image_placeholders(&mut msg);
             msgs.push(msg);
         } else if t == "function_call" || t == "custom_tool_call" {
             let args = arguments
