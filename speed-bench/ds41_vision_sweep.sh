@@ -210,12 +210,18 @@ row() { # <tag> <ctx-tokens> <kind> <image> <patch> <span> <tower-s> <resp-file>
 
 image_row() { # <name> <file>
     name=$1; file=$2
-    b64=$(base64 -w0 "$file" 2>/dev/null) || b64=$(base64 "$file" | tr -d '\n')
     case "$file" in
         *.jpg|*.jpeg) mime=image/jpeg ;;
         *) mime=image/png ;;
     esac
-    jq -n --arg p "$PROMPT" --arg u "data:$mime;base64,$b64" --argjson mt "$GEN" \
+    # The data URL goes through a file: bug.jpeg's base64 (2.4 MB) exceeds the
+    # kernel's 128 KB per-argument limit, so the old inline --arg form died
+    # with E2BIG ("jq: Argument list too long") and posted an empty body
+    # (HTTP 400 invalid JSON) on the Spark run of 2026-10-14.
+    { printf 'data:%s;base64,' "$mime"
+      base64 -w0 "$file" 2>/dev/null || base64 "$file" | tr -d '\n'
+    } > "$OUT/$name.url"
+    jq -n --arg p "$PROMPT" --rawfile u "$OUT/$name.url" --argjson mt "$GEN" \
         '{messages:[{role:"user",content:[
             {type:"text",text:$p},
             {type:"image_url",image_url:{url:$u}}]}],
