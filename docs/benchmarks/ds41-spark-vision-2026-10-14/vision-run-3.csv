@@ -1,0 +1,6 @@
+ctx_tokens,prefill_tokens,prefill_cached_tokens,prefill_tps,gen_tokens,gen_tps,first_token_sec,tok_per_step,wall_s,clock_mhz,kind,image,patch,span,tower_s
+502,502,0,100.3,128,43.5,5.0165,2.98,7.941,2418,image,review-market-panel.png,-,-,-
+967,967,0,125.9,128,32.4,7.7475,1.91,12.676,2424,image,bug.jpeg,-,-,-
+231,231,0,57.4,59,38.5,4.0291,2.81,5.548,2408,image,homer.png,-,-,-
+556,556,0,524.9,128,44.5,1.0602,2.84,3.923,2418,text,-,-,-,-
+1038,1038,0,577.0,128,30.1,1.8005,1.88,6.033,2424,text,-,-,-,-

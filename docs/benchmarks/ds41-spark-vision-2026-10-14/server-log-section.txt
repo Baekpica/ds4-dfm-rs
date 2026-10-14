@@ -1,0 +1,557 @@
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+ds4: [ds41] grow v41 hc inv -> 0.0 MB (gen 1)
+ds4: [ds41] grow v41 q4k w bf16 -> 5.0 MB (gen 2)
+ds4: [ds41] grow v41 q4k x bf16 -> 20.0 MB (gen 3)
+ds4: [ds41] grow v41 q4k w bf16 -> 12.5 MB (gen 4)
+ds4: [ds41] grow v41 q4k w bf16 -> 80.0 MB (gen 5)
+ds4: [attn] tensor-core prefill shared 26 KB enabled
+ds4: [ds41] grow v41 q4k x bf16 -> 128.0 MB (gen 6)
+ds4: [ds41] grow v41 bf16 x -> 20.0 MB (gen 7)
+ds4: [ds41] grow vq prefill hdr -> 0.0 MB (gen 8)
+ds4: [ds41] grow vq prefill ys -> 280.0 MB (gen 9)
+ds4: [ds41] grow vq prefill perm -> 0.0 MB (gen 10)
+ds4: [ds41] grow vq prefill inv -> 0.0 MB (gen 11)
+ds4: [ds41] vq-prefill tensor-core path (bf16 mma, <=128 tokens/item, 512 threads) ready, 48 SMs
+ds4: [ds41] grow vq prefill mma items -> 0.0 MB (gen 12)
+ds4: [ds41] grow vq prefill mma off -> 0.0 MB (gen 13)
+ds4: [ds41] grow vq prefill mma xs16 -> 120.0 MB (gen 14)
+ds4: [ds41] grow vq prefill mma h16 -> 54.0 MB (gen 15)
+ds4: [ds41] grow vq prefill mma g32 -> 108.0 MB (gen 16)
+[v41] pos 0+2048 L00 ok 0.3sds4: [ds41] grow v41 wkv bf16 -> 300.0 MB (gen 17)
+ds4: [ds41] grow v41 wkv x bf16 -> 24.0 MB (gen 18)
+ds4: [ds41] grow vq prefill mma items -> 0.0 MB (gen 19)
+[v41] pos 0+2048 L01 ok 0.5s[v41] pos 0+2048 L02 ok 0.6s[v41] pos 0+2048 L03 ok 0.7s[v41] pos 0+2048 L04 ok 0.7s[v41] pos 0+2048 L05 ok 0.8s[v41] pos 0+2048 L06 ok 0.9s[v41] pos 0+2048 L07 ok 1.0s[v41] pos 0+2048 L08 ok 1.1s[v41] pos 0+2048 L09 ok 1.1s[v41] pos 0+2048 L10 ok 1.2s[v41] pos 0+2048 L11 ok 1.3s[v41] pos 0+2048 L12 ok 1.3s[v41] pos 0+2048 L13 ok 1.4s[v41] pos 0+2048 L14 ok 1.5s[v41] pos 0+2048 L15 ok 1.6s[v41] pos 0+2048 L16 ok 1.6s[v41] pos 0+2048 L17 ok 1.7s[v41] pos 0+2048 L18 ok 1.8s[v41] pos 0+2048 L19 ok 1.8s
+[v41] pos 2048+464 L00 ok 0.0s[v41] pos 2048+464 L01 ok 0.1s[v41] pos 2048+464 L02 ok 0.1s[v41] pos 2048+464 L03 ok 0.1s[v41] pos 2048+464 L04 ok 0.1s[v41] pos 2048+464 L05 ok 0.2s[v41] pos 2048+464 L06 ok 0.2s[v41] pos 2048+464 L07 ok 0.2s[v41] pos 2048+464 L08 ok 0.2s[v41] pos 2048+464 L09 ok 0.3s[v41] pos 2048+464 L10 ok 0.3s[v41] pos 2048+464 L11 ok 0.3s[v41] pos 2048+464 L12 ok 0.3s[v41] pos 2048+464 L13 ok 0.3s[v41] pos 2048+464 L14 ok 0.4s[v41] pos 2048+464 L15 ok 0.4s[v41] pos 2048+464 L16 ok 0.4s[v41] pos 2048+464 L17 ok 0.4s[v41] pos 2048+464 L18 ok 0.4s[v41] pos 2048+464 L19 ok 0.5sds4: [ds41] grow v41 candidate blocks -> 0.0 MB (gen 20)
+[v41] pos 2048+464 L20 ok 0.5s[v41] pos 2048+464 L21 ok 0.5s[v41] pos 2048+464 L22 ok 0.5s[v41] pos 2048+464 L23 ok 0.6s[v41] pos 2048+464 L24 ok 0.6s[v41] pos 2048+464 L25 ok 0.6s[v41] pos 2048+464 L26 ok 0.6s[v41] pos 2048+464 L27 ok 0.6s[v41] pos 2048+464 L28 ok 0.7s[v41] pos 2048+464 L29 ok 0.7s[v41] pos 2048+464 L30 ok 0.7s[v41] pos 2048+464 L31 ok 0.7s[v41] pos 2048+464 L32 ok 0.7s[v41] pos 2048+464 L33 ok 0.8s[v41] pos 2048+464 L34 ok 0.8s[v41] pos 2048+464 L35 ok 0.8s[v41] pos 2048+464 L36 ok 0.8s[v41] pos 2048+464 L37 ok 0.9s[v41] pos 2048+464 L38 ok 0.9s[v41] pos 2048+464 L39 ok 0.9s
+[v41] prefill 2512 token 2.7s (921.7 t/s)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+ds4: [ds41] grow vision qkv bf16 -> 24.2 MB (gen 21)
+ds4: [ds41] grow vision attn S -> 128.0 MB (gen 22)
+ds4: [ds41] grow vision attn P -> 64.0 MB (gen 23)
+ds4: [ds41] grow v41 bf16 x -> 22.2 MB (gen 24)
+[v41] vision tower: 1 image(s) 4.08s (weights read per block from the sidecar, freed after)
+[v41] image 0: 48x86 patch -> 16x29 token (span 482)
+[v41] pos 0+502 L00 ok 0.0s[v41] pos 0+502 L01 ok 0.1s[v41] pos 0+502 L02 ok 0.2s[v41] pos 0+502 L03 ok 0.2s[v41] pos 0+502 L04 ok 0.2s[v41] pos 0+502 L05 ok 0.2s[v41] pos 0+502 L06 ok 0.3s[v41] pos 0+502 L07 ok 0.3s[v41] pos 0+502 L08 ok 0.3s[v41] pos 0+502 L09 ok 0.3s[v41] pos 0+502 L10 ok 0.3s[v41] pos 0+502 L11 ok 0.4s[v41] pos 0+502 L12 ok 0.4s[v41] pos 0+502 L13 ok 0.4s[v41] pos 0+502 L14 ok 0.4s[v41] pos 0+502 L15 ok 0.5s[v41] pos 0+502 L16 ok 0.5s[v41] pos 0+502 L17 ok 0.5s[v41] pos 0+502 L18 ok 0.5s[v41] pos 0+502 L19 ok 0.5s[v41] pos 0+502 L20 ok 0.6s[v41] pos 0+502 L21 ok 0.6s[v41] pos 0+502 L22 ok 0.6s[v41] pos 0+502 L23 ok 0.6s[v41] pos 0+502 L24 ok 0.6s[v41] pos 0+502 L25 ok 0.7s[v41] pos 0+502 L26 ok 0.7s[v41] pos 0+502 L27 ok 0.7s[v41] pos 0+502 L28 ok 0.7s[v41] pos 0+502 L29 ok 0.7s[v41] pos 0+502 L30 ok 0.8s[v41] pos 0+502 L31 ok 0.8s[v41] pos 0+502 L32 ok 0.8s[v41] pos 0+502 L33 ok 0.8s[v41] pos 0+502 L34 ok 0.8s[v41] pos 0+502 L35 ok 0.9s[v41] pos 0+502 L36 ok 0.9s[v41] pos 0+502 L37 ok 0.9s[v41] pos 0+502 L38 ok 0.9s[v41] pos 0+502 L39 ok 1.0s
+[v41] prefill 502 token 5.0s (99.5 t/s)
+ds4: [ds41] grow v41 fp8blk x bf16 -> 0.2 MB (gen 25)
+ds4: [ds41] grow v41 hc mix part -> 0.0 MB (gen 26)
+ds4: [ds41] grow v41 hc mix ctr -> 0.0 MB (gen 27)
+ds4: [attn] decode tensor-core shared 41 KB enabled
+ds4: [ds41] grow v41 attn mma acc -> 5.6 MB (gen 28)
+ds4: [ds41] grow v41 attn mma max -> 0.0 MB (gen 29)
+ds4: [ds41] grow v41 attn mma sum -> 0.0 MB (gen 30)
+ds4: [ds41] grow v41 fp8blk x bf16 -> 0.3 MB (gen 31)
+ds4: [ds41] grow v41 vq h -> 0.1 MB (gen 32)
+ds4: [ds41] grow v41 vq partial -> 0.3 MB (gen 33)
+ds4: [ds41] grow v41 vq x(bf16) -> 0.0 MB (gen 34)
+ds4: [ds41] device: 48 SM / 100 KB shared per SM / 1536 threads per SM / 65536 regs per SM
+ds4: [ds41] VQ gateup kernel: 1024 threads/block, 56 regs/thread, dynamic shared 32 KB => 1 blocks/SM = 1024 threads, occupancy 67%
+ds4: [ds41]   bound by: shared 3 / registers 1 / thread slots 1 (min)
+ds4: [ds41] VQ codebook 4096 words (32 KB each, NBIT 12); per-block dynamic shared cap 99 KB => gate+up in shared / down in shared
+ds4: [ds41] grow v41 vq order -> 0.0 MB (gen 35)
+ds4: [ds41] grow v41 hc mix part -> 0.0 MB (gen 36)
+ds4: [ds41] grow v41 hc mix ctr -> 0.0 MB (gen 37)
+ds4: [ds41] grow v41 attn mma acc -> 6.0 MB (gen 38)
+ds4: [ds41] grow v41 attn mma max -> 0.0 MB (gen 39)
+ds4: [ds41] grow v41 attn mma sum -> 0.0 MB (gen 40)
+ds4: [ds41] grow v41 vq h -> 0.2 MB (gen 41)
+ds4: [ds41] grow v41 vq partial -> 0.7 MB (gen 42)
+ds4: [ds41] grow v41 vq x(bf16) -> 0.1 MB (gen 43)
+ds4: [ds41] device: 48 SM / 100 KB shared per SM / 1536 threads per SM / 65536 regs per SM
+ds4: [ds41] VQ gateup kernel: 1024 threads/block, 64 regs/thread, dynamic shared 64 KB => 1 blocks/SM = 1024 threads, occupancy 67%
+ds4: [ds41]   bound by: shared 1 / registers 1 / thread slots 1 (min)
+ds4: [ds41] VQ codebook 8192 words (64 KB each, NBIT 13); per-block dynamic shared cap 99 KB => gate+up in shared / down in shared
+ds4: [ds41] grow v41 vq order -> 0.0 MB (gen 44)
+ds4: [ds41] grow v41 attn mma acc -> 18.0 MB (gen 45)
+ds4: [ds41] grow v41 attn mma max -> 0.0 MB (gen 46)
+ds4: [ds41] grow v41 attn mma sum -> 0.0 MB (gen 47)
+ds4: [ds41] grow v41 attn mma acc -> 48.0 MB (gen 48)
+ds4: [ds41] grow v41 attn mma max -> 0.1 MB (gen 49)
+ds4: [ds41] grow v41 attn mma sum -> 0.1 MB (gen 50)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [508, 634]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [511, 638]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [520, 637]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [523, 636]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 6 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [592, 635]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 5 rows) captured
+
+[v41] DSpark: 44 rounds (scheduler skipped 0), average accept 1.91/5; histogram 0:6 1:15 2:11 3:5 4:3 5:4
+[v41] one round 67.1 ms = draft 7.7 + snapshot/rollback 0.1 + verify 59.3 + argmax 0.0; yield 2.91 token => 23.0 ms/token
+[v41] host gaps/round: verify end->draft graph out 0.17 ms (slots 0.000 + cudaGraphLaunch(draft, 37 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 1.32 ms (start 1.28 = slots 0.000 + engram prep 0.340 + graph checks 0.935 + arm 0.000; cudaGraphLaunch 0.04); samples 39/39 rounds | capture (one-off, amortized above): verify graphs 5 for 36 ms, draft graphs 6 for 4 ms
+ds4: [graph] verify batches walked 39 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+ds4: [ds41] grow vision qkv bf16 -> 47.1 MB (gen 51)
+ds4: [ds41] grow v41 bf16 x -> 43.2 MB (gen 52)
+[v41] vision tower: 1 image(s) 5.67s (weights read per block from the sidecar, freed after)
+[v41] image 0: 134x60 patch -> 45x20 token (span 947)
+[v41] pos 0+967 L00 ok 0.0s[v41] pos 0+967 L01 ok 0.2s[v41] pos 0+967 L02 ok 0.2s[v41] pos 0+967 L03 ok 0.3s[v41] pos 0+967 L04 ok 0.3s[v41] pos 0+967 L05 ok 0.3s[v41] pos 0+967 L06 ok 0.4s[v41] pos 0+967 L07 ok 0.4s[v41] pos 0+967 L08 ok 0.5s[v41] pos 0+967 L09 ok 0.5s[v41] pos 0+967 L10 ok 0.5s[v41] pos 0+967 L11 ok 0.6s[v41] pos 0+967 L12 ok 0.6s[v41] pos 0+967 L13 ok 0.6s[v41] pos 0+967 L14 ok 0.7s[v41] pos 0+967 L15 ok 0.7s[v41] pos 0+967 L16 ok 0.7s[v41] pos 0+967 L17 ok 0.8s[v41] pos 0+967 L18 ok 0.8s[v41] pos 0+967 L19 ok 0.8s[v41] pos 0+967 L20 ok 0.9s[v41] pos 0+967 L21 ok 0.9s[v41] pos 0+967 L22 ok 0.9s[v41] pos 0+967 L23 ok 1.0s[v41] pos 0+967 L24 ok 1.0s[v41] pos 0+967 L25 ok 1.0s[v41] pos 0+967 L26 ok 1.1s[v41] pos 0+967 L27 ok 1.1s[v41] pos 0+967 L28 ok 1.2s[v41] pos 0+967 L29 ok 1.2s[v41] pos 0+967 L30 ok 1.2s[v41] pos 0+967 L31 ok 1.3s[v41] pos 0+967 L32 ok 1.3s[v41] pos 0+967 L33 ok 1.3s[v41] pos 0+967 L34 ok 1.4s[v41] pos 0+967 L35 ok 1.4s[v41] pos 0+967 L36 ok 1.4s[v41] pos 0+967 L37 ok 1.5s[v41] pos 0+967 L38 ok 1.5s[v41] pos 0+967 L39 ok 1.5s
+[v41] prefill 967 token 7.2s (133.9 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [969, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [973, 1023]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [995, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1023, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1024, 1103]
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [1026, 1102]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [1076, 1104]
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [1077, 1101]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+
+[v41] DSpark: 67 rounds (scheduler skipped 32), average accept 0.82/5; histogram 0:27 1:28 2:9 3:3 4:0 5:0
+[v41] one round 54.3 ms = draft 7.3 + snapshot/rollback 0.1 + verify 47.0 + argmax 0.0; yield 1.82 token => 29.8 ms/token
+[v41] host gaps/round: verify end->draft graph out 4.96 ms (slots 0.000 + cudaGraphLaunch(draft, 68 graph rounds) 0.00; rest = accept/rollback/emit) | draft end->verify graph out 0.57 ms (start 0.61 = slots 0.000 + engram prep 0.193 + graph checks 0.420 + arm 0.000; cudaGraphLaunch 0.04); samples 63/63 rounds | capture (one-off, amortized above): verify graphs 8 for 28 ms, draft graphs 4 for 2 ms
+ds4: [graph] verify batches walked 63 rounds, k=0 rounds walked 4 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] vision tower: 1 image(s) 3.46s (weights read per block from the sidecar, freed after)
+[v41] image 0: 56x28 patch -> 19x10 token (span 211)
+[v41] pos 0+231 L00 ok 0.0s[v41] pos 0+231 L01 ok 0.1s[v41] pos 0+231 L02 ok 0.1s[v41] pos 0+231 L03 ok 0.1s[v41] pos 0+231 L04 ok 0.1s[v41] pos 0+231 L05 ok 0.1s[v41] pos 0+231 L06 ok 0.2s[v41] pos 0+231 L07 ok 0.2s[v41] pos 0+231 L08 ok 0.2s[v41] pos 0+231 L09 ok 0.2s[v41] pos 0+231 L10 ok 0.2s[v41] pos 0+231 L11 ok 0.2s[v41] pos 0+231 L12 ok 0.2s[v41] pos 0+231 L13 ok 0.3s[v41] pos 0+231 L14 ok 0.3s[v41] pos 0+231 L15 ok 0.3s[v41] pos 0+231 L16 ok 0.3s[v41] pos 0+231 L17 ok 0.3s[v41] pos 0+231 L18 ok 0.3s[v41] pos 0+231 L19 ok 0.3s[v41] pos 0+231 L20 ok 0.4s[v41] pos 0+231 L21 ok 0.4s[v41] pos 0+231 L22 ok 0.4s[v41] pos 0+231 L23 ok 0.4s[v41] pos 0+231 L24 ok 0.4s[v41] pos 0+231 L25 ok 0.4s[v41] pos 0+231 L26 ok 0.4s[v41] pos 0+231 L27 ok 0.4s[v41] pos 0+231 L28 ok 0.4s[v41] pos 0+231 L29 ok 0.5s[v41] pos 0+231 L30 ok 0.5s[v41] pos 0+231 L31 ok 0.5s[v41] pos 0+231 L32 ok 0.5s[v41] pos 0+231 L33 ok 0.5s[v41] pos 0+231 L34 ok 0.5s[v41] pos 0+231 L35 ok 0.5s[v41] pos 0+231 L36 ok 0.5s[v41] pos 0+231 L37 ok 0.6s[v41] pos 0+231 L38 ok 0.6s[v41] pos 0+231 L39 ok 0.6s
+[v41] prefill 231 token 4.1s (57.0 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [233, 363]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [238, 367]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [250, 366]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [270, 364]
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [274, 365]
+
+[v41] DSpark: 21 rounds (scheduler skipped 0), average accept 1.86/5; histogram 0:2 1:7 2:6 3:5 4:0 5:1
+[v41] one round 70.9 ms = draft 8.0 + snapshot/rollback 0.1 + verify 62.8 + argmax 0.0; yield 2.86 token => 24.8 ms/token
+[v41] host gaps/round: verify end->draft graph out 10.11 ms (slots 0.000 + cudaGraphLaunch(draft, 15 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 1.68 ms (start 1.58 = slots 0.000 + engram prep 0.419 + graph checks 1.162 + arm 0.000; cudaGraphLaunch 0.10); samples 16/16 rounds | capture (one-off, amortized above): verify graphs 5 for 19 ms, draft graphs 4 for 2 ms
+ds4: [graph] verify batches walked 16 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+556 L00 ok 0.0s[v41] pos 0+556 L01 ok 0.1s[v41] pos 0+556 L02 ok 0.2s[v41] pos 0+556 L03 ok 0.2s[v41] pos 0+556 L04 ok 0.2s[v41] pos 0+556 L05 ok 0.2s[v41] pos 0+556 L06 ok 0.3s[v41] pos 0+556 L07 ok 0.3s[v41] pos 0+556 L08 ok 0.3s[v41] pos 0+556 L09 ok 0.3s[v41] pos 0+556 L10 ok 0.4s[v41] pos 0+556 L11 ok 0.4s[v41] pos 0+556 L12 ok 0.4s[v41] pos 0+556 L13 ok 0.4s[v41] pos 0+556 L14 ok 0.5s[v41] pos 0+556 L15 ok 0.5s[v41] pos 0+556 L16 ok 0.5s[v41] pos 0+556 L17 ok 0.5s[v41] pos 0+556 L18 ok 0.5s[v41] pos 0+556 L19 ok 0.6s[v41] pos 0+556 L20 ok 0.6s[v41] pos 0+556 L21 ok 0.6s[v41] pos 0+556 L22 ok 0.6s[v41] pos 0+556 L23 ok 0.7s[v41] pos 0+556 L24 ok 0.7s[v41] pos 0+556 L25 ok 0.7s[v41] pos 0+556 L26 ok 0.7s[v41] pos 0+556 L27 ok 0.7s[v41] pos 0+556 L28 ok 0.8s[v41] pos 0+556 L29 ok 0.8s[v41] pos 0+556 L30 ok 0.8s[v41] pos 0+556 L31 ok 0.8s[v41] pos 0+556 L32 ok 0.9s[v41] pos 0+556 L33 ok 0.9s[v41] pos 0+556 L34 ok 0.9s[v41] pos 0+556 L35 ok 0.9s[v41] pos 0+556 L36 ok 0.9s[v41] pos 0+556 L37 ok 1.0s[v41] pos 0+556 L38 ok 1.0s[v41] pos 0+556 L39 ok 1.0s
+[v41] prefill 556 token 1.0s (546.2 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [557, 688]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [561, 692]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [573, 691]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [605, 690]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [648, 689]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 5 rows) captured
+
+[v41] DSpark: 45 rounds (scheduler skipped 0), average accept 1.87/5; histogram 0:3 1:15 2:15 3:9 4:3 5:0
+[v41] one round 63.0 ms = draft 7.6 + snapshot/rollback 0.0 + verify 55.4 + argmax 0.0; yield 2.87 token => 22.0 ms/token
+[v41] host gaps/round: verify end->draft graph out 5.25 ms (slots 0.000 + cudaGraphLaunch(draft, 39 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.75 ms (start 0.71 = slots 0.000 + engram prep 0.235 + graph checks 0.475 + arm 0.000; cudaGraphLaunch 0.04); samples 40/40 rounds | capture (one-off, amortized above): verify graphs 5 for 19 ms, draft graphs 5 for 2 ms
+ds4: [graph] verify batches walked 40 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+1038 L00 ok 0.0s[v41] pos 0+1038 L01 ok 0.3s[v41] pos 0+1038 L02 ok 0.3s[v41] pos 0+1038 L03 ok 0.3s[v41] pos 0+1038 L04 ok 0.4s[v41] pos 0+1038 L05 ok 0.4s[v41] pos 0+1038 L06 ok 0.5s[v41] pos 0+1038 L07 ok 0.5s[v41] pos 0+1038 L08 ok 0.6s[v41] pos 0+1038 L09 ok 0.6s[v41] pos 0+1038 L10 ok 0.6s[v41] pos 0+1038 L11 ok 0.7s[v41] pos 0+1038 L12 ok 0.7s[v41] pos 0+1038 L13 ok 0.7s[v41] pos 0+1038 L14 ok 0.8s[v41] pos 0+1038 L15 ok 0.8s[v41] pos 0+1038 L16 ok 0.9s[v41] pos 0+1038 L17 ok 0.9s[v41] pos 0+1038 L18 ok 0.9s[v41] pos 0+1038 L19 ok 1.0s[v41] pos 0+1038 L20 ok 1.0s[v41] pos 0+1038 L21 ok 1.1s[v41] pos 0+1038 L22 ok 1.1s[v41] pos 0+1038 L23 ok 1.1s[v41] pos 0+1038 L24 ok 1.2s[v41] pos 0+1038 L25 ok 1.2s[v41] pos 0+1038 L26 ok 1.3s[v41] pos 0+1038 L27 ok 1.3s[v41] pos 0+1038 L28 ok 1.3s[v41] pos 0+1038 L29 ok 1.4s[v41] pos 0+1038 L30 ok 1.4s[v41] pos 0+1038 L31 ok 1.4s[v41] pos 0+1038 L32 ok 1.5s[v41] pos 0+1038 L33 ok 1.5s[v41] pos 0+1038 L34 ok 1.6s[v41] pos 0+1038 L35 ok 1.6s[v41] pos 0+1038 L36 ok 1.6s[v41] pos 0+1038 L37 ok 1.7s[v41] pos 0+1038 L38 ok 1.7s[v41] pos 0+1038 L39 ok 1.8s
+[v41] prefill 1038 token 1.8s (591.3 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [1041, 1170]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1043, 1174]
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [1046, 1173]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [1062, 1175]
+
+[v41] DSpark: 65 rounds (scheduler skipped 36), average accept 0.69/5; histogram 0:30 1:26 2:8 3:1 4:0 5:0
+[v41] one round 53.7 ms = draft 7.3 + snapshot/rollback 0.1 + verify 46.3 + argmax 0.0; yield 1.69 token => 31.7 ms/token
+[v41] host gaps/round: verify end->draft graph out 13.65 ms (slots 0.000 + cudaGraphLaunch(draft, 78 graph rounds) 0.00; rest = accept/rollback/emit) | draft end->verify graph out 0.37 ms (start 0.34 = slots 0.000 + engram prep 0.160 + graph checks 0.184 + arm 0.000; cudaGraphLaunch 0.02); samples 61/61 rounds | capture (one-off, amortized above): verify graphs 4 for 14 ms, draft graphs 3 for 1 ms
+ds4: [graph] verify batches walked 61 rounds, k=0 rounds walked 16 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+2048 L00 ok 0.1s[v41] pos 0+2048 L01 ok 0.5s[v41] pos 0+2048 L02 ok 0.6s[v41] pos 0+2048 L03 ok 0.7s[v41] pos 0+2048 L04 ok 0.7s[v41] pos 0+2048 L05 ok 0.8s[v41] pos 0+2048 L06 ok 0.9s[v41] pos 0+2048 L07 ok 0.9s[v41] pos 0+2048 L08 ok 1.1s[v41] pos 0+2048 L09 ok 1.2s[v41] pos 0+2048 L10 ok 1.2s[v41] pos 0+2048 L11 ok 1.3s[v41] pos 0+2048 L12 ok 1.4s[v41] pos 0+2048 L13 ok 1.4s[v41] pos 0+2048 L14 ok 1.5s[v41] pos 0+2048 L15 ok 1.6s[v41] pos 0+2048 L16 ok 1.7s[v41] pos 0+2048 L17 ok 1.8s[v41] pos 0+2048 L18 ok 1.9s[v41] pos 0+2048 L19 ok 2.0s
+[v41] pos 2048+464 L00 ok 0.0s[v41] pos 2048+464 L01 ok 0.1s[v41] pos 2048+464 L02 ok 0.1s[v41] pos 2048+464 L03 ok 0.1s[v41] pos 2048+464 L04 ok 0.1s[v41] pos 2048+464 L05 ok 0.2s[v41] pos 2048+464 L06 ok 0.2s[v41] pos 2048+464 L07 ok 0.2s[v41] pos 2048+464 L08 ok 0.2s[v41] pos 2048+464 L09 ok 0.3s[v41] pos 2048+464 L10 ok 0.3s[v41] pos 2048+464 L11 ok 0.3s[v41] pos 2048+464 L12 ok 0.3s[v41] pos 2048+464 L13 ok 0.3s[v41] pos 2048+464 L14 ok 0.4s[v41] pos 2048+464 L15 ok 0.4s[v41] pos 2048+464 L16 ok 0.4s[v41] pos 2048+464 L17 ok 0.4s[v41] pos 2048+464 L18 ok 0.5s[v41] pos 2048+464 L19 ok 0.5s[v41] pos 2048+464 L20 ok 0.5s[v41] pos 2048+464 L21 ok 0.5s[v41] pos 2048+464 L22 ok 0.5s[v41] pos 2048+464 L23 ok 0.6s[v41] pos 2048+464 L24 ok 0.6s[v41] pos 2048+464 L25 ok 0.6s[v41] pos 2048+464 L26 ok 0.6s[v41] pos 2048+464 L27 ok 0.6s[v41] pos 2048+464 L28 ok 0.7s[v41] pos 2048+464 L29 ok 0.7s[v41] pos 2048+464 L30 ok 0.7s[v41] pos 2048+464 L31 ok 0.7s[v41] pos 2048+464 L32 ok 0.8s[v41] pos 2048+464 L33 ok 0.8s[v41] pos 2048+464 L34 ok 0.8s[v41] pos 2048+464 L35 ok 0.8s[v41] pos 2048+464 L36 ok 0.8s[v41] pos 2048+464 L37 ok 0.9s[v41] pos 2048+464 L38 ok 0.9s[v41] pos 2048+464 L39 ok 0.9s
+[v41] prefill 2512 token 2.9s (868.0 t/s)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] vision tower: 1 image(s) 3.90s (weights read per block from the sidecar, freed after)
+[v41] image 0: 48x86 patch -> 16x29 token (span 482)
+[v41] pos 0+502 L00 ok 0.0s[v41] pos 0+502 L01 ok 0.1s[v41] pos 0+502 L02 ok 0.1s[v41] pos 0+502 L03 ok 0.2s[v41] pos 0+502 L04 ok 0.2s[v41] pos 0+502 L05 ok 0.2s[v41] pos 0+502 L06 ok 0.2s[v41] pos 0+502 L07 ok 0.3s[v41] pos 0+502 L08 ok 0.3s[v41] pos 0+502 L09 ok 0.3s[v41] pos 0+502 L10 ok 0.3s[v41] pos 0+502 L11 ok 0.3s[v41] pos 0+502 L12 ok 0.4s[v41] pos 0+502 L13 ok 0.4s[v41] pos 0+502 L14 ok 0.4s[v41] pos 0+502 L15 ok 0.4s[v41] pos 0+502 L16 ok 0.5s[v41] pos 0+502 L17 ok 0.5s[v41] pos 0+502 L18 ok 0.5s[v41] pos 0+502 L19 ok 0.5s[v41] pos 0+502 L20 ok 0.5s[v41] pos 0+502 L21 ok 0.6s[v41] pos 0+502 L22 ok 0.6s[v41] pos 0+502 L23 ok 0.6s[v41] pos 0+502 L24 ok 0.6s[v41] pos 0+502 L25 ok 0.6s[v41] pos 0+502 L26 ok 0.7s[v41] pos 0+502 L27 ok 0.7s[v41] pos 0+502 L28 ok 0.7s[v41] pos 0+502 L29 ok 0.7s[v41] pos 0+502 L30 ok 0.8s[v41] pos 0+502 L31 ok 0.8s[v41] pos 0+502 L32 ok 0.8s[v41] pos 0+502 L33 ok 0.8s[v41] pos 0+502 L34 ok 0.8s[v41] pos 0+502 L35 ok 0.9s[v41] pos 0+502 L36 ok 0.9s[v41] pos 0+502 L37 ok 0.9s[v41] pos 0+502 L38 ok 0.9s[v41] pos 0+502 L39 ok 0.9s
+[v41] prefill 502 token 4.9s (103.4 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [508, 634]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [511, 638]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [520, 637]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [523, 636]
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [529, 635]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 6 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 5 rows) captured
+
+[v41] DSpark: 43 rounds (scheduler skipped 0), average accept 1.98/5; histogram 0:5 1:15 2:10 3:6 4:3 5:4
+[v41] one round 68.0 ms = draft 7.7 + snapshot/rollback 0.1 + verify 60.3 + argmax 0.0; yield 2.98 token => 22.9 ms/token
+[v41] host gaps/round: verify end->draft graph out 2.34 ms (slots 0.000 + cudaGraphLaunch(draft, 36 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.77 ms (start 0.73 = slots 0.000 + engram prep 0.233 + graph checks 0.494 + arm 0.000; cudaGraphLaunch 0.04); samples 38/38 rounds | capture (one-off, amortized above): verify graphs 5 for 19 ms, draft graphs 6 for 3 ms
+ds4: [graph] verify batches walked 38 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] vision tower: 1 image(s) 6.07s (weights read per block from the sidecar, freed after)
+[v41] image 0: 134x60 patch -> 45x20 token (span 947)
+[v41] pos 0+967 L00 ok 0.0s[v41] pos 0+967 L01 ok 0.2s[v41] pos 0+967 L02 ok 0.2s[v41] pos 0+967 L03 ok 0.3s[v41] pos 0+967 L04 ok 0.3s[v41] pos 0+967 L05 ok 0.3s[v41] pos 0+967 L06 ok 0.4s[v41] pos 0+967 L07 ok 0.4s[v41] pos 0+967 L08 ok 0.5s[v41] pos 0+967 L09 ok 0.5s[v41] pos 0+967 L10 ok 0.5s[v41] pos 0+967 L11 ok 0.6s[v41] pos 0+967 L12 ok 0.6s[v41] pos 0+967 L13 ok 0.6s[v41] pos 0+967 L14 ok 0.7s[v41] pos 0+967 L15 ok 0.7s[v41] pos 0+967 L16 ok 0.7s[v41] pos 0+967 L17 ok 0.8s[v41] pos 0+967 L18 ok 0.8s[v41] pos 0+967 L19 ok 0.8s[v41] pos 0+967 L20 ok 0.9s[v41] pos 0+967 L21 ok 0.9s[v41] pos 0+967 L22 ok 0.9s[v41] pos 0+967 L23 ok 1.0s[v41] pos 0+967 L24 ok 1.0s[v41] pos 0+967 L25 ok 1.0s[v41] pos 0+967 L26 ok 1.1s[v41] pos 0+967 L27 ok 1.1s[v41] pos 0+967 L28 ok 1.2s[v41] pos 0+967 L29 ok 1.2s[v41] pos 0+967 L30 ok 1.2s[v41] pos 0+967 L31 ok 1.3s[v41] pos 0+967 L32 ok 1.3s[v41] pos 0+967 L33 ok 1.3s[v41] pos 0+967 L34 ok 1.4s[v41] pos 0+967 L35 ok 1.4s[v41] pos 0+967 L36 ok 1.4s[v41] pos 0+967 L37 ok 1.5s[v41] pos 0+967 L38 ok 1.5s[v41] pos 0+967 L39 ok 1.5s
+[v41] prefill 967 token 7.6s (126.7 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [969, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [973, 1023]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [995, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1023, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1024, 1103]
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [1025, 1102]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [1076, 1104]
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [1077, 1101]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+
+[v41] DSpark: 67 rounds (scheduler skipped 32), average accept 0.82/5; histogram 0:27 1:28 2:9 3:3 4:0 5:0
+[v41] one round 54.5 ms = draft 7.3 + snapshot/rollback 0.1 + verify 47.2 + argmax 0.0; yield 1.82 token => 29.9 ms/token
+[v41] host gaps/round: verify end->draft graph out 4.94 ms (slots 0.000 + cudaGraphLaunch(draft, 68 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.52 ms (start 0.58 = slots 0.000 + engram prep 0.143 + graph checks 0.433 + arm 0.000; cudaGraphLaunch 0.04); samples 63/63 rounds | capture (one-off, amortized above): verify graphs 8 for 29 ms, draft graphs 4 for 2 ms
+ds4: [graph] verify batches walked 63 rounds, k=0 rounds walked 4 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] vision tower: 1 image(s) 3.34s (weights read per block from the sidecar, freed after)
+[v41] image 0: 56x28 patch -> 19x10 token (span 211)
+[v41] pos 0+231 L00 ok 0.0s[v41] pos 0+231 L01 ok 0.1s[v41] pos 0+231 L02 ok 0.1s[v41] pos 0+231 L03 ok 0.1s[v41] pos 0+231 L04 ok 0.1s[v41] pos 0+231 L05 ok 0.1s[v41] pos 0+231 L06 ok 0.2s[v41] pos 0+231 L07 ok 0.2s[v41] pos 0+231 L08 ok 0.2s[v41] pos 0+231 L09 ok 0.2s[v41] pos 0+231 L10 ok 0.2s[v41] pos 0+231 L11 ok 0.2s[v41] pos 0+231 L12 ok 0.2s[v41] pos 0+231 L13 ok 0.3s[v41] pos 0+231 L14 ok 0.3s[v41] pos 0+231 L15 ok 0.3s[v41] pos 0+231 L16 ok 0.3s[v41] pos 0+231 L17 ok 0.3s[v41] pos 0+231 L18 ok 0.3s[v41] pos 0+231 L19 ok 0.3s[v41] pos 0+231 L20 ok 0.4s[v41] pos 0+231 L21 ok 0.4s[v41] pos 0+231 L22 ok 0.4s[v41] pos 0+231 L23 ok 0.4s[v41] pos 0+231 L24 ok 0.4s[v41] pos 0+231 L25 ok 0.4s[v41] pos 0+231 L26 ok 0.4s[v41] pos 0+231 L27 ok 0.4s[v41] pos 0+231 L28 ok 0.4s[v41] pos 0+231 L29 ok 0.5s[v41] pos 0+231 L30 ok 0.5s[v41] pos 0+231 L31 ok 0.5s[v41] pos 0+231 L32 ok 0.5s[v41] pos 0+231 L33 ok 0.5s[v41] pos 0+231 L34 ok 0.5s[v41] pos 0+231 L35 ok 0.5s[v41] pos 0+231 L36 ok 0.6s[v41] pos 0+231 L37 ok 0.6s[v41] pos 0+231 L38 ok 0.6s[v41] pos 0+231 L39 ok 0.6s
+[v41] prefill 231 token 3.9s (58.7 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [233, 363]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [238, 367]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [247, 365]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [255, 366]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [277, 364]
+
+[v41] DSpark: 25 rounds (scheduler skipped 2), average accept 1.40/5; histogram 0:4 1:11 2:6 3:4 4:0 5:0
+[v41] one round 67.0 ms = draft 7.8 + snapshot/rollback 0.1 + verify 59.1 + argmax 0.0; yield 2.40 token => 27.9 ms/token
+[v41] host gaps/round: verify end->draft graph out 7.68 ms (slots 0.000 + cudaGraphLaunch(draft, 20 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 1.27 ms (start 1.19 = slots 0.000 + engram prep 0.265 + graph checks 0.923 + arm 0.000; cudaGraphLaunch 0.08); samples 20/20 rounds | capture (one-off, amortized above): verify graphs 5 for 18 ms, draft graphs 4 for 2 ms
+ds4: [graph] verify batches walked 20 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+556 L00 ok 0.0s[v41] pos 0+556 L01 ok 0.1s[v41] pos 0+556 L02 ok 0.2s[v41] pos 0+556 L03 ok 0.2s[v41] pos 0+556 L04 ok 0.2s[v41] pos 0+556 L05 ok 0.2s[v41] pos 0+556 L06 ok 0.3s[v41] pos 0+556 L07 ok 0.3s[v41] pos 0+556 L08 ok 0.3s[v41] pos 0+556 L09 ok 0.3s[v41] pos 0+556 L10 ok 0.4s[v41] pos 0+556 L11 ok 0.4s[v41] pos 0+556 L12 ok 0.4s[v41] pos 0+556 L13 ok 0.4s[v41] pos 0+556 L14 ok 0.5s[v41] pos 0+556 L15 ok 0.5s[v41] pos 0+556 L16 ok 0.5s[v41] pos 0+556 L17 ok 0.5s[v41] pos 0+556 L18 ok 0.5s[v41] pos 0+556 L19 ok 0.6s[v41] pos 0+556 L20 ok 0.6s[v41] pos 0+556 L21 ok 0.6s[v41] pos 0+556 L22 ok 0.6s[v41] pos 0+556 L23 ok 0.7s[v41] pos 0+556 L24 ok 0.7s[v41] pos 0+556 L25 ok 0.7s[v41] pos 0+556 L26 ok 0.7s[v41] pos 0+556 L27 ok 0.7s[v41] pos 0+556 L28 ok 0.8s[v41] pos 0+556 L29 ok 0.8s[v41] pos 0+556 L30 ok 0.8s[v41] pos 0+556 L31 ok 0.8s[v41] pos 0+556 L32 ok 0.9s[v41] pos 0+556 L33 ok 0.9s[v41] pos 0+556 L34 ok 0.9s[v41] pos 0+556 L35 ok 0.9s[v41] pos 0+556 L36 ok 0.9s[v41] pos 0+556 L37 ok 1.0s[v41] pos 0+556 L38 ok 1.0s[v41] pos 0+556 L39 ok 1.0s
+[v41] prefill 556 token 1.0s (543.5 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [557, 688]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [561, 692]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [575, 691]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [609, 690]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [648, 689]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 5 rows) captured
+
+[v41] DSpark: 45 rounds (scheduler skipped 0), average accept 1.87/5; histogram 0:3 1:14 2:17 3:8 4:3 5:0
+[v41] one round 63.0 ms = draft 7.7 + snapshot/rollback 0.0 + verify 55.3 + argmax 0.0; yield 2.87 token => 22.0 ms/token
+[v41] host gaps/round: verify end->draft graph out 5.23 ms (slots 0.000 + cudaGraphLaunch(draft, 39 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.72 ms (start 0.68 = slots 0.000 + engram prep 0.218 + graph checks 0.465 + arm 0.000; cudaGraphLaunch 0.04); samples 40/40 rounds | capture (one-off, amortized above): verify graphs 5 for 19 ms, draft graphs 5 for 2 ms
+ds4: [graph] verify batches walked 40 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+1038 L00 ok 0.0s[v41] pos 0+1038 L01 ok 0.3s[v41] pos 0+1038 L02 ok 0.3s[v41] pos 0+1038 L03 ok 0.3s[v41] pos 0+1038 L04 ok 0.4s[v41] pos 0+1038 L05 ok 0.4s[v41] pos 0+1038 L06 ok 0.5s[v41] pos 0+1038 L07 ok 0.5s[v41] pos 0+1038 L08 ok 0.6s[v41] pos 0+1038 L09 ok 0.6s[v41] pos 0+1038 L10 ok 0.6s[v41] pos 0+1038 L11 ok 0.7s[v41] pos 0+1038 L12 ok 0.7s[v41] pos 0+1038 L13 ok 0.8s[v41] pos 0+1038 L14 ok 0.8s[v41] pos 0+1038 L15 ok 0.8s[v41] pos 0+1038 L16 ok 0.9s[v41] pos 0+1038 L17 ok 0.9s[v41] pos 0+1038 L18 ok 0.9s[v41] pos 0+1038 L19 ok 1.0s[v41] pos 0+1038 L20 ok 1.0s[v41] pos 0+1038 L21 ok 1.1s[v41] pos 0+1038 L22 ok 1.1s[v41] pos 0+1038 L23 ok 1.1s[v41] pos 0+1038 L24 ok 1.2s[v41] pos 0+1038 L25 ok 1.2s[v41] pos 0+1038 L26 ok 1.3s[v41] pos 0+1038 L27 ok 1.3s[v41] pos 0+1038 L28 ok 1.3s[v41] pos 0+1038 L29 ok 1.4s[v41] pos 0+1038 L30 ok 1.4s[v41] pos 0+1038 L31 ok 1.4s[v41] pos 0+1038 L32 ok 1.5s[v41] pos 0+1038 L33 ok 1.5s[v41] pos 0+1038 L34 ok 1.6s[v41] pos 0+1038 L35 ok 1.6s[v41] pos 0+1038 L36 ok 1.6s[v41] pos 0+1038 L37 ok 1.7s[v41] pos 0+1038 L38 ok 1.7s[v41] pos 0+1038 L39 ok 1.8s
+[v41] prefill 1038 token 1.8s (588.6 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [1041, 1170]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1043, 1174]
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [1046, 1173]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [1062, 1175]
+
+[v41] DSpark: 68 rounds (scheduler skipped 31), average accept 0.69/5; histogram 0:31 1:28 2:8 3:1 4:0 5:0
+[v41] one round 53.7 ms = draft 7.4 + snapshot/rollback 0.1 + verify 46.3 + argmax 0.0; yield 1.69 token => 31.7 ms/token
+[v41] host gaps/round: verify end->draft graph out 9.08 ms (slots 0.000 + cudaGraphLaunch(draft, 76 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.36 ms (start 0.35 = slots 0.000 + engram prep 0.149 + graph checks 0.203 + arm 0.000; cudaGraphLaunch 0.02); samples 64/64 rounds | capture (one-off, amortized above): verify graphs 4 for 15 ms, draft graphs 3 for 2 ms
+ds4: [graph] verify batches walked 64 rounds, k=0 rounds walked 11 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+2048 L00 ok 0.1s[v41] pos 0+2048 L01 ok 0.5s[v41] pos 0+2048 L02 ok 0.6s[v41] pos 0+2048 L03 ok 0.7s[v41] pos 0+2048 L04 ok 0.7s[v41] pos 0+2048 L05 ok 0.8s[v41] pos 0+2048 L06 ok 0.9s[v41] pos 0+2048 L07 ok 0.9s[v41] pos 0+2048 L08 ok 1.0s[v41] pos 0+2048 L09 ok 1.1s[v41] pos 0+2048 L10 ok 1.2s[v41] pos 0+2048 L11 ok 1.2s[v41] pos 0+2048 L12 ok 1.3s[v41] pos 0+2048 L13 ok 1.4s[v41] pos 0+2048 L14 ok 1.5s[v41] pos 0+2048 L15 ok 1.5s[v41] pos 0+2048 L16 ok 1.6s[v41] pos 0+2048 L17 ok 1.7s[v41] pos 0+2048 L18 ok 1.7s[v41] pos 0+2048 L19 ok 1.8s
+[v41] pos 2048+464 L00 ok 0.0s[v41] pos 2048+464 L01 ok 0.1s[v41] pos 2048+464 L02 ok 0.1s[v41] pos 2048+464 L03 ok 0.1s[v41] pos 2048+464 L04 ok 0.1s[v41] pos 2048+464 L05 ok 0.2s[v41] pos 2048+464 L06 ok 0.2s[v41] pos 2048+464 L07 ok 0.2s[v41] pos 2048+464 L08 ok 0.2s[v41] pos 2048+464 L09 ok 0.2s[v41] pos 2048+464 L10 ok 0.3s[v41] pos 2048+464 L11 ok 0.3s[v41] pos 2048+464 L12 ok 0.3s[v41] pos 2048+464 L13 ok 0.3s[v41] pos 2048+464 L14 ok 0.4s[v41] pos 2048+464 L15 ok 0.4s[v41] pos 2048+464 L16 ok 0.4s[v41] pos 2048+464 L17 ok 0.4s[v41] pos 2048+464 L18 ok 0.4s[v41] pos 2048+464 L19 ok 0.5s[v41] pos 2048+464 L20 ok 0.5s[v41] pos 2048+464 L21 ok 0.5s[v41] pos 2048+464 L22 ok 0.5s[v41] pos 2048+464 L23 ok 0.5s[v41] pos 2048+464 L24 ok 0.6s[v41] pos 2048+464 L25 ok 0.6s[v41] pos 2048+464 L26 ok 0.6s[v41] pos 2048+464 L27 ok 0.6s[v41] pos 2048+464 L28 ok 0.7s[v41] pos 2048+464 L29 ok 0.7s[v41] pos 2048+464 L30 ok 0.7s[v41] pos 2048+464 L31 ok 0.7s[v41] pos 2048+464 L32 ok 0.7s[v41] pos 2048+464 L33 ok 0.8s[v41] pos 2048+464 L34 ok 0.8s[v41] pos 2048+464 L35 ok 0.8s[v41] pos 2048+464 L36 ok 0.8s[v41] pos 2048+464 L37 ok 0.9s[v41] pos 2048+464 L38 ok 0.9s[v41] pos 2048+464 L39 ok 0.9s
+[v41] prefill 2512 token 2.7s (933.7 t/s)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] vision tower: 1 image(s) 4.00s (weights read per block from the sidecar, freed after)
+[v41] image 0: 48x86 patch -> 16x29 token (span 482)
+[v41] pos 0+502 L00 ok 0.0s[v41] pos 0+502 L01 ok 0.1s[v41] pos 0+502 L02 ok 0.2s[v41] pos 0+502 L03 ok 0.2s[v41] pos 0+502 L04 ok 0.2s[v41] pos 0+502 L05 ok 0.2s[v41] pos 0+502 L06 ok 0.3s[v41] pos 0+502 L07 ok 0.3s[v41] pos 0+502 L08 ok 0.3s[v41] pos 0+502 L09 ok 0.3s[v41] pos 0+502 L10 ok 0.3s[v41] pos 0+502 L11 ok 0.4s[v41] pos 0+502 L12 ok 0.4s[v41] pos 0+502 L13 ok 0.4s[v41] pos 0+502 L14 ok 0.4s[v41] pos 0+502 L15 ok 0.5s[v41] pos 0+502 L16 ok 0.5s[v41] pos 0+502 L17 ok 0.5s[v41] pos 0+502 L18 ok 0.5s[v41] pos 0+502 L19 ok 0.5s[v41] pos 0+502 L20 ok 0.6s[v41] pos 0+502 L21 ok 0.6s[v41] pos 0+502 L22 ok 0.6s[v41] pos 0+502 L23 ok 0.6s[v41] pos 0+502 L24 ok 0.6s[v41] pos 0+502 L25 ok 0.7s[v41] pos 0+502 L26 ok 0.7s[v41] pos 0+502 L27 ok 0.7s[v41] pos 0+502 L28 ok 0.7s[v41] pos 0+502 L29 ok 0.8s[v41] pos 0+502 L30 ok 0.8s[v41] pos 0+502 L31 ok 0.8s[v41] pos 0+502 L32 ok 0.8s[v41] pos 0+502 L33 ok 0.8s[v41] pos 0+502 L34 ok 0.9s[v41] pos 0+502 L35 ok 0.9s[v41] pos 0+502 L36 ok 0.9s[v41] pos 0+502 L37 ok 0.9s[v41] pos 0+502 L38 ok 0.9s[v41] pos 0+502 L39 ok 1.0s
+[v41] prefill 502 token 5.0s (100.9 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [508, 634]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [511, 638]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [520, 637]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [527, 636]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [556, 635]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 6 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 5 rows) captured
+
+[v41] DSpark: 43 rounds (scheduler skipped 0), average accept 1.98/5; histogram 0:4 1:16 2:9 3:8 4:3 5:3
+[v41] one round 67.4 ms = draft 7.7 + snapshot/rollback 0.1 + verify 59.6 + argmax 0.0; yield 2.98 token => 22.6 ms/token
+[v41] host gaps/round: verify end->draft graph out 0.12 ms (slots 0.000 + cudaGraphLaunch(draft, 36 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.77 ms (start 0.73 = slots 0.000 + engram prep 0.232 + graph checks 0.496 + arm 0.000; cudaGraphLaunch 0.04); samples 38/38 rounds | capture (one-off, amortized above): verify graphs 5 for 19 ms, draft graphs 6 for 3 ms
+ds4: [graph] verify batches walked 38 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] vision tower: 1 image(s) 6.06s (weights read per block from the sidecar, freed after)
+[v41] image 0: 134x60 patch -> 45x20 token (span 947)
+[v41] pos 0+967 L00 ok 0.0s[v41] pos 0+967 L01 ok 0.2s[v41] pos 0+967 L02 ok 0.3s[v41] pos 0+967 L03 ok 0.3s[v41] pos 0+967 L04 ok 0.3s[v41] pos 0+967 L05 ok 0.4s[v41] pos 0+967 L06 ok 0.4s[v41] pos 0+967 L07 ok 0.4s[v41] pos 0+967 L08 ok 0.5s[v41] pos 0+967 L09 ok 0.5s[v41] pos 0+967 L10 ok 0.6s[v41] pos 0+967 L11 ok 0.6s[v41] pos 0+967 L12 ok 0.6s[v41] pos 0+967 L13 ok 0.7s[v41] pos 0+967 L14 ok 0.7s[v41] pos 0+967 L15 ok 0.7s[v41] pos 0+967 L16 ok 0.8s[v41] pos 0+967 L17 ok 0.8s[v41] pos 0+967 L18 ok 0.8s[v41] pos 0+967 L19 ok 0.9s[v41] pos 0+967 L20 ok 0.9s[v41] pos 0+967 L21 ok 0.9s[v41] pos 0+967 L22 ok 1.0s[v41] pos 0+967 L23 ok 1.0s[v41] pos 0+967 L24 ok 1.0s[v41] pos 0+967 L25 ok 1.1s[v41] pos 0+967 L26 ok 1.1s[v41] pos 0+967 L27 ok 1.1s[v41] pos 0+967 L28 ok 1.2s[v41] pos 0+967 L29 ok 1.2s[v41] pos 0+967 L30 ok 1.3s[v41] pos 0+967 L31 ok 1.3s[v41] pos 0+967 L32 ok 1.3s[v41] pos 0+967 L33 ok 1.4s[v41] pos 0+967 L34 ok 1.4s[v41] pos 0+967 L35 ok 1.4s[v41] pos 0+967 L36 ok 1.5s[v41] pos 0+967 L37 ok 1.5s[v41] pos 0+967 L38 ok 1.5s[v41] pos 0+967 L39 ok 1.6s
+[v41] prefill 967 token 7.6s (126.5 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [969, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [973, 1023]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [995, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1023, 1023]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1024, 1103]
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [1026, 1102]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [1076, 1104]
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [1077, 1101]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+
+[v41] DSpark: 67 rounds (scheduler skipped 30), average accept 0.82/5; histogram 0:27 1:28 2:9 3:3 4:0 5:0
+[v41] one round 54.7 ms = draft 7.2 + snapshot/rollback 0.1 + verify 47.3 + argmax 0.0; yield 1.82 token => 30.0 ms/token
+[v41] host gaps/round: verify end->draft graph out 4.97 ms (slots 0.000 + cudaGraphLaunch(draft, 68 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.56 ms (start 0.61 = slots 0.000 + engram prep 0.169 + graph checks 0.445 + arm 0.000; cudaGraphLaunch 0.04); samples 63/63 rounds | capture (one-off, amortized above): verify graphs 8 for 30 ms, draft graphs 4 for 2 ms
+ds4: [graph] verify batches walked 63 rounds, k=0 rounds walked 4 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] vision tower: 1 image(s) 3.43s (weights read per block from the sidecar, freed after)
+[v41] image 0: 56x28 patch -> 19x10 token (span 211)
+[v41] pos 0+231 L00 ok 0.0s[v41] pos 0+231 L01 ok 0.1s[v41] pos 0+231 L02 ok 0.1s[v41] pos 0+231 L03 ok 0.1s[v41] pos 0+231 L04 ok 0.1s[v41] pos 0+231 L05 ok 0.1s[v41] pos 0+231 L06 ok 0.1s[v41] pos 0+231 L07 ok 0.2s[v41] pos 0+231 L08 ok 0.2s[v41] pos 0+231 L09 ok 0.2s[v41] pos 0+231 L10 ok 0.2s[v41] pos 0+231 L11 ok 0.2s[v41] pos 0+231 L12 ok 0.2s[v41] pos 0+231 L13 ok 0.2s[v41] pos 0+231 L14 ok 0.3s[v41] pos 0+231 L15 ok 0.3s[v41] pos 0+231 L16 ok 0.3s[v41] pos 0+231 L17 ok 0.3s[v41] pos 0+231 L18 ok 0.3s[v41] pos 0+231 L19 ok 0.3s[v41] pos 0+231 L20 ok 0.3s[v41] pos 0+231 L21 ok 0.3s[v41] pos 0+231 L22 ok 0.4s[v41] pos 0+231 L23 ok 0.4s[v41] pos 0+231 L24 ok 0.4s[v41] pos 0+231 L25 ok 0.4s[v41] pos 0+231 L26 ok 0.4s[v41] pos 0+231 L27 ok 0.4s[v41] pos 0+231 L28 ok 0.4s[v41] pos 0+231 L29 ok 0.4s[v41] pos 0+231 L30 ok 0.5s[v41] pos 0+231 L31 ok 0.5s[v41] pos 0+231 L32 ok 0.5s[v41] pos 0+231 L33 ok 0.5s[v41] pos 0+231 L34 ok 0.5s[v41] pos 0+231 L35 ok 0.5s[v41] pos 0+231 L36 ok 0.5s[v41] pos 0+231 L37 ok 0.5s[v41] pos 0+231 L38 ok 0.6s[v41] pos 0+231 L39 ok 0.6s
+[v41] prefill 231 token 4.0s (57.7 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [233, 363]
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [238, 367]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [250, 366]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [270, 364]
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [274, 365]
+
+[v41] DSpark: 21 rounds (scheduler skipped 0), average accept 1.86/5; histogram 0:2 1:7 2:6 3:5 4:0 5:1
+[v41] one round 71.1 ms = draft 8.1 + snapshot/rollback 0.1 + verify 62.8 + argmax 0.0; yield 2.86 token => 24.9 ms/token
+[v41] host gaps/round: verify end->draft graph out 10.10 ms (slots 0.000 + cudaGraphLaunch(draft, 15 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 1.64 ms (start 1.54 = slots 0.000 + engram prep 0.313 + graph checks 1.230 + arm 0.000; cudaGraphLaunch 0.09); samples 16/16 rounds | capture (one-off, amortized above): verify graphs 5 for 20 ms, draft graphs 4 for 2 ms
+ds4: [graph] verify batches walked 16 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] amplifier changed; the KV checkpoint is dropped
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+556 L00 ok 0.0s[v41] pos 0+556 L01 ok 0.1s[v41] pos 0+556 L02 ok 0.2s[v41] pos 0+556 L03 ok 0.2s[v41] pos 0+556 L04 ok 0.2s[v41] pos 0+556 L05 ok 0.2s[v41] pos 0+556 L06 ok 0.3s[v41] pos 0+556 L07 ok 0.3s[v41] pos 0+556 L08 ok 0.3s[v41] pos 0+556 L09 ok 0.3s[v41] pos 0+556 L10 ok 0.4s[v41] pos 0+556 L11 ok 0.4s[v41] pos 0+556 L12 ok 0.4s[v41] pos 0+556 L13 ok 0.4s[v41] pos 0+556 L14 ok 0.5s[v41] pos 0+556 L15 ok 0.5s[v41] pos 0+556 L16 ok 0.5s[v41] pos 0+556 L17 ok 0.5s[v41] pos 0+556 L18 ok 0.5s[v41] pos 0+556 L19 ok 0.6s[v41] pos 0+556 L20 ok 0.6s[v41] pos 0+556 L21 ok 0.6s[v41] pos 0+556 L22 ok 0.6s[v41] pos 0+556 L23 ok 0.7s[v41] pos 0+556 L24 ok 0.7s[v41] pos 0+556 L25 ok 0.7s[v41] pos 0+556 L26 ok 0.7s[v41] pos 0+556 L27 ok 0.7s[v41] pos 0+556 L28 ok 0.8s[v41] pos 0+556 L29 ok 0.8s[v41] pos 0+556 L30 ok 0.8s[v41] pos 0+556 L31 ok 0.8s[v41] pos 0+556 L32 ok 0.9s[v41] pos 0+556 L33 ok 0.9s[v41] pos 0+556 L34 ok 0.9s[v41] pos 0+556 L35 ok 0.9s[v41] pos 0+556 L36 ok 1.0s[v41] pos 0+556 L37 ok 1.0s[v41] pos 0+556 L38 ok 1.0s[v41] pos 0+556 L39 ok 1.0s
+[v41] prefill 556 token 1.0s (541.6 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [557, 688]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [561, 692]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [575, 691]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 1462 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 4-row graph captured: position bucket [609, 690]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 4 rows) captured
+ds4: [graph] decode step captured: 1463 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 5-row graph captured: position bucket [648, 689]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 5 rows) captured
+
+[v41] DSpark: 45 rounds (scheduler skipped 0), average accept 1.87/5; histogram 0:3 1:14 2:17 3:8 4:3 5:0
+[v41] one round 63.0 ms = draft 7.7 + snapshot/rollback 0.0 + verify 55.3 + argmax 0.0; yield 2.87 token => 22.0 ms/token
+[v41] host gaps/round: verify end->draft graph out 5.25 ms (slots 0.000 + cudaGraphLaunch(draft, 39 graph rounds) 0.01; rest = accept/rollback/emit) | draft end->verify graph out 0.73 ms (start 0.69 = slots 0.000 + engram prep 0.217 + graph checks 0.474 + arm 0.000; cudaGraphLaunch 0.04); samples 40/40 rounds | capture (one-off, amortized above): verify graphs 5 for 19 ms, draft graphs 5 for 2 ms
+ds4: [graph] verify batches walked 40 rounds, k=0 rounds walked 0 steps on the n=1 graph (not in the steady account)
+ds4: [v41] engram rows: open cached (assets already open)
+ds4: [v41] zchain mount: cached (identity 1/1171210018263253834)
+ds4: [v41] DSpark drafter armed: 3 towers x 128 experts top-3 (VQ blob), block 5, target layers L37 L38 L39
+[v41] pos 0+1038 L00 ok 0.0s[v41] pos 0+1038 L01 ok 0.3s[v41] pos 0+1038 L02 ok 0.3s[v41] pos 0+1038 L03 ok 0.3s[v41] pos 0+1038 L04 ok 0.4s[v41] pos 0+1038 L05 ok 0.4s[v41] pos 0+1038 L06 ok 0.5s[v41] pos 0+1038 L07 ok 0.5s[v41] pos 0+1038 L08 ok 0.5s[v41] pos 0+1038 L09 ok 0.6s[v41] pos 0+1038 L10 ok 0.6s[v41] pos 0+1038 L11 ok 0.7s[v41] pos 0+1038 L12 ok 0.7s[v41] pos 0+1038 L13 ok 0.7s[v41] pos 0+1038 L14 ok 0.8s[v41] pos 0+1038 L15 ok 0.8s[v41] pos 0+1038 L16 ok 0.9s[v41] pos 0+1038 L17 ok 0.9s[v41] pos 0+1038 L18 ok 0.9s[v41] pos 0+1038 L19 ok 1.0s[v41] pos 0+1038 L20 ok 1.0s[v41] pos 0+1038 L21 ok 1.1s[v41] pos 0+1038 L22 ok 1.1s[v41] pos 0+1038 L23 ok 1.1s[v41] pos 0+1038 L24 ok 1.2s[v41] pos 0+1038 L25 ok 1.2s[v41] pos 0+1038 L26 ok 1.2s[v41] pos 0+1038 L27 ok 1.3s[v41] pos 0+1038 L28 ok 1.3s[v41] pos 0+1038 L29 ok 1.4s[v41] pos 0+1038 L30 ok 1.4s[v41] pos 0+1038 L31 ok 1.4s[v41] pos 0+1038 L32 ok 1.5s[v41] pos 0+1038 L33 ok 1.5s[v41] pos 0+1038 L34 ok 1.6s[v41] pos 0+1038 L35 ok 1.6s[v41] pos 0+1038 L36 ok 1.6s[v41] pos 0+1038 L37 ok 1.7s[v41] pos 0+1038 L38 ok 1.7s[v41] pos 0+1038 L39 ok 1.8s
+[v41] prefill 1038 token 1.8s (590.4 t/s)
+ds4: [graph] decode step captured: 1464 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 6-row graph captured: position bucket [1041, 1170]
+ds4: [graph] decode step captured: 237 nodes (104 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 1 rows) captured
+ds4: [graph] decode step captured: 1460 nodes (1337 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 2-row graph captured: position bucket [1043, 1174]
+ds4: [graph] decode step captured: 1461 nodes (1334 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 3-row graph captured: position bucket [1046, 1173]
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 2 rows) captured
+ds4: [graph] decode step captured: 242 nodes (102 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] draft graph (top-up 3 rows) captured
+ds4: [graph] decode step captured: 1377 nodes (1391 edges made programmatic, 0 unsupported kept ordinary)
+ds4: [graph] 1-row graph captured: position bucket [1062, 1175]
+
+[v41] DSpark: 68 rounds (scheduler skipped 34), average accept 0.69/5; histogram 0:31 1:28 2:8 3:1 4:0 5:0
+[v41] one round 54.0 ms = draft 7.4 + snapshot/rollback 0.1 + verify 46.5 + argmax 0.0; yield 1.69 token => 31.9 ms/token
+[v41] host gaps/round: verify end->draft graph out 9.03 ms (slots 0.000 + cudaGraphLaunch(draft, 76 graph rounds) 0.00; rest = accept/rollback/emit) | draft end->verify graph out 0.33 ms (start 0.32 = slots 0.000 + engram prep 0.124 + graph checks 0.197 + arm 0.000; cudaGraphLaunch 0.02); samples 64/64 rounds | capture (one-off, amortized above): verify graphs 4 for 15 ms, draft graphs 3 for 1 ms
+ds4: [graph] verify batches walked 64 rounds, k=0 rounds walked 11 steps on the n=1 graph (not in the steady account)
+ds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)
+ds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)
