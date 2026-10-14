@@ -10,8 +10,7 @@ recorded benchmark numbers.
 [JLFN](https://github.com/JLFN) ported DeepSeek V4.1 Flash serving to
 `ds4-dfm-rs` in [PR #80](https://github.com/Baekpica/ds4-dfm-rs/pull/80),
 from the [YoungAi engine](https://github.com/fodelf/YoungAi/tree/7fb26cc332d740416792204a29c7d13d2986caf5).
-The vision tower and its serving surfaces (2026-10-13) continue the port on
-`feat/optimize`, open toward `main` as
+The vision tower and its serving surfaces (2026-10-13) continue the port in
 [PR #83](https://github.com/Baekpica/ds4-dfm-rs/pull/83).
 The VQ GGUF and GR/RB sidecars are distributed by
 [YoungAi](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash);
@@ -54,6 +53,12 @@ against Spark-minted goldens, pass on three images (tower row cosine mean
 4.0 pixel-levels); text output is byte-identical with and without the sidecar,
 and one image request answered identically through the OpenAI, Anthropic and
 Responses surfaces.
+
+The [October 14 review](benchmarks/ds41-vision-review-2026-10-14/README.md)
+adds image-aware Engram/KV, guarded multi-image admission and tool-image
+ordering fixes. It records 31 numerical/state generations, 12 comparisons and
+11 HTTP requests across a disk restart. Performance observations remain
+single-run diagnostics; repeated speed qualification is deferred.
 
 ## Artifact and host identity
 
@@ -171,6 +176,33 @@ is what the render wraps in `<tool_result>`, so the placeholder is written
 into that text at parse time). Without the sidecar an image request is refused
 with HTTP 400 by name; a head without a V4.1 placeholder refuses a tool-result
 image by name as well.
+
+Responses also accepts image blocks in `function_call_output.output` as a
+host extension. Anthropic images outside and inside a `tool_result` retain
+their original block order. This extension is separate from YoungAi's input
+template grammar.
+
+V4.1 image-only requests have no fixed four-image limit. Admission still
+enforces 10 MiB per encoded image, 20 MiB combined, a 16,384-pixel edge,
+128 MiB decoded per image, the expanded context, and host/device memory
+budgets. The host checks all image headers and the cumulative preprocessing
+budget before decoding. Other families and mixed audio/video requests retain
+their existing count limits.
+
+Image KV identity follows each expanded prompt position, including the tower
+bytes and preprocessing geometry. Replacing or reordering an image misses;
+appending an image can reuse the saved prefix. Disk payload ABI 2 carries the
+same signatures; older payloads are cache misses. Engram lookbacks stop at an
+image boundary, following
+[YoungAi `846c929c`](https://github.com/fodelf/YoungAi/tree/846c929c5d11ef4f89d6406e8504e6e66db3ce69).
+Prepared image payloads cannot be mutated independently of those signatures.
+
+After a prefix restore, text-only suffixes skip the vision tower. An appended
+image runs only the uncached images through it. Per-image arithmetic is
+unchanged; no tower weights or image embeddings are retained between requests.
+`DS41_VISION_REENCODE=1` forces full image reencoding for diagnostic A/B runs.
+This remains prompt-end checkpoint reuse; it does not add arbitrary partial
+rollback, concurrent banks, or snapshots.
 
 Live on the Spark, 2026-10-14 (`ds4-server` sha256 `090490ac516dba0f1f9cce306`…,
 built from `6e660b0`): a tool-role message carrying a block-array image answers

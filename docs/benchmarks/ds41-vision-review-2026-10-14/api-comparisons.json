@@ -1,0 +1,12 @@
+[
+  {
+    "name": "disk-restart-exact",
+    "status": "PASS",
+    "request_bytes": true,
+    "expanded_prompt": true,
+    "returned_tokens": true,
+    "native_tokens": true,
+    "all_logits": true,
+    "returned_choices": true
+  }
+]

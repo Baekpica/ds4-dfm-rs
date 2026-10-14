@@ -173,6 +173,7 @@ pub struct ds4_bridge_v41_sampling {
 #[derive(Clone, Copy)]
 pub struct ds4_bridge_v41_image {
     pub patches: *const f32,
+    pub patches_len: u64,
     pub n_vit_h: u32,
     pub n_vit_w: u32,
     pub n_llm_h: u32,
@@ -184,6 +185,7 @@ pub struct ds4_bridge_v41_images {
     pub img: *const ds4_bridge_v41_image,
     pub n: c_int,
     pub row_of: *const i32,
+    pub sig_of: *const u64,
     pub np: u32,
     pub n_rows: u32,
 }
@@ -862,7 +864,7 @@ extern "C" {
      * mounted-amplifier identity the native drops the checkpoint on. */
     pub fn ds4_bridge_v41_kvreuse_set(on: c_int);
     pub fn ds4_bridge_v41_kvreuse_last_reused() -> c_int;
-    pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int) -> u32;
+    pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int, sig: *const u64) -> u32;
     pub fn ds4_bridge_v41_kvreuse_note_mount(has_mount: c_int, hash: u64);
     /* The disk half (item 4): the payload export/import the Rust store
      * (crates/ds4-kv) drives; both are gated by --no-kv-reuse and K.valid. */
@@ -913,6 +915,7 @@ extern "C" {
     pub fn ds4_bridge_v41_vision_run(
         m: *mut ds4_bridge_model,
         patches: *const f32,
+        patches_len: u64,
         n_vit_h: u32,
         n_vit_w: u32,
         n_llm_h: *mut u32,

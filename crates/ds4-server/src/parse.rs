@@ -287,6 +287,32 @@ const CHAT_IMAGE_MAX_COUNT: usize = 4;
 const CHAT_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
 const CHAT_IMAGE_TOTAL_MAX: usize = 20 * 1024 * 1024;
 
+struct ImageInputs {
+    items: Vec<RequestImage>,
+    bytes: usize,
+    count_limit: Option<usize>,
+}
+
+impl ImageInputs {
+    fn new(env: &ParseEnv) -> Self {
+        Self {
+            items: Vec::new(),
+            bytes: 0,
+            // YoungAi server_parse_tools.c:289 grows the image list; ds41
+            // checks expanded context and memory. Other families keep four.
+            count_limit: (!env.engine_defaults).then_some(CHAT_IMAGE_MAX_COUNT),
+        }
+    }
+}
+
+impl std::ops::Deref for ImageInputs {
+    type Target = [RequestImage];
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
 fn base64_value(c: u8) -> Option<u32> {
     match c {
         b'A'..=b'Z' => Some((c - b'A') as u32),
@@ -357,7 +383,7 @@ fn media_bytes(images: &[RequestImage], audios: &[RequestAudio], videos: &[Reque
 }
 
 fn add_image_base64(
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &[RequestAudio],
     videos: &[RequestVideo],
     mime_type: &str,
@@ -368,10 +394,15 @@ fn add_image_base64(
         "image/jpeg" => ImageMime::Jpeg,
         _ => return Err(format!("unsupported image media type: {mime_type}")),
     };
-    if media_count(images, audios, videos) >= CHAT_IMAGE_MAX_COUNT {
+    let limit = if audios.is_empty() && videos.is_empty() {
+        images.count_limit
+    } else {
+        Some(CHAT_IMAGE_MAX_COUNT)
+    };
+    if limit.is_some_and(|n| media_count(images, audios, videos) >= n) {
         return Err("at most 4 media inputs are supported".into());
     }
-    let total = media_bytes(images, audios, videos);
+    let total = images.bytes + media_bytes(&[], audios, videos);
     if total > CHAT_IMAGE_TOTAL_MAX {
         return Err("media exceeds 20 MiB request limit".into());
     }
@@ -384,7 +415,8 @@ fn add_image_base64(
         return Err("image bytes do not match declared media type".into());
     }
     let index = images.len();
-    images.push(RequestImage {
+    images.bytes += data.len();
+    images.items.push(RequestImage {
         mime,
         data: data.into(),
     });
@@ -392,7 +424,7 @@ fn add_image_base64(
 }
 
 fn add_image_data_uri(
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &[RequestAudio],
     videos: &[RequestVideo],
     uri: &str,
@@ -464,7 +496,8 @@ fn validate_audio_refs(
     audios: &[RequestAudio],
     videos: &[RequestVideo],
 ) -> Result<(), String> {
-    if media_count(images, audios, videos) > CHAT_IMAGE_MAX_COUNT
+    if ((!audios.is_empty() || !videos.is_empty())
+        && media_count(images, audios, videos) > CHAT_IMAGE_MAX_COUNT)
         || media_bytes(images, audios, videos) > CHAT_IMAGE_TOTAL_MAX
     {
         return Err("media exceeds the 4 input or 20 MiB request limit".into());
@@ -979,7 +1012,7 @@ fn parse_chat_image_url(p: &mut Json<'_>) -> Option<String> {
 fn parse_openai_message_content(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &mut Vec<RequestAudio>,
     videos: &mut Vec<RequestVideo>,
     err: &mut String,
@@ -1127,7 +1160,7 @@ fn parse_openai_message_content(
 
 fn parse_messages(
     p: &mut Json<'_>,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     audios: &mut Vec<RequestAudio>,
     videos: &mut Vec<RequestVideo>,
     err: &mut String,
@@ -1273,7 +1306,7 @@ fn parse_anthropic_image_source(p: &mut Json<'_>) -> Option<(String, String, Str
 fn json_tool_result_content(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> Option<(String, String)> {
     p.ws();
@@ -1379,7 +1412,7 @@ fn json_tool_result_content(
 fn parse_anthropic_content_block(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> bool {
     if p.bump() != Some(b'{') {
@@ -1527,7 +1560,7 @@ fn parse_anthropic_content_block(
 fn parse_anthropic_content(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> bool {
     p.ws();
@@ -1542,6 +1575,7 @@ fn parse_anthropic_content(
         return json_skip_value(p);
     }
     p.i += 1;
+    let mut image_offsets = Vec::new();
     p.ws();
     while p.peek().is_some() && p.peek() != Some(b']') {
         if p.peek() == Some(b'"') {
@@ -1551,8 +1585,13 @@ fn parse_anthropic_content(
                 return false;
             }
         } else if p.peek() == Some(b'{') {
+            let offset = msg.content.len();
+            let parts_before = msg.parts.len();
             if !parse_anthropic_content_block(p, msg, images, err) {
                 return false;
+            }
+            if matches!(&msg.parts[parts_before..], [ChatPart::Image(_)]) {
+                image_offsets.push(offset);
             }
         } else if !json_skip_value(p) {
             return false;
@@ -1563,12 +1602,35 @@ fn parse_anthropic_content(
         }
         p.ws();
     }
-    p.bump() == Some(b']')
+    if p.bump() != Some(b']') {
+        return false;
+    }
+    // Mixed tool messages use flat DSML content. Preserve top-level images
+    // there too, in block order (YoungAi server_parse_tools.c:281-290).
+    if image_offsets.is_empty()
+        || !msg
+            .parts
+            .iter()
+            .any(|p| matches!(p, ChatPart::ToolResult { .. }))
+    {
+        return true;
+    }
+    let mut rendered =
+        String::with_capacity(msg.content.len() + image_offsets.len() * DSML_IMAGE.len());
+    let mut from = 0;
+    for offset in image_offsets {
+        rendered.push_str(&msg.content[from..offset]);
+        rendered.push_str(DSML_IMAGE);
+        from = offset;
+    }
+    rendered.push_str(&msg.content[from..]);
+    msg.content = rendered;
+    true
 }
 
 fn parse_anthropic_messages(
     p: &mut Json<'_>,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> Option<Vec<ChatMsg>> {
     p.ws();
@@ -2268,7 +2330,7 @@ fn responses_validate_tool_outputs(
 
 fn parse_responses_content_array_mm(
     p: &mut Json<'_>,
-    mut images: Option<&mut Vec<RequestImage>>,
+    mut images: Option<&mut ImageInputs>,
     err: &mut String,
 ) -> Option<(String, Vec<ChatPart>)> {
     p.ws();
@@ -2432,7 +2494,7 @@ fn parse_responses_input(
     p: &mut Json<'_>,
     loaded: &mut String,
     orders: &mut Vec<ToolSchemaOrder>,
-    images: &mut Vec<RequestImage>,
+    images: &mut ImageInputs,
     err: &mut String,
 ) -> Option<Vec<ChatMsg>> {
     p.ws();
@@ -2456,6 +2518,7 @@ fn parse_responses_input(
         let mut item_id = None;
         let mut arguments = None;
         let mut output = None;
+        let mut output_parts = Vec::new();
         let mut input_str = None;
         let mut summary = None;
         let mut action = None;
@@ -2495,7 +2558,9 @@ fn parse_responses_input(
             } else if key == "output" {
                 p.ws();
                 output = if p.peek() == Some(b'[') {
-                    Some(parse_responses_content_array(p)?)
+                    let (text, parts) = parse_responses_content_array_mm(p, Some(images), err)?;
+                    output_parts = parts;
+                    Some(text)
                 } else if p.peek() == Some(b'"') {
                     Some(json_string(p)?)
                 } else {
@@ -2610,11 +2675,13 @@ fn parse_responses_input(
             let mut msg = ChatMsg {
                 role: "tool".into(),
                 content: output.take().unwrap_or_default(),
+                parts: output_parts,
                 ..Default::default()
             };
             if let Some(id) = call_id.as_deref().or(item_id.as_deref()) {
                 add_tool_call_id(&mut msg, id);
             }
+            write_tool_image_placeholders(&mut msg);
             msgs.push(msg);
         } else if t == "reasoning" {
             if let Some(s) = summary.as_deref() {
@@ -2774,7 +2841,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         env.default_effort
     };
     let mut msgs = Vec::new();
-    let mut images = Vec::new();
+    let mut images = ImageInputs::new(env);
     let mut audios = Vec::new();
     let mut videos = Vec::new();
     let mut tool_schemas = String::new();
@@ -2952,9 +3019,6 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     validate_image_references(&msgs, &images)?;
     validate_audio_refs(&msgs, &images, &audios, &videos)?;
     validate_video_refs(&msgs, &videos)?;
-    if images.len() + audios.len() + videos.len() > CHAT_IMAGE_MAX_COUNT {
-        return Err("at most 4 media inputs are supported".into());
-    }
     r.has_tool_results = chat_history_has_pending_tool_results(&msgs);
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
@@ -2967,7 +3031,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         env.engine_defaults,
     );
     r.messages = msgs;
-    r.images = images;
+    r.images = images.items;
     r.audios = audios;
     r.videos = videos;
     r.tool_schemas = tool_schemas;
@@ -3152,7 +3216,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         env.default_effort
     };
     let mut msgs = Vec::new();
-    let mut images = Vec::new();
+    let mut images = ImageInputs::new(env);
     let mut system = None;
     let mut tool_schemas = String::new();
     let mut orders = Vec::new();
@@ -3324,7 +3388,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     }
     r.live_call_ids = crate::cont::live_tool_result_ids(Api::Anthropic, &msgs);
     r.messages = msgs;
-    r.images = images;
+    r.images = images.items;
     r.tool_schemas = tool_schemas;
     r.tool_orders = orders;
     r.finish_needs();
@@ -3349,7 +3413,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         env.default_effort
     };
     let mut msgs = Vec::new();
-    let mut images = Vec::new();
+    let mut images = ImageInputs::new(env);
     let mut loaded = String::new();
     let mut orders = Vec::new();
     let mut instructions = None;
@@ -3543,7 +3607,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     }
     r.live_call_ids = crate::cont::live_tool_result_ids(Api::Responses, &msgs);
     r.messages = msgs;
-    r.images = images;
+    r.images = images.items;
     r.tool_schemas = combined;
     r.tool_orders = orders;
     r.finish_needs();

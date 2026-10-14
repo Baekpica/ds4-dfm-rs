@@ -53,6 +53,12 @@ static void v41_vis_free_list(ds4_gpu_tensor **l, size_t n) {
     for (size_t i = 0; i < n; i++) { if (l[i]) { ds4_gpu_tensor_free(l[i]); l[i] = NULL; } }
 }
 
+/* Port lifetime boundary for YoungAi core_v41_vision.c:132-146's resident
+ * bias: a reopened model must upload its own router bias. */
+static void v41_vision_cleanup(void) {
+    v41_vis_free_list(g_v41_bias_vl, DS4_MAX_LAYER);
+}
+
 /* Drop the sidecar's page cache after a request so the next image reads from
  * SSD.  ONLY the sidecar: the main mapping's expert streaming relies on its
  * cache (core_v41_vision.c:37-42). */
@@ -166,15 +172,29 @@ int ds4_v41_has_vision(void *engine) {
 /* One image through the tower -> malloc'd aligner rows [n_llm][E], row-major
  * (core_v41_vision.c:116-131).  Entry for the golden gate and the caller that
  * lays out the span. */
-float *v41_vision_run(void *engine, const float *patches, uint32_t n_vit_h, uint32_t n_vit_w,
+float *v41_vision_run(void *engine, const float *patches, uint64_t patches_len,
+                      uint32_t n_vit_h, uint32_t n_vit_w,
                       uint32_t *n_llm_h, uint32_t *n_llm_w) {
     ds4_engine *e = engine;
     const ds4_v41_cfg *v = &g_ds4_v41;
     if (!v->vis_layers) { fprintf(stderr, "ds4: this GGUF has no vision tower\n"); return NULL; }
+    if (!e || !patches || !n_llm_h || !n_llm_w || !v->vis_patch || !v->vis_ds || !v->vis_max_tok) { return NULL; }
+
+    /* The golden fixture and caller metadata do not prove the loaded tower's
+     * stride. Bound its read against the actual slice before any GPU work. */
+    const uint64_t patch_area = (uint64_t)v->vis_patch * v->vis_patch;
+    const uint64_t n_vit = (uint64_t)n_vit_h * n_vit_w;
+    if (!n_vit || n_vit > UINT32_MAX || patch_area > UINT32_MAX / 3u) { return NULL; }
+    const uint64_t elements = n_vit * (3u * patch_area);
+    if (elements > SIZE_MAX / sizeof(float) || patches_len != elements) { return NULL; }
+    const uint32_t lh = (uint32_t)(((uint64_t)n_vit_h + v->vis_ds - 1u) / v->vis_ds);
+    const uint32_t lw = (uint32_t)(((uint64_t)n_vit_w + v->vis_ds - 1u) / v->vis_ds);
+    if ((uint64_t)lh * ((uint64_t)lw + 1u) + 2u > v->vis_max_tok) { return NULL; }
+
     v41_image im; memset(&im, 0, sizeof im);
     im.n_vit_h = n_vit_h; im.n_vit_w = n_vit_w;
-    im.n_llm_h = (n_vit_h + v->vis_ds - 1) / v->vis_ds; im.n_llm_w = (n_vit_w + v->vis_ds - 1) / v->vis_ds;
-    im.patches = (float *)patches;   /* v41_image owns it for the free in vis_run_images */
+    im.n_llm_h = lh; im.n_llm_w = lw;
+    im.patches = (float *)patches;   /* borrowed for this call */
     v41_vact A; memset(&A, 0, sizeof A);
     if (!v41_vis_run_images(e, &im, 1, &A)) return NULL;
     const uint64_t E = DS4_N_EMBD;
@@ -204,34 +224,40 @@ static bool v41_vis_bias_vl_upload(ds4_engine *e) {
 /* Run the tower once for a whole request and lay the span rows into
  * imgs->embd: per image, image_start, then n_llm_h rows of n_llm_w aligner rows
  * each followed by image_newline, then image_end (official
- * merge_image_embeddings; core_v41_vision.c:149-178).  Encoded once, before the
- * first prefill block. */
-bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs) {
+ * merge_image_embeddings; core_v41_vision.c:149-178). Skip complete images
+ * before the first consumed row. This changes no per-image arithmetic and
+ * keeps no embeddings resident beyond the request. */
+bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs, uint32_t first_row) {
     if (!imgs || imgs->encoded) return true;
+    uint32_t first = 0;
+    while (first < imgs->n && imgs->img[first].row0 + imgs->img[first].n_tok <= first_row) { first++; }
+    if (first == imgs->n) { return false; }
+    imgs->row_base = imgs->img[first].row0;
+    const uint32_t count = imgs->n - first;
     const ds4_v41_cfg *v = &g_ds4_v41;
     const ds4_v41_vision_weights *V = &e->weights.v41_vision;
     if (!v->vis_layers) { fprintf(stderr, "ds4: [v41] this GGUF has no vision tower, cannot take images\n"); return false; }
     const uint64_t E = DS4_N_EMBD, rowb = E * 4;
     const ds4_model *vm = v41_vision_model(e);
     bool ok = v41_vis_bias_vl_upload(e);
-    if (ok && !imgs->embd) imgs->embd = v41_alloc((uint64_t)imgs->n_rows * rowb, &ok);
-    v41_vact *A = xmalloc_zeroed(imgs->n ? imgs->n : 1, sizeof *A);
-    if (ok) ok = v41_vis_run_images(e, imgs->img, imgs->n, A);
+    if (ok && !imgs->embd) imgs->embd = v41_alloc((uint64_t)(imgs->n_rows - imgs->row_base) * rowb, &ok);
+    v41_vact *A = xmalloc_zeroed(count, sizeof *A);
+    if (ok) ok = v41_vis_run_images(e, imgs->img + first, count, A);
     const float *vs = (const float *)tensor_data(vm, V->image_start);
     const float *ve = (const float *)tensor_data(vm, V->image_end);
     const float *vn = (const float *)tensor_data(vm, V->image_newline);
-    for (uint32_t i = 0; ok && i < imgs->n; i++) {
+    for (uint32_t i = first; ok && i < imgs->n; i++) {
         v41_image *im = &imgs->img[i];
-        uint64_t k = im->row0;
+        uint64_t k = im->row0 - imgs->row_base;
         ok = ds4_gpu_tensor_write(imgs->embd, k++ * rowb, vs, rowb) != 0;
         for (uint32_t gi = 0; ok && gi < im->n_llm_h; gi++) {
-            ok = ds4_gpu_tensor_copy(imgs->embd, k * rowb, A[i].al, (uint64_t)gi * im->n_llm_w * rowb,
+            ok = ds4_gpu_tensor_copy(imgs->embd, k * rowb, A[i - first].al, (uint64_t)gi * im->n_llm_w * rowb,
                                      (uint64_t)im->n_llm_w * rowb) != 0;
             k += im->n_llm_w;
             if (ok) ok = ds4_gpu_tensor_write(imgs->embd, k++ * rowb, vn, rowb) != 0;
         }
         if (ok) ok = ds4_gpu_tensor_write(imgs->embd, k++ * rowb, ve, rowb) != 0;
-        if (ok && k != (uint64_t)im->row0 + im->n_tok) {
+        if (ok && k != (uint64_t)im->row0 - imgs->row_base + im->n_tok) {
             fprintf(stderr, "ds4: [v41] image span row count does not balance\n"); ok = false;
         }
         if (ok) fprintf(stderr, "[v41] image %u: %ux%u patch -> %ux%u token (span %u)\n",
@@ -239,7 +265,7 @@ bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs) {
     }
     /* Patches are the Rust host's (borrowed for the run): the native frees only
      * the tower's own device tensors, never imgs->img[i].patches. */
-    for (uint32_t i = 0; i < imgs->n; i++) {
+    for (uint32_t i = 0; i < count; i++) {
         if (A[i].al) { ds4_gpu_tensor_free(A[i].al); }
     }
     free(A);
@@ -256,19 +282,61 @@ bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs) {
  * length and row0 the engine computes in its expansion loop (:200-204) are
  * recomputed here so the struct is self-consistent. */
 struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
-                                            const int32_t *row_of, uint32_t np, uint32_t n_rows) {
-    if (n < 0 || np == 0u) return NULL;
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows, const uint64_t *sig_of) {
+    const ds4_v41_cfg *v = &g_ds4_v41;
+    if (n <= 0 || !in || !row_of || !sig_of || !np || np > INT32_MAX ||
+        n_rows > np || (uint32_t)n > np || !v->vis_layers || !v->vis_patch || !v->vis_ds || !v->vis_max_tok) { return NULL; }
+    if ((uint64_t)np > SIZE_MAX / sizeof *sig_of ||
+        (uint64_t)n > SIZE_MAX / sizeof(v41_image)) { return NULL; }
+
+    /* YoungAi preprocesses with the loaded tower config. The Rust host passes
+     * independent buffers, so prove their geometry and extent before use. */
+    const uint64_t patch_area = (uint64_t)v->vis_patch * v->vis_patch;
+    if (patch_area > UINT32_MAX / 3u) { return NULL; }
+    uint64_t total = 0;
+    for (int i = 0; i < n; i++) {
+        const ds4_v41_image_src *im = &in[i];
+        const uint64_t n_vit = (uint64_t)im->n_vit_h * im->n_vit_w;
+        if (!im->patches || !n_vit || n_vit > UINT32_MAX) { return NULL; }
+        const uint64_t elements = n_vit * (3u * patch_area);
+        if (elements > SIZE_MAX / sizeof(float) || im->patches_len != elements ||
+            im->n_llm_h != ((uint64_t)im->n_vit_h + v->vis_ds - 1u) / v->vis_ds ||
+            im->n_llm_w != ((uint64_t)im->n_vit_w + v->vis_ds - 1u) / v->vis_ds) { return NULL; }
+        const uint64_t span = (uint64_t)im->n_llm_h * ((uint64_t)im->n_llm_w + 1u) + 2u;
+        if (span > v->vis_max_tok || span > n_rows - total) { return NULL; }
+        total += span;
+    }
+    if (total != n_rows) { return NULL; }
+
+    /* Each image occupies one contiguous span; text carries no signature.
+     * This also bounds every device row-select index to its embedding set. */
+    uint32_t pos = 0, row = 0;
+    for (int i = 0; i < n; i++) {
+        while (pos < np && row_of[pos] == -1) {
+            if (sig_of[pos++]) { return NULL; }
+        }
+        const uint32_t span = in[i].n_llm_h * (in[i].n_llm_w + 1u) + 2u;
+        if (span > np - pos || !sig_of[pos]) { return NULL; }
+        const uint64_t sig = sig_of[pos];
+        for (uint32_t j = 0; j < span; j++, pos++, row++) {
+            if (row_of[pos] != (int32_t)row || sig_of[pos] != sig) { return NULL; }
+        }
+    }
+    while (pos < np) {
+        if (row_of[pos] != -1 || sig_of[pos]) { return NULL; }
+        pos++;
+    }
+
     struct ds4_v41_images *S = xcalloc(1, sizeof *S);
-    S->img = xcalloc((size_t)(n > 0 ? n : 1), sizeof(v41_image));
+    S->img = xcalloc((size_t)n, sizeof(v41_image));
     S->n = (uint32_t)n;
     S->np = np;
     S->n_rows = n_rows;
     S->row_of = xmalloc((size_t)np * 4);
     memcpy(S->row_of, row_of, (size_t)np * 4);
-    /* sig_of stays NULL: image identity is folded into the Rust KV mount
-     * digest, which drops the native checkpoint on a change (the engine's
-     * per-position sig, core_v41_kvreuse.c:99-129, is not ported). */
-    S->sig_of = NULL;
+    /* Borrowed Rust identity becomes owned native checkpoint input. */
+    S->sig_of = xmalloc((size_t)np * 8);
+    memcpy(S->sig_of, sig_of, (size_t)np * 8);
     uint32_t row0 = 0;
     for (int i = 0; i < n; i++) {
         v41_image *im = &S->img[i];

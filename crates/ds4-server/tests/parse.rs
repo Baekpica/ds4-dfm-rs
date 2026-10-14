@@ -810,3 +810,172 @@ fn openai_tool_message_carries_the_image_placeholder() {
         Some("images inside a tool result are supported only by DeepSeek V4.1 Flash")
     );
 }
+
+mod v41_media {
+    use super::*;
+    use serde_json::{json, Value};
+
+    const PNG: &str = concat!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
+        "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    );
+
+    fn image(surface: &str, data: &str) -> Value {
+        match surface {
+            "chat" => {
+                json!({"type":"image_url","image_url":format!("data:image/png;base64,{data}")})
+            }
+            "responses" => {
+                json!({"type":"input_image","image_url":format!("data:image/png;base64,{data}")})
+            }
+            "anthropic" => {
+                json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":data}})
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn request(surface: &str, blocks: Vec<Value>) -> Value {
+        let messages = json!([{"role":"user","content":blocks}]);
+        if surface == "responses" {
+            json!({"input":messages})
+        } else {
+            json!({"messages":messages})
+        }
+    }
+
+    fn parse(surface: &str, body: &Value) -> Result<ParsedRequest, String> {
+        let mut env = env();
+        env.engine_defaults = true;
+        let body = body.to_string();
+        match surface {
+            "chat" => parse_chat_request(&env, &body),
+            "anthropic" => parse_anthropic_request(&env, &body),
+            "responses" => parse_responses_request(&env, &body),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mixed_tool_image_order() {
+        let nested = json!({"type":"tool_result","tool_use_id":"c1","content":[
+            {"type":"text","text":"nested:"},image("anthropic", PNG),
+            {"type":"text","text":":end"}
+        ]});
+        let outer = image("anthropic", PNG);
+        for (blocks, want) in [
+            (
+                vec![outer.clone(), nested.clone()],
+                format!("{DSML_IMAGE}<tool_result>nested:{DSML_IMAGE}:end</tool_result>"),
+            ),
+            (
+                vec![nested, outer],
+                format!("<tool_result>nested:{DSML_IMAGE}:end</tool_result>{DSML_IMAGE}"),
+            ),
+        ] {
+            let body = json!({"messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"shot","input":{}}]},
+                {"role":"user","content":blocks}
+            ]});
+            let parsed = parse("anthropic", &body).unwrap();
+            let rendered =
+                String::from_utf8(ds4_server::render_prompt(&parsed, 16).unwrap()).unwrap();
+            assert_eq!(parsed.images.len(), 2);
+            assert!(rendered.contains(&want), "{rendered}");
+            assert_eq!(rendered.matches(DSML_IMAGE).count(), 2);
+            assert_eq!(
+                parsed.messages[1]
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ChatPart::Image(index) => Some(*index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                [0, 1]
+            );
+        }
+    }
+
+    #[test]
+    fn responses_tool_images() {
+        for (call, output) in [
+            ("function_call", "function_call_output"),
+            ("custom_tool_call", "custom_tool_call_output"),
+        ] {
+            let body = json!({"reasoning":{"effort":"none"},"input":[
+                {"type":call,"call_id":"c1","name":"shot","arguments":"{}"},
+                {"type":output,"call_id":"c1","output":[
+                    {"type":"input_text","text":"before:"},image("responses", PNG),
+                    {"type":"input_text","text":":after"}
+                ]}
+            ]});
+            let parsed = parse("responses", &body).unwrap();
+            assert_eq!(parsed.images.len(), 1);
+            assert_eq!(
+                parsed.messages[1].content,
+                format!("before:{DSML_IMAGE}:after")
+            );
+            assert_eq!(generation_blocked(&parsed, 16), None);
+            assert!(generation_blocked(&parsed, 7)
+                .unwrap()
+                .contains("tool result"));
+            let rendered =
+                String::from_utf8(ds4_server::render_prompt(&parsed, 16).unwrap()).unwrap();
+            assert!(rendered.contains(&format!(
+                "<tool_result>before:{DSML_IMAGE}:after</tool_result>"
+            )));
+        }
+    }
+
+    #[test]
+    fn multi_image_admission() {
+        for surface in ["chat", "anthropic", "responses"] {
+            for count in [5, 8] {
+                let body = request(surface, vec![image(surface, PNG); count]);
+                let parsed = parse(surface, &body).unwrap();
+                assert_eq!(parsed.images.len(), count, "{surface}");
+                assert!(rust_parse(surface, &body.to_string()).is_err(), "{surface}");
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_media_stays_bounded() {
+        let audio =
+            json!({"type":"input_audio","input_audio":{"format":"wav","data":"UklGRgAAAABXQVZF"}});
+        for first in [true, false] {
+            let mut blocks = vec![image("chat", PNG); 4];
+            blocks.insert(if first { 0 } else { blocks.len() }, audio.clone());
+            assert!(parse("chat", &request("chat", blocks)).is_err());
+        }
+    }
+
+    #[test]
+    fn image_bytes_stay_bounded() {
+        let limit = 10 * 1024 * 1024;
+        let mut data = "iVBORw0KGgoA".to_string();
+        data.push_str(&"AAAA".repeat((limit - 9) / 3));
+        data.push_str("AA==");
+        let too_large = "AAAA".repeat(limit / 3 + 1);
+        for surface in ["chat", "anthropic", "responses"] {
+            let body = request(surface, vec![image(surface, &too_large)]);
+            assert_eq!(
+                parse(surface, &body).unwrap_err(),
+                "media exceeds 10 MiB decoded limit"
+            );
+            let body = request(
+                surface,
+                vec![
+                    image(surface, &data),
+                    image(surface, &data),
+                    image(surface, PNG),
+                ],
+            );
+            assert_eq!(
+                parse(surface, &body).unwrap_err(),
+                "media exceeds 20 MiB request limit"
+            );
+        }
+    }
+}

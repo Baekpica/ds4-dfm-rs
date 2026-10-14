@@ -61,8 +61,8 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt,
 /* The bridge references the vision image set even when a request passes none;
  * this stub keeps the teardown gate link-clean. */
 struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
-                                            const int32_t *row_of, uint32_t np, uint32_t n_rows) {
-    (void)in; (void)n; (void)row_of; (void)np; (void)n_rows;
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows, const uint64_t *sig_of) {
+    (void)in; (void)n; (void)row_of; (void)np; (void)n_rows; (void)sig_of;
     return NULL;
 }
 void ds4_v41_images_free(struct ds4_v41_images *S) { (void)S; }
@@ -70,9 +70,10 @@ uint64_t ds4_v41_images_bytes(const struct ds4_v41_images *S) { (void)S; return 
 uint64_t ds4_v41_prefill_bytes(void *engine, int n_prompt) { (void)engine; (void)n_prompt; return 0; }
 /* The golden gate's tower entry: the stub engine carries no tower. */
 int ds4_v41_has_vision(void *engine) { (void)engine; return 0; }
-float *v41_vision_run(void *engine, const float *patches, uint32_t n_vit_h, uint32_t n_vit_w,
+float *v41_vision_run(void *engine, const float *patches, uint64_t patches_len,
+                      uint32_t n_vit_h, uint32_t n_vit_w,
                       uint32_t *n_llm_h, uint32_t *n_llm_w) {
-    (void)engine; (void)patches; (void)n_vit_h; (void)n_vit_w; (void)n_llm_h; (void)n_llm_w;
+    (void)engine; (void)patches; (void)patches_len; (void)n_vit_h; (void)n_vit_w; (void)n_llm_h; (void)n_llm_w;
     return NULL;
 }
 

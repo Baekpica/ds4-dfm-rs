@@ -3062,8 +3062,13 @@ fn expand_v41_images(
             }
         }
     }
-    let imgs = ds4_core::v41_media::V41Images::expand(tokens, &order, &meta)
-        .map_err(|e| GenerateError::Engine(e.to_string()))?;
+    let imgs =
+        ds4_core::v41_media::V41Images::expand(tokens, &order, &meta, engine.ctx().max(0) as usize)
+            .map_err(|_| {
+                GenerateError::BadRequest(
+                    "invalid V4.1 images or expanded image request exceeds context/memory budget",
+                )
+            })?;
     Ok(Some(imgs))
 }
 

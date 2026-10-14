@@ -461,9 +461,14 @@ tests/ds41_boundary_verify: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_
 tests/test_ds41_kv_import: tests/test_ds41_kv_import.c ds4_ds41_kvreuse.inc
 	$(CC) $(CFLAGS) -o $@ tests/test_ds41_kv_import.c
 
-.PHONY: test-ds41-kv-import
+.PHONY: test-ds41-kv-import test-ds41-vision-gate
 test-ds41-kv-import: tests/test_ds41_kv_import
 	./tests/test_ds41_kv_import
+	python3 tests/test_ds41_model_lifetime.py
+
+test-ds41-vision-gate:
+	python3 tests/test_ds41_images.py
+	python3 tests/test_ds41_vision_gate.py
 
 tests/test_ds41_bridge_lifetime: tests/test_ds41_bridge_lifetime.c native/bridge/ds4_bridge.c native/bridge/ds4_bridge.h
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -I. -o $@ $< -Wl,--gc-sections

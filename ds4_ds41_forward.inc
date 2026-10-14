@@ -237,13 +237,14 @@ struct ds4_v41_images {
     uint32_t np;                 /* expanded prompt positions */
     int32_t *row_of;             /* [np] embd row per position, -1 = text */
     uint64_t *sig_of;            /* [np] image signature per position, 0 = text */
-    ds4_gpu_tensor *embd;        /* [n_rows][E] built span embeddings */
+    uint32_t row_base;           /* first encoded image's row; earlier rows are in reused KV */
+    ds4_gpu_tensor *embd;        /* [n_rows - row_base][E] built span embeddings */
     int encoded;
 };
 
 /* Defined in ds4_ds41_vision.inc (included after this file): run the tower once
  * for the request and build the span embeddings into imgs->embd. */
-bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs);
+bool v41_vision_encode(ds4_engine *e, struct ds4_v41_images *imgs, uint32_t first_row);
 
 typedef struct {
     uint32_t cap_tok, ctx;      /* max tokens per block / position capacity */
@@ -1245,24 +1246,35 @@ static bool v41_forward(ds4_engine *e, ds4_v41_state *st, const int32_t *ids, ui
         free(pos);
         if (!ok) return false;
     }
-    /* Vision: map this block's positions to vimg->embd rows and run the tower
-     * once (all images together) before the first block; afterwards each block
-     * only fetches rows by position.  himg records image positions like hist
-     * does, so the engram hash lookback can stop at them; vrows_on is cleared at
-     * block end so the decode step and clones never see it
-     * (core_v41_forward.c:388-404). */
+    /* YoungAi core_v41_forward.c:388-404, with a cached-prefix fast path:
+     * encode only when this block consumes image rows. Earlier images already
+     * live in KV; a text-only suffix must not stage the tower again. himg still
+     * records every position for Engram, including those restored from KV. */
     st->vrows_on = 0;
     if (st->vimg && !st->draft) {
-        if (!v41_vision_encode(e, st->vimg)) return false;
         int32_t *rows = xmalloc((size_t)n * 4);
         int any = 0;
+        uint32_t first_row = st->vimg->n_rows;
         for (uint32_t i = 0; i < n; i++) {
             const uint32_t p = st->pos0 + i;
             rows[i] = p < st->vimg->np ? st->vimg->row_of[p] : -1;
             st->himg[p] = rows[i] >= 0;
             any |= rows[i] >= 0;
+            if (rows[i] >= 0 && (uint32_t)rows[i] < first_row) { first_row = (uint32_t)rows[i]; }
         }
-        const bool okr = !any || ds4_gpu_tensor_write(st->vrows, 0, rows, (uint64_t)n * 4);
+        /* Diagnostic control: retain the full-image work for matched A/B. */
+        const char *force = getenv("DS41_VISION_REENCODE");
+        const bool reencode = force && strcmp(force, "0") != 0;
+        bool okr = true;
+        if (any || reencode) {
+            okr = v41_vision_encode(e, st->vimg, reencode ? 0u : first_row);
+        }
+        for (uint32_t i = 0; okr && i < n; i++) {
+            if (rows[i] < 0) { continue; }
+            if ((uint32_t)rows[i] < st->vimg->row_base) { okr = false; break; }
+            rows[i] -= (int32_t)st->vimg->row_base;
+        }
+        if (okr && any) { okr = ds4_gpu_tensor_write(st->vrows, 0, rows, (uint64_t)n * 4) != 0; }
         free(rows);
         if (!okr) return false;
         st->vrows_on = any;

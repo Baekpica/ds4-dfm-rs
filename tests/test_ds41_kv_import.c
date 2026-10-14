@@ -29,6 +29,7 @@ typedef struct {
     uint32_t ctx, n_past, mainh_n, last_logit_row;
     int64_t mainh_end;
     int dev_sample;
+    uint8_t *himg;
 } ds4_v41_state;
 
 static struct {
@@ -36,6 +37,7 @@ static struct {
     uint8_t is_kv_source[DS4_MAX_LAYER];
 } g_ds4_v41 = {64u, 1u, 1u, {1u, 0u}};
 static uint32_t g_ratio[DS4_MAX_LAYER] = {4u, 4u};
+static uint32_t g_live_tensors;
 
 static void *xmalloc(size_t bytes) {
     void *p = malloc(bytes);
@@ -48,12 +50,16 @@ static ds4_gpu_tensor *v41_alloc(uint64_t bytes, bool *ok) {
     t->data = xmalloc((size_t)bytes);
     t->bytes = bytes;
     memset(t->data, 0x5a, (size_t)bytes);
+    g_live_tensors++;
     *ok = true;
     return t;
 }
 
 static uint64_t ds4_gpu_tensor_bytes(const ds4_gpu_tensor *t) { return t->bytes; }
-static void ds4_gpu_tensor_free(ds4_gpu_tensor *t) { free(t->data); free(t); }
+static void ds4_gpu_tensor_free(ds4_gpu_tensor *t) {
+    free(t->data); free(t);
+    g_live_tensors--;
+}
 static int ds4_gpu_synchronize(void) { return 1; }
 static uint32_t ds4_layer_compress_ratio(uint32_t il) { return g_ratio[il]; }
 
@@ -115,6 +121,127 @@ static int reject_counter(const char *path, const uint8_t *blob, size_t bytes,
     return failed;
 }
 
+static int check_result(const char *name, int ok) {
+    printf("%s: %s\n", name, ok ? "PASS" : "FAIL");
+    return !ok;
+}
+
+/* YoungAi core_v41_kvreuse.c:91-131 compares image signatures at each
+ * checkpoint position and restores image history for the engram lookback. */
+static int vision_cases(ds4_v41_state *st, const char *path) {
+    enum { PREFIX = 9, EXTENDED = 12 };
+    const int32_t prompt[EXTENDED] = {1, 2, 3, 7, 7, 6, 7, 7, 9, 10, 7, 7};
+    const uint64_t sig[EXTENDED] = {
+        0, 0, 0, UINT64_C(0x0123456789abcdef), UINT64_C(0x0123456789abcdef),
+        0, UINT64_C(0xfedcba9876543210), UINT64_C(0xfedcba9876543210), 0,
+        0, UINT64_C(0x1122334455667788), UINT64_C(0x1122334455667788),
+    };
+    uint64_t changed[EXTENDED], zeros[EXTENDED] = {0};
+    memcpy(changed, sig, sizeof changed);
+    changed[3] = changed[4] = UINT64_C(0x8877665544332211);
+    int failures = 0;
+
+    v41_kvreuse_save(st, prompt, PREFIX, sig);
+    memset(st->himg, 0xa5, st->ctx);
+    int same = v41_kvreuse_peek(prompt, PREFIX, sig) == PREFIX &&
+        v41_kvreuse_restore(st, prompt, PREFIX, sig) == PREFIX;
+    for (uint32_t i = 0; same && i < PREFIX; i++) {
+        same = st->himg[i] == (sig[i] != 0);
+    }
+    failures += check_result("same image restores image history", same && st->himg[PREFIX] == 0xa5);
+
+    /* Matching placeholder IDs do not identify image content. A miss must
+     * leave the fresh state's buffers and history available for cold fill. */
+    st->n_past = 0;
+    memset(st->himg, 0xa5, st->ctx);
+    memset(st->logits->data, 0x3c, (size_t)st->logits->bytes);
+    int different = v41_kvreuse_peek(prompt, PREFIX, changed) == 0u &&
+        v41_kvreuse_restore(st, prompt, PREFIX, changed) == 0u &&
+        st->n_past == 0u && g_v41_kvreuse_last_reused == 0 &&
+        filled(st->logits, 0x3c);
+    for (uint32_t i = 0; different && i < st->ctx; i++) {
+        different = st->himg[i] == 0xa5;
+    }
+    failures += check_result("changed image with same tokens misses", different);
+    failures += check_result("image checkpoint rejects text signatures",
+        v41_kvreuse_peek(prompt, PREFIX, NULL) == 0u &&
+        v41_kvreuse_restore(st, prompt, PREFIX, NULL) == 0u &&
+        v41_kvreuse_peek(prompt, PREFIX, zeros) == 0u &&
+        v41_kvreuse_restore(st, prompt, PREFIX, zeros) == 0u);
+
+    /* A later image has no influence on the saved causal prefix. */
+    failures += check_result("appended image retains matching prefix",
+        v41_kvreuse_peek(prompt, EXTENDED, sig) == PREFIX &&
+        v41_kvreuse_restore(st, prompt, EXTENDED, sig) == PREFIX);
+    failures += check_result("changed image rejects extended prompt",
+        v41_kvreuse_peek(prompt, EXTENDED, changed) == 0u &&
+        v41_kvreuse_restore(st, prompt, EXTENDED, changed) == 0u);
+
+    v41_kvreuse_save(st, prompt, PREFIX, NULL);
+    uint64_t appended[EXTENDED] = {0};
+    appended[10] = appended[11] = sig[10];
+    memset(st->himg, 0xa5, st->ctx);
+    int text = v41_kvreuse_peek(prompt, EXTENDED, appended) == PREFIX &&
+        v41_kvreuse_restore(st, prompt, EXTENDED, appended) == PREFIX;
+    for (uint32_t i = 0; text && i < PREFIX; i++) {
+        text = st->himg[i] == 0;
+    }
+    failures += check_result("text prefix before first image reuses", text);
+    failures += check_result("null and zero signatures are equivalent",
+        v41_kvreuse_peek(prompt, PREFIX, zeros) == PREFIX &&
+        v41_kvreuse_restore(st, prompt, PREFIX, zeros) == PREFIX);
+    failures += check_result("image cannot replace saved text prefix",
+        v41_kvreuse_peek(prompt, PREFIX, sig) == 0u &&
+        v41_kvreuse_restore(st, prompt, PREFIX, sig) == 0u);
+
+    v41_kvreuse_save(st, prompt, PREFIX, sig);
+    struct stat sb;
+    if (!v41_kvreuse_export(path) || stat(path, &sb) != 0) {
+        return failures + check_result("image checkpoint export", 0);
+    }
+    const uint64_t bytes = (uint64_t)sb.st_size;
+    const uint64_t sig_bytes = (uint64_t)PREFIX * sizeof(uint64_t);
+    FILE *fp = fopen(path, "rb");
+    uint8_t encoded[PREFIX * sizeof(uint64_t)];
+    int encoded_ok = fp && bytes >= sig_bytes &&
+        fseeko(fp, (off_t)(bytes - sig_bytes), SEEK_SET) == 0 &&
+        fread(encoded, 1, sizeof encoded, fp) == sizeof encoded;
+    if (fp) { fclose(fp); }
+    for (uint32_t i = 0; encoded_ok && i < PREFIX; i++) {
+        for (uint32_t byte = 0; byte < sizeof(uint64_t); byte++) {
+            if (encoded[i * sizeof(uint64_t) + byte] != (uint8_t)(sig[i] >> (byte * 8u))) {
+                encoded_ok = 0;
+            }
+        }
+    }
+    failures += check_result("disk signatures use little endian", encoded_ok);
+
+    /* Overwrite the resident identity before import so a passing check
+     * proves the disk payload restored signatures, not stale host memory. */
+    v41_kvreuse_save(st, prompt, PREFIX, changed);
+    memset(st->himg, 0xa5, st->ctx);
+    int loaded = v41_kvreuse_import(path, 0, bytes, prompt, PREFIX) &&
+        v41_kvreuse_peek(prompt, PREFIX, sig) == PREFIX &&
+        v41_kvreuse_peek(prompt, PREFIX, changed) == 0u &&
+        v41_kvreuse_restore(st, prompt, PREFIX, sig) == PREFIX;
+    for (uint32_t i = 0; loaded && i < PREFIX; i++) {
+        loaded = st->himg[i] == (sig[i] != 0);
+    }
+    failures += check_result("disk round trip restores image identity", loaded);
+    failures += check_result("disk prefix allows a later image",
+        v41_kvreuse_peek(prompt, EXTENDED, sig) == PREFIX &&
+        v41_kvreuse_restore(st, prompt, EXTENDED, sig) == PREFIX);
+
+    v41_kvreuse_drop();
+    failures += check_result("legacy payload without signatures misses",
+        !v41_kvreuse_import(path, 0, bytes - sig_bytes, prompt, PREFIX) &&
+        v41_kvreuse_peek(prompt, PREFIX, sig) == 0u);
+    failures += check_result("truncated signature payload misses",
+        !v41_kvreuse_import(path, 0, bytes - 1u, prompt, PREFIX) &&
+        v41_kvreuse_peek(prompt, PREFIX, sig) == 0u);
+    return failures;
+}
+
 int main(void) {
     const uint32_t n = 9u;
     const int32_t tokens[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
@@ -131,9 +258,11 @@ int main(void) {
     st.mainh = v41_alloc(DS4_N_SWA * DS4_N_EMBD * 4u, &ok);
     st.logits = v41_alloc(DS4_N_VOCAB * 4u, &ok);
     st.ng_src[0] = 2u; st.cpend[0] = 1u; st.ctx = g_ds4_v41.ctx;
+    st.himg = xmalloc(st.ctx);
+    memset(st.himg, 0, st.ctx);
     st.win_from[1] = 8u;   /* a CED decoder layer retains a nonzero window floor */
     st.mainh_end = n - 1u; st.mainh_n = DS4_N_SWA;
-    v41_kvreuse_save(&st, tokens, n);
+    v41_kvreuse_save(&st, tokens, n, NULL);
 
     char path[] = "/tmp/ds41-kv-import-XXXXXX";
     const int fd = mkstemp(path);
@@ -156,7 +285,7 @@ int main(void) {
     st.ng_src[0] = 0; st.cpend[0] = 0; st.win_from[1] = 0; st.mainh_n = 0; st.mainh_end = -1;
     int failures = 0;
     if (!v41_kvreuse_import(path, 0, bytes, tokens, n) ||
-        v41_kvreuse_restore(&st, tokens, n) != n) {
+        v41_kvreuse_restore(&st, tokens, n, NULL) != n) {
         fprintf(stderr, "valid round trip: FAIL\n");
         failures++;
     } else {
@@ -175,12 +304,12 @@ int main(void) {
     st.dev_sample = 1;
     st.n_past = 0;
     memset(st.logits->data, 0x3c, (size_t)st.logits->bytes);
-    int sample_cold = v41_kvreuse_restore(&st, tokens, n) == 0u &&
+    int sample_cold = v41_kvreuse_restore(&st, tokens, n, NULL) == 0u &&
         st.n_past == 0u && g_v41_kvreuse_last_reused == 0 && filled(st.logits, 0x3c);
     printf("sampled full hit is cold: %s\n", sample_cold ? "PASS" : "FAIL");
     failures += !sample_cold;
     const int32_t extended[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    int sample_suffix = v41_kvreuse_restore(&st, extended, n + 1u) == n;
+    int sample_suffix = v41_kvreuse_restore(&st, extended, n + 1u, NULL) == n;
     printf("sampled suffix retains prefix: %s\n", sample_suffix ? "PASS" : "FAIL");
     failures += !sample_suffix;
     st.dev_sample = 0;
@@ -189,7 +318,7 @@ int main(void) {
     v41_kv_put_le64(mut + tail, UINT64_MAX);
     v41_kv_put_le32(mut + tail + 8u, 0u);
     int empty = write_blob(path, mut, bytes) && v41_kvreuse_import(path, 0, bytes, tokens, n) &&
-        v41_kvreuse_restore(&st, tokens, n) == n && st.mainh_n == 0u && st.mainh_end == -1;
+        v41_kvreuse_restore(&st, tokens, n, NULL) == n && st.mainh_n == 0u && st.mainh_end == -1;
     printf("empty mainh run: %s\n", empty ? "PASS" : "FAIL");
     failures += !empty;
     memcpy(mut, blob, bytes);
@@ -224,15 +353,16 @@ int main(void) {
     /* Reuse the larger K.mainh allocation, then import half the declared
      * ring. Its remaining bytes belong to an older checkpoint, not this file. */
     const uint64_t mainh_bytes = ds4_gpu_tensor_bytes(st.mainh), half = mainh_bytes / 2u;
-    const size_t mainh_off = bytes - (size_t)mainh_bytes - DS4_N_VOCAB * 4u;
+    const size_t tail_bytes = DS4_N_VOCAB * 4u + (size_t)n * sizeof(uint64_t);
+    const size_t mainh_off = bytes - (size_t)mainh_bytes - tail_bytes;
     memcpy(mut, blob, bytes);
     v41_kv_put_le64(mut + tail + 12u, half);
-    memmove(mut + mainh_off + half, blob + mainh_off + mainh_bytes, DS4_N_VOCAB * 4u);
+    memmove(mut + mainh_off + half, blob + mainh_off + mainh_bytes, tail_bytes);
     const size_t short_bytes = bytes - (size_t)half;
     if (!write_blob(path, mut, short_bytes)) { failures++; }
     else {
         const int loaded = v41_kvreuse_import(path, 0, short_bytes, tokens, n);
-        const int used = loaded && v41_kvreuse_restore(&st, tokens, n) != 0u;
+        const int used = loaded && v41_kvreuse_restore(&st, tokens, n, NULL) != 0u;
         printf("short mainh after larger allocation: %s%s\n", loaded ? "FAIL (accepted)" : "PASS",
                used ? " (used stale bytes)" : "");
         failures += loaded;
@@ -246,13 +376,13 @@ int main(void) {
     v41_kv_put_le64(mut + tail, 0u);
     v41_kv_put_le32(mut + tail + 8u, 0u);
     v41_kv_put_le64(mut + tail + 12u, 0u);
-    memmove(mut + mainh_off, blob + mainh_off + mainh_bytes, DS4_N_VOCAB * 4u);
+    memmove(mut + mainh_off, blob + mainh_off + mainh_bytes, tail_bytes);
     g_ds4_v41.mtp_towers = 0u; g_ds4_v41.n_mtp_target = 0u;
     st.mainh = NULL; st.mainh_n = 0u; st.mainh_end = 0;
     const size_t no_mtp_bytes = bytes - (size_t)mainh_bytes;
     int no_mtp = write_blob(path, mut, no_mtp_bytes) &&
         v41_kvreuse_import(path, 0, no_mtp_bytes, tokens, n) &&
-        v41_kvreuse_restore(&st, tokens, n) == n && K.mainh_bytes == 0u;
+        v41_kvreuse_restore(&st, tokens, n, NULL) == n && K.mainh_bytes == 0u;
     printf("no-MTP checkpoint: %s\n", no_mtp ? "PASS" : "FAIL");
     failures += !no_mtp;
 
@@ -263,20 +393,22 @@ int main(void) {
     st.comp_kv[0] = v41_alloc((uint64_t)n * DS4_V41_CKV_BYTES, &ok);
     st.index_k[0] = v41_alloc((uint64_t)n * DS4_V41_IDXK_BYTES, &ok);
     st.ng_src[0] = n; st.cpend[0] = 0u;
-    v41_kvreuse_save(&st, tokens, n);
+    v41_kvreuse_save(&st, tokens, n, NULL);
     struct stat sb;
     int ratio_one = v41_kvreuse_export(path) && stat(path, &sb) == 0;
     st.ng_src[0] = 0u;
     memset(st.comp_kv[0]->data, 0x3c, (size_t)st.comp_kv[0]->bytes);
     if (ratio_one) {
         ratio_one = v41_kvreuse_import(path, 0, (uint64_t)sb.st_size, tokens, n) &&
-            v41_kvreuse_restore(&st, tokens, n) == n && st.ng_src[0] == n &&
+            v41_kvreuse_restore(&st, tokens, n, NULL) == n && st.ng_src[0] == n &&
             st.cpend[0] == 0u && filled(st.comp_kv[0], 0x5a);
     }
     printf("ratio-one source checkpoint: %s\n", ratio_one ? "PASS" : "FAIL");
     failures += !ratio_one;
+    failures += vision_cases(&st, path);
     unlink(path);
-    free(mut); free(blob);
+    v41_kvreuse_cleanup();
+    free(mut); free(blob); free(st.himg);
     printf("ds41 KV import gate: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures ? 1 : 0;
 }

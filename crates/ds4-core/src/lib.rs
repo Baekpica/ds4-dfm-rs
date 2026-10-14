@@ -2247,6 +2247,9 @@ fn drop_model_native(raw: NonNull<ds4_bridge_model>) {
 
 impl Drop for Model {
     fn drop(&mut self) {
+        if self.shape().variant == Variant::DeepSeek41Flash {
+            v41_run::clear_setup_cache();
+        }
         drop_model_native(self.raw);
     }
 }

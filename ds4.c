@@ -73155,6 +73155,11 @@ int ds4_engine_model_id(ds4_engine *e) {
     return (int)DS4_MODEL_VARIANT;
 }
 
+#ifndef DS4_NO_GPU
+static void v41_kvreuse_cleanup(void);
+static void v41_vision_cleanup(void);
+#endif
+
 void ds4_engine_close(ds4_engine *e) {
     if (!e) return;
 #ifndef DS4_NO_GPU
@@ -73183,6 +73188,8 @@ void ds4_engine_close(ds4_engine *e) {
 #endif
     model_close(&e->model);
 #ifndef DS4_NO_GPU
+    v41_kvreuse_cleanup();
+    v41_vision_cleanup();
     ds4_gpu_cleanup();
 #endif
     ds4_release_instance_lock();

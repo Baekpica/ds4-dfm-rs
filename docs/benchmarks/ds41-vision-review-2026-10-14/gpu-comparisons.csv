@@ -1,0 +1,13 @@
+left,right,skip_left_rows,scope,status
+cold-p,full-hit-p,0,tokens_and_all_logits,PASS
+cold-p,warm-suffix-one,1,tokens_and_all_logits,PASS
+changed-image-miss,changed-image-cold,0,tokens_and_all_logits,PASS
+follow-text-reencode,follow-text-reuse,0,tokens_and_all_logits,PASS
+append-image-reencode,append-image-reuse,0,tokens_and_all_logits,PASS
+reordered-images-miss,reordered-images-cold,0,tokens_and_all_logits,PASS
+extended-bare-pure-eager,extended-bare-pure-captured,0,tokens_and_all_logits,PASS
+extended-bare-pure-eager,extended-bare-fixed5-eager,0,tokens_only,PASS
+extended-bare-pure-captured,extended-bare-fixed5-captured,0,tokens_only,PASS
+extended-gr-pure-eager,extended-gr-pure-captured,0,tokens_and_all_logits,PASS
+extended-gr-pure-eager,extended-gr-fixed5-eager,0,tokens_only,PASS
+extended-gr-pure-captured,extended-gr-fixed5-captured,0,tokens_only,PASS

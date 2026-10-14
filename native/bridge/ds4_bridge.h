@@ -310,7 +310,7 @@ void ds4_bridge_v41_set_prof(int on);
  * checkpoint on (the engine's switch_plugins stand-in). */
 void ds4_bridge_v41_kvreuse_set(int on);
 int ds4_bridge_v41_kvreuse_last_reused(void);
-uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n);
+uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_t *sig);
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
 /* The disk half (item 4): the payload export/import the Rust store drives
  * (crates/ds4-kv, v41_disk.rs).  export writes the checkpoint payload (meta
@@ -365,12 +365,14 @@ void ds4_bridge_v41_zchain_rb_clear(void);
  * (no tower, byte-identical to before). */
 typedef struct {
     const float *patches;
+    uint64_t patches_len; /* f32 elements */
     uint32_t n_vit_h, n_vit_w, n_llm_h, n_llm_w;
 } ds4_bridge_v41_image;
 typedef struct {
     const ds4_bridge_v41_image *img;
     int n;
     const int32_t *row_of;
+    const uint64_t *sig_of;
     uint32_t np, n_rows;
 } ds4_bridge_v41_images;
 /* The serving admission's byte account (server_sched_v41.c:58): the prefill
@@ -383,10 +385,11 @@ uint64_t ds4_bridge_v41_images_bytes(const ds4_bridge_v41_images *images);
  * core_v41_vision.c:116-131, called by core_v41_vision_gate.c:80):
  * has_vision is the gate's upfront check (:45); vision_run returns malloc'd
  * aligner rows [n_llm_h*n_llm_w][DS4_N_EMBD] for one patch set (NULL when the
- * model carries no tower or the forward fails), freed with vision_rows_free
- * so malloc/free stay on the native side of the boundary. */
+ * model carries no tower, the patch extent is invalid, or the forward fails),
+ * freed with vision_rows_free. patches_len counts f32 elements. */
 int ds4_bridge_v41_has_vision(ds4_bridge_model *m);
 float *ds4_bridge_v41_vision_run(ds4_bridge_model *m, const float *patches,
+                                 uint64_t patches_len,
                                  uint32_t n_vit_h, uint32_t n_vit_w,
                                  uint32_t *n_llm_h, uint32_t *n_llm_w);
 void ds4_bridge_v41_vision_rows_free(float *rows);

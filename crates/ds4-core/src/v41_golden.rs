@@ -334,6 +334,7 @@ impl Model {
             ds4_bridge_v41_vision_run(
                 self.raw_ptr(),
                 golden.patches.as_ptr(),
+                golden.patches.len() as u64,
                 golden.n_vit_h,
                 golden.n_vit_w,
                 &mut olh,
@@ -373,6 +374,7 @@ impl Model {
             ds4_bridge_v41_vision_run(
                 self.raw_ptr(),
                 p.patches.as_ptr(),
+                p.patches.len() as u64,
                 p.plan.n_vit_h,
                 p.plan.n_vit_w,
                 &mut olh,

@@ -107,14 +107,11 @@ int ds4_v41_score_ids(void *engine, const int *ids, int n_ids, const char *out_p
  * [n_vit_h*n_vit_w][3*patch*patch] on the bf16 grid the tower consumes (
  * core_v41_image.c:150-172), borrowed for the run (the native never frees
  * them).  The span length n_tok = n_llm_h*(n_llm_w+1)+2 and the row0 offsets
- * are the native's own account (core_v41_vision.c:200-204).  The per-image
- * identity (core_v41_vision.c:198/182 fnv1a64) is not carried here: the port
- * enforces image identity by folding the fingerprint into the Rust KV mount
- * digest, which drops the native checkpoint on a change (see ds41_forward.h
- * note on ds4_v41_images_build and crates/ds4-core/src/v41_run.rs
- * kv_state_digest). */
+ * are the native's own account (core_v41_vision.c:200-204). Image identity is
+ * carried by the expanded prompt's sig_of map, alongside row_of. */
 typedef struct {
     const float *patches;         /* [n_vit_h*n_vit_w][3*patch*patch], borrowed */
+    uint64_t patches_len;         /* f32 elements, checked against the loaded tower */
     uint32_t n_vit_h, n_vit_w;    /* ViT patch grid */
     uint32_t n_llm_h, n_llm_w;    /* aligner (LLM) token grid */
 } ds4_v41_image_src;
@@ -125,9 +122,10 @@ struct ds4_v41_images;
 
 /* Build the image set: copies row_of (expanded prompt: position -> embed row,
  * -1 = text), takes the patches borrowed, and computes each span's n_tok/row0.
- * n_rows = sum of span lengths.  NULL when n < 0 or np == 0. */
+ * n_rows = sum of span lengths. NULL for an empty or malformed set, including
+ * a patch extent or grid that disagrees with the loaded tower. */
 struct ds4_v41_images *ds4_v41_images_build(const ds4_v41_image_src *in, int n,
-                                            const int32_t *row_of, uint32_t np, uint32_t n_rows);
+                                            const int32_t *row_of, uint32_t np, uint32_t n_rows, const uint64_t *sig_of);
 void ds4_v41_images_free(struct ds4_v41_images *S);
 /* The prefill's extra peak for the serving admission account, mirroring the
  * engine's ds4_v41_images_bytes (core_v41_vision.c:229-241). */
@@ -144,9 +142,11 @@ int ds4_v41_has_vision(void *engine);
  * (core_v41_vision_gate.c:80) and any caller that wants rows outside a
  * request; NULL when the model carries no tower or the forward fails.  The
  * caller frees the rows with free().  patches are n_vit_h*n_vit_w rows of
- * 3*patch*patch f32 on the bf16 grid; n_llm_h/n_llm_w receive the aligner
- * grid (n_vit / downsample, rounded up). */
-float *v41_vision_run(void *engine, const float *patches, uint32_t n_vit_h, uint32_t n_vit_w,
+ * 3*patch*patch f32 on the bf16 grid; patches_len counts those elements and
+ * must match the loaded tower. n_llm_h/n_llm_w receive the aligner grid
+ * (n_vit / downsample, rounded up). */
+float *v41_vision_run(void *engine, const float *patches, uint64_t patches_len,
+                      uint32_t n_vit_h, uint32_t n_vit_w,
                       uint32_t *n_llm_h, uint32_t *n_llm_w);
 
 /* The prefill peak bytes for `n_prompt` positions (the engine's
@@ -210,7 +210,7 @@ void ds4_engine_v41_set_prof(int on);
  * v41_kvreuse_note_mount replaces the engine's switch_plugins drop. */
 void ds4_engine_v41_set_kv_reuse(int on);
 int ds4_engine_v41_last_reused(void);
-uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np);
+uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np, const uint64_t *sig);
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash);
 
 /* The disk half (item 4): the payload export/import the bridge exposes to

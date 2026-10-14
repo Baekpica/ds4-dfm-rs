@@ -717,11 +717,15 @@ static void close_model(ds4_model *m) {
 #define vocab_free(...) ((void)0)
 #define ds4_threads_shutdown(...) ((void)0)
 #define mimo2_media_free(...) ((void)0)
+#define v41_kvreuse_cleanup(...) ((void)0)
+#define v41_vision_cleanup(...) ((void)0)
 #define ds4_gpu_cleanup(...) ((void)0)
 #define ds4_release_instance_lock(...) ((void)0)
 #include GLM53_CLOSE_FIXTURE
 #undef ds4_release_instance_lock
 #undef ds4_gpu_cleanup
+#undef v41_vision_cleanup
+#undef v41_kvreuse_cleanup
 #undef mimo2_media_free
 #undef ds4_threads_shutdown
 #undef vocab_free

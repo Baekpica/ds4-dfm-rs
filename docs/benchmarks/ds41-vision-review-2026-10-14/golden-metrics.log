@@ -1,0 +1,21 @@
+@@ GOLDEN BEGIN panel
+[v41-golden] (1) plan ok: image 1200x665 -> pad 1204x672 (golden 1204x672), patch 48x86 (golden 48x86), token 16x29 (golden 16x29)
+[v41-golden] (2) pixels (report only): 0/2427264 differ, max 0 (PNG expected 0; JPEG decoder +-1..2, gate :34)
+[v41-golden] (3) patches: 0/2427264 elements differ, max 0.00000 (about 0.0 pixel-levels)
+[v41-golden] (4) tower (golden patches): 464 rows x 5120, row cos mean 0.999804 min 0.990113 (row 97), max abs diff 0.01953
+[v41-golden] (5) end-to-end (our patches): row cos mean 0.999804 min 0.990113 (row 97), max abs diff 0.01953 (decoder differences ride here; report only)
+@@ GOLDEN END panel status=PASS
+@@ GOLDEN BEGIN bug
+[v41-golden] (1) plan ok: image 1080x2414 -> pad 840x1876 (golden 840x1876), patch 134x60 (golden 134x60), token 45x20 (golden 45x20)
+[v41-golden] (2) pixels (report only): 116398/4727520 differ, max 4 (PNG expected 0; JPEG decoder +-1..2, gate :34)
+[v41-golden] (3) patches: 116398/4727520 elements differ, max 0.03125 (about 4.0 pixel-levels)
+[v41-golden] (4) tower (golden patches): 900 rows x 5120, row cos mean 0.999875 min 0.996753 (row 15), max abs diff 0.01768
+[v41-golden] (5) end-to-end (our patches): row cos mean 0.999868 min 0.997257 (row 159), max abs diff 0.01660 (decoder differences ride here; report only)
+@@ GOLDEN END bug status=PASS
+@@ GOLDEN BEGIN homer
+[v41-golden] (1) plan ok: image 190x390 -> pad 392x784 (golden 392x784), patch 56x28 (golden 56x28), token 19x10 (golden 19x10)
+[v41-golden] (2) pixels (report only): 0/921984 differ, max 0 (PNG expected 0; JPEG decoder +-1..2, gate :34)
+[v41-golden] (3) patches: 0/921984 elements differ, max 0.00000 (about 0.0 pixel-levels)
+[v41-golden] (4) tower (golden patches): 190 rows x 5120, row cos mean 0.999716 min 0.990216 (row 141), max abs diff 0.02148
+[v41-golden] (5) end-to-end (our patches): row cos mean 0.999716 min 0.990216 (row 141), max abs diff 0.02148 (decoder differences ride here; report only)
+@@ GOLDEN END homer status=PASS
