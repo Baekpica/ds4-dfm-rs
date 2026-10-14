@@ -31,8 +31,10 @@ serving must keep their current behavior.
   WebP, and malformed base64 with a specific 400 response. Server-side URL
   fetching would add an SSRF boundary and is not required for local clients
   that can send standard data URIs.
-- Images are legal only in user messages. A system/assistant/tool image is a
-  validation error, matching the pinned Qwen chat template's constraints.
+- Images are legal only in user messages. A system/assistant image is a parse
+  error, and a tool/function image is refused by name (only the V4.1 head can
+  place one inside a tool result), matching the pinned Qwen chat template's
+  constraints.
 - V1 supports multiple image blocks in encounter order, bounded to four
   images, 10 MiB of base64-decoded payload per image, and 20 MiB total per
   request. Each allocation is bounded before image decompression.

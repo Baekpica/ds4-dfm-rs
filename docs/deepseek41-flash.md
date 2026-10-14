@@ -163,10 +163,13 @@ mode or context in the generic capability table.
 
 Image input is the model's own tower, not a generic media path: with
 `--vision-gguf <sidecar>` the DSML render writes one placeholder per image in
-the client's block order and the tower embeds those rows; an Anthropic
-`tool_result` whose content is a block array carries images the same way (the
-MCP screenshot loop). Without the sidecar an image request is refused with
-HTTP 400 by name; a head without a V4.1 placeholder refuses a tool-result
+the client's block order and the tower embeds those rows. A tool result
+carries images the same way in both client shapes: an Anthropic `tool_result`
+whose content is a block array, and a Chat Completions `tool`/`function`
+message whose content is a block array (the MCP screenshot loop; its content
+is what the render wraps in `<tool_result>`, so the placeholder is written
+into that text at parse time). Without the sidecar an image request is refused
+with HTTP 400 by name; a head without a V4.1 placeholder refuses a tool-result
 image by name as well.
 
 The native run keeps one prompt-end KV checkpoint and reuses the previous
