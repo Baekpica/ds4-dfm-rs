@@ -54,6 +54,8 @@ pub enum TypeClass {
     QwenPlain,
     QwenMtpRouted,
     GlmDense,
+    /// GVQ1 keeps its original type or uses the named nonexpert Q4_K recipe.
+    GlmVqNative(u32),
     GlmRouted,
     /// V4.1 main skeleton: fp4x32 or q4_K, nothing else (`expect_skel`,
     /// core_bind_v41.c:36-39).
@@ -87,6 +89,7 @@ impl TypeClass {
             TypeClass::QwenPlain => "qwen-plain".into(),
             TypeClass::QwenMtpRouted => "qwen-mtp-routed".into(),
             TypeClass::GlmDense => "glm-dense".into(),
+            TypeClass::GlmVqNative(t) => format!("glm-vq-native:{}|q4_K", tensor_type_name(t)),
             TypeClass::GlmRouted => "glm-routed".into(),
             TypeClass::V41Skel => "v41-skel".into(),
             TypeClass::V41Dense => "v41-dense".into(),
@@ -183,6 +186,7 @@ fn is_nextn(shape: &Shape, il: u32) -> bool {
 fn type_ok(class: TypeClass, typ: u32) -> bool {
     match class {
         TypeClass::Exact(t) | TypeClass::OptionalExact(t) => typ == t,
+        TypeClass::GlmVqNative(t) => typ == t || typ == T_Q4_K,
         TypeClass::Plain => typ == T_F16 || typ == T_F32,
         TypeClass::MotifProj => typ == T_F16 || typ == T_BF16,
         TypeClass::Routed => typ == T_IQ2_XXS || typ == T_Q2_K || typ == T_Q4_K,

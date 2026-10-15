@@ -25,6 +25,9 @@ const VQ: u32 = 0x4756_5138;
 const F32: u32 = 0;
 const F16: u32 = 1;
 const BF16: u32 = 30;
+const Q4_K: u32 = 12;
+const Q4_BLOCK: u64 = 256;
+const Q4_BYTES: u64 = 144;
 const SCALE_BLOCK: u64 = 128;
 const PATCH: &str = "model.visual.patch_embed.proj.weight";
 
@@ -337,6 +340,19 @@ pub(super) fn validate_part(
             F32 => t.elements.checked_mul(4).ok_or(TensorError::Overflow)?,
             F16 | BF16 => t.elements.checked_mul(2).ok_or(TensorError::Overflow)?,
             FP8 | CODEBOOK => t.elements,
+            Q4_K => {
+                if g.get_string("glm_vq.native_policy") != Some(b"q4_k_nonexpert_v1")
+                    || !layout::q4k_target(&t.name)
+                    || t.ndim != 2
+                    || t.dim[0] % Q4_BLOCK != 0
+                {
+                    return Err(fail("unsupported Q4_K role/recipe/shape"));
+                }
+                t.elements
+                    .checked_div(Q4_BLOCK)
+                    .and_then(|n| n.checked_mul(Q4_BYTES))
+                    .ok_or(TensorError::Overflow)?
+            }
             VQ => {
                 let header = Header::parse(g.as_bytes(), t)?;
                 let bytes = header.size;
@@ -346,6 +362,15 @@ pub(super) fn validate_part(
             _ => return Err(fail("unsupported tensor type")),
         };
         raw(g.as_bytes(), t)?;
+        if t.typ == Q4_K {
+            for block in raw(g.as_bytes(), t)?.chunks_exact(Q4_BYTES as usize) {
+                for scale in [&block[..2], &block[2..4]] {
+                    if u16::from_le_bytes(scale.try_into().unwrap()) & 0x7c00 == 0x7c00 {
+                        return Err(fail("nonfinite Q4_K scale"));
+                    }
+                }
+            }
+        }
     }
     zeros(g.as_bytes(), dir_end as u64, data_pos)?;
     let mut order: Vec<_> = tensors.iter().collect();

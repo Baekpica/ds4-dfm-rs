@@ -34,12 +34,54 @@ fn tensor(out: &mut Vec<LayoutSpec>, name: String, typ: u32, shape: &[u64]) {
     for (i, &n) in shape.iter().rev().enumerate() {
         dim[i] = n;
     }
+    let class = if q4k_target(&name) {
+        TypeClass::GlmVqNative(typ)
+    } else {
+        TypeClass::Exact(typ)
+    };
     out.push(LayoutSpec {
         name,
-        class: TypeClass::Exact(typ),
+        class,
         ndim: shape.len() as u32,
         dim,
     });
+}
+
+// Quantize the bandwidth-heavy trunk matrices; state/routing controls and
+// the original draft remain independent quality contracts.
+pub(super) fn q4k_target(name: &str) -> bool {
+    if matches!(
+        name,
+        "lm_head.weight" | "model.language_model.embed_tokens.weight"
+    ) {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix("model.language_model.layers.") else {
+        return false;
+    };
+    let Some((layer, role)) = rest.split_once('.') else {
+        return false;
+    };
+    if !layer.parse::<u32>().is_ok_and(|il| il < TRUNK) {
+        return false;
+    }
+    matches!(
+        role,
+        "self_attn.q_proj.weight"
+            | "self_attn.k_proj.weight"
+            | "self_attn.v_proj.weight"
+            | "self_attn.o_proj.weight"
+            | "self_attn.q_a_proj.weight"
+            | "self_attn.q_b_proj.weight"
+            | "self_attn.kv_a_proj_with_mqa.weight"
+            | "self_attn.kv_b_proj.weight"
+            | "mlp.gate_proj.weight"
+            | "mlp.up_proj.weight"
+            | "mlp.down_proj.weight"
+            | "mlp.shared_experts.gate_proj.weight"
+            | "mlp.shared_experts.up_proj.weight"
+            | "mlp.shared_experts.down_proj.weight"
+    )
 }
 
 fn matrix(out: &mut Vec<LayoutSpec>, prefix: &str, typ: u32, rows: u64, cols: u64) {

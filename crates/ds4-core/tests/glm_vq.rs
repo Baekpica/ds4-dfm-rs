@@ -272,6 +272,36 @@ fn native_fp8_scales() {
 }
 
 #[test]
+fn native_q4k_contract() {
+    let tmp = Temp::new();
+    let mut tensors = [Tensor {
+        name: "model.language_model.layers.0.self_attn.q_proj.weight",
+        dims: vec![256, 2],
+        typ: 12,
+        bytes: vec![0; 2 * 144],
+    }];
+    let recipe = [("glm_vq.native_policy", "q4_k_nonexpert_v1")];
+    let inv = tmp.open(&container(&recipe, &tensors).0).unwrap();
+    assert_eq!(inv.tensors[0].bytes, 288);
+    assert!(tmp.open(&container(&[], &tensors).0).is_err());
+    for name in [
+        "model.language_model.layers.45.self_attn.q_proj.weight",
+        "model.language_model.layers.3.mlp.gate.weight",
+        "model.language_model.layers.3.mlp.experts.0.gate_proj.weight",
+        "model.language_model.layers.0.self_attn.f_a_proj.weight",
+    ] {
+        tensors[0].name = name;
+        assert!(tmp.open(&container(&recipe, &tensors).0).is_err());
+    }
+    tensors[0].name = "lm_head.weight";
+    tensors[0].dims[0] = 128;
+    assert!(tmp.open(&container(&recipe, &tensors).0).is_err());
+    tensors[0].dims[0] = 256;
+    tensors[0].bytes[..2].copy_from_slice(&0x7c00u16.to_le_bytes());
+    assert!(tmp.open(&container(&recipe, &tensors).0).is_err());
+}
+
+#[test]
 #[ignore = "requires the pinned local handoff; no model download"]
 fn handoff_parts_are_valid() {
     let root = PathBuf::from(std::env::var_os("DS4_GLM_VQ_FIXTURES").expect("DS4_GLM_VQ_FIXTURES"));

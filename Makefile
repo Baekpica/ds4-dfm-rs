@@ -2019,6 +2019,9 @@ test-glm-vq-ops: tests/libglm_vq_test.so
 test-glm-vq-kda: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_kda.py --lib tests/libglm_vq_test.so
 
+gguf-tools/libds4q.so: gguf-tools/quants.c gguf-tools/quants.h
+	$(CC) -O3 -fPIC -shared -o $@ $< -lm -pthread
+
 tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
 
