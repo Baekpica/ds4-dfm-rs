@@ -1979,6 +1979,13 @@ test-glm-vq-restore: tests/libglm_vq_test.so
 test-glm-vq-ops: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
 
+tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-linear
+test-glm-vq-linear: tests/libglm_vq_linear.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_linear.py --lib tests/libglm_vq_linear.so --fixtures "$(GLMVQ_FIXTURES)"
+
 tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
@@ -2494,6 +2501,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/libglm_vq_linear.so
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o

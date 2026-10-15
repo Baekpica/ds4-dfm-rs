@@ -230,3 +230,4 @@ tests/naive_banks
 
 /tests/libglm_vq_test.so
 /tests/test_glm_vq_bind
+/tests/libglm_vq_linear.so
