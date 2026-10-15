@@ -1990,6 +1990,13 @@ tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cu
 test-glm-vq-linear: tests/libglm_vq_linear.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_linear.py --lib tests/libglm_vq_linear.so --fixtures "$(GLMVQ_FIXTURES)"
 
+tests/libglm_vq_attention.so: tests/test_glm_vq_attention.cu cuda/glm_vq_attention.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-attention
+test-glm-vq-attention: tests/libglm_vq_attention.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_attention.py --lib tests/libglm_vq_attention.so
+
 tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
@@ -2505,7 +2512,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
-	rm -f tests/libglm_vq_linear.so
+	rm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
