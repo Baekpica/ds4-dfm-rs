@@ -1953,6 +1953,16 @@ tests/test_glm53_mixed: tests/test_glm53_mixed.o $(DS4_CUDA_CORE_OBJS)
 test-glm53-mixed: tests/test_glm53_mixed
 	./tests/test_glm53_mixed
 
+GLMVQ_PYTHON ?= python3
+tests/libglm_vq_test.so: tests/test_glm_vq_cuda.cu cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $<
+
+.PHONY: test-glm-vq-restore
+test-glm-vq-restore: tests/libglm_vq_test.so
+	@test -n "$(GLMVQ_FIXTURES)" || \
+		{ echo "set GLMVQ_FIXTURES to the immutable golden-fixtures directory" >&2; exit 2; }
+	$(GLMVQ_PYTHON) tests/test_glm_vq_cuda.py --lib tests/libglm_vq_test.so --fixtures "$(GLMVQ_FIXTURES)"
+
 tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
@@ -2472,7 +2482,7 @@ clean:
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
 	rm -f tests/test_glm53_compare tests/test_glm53_mtp_long tests/test_glm53_mtp_long.o
-	rm -f tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
+	rm -f tests/libglm_vq_test.so tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
 	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o

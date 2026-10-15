@@ -227,3 +227,5 @@ tests/naive_banks
 /tests/test_glm53_dense_gemm
 /tests/test_glm53_upload_async
 /tests/test_glm53_width
+
+/tests/libglm_vq_test.so
