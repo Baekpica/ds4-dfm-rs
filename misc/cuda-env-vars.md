@@ -1177,6 +1177,13 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   This candidate needs artifact-specific quality/performance qualification.
   Original BF16/FP8 tensors and VQ experts do not use this switch.
 
+- `DS4_GLMVQ_Q4_STREAM=0` disables cooperative Q4_K weight loads. Default On
+  stages aligned matrices larger than 4 MiB for single-token decode, within
+  the device's shared-memory limit. Small matrices and widths 2–8 retain
+  scalar dots. Packed values and the BF16 output boundary remain; FP32
+  reduction order changes. Double buffering lost the measured GLM replay
+  comparison and remains available only in the diagnostic harness.
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

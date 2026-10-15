@@ -25,6 +25,7 @@ struct ds4_gvq_ctx {
     cudaStream_t stream;
     glmvq_restore_mode restore;
     bool direct_q4;
+    glmvq_q4_config q4;
     std::vector<int32_t> routes;
     std::vector<uint32_t> grouped;
     ds4_gpu_tensor *mma = nullptr;
@@ -187,6 +188,17 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         return nullptr;
     }
     ctx->direct_q4 = !q4 || strcmp(q4, "0");
+    const char *q4_stream = getenv("DS4_GLMVQ_Q4_STREAM");
+    if (q4_stream && strcmp(q4_stream, "0") && strcmp(q4_stream, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_Q4_STREAM accepts 0 or 1\n");
+        delete ctx;
+        return nullptr;
+    }
+    const glmvq_q4_load q4_mode = q4_stream && !strcmp(q4_stream, "0") ? GLMVQ_Q4_SCALAR : GLMVQ_Q4_AUTO;
+    if (!cuda_ok(glmvq_q4_prepare(&ctx->q4, q4_mode), "GLM VQ Q4 resources")) {
+        delete ctx;
+        return nullptr;
+    }
     ctx->model = model;
     ctx->scratch = ds4_gpu_tensor_alloc(bytes);
     ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);
@@ -256,7 +268,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         if (math != DS4_GVQ_BF16) { return 0; }
         if (rows <= GLMVQ_Q4_WARPS) {
             return cuda_ok(glmvq_q4_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
-                s.rows, s.cols, rows, ctx->stream), "GLM VQ Q4 decode");
+                s.rows, s.cols, rows, ctx->stream, &ctx->q4), "GLM VQ Q4 decode");
         }
         // Wide projections reuse the established Q4_K x Q8_1 MMQ primitive.
         // Keep the source BF16 output boundary; Q8 input error is assessed

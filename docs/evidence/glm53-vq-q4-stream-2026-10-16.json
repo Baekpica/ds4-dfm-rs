@@ -1,0 +1,1031 @@
+{
+  "whole_workload": {
+    "identity": {
+      "head": "923e9b3400d0d4c16a28b41e7a4bbeedfc670ad5",
+      "binary_sha256": "819b4471987a2fc2a476ed31322f3b1ef6cf51b306d311fcdd998c736e589f35",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "native_sources": {
+        "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "ds4_glmvq_gpu.cuh": "3964813c63e91d16aa94d675eff844ea5c028c7c1467ab8a611860310dd0a6bf",
+        "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f"
+      },
+      "manifest_sha256": "d16712edb7940dd070873d7aa660f7731c036605484a1bc54155e5f5c802fe47",
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "environment": {
+        "DS4_GLMVQ_MMA": "0",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "libraries": "\tlinux-vdso.so.1\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6\n\t/lib/ld-linux-aarch64.so.1\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13\n",
+      "build_note": "Base commit plus recorded native source hashes; compiled before the feature commit",
+      "hardware": "NVIDIA GB10, sm_121a, CUDA 13.4",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ]
+    },
+    "runs": [
+      {
+        "label": "q4-stream-off-1",
+        "mode": "0",
+        "prefill_tps": 122.31,
+        "decode_tps": 3.89,
+        "first_decode_seconds": 0.2648,
+        "process_wall_seconds": 205.8698178170016,
+        "minimum_system_available_gib": 42.02504348754883,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "stream": "0"
+      },
+      {
+        "label": "q4-stream-on-1",
+        "mode": "1",
+        "prefill_tps": 121.78,
+        "decode_tps": 4.01,
+        "first_decode_seconds": 0.2733,
+        "process_wall_seconds": 217.2546479589946,
+        "minimum_system_available_gib": 42.312744140625,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184.0,
+          2184
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "stream": "1"
+      },
+      {
+        "label": "q4-stream-on-2",
+        "mode": "1",
+        "prefill_tps": 122.05,
+        "decode_tps": 3.99,
+        "first_decode_seconds": 0.2632,
+        "process_wall_seconds": 209.3985248899844,
+        "minimum_system_available_gib": 42.13766098022461,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184.0,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "stream": "1"
+      },
+      {
+        "label": "q4-stream-off-2",
+        "mode": "0",
+        "prefill_tps": 122.24,
+        "decode_tps": 3.86,
+        "first_decode_seconds": 0.279,
+        "process_wall_seconds": 213.82293225900503,
+        "minimum_system_available_gib": 42.161888122558594,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "stream": "0"
+      }
+    ],
+    "scope": "Same KeepHead Q4 bytes; scalar vs cooperative decode loads. 2K raw code, one frontier and32 greedy tokens; artifact quality and serving not implied",
+    "off": {
+      "prefill_tps": 122.275,
+      "decode_tps": 3.875
+    },
+    "on": {
+      "prefill_tps": 121.91499999999999,
+      "decode_tps": 4.0
+    },
+    "gain_percent": {
+      "prefill_tps": -0.2944183193620997,
+      "decode_tps": 3.2258064516129004
+    }
+  },
+  "target_profile": {
+    "ds4.prefill": {
+      "wall_s": 16.345039952,
+      "gpu_busy_s": 15.545757384,
+      "gpu_idle_s": 0.799282568,
+      "categories": {
+        "vq_restore": {
+          "seconds": 8.760295439,
+          "wall_percent": 53.59604788196359,
+          "launches": 110175
+        },
+        "vq_other": {
+          "seconds": 4.076622021,
+          "wall_percent": 24.941034301364184,
+          "launches": 440700
+        },
+        "attention_kda_core": {
+          "seconds": 1.234392362,
+          "wall_percent": 7.552091433395108,
+          "launches": 444
+        },
+        "dense_shared_control_projections": {
+          "seconds": 1.012322208,
+          "wall_percent": 6.1934520256472725,
+          "launches": 9245
+        },
+        "mhc_norm": {
+          "seconds": 0.382803477,
+          "wall_percent": 2.342016159790173,
+          "launches": 1661
+        },
+        "other_gpu": {
+          "seconds": 0.035766621,
+          "wall_percent": 0.21882247522817191,
+          "launches": 1217
+        },
+        "router_select": {
+          "seconds": 0.018621976,
+          "wall_percent": 0.11393044039468006,
+          "launches": 168
+        },
+        "output_head": {
+          "seconds": 0.008826937,
+          "wall_percent": 0.05400376521514665,
+          "launches": 24
+        }
+      }
+    },
+    "ds4.decode": {
+      "wall_s": 8.305409474,
+      "gpu_busy_s": 8.179949599,
+      "gpu_idle_s": 0.125459875,
+      "categories": {
+        "dense_shared_control_projections": {
+          "seconds": 3.346182376,
+          "wall_percent": 40.28919207987505,
+          "launches": 49056
+        },
+        "vq_restore": {
+          "seconds": 2.561003288,
+          "wall_percent": 30.83536454183499,
+          "launches": 32256
+        },
+        "vq_other": {
+          "seconds": 0.931582869,
+          "wall_percent": 11.216579651085365,
+          "launches": 129024
+        },
+        "attention_kda_core": {
+          "seconds": 0.850895548,
+          "wall_percent": 10.245076424753288,
+          "launches": 3552
+        },
+        "output_head": {
+          "seconds": 0.227429629,
+          "wall_percent": 2.7383313214353384,
+          "launches": 192
+        },
+        "mhc_norm": {
+          "seconds": 0.174634511,
+          "wall_percent": 2.1026598573699653,
+          "launches": 13312
+        },
+        "router_select": {
+          "seconds": 0.075145938,
+          "wall_percent": 0.9047830601879846,
+          "launches": 1344
+        },
+        "other_gpu": {
+          "seconds": 0.010741399,
+          "wall_percent": 0.12933015564886766,
+          "launches": 8416
+        }
+      }
+    },
+    "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; MMA gather-to-reduce is also routed VQ; Q4 small dots and quantize_mmq-to-round are dense; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+  },
+  "allocation_peak": {
+    "peak_device_allocation_bytes": 80099681029,
+    "peak_device_allocation_gib": 74.59864116180688,
+    "ending_bytes": 66565,
+    "method": "CUDA memory events; device and device static allocation minus frees; excludes driver/OS/mmap accounting"
+  },
+  "shape_weighting": {
+    "calls_per_token": 189,
+    "packed_bytes_per_token": 3444572160,
+    "shape_weighted_scalar_ms": 25.497339783236384,
+    "shape_weighted_selected_ms": 15.780286459252238,
+    "saved_ms_per_token_estimate": 9.717053323984146,
+    "measured_whole_scalar_q4_ms_per_token": 27.87759375,
+    "scope": "isolated times weighted by actual nonexpert shape counts, excludes wide kv_b; not end-to-end measurement"
+  },
+  "isolated": [
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.20871050655841827,
+      "payload_gbs": 135.6498648144269,
+      "matrix_sha256": "fefbdc5afe46e415cd2519a6ce399085f9352376fbf799a1a525b96131dfc417",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.12968474626541138,
+      "payload_gbs": 218.31057865554897,
+      "matrix_sha256": "fefbdc5afe46e415cd2519a6ce399085f9352376fbf799a1a525b96131dfc417",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.19654291315291927
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.12969249486923218,
+      "payload_gbs": 218.2975354784122,
+      "matrix_sha256": "fefbdc5afe46e415cd2519a6ce399085f9352376fbf799a1a525b96131dfc417",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.19654291315291927
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.21382224559783936,
+      "payload_gbs": 132.4069528913697,
+      "matrix_sha256": "c0cac52e428503ca3d336e8110e862123ace4f352673e0d089c2b087566202be",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.1241689994931221,
+      "payload_gbs": 228.0082155414985,
+      "matrix_sha256": "c0cac52e428503ca3d336e8110e862123ace4f352673e0d089c2b087566202be",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.5016125361718241
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.16442950069904327,
+      "payload_gbs": 172.18048999503364,
+      "matrix_sha256": "c0cac52e428503ca3d336e8110e862123ace4f352673e0d089c2b087566202be",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.5016125361718241
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.k_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.13524575531482697,
+      "payload_gbs": 139.55608407867575,
+      "matrix_sha256": "f8c641cd6acf3d23b30eaacd7cb660588065d60d841ef54b30d088b5f75a775a",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.k_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.08350875228643417,
+      "payload_gbs": 226.01664476151086,
+      "matrix_sha256": "f8c641cd6acf3d23b30eaacd7cb660588065d60d841ef54b30d088b5f75a775a",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.4857195527435144
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.k_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.11267674714326859,
+      "payload_gbs": 167.50898901972405,
+      "matrix_sha256": "f8c641cd6acf3d23b30eaacd7cb660588065d60d841ef54b30d088b5f75a775a",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.4857195527435144
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.15761199593544006,
+      "payload_gbs": 119.75210318211559,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "saved activation",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.08537375181913376,
+      "payload_gbs": 221.07928488355273,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "saved activation",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.3936304065081805
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.11826899647712708,
+      "payload_gbs": 159.58846834089994,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "saved activation",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.3936304065081805
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.008238749578595161,
+      "payload_gbs": 143.1828930769794,
+      "matrix_sha256": "e016bc04c20a19b77d1d54658ac334361a8dd82c26ac91a2fd422a3e52e9ea7f",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.008703500032424927,
+      "payload_gbs": 135.5371971741502,
+      "matrix_sha256": "e016bc04c20a19b77d1d54658ac334361a8dd82c26ac91a2fd422a3e52e9ea7f",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.337920802395961
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.0093987500295043,
+      "payload_gbs": 125.51115800472205,
+      "matrix_sha256": "e016bc04c20a19b77d1d54658ac334361a8dd82c26ac91a2fd422a3e52e9ea7f",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.337920802395961
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.2919495105743408,
+      "payload_gbs": 129.29885008451768,
+      "matrix_sha256": "3a291dfaf8349ec39d817a166718bb5975dfb76954083b3ba57fcb3ca35b1a89",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.20290899276733398,
+      "payload_gbs": 186.0377674008991,
+      "matrix_sha256": "3a291dfaf8349ec39d817a166718bb5975dfb76954083b3ba57fcb3ca35b1a89",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.1033471765301515
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.20215700566768646,
+      "payload_gbs": 186.7297938813599,
+      "matrix_sha256": "3a291dfaf8349ec39d817a166718bb5975dfb76954083b3ba57fcb3ca35b1a89",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.1033471765301515
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.01996549963951111,
+      "payload_gbs": 177.25296455875008,
+      "matrix_sha256": "f56e266b4cd77b16b85c35cf2f16d13b144214c60b6ee0f5c8e1b12a3c3d5855",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.01986975036561489,
+      "payload_gbs": 178.10711935889404,
+      "matrix_sha256": "f56e266b4cd77b16b85c35cf2f16d13b144214c60b6ee0f5c8e1b12a3c3d5855",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.433999004577126
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.021293750032782555,
+      "payload_gbs": 166.19637191906818,
+      "matrix_sha256": "f56e266b4cd77b16b85c35cf2f16d13b144214c60b6ee0f5c8e1b12a3c3d5855",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.433999004577126
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "scalar",
+      "milliseconds": 0.08297350257635117,
+      "payload_gbs": 170.60598336166456,
+      "matrix_sha256": "bd56a7a49317ca58c4a25f1dae5f4dad1be4d9585bf956483d7773c1ce5f0abe",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy"
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.06212475150823593,
+      "payload_gbs": 227.86048485237575,
+      "matrix_sha256": "bd56a7a49317ca58c4a25f1dae5f4dad1be4d9585bf956483d7773c1ce5f0abe",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.7987855897954423
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.07965424656867981,
+      "payload_gbs": 177.71527080850043,
+      "matrix_sha256": "bd56a7a49317ca58c4a25f1dae5f4dad1be4d9585bf956483d7773c1ce5f0abe",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.7987855897954423
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "tokens": 3,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.12394975125789642,
+      "payload_gbs": 152.27435156952427,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "saved activation",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.8452039847474345
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 3,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.10211674869060516,
+      "payload_gbs": 138.62344993855396,
+      "matrix_sha256": "bd56a7a49317ca58c4a25f1dae5f4dad1be4d9585bf956483d7773c1ce5f0abe",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.8086169639040771
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "tokens": 8,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.19478200376033783,
+      "payload_gbs": 96.89995808454283,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "saved activation",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.8506702925796589
+    },
+    {
+      "matrix": "model.language_model.layers.11.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 8,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.1481495052576065,
+      "payload_gbs": 95.55061270967825,
+      "matrix_sha256": "bd56a7a49317ca58c4a25f1dae5f4dad1be4d9585bf956483d7773c1ce5f0abe",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "synthetic BF16 normal; dense access is value-independent",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.8380784388357055
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8191,
+        4096
+      ],
+      "tokens": 3,
+      "repeats": 128,
+      "mode": "stage",
+      "milliseconds": 0.12921400368213654,
+      "payload_gbs": 146.05277649646118,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "saved activation",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.8452039847474345
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8191,
+        4096
+      ],
+      "tokens": 8,
+      "repeats": 128,
+      "mode": "pipe",
+      "milliseconds": 0.19338199496269226,
+      "payload_gbs": 97.58956103250898,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "library_sha256": "be6cbc9937dd2f90deb88a1cef86640ac9125151c646ef464852b6338af4f225",
+      "input": "saved activation",
+      "cache": "rotate at least64MiB of matrix copies; one launch for NCU has its own replay/cache policy",
+      "max_bound_ratio": 0.8506702925796589
+    }
+  ],
+  "ncu": {
+    "q4-scalar-ncu": {
+      "gpu__time_duration.sum": {
+        "value": "167.520000",
+        "unit": "us"
+      },
+      "launch__occupancy_limit_registers": {
+        "value": "6.000000",
+        "unit": "block"
+      },
+      "launch__occupancy_limit_shared_mem": {
+        "value": "14.000000",
+        "unit": "block"
+      },
+      "launch__registers_per_thread": {
+        "value": "40",
+        "unit": "register/thread"
+      },
+      "sm__warps_active.avg.pct_of_peak_sustained_active": {
+        "value": "93.207421",
+        "unit": "%"
+      },
+      "smsp__inst_executed.sum": {
+        "value": "20258816.000000",
+        "unit": "inst"
+      }
+    },
+    "q4-stage-ncu": {
+      "gpu__time_duration.sum": {
+        "value": "103.392000",
+        "unit": "us"
+      },
+      "launch__occupancy_limit_registers": {
+        "value": "4.000000",
+        "unit": "block"
+      },
+      "launch__occupancy_limit_shared_mem": {
+        "value": "5.000000",
+        "unit": "block"
+      },
+      "launch__registers_per_thread": {
+        "value": "51",
+        "unit": "register/thread"
+      },
+      "sm__warps_active.avg.pct_of_peak_sustained_active": {
+        "value": "61.604331",
+        "unit": "%"
+      },
+      "smsp__inst_executed.sum": {
+        "value": "16646144.000000",
+        "unit": "inst"
+      }
+    }
+  },
+  "numerical_contract": "Same affine Q4 values, FP32 FMA/reduction with changed lane order, BF16 output; FP64 reference bound gamma(K+32)*sum(abs(x*w))+BF16 half-ULP. No bit identity requirement.",
+  "resources": {
+    "stage_registers_nt1": 51,
+    "pipe_registers_nt1": 53,
+    "stage_pipe_registers_nt8": 64,
+    "stack_bytes": 0,
+    "local_bytes": 0,
+    "kda_stage_shared_bytes": 18432,
+    "extra_global_bytes": 0
+  },
+  "reference": {
+    "commit": "7fb26cc332d740416792204a29c7d13d2986caf5",
+    "source": "src/cuda/cuda_v41_q4k.inc.cu:29-179",
+    "deviations": "GLM FP32/BF16 boundary and ordinary stream ordering; no PDL. Actual shapes reject the reference pipe heuristic."
+  },
+  "quality": {
+    "labels": [
+      "q4k-keephead-quality-direct",
+      "q4-stream-quality"
+    ],
+    "manifest_sha256": "d16712edb7940dd070873d7aa660f7731c036605484a1bc54155e5f5c802fe47",
+    "binary_sha256": [
+      "a7132b64beddf5a3b2de4e4b268313590e933ebd5fca0a937fb641c8a854c576",
+      "a6dab7fc05690af848731fc0a71848f3005af3064939c829aa7259b02d25bbfa"
+    ],
+    "targets": 106,
+    "paired_nll_delta": 0.00263739563757771,
+    "case_bootstrap95": [
+      -0.0025754079175658003,
+      0.0059895613150129316
+    ],
+    "cases": [
+      {
+        "id": "ko_summary",
+        "targets": 24,
+        "nll_delta": 0.005813527563726033,
+        "kl_mean": 0.0003469932808408732,
+        "kl_max": 0.001975601204391277,
+        "tv_mean": 0.004686524591895478,
+        "max_abs_logit": 3.41796875,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "q4k-keephead-quality-direct",
+            "answer": "<tool_call>MeetingMemoHeaderAndBodyAnalysisTransferWordingPostcheckFollowTheRequestNoExtraNoAnalysisFormatCheckA11yMeetingContentTopicGuidelineInferenceLanguageFormatTranslationCoTWrapperHybridFlowReportStreamSegmentTextUnitSmallMultiSegmentMainOrganizerMappingTransferLanguagePatternFactualTextCellBlockNoPillarMarkerSegmentFinishWrapNoFooterSegmentStructurePreprocessMicroTextPostcutTargetConcatMergeScheduleClusterTrailLeadTokenPrepHookRowBundleDowngradeProjectWeekBigProject",
+            "stopped": false
+          },
+          {
+            "label": "q4-stream-quality",
+            "answer": "<tool_call>MeetingMemoHeaderAndBodyFormatReal\n- type: meeting memo\n- title: (None)\n- date: (None)\n- meta: (None)\n- part: header\n- items:\n  - id: 0\n    name and alternative names: (None)\n    misc: (None)\n  - id: 1\n    name and alternative names: (None)\n    misc: (None)\n  - id: 2\n    name and alternative",
+            "stopped": false
+          }
+        ]
+      },
+      {
+        "id": "en_reading",
+        "targets": 22,
+        "nll_delta": 0.0036190901146362364,
+        "kl_mean": 0.0009407861596262262,
+        "kl_max": 0.00400370559063569,
+        "tv_mean": 0.011102992134245331,
+        "max_abs_logit": 1.7265625,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "q4k-keephead-quality-direct",
+            "answer": "The River branch opens at 11:00 on Friday due to the electrical inspection, later than its usual 09:00.",
+            "stopped": true
+          },
+          {
+            "label": "q4-stream-quality",
+            "answer": "The River branch opens at 11:00 on Friday due to the electrical inspection, later than its usual 09:00.",
+            "stopped": true
+          }
+        ]
+      },
+      {
+        "id": "python_order",
+        "targets": 24,
+        "nll_delta": 9.868519247306178e-05,
+        "kl_mean": 0.00016708918622490156,
+        "kl_max": 0.002030373646448241,
+        "tv_mean": 0.002227333084618294,
+        "max_abs_logit": 1.21875,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "q4k-keephead-quality-direct",
+            "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```",
+            "stopped": true
+          },
+          {
+            "label": "q4-stream-quality",
+            "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```",
+            "stopped": true
+          }
+        ]
+      },
+      {
+        "id": "math_cost",
+        "targets": 23,
+        "nll_delta": 0.007672959146845114,
+        "kl_mean": 0.001064687724992982,
+        "kl_max": 0.0049676146284218774,
+        "tv_mean": 0.008695546667645646,
+        "max_abs_logit": 2.0625,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "q4k-keephead-quality-direct",
+            "answer": "One arithmetic expression: 4 × 7 + 5 × 3 − 6 = 28 + 15 − 6 = 37, so the final cost is 37 dollars.",
+            "stopped": true
+          },
+          {
+            "label": "q4-stream-quality",
+            "answer": "One arithmetic expression: 4 × 7 + 5 × 3 − 6 = 28 + 15 − 6 = 37, so the final cost is 37 dollars.",
+            "stopped": true
+          }
+        ]
+      },
+      {
+        "id": "json_contract",
+        "targets": 10,
+        "nll_delta": -0.011955958161579261,
+        "kl_mean": 0.000565797043150645,
+        "kl_max": 0.003566964098157489,
+        "tv_mean": 0.0038651435746016516,
+        "max_abs_logit": 1.69140625,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "q4k-keephead-quality-direct",
+            "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+            "stopped": true
+          },
+          {
+            "label": "q4-stream-quality",
+            "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+            "stopped": true
+          }
+        ]
+      },
+      {
+        "id": "ko_stop",
+        "targets": 3,
+        "nll_delta": 0.0003774567169389324,
+        "kl_mean": 4.038276451610897e-05,
+        "kl_max": 9.084311672687426e-05,
+        "tv_mean": 0.0005347674071336814,
+        "max_abs_logit": 0.5,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "q4k-keephead-quality-direct",
+            "answer": "완료",
+            "stopped": true
+          },
+          {
+            "label": "q4-stream-quality",
+            "answer": "완료",
+            "stopped": true
+          }
+        ]
+      }
+    ],
+    "scope": "same Q4 bytes; changed decode reduction/load order only. Judge substantive task changes, not bit identity. Existing artifact quality failures remain open.",
+    "decision": "No added task failure in this six-case screen: five contracts hold; both kernels retain the pre-existing Korean-summary artifact failure. This does not adopt the artifact."
+  },
+  "decision": "Retain shape-gated cooperative loads on Q4 artifacts; leave the Q4 artifact quality decision open. Pipeline is diagnostic only.",
+  "missing": [
+    "Q4 artifact quality adoption",
+    "8K and long context",
+    "MTP",
+    "captured decode",
+    "vision",
+    "API serving",
+    "state reuse"
+  ],
+  "local_receipts": [
+    {
+      "path": "scratch/glm-vq/q4-stream-ab.json",
+      "sha256": "344f27a1304df08d0793a073ab4a984d262e9a7ed0823bf357947b060eec21a0"
+    },
+    {
+      "path": "scratch/glm-vq/q4-stream-probe.json",
+      "sha256": "b68600ca27bc48278f763f8167457b8d70aceb2f6a035fccec497cd92250c5c0"
+    },
+    {
+      "path": "scratch/glm-vq/q4-stream-ncu-summary.json",
+      "sha256": "1ee90641bc17c7a8bde714f1de9c3cc8998745f65ed394852ac0f24375473e17"
+    },
+    {
+      "path": "scratch/glm-vq/q4-stream-kernel-quality.json",
+      "sha256": "6ff6481f988db1bd21f7a9d45f5815517c385bcc8c09e482e6fe67ed1a556b01"
+    },
+    {
+      "path": "scratch/glm-vq/q4-stream-quality/receipt.json",
+      "sha256": "848ab6972aacd8f4a6f42075eb33a50fa85ff8d157a6a2423028a0884972ef75"
+    },
+    {
+      "path": "scratch/glm-vq/q4-stream-native-build.log",
+      "sha256": "75979817f302d11544c43abbccc99b8e421ff577c2ce0772a925b0600cc85b59"
+    },
+    {
+      "path": "scratch/glm-vq/q4-stream-resources.txt",
+      "sha256": "081d2a072475557143ebec516e965b661939f5b8564d2666ef425adc7e395804"
+    }
+  ]
+}

@@ -103,7 +103,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [August 22 partial reuse](motif3-partial-reuse-2026-08-22.md).
 - **GLM VQ:** [packed restore](glm53-vq-restore-2026-10-15.md),
   [opt-in register MMA](glm53-vq-mma-2026-10-15.md),
-  [nonexpert Q4_K candidate](glm53-vq-q4k-2026-10-15.md).
+  [nonexpert Q4_K candidate](glm53-vq-q4k-2026-10-15.md),
+  [cooperative Q4 decode](glm53-vq-q4-stream-2026-10-16.md).
 - **dots3:** [September 6 optimization](dots3-optimization-2026-09-06.md).
 - **K2:** [September 5](k2-optimization-2026-09-05.md),
   [continuation campaign](k2-optimization-2026-09-05-cont.md).
