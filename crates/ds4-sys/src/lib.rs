@@ -553,11 +553,21 @@ pub struct ds4_host_tensor {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct ds4_host_shard {
+    pub path: *const c_char,
+    pub size: u64,
+    pub base: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ds4_host_tensor_dir {
     pub n: u32,
     pub v: *const ds4_host_tensor,
     pub data_pos: u64,
     pub alignment: u64,
+    pub n_shards: u32,
+    pub shards: *const ds4_host_shard,
 }
 
 extern "C" {

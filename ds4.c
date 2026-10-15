@@ -3457,6 +3457,18 @@ static void model_parse_shard(ds4_model *shard, const uint8_t *base,
 static void model_open_split(ds4_model *m, const char *path, uint32_t count,
                              int mmap_flags);
 
+#include "native/bridge/ds4_named_map.inc"
+
+static void model_build_catalog(ds4_model *m) {
+    if (!m->n_tensors) { return; }
+    m->tensor_traits = xmalloc((size_t)m->n_tensors);
+    for (uint64_t i = 0; i < m->n_tensors; i++) {
+        const ds4_tensor *t = &m->tensors[i];
+        m->tensor_traits[i] = (uint8_t)ds4_tensor_catalog_classify(
+            t->name.ptr, t->name.len, t->ndim, t->type, t->dim, t->bytes);
+    }
+}
+
 /* Open and map the GGUF once.  Metal needs a shared mapping for no-copy
  * MTLBuffers; CPU uses a private read-only mapping to avoid Darwin VM stress.
  * Tokenizer-only callers pass prefetch_cpu=false so inspecting tokens never
@@ -3465,6 +3477,13 @@ static void model_open(ds4_model *m, const char *path, bool metal_mapping,
                        bool prefetch_cpu) {
     memset(m, 0, sizeof(*m));
     m->fd = -1;
+
+    if (g_host_tensor_dir && g_host_tensor_dir->n_shards) {
+        model_open_named(m, metal_mapping ? MAP_SHARED : MAP_PRIVATE);
+        model_build_catalog(m);
+        if (!metal_mapping && prefetch_cpu) { model_prefetch_cpu_mapping(m); }
+        return;
+    }
 
     int fd = open(path, O_RDONLY);
     if (fd == -1) ds4_die_errno("cannot open model", path);
@@ -3560,14 +3579,7 @@ static void model_open(ds4_model *m, const char *path, bool metal_mapping,
     }
     /* memgov D1a-2: build the semantic catalog after tensors are final
      * (including after a split remap). */
-    if (m->n_tensors != 0) {
-        m->tensor_traits = xmalloc((size_t)m->n_tensors);
-        for (uint64_t i = 0; i < m->n_tensors; i++) {
-            const ds4_tensor *t = &m->tensors[i];
-            m->tensor_traits[i] = (uint8_t)ds4_tensor_catalog_classify(
-                t->name.ptr, t->name.len, t->ndim, t->type, t->dim, t->bytes);
-        }
-    }
+    model_build_catalog(m);
 
     if (!metal_mapping && prefetch_cpu) model_prefetch_cpu_mapping(m);
 }

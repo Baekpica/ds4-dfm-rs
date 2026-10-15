@@ -835,6 +835,8 @@ ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_m
 # Native checkpoint changes must reach incremental production/test builds.
 ds4.o ds4_cuda_test_hooks.o: ds4_ds41_kvreuse.inc
 
+ds4.o ds4_cpu.o ds4_cuda_test_hooks.o: native/bridge/ds4_host_load.h native/bridge/ds4_named_map.inc
+
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_cli.c
 
@@ -1815,7 +1817,7 @@ tests/test_exaone_tokenizer: tests/test_exaone_tokenizer.o
 	$(CC) $(CFLAGS) -O0 -o $@ $^ -Wl,--gc-sections $(LDLIBS)
 endif
 
-tests/test_split_gguf: tests/test_split_gguf.c ds4.c ds4.h
+tests/test_split_gguf: tests/test_split_gguf.c ds4.c ds4.h native/bridge/ds4_host_load.h native/bridge/ds4_named_map.inc
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 

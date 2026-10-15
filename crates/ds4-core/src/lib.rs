@@ -862,11 +862,18 @@ fn pack_bind_plan(plan: &BindPlan, inventory: &TensorInventory) -> Result<FfiBin
 
 struct FfiTensorDir {
     _names: Vec<CString>,
+    _paths: Vec<CString>,
+    shards: Vec<ds4_sys::ds4_host_shard>,
     rows: Vec<ds4_host_tensor>,
     dir: ds4_host_tensor_dir,
 }
 
-fn pack_tensor_dir(inventory: &TensorInventory) -> Result<FfiTensorDir> {
+enum ShardMapping {
+    Legacy,
+    Named,
+}
+
+fn pack_tensor_dir(inventory: &TensorInventory, mapping: ShardMapping) -> Result<FfiTensorDir> {
     let mut names = Vec::with_capacity(inventory.tensors.len());
     for t in &inventory.tensors {
         names.push(CString::new(t.name.as_str()).map_err(|_| Error {
@@ -892,14 +899,44 @@ fn pack_tensor_dir(inventory: &TensorInventory) -> Result<FfiTensorDir> {
             }
         })
         .collect();
+    let paths = match mapping {
+        ShardMapping::Legacy => Vec::new(),
+        ShardMapping::Named => inventory
+            .shards
+            .iter()
+            .map(|sh| {
+                CString::new(sh.path.as_os_str().as_encoded_bytes()).map_err(|_| Error {
+                    code: 1,
+                    message: "shard path contains NUL".into(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
+    let shards: Vec<_> = paths
+        .iter()
+        .zip(&inventory.shards)
+        .map(|(path, sh)| ds4_sys::ds4_host_shard {
+            path: path.as_ptr(),
+            size: sh.size,
+            base: sh.base,
+        })
+        .collect();
     let dir = ds4_host_tensor_dir {
         n: rows.len() as u32,
         v: rows.as_ptr(),
         data_pos: inventory.data_pos,
         alignment: inventory.alignment,
+        n_shards: shards.len() as u32,
+        shards: if shards.is_empty() {
+            ptr::null()
+        } else {
+            shards.as_ptr()
+        },
     };
     Ok(FfiTensorDir {
         _names: names,
+        _paths: paths,
+        shards,
         rows,
         dir,
     })
@@ -908,6 +945,9 @@ fn pack_tensor_dir(inventory: &TensorInventory) -> Result<FfiTensorDir> {
 impl FfiTensorDir {
     fn as_c(&mut self) -> *const ds4_host_tensor_dir {
         self.dir.v = self.rows.as_ptr();
+        if !self.shards.is_empty() {
+            self.dir.shards = self.shards.as_ptr();
+        }
         &self.dir
     }
 }
@@ -1702,7 +1742,12 @@ impl Model {
         };
         let mut ffi_plan = pack_bind_plan(&bind_plan, &inventory)?;
         let mut ffi_bind = pack_host_bind_map(&bind_plan)?;
-        let mut ffi_dir = pack_tensor_dir(&inventory)?;
+        let mapping = if Path::new(path).is_dir() {
+            ShardMapping::Named
+        } else {
+            ShardMapping::Legacy
+        };
+        let mut ffi_dir = pack_tensor_dir(&inventory, mapping)?;
         let (mtp, dspark) = sibling::attach_siblings(
             identified.shape.family,
             identified.shape,
@@ -3348,6 +3393,47 @@ impl Drop for Session<'_> {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn named_mapping_keeps_ffi_paths() {
+        let inventory = TensorInventory {
+            shards: vec![
+                tensors::ShardPlan {
+                    path: "native.gguf".into(),
+                    size: 128,
+                    base: 0,
+                },
+                tensors::ShardPlan {
+                    path: "expert.gguf".into(),
+                    size: 512,
+                    base: 4096,
+                },
+            ],
+            tensors: Vec::new(),
+            data_pos: 128,
+            alignment: 128,
+            page: 4096,
+        };
+        let mut legacy = pack_tensor_dir(&inventory, ShardMapping::Legacy).unwrap();
+        let mut named = pack_tensor_dir(&inventory, ShardMapping::Named).unwrap();
+        // Move the owner before use: the borrowed paths must remain valid for
+        // the entire synchronous native open, including its map-plan walk.
+        let mut moved = std::mem::replace(
+            &mut named,
+            pack_tensor_dir(&inventory, ShardMapping::Legacy).unwrap(),
+        );
+        // SAFETY: both FFI descriptors borrow allocations owned by these live
+        // wrappers. Exactly n_shards entries were initialized by the packer.
+        unsafe {
+            assert_eq!((*legacy.as_c()).n_shards, 0);
+            assert!((*legacy.as_c()).shards.is_null());
+            let dir = &*moved.as_c();
+            assert_eq!(dir.n_shards, 2);
+            let parts = std::slice::from_raw_parts(dir.shards, dir.n_shards as usize);
+            assert_eq!(std::ffi::CStr::from_ptr(parts[1].path).to_bytes(), b"expert.gguf");
+            assert_eq!((parts[1].size, parts[1].base), (512, 4096));
+        }
+    }
 
     #[test]
     fn glm_serial_budget_keeps_banks() {
