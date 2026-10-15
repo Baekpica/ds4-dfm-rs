@@ -1966,7 +1966,7 @@ tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc 
 test-glm-vq-bind: tests/test_glm_vq_bind
 	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_bind --model "$(GLMVQ_MODEL)"
 
-tests/libglm_vq_test.so: tests/test_glm_vq_cuda.cu cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+tests/libglm_vq_test.so: tests/test_glm_vq_cuda.cu cuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_kda.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $<
 
 .PHONY: test-glm-vq-restore
@@ -1978,6 +1978,10 @@ test-glm-vq-restore: tests/libglm_vq_test.so
 .PHONY: test-glm-vq-ops
 test-glm-vq-ops: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
+
+.PHONY: test-glm-vq-kda
+test-glm-vq-kda: tests/libglm_vq_test.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_kda.py --lib tests/libglm_vq_test.so
 
 tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
