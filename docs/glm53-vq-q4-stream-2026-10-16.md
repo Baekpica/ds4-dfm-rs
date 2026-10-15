@@ -112,3 +112,37 @@ its aggregate statistics do not establish broad quality equivalence.
 
 Retain cooperative loads for eligible Q4 matrices. Artifact adoption,
 MTP, graphs, 8K, vision, API serving and state reuse remain unqualified here.
+
+## Follow-up transport screen on the retained KDA artifact
+
+At `de0ee6a4`, the user-selected 136-matrix KDA Q4_K artifact is active;
+its earlier artifact-quality rejection is superseded. The retained
+[latent-attention profile](glm53-vq-latent-2026-10-16.md) attributes 22.52%
+of decode to Q4 staging: 2.567 GB logical weights/token at 189.15 GB/s
+payload bandwidth. This is not measured DRAM traffic.
+
+The kernel source and all 136 selected payload hashes match the earlier
+Q4 evidence. Reusing its NCU source counters identifies waits at weight
+staging stores and the first input-dependent FMA. A bounded replay compares
+constant-shape code, single-stage cp.async and next-block input prefetch.
+Each entry below is the median of three interleaved CUDA-event observations
+in microseconds, using actual layer-zero matrices and saved source inputs.
+
+| Shape | Current | Shape only | Async | Async + prefetch |
+|---|---:|---:|---:|---:|
+| [8192, 4096] | 83.27 | 82.25 | 107.35 | 105.23 |
+| [4096, 8192] | 83.34 | 85.80 | 107.93 | 115.82 |
+
+Async variants regress. Shape specialization does not consistently improve
+both shapes beyond observed variation. Reject this screen; keep production
+unchanged. All 24 outputs match the current dot path. No new arithmetic,
+whole-model loading or quality rerun was needed. The replay rotates 72 MiB
+of copied weights with no intervening model kernels; it is not a serving
+benchmark. Observed busy clocks are 2,184–2,190 MHz.
+
+Each candidate uses the same 18 KiB dynamic shared memory and no spills.
+Registers fall from 51 to 40 for specialization; prefetch uses 51/48.
+Those reductions do not establish a speedup. The cause of the async slowdown
+was not profiled further because neither async variant proceeds to adoption.
+Commands, outputs, libraries and reproducer sources are in the
+[screen evidence](evidence/glm53-vq-q4-refine-2026-10-16.json).
