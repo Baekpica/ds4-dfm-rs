@@ -127,6 +127,35 @@ this small screen does not establish broad quality equivalence.
 
 Adopt the direct kernel with its shape/resource fallback and kill switch.
 Keep the Q4 artifact unadopted. The measured 64.72% gain belongs to the
-KeepHead Q4 workload above; original-artifact speed requires its own
-measurement. MTP, graph, long-context, vision, serving and broader quality
-remain outside this proof.
+KeepHead Q4 workload above. MTP, graph, long-context, vision, serving and
+broader quality remain outside this proof.
+
+## Retained original-artifact profile
+
+After adoption, a fresh Nsight Systems run on `90f98b2c` with the original
+nonexpert precision measured 121.26 prefill and 5.57 decode tok/s. Context,
+prompt, generation and chunk match the 2K workload above; direct decode
+uses its default, and VQ MMA remains off. This is a current rate and
+attribution, not a matched original-artifact off/on gain claim.
+
+| Decode region | Time, s | Share of 5.744 s |
+|---|---:|---:|
+| Dense/shared/control projections | 3.975 | 69.20% |
+| Attention/KDA core | 0.878 | 15.29% |
+| Direct VQ experts | 0.324 | 5.65% |
+| Output head | 0.230 | 4.00% |
+| mHC/normalization | 0.176 | 3.06% |
+| Router selection | 0.075 | 1.31% |
+
+GPU idle is 0.073 s, an upper bound on host dispatch gaps rather than
+isolated CPU time. Projection conversion/GEMM time stays with projections,
+including KDA/attention projections. FP8 restoration alone consumes
+1.214 s; repeated BF16 GEMVs and conversions are the next decode target.
+Prefill still spends 78.72% in routed VQ restore/computation, supporting
+completion of the existing register-MMA candidate's missing text gate.
+
+Observed busy clocks were 2,184–2,190 MHz. Peak traced device allocation
+was 81.58 GiB, excluding host mappings and untraced driver bookkeeping;
+minimum system available memory was 34.37 GiB. Process wall was 308.31 s,
+including model integrity/loading and trace collection. No HTTP TTFT or
+cold-start gain is claimed.

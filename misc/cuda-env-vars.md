@@ -1163,12 +1163,14 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   are unchanged. This knob belongs to the separate GLM VQ family. See the
   [bounded 2K A/B](../docs/glm53-vq-restore-2026-10-15.md).
 
-- `DS4_GLMVQ_MMA=1` evaluates grouped register-BF16 VQ MMA for prefill
-  widths >=32. Default Off pending whole-model qualification. Aligned
+- `DS4_GLMVQ_MMA=0` disables grouped register-BF16 VQ MMA for prefill
+  widths >=32. Default On after bounded 2K A/B, text and combined-path
+  checks. Aligned
   13-bit E4M3 GLM shapes with a shared codebook use persistent CTAs and
   fused up/SwiGLU; other cases retain restore+GEMM. Gain/BF16 boundaries
   remain, while accumulation order differs. Adds 144.094 MiB of grouped
-  activation/worklist workspace at 512 rows. Decode keeps its existing path.
+  activation/worklist workspace at 512 rows. Single-token decode uses its
+  separate dispatch. See the [qualification](../docs/glm53-vq-mma-2026-10-15.md).
 
 - `DS4_GLMVQ_Q4_DIRECT=0` restores BF16 dequantization plus cuBLAS for the
   separate `q4_k_nonexpert_v2` artifact. Default On uses direct Q4_K dots at

@@ -52,7 +52,7 @@ static uint64_t gvq_decode_bytes() {
 
 static uint64_t gvq_mma_bytes(uint32_t rows) {
     const char *enabled = getenv("DS4_GLMVQ_MMA");
-    if (!enabled || strcmp(enabled, "1") || rows < GVQ_MMA_TOKENS) { return 0; }
+    if ((enabled && !strcmp(enabled, "0")) || rows < GVQ_MMA_TOKENS) { return 0; }
     // Grouped x/mid are BF16, gate/down F32; no expanded expert weights.
     const uint64_t per_pair = (GVQ_HIDDEN + GVQ_FFN) *
         (sizeof(float) + sizeof(__nv_bfloat16)) + sizeof(glmvq_mma_item) + sizeof(uint32_t);

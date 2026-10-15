@@ -968,5 +968,271 @@
     "driver": "615.71.09"
   },
   "default_selection": "Final edit enables previously qualified path when DS4_GLMVQ_DECODE is unset. No kernel arithmetic change; reuse isolated, A/B and text gates. Rebuild once for retained whole-path profile.",
-  "original_quality_comparison_sha256": "8b01667eadeb4995d3043350b4da31f59f2f930acc8ee674669a6b86ea541ebd"
+  "original_quality_comparison_sha256": "8b01667eadeb4995d3043350b4da31f59f2f930acc8ee674669a6b86ea541ebd",
+  "retained_original_profile": {
+    "label": "vq-decode-retained-original-profile",
+    "head": "90f98b2cc5e3d54ae187ae2ac69ad125db56f805",
+    "binary_sha256": "f50e2ba09cb904330a901afba1d96b0f579753141b755e49e3ee1add1d7f1531",
+    "native_sources": {
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "556bed2996fe39ba2b8671107fe91dbb6510c7ce447133b6facf66dabd1ad79f",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e"
+    },
+    "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+    "environment": {
+      "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+      "DS4_GLMVQ_Q4_STREAM": "1",
+      "DS4_GLMVQ_Q4_DIRECT": "1",
+      "DS4_GLMVQ_MMA": "0",
+      "DS4_GLMVQ_PREFILL_ROWS": "512",
+      "DS4_MTP_SPEC_DISABLE": "1"
+    },
+    "command": [
+      "python3",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+      "--max-gib",
+      "104",
+      "--high-gib",
+      "100",
+      "--reserve-gib",
+      "12",
+      "--timeout",
+      "1800",
+      "--log",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/vq-decode-retained-original-profile/memory.jsonl",
+      "--",
+      "nsys",
+      "profile",
+      "--trace=cuda,nvtx,cublas-verbose",
+      "--sample=none",
+      "--cpuctxsw=none",
+      "--cuda-memory-usage=true",
+      "--output",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/vq-decode-retained-original-profile/trace",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+      "--cuda",
+      "-m",
+      "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "--prompt-file",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+      "--ctx-start",
+      "1984",
+      "--ctx-max",
+      "1984",
+      "--ctx-alloc",
+      "2048",
+      "--gen-tokens",
+      "32",
+      "--mtp-draft",
+      "1",
+      "--threads",
+      "8",
+      "--dump-frontier-logits-dir",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/vq-decode-retained-original-profile/proof"
+    ],
+    "bench": {
+      "ctx_tokens": "1984",
+      "prefill_tokens": "1984",
+      "prefill_tps": "121.26",
+      "gen_tokens": "32",
+      "gen_tps": "5.57",
+      "gen_tps_ss": "5.59",
+      "first_token_sec": "0.1989",
+      "kvcache_bytes": "180425524"
+    },
+    "process_wall_seconds": 308.307941534993,
+    "phases": {
+      "ds4.prefill": {
+        "wall_s": 16.361042573,
+        "gpu_busy_s": 15.55574344,
+        "gpu_idle_s": 0.805299133,
+        "categories": {
+          "vq_restore": {
+            "seconds": 8.816364342,
+            "wall_percent": 53.88632358031577,
+            "launches": 110781
+          },
+          "vq_other": {
+            "seconds": 4.063271889,
+            "wall_percent": 24.835042576721005,
+            "launches": 443124
+          },
+          "attention_kda_core": {
+            "seconds": 1.242540762,
+            "wall_percent": 7.594508457856575,
+            "launches": 444
+          },
+          "dense_shared_control_projections": {
+            "seconds": 0.976775041,
+            "wall_percent": 5.970127127545859,
+            "launches": 8013
+          },
+          "mhc_norm": {
+            "seconds": 0.383384676,
+            "wall_percent": 2.343277784954151,
+            "launches": 1661
+          },
+          "other_gpu": {
+            "seconds": 0.035826703,
+            "wall_percent": 0.21897567248632083,
+            "launches": 1217
+          },
+          "router_select": {
+            "seconds": 0.018662213,
+            "wall_percent": 0.11406493759020915,
+            "launches": 168
+          },
+          "output_head": {
+            "seconds": 0.008839908,
+            "wall_percent": 0.05403022429993649,
+            "launches": 24
+          }
+        }
+      },
+      "ds4.decode": {
+        "wall_s": 5.743597051,
+        "gpu_busy_s": 5.670686568,
+        "gpu_idle_s": 0.072910483,
+        "categories": {
+          "dense_shared_control_projections": {
+            "seconds": 3.974789216,
+            "wall_percent": 69.20383133959514,
+            "launches": 62496
+          },
+          "attention_kda_core": {
+            "seconds": 0.87804207,
+            "wall_percent": 15.287320161972831,
+            "launches": 3552
+          },
+          "vq_other": {
+            "seconds": 0.324438491,
+            "wall_percent": 5.648698683406299,
+            "launches": 4032
+          },
+          "output_head": {
+            "seconds": 0.229798779,
+            "wall_percent": 4.000955794069684,
+            "launches": 192
+          },
+          "mhc_norm": {
+            "seconds": 0.175500695,
+            "wall_percent": 3.0555885700485224,
+            "launches": 13312
+          },
+          "router_select": {
+            "seconds": 0.075141286,
+            "wall_percent": 1.308261797141869,
+            "launches": 1344
+          },
+          "other_gpu": {
+            "seconds": 0.010783202,
+            "wall_percent": 0.18774301024690737,
+            "launches": 7072
+          }
+        }
+      },
+      "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; MMA gather-to-reduce is also routed VQ; Q4 small dots and quantize_mmq-to-round are dense; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+    },
+    "observed_busy_sm_mhz": [
+      2184,
+      2184.0,
+      2190
+    ],
+    "minimum_system_available_gib": 34.3693733215332,
+    "peak_traced_device_bytes": 87597091234,
+    "peak_traced_device_gib": 81.58114853687584,
+    "peak_scope": "Nsight device plus static device allocation-event high water; excludes pinned host memory, mmap and untraced driver bookkeeping",
+    "decode_top_kernels": [
+      {
+        "kernel": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+        "seconds": 1.662789654,
+        "launches": 8448
+      },
+      {
+        "kernel": "void glmvq_fp8_restore<__nv_bfloat16>(const unsigned char *, const float *, unsigned int, unsigned int, T1 *)",
+        "seconds": 1.213756494,
+        "launches": 5728
+      },
+      {
+        "kernel": "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)",
+        "seconds": 0.63074498,
+        "launches": 20480
+      },
+      {
+        "kernel": "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)",
+        "seconds": 0.582100153,
+        "launches": 16960
+      },
+      {
+        "kernel": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x256_32x3_tn_align8>(T1::Params)",
+        "seconds": 0.376308377,
+        "launches": 352
+      },
+      {
+        "kernel": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+        "seconds": 0.249704237,
+        "launches": 4928
+      },
+      {
+        "kernel": "void glmvq_decode_gu<(unsigned int)13, (unsigned int)32, (glmvq_decode_output)0>(const glmvq_decode_item *, const uint4 *, const float *, __nv_bfloat16 *, float, float *, float *)",
+        "seconds": 0.228016351,
+        "launches": 1344
+      },
+      {
+        "kernel": "glmvq_rms(const float *, const __nv_bfloat16 *, const float *, float *, unsigned int, float, glmvq_norm)",
+        "seconds": 0.095070018,
+        "launches": 7584
+      },
+      {
+        "kernel": "void glmvq_decode_down<(unsigned int)13, (unsigned int)32>(const glmvq_decode_item *, const uint4 *, const __nv_bfloat16 *, float *)",
+        "seconds": 0.094250631,
+        "launches": 1344
+      },
+      {
+        "kernel": "std::enable_if<T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)1, (bool)1, (bool)0, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+        "seconds": 0.088608588,
+        "launches": 308
+      },
+      {
+        "kernel": "gvq_router(int *, float *, const float *, const float *, float)",
+        "seconds": 0.075141286,
+        "launches": 1344
+      },
+      {
+        "kernel": "glmvq_hc_split(const float *, const float *, const float *, const float *, float *, float *, unsigned int, unsigned int, float)",
+        "seconds": 0.074869761,
+        "launches": 2880
+      },
+      {
+        "kernel": "std::enable_if<T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)1, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+        "seconds": 0.074818298,
+        "launches": 132
+      },
+      {
+        "kernel": "void gemv2T_kernel_val<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (int)128, (int)16, (int)2, (int)2, (bool)0, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13, T6, T6)",
+        "seconds": 0.072766819,
+        "launches": 176
+      },
+      {
+        "kernel": "glmvq_kda(float *, float *, float *, float *, float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+        "seconds": 0.053222465,
+        "launches": 1088
+      },
+      {
+        "kernel": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)5, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+        "seconds": 0.023335745,
+        "launches": 2176
+      }
+    ],
+    "receipt_sha256": "96a54d4aa139d50f1b5c8afb55ceb12e15ac99cc4d3a7134a1118503ce68cf2d",
+    "scope": "Fresh retained original-artifact profile, default direct decode; no original off/on gain claim and no serving qualification"
+  }
 }
