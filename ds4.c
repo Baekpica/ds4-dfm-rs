@@ -374,6 +374,7 @@ typedef enum {
     DS4_MODEL_FAMILY_QWEN35      = 12,
     DS4_MODEL_FAMILY_NAIVE       = 11,
     DS4_MODEL_FAMILY_IQUEST      = 13,
+    DS4_MODEL_FAMILY_GLM53_VQ    = 14,
 } ds4_model_family;
 
 typedef enum {
@@ -396,6 +397,7 @@ typedef enum {
     /* DeepSeek V4.1 Flash; 16 mirrors the Rust Variant::DeepSeek41Flash
      * (crates/ds4-core/src/shape.rs:97). */
     DS4_VARIANT_V41             = 16,
+    DS4_VARIANT_GLM53_FLASH_VQ  = 17,
 } ds4_variant;
 
 typedef struct {
@@ -1610,7 +1612,8 @@ static bool ds4_solar_layer_is_gqa(uint32_t il) {
 }
 
 static bool ds4_glm53_layer_is_kda(uint32_t il) {
-    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) return false;
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 &&
+        DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53_VQ) { return false; }
     if (il >= DS4_N_LAYER)
         ds4_die("GLM 5.3 layer index is outside the loaded model layout");
     return il + DS4_N_NEXTN_PREDICT < DS4_N_LAYER && (il % 4u) != 3u;
@@ -2409,6 +2412,10 @@ enum {
     DS4_TENSOR_FP4X32   = 43,
     DS4_TENSOR_FP8_32X32 = 44,
     DS4_TENSOR_PQ2_0    = 142,
+    /* GVQ1 private storage types; scale and codebook links stay separate. */
+    DS4_TENSOR_GLM_FP8  = 0x47514638,
+    DS4_TENSOR_GLM_BOOK = 0x47564342,
+    DS4_TENSOR_GLM_VQ   = 0x47565138,
 };
 
 typedef struct ds4_tensor ds4_tensor;
@@ -2513,6 +2520,7 @@ struct ds4_tensor {
     uint64_t abs_offset;
     uint64_t elements;
     uint64_t bytes;
+    ds4_tensor *source_scale; /* Original FP8's multiplicative F32 blocks. */
 };
 
 typedef struct {
@@ -2768,6 +2776,12 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_GLM53_FLASH:
         g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+        break;
+    case DS4_VARIANT_GLM53_FLASH_VQ:
+        g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+        g_ds4_shape.family = DS4_MODEL_FAMILY_GLM53_VQ;
+        g_ds4_shape.variant = DS4_VARIANT_GLM53_FLASH_VQ;
+        g_ds4_shape.name = "GLM-5.3-Flash-VQ";
         break;
     case DS4_VARIANT_K2_HORIZON_375B:
         g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
@@ -5394,6 +5408,14 @@ typedef struct {
     ds4_inkling_block layer[INKLING_DRAFT_LAYERS];
 } ds4_inkling_draft;
 
+enum { GLMVQ_EXPERTS = 288, GLMVQ_LAYERS = 46, GLMVQ_TRUNK = 45 };
+typedef struct {
+    ds4_tensor *book;
+    ds4_tensor *gate[GLMVQ_EXPERTS];
+    ds4_tensor *up[GLMVQ_EXPERTS];
+    ds4_tensor *down[GLMVQ_EXPERTS];
+} ds4_glmvq_experts;
+
 typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
@@ -5402,6 +5424,7 @@ typedef struct {
     ds4_tensor *output_norm;
     ds4_tensor *output;
     ds4_layer_weights layer[DS4_MAX_LAYER];
+    ds4_glmvq_experts *glmvq; /* Allocated only for the named GVQ1 family. */
     /* The official checkpoint carries one dense MTP block in the same GGUF.
      * It is bound separately from the 53 executable target-model layers. */
     ds4_tensor *motif_mtp_embed_norm;
@@ -9655,6 +9678,8 @@ static void weights_bind_glm53(ds4_weights *w, const ds4_model *m) {
         weights_bind_glm53_layer(&w->layer[il], m, il);
 }
 
+#include "ds4_glmvq_bind.inc"
+
 static ds4_tensor *inkling_tensor(const ds4_model *m, const char *prefix,
                                   const char *suffix) {
     char name[192];
@@ -10150,6 +10175,11 @@ static void weights_bind(
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         inkling_bind(w, m);
+        return;
+    }
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) {
+        glmvq_bind(w, m);
         return;
     }
 
@@ -10739,6 +10769,7 @@ int ds4_dspark_validate(const char *path) {
 }
 
 static void weights_free(ds4_weights *w) {
+    free(w->glmvq);
     memset(w, 0, sizeof(*w));
 }
 

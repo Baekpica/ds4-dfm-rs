@@ -83,6 +83,8 @@ static inline int ds4_tcat_contains(const char *name, uint64_t len,
 #define DS4_TCAT_GGML_Q2_K    10u
 #define DS4_TCAT_GGML_IQ2_XXS 16u
 #define DS4_TCAT_GGML_IQ2_XS  17u
+#define DS4_TCAT_GLM_FP8      0x47514638u
+#define DS4_TCAT_GLM_VQ       0x47565138u
 
 static inline uint32_t ds4_tensor_catalog_classify(const char *name,
                                                    uint64_t name_len,
@@ -96,6 +98,17 @@ static inline uint32_t ds4_tensor_catalog_classify(const char *name,
     const int down = ds4_tcat_has_suffix(name, name_len, ".ffn_down_exps.weight");
     const int w13  = ds4_tcat_has_suffix(name, name_len, ".mlp.experts.w13_weight");
     const int w2   = ds4_tcat_has_suffix(name, name_len, ".mlp.experts.w2_weight");
+
+    /* GVQ1 retains individual matrices, including the original FP8 MTP
+     * experts. Shared books/scales stay hot; no blob relocation applies. */
+    if (ndim == 2 && (ggml_type == DS4_TCAT_GLM_VQ || ggml_type == DS4_TCAT_GLM_FP8) &&
+        ds4_tcat_contains(name, name_len, "model.language_model.layers.") &&
+        ds4_tcat_contains(name, name_len, ".mlp.experts.") &&
+        (ds4_tcat_has_suffix(name, name_len, ".gate_proj.weight") ||
+         ds4_tcat_has_suffix(name, name_len, ".up_proj.weight") ||
+         ds4_tcat_has_suffix(name, name_len, ".down_proj.weight"))) {
+        traits |= DS4_TCAT_ROUTED_EXPERT;
+    }
 
     if (ndim == 3 && (gate || up || down || w13 || w2)) {
         traits |= DS4_TCAT_ROUTED_EXPERT;
