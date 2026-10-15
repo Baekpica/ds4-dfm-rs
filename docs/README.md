@@ -105,7 +105,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [register MMA prefill](glm53-vq-mma-2026-10-15.md),
   [nonexpert Q4_K candidate](glm53-vq-q4k-2026-10-15.md),
   [cooperative Q4 decode](glm53-vq-q4-stream-2026-10-16.md),
-  [direct VQ expert decode](glm53-vq-decode-2026-10-16.md).
+  [direct VQ expert decode](glm53-vq-decode-2026-10-16.md),
+  [fused FP8 projections](glm53-vq-fp8-2026-10-16.md).
 - **dots3:** [September 6 optimization](dots3-optimization-2026-09-06.md).
 - **K2:** [September 5](k2-optimization-2026-09-05.md),
   [continuation campaign](k2-optimization-2026-09-05-cont.md).

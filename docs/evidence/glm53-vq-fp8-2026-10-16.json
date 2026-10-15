@@ -1,0 +1,3060 @@
+{
+  "whole_workload": {
+    "identity": {
+      "head": "a12e49494b56b0221dbbdcc15a44b1d8e08cc8fb",
+      "binary_sha256": "d64818e11b927b8a98013214b7bf4071f57dd16b4d95ed5caabeb7ddd584fb91",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "native_sources": {
+        "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "ds4_glmvq_gpu.cuh": "98ef2f151aff308936a3d755b7baa9250009bd95f84fc96378ee250bc23103e9",
+        "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "cuda/glm_vq_fp8.cuh": "a5a78a36bd171067693bcfc9987a4da0afba32072e83b71e2e9dcfc66d032225"
+      },
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_RESTORE_VEC": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "libraries": "\tlinux-vdso.so.1\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6\n\t/lib/ld-linux-aarch64.so.1\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13\n"
+    },
+    "runs": [
+      {
+        "label": "fp8-direct-off1",
+        "mode": "0",
+        "prefill_tps": 388.36,
+        "decode_tps": 5.63,
+        "first_decode_seconds": 0.186,
+        "process_wall_seconds": 210.4401640110009,
+        "minimum_system_available_gib": 35.44085693359375,
+        "observed_busy_sm_mhz": [
+          2184,
+          2190.0,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_fp8": "0",
+        "inference_seconds_from_rounded_rates": 10.79249865582226
+      },
+      {
+        "label": "fp8-direct-on1",
+        "mode": "1",
+        "prefill_tps": 319.38,
+        "decode_tps": 7.28,
+        "first_decode_seconds": 0.1518,
+        "process_wall_seconds": 252.3044335359882,
+        "minimum_system_available_gib": 35.28227233886719,
+        "observed_busy_sm_mhz": [
+          2184,
+          2187.0,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_fp8": "1",
+        "inference_seconds_from_rounded_rates": 10.607640215004484
+      },
+      {
+        "label": "fp8-direct-on2",
+        "mode": "1",
+        "prefill_tps": 404.16,
+        "decode_tps": 7.35,
+        "first_decode_seconds": 0.1496,
+        "process_wall_seconds": 206.12179074197775,
+        "minimum_system_available_gib": 35.41057586669922,
+        "observed_busy_sm_mhz": [
+          2184,
+          2190,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_fp8": "1",
+        "inference_seconds_from_rounded_rates": 9.262688448300935
+      },
+      {
+        "label": "fp8-direct-off2",
+        "mode": "0",
+        "prefill_tps": 382.84,
+        "decode_tps": 5.63,
+        "first_decode_seconds": 0.1877,
+        "process_wall_seconds": 280.9446842549951,
+        "minimum_system_available_gib": 35.346649169921875,
+        "observed_busy_sm_mhz": [
+          2184,
+          2190.0,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_fp8": "0",
+        "inference_seconds_from_rounded_rates": 10.866158186187441
+      },
+      {
+        "label": "fp8-direct-off3b",
+        "mode": "0",
+        "prefill_tps": 387.97,
+        "decode_tps": 5.62,
+        "first_decode_seconds": 0.191,
+        "process_wall_seconds": 271.8909149180108,
+        "minimum_system_available_gib": 35.347320556640625,
+        "observed_busy_sm_mhz": [
+          2184,
+          2187.0,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_fp8": "0",
+        "inference_seconds_from_rounded_rates": 10.807747636502327
+      },
+      {
+        "label": "fp8-direct-on3",
+        "mode": "1",
+        "prefill_tps": 352.27,
+        "decode_tps": 7.23,
+        "first_decode_seconds": 0.1513,
+        "process_wall_seconds": 275.27511790100834,
+        "minimum_system_available_gib": 35.411251068115234,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_fp8": "1",
+        "inference_seconds_from_rounded_rates": 10.058046369169944
+      }
+    ],
+    "native_sources": {
+      "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+      "ds4_glmvq_gpu.cuh": "98ef2f151aff308936a3d755b7baa9250009bd95f84fc96378ee250bc23103e9",
+      "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+      "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+      "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+      "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+      "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+      "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+      "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+      "cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+      "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+      "cuda/glm_vq_fp8.cuh": "a5a78a36bd171067693bcfc9987a4da0afba32072e83b71e2e9dcfc66d032225"
+    },
+    "scope": "Same original artifact bytes; restore/GEMV vs fused FP8 decode projection. 2K raw code, one frontier and32 greedy tokens; artifact quality and serving not implied",
+    "off": {
+      "prefill_tps": 387.97,
+      "decode_tps": 5.63,
+      "median_inference_seconds_from_rounded_rates": 10.807747636502327,
+      "prefill_range_tps": [
+        382.84,
+        388.36
+      ],
+      "decode_range_tps": [
+        5.62,
+        5.63
+      ]
+    },
+    "on": {
+      "prefill_tps": 352.27,
+      "decode_tps": 7.28,
+      "median_inference_seconds_from_rounded_rates": 10.058046369169944,
+      "prefill_range_tps": [
+        319.38,
+        404.16
+      ],
+      "decode_range_tps": [
+        7.23,
+        7.35
+      ]
+    },
+    "gain_percent": {
+      "prefill_tps": -9.201742402763113,
+      "decode_tps": 29.307282415630564
+    },
+    "inference_time_change_percent": -6.936702193159339
+  },
+  "build": {
+    "head": "a12e49494b56b0221dbbdcc15a44b1d8e08cc8fb",
+    "command": [
+      "make",
+      "-j2",
+      "CUDA_ARCH=sm_121",
+      "CUDA_HOME=/usr/local/cuda-13.4",
+      "ds4-bench-perf",
+      "tests/glm_vq_quality"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 74.8198099170113,
+    "binaries": {
+      "ds4-bench-perf": "d64818e11b927b8a98013214b7bf4071f57dd16b4d95ed5caabeb7ddd584fb91",
+      "tests/glm_vq_quality": "c83ab299118a948ffdca0bb4ad4cb29f69b1abec251843f1971636d6c51939ca"
+    }
+  },
+  "target_baseline": {
+    "ds4.prefill": {
+      "wall_s": 4.944477639,
+      "gpu_busy_s": 4.701938216,
+      "gpu_idle_s": 0.242539423,
+      "categories": {
+        "vq_other": {
+          "seconds": 1.99350759,
+          "wall_percent": 40.31786035952584,
+          "launches": 840
+        },
+        "attention_kda_core": {
+          "seconds": 1.257055925,
+          "wall_percent": 25.423432297172532,
+          "launches": 444
+        },
+        "dense_shared_control_projections": {
+          "seconds": 1.002983785,
+          "wall_percent": 20.28492913162106,
+          "launches": 8013
+        },
+        "mhc_norm": {
+          "seconds": 0.388943211,
+          "wall_percent": 7.86621437888962,
+          "launches": 1661
+        },
+        "other_gpu": {
+          "seconds": 0.031408389,
+          "wall_percent": 0.6352215803801716,
+          "launches": 1049
+        },
+        "router_select": {
+          "seconds": 0.018699928,
+          "wall_percent": 0.3781982519751466,
+          "launches": 168
+        },
+        "output_head": {
+          "seconds": 0.00924899,
+          "wall_percent": 0.18705696891108944,
+          "launches": 24
+        }
+      }
+    },
+    "ds4.decode": {
+      "wall_s": 5.734338891,
+      "gpu_busy_s": 5.658694635,
+      "gpu_idle_s": 0.075644256,
+      "categories": {
+        "dense_shared_control_projections": {
+          "seconds": 3.966139796,
+          "wall_percent": 69.16472624638257,
+          "launches": 62496
+        },
+        "attention_kda_core": {
+          "seconds": 0.870059457,
+          "wall_percent": 15.172794519792884,
+          "launches": 3552
+        },
+        "vq_other": {
+          "seconds": 0.323997603,
+          "wall_percent": 5.6501300177516836,
+          "launches": 4032
+        },
+        "output_head": {
+          "seconds": 0.23543669,
+          "wall_percent": 4.105733799052512,
+          "launches": 192
+        },
+        "mhc_norm": {
+          "seconds": 0.174838522,
+          "wall_percent": 3.048974351244006,
+          "launches": 13312
+        },
+        "router_select": {
+          "seconds": 0.075583033,
+          "wall_percent": 1.3180775401786418,
+          "launches": 1344
+        },
+        "other_gpu": {
+          "seconds": 0.010379254,
+          "wall_percent": 0.1810017544706009,
+          "launches": 7072
+        }
+      }
+    },
+    "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; MMA gather-to-reduce is also routed VQ; Q4 small dots and quantize_mmq-to-round are dense; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+  },
+  "ncu": {
+    "fp8-shared-base": {
+      "0": {
+        "kernel": "void glmvq_fp8_restore<__nv_bfloat16>(const unsigned char *, const float *, unsigned int, unsigned int, T1 *)",
+        "metrics": {
+          "gpu__time_duration.sum": [
+            "118.112000",
+            "us"
+          ],
+          "launch__registers_per_thread": [
+            "16",
+            "register/thread"
+          ],
+          "launch__shared_mem_per_block": [
+            "1.024000",
+            "Kbyte/block"
+          ],
+          "sm__warps_active.avg.pct_of_peak_sustained_active": [
+            "80.170090",
+            "%"
+          ],
+          "lts__t_sector_hit_rate.pct": [
+            "20.265349",
+            "%"
+          ],
+          "sm__cycles_elapsed.avg.per_second": [
+            "2.190836",
+            "Ghz"
+          ]
+        }
+      },
+      "1": {
+        "kernel": "std::enable_if<!T7, void>::type internal::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, 0, 1, 1, 0, 6, 0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+        "metrics": {
+          "gpu__time_duration.sum": [
+            "112.064000",
+            "us"
+          ],
+          "launch__registers_per_thread": [
+            "164",
+            "register/thread"
+          ],
+          "launch__shared_mem_per_block": [
+            "1.296000",
+            "Kbyte/block"
+          ],
+          "sm__warps_active.avg.pct_of_peak_sustained_active": [
+            "23.480573",
+            "%"
+          ],
+          "lts__t_sector_hit_rate.pct": [
+            "3.274168",
+            "%"
+          ],
+          "sm__cycles_elapsed.avg.per_second": [
+            "2.196064",
+            "Ghz"
+          ]
+        }
+      }
+    },
+    "fp8-dsa-base": {
+      "0": {
+        "kernel": "void glmvq_fp8_restore<__nv_bfloat16>(const unsigned char *, const float *, unsigned int, unsigned int, T1 *)",
+        "metrics": {
+          "gpu__time_duration.sum": [
+            "1.040576",
+            "ms"
+          ],
+          "launch__registers_per_thread": [
+            "16",
+            "register/thread"
+          ],
+          "launch__shared_mem_per_block": [
+            "1.024000",
+            "Kbyte/block"
+          ],
+          "sm__warps_active.avg.pct_of_peak_sustained_active": [
+            "83.327156",
+            "%"
+          ],
+          "lts__t_sector_hit_rate.pct": [
+            "19.985985",
+            "%"
+          ],
+          "sm__cycles_elapsed.avg.per_second": [
+            "2.196095",
+            "Ghz"
+          ]
+        }
+      },
+      "1": {
+        "kernel": "std::enable_if<!T7, void>::type internal::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, 0, 1, 1, 0, 7, 0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+        "metrics": {
+          "gpu__time_duration.sum": [
+            "0.597408",
+            "ms"
+          ],
+          "launch__registers_per_thread": [
+            "164",
+            "register/thread"
+          ],
+          "launch__shared_mem_per_block": [
+            "1.552000",
+            "Kbyte/block"
+          ],
+          "sm__warps_active.avg.pct_of_peak_sustained_active": [
+            "24.760243",
+            "%"
+          ],
+          "lts__t_sector_hit_rate.pct": [
+            "2.692286",
+            "%"
+          ],
+          "sm__cycles_elapsed.avg.per_second": [
+            "2.196483",
+            "Ghz"
+          ]
+        }
+      }
+    },
+    "fp8-dsa-direct": {
+      "0": {
+        "kernel": "void glmvq_fp8_dot<0>(const unsigned char *, const float *, const float *, float *, unsigned int, unsigned int, unsigned int)",
+        "metrics": {
+          "gpu__time_duration.sum": [
+            "271.072000",
+            "us"
+          ],
+          "launch__registers_per_thread": [
+            "37",
+            "register/thread"
+          ],
+          "launch__shared_mem_per_block": [
+            "1.056000",
+            "Kbyte/block"
+          ],
+          "sm__warps_active.avg.pct_of_peak_sustained_active": [
+            "97.534386",
+            "%"
+          ],
+          "lts__t_sector_hit_rate.pct": [
+            "16.628406",
+            "%"
+          ],
+          "sm__cycles_elapsed.avg.per_second": [
+            "2.194724",
+            "Ghz"
+          ]
+        }
+      }
+    }
+  },
+  "isolated": [
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+      "shape": [
+        2048,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.14819636940956116,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "24ac21c1c5004e0598b2743a2eb17374a13f5334957760bc379e2aea3f793fee",
+      "scale_sha256": "7562e6327b47dffe174ba6d376c1ae4093f7640eb973d9fe5b50fa75ffce37fc",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6613069169092007,
+      "label": "fp8-shared-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+      "shape": [
+        2048,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.035830624401569366,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "24ac21c1c5004e0598b2743a2eb17374a13f5334957760bc379e2aea3f793fee",
+      "scale_sha256": "7562e6327b47dffe174ba6d376c1ae4093f7640eb973d9fe5b50fa75ffce37fc",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6613069169092007,
+      "label": "fp8-shared-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+      "shape": [
+        2048,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.03402537479996681,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "24ac21c1c5004e0598b2743a2eb17374a13f5334957760bc379e2aea3f793fee",
+      "scale_sha256": "7562e6327b47dffe174ba6d376c1ae4093f7640eb973d9fe5b50fa75ffce37fc",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6613069169092007,
+      "label": "fp8-shared-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+      "shape": [
+        2048,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.033375248312950134,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "24ac21c1c5004e0598b2743a2eb17374a13f5334957760bc379e2aea3f793fee",
+      "scale_sha256": "7562e6327b47dffe174ba6d376c1ae4093f7640eb973d9fe5b50fa75ffce37fc",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6613069169092007,
+      "label": "fp8-shared-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+      "shape": [
+        2048,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.0364997498691082,
+      "profile": false,
+      "mode": "shared",
+      "split": 1,
+      "payload_sha256": "24ac21c1c5004e0598b2743a2eb17374a13f5334957760bc379e2aea3f793fee",
+      "scale_sha256": "7562e6327b47dffe174ba6d376c1ae4093f7640eb973d9fe5b50fa75ffce37fc",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6613069169092007,
+      "label": "fp8-shared-shared-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+      "shape": [
+        2048,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.03546150028705597,
+      "profile": false,
+      "mode": "shared",
+      "split": 4,
+      "payload_sha256": "24ac21c1c5004e0598b2743a2eb17374a13f5334957760bc379e2aea3f793fee",
+      "scale_sha256": "7562e6327b47dffe174ba6d376c1ae4093f7640eb973d9fe5b50fa75ffce37fc",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6613069169092007,
+      "label": "fp8-shared-shared-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+      "shape": [
+        2048,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.03431599959731102,
+      "profile": false,
+      "mode": "shared",
+      "split": 8,
+      "payload_sha256": "24ac21c1c5004e0598b2743a2eb17374a13f5334957760bc379e2aea3f793fee",
+      "scale_sha256": "7562e6327b47dffe174ba6d376c1ae4093f7640eb973d9fe5b50fa75ffce37fc",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6613069169092007,
+      "label": "fp8-shared-shared-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "milliseconds": 1.5246237516403198,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "97e6654499e3c8c3c729e9820fead57f2ff295396f010b733a0741fa480eeb2d",
+      "scale_sha256": "f50584cf9d7132002a0f2d686a0f5426e88e9ed2f0882a8013b360d79b4c378a",
+      "input_sha256": "fe6a24ae87719a24edeaaea32ae507c1a18987298896adfcd78c2396bcbe1d25",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.12098149757627631,
+      "label": "fp8-dsa-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "milliseconds": 0.2867133617401123,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "97e6654499e3c8c3c729e9820fead57f2ff295396f010b733a0741fa480eeb2d",
+      "scale_sha256": "f50584cf9d7132002a0f2d686a0f5426e88e9ed2f0882a8013b360d79b4c378a",
+      "input_sha256": "fe6a24ae87719a24edeaaea32ae507c1a18987298896adfcd78c2396bcbe1d25",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.12098149757627631,
+      "label": "fp8-dsa-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "milliseconds": 0.27741336822509766,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "97e6654499e3c8c3c729e9820fead57f2ff295396f010b733a0741fa480eeb2d",
+      "scale_sha256": "f50584cf9d7132002a0f2d686a0f5426e88e9ed2f0882a8013b360d79b4c378a",
+      "input_sha256": "fe6a24ae87719a24edeaaea32ae507c1a18987298896adfcd78c2396bcbe1d25",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.12098149757627631,
+      "label": "fp8-dsa-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "milliseconds": 0.26954326033592224,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "97e6654499e3c8c3c729e9820fead57f2ff295396f010b733a0741fa480eeb2d",
+      "scale_sha256": "f50584cf9d7132002a0f2d686a0f5426e88e9ed2f0882a8013b360d79b4c378a",
+      "input_sha256": "fe6a24ae87719a24edeaaea32ae507c1a18987298896adfcd78c2396bcbe1d25",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.12098149757627631,
+      "label": "fp8-dsa-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "milliseconds": 0.3028906285762787,
+      "profile": false,
+      "mode": "shared",
+      "split": 1,
+      "payload_sha256": "97e6654499e3c8c3c729e9820fead57f2ff295396f010b733a0741fa480eeb2d",
+      "scale_sha256": "f50584cf9d7132002a0f2d686a0f5426e88e9ed2f0882a8013b360d79b4c378a",
+      "input_sha256": "fe6a24ae87719a24edeaaea32ae507c1a18987298896adfcd78c2396bcbe1d25",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.12098149757627631,
+      "label": "fp8-dsa-shared-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "milliseconds": 0.29297199845314026,
+      "profile": false,
+      "mode": "shared",
+      "split": 4,
+      "payload_sha256": "97e6654499e3c8c3c729e9820fead57f2ff295396f010b733a0741fa480eeb2d",
+      "scale_sha256": "f50584cf9d7132002a0f2d686a0f5426e88e9ed2f0882a8013b360d79b4c378a",
+      "input_sha256": "fe6a24ae87719a24edeaaea32ae507c1a18987298896adfcd78c2396bcbe1d25",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.12098149757627631,
+      "label": "fp8-dsa-shared-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        16384
+      ],
+      "tokens": 1,
+      "milliseconds": 0.3263413608074188,
+      "profile": false,
+      "mode": "shared",
+      "split": 8,
+      "payload_sha256": "97e6654499e3c8c3c729e9820fead57f2ff295396f010b733a0741fa480eeb2d",
+      "scale_sha256": "f50584cf9d7132002a0f2d686a0f5426e88e9ed2f0882a8013b360d79b4c378a",
+      "input_sha256": "fe6a24ae87719a24edeaaea32ae507c1a18987298896adfcd78c2396bcbe1d25",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.12098149757627631,
+      "label": "fp8-dsa-shared-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.down_proj.weight",
+      "shape": [
+        4096,
+        2048
+      ],
+      "tokens": 1,
+      "milliseconds": 0.14925606548786163,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "3807f8c0d848c76c19f38625d50a87e91c13e7e3c475ecba3cee36a401934224",
+      "scale_sha256": "0a800463ab72bcaaaea1fef6c02d84c44216c16531649695999acdc4b366c763",
+      "input_sha256": "f38e56c3cc9695e832183688ff838056d12c13577ba499e0bf23e5f7ceed305b",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-shared-down-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.down_proj.weight",
+      "shape": [
+        4096,
+        2048
+      ],
+      "tokens": 1,
+      "milliseconds": 0.03591431304812431,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "3807f8c0d848c76c19f38625d50a87e91c13e7e3c475ecba3cee36a401934224",
+      "scale_sha256": "0a800463ab72bcaaaea1fef6c02d84c44216c16531649695999acdc4b366c763",
+      "input_sha256": "f38e56c3cc9695e832183688ff838056d12c13577ba499e0bf23e5f7ceed305b",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-shared-down-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.down_proj.weight",
+      "shape": [
+        4096,
+        2048
+      ],
+      "tokens": 1,
+      "milliseconds": 0.03335612639784813,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "3807f8c0d848c76c19f38625d50a87e91c13e7e3c475ecba3cee36a401934224",
+      "scale_sha256": "0a800463ab72bcaaaea1fef6c02d84c44216c16531649695999acdc4b366c763",
+      "input_sha256": "f38e56c3cc9695e832183688ff838056d12c13577ba499e0bf23e5f7ceed305b",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-shared-down-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.down_proj.weight",
+      "shape": [
+        4096,
+        2048
+      ],
+      "tokens": 1,
+      "milliseconds": 0.033031564205884933,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "3807f8c0d848c76c19f38625d50a87e91c13e7e3c475ecba3cee36a401934224",
+      "scale_sha256": "0a800463ab72bcaaaea1fef6c02d84c44216c16531649695999acdc4b366c763",
+      "input_sha256": "f38e56c3cc9695e832183688ff838056d12c13577ba499e0bf23e5f7ceed305b",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-shared-down-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.mlp.shared_experts.down_proj.weight",
+      "shape": [
+        4096,
+        2048
+      ],
+      "tokens": 1,
+      "milliseconds": 0.037408001720905304,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "3807f8c0d848c76c19f38625d50a87e91c13e7e3c475ecba3cee36a401934224",
+      "scale_sha256": "0a800463ab72bcaaaea1fef6c02d84c44216c16531649695999acdc4b366c763",
+      "input_sha256": "f38e56c3cc9695e832183688ff838056d12c13577ba499e0bf23e5f7ceed305b",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.7626659917844298,
+      "label": "fp8-shared-down-global-8-check"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 1.2590317726135254,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "d4aaea77a6cdda92f95388ea16645ca1c981ac2557ab9e5be697301a09dea8a8",
+      "scale_sha256": "122155ca6eb1f0ce3103b3800d28049164bdca8623b863952463bb42c23ab23a",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-gate-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.2070147544145584,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "d4aaea77a6cdda92f95388ea16645ca1c981ac2557ab9e5be697301a09dea8a8",
+      "scale_sha256": "122155ca6eb1f0ce3103b3800d28049164bdca8623b863952463bb42c23ab23a",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-gate-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.2028844952583313,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "d4aaea77a6cdda92f95388ea16645ca1c981ac2557ab9e5be697301a09dea8a8",
+      "scale_sha256": "122155ca6eb1f0ce3103b3800d28049164bdca8623b863952463bb42c23ab23a",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-gate-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.19986724853515625,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "d4aaea77a6cdda92f95388ea16645ca1c981ac2557ab9e5be697301a09dea8a8",
+      "scale_sha256": "122155ca6eb1f0ce3103b3800d28049164bdca8623b863952463bb42c23ab23a",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-gate-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.gate_proj.weight",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.2048960030078888,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "d4aaea77a6cdda92f95388ea16645ca1c981ac2557ab9e5be697301a09dea8a8",
+      "scale_sha256": "122155ca6eb1f0ce3103b3800d28049164bdca8623b863952463bb42c23ab23a",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6714344557760842,
+      "label": "fp8-dense-gate-global-8-check"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "milliseconds": 1.1252350807189941,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "10347315956967d990b4365300a7855895817aa18995b9b734e83be1e10684d1",
+      "scale_sha256": "6a0af98911d81edd4f8b87fe19fc8359a30f0e3305c9fc28d611feb6a0cd787a",
+      "input_sha256": "214116d7d82c3892fc89e9a1f5ef44ca0392b47e792ae1830118d9bd21fab4ba",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/mlp.mid.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-down-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "milliseconds": 0.21126949787139893,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "10347315956967d990b4365300a7855895817aa18995b9b734e83be1e10684d1",
+      "scale_sha256": "6a0af98911d81edd4f8b87fe19fc8359a30f0e3305c9fc28d611feb6a0cd787a",
+      "input_sha256": "214116d7d82c3892fc89e9a1f5ef44ca0392b47e792ae1830118d9bd21fab4ba",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/mlp.mid.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-down-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "milliseconds": 0.20823612809181213,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "10347315956967d990b4365300a7855895817aa18995b9b734e83be1e10684d1",
+      "scale_sha256": "6a0af98911d81edd4f8b87fe19fc8359a30f0e3305c9fc28d611feb6a0cd787a",
+      "input_sha256": "214116d7d82c3892fc89e9a1f5ef44ca0392b47e792ae1830118d9bd21fab4ba",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/mlp.mid.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-down-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "milliseconds": 0.2046145647764206,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "10347315956967d990b4365300a7855895817aa18995b9b734e83be1e10684d1",
+      "scale_sha256": "6a0af98911d81edd4f8b87fe19fc8359a30f0e3305c9fc28d611feb6a0cd787a",
+      "input_sha256": "214116d7d82c3892fc89e9a1f5ef44ca0392b47e792ae1830118d9bd21fab4ba",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/mlp.mid.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dense-down-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.mlp.down_proj.weight",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tokens": 1,
+      "milliseconds": 0.19939200580120087,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "10347315956967d990b4365300a7855895817aa18995b9b734e83be1e10684d1",
+      "scale_sha256": "6a0af98911d81edd4f8b87fe19fc8359a30f0e3305c9fc28d611feb6a0cd787a",
+      "input_sha256": "214116d7d82c3892fc89e9a1f5ef44ca0392b47e792ae1830118d9bd21fab4ba",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/mlp.mid.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.46600274578554735,
+      "label": "fp8-dense-down-global-8-check"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.03152325004339218,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "b453f3ee6e9783fc0c81936a558894e27c48ec0ccc3e79878605218ad04c6eaa",
+      "scale_sha256": "d05017223b85257643e47d57ca09956dc865e03e82bdb8804054a252655c9634",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-kva-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.01141437515616417,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "b453f3ee6e9783fc0c81936a558894e27c48ec0ccc3e79878605218ad04c6eaa",
+      "scale_sha256": "d05017223b85257643e47d57ca09956dc865e03e82bdb8804054a252655c9634",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-kva-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.010007999837398529,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "b453f3ee6e9783fc0c81936a558894e27c48ec0ccc3e79878605218ad04c6eaa",
+      "scale_sha256": "d05017223b85257643e47d57ca09956dc865e03e82bdb8804054a252655c9634",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-kva-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.009844999760389328,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "b453f3ee6e9783fc0c81936a558894e27c48ec0ccc3e79878605218ad04c6eaa",
+      "scale_sha256": "d05017223b85257643e47d57ca09956dc865e03e82bdb8804054a252655c9634",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-kva-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.kv_a_proj_with_mqa.weight",
+      "shape": [
+        512,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.013088000006973743,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "b453f3ee6e9783fc0c81936a558894e27c48ec0ccc3e79878605218ad04c6eaa",
+      "scale_sha256": "d05017223b85257643e47d57ca09956dc865e03e82bdb8804054a252655c9634",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.6417583150425366,
+      "label": "fp8-dsa-kva-global-8-check"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.11035174876451492,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "d79be6a957e1c23680665a68e4bbc9ffaf71a01bb7dc540e40140c6af9a3b3bc",
+      "scale_sha256": "165bb5ed26c4a904ba915d5bd22657560e019041ccb0f13868ddd811e3c429dd",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qa-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.027033625170588493,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "d79be6a957e1c23680665a68e4bbc9ffaf71a01bb7dc540e40140c6af9a3b3bc",
+      "scale_sha256": "165bb5ed26c4a904ba915d5bd22657560e019041ccb0f13868ddd811e3c429dd",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qa-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.025772875174880028,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "d79be6a957e1c23680665a68e4bbc9ffaf71a01bb7dc540e40140c6af9a3b3bc",
+      "scale_sha256": "165bb5ed26c4a904ba915d5bd22657560e019041ccb0f13868ddd811e3c429dd",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qa-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.025378499180078506,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "d79be6a957e1c23680665a68e4bbc9ffaf71a01bb7dc540e40140c6af9a3b3bc",
+      "scale_sha256": "165bb5ed26c4a904ba915d5bd22657560e019041ccb0f13868ddd811e3c429dd",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qa-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_a_proj.weight",
+      "shape": [
+        1536,
+        4096
+      ],
+      "tokens": 1,
+      "milliseconds": 0.029823999851942062,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "d79be6a957e1c23680665a68e4bbc9ffaf71a01bb7dc540e40140c6af9a3b3bc",
+      "scale_sha256": "165bb5ed26c4a904ba915d5bd22657560e019041ccb0f13868ddd811e3c429dd",
+      "input_sha256": "934e50632d1b543f485b7de6b9ee9ce2f53bcbc45c20202109208d72deb60873",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "scratch/glm-vq/layer-fixture/post_attention_layernorm.f32",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.5203214502392195,
+      "label": "fp8-dsa-qa-global-8-check"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "milliseconds": 0.5768113732337952,
+      "profile": false,
+      "mode": "base",
+      "split": 4,
+      "payload_sha256": "206fcd1d56fa905fc65e21fb9d311b051ef186e56500df189aaab3303c54af77",
+      "scale_sha256": "3ba6893b49db9b2c95639e1504d47481014936c66d4fc505e20d2d93c446b732",
+      "input_sha256": "fffd6ea57c1b38a935089b88e5b2242c8bcfdfc6dd21f637c4d686aee61df5a8",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qb-base-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "milliseconds": 0.10274124890565872,
+      "profile": false,
+      "mode": "global",
+      "split": 1,
+      "payload_sha256": "206fcd1d56fa905fc65e21fb9d311b051ef186e56500df189aaab3303c54af77",
+      "scale_sha256": "3ba6893b49db9b2c95639e1504d47481014936c66d4fc505e20d2d93c446b732",
+      "input_sha256": "fffd6ea57c1b38a935089b88e5b2242c8bcfdfc6dd21f637c4d686aee61df5a8",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qb-global-1"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "milliseconds": 0.09853330999612808,
+      "profile": false,
+      "mode": "global",
+      "split": 2,
+      "payload_sha256": "206fcd1d56fa905fc65e21fb9d311b051ef186e56500df189aaab3303c54af77",
+      "scale_sha256": "3ba6893b49db9b2c95639e1504d47481014936c66d4fc505e20d2d93c446b732",
+      "input_sha256": "fffd6ea57c1b38a935089b88e5b2242c8bcfdfc6dd21f637c4d686aee61df5a8",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qb-global-2"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "milliseconds": 0.0986284390091896,
+      "profile": false,
+      "mode": "global",
+      "split": 4,
+      "payload_sha256": "206fcd1d56fa905fc65e21fb9d311b051ef186e56500df189aaab3303c54af77",
+      "scale_sha256": "3ba6893b49db9b2c95639e1504d47481014936c66d4fc505e20d2d93c446b732",
+      "input_sha256": "fffd6ea57c1b38a935089b88e5b2242c8bcfdfc6dd21f637c4d686aee61df5a8",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qb-global-4"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "milliseconds": 0.10130731016397476,
+      "profile": false,
+      "mode": "global",
+      "split": 8,
+      "payload_sha256": "206fcd1d56fa905fc65e21fb9d311b051ef186e56500df189aaab3303c54af77",
+      "scale_sha256": "3ba6893b49db9b2c95639e1504d47481014936c66d4fc505e20d2d93c446b732",
+      "input_sha256": "fffd6ea57c1b38a935089b88e5b2242c8bcfdfc6dd21f637c4d686aee61df5a8",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "label": "fp8-dsa-qb-global-8"
+    },
+    {
+      "matrix": "model.language_model.layers.3.self_attn.q_b_proj.weight",
+      "shape": [
+        16384,
+        1536
+      ],
+      "tokens": 1,
+      "milliseconds": 0.10127999633550644,
+      "profile": false,
+      "mode": "global",
+      "split": 2,
+      "payload_sha256": "206fcd1d56fa905fc65e21fb9d311b051ef186e56500df189aaab3303c54af77",
+      "scale_sha256": "3ba6893b49db9b2c95639e1504d47481014936c66d4fc505e20d2d93c446b732",
+      "input_sha256": "fffd6ea57c1b38a935089b88e5b2242c8bcfdfc6dd21f637c4d686aee61df5a8",
+      "library_sha256": "70bbd143c52adf5d39c476178bdab62ce183846228598aec67b945dde93b5b5f",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "input": "synthetic BF16 normal; dense access value-independent",
+      "input_row": 0,
+      "cache": "rotate at least64MiB weights; hot input/scales;16 warmups",
+      "scope": "Original FP8 block-scale/BF16 boundaries; direct dot changes FP32 reduction order. Baseline production cuBLAS with32MiB workspace; no whole-model claim",
+      "max_bound_ratio": 0.8080744236431572,
+      "label": "fp8-dsa-qb-global-2-check"
+    }
+  ],
+  "isolated_protocol": {
+    "initial_two_shapes_repeats": 256,
+    "remaining_six_shape_repeats": 512,
+    "selected_remaining_bound_repeats": 1,
+    "warmups": 16,
+    "weight_rotation_min_bytes": 67108864,
+    "global_registers": 37,
+    "shared_input_registers": 32,
+    "stack_and_local_spill_bytes": 0
+  },
+  "quality": {
+    "labels": [
+      "mma-direct-original-quality",
+      "fp8-direct-original-quality"
+    ],
+    "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+    "binary_sha256": [
+      "1ea4cddbe8f3781be50181851fb18ad2338d64f29846b5b810a6be1174f707aa",
+      "c83ab299118a948ffdca0bb4ad4cb29f69b1abec251843f1971636d6c51939ca"
+    ],
+    "targets": 106,
+    "paired_nll_delta": 0.004095950287914055,
+    "case_bootstrap95": [
+      -0.0004515599176617475,
+      0.012857678108647156
+    ],
+    "cases": [
+      {
+        "id": "ko_summary",
+        "targets": 24,
+        "nll_delta": 0.004315405339864557,
+        "kl_mean": 0.0006258789810494483,
+        "kl_max": 0.0047187947886345085,
+        "tv_mean": 0.005934339084616228,
+        "max_abs_logit": 1.765625,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "mma-direct-original-quality",
+            "answer": "**변경된 일정 요약**\n- 원래 출시일은 화요일 오전 10시였으나, 마지막 접근성 점검을 위해 목요일 오후 3시로 미뤘습니다.\n- 민지는 결제 화면 점검을, 준호는 사용자 안내문 수정을 담당하며, 서버 이전 작",
+            "stopped": false,
+            "generated_ids": [
+              334,
+              27904,
+              222,
+              64829,
+              51957,
+              82866,
+              29172,
+              85289,
+              139441,
+              1019,
+              12,
+              139304,
+              53086,
+              142630,
+              29217,
+              31935,
+              33542,
+              150260,
+              35533,
+              31935,
+              72513,
+              65385,
+              220,
+              98668,
+              29217,
+              139633,
+              33347,
+              59895,
+              11,
+              94772,
+              21279,
+              38703,
+              231,
+              18553,
+              239,
+              144058,
+              32677,
+              18553,
+              238,
+              27548,
+              222,
+              17851,
+              139987,
+              149562,
+              35533,
+              31935,
+              38315,
+              44421,
+              73630,
+              220,
+              18,
+              29217,
+              17358,
+              134781,
+              167,
+              97,
+              246,
+              38027,
+              624,
+              12,
+              132677,
+              120,
+              21279,
+              16544,
+              81939,
+              36893,
+              150260,
+              32146,
+              18553,
+              238,
+              27548,
+              222,
+              17851,
+              11,
+              53629,
+              222,
+              47033,
+              16544,
+              40495,
+              25635,
+              94372,
+              94420,
+              51248,
+              87781,
+              17851,
+              33978,
+              112,
+              64322,
+              16172,
+              131871,
+              11,
+              89118,
+              78369,
+              23021,
+              65385,
+              67736
+            ]
+          },
+          {
+            "label": "fp8-direct-original-quality",
+            "answer": "**변경된 일정 요약**\n- 원래 출시일은 화요일 오전 10시였으나, 마지막 접근성 점검을 위해 목요일 오후 3시로 미뤘습니다.\n- 결제 화면 점검은 민지가 담당하고, 사용자 안내문 수정은 준호가 담당합니다.\n\n**�",
+            "stopped": false,
+            "generated_ids": [
+              334,
+              27904,
+              222,
+              64829,
+              51957,
+              82866,
+              29172,
+              85289,
+              139441,
+              1019,
+              12,
+              139304,
+              53086,
+              142630,
+              29217,
+              31935,
+              33542,
+              150260,
+              35533,
+              31935,
+              72513,
+              65385,
+              220,
+              98668,
+              29217,
+              139633,
+              33347,
+              59895,
+              11,
+              94772,
+              21279,
+              38703,
+              231,
+              18553,
+              239,
+              144058,
+              32677,
+              18553,
+              238,
+              27548,
+              222,
+              17851,
+              139987,
+              149562,
+              35533,
+              31935,
+              38315,
+              44421,
+              73630,
+              220,
+              18,
+              29217,
+              17358,
+              134781,
+              167,
+              97,
+              246,
+              38027,
+              624,
+              12,
+              81939,
+              36893,
+              150260,
+              32146,
+              18553,
+              238,
+              27548,
+              222,
+              33542,
+              132677,
+              120,
+              21279,
+              19931,
+              33978,
+              112,
+              64322,
+              131244,
+              11,
+              40495,
+              25635,
+              94372,
+              94420,
+              51248,
+              87781,
+              33542,
+              53629,
+              222,
+              47033,
+              19931,
+              33978,
+              112,
+              64322,
+              60412,
+              382,
+              334,
+              8842
+            ]
+          }
+        ]
+      },
+      {
+        "id": "en_reading",
+        "targets": 22,
+        "nll_delta": 0.0015992155017245128,
+        "kl_mean": 0.0007322869111246112,
+        "kl_max": 0.0070431953773849795,
+        "tv_mean": 0.007261881063398861,
+        "max_abs_logit": 1.421875,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "mma-direct-original-quality",
+            "answer": "The River branch opens later than usual on Friday, at 11:00.",
+            "stopped": true,
+            "generated_ids": [
+              785,
+              10943,
+              8868,
+              15873,
+              2937,
+              1091,
+              13466,
+              389,
+              6602,
+              11,
+              518,
+              220,
+              98965,
+              25,
+              98503,
+              13
+            ]
+          },
+          {
+            "label": "fp8-direct-original-quality",
+            "answer": "The River branch opens later than usual on Friday, at 11:00.",
+            "stopped": true,
+            "generated_ids": [
+              785,
+              10943,
+              8868,
+              15873,
+              2937,
+              1091,
+              13466,
+              389,
+              6602,
+              11,
+              518,
+              220,
+              98965,
+              25,
+              98503,
+              13
+            ]
+          }
+        ]
+      },
+      {
+        "id": "python_order",
+        "targets": 24,
+        "nll_delta": 0.0021093725638094973,
+        "kl_mean": 0.0002046214150908752,
+        "kl_max": 0.0016162435092056434,
+        "tv_mean": 0.0023982317301575705,
+        "max_abs_logit": 2.9775390625,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "mma-direct-original-quality",
+            "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```",
+            "stopped": true,
+            "generated_ids": [
+              73022,
+              12663,
+              198,
+              750,
+              4911,
+              1243,
+              7869,
+              20063,
+              982,
+              262,
+              3884,
+              284,
+              738,
+              741,
+              262,
+              1102,
+              284,
+              4167,
+              262,
+              369,
+              897,
+              304,
+              2750,
+              510,
+              286,
+              421,
+              897,
+              537,
+              304,
+              3884,
+              510,
+              310,
+              3884,
+              1364,
+              3679,
+              340,
+              310,
+              1102,
+              2057,
+              3679,
+              340,
+              262,
+              470,
+              1102,
+              198,
+              73022
+            ]
+          },
+          {
+            "label": "fp8-direct-original-quality",
+            "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```\n\nThis preserves first-occurrence order without mutating or sorting the input.",
+            "stopped": true,
+            "generated_ids": [
+              73022,
+              12663,
+              198,
+              750,
+              4911,
+              1243,
+              7869,
+              20063,
+              982,
+              262,
+              3884,
+              284,
+              738,
+              741,
+              262,
+              1102,
+              284,
+              4167,
+              262,
+              369,
+              897,
+              304,
+              2750,
+              510,
+              286,
+              421,
+              897,
+              537,
+              304,
+              3884,
+              510,
+              310,
+              3884,
+              1364,
+              3679,
+              340,
+              310,
+              1102,
+              2057,
+              3679,
+              340,
+              262,
+              470,
+              1102,
+              198,
+              13865,
+              19288,
+              1986,
+              74309,
+              1156,
+              12,
+              13974,
+              20516,
+              1973,
+              2041,
+              95708,
+              476,
+              28176,
+              279,
+              1946,
+              13
+            ]
+          }
+        ]
+      },
+      {
+        "id": "math_cost",
+        "targets": 23,
+        "nll_delta": -0.0028481901797921755,
+        "kl_mean": 0.0016562721301350517,
+        "kl_max": 0.019821534588884786,
+        "tv_mean": 0.010689047221578032,
+        "max_abs_logit": 1.3125,
+        "argmax_agreement": 0.9565217391304348,
+        "answers": [
+          {
+            "label": "mma-direct-original-quality",
+            "answer": "4 * 7 + 5 * 3 - 6 = 28 + 15 - 6 = 37.\nSo the final cost is 37 dollars.",
+            "stopped": true,
+            "generated_ids": [
+              19,
+              353,
+              220,
+              22,
+              488,
+              220,
+              20,
+              353,
+              220,
+              18,
+              481,
+              220,
+              21,
+              284,
+              220,
+              99869,
+              488,
+              220,
+              99082,
+              481,
+              220,
+              21,
+              284,
+              220,
+              101140,
+              624,
+              4416,
+              279,
+              1590,
+              2783,
+              374,
+              220,
+              101140,
+              11187,
+              13
+            ]
+          },
+          {
+            "label": "fp8-direct-original-quality",
+            "answer": "4 * 7 + 5 * 3 - 6 = 28 + 15 - 6 = 37.\nSo the final cost is 37 dollars.",
+            "stopped": true,
+            "generated_ids": [
+              19,
+              353,
+              220,
+              22,
+              488,
+              220,
+              20,
+              353,
+              220,
+              18,
+              481,
+              220,
+              21,
+              284,
+              220,
+              99869,
+              488,
+              220,
+              99082,
+              481,
+              220,
+              21,
+              284,
+              220,
+              101140,
+              624,
+              4416,
+              279,
+              1590,
+              2783,
+              374,
+              220,
+              101140,
+              11187,
+              13
+            ]
+          }
+        ]
+      },
+      {
+        "id": "json_contract",
+        "targets": 10,
+        "nll_delta": 0.030982359704288243,
+        "kl_mean": 0.0012006778153732522,
+        "kl_max": 0.010477203839871402,
+        "tv_mean": 0.006046956293118481,
+        "max_abs_logit": 1.5986328125,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "mma-direct-original-quality",
+            "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+            "stopped": true,
+            "generated_ids": [
+              4913,
+              8923,
+              788,
+              330,
+              1514,
+              10960,
+              497,
+              330,
+              3843,
+              788,
+              330,
+              34,
+              9204
+            ]
+          },
+          {
+            "label": "fp8-direct-original-quality",
+            "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+            "stopped": true,
+            "generated_ids": [
+              4913,
+              8923,
+              788,
+              330,
+              1514,
+              10960,
+              497,
+              330,
+              3843,
+              788,
+              330,
+              34,
+              9204
+            ]
+          }
+        ]
+      },
+      {
+        "id": "ko_stop",
+        "targets": 3,
+        "nll_delta": 0.00015936562837026713,
+        "kl_mean": 1.715116055429355e-05,
+        "kl_max": 4.926539741667143e-05,
+        "tv_mean": 0.0001599483105007001,
+        "max_abs_logit": 0.3681640625,
+        "argmax_agreement": 1.0,
+        "answers": [
+          {
+            "label": "mma-direct-original-quality",
+            "answer": "완료",
+            "stopped": true,
+            "generated_ids": [
+              57901,
+              226,
+              62807
+            ]
+          },
+          {
+            "label": "fp8-direct-original-quality",
+            "answer": "완료",
+            "stopped": true,
+            "generated_ids": [
+              57901,
+              226,
+              62807
+            ]
+          }
+        ]
+      }
+    ],
+    "scope": "Same original artifact and accepted VQ kernels; fused FP8 dot keeps per-weight/input/output BF16 boundaries and changes FP32 accumulation order. Bounded six-case arithmetic screen only; inspect task answers and likelihood distributions."
+  },
+  "existing_variation": {
+    "labels": [
+      "mma-quality-off",
+      "mma-quality-width",
+      "mma-direct-original-quality",
+      "fp8-direct-original-quality"
+    ],
+    "cases": [
+      {
+        "id": "ko_summary",
+        "candidate_equals_width64": false,
+        "candidate_equals_retained": false,
+        "original_width_nll_delta": 0.014051395873157105
+      },
+      {
+        "id": "en_reading",
+        "candidate_equals_width64": true,
+        "candidate_equals_retained": true,
+        "original_width_nll_delta": 0.01286122433831109
+      },
+      {
+        "id": "python_order",
+        "candidate_equals_width64": true,
+        "candidate_equals_retained": false,
+        "original_width_nll_delta": 0.004949599564857188,
+        "function_ast_equal": true
+      },
+      {
+        "id": "math_cost",
+        "candidate_equals_width64": true,
+        "candidate_equals_retained": true,
+        "original_width_nll_delta": 0.009031371476721539
+      },
+      {
+        "id": "json_contract",
+        "candidate_equals_width64": true,
+        "candidate_equals_retained": true,
+        "original_width_nll_delta": 0.006820138134170151
+      },
+      {
+        "id": "ko_stop",
+        "candidate_equals_width64": true,
+        "candidate_equals_retained": true,
+        "original_width_nll_delta": 0.0026994835245280533
+      }
+    ],
+    "scope": "Existing original width64 variation informs dynamic tolerance; not a universal bound or strict formatting pass. No new inference."
+  },
+  "quality_receipts": [
+    {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/mma-direct-original-quality/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/glm_vq_quality",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/fixtures/glm-vq-text-quality.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/mma-direct-original-quality/cases"
+      ],
+      "head": "90f98b2cc5e3d54ae187ae2ac69ad125db56f805",
+      "binary_sha256": "1ea4cddbe8f3781be50181851fb18ad2338d64f29846b5b810a6be1174f707aa",
+      "cases_sha256": "a133fbd5b9c076cbe3103af64a7c9a7853fc5e150174ce4a164e5f77240673d5",
+      "native_sources": {
+        "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "ds4_glmvq_gpu.cuh": "556bed2996fe39ba2b8671107fe91dbb6510c7ce447133b6facf66dabd1ad79f",
+        "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e"
+      },
+      "harness_sha256": "914f876eb5dbb05f9cb67ddd9f75584e936e3effc4a7539982e2bd10b94ced9e",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000fb8bb0cb6000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000fb8bacee0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000fb8bace30000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000fb8bacc70000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000fb8bacb90000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000fb8ba8600000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000fb8ba8370000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fb8bb0c70000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000fb8bacb60000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000fb8bacb30000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000fb8bacb00000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000fb8b7b000000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "teacher_forcing": "first24 target tokens per case, full vocabulary logits/NLL",
+      "generation": "greedy up to96 tokens, EOS respected, separate fresh session",
+      "owner": "single in-process VMM",
+      "cache": "fresh process and fresh sessions; inherited OS cache",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "acceptance": "separate task/format regressions and paired held-out likelihood/distribution changes; original chunk-width variation is context, not a hard Q4 loss ceiling; investigate consistent substantive degradation, do not widen bounds after results",
+      "scope": "bounded text arithmetic quality; no tool protocol, image, MTP, capture or long-context qualification",
+      "exit_code": 0,
+      "wall_seconds": 241.7688069010037
+    },
+    {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/fp8-direct-original-quality/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/glm_vq_quality",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/fixtures/glm-vq-text-quality.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/fp8-direct-original-quality/cases"
+      ],
+      "head": "a12e49494b56b0221dbbdcc15a44b1d8e08cc8fb",
+      "binary_sha256": "c83ab299118a948ffdca0bb4ad4cb29f69b1abec251843f1971636d6c51939ca",
+      "cases_sha256": "a133fbd5b9c076cbe3103af64a7c9a7853fc5e150174ce4a164e5f77240673d5",
+      "native_sources": {
+        "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "ds4_glmvq_gpu.cuh": "98ef2f151aff308936a3d755b7baa9250009bd95f84fc96378ee250bc23103e9",
+        "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "cuda/glm_vq_fp8.cuh": "a5a78a36bd171067693bcfc9987a4da0afba32072e83b71e2e9dcfc66d032225"
+      },
+      "harness_sha256": "914f876eb5dbb05f9cb67ddd9f75584e936e3effc4a7539982e2bd10b94ced9e",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000e96bc8269000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e96bc4480000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e96bc43d0000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e96bc4210000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000e96bc4130000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000e96bbfc00000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000e96bbf970000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e96bc8220000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e96bc4100000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e96bc40d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e96bbf940000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000e96b92600000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "teacher_forcing": "first24 target tokens per case, full vocabulary logits/NLL",
+      "generation": "greedy up to96 tokens, EOS respected, separate fresh session",
+      "owner": "single in-process VMM",
+      "cache": "fresh process and fresh sessions; inherited OS cache",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "acceptance": "separate task/format regressions and paired held-out likelihood/distribution changes; original chunk-width variation is context, not a hard Q4 loss ceiling; investigate consistent substantive degradation, do not widen bounds after results",
+      "scope": "bounded text arithmetic quality; no tool protocol, image, MTP, capture or long-context qualification",
+      "exit_code": 0,
+      "wall_seconds": 230.33161920600105
+    }
+  ],
+  "current_trace": {
+    "coverage": {
+      "ds4.prefill": {
+        "void glmvq_fp8_restore<__nv_bfloat16>(const unsigned char *, const float *, unsigned int, unsigned int, T1 *)": 716
+      },
+      "ds4.decode": {
+        "void glmvq_fp8_dot<(glmvq_fp8_feed)0>(const unsigned char *, const float *, const float *, float *, unsigned int, unsigned int, unsigned int)": 5728
+      }
+    },
+    "rates": {
+      "ctx_tokens": "1984",
+      "prefill_tokens": "1984",
+      "prefill_tps": "288.33",
+      "gen_tokens": "32",
+      "gen_tps": "7.34",
+      "gen_tps_ss": "7.37",
+      "first_token_sec": "0.1580",
+      "kvcache_bytes": "180425524"
+    },
+    "phase_costs": {
+      "ds4.prefill": {
+        "wall_s": 6.880995729,
+        "gpu_busy_s": 4.774798232,
+        "gpu_idle_s": 2.106197497,
+        "categories": {
+          "vq_other": {
+            "seconds": 2.039427931,
+            "wall_percent": 29.638558303485325,
+            "launches": 840
+          },
+          "attention_kda_core": {
+            "seconds": 1.289433548,
+            "wall_percent": 18.739054619169057,
+            "launches": 444
+          },
+          "dense_shared_control_projections": {
+            "seconds": 1.00617597,
+            "wall_percent": 14.622534435815226,
+            "launches": 8013
+          },
+          "mhc_norm": {
+            "seconds": 0.38044127,
+            "wall_percent": 5.528869439587469,
+            "launches": 1661
+          },
+          "other_gpu": {
+            "seconds": 0.031530056,
+            "wall_percent": 0.45821938047594446,
+            "launches": 1049
+          },
+          "router_select": {
+            "seconds": 0.018781237,
+            "wall_percent": 0.27294359333557433,
+            "launches": 168
+          },
+          "output_head": {
+            "seconds": 0.008853951,
+            "wall_percent": 0.12867252573177698,
+            "launches": 24
+          }
+        }
+      },
+      "ds4.decode": {
+        "wall_s": 4.361506429,
+        "gpu_busy_s": 4.286219189,
+        "gpu_idle_s": 0.07528724,
+        "categories": {
+          "dense_shared_control_projections": {
+            "seconds": 2.614382754,
+            "wall_percent": 59.94219649928206,
+            "launches": 45312
+          },
+          "attention_kda_core": {
+            "seconds": 0.854277401,
+            "wall_percent": 19.58675092898734,
+            "launches": 3552
+          },
+          "vq_other": {
+            "seconds": 0.32204002,
+            "wall_percent": 7.383687843693878,
+            "launches": 4032
+          },
+          "output_head": {
+            "seconds": 0.229966596,
+            "wall_percent": 5.272641454130022,
+            "launches": 192
+          },
+          "mhc_norm": {
+            "seconds": 0.177610845,
+            "wall_percent": 4.072236230561337,
+            "launches": 13312
+          },
+          "router_select": {
+            "seconds": 0.075490966,
+            "wall_percent": 1.73084614751579,
+            "launches": 1344
+          },
+          "other_gpu": {
+            "seconds": 0.009944564,
+            "wall_percent": 0.2280075511038528,
+            "launches": 7072
+          }
+        }
+      },
+      "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; MMA gather-to-reduce is also routed VQ; Q4 small dots and quantize_mmq-to-round are dense; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+    },
+    "device_allocation_peak_bytes": 87748172736,
+    "device_allocation_peak_gib": 81.72185415029526,
+    "peak_timestamp_ns": 234126191727,
+    "memory_events": 386,
+    "minimum_system_available_gib": 34.34602737426758,
+    "observed_busy_sm_mhz": [
+      2184,
+      2184,
+      2190
+    ],
+    "memory_method": "Sum live Nsight DEVICE allocations minus matching releases; final live set empty. Excludes mapped files, driver and OS storage; not CPU RAM plus VRAM.",
+    "scope": "One current candidate trace; same instrumentation as prior combined baseline, different native build. Attribution and allocation observation, not an additional matched performance pair.",
+    "prefill_host_detail": {
+      "label": "fp8-direct-retained-profile",
+      "first_kernel_after_prefill_start_s": 1.796066708,
+      "largest_api_calls_name_duration_start_end_s": [
+        [
+          "cudaMalloc_v3020",
+          1.150222979,
+          0.624916672,
+          1.775139651
+        ],
+        [
+          "cudaMalloc_v3020",
+          0.243673873,
+          0.040693624,
+          0.284367497
+        ],
+        [
+          "cudaMalloc_v3020",
+          0.205173681,
+          0.405002438,
+          0.610176119
+        ],
+        [
+          "cudaMalloc_v3020",
+          0.101953635,
+          0.284369129,
+          0.386322764
+        ],
+        [
+          "cudaMalloc_v3020",
+          0.076815968,
+          1.809484387,
+          1.886300355
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.070652376,
+          4.543374933,
+          4.614027309
+        ],
+        [
+          "cuKernelSetAttribute",
+          0.061041932,
+          3.353011559,
+          3.414053491
+        ],
+        [
+          "cuKernelSetAttribute",
+          0.038726576,
+          5.763859521,
+          5.802586097
+        ],
+        [
+          "cuKernelSetAttribute",
+          0.038720447,
+          2.102245452,
+          2.140965899
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.036947126,
+          2.489563604,
+          2.52651073
+        ]
+      ],
+      "prefill_device_allocations": [
+        71,
+        232230895373,
+        234126191727,
+        1654364864
+      ]
+    },
+    "baseline_prefill_host_detail": {
+      "label": "vq-combined-original-profile",
+      "first_kernel_after_prefill_start_s": 0.044023195,
+      "largest_api_calls_name_duration_start_end_s": [
+        [
+          "cudaMemcpy_v3020",
+          0.069727565,
+          2.599874096,
+          2.669601661
+        ],
+        [
+          "cuKernelSetAttribute",
+          0.06131094,
+          1.407277016,
+          1.468587956
+        ],
+        [
+          "cuKernelSetAttribute",
+          0.039895884,
+          3.821171357,
+          3.861067241
+        ],
+        [
+          "cuKernelSetAttribute",
+          0.039815244,
+          0.236565327,
+          0.276380571
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.030448095,
+          0.989706427,
+          1.020154522
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.030278559,
+          3.014104442,
+          3.044383001
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.030084672,
+          0.453160969,
+          0.483245641
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.030025872,
+          3.569253447,
+          3.599279319
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.029418738,
+          2.501952029,
+          2.531370767
+        ],
+        [
+          "cudaMemcpy_v3020",
+          0.029298899,
+          2.007972844,
+          2.037271743
+        ]
+      ],
+      "prefill_device_allocations": [
+        71,
+        227010094489,
+        227048637801,
+        1654364864
+      ]
+    },
+    "prefill_allocation_size_sequence_equal": true,
+    "prefill_allocation_sizes": [
+      306184192,
+      33554432,
+      16384,
+      1024,
+      131072,
+      67108864,
+      151093248,
+      165056,
+      4194304,
+      268435456,
+      2048,
+      2048,
+      8388608,
+      8388608,
+      33554432,
+      33554432,
+      33554432,
+      49152,
+      49152,
+      33554432,
+      8192,
+      3145728,
+      3145728,
+      1048576,
+      1048576,
+      33554432,
+      33554432,
+      33554432,
+      33554432,
+      8388608,
+      33554432,
+      33554432,
+      33554432,
+      8388608,
+      67108864,
+      16384,
+      16384,
+      67108864,
+      67108864,
+      8388608,
+      262144,
+      262144,
+      65536,
+      1048576,
+      1048576,
+      4200448,
+      619520,
+      156053504,
+      14509568,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072
+    ]
+  },
+  "current_trace_receipt": {
+    "command": [
+      "python3",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+      "--max-gib",
+      "104",
+      "--high-gib",
+      "100",
+      "--reserve-gib",
+      "12",
+      "--timeout",
+      "1800",
+      "--log",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/fp8-direct-retained-profile/memory.jsonl",
+      "--",
+      "nsys",
+      "profile",
+      "--trace=cuda,nvtx,cublas-verbose",
+      "--sample=none",
+      "--cpuctxsw=none",
+      "--cuda-memory-usage=true",
+      "--output",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/fp8-direct-retained-profile/trace",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+      "--cuda",
+      "-m",
+      "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "--prompt-file",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+      "--ctx-start",
+      "1984",
+      "--ctx-max",
+      "1984",
+      "--ctx-alloc",
+      "2048",
+      "--gen-tokens",
+      "32",
+      "--mtp-draft",
+      "1",
+      "--threads",
+      "8",
+      "--dump-frontier-logits-dir",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/fp8-direct-retained-profile/proof"
+    ],
+    "head": "a12e49494b56b0221dbbdcc15a44b1d8e08cc8fb",
+    "diff": "diff --git a/Makefile b/Makefile\nindex 5f8079bf..b5ae4869 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -2041,6 +2041,9 @@ tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cu\n tests/libglm_vq_decode.so: tests/test_glm_vq_decode.cu cuda/glm_vq_decode.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh\n \t$(NVCC) $(NVCCFLAGS) -shared -Xcompiler -fPIC -I. -o $@ $< $(CUDA_LDLIBS)\n \n+tests/libglm_vq_fp8.so: tests/test_glm_vq_fp8.cu cuda/glm_vq_fp8.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh\n+\t$(NVCC) $(NVCCFLAGS) -shared -Xcompiler -fPIC -I. -o $@ $< $(CUDA_LDLIBS)\n+\n .PHONY: test-glm-vq-linear\n test-glm-vq-linear: tests/libglm_vq_linear.so\n \t$(GLMVQ_PYTHON) tests/test_glm_vq_linear.py --lib tests/libglm_vq_linear.so --fixtures \"$(GLMVQ_FIXTURES)\"\n@@ -2100,7 +2103,7 @@ ds4.o ds4_cpu.o: $(GLMVQ_NATIVE_DEPS)\n tests/test_glm_vq_quote.o: $(GLMVQ_NATIVE_DEPS) $(GLM53_NATIVE_DEPS)\n ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \\\n \tcuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh \\\n-\tcuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh\n+\tcuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_fp8.cuh\n tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \\\n \ttests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \\\n \ttests/test_glm53_payload: $(GLM53_NATIVE_DEPS)\n@@ -2631,7 +2634,7 @@ clean:\n \trm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o\n \trm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o\n \trm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o tests/test_glm53_bounds tests/test_glm53_bounds.o tests/test_k2_lifecycle tests/test_k2_lifecycle.o\n-\trm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/glm_vq_quality tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so\n+\trm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so\n \trm -f tests/test_k2_rewind tests/test_deepseek_budget\n \trm -f ds4 ds4-server ds4-bench ds4-bench-perf ds4-eval ds4-agent ds4-c ds4-server-c ds4-bench-c ds4-agent-c ds4-rs ds4-bench-rs ds4-server-rs ds4-agent-rs ds4_weight_server tests/parity/shape_c_oracle tests/parity/shape_c_oracle.o tests/parity/catalog_c_oracle tests/parity/catalog_c_oracle.o tests/parity/tensor_c_oracle tests/parity/tensor_c_oracle.o tests/parity/bind_c_oracle tests/parity/bind_c_oracle.o tests/parity/bind_lookup_c_oracle tests/parity/bind_lookup_c_oracle.o tests/parity/load_c_oracle tests/parity/load_c_oracle.o tests/parity/validate_c_oracle tests/parity/validate_c_oracle.o tests/parity/layout_c_oracle tests/parity/layout_c_oracle.o tests/parity/vocab_c_oracle tests/parity/vocab_c_oracle.o tests/parity/tokenizer_c_oracle tests/parity/tokenizer_c_oracle.o tests/parity/session_c_oracle tests/parity/session_c_oracle.o tests/parity/payload_c_oracle tests/parity/payload_c_oracle.o tests/parity/kv_c_oracle tests/parity/kv_c_oracle.o tests/parity/kv_c_stubs.o tests/parity/web_c_oracle tests/parity/web_c_oracle.o tests/parity/dist_c_oracle tests/parity/dist_c_oracle.o tests/parity/route_c_oracle tests/parity/route_c_oracle.o tests/parity/server_c_oracle tests/parity/server_c_oracle.o tests/parity/parse_c_oracle tests/parity/parse_c_oracle.o tests/parity/stream_c_oracle tests/parity/stream_c_oracle.o tests/parity/tool_stream_c_oracle tests/parity/tool_stream_c_oracle.o tests/parity/dsml_c_oracle tests/parity/dsml_c_oracle.o tests/parity/retry_c_oracle tests/parity/retry_c_oracle.o tests/parity/admit_c_oracle tests/parity/admit_c_oracle.o tests/parity/render_c_oracle tests/parity/render_c_oracle.o tests/parity/bridge_null_oracle tests/parity/bridge_null_oracle.o tests/parity/bridge_null_stubs.o tests/parity/cont_c_oracle tests/parity/cont_c_oracle.o tests/parity/memgov_c_oracle tests/parity/memgov_c_oracle.o ds4_cpu ds4_native ds4_server_test ds4_test tests/test_motif3_loader tests/test_motif3_reference tests/test_motif3_tokenizer tests/test_motif3_cuda tests/test_motif3_resident tests/test_motif3_batch tests/test_motif3_long tests/test_motif3_resident.o tests/test_motif3_batch.o tests/test_motif3_long.o tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_batch tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_batch.o *.o cuda/mmq/test/test_mmq_parity.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o tests/cuda_tokentile_ldmatrix tests/cuda_tokentile_ldmatrix.o tests/test_split_gguf tests/test_solar_loader tests/test_solar_tokenizer tests/test_repack_premapped tests/test_mmq_parity tests/test_mmid_fast tests/test_mmid_fast.o tests/test_model_family_kernels tests/test_model_family_kernels.o tests/test_solar_forward tests/test_solar_forward.o tests/test_solar_session tests/test_solar_session.o tests/test_solar_kda tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_solar_gates tests/test_solar_kv tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_kda_chunk.o tests/test_solar_gates.o tests/test_solar_kv.o native/bridge/ds4_bridge.o\n \trm -f tests/test_qwen4exp_loader tests/test_qwen4exp_tokenizer tests/test_qwen4exp_ple tests/test_qwen4exp_ple_cuda tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_primitives tests/test_qwen4exp_primitives.o tests/test_qwen4exp_hc_forward tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_ple_forward tests/test_qwen4exp_ple_forward.o tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_batch tests/test_qwen4exp_batch.o tests/libds4ple_test.so cuda/qwen38_ple.o\ndiff --git a/ds4_glmvq_gpu.cuh b/ds4_glmvq_gpu.cuh\nindex 51efd3ab..5210d0af 100644\n--- a/ds4_glmvq_gpu.cuh\n+++ b/ds4_glmvq_gpu.cuh\n@@ -6,6 +6,7 @@\n #include \"cuda/glm_vq_attention.cuh\"\n #include \"cuda/glm_vq_mma.cuh\"\n #include \"cuda/glm_vq_decode.cuh\"\n+#include \"cuda/glm_vq_fp8.cuh\"\n \n enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,\n        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,\n@@ -26,6 +27,8 @@ struct ds4_gvq_ctx {\n     cudaStream_t stream;\n     glmvq_restore_mode restore;\n     bool direct_q4;\n+    bool direct_fp8;\n+    uint64_t fp8_calls = 0;\n     glmvq_q4_config q4;\n     std::vector<int32_t> routes;\n     std::vector<uint32_t> grouped;\n@@ -167,6 +170,9 @@ extern \"C\" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,\n \n extern \"C\" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {\n     if (!ctx) { return; }\n+    if (ctx->direct_fp8) {\n+        fprintf(stderr, \"ds4: GLM VQ direct FP8 calls=%llu\\n\", (unsigned long long)ctx->fp8_calls);\n+    }\n     if (ctx->mma) {\n         fprintf(stderr, \"ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu\\n\",\n             (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,\n@@ -202,8 +208,14 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         fprintf(stderr, \"ds4: DS4_GLMVQ_DECODE accepts 0 or 1\\n\");\n         return nullptr;\n     }\n+    const char *fp8 = getenv(\"DS4_GLMVQ_FP8_DIRECT\");\n+    if (fp8 && strcmp(fp8, \"0\") && strcmp(fp8, \"1\")) {\n+        fprintf(stderr, \"ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\\n\");\n+        return nullptr;\n+    }\n     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};\n     if (!ctx) { return nullptr; }\n+    ctx->direct_fp8 = fp8 && !strcmp(fp8, \"1\");\n     ctx->restore = restore && strcmp(restore, \"0\") == 0\n         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;\n     const char *q4 = getenv(\"DS4_GLMVQ_Q4_DIRECT\");\n@@ -302,6 +314,16 @@ extern \"C\" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_\n     if ((type != GVQ_TYPE_BF16 && type != GVQ_TYPE_FP8 && type != GVQ_TYPE_VQ && type != GVQ_TYPE_Q4) ||\n         !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows) ||\n         (math != DS4_GVQ_BF16 && math != DS4_GVQ_F32) || !gvq_stream(ctx)) { return 0; }\n+    if (type == GVQ_TYPE_FP8 && ctx->direct_fp8 && rows == 1 && math == DS4_GVQ_BF16) {\n+        const uint32_t split = glmvq_fp8_split(s.rows, s.cols);\n+        if (split && glmvq_fp8_fits(s.data, s.scale, input->ptr, out->ptr, s.rows, s.cols)) {\n+            // Preserve source BF16 boundaries without writing expanded weights.\n+            ctx->fp8_calls++;\n+            return cuda_ok(glmvq_fp8_decode(s.data, s.scale, (const float *)input->ptr,\n+                (float *)out->ptr, s.rows, s.cols, split, GLMVQ_FP8_GLOBAL, ctx->stream),\n+                \"GLM VQ FP8 decode\");\n+        }\n+    }\n     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {\n         if (math != DS4_GVQ_BF16) { return 0; }\n         if (rows <= GLMVQ_Q4_WARPS) {\ndiff --git a/misc/cuda-env-vars.md b/misc/cuda-env-vars.md\nindex cba53b47..29f3ee13 100644\n--- a/misc/cuda-env-vars.md\n+++ b/misc/cuda-env-vars.md\n@@ -1195,6 +1195,13 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.\n   [qualification](../docs/glm53-vq-decode-2026-10-16.md);\n   no MTP or graph support is implied.\n \n+- `DS4_GLMVQ_FP8_DIRECT=1` enables the candidate fused FP8 decode projection.\n+  Default Off pending whole-workload qualification. Single-token BF16 math\n+  on measured original FP8 matrix shapes uses coalesced loads and in-register\n+  block-scale restoration. Original weight/input/output BF16 boundaries\n+  remain; FP32 reduction order changes. Other widths, shapes or alignments\n+  retain restore+cuBLAS. Artifact precision and workspace sizes are unchanged.\n+\n - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.\n   Default enabled: pair latent outputs only for selected2051/128-row/\n   64-head/latent512 prefill. Preserve each output's FMA order; no added\n",
+    "binary_sha256": "d64818e11b927b8a98013214b7bf4071f57dd16b4d95ed5caabeb7ddd584fb91",
+    "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+    "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+    "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+    "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+    "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+    "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+    "native_sources": {
+      "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+      "ds4_glmvq_gpu.cuh": "98ef2f151aff308936a3d755b7baa9250009bd95f84fc96378ee250bc23103e9",
+      "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+      "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+      "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+      "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+      "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+      "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+      "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+      "cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+      "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+      "cuda/glm_vq_fp8.cuh": "a5a78a36bd171067693bcfc9987a4da0afba32072e83b71e2e9dcfc66d032225"
+    },
+    "nonexpert_recipe": null,
+    "libraries": "\tlinux-vdso.so.1 (0x0000f3b69aa6a000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f3b696c80000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f3b696bd0000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f3b696a10000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000f3b696930000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000f3b692400000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000f3b692170000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f3b69aa20000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f3b696900000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f3b6968d0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f3b692140000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000f3b664e00000)\n",
+    "environment": {
+      "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+      "DS4_GLMVQ_MMA": "1",
+      "DS4_GLMVQ_DECODE": "1",
+      "DS4_GLMVQ_RESTORE_VEC": "1",
+      "DS4_GLMVQ_Q4_DIRECT": "1",
+      "DS4_GLMVQ_Q4_STREAM": "1",
+      "DS4_GLMVQ_FP8_DIRECT": "1",
+      "DS4_GLMVQ_PREFILL_ROWS": "512",
+      "DS4_MTP_SPEC_DISABLE": "1"
+    },
+    "prompt": 1984,
+    "decode": 32,
+    "context": 2048,
+    "prefill_rows": 512,
+    "mtp": false,
+    "capture": false,
+    "sampling": "forced non-EOS greedy",
+    "weight_owner": "single in-process VMM",
+    "cache": "fresh process, inherited OS file cache; no warmup protocol",
+    "clock_policy_mhz": [
+      300,
+      2200
+    ],
+    "profiler": true,
+    "cuda_memory_trace": true,
+    "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+    "exit_code": 0,
+    "wall_seconds": 247.47288272998412
+  },
+  "cancelled_run": {
+    "receipt": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/fp8-direct-off3/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/fp8-direct-off3/proof"
+      ],
+      "head": "a12e49494b56b0221dbbdcc15a44b1d8e08cc8fb",
+      "diff": "diff --git a/Makefile b/Makefile\nindex 5f8079bf..b5ae4869 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -2041,6 +2041,9 @@ tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cu\n tests/libglm_vq_decode.so: tests/test_glm_vq_decode.cu cuda/glm_vq_decode.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh\n \t$(NVCC) $(NVCCFLAGS) -shared -Xcompiler -fPIC -I. -o $@ $< $(CUDA_LDLIBS)\n \n+tests/libglm_vq_fp8.so: tests/test_glm_vq_fp8.cu cuda/glm_vq_fp8.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh\n+\t$(NVCC) $(NVCCFLAGS) -shared -Xcompiler -fPIC -I. -o $@ $< $(CUDA_LDLIBS)\n+\n .PHONY: test-glm-vq-linear\n test-glm-vq-linear: tests/libglm_vq_linear.so\n \t$(GLMVQ_PYTHON) tests/test_glm_vq_linear.py --lib tests/libglm_vq_linear.so --fixtures \"$(GLMVQ_FIXTURES)\"\n@@ -2100,7 +2103,7 @@ ds4.o ds4_cpu.o: $(GLMVQ_NATIVE_DEPS)\n tests/test_glm_vq_quote.o: $(GLMVQ_NATIVE_DEPS) $(GLM53_NATIVE_DEPS)\n ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \\\n \tcuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh \\\n-\tcuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh\n+\tcuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_fp8.cuh\n tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \\\n \ttests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \\\n \ttests/test_glm53_payload: $(GLM53_NATIVE_DEPS)\n@@ -2631,7 +2634,7 @@ clean:\n \trm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o\n \trm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o\n \trm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o tests/test_glm53_bounds tests/test_glm53_bounds.o tests/test_k2_lifecycle tests/test_k2_lifecycle.o\n-\trm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/glm_vq_quality tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so\n+\trm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so\n \trm -f tests/test_k2_rewind tests/test_deepseek_budget\n \trm -f ds4 ds4-server ds4-bench ds4-bench-perf ds4-eval ds4-agent ds4-c ds4-server-c ds4-bench-c ds4-agent-c ds4-rs ds4-bench-rs ds4-server-rs ds4-agent-rs ds4_weight_server tests/parity/shape_c_oracle tests/parity/shape_c_oracle.o tests/parity/catalog_c_oracle tests/parity/catalog_c_oracle.o tests/parity/tensor_c_oracle tests/parity/tensor_c_oracle.o tests/parity/bind_c_oracle tests/parity/bind_c_oracle.o tests/parity/bind_lookup_c_oracle tests/parity/bind_lookup_c_oracle.o tests/parity/load_c_oracle tests/parity/load_c_oracle.o tests/parity/validate_c_oracle tests/parity/validate_c_oracle.o tests/parity/layout_c_oracle tests/parity/layout_c_oracle.o tests/parity/vocab_c_oracle tests/parity/vocab_c_oracle.o tests/parity/tokenizer_c_oracle tests/parity/tokenizer_c_oracle.o tests/parity/session_c_oracle tests/parity/session_c_oracle.o tests/parity/payload_c_oracle tests/parity/payload_c_oracle.o tests/parity/kv_c_oracle tests/parity/kv_c_oracle.o tests/parity/kv_c_stubs.o tests/parity/web_c_oracle tests/parity/web_c_oracle.o tests/parity/dist_c_oracle tests/parity/dist_c_oracle.o tests/parity/route_c_oracle tests/parity/route_c_oracle.o tests/parity/server_c_oracle tests/parity/server_c_oracle.o tests/parity/parse_c_oracle tests/parity/parse_c_oracle.o tests/parity/stream_c_oracle tests/parity/stream_c_oracle.o tests/parity/tool_stream_c_oracle tests/parity/tool_stream_c_oracle.o tests/parity/dsml_c_oracle tests/parity/dsml_c_oracle.o tests/parity/retry_c_oracle tests/parity/retry_c_oracle.o tests/parity/admit_c_oracle tests/parity/admit_c_oracle.o tests/parity/render_c_oracle tests/parity/render_c_oracle.o tests/parity/bridge_null_oracle tests/parity/bridge_null_oracle.o tests/parity/bridge_null_stubs.o tests/parity/cont_c_oracle tests/parity/cont_c_oracle.o tests/parity/memgov_c_oracle tests/parity/memgov_c_oracle.o ds4_cpu ds4_native ds4_server_test ds4_test tests/test_motif3_loader tests/test_motif3_reference tests/test_motif3_tokenizer tests/test_motif3_cuda tests/test_motif3_resident tests/test_motif3_batch tests/test_motif3_long tests/test_motif3_resident.o tests/test_motif3_batch.o tests/test_motif3_long.o tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_batch tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_batch.o *.o cuda/mmq/test/test_mmq_parity.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o tests/cuda_tokentile_ldmatrix tests/cuda_tokentile_ldmatrix.o tests/test_split_gguf tests/test_solar_loader tests/test_solar_tokenizer tests/test_repack_premapped tests/test_mmq_parity tests/test_mmid_fast tests/test_mmid_fast.o tests/test_model_family_kernels tests/test_model_family_kernels.o tests/test_solar_forward tests/test_solar_forward.o tests/test_solar_session tests/test_solar_session.o tests/test_solar_kda tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_solar_gates tests/test_solar_kv tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_kda_chunk.o tests/test_solar_gates.o tests/test_solar_kv.o native/bridge/ds4_bridge.o\n \trm -f tests/test_qwen4exp_loader tests/test_qwen4exp_tokenizer tests/test_qwen4exp_ple tests/test_qwen4exp_ple_cuda tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_primitives tests/test_qwen4exp_primitives.o tests/test_qwen4exp_hc_forward tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_ple_forward tests/test_qwen4exp_ple_forward.o tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_batch tests/test_qwen4exp_batch.o tests/libds4ple_test.so cuda/qwen38_ple.o\ndiff --git a/ds4_glmvq_gpu.cuh b/ds4_glmvq_gpu.cuh\nindex 51efd3ab..5210d0af 100644\n--- a/ds4_glmvq_gpu.cuh\n+++ b/ds4_glmvq_gpu.cuh\n@@ -6,6 +6,7 @@\n #include \"cuda/glm_vq_attention.cuh\"\n #include \"cuda/glm_vq_mma.cuh\"\n #include \"cuda/glm_vq_decode.cuh\"\n+#include \"cuda/glm_vq_fp8.cuh\"\n \n enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,\n        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,\n@@ -26,6 +27,8 @@ struct ds4_gvq_ctx {\n     cudaStream_t stream;\n     glmvq_restore_mode restore;\n     bool direct_q4;\n+    bool direct_fp8;\n+    uint64_t fp8_calls = 0;\n     glmvq_q4_config q4;\n     std::vector<int32_t> routes;\n     std::vector<uint32_t> grouped;\n@@ -167,6 +170,9 @@ extern \"C\" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,\n \n extern \"C\" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {\n     if (!ctx) { return; }\n+    if (ctx->direct_fp8) {\n+        fprintf(stderr, \"ds4: GLM VQ direct FP8 calls=%llu\\n\", (unsigned long long)ctx->fp8_calls);\n+    }\n     if (ctx->mma) {\n         fprintf(stderr, \"ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu\\n\",\n             (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,\n@@ -202,8 +208,14 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         fprintf(stderr, \"ds4: DS4_GLMVQ_DECODE accepts 0 or 1\\n\");\n         return nullptr;\n     }\n+    const char *fp8 = getenv(\"DS4_GLMVQ_FP8_DIRECT\");\n+    if (fp8 && strcmp(fp8, \"0\") && strcmp(fp8, \"1\")) {\n+        fprintf(stderr, \"ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\\n\");\n+        return nullptr;\n+    }\n     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};\n     if (!ctx) { return nullptr; }\n+    ctx->direct_fp8 = fp8 && !strcmp(fp8, \"1\");\n     ctx->restore = restore && strcmp(restore, \"0\") == 0\n         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;\n     const char *q4 = getenv(\"DS4_GLMVQ_Q4_DIRECT\");\n@@ -302,6 +314,16 @@ extern \"C\" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_\n     if ((type != GVQ_TYPE_BF16 && type != GVQ_TYPE_FP8 && type != GVQ_TYPE_VQ && type != GVQ_TYPE_Q4) ||\n         !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows) ||\n         (math != DS4_GVQ_BF16 && math != DS4_GVQ_F32) || !gvq_stream(ctx)) { return 0; }\n+    if (type == GVQ_TYPE_FP8 && ctx->direct_fp8 && rows == 1 && math == DS4_GVQ_BF16) {\n+        const uint32_t split = glmvq_fp8_split(s.rows, s.cols);\n+        if (split && glmvq_fp8_fits(s.data, s.scale, input->ptr, out->ptr, s.rows, s.cols)) {\n+            // Preserve source BF16 boundaries without writing expanded weights.\n+            ctx->fp8_calls++;\n+            return cuda_ok(glmvq_fp8_decode(s.data, s.scale, (const float *)input->ptr,\n+                (float *)out->ptr, s.rows, s.cols, split, GLMVQ_FP8_GLOBAL, ctx->stream),\n+                \"GLM VQ FP8 decode\");\n+        }\n+    }\n     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {\n         if (math != DS4_GVQ_BF16) { return 0; }\n         if (rows <= GLMVQ_Q4_WARPS) {\ndiff --git a/misc/cuda-env-vars.md b/misc/cuda-env-vars.md\nindex cba53b47..29f3ee13 100644\n--- a/misc/cuda-env-vars.md\n+++ b/misc/cuda-env-vars.md\n@@ -1195,6 +1195,13 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.\n   [qualification](../docs/glm53-vq-decode-2026-10-16.md);\n   no MTP or graph support is implied.\n \n+- `DS4_GLMVQ_FP8_DIRECT=1` enables the candidate fused FP8 decode projection.\n+  Default Off pending whole-workload qualification. Single-token BF16 math\n+  on measured original FP8 matrix shapes uses coalesced loads and in-register\n+  block-scale restoration. Original weight/input/output BF16 boundaries\n+  remain; FP32 reduction order changes. Other widths, shapes or alignments\n+  retain restore+cuBLAS. Artifact precision and workspace sizes are unchanged.\n+\n - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.\n   Default enabled: pair latent outputs only for selected2051/128-row/\n   64-head/latent512 prefill. Preserve each output's FMA order; no added\n",
+      "binary_sha256": "d64818e11b927b8a98013214b7bf4071f57dd16b4d95ed5caabeb7ddd584fb91",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "ds4_glmvq_gpu.cuh": "98ef2f151aff308936a3d755b7baa9250009bd95f84fc96378ee250bc23103e9",
+        "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "cuda/glm_vq_fp8.cuh": "a5a78a36bd171067693bcfc9987a4da0afba32072e83b71e2e9dcfc66d032225"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000fba051eae000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000fba04e0c0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000fba04e010000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000fba04de50000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000fba04dd70000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000fba049800000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000fba049570000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fba051e60000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000fba04dd40000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000fba04dd10000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000fba04dce0000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000fba01c200000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_RESTORE_VEC": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "0",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 75,
+      "wall_seconds": 85.87850668598549
+    },
+    "reason": "Stopped before model/GPU readiness to assess changed code-only formatting. No inference/timing sample; reused saved original width64 output to assess variation."
+  },
+  "logical_traffic": {
+    "eligible_matrices_per_decode": 179,
+    "fp8_weight_bytes_per_decode": 2617245696,
+    "old_expanded_bf16_write_bytes_per_decode": 5234491392,
+    "old_expanded_bf16_reread_bytes_per_decode": 5234491392,
+    "extra_workspace_bytes": 0,
+    "scope": "Logical weight bytes; excludes scales/activations/cache effects, not measured DRAM bytes."
+  },
+  "reference": {
+    "commit": "7fb26cc332d740416792204a29c7d13d2986caf5",
+    "file": "src/cuda/cuda_v41_q4k.inc.cu",
+    "lines": "12-15",
+    "scope": "Pinned read-only YoungAi archive; coalesced complete cache lines. No ds41 behavior or speed qualification inferred."
+  },
+  "scope": "Original GLM VQ bytes, N1 FP8 projections with source BF16 weight/input/output boundaries and changed FP32 reduction order. Fresh same-binary six-run 2K/32-token A/B, plus bounded six-task quality. Strict code-only formatting is not a pass; it matches existing original width64 variation. Not full serving qualification.",
+  "missing": [
+    "8K/sparse attention",
+    "embedded GLM MTP and accepted-prefix/rollback/sampling",
+    "CUDA graph state",
+    "vision and real tool/multi-turn API",
+    "banks/prefix/snapshots/disk KV",
+    "broad held-out source quality"
+  ],
+  "local_receipts": {
+    "scratch/glm-vq/fp8-tile-sweep.json": "98b8bfec399b276f728074ab50c18f04b409b1f7c8264ba67d58367fdd60b288",
+    "scratch/glm-vq/fp8-shape-sweep.json": "77a865762abe0ebbe697ef999d0925d86bdc340b1e2a0e34e45b257d327152e7",
+    "scratch/glm-vq/fp8-direct-original-quality-comparison.json": "24452f08c75e5ffc2c6cec1b49549d81d2b46ce5e8f2c3476112308dc307bd6f",
+    "scratch/glm-vq/fp8-existing-variation.json": "ac611798b91b055e9813bfbe3ec44d8abeaa5f7952a2746528e1f021bdc68e03",
+    "scratch/glm-vq/fp8-dsa-direct.ncu-repz": "75dcfbdfa872b05d4db74e058805361a75c338753e89b3ac65cbcc72c5c99ef2"
+  },
+  "decision": "Enable guarded N1 FP8 fusion. Six same-binary runs give +29.31% median decode and -6.94% median inference time. Prefill timing variability is localized to unchanged initial allocations: zero new prefill calls, identical 71 allocation sizes, GPU work similar. Keep cold-initialization and strict code-only-format limits explicit; broad serving remains unqualified.",
+  "default_selection": "Only DS4_GLMVQ_FP8_DIRECT default changes after explicit-on gates; reuse those numerical and performance results."
+}

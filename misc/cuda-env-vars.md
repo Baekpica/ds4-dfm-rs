@@ -1195,6 +1195,14 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   [qualification](../docs/glm53-vq-decode-2026-10-16.md);
   no MTP or graph support is implied.
 
+- `DS4_GLMVQ_FP8_DIRECT=0` disables fused FP8 decode projections.
+  Default On after bounded 2K A/B and arithmetic/output checks. Single-token BF16 math
+  on measured original FP8 matrix shapes uses coalesced loads and in-register
+  block-scale restoration. Original weight/input/output BF16 boundaries
+  remain; FP32 reduction order changes. Other widths, shapes or alignments
+  retain restore+cuBLAS. Artifact precision and workspace sizes are unchanged.
+  See the [evidence and output-format limits](../docs/glm53-vq-fp8-2026-10-16.md).
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

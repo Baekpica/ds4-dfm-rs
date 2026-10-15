@@ -6,6 +6,7 @@
 #include "cuda/glm_vq_attention.cuh"
 #include "cuda/glm_vq_mma.cuh"
 #include "cuda/glm_vq_decode.cuh"
+#include "cuda/glm_vq_fp8.cuh"
 
 enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,
@@ -26,6 +27,8 @@ struct ds4_gvq_ctx {
     cudaStream_t stream;
     glmvq_restore_mode restore;
     bool direct_q4;
+    bool direct_fp8;
+    uint64_t fp8_calls = 0;
     glmvq_q4_config q4;
     std::vector<int32_t> routes;
     std::vector<uint32_t> grouped;
@@ -167,6 +170,9 @@ extern "C" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
 
 extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     if (!ctx) { return; }
+    if (ctx->direct_fp8) {
+        fprintf(stderr, "ds4: GLM VQ direct FP8 calls=%llu\n", (unsigned long long)ctx->fp8_calls);
+    }
     if (ctx->mma) {
         fprintf(stderr, "ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu\n",
             (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,
@@ -202,8 +208,14 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_DECODE accepts 0 or 1\n");
         return nullptr;
     }
+    const char *fp8 = getenv("DS4_GLMVQ_FP8_DIRECT");
+    if (fp8 && strcmp(fp8, "0") && strcmp(fp8, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\n");
+        return nullptr;
+    }
     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};
     if (!ctx) { return nullptr; }
+    ctx->direct_fp8 = !fp8 || strcmp(fp8, "0");
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -302,6 +314,16 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     if ((type != GVQ_TYPE_BF16 && type != GVQ_TYPE_FP8 && type != GVQ_TYPE_VQ && type != GVQ_TYPE_Q4) ||
         !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows) ||
         (math != DS4_GVQ_BF16 && math != DS4_GVQ_F32) || !gvq_stream(ctx)) { return 0; }
+    if (type == GVQ_TYPE_FP8 && ctx->direct_fp8 && rows == 1 && math == DS4_GVQ_BF16) {
+        const uint32_t split = glmvq_fp8_split(s.rows, s.cols);
+        if (split && glmvq_fp8_fits(s.data, s.scale, input->ptr, out->ptr, s.rows, s.cols)) {
+            // Preserve source BF16 boundaries without writing expanded weights.
+            ctx->fp8_calls++;
+            return cuda_ok(glmvq_fp8_decode(s.data, s.scale, (const float *)input->ptr,
+                (float *)out->ptr, s.rows, s.cols, split, GLMVQ_FP8_GLOBAL, ctx->stream),
+                "GLM VQ FP8 decode");
+        }
+    }
     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {
         if (math != DS4_GVQ_BF16) { return 0; }
         if (rows <= GLMVQ_Q4_WARPS) {
