@@ -61,6 +61,9 @@
 #ifndef DS4_NO_GPU
 #include "ds4_gpu.h"
 #include "ds41_forward.h"
+#ifndef __APPLE__
+#include "ds4_glmvq.h"
+#endif
 #endif
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
@@ -1611,9 +1614,13 @@ static bool ds4_solar_layer_is_gqa(uint32_t il) {
     return (il % 4u) == 0u;
 }
 
+static bool ds4_model_is_glm(void) {
+    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53 ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ;
+}
+
 static bool ds4_glm53_layer_is_kda(uint32_t il) {
-    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 &&
-        DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53_VQ) { return false; }
+    if (!ds4_model_is_glm()) { return false; }
     if (il >= DS4_N_LAYER)
         ds4_die("GLM 5.3 layer index is outside the loaded model layout");
     return il + DS4_N_NEXTN_PREDICT < DS4_N_LAYER && (il % 4u) != 3u;
@@ -5425,6 +5432,9 @@ typedef struct {
     ds4_tensor *output;
     ds4_layer_weights layer[DS4_MAX_LAYER];
     ds4_glmvq_experts *glmvq; /* Allocated only for the named GVQ1 family. */
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+    ds4_gvq_model *glmvq_gpu;
+#endif
     /* The official checkpoint carries one dense MTP block in the same GGUF.
      * It is bound separately from the 53 executable target-model layers. */
     ds4_tensor *motif_mtp_embed_norm;
@@ -10769,6 +10779,9 @@ int ds4_dspark_validate(const char *path) {
 }
 
 static void weights_free(ds4_weights *w) {
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+    ds4_gpu_gvq_unbind(w->glmvq_gpu);
+#endif
     free(w->glmvq);
     memset(w, 0, sizeof(*w));
 }
@@ -22759,6 +22772,10 @@ typedef struct {
     ds4_gpu_tensor *layer_pool[DS4_MAX_LAYER];
     ds4_gpu_tensor *layer_tail_k[DS4_MAX_LAYER];
     ds4_gpu_tensor *layer_tail_gate[DS4_MAX_LAYER];
+#ifndef __APPLE__
+    ds4_gvq_ctx *gvq;
+    ds4_gpu_tensor *gvq_latent, *gvq_kv, *gvq_pos;
+#endif
 } ds4_glm53_gpu_graph;
 
 enum {
@@ -53232,7 +53249,7 @@ static DS4_MAYBE_UNUSED bool ds4_session_is_qwen4exp(const ds4_session *s) {
 }
 
 static DS4_MAYBE_UNUSED bool ds4_session_is_glm53(const ds4_session *s) {
-    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53;
+    return s && s->engine && ds4_model_is_glm();
 }
 static uint32_t session_cpu_raw_live_rows(const ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
@@ -60135,7 +60152,7 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
             ? ling3vl_session_bytes(e, (uint32_t)ctx,
                                     ling3vl_prefill_cap((uint32_t)ctx)) : 0;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         /* GLM owns KDA/latent state; DeepSeek's raw cache shape is unrelated. */
         return e->backend == DS4_BACKEND_CUDA
             ? glm53_session_bytes((uint32_t)ctx,
@@ -71852,6 +71869,8 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
      * plan note; the same boot reaches "listening on" under
      * DS4_NO_BOOT_PREWARM=1). */
     if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) return;
+    // VQ owns its source graph scratch; generic DeepSeek prewarm is unrelated.
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return; }
     e->boot_prewarm_done = true;
     const double warm_t0 = now_sec();
     /* memgov D0b-3 (S8): prewarm allocates by design (post-placement
@@ -72480,6 +72499,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     glob || rsrc[0].ov || rsrc[1].ov || rsrc[2].ov
                         ? "explicit" : "legacy-alias");
         }
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
+            res_pol[0] != DS4_RESIDENCY_EAGER_DEVICE) {
+            fprintf(stderr, "ds4: GLM VQ source baseline requires eager weight residency\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
         /* memgov D1a-1: declare every served mmap as a model source BEFORE
          * its first weight-class allocation (the artifact build below is
          * the earliest) -- the backend attributes each WEIGHT_* census
@@ -72881,7 +72907,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     res_pol[si] != DS4_RESIDENCY_HOST_MAPPED;
                 up.replaces_complete =
                     ds4_gpu_model_map_replaces_complete(mm->map) != 0;
-                up.promote_experts = needs_device_copy;
+                // VQ's pointer plan retains every independent source matrix.
+                // Fund their resident units before resolving any pointers;
+                // page-overlapping cold registrations cannot supply this plan.
+                up.promote_experts = needs_device_copy ||
+                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
                     : ds4_units_verify(tin, n, &up, units, nu);
@@ -72958,6 +72988,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * interesting snapshot; the reconciliation invariant itself holds at
          * any instant by the dual-write construction. */
         ds4_gpu_report_model_sources();
+#ifndef __APPLE__
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
+            !glmvq_gpu_bind(&e->weights, &e->model)) {
+            fprintf(stderr, "ds4: GLM VQ source pointer binding failed\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+#endif
         fprintf(stderr, "ds4: %s backend initialized for graph diagnostics\n",
                 ds4_backend_name(e->backend));
         /* v0.5 inc-14b: boot prewarm (see ds4_engine_boot_prewarm).  Callers
@@ -73170,6 +73209,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
         const char *enabled = getenv("DS4_DOTS3_BATCH");
         return enabled && strcmp(enabled, "1") == 0;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return false; }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) { return e->backend == DS4_BACKEND_CUDA; }
     /* Bonsai's session IS the trunk state (the CUDA graph or the CPU reference)
      * and there is no multi-sequence graph for it, so the DeepSeek slab body
@@ -74146,7 +74186,7 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
         q->fits = (e->backend == DS4_BACKEND_CUDA && ctx_size <= 524288) ? 1 : 0;
         return q->fits;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         q->fits = glm53_graph_session_fit_check(
             e->backend, (uint32_t)ctx_size,
             glm53_graph_row_cap((uint32_t)ctx_size, e->glm53_stream.count),
@@ -74307,19 +74347,21 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         return 0;
 #endif
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
 #ifdef DS4_NO_GPU
         fprintf(stderr, "ds4: GLM-5.3 sessions require the CUDA backend\n");
         return 1;
 #else
-        if ((uint32_t)ctx_size > DS4_GLM53_RESIDENT_CTX_MAX ||
+        const uint32_t ctx_max = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
+            ? DS4_GLM53_INDEX_TOPK : DS4_GLM53_RESIDENT_CTX_MAX;
+        if ((uint32_t)ctx_size > ctx_max ||
             e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
             e->distributed.role != DS4_DISTRIBUTED_NONE ||
             e->dspark_ready) {
             fprintf(stderr,
                     "ds4: GLM-5.3 sessions require one resident CUDA model, "
                     "no DeepSeek sidecars, and ctx <= %u\n",
-                    DS4_GLM53_RESIDENT_CTX_MAX);
+                    ctx_max);
             return 1;
         }
         ds4_session *s = xcalloc(1, sizeof(*s));

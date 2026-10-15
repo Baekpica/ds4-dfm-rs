@@ -1064,7 +1064,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             INKLING_NATIVE_MAX,
         ),
         ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
-        ModelFamily::Glm53Vq => GLM_NATIVE_DEFAULT,
+        ModelFamily::Glm53Vq => env_u32(
+            "DS4_GLMVQ_PREFILL_ROWS",
+            GLM_NATIVE_DEFAULT,
+            1,
+            GLM_NATIVE_MAX,
+        ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
             if caps.variant == Variant::K2Horizon375B {

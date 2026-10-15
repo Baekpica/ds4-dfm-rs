@@ -32,12 +32,14 @@ static bool glm53_mtp_step(ds4_glm53_gpu_graph *g, const ds4_model *m,
 static uint32_t glm53_graph_row_cap(uint32_t ctx, uint32_t slots) {
     (void)slots; /* Routing is subdivided by its actual expert union. */
     uint32_t rows = GLM53_PREFILL_DEFAULT;
-    const char *value = getenv("DS4_GLM53_PREFILL_ROWS");
+    const char *name = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
+        ? "DS4_GLMVQ_PREFILL_ROWS" : "DS4_GLM53_PREFILL_ROWS";
+    const char *value = getenv(name);
     if (value && value[0]) {
         char *end = NULL;
         const unsigned long parsed = strtoul(value, &end, 10);
         if (!end || *end || parsed < 1ul || parsed > GLM53_PREFILL_MAX) {
-            fprintf(stderr, "ds4: invalid DS4_GLM53_PREFILL_ROWS (use 1..2048)\n");
+            fprintf(stderr, "ds4: invalid %s (use 1..2048)\n", name);
             return 0u;
         }
         rows = (uint32_t)parsed;
@@ -46,6 +48,7 @@ static uint32_t glm53_graph_row_cap(uint32_t ctx, uint32_t slots) {
 }
 
 static uint32_t glm53_window_cap(uint32_t ctx, uint32_t slots) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return 0u; }
     const char *value = getenv("DS4_GLM53_PREFILL_WINDOW");
     if ((value && strcmp(value, "4096") != 0) || ctx < GLM53_PREFILL_WINDOW ||
         slots < 2u * DS4_N_EXPERT ||
@@ -63,6 +66,7 @@ static uint64_t glm53_window_bytes(uint32_t window) {
 }
 
 static bool glm53_graph_diag(void) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return false; }
     const char *value = getenv("DS4_GLM53_DSA_EXPANDED");
     return value && strcmp(value, "1") == 0;
 }
@@ -130,7 +134,23 @@ static uint64_t glm53_graph_state_bytes(void) {
         2u * (uint64_t)DS4_N_EMBD * sizeof(float);
 }
 
+#ifndef __APPLE__
+#include "ds4_glmvq_graph.inc"
+#endif
+
+static bool glm53_copy_control(ds4_glm53_gpu_graph *g,
+        ds4_gpu_tensor *out, const ds4_model *model, const ds4_tensor *weight, uint64_t bytes) {
+#ifndef __APPLE__
+    if (g->gvq) { return gvq_control(g, model, out, weight, bytes); }
+#else
+    (void)g;
+#endif
+    return solar_copy_control(out, model, weight, bytes);
+}
+
 static uint64_t glm53_graph_bytes_plan(uint32_t ctx_cap, uint32_t rows, uint32_t window) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
+        (ctx_cap > DS4_GLM53_INDEX_TOPK || window)) { return 0u; }
     if (!ctx_cap || ctx_cap > DS4_GLM53_RESIDENT_CTX_MAX ||
         !rows || rows > ctx_cap || rows > GLM53_PREFILL_MAX ||
         (window && (window != GLM53_PREFILL_WINDOW || window > ctx_cap ||
@@ -143,8 +163,16 @@ static uint64_t glm53_graph_bytes_plan(uint32_t ctx_cap, uint32_t rows, uint32_t
 #define GLM53_QUOTE(field, cols, type) bytes += (uint64_t)rows * (cols) * sizeof(type);
     GLM53_ROW_BUFFERS(GLM53_QUOTE)
 #undef GLM53_QUOTE
-    bytes += ds4_gpu_solar_kda_prefill_scratch_bytes(rows, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
-    bytes += glm53_dense_reserve(rows, ctx_cap);
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) {
+#ifndef __APPLE__
+        bytes += gvq_extra_bytes(ctx_cap, rows);
+#else
+        return 0u;
+#endif
+    } else {
+        bytes += ds4_gpu_solar_kda_prefill_scratch_bytes(rows, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
+        bytes += glm53_dense_reserve(rows, ctx_cap);
+    }
     bytes += glm53_window_bytes(window);
 
     uint32_t kda, dsa;
@@ -206,6 +234,9 @@ static bool glm53_graph_bind(ds4_glm53_gpu_graph *active,
 
 static void glm53_graph_free(ds4_glm53_gpu_graph *g) {
     if (!g) { return; }
+#ifndef __APPLE__
+    gvq_graph_free(g);
+#endif
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
         ds4_gpu_tensor *views[] = {
             g->recurrent[il], g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],
@@ -290,12 +321,12 @@ static bool glm53_graph_state(ds4_glm53_gpu_graph *g,
             solar_pool_take(&g->decay_scale[il], g->control_pool, &control_cursor, decay_bytes) &&
             solar_pool_take(&g->dt_bias[il], g->control_pool, &control_cursor, dt_bytes) &&
             solar_pool_take(&g->o_norm[il], g->control_pool, &control_cursor, norm_bytes) &&
-            solar_copy_control(g->q_conv_weight[il], model, l->kda_q_conv, conv_bytes) &&
-            solar_copy_control(g->k_conv_weight[il], model, l->kda_k_conv, conv_bytes) &&
-            solar_copy_control(g->v_conv_weight[il], model, l->kda_v_conv, conv_bytes) &&
-            solar_copy_control(g->decay_scale[il], model, l->kda_a_log, decay_bytes) &&
-            solar_copy_control(g->dt_bias[il], model, l->kda_dt_bias, dt_bytes) &&
-            solar_copy_control(g->o_norm[il], model, l->kda_o_norm, norm_bytes);
+            glm53_copy_control(g, g->q_conv_weight[il], model, l->kda_q_conv, conv_bytes) &&
+            glm53_copy_control(g, g->k_conv_weight[il], model, l->kda_k_conv, conv_bytes) &&
+            glm53_copy_control(g, g->v_conv_weight[il], model, l->kda_v_conv, conv_bytes) &&
+            glm53_copy_control(g, g->decay_scale[il], model, l->kda_a_log, decay_bytes) &&
+            glm53_copy_control(g, g->dt_bias[il], model, l->kda_dt_bias, dt_bytes) &&
+            glm53_copy_control(g, g->o_norm[il], model, l->kda_o_norm, norm_bytes);
         if (!ok) { return false; }
     }
     return solar_pool_take(&g->last_hidden, g->state_pool, &state_cursor, hidden_bytes) &&
@@ -307,7 +338,7 @@ static bool glm53_graph_alloc_plan(ds4_glm53_gpu_graph *g,
         const ds4_model *model, const ds4_weights *weights, uint32_t ctx_cap,
         uint32_t rows, uint32_t window, ds4_glm53_stream *stream) {
     if (!g || !model || !weights || (stream && stream->count < DS4_N_EXPERT_USED) ||
-        DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+        !ds4_model_is_glm() ||
         (window && (!stream || stream->count < 2u * DS4_N_EXPERT)) ||
         !glm53_graph_bytes_plan(ctx_cap, rows, window)) { return false; }
     memset(g, 0, sizeof(*g));
@@ -317,6 +348,12 @@ static bool glm53_graph_alloc_plan(ds4_glm53_gpu_graph *g,
     g->pool_cap = (ctx_cap + DS4_GLM53_POOL_SIZE - 1u) / DS4_GLM53_POOL_SIZE;
     g->expanded_diag = glm53_graph_diag();
     g->stream = stream;
+#ifndef __APPLE__
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ && !gvq_graph_init(g, weights)) {
+        glm53_graph_free(g);
+        return false;
+    }
+#endif
 #define GLM53_ALLOC(field, cols, type) do { \
         const uint64_t bytes_ = (uint64_t)g->row_cap * (cols) * sizeof(type); \
         g->field = ds4_gpu_tensor_alloc(bytes_); \
@@ -329,10 +366,12 @@ static bool glm53_graph_alloc_plan(ds4_glm53_gpu_graph *g,
     g->logits = ds4_gpu_tensor_alloc(logit_bytes);
     g->workspace_bytes += logit_bytes;
     // The CUDA temporary arena retains the largest dense GEMM slab.
-    g->workspace_bytes += glm53_dense_reserve(g->row_cap, ctx_cap);
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53_VQ) {
+        g->workspace_bytes += glm53_dense_reserve(g->row_cap, ctx_cap);
+    }
     g->workspace_bytes += glm53_window_bytes(window);
-    const uint64_t scratch_bytes = ds4_gpu_solar_kda_prefill_scratch_bytes(
-        g->row_cap, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
+    const uint64_t scratch_bytes = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ ? 0u :
+        ds4_gpu_solar_kda_prefill_scratch_bytes(g->row_cap, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
     if (scratch_bytes) {
         g->kda_scratch = ds4_gpu_tensor_alloc(scratch_bytes);
         g->workspace_bytes += scratch_bytes;
@@ -350,6 +389,7 @@ static bool glm53_graph_alloc_plan(ds4_glm53_gpu_graph *g,
     ds4_log(stderr, DS4_LOG_TIMING,
         "ds4: GLM-5.3 %s graph: ctx %u, prefill %u, KV %.2f GiB, "
         "state %.2f MiB, workspace %.2f MiB\n",
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ ? "VQ source eager" :
         g->expanded_diag ? "expanded diagnostic" : "compact", ctx_cap, g->row_cap,
         (double)g->kv_bytes / 1073741824.0, (double)g->state_bytes / 1048576.0,
         (double)g->workspace_bytes / 1048576.0);
@@ -585,6 +625,9 @@ static bool glm53_graph_ffn(ds4_glm53_gpu_graph *g, const ds4_model *model,
 
 static bool glm53_graph_output(ds4_glm53_gpu_graph *g, const ds4_model *model,
         const ds4_weights *weights, uint32_t rows, float *host_logits) {
+#ifndef __APPLE__
+    if (g->gvq) { return gvq_output(g, model, weights, rows, host_logits); }
+#endif
     const uint64_t bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
     ds4_gpu_tensor *hc = ds4_gpu_tensor_view(g->hc_cur,
         (uint64_t)(rows - 1u) * DS4_N_HC * bytes, DS4_N_HC * bytes);
@@ -612,12 +655,23 @@ static bool glm53_graph_embed(ds4_glm53_gpu_graph *g, const ds4_model *model,
           ds4_gpu_embed_tokens_quant_tensor(g->cur, g->token, model->map, model->size,
             weights->token_embd->abs_offset, weights->token_embd->type,
             (uint32_t)weights->token_embd->dim[1], rows, DS4_N_EMBD);
-    if (!embedded || !ds4_gpu_repeat_hc_rows_tensor(g->hc_cur, g->cur, DS4_N_EMBD, DS4_N_HC, rows)) { return false; }
+    if (!embedded) { return false; }
+#ifndef __APPLE__
+    if (g->gvq && embeddings && !ds4_gpu_gvq_round(g->cur, (uint64_t)rows * DS4_N_EMBD)) { return false; }
+#endif
+    if (!ds4_gpu_repeat_hc_rows_tensor(g->hc_cur, g->cur, DS4_N_EMBD, DS4_N_HC, rows)) { return false; }
     return true;
 }
 
 static bool glm53_graph_layer(ds4_glm53_gpu_graph *g, const ds4_model *model,
         const ds4_weights *weights, uint32_t il, uint32_t rows, uint32_t pos0) {
+#ifndef __APPLE__
+    if (g->gvq) {
+        const bool ok = gvq_layer(g, model, weights, il, rows, pos0);
+        if (!ok) { fprintf(stderr, "ds4: GLM VQ layer %u failed\n", il); }
+        return ok;
+    }
+#endif
     const ds4_layer_weights *l = &weights->layer[il];
     if (!glm53_graph_hc_pre(g, model, l->hc_attn_fn, l->hc_attn_scale,
             l->hc_attn_base, l->attn_norm, g->hc_cur, rows)) {

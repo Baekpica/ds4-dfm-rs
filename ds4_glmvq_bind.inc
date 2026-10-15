@@ -127,3 +127,39 @@ static void glmvq_bind(ds4_weights *w, const ds4_model *m) {
         if (il >= DS4_N_LEADING_DENSE) { glmvq_bind_experts(&w->glmvq[il], m, il); }
     }
 }
+
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+static uint32_t glmvq_index(const ds4_model *m, const ds4_tensor *t) {
+    return t ? (uint32_t)(t - m->tensors) : DS4_GVQ_NO_LINK;
+}
+
+/* Materialized source pointers belong to the weight owner, not each bank.
+ * Sessions borrow the plan and allocate only arithmetic/state scratch. */
+static bool glmvq_gpu_bind(ds4_weights *w, const ds4_model *m) {
+    if (!w->glmvq || !m->n_tensors || m->n_tensors > UINT32_MAX) { return false; }
+    ds4_gvq_record *records = xcalloc((size_t)m->n_tensors, sizeof(*records));
+    for (uint32_t i = 0; i < m->n_tensors; i++) {
+        const ds4_tensor *t = &m->tensors[i];
+        const uint64_t cols = t->ndim ? t->dim[0] : 1u;
+        const uint64_t rows = cols ? t->elements / cols : 0u;
+        if (!cols || cols > UINT32_MAX || !rows || rows > UINT32_MAX) {
+            free(records);
+            return false;
+        }
+        records[i] = (ds4_gvq_record){t->abs_offset, t->bytes, t->type,
+            (uint32_t)rows, (uint32_t)cols, glmvq_index(m, t->source_scale), DS4_GVQ_NO_LINK};
+    }
+    for (uint32_t il = DS4_N_LEADING_DENSE; il < GLMVQ_TRUNK; il++) {
+        const ds4_glmvq_experts *e = &w->glmvq[il];
+        const uint32_t book = glmvq_index(m, e->book);
+        for (uint32_t expert = 0; expert < GLMVQ_EXPERTS; expert++) {
+            records[glmvq_index(m, e->gate[expert])].book = book;
+            records[glmvq_index(m, e->up[expert])].book = book;
+            records[glmvq_index(m, e->down[expert])].book = book;
+        }
+    }
+    w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, (uint32_t)m->n_tensors);
+    free(records);
+    return w->glmvq_gpu != NULL;
+}
+#endif

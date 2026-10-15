@@ -22,6 +22,7 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GLM_CTX_MAX: u32 = 1_048_576;
+const GLMVQ_EAGER_CTX_MAX: u32 = 2048;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -713,7 +714,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_lane: SpecLane::None,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
-            ctx_max: Some(GLM_CTX_MAX),
+            ctx_max: Some(GLMVQ_EAGER_CTX_MAX),
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -1659,6 +1660,7 @@ impl ResolvedPlan {
             Some(ModelFamily::IQuestQ1) => Some("DS4_IQUEST_PREFILL_CHUNK"),
             Some(ModelFamily::NaiveN05) => Some("DS4_NAIVE_PREFILL_CHUNK"),
             Some(ModelFamily::Glm53) => Some("DS4_GLM53_PREFILL_ROWS"),
+            Some(ModelFamily::Glm53Vq) => Some("DS4_GLMVQ_PREFILL_ROWS"),
             _ => None,
         }
     }
@@ -2552,7 +2554,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
         Variant::Glm53Flash => "compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate",
-        Variant::Glm53FlashVq => "GVQ1 loader and CUDA restore are present; native serving and all workload limits remain unqualified",
+        Variant::Glm53FlashVq => "Eager CUDA source graph caps context at 2048; native serving and workload limits remain unqualified",
         Variant::Dots3NotePrev => {
             "text banks, local-window partial reuse and serial MTP are present but unqualified"
         }
@@ -2684,6 +2686,36 @@ mod tests {
         };
         let p = resolve_plan(&req, None, &EngineFacts::default());
         assert!(p.has_errors());
+    }
+
+    #[test]
+    fn vq_baseline_limits() {
+        let family = ModelFamily::Glm53Vq;
+        let variant = Variant::Glm53FlashVq;
+        let caps = caps(family, variant);
+        assert_eq!(caps.ctx_max, Some(2048));
+        assert_eq!(caps.qualified_ctx, None);
+        assert_eq!(caps.qualified_prompt, None);
+        let request = ServingRequest {
+            backend: Backend::Cuda,
+            ctx: 2048,
+            native_chunk: Some(512),
+            ..ServingRequest::default()
+        };
+        let p = plan(request.clone(), family, variant);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(name, value)| { name == "DS4_GLMVQ_PREFILL_ROWS" && value == "512" }));
+        let p = plan(
+            ServingRequest {
+                ctx: 2049,
+                ..request
+            },
+            family,
+            variant,
+        );
+        assert!(p.issues.iter().any(|issue| issue.code == "ctx_unavailable"));
     }
 
     #[test]

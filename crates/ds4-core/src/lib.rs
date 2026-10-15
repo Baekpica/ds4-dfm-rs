@@ -1235,6 +1235,12 @@ fn open_bind_plan(
         Some(w) => BindPlan::resolve_v41(shape, w, inventory),
         None => BindPlan::resolve(shape, inventory),
     };
+    if shape.family == ModelFamily::Glm53Vq && plan.slots.len() != inventory.tensors.len() {
+        return Err(Error {
+            code: 1,
+            message: "GLM VQ tensor set mismatch".into(),
+        });
+    }
     if let Some(name) = plan.missing_required().first() {
         return Err(Error {
             code: 1,
@@ -1252,6 +1258,34 @@ fn open_bind_plan(
     Ok((plan, wire))
 }
 
+fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
+    let (g, vocab) = if shape.family == ModelFamily::Glm53Vq {
+        let g = glm_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
+    } else {
+        let g = GgufFile::open(path).map_err(|e| Error {
+            code: 1,
+            message: format!("validate failed: {}", e.token()),
+        })?;
+        validate_file(&g, shape).map_err(|e| Error {
+            code: 1,
+            message: format!("validate failed: {}", e.token()),
+        })?;
+        let vocab = Vocab::load(&g, shape.family);
+        (g, vocab)
+    };
+    Ok((
+        g,
+        vocab.map_err(|e| Error {
+            code: 1,
+            message: format!("vocab failed: {e}"),
+        })?,
+    ))
+}
+
 /// Everything `Model::open` checks before it touches the device: identify,
 /// family validation, vocab, chat template, tensor inventory, required
 /// tensors and layouts. `--check-config` runs it so an artifact that cannot
@@ -1261,18 +1295,7 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
         code: 1,
         message: format!("identify failed: {}", e.token()),
     })?;
-    let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
-        code: 1,
-        message: format!("validate failed: {}", e.token()),
-    })?;
-    validate_file(&g, &identified.shape).map_err(|e| Error {
-        code: 1,
-        message: format!("validate failed: {}", e.token()),
-    })?;
-    Vocab::load(&g, identified.shape.family).map_err(|e| Error {
-        code: 1,
-        message: format!("vocab failed: {e}"),
-    })?;
+    let (g, _) = open_input_assets(Path::new(path), &identified.shape)?;
     chat_template::Template::load(std::path::Path::new(path), &g)?;
     let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
         code: 1,
@@ -1467,10 +1490,18 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
-        if identified.shape.family == ModelFamily::Glm53Vq {
+        if identified.shape.family == ModelFamily::Glm53Vq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some()
+                || tuning.mtp_draft_tokens > 1)
+        {
             return Err(Error {
                 code: 1,
-                message: "GLM VQ native execution is not integrated yet".into(),
+                message: "GLM VQ baseline requires one CUDA model with MTP and vision disabled"
+                    .into(),
             });
         }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
@@ -1518,24 +1549,13 @@ impl Model {
                 },
             )?;
         }
-        let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
-            code: 1,
-            message: format!("validate failed: {}", e.token()),
-        })?;
-        validate_file(&g, &identified.shape).map_err(|e| Error {
-            code: 1,
-            message: format!("validate failed: {}", e.token()),
-        })?;
+        let (g, vocab) = open_input_assets(Path::new(path), &identified.shape)?;
         if identified.shape.family == ModelFamily::Inkling {
             inkling_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
         }
         if identified.shape.family == ModelFamily::Ling3Vl {
             ling_open_check(backend, &tuning, dspark_path, distributed)?;
         }
-        let vocab = Vocab::load(&g, identified.shape.family).map_err(|e| Error {
-            code: 1,
-            message: format!("vocab failed: {e}"),
-        })?;
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
         let mut ffi_vocab = pack_host_vocab(&vocab);
         let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {

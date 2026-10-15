@@ -232,3 +232,7 @@ tests/naive_banks
 /tests/test_glm_vq_bind
 /tests/libglm_vq_linear.so
 /tests/libglm_vq_attention.so
+/tests/test_glm_vq_cache
+/tests/test_glm_vq_owner
+/tests/test_glm_vq_quote
+/glm-vq-gate
