@@ -57,6 +57,7 @@ static void check_paths(const ds4_gvq_model *model) {
     if (linear > scratch) { scratch = linear; }
     /* Expert kernels are unrelated to this isolated attention contract. */
     CHECK(!setenv("DS4_GLMVQ_MMA", "0", 1) && !setenv("DS4_GLMVQ_DECODE", "0", 1));
+    CHECK(!setenv("DS4_GLMVQ_LATENT_ATTN", "0", 1));
     CHECK(!setenv("DS4_GLMVQ_KV_BF16", "0", 1));
     ds4_gvq_ctx *old = ds4_gpu_gvq_create(model, scratch, MAX_ROWS);
     CHECK(!setenv("DS4_GLMVQ_KV_BF16", "1", 1));
@@ -108,8 +109,81 @@ static void check_paths(const ds4_gvq_model *model) {
     free(actual); free(reference); free(query); free(after); free(cache);
 }
 
+/* The optional fixture comes from the independently checked per-operation
+ * FP64 probe, not from the native adapter being tested here. */
+static void check_latent(const ds4_gvq_model *model, const char *path) {
+    enum { MAGIC = 0x4c415451, KEYS = 1985, QUERY_ROWS = 2, FAST_KEYS = 512 };
+    const uint64_t cb = (uint64_t)KEYS * LATENT * sizeof(uint16_t);
+    const uint64_t qb = (uint64_t)HEADS * DIM * sizeof(float);
+    const uint64_t kb = (uint64_t)KEYS * HEADS * 2 * DIM * sizeof(float);
+    uint32_t header[5];
+    FILE *file = fopen(path, "rb");
+    uint16_t *cache = malloc(cb), *after = malloc(cb);
+    float *query = malloc(qb), *expected = malloc(qb * 2);
+    float *actual = malloc(qb * QUERY_ROWS), *control = malloc(qb * QUERY_ROWS);
+    CHECK(file && cache && after && query && expected && actual && control);
+    CHECK(fread(header, sizeof(header), 1, file) == 1 && header[0] == MAGIC &&
+        header[1] == KEYS && header[2] == HEADS && header[3] == DIM && header[4] == LATENT);
+    CHECK(fread(cache, cb, 1, file) == 1 && fread(query, qb, 1, file) == 1 &&
+        fread(expected, qb * 2, 1, file) == 1 && fgetc(file) == EOF && !fclose(file));
+
+    ds4_gpu_tensor *owner = ds4_gpu_tensor_alloc(cb + sizeof(uint16_t));
+    CHECK(owner);
+    ds4_gpu_tensor *aligned = ds4_gpu_tensor_view(owner, 0, cb);
+    ds4_gpu_tensor *unaligned = ds4_gpu_tensor_view(owner, sizeof(uint16_t), cb);
+    ds4_gpu_tensor *q = ds4_gpu_tensor_alloc(qb * QUERY_ROWS);
+    ds4_gpu_tensor *out = ds4_gpu_tensor_alloc(qb * QUERY_ROWS);
+    ds4_gpu_tensor *latent = ds4_gpu_tensor_alloc(cb * 2), *kv = ds4_gpu_tensor_alloc(kb);
+    ds4_gpu_tensor *pos = ds4_gpu_tensor_alloc(QUERY_ROWS * sizeof(uint32_t));
+    CHECK(aligned && unaligned && q && out && latent && kv && pos);
+    for (uint32_t i = 0; i < QUERY_ROWS; i++) { CHECK(ds4_gpu_tensor_write(q, i * qb, query, qb)); }
+    CHECK(!setenv("DS4_GLMVQ_MMA", "0", 1) && !setenv("DS4_GLMVQ_DECODE", "0", 1));
+    CHECK(!setenv("DS4_GLMVQ_KV_BF16", "1", 1) && !setenv("DS4_GLMVQ_LATENT_ATTN", "0", 1));
+    uint64_t scratch = ds4_gpu_gvq_attn_bytes(QUERY_ROWS, KEYS, HEADS, DIM);
+    const uint64_t linear = ds4_gpu_gvq_linear_bytes(HEADS * 2 * DIM, LATENT,
+        KEYS, BF16_TYPE, DS4_GVQ_BF16);
+    if (linear > scratch) { scratch = linear; }
+    ds4_gvq_ctx *old = ds4_gpu_gvq_create(model, scratch, QUERY_ROWS);
+    CHECK(!setenv("DS4_GLMVQ_LATENT_ATTN", "1", 1));
+    ds4_gvq_ctx *fast = ds4_gpu_gvq_create(model, scratch, QUERY_ROWS);
+    CHECK(old && fast);
+    const struct { uint32_t rows, keys; int fixture; } cases[] = {
+        {1, FAST_KEYS - 1, -1}, {1, FAST_KEYS, 0}, {1, KEYS, 1},
+        {1, KEYS, -1}, {QUERY_ROWS, KEYS, -1}
+    };
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const uint32_t rows = cases[c].rows, first = cases[c].keys - rows;
+        const uint64_t bytes = rows * qb;
+        ds4_gpu_tensor *input = c == 3 ? unaligned : aligned;
+        CHECK(ds4_gpu_tensor_write(input, 0, cache, cb));
+        const float *reference = control;
+        if (cases[c].fixture >= 0) {
+            reference = expected + (uint64_t)cases[c].fixture * HEADS * DIM;
+        } else {
+            CHECK(ds4_gpu_gvq_dsa(old, out, q, input, 0, latent, kv, pos, first, rows, HEADS, DIM));
+            CHECK(ds4_gpu_tensor_read(out, 0, control, bytes));
+        }
+        CHECK(ds4_gpu_gvq_dsa(fast, out, q, input, 0, latent, kv, pos, first, rows, HEADS, DIM));
+        CHECK(ds4_gpu_tensor_read(out, 0, actual, bytes));
+        for (uint64_t i = 0; i < bytes / sizeof(float); i++) {
+            CHECK(isfinite(actual[i]) && actual[i] == reference[i]);
+        }
+        uint32_t positions[QUERY_ROWS];
+        CHECK(ds4_gpu_tensor_read(pos, 0, positions, rows * sizeof(uint32_t)));
+        for (uint32_t i = 0; i < rows; i++) { CHECK(positions[i] == first + i); }
+        CHECK(ds4_gpu_tensor_read(input, 0, after, cb) && !memcmp(cache, after, cb));
+        printf("GVQ latent rows=%u keys=%u fixture=%d unaligned=%u cache/positions=PASS\n",
+            rows, cases[c].keys, cases[c].fixture, input == unaligned);
+    }
+    ds4_gpu_gvq_free(fast); ds4_gpu_gvq_free(old);
+    ds4_gpu_tensor_free(pos); ds4_gpu_tensor_free(kv); ds4_gpu_tensor_free(latent);
+    ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(q);
+    ds4_gpu_tensor_free(unaligned); ds4_gpu_tensor_free(aligned); ds4_gpu_tensor_free(owner);
+    free(control); free(actual); free(expected); free(query); free(after); free(cache);
+}
+
 int main(int argc, char **argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
     const uint64_t bytes = (uint64_t)HEADS * 2 * DIM * LATENT * sizeof(uint16_t);
     FILE *file = fopen(argv[1], "rb");
     CHECK(file && !fseek(file, 0, SEEK_END) && ftell(file) == (long)bytes);
@@ -131,11 +205,12 @@ int main(int argc, char **argv) {
         DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK};
     ds4_gvq_model *model = ds4_gpu_gvq_bind(map, bytes, &record, 1);
     CHECK(model);
-    check_paths(model);
+    if (argc == 3) { check_latent(model, argv[2]); }
+    else { check_paths(model); }
     ds4_gpu_gvq_unbind(model);
     ds4_gpu_unregister_model_map(map);
     ds4_gpu_cleanup();
     CHECK(!munmap(map, bytes) && !fclose(file));
-    puts("GLMVQ_KV_HANDOFF_PASS");
+    puts(argc == 3 ? "GLMVQ_LATENT_ADAPTER_PASS" : "GLMVQ_KV_HANDOFF_PASS");
     return 0;
 }

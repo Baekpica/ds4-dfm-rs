@@ -13,6 +13,8 @@ enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
 enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32 };
+enum { GVQ_LATENT_MIN_KEYS = 512, GVQ_LATENT_MAX_KEYS = 2048,
+       GVQ_LATENT_HEADS = 64, GVQ_LATENT_DIM = 256, GVQ_LATENT_WIDTH = 512 };
 
 struct ds4_gvq_model {
     std::vector<glmvq_source> source;
@@ -29,6 +31,8 @@ struct ds4_gvq_ctx {
     bool direct_q4;
     bool direct_fp8;
     bool direct_kv;
+    bool latent_attn;
+    uint64_t latent_calls = 0;
     uint64_t kv_calls = 0;
     uint64_t fp8_calls = 0;
     glmvq_q4_config q4;
@@ -172,6 +176,9 @@ extern "C" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
 
 extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     if (!ctx) { return; }
+    if (ctx->latent_attn) {
+        fprintf(stderr, "ds4: GLM VQ latent attention calls=%llu\n", (unsigned long long)ctx->latent_calls);
+    }
     if (ctx->direct_kv) {
         fprintf(stderr, "ds4: GLM VQ BF16 KV calls=%llu\n", (unsigned long long)ctx->kv_calls);
     }
@@ -223,10 +230,16 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_KV_BF16 accepts 0 or 1\n");
         return nullptr;
     }
+    const char *latent_attn = getenv("DS4_GLMVQ_LATENT_ATTN");
+    if (latent_attn && strcmp(latent_attn, "0") && strcmp(latent_attn, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_LATENT_ATTN accepts 0 or 1\n");
+        return nullptr;
+    }
     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};
     if (!ctx) { return nullptr; }
     ctx->direct_fp8 = !fp8 || strcmp(fp8, "0");
     ctx->direct_kv = !kv || strcmp(kv, "0");
+    ctx->latent_attn = !latent_attn || strcmp(latent_attn, "0");
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -543,6 +556,20 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
             ds4_gpu_gvq_linear(ctx, kv, weight, latent, keys, DS4_GVQ_BF16) &&
             ds4_gpu_gvq_positions(positions, first, rows) &&
             ds4_gpu_gvq_attn(ctx, out, query, kv, positions, nullptr, 0, rows, keys, heads, dim);
+    }
+
+    // Full-prefix expansion dominates longer N=1 decode. Other widths keep
+    // the measured expanded path; this does not qualify MTP or sparse DSA.
+    if (ctx->latent_attn && rows == 1 && heads == GVQ_LATENT_HEADS &&
+        dim == GVQ_LATENT_DIM && s.cols == GVQ_LATENT_WIDTH &&
+        keys >= GVQ_LATENT_MIN_KEYS && keys <= GVQ_LATENT_MAX_KEYS) {
+        if (!ds4_gpu_gvq_positions(positions, first, rows)) { return 0; }
+        ctx->latent_calls++;
+        return cublas_ok(glmvq_latent_attn(ctx->handle,
+            (const __nv_bfloat16 *)s.data, (const __nv_bfloat16 *)cache->ptr,
+            (const float *)query->ptr, (float *)out->ptr, (const uint32_t *)positions->ptr,
+            rows, keys, heads, dim, s.cols, ctx->scratch->ptr, ctx->scratch->bytes,
+            ctx->stream), "GLM VQ latent attention");
     }
 
     // Both latent cache and KV_B output are BF16 in the source model. Keep

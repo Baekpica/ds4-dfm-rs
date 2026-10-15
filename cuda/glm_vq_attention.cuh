@@ -135,4 +135,72 @@ static cublasStatus_t glmvq_attention(cublasHandle_t handle, const float *query,
     return cudaGetLastError() == cudaSuccess ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_EXECUTION_FAILED;
 }
 
+/* Source modeling_glm5_next.py:1076-1199 expands every cached latent row.
+ * Factor no-RoPE attention as (Q Wk) C^T, then (P C) Wv^T for N=1.
+ * BF16 rounding moves from expanded K/V to Q-low and output-low; this is
+ * approximate arithmetic, qualified separately from the expanded path. */
+static cublasStatus_t glmvq_latent_attn(cublasHandle_t handle,
+        const __nv_bfloat16 *weight, const __nv_bfloat16 *cache,
+        const float *query, float *output, const uint32_t *positions,
+        uint32_t rows, uint32_t keys, uint32_t heads, uint32_t dim,
+        uint32_t latent, void *scratch, uint64_t bytes, cudaStream_t stream) {
+    if (!handle || !weight || !cache || !query || !output || !positions || !scratch ||
+        rows != 1 || !keys || !heads || !dim || !latent ||
+        (uint64_t)rows * heads > INT_MAX || keys > INT_MAX ||
+        (uint64_t)heads * dim > INT_MAX || latent > INT_MAX) { return CUBLAS_STATUS_INVALID_VALUE; }
+    const glmvq_attn_layout l = glmvq_attn_bytes(rows, keys, heads, dim);
+    const uint64_t nq = (uint64_t)rows * heads * dim;
+    const uint64_t nl = (uint64_t)rows * heads * latent;
+    if (bytes < l.bytes || nl * sizeof(__nv_bfloat16) * 2 > l.scores - l.kv) {
+        return CUBLAS_STATUS_INVALID_VALUE;
+    }
+    auto *base = (uint8_t *)scratch;
+    auto *q = (__nv_bfloat16 *)(base + l.q);
+    auto *qlow = (__nv_bfloat16 *)(base + l.kv), *low = qlow + nl;
+    auto *scores = (__nv_bfloat16 *)(base + l.scores);
+    auto *y = (__nv_bfloat16 *)(base + l.output);
+    const float alpha = 1.0f, beta = 0.0f;
+    const long long wstride = (long long)2 * dim * latent;
+    glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(query, q, nq);
+    if (cudaGetLastError() != cudaSuccess) { return CUBLAS_STATUS_EXECUTION_FAILED; }
+    cublasStatus_t status = cublasGemmStridedBatchedEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        latent, rows, dim, &alpha, weight, CUDA_R_16BF, latent, wstride,
+        q, CUDA_R_16BF, heads * dim, dim, &beta, qlow, CUDA_R_16BF,
+        latent, (uint64_t)rows * latent, heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    // All heads share C. Fold heads into N instead of replicating C or using zero strides.
+    status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        keys, rows * heads, latent, &alpha, cache, CUDA_R_16BF, latent,
+        qlow, CUDA_R_16BF, latent, &beta, scores, CUDA_R_16BF, keys,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    glmvq_attn_softmax<<<dim3(rows, heads), GLMVQ_THREADS, 0, stream>>>(
+        scores, nullptr, positions, rows, keys, 1.0f / sqrtf((float)dim));
+    if (cudaGetLastError() != cudaSuccess) { return CUBLAS_STATUS_EXECUTION_FAILED; }
+    // cuBLAS may reduce split-K partials in the output type. Keep only this
+    // long PV reduction in FP32 without changing the caller's math policy.
+    cublasMath_t math;
+    status = cublasGetMathMode(handle, &math);
+    if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    status = cublasSetMathMode(handle,
+        (cublasMath_t)(math | CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
+    if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        latent, rows * heads, keys, &alpha, cache, CUDA_R_16BF, latent,
+        scores, CUDA_R_16BF, keys, &beta, low, CUDA_R_16BF, latent,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    const cublasStatus_t restored = cublasSetMathMode(handle, math);
+    if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    if (restored != CUBLAS_STATUS_SUCCESS) { return restored; }
+    status = cublasGemmStridedBatchedEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim, rows, latent, &alpha, weight + (uint64_t)dim * latent,
+        CUDA_R_16BF, latent, wstride, low, CUDA_R_16BF, latent,
+        (uint64_t)rows * latent, &beta, y, CUDA_R_16BF, dim,
+        (uint64_t)rows * dim, heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    glmvq_attn_output<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(
+        output, y, rows, heads, dim, nq);
+    return cudaGetLastError() == cudaSuccess ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_EXECUTION_FAILED;
+}
+
 #endif

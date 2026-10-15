@@ -110,8 +110,8 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
 static bool gvq_dsa(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_layer_weights *l, uint32_t il, uint32_t pos, uint32_t rows) {
     const uint32_t keys = pos + rows;
-    // All causal keys are selected below index_topk. Preserve the source's
-    // interleaved kv_b BF16 expansion and eager QK/softmax/PV (1076-1137).
+    // All causal keys are selected below index_topk. The adapter selects
+    // expanded BF16 attention or the qualified N=1 latent factorization.
     if (keys > GVQ_BASELINE_CTX) { return false; }
     return gvq_mm(g, m, g->q_rank, l->attn_q_a, g->norm, rows, DS4_GVQ_BF16) &&
         gvq_norm(g, m, g->q_rank_norm, g->q_rank, l->attn_q_a_norm, rows, DS4_N_LORA_Q) &&
