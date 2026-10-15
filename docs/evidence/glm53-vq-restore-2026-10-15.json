@@ -275,5 +275,117 @@
     "local_bytes": 0,
     "additional_gpu_allocations": 0
   },
-  "local_receipts": "scratch/glm-vq/{restore-off-1,restore-on-1,restore-on-2,restore-off-2,profile-2k,restore-baseline.ncu-repz}"
+  "local_receipts": "scratch/glm-vq/{restore-off-1,restore-on-1,restore-on-2,restore-off-2,profile-2k,restore-baseline.ncu-repz}",
+  "retained_profile": {
+    "head": "2106bb11d28b01e0ff30c67e99c4664cae89d3f5",
+    "binary_sha256": "22cb50fc72825429531f640eb0802bd0be22850de6706fc0d0a84f701e4089c2",
+    "cuda_memory_trace": true,
+    "exit_code": 0,
+    "phase_costs": {
+      "ds4.prefill": {
+        "wall_s": 18.553351761,
+        "gpu_busy_s": 16.114177781,
+        "gpu_idle_s": 2.43917398,
+        "categories": {
+          "vq_restore": {
+            "seconds": 8.788985537,
+            "wall_percent": 47.37141649777186,
+            "launches": 110781
+          },
+          "vq_other": {
+            "seconds": 4.598966598,
+            "wall_percent": 24.787793910463336,
+            "launches": 443124
+          },
+          "attention_kda_core": {
+            "seconds": 1.269169588,
+            "wall_percent": 6.840648548839854,
+            "launches": 444
+          },
+          "dense_shared_control_projections": {
+            "seconds": 0.997019337,
+            "wall_percent": 5.373796335257226,
+            "launches": 8013
+          },
+          "mhc_norm": {
+            "seconds": 0.381955094,
+            "wall_percent": 2.0586851309685574,
+            "launches": 1661
+          },
+          "other_gpu": {
+            "seconds": 0.036019347,
+            "wall_percent": 0.19413929873153338,
+            "launches": 1217
+          },
+          "router_select": {
+            "seconds": 0.018781309,
+            "wall_percent": 0.10122865799094681,
+            "launches": 168
+          },
+          "output_head": {
+            "seconds": 0.008942436,
+            "wall_percent": 0.04819849327061977,
+            "launches": 24
+          }
+        }
+      },
+      "ds4.decode": {
+        "wall_s": 8.940403782,
+        "gpu_busy_s": 8.815284195,
+        "gpu_idle_s": 0.125119587,
+        "categories": {
+          "dense_shared_control_projections": {
+            "seconds": 4.020655545,
+            "wall_percent": 44.97174448759142,
+            "launches": 62496
+          },
+          "vq_restore": {
+            "seconds": 2.512660382,
+            "wall_percent": 28.10455146398219,
+            "launches": 32256
+          },
+          "vq_other": {
+            "seconds": 0.919190952,
+            "wall_percent": 10.281313623112151,
+            "launches": 129024
+          },
+          "attention_kda_core": {
+            "seconds": 0.86937389,
+            "wall_percent": 9.724100960074512,
+            "launches": 3552
+          },
+          "output_head": {
+            "seconds": 0.231313155,
+            "wall_percent": 2.587278613363192,
+            "launches": 192
+          },
+          "mhc_norm": {
+            "seconds": 0.173688128,
+            "wall_percent": 1.9427324787018216,
+            "launches": 13312
+          },
+          "router_select": {
+            "seconds": 0.075194268,
+            "wall_percent": 0.8410612074522967,
+            "launches": 1344
+          },
+          "other_gpu": {
+            "seconds": 0.010804087,
+            "wall_percent": 0.12084562692517549,
+            "launches": 8416
+          }
+        }
+      },
+      "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+    },
+    "allocation_peak": {
+      "device_allocation_peak_bytes": 87596914432,
+      "device_allocation_peak_gib": 81.580983877182,
+      "peak_timestamp_ns": 262484162156,
+      "event_count": 382,
+      "method": "Sum live Nsight CUDA_GPU_MEMORY_USAGE_EVENTS memKind DEVICE allocations minus releases; all addresses/sizes pair and final live set is empty. Does not include untracked driver/OS allocations or mapped file cache; not a sum of CPU RAM and VRAM."
+    },
+    "initial_prefill_gap_seconds": 1.968461694,
+    "note": "Memory tracking inflated initial setup gap (earlier trace 0.050590561s). Diagnostic phase costs are not additional speed-proof runs."
+  }
 }

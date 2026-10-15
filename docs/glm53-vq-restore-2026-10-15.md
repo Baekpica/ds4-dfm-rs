@@ -60,8 +60,10 @@ indices and rollback plumbing remain structural correctness requirements.
 
 Minimum system available memory was 35.37–35.48 GiB. Resident device weights
 were 80.06 GiB; the graph reported approximately 0.02 GiB KV, 148.82 MiB
-state and 1,183.31 MiB workspace. These are component observations, not a
-measured allocation peak. OS and CUDA memory must not be counted twice.
+state and 1,183.31 MiB workspace. A subsequent allocation trace of retained
+build `2106bb11` measured 81.58 GiB peak live device allocations. All 191
+allocation/release pairs matched and ended empty. This excludes untracked
+driver/OS memory and mapped file cache; CPU RAM and VRAM are not additive.
 
 Process wall times were 214.88–315.58 seconds, dominated by validation and
 variable weight-loading/file-cache costs. The bench's first-token field
@@ -70,3 +72,10 @@ yield the approximate phase times above.
 
 Long context, capture, embedded MTP, vision, common serving combinations,
 held-out quality and same-source MXQ comparison remain outside this result.
+
+The retained profile still attributes 72.16% of prefill wall time to routed
+VQ restoration/GEMMs. Dense/shared/control projections account for 44.97%
+of decode, followed by routed VQ at 38.39%. Memory instrumentation increased
+the initial prefill GPU gap from 0.05 to 1.97 seconds; this is not evidence
+of steady dispatch overhead. These observations select subsequent detailed
+analysis, not another throughput claim.
