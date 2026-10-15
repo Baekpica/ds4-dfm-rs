@@ -1956,7 +1956,7 @@ test-glm53-mixed: tests/test_glm53_mixed
 	./tests/test_glm53_mixed
 
 GLMVQ_PYTHON ?= python3
-tests/libglm_vq_test.so: tests/test_glm_vq_cuda.cu cuda/glm_vq.cuh
+tests/libglm_vq_test.so: tests/test_glm_vq_cuda.cu cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $<
 
 .PHONY: test-glm-vq-restore
@@ -1964,6 +1964,10 @@ test-glm-vq-restore: tests/libglm_vq_test.so
 	@test -n "$(GLMVQ_FIXTURES)" || \
 		{ echo "set GLMVQ_FIXTURES to the immutable golden-fixtures directory" >&2; exit 2; }
 	$(GLMVQ_PYTHON) tests/test_glm_vq_cuda.py --lib tests/libglm_vq_test.so --fixtures "$(GLMVQ_FIXTURES)"
+
+.PHONY: test-glm-vq-ops
+test-glm-vq-ops: tests/libglm_vq_test.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
 
 tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
