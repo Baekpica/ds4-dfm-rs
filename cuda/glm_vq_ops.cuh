@@ -62,14 +62,17 @@ __global__ void glmvq_rms(const float *input, const __nv_bfloat16 *weight,
     }
 }
 
+__device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float limit) {
+    const float g = fminf(gate, limit);
+    const float u = fminf(fmaxf(up, -limit), limit);
+    const float silu = glmvq_round(__fdiv_rn(g, glmvq_add(1.0f, expf(-g))));
+    return glmvq_round(glmvq_mul(silu, u));
+}
+
 __global__ void glmvq_swiglu(const float *gate, const float *up, float *output,
         uint64_t count, float limit) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= count) { return; }
-    const float g = fminf(gate[i], limit);
-    const float u = fminf(fmaxf(up[i], -limit), limit);
-    const float silu = glmvq_round(__fdiv_rn(g, glmvq_add(1.0f, expf(-g))));
-    output[i] = glmvq_round(glmvq_mul(silu, u));
+    if (i < count) { output[i] = glmvq_swiglu_value(gate[i], up[i], limit); }
 }
 
 __device__ void glmvq_hc_weights(float *split, const float *mix,

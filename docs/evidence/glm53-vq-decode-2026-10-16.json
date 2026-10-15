@@ -1,0 +1,972 @@
+{
+  "whole_workload": {
+    "identity": {
+      "head": "6161785409fcb83cd68becc570fe2272fcd976c8",
+      "binary_sha256": "a26eaff4baef452578e1212a3866186df4422fd9dce20fca2d95c234019e3d15",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "native_sources": {
+        "ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "ds4_glmvq_gpu.cuh": "a6c53f72ac05a5d985746bc87597adb47f4f03f67e1953c8ac085b15074be5c5",
+        "ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e"
+      },
+      "manifest_sha256": "d16712edb7940dd070873d7aa660f7731c036605484a1bc54155e5f5c802fe47",
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_MMA": "0",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "libraries": "\tlinux-vdso.so.1\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6\n\t/lib/ld-linux-aarch64.so.1\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13\n",
+      "build_note": "Base commit plus frozen native source digests; compiled before the feature commit"
+    },
+    "runs": [
+      {
+        "label": "vq-decode-off-1",
+        "mode": "0",
+        "prefill_tps": 121.81,
+        "decode_tps": 4.02,
+        "first_decode_seconds": 0.2673,
+        "process_wall_seconds": 217.99895636201836,
+        "minimum_system_available_gib": 42.02198791503906,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184,
+          2190
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_decode": "0",
+        "inference_seconds_from_rounded_rates": 24.24786011654232,
+        "direct_decode_calls": 0
+      },
+      {
+        "label": "vq-decode-on-1",
+        "mode": "1",
+        "prefill_tps": 121.75,
+        "decode_tps": 6.66,
+        "first_decode_seconds": 0.1642,
+        "process_wall_seconds": 282.22110084898304,
+        "minimum_system_available_gib": 42.058467864990234,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184.0,
+          2184
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_decode": "1",
+        "inference_seconds_from_rounded_rates": 21.10049268981507,
+        "direct_decode_calls": 1344
+      },
+      {
+        "label": "vq-decode-on-2",
+        "mode": "1",
+        "prefill_tps": 122.36,
+        "decode_tps": 6.6,
+        "first_decode_seconds": 0.1636,
+        "process_wall_seconds": 208.7225842109765,
+        "minimum_system_available_gib": 42.11821746826172,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184.0,
+          2184
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_decode": "1",
+        "inference_seconds_from_rounded_rates": 21.062934014879094,
+        "direct_decode_calls": 1344
+      },
+      {
+        "label": "vq-decode-off-2",
+        "mode": "0",
+        "prefill_tps": 122.45,
+        "decode_tps": 4.03,
+        "first_decode_seconds": 0.2662,
+        "process_wall_seconds": 206.39708403401892,
+        "minimum_system_available_gib": 42.0955696105957,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184.0,
+          2184
+        ],
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "kl_candidate_ref": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32,
+        "direct_decode": "0",
+        "inference_seconds_from_rounded_rates": 24.14297829569369,
+        "direct_decode_calls": 0
+      }
+    ],
+    "scope": "Same KeepHead Q4 bytes; restore/GEMV vs persistent direct VQ decode. 2K raw code, one frontier and32 greedy tokens; artifact quality and serving not implied",
+    "off": {
+      "prefill_tps": 122.13,
+      "decode_tps": 4.025
+    },
+    "on": {
+      "prefill_tps": 122.055,
+      "decode_tps": 6.63
+    },
+    "gain_percent": {
+      "prefill_tps": -0.06140997297959805,
+      "decode_tps": 64.72049689440993
+    }
+  },
+  "target_profile": {
+    "ds4.prefill": {
+      "wall_s": 16.254411533,
+      "gpu_busy_s": 15.455264862,
+      "gpu_idle_s": 0.799146671,
+      "categories": {
+        "vq_restore": {
+          "seconds": 8.671776216,
+          "wall_percent": 53.350293232052124,
+          "launches": 110175
+        },
+        "vq_other": {
+          "seconds": 4.068776394,
+          "wall_percent": 25.031828348504014,
+          "launches": 440700
+        },
+        "attention_kda_core": {
+          "seconds": 1.23941169,
+          "wall_percent": 7.625078813119282,
+          "launches": 444
+        },
+        "dense_shared_control_projections": {
+          "seconds": 1.01199476,
+          "wall_percent": 6.2259698417591425,
+          "launches": 9245
+        },
+        "mhc_norm": {
+          "seconds": 0.384382294,
+          "wall_percent": 2.364787511498771,
+          "launches": 1661
+        },
+        "other_gpu": {
+          "seconds": 0.036058621,
+          "wall_percent": 0.2218389815392156,
+          "launches": 1217
+        },
+        "router_select": {
+          "seconds": 0.018619438,
+          "wall_percent": 0.11455005899289852,
+          "launches": 168
+        },
+        "output_head": {
+          "seconds": 0.008969662,
+          "wall_percent": 0.055182938993451905,
+          "launches": 24
+        }
+      }
+    },
+    "ds4.decode": {
+      "wall_s": 8.002444249,
+      "gpu_busy_s": 7.879320488,
+      "gpu_idle_s": 0.123123761,
+      "categories": {
+        "dense_shared_control_projections": {
+          "seconds": 3.030174683,
+          "wall_percent": 37.86561441372936,
+          "launches": 49056
+        },
+        "vq_restore": {
+          "seconds": 2.550512582,
+          "wall_percent": 31.871669487965715,
+          "launches": 32256
+        },
+        "vq_other": {
+          "seconds": 0.938958198,
+          "wall_percent": 11.733392558371575,
+          "launches": 129024
+        },
+        "attention_kda_core": {
+          "seconds": 0.864976256,
+          "wall_percent": 10.808900744395551,
+          "launches": 3552
+        },
+        "output_head": {
+          "seconds": 0.232916716,
+          "wall_percent": 2.9105696803711654,
+          "launches": 192
+        },
+        "mhc_norm": {
+          "seconds": 0.173789719,
+          "wall_percent": 2.1717079631228557,
+          "launches": 13312
+        },
+        "router_select": {
+          "seconds": 0.075139476,
+          "wall_percent": 0.9389565695429813,
+          "launches": 1344
+        },
+        "other_gpu": {
+          "seconds": 0.010588906,
+          "wall_percent": 0.13232089684752515,
+          "launches": 8416
+        }
+      }
+    },
+    "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; MMA gather-to-reduce is also routed VQ; Q4 small dots and quantize_mmq-to-round are dense; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+  },
+  "reusable_ncu": [
+    {
+      "id": "0",
+      "kernel": "glmvq_restore_vec(glmvq_matrix, __nv_bfloat16 *)",
+      "grid": "(4096, 1, 1)",
+      "block": "(256, 1, 1)",
+      "metrics": {
+        "gpu__time_duration.sum": [
+          "55.200000",
+          "us"
+        ],
+        "sm__cycles_elapsed.avg.per_second": [
+          "2.187079",
+          "Ghz"
+        ],
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "14.702072",
+          "%"
+        ],
+        "lts__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "39.229979",
+          "%"
+        ],
+        "l1tex__t_sector_hit_rate.pct": [
+          "60.407588",
+          "%"
+        ],
+        "lts__t_sector_hit_rate.pct": [
+          "19.942334",
+          "%"
+        ],
+        "launch__registers_per_thread": [
+          "22",
+          "register/thread"
+        ],
+        "launch__shared_mem_per_block": [
+          "1.024000",
+          "Kbyte/block"
+        ],
+        "sm__warps_active.avg.pct_of_peak_sustained_active": [
+          "84.048116",
+          "%"
+        ],
+        "lts__d_sectors_fill_sysmem.sum": [
+          "55930.000000",
+          "sector"
+        ],
+        "lts__t_sectors_aperture_sysmem_op_write.sum": [
+          "524688.000000",
+          "sector"
+        ],
+        "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": [
+          "54.778036",
+          "inst"
+        ],
+        "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": [
+          "1.071371",
+          "inst"
+        ]
+      }
+    },
+    {
+      "id": "1",
+      "kernel": "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)",
+      "grid": "(8, 1, 1)",
+      "block": "(256, 1, 1)",
+      "metrics": {
+        "gpu__time_duration.sum": [
+          "4.192000",
+          "us"
+        ],
+        "sm__cycles_elapsed.avg.per_second": [
+          "2.168893",
+          "Ghz"
+        ],
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "0.146649",
+          "%"
+        ],
+        "lts__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "0.578675",
+          "%"
+        ],
+        "l1tex__t_sector_hit_rate.pct": [
+          "16.666667",
+          "%"
+        ],
+        "lts__t_sector_hit_rate.pct": [
+          "47.863248",
+          "%"
+        ],
+        "launch__registers_per_thread": [
+          "16",
+          "register/thread"
+        ],
+        "launch__shared_mem_per_block": [
+          "1.024000",
+          "Kbyte/block"
+        ],
+        "sm__warps_active.avg.pct_of_peak_sustained_active": [
+          "17.254821",
+          "%"
+        ],
+        "lts__d_sectors_fill_sysmem.sum": [
+          "401.000000",
+          "sector"
+        ],
+        "lts__t_sectors_aperture_sysmem_op_write.sum": [
+          "147.000000",
+          "sector"
+        ],
+        "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": [
+          "130.441612",
+          "inst"
+        ],
+        "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": [
+          "0.000000",
+          "inst"
+        ]
+      }
+    },
+    {
+      "id": "2",
+      "kernel": "std::enable_if<!T7, void>::type internal::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, 0, 1, 1, 0, 6, 0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+      "grid": "(1024, 1, 1)",
+      "block": "(16, 4, 1)",
+      "metrics": {
+        "gpu__time_duration.sum": [
+          "97.824000",
+          "us"
+        ],
+        "sm__cycles_elapsed.avg.per_second": [
+          "2.195911",
+          "Ghz"
+        ],
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "11.003692",
+          "%"
+        ],
+        "lts__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "16.994388",
+          "%"
+        ],
+        "l1tex__t_sector_hit_rate.pct": [
+          "32.526550",
+          "%"
+        ],
+        "lts__t_sector_hit_rate.pct": [
+          "2.106469",
+          "%"
+        ],
+        "launch__registers_per_thread": [
+          "164",
+          "register/thread"
+        ],
+        "launch__shared_mem_per_block": [
+          "1.296000",
+          "Kbyte/block"
+        ],
+        "sm__warps_active.avg.pct_of_peak_sustained_active": [
+          "23.125709",
+          "%"
+        ],
+        "lts__d_sectors_fill_sysmem.sum": [
+          "525597.000000",
+          "sector"
+        ],
+        "lts__t_sectors_aperture_sysmem_op_write.sum": [
+          "1717.000000",
+          "sector"
+        ],
+        "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": [
+          "27.810757",
+          "inst"
+        ],
+        "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": [
+          "12.590515",
+          "inst"
+        ]
+      }
+    },
+    {
+      "id": "3",
+      "kernel": "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)",
+      "grid": "(16, 1, 1)",
+      "block": "(256, 1, 1)",
+      "metrics": {
+        "gpu__time_duration.sum": [
+          "4.544000",
+          "us"
+        ],
+        "sm__cycles_elapsed.avg.per_second": [
+          "2.188435",
+          "Ghz"
+        ],
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "0.268162",
+          "%"
+        ],
+        "lts__throughput.avg.pct_of_peak_sustained_elapsed": [
+          "0.736527",
+          "%"
+        ],
+        "l1tex__t_sector_hit_rate.pct": [
+          "0.000000",
+          "%"
+        ],
+        "lts__t_sector_hit_rate.pct": [
+          "30.373002",
+          "%"
+        ],
+        "launch__registers_per_thread": [
+          "16",
+          "register/thread"
+        ],
+        "launch__shared_mem_per_block": [
+          "1.024000",
+          "Kbyte/block"
+        ],
+        "sm__warps_active.avg.pct_of_peak_sustained_active": [
+          "16.541085",
+          "%"
+        ],
+        "lts__d_sectors_fill_sysmem.sum": [
+          "403.000000",
+          "sector"
+        ],
+        "lts__t_sectors_aperture_sysmem_op_write.sum": [
+          "732.000000",
+          "sector"
+        ],
+        "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": [
+          "130.531661",
+          "inst"
+        ],
+        "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": [
+          "0.000000",
+          "inst"
+        ]
+      }
+    }
+  ],
+  "isolated": [
+    {
+      "label": "decode-13-32",
+      "bits": 13,
+      "warps": 32,
+      "input_row": 0,
+      "matrices": 24,
+      "max_bound_ratio": 0.8308490818205138,
+      "baseline_ms": 2.6267189979553223,
+      "direct_ms": 0.19173400104045868,
+      "full_output_relative_rms": 9.083124314201996e-05,
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "library_sha256": "5ab5c6ee17f613891c72a4f0d45dcf814f91f7f4d1148d46457dc9478e168679",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Saved layer3 experts and layer0 normalized input;12bit masks the actual plane for a layout case. Rotation exceeds L2; book/activation hot. Projection bounds, fused SwiGLU and ordered reduction pass; no whole-workload or broad quality claim."
+    },
+    {
+      "label": "decode-13-16",
+      "bits": 13,
+      "warps": 16,
+      "input_row": 5,
+      "matrices": 24,
+      "max_bound_ratio": 0.8192741809723489,
+      "baseline_ms": 2.7007439136505127,
+      "direct_ms": 0.2243330031633377,
+      "full_output_relative_rms": 0.0,
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "library_sha256": "5ab5c6ee17f613891c72a4f0d45dcf814f91f7f4d1148d46457dc9478e168679",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Saved layer3 experts and layer0 normalized input;12bit masks the actual plane for a layout case. Rotation exceeds L2; book/activation hot. Projection bounds, fused SwiGLU and ordered reduction pass; no whole-workload or broad quality claim."
+    },
+    {
+      "label": "decode-12-32",
+      "bits": 12,
+      "warps": 32,
+      "input_row": 1,
+      "matrices": 24,
+      "max_bound_ratio": 0.7943962980601467,
+      "baseline_ms": 2.6533679962158203,
+      "direct_ms": 0.1789339929819107,
+      "full_output_relative_rms": 0.0002704672224353999,
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "library_sha256": "5ab5c6ee17f613891c72a4f0d45dcf814f91f7f4d1148d46457dc9478e168679",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Saved layer3 experts and layer0 normalized input;12bit masks the actual plane for a layout case. Rotation exceeds L2; book/activation hot. Projection bounds, fused SwiGLU and ordered reduction pass; no whole-workload or broad quality claim."
+    },
+    {
+      "label": "decode-12-16",
+      "bits": 12,
+      "warps": 16,
+      "input_row": 5,
+      "matrices": 24,
+      "max_bound_ratio": 0.7901744027095385,
+      "baseline_ms": 2.5750010013580322,
+      "direct_ms": 0.22661800682544708,
+      "full_output_relative_rms": 9.697501081973314e-05,
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "library_sha256": "5ab5c6ee17f613891c72a4f0d45dcf814f91f7f4d1148d46457dc9478e168679",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Saved layer3 experts and layer0 normalized input;12bit masks the actual plane for a layout case. Rotation exceeds L2; book/activation hot. Projection bounds, fused SwiGLU and ordered reduction pass; no whole-workload or broad quality claim."
+    },
+    {
+      "label": "decode-13-16-matched",
+      "bits": 13,
+      "warps": 16,
+      "input_row": 0,
+      "matrices": 24,
+      "max_bound_ratio": 0.8308490818205138,
+      "baseline_ms": 2.652920961380005,
+      "direct_ms": 0.22232399880886078,
+      "full_output_relative_rms": 9.083124314201996e-05,
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "library_sha256": "5ab5c6ee17f613891c72a4f0d45dcf814f91f7f4d1148d46457dc9478e168679",
+      "libraries": [
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Saved layer3 experts and layer0 normalized input;12bit masks the actual plane for a layout case. Rotation exceeds L2; book/activation hot. Projection bounds, fused SwiGLU and ordered reduction pass; no whole-workload or broad quality claim."
+    }
+  ],
+  "resources": {
+    "warps": 32,
+    "gate_up_registers": 64,
+    "down_registers": 56,
+    "stack_bytes": 0,
+    "local_bytes": 0,
+    "gate_up_dynamic_shared_bytes": 73728,
+    "down_dynamic_shared_bytes": 98304,
+    "extra_session_bytes": 165056
+  },
+  "logical_traffic": {
+    "packed_indices_plane_gain_bytes_per_token": 1723072512,
+    "avoided_expanded_bf16_write_bytes_per_token": 16911433728,
+    "avoided_expanded_bf16_read_bytes_per_token": 16911433728,
+    "note": "42 layers x top8; arithmetic layout counts, not DRAM counters; books, activations and other model operations excluded"
+  },
+  "arithmetic": "Per-codeword FP32 gain then BF16, FP32 FMA/reduction with changed order, BF16 gate/up, original clamp and BF16 SiLU/product; ascending-expert weighted BF16 reduction",
+  "reference": {
+    "commit": "7fb26cc332d740416792204a29c7d13d2986caf5",
+    "files": [
+      "src/cuda/cuda_vq_row.inc.cu:146-280",
+      "src/cuda/cuda_vq_persist.inc.cu:1-210"
+    ],
+    "deviations": "GLM per-element gain/BF16 boundary, strided persistent work, GVQ1 bound descriptors, host-selected sorted experts; no ds41 PDL or state rules"
+  },
+  "quality": {
+    "q4": {
+      "labels": [
+        "q4-stream-quality",
+        "vq-decode-q4-quality"
+      ],
+      "manifest_sha256": "d16712edb7940dd070873d7aa660f7731c036605484a1bc54155e5f5c802fe47",
+      "binary_sha256": [
+        "a6dab7fc05690af848731fc0a71848f3005af3064939c829aa7259b02d25bbfa",
+        "91d5652ef6cb2b97525f80f6f3bbe7d8a86403959d14173cfa42edee279ad8cc"
+      ],
+      "targets": 106,
+      "paired_nll_delta": -0.003493644195708699,
+      "case_bootstrap95": [
+        -0.006999054803732217,
+        0.00101581362098219
+      ],
+      "cases": [
+        {
+          "id": "ko_summary",
+          "targets": 24,
+          "nll_delta": -0.00855582763620936,
+          "kl_mean": 0.0003147651077408465,
+          "kl_max": 0.001831149477838509,
+          "tv_mean": 0.0033710720521487416,
+          "max_abs_logit": 3.9453125,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "q4-stream-quality",
+              "answer": "<tool_call>MeetingMemoHeaderAndBodyFormatReal\n- type: meeting memo\n- title: (None)\n- date: (None)\n- meta: (None)\n- part: header\n- items:\n  - id: 0\n    name and alternative names: (None)\n    misc: (None)\n  - id: 1\n    name and alternative names: (None)\n    misc: (None)\n  - id: 2\n    name and alternative",
+              "stopped": false
+            },
+            {
+              "label": "vq-decode-q4-quality",
+              "answer": "<tool_call>MeetingMemoHeaderAndBodyAnalysisTransferWMLSemanticsShallow<meetingMemoData>meeting memo syntax formalism meta semantic representation parse syntax grammar rules regex deep parse structure parse tree root node parse root node syntax parse root node structure parse root node details parse root node subnodes parse root node subnodes syntax parse root node subnodes structure parse root node subnodes details parse root node subnodes details decomposition parse root node subnodes details decomposition syntax parse root node subnodes details decomposition",
+              "stopped": false
+            }
+          ]
+        },
+        {
+          "id": "en_reading",
+          "targets": 22,
+          "nll_delta": -0.005391560928123631,
+          "kl_mean": 0.0009341899338105582,
+          "kl_max": 0.004254399261140557,
+          "tv_mean": 0.010258468831954505,
+          "max_abs_logit": 2.5,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "q4-stream-quality",
+              "answer": "The River branch opens at 11:00 on Friday due to the electrical inspection, later than its usual 09:00.",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-q4-quality",
+              "answer": "The River branch opens at 11:00 on Friday due to the electrical inspection, later than its usual 09:00.",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "python_order",
+          "targets": 24,
+          "nll_delta": 0.004293900915037785,
+          "kl_mean": 0.00021132493475702624,
+          "kl_max": 0.001964617409743713,
+          "tv_mean": 0.002990701767702665,
+          "max_abs_logit": 0.984375,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "q4-stream-quality",
+              "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-q4-quality",
+              "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "math_cost",
+          "targets": 23,
+          "nll_delta": -0.00587655518455352,
+          "kl_mean": 0.0009059684713144101,
+          "kl_max": 0.004390368071983729,
+          "tv_mean": 0.009117538451714133,
+          "max_abs_logit": 2.25,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "q4-stream-quality",
+              "answer": "One arithmetic expression: 4 × 7 + 5 × 3 − 6 = 28 + 15 − 6 = 37, so the final cost is 37 dollars.",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-q4-quality",
+              "answer": "One arithmetic expression: 4 × 7 + 5 × 3 − 6 = 28 + 15 − 6 = 37, so the final cost is 37 dollars.",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "json_contract",
+          "targets": 10,
+          "nll_delta": -0.0011850391291719832,
+          "kl_mean": 0.00015619718630865997,
+          "kl_max": 0.00117373756434592,
+          "tv_mean": 0.0012626578848957397,
+          "max_abs_logit": 0.78125,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "q4-stream-quality",
+              "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-q4-quality",
+              "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "ko_stop",
+          "targets": 3,
+          "nll_delta": -0.0008048474939445308,
+          "kl_mean": 0.00011057441316733779,
+          "kl_max": 0.0003205859695754604,
+          "tv_mean": 0.0008792255045024052,
+          "max_abs_logit": 0.53125,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "q4-stream-quality",
+              "answer": "완료",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-q4-quality",
+              "answer": "완료",
+              "stopped": true
+            }
+          ]
+        }
+      ],
+      "scope": "same artifact bytes; direct VQ dot/reduction order with preserved gain/BF16/SwiGLU boundaries. Judge substantive task changes, not bit identity. Existing artifact failures remain open; assess each generated task."
+    },
+    "original": {
+      "labels": [
+        "mma-quality-off",
+        "vq-decode-original-quality"
+      ],
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "binary_sha256": [
+        "526071150aab611114d3c40a91ad24306a99c4f831e6327173837aa91f3c3a96",
+        "91d5652ef6cb2b97525f80f6f3bbe7d8a86403959d14173cfa42edee279ad8cc"
+      ],
+      "targets": 106,
+      "paired_nll_delta": 0.0037791967790485586,
+      "case_bootstrap95": [
+        -0.0011582383496600902,
+        0.0105352249534743
+      ],
+      "cases": [
+        {
+          "id": "ko_summary",
+          "targets": 24,
+          "nll_delta": 0.001915012428031974,
+          "kl_mean": 0.0003800301424510515,
+          "kl_max": 0.002940781684596326,
+          "tv_mean": 0.004161003964432783,
+          "max_abs_logit": 0.9921875,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "mma-quality-off",
+              "answer": "**변경된 일정 요약**\n- 원래 출시일은 화요일 오전 10시였으나, 마지막 접근성 점검을 위해 목요일 오후 3시로 미뤘습니다.\n- 서버 이전 작업은 이미 완료되어 다시 수행할 필요가 없습니다.\n\n**담당자 요약**\n- 민지:",
+              "stopped": false
+            },
+            {
+              "label": "vq-decode-original-quality",
+              "answer": "**변경된 일정 요약**\n- 원래 출시일은 화요일 오전 10시였으나, 마지막 접근성 점검을 위해 목요일 오후 3시로 미뤘습니다.\n- 민지는 결제 화면 점검을, 준호는 사용자 안내문 수정을 담당하며, 서버 이전 작",
+              "stopped": false
+            }
+          ]
+        },
+        {
+          "id": "en_reading",
+          "targets": 22,
+          "nll_delta": 0.017266395586217828,
+          "kl_mean": 0.001104754319586083,
+          "kl_max": 0.011390300122625223,
+          "tv_mean": 0.009280500366482917,
+          "max_abs_logit": 1.875,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "mma-quality-off",
+              "answer": "The River branch opens later than usual on Friday, at 11:00.",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-original-quality",
+              "answer": "The River branch opens later than usual on Friday, at 11:00.",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "python_order",
+          "targets": 24,
+          "nll_delta": 0.0019914819818773744,
+          "kl_mean": 0.00037381449216025426,
+          "kl_max": 0.003899350419105856,
+          "tv_mean": 0.0030953597770110677,
+          "max_abs_logit": 2.7578125,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "mma-quality-off",
+              "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-original-quality",
+              "answer": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "math_cost",
+          "targets": 23,
+          "nll_delta": -0.0017176620495090867,
+          "kl_mean": 0.001254214770374792,
+          "kl_max": 0.006722664213565853,
+          "tv_mean": 0.008977494589944365,
+          "max_abs_logit": 1.7265625,
+          "argmax_agreement": 0.9565217391304348,
+          "answers": [
+            {
+              "label": "mma-quality-off",
+              "answer": "4 * 7 + 5 * 3 - 6 = 28 + 15 - 6 = 37.\nSo the final cost is 37 dollars.",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-original-quality",
+              "answer": "4 * 7 + 5 * 3 - 6 = 28 + 15 - 6 = 37.\nSo the final cost is 37 dollars.",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "json_contract",
+          "targets": 10,
+          "nll_delta": -0.003279882804505263,
+          "kl_mean": 0.001672558017303253,
+          "kl_max": 0.009526126629100098,
+          "tv_mean": 0.003259885501853274,
+          "max_abs_logit": 3.71875,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "mma-quality-off",
+              "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-original-quality",
+              "answer": "{\"city\": \"Seoul\", \"unit\": \"C\"}",
+              "stopped": true
+            }
+          ]
+        },
+        {
+          "id": "ko_stop",
+          "targets": 3,
+          "nll_delta": -0.00023888499056923251,
+          "kl_mean": 2.843063527353756e-05,
+          "kl_max": 6.476787448512212e-05,
+          "tv_mean": 0.00042373316307763536,
+          "max_abs_logit": 0.5,
+          "argmax_agreement": 1.0,
+          "answers": [
+            {
+              "label": "mma-quality-off",
+              "answer": "완료",
+              "stopped": true
+            },
+            {
+              "label": "vq-decode-original-quality",
+              "answer": "완료",
+              "stopped": true
+            }
+          ]
+        }
+      ],
+      "scope": "same artifact bytes; direct VQ dot/reduction order with preserved gain/BF16/SwiGLU boundaries. Judge substantive task changes, not bit identity. Existing artifact failures remain open; assess each generated task.",
+      "assessment": "Five previously passing answers unchanged. Original Korean summary remains coherent and matches saved chunk64 wording; both capped at96, not a completed-summary pass. No added observed task failure; bounded screen, not broad quality."
+    }
+  },
+  "decision": "Adopt shape/resource-guarded N1 direct kernel with DECODE=0 fallback; Q4 artifact remains unadopted. Speed evidence is same KeepHead Q4 artifact only.",
+  "missing": [
+    "Q4 artifact adoption",
+    "8K/long context",
+    "MTP",
+    "capture",
+    "vision",
+    "API serving",
+    "state reuse"
+  ],
+  "local_receipts": [
+    {
+      "path": "scratch/glm-vq/vq-decode-ab.json",
+      "sha256": "eeba19d62b9284df298672817c3b91da077732567f41be8e65ff77eb69e99f08"
+    },
+    {
+      "path": "scratch/glm-vq/q4-stream-retained-profile/receipt.json",
+      "sha256": "33d90848b72bd5dc727a764c3f7a072aec9912cee0d00b47e8e15c69f61177e6"
+    },
+    {
+      "path": "scratch/glm-vq/decode-native-build.log",
+      "sha256": "826a2edd97f9931ccb8038ac19735924810d21a675b933d13362761489396e5f"
+    },
+    {
+      "path": "scratch/glm-vq/decode-native-resources.txt",
+      "sha256": "81b232c82f89657c12df120e3a4e1c2b1ea92cbea3fe5e0a912bde2c9257fddf"
+    },
+    {
+      "path": "scratch/glm-vq/linear-replay-fixture.json",
+      "sha256": "d4f54637eb5ee51e2cbc936b1b139b3ea3286e979e5466363cea026e4bd5c817"
+    }
+  ],
+  "loaded_libraries": {
+    "pid": 408617,
+    "command": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/glm_vq_quality /home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-NonExpert-KeepHead-GGUF /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/fixtures/glm-vq-text-quality.json /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/vq-decode-q4-quality/cases ",
+    "libraries": [
+      "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+      "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+      "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+      "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+    ],
+    "driver": "615.71.09"
+  },
+  "default_selection": "Final edit enables previously qualified path when DS4_GLMVQ_DECODE is unset. No kernel arithmetic change; reuse isolated, A/B and text gates. Rebuild once for retained whole-path profile.",
+  "original_quality_comparison_sha256": "8b01667eadeb4995d3043350b4da31f59f2f930acc8ee674669a6b86ea541ebd"
+}

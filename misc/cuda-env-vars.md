@@ -1184,6 +1184,15 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   reduction order changes. Double buffering lost the measured GLM replay
   comparison and remains available only in the diagnostic harness.
 
+- `DS4_GLMVQ_DECODE=0` disables persistent direct VQ expert decode.
+  Default On after bounded 2K workload and changed-arithmetic text checks. Eligible
+  single-token calls use a shared E4M3 codebook and cooperative packed
+  loads, with fused gate/up/SwiGLU. Per-weight gain/BF16 boundaries remain;
+  FP32 reduction order changes. Unsupported shape/alignment/resources and
+  verification batches use restore+GEMM. See the
+  [qualification](../docs/glm53-vq-decode-2026-10-16.md);
+  no MTP or graph support is implied.
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

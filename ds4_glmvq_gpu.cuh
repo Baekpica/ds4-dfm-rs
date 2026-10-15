@@ -5,6 +5,7 @@
 #include "cuda/glm_vq_kda.cuh"
 #include "cuda/glm_vq_attention.cuh"
 #include "cuda/glm_vq_mma.cuh"
+#include "cuda/glm_vq_decode.cuh"
 
 enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,
@@ -34,7 +35,20 @@ struct ds4_gvq_ctx {
     std::vector<uint32_t> order;
     std::vector<uint8_t> token_used;
     uint64_t mma_calls = 0, mma_items = 0;
+    ds4_gpu_tensor *decode = nullptr;
+    uint32_t decode_blocks = 0;
+    glmvq_decode_item decode_items[GVQ_USED] = {};
+    uint64_t decode_calls = 0;
 };
+
+static constexpr uint64_t GVQ_DECODE_WORK =
+    (sizeof(glmvq_decode_item) * GVQ_USED + 15u) / 16u * 16u;
+
+static uint64_t gvq_decode_bytes() {
+    const char *enabled = getenv("DS4_GLMVQ_DECODE");
+    if (enabled && !strcmp(enabled, "0")) { return 0; }
+    return GVQ_DECODE_WORK + GVQ_USED * (GVQ_FFN * sizeof(__nv_bfloat16) + GVQ_HIDDEN * sizeof(float));
+}
 
 static uint64_t gvq_mma_bytes(uint32_t rows) {
     const char *enabled = getenv("DS4_GLMVQ_MMA");
@@ -139,7 +153,8 @@ extern "C" ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
 }
 
 extern "C" uint64_t ds4_gpu_gvq_workspace(uint32_t rows) {
-    return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t) + gvq_mma_bytes(rows);
+    return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t) +
+        gvq_mma_bytes(rows) + gvq_decode_bytes();
 }
 
 extern "C" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
@@ -157,8 +172,13 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
             (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,
             (unsigned long long)ctx->mma->bytes);
     }
+    if (ctx->decode) {
+        fprintf(stderr, "ds4: GLM VQ direct decode calls=%llu workspace=%llu\n",
+            (unsigned long long)ctx->decode_calls, (unsigned long long)ctx->decode->bytes);
+    }
     if (ctx->handle) { (void)cublasDestroy(ctx->handle); }
     ds4_gpu_tensor_free(ctx->mma);
+    ds4_gpu_tensor_free(ctx->decode);
     ds4_gpu_tensor_free(ctx->pairs);
     ds4_gpu_tensor_free(ctx->workspace);
     ds4_gpu_tensor_free(ctx->scratch);
@@ -175,6 +195,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     const char *mma = getenv("DS4_GLMVQ_MMA");
     if (mma && strcmp(mma, "0") && strcmp(mma, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_MMA accepts 0 or 1\n");
+        return nullptr;
+    }
+    const char *decode = getenv("DS4_GLMVQ_DECODE");
+    if (decode && strcmp(decode, "0") && strcmp(decode, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_DECODE accepts 0 or 1\n");
         return nullptr;
     }
     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};
@@ -228,6 +253,19 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         } else {
             (void)cudaGetLastError();
             fprintf(stderr, "ds4: GLM VQ MMA resources unavailable; using restore+GEMM\n");
+        }
+    }
+    const uint64_t decode_bytes = gvq_decode_bytes();
+    if (decode_bytes) {
+        // The published artifact uses a shared 8192-word E4M3 layer book.
+        // Reserve descriptors and intermediate rows before any execution.
+        const cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);
+        if (status == cudaSuccess) {
+            ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);
+            if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }
+        } else {
+            (void)cudaGetLastError();
+            fprintf(stderr, "ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\n");
         }
     }
     return ctx;
@@ -554,6 +592,46 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     return cuda_ok(cudaGetLastError(), "GLM VQ grouped MMA");
 }
 
+static bool gvq_decode_fits(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
+    const auto &sources = ctx->model->source;
+    const void *book = nullptr;
+    for (uint32_t slot = 0; slot < GVQ_USED; slot++) {
+        const uint32_t pair = ctx->grouped[slot], expert = ctx->routes[pair];
+        auto &item = ctx->decode_items[slot];
+        glmvq_matrix *outputs[] = {&item.gate, &item.up, &item.down};
+        for (uint32_t projection = 0; projection < 3; projection++) {
+            const uint32_t index = matrices[projection * GVQ_EXPERTS + expert];
+            if (index >= sources.size()) { return false; }
+            const auto &s = sources[index];
+            const uint32_t rows = projection == 2 ? GVQ_HIDDEN : GVQ_FFN;
+            const uint32_t cols = projection == 2 ? GVQ_FFN : GVQ_HIDDEN;
+            if (!book) { book = s.vq.book; }
+            if (s.storage != GLMVQ_WEIGHT_VQ || s.rows != rows || s.cols != cols ||
+                s.vq.rows != rows || s.vq.cols != cols || s.vq.precision != GLMVQ_E4M3 ||
+                !s.vq.main || !s.vq.plane || !s.vq.gain || !book || s.vq.book != book ||
+                (uintptr_t)s.vq.main % 128 || (uintptr_t)s.vq.plane % 128 ||
+                (uintptr_t)book % 16 || (uintptr_t)s.vq.gain % sizeof(__half)) { return false; }
+            *outputs[projection] = s.vq;
+        }
+        item.pair = pair;
+    }
+    return true;
+}
+
+static int gvq_decode_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights, float clamp) {
+    if (!ds4_gpu_tensor_write(ctx->decode, 0, ctx->decode_items, sizeof(ctx->decode_items))) { return 0; }
+    uint8_t *base = (uint8_t *)ctx->decode->ptr;
+    auto *items = (glmvq_decode_item *)base;
+    auto *mid = (__nv_bfloat16 *)(base + GVQ_DECODE_WORK);
+    auto *partial = (float *)(mid + GVQ_USED * GVQ_FFN);
+    ctx->decode_calls++;
+    return cuda_ok(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL>(items,
+        ctx->decode_items[0].gate.book, (const float *)input->ptr, mid, partial,
+        (float *)out->ptr, (const float *)weights->ptr, clamp, ctx->decode_blocks,
+        ds4_current_stream()), "GLM VQ direct decode");
+}
+
 extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         ds4_gpu_tensor *gathered, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
         ds4_gpu_tensor *mid, ds4_gpu_tensor *down, const ds4_gpu_tensor *input,
@@ -583,6 +661,11 @@ extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         cursor[e] = offsets[e];
     }
     for (uint64_t i = 0; i < pairs; i++) { ctx->grouped[cursor[ctx->routes[i]]++] = (uint32_t)i; }
+    // Verification widths keep their separate fallback. This path changes
+    // transport/reduction, never expert weight precision or routing order.
+    if (ctx->decode && rows == 1 && gvq_decode_fits(ctx, matrices)) {
+        return gvq_decode_moe(ctx, out, input, weights, clamp);
+    }
     if (!ds4_gpu_tensor_write(ctx->pairs, 0, ctx->grouped.data(), pairs * sizeof(uint32_t))) { return 0; }
     // Keep single-token decode and small verification widths on their own path.
     if (ctx->mma && rows >= GVQ_MMA_TOKENS && gvq_mma_fits(ctx, matrices)) {
