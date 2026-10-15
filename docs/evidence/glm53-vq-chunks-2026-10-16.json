@@ -1,0 +1,2935 @@
+{
+  "decision": "No chunk/default change: wider-chunk whole-inference gain is not repeatable.",
+  "build": {
+    "head": "6b5a00e27deb8a00a3d6d4016496402871ca31a6",
+    "command": [
+      "make",
+      "-j2",
+      "CUDA_ARCH=sm_121",
+      "CUDA_HOME=/usr/local/cuda-13.4",
+      "ds4-bench-perf",
+      "tests/glm_vq_quality"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 75.35553180400166,
+    "scope": "Default-only enablement of the explicitly qualified FP8 path and corrected source citation; existing arithmetic, quality and A/B evidence reused. No further model check.",
+    "binaries": {
+      "ds4-bench-perf": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "tests/glm_vq_quality": "8475abc12ff7fa0f336b985b39ffd3060f7a49f53aa4170cdac7fdd6ff798198"
+    }
+  },
+  "matched_plain_runs": {
+    "identity": {
+      "head": "c29d3ba7979f0fbe41f938d5d210c89f47c127a2",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ]
+    },
+    "runs": [
+      {
+        "label": "chunk-512-1",
+        "chunk": 512,
+        "prefill_tps": 401.57,
+        "decode_tps": 7.34,
+        "steady_decode_tps": 7.37,
+        "inferred_prefill_seconds": 4.9406081131558635,
+        "inferred_decode_seconds": 4.359673024523161,
+        "inferred_inference_seconds": 9.300281137679026,
+        "first_decode_seconds": 0.1545,
+        "process_wall_seconds": 207.61454598401906,
+        "minimum_system_available_gib": 35.42744445800781,
+        "observed_busy_sm_mhz": [
+          2184,
+          2190,
+          2190
+        ],
+        "mma_calls": 168,
+        "mma_workitems": 45795,
+        "mma_workspace_bytes": 151093248,
+        "max32_slot_use": 0.45489682279724863,
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      },
+      {
+        "label": "chunk-2048-1",
+        "chunk": 2048,
+        "prefill_tps": 331.54,
+        "decode_tps": 7.35,
+        "steady_decode_tps": 7.37,
+        "inferred_prefill_seconds": 5.984194968932859,
+        "inferred_decode_seconds": 4.35374149659864,
+        "inferred_inference_seconds": 10.337936465531499,
+        "first_decode_seconds": 0.1478,
+        "process_wall_seconds": 290.44136766399606,
+        "minimum_system_available_gib": 32.844337463378906,
+        "observed_busy_sm_mhz": [
+          2184,
+          2190,
+          2190
+        ],
+        "mma_calls": 42,
+        "mma_workitems": 27406,
+        "mma_workspace_bytes": 604372992,
+        "max32_slot_use": 0.760125519959133,
+        "logit_max_abs": 1.1484375,
+        "logit_rms": 0.2236515518040687,
+        "kl_ref_candidate": 1.2394932324278696e-07,
+        "tv": 4.914422589843723e-07,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      },
+      {
+        "label": "chunk-1024-1",
+        "chunk": 1024,
+        "prefill_tps": 456.16,
+        "decode_tps": 7.35,
+        "steady_decode_tps": 7.37,
+        "inferred_prefill_seconds": 4.349351104875482,
+        "inferred_decode_seconds": 4.35374149659864,
+        "inferred_inference_seconds": 8.703092601474122,
+        "first_decode_seconds": 0.1504,
+        "process_wall_seconds": 285.08385863297735,
+        "minimum_system_available_gib": 34.551517486572266,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184,
+          2190
+        ],
+        "mma_calls": 84,
+        "mma_workitems": 33435,
+        "mma_workspace_bytes": 302186496,
+        "max32_slot_use": 0.6230596680125617,
+        "logit_max_abs": 1.25,
+        "logit_rms": 0.2286467870704278,
+        "kl_ref_candidate": 2.3137932515010346e-07,
+        "tv": 7.623702458408472e-07,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      },
+      {
+        "label": "chunk-1024-2",
+        "chunk": 1024,
+        "prefill_tps": 356.69,
+        "decode_tps": 7.38,
+        "steady_decode_tps": 7.4,
+        "inferred_prefill_seconds": 5.562252936723766,
+        "inferred_decode_seconds": 4.336043360433605,
+        "inferred_inference_seconds": 9.898296297157371,
+        "first_decode_seconds": 0.1471,
+        "process_wall_seconds": 230.45258230200852,
+        "minimum_system_available_gib": 34.53241729736328,
+        "observed_busy_sm_mhz": [
+          2184,
+          2187.0,
+          2190
+        ],
+        "mma_calls": 84,
+        "mma_workitems": 33435,
+        "mma_workspace_bytes": 302186496,
+        "max32_slot_use": 0.6230596680125617,
+        "logit_max_abs": 1.25,
+        "logit_rms": 0.2286467870704278,
+        "kl_ref_candidate": 2.3137932515010346e-07,
+        "tv": 7.623702458408472e-07,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      },
+      {
+        "label": "chunk-512-2",
+        "chunk": 512,
+        "prefill_tps": 396.9,
+        "decode_tps": 7.33,
+        "steady_decode_tps": 7.36,
+        "inferred_prefill_seconds": 4.998740236835475,
+        "inferred_decode_seconds": 4.365620736698499,
+        "inferred_inference_seconds": 9.364360973533975,
+        "first_decode_seconds": 0.1489,
+        "process_wall_seconds": 210.67721293799696,
+        "minimum_system_available_gib": 35.42860794067383,
+        "observed_busy_sm_mhz": [
+          2184,
+          2184,
+          2190
+        ],
+        "mma_calls": 168,
+        "mma_workitems": 45795,
+        "mma_workspace_bytes": 151093248,
+        "max32_slot_use": 0.45489682279724863,
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      }
+    ],
+    "medians": {
+      "512": {
+        "runs": 2,
+        "prefill_tps": 399.235,
+        "decode_tps": 7.335,
+        "inferred_inference_seconds": 9.3323210556065,
+        "mma_workitems": 45795.0,
+        "max32_slot_use": 0.45489682279724863
+      },
+      "1024": {
+        "runs": 2,
+        "prefill_tps": 406.425,
+        "decode_tps": 7.365,
+        "inferred_inference_seconds": 9.300694449315746,
+        "mma_workitems": 33435.0,
+        "max32_slot_use": 0.6230596680125617
+      },
+      "2048": {
+        "runs": 1,
+        "prefill_tps": 331.54,
+        "decode_tps": 7.35,
+        "inferred_inference_seconds": 10.337936465531499,
+        "mma_workitems": 27406,
+        "max32_slot_use": 0.760125519959133
+      }
+    },
+    "scope": "Original artifact, unchanged accepted kernels, 1984 raw-code tokens +32 forced greedy tokens, ctx2048, MTP/capture off. Inference time inferred from rounded phase throughput; not HTTP TTFT. max32 slot use is weight-reuse capacity, not tensor arithmetic utilization; kernel already skips empty n8 subtiles. Long-prefix quality assessed separately."
+  },
+  "receipts": {
+    "chunk-512-1": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-512-1/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-512-1/proof"
+      ],
+      "head": "c29d3ba7979f0fbe41f938d5d210c89f47c127a2",
+      "diff": "",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000e5a63d4bc000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e5a6396e0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e5a639630000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e5a639470000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000e5a639390000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000e5a634e00000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000e5a634b70000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e5a63d480000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e5a639360000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e5a639330000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e5a639300000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000e5a607800000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 207.61454598401906
+    },
+    "chunk-2048-1": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-2048-1/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-2048-1/proof"
+      ],
+      "head": "c29d3ba7979f0fbe41f938d5d210c89f47c127a2",
+      "diff": "",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000f8e9820bc000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f8e97e2e0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f8e97e230000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f8e97e070000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000f8e97df90000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000f8e979a00000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000f8e979770000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f8e982080000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f8e97df60000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f8e97df30000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f8e97df00000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000f8e94c400000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "2048",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 2048,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 290.44136766399606
+    },
+    "chunk-1024-1": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-1024-1/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-1024-1/proof"
+      ],
+      "head": "c29d3ba7979f0fbe41f938d5d210c89f47c127a2",
+      "diff": "",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000ee473494c000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ee4730b70000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ee4730ac0000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ee4730900000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000ee4730820000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000ee472c200000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ee472bf70000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000ee4734910000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000ee47307f0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ee47307c0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000ee4730790000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000ee46fec00000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 285.08385863297735
+    },
+    "chunk-1024-2": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-1024-2/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-1024-2/proof"
+      ],
+      "head": "c29d3ba7979f0fbe41f938d5d210c89f47c127a2",
+      "diff": "",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000ee02c1c4c000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ee02bde70000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ee02bddc0000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ee02bdc00000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000ee02bdb20000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000ee02b9600000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ee02b9370000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000ee02c1c10000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000ee02bdaf0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ee02bdac0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000ee02b9340000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000ee028c000000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 230.45258230200852
+    },
+    "chunk-512-2": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-512-2/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-512-2/proof"
+      ],
+      "head": "c29d3ba7979f0fbe41f938d5d210c89f47c127a2",
+      "diff": "",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000e43384dac000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e43380fd0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e43380f20000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e43380d60000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000e43380c80000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000e4337c600000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000e4337c370000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e43384d70000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e43380c50000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e43380c20000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e43380bf0000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000e4334f000000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 210.67721293799696
+    },
+    "retained-after-kda-profile": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/retained-after-kda-profile/memory.jsonl",
+        "--",
+        "nsys",
+        "profile",
+        "--trace=cuda,nvtx,cublas-verbose",
+        "--sample=none",
+        "--cpuctxsw=none",
+        "--cuda-memory-usage=true",
+        "--output",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/retained-after-kda-profile/trace",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/retained-after-kda-profile/proof"
+      ],
+      "head": "6b5a00e27deb8a00a3d6d4016496402871ca31a6",
+      "diff": "",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000f1b57f42c000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f1b57b650000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f1b57b5a0000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f1b57b3e0000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000f1b57b300000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000f1b576e00000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000f1b576b70000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f1b57f3f0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f1b57b2d0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f1b576b40000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f1b576b10000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000f1b549800000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "512",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 512,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": true,
+      "cuda_memory_trace": true,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 294.86950199399143
+    },
+    "chunk-1024-profile": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-1024-profile/memory.jsonl",
+        "--",
+        "nsys",
+        "profile",
+        "--trace=cuda,nvtx,cublas-verbose",
+        "--sample=none",
+        "--cpuctxsw=none",
+        "--cuda-memory-usage=true",
+        "--output",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-1024-profile/trace",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/chunk-1024-profile/proof"
+      ],
+      "head": "c29d3ba7979f0fbe41f938d5d210c89f47c127a2",
+      "diff": "",
+      "binary_sha256": "05d4649fe50f07e60a401ce463887d6bc9758a1726c8f6696b1743b79f745a81",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "f545e45f3917a53718351737ea6481074aece256b4d86f5f0a28ab1378825688",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000ed93de94c000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ed93dab70000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ed93daac0000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ed93da900000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000ed93da820000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000ed93d6200000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ed93d5f70000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000ed93de910000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000ed93da7f0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ed93da7c0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000ed93da790000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000ed93a8c00000)\n",
+      "environment": {
+        "DS4_GLMVQ_MMA": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_Q4_STREAM": "1",
+        "DS4_GLMVQ_Q4_DIRECT": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": true,
+      "cuda_memory_trace": true,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 237.21735474900925
+    }
+  },
+  "profiling": {
+    "retained-after-kda-profile": {
+      "rates": {
+        "ctx_tokens": "1984",
+        "prefill_tokens": "1984",
+        "prefill_tps": "391.20",
+        "gen_tokens": "32",
+        "gen_tps": "7.41",
+        "gen_tps_ss": "7.44",
+        "first_token_sec": "0.1491",
+        "kvcache_bytes": "180425524"
+      },
+      "phase_costs": {
+        "ds4.prefill": {
+          "wall_s": 5.071549494,
+          "gpu_busy_s": 4.835902775,
+          "gpu_idle_s": 0.235646719,
+          "categories": {
+            "vq_other": {
+              "seconds": 2.054752878,
+              "wall_percent": 40.51528789043501,
+              "launches": 840
+            },
+            "attention_kda_core": {
+              "seconds": 1.331284467,
+              "wall_percent": 26.250053727662586,
+              "launches": 444
+            },
+            "dense_shared_control_projections": {
+              "seconds": 1.004664071,
+              "wall_percent": 19.809805113576992,
+              "launches": 8013
+            },
+            "mhc_norm": {
+              "seconds": 0.386357948,
+              "wall_percent": 7.618144089041991,
+              "launches": 1661
+            },
+            "other_gpu": {
+              "seconds": 0.031091823,
+              "wall_percent": 0.613063582181024,
+              "launches": 1049
+            },
+            "router_select": {
+              "seconds": 0.018809272,
+              "wall_percent": 0.37087821034286844,
+              "launches": 168
+            },
+            "output_head": {
+              "seconds": 0.008850638,
+              "wall_percent": 0.17451546140821317,
+              "launches": 24
+            }
+          }
+        },
+        "ds4.decode": {
+          "wall_s": 4.316500869,
+          "gpu_busy_s": 4.245257725,
+          "gpu_idle_s": 0.071243144,
+          "categories": {
+            "dense_shared_control_projections": {
+              "seconds": 2.589914193,
+              "wall_percent": 60.000316728767466,
+              "launches": 45312
+            },
+            "attention_kda_core": {
+              "seconds": 0.83856785,
+              "wall_percent": 19.427028406790757,
+              "launches": 3552
+            },
+            "vq_other": {
+              "seconds": 0.32123479,
+              "wall_percent": 7.442018425318195,
+              "launches": 4032
+            },
+            "output_head": {
+              "seconds": 0.231275863,
+              "wall_percent": 5.35794779194796,
+              "launches": 192
+            },
+            "mhc_norm": {
+              "seconds": 0.176795725,
+              "wall_percent": 4.095811175892526,
+              "launches": 13312
+            },
+            "router_select": {
+              "seconds": 0.075358533,
+              "wall_percent": 1.7458245761330808,
+              "launches": 1344
+            },
+            "other_gpu": {
+              "seconds": 0.00954232,
+              "wall_percent": 0.22106609704472643,
+              "launches": 7072
+            }
+          }
+        },
+        "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; MMA gather-to-reduce is also routed VQ; Q4 small dots and quantize_mmq-to-round are dense; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+      },
+      "kernels": {
+        "ds4.prefill": [
+          {
+            "name": "glmvq_kda(float *, float *, float *, float *, float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+            "seconds": 1.179504119,
+            "launches": 136
+          },
+          {
+            "name": "void glmvq_mma_kernel<(unsigned int)256, (unsigned int)32, (glmvq_mma_stage)1>(const glmvq_source *, const glmvq_mma_item *, unsigned int, const unsigned char *, const __nv_bfloat16 *, float *, __nv_bfloat16 *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.664680251,
+            "launches": 168
+          },
+          {
+            "name": "void glmvq_mma_kernel<(unsigned int)256, (unsigned int)32, (glmvq_mma_stage)2>(const glmvq_source *, const glmvq_mma_item *, unsigned int, const unsigned char *, const __nv_bfloat16 *, float *, __nv_bfloat16 *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.659222288,
+            "launches": 168
+          },
+          {
+            "name": "void glmvq_mma_kernel<(unsigned int)256, (unsigned int)32, (glmvq_mma_stage)0>(const glmvq_source *, const glmvq_mma_item *, unsigned int, const unsigned char *, const __nv_bfloat16 *, float *, __nv_bfloat16 *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.643545088,
+            "launches": 168
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.279540209,
+            "launches": 642
+          },
+          {
+            "name": "glmvq_rms(const float *, const __nv_bfloat16 *, const float *, float *, unsigned int, float, glmvq_norm)",
+            "seconds": 0.194989926,
+            "launches": 945
+          },
+          {
+            "name": "void glmvq_fp8_restore<__nv_bfloat16>(const unsigned char *, const float *, unsigned int, unsigned int, T1 *)",
+            "seconds": 0.158986875,
+            "launches": 716
+          },
+          {
+            "name": "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.143751157,
+            "launches": 2117
+          },
+          {
+            "name": "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.133337694,
+            "launches": 2693
+          },
+          {
+            "name": "glmvq_hc_expand(const float *, const float *, const float *, float *, unsigned int, unsigned long)",
+            "seconds": 0.114111037,
+            "launches": 360
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_simt_sgemm_64x64_8x5_tn_align1>(T1::Params)",
+            "seconds": 0.108137368,
+            "launches": 360
+          },
+          {
+            "name": "glmvq_hc_split(const float *, const float *, const float *, const float *, float *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.078398842,
+            "launches": 360
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_96x256x64_2_48x64x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.056029977,
+            "launches": 102
+          },
+          {
+            "name": "glmvq_mma_reduce(float *, const float *, const float *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.050103502,
+            "launches": 168
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_192x144x64_2_48x72x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.039746075,
+            "launches": 42
+          },
+          {
+            "name": "glmvq_mma_gather(__nv_bfloat16 *, const float *, const unsigned int *, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.037201749,
+            "launches": 168
+          },
+          {
+            "name": "glmvq_attn_softmax(__nv_bfloat16 *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, float)",
+            "seconds": 0.035265937,
+            "launches": 44
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x256_32x3_tn_align8>(T1::Params)",
+            "seconds": 0.033200304,
+            "launches": 44
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_192x128x64_2_96x32x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.028128036,
+            "launches": 252
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_simt_sgemm_64x128_8x5_tn_align1>(T1::Params)",
+            "seconds": 0.025165055,
+            "launches": 168
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_192x176x64_2_48x88x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.024336611,
+            "launches": 33
+          },
+          {
+            "name": "gvq_router(int *, float *, const float *, const float *, float)",
+            "seconds": 0.018809272,
+            "launches": 168
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x160x64_2_64x40x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.015400602,
+            "launches": 101
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+            "seconds": 0.014437589,
+            "launches": 22
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_160x128x64_2_80x32x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.013274132,
+            "launches": 33
+          },
+          {
+            "name": "add_kernel(float *, const float *, const float *, unsigned int)",
+            "seconds": 0.011925427,
+            "launches": 168
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x96x64_3_64x24x64_tmaAB_alignCD4_bz_NNNN",
+            "seconds": 0.009518896,
+            "launches": 11
+          },
+          {
+            "name": "glmvq_swiglu(const float *, const float *, float *, unsigned long, float)",
+            "seconds": 0.009315531,
+            "launches": 180
+          },
+          {
+            "name": "glmvq_attn_output(float *, const __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.008505163,
+            "launches": 44
+          },
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.007063851,
+            "launches": 1
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8>(T1::Params)",
+            "seconds": 0.006819563,
+            "launches": 204
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_32x64x128_4_16x32x128_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.006179593,
+            "launches": 272
+          },
+          {
+            "name": "glmvq_round_rows(float *, unsigned long)",
+            "seconds": 0.004347942,
+            "launches": 172
+          },
+          {
+            "name": "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, float, float, float, (bool)0, float, float, float, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",
+            "seconds": 0.003768328,
+            "launches": 528
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_64x3_nn_align8>(T1::Params)",
+            "seconds": 0.003545222,
+            "launches": 11
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.003349797,
+            "launches": 11
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x128x64_3_64x32x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.002571592,
+            "launches": 33
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_64x3_tn_align8>(T1::Params)",
+            "seconds": 0.002352995,
+            "launches": 68
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_32x32x128_6_32x8x128_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.002260292,
+            "launches": 136
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_64x88x64_5_16x88x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.001713763,
+            "launches": 44
+          },
+          {
+            "name": "fill_f32_kernel(float *, unsigned long, float)",
+            "seconds": 0.00155005,
+            "launches": 3
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x112x64_3_32x56x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.000776674,
+            "launches": 11
+          },
+          {
+            "name": "repeat_hc_rows_kernel(float *, const float *, unsigned int, unsigned int, unsigned int)",
+            "seconds": 0.000667363,
+            "launches": 4
+          },
+          {
+            "name": "embed_tokens_generic_kernel(float *, const int *, const unsigned char *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 0.000123232,
+            "launches": 4
+          },
+          {
+            "name": "void glmvq_convert<float, float>(const T2 *, T1 *, unsigned long)",
+            "seconds": 8.6688e-05,
+            "launches": 68
+          },
+          {
+            "name": "gvq_positions(unsigned int *, unsigned int, unsigned int)",
+            "seconds": 5.9232e-05,
+            "launches": 44
+          },
+          {
+            "name": "hc_weighted_sum_kernel(float *, const float *, const float *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 6.208e-06,
+            "launches": 4
+          }
+        ],
+        "ds4.decode": [
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 1.432952535,
+            "launches": 7648
+          },
+          {
+            "name": "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.617557305,
+            "launches": 14752
+          },
+          {
+            "name": "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.561652699,
+            "launches": 11232
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x256_32x3_tn_align8>(T1::Params)",
+            "seconds": 0.362162936,
+            "launches": 352
+          },
+          {
+            "name": "void glmvq_fp8_dot<(glmvq_fp8_feed)0>(const unsigned char *, const float *, const float *, float *, unsigned int, unsigned int, unsigned int)",
+            "seconds": 0.352584261,
+            "launches": 5728
+          },
+          {
+            "name": "void glmvq_decode_gu<(unsigned int)13, (unsigned int)32, (glmvq_decode_output)0>(const glmvq_decode_item *, const uint4 *, const float *, __nv_bfloat16 *, float, float *, float *)",
+            "seconds": 0.223255589,
+            "launches": 1344
+          },
+          {
+            "name": "glmvq_rms(const float *, const __nv_bfloat16 *, const float *, float *, unsigned int, float, glmvq_norm)",
+            "seconds": 0.095849282,
+            "launches": 7584
+          },
+          {
+            "name": "void glmvq_decode_down<(unsigned int)13, (unsigned int)32>(const glmvq_decode_item *, const uint4 *, const __nv_bfloat16 *, float *)",
+            "seconds": 0.09567248,
+            "launches": 1344
+          },
+          {
+            "name": "std::enable_if<T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)1, (bool)1, (bool)0, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.089228041,
+            "launches": 308
+          },
+          {
+            "name": "glmvq_hc_split(const float *, const float *, const float *, const float *, float *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.075541089,
+            "launches": 2880
+          },
+          {
+            "name": "gvq_router(int *, float *, const float *, const float *, float)",
+            "seconds": 0.075358533,
+            "launches": 1344
+          },
+          {
+            "name": "std::enable_if<T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)1, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.071790542,
+            "launches": 132
+          },
+          {
+            "name": "void gemv2T_kernel_val<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (int)128, (int)16, (int)2, (int)2, (bool)0, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13, T6, T6)",
+            "seconds": 0.063690391,
+            "launches": 176
+          },
+          {
+            "name": "glmvq_kda(float *, float *, float *, float *, float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+            "seconds": 0.034847975,
+            "launches": 1088
+          },
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)5, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.023289989,
+            "launches": 2176
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x1_tn_align8>(T1::Params)",
+            "seconds": 0.012978132,
+            "launches": 44
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x64_64x3_nn_align8>(T1::Params)",
+            "seconds": 0.01183749,
+            "launches": 44
+          },
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, float, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)9, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)",
+            "seconds": 0.010603214,
+            "launches": 1344
+          },
+          {
+            "name": "void dot_kernel<float, (int)128, (int)0, cublasDotParams<cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>>>(T4)",
+            "seconds": 0.009909076,
+            "launches": 2880
+          },
+          {
+            "name": "glmvq_hc_expand(const float *, const float *, const float *, float *, unsigned int, unsigned long)",
+            "seconds": 0.005824203,
+            "launches": 2880
+          },
+          {
+            "name": "void reduce_1Block_kernel<float, (int)128, (int)7, cublasGemvTensorStridedBatched<float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>>(const T1 *, T1, T4, int, const T1 *, T1, T5, T6, cublasPointerMode_t, cublasLtEpilogue_t, cublasGemvTensorStridedBatched<const biasType<T6::value_type, T1>::type>)",
+            "seconds": 0.003937926,
+            "launches": 2880
+          },
+          {
+            "name": "glmvq_attn_softmax(__nv_bfloat16 *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, float)",
+            "seconds": 0.003207428,
+            "launches": 352
+          },
+          {
+            "name": "glmvq_decode_reduce(float *, const float *, const float *, const glmvq_decode_item *)",
+            "seconds": 0.002306721,
+            "launches": 1344
+          },
+          {
+            "name": "glmvq_swiglu(const float *, const float *, float *, unsigned long, float)",
+            "seconds": 0.00199754,
+            "launches": 1440
+          },
+          {
+            "name": "add_kernel(float *, const float *, const float *, unsigned int)",
+            "seconds": 0.001787651,
+            "launches": 1344
+          },
+          {
+            "name": "glmvq_round_rows(float *, unsigned long)",
+            "seconds": 0.001708099,
+            "launches": 1376
+          },
+          {
+            "name": "glmvq_attn_output(float *, const __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.000597858,
+            "launches": 352
+          },
+          {
+            "name": "gvq_positions(unsigned int *, unsigned int, unsigned int)",
+            "seconds": 0.000373024,
+            "launches": 352
+          },
+          {
+            "name": "embed_tokens_generic_kernel(float *, const int *, const unsigned char *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 9.5808e-05,
+            "launches": 32
+          },
+          {
+            "name": "hc_weighted_sum_kernel(float *, const float *, const float *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 4.7425e-05,
+            "launches": 32
+          },
+          {
+            "name": "repeat_hc_rows_kernel(float *, const float *, unsigned int, unsigned int, unsigned int)",
+            "seconds": 4.4032e-05,
+            "launches": 32
+          }
+        ]
+      },
+      "runtime_apis": {
+        "ds4.prefill": [
+          {
+            "name": "cudaMemcpy_v3020",
+            "seconds": 4.566083086,
+            "calls": 345
+          },
+          {
+            "name": "cuKernelSetAttribute",
+            "seconds": 0.191474633,
+            "calls": 1745
+          },
+          {
+            "name": "cuLibraryLoadData",
+            "seconds": 0.072637787,
+            "calls": 30
+          },
+          {
+            "name": "cudaMalloc_v3020",
+            "seconds": 0.035411078,
+            "calls": 71
+          },
+          {
+            "name": "cudaLaunchKernel_v7000",
+            "seconds": 0.025797761,
+            "calls": 9071
+          },
+          {
+            "name": "cuLaunchKernelEx",
+            "seconds": 0.004913547,
+            "calls": 1745
+          },
+          {
+            "name": "cudaLaunchKernelExC_v11060",
+            "seconds": 0.00361943,
+            "calls": 528
+          },
+          {
+            "name": "cuKernelGetFunction",
+            "seconds": 0.002414692,
+            "calls": 855
+          },
+          {
+            "name": "cuLaunchKernel",
+            "seconds": 0.002409477,
+            "calls": 855
+          },
+          {
+            "name": "cuLibraryGetKernel",
+            "seconds": 0.001851684,
+            "calls": 57
+          },
+          {
+            "name": "cudaStreamIsCapturing_v10000",
+            "seconds": 0.000843649,
+            "calls": 5202
+          },
+          {
+            "name": "cudaMemcpyAsync_v3020",
+            "seconds": 0.000840545,
+            "calls": 336
+          },
+          {
+            "name": "cuKernelGetName",
+            "seconds": 0.000515649,
+            "calls": 9071
+          },
+          {
+            "name": "cuStreamGetGreenCtx",
+            "seconds": 0.000337681,
+            "calls": 5202
+          },
+          {
+            "name": "cudaMemGetInfo_v3020",
+            "seconds": 3.5408e-05,
+            "calls": 1
+          },
+          {
+            "name": "cudaEventCreateWithFlags_v3020",
+            "seconds": 1.0928e-05,
+            "calls": 18
+          },
+          {
+            "name": "cudaFree_v3020",
+            "seconds": 6.208e-06,
+            "calls": 1
+          }
+        ],
+        "ds4.decode": [
+          {
+            "name": "cudaMemcpy_v3020",
+            "seconds": 3.921850796,
+            "calls": 2784
+          },
+          {
+            "name": "cudaLaunchKernel_v7000",
+            "seconds": 0.22796095,
+            "calls": 74376
+          },
+          {
+            "name": "cuKernelGetFunction",
+            "seconds": 0.008548173,
+            "calls": 440
+          },
+          {
+            "name": "cudaStreamIsCapturing_v10000",
+            "seconds": 0.004657557,
+            "calls": 30208
+          },
+          {
+            "name": "cuKernelGetName",
+            "seconds": 0.004115787,
+            "calls": 74376
+          },
+          {
+            "name": "cuStreamGetGreenCtx",
+            "seconds": 0.001938032,
+            "calls": 30208
+          },
+          {
+            "name": "cuLaunchKernel",
+            "seconds": 0.001584625,
+            "calls": 440
+          },
+          {
+            "name": "cuLibraryGetKernel",
+            "seconds": 1.5888e-05,
+            "calls": 5
+          }
+        ]
+      },
+      "host_detail": {
+        "ds4.prefill": {
+          "first_kernel_after_phase_start_s": 0.044040977,
+          "largest_api_calls": [
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.070316905,
+              "start_s": 2.741083475,
+              "end_s": 2.81140038
+            },
+            {
+              "name": "cuKernelSetAttribute",
+              "seconds": 0.060522105,
+              "start_s": 1.55515026,
+              "end_s": 1.615672365
+            },
+            {
+              "name": "cuKernelSetAttribute",
+              "seconds": 0.045175395,
+              "start_s": 0.235248653,
+              "end_s": 0.280424048
+            },
+            {
+              "name": "cuKernelSetAttribute",
+              "seconds": 0.039143818,
+              "start_s": 3.956469599,
+              "end_s": 3.995613417
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.034482163,
+              "start_s": 0.607241589,
+              "end_s": 0.641723752
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.034363603,
+              "start_s": 0.734471698,
+              "end_s": 0.768835301
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.033644754,
+              "start_s": 0.573311971,
+              "end_s": 0.606956725
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.033479682,
+              "start_s": 0.480627449,
+              "end_s": 0.514107131
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.033338945,
+              "start_s": 0.828246909,
+              "end_s": 0.861585854
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.033325825,
+              "start_s": 0.700829712,
+              "end_s": 0.734155537
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.033322258,
+              "start_s": 1.200447925,
+              "end_s": 1.233770183
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.033302545,
+              "start_s": 0.861903999,
+              "end_s": 0.895206544
+            }
+          ],
+          "device_allocation_sizes": [
+            306184192,
+            33554432,
+            16384,
+            1024,
+            131072,
+            67108864,
+            151093248,
+            165056,
+            4194304,
+            268435456,
+            2048,
+            2048,
+            8388608,
+            8388608,
+            33554432,
+            33554432,
+            33554432,
+            49152,
+            49152,
+            33554432,
+            8192,
+            3145728,
+            3145728,
+            1048576,
+            1048576,
+            33554432,
+            33554432,
+            33554432,
+            33554432,
+            8388608,
+            33554432,
+            33554432,
+            33554432,
+            8388608,
+            67108864,
+            16384,
+            16384,
+            67108864,
+            67108864,
+            8388608,
+            262144,
+            262144,
+            65536,
+            1048576,
+            1048576,
+            4200448,
+            619520,
+            156053504,
+            14509568,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072
+          ]
+        },
+        "ds4.decode": {
+          "first_kernel_after_phase_start_s": 0.000460672,
+          "largest_api_calls": [
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011991378,
+              "start_s": 3.648184805,
+              "end_s": 3.660176183
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011848593,
+              "start_s": 2.433871964,
+              "end_s": 2.445720557
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011789089,
+              "start_s": 3.511024106,
+              "end_s": 3.522813195
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011681249,
+              "start_s": 0.42186941,
+              "end_s": 0.433550659
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011619073,
+              "start_s": 0.692090067,
+              "end_s": 0.70370914
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011532289,
+              "start_s": 1.632829591,
+              "end_s": 1.64436188
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011526497,
+              "start_s": 3.2398602,
+              "end_s": 3.251386697
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.0111176,
+              "start_s": 3.917740102,
+              "end_s": 3.928857702
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011028176,
+              "start_s": 1.499215137,
+              "end_s": 1.510243313
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.0109572,
+              "start_s": 2.298785795,
+              "end_s": 2.309742995
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.010873937,
+              "start_s": 2.164230315,
+              "end_s": 2.175104252
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.010733584,
+              "start_s": 1.764916123,
+              "end_s": 1.775649707
+            }
+          ],
+          "device_allocation_sizes": []
+        }
+      },
+      "mma_calls": 168,
+      "mma_workitems": 45795,
+      "mma_workspace_bytes": 151093248,
+      "max32_slot_use": 0.45489682279724863,
+      "device_allocation_peak_bytes": 87748172736,
+      "device_allocation_peak_gib": 81.72185415029526,
+      "peak_timestamp_ns": 281259066389,
+      "memory_events": 386,
+      "minimum_system_available_gib": 34.26317596435547,
+      "observed_busy_sm_mhz": [
+        2184,
+        2190,
+        2190
+      ],
+      "memory_method": "Sum live Nsight DEVICE allocations minus matching releases; final live set empty. Excludes mapped files, driver and OS storage; UMA is not CPU RAM plus VRAM.",
+      "scope": "One original-artifact chunk trace with accepted kernels; attribution is not another unprofiled A/B run. Runtime API durations overlap GPU work. max32 slot use measures weight-reuse capacity; MMA already skips unused n8 subtiles."
+    },
+    "chunk-1024-profile": {
+      "rates": {
+        "ctx_tokens": "1984",
+        "prefill_tokens": "1984",
+        "prefill_tps": "331.85",
+        "gen_tokens": "32",
+        "gen_tps": "7.31",
+        "gen_tps_ss": "7.33",
+        "first_token_sec": "0.1501",
+        "kvcache_bytes": "180425524"
+      },
+      "phase_costs": {
+        "ds4.prefill": {
+          "wall_s": 5.979311457,
+          "gpu_busy_s": 4.138450267,
+          "gpu_idle_s": 1.84086119,
+          "categories": {
+            "vq_other": {
+              "seconds": 1.543892621,
+              "wall_percent": 25.820575363950304,
+              "launches": 420
+            },
+            "attention_kda_core": {
+              "seconds": 1.289365724,
+              "wall_percent": 21.56378260728558,
+              "launches": 222
+            },
+            "dense_shared_control_projections": {
+              "seconds": 0.843292609,
+              "wall_percent": 14.103506985118738,
+              "launches": 4109
+            },
+            "mhc_norm": {
+              "seconds": 0.401885004,
+              "wall_percent": 6.721258908992136,
+              "launches": 831
+            },
+            "other_gpu": {
+              "seconds": 0.032770175,
+              "wall_percent": 0.5480593415423418,
+              "launches": 443
+            },
+            "router_select": {
+              "seconds": 0.018421443,
+              "wall_percent": 0.3080863596498884,
+              "launches": 84
+            },
+            "output_head": {
+              "seconds": 0.008293573,
+              "wall_percent": 0.1387044822743041,
+              "launches": 12
+            }
+          }
+        },
+        "ds4.decode": {
+          "wall_s": 4.378621625,
+          "gpu_busy_s": 4.306261152,
+          "gpu_idle_s": 0.072360473,
+          "categories": {
+            "dense_shared_control_projections": {
+              "seconds": 2.627616897,
+              "wall_percent": 60.01013839600722,
+              "launches": 45312
+            },
+            "attention_kda_core": {
+              "seconds": 0.858873574,
+              "wall_percent": 19.61515854889608,
+              "launches": 3552
+            },
+            "vq_other": {
+              "seconds": 0.32342581,
+              "wall_percent": 7.386475418505705,
+              "launches": 4032
+            },
+            "output_head": {
+              "seconds": 0.232735532,
+              "wall_percent": 5.315269322911637,
+              "launches": 192
+            },
+            "mhc_norm": {
+              "seconds": 0.176164546,
+              "wall_percent": 4.023287716713819,
+              "launches": 13312
+            },
+            "router_select": {
+              "seconds": 0.075418409,
+              "wall_percent": 1.7224235263762944,
+              "launches": 1344
+            },
+            "other_gpu": {
+              "seconds": 0.009466432,
+              "wall_percent": 0.2161966210085577,
+              "launches": 7072
+            }
+          }
+        },
+        "method": "Inferred from the committed eager graph launch order: gather-to-scatter is routed VQ; MMA gather-to-reduce is also routed VQ; Q4 small dots and quantize_mmq-to-round are dense; positions-to-attn_output is attention core; hc_weighted_sum-to-final-convert is head. KDA/attention projections and mHC/router GEMMs are in dense_shared_control_projections. GPU idle is an upper bound on host dispatch/allocation gaps, not isolated CPU execution. Synchronous CUDA API time overlaps GPU work and must not be added to these costs."
+      },
+      "kernels": {
+        "ds4.prefill": [
+          {
+            "name": "glmvq_kda(float *, float *, float *, float *, float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+            "seconds": 1.144811005,
+            "launches": 68
+          },
+          {
+            "name": "void glmvq_mma_kernel<(unsigned int)256, (unsigned int)32, (glmvq_mma_stage)1>(const glmvq_source *, const glmvq_mma_item *, unsigned int, const unsigned char *, const __nv_bfloat16 *, float *, __nv_bfloat16 *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.490171974,
+            "launches": 84
+          },
+          {
+            "name": "void glmvq_mma_kernel<(unsigned int)256, (unsigned int)32, (glmvq_mma_stage)2>(const glmvq_source *, const glmvq_mma_item *, unsigned int, const unsigned char *, const __nv_bfloat16 *, float *, __nv_bfloat16 *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.476436203,
+            "launches": 84
+          },
+          {
+            "name": "void glmvq_mma_kernel<(unsigned int)256, (unsigned int)32, (glmvq_mma_stage)0>(const glmvq_source *, const glmvq_mma_item *, unsigned int, const unsigned char *, const __nv_bfloat16 *, float *, __nv_bfloat16 *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.474345366,
+            "launches": 84
+          },
+          {
+            "name": "glmvq_rms(const float *, const __nv_bfloat16 *, const float *, float *, unsigned int, float, glmvq_norm)",
+            "seconds": 0.212025942,
+            "launches": 473
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.154698292,
+            "launches": 195
+          },
+          {
+            "name": "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.131488131,
+            "launches": 1059
+          },
+          {
+            "name": "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.128376925,
+            "launches": 1415
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_simt_sgemm_32x128_8x5_tn_align1>(T1::Params)",
+            "seconds": 0.122027232,
+            "launches": 180
+          },
+          {
+            "name": "glmvq_hc_expand(const float *, const float *, const float *, float *, unsigned int, unsigned long)",
+            "seconds": 0.117479799,
+            "launches": 180
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x160x64_2_64x40x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.088083464,
+            "launches": 119
+          },
+          {
+            "name": "void glmvq_fp8_restore<__nv_bfloat16>(const unsigned char *, const float *, unsigned int, unsigned int, T1 *)",
+            "seconds": 0.080546368,
+            "launches": 358
+          },
+          {
+            "name": "glmvq_hc_split(const float *, const float *, const float *, const float *, float *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.073232601,
+            "launches": 180
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_160x192x64_2_80x48x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.061000518,
+            "launches": 87
+          },
+          {
+            "name": "glmvq_mma_reduce(float *, const float *, const float *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.053017096,
+            "launches": 84
+          },
+          {
+            "name": "glmvq_mma_gather(__nv_bfloat16 *, const float *, const unsigned int *, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.049921982,
+            "launches": 84
+          },
+          {
+            "name": "glmvq_attn_softmax(__nv_bfloat16 *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, float)",
+            "seconds": 0.040841601,
+            "launches": 22
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x256_32x3_tn_align8>(T1::Params)",
+            "seconds": 0.035235845,
+            "launches": 39
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_simt_sgemm_128x256_8x4_tn_align1>(T1::Params)",
+            "seconds": 0.021317669,
+            "launches": 84
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_144x192x64_2_144x24x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.019874321,
+            "launches": 11
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_96x256x64_2_48x64x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.018510882,
+            "launches": 84
+          },
+          {
+            "name": "gvq_router(int *, float *, const float *, const float *, float)",
+            "seconds": 0.018421443,
+            "launches": 84
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x128_64x3_nn_align8>(T1::Params)",
+            "seconds": 0.017482722,
+            "launches": 11
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_112x192x64_2_112x24x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.01652923,
+            "launches": 84
+          },
+          {
+            "name": "add_kernel(float *, const float *, const float *, unsigned int)",
+            "seconds": 0.013069348,
+            "launches": 84
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.010920497,
+            "launches": 11
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8>(T1::Params)",
+            "seconds": 0.010723507,
+            "launches": 136
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x208x64_2_32x104x64_tmaAB_alignCD4_bz_NNNN",
+            "seconds": 0.010529461,
+            "launches": 11
+          },
+          {
+            "name": "glmvq_swiglu(const float *, const float *, float *, unsigned long, float)",
+            "seconds": 0.010026462,
+            "launches": 90
+          },
+          {
+            "name": "glmvq_attn_output(float *, const __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.009437025,
+            "launches": 22
+          },
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.007031566,
+            "launches": 1
+          },
+          {
+            "name": "glmvq_round_rows(float *, unsigned long)",
+            "seconds": 0.006889133,
+            "launches": 86
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_64x48x128_3_16x48x128_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.004001155,
+            "launches": 136
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_192x176x64_2_48x88x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.001860274,
+            "launches": 11
+          },
+          {
+            "name": "fill_f32_kernel(float *, unsigned long, float)",
+            "seconds": 0.001544789,
+            "launches": 3
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_192x160x64_2_48x80x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.001448728,
+            "launches": 11
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_32x64x128_4_16x32x128_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.001431094,
+            "launches": 68
+          },
+          {
+            "name": "nvjet_sm121_tst_mma_128x96x64_3_32x48x64_tmaAB_alignCD4_bz_TNNN",
+            "seconds": 0.001379091,
+            "launches": 22
+          },
+          {
+            "name": "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, float, float, float, (bool)0, float, float, float, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",
+            "seconds": 0.000836669,
+            "launches": 180
+          },
+          {
+            "name": "repeat_hc_rows_kernel(float *, const float *, unsigned int, unsigned int, unsigned int)",
+            "seconds": 0.000670555,
+            "launches": 2
+          },
+          {
+            "name": "embed_tokens_generic_kernel(float *, const int *, const unsigned char *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 0.000125728,
+            "launches": 2
+          },
+          {
+            "name": "void glmvq_convert<float, float>(const T2 *, T1 *, unsigned long)",
+            "seconds": 8.6528e-05,
+            "launches": 68
+          },
+          {
+            "name": "gvq_positions(unsigned int *, unsigned int, unsigned int)",
+            "seconds": 2.9472e-05,
+            "launches": 22
+          },
+          {
+            "name": "hc_weighted_sum_kernel(float *, const float *, const float *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 3.456e-06,
+            "launches": 2
+          }
+        ],
+        "ds4.decode": [
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 1.452565871,
+            "launches": 7648
+          },
+          {
+            "name": "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.6181926,
+            "launches": 14752
+          },
+          {
+            "name": "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)",
+            "seconds": 0.576598263,
+            "launches": 11232
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x256_32x3_tn_align8>(T1::Params)",
+            "seconds": 0.375428026,
+            "launches": 352
+          },
+          {
+            "name": "void glmvq_fp8_dot<(glmvq_fp8_feed)0>(const unsigned char *, const float *, const float *, float *, unsigned int, unsigned int, unsigned int)",
+            "seconds": 0.356370026,
+            "launches": 5728
+          },
+          {
+            "name": "void glmvq_decode_gu<(unsigned int)13, (unsigned int)32, (glmvq_decode_output)0>(const glmvq_decode_item *, const uint4 *, const float *, __nv_bfloat16 *, float, float *, float *)",
+            "seconds": 0.225156613,
+            "launches": 1344
+          },
+          {
+            "name": "void glmvq_decode_down<(unsigned int)13, (unsigned int)32>(const glmvq_decode_item *, const uint4 *, const __nv_bfloat16 *, float *)",
+            "seconds": 0.095925888,
+            "launches": 1344
+          },
+          {
+            "name": "glmvq_rms(const float *, const __nv_bfloat16 *, const float *, float *, unsigned int, float, glmvq_norm)",
+            "seconds": 0.095721019,
+            "launches": 7584
+          },
+          {
+            "name": "std::enable_if<T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)1, (bool)1, (bool)0, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.089740386,
+            "launches": 308
+          },
+          {
+            "name": "gvq_router(int *, float *, const float *, const float *, float)",
+            "seconds": 0.075418409,
+            "launches": 1344
+          },
+          {
+            "name": "glmvq_hc_split(const float *, const float *, const float *, const float *, float *, float *, unsigned int, unsigned int, float)",
+            "seconds": 0.075120527,
+            "launches": 2880
+          },
+          {
+            "name": "std::enable_if<T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)1, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.074120182,
+            "launches": 132
+          },
+          {
+            "name": "void gemv2T_kernel_val<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (int)128, (int)16, (int)2, (int)2, (bool)0, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13, T6, T6)",
+            "seconds": 0.067138569,
+            "launches": 176
+          },
+          {
+            "name": "glmvq_kda(float *, float *, float *, float *, float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, const float *, unsigned int, unsigned int, float)",
+            "seconds": 0.035462394,
+            "launches": 1088
+          },
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)5, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)",
+            "seconds": 0.023251431,
+            "launches": 2176
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x1_tn_align8>(T1::Params)",
+            "seconds": 0.013294087,
+            "launches": 44
+          },
+          {
+            "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x64_64x3_nn_align8>(T1::Params)",
+            "seconds": 0.011947245,
+            "launches": 44
+          },
+          {
+            "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, float, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)9, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)",
+            "seconds": 0.010402165,
+            "launches": 1344
+          },
+          {
+            "name": "void dot_kernel<float, (int)128, (int)0, cublasDotParams<cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>>>(T4)",
+            "seconds": 0.010146407,
+            "launches": 2880
+          },
+          {
+            "name": "glmvq_hc_expand(const float *, const float *, const float *, float *, unsigned int, unsigned long)",
+            "seconds": 0.005735703,
+            "launches": 2880
+          },
+          {
+            "name": "void reduce_1Block_kernel<float, (int)128, (int)7, cublasGemvTensorStridedBatched<float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>>(const T1 *, T1, T4, int, const T1 *, T1, T5, T6, cublasPointerMode_t, cublasLtEpilogue_t, cublasGemvTensorStridedBatched<const biasType<T6::value_type, T1>::type>)",
+            "seconds": 0.00398644,
+            "launches": 2880
+          },
+          {
+            "name": "glmvq_attn_softmax(__nv_bfloat16 *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, float)",
+            "seconds": 0.003155619,
+            "launches": 352
+          },
+          {
+            "name": "glmvq_decode_reduce(float *, const float *, const float *, const glmvq_decode_item *)",
+            "seconds": 0.002343309,
+            "launches": 1344
+          },
+          {
+            "name": "glmvq_swiglu(const float *, const float *, float *, unsigned long, float)",
+            "seconds": 0.001845398,
+            "launches": 1440
+          },
+          {
+            "name": "glmvq_round_rows(float *, unsigned long)",
+            "seconds": 0.001789589,
+            "launches": 1376
+          },
+          {
+            "name": "add_kernel(float *, const float *, const float *, unsigned int)",
+            "seconds": 0.001691791,
+            "launches": 1344
+          },
+          {
+            "name": "glmvq_attn_output(float *, const __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned long)",
+            "seconds": 0.000576798,
+            "launches": 352
+          },
+          {
+            "name": "gvq_positions(unsigned int *, unsigned int, unsigned int)",
+            "seconds": 0.000335871,
+            "launches": 352
+          },
+          {
+            "name": "embed_tokens_generic_kernel(float *, const int *, const unsigned char *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 0.000124351,
+            "launches": 32
+          },
+          {
+            "name": "repeat_hc_rows_kernel(float *, const float *, unsigned int, unsigned int, unsigned int)",
+            "seconds": 5.9007e-05,
+            "launches": 32
+          },
+          {
+            "name": "hc_weighted_sum_kernel(float *, const float *, const float *, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "seconds": 5.7216e-05,
+            "launches": 32
+          }
+        ]
+      },
+      "runtime_apis": {
+        "ds4.prefill": [
+          {
+            "name": "cudaMemcpy_v3020",
+            "seconds": 3.825877328,
+            "calls": 173
+          },
+          {
+            "name": "cudaMalloc_v3020",
+            "seconds": 1.643192296,
+            "calls": 71
+          },
+          {
+            "name": "cuKernelSetAttribute",
+            "seconds": 0.241350061,
+            "calls": 850
+          },
+          {
+            "name": "cuLibraryLoadData",
+            "seconds": 0.081216111,
+            "calls": 28
+          },
+          {
+            "name": "cudaLaunchKernel_v7000",
+            "seconds": 0.016793244,
+            "calls": 4641
+          },
+          {
+            "name": "cuKernelGetFunction",
+            "seconds": 0.003634055,
+            "calls": 450
+          },
+          {
+            "name": "cuLaunchKernelEx",
+            "seconds": 0.003229754,
+            "calls": 850
+          },
+          {
+            "name": "cudaLaunchKernelExC_v11060",
+            "seconds": 0.003094571,
+            "calls": 180
+          },
+          {
+            "name": "cuLibraryGetKernel",
+            "seconds": 0.001862146,
+            "calls": 54
+          },
+          {
+            "name": "cuLaunchKernel",
+            "seconds": 0.001607224,
+            "calls": 450
+          },
+          {
+            "name": "cudaMemGetInfo_v3020",
+            "seconds": 0.00057254,
+            "calls": 1
+          },
+          {
+            "name": "cudaMemcpyAsync_v3020",
+            "seconds": 0.000458972,
+            "calls": 168
+          },
+          {
+            "name": "cudaStreamIsCapturing_v10000",
+            "seconds": 0.000447435,
+            "calls": 2602
+          },
+          {
+            "name": "cudaMemsetAsync_v3020",
+            "seconds": 0.000270366,
+            "calls": 84
+          },
+          {
+            "name": "cuKernelGetName",
+            "seconds": 0.000268416,
+            "calls": 4641
+          },
+          {
+            "name": "cuStreamGetGreenCtx",
+            "seconds": 0.000173309,
+            "calls": 2602
+          },
+          {
+            "name": "cudaEventCreateWithFlags_v3020",
+            "seconds": 1.3264e-05,
+            "calls": 18
+          },
+          {
+            "name": "cudaFree_v3020",
+            "seconds": 9.76e-07,
+            "calls": 1
+          }
+        ],
+        "ds4.decode": [
+          {
+            "name": "cudaMemcpy_v3020",
+            "seconds": 3.964622352,
+            "calls": 2784
+          },
+          {
+            "name": "cudaLaunchKernel_v7000",
+            "seconds": 0.244497308,
+            "calls": 74376
+          },
+          {
+            "name": "cuKernelGetFunction",
+            "seconds": 0.010918,
+            "calls": 440
+          },
+          {
+            "name": "cudaStreamIsCapturing_v10000",
+            "seconds": 0.004482033,
+            "calls": 30208
+          },
+          {
+            "name": "cuKernelGetName",
+            "seconds": 0.003888841,
+            "calls": 74376
+          },
+          {
+            "name": "cuStreamGetGreenCtx",
+            "seconds": 0.001880619,
+            "calls": 30208
+          },
+          {
+            "name": "cuLaunchKernel",
+            "seconds": 0.001709477,
+            "calls": 440
+          },
+          {
+            "name": "cuLibraryGetKernel",
+            "seconds": 1.1856e-05,
+            "calls": 5
+          }
+        ]
+      },
+      "host_detail": {
+        "ds4.prefill": {
+          "first_kernel_after_phase_start_s": 1.646969439,
+          "largest_api_calls": [
+            {
+              "name": "cudaMalloc_v3020",
+              "seconds": 0.617854125,
+              "start_s": 0.329680234,
+              "end_s": 0.947534359
+            },
+            {
+              "name": "cudaMalloc_v3020",
+              "seconds": 0.448441679,
+              "start_s": 0.961439796,
+              "end_s": 1.409881475
+            },
+            {
+              "name": "cudaMalloc_v3020",
+              "seconds": 0.134969649,
+              "start_s": 0.19232537,
+              "end_s": 0.327295019
+            },
+            {
+              "name": "cudaMalloc_v3020",
+              "seconds": 0.125687956,
+              "start_s": 0.001872674,
+              "end_s": 0.12756063
+            },
+            {
+              "name": "cuKernelSetAttribute",
+              "seconds": 0.10166219,
+              "start_s": 1.837565158,
+              "end_s": 1.939227348
+            },
+            {
+              "name": "cuKernelSetAttribute",
+              "seconds": 0.078209572,
+              "start_s": 4.000642789,
+              "end_s": 4.078852361
+            },
+            {
+              "name": "cudaMalloc_v3020",
+              "seconds": 0.064699716,
+              "start_s": 0.127564646,
+              "end_s": 0.192264362
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.058830046,
+              "start_s": 2.612456503,
+              "end_s": 2.671286549
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.058332034,
+              "start_s": 3.519256207,
+              "end_s": 3.577588241
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.057677287,
+              "start_s": 3.307027634,
+              "end_s": 3.364704921
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.056524239,
+              "start_s": 3.36508863,
+              "end_s": 3.421612869
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.055902307,
+              "start_s": 3.15663035,
+              "end_s": 3.212532657
+            }
+          ],
+          "device_allocation_sizes": [
+            478150656,
+            33554432,
+            32768,
+            1024,
+            131072,
+            67108864,
+            302186496,
+            165056,
+            4194304,
+            268435456,
+            4096,
+            4096,
+            16777216,
+            16777216,
+            67108864,
+            67108864,
+            67108864,
+            98304,
+            98304,
+            67108864,
+            16384,
+            6291456,
+            6291456,
+            2097152,
+            2097152,
+            67108864,
+            67108864,
+            67108864,
+            67108864,
+            16777216,
+            67108864,
+            67108864,
+            67108864,
+            16777216,
+            134217728,
+            32768,
+            32768,
+            134217728,
+            134217728,
+            16777216,
+            524288,
+            524288,
+            131072,
+            2097152,
+            2097152,
+            8400896,
+            619520,
+            156053504,
+            14509568,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072,
+            2097152,
+            131072
+          ]
+        },
+        "ds4.decode": {
+          "first_kernel_after_phase_start_s": 0.000473276,
+          "largest_api_calls": [
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.012508504,
+              "start_s": 3.013061418,
+              "end_s": 3.025569922
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011880412,
+              "start_s": 3.41944786,
+              "end_s": 3.431328272
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.01183166,
+              "start_s": 3.97013395,
+              "end_s": 3.98196561
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011672621,
+              "start_s": 2.461158458,
+              "end_s": 2.472831079
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011635982,
+              "start_s": 0.559980679,
+              "end_s": 0.571616661
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011626782,
+              "start_s": 1.241228625,
+              "end_s": 1.252855407
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011605262,
+              "start_s": 1.919122467,
+              "end_s": 1.930727729
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011563997,
+              "start_s": 2.324598788,
+              "end_s": 2.336162785
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011492318,
+              "start_s": 0.693272965,
+              "end_s": 0.704765283
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.011033554,
+              "start_s": 1.649031905,
+              "end_s": 1.660065459
+            },
+            {
+              "name": "cudaMemcpy_v3020",
+              "seconds": 0.010875395,
+              "start_s": 3.831235416,
+              "end_s": 3.842110811
+            },
+            {
+              "name": "cuKernelGetFunction",
+              "seconds": 0.010824771,
+              "start_s": 0.969857401,
+              "end_s": 0.980682172
+            }
+          ],
+          "device_allocation_sizes": []
+        }
+      },
+      "mma_calls": 84,
+      "mma_workitems": 33435,
+      "mma_workspace_bytes": 302186496,
+      "max32_slot_use": 0.6230596680125617,
+      "device_allocation_peak_bytes": 88699036608,
+      "device_allocation_peak_gib": 82.60741513967514,
+      "peak_timestamp_ns": 223879444250,
+      "memory_events": 386,
+      "minimum_system_available_gib": 33.43286895751953,
+      "observed_busy_sm_mhz": [
+        2184,
+        2190,
+        2190
+      ],
+      "memory_method": "Sum live Nsight DEVICE allocations minus matching releases; final live set empty. Excludes mapped files, driver and OS storage; UMA is not CPU RAM plus VRAM.",
+      "scope": "One original-artifact chunk trace with accepted kernels; attribution is not another unprofiled A/B run. Runtime API durations overlap GPU work. max32 slot use measures weight-reuse capacity; MMA already skips unused n8 subtiles."
+    }
+  },
+  "isolated_mma": {
+    "8": {
+      "width": 8,
+      "items": 280,
+      "actual_token_rows": 2240,
+      "distinct_weight_bytes": 478248960,
+      "milliseconds": 3.407768964767456,
+      "repeats": 64,
+      "warmups": 16,
+      "registers": 128,
+      "local_bytes": 0,
+      "persistent_ctas": 48,
+      "library_sha256": "07af34862a0330399600b3cdcf54d0c917d7bb28e25b7c0a8b75415565e72a3a",
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Same production256x32 gate;8 actual layer3 experts copied35times to distinct addresses,repeated saved layer0 inputs,streaming weight set. Uniform width8/16/32,not actual in-model routing;timing/profile only,existing numeric evidence reused."
+    },
+    "16": {
+      "width": 16,
+      "items": 280,
+      "actual_token_rows": 4480,
+      "distinct_weight_bytes": 478248960,
+      "milliseconds": 3.714016914367676,
+      "repeats": 64,
+      "warmups": 16,
+      "registers": 128,
+      "local_bytes": 0,
+      "persistent_ctas": 48,
+      "library_sha256": "07af34862a0330399600b3cdcf54d0c917d7bb28e25b7c0a8b75415565e72a3a",
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Same production256x32 gate;8 actual layer3 experts copied35times to distinct addresses,repeated saved layer0 inputs,streaming weight set. Uniform width8/16/32,not actual in-model routing;timing/profile only,existing numeric evidence reused."
+    },
+    "32": {
+      "width": 32,
+      "items": 280,
+      "actual_token_rows": 8960,
+      "distinct_weight_bytes": 478248960,
+      "milliseconds": 4.367561340332031,
+      "repeats": 64,
+      "warmups": 16,
+      "registers": 128,
+      "local_bytes": 0,
+      "persistent_ctas": 48,
+      "library_sha256": "07af34862a0330399600b3cdcf54d0c917d7bb28e25b7c0a8b75415565e72a3a",
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Same production256x32 gate;8 actual layer3 experts copied35times to distinct addresses,repeated saved layer0 inputs,streaming weight set. Uniform width8/16/32,not actual in-model routing;timing/profile only,existing numeric evidence reused."
+    }
+  },
+  "ncu": {
+    "receipt": {
+      "width": 16,
+      "items": 280,
+      "actual_token_rows": 4480,
+      "distinct_weight_bytes": 478248960,
+      "milliseconds": null,
+      "repeats": 1,
+      "warmups": 16,
+      "registers": 128,
+      "local_bytes": 0,
+      "persistent_ctas": 48,
+      "library_sha256": "07af34862a0330399600b3cdcf54d0c917d7bb28e25b7c0a8b75415565e72a3a",
+      "fixture_sha256": "336362b24d68b8176816e5db0c6f6618671aa9ee813a6d4e63aa9d758f7cad8b",
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/nsight-compute-2026.3.1/target/linux-desktop-t210-a64/libcuda-injection.so",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "scope": "Same production256x32 gate;8 actual layer3 experts copied35times to distinct addresses,repeated saved layer0 inputs,streaming weight set. Uniform width8/16/32,not actual in-model routing;timing/profile only,existing numeric evidence reused."
+    },
+    "metrics": {
+      "gpu__time_duration.sum": [
+        "3.701120",
+        "ms"
+      ],
+      "launch__registers_per_thread": [
+        "128",
+        "register/thread"
+      ],
+      "launch__shared_mem_per_block": [
+        "97.280000",
+        "Kbyte/block"
+      ],
+      "sm__warps_active.avg.pct_of_peak_sustained_active": [
+        "31.949838",
+        "%"
+      ],
+      "sm__cycles_elapsed.avg.per_second": [
+        "2.180951",
+        "Ghz"
+      ],
+      "smsp__warps_eligible.avg.per_cycle_active": [
+        "0.885910",
+        "warp"
+      ],
+      "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active": [
+        "18.506337",
+        "%"
+      ],
+      "lts__t_sector_hit_rate.pct": [
+        "74.868039",
+        "%"
+      ],
+      "TriageCompute.l1tex__average_data_bank_conflicts_per_request_mem_shared_op_atom.ratio": [
+        "",
+        "bank_conflicts"
+      ],
+      "TriageCompute.l1tex__average_data_bank_conflicts_per_request_mem_shared_op_ld.ratio": [
+        "",
+        "bank_conflicts"
+      ],
+      "TriageCompute.l1tex__average_data_bank_conflicts_per_request_mem_shared_op_ldgsts.pct": [
+        "",
+        "%"
+      ],
+      "TriageCompute.l1tex__average_data_bank_conflicts_per_request_mem_shared_op_st.ratio": [
+        "",
+        "bank_conflicts"
+      ],
+      "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum": [
+        "57235679",
+        ""
+      ],
+      "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_atom.sum": [
+        "0",
+        ""
+      ],
+      "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum": [
+        "38071775",
+        ""
+      ],
+      "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ldgsts.sum": [
+        "18581148",
+        ""
+      ],
+      "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": [
+        "0",
+        ""
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_atom.avg.pct_of_peak_sustained_elapsed": [
+        "0",
+        "%"
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_atom.sum": [
+        "0",
+        ""
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.avg.pct_of_peak_sustained_elapsed": [
+        "7.333379",
+        "%"
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum": [
+        "38071775",
+        ""
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ldgsts.avg.pct_of_peak_sustained_elapsed": [
+        "3.692420",
+        "%"
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ldgsts.sum": [
+        "19159464",
+        ""
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.avg.pct_of_peak_sustained_elapsed": [
+        "0",
+        "%"
+      ],
+      "pmsampling:l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": [
+        "0",
+        ""
+      ]
+    },
+    "options": "--set full --replay-mode kernel --cache-control none --clock-control none; one width16 gate,41passes; guard8/6/12GiB,300s",
+    "raw": "scratch/glm-vq/mma-current-ncu.ncu-repz"
+  },
+  "quality": {
+    "frozen_fixture": {
+      "cases": [
+        {
+          "id": "en_release",
+          "predicted_prompt_tokens": 1730,
+          "records": 75
+        },
+        {
+          "id": "ko_handoff",
+          "predicted_prompt_tokens": 1734,
+          "records": 64
+        },
+        {
+          "id": "code_coupon",
+          "predicted_prompt_tokens": 1739,
+          "records": 120
+        },
+        {
+          "id": "tool_arguments",
+          "predicted_prompt_tokens": 1749,
+          "records": 83
+        }
+      ],
+      "sha256": "faaee057387f376aa129343af2afa4b2b73c7fecfcb41aa12786d7c73ceed11a",
+      "scope": "Synthetic long-prefix chunk-boundary arithmetic checks, frozen before chunk measurements; not real tool/multi-turn/image tests. Token counts use unchanged source Tokenizer and forced-off input grammar; actual native count recorded by quality harness."
+    },
+    "executed": false,
+    "reason": "No new configuration is adopted; skip adoption-only long-prefix pair. Unchanged primitive and previous short-text proofs are reused.32 raw-code greedy IDs and one peaked frontier are not general quality evidence."
+  },
+  "validation_scope": "Same original artifact and unchanged inference build;2K eager text,1,984input+32forced non-EOS greedy transitions,one in-process VMM owner,MTP/capture off. Fresh processes with inherited OS file cache; no controlled cold/warm expert classification. No HTTP TTFT or API/8K/vision/MTP/state-reuse qualification.",
+  "raw_sha256": {
+    "chunk-512-1/receipt.json": "52c8fe20728cdc5231067f0d4c18c3971cfff2ebdae85e118c5eb9061879185e",
+    "chunk-512-1/run.log": "ac482c19403bb7c60be90469027c84976674b59c13c048b06757ea3ef4db154e",
+    "chunk-512-1/memory.jsonl": "266c84e549b358b5987b87d9cbf0f6d86b0cf9c723bc8fd86554ce92c6d54c34",
+    "chunk-512-1/clocks.csv": "6d78886e33bd49ed19d89c165fc522e66aaefb674b82fb4260a173d75dcd7894",
+    "chunk-512-1/loaded-libraries.json": "1192a68db3d48850cb51a84d51cdde39f009bbb044e4b56263408e5bd1ed6d05",
+    "chunk-512-1/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "chunk-512-1/proof/frontier_001984.logits.json": "a50e1e68c5669fa72716db18b75617e0d83520d6a2f6d41263353c954d6a68ec",
+    "chunk-2048-1/receipt.json": "a36056223f083eca808f4d7da918f9fe209a178e990b291a960c291778ae659d",
+    "chunk-2048-1/run.log": "0a894de6c15b0884bb058b96b002dfc8c5b3380f9e2ef6cc07d433e7d90378cf",
+    "chunk-2048-1/memory.jsonl": "eb7eab2fc70497aba50e1220403d0649565fd8f85cc523c89a352ed111d5eb2c",
+    "chunk-2048-1/clocks.csv": "ad2477f0478b2cf9219341e55cec20ebbf37da2a74db9c065118797c7b6e03d0",
+    "chunk-2048-1/loaded-libraries.json": "ada9a4e5c693a9e46344e13dbe7a36f97f152689bffa34e6c73b616e6a175cef",
+    "chunk-2048-1/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "chunk-2048-1/proof/frontier_001984.logits.json": "69ef6b99223e6ce9385d8895c20f2f0440c5148d6435f1b46645003564fa97df",
+    "chunk-1024-1/receipt.json": "5e38c9bd4d55a6bcb7e7c0c1536a266eb1612b02ecb39150acbb244db268ca96",
+    "chunk-1024-1/run.log": "dfe341448bb94cc12db424c33a7558f09c3dd6f6028a2d4b69467418e5650968",
+    "chunk-1024-1/memory.jsonl": "567596fb7d660b80a30c7017d8b89fd99d5af6dcce60d60ee3e571982ffa9c20",
+    "chunk-1024-1/clocks.csv": "57d68f18f3fbad64879b61c37cddf3f5e4da74094295bc4151f2df4a6f47902a",
+    "chunk-1024-1/loaded-libraries.json": "7395cffa58972158a2f67d03f086db43c65ef889841e08d93f77e2cc75dd8759",
+    "chunk-1024-1/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "chunk-1024-1/proof/frontier_001984.logits.json": "8b319fe89716a13e3553fe805c888ee814912c51db548e374d6f751983f176e0",
+    "chunk-1024-2/receipt.json": "26bec2bb96448b28a6cf504ee1498c52c572ead72081dc2067af8425bec55e79",
+    "chunk-1024-2/run.log": "c0e85efddcd7e4318d24b9cd67d236cb955ef395b17c313a81bbe080eb4c87e7",
+    "chunk-1024-2/memory.jsonl": "b8a61036248d3ffd460d035e72f1775948d4e04e44c24588d07d8964f7fee229",
+    "chunk-1024-2/clocks.csv": "a0f658a4fcedfdc826cdba3eb75032dcb4bd3af6fbb7b765140df9ba0dcae25a",
+    "chunk-1024-2/loaded-libraries.json": "6e9d8a6a477d564e3d714245b9229e67cf151c8af142e6fecd43f370c51a94ce",
+    "chunk-1024-2/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "chunk-1024-2/proof/frontier_001984.logits.json": "8b319fe89716a13e3553fe805c888ee814912c51db548e374d6f751983f176e0",
+    "chunk-512-2/receipt.json": "387d888b5f86b19906a277a57380346c2c87ef8090d7fd0a75c48c58ca71f4a1",
+    "chunk-512-2/run.log": "d80dbd8cb6a88036762cd952e18ea30b762f4df60f91283c3814c392880bd79a",
+    "chunk-512-2/memory.jsonl": "0dc00959b270f7fb68e059f7a1c1d3331dc8513af7fa394a5529cb1be82989c4",
+    "chunk-512-2/clocks.csv": "40bded21d9bc8bb962e0b66928920f4627707ed70ac2f0c7ca7a18ef86d1bdbb",
+    "chunk-512-2/loaded-libraries.json": "3bb126ea6f399d5b9d75a157cad5bf96b760236ffd4b562df4ef45fa29fd0f59",
+    "chunk-512-2/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "chunk-512-2/proof/frontier_001984.logits.json": "a50e1e68c5669fa72716db18b75617e0d83520d6a2f6d41263353c954d6a68ec",
+    "retained-after-kda-profile/receipt.json": "f07561ec679b4be5a15db7a70d5e4f5d7f353532cf28c3db1d7cc41ad55aea6b",
+    "retained-after-kda-profile/run.log": "53d270084e29f3ee5aa7af2aada79be1c3f6b944591da3bc7d697fd7790b426c",
+    "retained-after-kda-profile/memory.jsonl": "43c39eb8a7d47c5dad4d854d8942c5da8c2615c3e16f97a892ee9f96555ebf76",
+    "retained-after-kda-profile/clocks.csv": "849d175679de00fc0287365309f61b573eef073f6dff3795014e4c6d101792ec",
+    "retained-after-kda-profile/loaded-libraries.json": "9ad672e16e39f942404bf13a9a42a9f93595f9264252c537ee7b27aebf0a3019",
+    "retained-after-kda-profile/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "retained-after-kda-profile/proof/frontier_001984.logits.json": "a50e1e68c5669fa72716db18b75617e0d83520d6a2f6d41263353c954d6a68ec",
+    "chunk-1024-profile/receipt.json": "6dfc50b7ce4549f52b5963b162ee5c8cf7c54a1ed762a0397988f6fe58f02d92",
+    "chunk-1024-profile/run.log": "024a7f790040b6ce7e3c806c82ee6c5b4ac0ab7afcd9842418e843d4df17cea0",
+    "chunk-1024-profile/memory.jsonl": "eb0f7f6592c66c10150ebf3c8294058a0fda65322f16436808208f35fc63ecbe",
+    "chunk-1024-profile/clocks.csv": "945a1cef025962e1fe4ec09909191767a03eae447eb1ec61156b7a7e3382d903",
+    "chunk-1024-profile/loaded-libraries.json": "5f59791f6142576ee4bd1868828dcc154d86dd81b78e48eab48527e2b3dd163f",
+    "chunk-1024-profile/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "chunk-1024-profile/proof/frontier_001984.logits.json": "8b319fe89716a13e3553fe805c888ee814912c51db548e374d6f751983f176e0",
+    "retained-after-kda-profile/trace.nsys-rep": "727d44fbb693962f4e54ffe281212feed1ea0d3948b13bcc37731e67747d02d1",
+    "retained-after-kda-profile/trace.sqlite": "490c04b5e695a2e0cecb65cd2bf36d415da5b010ba1e9ef367fa4139003ab1c1",
+    "retained-after-kda-profile/phase-costs.json": "c5966ab1caf4244504e0395c77b38e58ae60b02b4ae0fa46ebe1b51d5e0f0437",
+    "retained-after-kda-profile/summary.json": "3683a760309d0760c563b0ee5eb872a1eb4a64a33b5705ac433a0488f92407bb",
+    "chunk-1024-profile/trace.nsys-rep": "aee231969efab1e027578218d8df7856fc58846e24ba940964d0b106183c8442",
+    "chunk-1024-profile/trace.sqlite": "af8cee9c3963a99a863f7d2dbb7979adaf2aab015c6000a7aba97667d0a4cebb",
+    "chunk-1024-profile/phase-costs.json": "9878a72834164a92a15d9a0e3f03b1604f8d00c594b0d0ab8d71d6df1da3dda3",
+    "chunk-1024-profile/summary.json": "7130eee1fa78f166ce1b8c58f837761cbf5f74ec51c90ab58432be058018db36",
+    "mma-current-ncu.ncu-repz": "a3448ac6325725f80cf54cc78726aa31a32c36e61782b8d35dd3f92dafb8f24a",
+    "mma-current-ncu.csv": "a21909e9de260c833f386a61a17df319ca13dc764e10f9ce673cadce528e85bf",
+    "mma_replay.py": "c40f71922e6aaaaeb67f9ca6aa833f825b37b746c03c02a16eb8f7166e36da7f",
+    "chunk-long-quality.json": "faaee057387f376aa129343af2afa4b2b73c7fecfcb41aa12786d7c73ceed11a",
+    "run_perf.py": "e21907bcf270db67a385c94a82f12d191fa879e7b3cfbe55658dc49fe2312261",
+    "compare_chunks.py": "1d8c1cd408b0a4c0c1f7b5a6e8fb3ead2a46f4a847224b34656d9b76dbf4244f",
+    "phase_costs.py": "bfc0646373bffbbe2f3d235f4d69af904152db7e2ab388e8dd4778c0e629efa8",
+    "chunk_trace_summary.py": "01039f9ba9925e8e3030655913cec65c733c1c6f65577af3b57168394725e923"
+  }
+}
