@@ -1203,6 +1203,14 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   retain restore+cuBLAS. Artifact precision and workspace sizes are unchanged.
   See the [evidence and output-format limits](../docs/glm53-vq-fp8-2026-10-16.md).
 
+- `DS4_GLMVQ_KV_BF16=0` restores the latent/expanded KV conversion path.
+  Default On after matched 2K off/on checks. Aligned BF16 KV_B projections
+  read the BF16 latent cache and feed BF16 output directly to attention.
+  GEMM, softmax and PV rounding boundaries, cache ownership and workspace
+  capacities are unchanged. Other supported formats/alignments retain the
+  previous path; capture remains unsupported. See the
+  [handoff evidence](../docs/glm53-vq-kv-bf16-2026-10-16.md).
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

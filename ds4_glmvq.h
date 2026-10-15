@@ -58,6 +58,12 @@ int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *kv,
     const ds4_gpu_tensor *positions, const ds4_gpu_tensor *selected,
     uint32_t stride, uint32_t rows, uint32_t keys, uint32_t heads, uint32_t dim);
+/* Expand latent KV and attend over its causal prefix. Temporaries retain
+ * their F32 capacity for the format/alignment fallback. */
+int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
+    const ds4_gpu_tensor *query, const ds4_gpu_tensor *cache, uint32_t weight,
+    ds4_gpu_tensor *latent, ds4_gpu_tensor *kv, ds4_gpu_tensor *positions,
+    uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim);
 int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     ds4_gpu_tensor *gathered, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
     ds4_gpu_tensor *mid, ds4_gpu_tensor *down, const ds4_gpu_tensor *input,

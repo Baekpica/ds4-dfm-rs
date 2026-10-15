@@ -2,6 +2,7 @@
 #define DS4_GLM_VQ_ATTENTION_CUH
 
 #include "glm_vq_linear.cuh"
+#include <type_traits>
 
 struct glmvq_attn_layout { uint64_t q, kv, scores, output, mask, bytes; };
 
@@ -85,8 +86,9 @@ __global__ void glmvq_attn_output(float *output, const __nv_bfloat16 *input,
     output[i] = __bfloat162float(input[((uint64_t)head * rows + row) * dim + col]);
 }
 
+template<typename KV>
 static cublasStatus_t glmvq_attention(cublasHandle_t handle, const float *query,
-        const float *kv, float *output, const uint32_t *positions,
+        const KV *kv, float *output, const uint32_t *positions,
         const int32_t *selected, uint32_t stride, uint32_t rows, uint32_t keys,
         uint32_t heads, uint32_t dim, void *scratch, uint64_t bytes, cudaStream_t stream) {
     if (!handle || !query || !kv || !output || !positions || !scratch ||
@@ -97,12 +99,21 @@ static cublasStatus_t glmvq_attention(cublasHandle_t handle, const float *query,
     const glmvq_attn_layout layout = glmvq_attn_bytes(rows, keys, heads, dim);
     if (bytes < layout.bytes) { return CUBLAS_STATUS_INVALID_VALUE; }
     uint8_t *base = (uint8_t *)scratch;
-    __nv_bfloat16 *q = (__nv_bfloat16 *)(base + layout.q), *k = (__nv_bfloat16 *)(base + layout.kv);
+    static_assert(std::is_same<KV, float>::value || std::is_same<KV, __nv_bfloat16>::value);
+    __nv_bfloat16 *q = (__nv_bfloat16 *)(base + layout.q);
+    const __nv_bfloat16 *k;
     __nv_bfloat16 *scores = (__nv_bfloat16 *)(base + layout.scores), *y = (__nv_bfloat16 *)(base + layout.output);
     uint32_t *mask = selected ? (uint32_t *)(base + layout.mask) : nullptr;
     const uint64_t nq = (uint64_t)rows * heads * dim, nkv = (uint64_t)keys * heads * 2 * dim;
     glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(query, q, nq);
-    glmvq_convert<<<(nkv + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(kv, k, nkv);
+    if constexpr (std::is_same<KV, float>::value) {
+        auto *packed = (__nv_bfloat16 *)(base + layout.kv);
+        glmvq_convert<<<(nkv + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(kv, packed, nkv);
+        k = packed;
+    } else {
+        // KV_B already rounds to BF16; consuming it directly preserves that boundary.
+        k = kv;
+    }
     if (selected) { glmvq_attn_mask<<<rows, GLMVQ_THREADS, 0, stream>>>(mask, selected, keys, stride); }
     if (cudaGetLastError() != cudaSuccess) { return CUBLAS_STATUS_EXECUTION_FAILED; }
     const float alpha = 1.0f, beta = 0.0f;

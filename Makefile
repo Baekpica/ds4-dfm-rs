@@ -1983,6 +1983,12 @@ tests/test_glm_vq_q4.o: tests/test_glm_vq_q4.c ds4.h ds4_glmvq.h ds4_gpu.h
 tests/test_glm_vq_q4: tests/test_glm_vq_q4.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_glm_vq_kv.o: tests/test_glm_vq_kv.c ds4.h ds4_glmvq.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm_vq_kv: tests/test_glm_vq_kv.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
 .PHONY: test-glm-vq-cache
 test-glm-vq-cache: tests/test_glm_vq_cache
 	./tests/test_glm_vq_cache
@@ -2584,6 +2590,7 @@ endif
 
 clean:
 	rm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate
+	rm -f tests/test_glm_vq_kv tests/test_glm_vq_kv.o
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o

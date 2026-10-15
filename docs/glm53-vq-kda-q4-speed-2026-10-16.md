@@ -6,6 +6,9 @@ as requested by the user. Two fresh Q4 runs increase median decode from
 9.210 to 8.377 s (-9.04%). Both Q4 phase sums are below both original
 controls. A prefill gain is not established.
 
+The subsequent [direct BF16 KV handoff](glm53-vq-kv-bf16-2026-10-16.md)
+removes the conversion bottleneck identified below on this same Q4 artifact.
+
 ## Artifact and arithmetic
 
 The active local artifact is `GLM-5.3-Flash-VQ-Q4K-KDA-GGUF`, manifest

@@ -109,6 +109,7 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [fused FP8 projections](glm53-vq-fp8-2026-10-16.md),
   [selective KDA Q4 assessment](glm53-vq-kda-q4-2026-10-16.md),
   [KDA Q4 speed baseline](glm53-vq-kda-q4-speed-2026-10-16.md),
+  [direct BF16 KV handoff](glm53-vq-kv-bf16-2026-10-16.md),
   [prefill chunk assessment](glm53-vq-chunks-2026-10-16.md),
   [workspace allocation assessment](glm53-vq-work-arena-2026-10-16.md).
 - **dots3:** [September 6 optimization](dots3-optimization-2026-09-06.md).

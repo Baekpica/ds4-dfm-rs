@@ -119,11 +119,9 @@ static bool gvq_dsa(ds4_glm53_gpu_graph *g, const ds4_model *m,
         gvq_mm(g, m, g->kv_rank, l->attn_kv_a_mqa, g->norm, rows, DS4_GVQ_BF16) &&
         gvq_norm(g, m, g->kv_rank_norm, g->kv_rank, l->attn_kv_a_norm, rows, DS4_N_KV_LORA) &&
         ds4_gpu_gvq_store(g->layer_kv[il], g->kv_rank_norm, rows, pos, g->ctx_cap, DS4_N_KV_LORA) &&
-        ds4_gpu_gvq_unpack(g->gvq_latent, g->layer_kv[il], (uint64_t)keys * DS4_N_KV_LORA) &&
-        gvq_mm(g, m, g->gvq_kv, l->attn_kv_b, g->gvq_latent, keys, DS4_GVQ_BF16) &&
-        ds4_gpu_gvq_positions(g->gvq_pos, pos, rows) &&
-        ds4_gpu_gvq_attn(g->gvq, g->heads, g->q, g->gvq_kv, g->gvq_pos,
-            NULL, 0u, rows, keys, DS4_N_HEAD, DS4_N_KEY_MLA) &&
+        ds4_gpu_gvq_dsa(g->gvq, g->heads, g->q, g->layer_kv[il],
+            glmvq_index(m, l->attn_kv_b), g->gvq_latent, g->gvq_kv,
+            g->gvq_pos, pos, rows, DS4_N_HEAD, DS4_N_KEY_MLA) &&
         gvq_mm(g, m, g->attn_out, l->attn_output, g->heads, rows, DS4_GVQ_BF16);
 }
 

@@ -28,6 +28,8 @@ struct ds4_gvq_ctx {
     glmvq_restore_mode restore;
     bool direct_q4;
     bool direct_fp8;
+    bool direct_kv;
+    uint64_t kv_calls = 0;
     uint64_t fp8_calls = 0;
     glmvq_q4_config q4;
     std::vector<int32_t> routes;
@@ -170,6 +172,9 @@ extern "C" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
 
 extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     if (!ctx) { return; }
+    if (ctx->direct_kv) {
+        fprintf(stderr, "ds4: GLM VQ BF16 KV calls=%llu\n", (unsigned long long)ctx->kv_calls);
+    }
     if (ctx->direct_fp8) {
         fprintf(stderr, "ds4: GLM VQ direct FP8 calls=%llu\n", (unsigned long long)ctx->fp8_calls);
     }
@@ -213,9 +218,15 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\n");
         return nullptr;
     }
+    const char *kv = getenv("DS4_GLMVQ_KV_BF16");
+    if (kv && strcmp(kv, "0") && strcmp(kv, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_KV_BF16 accepts 0 or 1\n");
+        return nullptr;
+    }
     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};
     if (!ctx) { return nullptr; }
     ctx->direct_fp8 = !fp8 || strcmp(fp8, "0");
+    ctx->direct_kv = !kv || strcmp(kv, "0");
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -503,6 +514,50 @@ extern "C" int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     return cublas_ok(glmvq_attention(ctx->handle, (const float *)query->ptr, (const float *)kv->ptr,
         (float *)out->ptr, (const uint32_t *)positions->ptr, selected ? (const int32_t *)selected->ptr : nullptr,
         stride, rows, keys, heads, dim, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream), "GLM VQ attention");
+}
+
+extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *query, const ds4_gpu_tensor *cache, uint32_t weight,
+        ds4_gpu_tensor *latent, ds4_gpu_tensor *kv, ds4_gpu_tensor *positions,
+        uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim) {
+    if (!ctx || ds4_capture_active() || !rows || !heads || !dim ||
+        first > INT_MAX || rows > (uint32_t)INT_MAX - first ||
+        weight >= ctx->model->source.size() || (uint64_t)heads * dim > INT_MAX / 2u) { return 0; }
+    const glmvq_source &s = ctx->model->source[weight];
+    const uint32_t keys = first + rows;
+    const uint64_t nq = (uint64_t)rows * heads * dim;
+    const uint64_t nx = (uint64_t)keys * s.cols, ny = (uint64_t)keys * s.rows;
+    if (!s.cols || s.cols > INT_MAX || s.rows != (uint64_t)heads * 2 * dim ||
+        !cache || nx > cache->bytes / sizeof(__nv_bfloat16) ||
+        !gvq_floats(latent, nx) || !gvq_floats(kv, ny) ||
+        !gvq_floats(query, nq) || !gvq_floats(out, nq) ||
+        !positions || rows > positions->bytes / sizeof(uint32_t) ||
+        ctx->scratch->bytes < glmvq_attn_bytes(rows, keys, heads, dim).bytes ||
+        !gvq_stream(ctx)) { return 0; }
+
+    const uintptr_t alignment = (uintptr_t)s.data | (uintptr_t)cache->ptr | (uintptr_t)kv->ptr;
+    if (!ctx->direct_kv || ctx->model->records[weight].type != GVQ_TYPE_BF16 ||
+        s.storage != GLMVQ_WEIGHT_BF16 ||
+        s.rows % 8 || s.cols % 8 || alignment % 16) {
+        return ds4_gpu_gvq_unpack(latent, cache, nx) &&
+            ds4_gpu_gvq_linear(ctx, kv, weight, latent, keys, DS4_GVQ_BF16) &&
+            ds4_gpu_gvq_positions(positions, first, rows) &&
+            ds4_gpu_gvq_attn(ctx, out, query, kv, positions, nullptr, 0, rows, keys, heads, dim);
+    }
+
+    // Both latent cache and KV_B output are BF16 in the source model. Keep
+    // the same GEMM and attention rounding without two F32 round trips.
+    const float alpha = 1.0f, beta = 0.0f;
+    if (!cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N,
+        s.rows, keys, s.cols, &alpha, s.data, CUDA_R_16BF, s.cols,
+        cache->ptr, CUDA_R_16BF, s.cols, &beta, kv->ptr, CUDA_R_16BF, s.rows,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ BF16 KV projection") ||
+        !ds4_gpu_gvq_positions(positions, first, rows)) { return 0; }
+    ctx->kv_calls++;
+    return cublas_ok(glmvq_attention(ctx->handle, (const float *)query->ptr,
+        (const __nv_bfloat16 *)kv->ptr, (float *)out->ptr, (const uint32_t *)positions->ptr,
+        nullptr, 0, rows, keys, heads, dim, ctx->scratch->ptr, ctx->scratch->bytes,
+        ctx->stream), "GLM VQ BF16 KV attention");
 }
 
 extern "C" int ds4_gpu_gvq_kda(ds4_gpu_tensor *out, ds4_gpu_tensor *state,

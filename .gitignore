@@ -237,6 +237,7 @@ tests/naive_banks
 /gguf-tools/libds4q.so
 /tests/test_glm_vq_cache
 /tests/test_glm_vq_q4
+/tests/test_glm_vq_kv
 /tests/test_glm_vq_owner
 /tests/test_glm_vq_quote
 /glm-vq-gate
