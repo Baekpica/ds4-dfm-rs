@@ -6,6 +6,10 @@ enum { GVQ_BASELINE_CTX = 2048u };
 
 static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
     uint64_t bytes = ds4_gpu_gvq_attn_bytes(rows, ctx, DS4_N_HEAD, DS4_N_KEY_MLA);
+    // Only the diagnostic Q4 restore path materializes the full output head.
+    // Fund it before graph allocation; direct dots need no expanded head.
+    const char *direct = getenv("DS4_GLMVQ_Q4_DIRECT");
+    const uint32_t head_type = direct && !strcmp(direct, "0") ? DS4_TENSOR_Q4_K : DS4_TENSOR_BF16;
     const uint64_t candidates[] = {
         ds4_gpu_gvq_linear_bytes(DS4_N_FF_DENSE, DS4_N_EMBD, rows,
             DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
@@ -16,7 +20,7 @@ static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
         ds4_gpu_gvq_linear_bytes(DS4_N_EXPERT, DS4_N_EMBD, rows,
             DS4_TENSOR_BF16, DS4_GVQ_F32),
         ds4_gpu_gvq_linear_bytes(DS4_N_VOCAB, DS4_N_EMBD, 1u,
-            DS4_TENSOR_BF16, DS4_GVQ_BF16)
+            head_type, DS4_GVQ_BF16)
     };
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
         if (candidates[i] > bytes) { bytes = candidates[i]; }

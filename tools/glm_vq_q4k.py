@@ -18,13 +18,11 @@ ALIGN = 128
 Q4_K, BF16, FP8 = 12, 30, 0x47514638
 BLOCK, BLOCK_BYTES = 256, 144
 ROWS = 128
-POLICY = 'q4_k_nonexpert_v1'
+POLICY = 'q4_k_nonexpert_v2'
 ROLES = {
     'self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj',
     'self_attn.q_a_proj', 'self_attn.q_b_proj', 'self_attn.kv_a_proj_with_mqa',
     'self_attn.kv_b_proj', 'mlp.gate_proj', 'mlp.up_proj', 'mlp.down_proj',
-    'mlp.shared_experts.gate_proj', 'mlp.shared_experts.up_proj',
-    'mlp.shared_experts.down_proj',
 }
 
 
@@ -140,7 +138,10 @@ class Quantizer:
         return raw, out.tobytes()
 
 
-def rewrite(src, dst, records, quant, workers):
+def rewrite(src, dst, records, quant, workers, keep=frozenset()):
+    def chosen(name):
+        return target(name) and name not in keep
+
     with src.open('rb') as inp:
         meta, entries, base = read_header(inp)
         byname = {e['name']: e for e in entries}
@@ -152,7 +153,7 @@ def rewrite(src, dst, records, quant, workers):
                 raise ValueError('manifest/header mismatch')
             e['source_type'] = e['typ']
             e['size'] = r['payload_bytes']
-            if target(e['name']):
+            if chosen(e['name']):
                 if len(e['dims']) != 2 or e['dims'][0] % BLOCK or e['typ'] not in (BF16, FP8):
                     raise ValueError('unsupported recipe shape/type')
                 e['typ'] = Q4_K
@@ -160,7 +161,7 @@ def rewrite(src, dst, records, quant, workers):
             e['out_offset'] = align(out_offset)
             out_offset = e['out_offset'] + e['size']
         meta['glm_vq.native_policy'] = (8, POLICY)
-        meta['glm_vq.fp8_scales'] = (8, json.dumps({k: v for k, v in links.items() if not target(k)}, sort_keys=True))
+        meta['glm_vq.fp8_scales'] = (8, json.dumps({k: v for k, v in links.items() if not chosen(k)}, sort_keys=True))
         with dst.open('xb') as out, ThreadPoolExecutor(max_workers=workers) as pool:
             head = header(meta, entries)
             out.write(head)
@@ -211,17 +212,23 @@ def main():
     p.add_argument('output', type=Path)
     p.add_argument('--lib', type=Path, default=Path('gguf-tools/libds4q.so'))
     p.add_argument('--workers', type=int, default=12)
+    p.add_argument('--keep', action='append', default=[], metavar='TENSOR',
+                   help='retain this eligible tensor in its source precision; repeatable')
     args = p.parse_args()
     if not 1 <= args.workers <= 32:
         p.error('workers must be 1..32')
     source, output = args.source.resolve(), args.output.resolve()
-    output.mkdir(exist_ok=False)
     started = time.monotonic()
     manifest_path = source / 'tensor-manifest.json'
     manifest = json.loads(manifest_path.read_text())
     files = json.loads((source / 'files.json').read_text())
     records = {r['name']: r for r in manifest['tensors']}
-    parts = {r['part'] for r in records.values() if target(r['name'])}
+    keep = frozenset(args.keep)
+    if any(name not in records or not target(name) for name in keep):
+        p.error('--keep requires an eligible nonexpert tensor name')
+    chosen = {name for name in records if target(name) and name not in keep}
+    parts = {records[name]['part'] for name in chosen}
+    output.mkdir(exist_ok=False)
     before = sum(r['payload_bytes'] for r in records.values())
     quant = Quantizer(args.lib)
     for entry in files['files']:
@@ -241,13 +248,14 @@ def main():
         if name not in parts:
             os.link(src, dst)
             continue
-        rewrite(src, dst, records, quant, args.workers)
+        rewrite(src, dst, records, quant, args.workers, keep)
         entry.update(bytes=dst.stat().st_size, sha256=digest(dst))
         print(json.dumps(dict(part=name, bytes=entry['bytes'], seconds=time.monotonic() - started)), flush=True)
     manifest['nonexpert_recipe'] = dict(name=POLICY, parent_manifest_sha256=digest(manifest_path),
         quantizer_sha256=digest(args.lib), converter_sha256=digest(Path(__file__)),
         input='source BF16; FP8 times original block scale rounded to BF16',
-        preserved='VQ/books, MTP, vision, router/norm/mHC/KDA gates/indexer',
+        preserved='routed/shared experts, VQ/books, MTP, vision, router/norm/mHC/KDA gates/indexer',
+        kept_tensors=sorted(keep),
         weights='Q4_K: 256 elements per 144-byte block, no imatrix')
     (output / 'tensor-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     for entry in files['files']:
@@ -255,7 +263,7 @@ def main():
             entry.update(bytes=(output / entry['path']).stat().st_size, sha256=digest(output / entry['path']))
     (output / 'files.json').write_text(json.dumps(files, indent=2) + '\n')
     after = sum(r['payload_bytes'] for r in records.values())
-    report = dict(recipe=POLICY, converted=sum(target(n) for n in records), parts=len(parts),
+    report = dict(recipe=POLICY, converted=len(chosen), parts=len(parts), kept_tensors=sorted(keep),
                   parent_manifest_sha256=digest(manifest_path), manifest_sha256=digest(output / 'tensor-manifest.json'),
                   payload_before=before, payload_after=after, saved_bytes=before-after,
                   elapsed_seconds=time.monotonic()-started)

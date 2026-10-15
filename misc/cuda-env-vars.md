@@ -1170,6 +1170,13 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   remain, while accumulation order differs. Adds 144.094 MiB of grouped
   activation/worklist workspace at 512 rows. Decode keeps its existing path.
 
+- `DS4_GLMVQ_Q4_DIRECT=0` restores BF16 dequantization plus cuBLAS for the
+  separate `q4_k_nonexpert_v2` artifact. Default On uses direct Q4_K dots at
+  widths 1–8 and Q4_K/Q8_1 MMQ above 8. The output retains the BF16 boundary;
+  direct weight reconstruction and MMQ activation quantization change arithmetic.
+  This candidate needs artifact-specific quality/performance qualification.
+  Original BF16/FP8 tensors and VQ experts do not use this switch.
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

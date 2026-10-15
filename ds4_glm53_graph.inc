@@ -657,7 +657,8 @@ static bool glm53_graph_embed(ds4_glm53_gpu_graph *g, const ds4_model *model,
             (uint32_t)weights->token_embd->dim[1], rows, DS4_N_EMBD);
     if (!embedded) { return false; }
 #ifndef __APPLE__
-    if (g->gvq && embeddings && !ds4_gpu_gvq_round(g->cur, (uint64_t)rows * DS4_N_EMBD)) { return false; }
+    if (g->gvq && (embeddings || weights->token_embd->type == DS4_TENSOR_Q4_K) &&
+        !ds4_gpu_gvq_round(g->cur, (uint64_t)rows * DS4_N_EMBD)) { return false; }
 #endif
     if (!ds4_gpu_repeat_hc_rows_tensor(g->hc_cur, g->cur, DS4_N_EMBD, DS4_N_HC, rows)) { return false; }
     return true;

@@ -2,10 +2,11 @@
 #define DS4_GLM_VQ_LINEAR_CUH
 
 #include "glm_vq_ops.cuh"
+#include "glm_vq_q4.cuh"
 #include <cublas_v2.h>
 #include <limits.h>
 
-enum glmvq_storage { GLMVQ_WEIGHT_BF16, GLMVQ_WEIGHT_FP8, GLMVQ_WEIGHT_VQ };
+enum glmvq_storage { GLMVQ_WEIGHT_BF16, GLMVQ_WEIGHT_FP8, GLMVQ_WEIGHT_VQ, GLMVQ_WEIGHT_Q4 };
 enum glmvq_compute { GLMVQ_COMPUTE_BF16, GLMVQ_COMPUTE_F32 };
 
 struct glmvq_source {
@@ -61,6 +62,11 @@ static cublasStatus_t glmvq_gemm(cublasHandle_t handle, const glmvq_source &w,
         }
         glmvq_fp8_restore<<<blocks, GLMVQ_THREADS, 0, stream>>>(
             (const uint8_t *)w.data, w.scale, w.rows, w.cols, cursor);
+        weight = cursor;
+        cursor += count;
+    } else if (w.storage == GLMVQ_WEIGHT_Q4) {
+        if (!w.data || w.cols % GLMVQ_Q4_BLOCK) { return CUBLAS_STATUS_INVALID_VALUE; }
+        glmvq_q4_restore<<<blocks, GLMVQ_THREADS, 0, stream>>>((const uint8_t *)w.data, cursor, count);
         weight = cursor;
         cursor += count;
     } else if (w.storage == GLMVQ_WEIGHT_VQ) {

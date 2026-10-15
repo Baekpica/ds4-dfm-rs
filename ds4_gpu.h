@@ -683,9 +683,9 @@ int ds4_gpu_embed_tokens_q8_0_tensor(
         uint32_t                n_tokens,
         uint32_t                n_embd);
 
-/* Quantized token-table gathers for model families without hyper-connection
- * replication. The current shared contract accepts Q8_0 (type 8), writes F32
- * rows, and zeroes invalid token ids in the batched form. */
+/* Token-table gathers without hyper-connection replication. CUDA accepts
+ * F32/F16/BF16, Q8_0/Q4_K/Q6_K and PQ2_0; writes F32 rows and zeroes invalid
+ * token ids in the batched form. Metal has its own format capability gate. */
 int ds4_gpu_embed_token_quant_tensor(
         ds4_gpu_tensor *out,
         const void       *model_map,

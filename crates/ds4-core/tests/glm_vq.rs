@@ -280,7 +280,7 @@ fn native_q4k_contract() {
         typ: 12,
         bytes: vec![0; 2 * 144],
     }];
-    let recipe = [("glm_vq.native_policy", "q4_k_nonexpert_v1")];
+    let recipe = [("glm_vq.native_policy", "q4_k_nonexpert_v2")];
     let inv = tmp.open(&container(&recipe, &tensors).0).unwrap();
     assert_eq!(inv.tensors[0].bytes, 288);
     assert!(tmp.open(&container(&[], &tensors).0).is_err());
@@ -288,6 +288,7 @@ fn native_q4k_contract() {
         "model.language_model.layers.45.self_attn.q_proj.weight",
         "model.language_model.layers.3.mlp.gate.weight",
         "model.language_model.layers.3.mlp.experts.0.gate_proj.weight",
+        "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
         "model.language_model.layers.0.self_attn.f_a_proj.weight",
     ] {
         tensors[0].name = name;

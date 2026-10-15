@@ -21,7 +21,8 @@ int main(void) {
             if (scanf("%" SCNu64, &dims[d]) != 1 || dims[d] > UINT32_MAX) { return 1; }
         }
         if (ndim != 2 || strstr(name, "embed_tokens.weight") ||
-            (type != DS4_TENSOR_BF16 && type != DS4_TENSOR_GLM_FP8 && type != DS4_TENSOR_GLM_VQ)) {
+            (type != DS4_TENSOR_BF16 && type != DS4_TENSOR_GLM_FP8 &&
+             type != DS4_TENSOR_GLM_VQ && type != DS4_TENSOR_Q4_K)) {
             continue;
         }
         const ds4_gvq_math math = strstr(name, ".hc_attn_fn") || strstr(name, ".hc_ffn_fn") ||

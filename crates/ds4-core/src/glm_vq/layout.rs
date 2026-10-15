@@ -78,9 +78,6 @@ pub(super) fn q4k_target(name: &str) -> bool {
             | "mlp.gate_proj.weight"
             | "mlp.up_proj.weight"
             | "mlp.down_proj.weight"
-            | "mlp.shared_experts.gate_proj.weight"
-            | "mlp.shared_experts.up_proj.weight"
-            | "mlp.shared_experts.down_proj.weight"
     )
 }
 

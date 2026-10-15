@@ -11,7 +11,7 @@ static ds4_tensor *glmvq_tensor(const ds4_model *m, uint32_t il, const char *nam
 static ds4_tensor *glmvq_linear(const ds4_model *m, uint32_t il, const char *name) {
     ds4_tensor *t = glmvq_tensor(m, il, name);
     if (t->ndim != 2 || (t->type != DS4_TENSOR_BF16 &&
-        t->type != DS4_TENSOR_GLM_FP8 && t->type != DS4_TENSOR_GLM_VQ)) {
+        t->type != DS4_TENSOR_GLM_FP8 && t->type != DS4_TENSOR_GLM_VQ && t->type != DS4_TENSOR_Q4_K)) {
         ds4_die("invalid GLM VQ matrix contract");
     }
     if (t->type != DS4_TENSOR_GLM_FP8) { return t; }

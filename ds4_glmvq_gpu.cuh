@@ -6,7 +6,7 @@
 #include "cuda/glm_vq_attention.cuh"
 #include "cuda/glm_vq_mma.cuh"
 
-enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_BF16 = 30,
+enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
@@ -24,6 +24,7 @@ struct ds4_gvq_ctx {
     cublasHandle_t handle;
     cudaStream_t stream;
     glmvq_restore_mode restore;
+    bool direct_q4;
     std::vector<int32_t> routes;
     std::vector<uint32_t> grouped;
     ds4_gpu_tensor *mma = nullptr;
@@ -62,6 +63,12 @@ static uint32_t gvq_u32(const uint8_t *data, size_t offset) {
 static bool gvq_link(ds4_gvq_model *plan, const void *map, uint32_t index) {
     const ds4_gvq_record &r = plan->records[index];
     glmvq_source &s = plan->source[index];
+    if (r.type == GVQ_TYPE_Q4) {
+        if (r.cols % GLMVQ_Q4_BLOCK || r.bytes != (uint64_t)r.rows * r.cols /
+            GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES || (uintptr_t)s.data % 16) { return false; }
+        s.storage = GLMVQ_WEIGHT_Q4;
+        return true;
+    }
     if (r.type == GVQ_TYPE_FP8) {
         if (r.scale >= plan->source.size()) { return false; }
         const ds4_gvq_record &scale = plan->records[r.scale];
@@ -173,6 +180,13 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     if (!ctx) { return nullptr; }
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
+    const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
+    if (q4 && strcmp(q4, "0") && strcmp(q4, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_Q4_DIRECT accepts 0 or 1\n");
+        delete ctx;
+        return nullptr;
+    }
+    ctx->direct_q4 = !q4 || strcmp(q4, "0");
     ctx->model = model;
     ctx->scratch = ds4_gpu_tensor_alloc(bytes);
     ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);
@@ -235,9 +249,25 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     if (!ctx || !rows || index >= ctx->model->source.size()) { return 0; }
     const glmvq_source &s = ctx->model->source[index];
     const uint32_t type = ctx->model->records[index].type;
-    if ((type != GVQ_TYPE_BF16 && type != GVQ_TYPE_FP8 && type != GVQ_TYPE_VQ) ||
+    if ((type != GVQ_TYPE_BF16 && type != GVQ_TYPE_FP8 && type != GVQ_TYPE_VQ && type != GVQ_TYPE_Q4) ||
         !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows) ||
         (math != DS4_GVQ_BF16 && math != DS4_GVQ_F32) || !gvq_stream(ctx)) { return 0; }
+    if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {
+        if (math != DS4_GVQ_BF16) { return 0; }
+        if (rows <= GLMVQ_Q4_WARPS) {
+            return cuda_ok(glmvq_q4_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
+                s.rows, s.cols, rows, ctx->stream), "GLM VQ Q4 decode");
+        }
+        // Wide projections reuse the established Q4_K x Q8_1 MMQ primitive.
+        // Keep the source BF16 output boundary; Q8 input error is assessed
+        // separately from the new weight quantization.
+        if (ds4_mmq_q4_K_dense(s.data, (const float *)input->ptr, (float *)out->ptr,
+            s.rows, rows, s.cols, ctx->stream) != 0) { return 0; }
+        const uint64_t count = (uint64_t)rows * s.rows;
+        glmvq_round_rows<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+            (float *)out->ptr, count);
+        return cuda_ok(cudaGetLastError(), "GLM VQ Q4 BF16 output");
+    }
     return cublas_ok(glmvq_gemm(ctx->handle, s, (const float *)input->ptr, (float *)out->ptr,
         rows, (glmvq_compute)math, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream,
         ctx->restore), "GLM VQ linear");
