@@ -1,0 +1,32 @@
+[
+  {
+    "id": "ko_summary",
+    "prompt": "다음 회의 메모를 읽고 변경된 일정과 담당자를 한국어 두 문장으로 요약하세요. 원래 출시는 화요일 오전 10시였지만 마지막 접근성 점검을 위해 목요일 오후 3시로 미뤘습니다. 민지는 결제 화면을 점검하고 준호는 사용자 안내문을 수정합니다. 서버 이전 작업은 이미 끝났으므로 다시 할 필요가 없습니다. 추측이나 추가 제안은 넣지 마세요.",
+    "target": "출시는 화요일 오전 10시에서 목요일 오후 3시로 변경되었습니다. 민지는 결제 화면을 점검하고 준호는 사용자 안내문을 수정합니다."
+  },
+  {
+    "id": "en_reading",
+    "prompt": "Read this fictional service notice and answer in one sentence. The River library normally opens at 09:00. On Friday it will open at 11:00 because of an electrical inspection. The East branch is unaffected and opens at its normal time of 08:30. Returns placed in the outdoor box are accepted at all hours. Which branch opens later than usual on Friday, and at what time? Use only the notice.",
+    "target": "The River library opens later than usual on Friday, at 11:00, because of an electrical inspection."
+  },
+  {
+    "id": "python_order",
+    "prompt": "Write a Python function named unique_in_order(values) that accepts a list of integers and returns a new list containing each distinct integer once, preserving its first occurrence. Do not mutate the input and do not sort it. For example, [3, 1, 3, 2, 1] must produce [3, 1, 2]. Return only the function in a Python code block, without a prose explanation.",
+    "target": "```python\ndef unique_in_order(values):\n    seen = set()\n    result = []\n    for value in values:\n        if value not in seen:\n            seen.add(value)\n            result.append(value)\n    return result\n```"
+  },
+  {
+    "id": "math_cost",
+    "prompt": "A shop sells notebooks for 7 dollars each and pens for 3 dollars each. A customer buys 4 notebooks and 5 pens, then uses a coupon taking 6 dollars off the total. There are no taxes, delivery charges, or other discounts. What is the final cost? Show one arithmetic expression and give the answer in dollars. Keep the answer to at most two sentences.",
+    "target": "The final cost is 4 × 7 + 5 × 3 - 6 = 37 dollars."
+  },
+  {
+    "id": "json_contract",
+    "prompt": "Create the arguments for a fictional weather lookup from this request: 'Please show the weather in Seoul in Celsius.' Return only a valid JSON object with exactly the keys city and unit, in that order. The city value must be the English string Seoul and the unit value must be the string C. Do not add markdown, an explanation, extra keys, or weather data.",
+    "target": "{\"city\":\"Seoul\",\"unit\":\"C\"}"
+  },
+  {
+    "id": "ko_stop",
+    "prompt": "이 요청은 출력 형식을 확인하기 위한 것입니다. 다른 설명, 인사, 따옴표, 목록, 마침표는 쓰지 마세요. 다음 한 단어를 그대로 출력하고 응답을 끝내세요: 완료",
+    "target": "완료"
+  }
+]

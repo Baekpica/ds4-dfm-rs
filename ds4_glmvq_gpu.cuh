@@ -4,11 +4,13 @@
 #include "cuda/glm_vq_linear.cuh"
 #include "cuda/glm_vq_kda.cuh"
 #include "cuda/glm_vq_attention.cuh"
+#include "cuda/glm_vq_mma.cuh"
 
 enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_BF16 = 30,
        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
+enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32 };
 
 struct ds4_gvq_model {
     std::vector<glmvq_source> source;
@@ -24,7 +26,22 @@ struct ds4_gvq_ctx {
     glmvq_restore_mode restore;
     std::vector<int32_t> routes;
     std::vector<uint32_t> grouped;
+    ds4_gpu_tensor *mma = nullptr;
+    int mma_blocks[3] = {};
+    std::vector<glmvq_mma_item> items;
+    std::vector<uint32_t> order;
+    std::vector<uint8_t> token_used;
+    uint64_t mma_calls = 0, mma_items = 0;
 };
+
+static uint64_t gvq_mma_bytes(uint32_t rows) {
+    const char *enabled = getenv("DS4_GLMVQ_MMA");
+    if (!enabled || strcmp(enabled, "1") || rows < GVQ_MMA_TOKENS) { return 0; }
+    // Grouped x/mid are BF16, gate/down F32; no expanded expert weights.
+    const uint64_t per_pair = (GVQ_HIDDEN + GVQ_FFN) *
+        (sizeof(float) + sizeof(__nv_bfloat16)) + sizeof(glmvq_mma_item) + sizeof(uint32_t);
+    return (uint64_t)rows * GVQ_USED * per_pair;
+}
 
 static bool gvq_span(uint64_t off, uint64_t bytes, uint64_t size) {
     return off <= size && bytes <= size - off;
@@ -114,7 +131,7 @@ extern "C" ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
 }
 
 extern "C" uint64_t ds4_gpu_gvq_workspace(uint32_t rows) {
-    return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t);
+    return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t) + gvq_mma_bytes(rows);
 }
 
 extern "C" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
@@ -127,7 +144,13 @@ extern "C" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
 
 extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     if (!ctx) { return; }
+    if (ctx->mma) {
+        fprintf(stderr, "ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu\n",
+            (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,
+            (unsigned long long)ctx->mma->bytes);
+    }
     if (ctx->handle) { (void)cublasDestroy(ctx->handle); }
+    ds4_gpu_tensor_free(ctx->mma);
     ds4_gpu_tensor_free(ctx->pairs);
     ds4_gpu_tensor_free(ctx->workspace);
     ds4_gpu_tensor_free(ctx->scratch);
@@ -139,6 +162,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     const char *restore = getenv("DS4_GLMVQ_RESTORE_VEC");
     if (restore && strcmp(restore, "0") && strcmp(restore, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_RESTORE_VEC accepts 0 or 1\n");
+        return nullptr;
+    }
+    const char *mma = getenv("DS4_GLMVQ_MMA");
+    if (mma && strcmp(mma, "0") && strcmp(mma, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_MMA accepts 0 or 1\n");
         return nullptr;
     }
     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};
@@ -156,6 +184,25 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         !cublas_ok(cublasSetWorkspace(ctx->handle, ctx->workspace->ptr, ctx->workspace->bytes), "GLM VQ cuBLAS workspace")) {
         ds4_gpu_gvq_free(ctx);
         return nullptr;
+    }
+    const uint64_t mma_bytes = gvq_mma_bytes(rows);
+    if (mma_bytes) {
+        // Reserve before execution/capture; shape/resource failures keep GEMM.
+        const cudaError_t status[] = {
+            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),
+            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),
+            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])
+        };
+        if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) {
+            ctx->mma = ds4_gpu_tensor_alloc(mma_bytes);
+            if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }
+            ctx->items.reserve((uint64_t)rows * GVQ_USED);
+            ctx->order.resize((uint64_t)rows * GVQ_USED);
+            ctx->token_used.resize(rows);
+        } else {
+            (void)cudaGetLastError();
+            fprintf(stderr, "ds4: GLM VQ MMA resources unavailable; using restore+GEMM\n");
+        }
     }
     return ctx;
 }
@@ -399,6 +446,72 @@ __global__ void gvq_scatter(float *output, const float *input, const float *weig
     output[target] = glmvq_round(glmvq_add(output[target], value));
 }
 
+static bool gvq_mma_fits(const ds4_gvq_ctx *ctx, const uint32_t *matrices) {
+    const auto &sources = ctx->model->source;
+    if (matrices[0] >= sources.size()) { return false; }
+    const void *book = sources[matrices[0]].vq.book;
+    for (uint32_t i = 0; i < 3 * GVQ_EXPERTS; i++) {
+        const uint32_t index = matrices[i];
+        const uint32_t rows = i < 2 * GVQ_EXPERTS ? GVQ_FFN : GVQ_HIDDEN;
+        const uint32_t cols = i < 2 * GVQ_EXPERTS ? GVQ_HIDDEN : GVQ_FFN;
+        if (index >= sources.size() || !glmvq_mma_fits(sources[index], rows, cols, book)) { return false; }
+    }
+    return true;
+}
+
+static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *weights,
+        const uint32_t *matrices, const uint32_t *offsets, uint32_t rows, float clamp) {
+    const uint64_t pairs = (uint64_t)rows * GVQ_USED;
+    uint8_t *cursor = (uint8_t *)ctx->mma->ptr;
+    auto *x = (__nv_bfloat16 *)cursor; cursor += pairs * GVQ_HIDDEN * sizeof(*x);
+    auto *gate = (float *)cursor; cursor += pairs * GVQ_FFN * sizeof(*gate);
+    auto *mid = (__nv_bfloat16 *)cursor; cursor += pairs * GVQ_FFN * sizeof(*mid);
+    auto *down = (float *)cursor; cursor += pairs * GVQ_HIDDEN * sizeof(*down);
+    auto *work = (glmvq_mma_item *)cursor; cursor += pairs * sizeof(*work);
+    auto *order = (uint32_t *)cursor;
+    ctx->items.clear();
+    for (uint32_t e = 0; e < GVQ_EXPERTS; e++) {
+        for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += GVQ_MMA_TOKENS) {
+            ctx->items.push_back({{matrices[e], matrices[GVQ_EXPERTS + e], matrices[2 * GVQ_EXPERTS + e]},
+                start, min((uint32_t)GVQ_MMA_TOKENS, offsets[e + 1] - start)});
+        }
+    }
+    std::fill(ctx->token_used.begin(), ctx->token_used.begin() + rows, 0);
+    for (uint32_t i = 0; i < pairs; i++) {
+        const uint32_t token = ctx->grouped[i] / GVQ_USED;
+        ctx->order[token * GVQ_USED + ctx->token_used[token]++] = i;
+    }
+    const cudaStream_t stream = ds4_current_stream();
+    if (!cuda_ok(cudaMemcpyAsync(work, ctx->items.data(), ctx->items.size() * sizeof(*work),
+            cudaMemcpyHostToDevice, stream), "GLM VQ MMA work") ||
+        !cuda_ok(cudaMemcpyAsync(order, ctx->order.data(), pairs * sizeof(*order),
+            cudaMemcpyHostToDevice, stream), "GLM VQ MMA order")) { return 0; }
+    const auto *source = (const glmvq_source *)ctx->model->device->ptr;
+    const auto *book = (const uint8_t *)ctx->model->source[matrices[0]].vq.book;
+    const auto *grouped = (const uint32_t *)ctx->pairs->ptr;
+    const uint64_t elements = pairs * GVQ_HIDDEN;
+    glmvq_mma_gather<<<(elements + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(
+        x, (const float *)input->ptr, grouped, GVQ_USED, GVQ_HIDDEN, elements);
+    const uint32_t nitems = ctx->items.size();
+    ctx->mma_calls++;
+    ctx->mma_items += nitems;
+    constexpr uint32_t shared = glmvq_mma_bytes<GVQ_MMA_ROWS, GVQ_MMA_TOKENS>();
+    const uint32_t gate_blocks = min(nitems * (GVQ_FFN / GVQ_MMA_ROWS), (uint32_t)ctx->mma_blocks[0]);
+    const uint32_t up_blocks = min(nitems * (GVQ_FFN / GVQ_MMA_ROWS), (uint32_t)ctx->mma_blocks[1]);
+    const uint32_t down_blocks = min(nitems * (GVQ_HIDDEN / GVQ_MMA_ROWS), (uint32_t)ctx->mma_blocks[2]);
+    glmvq_mma_kernel<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE><<<gate_blocks, GVQ_MMA_ROWS * 2, shared, stream>>>(
+        source, work, nitems, book, x, gate, mid, down, GVQ_FFN, GVQ_HIDDEN, clamp);
+    glmvq_mma_kernel<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP><<<up_blocks, GVQ_MMA_ROWS * 2, shared, stream>>>(
+        source, work, nitems, book, x, gate, mid, down, GVQ_FFN, GVQ_HIDDEN, clamp);
+    glmvq_mma_kernel<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN><<<down_blocks, GVQ_MMA_ROWS * 2, shared, stream>>>(
+        source, work, nitems, book, mid, gate, mid, down, GVQ_HIDDEN, GVQ_FFN, clamp);
+    const uint64_t count = (uint64_t)rows * GVQ_HIDDEN;
+    glmvq_mma_reduce<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(
+        (float *)out->ptr, down, (const float *)weights->ptr, grouped, order, GVQ_USED, GVQ_HIDDEN, count);
+    return cuda_ok(cudaGetLastError(), "GLM VQ grouped MMA");
+}
+
 extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         ds4_gpu_tensor *gathered, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
         ds4_gpu_tensor *mid, ds4_gpu_tensor *down, const ds4_gpu_tensor *input,
@@ -428,8 +541,12 @@ extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         cursor[e] = offsets[e];
     }
     for (uint64_t i = 0; i < pairs; i++) { ctx->grouped[cursor[ctx->routes[i]]++] = (uint32_t)i; }
-    if (!ds4_gpu_tensor_write(ctx->pairs, 0, ctx->grouped.data(), pairs * sizeof(uint32_t)) ||
-        !ds4_gpu_tensor_fill_f32(out, 0.0f, count)) { return 0; }
+    if (!ds4_gpu_tensor_write(ctx->pairs, 0, ctx->grouped.data(), pairs * sizeof(uint32_t))) { return 0; }
+    // Keep single-token decode and small verification widths on their own path.
+    if (ctx->mma && rows >= GVQ_MMA_TOKENS && gvq_mma_fits(ctx, matrices)) {
+        return gvq_mma_moe(ctx, out, input, weights, matrices, offsets, rows, clamp);
+    }
+    if (!ds4_gpu_tensor_fill_f32(out, 0.0f, count)) { return 0; }
     for (uint32_t e = 0; e < GVQ_EXPERTS; e++) {
         const uint32_t n = counts[e];
         if (!n) { continue; }

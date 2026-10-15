@@ -1163,6 +1163,13 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   are unchanged. This knob belongs to the separate GLM VQ family. See the
   [bounded 2K A/B](../docs/glm53-vq-restore-2026-10-15.md).
 
+- `DS4_GLMVQ_MMA=1` evaluates grouped register-BF16 VQ MMA for prefill
+  widths >=32. Default Off pending whole-model qualification. Aligned
+  13-bit E4M3 GLM shapes with a shared codebook use persistent CTAs and
+  fused up/SwiGLU; other cases retain restore+GEMM. Gain/BF16 boundaries
+  remain, while accumulation order differs. Adds 144.094 MiB of grouped
+  activation/worklist workspace at 512 rows. Decode keeps its existing path.
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

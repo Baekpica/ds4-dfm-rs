@@ -1,0 +1,157 @@
+{
+  "identity": {
+    "head": "3219d0af598bc5a5843706f89587b274694da1c0",
+    "binary_sha256": "fd8ef68f4783d8a78f30d64e30855856b0f29a9f1f6ba62ab0736fb3c89bc43a",
+    "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+    "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+    "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+    "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+    "prompt": 1984,
+    "decode": 32,
+    "context": 2048,
+    "prefill_rows": 512,
+    "mtp": false,
+    "capture": false,
+    "sampling": "forced non-EOS greedy",
+    "weight_owner": "single in-process VMM",
+    "cache": "fresh process, inherited OS file cache; no warmup protocol",
+    "environment": {
+      "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:",
+      "DS4_GLMVQ_PREFILL_ROWS": "512",
+      "DS4_MTP_SPEC_DISABLE": "1"
+    },
+    "libraries": "\tlinux-vdso.so.1\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6\n\t/lib/ld-linux-aarch64.so.1\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13\n"
+  },
+  "runs": [
+    {
+      "label": "mma-off-1",
+      "mode": "0",
+      "prefill_tps": 123.69,
+      "decode_tps": 3.58,
+      "first_decode_seconds": 0.2892,
+      "process_wall_seconds": 213.95666581598925,
+      "minimum_system_available_gib": 35.48630142211914,
+      "observed_busy_sm_mhz": [
+        2184,
+        2184,
+        2190
+      ],
+      "logit_max_abs": 0.0,
+      "logit_rms": 0.0,
+      "kl_ref_candidate": 0.0,
+      "kl_candidate_ref": 0.0,
+      "tv": 0.0,
+      "argmax_equal": true,
+      "generated_ids_equal": true,
+      "generated_common_prefix": 32,
+      "mma_coverage": []
+    },
+    {
+      "label": "mma-on-1",
+      "mode": "1",
+      "prefill_tps": 401.76,
+      "decode_tps": 3.58,
+      "first_decode_seconds": 0.2847,
+      "process_wall_seconds": 255.00413742498495,
+      "minimum_system_available_gib": 35.046630859375,
+      "observed_busy_sm_mhz": [
+        2184,
+        2184.0,
+        2190
+      ],
+      "logit_max_abs": 1.0,
+      "logit_rms": 0.1979817410628099,
+      "kl_ref_candidate": 6.588270599575707e-08,
+      "kl_candidate_ref": 5.9085644050092195e-08,
+      "tv": 2.2601251338034864e-07,
+      "argmax_equal": true,
+      "generated_ids_equal": true,
+      "generated_common_prefix": 32,
+      "mma_coverage": [
+        "ds4: GLM VQ MMA calls=168 items=45795 workspace=151093248"
+      ]
+    },
+    {
+      "label": "mma-on-2",
+      "mode": "1",
+      "prefill_tps": 387.77,
+      "decode_tps": 3.57,
+      "first_decode_seconds": 0.2906,
+      "process_wall_seconds": 204.19477465099772,
+      "minimum_system_available_gib": 35.257015228271484,
+      "observed_busy_sm_mhz": [
+        2184,
+        2184,
+        2190
+      ],
+      "logit_max_abs": 1.0,
+      "logit_rms": 0.1979817410628099,
+      "kl_ref_candidate": 6.588270599575707e-08,
+      "kl_candidate_ref": 5.9085644050092195e-08,
+      "tv": 2.2601251338034864e-07,
+      "argmax_equal": true,
+      "generated_ids_equal": true,
+      "generated_common_prefix": 32,
+      "mma_coverage": [
+        "ds4: GLM VQ MMA calls=168 items=45795 workspace=151093248"
+      ]
+    },
+    {
+      "label": "mma-off-2-retry",
+      "mode": "0",
+      "prefill_tps": 118.06,
+      "decode_tps": 3.58,
+      "first_decode_seconds": 0.2934,
+      "process_wall_seconds": 282.7785872630193,
+      "minimum_system_available_gib": 35.522457122802734,
+      "observed_busy_sm_mhz": [
+        2184,
+        2184,
+        2184
+      ],
+      "logit_max_abs": 0.0,
+      "logit_rms": 0.0,
+      "kl_ref_candidate": 0.0,
+      "kl_candidate_ref": 0.0,
+      "tv": 0.0,
+      "argmax_equal": true,
+      "generated_ids_equal": true,
+      "generated_common_prefix": 32,
+      "mma_coverage": []
+    }
+  ],
+  "native_sources": {
+    "ds4_glmvq_gpu.cuh": "d5b3f765d1f72e1c0c7f3052c3259ea222f882e744024056c545783a759b349d",
+    "cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+    "cuda/glm_vq_linear.cuh": "2bdae28da17b15516305f37553a7e0f127c4e71244bc532e7d751bc7479df594",
+    "cuda/glm_vq.cuh": "3335f74d86848f0b42b22d547403e16c41f26ec470ab0e65ba1d3cae177f40c5",
+    "ds4_glmvq_graph.inc": "0686d01dd5f71619baf4df6990b8444c720c477a5c6d6ed3d234e7262d98d74f",
+    "ds4.c": "410f6768de69b22eb6797fd0970a669d95887700ddee92b5fe1b1eebe9e4fcaf",
+    "ds4_cuda.cu": "d9ddb178f2db48877e8c4999ef6ed38dc77d6747c757e6a1ca58e07f93e6dfc9"
+  },
+  "scope": "2K raw code workload, one frontier and32 greedy tokens; full quality/serving not implied",
+  "off": {
+    "prefill_tps": 120.875,
+    "decode_tps": 3.58
+  },
+  "on": {
+    "prefill_tps": 394.765,
+    "decode_tps": 3.575
+  },
+  "gain_percent": {
+    "prefill_tps": 226.5894519131334,
+    "decode_tps": -0.13966480446927498
+  },
+  "excluded_run": {
+    "label": "mma-off-2",
+    "status": 75,
+    "phase": "weight loading",
+    "reason": "PSI full20.53%, available57.63GiB; no inference result"
+  },
+  "retry_startup": {
+    "label": "mma-off-2-retry",
+    "cache_advice": "task-model POSIX_FADV_DONTNEED after cleanup",
+    "guard": "unchanged104/100GiB,12GiBreserve,PSI20%",
+    "receipt": "mma-off-2-cache-reclaim.json"
+  }
+}
