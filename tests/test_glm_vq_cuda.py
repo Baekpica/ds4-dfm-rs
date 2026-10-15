@@ -94,7 +94,7 @@ def exact(actual, expected):
     assert torch.equal(actual.cpu().view(bits), expected.view(bits)), 'restore bits differ'
 
 
-def synthetic(kernels):
+def synthetic(kernels, dtypes=(torch.float32, torch.bfloat16)):
     rng = np.random.default_rng(5353)
     for k in [4096, 8192]:
         for precision in [1, 2]:
@@ -119,9 +119,10 @@ def synthetic(kernels):
                     book = words.astype('<f2')
                     words = book.astype('f4')
                 expected = (words[idx] * g.astype('f4')[:, None, None]).reshape(rows, cols)
-                for dtype in [torch.float32, torch.bfloat16]:
+                for dtype in dtypes:
                     exact(kernels.restore(m, e, book, g, rows, cols, precision, dtype), expected)
-                print(json.dumps({'synthetic': [rows, cols, k, precision], 'fp32_bf16': 'bit-exact PASS'}), flush=True)
+                print(json.dumps({'synthetic': [rows, cols, k, precision],
+                                  'outputs': list(map(str, dtypes)), 'result': 'bit-exact PASS'}), flush=True)
 
 
 def fp8_scales(kernels):
@@ -138,11 +139,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--lib', type=Path, required=True)
     parser.add_argument('--fixtures', type=Path)
-    parser.add_argument('--case', choices=['all', 'scales', 'packing', 'fixtures'], default='all')
+    parser.add_argument('--case', choices=['all', 'scales', 'packing', 'fixtures', 'vq-bf16'], default='all')
     args = parser.parse_args()
     kernels = Kernels(args.lib)
-    if args.case in ['all', 'fixtures'] and args.fixtures is None:
+    if args.case in ['all', 'fixtures', 'vq-bf16'] and args.fixtures is None:
         parser.error('--fixtures is required for the golden restore gate')
+    if args.case == 'vq-bf16':
+        synthetic(kernels, (torch.bfloat16,))
+        manifest = json.loads((args.fixtures / 'manifest.json').read_text())
+        for entry in manifest['fixtures']:
+            folder = args.fixtures / entry['id']
+            expected = np.load(folder / 'expected.npz')
+            exact(kernels.restore(*fixture(folder / 'fixture.gguf'), torch.bfloat16), expected['vq_expected_f32'])
+        print('GLMVQ_BF16_RESTORE_PASS', flush=True)
+        return
     if args.case in ['all', 'scales']:
         fp8_scales(kernels)
     if args.case in ['all', 'packing']:

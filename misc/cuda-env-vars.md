@@ -1156,6 +1156,13 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   the model. See `misc/proof-harness/README.md` for the sidecar
   lifecycle.
 
+- `DS4_GLMVQ_RESTORE_VEC=0` restores scalar GLM VQ weight restoration.
+  Default On: packed E4M3 loads and BF16 vector stores for aligned GLM VQ
+  gate/up/down matrices. Other shapes, formats or
+  alignments retain scalar restore. Gain multiplication and BF16 rounding
+  are unchanged. This knob belongs to the separate GLM VQ family. See the
+  [bounded 2K A/B](../docs/glm53-vq-restore-2026-10-15.md).
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

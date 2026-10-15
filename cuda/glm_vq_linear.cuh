@@ -34,7 +34,8 @@ __global__ void glmvq_convert(const S *input, D *output, uint64_t count) {
 
 static cublasStatus_t glmvq_gemm(cublasHandle_t handle, const glmvq_source &w,
         const float *input, float *output, uint32_t tokens, glmvq_compute compute,
-        void *scratch, uint64_t bytes, cudaStream_t stream) {
+        void *scratch, uint64_t bytes, cudaStream_t stream,
+        glmvq_restore_mode restore = GLMVQ_RESTORE_VECTOR) {
     if (!handle || !input || !output || !scratch || !w.rows || !w.cols || !tokens ||
         w.rows > INT_MAX || w.cols > INT_MAX || tokens > INT_MAX ||
         bytes < glmvq_linear_bytes(w, tokens, compute)) { return CUBLAS_STATUS_INVALID_VALUE; }
@@ -66,8 +67,9 @@ static cublasStatus_t glmvq_gemm(cublasHandle_t handle, const glmvq_source &w,
         if (w.rows != w.vq.rows || w.cols != w.vq.cols || !w.vq.main || !w.vq.book || !w.vq.gain) {
             return CUBLAS_STATUS_INVALID_VALUE;
         }
-        const unsigned vectors = (unsigned)((count / GLMVQ_VECTOR + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
-        glmvq_restore<<<vectors, GLMVQ_THREADS, 0, stream>>>(w.vq, cursor);
+        if (glmvq_restore_bf16(w.vq, cursor, stream, restore) != cudaSuccess) {
+            return CUBLAS_STATUS_EXECUTION_FAILED;
+        }
         weight = cursor;
         cursor += count;
     } else if (w.storage != GLMVQ_WEIGHT_BF16 || !w.data) { return CUBLAS_STATUS_INVALID_VALUE; }

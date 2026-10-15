@@ -19,7 +19,7 @@ extern "C" int test_glmvq_restore(const uint8_t *main, const uint8_t *plane,
     if (output == OUTPUT_F32) {
         glmvq_restore<<<blocks, GLMVQ_THREADS, 0, stream>>>(matrix, (float *)out);
     } else if (output == OUTPUT_BF16) {
-        glmvq_restore<<<blocks, GLMVQ_THREADS, 0, stream>>>(matrix, (__nv_bfloat16 *)out);
+        return (int)glmvq_restore_bf16(matrix, (__nv_bfloat16 *)out, stream, GLMVQ_RESTORE_VECTOR);
     } else { return (int)cudaErrorInvalidValue; }
     return (int)cudaGetLastError();
 }

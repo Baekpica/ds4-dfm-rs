@@ -21,6 +21,7 @@ struct ds4_gvq_ctx {
     ds4_gpu_tensor *scratch, *workspace, *pairs;
     cublasHandle_t handle;
     cudaStream_t stream;
+    glmvq_restore_mode restore;
     std::vector<int32_t> routes;
     std::vector<uint32_t> grouped;
 };
@@ -135,8 +136,15 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
 
 extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint32_t rows) {
     if (!model || !bytes || !rows) { return nullptr; }
+    const char *restore = getenv("DS4_GLMVQ_RESTORE_VEC");
+    if (restore && strcmp(restore, "0") && strcmp(restore, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_RESTORE_VEC accepts 0 or 1\n");
+        return nullptr;
+    }
     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};
     if (!ctx) { return nullptr; }
+    ctx->restore = restore && strcmp(restore, "0") == 0
+        ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     ctx->model = model;
     ctx->scratch = ds4_gpu_tensor_alloc(bytes);
     ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);
@@ -184,7 +192,8 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows) ||
         (math != DS4_GVQ_BF16 && math != DS4_GVQ_F32) || !gvq_stream(ctx)) { return 0; }
     return cublas_ok(glmvq_gemm(ctx->handle, s, (const float *)input->ptr, (float *)out->ptr,
-        rows, (glmvq_compute)math, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream), "GLM VQ linear");
+        rows, (glmvq_compute)math, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream,
+        ctx->restore), "GLM VQ linear");
 }
 
 extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
