@@ -108,7 +108,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [direct VQ expert decode](glm53-vq-decode-2026-10-16.md),
   [fused FP8 projections](glm53-vq-fp8-2026-10-16.md),
   [selective KDA Q4 assessment](glm53-vq-kda-q4-2026-10-16.md),
-  [prefill chunk assessment](glm53-vq-chunks-2026-10-16.md).
+  [prefill chunk assessment](glm53-vq-chunks-2026-10-16.md),
+  [workspace allocation assessment](glm53-vq-work-arena-2026-10-16.md).
 - **dots3:** [September 6 optimization](dots3-optimization-2026-09-06.md).
 - **K2:** [September 5](k2-optimization-2026-09-05.md),
   [continuation campaign](k2-optimization-2026-09-05-cont.md).
