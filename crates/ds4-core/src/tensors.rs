@@ -21,6 +21,7 @@ pub enum TensorError {
     SplitPath,
     SplitFirst,
     ExpectedTensors { declared: u32, got: u64 },
+    GlmVq(&'static str),
 }
 
 impl TensorError {
@@ -35,6 +36,7 @@ impl TensorError {
             TensorError::ExpectedTensors { declared, got } => {
                 format!("split-tensors {declared}!={got}")
             }
+            TensorError::GlmVq(reason) => format!("glm-vq {reason}"),
         }
     }
 }
@@ -304,6 +306,7 @@ fn parse_one(
             return Err(TensorError::OutsideFile);
         }
     }
+    crate::glm_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     Ok((data_pos, tensors))
 }
 

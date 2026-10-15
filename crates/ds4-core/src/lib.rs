@@ -15,6 +15,7 @@ mod dots3_mtp;
 mod engram;
 mod gguf;
 mod glm_mtp;
+mod glm_vq;
 mod identify;
 mod inkling;
 mod inkling_audio;
