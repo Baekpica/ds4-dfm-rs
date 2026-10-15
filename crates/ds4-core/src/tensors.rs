@@ -357,6 +357,9 @@ fn file_len(path: &Path) -> Result<u64, TensorError> {
 
 impl TensorInventory {
     pub fn open(path: &Path) -> Result<Self, TensorError> {
+        if path.is_dir() {
+            return crate::glm_vq::open_dir(path);
+        }
         let g = GgufFile::open(path)?;
         Self::from_file(path, &g)
     }

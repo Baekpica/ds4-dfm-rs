@@ -3,6 +3,8 @@
 //! fe2a446e774624ef8d397136d81524c61db77f65. Validate borrowed mmap spans;
 //! never expand experts or copy an entire part while building the inventory.
 
+mod release;
+
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
@@ -25,6 +27,10 @@ const SCALE_BLOCK: u64 = 128;
 const PATCH: &str = "model.visual.patch_embed.proj.weight";
 
 type Result<T> = std::result::Result<T, TensorError>;
+
+pub(super) fn open_dir(path: &std::path::Path) -> Result<crate::tensors::TensorInventory> {
+    release::open_dir(path)
+}
 
 fn fail(reason: &'static str) -> TensorError {
     TensorError::GlmVq(reason)
