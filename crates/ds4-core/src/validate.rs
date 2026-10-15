@@ -1955,6 +1955,9 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::NaiveN05 => crate::naive::validate_metadata(g),
         ModelFamily::IQuestQ1 => crate::iquest::validate(g),
         ModelFamily::Glm53 => validate_glm53(g, shape),
+        ModelFamily::Glm53Vq => Err(ValidateError::Token(
+            "GLM VQ requires a complete release directory",
+        )),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::Qwen35 => validate_qwen35(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
@@ -1969,6 +1972,13 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
 }
 
 pub fn validate_gguf(path: &std::path::Path) -> Result<Shape, ValidateError> {
+    if path.is_dir() {
+        let id = crate::glm_vq::identify(path)?;
+        let inventory = TensorInventory::open(path)
+            .map_err(|e| ValidateError::TokenKey("GLM VQ inventory", e.token()))?;
+        crate::glm_vq::validate_inventory(&inventory)?;
+        return Ok(id.shape);
+    }
     let g = GgufFile::open(path)?;
     let id = identify_file(&g)?;
     validate_file(&g, &id.shape)?;
@@ -2011,6 +2021,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
                         Variant::Qwen35_27B => SHAPE_QWEN35,
                         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
+                        Variant::Glm53FlashVq => crate::shape::SHAPE_GLM53_VQ,
                         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,
                         Variant::Step37Flash => crate::shape::SHAPE_STEP37_FLASH,

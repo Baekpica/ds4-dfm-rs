@@ -3,6 +3,8 @@
 //! fe2a446e774624ef8d397136d81524c61db77f65. Validate borrowed mmap spans;
 //! never expand experts or copy an entire part while building the inventory.
 
+mod layout;
+mod model;
 mod release;
 
 use std::collections::{HashMap, HashSet};
@@ -30,6 +32,36 @@ type Result<T> = std::result::Result<T, TensorError>;
 
 pub(super) fn open_dir(path: &std::path::Path) -> Result<crate::tensors::TensorInventory> {
     release::open_dir(path)
+}
+
+pub(super) fn identify(
+    path: &std::path::Path,
+) -> std::result::Result<crate::Identified, crate::IdentifyError> {
+    model::identify(path)
+}
+
+pub(super) fn layouts() -> Vec<crate::LayoutSpec> {
+    layout::layouts()
+}
+
+pub(super) fn asset(root: &std::path::Path, name: &str) -> Result<Vec<u8>> {
+    release::asset(root, name)
+}
+
+pub(super) fn metadata(root: &std::path::Path) -> Result<GgufFile> {
+    let (path, _) = release::first_part(root)?;
+    Ok(GgufFile::open(&path)?)
+}
+
+pub(super) fn validate_inventory(
+    inventory: &crate::TensorInventory,
+) -> std::result::Result<(), crate::ValidateError> {
+    let plan = crate::BindPlan::resolve(crate::shape::SHAPE_GLM53_VQ, inventory);
+    if plan.slots.len() != inventory.tensors.len() {
+        return Err(crate::ValidateError::Token("GLM VQ tensor set mismatch"));
+    }
+    crate::validate_layouts(&plan)
+        .map_err(|e| crate::ValidateError::TokenKey("GLM VQ tensor layout", e.to_string()))
 }
 
 fn fail(reason: &'static str) -> TensorError {

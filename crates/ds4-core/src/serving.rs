@@ -699,6 +699,26 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        ModelFamily::Glm53Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::None,
+            reuse_support: Support::None,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(GLM_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: true,
+        },
         ModelFamily::IQuestQ1 => ServingCaps {
             family,
             variant,
@@ -1450,6 +1470,7 @@ impl ServingCaps {
             Variant::Dots3NotePrev => "dots3-note",
             Variant::Qwen38FlashNext => "qwen4exp",
             Variant::Glm53Flash => "glm5-next",
+            Variant::Glm53FlashVq => "GLM-5.3-Flash-VQ",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -2531,6 +2552,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
         Variant::Glm53Flash => "compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate",
+        Variant::Glm53FlashVq => "GVQ1 loader and CUDA restore are present; native serving and all workload limits remain unqualified",
         Variant::Dots3NotePrev => {
             "text banks, local-window partial reuse and serial MTP are present but unqualified"
         }

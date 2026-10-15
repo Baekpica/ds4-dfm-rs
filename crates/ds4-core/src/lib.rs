@@ -1467,6 +1467,12 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::Glm53Vq {
+            return Err(Error {
+                code: 1,
+                message: "GLM VQ native execution is not integrated yet".into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -3430,7 +3436,10 @@ mod tests {
             let dir = &*moved.as_c();
             assert_eq!(dir.n_shards, 2);
             let parts = std::slice::from_raw_parts(dir.shards, dir.n_shards as usize);
-            assert_eq!(std::ffi::CStr::from_ptr(parts[1].path).to_bytes(), b"expert.gguf");
+            assert_eq!(
+                std::ffi::CStr::from_ptr(parts[1].path).to_bytes(),
+                b"expert.gguf"
+            );
             assert_eq!((parts[1].size, parts[1].base), (512, 4096));
         }
     }

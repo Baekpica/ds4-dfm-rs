@@ -87,6 +87,38 @@ fn check_file(bytes: &[u8], entry: &Value) -> Result<()> {
     check_hash(bytes, text(entry, "sha256")?)
 }
 
+pub(super) fn asset(root: &Path, name: &str) -> Result<Vec<u8>> {
+    filename(name)?;
+    let files = json(&json_bytes(&root.join("files.json"))?)?;
+    let matches: Vec<_> = array(&files, "files")?
+        .iter()
+        .filter(|e| e.get("path").and_then(Value::as_str) == Some(name))
+        .collect();
+    if matches.len() != 1 {
+        return Err(fail("missing/duplicate release asset"));
+    }
+    let bytes = json_bytes(&root.join(name))?;
+    check_file(&bytes, matches[0])?;
+    Ok(bytes)
+}
+
+pub(super) fn first_part(root: &Path) -> Result<(std::path::PathBuf, u32)> {
+    let files = json(&json_bytes(&root.join("files.json"))?)?;
+    let mut parts = Vec::new();
+    for entry in array(&files, "files")? {
+        let name = text(entry, "path")?;
+        filename(name)?;
+        if name.ends_with(".gguf") {
+            parts.push(name);
+        }
+    }
+    parts.sort_unstable();
+    if parts.is_empty() || parts.windows(2).any(|p| p[0] == p[1]) {
+        return Err(fail("missing/duplicate release parts"));
+    }
+    Ok((root.join(parts[0]), parts.len() as u32))
+}
+
 fn check_tensor(g: &GgufFile, tensor: &TensorInfo, entry: &Value) -> Result<()> {
     let dims: Vec<_> = tensor.dim[..tensor.ndim as usize]
         .iter()

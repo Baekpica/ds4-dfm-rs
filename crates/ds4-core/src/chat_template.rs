@@ -32,6 +32,10 @@ pub struct ChatOptions {
     prefill: &'static str,
 }
 
+fn glm_model(id: i32) -> bool {
+    id == crate::Variant::Glm53Flash as i32 || id == crate::Variant::Glm53FlashVq as i32
+}
+
 impl ChatOptions {
     pub fn new(model_id: i32, mode: ChatThinkMode) -> Self {
         use ChatThinkMode::{High, Low, Max, None};
@@ -39,7 +43,7 @@ impl ChatOptions {
             (6, High | Max) => "xhigh",
             (2, Low) => "medium",
             (2, Max) => "xhigh",
-            (7, None | Max) => "max",
+            (id, None | Max) if glm_model(id) => "max",
             // The existing K2 output parser handles its default think channel.
             (8, _) => "high",
             (_, None) => "none",
@@ -48,7 +52,7 @@ impl ChatOptions {
             (_, Max) => "max",
         };
         let prefill = match (model_id, mode) {
-            (7, None) => "</think>",
+            (id, None) if glm_model(id) => "</think>",
             (8, None) => "</ifm|think>\n",
             (id, None) if id == crate::Variant::Step37Flash as i32 => "</think>\n",
             _ => "",
@@ -80,12 +84,25 @@ impl Template {
 
     /// Read only artifact metadata; never load weights or a GPU model.
     pub fn from_model(path: &Path) -> Result<Option<Self>> {
+        if path.is_dir() {
+            let gguf = crate::glm_vq::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         let gguf = GgufFile::open(path).map_err(asset_error)?;
         Self::load(path, &gguf)
     }
 
     pub(crate) fn load(path: &Path, gguf: &GgufFile) -> Result<Option<Self>> {
-        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let dir = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or_else(|| Path::new("."))
+        };
+        if path.is_dir() {
+            for name in ["tokenizer_config.json", "chat_template.jinja"] {
+                crate::glm_vq::asset(path, name).map_err(asset_error)?;
+            }
+        }
         let config_path = dir.join("tokenizer_config.json");
         let config: Value = read_optional(&config_path)?
             .map(|text| serde_json::from_str(&text).map_err(asset_error))
@@ -167,8 +184,7 @@ impl Template {
         for message in &mut messages {
             // GLM extracts embedded thinking in its template. An injected
             // empty reasoning field would bypass that source-defined path.
-            if message["role"] != "assistant" || options.model == crate::Variant::Glm53Flash as i32
-            {
+            if message["role"] != "assistant" || glm_model(options.model) {
                 continue;
             }
             // APIs may omit hidden reasoning. Supply an empty canonical field,

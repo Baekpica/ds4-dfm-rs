@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[path = "glm_vq/release.rs"]
 mod release;
 
+#[path = "glm_vq/input.rs"]
+mod input;
+
 const VQ: u32 = 0x4756_5138;
 const BOOK: u32 = 0x4756_4342;
 const FP8: u32 = 0x4751_4638;

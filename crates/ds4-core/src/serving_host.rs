@@ -1004,6 +1004,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Ling3Vl => LING_NATIVE_MAX,
         ModelFamily::Inkling => INKLING_NATIVE_MAX,
         ModelFamily::Glm53 => GLM_NATIVE_MAX,
+        ModelFamily::Glm53Vq => GLM_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1063,6 +1064,7 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             INKLING_NATIVE_MAX,
         ),
         ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
+        ModelFamily::Glm53Vq => GLM_NATIVE_DEFAULT,
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
             if caps.variant == Variant::K2Horizon375B {

@@ -1,0 +1,2918 @@
+{
+  "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+  "transformers": "5.19.0",
+  "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+  "raw": [
+    {
+      "text": "",
+      "ids": []
+    },
+    {
+      "text": "안녕하세요. 서울의 날씨를 설명해 주세요.",
+      "ids": [
+        133420,
+        73588,
+        243,
+        90385,
+        13,
+        89118,
+        139966,
+        20360,
+        37001,
+        254,
+        142995,
+        101,
+        18381,
+        57456,
+        78992,
+        33720,
+        55299,
+        49978,
+        13
+      ]
+    },
+    {
+      "text": "Hello, world!",
+      "ids": [
+        9703,
+        11,
+        1879,
+        0
+      ]
+    },
+    {
+      "text": "I'm here; WE'RE ready. Can't stop.",
+      "ids": [
+        40,
+        2776,
+        1588,
+        26,
+        19640,
+        93362,
+        5527,
+        13,
+        2980,
+        944,
+        2936,
+        13
+      ]
+    },
+    {
+      "text": "def add(a, b):\n    return a + b\n",
+      "ids": [
+        750,
+        912,
+        2877,
+        11,
+        293,
+        982,
+        262,
+        470,
+        264,
+        488,
+        293,
+        198
+      ]
+    },
+    {
+      "text": "1234567890 ١٢٣٤٥ １２３４５ 17 * 19 = 323",
+      "ids": [
+        108714,
+        100461,
+        21,
+        100928,
+        24,
+        15,
+        220,
+        152464,
+        152465,
+        152466,
+        152467,
+        152468,
+        220,
+        20069,
+        24842,
+        33355,
+        45333,
+        43248,
+        220,
+        99419,
+        353,
+        220,
+        98729,
+        284,
+        220,
+        18,
+        99619
+      ]
+    },
+    {
+      "text": " \t\n\r\n  trailing   ",
+      "ids": [
+        17452,
+        319,
+        220,
+        27654,
+        262
+      ]
+    },
+    {
+      "text": "é é ‍👩‍💻 한글 中文 日本語",
+      "ids": [
+        68,
+        53481,
+        3958,
+        636,
+        235,
+        151929,
+        124564,
+        152011,
+        60867,
+        82602,
+        117604,
+        108478,
+        131513
+      ]
+    },
+    {
+      "text": "{\"name\":\"weather\",\"arguments\":{\"city\":\"Seoul\"}}",
+      "ids": [
+        4913,
+        606,
+        3252,
+        15194,
+        2198,
+        16356,
+        22260,
+        8923,
+        3252,
+        1514,
+        10960,
+        30849
+      ]
+    },
+    {
+      "text": "<tool_call>weather<arg_key>city</arg_key><arg_value>서울</arg_value></tool_call>",
+      "ids": [
+        154843,
+        15194,
+        154847,
+        8923,
+        154848,
+        154849,
+        26612,
+        139966,
+        154850,
+        154844
+      ]
+    },
+    {
+      "text": "abc\u0000def",
+      "ids": [
+        13674,
+        188,
+        750
+      ]
+    },
+    {
+      "text": "[gMASK]<sop><|user|>Hi<|assistant|><think>\n",
+      "ids": [
+        154822,
+        154824,
+        154827,
+        13041,
+        154828,
+        154841,
+        198
+      ]
+    },
+    {
+      "text": "<|endoftext|>",
+      "ids": [
+        154820
+      ]
+    },
+    {
+      "text": "[MASK]",
+      "ids": [
+        154821
+      ]
+    },
+    {
+      "text": "[gMASK]",
+      "ids": [
+        154822
+      ]
+    },
+    {
+      "text": "[sMASK]",
+      "ids": [
+        154823
+      ]
+    },
+    {
+      "text": "<sop>",
+      "ids": [
+        154824
+      ]
+    },
+    {
+      "text": "<eop>",
+      "ids": [
+        154825
+      ]
+    },
+    {
+      "text": "<|system|>",
+      "ids": [
+        154826
+      ]
+    },
+    {
+      "text": "<|user|>",
+      "ids": [
+        154827
+      ]
+    },
+    {
+      "text": "<|assistant|>",
+      "ids": [
+        154828
+      ]
+    },
+    {
+      "text": "<|observation|>",
+      "ids": [
+        154829
+      ]
+    },
+    {
+      "text": "<|begin_of_image|>",
+      "ids": [
+        154830
+      ]
+    },
+    {
+      "text": "<|end_of_image|>",
+      "ids": [
+        154831
+      ]
+    },
+    {
+      "text": "<|begin_of_video|>",
+      "ids": [
+        154832
+      ]
+    },
+    {
+      "text": "<|end_of_video|>",
+      "ids": [
+        154833
+      ]
+    },
+    {
+      "text": "<|begin_of_audio|>",
+      "ids": [
+        154834
+      ]
+    },
+    {
+      "text": "<|end_of_audio|>",
+      "ids": [
+        154835
+      ]
+    },
+    {
+      "text": "<|begin_of_transcription|>",
+      "ids": [
+        154836
+      ]
+    },
+    {
+      "text": "<|end_of_transcription|>",
+      "ids": [
+        154837
+      ]
+    },
+    {
+      "text": "<|code_prefix|>",
+      "ids": [
+        154838
+      ]
+    },
+    {
+      "text": "<|code_middle|>",
+      "ids": [
+        154839
+      ]
+    },
+    {
+      "text": "<|code_suffix|>",
+      "ids": [
+        154840
+      ]
+    },
+    {
+      "text": "<think>",
+      "ids": [
+        154841
+      ]
+    },
+    {
+      "text": "</think>",
+      "ids": [
+        154842
+      ]
+    },
+    {
+      "text": "<tool_call>",
+      "ids": [
+        154843
+      ]
+    },
+    {
+      "text": "</tool_call>",
+      "ids": [
+        154844
+      ]
+    },
+    {
+      "text": "<tool_response>",
+      "ids": [
+        154845
+      ]
+    },
+    {
+      "text": "</tool_response>",
+      "ids": [
+        154846
+      ]
+    },
+    {
+      "text": "<arg_key>",
+      "ids": [
+        154847
+      ]
+    },
+    {
+      "text": "</arg_key>",
+      "ids": [
+        154848
+      ]
+    },
+    {
+      "text": "<arg_value>",
+      "ids": [
+        154849
+      ]
+    },
+    {
+      "text": "</arg_value>",
+      "ids": [
+        154850
+      ]
+    },
+    {
+      "text": "/nothink",
+      "ids": [
+        154851
+      ]
+    },
+    {
+      "text": "<|begin_of_box|>",
+      "ids": [
+        154852
+      ]
+    },
+    {
+      "text": "<|end_of_box|>",
+      "ids": [
+        154853
+      ]
+    },
+    {
+      "text": "<|image|>",
+      "ids": [
+        154854
+      ]
+    },
+    {
+      "text": "<|video|>",
+      "ids": [
+        154855
+      ]
+    },
+    {
+      "text": "äger",
+      "ids": [
+        148490
+      ]
+    },
+    {
+      "text": " الز",
+      "ids": [
+        131478
+      ]
+    },
+    {
+      "text": " Ε",
+      "ids": [
+        128228
+      ]
+    },
+    {
+      "text": " wxDefault",
+      "ids": [
+        82896
+      ]
+    },
+    {
+      "text": "颠覆",
+      "ids": [
+        111560
+      ]
+    },
+    {
+      "text": "repos",
+      "ids": [
+        67857
+      ]
+    },
+    {
+      "text": " gratu",
+      "ids": [
+        128754
+      ]
+    },
+    {
+      "text": "-safe",
+      "ids": [
+        54750
+      ]
+    },
+    {
+      "text": "Leaf",
+      "ids": [
+        31330
+      ]
+    },
+    {
+      "text": "经营者",
+      "ids": [
+        111123
+      ]
+    },
+    {
+      "text": "的行为",
+      "ids": [
+        103254
+      ]
+    },
+    {
+      "text": "_:*",
+      "ids": [
+        77964
+      ]
+    },
+    {
+      "text": " Sistema",
+      "ids": [
+        75647
+      ]
+    },
+    {
+      "text": " Fairy",
+      "ids": [
+        54707
+      ]
+    },
+    {
+      "text": "bereitung",
+      "ids": [
+        146758
+      ]
+    },
+    {
+      "text": "Aff",
+      "ids": [
+        25760
+      ]
+    },
+    {
+      "text": " comprend",
+      "ids": [
+        59431
+      ]
+    },
+    {
+      "text": " stom",
+      "ids": [
+        20060
+      ]
+    },
+    {
+      "text": "rijven",
+      "ids": [
+        147592
+      ]
+    },
+    {
+      "text": " gebruiken",
+      "ids": [
+        142727
+      ]
+    },
+    {
+      "text": "�权",
+      "ids": [
+        5691,
+        98801
+      ]
+    },
+    {
+      "text": " prefect",
+      "ids": [
+        88704
+      ]
+    },
+    {
+      "text": "getRow",
+      "ids": [
+        86751
+      ]
+    },
+    {
+      "text": " pronunciation",
+      "ids": [
+        70093
+      ]
+    },
+    {
+      "text": " хот",
+      "ids": [
+        128045
+      ]
+    },
+    {
+      "text": " menacing",
+      "ids": [
+        93182
+      ]
+    },
+    {
+      "text": " учащихся",
+      "ids": [
+        147883
+      ]
+    },
+    {
+      "text": "thood",
+      "ids": [
+        31733
+      ]
+    },
+    {
+      "text": " chevy",
+      "ids": [
+        96099
+      ]
+    },
+    {
+      "text": " منذ",
+      "ids": [
+        140986
+      ]
+    },
+    {
+      "text": "ادن",
+      "ids": [
+        148963
+      ]
+    },
+    {
+      "text": "_complex",
+      "ids": [
+        41287
+      ]
+    },
+    {
+      "text": ">&",
+      "ids": [
+        5789
+      ]
+    },
+    {
+      "text": "老乡",
+      "ids": [
+        126906
+      ]
+    },
+    {
+      "text": " nhiều",
+      "ids": [
+        128274
+      ]
+    },
+    {
+      "text": "出土",
+      "ids": [
+        110835
+      ]
+    },
+    {
+      "text": "odef",
+      "ids": [
+        96756
+      ]
+    },
+    {
+      "text": "◥",
+      "ids": [
+        154543
+      ]
+    },
+    {
+      "text": " través",
+      "ids": [
+        49035
+      ]
+    },
+    {
+      "text": " css",
+      "ids": [
+        15865
+      ]
+    },
+    {
+      "text": "*)\"",
+      "ids": [
+        60468
+      ]
+    },
+    {
+      "text": "splash",
+      "ids": [
+        48328
+      ]
+    },
+    {
+      "text": " приобрести",
+      "ids": [
+        135994
+      ]
+    },
+    {
+      "text": " 201",
+      "ids": [
+        220,
+        98546
+      ]
+    },
+    {
+      "text": "_ready",
+      "ids": [
+        35280
+      ]
+    },
+    {
+      "text": "illa",
+      "ids": [
+        6241
+      ]
+    },
+    {
+      "text": " ceramic",
+      "ids": [
+        41787
+      ]
+    },
+    {
+      "text": "净化",
+      "ids": [
+        105839
+      ]
+    },
+    {
+      "text": " elecciones",
+      "ids": [
+        141764
+      ]
+    },
+    {
+      "text": "LOSE",
+      "ids": [
+        15949
+      ]
+    },
+    {
+      "text": "サービス",
+      "ids": [
+        133808
+      ]
+    },
+    {
+      "text": " entren",
+      "ids": [
+        93034
+      ]
+    },
+    {
+      "text": "制作",
+      "ids": [
+        100214
+      ]
+    },
+    {
+      "text": " <*",
+      "ids": [
+        85490
+      ]
+    },
+    {
+      "text": " deserved",
+      "ids": [
+        44189
+      ]
+    },
+    {
+      "text": "{\n\n\n",
+      "ids": [
+        53275
+      ]
+    },
+    {
+      "text": "登",
+      "ids": [
+        99535
+      ]
+    },
+    {
+      "text": "比赛",
+      "ids": [
+        100083
+      ]
+    },
+    {
+      "text": ".Errorf",
+      "ids": [
+        13072
+      ]
+    },
+    {
+      "text": "-leg",
+      "ids": [
+        60694
+      ]
+    },
+    {
+      "text": "结节",
+      "ids": [
+        113421
+      ]
+    },
+    {
+      "text": "女儿",
+      "ids": [
+        101166
+      ]
+    },
+    {
+      "text": "story",
+      "ids": [
+        26400
+      ]
+    },
+    {
+      "text": "前几天",
+      "ids": [
+        115640
+      ]
+    },
+    {
+      "text": " twee",
+      "ids": [
+        72051
+      ]
+    },
+    {
+      "text": " Collector",
+      "ids": [
+        58145
+      ]
+    },
+    {
+      "text": " noisy",
+      "ids": [
+        48963
+      ]
+    },
+    {
+      "text": "?'\n\n",
+      "ids": [
+        85502
+      ]
+    },
+    {
+      "text": "))){\n",
+      "ids": [
+        51025
+      ]
+    },
+    {
+      "text": "环境下",
+      "ids": [
+        108615
+      ]
+    },
+    {
+      "text": "raham",
+      "ids": [
+        16586
+      ]
+    },
+    {
+      "text": " NodeType",
+      "ids": [
+        82065
+      ]
+    },
+    {
+      "text": "ака",
+      "ids": [
+        132011
+      ]
+    },
+    {
+      "text": " 但是",
+      "ids": [
+        103778
+      ]
+    },
+    {
+      "text": "羟",
+      "ids": [
+        115729
+      ]
+    },
+    {
+      "text": " sheep",
+      "ids": [
+        31776
+      ]
+    },
+    {
+      "text": " placement",
+      "ids": [
+        21398
+      ]
+    },
+    {
+      "text": "闲",
+      "ids": [
+        100661
+      ]
+    },
+    {
+      "text": " Oli",
+      "ids": [
+        134558
+      ]
+    },
+    {
+      "text": ",\");\n",
+      "ids": [
+        87617
+      ]
+    },
+    {
+      "text": "ा",
+      "ids": [
+        23801
+      ]
+    },
+    {
+      "text": " фильм",
+      "ids": [
+        133954
+      ]
+    },
+    {
+      "text": "OUNTER",
+      "ids": [
+        34845
+      ]
+    },
+    {
+      "text": " бук",
+      "ids": [
+        129977
+      ]
+    },
+    {
+      "text": "雾",
+      "ids": [
+        102210
+      ]
+    },
+    {
+      "text": "摇滚",
+      "ids": [
+        114897
+      ]
+    },
+    {
+      "text": "_STA",
+      "ids": [
+        80861
+      ]
+    },
+    {
+      "text": "警务",
+      "ids": [
+        117799
+      ]
+    },
+    {
+      "text": " inorder",
+      "ids": [
+        65560
+      ]
+    },
+    {
+      "text": "私人",
+      "ids": [
+        105773
+      ]
+    },
+    {
+      "text": " nauc",
+      "ids": [
+        150967
+      ]
+    },
+    {
+      "text": " alphanumeric",
+      "ids": [
+        98139
+      ]
+    },
+    {
+      "text": " Debt",
+      "ids": [
+        57163
+      ]
+    },
+    {
+      "text": " ($.",
+      "ids": [
+        83635
+      ]
+    },
+    {
+      "text": "utils",
+      "ids": [
+        6031
+      ]
+    },
+    {
+      "text": " крови",
+      "ids": [
+        133457
+      ]
+    },
+    {
+      "text": " Homes",
+      "ids": [
+        36378
+      ]
+    },
+    {
+      "text": " attempting",
+      "ids": [
+        19368
+      ]
+    },
+    {
+      "text": "陕",
+      "ids": [
+        102007
+      ]
+    },
+    {
+      "text": ".Serve",
+      "ids": [
+        82845
+      ]
+    },
+    {
+      "text": "jdk",
+      "ids": [
+        88116
+      ]
+    },
+    {
+      "text": "-manager",
+      "ids": [
+        44635
+      ]
+    },
+    {
+      "text": " RW",
+      "ids": [
+        45927
+      ]
+    },
+    {
+      "text": "алов",
+      "ids": [
+        131050
+      ]
+    },
+    {
+      "text": "Wis",
+      "ids": [
+        78118
+      ]
+    },
+    {
+      "text": " edx",
+      "ids": [
+        63192
+      ]
+    },
+    {
+      "text": " Depos",
+      "ids": [
+        76437
+      ]
+    },
+    {
+      "text": "图纸",
+      "ids": [
+        114846
+      ]
+    },
+    {
+      "text": " Гре",
+      "ids": [
+        149499
+      ]
+    },
+    {
+      "text": "起重",
+      "ids": [
+        112694
+      ]
+    },
+    {
+      "text": "elic",
+      "ids": [
+        42379
+      ]
+    },
+    {
+      "text": " dorm",
+      "ids": [
+        29002
+      ]
+    },
+    {
+      "text": ".connector",
+      "ids": [
+        63060
+      ]
+    },
+    {
+      "text": " Citizens",
+      "ids": [
+        39680
+      ]
+    },
+    {
+      "text": "autom",
+      "ids": [
+        26985
+      ]
+    },
+    {
+      "text": "༘",
+      "ids": [
+        153933
+      ]
+    },
+    {
+      "text": " tama",
+      "ids": [
+        136570
+      ]
+    },
+    {
+      "text": " fels",
+      "ids": [
+        148200
+      ]
+    },
+    {
+      "text": "-performance",
+      "ids": [
+        57084
+      ]
+    },
+    {
+      "text": "_places",
+      "ids": [
+        57057
+      ]
+    },
+    {
+      "text": "talk",
+      "ids": [
+        35067
+      ]
+    },
+    {
+      "text": "Genre",
+      "ids": [
+        37330
+      ]
+    },
+    {
+      "text": "oundingBox",
+      "ids": [
+        57114
+      ]
+    },
+    {
+      "text": "网络",
+      "ids": [
+        99216
+      ]
+    },
+    {
+      "text": " milfs",
+      "ids": [
+        91203
+      ]
+    },
+    {
+      "text": "DateString",
+      "ids": [
+        46482
+      ]
+    },
+    {
+      "text": " unreal",
+      "ids": [
+        48791
+      ]
+    },
+    {
+      "text": "_FEATURE",
+      "ids": [
+        30705
+      ]
+    },
+    {
+      "text": "verify",
+      "ids": [
+        12440
+      ]
+    },
+    {
+      "text": "zens",
+      "ids": [
+        18517
+      ]
+    },
+    {
+      "text": "应聘",
+      "ids": [
+        110506
+      ]
+    },
+    {
+      "text": "<UnityEngine",
+      "ids": [
+        57379
+      ]
+    },
+    {
+      "text": " mensagem",
+      "ids": [
+        58410
+      ]
+    },
+    {
+      "text": ";-",
+      "ids": [
+        54070
+      ]
+    },
+    {
+      "text": " SharedPreferences",
+      "ids": [
+        34910
+      ]
+    },
+    {
+      "text": "消防安全",
+      "ids": [
+        110950
+      ]
+    },
+    {
+      "text": "听起来",
+      "ids": [
+        116091
+      ]
+    },
+    {
+      "text": "肝肾",
+      "ids": [
+        126070
+      ]
+    },
+    {
+      "text": " attractive",
+      "ids": [
+        18845
+      ]
+    },
+    {
+      "text": " lamb",
+      "ids": [
+        38100
+      ]
+    },
+    {
+      "text": "antha",
+      "ids": [
+        57473
+      ]
+    },
+    {
+      "text": ".surname",
+      "ids": [
+        93209
+      ]
+    },
+    {
+      "text": " DIST",
+      "ids": [
+        35921
+      ]
+    },
+    {
+      "text": ".setEditable",
+      "ids": [
+        71009
+      ]
+    },
+    {
+      "text": "做好了",
+      "ids": [
+        116072
+      ]
+    },
+    {
+      "text": " från",
+      "ids": [
+        47804
+      ]
+    },
+    {
+      "text": "\tNdrFcShort",
+      "ids": [
+        74578
+      ]
+    },
+    {
+      "text": "{-#",
+      "ids": [
+        34206
+      ]
+    },
+    {
+      "text": " талант",
+      "ids": [
+        149385
+      ]
+    },
+    {
+      "text": " пись",
+      "ids": [
+        131555
+      ]
+    },
+    {
+      "text": "当天",
+      "ids": [
+        103769
+      ]
+    },
+    {
+      "text": " sprzę",
+      "ids": [
+        148914
+      ]
+    },
+    {
+      "text": "<select",
+      "ids": [
+        36268
+      ]
+    },
+    {
+      "text": " rowNum",
+      "ids": [
+        98195
+      ]
+    },
+    {
+      "text": "/#{",
+      "ids": [
+        42603
+      ]
+    },
+    {
+      "text": "人们对",
+      "ids": [
+        109206
+      ]
+    },
+    {
+      "text": "_ack",
+      "ids": [
+        48143
+      ]
+    },
+    {
+      "text": "awaiter",
+      "ids": [
+        72414
+      ]
+    },
+    {
+      "text": " Ranger",
+      "ids": [
+        48019
+      ]
+    },
+    {
+      "text": " Informations",
+      "ids": [
+        148678
+      ]
+    }
+  ],
+  "chats": [
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "한국어로 짧게 답해 주세요.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>한국어로 짧게 답해 주세요.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154827,
+        23508,
+        130419,
+        30953,
+        17358,
+        47610,
+        100,
+        57406,
+        33978,
+        113,
+        33720,
+        55299,
+        49978,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Return a Python function that squares x.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>Return a Python function that squares x.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154827,
+        5598,
+        264,
+        13020,
+        729,
+        429,
+        31209,
+        856,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Remember the name Mina.",
+            "role": "user"
+          },
+          {
+            "content": "I will remember Mina.",
+            "role": "assistant"
+          },
+          {
+            "content": "What name did I give you?",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>Remember the name Mina.<|assistant|><think></think>I will remember Mina.<|user|>What name did I give you?<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154827,
+        28490,
+        279,
+        829,
+        386,
+        2210,
+        13,
+        154828,
+        154841,
+        154842,
+        40,
+        686,
+        6099,
+        386,
+        2210,
+        13,
+        154827,
+        3838,
+        829,
+        1521,
+        358,
+        2968,
+        498,
+        30,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Use concise answers.",
+            "role": "system"
+          },
+          {
+            "content": "What is 3 + 5?",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|system|>Use concise answers.<|user|>What is 3 + 5?<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154826,
+        10248,
+        63141,
+        11248,
+        13,
+        154827,
+        3838,
+        374,
+        220,
+        18,
+        488,
+        220,
+        20,
+        30,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": [
+              {
+                "type": "image"
+              },
+              {
+                "text": "Describe the image.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|><|begin_of_image|><|image|><|end_of_image|>Describe the image.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154827,
+        154830,
+        154854,
+        154831,
+        74198,
+        279,
+        2168,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": [
+              {
+                "type": "image"
+              },
+              {
+                "type": "image"
+              },
+              {
+                "text": "Compare them.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|><|begin_of_image|><|image|><|end_of_image|><|begin_of_image|><|image|><|end_of_image|>Compare them.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154827,
+        154830,
+        154854,
+        154831,
+        154830,
+        154854,
+        154831,
+        27283,
+        1105,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Check the temperature in Seoul.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low",
+        "tools": [
+          {
+            "function": {
+              "description": "Read temperature.",
+              "name": "temperature",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"description\": \"Read temperature.\", \"name\": \"temperature\", \"parameters\": {\"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"], \"type\": \"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>Check the temperature in Seoul.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154826,
+        198,
+        2,
+        13843,
+        271,
+        2610,
+        1231,
+        1618,
+        825,
+        476,
+        803,
+        5746,
+        311,
+        7789,
+        448,
+        279,
+        1196,
+        3239,
+        382,
+        2610,
+        525,
+        3897,
+        448,
+        729,
+        32479,
+        2878,
+        366,
+        15906,
+        1472,
+        15906,
+        29,
+        11868,
+        9488,
+        510,
+        27,
+        15906,
+        397,
+        4913,
+        4684,
+        788,
+        330,
+        4418,
+        9312,
+        10460,
+        330,
+        606,
+        788,
+        330,
+        34388,
+        497,
+        330,
+        13777,
+        788,
+        5212,
+        13185,
+        788,
+        5212,
+        8923,
+        788,
+        5212,
+        1313,
+        788,
+        330,
+        917,
+        9204,
+        2137,
+        330,
+        6279,
+        788,
+        4383,
+        8923,
+        7914,
+        330,
+        1313,
+        788,
+        330,
+        1700,
+        94837,
+        522,
+        15906,
+        1339,
+        2461,
+        1817,
+        729,
+        1618,
+        11,
+        2550,
+        279,
+        729,
+        829,
+        323,
+        5977,
+        2878,
+        279,
+        2701,
+        11868,
+        3561,
+        510,
+        154843,
+        90,
+        1688,
+        11489,
+        92,
+        154847,
+        90,
+        858,
+        16159,
+        12,
+        16,
+        92,
+        154848,
+        154849,
+        90,
+        858,
+        19048,
+        12,
+        16,
+        92,
+        154850,
+        154847,
+        90,
+        858,
+        16159,
+        12,
+        17,
+        92,
+        154848,
+        154849,
+        90,
+        858,
+        19048,
+        12,
+        17,
+        92,
+        154850,
+        1112,
+        154844,
+        154827,
+        3973,
+        279,
+        9312,
+        304,
+        49867,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Compute 8 * 9.",
+            "role": "user"
+          },
+          {
+            "content": "<think>Multiply.</think>72",
+            "role": "assistant"
+          },
+          {
+            "content": "Add one.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "low"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>Compute 8 * 9.<|assistant|><think>Multiply.</think>72<|user|>Add one.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        12035,
+        154827,
+        45975,
+        220,
+        23,
+        353,
+        220,
+        24,
+        13,
+        154828,
+        154841,
+        94357,
+        13,
+        154842,
+        102650,
+        154827,
+        2212,
+        825,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "한국어로 짧게 답해 주세요.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>한국어로 짧게 답해 주세요.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154827,
+        23508,
+        130419,
+        30953,
+        17358,
+        47610,
+        100,
+        57406,
+        33978,
+        113,
+        33720,
+        55299,
+        49978,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Return a Python function that squares x.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Return a Python function that squares x.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154827,
+        5598,
+        264,
+        13020,
+        729,
+        429,
+        31209,
+        856,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Remember the name Mina.",
+            "role": "user"
+          },
+          {
+            "content": "I will remember Mina.",
+            "role": "assistant"
+          },
+          {
+            "content": "What name did I give you?",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Remember the name Mina.<|assistant|><think></think>I will remember Mina.<|user|>What name did I give you?<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154827,
+        28490,
+        279,
+        829,
+        386,
+        2210,
+        13,
+        154828,
+        154841,
+        154842,
+        40,
+        686,
+        6099,
+        386,
+        2210,
+        13,
+        154827,
+        3838,
+        829,
+        1521,
+        358,
+        2968,
+        498,
+        30,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Use concise answers.",
+            "role": "system"
+          },
+          {
+            "content": "What is 3 + 5?",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>Use concise answers.<|user|>What is 3 + 5?<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154826,
+        10248,
+        63141,
+        11248,
+        13,
+        154827,
+        3838,
+        374,
+        220,
+        18,
+        488,
+        220,
+        20,
+        30,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": [
+              {
+                "type": "image"
+              },
+              {
+                "text": "Describe the image.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|><|begin_of_image|><|image|><|end_of_image|>Describe the image.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154827,
+        154830,
+        154854,
+        154831,
+        74198,
+        279,
+        2168,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": [
+              {
+                "type": "image"
+              },
+              {
+                "type": "image"
+              },
+              {
+                "text": "Compare them.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|><|begin_of_image|><|image|><|end_of_image|><|begin_of_image|><|image|><|end_of_image|>Compare them.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154827,
+        154830,
+        154854,
+        154831,
+        154830,
+        154854,
+        154831,
+        27283,
+        1105,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Check the temperature in Seoul.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high",
+        "tools": [
+          {
+            "function": {
+              "description": "Read temperature.",
+              "name": "temperature",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"description\": \"Read temperature.\", \"name\": \"temperature\", \"parameters\": {\"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"], \"type\": \"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>Check the temperature in Seoul.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154826,
+        198,
+        2,
+        13843,
+        271,
+        2610,
+        1231,
+        1618,
+        825,
+        476,
+        803,
+        5746,
+        311,
+        7789,
+        448,
+        279,
+        1196,
+        3239,
+        382,
+        2610,
+        525,
+        3897,
+        448,
+        729,
+        32479,
+        2878,
+        366,
+        15906,
+        1472,
+        15906,
+        29,
+        11868,
+        9488,
+        510,
+        27,
+        15906,
+        397,
+        4913,
+        4684,
+        788,
+        330,
+        4418,
+        9312,
+        10460,
+        330,
+        606,
+        788,
+        330,
+        34388,
+        497,
+        330,
+        13777,
+        788,
+        5212,
+        13185,
+        788,
+        5212,
+        8923,
+        788,
+        5212,
+        1313,
+        788,
+        330,
+        917,
+        9204,
+        2137,
+        330,
+        6279,
+        788,
+        4383,
+        8923,
+        7914,
+        330,
+        1313,
+        788,
+        330,
+        1700,
+        94837,
+        522,
+        15906,
+        1339,
+        2461,
+        1817,
+        729,
+        1618,
+        11,
+        2550,
+        279,
+        729,
+        829,
+        323,
+        5977,
+        2878,
+        279,
+        2701,
+        11868,
+        3561,
+        510,
+        154843,
+        90,
+        1688,
+        11489,
+        92,
+        154847,
+        90,
+        858,
+        16159,
+        12,
+        16,
+        92,
+        154848,
+        154849,
+        90,
+        858,
+        19048,
+        12,
+        16,
+        92,
+        154850,
+        154847,
+        90,
+        858,
+        16159,
+        12,
+        17,
+        92,
+        154848,
+        154849,
+        90,
+        858,
+        19048,
+        12,
+        17,
+        92,
+        154850,
+        1112,
+        154844,
+        154827,
+        3973,
+        279,
+        9312,
+        304,
+        49867,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Compute 8 * 9.",
+            "role": "user"
+          },
+          {
+            "content": "<think>Multiply.</think>72",
+            "role": "assistant"
+          },
+          {
+            "content": "Add one.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "high"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: High<|user|>Compute 8 * 9.<|assistant|><think>Multiply.</think>72<|user|>Add one.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        5124,
+        154827,
+        45975,
+        220,
+        23,
+        353,
+        220,
+        24,
+        13,
+        154828,
+        154841,
+        94357,
+        13,
+        154842,
+        102650,
+        154827,
+        2212,
+        825,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "한국어로 짧게 답해 주세요.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>한국어로 짧게 답해 주세요.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154827,
+        23508,
+        130419,
+        30953,
+        17358,
+        47610,
+        100,
+        57406,
+        33978,
+        113,
+        33720,
+        55299,
+        49978,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Return a Python function that squares x.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Return a Python function that squares x.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154827,
+        5598,
+        264,
+        13020,
+        729,
+        429,
+        31209,
+        856,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Remember the name Mina.",
+            "role": "user"
+          },
+          {
+            "content": "I will remember Mina.",
+            "role": "assistant"
+          },
+          {
+            "content": "What name did I give you?",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Remember the name Mina.<|assistant|><think></think>I will remember Mina.<|user|>What name did I give you?<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154827,
+        28490,
+        279,
+        829,
+        386,
+        2210,
+        13,
+        154828,
+        154841,
+        154842,
+        40,
+        686,
+        6099,
+        386,
+        2210,
+        13,
+        154827,
+        3838,
+        829,
+        1521,
+        358,
+        2968,
+        498,
+        30,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Use concise answers.",
+            "role": "system"
+          },
+          {
+            "content": "What is 3 + 5?",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>Use concise answers.<|user|>What is 3 + 5?<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154826,
+        10248,
+        63141,
+        11248,
+        13,
+        154827,
+        3838,
+        374,
+        220,
+        18,
+        488,
+        220,
+        20,
+        30,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": [
+              {
+                "type": "image"
+              },
+              {
+                "text": "Describe the image.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|><|begin_of_image|><|image|><|end_of_image|>Describe the image.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154827,
+        154830,
+        154854,
+        154831,
+        74198,
+        279,
+        2168,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": [
+              {
+                "type": "image"
+              },
+              {
+                "type": "image"
+              },
+              {
+                "text": "Compare them.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|><|begin_of_image|><|image|><|end_of_image|><|begin_of_image|><|image|><|end_of_image|>Compare them.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154827,
+        154830,
+        154854,
+        154831,
+        154830,
+        154854,
+        154831,
+        27283,
+        1105,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Check the temperature in Seoul.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max",
+        "tools": [
+          {
+            "function": {
+              "description": "Read temperature.",
+              "name": "temperature",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"description\": \"Read temperature.\", \"name\": \"temperature\", \"parameters\": {\"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"], \"type\": \"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|user|>Check the temperature in Seoul.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154826,
+        198,
+        2,
+        13843,
+        271,
+        2610,
+        1231,
+        1618,
+        825,
+        476,
+        803,
+        5746,
+        311,
+        7789,
+        448,
+        279,
+        1196,
+        3239,
+        382,
+        2610,
+        525,
+        3897,
+        448,
+        729,
+        32479,
+        2878,
+        366,
+        15906,
+        1472,
+        15906,
+        29,
+        11868,
+        9488,
+        510,
+        27,
+        15906,
+        397,
+        4913,
+        4684,
+        788,
+        330,
+        4418,
+        9312,
+        10460,
+        330,
+        606,
+        788,
+        330,
+        34388,
+        497,
+        330,
+        13777,
+        788,
+        5212,
+        13185,
+        788,
+        5212,
+        8923,
+        788,
+        5212,
+        1313,
+        788,
+        330,
+        917,
+        9204,
+        2137,
+        330,
+        6279,
+        788,
+        4383,
+        8923,
+        7914,
+        330,
+        1313,
+        788,
+        330,
+        1700,
+        94837,
+        522,
+        15906,
+        1339,
+        2461,
+        1817,
+        729,
+        1618,
+        11,
+        2550,
+        279,
+        729,
+        829,
+        323,
+        5977,
+        2878,
+        279,
+        2701,
+        11868,
+        3561,
+        510,
+        154843,
+        90,
+        1688,
+        11489,
+        92,
+        154847,
+        90,
+        858,
+        16159,
+        12,
+        16,
+        92,
+        154848,
+        154849,
+        90,
+        858,
+        19048,
+        12,
+        16,
+        92,
+        154850,
+        154847,
+        90,
+        858,
+        16159,
+        12,
+        17,
+        92,
+        154848,
+        154849,
+        90,
+        858,
+        19048,
+        12,
+        17,
+        92,
+        154850,
+        1112,
+        154844,
+        154827,
+        3973,
+        279,
+        9312,
+        304,
+        49867,
+        13,
+        154828,
+        154841
+      ]
+    },
+    {
+      "context": {
+        "add_generation_prompt": true,
+        "clear_thinking": false,
+        "messages": [
+          {
+            "content": "Compute 8 * 9.",
+            "role": "user"
+          },
+          {
+            "content": "<think>Multiply.</think>72",
+            "role": "assistant"
+          },
+          {
+            "content": "Add one.",
+            "role": "user"
+          }
+        ],
+        "reasoning_effort": "max"
+      },
+      "text": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>Compute 8 * 9.<|assistant|><think>Multiply.</think>72<|user|>Add one.<|assistant|><think>",
+      "ids": [
+        154822,
+        154824,
+        154826,
+        25062,
+        287,
+        29905,
+        371,
+        25,
+        7487,
+        154827,
+        45975,
+        220,
+        23,
+        353,
+        220,
+        24,
+        13,
+        154828,
+        154841,
+        94357,
+        13,
+        154842,
+        102650,
+        154827,
+        2212,
+        825,
+        13,
+        154828,
+        154841
+      ]
+    }
+  ]
+}
