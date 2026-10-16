@@ -172,6 +172,9 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
   vendored MMQ/MMVQ stay at 150–190 GB/s. A BF16 MMA over the exact 4-bit
   integers runs 2–8 tokens at the one-token cost; stage 2,304-byte row
   segments (576-byte ones lost DRAM locality).
+- **Apply the VQ gain after the dot.** Rounding gain·codeword to BF16 per
+  weight was half the expert dot's instructions; one FP32 multiply after
+  the dot made 2–4-row verify experts 10–13% faster (one row is DRAM-bound).
 
 # Agent Notes
 

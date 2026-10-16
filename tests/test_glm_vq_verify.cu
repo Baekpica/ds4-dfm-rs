@@ -300,6 +300,7 @@ static void route(const std::vector<int> &sel, uint32_t rows, const std::vector<
     plan.group[plan.groups] = plan.items = (uint32_t)items.size();
 }
 
+template <glmvq_decode_gain GAIN>
 static int vq_case(uint32_t blocks) {
     const uint32_t E = 12, H = GLMVQ_DEC_HIDDEN, F = GLMVQ_DEC_FFN;
     std::uniform_int_distribution<int> byte(0, 255);
@@ -339,7 +340,7 @@ static int vq_case(uint32_t blocks) {
             std::sort(k.begin(), k.end(), [&](uint32_t a, uint32_t b) { return sel[r * 8 + a] < sel[r * 8 + b]; });
             for (uint32_t j = 0; j < 8; j++) { const int e = sel[r * 8 + k[j]]; items[j] = {gate[e], upm[e], dn[e], k[j]}; }
             glmvq_decode_item *ditems = up(items);
-            CK(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL>(ditems, dbook, dx + (size_t)r * H, mid, partial,
+            CK(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, GAIN>(ditems, dbook, dx + (size_t)r * H, mid, partial,
                 ref + (size_t)r * H, dw + r * 8, 7.0f, blocks, 0));
             CK(cudaDeviceSynchronize());
             cudaFree(ditems);
@@ -348,12 +349,13 @@ static int vq_case(uint32_t blocks) {
         route(sel, rows, gate, upm, dn, items, plan);
         glmvq_verify_item *ditems = up(items);
         glmvq_verify_plan *dplan = up(std::vector<glmvq_verify_plan>{plan});
-        CK(glmvq_verify_launch<13, 32>(ditems, dplan, dbook, dx, rows, mid, partial, got, dw, 7.0f, blocks, 0));
+        CK(glmvq_verify_launch<13, 32, GAIN>(ditems, dplan, dbook, dx, rows, mid, partial, got, dw, 7.0f, blocks, 0));
         CK(cudaDeviceSynchronize());
         auto a = down(ref, x.size()), b = down(got, x.size());
         uint32_t differ = 0;
         for (size_t i = 0; i < a.size(); i++) { differ += a[i] != b[i]; }
-        printf("vq union rows=%u experts=%zu groups=%u: %u of %zu differ %s\n", rows, items.size(), plan.groups,
+        printf("vq union %s rows=%u experts=%zu groups=%u: %u of %zu differ %s\n",
+            GAIN == GLMVQ_GAIN_DOT ? "gain-dot" : "gain-weight", rows, items.size(), plan.groups,
             differ, a.size(), differ ? "FAIL" : "ok");
         failures += differ != 0;
         cudaFree(dx); cudaFree(dw); cudaFree(ref); cudaFree(got); cudaFree(partial); cudaFree(mid);
@@ -365,6 +367,7 @@ static int vq_case(uint32_t blocks) {
 int main() {
     uint32_t blocks = 0;
     CK(glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&blocks));
+    CK(glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT>(&blocks));
     glmvq_q4_config config;
     CK(glmvq_q4_prepare(&config, GLMVQ_Q4_AUTO));
     int failures = 0;
@@ -392,7 +395,8 @@ int main() {
     failures += expand_mix_case(37);
     failures += index_case(37, 3000);
     failures += index_case(256, 8000);
-    failures += vq_case(blocks);
+    failures += vq_case<GLMVQ_GAIN_WEIGHT>(blocks);
+    failures += vq_case<GLMVQ_GAIN_DOT>(blocks);
     printf(failures ? "FAIL %d\n" : "GLMVQ_VERIFY_PASS\n", failures);
     return failures != 0;
 }

@@ -5,6 +5,10 @@
 
 enum { GLMVQ_DEC_HIDDEN = 4096, GLMVQ_DEC_FFN = 2048, GLMVQ_DEC_USED = 8 };
 enum glmvq_decode_output { GLMVQ_DEC_NORMAL, GLMVQ_DEC_PROOF };
+// Where the row gain enters an expert dot. WEIGHT rounds gain * codeword to
+// BF16 per weight, as the restore path does; DOT multiplies the FP32 dot
+// once, as the prefill tensor-core kernel does.
+enum glmvq_decode_gain { GLMVQ_GAIN_WEIGHT, GLMVQ_GAIN_DOT };
 
 struct glmvq_decode_item {
     glmvq_matrix gate, up, down;
@@ -37,7 +41,31 @@ __device__ __forceinline__ float glmvq_decode_pair(uint32_t word, uint32_t x,
     return fmaf(__uint_as_float(w & 0xffff0000u), __uint_as_float(x & 0xffff0000u), sum);
 }
 
-template <uint32_t COLS, uint32_t BITS>
+// Two E4M3 codeword values as exact floats.
+__device__ __forceinline__ float2 glmvq_decode_raw(uint32_t bits) {
+    return __half22float2(__nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)bits, __NV_E4M3));
+}
+
+// sum += one 8-wide codeword . eight BF16 inputs.
+template <glmvq_decode_gain GAIN>
+__device__ __forceinline__ float glmvq_decode_word8(uint2 word, const uint4 &values, float gain, float sum) {
+    if constexpr (GAIN == GLMVQ_GAIN_WEIGHT) {
+        sum = glmvq_decode_pair(word.x, values.x, gain, sum);
+        sum = glmvq_decode_pair(word.x >> 16, values.y, gain, sum);
+        sum = glmvq_decode_pair(word.y, values.z, gain, sum);
+        return glmvq_decode_pair(word.y >> 16, values.w, gain, sum);
+    }
+    const uint32_t ws[4] = {word.x, word.x >> 16, word.y, word.y >> 16}, xs[4] = {values.x, values.y, values.z, values.w};
+    #pragma unroll
+    for (uint32_t i = 0; i < 4; i++) {
+        const float2 w = glmvq_decode_raw(ws[i]);
+        sum = fmaf(w.x, __uint_as_float(xs[i] << 16), sum);
+        sum = fmaf(w.y, __uint_as_float(xs[i] & 0xffff0000u), sum);
+    }
+    return sum;
+}
+
+template <uint32_t COLS, uint32_t BITS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 __device__ __forceinline__ float glmvq_decode_dot(const glmvq_matrix &m,
         uint32_t row, const __nv_bfloat16 *x, const uint2 *book,
         glmvq_decode_block *carry, const uint32_t *next, const uint32_t *next_plane) {
@@ -69,16 +97,13 @@ __device__ __forceinline__ float glmvq_decode_dot(const glmvq_matrix &m,
             }
             const uint2 word = book[index];
             const uint4 values = *(const uint4 *)(x + b * 2048 + k * 256 + lane * GLMVQ_VECTOR);
-            sum = glmvq_decode_pair(word.x, values.x, gain, sum);
-            sum = glmvq_decode_pair(word.x >> 16, values.y, gain, sum);
-            sum = glmvq_decode_pair(word.y, values.z, gain, sum);
-            sum = glmvq_decode_pair(word.y >> 16, values.w, gain, sum);
+            sum = glmvq_decode_word8<GAIN>(word, values, gain, sum);
         }
         cur = ahead;
     }
     *carry = cur;
     for (uint32_t stride = 16; stride; stride >>= 1) { sum += __shfl_xor_sync(0xffffffffu, sum, stride); }
-    return glmvq_round(sum);
+    return glmvq_round(GAIN == GLMVQ_GAIN_DOT ? glmvq_mul(sum, gain) : sum);
 }
 
 template <uint32_t BITS>
@@ -90,7 +115,7 @@ __device__ __forceinline__ void glmvq_decode_book(uint4 *dst, const uint4 *src) 
 
 // YoungAi cuda_vq_persist.inc.cu:1-210: each persistent CTA retains one
 // layer book. E4M3 stays packed: even the 13-bit book needs only 64 KiB.
-template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT>
+template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
         const glmvq_decode_item *items, const uint4 *book, const float *input,
         __nv_bfloat16 *mid, float clamp, float *gate, float *up) {
@@ -113,9 +138,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
         const auto *um = (const uint32_t *)item.up.main + row * GLMVQ_DEC_HIDDEN * 3 / 64;
         const auto *up_plane = BITS == 13 ? (const uint32_t *)item.up.plane + row * GLMVQ_DEC_HIDDEN / 256 : nullptr;
         auto carry = glmvq_decode_load<BITS>(gm, gp);
-        const float g = glmvq_decode_dot<GLMVQ_DEC_HIDDEN, BITS>(item.gate, row, x,
+        const float g = glmvq_decode_dot<GLMVQ_DEC_HIDDEN, BITS, GAIN>(item.gate, row, x,
             (const uint2 *)decode_stage, &carry, um, up_plane);
-        const float u = glmvq_decode_dot<GLMVQ_DEC_HIDDEN, BITS>(item.up, row, x,
+        const float u = glmvq_decode_dot<GLMVQ_DEC_HIDDEN, BITS, GAIN>(item.up, row, x,
             (const uint2 *)decode_stage, &carry, nullptr, nullptr);
         if (!lane) {
             mid[task] = __float2bfloat16_rn(glmvq_swiglu_value(g, u, clamp));
@@ -124,7 +149,7 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
     }
 }
 
-template <uint32_t BITS, uint32_t WARPS>
+template <uint32_t BITS, uint32_t WARPS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_down(
         const glmvq_decode_item *items, const uint4 *book, const __nv_bfloat16 *mid, float *output) {
     extern __shared__ __align__(16) uint8_t decode_stage[];
@@ -144,7 +169,7 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_down(
         const auto *main = (const uint32_t *)m.main + row * GLMVQ_DEC_FFN * 3 / 64;
         const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + row * GLMVQ_DEC_FFN / 256 : nullptr;
         auto carry = glmvq_decode_load<BITS>(main, plane);
-        const float value = glmvq_decode_dot<GLMVQ_DEC_FFN, BITS>(m, row,
+        const float value = glmvq_decode_dot<GLMVQ_DEC_FFN, BITS, GAIN>(m, row,
             x + e * GLMVQ_DEC_FFN, (const uint2 *)decode_stage, &carry, nullptr, nullptr);
         if (!lane) { output[task] = value; }
     }
@@ -196,7 +221,7 @@ __device__ __forceinline__ float glmvq_verify_fma(const uint32_t *w, const uint4
 }
 
 // glmvq_decode_dot for up to four inputs sharing one decoded weight row.
-template <uint32_t COLS, uint32_t BITS>
+template <uint32_t COLS, uint32_t BITS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 __device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t row,
         const __nv_bfloat16 *const *x, uint32_t count, const uint2 *book,
         glmvq_decode_block *carry, const uint32_t *next, const uint32_t *next_plane, float *out) {
@@ -226,12 +251,29 @@ __device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t
                 index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
             }
             const uint2 word = book[index];
-            const uint32_t w[4] = {glmvq_scaled_pair(word.x, gain), glmvq_scaled_pair(word.x >> 16, gain),
-                glmvq_scaled_pair(word.y, gain), glmvq_scaled_pair(word.y >> 16, gain)};
             const uint32_t at = b * 2048 + k * 256 + lane * GLMVQ_VECTOR;
-            #pragma unroll
-            for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
-                if (t < count) { sum[t] = glmvq_verify_fma(w, *(const uint4 *)(x[t] + at), sum[t]); }
+            if constexpr (GAIN == GLMVQ_GAIN_WEIGHT) {
+                const uint32_t w[4] = {glmvq_scaled_pair(word.x, gain), glmvq_scaled_pair(word.x >> 16, gain),
+                    glmvq_scaled_pair(word.y, gain), glmvq_scaled_pair(word.y >> 16, gain)};
+                #pragma unroll
+                for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+                    if (t < count) { sum[t] = glmvq_verify_fma(w, *(const uint4 *)(x[t] + at), sum[t]); }
+                }
+            } else {
+                // Convert the codeword once; every row reuses the floats.
+                const float2 w[4] = {glmvq_decode_raw(word.x), glmvq_decode_raw(word.x >> 16),
+                    glmvq_decode_raw(word.y), glmvq_decode_raw(word.y >> 16)};
+                #pragma unroll
+                for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+                    if (t >= count) { continue; }
+                    const uint4 v = *(const uint4 *)(x[t] + at);
+                    const uint32_t xs[4] = {v.x, v.y, v.z, v.w};
+                    #pragma unroll
+                    for (uint32_t i = 0; i < 4; i++) {
+                        sum[t] = fmaf(w[i].x, __uint_as_float(xs[i] << 16), sum[t]);
+                        sum[t] = fmaf(w[i].y, __uint_as_float(xs[i] & 0xffff0000u), sum[t]);
+                    }
+                }
             }
         }
         cur = ahead;
@@ -240,11 +282,11 @@ __device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t
     #pragma unroll
     for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
         for (uint32_t stride = 16; stride; stride >>= 1) { sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], stride); }
-        out[t] = glmvq_round(sum[t]);
+        out[t] = glmvq_round(GAIN == GLMVQ_GAIN_DOT ? glmvq_mul(sum[t], gain) : sum[t]);
     }
 }
 
-template <uint32_t BITS, uint32_t WARPS>
+template <uint32_t BITS, uint32_t WARPS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
         const glmvq_verify_item *items, const glmvq_verify_plan *plan, const uint4 *book,
         const float *input, uint32_t rows, __nv_bfloat16 *mid, float clamp) {
@@ -274,9 +316,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
         const auto *upl = BITS == 13 ? (const uint32_t *)item.up.plane + row * GLMVQ_DEC_HIDDEN / 256 : nullptr;
         float g[GLMVQ_VER_ROWS], u[GLMVQ_VER_ROWS];
         auto carry = glmvq_decode_load<BITS>(gm, gp);
-        glmvq_verify_dot<GLMVQ_DEC_HIDDEN, BITS>(item.gate, row, xs, count, (const uint2 *)verify_stage,
+        glmvq_verify_dot<GLMVQ_DEC_HIDDEN, BITS, GAIN>(item.gate, row, xs, count, (const uint2 *)verify_stage,
             &carry, um, upl, g);
-        glmvq_verify_dot<GLMVQ_DEC_HIDDEN, BITS>(item.up, row, xs, count, (const uint2 *)verify_stage,
+        glmvq_verify_dot<GLMVQ_DEC_HIDDEN, BITS, GAIN>(item.up, row, xs, count, (const uint2 *)verify_stage,
             &carry, nullptr, nullptr, u);
         if (lane) { continue; }
         for (uint32_t t = 0; t < count; t++) {
@@ -285,7 +327,7 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
     }
 }
 
-template <uint32_t BITS, uint32_t WARPS>
+template <uint32_t BITS, uint32_t WARPS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
         const glmvq_verify_item *items, const glmvq_verify_plan *plan, const uint4 *book,
         const __nv_bfloat16 *mid, float *partial) {
@@ -323,7 +365,7 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
             const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + row * GLMVQ_DEC_FFN / 256 : nullptr;
             float value[GLMVQ_VER_ROWS];
             auto carry = glmvq_decode_load<BITS>(main, plane);
-            glmvq_verify_dot<GLMVQ_DEC_FFN, BITS>(m, row, xs, count, (const uint2 *)verify_stage,
+            glmvq_verify_dot<GLMVQ_DEC_FFN, BITS, GAIN>(m, row, xs, count, (const uint2 *)verify_stage,
                 &carry, nullptr, nullptr, value);
             if (lane) { continue; }
             for (uint32_t t = 0; t < count; t++) {
@@ -350,7 +392,7 @@ __global__ void glmvq_verify_reduce(float *out, const float *partial,
     out[i] = shared ? glmvq_round(glmvq_add(sum, shared[i])) : sum;
 }
 
-template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT>
+template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 static cudaError_t glmvq_decode_prepare(uint32_t *blocks) {
     int device, shared, sms;
     cudaError_t err = cudaGetDevice(&device);
@@ -364,30 +406,31 @@ static cudaError_t glmvq_decode_prepare(uint32_t *blocks) {
     constexpr uint32_t vgu = book + GLMVQ_VER_ROWS * GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16);
     constexpr uint32_t vdn = book + GLMVQ_VER_GROUP * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16);
     if (vgu > (uint32_t)shared || vdn > (uint32_t)shared) { return cudaErrorNotSupported; }
-    err = cudaFuncSetAttribute(glmvq_decode_gu<BITS, WARPS, OUTPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize, gu);
+    err = cudaFuncSetAttribute(glmvq_decode_gu<BITS, WARPS, OUTPUT, GAIN>, cudaFuncAttributeMaxDynamicSharedMemorySize, gu);
     if (err == cudaSuccess) {
-        err = cudaFuncSetAttribute(glmvq_decode_down<BITS, WARPS>, cudaFuncAttributeMaxDynamicSharedMemorySize, dn);
+        err = cudaFuncSetAttribute(glmvq_decode_down<BITS, WARPS, GAIN>, cudaFuncAttributeMaxDynamicSharedMemorySize, dn);
     }
     if (err == cudaSuccess) {
-        err = cudaFuncSetAttribute(glmvq_verify_gu<BITS, WARPS>, cudaFuncAttributeMaxDynamicSharedMemorySize, vgu);
+        err = cudaFuncSetAttribute(glmvq_verify_gu<BITS, WARPS, GAIN>, cudaFuncAttributeMaxDynamicSharedMemorySize, vgu);
     }
     if (err == cudaSuccess) {
-        err = cudaFuncSetAttribute(glmvq_verify_down<BITS, WARPS>, cudaFuncAttributeMaxDynamicSharedMemorySize, vdn);
+        err = cudaFuncSetAttribute(glmvq_verify_down<BITS, WARPS, GAIN>, cudaFuncAttributeMaxDynamicSharedMemorySize, vdn);
     }
+
     if (err == cudaSuccess) { *blocks = (uint32_t)sms; }
     return err;
 }
 
-template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT>
+template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 static cudaError_t glmvq_decode_launch(const glmvq_decode_item *items, const void *book,
         const float *input, __nv_bfloat16 *mid, float *partial, float *out,
         const float *weights, float clamp, uint32_t blocks, cudaStream_t stream,
         float *gate = nullptr, float *up = nullptr, const float *shared = nullptr,
         glmvq_launch launch = GLMVQ_LAUNCH_PLAIN) {
     constexpr uint32_t cb = (1u << BITS) * GLMVQ_VECTOR;
-    glmvq_launch_kernel(launch, glmvq_decode_gu<BITS, WARPS, OUTPUT>, blocks, WARPS * 32,
+    glmvq_launch_kernel(launch, glmvq_decode_gu<BITS, WARPS, OUTPUT, GAIN>, blocks, WARPS * 32,
         cb + GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream, items, (const uint4 *)book, input, mid, clamp, gate, up);
-    glmvq_launch_kernel(launch, glmvq_decode_down<BITS, WARPS>, blocks, WARPS * 32,
+    glmvq_launch_kernel(launch, glmvq_decode_down<BITS, WARPS, GAIN>, blocks, WARPS * 32,
         cb + GLMVQ_DEC_USED * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream, items, (const uint4 *)book,
         (const __nv_bfloat16 *)mid, partial);
     glmvq_launch_kernel(launch, glmvq_decode_reduce, GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream,
@@ -396,15 +439,15 @@ static cudaError_t glmvq_decode_launch(const glmvq_decode_item *items, const voi
 }
 
 // Rows 2-4 after glmvq_verify_route filled items and plan on the device.
-template <uint32_t BITS, uint32_t WARPS>
+template <uint32_t BITS, uint32_t WARPS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT>
 static cudaError_t glmvq_verify_launch(const glmvq_verify_item *items, const glmvq_verify_plan *plan,
         const void *book, const float *input, uint32_t rows, __nv_bfloat16 *mid, float *partial,
         float *out, const float *weights, float clamp, uint32_t blocks, cudaStream_t stream,
         const float *shared = nullptr, glmvq_launch launch = GLMVQ_LAUNCH_PLAIN) {
     constexpr uint32_t cb = (1u << BITS) * GLMVQ_VECTOR;
-    glmvq_launch_kernel(launch, glmvq_verify_gu<BITS, WARPS>, blocks, WARPS * 32,
+    glmvq_launch_kernel(launch, glmvq_verify_gu<BITS, WARPS, GAIN>, blocks, WARPS * 32,
         cb + rows * GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream, items, plan, (const uint4 *)book, input, rows, mid, clamp);
-    glmvq_launch_kernel(launch, glmvq_verify_down<BITS, WARPS>, blocks, WARPS * 32,
+    glmvq_launch_kernel(launch, glmvq_verify_down<BITS, WARPS, GAIN>, blocks, WARPS * 32,
         cb + GLMVQ_VER_GROUP * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream, items, plan, (const uint4 *)book,
         (const __nv_bfloat16 *)mid, partial);
     glmvq_launch_kernel(launch, glmvq_verify_reduce, rows * GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream,

@@ -65,7 +65,10 @@ per token with the same Q4_K choice for its nonexpert weights.
   its plane, gate/up and the clamped SwiGLU fused, down computed directly and
   experts reduced in ascending expert order. Routing stays on the GPU: a
   route kernel places selected experts from per-layer device tables, so
-  decode no longer syncs with the host per MoE layer.
+  decode no longer syncs with the host per MoE layer. The row gain multiplies
+  the FP32 dot of the exact E4M3 codewords once, as in prefill; rounding
+  gain·codeword to BF16 per weight was half the dot's instructions
+  (`DS4_GLMVQ_GAIN_DOT=0` restores it).
 - **Non-expert projections.** Q4_K uses a cooperative stream kernel, FP8 a
   direct dot that rounds weights at the source BF16 boundary, BF16 a direct
   dot that reads the F32 activation row in place (the output head reaches
@@ -164,6 +167,7 @@ RMS 0.23, KL 2.3e-7.
 | Flash DSA attention, absorption GEMVs | FP32 softmax/accumulation order | within noise band | identical |
 | MTP verify kernels | one-row order per row | not applicable | identical at 8K; near-tie flip on prose |
 | Tensor-core verify Q4_K | exact products, F32 sub-block order | not applicable | prose and code equal MTP off (128 ids) |
+| Expert gain after the dot (decode, verify) | FP32 dot × gain, no per-weight BF16 rounding (relRMS 3e-3 vs it) | not applicable | 512 decode ids and MTP code ids identical |
 | Prefill mHC mix in one pass, narrow RMS | F32 order | RMS 0.20, KL 2.1e-7 | identical |
 | F32 Q4_K prefill outputs | no BF16 boundary after MMQ | RMS 0.24, KL 1.2e-7 | identical |
 | Expand fused with the next mix | F32 order through Sinkhorn | RMS 0.32, KL 1.8e-6 | identical |
@@ -232,7 +236,9 @@ The tensor-core verify Q4_K then shortened a two-draft cycle from 76.8 to
 72.7 ms on code (35.5 → 37.5 tok/s, same text) and from 75.3 to 71.8 ms on
 prose (32.7 → 37.1 tok/s; its 128 tokens now equal the MTP-off decode, which
 the SIMT verify had left at token 27 on a near-tie, so acceptance moved to
-2.67 tokens per verify).
+2.67 tokens per verify). Moving the expert gain after the dot took the code
+cycle to 69.0 ms (39.5 tok/s, same tokens); one-row decode stayed at
+24.8–25.3 tok/s with 512 identical tokens.
 
 ## Measured performance
 
@@ -252,10 +258,9 @@ against 2.26 tokens per verify), so compare per-token speed on the MTP-off line.
 - **Decode dispatch.** About 1,300 kernels per token. Dependent launch hides
   part of the gaps; CUDA graphs with device-resident positions remain (the
   DeepSeek VQ engine measured 43.9 → 32.5 ms per token).
-- **Verify width.** A two-draft cycle (three verify rows) takes ~72 ms.
+- **Verify width.** A two-draft cycle (three verify rows) takes ~69 ms.
   Q4_K now costs about one token's pass; each verify row still adds nearly
-  a full routed-expert pass (gate/up ~187 GB/s, down ~169 GB/s with its
-  mid-row groups).
+  a full routed-expert pass at ~175 GB/s.
 - **Prefill experts.** The FP8 kernel runs at ~25% of the FP8 tensor peak and
   is bound by shared-memory instruction pressure and barriers; at 2,048-token
   chunks the weight stream (~1.5 GB per layer) also sets a DRAM floor.
@@ -271,3 +276,5 @@ Measured and not kept, so they need a new idea before another attempt:
 | Selected-pool sort before flash attention | +0.7% prefill; logit RMS 0.79, KL 2.4e-6 (beyond the noise band) |
 | Q4_K decode split capped at 18 KiB staging | 187 → 238 GB/s isolated on 4096×16384; decode −0.75% in the model |
 | Vendored MMQ / MMVQ at verify widths | flat 150–190 GB/s, no better than the SIMT kernel |
+| Verify down without mid-row groups (contiguous tasks per CTA, L1 reads) | bit-identical, 3–25% slower |
+| Persistent grid / 576-byte stages for the verify Q4_K MMA | 1–2% / 6% slower (short strided row segments) |

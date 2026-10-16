@@ -1,6 +1,7 @@
 /* GVQ1 execution adapter; included once by ds4_cuda.cu. Weight pointers
  * resolve before capture, and each session owns bounded GEMM scratch. */
 #include "ds4_glmvq.h"
+#include <type_traits>
 #include "cuda/glm_vq_linear.cuh"
 #include "cuda/glm_vq_q4m.cuh"
 #include "cuda/glm_vq_kda.cuh"
@@ -43,6 +44,7 @@ struct ds4_gvq_ctx {
     glmvq_restore_mode restore;
     bool direct_q4;
     bool q4_mma;
+    bool gain_dot;
     bool q4_round;
     bool direct_fp8;
     bool direct_kv;
@@ -380,6 +382,13 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         return nullptr;
     }
     ctx->direct_q4 = !q4 || strcmp(q4, "0");
+    const char *gain = getenv("DS4_GLMVQ_GAIN_DOT");
+    if (gain && strcmp(gain, "0") && strcmp(gain, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_GAIN_DOT accepts 0 or 1\n");
+        delete ctx;
+        return nullptr;
+    }
+    ctx->gain_dot = !gain || strcmp(gain, "0");
     const char *q4_mma = getenv("DS4_GLMVQ_Q4_MMA");
     if (q4_mma && strcmp(q4_mma, "0") && strcmp(q4_mma, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_Q4_MMA accepts 0 or 1\n");
@@ -453,7 +462,10 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     if (decode_bytes) {
         // The published artifact uses a shared 8192-word E4M3 layer book.
         // Reserve descriptors and intermediate rows before any execution.
-        const cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);
+        cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);
+        if (status == cudaSuccess) {
+            status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT>(&ctx->decode_blocks);
+        }
         if (status == cudaSuccess) {
             ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);
             if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }
@@ -1460,6 +1472,13 @@ static const uint32_t *gvq_decode_table(ds4_gvq_ctx *ctx, const uint32_t *matric
     return fit ? tables + slot * GVQ_DECODE_TABLE : nullptr;
 }
 
+// Expert kernels for the context's gain arithmetic (glmvq_decode_gain).
+template <typename F>
+static cudaError_t gvq_gain(const ds4_gvq_ctx *ctx, F &&launch) {
+    return ctx->gain_dot ? launch(std::integral_constant<glmvq_decode_gain, GLMVQ_GAIN_DOT>{})
+        : launch(std::integral_constant<glmvq_decode_gain, GLMVQ_GAIN_WEIGHT>{});
+}
+
 static int gvq_decode_device(ds4_gvq_ctx *ctx, float *out, const float *input,
         const int32_t *selected, const float *weights, const uint32_t *table,
         const void *book, float clamp, const float *shared) {
@@ -1471,9 +1490,10 @@ static int gvq_decode_device(ds4_gvq_ctx *ctx, float *out, const float *input,
     glmvq_launch_kernel(ctx->launch, gvq_decode_route, 1, GVQ_USED, 0, stream, items, selected,
         table, (const glmvq_source *)ctx->model->device->ptr);
     ctx->decode_calls++;
-    return cuda_ok(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL>(items, book,
-        input, mid, partial, out, weights, clamp, ctx->decode_blocks, stream, nullptr, nullptr, shared, ctx->launch),
-        "GLM VQ routed decode");
+    return cuda_ok(gvq_gain(ctx, [&](auto gain) {
+        return glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, decltype(gain)::value>(items, book, input, mid,
+            partial, out, weights, clamp, ctx->decode_blocks, stream, nullptr, nullptr, shared, ctx->launch);
+    }), "GLM VQ routed decode");
 }
 
 // MTP verify widths: one pass over the rows' expert union.
@@ -1489,8 +1509,10 @@ static int gvq_verify_device(ds4_gvq_ctx *ctx, float *out, const float *input,
     glmvq_launch_kernel(ctx->launch, gvq_verify_route, 1, GLMVQ_VER_PAIRS, 0, stream, items, plan, selected, rows,
         table, (const glmvq_source *)ctx->model->device->ptr);
     ctx->decode_calls++;
-    return cuda_ok(glmvq_verify_launch<13, 32>(items, plan, book, input, rows, mid, partial,
-        out, weights, clamp, ctx->decode_blocks, stream, shared, ctx->launch), "GLM VQ verify decode");
+    return cuda_ok(gvq_gain(ctx, [&](auto gain) {
+        return glmvq_verify_launch<13, 32, decltype(gain)::value>(items, plan, book, input, rows, mid, partial,
+            out, weights, clamp, ctx->decode_blocks, stream, shared, ctx->launch);
+    }), "GLM VQ verify decode");
 }
 
 static int gvq_decode_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
@@ -1501,10 +1523,12 @@ static int gvq_decode_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     auto *mid = (__nv_bfloat16 *)(base + GVQ_DECODE_WORK);
     auto *partial = (float *)(mid + GVQ_USED * GVQ_FFN);
     ctx->decode_calls++;
-    return cuda_ok(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL>(items,
-        ctx->decode_items[0].gate.book, (const float *)input->ptr, mid, partial,
-        (float *)out->ptr, (const float *)weights->ptr, clamp, ctx->decode_blocks,
-        ds4_current_stream(), nullptr, nullptr, shared), "GLM VQ direct decode");
+    return cuda_ok(gvq_gain(ctx, [&](auto gain) {
+        return glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, decltype(gain)::value>(items,
+            ctx->decode_items[0].gate.book, (const float *)input->ptr, mid, partial,
+            (float *)out->ptr, (const float *)weights->ptr, clamp, ctx->decode_blocks,
+            ds4_current_stream(), nullptr, nullptr, shared);
+    }), "GLM VQ direct decode");
 }
 
 extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
