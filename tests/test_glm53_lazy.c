@@ -10,6 +10,7 @@ enum { GLM53_PREFILL_DEFAULT = 2048u, GLM53_PREFILL_MAX = 2048u,
     GLM53_PREFILL_WINDOW = 4096u, GLM53_DENSE_MIN_ROWS = 128u,
     DS4_GLM53_RESIDENT_CTX_MAX = 1048576u, GLM53_DIAG_CTX_MAX = 2048u,
     DS4_MODEL_FAMILY_GLM53 = 1, DS4_MODEL_FAMILY = DS4_MODEL_FAMILY_GLM53,
+    DS4_MODEL_FAMILY_GLM53_VQ = 14, GLM53_VQ_PREFILL_MAX = 4096u, DS4_GVQ_CTX_MAX = 1048576u,
     DS4_BACKEND_CUDA = 1, DS4_DISTRIBUTED_NONE = 0,
     DS4_GOVC_SERIAL_SESSION = 0, DS4_MEMC_SESSION_TENSORS = 0,
     DS4_LOG_TIMING = 0, DS4_N_EXPERT = 288u, DS4_N_EXPERT_USED = 8u,
@@ -118,6 +119,12 @@ static bool ds4_gpu_tensor_fill_f32(ds4_gpu_tensor *t, float value, uint64_t cou
 static bool ds4_session_lazy_graph_enabled(void) {
     const char *v = getenv("DS4_SESSION_LAZY_GRAPH");
     return !v || strcmp(v, "0") != 0;
+}
+/* GLM VQ graph hooks; the fixture runs the GLM-5.3 family. */
+static bool ds4_model_is_glm(void) { return true; }
+static uint64_t gvq_extra_bytes(uint32_t ctx, uint32_t rows) { (void)ctx; (void)rows; return 0u; }
+static bool gvq_graph_init(ds4_glm53_gpu_graph *g, const ds4_weights *w) {
+    (void)g; (void)w; return false;
 }
 
 #include GLM53_SESSION_FIXTURE

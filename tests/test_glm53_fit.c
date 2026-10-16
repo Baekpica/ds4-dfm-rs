@@ -10,7 +10,9 @@
 enum { ROWS = 2048u, WINDOW = 4096u, CONTEXT = 8192u, MAX_BANKS = 2u,
        GLM53_PREFILL_DEFAULT = ROWS, GLM53_PREFILL_MAX = ROWS,
        GLM53_PREFILL_WINDOW = WINDOW, GLM53_DENSE_MIN_ROWS = 128u,
-       DS4_N_EXPERT = 288u };
+       DS4_N_EXPERT = 288u, GLM53_VQ_PREFILL_MAX = 4096u,
+       DS4_MODEL_FAMILY_GLM53 = 1, DS4_MODEL_FAMILY_GLM53_VQ = 14,
+       DS4_MODEL_FAMILY = DS4_MODEL_FAMILY_GLM53 };
 #define CHECK(x) do { if (!(x)) { \
     fprintf(stderr, "GLM bank fit FAIL %d: %s\n", __LINE__, #x); exit(1); \
 } } while (0)

@@ -30,7 +30,7 @@ def main():
     names = ["ds4_glm53_graph.inc", "ds4_glm53_batch.inc", "tests/test_glm53_fit.c"]
     contents = {name: (ROOT / name).read_bytes() for name in names}
     code = "\n".join(body(contents[names[0]].decode(), name) for name in (
-        "glm53_graph_row_cap", "glm53_window_cap", "glm53_prefill_cap"))
+        "glm53_prefill_max", "glm53_graph_row_cap", "glm53_window_cap", "glm53_prefill_cap"))
     code += body(contents[names[1]].decode(), "glm53_batch_ctx_create")
     header = output / "fit.inc"
     header.write_text(code)
