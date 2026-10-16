@@ -116,7 +116,9 @@ accept: keep k rows; KDA state ◀── journal slot k, index tail ◀── re
 - **Draft context.** Prefill fills the draft layer's KV from the prompt;
   without it early drafts see only decoded tokens.
 - **Depth.** Routed-expert bytes grow almost linearly with verify rows
-  (consecutive tokens share few experts), so one or two drafts win.
+  (consecutive tokens share few experts), so one or two drafts win. Serve
+  with `--cuda --mtp-draft 2 --temp 0` (two drafts); `DS4_GLMVQ_MTP_DRAFT=N`
+  caps drafts per verify for measurement.
 
 ## Numerical contract
 
