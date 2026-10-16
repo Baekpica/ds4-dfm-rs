@@ -34,9 +34,11 @@ __global__ void glmvq_mma_gather(__nv_bfloat16 *output, const float *input,
     output[i] = __float2bfloat16_rn(input[(uint64_t)token * width + i % width]);
 }
 
+// `shared` (optional): the shared expert's output, added at the same BF16
+// boundary the separate add + round passes applied.
 __global__ void glmvq_mma_reduce(float *output, const float *input,
         const float *weights, const uint32_t *pairs, const uint32_t *order,
-        uint32_t used, uint32_t width, uint64_t count) {
+        uint32_t used, uint32_t width, uint64_t count, const float *shared = nullptr) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
     const uint32_t token = i / width, col = i % width;
@@ -48,7 +50,7 @@ __global__ void glmvq_mma_reduce(float *output, const float *input,
         const float value = glmvq_round(glmvq_mul(input[(uint64_t)row * width + col], weights[pairs[row]]));
         sum = glmvq_round(glmvq_add(sum, value));
     }
-    output[i] = sum;
+    output[i] = shared ? glmvq_round(glmvq_add(sum, shared[i])) : sum;
 }
 
 __device__ __forceinline__ uint32_t glmvq_mma_code(uint32_t a, uint32_t b,

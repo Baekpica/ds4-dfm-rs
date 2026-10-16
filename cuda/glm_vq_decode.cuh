@@ -147,7 +147,7 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_down(
 }
 
 __global__ void glmvq_decode_reduce(float *out, const float *partial,
-        const float *weights, const glmvq_decode_item *items) {
+        const float *weights, const glmvq_decode_item *items, const float *shared = nullptr) {
     const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= GLMVQ_DEC_HIDDEN) { return; }
     float sum = 0;
@@ -156,7 +156,7 @@ __global__ void glmvq_decode_reduce(float *out, const float *partial,
         const float value = glmvq_round(glmvq_mul(partial[e * GLMVQ_DEC_HIDDEN + row], weights[items[e].pair]));
         sum = glmvq_round(glmvq_add(sum, value));
     }
-    out[row] = sum;
+    out[row] = shared ? glmvq_round(glmvq_add(sum, shared[row])) : sum;
 }
 
 /* MTP verify widths (2-4 rows): one persistent pass over the union of the
@@ -325,7 +325,7 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
 
 // glmvq_decode_reduce per row: ascending expert order, same roundings.
 __global__ void glmvq_verify_reduce(float *out, const float *partial,
-        const float *weights, const glmvq_verify_plan *plan, uint32_t rows) {
+        const float *weights, const glmvq_verify_plan *plan, uint32_t rows, const float *shared = nullptr) {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= rows * GLMVQ_DEC_HIDDEN) { return; }
     const uint32_t r = i / GLMVQ_DEC_HIDDEN, h = i % GLMVQ_DEC_HIDDEN;
@@ -335,7 +335,7 @@ __global__ void glmvq_verify_reduce(float *out, const float *partial,
         const float value = glmvq_round(glmvq_mul(partial[(uint64_t)pair * GLMVQ_DEC_HIDDEN + h], weights[pair]));
         sum = glmvq_round(glmvq_add(sum, value));
     }
-    out[i] = sum;
+    out[i] = shared ? glmvq_round(glmvq_add(sum, shared[i])) : sum;
 }
 
 template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT>
@@ -370,13 +370,13 @@ template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT>
 static cudaError_t glmvq_decode_launch(const glmvq_decode_item *items, const void *book,
         const float *input, __nv_bfloat16 *mid, float *partial, float *out,
         const float *weights, float clamp, uint32_t blocks, cudaStream_t stream,
-        float *gate = nullptr, float *up = nullptr) {
+        float *gate = nullptr, float *up = nullptr, const float *shared = nullptr) {
     constexpr uint32_t cb = (1u << BITS) * GLMVQ_VECTOR;
     glmvq_decode_gu<BITS, WARPS, OUTPUT><<<blocks, WARPS * 32,
         cb + GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream>>>(items, (const uint4 *)book, input, mid, clamp, gate, up);
     glmvq_decode_down<BITS, WARPS><<<blocks, WARPS * 32,
         cb + GLMVQ_DEC_USED * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream>>>(items, (const uint4 *)book, mid, partial);
-    glmvq_decode_reduce<<<GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, items);
+    glmvq_decode_reduce<<<GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, items, shared);
     return cudaGetLastError();
 }
 
@@ -384,13 +384,14 @@ static cudaError_t glmvq_decode_launch(const glmvq_decode_item *items, const voi
 template <uint32_t BITS, uint32_t WARPS>
 static cudaError_t glmvq_verify_launch(const glmvq_verify_item *items, const glmvq_verify_plan *plan,
         const void *book, const float *input, uint32_t rows, __nv_bfloat16 *mid, float *partial,
-        float *out, const float *weights, float clamp, uint32_t blocks, cudaStream_t stream) {
+        float *out, const float *weights, float clamp, uint32_t blocks, cudaStream_t stream,
+        const float *shared = nullptr) {
     constexpr uint32_t cb = (1u << BITS) * GLMVQ_VECTOR;
     glmvq_verify_gu<BITS, WARPS><<<blocks, WARPS * 32, cb + rows * GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream>>>(
         items, plan, (const uint4 *)book, input, rows, mid, clamp);
     glmvq_verify_down<BITS, WARPS><<<blocks, WARPS * 32, cb + GLMVQ_VER_GROUP * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream>>>(
         items, plan, (const uint4 *)book, mid, partial);
-    glmvq_verify_reduce<<<rows * GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, plan, rows);
+    glmvq_verify_reduce<<<rows * GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, plan, rows, shared);
     return cudaGetLastError();
 }
 

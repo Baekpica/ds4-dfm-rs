@@ -212,14 +212,14 @@ static bool gvq_ffn(ds4_glm53_gpu_graph *g, const ds4_model *m,
         matrices[GLMVQ_EXPERTS + expert] = glmvq_index(m, e->up[expert]);
         matrices[2 * GLMVQ_EXPERTS + expert] = glmvq_index(m, e->down[expert]);
     }
+    // The shared expert runs first so the routed reduce adds it in its pass.
     return gvq_mm(g, m, g->kv_rank, l->ffn_gate_inp, g->norm, rows, DS4_GVQ_F32) &&
         ds4_gpu_gvq_router(g->gvq, g->selected, g->route_weights, g->kv_rank,
             glmvq_index(m, l->ffn_exp_probs_b), rows, DS4_EXPERT_WEIGHT_SCALE) &&
-        ds4_gpu_gvq_moe(g->gvq, g->ffn_out, g->q, g->ffn_gate, g->ffn_up,
-            g->ffn_mid, g->routed_down, g->norm, g->selected, g->route_weights, matrices, rows, DS4_SWIGLU_CLAMP_EXP) &&
         gvq_mlp(g, m, g->attn_out, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, rows) &&
-        ds4_gpu_add_tensor(g->ffn_out, g->ffn_out, g->attn_out, (uint64_t)rows * DS4_N_EMBD) &&
-        ds4_gpu_gvq_round(g->ffn_out, (uint64_t)rows * DS4_N_EMBD);
+        ds4_gpu_gvq_moe(g->gvq, g->ffn_out, g->q, g->ffn_gate, g->ffn_up,
+            g->ffn_mid, g->routed_down, g->norm, g->selected, g->route_weights, matrices, rows, DS4_SWIGLU_CLAMP_EXP,
+            g->attn_out);
 }
 
 static bool gvq_trace_tensor(const char *root, uint32_t il, const char *name,
