@@ -215,6 +215,11 @@ static bool glm53_bank_clone(ds4_glm53_gpu_graph *g,
         memset(g, 0, sizeof(*g));
         return false;
     }
+#ifndef __APPLE__
+    // Bank forwards are serialized. Share VQ handles/scratch, while the
+    // cloned state, latent history and partial pools below remain private.
+    g->gvq_borrowed = source->gvq != NULL;
+#endif
     g->state_pool = NULL; g->control_pool = NULL; g->logits = NULL; g->kda_scratch = NULL;
     g->last_hidden = NULL; g->mtp_hidden = NULL;
     g->mtp_kv = NULL; g->mtp_concat = NULL; g->mtp_journal = NULL;

@@ -703,12 +703,12 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         ModelFamily::Glm53Vq => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
-            bank_support: Support::None,
-            reuse: ReuseKind::None,
-            reuse_support: Support::None,
-            disk: Support::None,
-            snapshot: Support::None,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
             mtp: MtpKind::Embedded,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
@@ -2554,7 +2554,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
         Variant::Glm53Flash => "compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate",
-        Variant::Glm53FlashVq => "Eager CUDA sparse graph caps context at 8192; native serving and workload limits remain unqualified",
+        Variant::Glm53FlashVq => "Eager CUDA sparse graph caps context at 8192; banks, partial reuse and VQ snapshots are present; serving workload limits remain unqualified",
         Variant::Dots3NotePrev => {
             "text banks, local-window partial reuse and serial MTP are present but unqualified"
         }
@@ -2728,6 +2728,20 @@ mod tests {
             variant,
         );
         assert!(p.issues.iter().any(|issue| issue.code == "ctx_unavailable"));
+    }
+
+    #[test]
+    fn vq_state_caps() {
+        let caps = caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq);
+        assert_eq!(caps.banks, BankLane::Persistent);
+        assert_eq!(caps.bank_support, Support::Present);
+        assert_eq!(caps.reuse, ReuseKind::Partial);
+        assert_eq!(caps.reuse_support, Support::Present);
+        assert_eq!(caps.disk, Support::Present);
+        assert_eq!(caps.snapshot, Support::Present);
+        assert_eq!(caps.mtp_support, Support::None);
+        assert_eq!(caps.qualified_ctx, None);
+        assert_eq!(caps.qualified_banks, None);
     }
 
     #[test]

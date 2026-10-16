@@ -1971,6 +1971,13 @@ tests/glm_vq_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_quality" $@
 
+tests/glm_vq_state: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example glm_vq_state --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_state" $@
+
 tests/test_glm_vq_cache.o: tests/test_glm_vq_cache.c ds4_glmvq.h ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 

@@ -22775,6 +22775,7 @@ typedef struct {
 #ifndef __APPLE__
     ds4_gvq_ctx *gvq;
     ds4_gpu_tensor *gvq_latent, *gvq_kv, *gvq_pos;
+    bool gvq_borrowed; /* Banks share workspace; bank zero releases it. */
 #endif
 } ds4_glm53_gpu_graph;
 
@@ -61913,7 +61914,7 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
         BC_ERR("batch_ctx_create: this model does not yet implement the multi-sequence graph");
         return 1;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         return glm53_batch_ctx_create(e, ctx_size, max_seq,
             fit ? GLM53_FIT_BANKS : GLM53_STRICT_BANKS, out, err, errlen);
     }
@@ -73209,8 +73210,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
         const char *enabled = getenv("DS4_DOTS3_BATCH");
         return enabled && strcmp(enabled, "1") == 0;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return false; }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) { return e->backend == DS4_BACKEND_CUDA; }
+    if (ds4_model_is_glm()) { return e->backend == DS4_BACKEND_CUDA; }
     /* Bonsai's session IS the trunk state (the CUDA graph or the CPU reference)
      * and there is no multi-sequence graph for it, so the DeepSeek slab body
      * would read a layout this family does not have. */

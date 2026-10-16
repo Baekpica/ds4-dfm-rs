@@ -242,4 +242,5 @@ tests/naive_banks
 /tests/test_glm_vq_quote
 /tests/test_glm_vq_sparse
 /tests/libglm_vq_index.so
+/tests/glm_vq_state
 /glm-vq-gate

@@ -45,6 +45,7 @@ static bool gvq_graph_init(ds4_glm53_gpu_graph *g, const ds4_weights *w) {
 }
 
 static void gvq_graph_free(ds4_glm53_gpu_graph *g) {
+    if (g->gvq_borrowed) { return; }
     ds4_gpu_gvq_free(g->gvq);
     ds4_gpu_tensor_free(g->gvq_pos);
     ds4_gpu_tensor_free(g->gvq_kv);
