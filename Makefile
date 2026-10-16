@@ -2101,6 +2101,13 @@ test-glm-vq-mma-map: tests/libglm_vq_mma.so
 test-glm-vq-attention: tests/libglm_vq_attention.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_attention.py --lib tests/libglm_vq_attention.so
 
+tests/test_glm_vq_flash: tests/test_glm_vq_flash.cu cuda/glm_vq_flash.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $<
+
+.PHONY: test-glm-vq-flash
+test-glm-vq-flash: tests/test_glm_vq_flash
+	./tests/test_glm_vq_flash
+
 tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 

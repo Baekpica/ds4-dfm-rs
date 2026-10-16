@@ -7,6 +7,7 @@
 #include "cuda/glm_vq_index.cuh"
 #include "cuda/glm_vq_mma.cuh"
 #include "cuda/glm_vq_mma8.cuh"
+#include "cuda/glm_vq_flash.cuh"
 #include "cuda/glm_vq_decode.cuh"
 #include "cuda/glm_vq_fp8.cuh"
 #include "cuda/glm_vq_gemv.cuh"
@@ -38,6 +39,8 @@ struct ds4_gvq_ctx {
     bool decode_route;
     bool direct_bf16;
     bool kda_chunk;
+    bool flash;
+    uint64_t flash_calls = 0;
     uint64_t kda_chunks = 0;
     uint64_t bf16_calls = 0;
     uint64_t latent_calls = 0;
@@ -209,6 +212,9 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     if (ctx->kda_chunk) {
         fprintf(stderr, "ds4: GLM VQ chunked KDA calls=%llu\n", (unsigned long long)ctx->kda_chunks);
     }
+    if (ctx->flash) {
+        fprintf(stderr, "ds4: GLM VQ flash attention calls=%llu\n", (unsigned long long)ctx->flash_calls);
+    }
     if (ctx->mma) {
         fprintf(stderr, "ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu fp8=%d\n",
             (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,
@@ -269,6 +275,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_MMA8 accepts 0 or 1\n");
         return nullptr;
     }
+    const char *flash = getenv("DS4_GLMVQ_FLASH");
+    if (flash && strcmp(flash, "0") && strcmp(flash, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_FLASH accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *kda = getenv("DS4_GLMVQ_KDA_CHUNK");
     if (kda && strcmp(kda, "0") && strcmp(kda, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_CHUNK accepts 0 or 1\n");
@@ -287,6 +298,8 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->decode_route = !route || strcmp(route, "0");
     ctx->direct_bf16 = !bf16 || strcmp(bf16, "0");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
+    ctx->flash = (!flash || strcmp(flash, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_fa_kernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_FA_SMEM), "GLM VQ flash attention shared memory");
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -670,6 +683,73 @@ extern "C" int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         stride, rows, keys, heads, dim, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream), "GLM VQ attention");
 }
 
+enum { GVQ_FLASH_SPLITS = 48, GVQ_FLASH_ALIGN = 256 };
+
+struct gvq_flash_layout { uint64_t q, qlow, low, y, partial, stats, bytes; };
+
+// One query row splits its keys across CTAs; prefill rows each own a CTA.
+static gvq_flash_layout gvq_flash_plan(uint32_t rows) {
+    uint64_t cursor = 0;
+    auto take = [&](uint64_t bytes) {
+        const uint64_t at = cursor;
+        cursor += (bytes + GVQ_FLASH_ALIGN - 1) / GVQ_FLASH_ALIGN * GVQ_FLASH_ALIGN;
+        return at;
+    };
+    const uint64_t qbytes = (uint64_t)rows * GLMVQ_FA_HEADS * GVQ_LATENT_DIM * sizeof(__nv_bfloat16);
+    const uint64_t lbytes = (uint64_t)rows * GLMVQ_FA_HEADS * GLMVQ_FA_LATENT * sizeof(__nv_bfloat16);
+    gvq_flash_layout l;
+    l.q = take(qbytes); l.qlow = take(lbytes); l.low = take(lbytes); l.y = take(qbytes);
+    const uint64_t splits = rows == 1 ? GVQ_FLASH_SPLITS : 0;
+    l.partial = take(splits * GLMVQ_FA_HEADS * GLMVQ_FA_LATENT * sizeof(float));
+    l.stats = take(splits * GLMVQ_FA_HEADS * 2 * sizeof(float));
+    l.bytes = cursor;
+    return l;
+}
+
+// Absorbed attention: q·W_k (cuBLAS), the flash kernel over latent rows,
+// then low·W_v (cuBLAS). Rows stay [row][head][...] so no transposes occur.
+static int gvq_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const __nv_bfloat16 *weight, const ds4_gpu_tensor *cache, const uint32_t *positions,
+        const ds4_gpu_tensor *selected, uint32_t stride, uint32_t rows, uint32_t keys) {
+    const gvq_flash_layout l = gvq_flash_plan(rows);
+    uint8_t *base = (uint8_t *)ctx->scratch->ptr;
+    auto *q = (__nv_bfloat16 *)(base + l.q), *qlow = (__nv_bfloat16 *)(base + l.qlow);
+    auto *low = (__nv_bfloat16 *)(base + l.low), *y = (__nv_bfloat16 *)(base + l.y);
+    const uint32_t heads = GLMVQ_FA_HEADS, dim = GVQ_LATENT_DIM, latent = GLMVQ_FA_LATENT;
+    const uint64_t nq = (uint64_t)rows * heads * dim;
+    const long long wstride = (long long)2 * dim * latent;
+    const float alpha = 1.0f, beta = 0.0f;
+    glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+        (const float *)query->ptr, q, nq);
+    if (!cuda_ok(cudaGetLastError(), "GLM VQ flash query") ||
+        !cublas_ok(cublasGemmStridedBatchedEx(ctx->handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            latent, rows, dim, &alpha, weight, CUDA_R_16BF, latent, wstride,
+            q, CUDA_R_16BF, heads * dim, dim, &beta, qlow, CUDA_R_16BF, heads * latent, latent,
+            heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ flash q absorb")) { return 0; }
+    const uint32_t slots = selected ? stride : keys;
+    const uint32_t tiles = (slots + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
+    const uint32_t splits = rows == 1 ? min(tiles, (uint32_t)GVQ_FLASH_SPLITS) : 1;
+    const uint32_t per = (tiles + splits - 1) / splits;
+    float *partial = splits > 1 ? (float *)(base + l.partial) : nullptr;
+    float *stats = splits > 1 ? (float *)(base + l.stats) : nullptr;
+    glmvq_fa_kernel<<<dim3(rows, splits), GLMVQ_FA_THREADS, GLMVQ_FA_SMEM, ctx->stream>>>(
+        low, partial, stats, qlow, (const __nv_bfloat16 *)cache->ptr, positions,
+        selected ? (const uint32_t *)selected->ptr : nullptr, selected ? stride : 0u,
+        splits > 1 ? per : UINT32_MAX, 1.0f / sqrtf((float)dim));
+    if (splits > 1) {
+        glmvq_fa_combine<<<dim3(rows, heads), latent / 2, 0, ctx->stream>>>(low, partial, stats, splits);
+    }
+    if (!cuda_ok(cudaGetLastError(), "GLM VQ flash attention") ||
+        !cublas_ok(cublasGemmStridedBatchedEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim, rows, latent, &alpha, weight + (uint64_t)dim * latent, CUDA_R_16BF, latent, wstride,
+            low, CUDA_R_16BF, heads * latent, latent, &beta, y, CUDA_R_16BF, heads * dim, dim,
+            heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ flash v absorb")) { return 0; }
+    glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+        y, (float *)out->ptr, nq);
+    ctx->flash_calls++;
+    return cuda_ok(cudaGetLastError(), "GLM VQ flash output");
+}
+
 extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *query, const ds4_gpu_tensor *cache, uint32_t weight,
         ds4_gpu_tensor *latent, ds4_gpu_tensor *kv, ds4_gpu_tensor *positions,
@@ -701,6 +781,13 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
             ds4_gpu_gvq_attn(ctx, out, query, kv, positions, selected, stride, rows, keys, heads, dim);
     }
 
+    if (ctx->flash && heads == GLMVQ_FA_HEADS && dim == GVQ_LATENT_DIM && s.cols == GLMVQ_FA_LATENT &&
+        keys <= GVQ_LATENT_MAX_KEYS && ctx->scratch->bytes >= gvq_flash_plan(rows).bytes &&
+        (uintptr_t)cache->ptr % 16 == 0 && (uintptr_t)ctx->scratch->ptr % 16 == 0) {
+        return ds4_gpu_gvq_positions(positions, first, rows) &&
+            gvq_flash(ctx, out, query, (const __nv_bfloat16 *)s.data, cache,
+                (const uint32_t *)positions->ptr, selected, stride, rows, keys);
+    }
     // Full-prefix expansion dominates longer N=1 decode. Other widths keep
     // the expanded path. Sparse queries use the same causal selection mask.
     if (ctx->latent_attn && rows == 1 && heads == GVQ_LATENT_HEADS &&

@@ -1,0 +1,276 @@
+#ifndef DS4_GLM_VQ_FLASH_CUH
+#define DS4_GLM_VQ_FLASH_CUH
+
+#include "glm_vq_ops.cuh"
+
+/* Single-pass absorbed (latent) DSA attention. Every head scores the same
+ * BF16 latent cache rows C (512 wide): s = (q W_k)·c / 16, o = Σ p c, then
+ * the caller applies W_v. The expanded path built per-chunk K/V for all
+ * prefix keys and a [heads, rows, keys] BF16 score tensor (≈1 GB at 8K) for a
+ * separate softmax; here scores stay FP32 in registers, the softmax is online
+ * and each selected key row is gathered once per query.
+ *
+ * One CTA per query (and key split): 16 warps = 4 head groups x 4 latent
+ * quarters. A warp's QK covers its quarter of the 512 latent dims; the four
+ * quarter partials meet in shared memory, so each warp holds the full scores
+ * of its 16 heads and accumulates P·V for its 128 output columns.
+ * Arithmetic change against the expanded path: scores are not rounded to BF16
+ * before softmax, P rounds to BF16 for the PV MMA, O accumulates in FP32. */
+enum { GLMVQ_FA_HEADS = 64, GLMVQ_FA_LATENT = 512, GLMVQ_FA_KEYS = 32,
+       GLMVQ_FA_WARPS = 16, GLMVQ_FA_THREADS = GLMVQ_FA_WARPS * 32,
+       GLMVQ_FA_QUARTER = GLMVQ_FA_LATENT / 4, GLMVQ_FA_ROW = GLMVQ_FA_LATENT * 2 };
+static constexpr uint32_t GLMVQ_FA_TILE = GLMVQ_FA_KEYS * GLMVQ_FA_ROW;
+static constexpr uint32_t GLMVQ_FA_EXCHANGE = GLMVQ_FA_WARPS * 16 * GLMVQ_FA_KEYS * sizeof(float);
+static constexpr uint32_t GLMVQ_FA_SMEM = 2 * GLMVQ_FA_TILE + GLMVQ_FA_EXCHANGE +
+    2 * GLMVQ_FA_KEYS * sizeof(uint32_t);
+static constexpr uint32_t GLMVQ_FA_NONE = 0xffffffffu;
+
+__device__ __forceinline__ void glmvq_fa_copy(void *dst, const void *src, uint32_t bytes) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" ::
+        "r"((uint32_t)__cvta_generic_to_shared(dst)), "l"(src), "r"(bytes) : "memory");
+}
+
+// Latent rows are 64 chunks of 16 bytes; chunk ^ (key & 7) spreads the eight
+// rows one ldmatrix reads over eight bank groups.
+__device__ __forceinline__ uint32_t glmvq_fa_swz(uint32_t key, uint32_t chunk) {
+    return key * GLMVQ_FA_ROW + ((chunk ^ (key & 7u)) << 4);
+}
+
+__device__ __forceinline__ void glmvq_fa_ldsm4(uint32_t *r, const void *p, bool trans) {
+    const uint32_t a = (uint32_t)__cvta_generic_to_shared(p);
+    if (trans) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+            : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(a));
+    } else {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+            : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(a));
+    }
+}
+
+__device__ __forceinline__ void glmvq_fa_mma(float *d, const uint32_t *a, uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+__device__ __forceinline__ uint32_t glmvq_fa_pack(float lo, float hi) {
+    const __nv_bfloat162_raw v = __floats2bfloat162_rn(lo, hi);
+    return (uint32_t)v.x | ((uint32_t)v.y << 16);
+}
+
+// Score slot of (row, key pair) inside a warp's 16 x 32 exchange tile; the
+// XOR keeps a half-warp's eight-byte stores on sixteen distinct bank pairs.
+__device__ __forceinline__ uint32_t glmvq_fa_slot(uint32_t row, uint32_t pair) {
+    return row * GLMVQ_FA_KEYS + ((pair ^ ((row & 3u) << 2)) << 1);
+}
+
+/* `selected` = [rows, stride] key ids (GLMVQ_FA_NONE skips a slot) or null
+ * for dense causal keys 0..position. With `partial`, CTA (row, split) covers
+ * tiles split*per..: it writes unnormalized O plus per-head max and sum for
+ * glmvq_fa_combine; otherwise it writes normalized BF16 rows to `low`. */
+__global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
+        __nv_bfloat16 *low, float *partial, float *stats,
+        const __nv_bfloat16 *qlow, const __nv_bfloat16 *cache,
+        const uint32_t *positions, const uint32_t *selected, uint32_t stride,
+        uint32_t tiles_per_split, float scale) {
+    extern __shared__ __align__(16) uint8_t fa_shared[];
+    uint8_t *tiles = fa_shared;
+    float *exchange = (float *)(fa_shared + 2 * GLMVQ_FA_TILE);
+    uint32_t *kidx = (uint32_t *)(fa_shared + 2 * GLMVQ_FA_TILE + GLMVQ_FA_EXCHANGE);
+    const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
+    const uint32_t g = lane >> 2, q = lane & 3u, group = warp & 3u, quarter = warp >> 2;
+    const uint32_t row = blockIdx.x, split = blockIdx.y;
+    const uint32_t position = positions[row];
+    const uint32_t slots = selected ? stride : position + 1;
+    const uint32_t total = (slots + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
+    const uint32_t first = split * tiles_per_split;
+    const uint32_t last = min(total, first + tiles_per_split);
+    const uint32_t head0 = group * 16;
+
+    // Q fragments for this warp's 16 heads and latent quarter, kept in registers.
+    uint32_t qa[8][4];
+    const __nv_bfloat16 *qrow = qlow + ((uint64_t)row * GLMVQ_FA_HEADS + head0) * GLMVQ_FA_LATENT +
+        quarter * GLMVQ_FA_QUARTER;
+    #pragma unroll
+    for (uint32_t k = 0; k < 8; k++) {
+        const uint32_t col = k * 16 + 2 * q;
+        qa[k][0] = *(const uint32_t *)(qrow + (uint64_t)g * GLMVQ_FA_LATENT + col);
+        qa[k][1] = *(const uint32_t *)(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col);
+        qa[k][2] = *(const uint32_t *)(qrow + (uint64_t)g * GLMVQ_FA_LATENT + col + 8);
+        qa[k][3] = *(const uint32_t *)(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col + 8);
+    }
+
+    // Each of 16 threads per key copies four 16-byte chunks of its row.
+    auto issue = [&](uint32_t tile, uint32_t buf) {
+        const uint32_t key_slot = tid >> 4, part = tid & 15u;
+        const uint32_t slot = tile * GLMVQ_FA_KEYS + key_slot;
+        uint32_t key = GLMVQ_FA_NONE;
+        if (slot < slots) { key = selected ? selected[(uint64_t)row * stride + slot] : slot; }
+        if (key != GLMVQ_FA_NONE && key > position) { key = GLMVQ_FA_NONE; }
+        if (!part) { kidx[buf * GLMVQ_FA_KEYS + key_slot] = key; }
+        const uint8_t *src = (const uint8_t *)(cache + (uint64_t)(key == GLMVQ_FA_NONE ? 0 : key) * GLMVQ_FA_LATENT);
+        uint8_t *dst = tiles + buf * GLMVQ_FA_TILE;
+        #pragma unroll
+        for (uint32_t i = 0; i < 4; i++) {
+            const uint32_t chunk = part * 4 + i;
+            glmvq_fa_copy(dst + glmvq_fa_swz(key_slot, chunk), src + chunk * 16, key == GLMVQ_FA_NONE ? 0 : 16);
+        }
+    };
+
+    float o[16][4] = {};
+    float m[2] = {-INFINITY, -INFINITY}, l[2] = {0.0f, 0.0f};
+    const float log2_scale = scale * 1.4426950408889634f;
+    if (first < last) { issue(first, 0); }
+    asm volatile("cp.async.commit_group;" ::: "memory");
+    for (uint32_t tile = first; tile < last; tile++) {
+        const uint32_t buf = (tile - first) & 1u;
+        asm volatile("cp.async.wait_group 0;" ::: "memory");
+        __syncthreads();
+        if (tile + 1 < last) { issue(tile + 1, buf ^ 1u); }
+        asm volatile("cp.async.commit_group;" ::: "memory");
+        const uint8_t *kt = tiles + buf * GLMVQ_FA_TILE;
+
+        // Partial scores over this warp's latent quarter: 16 heads x 32 keys.
+        float s[4][4] = {};
+        #pragma unroll
+        for (uint32_t k = 0; k < 8; k++) {
+            #pragma unroll
+            for (uint32_t j = 0; j < 4; j += 2) {
+                uint32_t b[4];
+                const uint32_t mat = lane >> 3;
+                const uint32_t key = (j + (mat >> 1)) * 8 + (lane & 7u);
+                const uint32_t chunk = quarter * 16 + k * 2 + (mat & 1u);
+                glmvq_fa_ldsm4(b, kt + glmvq_fa_swz(key, chunk), false);
+                glmvq_fa_mma(s[j], qa[k], b[0], b[1]);
+                glmvq_fa_mma(s[j + 1], qa[k], b[2], b[3]);
+            }
+        }
+        float *mine = exchange + warp * 16 * GLMVQ_FA_KEYS;
+        #pragma unroll
+        for (uint32_t j = 0; j < 4; j++) {
+            *(float2 *)(mine + glmvq_fa_slot(g, 4 * j + q)) = make_float2(s[j][0], s[j][1]);
+            *(float2 *)(mine + glmvq_fa_slot(g + 8, 4 * j + q)) = make_float2(s[j][2], s[j][3]);
+        }
+        // The four quarter warps of a head group meet on their own barrier.
+        asm volatile("bar.sync %0, %1;" :: "r"(1 + group), "r"(128) : "memory");
+        #pragma unroll
+        for (uint32_t j = 0; j < 4; j++) { s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.0f; }
+        #pragma unroll
+        for (uint32_t part = 0; part < 4; part++) {
+            const float *other = exchange + (group + 4 * part) * 16 * GLMVQ_FA_KEYS;
+            #pragma unroll
+            for (uint32_t j = 0; j < 4; j++) {
+                const float2 a = *(const float2 *)(other + glmvq_fa_slot(g, 4 * j + q));
+                const float2 c = *(const float2 *)(other + glmvq_fa_slot(g + 8, 4 * j + q));
+                s[j][0] += a.x; s[j][1] += a.y; s[j][2] += c.x; s[j][3] += c.y;
+            }
+        }
+        // Online softmax over valid keys; rows g and g+8 of the head group.
+        const uint32_t *ids = kidx + buf * GLMVQ_FA_KEYS;
+        float peak[2] = {m[0], m[1]};
+        #pragma unroll
+        for (uint32_t j = 0; j < 4; j++) {
+            #pragma unroll
+            for (uint32_t e = 0; e < 2; e++) {
+                const bool valid = ids[j * 8 + 2 * q + e] != GLMVQ_FA_NONE;
+                s[j][e] = valid ? s[j][e] * log2_scale : -INFINITY;
+                s[j][e + 2] = valid ? s[j][e + 2] * log2_scale : -INFINITY;
+                peak[0] = fmaxf(peak[0], s[j][e]);
+                peak[1] = fmaxf(peak[1], s[j][e + 2]);
+            }
+        }
+        #pragma unroll
+        for (uint32_t h = 0; h < 2; h++) {
+            peak[h] = fmaxf(peak[h], __shfl_xor_sync(0xffffffffu, peak[h], 1));
+            peak[h] = fmaxf(peak[h], __shfl_xor_sync(0xffffffffu, peak[h], 2));
+        }
+        float alpha[2], sum[2] = {0.0f, 0.0f};
+        #pragma unroll
+        for (uint32_t h = 0; h < 2; h++) {
+            const float ref = peak[h] == -INFINITY ? 0.0f : peak[h];
+            alpha[h] = exp2f(m[h] - ref);
+            m[h] = peak[h];
+            #pragma unroll
+            for (uint32_t j = 0; j < 4; j++) {
+                s[j][2 * h] = exp2f(s[j][2 * h] - ref);
+                s[j][2 * h + 1] = exp2f(s[j][2 * h + 1] - ref);
+                sum[h] += s[j][2 * h] + s[j][2 * h + 1];
+            }
+        }
+        #pragma unroll
+        for (uint32_t h = 0; h < 2; h++) {
+            sum[h] += __shfl_xor_sync(0xffffffffu, sum[h], 1);
+            sum[h] += __shfl_xor_sync(0xffffffffu, sum[h], 2);
+            l[h] = l[h] * alpha[h] + sum[h];
+        }
+        #pragma unroll
+        for (uint32_t t = 0; t < 16; t++) {
+            o[t][0] *= alpha[0]; o[t][1] *= alpha[0]; o[t][2] *= alpha[1]; o[t][3] *= alpha[1];
+        }
+        // P (16 heads x 32 keys) as two k16 A fragments times V's 128 columns.
+        #pragma unroll
+        for (uint32_t kk = 0; kk < 2; kk++) {
+            const uint32_t pa[4] = {glmvq_fa_pack(s[2 * kk][0], s[2 * kk][1]),
+                glmvq_fa_pack(s[2 * kk][2], s[2 * kk][3]),
+                glmvq_fa_pack(s[2 * kk + 1][0], s[2 * kk + 1][1]),
+                glmvq_fa_pack(s[2 * kk + 1][2], s[2 * kk + 1][3])};
+            #pragma unroll
+            for (uint32_t t = 0; t < 16; t += 2) {
+                uint32_t b[4];
+                const uint32_t mat = lane >> 3;
+                const uint32_t key = kk * 16 + (mat & 1u) * 8 + (lane & 7u);
+                const uint32_t chunk = quarter * 16 + t + (mat >> 1);
+                glmvq_fa_ldsm4(b, kt + glmvq_fa_swz(key, chunk), true);
+                glmvq_fa_mma(o[t], pa, b[0], b[1]);
+                glmvq_fa_mma(o[t + 1], pa, b[2], b[3]);
+            }
+        }
+    }
+
+    const uint32_t heads[2] = {head0 + g, head0 + g + 8};
+    if (partial) {
+        const uint64_t base = ((uint64_t)row * gridDim.y + split) * GLMVQ_FA_HEADS;
+        #pragma unroll
+        for (uint32_t h = 0; h < 2; h++) {
+            float *dst = partial + (base + heads[h]) * GLMVQ_FA_LATENT + quarter * GLMVQ_FA_QUARTER + 2 * q;
+            #pragma unroll
+            for (uint32_t t = 0; t < 16; t++) { *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h], o[t][2 * h + 1]); }
+            if (!quarter && !q) { stats[(base + heads[h]) * 2] = m[h]; stats[(base + heads[h]) * 2 + 1] = l[h]; }
+        }
+        return;
+    }
+    #pragma unroll
+    for (uint32_t h = 0; h < 2; h++) {
+        const float inv = l[h] > 0.0f ? 1.0f / l[h] : 0.0f;
+        __nv_bfloat16 *dst = low + ((uint64_t)row * GLMVQ_FA_HEADS + heads[h]) * GLMVQ_FA_LATENT +
+            quarter * GLMVQ_FA_QUARTER + 2 * q;
+        #pragma unroll
+        for (uint32_t t = 0; t < 16; t++) {
+            *(uint32_t *)(dst + t * 8) = glmvq_fa_pack(o[t][2 * h] * inv, o[t][2 * h + 1] * inv);
+        }
+    }
+}
+
+// Joins key splits: block (row, head), one thread per latent column pair.
+__global__ void glmvq_fa_combine(__nv_bfloat16 *low, const float *partial, const float *stats,
+        uint32_t splits) {
+    const uint32_t row = blockIdx.x, head = blockIdx.y, col = threadIdx.x * 2;
+    float peak = -INFINITY;
+    for (uint32_t s = 0; s < splits; s++) {
+        peak = fmaxf(peak, stats[(((uint64_t)row * splits + s) * GLMVQ_FA_HEADS + head) * 2]);
+    }
+    const float ref = peak == -INFINITY ? 0.0f : peak;
+    float sum = 0.0f, a = 0.0f, b = 0.0f;
+    for (uint32_t s = 0; s < splits; s++) {
+        const uint64_t at = ((uint64_t)row * splits + s) * GLMVQ_FA_HEADS + head;
+        const float w = exp2f(stats[at * 2] - ref);
+        sum += w * stats[at * 2 + 1];
+        const float2 v = *(const float2 *)(partial + at * GLMVQ_FA_LATENT + col);
+        a += w * v.x; b += w * v.y;
+    }
+    const float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+    *(uint32_t *)(low + ((uint64_t)row * GLMVQ_FA_HEADS + head) * GLMVQ_FA_LATENT + col) = glmvq_fa_pack(a * inv, b * inv);
+}
+
+#endif
