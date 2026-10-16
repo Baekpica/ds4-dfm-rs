@@ -97,7 +97,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
     extern __shared__ __align__(16) uint8_t decode_stage[];
     constexpr uint32_t book_bytes = (1u << BITS) * GLMVQ_VECTOR;
     auto *x = (__nv_bfloat16 *)(decode_stage + book_bytes);
+    glmvq_pdl_open();
     glmvq_decode_book<BITS>((uint4 *)decode_stage, book);
+    glmvq_pdl_wait();
     for (uint32_t i = threadIdx.x; i < GLMVQ_DEC_HIDDEN; i += blockDim.x) {
         x[i] = __float2bfloat16_rn(input[i]);
     }
@@ -128,7 +130,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_down(
     extern __shared__ __align__(16) uint8_t decode_stage[];
     constexpr uint32_t book_bytes = (1u << BITS) * GLMVQ_VECTOR;
     auto *x = (__nv_bfloat16 *)(decode_stage + book_bytes);
+    glmvq_pdl_open();
     glmvq_decode_book<BITS>((uint4 *)decode_stage, book);
+    glmvq_pdl_wait();
     for (uint32_t i = threadIdx.x; i < GLMVQ_DEC_USED * GLMVQ_DEC_FFN / 8; i += blockDim.x) {
         ((uint4 *)x)[i] = ((const uint4 *)mid)[i];
     }
@@ -148,6 +152,8 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_down(
 
 __global__ void glmvq_decode_reduce(float *out, const float *partial,
         const float *weights, const glmvq_decode_item *items, const float *shared = nullptr) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= GLMVQ_DEC_HIDDEN) { return; }
     float sum = 0;
@@ -245,7 +251,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
     extern __shared__ __align__(16) uint8_t verify_stage[];
     constexpr uint32_t book_bytes = (1u << BITS) * GLMVQ_VECTOR;
     auto *x = (__nv_bfloat16 *)(verify_stage + book_bytes);
+    glmvq_pdl_open();
     glmvq_decode_book<BITS>((uint4 *)verify_stage, book);
+    glmvq_pdl_wait();
     for (uint32_t i = threadIdx.x; i < rows * GLMVQ_DEC_HIDDEN; i += blockDim.x) {
         x[i] = __float2bfloat16_rn(input[i]);
     }
@@ -284,7 +292,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
     extern __shared__ __align__(16) uint8_t verify_stage[];
     constexpr uint32_t book_bytes = (1u << BITS) * GLMVQ_VECTOR;
     auto *x = (__nv_bfloat16 *)(verify_stage + book_bytes);
+    glmvq_pdl_open();
     glmvq_decode_book<BITS>((uint4 *)verify_stage, book);
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31, warp = blockIdx.x * WARPS + threadIdx.x / 32;
     constexpr uint32_t row16 = GLMVQ_DEC_FFN * sizeof(__nv_bfloat16) / sizeof(uint4);
     for (uint32_t g = 0; g < plan->groups; g++) {
@@ -326,6 +336,8 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
 // glmvq_decode_reduce per row: ascending expert order, same roundings.
 __global__ void glmvq_verify_reduce(float *out, const float *partial,
         const float *weights, const glmvq_verify_plan *plan, uint32_t rows, const float *shared = nullptr) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= rows * GLMVQ_DEC_HIDDEN) { return; }
     const uint32_t r = i / GLMVQ_DEC_HIDDEN, h = i % GLMVQ_DEC_HIDDEN;
@@ -370,13 +382,16 @@ template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT>
 static cudaError_t glmvq_decode_launch(const glmvq_decode_item *items, const void *book,
         const float *input, __nv_bfloat16 *mid, float *partial, float *out,
         const float *weights, float clamp, uint32_t blocks, cudaStream_t stream,
-        float *gate = nullptr, float *up = nullptr, const float *shared = nullptr) {
+        float *gate = nullptr, float *up = nullptr, const float *shared = nullptr,
+        glmvq_launch launch = GLMVQ_LAUNCH_PLAIN) {
     constexpr uint32_t cb = (1u << BITS) * GLMVQ_VECTOR;
-    glmvq_decode_gu<BITS, WARPS, OUTPUT><<<blocks, WARPS * 32,
-        cb + GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream>>>(items, (const uint4 *)book, input, mid, clamp, gate, up);
-    glmvq_decode_down<BITS, WARPS><<<blocks, WARPS * 32,
-        cb + GLMVQ_DEC_USED * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream>>>(items, (const uint4 *)book, mid, partial);
-    glmvq_decode_reduce<<<GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, items, shared);
+    glmvq_launch_kernel(launch, glmvq_decode_gu<BITS, WARPS, OUTPUT>, blocks, WARPS * 32,
+        cb + GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream, items, (const uint4 *)book, input, mid, clamp, gate, up);
+    glmvq_launch_kernel(launch, glmvq_decode_down<BITS, WARPS>, blocks, WARPS * 32,
+        cb + GLMVQ_DEC_USED * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream, items, (const uint4 *)book,
+        (const __nv_bfloat16 *)mid, partial);
+    glmvq_launch_kernel(launch, glmvq_decode_reduce, GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream,
+        out, (const float *)partial, weights, items, shared);
     return cudaGetLastError();
 }
 
@@ -385,13 +400,15 @@ template <uint32_t BITS, uint32_t WARPS>
 static cudaError_t glmvq_verify_launch(const glmvq_verify_item *items, const glmvq_verify_plan *plan,
         const void *book, const float *input, uint32_t rows, __nv_bfloat16 *mid, float *partial,
         float *out, const float *weights, float clamp, uint32_t blocks, cudaStream_t stream,
-        const float *shared = nullptr) {
+        const float *shared = nullptr, glmvq_launch launch = GLMVQ_LAUNCH_PLAIN) {
     constexpr uint32_t cb = (1u << BITS) * GLMVQ_VECTOR;
-    glmvq_verify_gu<BITS, WARPS><<<blocks, WARPS * 32, cb + rows * GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream>>>(
-        items, plan, (const uint4 *)book, input, rows, mid, clamp);
-    glmvq_verify_down<BITS, WARPS><<<blocks, WARPS * 32, cb + GLMVQ_VER_GROUP * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream>>>(
-        items, plan, (const uint4 *)book, mid, partial);
-    glmvq_verify_reduce<<<rows * GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, plan, rows, shared);
+    glmvq_launch_kernel(launch, glmvq_verify_gu<BITS, WARPS>, blocks, WARPS * 32,
+        cb + rows * GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream, items, plan, (const uint4 *)book, input, rows, mid, clamp);
+    glmvq_launch_kernel(launch, glmvq_verify_down<BITS, WARPS>, blocks, WARPS * 32,
+        cb + GLMVQ_VER_GROUP * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream, items, plan, (const uint4 *)book,
+        (const __nv_bfloat16 *)mid, partial);
+    glmvq_launch_kernel(launch, glmvq_verify_reduce, rows * GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream,
+        out, (const float *)partial, weights, plan, rows, shared);
     return cudaGetLastError();
 }
 

@@ -38,9 +38,16 @@ __global__ void __launch_bounds__(GLMVQ_DOT_WARPS * 32) glmvq_bf16_dot(
         const __nv_bfloat16 *weight, const float *input, float *output,
         uint32_t rows, uint32_t cols, uint32_t split, uint32_t tokens) {
     __shared__ float partial[GLMVQ_DOT_WARPS][NT];
+    glmvq_pdl_open();
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32;
     const uint32_t local = warp / split, part = warp % split;
     const uint32_t row = blockIdx.x * (GLMVQ_DOT_WARPS / split) + local;
+    // The row's weights head for L2 while the predecessor drains.
+    if (row < rows && !lane && !part) {
+        asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
+            "l"(weight + (uint64_t)row * cols), "r"(cols * (uint32_t)sizeof(__nv_bfloat16)) : "memory");
+    }
+    glmvq_pdl_wait();
     float sum[NT] = {};
     if (row < rows) {
         const __nv_bfloat16 *w = weight + (uint64_t)row * cols;
@@ -77,27 +84,28 @@ static bool glmvq_bf16_fits(const void *weight, const void *input, const void *o
 
 template <glmvq_dot_math MATH, uint32_t NT>
 static void glmvq_bf16_launch(const void *weight, const float *input, float *output,
-        uint32_t rows, uint32_t cols, uint32_t split, uint32_t tokens, cudaStream_t stream) {
+        uint32_t rows, uint32_t cols, uint32_t split, uint32_t tokens, cudaStream_t stream, glmvq_launch launch) {
     const uint32_t grid = (rows + GLMVQ_DOT_WARPS / split - 1) / (GLMVQ_DOT_WARPS / split);
-    glmvq_bf16_dot<MATH, NT><<<grid, GLMVQ_DOT_WARPS * 32, 0, stream>>>(
+    glmvq_launch_kernel(launch, glmvq_bf16_dot<MATH, NT>, grid, GLMVQ_DOT_WARPS * 32, 0, stream,
         (const __nv_bfloat16 *)weight, input, output, rows, cols, split, tokens);
 }
 
 static cudaError_t glmvq_bf16_decode(const void *weight, const float *input, float *output,
-        uint32_t rows, uint32_t cols, glmvq_dot_math math, cudaStream_t stream, uint32_t tokens = 1) {
+        uint32_t rows, uint32_t cols, glmvq_dot_math math, cudaStream_t stream, uint32_t tokens = 1,
+        glmvq_launch launch = GLMVQ_LAUNCH_PLAIN) {
     if (!rows || !tokens || tokens > GLMVQ_DOT_TOKENS || !glmvq_bf16_fits(weight, input, output, cols)) {
         return cudaErrorInvalidValue;
     }
     // Few long rows split across a block's warps so every SM has work.
     const uint32_t split = rows < GLMVQ_DOT_WIDE_ROWS && cols >= GLMVQ_DOT_SPLIT_COLS ? GLMVQ_DOT_SPLIT : 1;
     if (math == GLMVQ_DOT_F32 && tokens == 1) {
-        glmvq_bf16_launch<GLMVQ_DOT_F32, 1>(weight, input, output, rows, cols, split, tokens, stream);
+        glmvq_bf16_launch<GLMVQ_DOT_F32, 1>(weight, input, output, rows, cols, split, tokens, stream, launch);
     } else if (math == GLMVQ_DOT_F32) {
-        glmvq_bf16_launch<GLMVQ_DOT_F32, GLMVQ_DOT_TOKENS>(weight, input, output, rows, cols, split, tokens, stream);
+        glmvq_bf16_launch<GLMVQ_DOT_F32, GLMVQ_DOT_TOKENS>(weight, input, output, rows, cols, split, tokens, stream, launch);
     } else if (tokens == 1) {
-        glmvq_bf16_launch<GLMVQ_DOT_BF16, 1>(weight, input, output, rows, cols, split, tokens, stream);
+        glmvq_bf16_launch<GLMVQ_DOT_BF16, 1>(weight, input, output, rows, cols, split, tokens, stream, launch);
     } else {
-        glmvq_bf16_launch<GLMVQ_DOT_BF16, GLMVQ_DOT_TOKENS>(weight, input, output, rows, cols, split, tokens, stream);
+        glmvq_bf16_launch<GLMVQ_DOT_BF16, GLMVQ_DOT_TOKENS>(weight, input, output, rows, cols, split, tokens, stream, launch);
     }
     return cudaGetLastError();
 }
@@ -111,6 +119,13 @@ __global__ void __launch_bounds__(GLMVQ_THREADS) glmvq_hc_mix(const float *resid
     __shared__ float partial[GLMVQ_THREADS];
     __shared__ float total[GLMVQ_THREADS / 32];
     const uint32_t lane = threadIdx.x;
+    glmvq_pdl_open();
+    // This output's 32 KB weight row heads for L2 while the predecessor drains.
+    if (!lane) {
+        asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
+            "l"(weight + (uint64_t)blockIdx.x * width), "r"(width * (uint32_t)sizeof(__nv_bfloat16)) : "memory");
+    }
+    glmvq_pdl_wait();
     // MTP verify rows: blockIdx.y selects the row; per-row math is unchanged.
     residual += (uint64_t)blockIdx.y * width;
     mix += (uint64_t)blockIdx.y * gridDim.x;

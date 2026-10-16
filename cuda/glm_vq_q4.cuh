@@ -9,6 +9,7 @@ enum glmvq_q4_load { GLMVQ_Q4_SCALAR, GLMVQ_Q4_STAGE, GLMVQ_Q4_PIPE, GLMVQ_Q4_AU
 struct glmvq_q4_config {
     glmvq_q4_load mode;
     uint32_t blocks, shared, major;
+    glmvq_launch launch;
 };
 
 // Q4_K layout/dot mapping: YoungAi 7fb26cc, cuda_v41_q4k.inc.cu:21-70.
@@ -26,6 +27,8 @@ template <uint32_t NT>
 __global__ void glmvq_q4_small(const uint8_t *weight, const float *input,
         float *out, uint32_t cols, uint32_t rows, uint32_t tokens, uint32_t split) {
     __shared__ float partial[GLMVQ_Q4_WARPS * NT];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     const uint32_t row = blockIdx.x * (GLMVQ_Q4_WARPS / split) + warp / split;
     const uint32_t part = warp % split, blocks = cols / GLMVQ_Q4_BLOCK;
@@ -126,6 +129,7 @@ __global__ void __launch_bounds__(256, 4) glmvq_q4_stream(const uint8_t *weight,
         const float *input, float *out, uint32_t cols, uint32_t rows, uint32_t tokens, uint32_t split) {
     extern __shared__ uint4 staged[];
     __shared__ float partial[GLMVQ_Q4_WARPS * NT];
+    glmvq_pdl_open();
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     const uint32_t rpb = GLMVQ_Q4_WARPS / split, local = warp / split, part = warp % split;
     const uint32_t blocks = cols / GLMVQ_Q4_BLOCK, groups = 1 + (rows - 1) / rpb;
@@ -134,6 +138,8 @@ __global__ void __launch_bounds__(256, 4) glmvq_q4_stream(const uint8_t *weight,
     const uint32_t first_rows = min(rpb, rows - group * rpb);
     glmvq_q4_copy<LOAD>(staged, (const uint4 *)weight + (uint64_t)group * group16, first_rows * row16);
     if constexpr (LOAD == GLMVQ_Q4_PIPE) { __pipeline_commit(); }
+    // The first weights stream while the predecessor drains.
+    glmvq_pdl_wait();
     for (; group < groups; group += LOAD == GLMVQ_Q4_PIPE ? gridDim.x : groups, buffer ^= 1) {
         if constexpr (LOAD == GLMVQ_Q4_PIPE) {
             const uint32_t next = group + gridDim.x;
@@ -181,7 +187,7 @@ static cudaError_t glmvq_q4_prepare(glmvq_q4_config *config, glmvq_q4_load mode)
     if (err == cudaSuccess) { err = cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device); }
     if (err == cudaSuccess) { err = cudaDeviceGetAttribute(&shared, cudaDevAttrMaxSharedMemoryPerBlock, device); }
     if (err == cudaSuccess) { err = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device); }
-    if (err == cudaSuccess) { *config = {mode, (uint32_t)sms * 4u, (uint32_t)shared, (uint32_t)major}; }
+    if (err == cudaSuccess) { *config = {mode, (uint32_t)sms * 4u, (uint32_t)shared, (uint32_t)major, GLMVQ_LAUNCH_PLAIN}; }
     return err;
 }
 
@@ -214,18 +220,20 @@ static void glmvq_q4_launch(const void *weight, const float *input, float *out,
     const uint32_t rpb = GLMVQ_Q4_WARPS / split, grid = 1 + (rows - 1) / rpb;
     const uint64_t bytes = (uint64_t)rpb * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
     const uint64_t weight_bytes = (uint64_t)rows * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+    const glmvq_launch launch = config ? config->launch : GLMVQ_LAUNCH_PLAIN;
+    const auto *w = (const uint8_t *)weight;
     switch (glmvq_q4_select(config, input, bytes, weight_bytes, tokens)) {
         case GLMVQ_Q4_PIPE:
-            glmvq_q4_stream<NT, GLMVQ_Q4_PIPE><<<min(grid, config->blocks), GLMVQ_Q4_WARPS * 32, 2 * bytes, stream>>>(
-                (const uint8_t *)weight, input, out, cols, rows, tokens, split);
+            glmvq_launch_kernel(launch, glmvq_q4_stream<NT, GLMVQ_Q4_PIPE>, min(grid, config->blocks),
+                GLMVQ_Q4_WARPS * 32, 2 * bytes, stream, w, input, out, cols, rows, tokens, split);
             break;
         case GLMVQ_Q4_STAGE:
-            glmvq_q4_stream<NT, GLMVQ_Q4_STAGE><<<grid, GLMVQ_Q4_WARPS * 32, bytes, stream>>>(
-                (const uint8_t *)weight, input, out, cols, rows, tokens, split);
+            glmvq_launch_kernel(launch, glmvq_q4_stream<NT, GLMVQ_Q4_STAGE>, grid,
+                GLMVQ_Q4_WARPS * 32, bytes, stream, w, input, out, cols, rows, tokens, split);
             break;
         default:
-            glmvq_q4_small<NT><<<grid, GLMVQ_Q4_WARPS * 32, 0, stream>>>(
-                (const uint8_t *)weight, input, out, cols, rows, tokens, split);
+            glmvq_launch_kernel(launch, glmvq_q4_small<NT>, grid, GLMVQ_Q4_WARPS * 32, 0, stream,
+                w, input, out, cols, rows, tokens, split);
     }
 }
 

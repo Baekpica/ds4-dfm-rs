@@ -75,6 +75,8 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
         const uint32_t *positions, const uint32_t *selected, uint32_t stride,
         uint32_t tiles_per_split, float scale) {
     extern __shared__ __align__(16) uint8_t fa_shared[];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     uint8_t *tiles = fa_shared;
     float *exchange = (float *)(fa_shared + 2 * GLMVQ_FA_TILE);
     uint32_t *kidx = (uint32_t *)(fa_shared + 2 * GLMVQ_FA_TILE + GLMVQ_FA_EXCHANGE);
@@ -255,6 +257,8 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
 // Joins key splits: block (row, head), one thread per latent column pair.
 __global__ void glmvq_fa_combine(__nv_bfloat16 *low, const float *partial, const float *stats,
         uint32_t splits) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t row = blockIdx.x, head = blockIdx.y, col = threadIdx.x * 2;
     float peak = -INFINITY;
     for (uint32_t s = 0; s < splits; s++) {
@@ -286,6 +290,15 @@ enum { GLMVQ_ABS_DIM = 256, GLMVQ_ABS_UNROLL = 8, GLMVQ_ABS_ROWS = 4 };
 __global__ void __launch_bounds__(256) glmvq_absorb_k(__nv_bfloat16 *qlow, const float *q,
         const __nv_bfloat16 *weight, uint32_t rows) {
     const uint32_t head = blockIdx.x, col = threadIdx.x * 2;
+    glmvq_pdl_open();
+    // The head's W_k (256 KB) heads for L2 in four pieces while the predecessor drains.
+    if (threadIdx.x < 4) {
+        constexpr uint32_t piece = GLMVQ_ABS_DIM * GLMVQ_FA_LATENT * sizeof(__nv_bfloat16) / 4;
+        asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
+            "l"((const uint8_t *)(weight + (uint64_t)head * 2 * GLMVQ_ABS_DIM * GLMVQ_FA_LATENT) + threadIdx.x * piece),
+            "r"(piece) : "memory");
+    }
+    glmvq_pdl_wait();
     const __nv_bfloat16 *w = weight + (uint64_t)head * 2 * GLMVQ_ABS_DIM * GLMVQ_FA_LATENT + col;
     float a[GLMVQ_ABS_ROWS] = {}, b[GLMVQ_ABS_ROWS] = {};
     #pragma unroll GLMVQ_ABS_UNROLL
@@ -310,6 +323,12 @@ __global__ void __launch_bounds__(256) glmvq_absorb_v(float *out, const __nv_bfl
     const uint32_t lane = threadIdx.x & 31, row = blockIdx.x * 8 + threadIdx.x / 32;
     const uint32_t head = row / GLMVQ_ABS_DIM, c = row % GLMVQ_ABS_DIM;
     const __nv_bfloat16 *w = weight + ((uint64_t)head * 2 * GLMVQ_ABS_DIM + GLMVQ_ABS_DIM + c) * GLMVQ_FA_LATENT;
+    glmvq_pdl_open();
+    if (!lane) {
+        asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::
+            "l"(w), "r"((uint32_t)(GLMVQ_FA_LATENT * sizeof(__nv_bfloat16))) : "memory");
+    }
+    glmvq_pdl_wait();
     float sum[GLMVQ_ABS_ROWS] = {};
     #pragma unroll
     for (uint32_t i = 0; i < GLMVQ_FA_LATENT / (32 * 8); i++) {

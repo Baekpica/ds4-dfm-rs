@@ -20,6 +20,8 @@ __global__ void glmvq_kda(float *output, float *state,
         const float *q_weight, const float *k_weight, const float *v_weight,
         const float *a_log, const float *dt_bias, uint32_t rows,
         uint32_t heads, float lower_bound, glmvq_kda_snap snap) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t head = blockIdx.x, d = threadIdx.x;
     const uint32_t dim = GLMVQ_KDA_DIM;
     const uint64_t channel = (uint64_t)head * dim + d, width = (uint64_t)heads * dim;

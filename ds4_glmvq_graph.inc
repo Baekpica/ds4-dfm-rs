@@ -234,7 +234,7 @@ static bool gvq_mlp(ds4_glm53_gpu_graph *g, const ds4_model *m,
     const ds4_tensor *const ws[] = {gate, up};
     return gvq_mm_many(g, m, outs, ws, 2u, g->norm, rows) &&
         ds4_gpu_gvq_swiglu(g->ffn_mid, g->ffn_gate, g->ffn_up,
-            (uint64_t)rows * gate->dim[1], DS4_SWIGLU_CLAMP_EXP) &&
+            rows, (uint32_t)gate->dim[1], DS4_SWIGLU_CLAMP_EXP) &&
         gvq_mm(g, m, out, down, g->ffn_mid, rows, DS4_GVQ_BF16);
 }
 

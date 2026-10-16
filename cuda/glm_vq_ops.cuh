@@ -44,6 +44,8 @@ __device__ __forceinline__ float glmvq_rms_value(float x, float inv, const __nv_
 
 __global__ void glmvq_rms(const float *input, const __nv_bfloat16 *weight,
         const float *gate, float *output, uint32_t width, float eps, glmvq_norm kind) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint64_t base = (uint64_t)blockIdx.x * width;
     const uint32_t lane = threadIdx.x;
     float sum = 0.0f;
@@ -93,6 +95,8 @@ __global__ void glmvq_rms(const float *input, const __nv_bfloat16 *weight,
 __global__ void __launch_bounds__(GLMVQ_RMS_ROWS * 32) glmvq_rms_warp(const float *input,
         const __nv_bfloat16 *weight, const float *gate, float *output, uint32_t rows,
         uint32_t width, float eps, glmvq_norm kind) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31, row = blockIdx.x * GLMVQ_RMS_ROWS + threadIdx.x / 32;
     if (row >= rows) { return; }
     const uint64_t base = (uint64_t)row * width;
@@ -124,6 +128,8 @@ __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float 
 
 __global__ void glmvq_swiglu(const float *gate, const float *up, float *output,
         uint64_t count, float limit) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < count) { output[i] = glmvq_swiglu_value(gate[i], up[i], limit); }
 }
@@ -234,6 +240,8 @@ __global__ void glmvq_hc_split(const float *mix, const R *residual,
         const float *scale, const float *base, float *output, float *split,
         uint32_t width, uint32_t iters, float eps,
         const __nv_bfloat16 *norm_weight, float *norm, float norm_eps) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t row = blockIdx.x;
     __shared__ float coeff[GLMVQ_HC_MIX];
     __shared__ float partial[GLMVQ_THREADS];
@@ -299,6 +307,8 @@ __global__ void glmvq_hc_split(const float *mix, const R *residual,
 template <typename R>
 __global__ void glmvq_hc_expand(const float *branch, const R *residual,
         const float *split, float *output, uint32_t width, uint64_t count) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
     const uint32_t col = i % width, dst = (i / width) % GLMVQ_HC;

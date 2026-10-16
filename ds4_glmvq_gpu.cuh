@@ -29,6 +29,11 @@ struct ds4_gvq_model {
     ds4_gpu_tensor *device = nullptr;
 };
 
+// Decode and verify widths chain their launches with programmatic dependent
+// launch (DS4_GLMVQ_PDL=0 turns it off); prefill grids launch normally.
+static glmvq_launch g_gvq_pdl = GLMVQ_LAUNCH_PLAIN;
+static glmvq_launch gvq_mode(uint32_t rows) { return rows <= GVQ_VERIFY_ROWS ? g_gvq_pdl : GLMVQ_LAUNCH_PLAIN; }
+
 struct ds4_gvq_ctx {
     const ds4_gvq_model *model;
     ds4_gpu_tensor *scratch, *workspace, *pairs;
@@ -45,6 +50,7 @@ struct ds4_gvq_ctx {
     bool kda_chunk;
     bool kda_mma;
     bool flash;
+    glmvq_launch launch;
     bool index_fused;
     uint64_t flash_calls = 0;
     uint64_t kda_chunks = 0;
@@ -310,6 +316,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_CHUNK accepts 0 or 1\n");
         return nullptr;
     }
+    const char *pdl = getenv("DS4_GLMVQ_PDL");
+    if (pdl && strcmp(pdl, "0") && strcmp(pdl, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_PDL accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *kda_mma = getenv("DS4_GLMVQ_KDA_MMA");
     if (kda_mma && strcmp(kda_mma, "0") && strcmp(kda_mma, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_MMA accepts 0 or 1\n");
@@ -328,6 +339,9 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->decode_route = !route || strcmp(route, "0");
     ctx->direct_bf16 = !bf16 || strcmp(bf16, "0");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
+    // Decode-width kernels launch with programmatic dependent launch.
+    ctx->launch = !pdl || strcmp(pdl, "0") ? GLMVQ_LAUNCH_PDL : GLMVQ_LAUNCH_PLAIN;
+    g_gvq_pdl = ctx->launch;
     ctx->kda_mma = (!kda_mma || strcmp(kda_mma, "0")) &&
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
@@ -375,6 +389,7 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         delete ctx;
         return nullptr;
     }
+    ctx->q4.launch = ctx->launch;
     ctx->model = model;
     ctx->scratch = ds4_gpu_tensor_alloc(bytes);
     ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);
@@ -485,7 +500,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         glmvq_bf16_fits(s.data, input->ptr, out->ptr, s.cols)) {
         ctx->bf16_calls++;
         return cuda_ok(glmvq_bf16_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
-            s.rows, s.cols, math == DS4_GVQ_F32 ? GLMVQ_DOT_F32 : GLMVQ_DOT_BF16, ctx->stream, rows),
+            s.rows, s.cols, math == DS4_GVQ_F32 ? GLMVQ_DOT_F32 : GLMVQ_DOT_BF16, ctx->stream, rows, ctx->launch),
             "GLM VQ BF16 decode");
     }
     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {
@@ -585,12 +600,12 @@ extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, width);
     if ((kind != DS4_GVQ_PLAIN_RMS && !w) || kind > DS4_GVQ_PLAIN_RMS) { return 0; }
     if (width <= GLMVQ_RMS_NARROW && width % 32 == 0) {
-        glmvq_rms_warp<<<(rows + GLMVQ_RMS_ROWS - 1) / GLMVQ_RMS_ROWS, GLMVQ_RMS_ROWS * 32, 0, ds4_current_stream()>>>(
-            (const float *)input->ptr, w, gate ? (const float *)gate->ptr : nullptr,
-            (float *)out->ptr, rows, width, eps, (glmvq_norm)kind);
+        glmvq_launch_kernel(gvq_mode(rows), glmvq_rms_warp, (rows + GLMVQ_RMS_ROWS - 1) / GLMVQ_RMS_ROWS,
+            GLMVQ_RMS_ROWS * 32, 0, ds4_current_stream(), (const float *)input->ptr, w,
+            gate ? (const float *)gate->ptr : nullptr, (float *)out->ptr, rows, width, eps, (glmvq_norm)kind);
         return cuda_ok(cudaGetLastError(), "GLM VQ RMS");
     }
-    glmvq_rms<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+    glmvq_launch_kernel(gvq_mode(rows), glmvq_rms, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
         (const float *)input->ptr, w, gate ? (const float *)gate->ptr : nullptr,
         (float *)out->ptr, width, eps, (glmvq_norm)kind);
     return cuda_ok(cudaGetLastError(), "GLM VQ RMS");
@@ -608,7 +623,8 @@ extern "C" int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_
         !gvq_floats(residual, count * GLMVQ_HC) || !gvq_floats(split, coeff) || !gvq_floats(mix, coeff) ||
         (norm && (!w || !gvq_floats(norm, count)))) { return 0; }
     auto launch = [&](auto *r) {
-        glmvq_hc_split<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>((const float *)mix->ptr,
+        glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_split<std::remove_const_t<std::remove_pointer_t<decltype(r)>>>,
+            rows, GLMVQ_THREADS, 0, ds4_current_stream(), (const float *)mix->ptr,
             r, s, b, (float *)out->ptr, (float *)split->ptr, width, iterations, eps,
             w, norm ? (float *)norm->ptr : nullptr, norm_eps);
     };
@@ -631,8 +647,8 @@ extern "C" int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
             ds4_current_stream()>>>((const float *)residual->ptr, w, (float *)mix->ptr, rows, width, eps);
         return cuda_ok(cudaGetLastError(), "GLM VQ mHC mix rows");
     }
-    glmvq_hc_mix<<<dim3(GLMVQ_HC_MIX, rows), GLMVQ_THREADS, 0, ds4_current_stream()>>>(
-        (const float *)residual->ptr, w, (float *)mix->ptr, width, eps);
+    glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_mix, dim3(GLMVQ_HC_MIX, rows), GLMVQ_THREADS, 0,
+        ds4_current_stream(), (const float *)residual->ptr, w, (float *)mix->ptr, width, eps);
     return cuda_ok(cudaGetLastError(), "GLM VQ mHC mix");
 }
 
@@ -643,7 +659,8 @@ extern "C" int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *bra
     if (!rows || !width || !gvq_floats(out, count) || !gvq_floats(residual, count) ||
         !gvq_floats(branch, count / GLMVQ_HC) || !gvq_floats(split, (uint64_t)rows * GLMVQ_HC_MIX)) { return 0; }
     auto launch = [&](auto *r) {
-        glmvq_hc_expand<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_expand<std::remove_const_t<std::remove_pointer_t<decltype(r)>>>,
+            (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, ds4_current_stream(),
             (const float *)branch->ptr, r, (const float *)split->ptr, (float *)out->ptr, width, count);
     };
     if (format == DS4_GVQ_ROWS_BF16) { launch((const __nv_bfloat16 *)residual->ptr); }
@@ -674,10 +691,12 @@ extern "C" int ds4_gpu_gvq_expand_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4
 }
 
 extern "C" int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
-        const ds4_gpu_tensor *up, uint64_t count, float limit) {
+        const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, float limit) {
+    const uint64_t count = (uint64_t)rows * width;
     if (!count || !gvq_floats(out, count) || !gvq_floats(gate, count) || !gvq_floats(up, count)) { return 0; }
-    glmvq_swiglu<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
-        (const float *)gate->ptr, (const float *)up->ptr, (float *)out->ptr, count, limit);
+    glmvq_launch_kernel(gvq_mode(rows), glmvq_swiglu, (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS),
+        GLMVQ_THREADS, 0, ds4_current_stream(), (const float *)gate->ptr, (const float *)up->ptr,
+        (float *)out->ptr, count, limit);
     return cuda_ok(cudaGetLastError(), "GLM VQ SwiGLU");
 }
 
@@ -743,13 +762,16 @@ extern "C" int ds4_gpu_gvq_store(ds4_gpu_tensor *cache, const ds4_gpu_tensor *in
 }
 
 __global__ void gvq_positions(uint32_t *out, uint32_t first, uint32_t rows) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row < rows) { out[row] = first + row; }
 }
 
 extern "C" int ds4_gpu_gvq_positions(ds4_gpu_tensor *out, uint32_t first, uint32_t rows) {
     if (!out || !rows || rows > out->bytes / sizeof(uint32_t) || first > UINT32_MAX - rows) { return 0; }
-    gvq_positions<<<(rows + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+    glmvq_launch_kernel(gvq_mode(rows), gvq_positions, (rows + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0,
+        ds4_current_stream(),
         (uint32_t *)out->ptr, first, rows);
     return cuda_ok(cudaGetLastError(), "GLM VQ positions");
 }
@@ -763,6 +785,8 @@ static_assert(GVQ_EXPERTS % GVQ_ROUTER_LANES == 0, "router lanes own whole exper
 // are unchanged, so selections and weights stay bit-identical.
 __global__ void gvq_router(int32_t *selected, float *weights, const float *logits,
         const float *bias, float scale) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x;
     const uint64_t row = (uint64_t)blockIdx.x * GVQ_EXPERTS;
     float prob[GVQ_ROUTER_PER_LANE], score[GVQ_ROUTER_PER_LANE];
@@ -807,8 +831,8 @@ extern "C" int ds4_gpu_gvq_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
     const float *b = (const float *)gvq_weight(ctx, bias, GVQ_TYPE_F32, GVQ_EXPERTS);
     if (!b || !rows || !selected || (uint64_t)rows * GVQ_USED > selected->bytes / sizeof(int32_t) ||
         !gvq_floats(weights, (uint64_t)rows * GVQ_USED) || !gvq_floats(logits, (uint64_t)rows * GVQ_EXPERTS)) { return 0; }
-    gvq_router<<<rows, GVQ_ROUTER_LANES, 0, ds4_current_stream()>>>((int32_t *)selected->ptr,
-        (float *)weights->ptr, (const float *)logits->ptr, b, scale);
+    glmvq_launch_kernel(gvq_mode(rows), gvq_router, rows, GVQ_ROUTER_LANES, 0, ds4_current_stream(),
+        (int32_t *)selected->ptr, (float *)weights->ptr, (const float *)logits->ptr, b, scale);
     return cuda_ok(cudaGetLastError(), "GLM VQ router");
 }
 
@@ -931,7 +955,8 @@ static int gvq_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor
     // (cuBLAS at N=1 ran at 90-215 GB/s). Prefill keeps tensor-core GEMMs.
     const bool gemv = rows <= GLMVQ_ABS_ROWS && ctx->direct_bf16;
     if (gemv) {
-        glmvq_absorb_k<<<heads, latent / 2, 0, ctx->stream>>>(qlow, (const float *)query->ptr, weight, rows);
+        glmvq_launch_kernel(gvq_mode(rows), glmvq_absorb_k, heads, latent / 2, 0, ctx->stream,
+            qlow, (const float *)query->ptr, weight, rows);
     } else {
         glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
             (const float *)query->ptr, q, nq);
@@ -947,15 +972,17 @@ static int gvq_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor
     const uint32_t per = (tiles + splits - 1) / splits;
     float *partial = splits > 1 ? (float *)(base + l.partial) : nullptr;
     float *stats = splits > 1 ? (float *)(base + l.stats) : nullptr;
-    glmvq_fa_kernel<<<dim3(rows, splits), GLMVQ_FA_THREADS, GLMVQ_FA_SMEM, ctx->stream>>>(
-        low, partial, stats, qlow, (const __nv_bfloat16 *)cache->ptr, positions,
+    glmvq_launch_kernel(gvq_mode(rows), glmvq_fa_kernel, dim3(rows, splits), GLMVQ_FA_THREADS, GLMVQ_FA_SMEM, ctx->stream,
+        low, partial, stats, (const __nv_bfloat16 *)qlow, (const __nv_bfloat16 *)cache->ptr, positions,
         selected ? (const uint32_t *)selected->ptr : nullptr, selected ? stride : 0u,
         splits > 1 ? per : UINT32_MAX, 1.0f / sqrtf((float)dim));
     if (splits > 1) {
-        glmvq_fa_combine<<<dim3(rows, heads), latent / 2, 0, ctx->stream>>>(low, partial, stats, splits);
+        glmvq_launch_kernel(gvq_mode(rows), glmvq_fa_combine, dim3(rows, heads), latent / 2, 0, ctx->stream,
+            low, (const float *)partial, (const float *)stats, splits);
     }
     if (gemv) {
-        glmvq_absorb_v<<<heads * dim / 8, 256, 0, ctx->stream>>>((float *)out->ptr, low, weight, rows);
+        glmvq_launch_kernel(gvq_mode(rows), glmvq_absorb_v, heads * dim / 8, 256, 0, ctx->stream,
+            (float *)out->ptr, (const __nv_bfloat16 *)low, weight, rows);
         ctx->flash_calls++;
         return cuda_ok(cudaGetLastError(), "GLM VQ flash v absorb");
     }
@@ -1167,7 +1194,7 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
             (const float *)a_log->ptr, (const float *)dt_bias->ptr, rows, heads, lower_bound);
         if (chunked >= 0) { return chunked; }
     }
-    glmvq_kda<<<heads, GLMVQ_KDA_DIM, 0, ds4_current_stream()>>>((float *)out->ptr,
+    glmvq_launch_kernel(gvq_mode(rows), glmvq_kda, heads, GLMVQ_KDA_DIM, 0, ds4_current_stream(), (float *)out->ptr,
         (float *)state->ptr, (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
         (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,
         (const float *)forget->ptr, (const float *)beta->ptr,
@@ -1331,6 +1358,8 @@ static bool gvq_decode_fits(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
 // unchanged; the two per-layer host syncs (route readback, item upload) go.
 __global__ void gvq_decode_route(glmvq_decode_item *items, const int32_t *selected,
         const uint32_t *table, const glmvq_source *sources) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t t = threadIdx.x;
     const uint32_t e = min((uint32_t)selected[t], (uint32_t)GVQ_EXPERTS - 1u);
     uint32_t rank = 0;
@@ -1343,6 +1372,8 @@ __global__ void gvq_decode_route(glmvq_decode_item *items, const int32_t *select
 __global__ void gvq_verify_route(glmvq_verify_item *items, glmvq_verify_plan *plan,
         const int32_t *selected, uint32_t rows, const uint32_t *table, const glmvq_source *sources) {
     __shared__ uint32_t expert[GLMVQ_VER_PAIRS], lead[GLMVQ_VER_PAIRS], width[GLMVQ_VER_PAIRS];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t t = threadIdx.x, pairs = rows * GVQ_USED;
     const bool live = t < pairs;
     if (live) { expert[t] = min((uint32_t)selected[t], (uint32_t)GVQ_EXPERTS - 1u); }
@@ -1421,11 +1452,11 @@ static int gvq_decode_device(ds4_gvq_ctx *ctx, float *out, const float *input,
     auto *mid = (__nv_bfloat16 *)(base + GVQ_DECODE_WORK);
     auto *partial = (float *)(mid + GVQ_USED * GVQ_FFN);
     const cudaStream_t stream = ds4_current_stream();
-    gvq_decode_route<<<1, GVQ_USED, 0, stream>>>(items, selected,
+    glmvq_launch_kernel(ctx->launch, gvq_decode_route, 1, GVQ_USED, 0, stream, items, selected,
         table, (const glmvq_source *)ctx->model->device->ptr);
     ctx->decode_calls++;
     return cuda_ok(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL>(items, book,
-        input, mid, partial, out, weights, clamp, ctx->decode_blocks, stream, nullptr, nullptr, shared),
+        input, mid, partial, out, weights, clamp, ctx->decode_blocks, stream, nullptr, nullptr, shared, ctx->launch),
         "GLM VQ routed decode");
 }
 
@@ -1439,11 +1470,11 @@ static int gvq_verify_device(ds4_gvq_ctx *ctx, float *out, const float *input,
     auto *mid = (__nv_bfloat16 *)(base + GVQ_VERIFY_ITEMS + GVQ_VERIFY_PLAN);
     auto *partial = (float *)((uint8_t *)mid + GVQ_VERIFY_MID);
     const cudaStream_t stream = ds4_current_stream();
-    gvq_verify_route<<<1, GLMVQ_VER_PAIRS, 0, stream>>>(items, plan, selected, rows,
+    glmvq_launch_kernel(ctx->launch, gvq_verify_route, 1, GLMVQ_VER_PAIRS, 0, stream, items, plan, selected, rows,
         table, (const glmvq_source *)ctx->model->device->ptr);
     ctx->decode_calls++;
     return cuda_ok(glmvq_verify_launch<13, 32>(items, plan, book, input, rows, mid, partial,
-        out, weights, clamp, ctx->decode_blocks, stream, shared), "GLM VQ verify decode");
+        out, weights, clamp, ctx->decode_blocks, stream, shared, ctx->launch), "GLM VQ verify decode");
 }
 
 static int gvq_decode_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
@@ -1524,7 +1555,7 @@ extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         if (!cuda_ok(cudaGetLastError(), "GLM VQ expert gather") ||
             !ds4_gpu_gvq_linear(ctx, gate, matrices[e], gathered, n, DS4_GVQ_BF16) ||
             !ds4_gpu_gvq_linear(ctx, up, matrices[GVQ_EXPERTS + e], gathered, n, DS4_GVQ_BF16) ||
-            !ds4_gpu_gvq_swiglu(mid, gate, up, (uint64_t)n * GVQ_FFN, clamp) ||
+            !ds4_gpu_gvq_swiglu(mid, gate, up, n, GVQ_FFN, clamp) ||
             !ds4_gpu_gvq_linear(ctx, down, matrices[2 * GVQ_EXPERTS + e], mid, n, DS4_GVQ_BF16)) { return 0; }
         gvq_scatter<<<blocks, GLMVQ_THREADS, 0, ds4_current_stream()>>>((float *)out->ptr,
             (const float *)down->ptr, (const float *)weights->ptr, (const uint32_t *)ctx->pairs->ptr,
