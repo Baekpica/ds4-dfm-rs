@@ -33,6 +33,7 @@ struct ds4_gvq_ctx {
     bool direct_fp8;
     bool direct_kv;
     bool latent_attn;
+    bool decode_route;
     uint64_t latent_calls = 0;
     uint64_t kv_calls = 0;
     uint64_t fp8_calls = 0;
@@ -49,15 +50,23 @@ struct ds4_gvq_ctx {
     uint32_t decode_blocks = 0;
     glmvq_decode_item decode_items[GVQ_USED] = {};
     uint64_t decode_calls = 0;
+    // Per-layer expert->matrix tables on device, keyed by expert 0's gate
+    // index. A layer whose 864 matrices all fit routes decode on the GPU.
+    std::vector<uint32_t> decode_keys;
+    std::vector<uint8_t> decode_fit;
 };
 
+enum { GVQ_DECODE_LAYERS = 46, GVQ_DECODE_TABLE = 3 * GVQ_EXPERTS };
 static constexpr uint64_t GVQ_DECODE_WORK =
     (sizeof(glmvq_decode_item) * GVQ_USED + 15u) / 16u * 16u;
+static constexpr uint64_t GVQ_DECODE_ROWS =
+    GVQ_USED * (GVQ_FFN * sizeof(__nv_bfloat16) + GVQ_HIDDEN * sizeof(float));
 
 static uint64_t gvq_decode_bytes() {
     const char *enabled = getenv("DS4_GLMVQ_DECODE");
     if (enabled && !strcmp(enabled, "0")) { return 0; }
-    return GVQ_DECODE_WORK + GVQ_USED * (GVQ_FFN * sizeof(__nv_bfloat16) + GVQ_HIDDEN * sizeof(float));
+    return GVQ_DECODE_WORK + GVQ_DECODE_ROWS +
+        (uint64_t)GVQ_DECODE_LAYERS * GVQ_DECODE_TABLE * sizeof(uint32_t);
 }
 
 static uint64_t gvq_mma_bytes(uint32_t rows) {
@@ -236,11 +245,17 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_LATENT_ATTN accepts 0 or 1\n");
         return nullptr;
     }
+    const char *route = getenv("DS4_GLMVQ_DECODE_ROUTE");
+    if (route && strcmp(route, "0") && strcmp(route, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_DECODE_ROUTE accepts 0 or 1\n");
+        return nullptr;
+    }
     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};
     if (!ctx) { return nullptr; }
     ctx->direct_fp8 = !fp8 || strcmp(fp8, "0");
     ctx->direct_kv = !kv || strcmp(kv, "0");
     ctx->latent_attn = !latent_attn || strcmp(latent_attn, "0");
+    ctx->decode_route = !route || strcmp(route, "0");
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -471,34 +486,51 @@ extern "C" int ds4_gpu_gvq_positions(ds4_gpu_tensor *out, uint32_t first, uint32
     return cuda_ok(cudaGetLastError(), "GLM VQ positions");
 }
 
+enum { GVQ_ROUTER_LANES = 32, GVQ_ROUTER_PER_LANE = GVQ_EXPERTS / GVQ_ROUTER_LANES };
+static_assert(GVQ_EXPERTS % GVQ_ROUTER_LANES == 0, "router lanes own whole expert columns");
+
+// One warp per token; lane l owns experts l, l+32, ... A serial scan took
+// ~56 us per decode layer. The (score desc, index asc) warp argmax keeps
+// the scan's lowest-index tie rule; probabilities and the slot-ordered sum
+// are unchanged, so selections and weights stay bit-identical.
 __global__ void gvq_router(int32_t *selected, float *weights, const float *logits,
         const float *bias, float scale) {
-    __shared__ float prob[GVQ_EXPERTS], score[GVQ_EXPERTS];
+    const uint32_t lane = threadIdx.x;
     const uint64_t row = (uint64_t)blockIdx.x * GVQ_EXPERTS;
-    for (uint32_t e = threadIdx.x; e < GVQ_EXPERTS; e += blockDim.x) {
-        prob[e] = glmvq_sigmoid(logits[row + e]);
-        score[e] = glmvq_add(prob[e], bias[e]);
+    float prob[GVQ_ROUTER_PER_LANE], score[GVQ_ROUTER_PER_LANE];
+    #pragma unroll
+    for (uint32_t i = 0; i < GVQ_ROUTER_PER_LANE; i++) {
+        const uint32_t e = lane + i * GVQ_ROUTER_LANES;
+        prob[i] = glmvq_sigmoid(logits[row + e]);
+        score[i] = glmvq_add(prob[i], bias[e]);
     }
-    __syncthreads();
-    if (threadIdx.x) { return; }
     const uint64_t offset = (uint64_t)blockIdx.x * GVQ_USED;
-    float sum = 0.0f;
+    float sum = 0.0f, mine = 0.0f;
     for (uint32_t slot = 0; slot < GVQ_USED; slot++) {
-        uint32_t best = 0;
-        for (uint32_t e = 1; e < GVQ_EXPERTS; e++) {
-            if (score[e] > score[best]) { best = e; }
+        float value = score[0];
+        uint32_t best = lane;
+        #pragma unroll
+        for (uint32_t i = 1; i < GVQ_ROUTER_PER_LANE; i++) {
+            if (score[i] > value) { value = score[i]; best = lane + i * GVQ_ROUTER_LANES; }
         }
-        selected[offset + slot] = (int32_t)best;
-        weights[offset + slot] = prob[best];
-        sum = glmvq_add(sum, prob[best]);
-        score[best] = -INFINITY;
+        for (uint32_t stride = GVQ_ROUTER_LANES / 2; stride; stride >>= 1) {
+            const float other = __shfl_xor_sync(0xffffffffu, value, stride);
+            const uint32_t at = __shfl_xor_sync(0xffffffffu, best, stride);
+            if (other > value || (other == value && at < best)) { value = other; best = at; }
+        }
+        float p = 0.0f;
+        #pragma unroll
+        for (uint32_t i = 0; i < GVQ_ROUTER_PER_LANE; i++) {
+            if (lane + i * GVQ_ROUTER_LANES == best) { p = prob[i]; score[i] = -INFINITY; }
+        }
+        p = __shfl_sync(0xffffffffu, p, best % GVQ_ROUTER_LANES);
+        if (lane == slot) { mine = p; selected[offset + slot] = (int32_t)best; }
+        sum = glmvq_add(sum, p);
     }
     // Source router: normalize uncorrected sigmoid scores with +1e-20,
     // then apply routed_scaling_factor (modeling_glm5_next.py:158-184).
     sum = glmvq_add(sum, 1.0e-20f);
-    for (uint32_t slot = 0; slot < GVQ_USED; slot++) {
-        weights[offset + slot] = glmvq_mul(__fdiv_rn(weights[offset + slot], sum), scale);
-    }
+    if (lane < GVQ_USED) { weights[offset + lane] = glmvq_mul(__fdiv_rn(mine, sum), scale); }
 }
 
 extern "C" int ds4_gpu_gvq_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
@@ -507,7 +539,7 @@ extern "C" int ds4_gpu_gvq_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
     const float *b = (const float *)gvq_weight(ctx, bias, GVQ_TYPE_F32, GVQ_EXPERTS);
     if (!b || !rows || !selected || (uint64_t)rows * GVQ_USED > selected->bytes / sizeof(int32_t) ||
         !gvq_floats(weights, (uint64_t)rows * GVQ_USED) || !gvq_floats(logits, (uint64_t)rows * GVQ_EXPERTS)) { return 0; }
-    gvq_router<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>((int32_t *)selected->ptr,
+    gvq_router<<<rows, GVQ_ROUTER_LANES, 0, ds4_current_stream()>>>((int32_t *)selected->ptr,
         (float *)weights->ptr, (const float *)logits->ptr, b, scale);
     return cuda_ok(cudaGetLastError(), "GLM VQ router");
 }
@@ -742,6 +774,16 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     return cuda_ok(cudaGetLastError(), "GLM VQ grouped MMA");
 }
 
+static bool gvq_decode_matrix(const glmvq_source &s, uint32_t projection, const void *book) {
+    const uint32_t rows = projection == 2 ? GVQ_HIDDEN : GVQ_FFN;
+    const uint32_t cols = projection == 2 ? GVQ_FFN : GVQ_HIDDEN;
+    return s.storage == GLMVQ_WEIGHT_VQ && s.rows == rows && s.cols == cols &&
+        s.vq.rows == rows && s.vq.cols == cols && s.vq.precision == GLMVQ_E4M3 &&
+        s.vq.main && s.vq.plane && s.vq.gain && book && s.vq.book == book &&
+        (uintptr_t)s.vq.main % 128 == 0 && (uintptr_t)s.vq.plane % 128 == 0 &&
+        (uintptr_t)book % 16 == 0 && (uintptr_t)s.vq.gain % sizeof(__half) == 0;
+}
+
 static bool gvq_decode_fits(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
     const auto &sources = ctx->model->source;
     const void *book = nullptr;
@@ -753,19 +795,67 @@ static bool gvq_decode_fits(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
             const uint32_t index = matrices[projection * GVQ_EXPERTS + expert];
             if (index >= sources.size()) { return false; }
             const auto &s = sources[index];
-            const uint32_t rows = projection == 2 ? GVQ_HIDDEN : GVQ_FFN;
-            const uint32_t cols = projection == 2 ? GVQ_FFN : GVQ_HIDDEN;
             if (!book) { book = s.vq.book; }
-            if (s.storage != GLMVQ_WEIGHT_VQ || s.rows != rows || s.cols != cols ||
-                s.vq.rows != rows || s.vq.cols != cols || s.vq.precision != GLMVQ_E4M3 ||
-                !s.vq.main || !s.vq.plane || !s.vq.gain || !book || s.vq.book != book ||
-                (uintptr_t)s.vq.main % 128 || (uintptr_t)s.vq.plane % 128 ||
-                (uintptr_t)book % 16 || (uintptr_t)s.vq.gain % sizeof(__half)) { return false; }
+            if (!gvq_decode_matrix(s, projection, book)) { return false; }
             *outputs[projection] = s.vq;
         }
         item.pair = pair;
     }
     return true;
+}
+
+// N=1 routing on the GPU: thread t places expert selected[t] at its rank.
+// Ascending expert order is the host grouping's order, so the reduction is
+// unchanged; the two per-layer host syncs (route readback, item upload) go.
+__global__ void gvq_decode_route(glmvq_decode_item *items, const int32_t *selected,
+        const uint32_t *table, const glmvq_source *sources) {
+    const uint32_t t = threadIdx.x;
+    const uint32_t e = min((uint32_t)selected[t], (uint32_t)GVQ_EXPERTS - 1u);
+    uint32_t rank = 0;
+    for (uint32_t j = 0; j < GVQ_USED; j++) { rank += (uint32_t)selected[j] < (uint32_t)selected[t]; }
+    items[rank] = {sources[table[e]].vq, sources[table[GVQ_EXPERTS + e]].vq,
+        sources[table[2 * GVQ_EXPERTS + e]].vq, t};
+}
+
+// The layer's device table, uploaded once; nullptr keeps the host-routed
+// fallback when any of its 864 matrices misses the direct layout.
+static const uint32_t *gvq_decode_table(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
+    const auto &sources = ctx->model->source;
+    const uint64_t first = GVQ_DECODE_WORK + GVQ_DECODE_ROWS;
+    const auto *tables = (const uint32_t *)((const uint8_t *)ctx->decode->ptr + first);
+    for (size_t i = 0; i < ctx->decode_keys.size(); i++) {
+        if (ctx->decode_keys[i] == matrices[0]) {
+            return ctx->decode_fit[i] ? tables + i * GVQ_DECODE_TABLE : nullptr;
+        }
+    }
+    const size_t slot = ctx->decode_keys.size();
+    if (slot == GVQ_DECODE_LAYERS || matrices[0] >= sources.size()) { return nullptr; }
+    const void *book = sources[matrices[0]].vq.book;
+    bool fit = true;
+    for (uint32_t i = 0; i < GVQ_DECODE_TABLE && fit; i++) {
+        fit = matrices[i] < sources.size() && gvq_decode_matrix(sources[matrices[i]], i / GVQ_EXPERTS, book);
+    }
+    if (fit && !ds4_gpu_tensor_write(ctx->decode, first + slot * GVQ_DECODE_TABLE * sizeof(uint32_t),
+            matrices, GVQ_DECODE_TABLE * sizeof(uint32_t))) { return nullptr; }
+    ctx->decode_keys.push_back(matrices[0]);
+    ctx->decode_fit.push_back(fit);
+    return fit ? tables + slot * GVQ_DECODE_TABLE : nullptr;
+}
+
+static int gvq_decode_device(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
+        const ds4_gpu_tensor *weights, const uint32_t *table, const void *book, float clamp) {
+    uint8_t *base = (uint8_t *)ctx->decode->ptr;
+    auto *items = (glmvq_decode_item *)base;
+    auto *mid = (__nv_bfloat16 *)(base + GVQ_DECODE_WORK);
+    auto *partial = (float *)(mid + GVQ_USED * GVQ_FFN);
+    const cudaStream_t stream = ds4_current_stream();
+    gvq_decode_route<<<1, GVQ_USED, 0, stream>>>(items, (const int32_t *)selected->ptr,
+        table, (const glmvq_source *)ctx->model->device->ptr);
+    ctx->decode_calls++;
+    return cuda_ok(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL>(items, book,
+        (const float *)input->ptr, mid, partial, (float *)out->ptr,
+        (const float *)weights->ptr, clamp, ctx->decode_blocks, stream), "GLM VQ routed decode");
 }
 
 static int gvq_decode_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
@@ -796,6 +886,13 @@ extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     // The numerical baseline groups actual routes on the host. Captured
     // decode needs the later GPU-selected dispatch, never a captured readback.
     if (ds4_capture_active()) { return 0; }
+    if (ctx->decode && ctx->decode_route && rows == 1) {
+        const uint32_t *table = gvq_decode_table(ctx, matrices);
+        if (table) {
+            return gvq_decode_device(ctx, out, input, selected, weights, table,
+                ctx->model->source[matrices[0]].vq.book, clamp);
+        }
+    }
     if (!ds4_gpu_tensor_read(selected, 0, ctx->routes.data(), pairs * sizeof(int32_t))) { return 0; }
     uint32_t counts[GVQ_EXPERTS] = {}, offsets[GVQ_EXPERTS + 1] = {}, cursor[GVQ_EXPERTS];
     for (uint64_t i = 0; i < pairs; i++) {

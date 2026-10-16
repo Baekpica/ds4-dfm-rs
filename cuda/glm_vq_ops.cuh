@@ -28,14 +28,27 @@ __global__ void glmvq_round_rows(float *values, uint64_t count) {
     if (i < count) { values[i] = glmvq_round(values[i]); }
 }
 
+enum { GLMVQ_RMS_BATCH = 16 };
+
 __global__ void glmvq_rms(const float *input, const __nv_bfloat16 *weight,
         const float *gate, float *output, uint32_t width, float eps, glmvq_norm kind) {
     const uint64_t base = (uint64_t)blockIdx.x * width;
     const uint32_t lane = threadIdx.x;
     float sum = 0.0f;
-    for (uint32_t col = lane; col < width; col += blockDim.x) {
-        const float x = input[base + col];
-        sum = glmvq_add(sum, glmvq_mul(x, x));
+    // A decode row is one 256-thread block; one load per dependent add left
+    // ~14 us of exposed latency on 16K mHC rows. Batch the loads, but keep
+    // each thread's col, col+256, ... accumulation order bit-identical.
+    for (uint32_t first = lane; first < width; first += GLMVQ_RMS_BATCH * blockDim.x) {
+        float x[GLMVQ_RMS_BATCH];
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+            const uint32_t col = first + j * blockDim.x;
+            x[j] = col < width ? input[base + col] : 0.0f;
+        }
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+            if (first + j * blockDim.x < width) { sum = glmvq_add(sum, glmvq_mul(x[j], x[j])); }
+        }
     }
     __shared__ float partial[GLMVQ_THREADS];
     partial[lane] = sum;
@@ -46,19 +59,30 @@ __global__ void glmvq_rms(const float *input, const __nv_bfloat16 *weight,
     }
     const float variance = glmvq_add(__fdiv_rn(partial[0], (float)width), eps);
     const float inv = __fdiv_rn(1.0f, __fsqrt_rn(variance));
-    for (uint32_t col = lane; col < width; col += blockDim.x) {
-        float value = glmvq_mul(input[base + col], inv);
-        if (kind == GLMVQ_RMS_PLAIN) {
-            output[base + col] = value;
-            continue;
+    for (uint32_t first = lane; first < width; first += GLMVQ_RMS_BATCH * blockDim.x) {
+        float x[GLMVQ_RMS_BATCH];
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+            const uint32_t col = first + j * blockDim.x;
+            x[j] = col < width ? input[base + col] : 0.0f;
         }
-        // Ordinary RMS rounds before the weight; gated RMS rounds only last.
-        if (kind == GLMVQ_RMS_WEIGHTED) { value = glmvq_round(value); }
-        value = glmvq_mul(value, __bfloat162float(weight[col]));
-        if (kind == GLMVQ_RMS_GATED) {
-            value = glmvq_mul(value, glmvq_sigmoid(gate[base + col]));
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+            const uint32_t col = first + j * blockDim.x;
+            if (col >= width) { break; }
+            float value = glmvq_mul(x[j], inv);
+            if (kind == GLMVQ_RMS_PLAIN) {
+                output[base + col] = value;
+                continue;
+            }
+            // Ordinary RMS rounds before the weight; gated RMS rounds only last.
+            if (kind == GLMVQ_RMS_WEIGHTED) { value = glmvq_round(value); }
+            value = glmvq_mul(value, __bfloat162float(weight[col]));
+            if (kind == GLMVQ_RMS_GATED) {
+                value = glmvq_mul(value, glmvq_sigmoid(gate[base + col]));
+            }
+            output[base + col] = glmvq_round(value);
         }
-        output[base + col] = glmvq_round(value);
     }
 }
 
@@ -127,24 +151,84 @@ __device__ void glmvq_hc_weights(float *split, const float *mix,
     }
 }
 
+// Folds a 4-lane group in ascending lane order from `init`; every member of
+// the group gets the serial loop's exact value.
+template <typename F>
+__device__ __forceinline__ float glmvq_hc_fold(float value, float init,
+        uint32_t first, uint32_t step, F op) {
+    float acc = init;
+    #pragma unroll
+    for (uint32_t i = 0; i < GLMVQ_HC; i++) {
+        acc = op(acc, __shfl_sync(0xffffffffu, value, first + i * step));
+    }
+    return acc;
+}
+
+// glmvq_hc_weights with one lane per Sinkhorn element: lanes 0-15 own
+// comb[row*4+col], lanes 16-23 own the pre/post gates. Each element sees the
+// same operations in the same order, so the coefficients are bit-identical;
+// one thread spent ~20 us per decode call on the serial divisions.
+__device__ void glmvq_hc_weights_warp(float *coeff, const float *mix,
+        const float *scale, const float *base, uint32_t iters, float eps) {
+    const uint32_t lane = threadIdx.x & 31, i = lane & 15u;
+    const uint32_t row = i / GLMVQ_HC, col = i % GLMVQ_HC;
+    const auto add = [](float a, float b) { return glmvq_add(a, b); };
+    const auto max = [](float a, float b) { return fmaxf(a, b); };
+    float c = glmvq_add(glmvq_mul(mix[2 * GLMVQ_HC + i], scale[2]), base[2 * GLMVQ_HC + i]);
+    const float peak = glmvq_hc_fold(c, -INFINITY, row * GLMVQ_HC, 1, max);
+    c = expf(glmvq_add(c, -peak));
+    c = glmvq_add(__fdiv_rn(c, glmvq_hc_fold(c, 0.0f, row * GLMVQ_HC, 1, add)), eps);
+    // Source does the first column normalization before the remaining pairs.
+    for (uint32_t step = 0; step < iters; step++) {
+        if (step) {
+            c = __fdiv_rn(c, glmvq_add(glmvq_hc_fold(c, 0.0f, row * GLMVQ_HC, 1, add), eps));
+        }
+        c = __fdiv_rn(c, glmvq_add(glmvq_hc_fold(c, 0.0f, col, GLMVQ_HC, add), eps));
+    }
+    if (lane < GLMVQ_HC * GLMVQ_HC) { coeff[2 * GLMVQ_HC + lane] = c; }
+    const uint32_t h = lane - GLMVQ_HC * GLMVQ_HC;
+    if (h < GLMVQ_HC) {
+        coeff[h] = glmvq_add(glmvq_sigmoid(glmvq_add(glmvq_mul(mix[h], scale[0]), base[h])), eps);
+    } else if (h < 2 * GLMVQ_HC) {
+        coeff[h] = glmvq_mul(2.0f, glmvq_sigmoid(glmvq_add(glmvq_mul(mix[h], scale[1]), base[h])));
+    }
+}
+
+enum { GLMVQ_HC_BATCH = 4 };
+
 __global__ void glmvq_hc_split(const float *mix, const float *residual,
         const float *scale, const float *base, float *output, float *split,
         uint32_t width, uint32_t iters, float eps) {
     const uint32_t row = blockIdx.x;
     __shared__ float coeff[GLMVQ_HC_MIX];
-    if (threadIdx.x == 0) {
-        glmvq_hc_weights(coeff, mix + (uint64_t)row * GLMVQ_HC_MIX, scale, base, iters, eps);
+    if (threadIdx.x < 32) {
+        glmvq_hc_weights_warp(coeff, mix + (uint64_t)row * GLMVQ_HC_MIX, scale, base, iters, eps);
     }
     __syncthreads();
     if (threadIdx.x < GLMVQ_HC_MIX) {
         split[(uint64_t)row * GLMVQ_HC_MIX + threadIdx.x] = coeff[threadIdx.x];
     }
-    for (uint32_t col = threadIdx.x; col < width; col += blockDim.x) {
-        float sum = 0.0f;
-        for (uint32_t h = 0; h < GLMVQ_HC; h++) {
-            sum = glmvq_add(sum, glmvq_mul(coeff[h], residual[((uint64_t)row * GLMVQ_HC + h) * width + col]));
+    const float *r = residual + (uint64_t)row * GLMVQ_HC * width;
+    // Batched loads expose several rows of latency at once; per-column order is unchanged.
+    for (uint32_t first = threadIdx.x; first < width; first += GLMVQ_HC_BATCH * blockDim.x) {
+        float x[GLMVQ_HC_BATCH][GLMVQ_HC];
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_HC_BATCH; j++) {
+            const uint32_t col = first + j * blockDim.x;
+            #pragma unroll
+            for (uint32_t h = 0; h < GLMVQ_HC; h++) {
+                x[j][h] = col < width ? r[(uint64_t)h * width + col] : 0.0f;
+            }
         }
-        output[(uint64_t)row * width + col] = glmvq_round(sum);
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_HC_BATCH; j++) {
+            const uint32_t col = first + j * blockDim.x;
+            if (col >= width) { break; }
+            float sum = 0.0f;
+            #pragma unroll
+            for (uint32_t h = 0; h < GLMVQ_HC; h++) { sum = glmvq_add(sum, glmvq_mul(coeff[h], x[j][h])); }
+            output[(uint64_t)row * width + col] = glmvq_round(sum);
+        }
     }
 }
 
