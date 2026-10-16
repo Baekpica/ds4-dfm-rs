@@ -499,14 +499,15 @@ __device__ __forceinline__ void glmvq_kda_mma(float *d, const uint32_t *a, uint3
 
 // Shared staging rows are padded by 16 bytes: an 8-row ldmatrix then
 // touches 32 distinct banks (row stride 68 or 36 words).
-enum { GLMVQ_KS_WIDE = GLMVQ_KDA_DIM + 8, GLMVQ_KS_NARROW = GLMVQ_KC + 8 };
+enum { GLMVQ_KS_WIDE = GLMVQ_KDA_DIM + 8, GLMVQ_KS_NARROW = GLMVQ_KC + 8, GLMVQ_KS_UROW = GLMVQ_KDA_DIM + 4 };
 enum : uint32_t {
     GLMVQ_KS_WN = 0,                                            // F16 [t][k]
     GLMVQ_KS_QT = GLMVQ_KS_WN + GLMVQ_KC * GLMVQ_KS_WIDE * 2,   // F16 [t][k]
     GLMVQ_KS_MQ = GLMVQ_KS_QT + GLMVQ_KC * GLMVQ_KS_WIDE * 2,   // F16 [t][s]; output BF16 [t][v] later
     GLMVQ_KS_KT = GLMVQ_KS_MQ + GLMVQ_KC * GLMVQ_KS_NARROW * 2, // F16 [k][t]
     GLMVQ_KS_DL = GLMVQ_KS_KT + GLMVQ_KDA_DIM * GLMVQ_KS_NARROW * 2,
-    GLMVQ_KSCAN_SMEM = GLMVQ_KS_DL + GLMVQ_KDA_DIM * 4 };
+    GLMVQ_KS_U = GLMVQ_KS_DL + GLMVQ_KDA_DIM * 4,                  // F32 [t][v], rows padded by 4
+    GLMVQ_KSCAN_SMEM = GLMVQ_KS_U + GLMVQ_KC * GLMVQ_KS_UROW * 4 };
 static_assert(GLMVQ_KC * GLMVQ_KS_WIDE * 2 <= GLMVQ_KS_DL - GLMVQ_KS_MQ, "output fits the Mq/K^ stage");
 
 __device__ __forceinline__ void glmvq_kda_ldsm(uint32_t *r, const __half *p) {
@@ -545,7 +546,7 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
     __half *sw = (__half *)(scan_shared + GLMVQ_KS_WN), *sq = (__half *)(scan_shared + GLMVQ_KS_QT);
     __half *sm = (__half *)(scan_shared + GLMVQ_KS_MQ), *sk = (__half *)(scan_shared + GLMVQ_KS_KT);
     __nv_bfloat16 *so = (__nv_bfloat16 *)(scan_shared + GLMVQ_KS_MQ);
-    float *sd = (float *)(scan_shared + GLMVQ_KS_DL);
+    float *sd = (float *)(scan_shared + GLMVQ_KS_DL), *su = (float *)(scan_shared + GLMVQ_KS_U);
     const uint32_t head = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const uint32_t g = lane >> 2, q = lane & 3, v0 = warp * 16;
     // ldmatrix x4: lane l addresses row l%8 of matrix l/8, matrices 8 halves apart along k.
@@ -561,8 +562,18 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
         st[n8][0] = sh[k0 * D + v0 + g]; st[n8][1] = sh[(k0 + 1) * D + v0 + g];
         st[n8][2] = sh[k0 * D + v0 + g + 8]; st[n8][3] = sh[(k0 + 1) * D + v0 + g + 8];
     }
-    glmvq_kda_stage(sw, (const __half *)(record(0) + GLMVQ_KR_WN), C, D, W, tid);
-    glmvq_kda_stage(sq, (const __half *)(record(0) + GLMVQ_KR_QT), C, D, W, tid);
+    // U (64 x 128 F32) lands with -W and Q~: 4 x 16 bytes per thread.
+    auto stage_a = [&](const uint8_t *rec) {
+        glmvq_kda_stage(sw, (const __half *)(rec + GLMVQ_KR_WN), C, D, W, tid);
+        glmvq_kda_stage(sq, (const __half *)(rec + GLMVQ_KR_QT), C, D, W, tid);
+        for (uint32_t i = tid; i < C * D / 4; i += GLMVQ_KSCAN) {
+            const uint32_t t = i / (D / 4), c = i % (D / 4) * 4;
+            asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::
+                "r"((uint32_t)__cvta_generic_to_shared(su + t * GLMVQ_KS_UROW + c)),
+                "l"((const float *)(rec + GLMVQ_KR_U) + t * D + c) : "memory");
+        }
+    };
+    stage_a(record(0));
     asm volatile("cp.async.commit_group;" ::: "memory");
     for (uint32_t chunk = 0; chunk < chunks; chunk++) {
         const uint8_t *rec = record(chunk);
@@ -578,15 +589,6 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
             const uint32_t row = min(chunk * C + tid / 4, rows - 1);
             asm volatile("prefetch.global.L2 [%0];" :: "l"(gate + (uint64_t)row * width + head * D + tid % 4 * 32));
         }
-        const float *u = (const float *)(rec + GLMVQ_KR_U);
-        float vn[8][4], o[8][4];
-        #pragma unroll
-        for (uint32_t j = 0; j < 8; j++) {
-            const uint32_t t = j * 8 + 2 * q;
-            vn[j][0] = __ldg(u + t * D + v0 + g); vn[j][1] = __ldg(u + (t + 1) * D + v0 + g);
-            vn[j][2] = __ldg(u + t * D + v0 + g + 8); vn[j][3] = __ldg(u + (t + 1) * D + v0 + g + 8);
-            o[j][0] = o[j][1] = o[j][2] = o[j][3] = 0.0f;
-        }
         uint32_t sa[8][4];
         #pragma unroll
         for (uint32_t kk = 0; kk < 8; kk++) {
@@ -597,6 +599,13 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
         }
         asm volatile("cp.async.wait_group 1;" ::: "memory");
         __syncthreads();
+        float vn[8][4], o[8][4];
+        #pragma unroll
+        for (uint32_t j = 0; j < 8; j++) {
+            const float *u = su + (j * 8 + 2 * q) * GLMVQ_KS_UROW + v0 + g;
+            vn[j][0] = u[0]; vn[j][1] = u[GLMVQ_KS_UROW]; vn[j][2] = u[8]; vn[j][3] = u[GLMVQ_KS_UROW + 8];
+            o[j][0] = o[j][1] = o[j][2] = o[j][3] = 0.0f;
+        }
         #pragma unroll
         for (uint32_t j = 0; j < 8; j++) {
             #pragma unroll
@@ -612,10 +621,7 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
             }
         }
         __syncthreads();
-        if (chunk + 1 < chunks) {
-            glmvq_kda_stage(sw, (const __half *)(record(chunk + 1) + GLMVQ_KR_WN), C, D, W, tid);
-            glmvq_kda_stage(sq, (const __half *)(record(chunk + 1) + GLMVQ_KR_QT), C, D, W, tid);
-        }
+        if (chunk + 1 < chunks) { stage_a(record(chunk + 1)); }
         asm volatile("cp.async.commit_group;" ::: "memory");
         // V' as F16 high and residual parts (the residual halves the state error).
         uint32_t va[4][4], vl[4][4];
@@ -663,6 +669,14 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
                 glmvq_kda_mma(st[n8], vl[kt4 + 1], b[2], b[3]);
             }
         }
+        // This warp's 8 gate rows load while the outputs meet in shared memory.
+        float gv[C / 8][D / 32];
+        #pragma unroll
+        for (uint32_t r = 0; r < C / 8; r++) {
+            const uint32_t row = min(chunk * C + warp * (C / 8) + r, rows - 1);
+            #pragma unroll
+            for (uint32_t i = 0; i < D / 32; i++) { gv[r][i] = __ldg(gate + (uint64_t)row * width + head * D + lane + 32 * i); }
+        }
         __syncthreads();
         // The recurrence's BF16 output boundary, in the Mq/K^ stage.
         #pragma unroll
@@ -673,6 +687,7 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
         }
         __syncthreads();
         // glmvq_rms_warp's gated norm: lane holds columns lane + 32i.
+        #pragma unroll
         for (uint32_t r = 0; r < C / 8; r++) {
             const uint32_t t = warp * (C / 8) + r, row = chunk * C + t;
             if (row >= rows) { break; }
@@ -687,7 +702,9 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
             #pragma unroll
             for (uint32_t i = 0; i < D / 32; i++) {
                 const uint32_t col = lane + 32 * i;
-                out[base + col] = glmvq_rms_value(x[i], inv, norm, gate, base + col, col, GLMVQ_RMS_GATED);
+                const float value = glmvq_mul(glmvq_mul(glmvq_mul(x[i], inv), __bfloat162float(norm[col])),
+                    glmvq_sigmoid(gv[r][i]));
+                out[base + col] = glmvq_round(value);
             }
         }
         __syncthreads();
