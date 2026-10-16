@@ -583,7 +583,7 @@ fn main() {
                         cfg.ctx = ctx as i32;
                         serve_req.ctx = cfg.ctx;
                         // Unit H: the engine's request-omitted parse defaults
-                        // (thinking off unless asked, effort HIGH, min_p 0.0)
+                        // (thinking off unless asked, effort HIGH, min_p 0.02)
                         // apply to the engine's own model set -- exactly this
                         // branch's model.
                         cfg.engine_defaults = true;
