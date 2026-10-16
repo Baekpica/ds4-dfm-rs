@@ -445,8 +445,10 @@ fn use_iquest_spec(temp: f32, family: ds4_core::ModelFamily, draft: i32) -> bool
 }
 
 fn use_glm_spec(temp: f32, family: ds4_core::ModelFamily, draft: i32) -> bool {
-    family == ds4_core::ModelFamily::Glm53
-        && temp <= 0.0
+    matches!(
+        family,
+        ds4_core::ModelFamily::Glm53 | ds4_core::ModelFamily::Glm53Vq
+    ) && temp <= 0.0
         && draft > 1
         && ds4_core::check_mtp_draft(family, draft).is_ok()
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
@@ -481,7 +483,11 @@ fn mtp_open_options(
         || std::env::var_os("DS4_DSPARK_MODEL").is_some()
         || (matches!(
             family,
-            Some(ds4_core::ModelFamily::IQuestQ1 | ds4_core::ModelFamily::Glm53)
+            Some(
+                ds4_core::ModelFamily::IQuestQ1
+                    | ds4_core::ModelFamily::Glm53
+                    | ds4_core::ModelFamily::Glm53Vq
+            )
         ) && args.mtp_draft > 1)
     {
         options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
@@ -2203,6 +2209,15 @@ mod tests {
         let mut too_many = parsed;
         too_many.mtp_draft = 4;
         assert!(mtp_open_options(&too_many, Some(ds4_core::ModelFamily::Glm53)).is_err());
+    }
+
+    #[test]
+    fn glm_vq_embedded_mtp_controls() {
+        let parsed = parse_args(args(&["--mtp-draft", "2"])).unwrap();
+        let options = mtp_open_options(&parsed, Some(ds4_core::ModelFamily::Glm53Vq)).unwrap();
+        assert!(options.contains(&ModelOpenOption::MtpDraftTokens(2)));
+        assert!(use_glm_spec(0.0, ds4_core::ModelFamily::Glm53Vq, 2));
+        assert!(!use_glm_spec(0.0, ds4_core::ModelFamily::Glm53Vq, 1));
     }
 
     #[test]
