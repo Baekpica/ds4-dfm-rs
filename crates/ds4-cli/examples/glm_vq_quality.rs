@@ -95,9 +95,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "stopped": stopped, "vocab": vocab, "context": context,
             "mtp": false, "capture": false,
             "scope": "bounded text arithmetic quality; not API/tool/media/state qualification"});
-        std::fs::write(out.join(format!("{prefix}.json")), serde_json::to_vec_pretty(&result)?)?;
-        println!("{}", json!({"case": id, "prompt_tokens": prompt.len(),
-            "stopped": stopped, "answer": result["answer"]}));
+        std::fs::write(
+            out.join(format!("{prefix}.json")),
+            serde_json::to_vec_pretty(&result)?,
+        )?;
+        println!(
+            "{}",
+            json!({"case": id, "prompt_tokens": prompt.len(),
+            "stopped": stopped, "answer": result["answer"]})
+        );
         std::io::stdout().flush()?;
     }
     Ok(())
