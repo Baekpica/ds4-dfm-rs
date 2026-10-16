@@ -99,6 +99,47 @@ The guiding principle is:
 
 **Measure the whole workload, explain the specific bottleneck, and validate the change end to end.** Consider execution-path topology as well as individual kernels.
 
+## GB10 (DGX Spark) bottleneck know-how
+
+Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
+300–2,200 MHz policy. Background and history: [GLM VQ](docs/glm53-vq.md).
+
+- **Attribute first.** Export the Nsight trace to SQLite and sum kernels inside
+  the `ds4.prefill` / `ds4.decode` NVTX ranges; divide by tokens. For each
+  decode kernel compute bytes moved / time: anything far below ~235 GB/s is a
+  target, anything near it only shrinks with fewer bytes.
+- **Decode is bytes per token.** Streaming kernels reach ~250 GB/s (BF16
+  dot), 233–237 (FP8 dot), 216 (Q4_K stream). Below ~5 µs a kernel is
+  latency-bound: launch, tail and exposed DRAM latency dominate.
+- **Never leave a serial loop on one thread.** A one-thread top-8 over 288
+  experts cost 56 µs per layer; a one-thread 20-iteration Sinkhorn 25 µs. Use
+  warp argmax / one lane per element with the same operation order.
+- **Batch loads in single-block kernels.** One load per dependent add exposes
+  ~1 µs per iteration: a one-block 16K RMS took 19 µs, 6.8 µs with 16 loads in
+  flight per thread and the same accumulation order.
+- **No host syncs on the hot path.** Any `ds4_gpu_tensor_read/write`
+  (`cudaMemcpy`) drains the stream; per-layer routing readback plus an item
+  upload cost ~1.3 ms per decoded token. Keep routing and tables on device.
+- **Fuse conversion chains.** Convert → cuBLAS GEMV → convert is three launches
+  and ran at 147–178 GB/s; one direct kernel reading the F32 row reached 250.
+- **Shared memory caps tiling.** 99 KiB opt-in per block (101,376 B). A 64 KiB
+  E4M3 codebook leaves ~35 KiB for staging, so one CTA per SM; stage sizes and
+  pipeline depth must be budgeted against it (BT=64 BF16 staging does not fit).
+- **Tensor-core VQ is fragment-bound, not FLOP-bound.** Rebuilding BF16 weights
+  per fragment cost 23 issued instructions per MMA (28% tensor use). E4M3
+  codewords feed `mma.m16n8k32.e4m3` unconverted; promote every 128 K to FP32
+  (tensor-core accumulation truncates). Choose the k order freely when A and B
+  agree so each lane loads whole codewords. Next limits: MIO queue, barriers,
+  operand-register MOVs (`"+f"` constraints), and the weight stream DRAM floor.
+- **L2 is small for MoE streams.** Bulk-prefetching each row's 384-byte chunks
+  helps; prefetching the next work unit early made the FP8 kernel slower.
+- **Noise.** With the model's page cache evicted, the first prefill chunk's
+  lazy workspace allocation can stall (PSI spike) and cost 4–7% of prefill.
+  Record load time and PSI; prefer repeated fast-load runs.
+- **Numerical tolerance.** Use an existing configuration change as the noise
+  reference (GLM 8K frontier, 512 vs 1024 chunks: logit RMS 0.23, KL 2.3e-7).
+  Keep bit identity when only scheduling changes; it makes A/B trivial.
+
 # Agent Notes
 
 Support is limited to explicit model-family/artifact contracts listed in

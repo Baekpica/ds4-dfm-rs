@@ -41,6 +41,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Qwen benchmark reference](qwen38-benchmark-reference.md) | Consolidated source limits, protocols, campaign numbers, candidate adoption and optimization target |
 | [GLM](ds4-dfm-model-families.md#glm-53-flash-release-scope) | Q2 + vision; recorded serial 2K qualification |
 | [GLM Uncensored](glm53-uncensored.md) | Mixed recipe, SSD/bank contracts and current verification boundaries |
+| [GLM VQ](glm53-vq.md) | GVQ1 format concept, GB10 execution paths, numerical contract and optimization log |
 | [K2](ds4-dfm-model-families.md#k2-horizon-375b-release-scope) | MQ87, IFM tools, one-bank serving and disk limits |
 | [dots3](ds4-dfm-model-families.md#dots3-serving) | Separate opt-in text banks and serial MTP |
 | [Bonsai](BONSAI.md) | Pinned ternary PQ2_0, CPU reference and serial CUDA |
