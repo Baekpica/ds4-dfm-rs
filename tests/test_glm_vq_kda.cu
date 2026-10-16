@@ -53,8 +53,8 @@ static int run(uint32_t rows, float state_sd, bool timing) {
     float *cs = up(state), *cqt = up(qt), *ckt = up(kt), *cvt = up(vt), *cheads;
     uint8_t *records;
     CK(cudaMalloc(&records, (uint64_t)chunks * heads * GLMVQ_KR_BYTES)); CK(cudaMalloc(&cheads, count * 4));
-    CK(cudaFuncSetAttribute(glmvq_kda_local, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_KLOCAL_SMEM));
-    CK(cudaFuncSetAttribute(glmvq_kda_scan, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_KSCAN_SMEM));
+    CK(cudaFuncSetAttribute(glmvq_kda_local<float>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_KLOCAL_SMEM));
+    CK(cudaFuncSetAttribute(glmvq_kda_scan<float>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_KSCAN_SMEM));
     auto chunked = [&]() {
         glmvq_kda_local<<<dim3(chunks, heads), GLMVQ_KLOCAL, GLMVQ_KLOCAL_SMEM>>>(records, cqt, ckt, cvt,
             dq, dk, dv, df, db, dqw, dkw, dvw, da, ddt, rows, heads, -5.0f);

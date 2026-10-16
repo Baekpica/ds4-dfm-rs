@@ -19,9 +19,10 @@ typedef struct ds4_gvq_ctx ds4_gvq_ctx;
 enum { DS4_GVQ_NO_LINK = UINT32_MAX, DS4_GVQ_CTX_MAX = 1048576 };
 typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32 } ds4_gvq_math;
 typedef enum { DS4_GVQ_RMS, DS4_GVQ_GATED_RMS, DS4_GVQ_PLAIN_RMS } ds4_gvq_norm;
-/* mHC residual rows: F32, or BF16 packed into the first half (the fused
- * prefill expand writes them; the values are BF16-rounded either way). */
-typedef enum { DS4_GVQ_HC_F32, DS4_GVQ_HC_BF16 } ds4_gvq_hc;
+/* Activation rows of BF16-rounded values: F32, or BF16 packed into the
+ * first half of the same buffer (mHC residuals from the fused prefill
+ * expand, KDA gate projections). */
+typedef enum { DS4_GVQ_ROWS_F32, DS4_GVQ_ROWS_BF16 } ds4_gvq_rows;
 
 /* Native-only pointer plan. Rust has validated payloads and links; this
  * table names source intervals and never exposes device handles to hosts. */
@@ -43,13 +44,17 @@ int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
 int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
+/* BF16-weight prefill projection leaving BF16 rows in `out`; 0 when the
+ * shape takes ds4_gpu_gvq_linear instead. */
+int ds4_gpu_gvq_linear_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+    const ds4_gpu_tensor *input, uint32_t rows);
 int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const ds4_gpu_tensor *input, const ds4_gpu_tensor *gate, uint32_t weight,
     uint32_t rows, uint32_t width, float eps, ds4_gvq_norm kind);
 /* With `norm`, also writes the ordinary RMS norm of `out` (bit-identical
  * to a separate ds4_gpu_gvq_rms). */
 int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *split,
-    const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
+    const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual, ds4_gvq_rows format,
     uint32_t scale, uint32_t base, uint32_t rows, uint32_t width,
     uint32_t iterations, float eps, ds4_gpu_tensor *norm, uint32_t norm_weight, float norm_eps);
 /* mHC RMS + F32 mapping dots; 0 when the shape needs the fallback. */
@@ -58,10 +63,10 @@ int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
 /* Prefill expand fused with the next mHC mix, writing BF16 rows; 0 when
  * rows or shape need the separate kernels. */
 int ds4_gpu_gvq_expand_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *mix,
-    const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
+    const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, ds4_gvq_rows format,
     const ds4_gpu_tensor *split, uint32_t weight, uint32_t rows, uint32_t width, float eps);
 int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
-    const ds4_gpu_tensor *residual, ds4_gvq_hc format, const ds4_gpu_tensor *split,
+    const ds4_gpu_tensor *residual, ds4_gvq_rows format, const ds4_gpu_tensor *split,
     uint32_t rows, uint32_t width);
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint64_t count, float limit);
@@ -117,16 +122,19 @@ int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state
     const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
     const ds4_gpu_tensor *dt_bias, uint32_t rows, uint32_t heads, float lower_bound,
     ds4_gpu_tensor *snap, uint64_t stride);
+/* Whether ds4_gpu_gvq_kda_gated takes these prefill rows (not short
+ * appends or DS4_GLMVQ_KDA_MMA=0). */
+int ds4_gpu_gvq_kda_fused(ds4_gvq_ctx *ctx, uint32_t rows);
 /* Prefill rows: KDA and the gated output norm in one call, writing the
  * normed heads to `out`. Returns -1 when the rows take the recurrence or
- * the separate norm (short appends, DS4_GLMVQ_KDA_MMA=0). */
+ * the separate norm. */
 int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,
     ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
     const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
-    const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
+    const ds4_gpu_tensor *forget, ds4_gvq_rows forget_rows, const ds4_gpu_tensor *beta,
     const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight,
     const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
-    const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate, uint32_t norm,
+    const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate, ds4_gvq_rows gate_rows, uint32_t norm,
     uint32_t rows, uint32_t heads, float lower_bound, float eps);
 
 #ifdef __cplusplus

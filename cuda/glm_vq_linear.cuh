@@ -33,10 +33,14 @@ __global__ void glmvq_convert(const S *input, D *output, uint64_t count) {
     if (i < count) { output[i] = glmvq_cast<D>((float)input[i]); }
 }
 
+enum glmvq_output { GLMVQ_OUT_F32, GLMVQ_OUT_BF16 };
+
+// GLMVQ_OUT_BF16 leaves the BF16 GEMM result in `output` (first half) for
+// readers that take BF16, skipping the widening pass.
 static cublasStatus_t glmvq_gemm(cublasHandle_t handle, const glmvq_source &w,
         const float *input, float *output, uint32_t tokens, glmvq_compute compute,
         void *scratch, uint64_t bytes, cudaStream_t stream,
-        glmvq_restore_mode restore = GLMVQ_RESTORE_VECTOR) {
+        glmvq_restore_mode restore = GLMVQ_RESTORE_VECTOR, glmvq_output kind = GLMVQ_OUT_F32) {
     if (!handle || !input || !output || !scratch || !w.rows || !w.cols || !tokens ||
         w.rows > INT_MAX || w.cols > INT_MAX || tokens > INT_MAX ||
         bytes < glmvq_linear_bytes(w, tokens, compute)) { return CUBLAS_STATUS_INVALID_VALUE; }
@@ -81,14 +85,14 @@ static cublasStatus_t glmvq_gemm(cublasHandle_t handle, const glmvq_source &w,
     } else if (w.storage != GLMVQ_WEIGHT_BF16 || !w.data) { return CUBLAS_STATUS_INVALID_VALUE; }
 
     const uint64_t nx = (uint64_t)tokens * w.cols, ny = (uint64_t)tokens * w.rows;
-    __nv_bfloat16 *x = cursor, *y = cursor + nx;
+    __nv_bfloat16 *x = cursor, *y = kind == GLMVQ_OUT_BF16 ? (__nv_bfloat16 *)output : cursor + nx;
     glmvq_convert<<<(nx + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(input, x, nx);
     if (cudaGetLastError() != cudaSuccess) { return CUBLAS_STATUS_EXECUTION_FAILED; }
     const cublasStatus_t status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
         w.rows, tokens, w.cols, &alpha, weight, CUDA_R_16BF, w.cols,
         x, CUDA_R_16BF, w.cols, &beta, y, CUDA_R_16BF, w.rows,
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-    if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    if (status != CUBLAS_STATUS_SUCCESS || kind == GLMVQ_OUT_BF16) { return status; }
     glmvq_convert<<<(ny + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(y, output, ny);
     return cudaGetLastError() == cudaSuccess ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_EXECUTION_FAILED;
 }

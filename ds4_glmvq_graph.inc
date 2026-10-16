@@ -100,14 +100,14 @@ static bool gvq_norm(ds4_glm53_gpu_graph *g, const ds4_model *m,
 
 static bool gvq_hc(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_tensor *fn, const ds4_tensor *scale, const ds4_tensor *base,
-        const ds4_tensor *norm, const ds4_gpu_tensor *residual, ds4_gvq_hc format, uint32_t rows) {
+        const ds4_tensor *norm, const ds4_gpu_tensor *residual, ds4_gvq_rows format, uint32_t rows) {
     // Source 286-329: mHC control arithmetic is FP32; collapse is BF16.
     // One kernel fuses the RMS and mapping dots (or the preceding expand
     // already did); the split applies the norm.
     const bool ready = g->gvq_mixed;
     g->gvq_mixed = false;
     // Only the fused expand writes BF16 rows, and it also leaves their mix.
-    if (format == DS4_GVQ_HC_BF16 && !ready) { return false; }
+    if (format == DS4_GVQ_ROWS_BF16 && !ready) { return false; }
     const bool mixed = ready || ds4_gpu_gvq_hc_mix(g->gvq, g->hc_mix, residual,
             glmvq_index(m, fn), DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS, rows) ||
         (ds4_gpu_gvq_rms(g->gvq, g->hc_flat, residual, NULL, DS4_GVQ_NO_LINK,
@@ -127,19 +127,27 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
     ds4_gpu_tensor *const gates[] = {g->q_rank, g->kv_rank, g->q_rank_norm};
     const ds4_tensor *const gates_w[] = {l->kda_f_a, l->kda_beta, l->kda_g_a};
     if (!gvq_mm_many(g, m, qkv, qkv_w, 3u, g->norm, rows) ||
-        !gvq_mm_many(g, m, gates, gates_w, 3u, g->norm, rows) ||
-        !gvq_mm(g, m, g->heads, l->kda_f_b, g->q_rank, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->ffn_gate, l->kda_g_b, g->q_rank_norm, rows, DS4_GVQ_BF16)) { return false; }
-    // Prefill: the tensor-core chunks also apply the gated output norm.
-    if (!g->mtp_capture) {
-        const int fused = ds4_gpu_gvq_kda_gated(g->gvq, g->heads, g->recurrent[il],
+        !gvq_mm_many(g, m, gates, gates_w, 3u, g->norm, rows)) { return false; }
+    // Prefill: the tensor-core chunks read the forget and output-gate
+    // projections as BF16 rows and also apply the gated output norm.
+    const bool fused = !g->mtp_capture && ds4_gpu_gvq_kda_fused(g->gvq, rows);
+    const ds4_gvq_rows forget = fused && ds4_gpu_gvq_linear_bf16(g->gvq, g->heads,
+        glmvq_index(m, l->kda_f_b), g->q_rank, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+    const ds4_gvq_rows gate = fused && ds4_gpu_gvq_linear_bf16(g->gvq, g->ffn_gate,
+        glmvq_index(m, l->kda_g_b), g->q_rank_norm, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+    if ((forget == DS4_GVQ_ROWS_F32 && !gvq_mm(g, m, g->heads, l->kda_f_b, g->q_rank, rows, DS4_GVQ_BF16)) ||
+        (gate == DS4_GVQ_ROWS_F32 && !gvq_mm(g, m, g->ffn_gate, l->kda_g_b, g->q_rank_norm, rows, DS4_GVQ_BF16))) {
+        return false;
+    }
+    if (fused) {
+        const int done = ds4_gpu_gvq_kda_gated(g->gvq, g->heads, g->recurrent[il],
             g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],
-            g->q, g->k, g->v, g->heads, g->kv_rank, g->q_conv_weight[il],
+            g->q, g->k, g->v, g->heads, forget, g->kv_rank, g->q_conv_weight[il],
             g->k_conv_weight[il], g->v_conv_weight[il], g->decay_scale[il],
-            g->dt_bias[il], g->ffn_gate, glmvq_index(m, l->kda_o_norm), rows, DS4_N_HEAD,
+            g->dt_bias[il], g->ffn_gate, gate, glmvq_index(m, l->kda_o_norm), rows, DS4_N_HEAD,
             DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS);
-        if (fused == 0) { return false; }
-        if (fused > 0) { return gvq_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16); }
+        if (done <= 0) { return false; }
+        return gvq_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
     }
     // MTP verify: journal slot r+1 receives this layer's state after row r.
     ds4_gpu_tensor *snap = NULL;
@@ -285,9 +293,9 @@ static bool gvq_trace(ds4_glm53_gpu_graph *g, uint32_t il, uint32_t rows, uint32
 // mHC expand; prefill rows also compute the next half's mix (`fn`) in the
 // same pass, consumed by the next gvq_hc. Windowed prefill revisits layers
 // per chunk, so it keeps them separate.
-// The fused expand writes BF16 rows (`out` then holds DS4_GVQ_HC_BF16).
+// The fused expand writes BF16 rows (`out` then holds DS4_GVQ_ROWS_BF16).
 static bool gvq_expand(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
-        const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
+        const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, ds4_gvq_rows format,
         const ds4_tensor *fn, uint32_t rows) {
     g->gvq_mixed = fn && !g->window_cap && ds4_gpu_gvq_expand_mix(g->gvq, out, g->hc_mix, branch, residual,
         format, g->hc_split, glmvq_index(m, fn), rows, DS4_N_EMBD, DS4_RMS_EPS);
@@ -300,7 +308,7 @@ static bool gvq_layer(ds4_glm53_gpu_graph *g, const ds4_model *m,
     const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
     const ds4_tensor *next = il + 1u < layers ? w->layer[il + 1u].hc_attn_fn : NULL;
     // hc_cur is the embedding (layer 0, MTP layer) or the previous layer's hc_next.
-    const ds4_gvq_hc cur = il && il < layers && !g->window_cap && g->gvq_packed ? DS4_GVQ_HC_BF16 : DS4_GVQ_HC_F32;
+    const ds4_gvq_rows cur = il && il < layers && !g->window_cap && g->gvq_packed ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     if (!gvq_hc(g, m, l->hc_attn_fn, l->hc_attn_scale, l->hc_attn_base, l->attn_norm, g->hc_cur, cur, rows)) {
         return false;
     }
@@ -309,7 +317,7 @@ static bool gvq_layer(ds4_glm53_gpu_graph *g, const ds4_model *m,
     if (!attention || !gvq_expand(g, m, g->hc_after_attn, g->attn_out, g->hc_cur, cur, l->hc_ffn_fn, rows)) {
         return false;
     }
-    const ds4_gvq_hc mid = g->gvq_mixed ? DS4_GVQ_HC_BF16 : DS4_GVQ_HC_F32;
+    const ds4_gvq_rows mid = g->gvq_mixed ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     const bool ok = gvq_hc(g, m, l->hc_ffn_fn, l->hc_ffn_scale, l->hc_ffn_base, l->ffn_norm, g->hc_after_attn, mid, rows) &&
         gvq_ffn(g, m, w, il, rows) &&
         gvq_expand(g, m, g->hc_next, g->ffn_out, g->hc_after_attn, mid, next, rows);

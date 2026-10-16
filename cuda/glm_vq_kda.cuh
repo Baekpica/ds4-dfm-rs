@@ -200,10 +200,19 @@ __device__ __forceinline__ float *glmvq_kda_tblock(float *tmp, uint32_t i, uint3
 /* One CTA per (chunk, head), 16 warps. Produces everything that does not
  * depend on the incoming state. The chunk's conv window reads the previous
  * call's tail for its first three tokens; the tail advances later. */
+__device__ __forceinline__ float4 glmvq_kda_load4(const float *p) { return *(const float4 *)p; }
+__device__ __forceinline__ float4 glmvq_kda_load4(const __nv_bfloat16 *p) {
+    const uint2 v = *(const uint2 *)p;
+    const __nv_bfloat162 lo = *(const __nv_bfloat162 *)&v.x, hi = *(const __nv_bfloat162 *)&v.y;
+    return make_float4(__low2float(lo), __high2float(lo), __low2float(hi), __high2float(hi));
+}
+
+// F (forget) is F32 or the BF16 projection output read in place.
+template <typename F>
 __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *records,
         const float *q_tail, const float *k_tail, const float *v_tail,
         const float *q_raw, const float *k_raw, const float *v_raw,
-        const float *forget, const float *beta_logits,
+        const F *forget, const float *beta_logits,
         const float *q_weight, const float *k_weight, const float *v_weight,
         const float *a_log, const float *dt_bias, uint32_t rows,
         uint32_t heads, float lower_bound) {
@@ -289,7 +298,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
         #pragma unroll
         for (uint32_t j = 0; j < 4; j++) {
             const uint32_t t = 4 * warp + j;
-            const float4 f = t < n ? *(const float4 *)(forget + (uint64_t)(t0 + t) * width + ch)
+            const float4 f = t < n ? glmvq_kda_load4(forget + (uint64_t)(t0 + t) * width + ch)
                 : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
             #pragma unroll
             for (uint32_t i = 0; i < 4; i++) {
@@ -538,8 +547,10 @@ __device__ __forceinline__ uint32_t glmvq_h2_rest(float lo, float hi, uint32_t r
     return glmvq_h2(lo - __low2float(r), hi - __high2float(r));
 }
 
+// G (gate) is F32 or the BF16 projection output read in place.
+template <typename G>
 __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, float *state,
-        const uint8_t *records, const float *gate, const __nv_bfloat16 *norm, uint32_t rows,
+        const uint8_t *records, const G *gate, const __nv_bfloat16 *norm, uint32_t rows,
         uint32_t heads, float eps) {
     constexpr uint32_t C = GLMVQ_KC, D = GLMVQ_KDA_DIM, W = GLMVQ_KS_WIDE, N = GLMVQ_KS_NARROW;
     extern __shared__ __align__(16) uint8_t scan_shared[];
@@ -585,9 +596,10 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
         }
         asm volatile("cp.async.commit_group;" ::: "memory");
         // The gated norm reads 64 gate rows of this head at the chunk's end.
-        if (tid < C * 4) {
-            const uint32_t row = min(chunk * C + tid / 4, rows - 1);
-            asm volatile("prefetch.global.L2 [%0];" :: "l"(gate + (uint64_t)row * width + head * D + tid % 4 * 32));
+        constexpr uint32_t LINES = D * sizeof(G) / 128;
+        if (tid < C * LINES) {
+            const uint32_t row = min(chunk * C + tid / LINES, rows - 1);
+            asm volatile("prefetch.global.L2 [%0];" :: "l"(gate + (uint64_t)row * width + head * D + tid % LINES * (128 / sizeof(G))));
         }
         uint32_t sa[8][4];
         #pragma unroll
@@ -675,7 +687,7 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
         for (uint32_t r = 0; r < C / 8; r++) {
             const uint32_t row = min(chunk * C + warp * (C / 8) + r, rows - 1);
             #pragma unroll
-            for (uint32_t i = 0; i < D / 32; i++) { gv[r][i] = __ldg(gate + (uint64_t)row * width + head * D + lane + 32 * i); }
+            for (uint32_t i = 0; i < D / 32; i++) { gv[r][i] = glmvq_value(gate[(uint64_t)row * width + head * D + lane + 32 * i]); }
         }
         __syncthreads();
         // The recurrence's BF16 output boundary, in the Mq/K^ stage.
