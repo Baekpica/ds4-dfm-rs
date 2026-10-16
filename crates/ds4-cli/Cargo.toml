@@ -65,6 +65,18 @@ required-features = ["native"]
 name = "glm53_mtp_gate"
 required-features = ["native"]
 
+[[example]]
+name = "glm_vq_gate"
+required-features = ["native"]
+
+[[example]]
+name = "glm_vq_quality"
+required-features = ["native"]
+
+[[example]]
+name = "glm_vq_state"
+required-features = ["native"]
+
 [dependencies]
 ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }
