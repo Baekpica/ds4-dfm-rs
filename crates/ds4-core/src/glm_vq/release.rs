@@ -2,9 +2,13 @@
 //! Native maps the returned page-aligned shard plan; offsets stay file-backed.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -142,7 +146,93 @@ fn check_tensor(g: &GgufFile, tensor: &TensorInfo, entry: &Value) -> Result<()> 
     check_hash(raw(g.as_bytes(), tensor)?, text(entry, "payload_sha256")?)
 }
 
+const MAX_VERIFIERS: usize = 16;
+/// File mtimes are coarse (one jiffy); only entries this old are cached, so
+/// any later rewrite is guaranteed a different mtime.
+const SETTLED: Duration = Duration::from_secs(2);
+
+type Stamp = Vec<(OsString, u64, SystemTime)>;
+
+/// Inventories already verified in this process, keyed by directory and
+/// the size/mtime of every entry. Each load path (validation, binding,
+/// serving identity) reopens the directory; one verification is enough.
+static VERIFIED: Mutex<Vec<(PathBuf, Stamp, TensorInventory)>> = Mutex::new(Vec::new());
+
+fn settled(stamp: &Stamp) -> bool {
+    let Some(limit) = SystemTime::now().checked_sub(SETTLED) else {
+        return false;
+    };
+    stamp.iter().all(|(_, _, modified)| *modified <= limit)
+}
+
+fn stamp(root: &Path) -> Result<Stamp> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(root).map_err(GgufError::Io)? {
+        let entry = entry.map_err(GgufError::Io)?;
+        let meta = entry.metadata().map_err(GgufError::Io)?;
+        entries.push((
+            entry.file_name(),
+            meta.len(),
+            meta.modified().map_err(GgufError::Io)?,
+        ));
+    }
+    entries.sort();
+    Ok(entries)
+}
+
 pub(super) fn open_dir(root: &Path) -> Result<TensorInventory> {
+    let key = root.canonicalize().map_err(GgufError::Io)?;
+    let before = stamp(root)?;
+    let known = VERIFIED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(k, s, _)| *k == key && *s == before)
+        .map(|(_, _, inventory)| inventory.clone());
+    if let Some(inventory) = known {
+        return Ok(inventory);
+    }
+    let inventory = verify_dir(root)?;
+    // A part rewritten during verification must not be cached as verified.
+    if settled(&before) && stamp(root)? == before {
+        VERIFIED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((key, before, inventory.clone()));
+    }
+    Ok(inventory)
+}
+
+/// Hash and parse one part with part-relative offsets.
+fn verify_part(
+    root: &Path,
+    part: &str,
+    expected: &HashMap<&str, &Value>,
+    entry: &Value,
+    revision: &str,
+) -> Result<(PathBuf, u64, TensorInventory)> {
+    let path = root.join(part);
+    let g = GgufFile::open(&path)?;
+    if g.get_string("glm_vq.source_revision") != Some(revision.as_bytes())
+        || g.get_u32("glm_vq.format_version") != Some(FORMAT_VERSION)
+    {
+        return Err(fail("part format/source revision mismatch"));
+    }
+    let inv = TensorInventory::from_file(&path, &g)?;
+    if inv.shards.len() != 1 || inv.tensors.len() != expected.len() {
+        return Err(fail("part tensor count"));
+    }
+    check_file(g.as_bytes(), entry)?;
+    for tensor in &inv.tensors {
+        let entry = expected
+            .get(tensor.name.as_str())
+            .ok_or(fail("unexpected part tensor"))?;
+        check_tensor(&g, tensor, entry)?;
+    }
+    Ok((path, g.as_bytes().len() as u64, inv))
+}
+
+fn verify_dir(root: &Path) -> Result<TensorInventory> {
     let files = json(&json_bytes(&root.join("files.json"))?)?;
     let mut file_index = HashMap::new();
     for entry in array(&files, "files")? {
@@ -214,36 +304,53 @@ pub(super) fn open_dir(root: &Path) -> Result<TensorInventory> {
         alignment: ALIGN,
         page,
     };
+    // Parts hash independently (~74 GiB, three digests per byte); workers
+    // pull parts in manifest order and assembly below stays sequential, so
+    // offsets and the first reported error match a serial pass.
+    let parts: Vec<_> = by_part.into_iter().collect();
+    let next = AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(MAX_VERIFIERS)
+        .min(parts.len());
+    let mut verified: Vec<Option<Result<(PathBuf, u64, TensorInventory)>>> =
+        parts.iter().map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((part, expected)) = parts.get(i) else {
+                            return done;
+                        };
+                        let entry = file_index[part];
+                        done.push((i, verify_part(root, part, expected, entry, revision)));
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            for (i, part) in handle.join().expect("GLM VQ part verifier panicked") {
+                verified[i] = Some(part);
+            }
+        }
+    });
     let mut base = 0u64;
-    for (part, expected) in by_part {
-        let path = root.join(part);
-        let g = GgufFile::open(&path)?;
-        if g.get_string("glm_vq.source_revision") != Some(revision.as_bytes())
-            || g.get_u32("glm_vq.format_version") != Some(FORMAT_VERSION)
-        {
-            return Err(fail("part format/source revision mismatch"));
-        }
-        let mut inv = TensorInventory::from_file(&path, &g)?;
-        if inv.shards.len() != 1 || inv.tensors.len() != expected.len() {
-            return Err(fail("part tensor count"));
-        }
-        check_file(g.as_bytes(), file_index[part])?;
+    for part in verified {
+        let (path, size, mut inv) = part.expect("every part is verified")?;
         let shard = result.shards.len() as u32;
         if shard == 0 {
             result.data_pos = inv.data_pos;
         }
         for tensor in &mut inv.tensors {
-            let entry = expected
-                .get(tensor.name.as_str())
-                .ok_or(fail("unexpected part tensor"))?;
-            check_tensor(&g, tensor, entry)?;
             tensor.shard = shard;
             tensor.abs_offset = tensor
                 .abs_offset
                 .checked_add(base)
                 .ok_or(TensorError::Overflow)?;
         }
-        let size = g.as_bytes().len() as u64;
         result.shards.push(ShardPlan { path, size, base });
         result.tensors.extend(inv.tensors);
         let span = size.checked_add(page - 1).ok_or(TensorError::Overflow)? / page * page;

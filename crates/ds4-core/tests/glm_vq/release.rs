@@ -79,6 +79,29 @@ fn named_parts_keep_mmap_offsets() {
 }
 
 #[test]
+fn reverify_rewritten_release() {
+    // Aged entries let the first verified open be reused by the second.
+    let release = Release::new();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    for entry in fs::read_dir(&release.root).unwrap() {
+        let file = fs::File::options()
+            .write(true)
+            .open(entry.unwrap().path())
+            .unwrap();
+        file.set_modified(old).unwrap();
+    }
+    let first = TensorInventory::open(&release.root).unwrap();
+    let again = TensorInventory::open(&release.root).unwrap();
+    assert_eq!(format!("{first:?}"), format!("{again:?}"));
+    // A rewrite after caching gets a new mtime and is verified again.
+    let part = release.root.join("native-a.gguf");
+    let mut bytes = fs::read(&part).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    fs::write(&part, bytes).unwrap();
+    assert!(TensorInventory::open(&release.root).is_err());
+}
+
+#[test]
 fn reject_missing_extra_parts() {
     let release = Release::new();
     let part = release.root.join("native-b.gguf");
