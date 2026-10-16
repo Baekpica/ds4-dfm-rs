@@ -81,8 +81,8 @@ int main() {
         for (auto &v : q) { v = nd(rng); }
         __nv_bfloat16 *dw = up(w), *dlow = up(low), *dql; float *dqv = up(q), *dout;
         CK(cudaMalloc(&dql, (size_t)H * D * 2)); CK(cudaMalloc(&dout, (size_t)H * A * 4));
-        glmvq_absorb_k<<<H, D / 2>>>(dql, dqv, dw);
-        glmvq_absorb_v<<<H * A / 8, 256>>>(dout, dlow, dw);
+        glmvq_absorb_k<<<H, D / 2>>>(dql, dqv, dw, 1u);
+        glmvq_absorb_v<<<H * A / 8, 256>>>(dout, dlow, dw, 1u);
         CK(cudaDeviceSynchronize());
         auto ql = down(dql, (size_t)H * D); auto out = down(dout, (size_t)H * A);
         double nk = 0, dk = 0, nv = 0, dv = 0;

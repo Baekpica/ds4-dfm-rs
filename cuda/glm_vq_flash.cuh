@@ -274,51 +274,65 @@ __global__ void glmvq_fa_combine(__nv_bfloat16 *low, const float *partial, const
 }
 
 
-/* One-row absorption GEMVs. cuBLAS ran these per-head N=1 products as
- * strided-batched GEMMs at 90-215 GB/s (2.8 ms per decoded token over 11
- * layers); each reads 16.8 MB of BF16 KV_B. FP32 accumulation, BF16 outputs
- * as before; only the reduction order differs. */
-enum { GLMVQ_ABS_DIM = 256, GLMVQ_ABS_UNROLL = 8 };
+/* Absorption GEMVs for 1-4 rows (decode, MTP verify). cuBLAS ran these
+ * per-head products as strided-batched GEMMs at 90-215 GB/s (2.8 ms per
+ * decoded token over 11 layers); each reads 16.8 MB of BF16 KV_B once for
+ * all rows. FP32 accumulation, BF16 outputs as before; only the reduction
+ * order differs, and it is the same for every row count. */
+enum { GLMVQ_ABS_DIM = 256, GLMVQ_ABS_UNROLL = 8, GLMVQ_ABS_ROWS = 4 };
 
-// qlow[h][l] = Σ_d q[h][d] W_k[h][d][l]: a thread owns a column pair and
-// walks d, so a warp reads 128 contiguous bytes of each W_k row.
+// qlow[r][h][l] = Σ_d q[r][h][d] W_k[h][d][l]: a thread owns a column pair
+// and walks d, so a warp reads 128 contiguous bytes of each W_k row.
 __global__ void __launch_bounds__(256) glmvq_absorb_k(__nv_bfloat16 *qlow, const float *q,
-        const __nv_bfloat16 *weight) {
+        const __nv_bfloat16 *weight, uint32_t rows) {
     const uint32_t head = blockIdx.x, col = threadIdx.x * 2;
     const __nv_bfloat16 *w = weight + (uint64_t)head * 2 * GLMVQ_ABS_DIM * GLMVQ_FA_LATENT + col;
-    const float *x = q + (uint64_t)head * GLMVQ_ABS_DIM;
-    float a = 0.0f, b = 0.0f;
+    float a[GLMVQ_ABS_ROWS] = {}, b[GLMVQ_ABS_ROWS] = {};
     #pragma unroll GLMVQ_ABS_UNROLL
     for (uint32_t d = 0; d < GLMVQ_ABS_DIM; d++) {
         const uint32_t pair = *(const uint32_t *)(w + (uint64_t)d * GLMVQ_FA_LATENT);
-        const float v = glmvq_round(x[d]);
-        a = fmaf(__uint_as_float(pair << 16), v, a);
-        b = fmaf(__uint_as_float(pair & 0xffff0000u), v, b);
+        #pragma unroll
+        for (uint32_t r = 0; r < GLMVQ_ABS_ROWS; r++) {
+            if (r >= rows) { continue; }
+            const float v = glmvq_round(q[((uint64_t)r * GLMVQ_FA_HEADS + head) * GLMVQ_ABS_DIM + d]);
+            a[r] = fmaf(__uint_as_float(pair << 16), v, a[r]);
+            b[r] = fmaf(__uint_as_float(pair & 0xffff0000u), v, b[r]);
+        }
     }
-    *(uint32_t *)(qlow + (uint64_t)head * GLMVQ_FA_LATENT + col) = glmvq_fa_pack(a, b);
+    for (uint32_t r = 0; r < rows; r++) {
+        *(uint32_t *)(qlow + ((uint64_t)r * GLMVQ_FA_HEADS + head) * GLMVQ_FA_LATENT + col) = glmvq_fa_pack(a[r], b[r]);
+    }
 }
 
-// out[h][c] = Σ_l low[h][l] W_v[h][c][l]: one warp per output row.
+// out[r][h][c] = Σ_l low[r][h][l] W_v[h][c][l]: one warp per output column.
 __global__ void __launch_bounds__(256) glmvq_absorb_v(float *out, const __nv_bfloat16 *low,
-        const __nv_bfloat16 *weight) {
+        const __nv_bfloat16 *weight, uint32_t rows) {
     const uint32_t lane = threadIdx.x & 31, row = blockIdx.x * 8 + threadIdx.x / 32;
     const uint32_t head = row / GLMVQ_ABS_DIM, c = row % GLMVQ_ABS_DIM;
     const __nv_bfloat16 *w = weight + ((uint64_t)head * 2 * GLMVQ_ABS_DIM + GLMVQ_ABS_DIM + c) * GLMVQ_FA_LATENT;
-    const __nv_bfloat16 *x = low + (uint64_t)head * GLMVQ_FA_LATENT;
-    float sum = 0.0f;
+    float sum[GLMVQ_ABS_ROWS] = {};
     #pragma unroll
     for (uint32_t i = 0; i < GLMVQ_FA_LATENT / (32 * 8); i++) {
         const uint32_t at = (i * 32 + lane) * 8;
-        const uint4 wv = *(const uint4 *)(w + at), xv = *(const uint4 *)(x + at);
-        const uint32_t ws[4] = {wv.x, wv.y, wv.z, wv.w}, xs[4] = {xv.x, xv.y, xv.z, xv.w};
+        const uint4 wv = *(const uint4 *)(w + at);
+        const uint32_t ws[4] = {wv.x, wv.y, wv.z, wv.w};
         #pragma unroll
-        for (uint32_t k = 0; k < 4; k++) {
-            sum = fmaf(__uint_as_float(ws[k] << 16), __uint_as_float(xs[k] << 16), sum);
-            sum = fmaf(__uint_as_float(ws[k] & 0xffff0000u), __uint_as_float(xs[k] & 0xffff0000u), sum);
+        for (uint32_t r = 0; r < GLMVQ_ABS_ROWS; r++) {
+            if (r >= rows) { continue; }
+            const uint4 xv = *(const uint4 *)(low + ((uint64_t)r * GLMVQ_FA_HEADS + head) * GLMVQ_FA_LATENT + at);
+            const uint32_t xs[4] = {xv.x, xv.y, xv.z, xv.w};
+            #pragma unroll
+            for (uint32_t k = 0; k < 4; k++) {
+                sum[r] = fmaf(__uint_as_float(ws[k] << 16), __uint_as_float(xs[k] << 16), sum[r]);
+                sum[r] = fmaf(__uint_as_float(ws[k] & 0xffff0000u), __uint_as_float(xs[k] & 0xffff0000u), sum[r]);
+            }
         }
     }
-    for (uint32_t stride = 16; stride; stride >>= 1) { sum += __shfl_xor_sync(0xffffffffu, sum, stride); }
-    if (!lane) { out[row] = glmvq_round(sum); }
+    #pragma unroll
+    for (uint32_t r = 0; r < GLMVQ_ABS_ROWS; r++) {
+        for (uint32_t stride = 16; stride; stride >>= 1) { sum[r] += __shfl_xor_sync(0xffffffffu, sum[r], stride); }
+        if (!lane && r < rows) { out[(uint64_t)r * GLMVQ_FA_HEADS * GLMVQ_ABS_DIM + row] = glmvq_round(sum[r]); }
+    }
 }
 
 #endif

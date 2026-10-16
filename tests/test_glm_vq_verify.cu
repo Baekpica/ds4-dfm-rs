@@ -1,14 +1,17 @@
 // MTP verify-width kernels vs their one-row decode counterparts.
 // Q4_K: each token of a multi-token call must equal a one-token call bit for
 // bit on staged shapes (same per-token FMA order), and stay within BF16
-// rounding of it on scalar-baseline shapes. VQ experts: the expert-union
-// kernels must reproduce the one-row decode kernels bit for bit per row.
+// rounding of it on scalar-baseline shapes. VQ experts, BF16 dots and DSA
+// absorption must reproduce their one-row kernels bit for bit per row.
 #include <cstdio>
 #include <cmath>
 #include <vector>
 #include <random>
 #include "../cuda/glm_vq_linear.cuh"
 #include "../cuda/glm_vq_decode.cuh"
+#include "../cuda/glm_vq_gemv.cuh"
+#include "../cuda/glm_vq_flash.cuh"
+#include "../cuda/glm_vq_fp8.cuh"
 #include <algorithm>
 #define CK(...) do { cudaError_t e_ = (__VA_ARGS__); if (e_ != cudaSuccess) { printf("CUDA %s line %d\n", cudaGetErrorString(e_), __LINE__); exit(2); } } while (0)
 static std::mt19937 rng(7);
@@ -50,6 +53,86 @@ static int q4_case(uint32_t rows, uint32_t cols, uint32_t tokens, const glmvq_q4
         staged ? "staged" : "scalar-one", differ, worst, ok ? "ok" : "FAIL");
     cudaFree(dw); cudaFree(dx); cudaFree(dy); cudaFree(d1);
     return !ok;
+}
+
+static int bf16_case(uint32_t rows, uint32_t cols, uint32_t tokens, glmvq_dot_math math) {
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<__nv_bfloat16> w((size_t)rows * cols);
+    for (auto &v : w) { v = __float2bfloat16_rn(nd(rng) * 0.05f); }
+    std::vector<float> x((size_t)tokens * cols);
+    for (auto &v : x) { v = nd(rng); }
+    __nv_bfloat16 *dw = up(w); float *dx = up(x), *dy, *d1;
+    CK(cudaMalloc(&dy, (size_t)tokens * rows * 4)); CK(cudaMalloc(&d1, (size_t)rows * 4));
+    CK(glmvq_bf16_decode(dw, dx, dy, rows, cols, math, 0, tokens));
+    CK(cudaDeviceSynchronize());
+    auto many = down(dy, (size_t)tokens * rows);
+    uint32_t differ = 0;
+    for (uint32_t t = 0; t < tokens; t++) {
+        CK(glmvq_bf16_decode(dw, dx + (size_t)t * cols, d1, rows, cols, math, 0, 1));
+        CK(cudaDeviceSynchronize());
+        auto one = down(d1, rows);
+        for (uint32_t r = 0; r < rows; r++) { differ += many[(size_t)t * rows + r] != one[r]; }
+    }
+    printf("bf16 %ux%u tokens=%u %s: %u differ %s\n", rows, cols, tokens,
+        math == GLMVQ_DOT_F32 ? "f32" : "bf16", differ, differ ? "FAIL" : "ok");
+    cudaFree(dw); cudaFree(dx); cudaFree(dy); cudaFree(d1);
+    return differ != 0;
+}
+
+static int fp8_case(uint32_t rows, uint32_t cols, uint32_t tokens) {
+    std::uniform_int_distribution<int> byte(0, 255);
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<uint8_t> w((size_t)rows * cols);
+    for (auto &b : w) { b = (uint8_t)byte(rng) & 0x77; }
+    std::vector<float> scale((size_t)rows / GLMVQ_SCALE_BLOCK * (cols / GLMVQ_SCALE_BLOCK)), x((size_t)tokens * cols);
+    for (auto &v : scale) { v = 0.01f + 0.01f * (byte(rng) / 255.0f); }
+    for (auto &v : x) { v = nd(rng); }
+    uint8_t *dw = up(w); float *ds = up(scale), *dx = up(x), *dy, *d1;
+    CK(cudaMalloc(&dy, (size_t)tokens * rows * 4)); CK(cudaMalloc(&d1, (size_t)rows * 4));
+    const uint32_t split = glmvq_fp8_split(rows, cols);
+    CK(glmvq_fp8_decode(dw, ds, dx, dy, rows, cols, split, GLMVQ_FP8_GLOBAL, 0, tokens));
+    CK(cudaDeviceSynchronize());
+    auto many = down(dy, (size_t)tokens * rows);
+    uint32_t differ = 0;
+    for (uint32_t t = 0; t < tokens; t++) {
+        CK(glmvq_fp8_decode(dw, ds, dx + (size_t)t * cols, d1, rows, cols, split, GLMVQ_FP8_GLOBAL, 0, 1));
+        CK(cudaDeviceSynchronize());
+        auto one = down(d1, rows);
+        for (uint32_t r = 0; r < rows; r++) { differ += many[(size_t)t * rows + r] != one[r]; }
+    }
+    printf("fp8 %ux%u tokens=%u: %u differ %s\n", rows, cols, tokens, differ, differ ? "FAIL" : "ok");
+    cudaFree(dw); cudaFree(ds); cudaFree(dx); cudaFree(dy); cudaFree(d1);
+    return differ != 0;
+}
+
+static int absorb_case(uint32_t rows) {
+    const uint32_t H = GLMVQ_FA_HEADS, A = GLMVQ_ABS_DIM, D = GLMVQ_FA_LATENT;
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<__nv_bfloat16> w((size_t)H * 2 * A * D), low((size_t)rows * H * D);
+    std::vector<float> q((size_t)rows * H * A);
+    for (auto &v : w) { v = __float2bfloat16_rn(nd(rng) * 0.05f); }
+    for (auto &v : low) { v = __float2bfloat16_rn(nd(rng)); }
+    for (auto &v : q) { v = nd(rng); }
+    __nv_bfloat16 *dw = up(w), *dlow = up(low), *dql; float *dq = up(q), *dout;
+    CK(cudaMalloc(&dql, low.size() * 2)); CK(cudaMalloc(&dout, q.size() * 4));
+    glmvq_absorb_k<<<H, D / 2>>>(dql, dq, dw, rows);
+    glmvq_absorb_v<<<H * A / 8, 256>>>(dout, dlow, dw, rows);
+    CK(cudaDeviceSynchronize());
+    auto ql = down(dql, low.size()); auto out = down(dout, q.size());
+    uint32_t differ = 0;
+    for (uint32_t r = 0; r < rows; r++) {
+        glmvq_absorb_k<<<H, D / 2>>>(dql, dq + (size_t)r * H * A, dw, 1u);
+        glmvq_absorb_v<<<H * A / 8, 256>>>(dout, dlow + (size_t)r * H * D, dw, 1u);
+        CK(cudaDeviceSynchronize());
+        auto ql1 = down(dql, (size_t)H * D); auto out1 = down(dout, (size_t)H * A);
+        for (size_t i = 0; i < ql1.size(); i++) {
+            differ += __bfloat16_as_ushort(ql[(size_t)r * H * D + i]) != __bfloat16_as_ushort(ql1[i]);
+        }
+        for (size_t i = 0; i < out1.size(); i++) { differ += out[(size_t)r * H * A + i] != out1[i]; }
+    }
+    printf("absorb rows=%u: %u differ %s\n", rows, differ, differ ? "FAIL" : "ok");
+    cudaFree(dw); cudaFree(dlow); cudaFree(dql); cudaFree(dq); cudaFree(dout);
+    return differ != 0;
 }
 
 // Host twin of gvq_verify_route: union items in ascending expert order.
@@ -152,6 +235,16 @@ int main() {
         failures += q4_case(4096, 4096, tokens, &config);   // KDA q/k/v
         failures += q4_case(4096, 8192, tokens, &config);   // KDA output
         failures += q4_case(512, 4096, tokens, &config);    // small: scalar one-token baseline
+    }
+    for (uint32_t tokens : {2u, 4u}) {
+        failures += bf16_case(4096, 4096, tokens, GLMVQ_DOT_BF16);   // KDA gate projections
+        failures += bf16_case(64, 4096, tokens, GLMVQ_DOT_BF16);     // split rows
+        failures += bf16_case(288, 4096, tokens, GLMVQ_DOT_F32);     // router
+    }
+    for (uint32_t rows = 2; rows <= GLMVQ_ABS_ROWS; rows++) { failures += absorb_case(rows); }
+    for (uint32_t tokens : {2u, 4u}) {
+        failures += fp8_case(4096, 8192, tokens);   // MTP eh_proj
+        failures += fp8_case(512, 4096, tokens);    // kv_a
     }
     failures += vq_case(blocks);
     printf(failures ? "FAIL %d\n" : "GLMVQ_VERIFY_PASS\n", failures);

@@ -12,7 +12,7 @@
  * differs from cuBLAS, and outputs keep their BF16 (or F32) boundary. */
 enum glmvq_dot_math { GLMVQ_DOT_BF16, GLMVQ_DOT_F32 };
 enum { GLMVQ_DOT_WARPS = 8, GLMVQ_DOT_VECTOR = 8, GLMVQ_DOT_SPLIT = 8,
-       GLMVQ_DOT_WIDE_ROWS = 4096, GLMVQ_DOT_SPLIT_COLS = 2048 };
+       GLMVQ_DOT_WIDE_ROWS = 4096, GLMVQ_DOT_SPLIT_COLS = 2048, GLMVQ_DOT_TOKENS = 4 };
 
 __device__ __forceinline__ float glmvq_bf16_lo(uint32_t w) { return __uint_as_float(w << 16); }
 __device__ __forceinline__ float glmvq_bf16_hi(uint32_t w) { return __uint_as_float(w & 0xffff0000u); }
@@ -31,31 +31,43 @@ __device__ __forceinline__ float glmvq_dot8(uint4 w, float4 a, float4 b, float s
 }
 
 // `split` warps share a row (few-row matrices); the partials add in warp order.
-template <glmvq_dot_math MATH>
+// MTP verify rows (NT up to 4) reuse each weight load; every token keeps the
+// one-token FMA and reduction order.
+template <glmvq_dot_math MATH, uint32_t NT>
 __global__ void __launch_bounds__(GLMVQ_DOT_WARPS * 32) glmvq_bf16_dot(
         const __nv_bfloat16 *weight, const float *input, float *output,
-        uint32_t rows, uint32_t cols, uint32_t split) {
-    __shared__ float partial[GLMVQ_DOT_WARPS];
+        uint32_t rows, uint32_t cols, uint32_t split, uint32_t tokens) {
+    __shared__ float partial[GLMVQ_DOT_WARPS][NT];
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32;
     const uint32_t local = warp / split, part = warp % split;
     const uint32_t row = blockIdx.x * (GLMVQ_DOT_WARPS / split) + local;
-    float sum = 0;
+    float sum[NT] = {};
     if (row < rows) {
         const __nv_bfloat16 *w = weight + (uint64_t)row * cols;
         const uint32_t step = split * 32 * GLMVQ_DOT_VECTOR;
         #pragma unroll 4
         for (uint32_t col = (part * 32 + lane) * GLMVQ_DOT_VECTOR; col < cols; col += step) {
-            sum = glmvq_dot8<MATH>(*(const uint4 *)(w + col),
-                *(const float4 *)(input + col), *(const float4 *)(input + col + 4), sum);
+            const uint4 value = *(const uint4 *)(w + col);
+            #pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                if (t >= tokens) { continue; }
+                const float *x = input + (uint64_t)t * cols + col;
+                sum[t] = glmvq_dot8<MATH>(value, *(const float4 *)x, *(const float4 *)(x + 4), sum[t]);
+            }
         }
     }
-    for (uint32_t stride = 16; stride; stride >>= 1) { sum += __shfl_xor_sync(0xffffffffu, sum, stride); }
-    if (!lane) { partial[warp] = sum; }
+    #pragma unroll
+    for (uint32_t t = 0; t < NT; t++) {
+        for (uint32_t stride = 16; stride; stride >>= 1) { sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], stride); }
+        if (!lane) { partial[warp][t] = sum[t]; }
+    }
     __syncthreads();
     if (row >= rows || part || lane) { return; }
-    sum = 0;
-    for (uint32_t i = 0; i < split; i++) { sum += partial[local * split + i]; }
-    output[row] = MATH == GLMVQ_DOT_BF16 ? glmvq_round(sum) : sum;
+    for (uint32_t t = 0; t < tokens; t++) {
+        float value = 0;
+        for (uint32_t i = 0; i < split; i++) { value += partial[local * split + i][t]; }
+        output[(uint64_t)t * rows + row] = MATH == GLMVQ_DOT_BF16 ? glmvq_round(value) : value;
+    }
 }
 
 static bool glmvq_bf16_fits(const void *weight, const void *input, const void *output, uint32_t cols) {
@@ -63,18 +75,29 @@ static bool glmvq_bf16_fits(const void *weight, const void *input, const void *o
         (uintptr_t)weight % 16 == 0 && (uintptr_t)input % 16 == 0 && (uintptr_t)output % 4 == 0;
 }
 
+template <glmvq_dot_math MATH, uint32_t NT>
+static void glmvq_bf16_launch(const void *weight, const float *input, float *output,
+        uint32_t rows, uint32_t cols, uint32_t split, uint32_t tokens, cudaStream_t stream) {
+    const uint32_t grid = (rows + GLMVQ_DOT_WARPS / split - 1) / (GLMVQ_DOT_WARPS / split);
+    glmvq_bf16_dot<MATH, NT><<<grid, GLMVQ_DOT_WARPS * 32, 0, stream>>>(
+        (const __nv_bfloat16 *)weight, input, output, rows, cols, split, tokens);
+}
+
 static cudaError_t glmvq_bf16_decode(const void *weight, const float *input, float *output,
-        uint32_t rows, uint32_t cols, glmvq_dot_math math, cudaStream_t stream) {
-    if (!rows || !glmvq_bf16_fits(weight, input, output, cols)) { return cudaErrorInvalidValue; }
+        uint32_t rows, uint32_t cols, glmvq_dot_math math, cudaStream_t stream, uint32_t tokens = 1) {
+    if (!rows || !tokens || tokens > GLMVQ_DOT_TOKENS || !glmvq_bf16_fits(weight, input, output, cols)) {
+        return cudaErrorInvalidValue;
+    }
     // Few long rows split across a block's warps so every SM has work.
     const uint32_t split = rows < GLMVQ_DOT_WIDE_ROWS && cols >= GLMVQ_DOT_SPLIT_COLS ? GLMVQ_DOT_SPLIT : 1;
-    const uint32_t grid = (rows + GLMVQ_DOT_WARPS / split - 1) / (GLMVQ_DOT_WARPS / split);
-    if (math == GLMVQ_DOT_F32) {
-        glmvq_bf16_dot<GLMVQ_DOT_F32><<<grid, GLMVQ_DOT_WARPS * 32, 0, stream>>>(
-            (const __nv_bfloat16 *)weight, input, output, rows, cols, split);
+    if (math == GLMVQ_DOT_F32 && tokens == 1) {
+        glmvq_bf16_launch<GLMVQ_DOT_F32, 1>(weight, input, output, rows, cols, split, tokens, stream);
+    } else if (math == GLMVQ_DOT_F32) {
+        glmvq_bf16_launch<GLMVQ_DOT_F32, GLMVQ_DOT_TOKENS>(weight, input, output, rows, cols, split, tokens, stream);
+    } else if (tokens == 1) {
+        glmvq_bf16_launch<GLMVQ_DOT_BF16, 1>(weight, input, output, rows, cols, split, tokens, stream);
     } else {
-        glmvq_bf16_dot<GLMVQ_DOT_BF16><<<grid, GLMVQ_DOT_WARPS * 32, 0, stream>>>(
-            (const __nv_bfloat16 *)weight, input, output, rows, cols, split);
+        glmvq_bf16_launch<GLMVQ_DOT_BF16, GLMVQ_DOT_TOKENS>(weight, input, output, rows, cols, split, tokens, stream);
     }
     return cudaGetLastError();
 }
@@ -88,6 +111,9 @@ __global__ void __launch_bounds__(GLMVQ_THREADS) glmvq_hc_mix(const float *resid
     __shared__ float partial[GLMVQ_THREADS];
     __shared__ float total[GLMVQ_THREADS / 32];
     const uint32_t lane = threadIdx.x;
+    // MTP verify rows: blockIdx.y selects the row; per-row math is unchanged.
+    residual += (uint64_t)blockIdx.y * width;
+    mix += (uint64_t)blockIdx.y * gridDim.x;
     float sum = 0.0f;
     for (uint32_t first = lane; first < width; first += GLMVQ_RMS_BATCH * blockDim.x) {
         float x[GLMVQ_RMS_BATCH];

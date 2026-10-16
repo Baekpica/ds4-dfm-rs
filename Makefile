@@ -2108,7 +2108,7 @@ tests/test_glm_vq_flash: tests/test_glm_vq_flash.cu cuda/glm_vq_flash.cuh cuda/g
 test-glm-vq-flash: tests/test_glm_vq_flash
 	./tests/test_glm_vq_flash
 
-tests/test_glm_vq_verify: tests/test_glm_vq_verify.cu cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh
+tests/test_glm_vq_verify: tests/test_glm_vq_verify.cu cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_gemv.cuh cuda/glm_vq_flash.cuh cuda/glm_vq_fp8.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
 .PHONY: test-glm-vq-verify
