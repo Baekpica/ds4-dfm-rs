@@ -1235,7 +1235,8 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
             constexpr uint32_t threads8 = glmvq_mma8_threads<GVQ_MMA_ROWS, 1>();
             glmvq_mma8_kernel<GVQ_MMA_ROWS, BT, 1, MODE><<<
                 min(nitems * (rows_out / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_blocks[MODE]), threads8, shared8, stream>>>(
-                source, work, nitems, book, in, scale, grouped, GVQ_USED, gate, mid, down, rows_out, cols_in, clamp);
+                source, work, nitems, book, in, scale, grouped, GVQ_USED, (__nv_bfloat16 *)gate, mid,
+                (__nv_bfloat16 *)down, rows_out, cols_in, clamp);
         };
         auto stages = [&](auto tokens) {
             launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_GATE>{}, x8, xs, GVQ_FFN, GVQ_HIDDEN);
@@ -1247,7 +1248,8 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         if (ctx->mma8_tokens == GVQ_MMA8_TOKENS) { stages(std::integral_constant<uint32_t, GVQ_MMA8_TOKENS>{}); }
         else { stages(std::integral_constant<uint32_t, GVQ_MMA_TOKENS>{}); }
         glmvq_mma_reduce<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(
-            (float *)out->ptr, down, (const float *)weights->ptr, grouped, order, GVQ_USED, GVQ_HIDDEN, count, addend);
+            (float *)out->ptr, (const __nv_bfloat16 *)down, (const float *)weights->ptr, grouped, order,
+            GVQ_USED, GVQ_HIDDEN, count, addend);
         return cuda_ok(cudaGetLastError(), "GLM VQ FP8 grouped MMA");
     }
     const uint64_t elements = pairs * GVQ_HIDDEN;

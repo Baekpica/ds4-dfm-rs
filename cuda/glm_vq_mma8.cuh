@@ -70,7 +70,9 @@ __device__ __forceinline__ uint32_t glmvq_mma8_code(const uint32_t (&w)[6], uint
 // Each persistent CTA keeps the layer book; a warp owns MT m16 row tiles of
 // a BM tile and all n8 token tiles of one expert item, so every B fragment it
 // loads feeds MT MMAs. `map` turns a grouped pair into its token (pair / used)
-// for gate/up; down reads the per-pair intermediate rows.
+// for gate/up; down reads the per-pair intermediate rows. Gate and down
+// outputs are BF16-rounded, so they are stored as BF16 (half the traffic of
+// the up epilogue's and the reduce's reads).
 // The k32 reduction order is free as long as A and B agree: lane q takes
 // whole codeword 4K+q (k 4q.. <- bytes 0-3, k 16+4q.. <- bytes 4-7), so one
 // 8-byte book read fills two A registers and B is 8 source-order bytes.
@@ -81,7 +83,7 @@ template <uint32_t BM, uint32_t BT, uint32_t MT, glmvq_mma_stage MODE>
 __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_kernel(
         const glmvq_source *sources, const glmvq_mma_item *items, uint32_t nitems,
         const uint8_t *book, const uint8_t *act, const float *act_scale, const uint32_t *map,
-        uint32_t used, float *gate, __nv_bfloat16 *mid, float *output,
+        uint32_t used, __nv_bfloat16 *gate, __nv_bfloat16 *mid, __nv_bfloat16 *output,
         uint32_t rows, uint32_t cols, float limit) {
     static_assert((BM == 128 || BM == 256) && (BT == 16 || BT == 32 || BT == 64) && (MT == 1 || MT == 2),
         "bounded GLM tiles");
@@ -248,10 +250,10 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                     for (uint32_t side = 0; side < 2; side++) {
                         const uint64_t index = base + lr[m][side];
                         const float value = glmvq_round(glmvq_mul(acc[m][j][side * 2 + e], gain[m][side]));
-                        if (MODE == GLMVQ_MMA_GATE) { gate[index] = value; }
-                        else if (MODE == GLMVQ_MMA_DOWN) { output[index] = value; }
+                        if (MODE == GLMVQ_MMA_GATE) { gate[index] = __float2bfloat16_rn(value); }
+                        else if (MODE == GLMVQ_MMA_DOWN) { output[index] = __float2bfloat16_rn(value); }
                         else {
-                            const float g0 = fminf(gate[index], limit);
+                            const float g0 = fminf(__bfloat162float(gate[index]), limit);
                             const float u0 = fminf(fmaxf(value, -limit), limit);
                             const float silu = glmvq_round(__fdiv_rn(g0, glmvq_add(1.0f, expf(-g0))));
                             mid[index] = __float2bfloat16_rn(glmvq_mul(silu, u0));

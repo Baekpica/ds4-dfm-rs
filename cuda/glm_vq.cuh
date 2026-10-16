@@ -38,6 +38,10 @@ __device__ __forceinline__ float glmvq_mul(float a, float b) {
     return value;
 }
 
+// BF16-rounded activations stored as F32 or BF16 (mHC rows, expert outputs).
+__device__ __forceinline__ float glmvq_value(float v) { return v; }
+__device__ __forceinline__ float glmvq_value(__nv_bfloat16 v) { return __bfloat162float(v); }
+
 template<typename T> __device__ __forceinline__ T glmvq_cast(float value);
 template<> __device__ __forceinline__ float glmvq_cast<float>(float value) {
     return value;

@@ -225,10 +225,6 @@ __device__ void glmvq_hc_weights_warp(float *coeff, const float *mix,
 
 enum { GLMVQ_HC_BATCH = 4 };
 
-// mHC residual rows hold BF16-rounded values; prefill keeps them as BF16.
-__device__ __forceinline__ float glmvq_value(float v) { return v; }
-__device__ __forceinline__ float glmvq_value(__nv_bfloat16 v) { return __bfloat162float(v); }
-
 // With `norm`, the block also applies the following ordinary RMS norm to
 // its own output row: each thread squares its columns in glmvq_rms's order
 // and reduces with the same tree, so `norm` is bit-identical to a separate
