@@ -71,6 +71,8 @@ int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *weights,
     const ds4_gpu_tensor *cache, uint32_t pools, uint32_t rows, uint32_t first);
 uint64_t ds4_gpu_gvq_attn_bytes(uint32_t rows, uint32_t keys, uint32_t heads, uint32_t dim);
+/* Flash attention scratch for `rows` query rows. */
+uint64_t ds4_gpu_gvq_flash_bytes(uint32_t rows);
 int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *kv,
     const ds4_gpu_tensor *positions, const ds4_gpu_tensor *selected,

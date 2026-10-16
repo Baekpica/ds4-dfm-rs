@@ -3,8 +3,17 @@
  * Sparse index pools keep the source BF16 boundaries. Captured execution
  * remains a separate state/position contract. */
 
+// Flash DSA attention (default) needs only its query and latent rows; the
+// DS4_GLMVQ_FLASH=0 fallback expands rows x keys scores and all keys' KV_B.
+static bool gvq_flash_env(void) {
+    const char *value = getenv("DS4_GLMVQ_FLASH");
+    return !value || strcmp(value, "0");
+}
+
 static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
-    uint64_t bytes = ds4_gpu_gvq_attn_bytes(rows, ctx, DS4_N_HEAD, DS4_N_KEY_MLA);
+    const bool flash = gvq_flash_env();
+    uint64_t bytes = flash ? ds4_gpu_gvq_flash_bytes(rows) :
+        ds4_gpu_gvq_attn_bytes(rows, ctx, DS4_N_HEAD, DS4_N_KEY_MLA);
     // Only the diagnostic Q4 restore path materializes the full output head.
     // Fund it before graph allocation; direct dots need no expanded head.
     const char *direct = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -16,7 +25,7 @@ static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
             DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(DS4_N_EMBD, DS4_N_HEAD * DS4_N_KEY_MLA, rows,
             DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
-        ds4_gpu_gvq_linear_bytes(2u * DS4_N_HEAD * DS4_N_KEY_MLA,
+        flash ? 0u : ds4_gpu_gvq_linear_bytes(2u * DS4_N_HEAD * DS4_N_KEY_MLA,
             DS4_N_KV_LORA, ctx, DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(DS4_N_EXPERT, DS4_N_EMBD, rows,
             DS4_TENSOR_BF16, DS4_GVQ_F32),
@@ -30,19 +39,23 @@ static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
 }
 
 static uint64_t gvq_extra_bytes(uint32_t ctx, uint32_t rows) {
-    return gvq_scratch(ctx, rows) + ds4_gpu_gvq_workspace(rows) +
-        (uint64_t)ctx * (DS4_N_KV_LORA + 2u * DS4_N_HEAD * DS4_N_KEY_MLA) * sizeof(float) +
+    const uint64_t expanded = gvq_flash_env() ? 0u :
+        (uint64_t)ctx * (DS4_N_KV_LORA + 2u * DS4_N_HEAD * DS4_N_KEY_MLA) * sizeof(float);
+    return gvq_scratch(ctx, rows) + ds4_gpu_gvq_workspace(rows) + expanded +
         (uint64_t)rows * sizeof(uint32_t);
 }
 
 static bool gvq_graph_init(ds4_glm53_gpu_graph *g, const ds4_weights *w) {
     if (g->ctx_cap > DS4_GVQ_CTX_MAX || !w->glmvq_gpu) { return false; }
     g->gvq = ds4_gpu_gvq_create(w->glmvq_gpu, gvq_scratch(g->ctx_cap, g->row_cap), g->row_cap);
-    g->gvq_latent = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * DS4_N_KV_LORA * sizeof(float));
-    g->gvq_kv = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * 2u * DS4_N_HEAD * DS4_N_KEY_MLA * sizeof(float));
+    const bool expanded = !gvq_flash_env();
+    if (expanded) {
+        g->gvq_latent = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * DS4_N_KV_LORA * sizeof(float));
+        g->gvq_kv = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * 2u * DS4_N_HEAD * DS4_N_KEY_MLA * sizeof(float));
+    }
     g->gvq_pos = ds4_gpu_tensor_alloc((uint64_t)g->row_cap * sizeof(uint32_t));
     g->workspace_bytes += gvq_extra_bytes(g->ctx_cap, g->row_cap);
-    return g->gvq && g->gvq_latent && g->gvq_kv && g->gvq_pos;
+    return g->gvq && g->gvq_pos && (!expanded || (g->gvq_latent && g->gvq_kv));
 }
 
 static void gvq_graph_free(ds4_glm53_gpu_graph *g) {

@@ -313,6 +313,12 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->kda_chunk = !kda || strcmp(kda, "0");
     ctx->flash = (!flash || strcmp(flash, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_fa_kernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_FA_SMEM), "GLM VQ flash attention shared memory");
+    // Graphs size no expanded-attention fallback while flash is requested.
+    if ((!flash || strcmp(flash, "0")) && !ctx->flash) {
+        fprintf(stderr, "ds4: GLM VQ flash attention unavailable; set DS4_GLMVQ_FLASH=0\n");
+        delete ctx;
+        return nullptr;
+    }
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -674,6 +680,7 @@ extern "C" uint64_t ds4_gpu_gvq_attn_bytes(uint32_t rows, uint32_t keys, uint32_
     return glmvq_attn_bytes(rows, keys, heads, dim).bytes;
 }
 
+
 extern "C" uint64_t ds4_gpu_gvq_index_bytes(uint32_t rows, uint32_t pools) {
     return glmvq_index_bytes(rows, pools);
 }
@@ -757,6 +764,10 @@ static gvq_flash_layout gvq_flash_plan(uint32_t rows) {
     return l;
 }
 
+extern "C" uint64_t ds4_gpu_gvq_flash_bytes(uint32_t rows) {
+    return gvq_flash_plan(rows).bytes;
+}
+
 // Absorbed attention: q·W_k (cuBLAS), the flash kernel over latent rows,
 // then low·W_v (cuBLAS). Rows stay [row][head][...] so no transposes occur.
 static int gvq_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
@@ -827,29 +838,30 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const uint64_t nx = (uint64_t)keys * s.cols, ny = (uint64_t)keys * s.rows;
     if (!s.cols || s.cols > INT_MAX || s.rows != (uint64_t)heads * 2 * dim ||
         !cache || nx > cache->bytes / sizeof(__nv_bfloat16) ||
-        !gvq_floats(latent, nx) || !gvq_floats(kv, ny) ||
         !gvq_floats(query, nq) || !gvq_floats(out, nq) ||
         (selected && (!stride || (uint64_t)rows * stride > selected->bytes / sizeof(int32_t))) ||
         !positions || rows > positions->bytes / sizeof(uint32_t) ||
-        ctx->scratch->bytes < glmvq_attn_bytes(rows, keys, heads, dim).bytes ||
         !gvq_stream(ctx)) { return 0; }
 
-    const uintptr_t alignment = (uintptr_t)s.data | (uintptr_t)cache->ptr | (uintptr_t)kv->ptr;
-    if (!ctx->direct_kv || ctx->model->records[weight].type != GVQ_TYPE_BF16 ||
-        s.storage != GLMVQ_WEIGHT_BF16 ||
-        s.rows % 8 || s.cols % 8 || alignment % 16) {
+    // Flash reads BF16 KV_B and the latent cache directly; it needs no
+    // expanded latent/KV buffers (allocated only with DS4_GLMVQ_FLASH=0).
+    const bool bf16_kv = ctx->direct_kv && ctx->model->records[weight].type == GVQ_TYPE_BF16 &&
+        s.storage == GLMVQ_WEIGHT_BF16 && s.rows % 8 == 0 && s.cols % 8 == 0 &&
+        ((uintptr_t)s.data | (uintptr_t)cache->ptr) % 16 == 0;
+    if (ctx->flash && bf16_kv && heads == GLMVQ_FA_HEADS && dim == GVQ_LATENT_DIM && s.cols == GLMVQ_FA_LATENT &&
+        keys <= GVQ_LATENT_MAX_KEYS && ctx->scratch->bytes >= gvq_flash_plan(rows).bytes &&
+        (uintptr_t)ctx->scratch->ptr % 16 == 0) {
+        return ds4_gpu_gvq_positions(positions, first, rows) &&
+            gvq_flash(ctx, out, query, (const __nv_bfloat16 *)s.data, cache,
+                (const uint32_t *)positions->ptr, selected, stride, rows, keys);
+    }
+    if (!gvq_floats(latent, nx) || !gvq_floats(kv, ny) ||
+        ctx->scratch->bytes < glmvq_attn_bytes(rows, keys, heads, dim).bytes) { return 0; }
+    if (!bf16_kv || (uintptr_t)kv->ptr % 16) {
         return ds4_gpu_gvq_unpack(latent, cache, nx) &&
             ds4_gpu_gvq_linear(ctx, kv, weight, latent, keys, DS4_GVQ_BF16) &&
             ds4_gpu_gvq_positions(positions, first, rows) &&
             ds4_gpu_gvq_attn(ctx, out, query, kv, positions, selected, stride, rows, keys, heads, dim);
-    }
-
-    if (ctx->flash && heads == GLMVQ_FA_HEADS && dim == GVQ_LATENT_DIM && s.cols == GLMVQ_FA_LATENT &&
-        keys <= GVQ_LATENT_MAX_KEYS && ctx->scratch->bytes >= gvq_flash_plan(rows).bytes &&
-        (uintptr_t)cache->ptr % 16 == 0 && (uintptr_t)ctx->scratch->ptr % 16 == 0) {
-        return ds4_gpu_gvq_positions(positions, first, rows) &&
-            gvq_flash(ctx, out, query, (const __nv_bfloat16 *)s.data, cache,
-                (const uint32_t *)positions->ptr, selected, stride, rows, keys);
     }
     // Full-prefix expansion dominates longer N=1 decode. Other widths keep
     // the expanded path. Sparse queries use the same causal selection mask.

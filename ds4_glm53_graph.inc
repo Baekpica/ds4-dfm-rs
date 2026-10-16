@@ -10,6 +10,7 @@ enum {
     GLM53_DIAG_CTX_MAX = 2048u,
     GLM53_PREFILL_DEFAULT = 2048u,
     GLM53_PREFILL_MAX = 2048u,
+    GLM53_VQ_PREFILL_MAX = 4096u,
     GLM53_PREFILL_WINDOW = 4096u,
     GLM53_QUANT_Q8 = 8u
 };
@@ -32,17 +33,23 @@ static bool glm53_mtp_step(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_weights *w, const ds4_gpu_tensor *hidden, int token,
         uint32_t pos, int *next);
 
+// GLM VQ rereads every routed expert's weights once per chunk (1.47 GB per
+// layer); 4096-row chunks measured +2.6% at 8K. The other paths keep 2048.
+static uint32_t glm53_prefill_max(void) {
+    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ ? GLM53_VQ_PREFILL_MAX : GLM53_PREFILL_MAX;
+}
+
 static uint32_t glm53_graph_row_cap(uint32_t ctx, uint32_t slots) {
     (void)slots; /* Routing is subdivided by its actual expert union. */
-    uint32_t rows = GLM53_PREFILL_DEFAULT;
+    uint32_t rows = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ ? GLM53_VQ_PREFILL_MAX : GLM53_PREFILL_DEFAULT;
     const char *name = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
         ? "DS4_GLMVQ_PREFILL_ROWS" : "DS4_GLM53_PREFILL_ROWS";
     const char *value = getenv(name);
     if (value && value[0]) {
         char *end = NULL;
         const unsigned long parsed = strtoul(value, &end, 10);
-        if (!end || *end || parsed < 1ul || parsed > GLM53_PREFILL_MAX) {
-            fprintf(stderr, "ds4: invalid %s (use 1..2048)\n", name);
+        if (!end || *end || parsed < 1ul || parsed > glm53_prefill_max()) {
+            fprintf(stderr, "ds4: invalid %s (use 1..%u)\n", name, glm53_prefill_max());
             return 0u;
         }
         rows = (uint32_t)parsed;
@@ -155,7 +162,7 @@ static uint64_t glm53_graph_bytes_plan(uint32_t ctx_cap, uint32_t rows, uint32_t
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
         (ctx_cap > DS4_GVQ_CTX_MAX || window)) { return 0u; }
     if (!ctx_cap || ctx_cap > DS4_GLM53_RESIDENT_CTX_MAX ||
-        !rows || rows > ctx_cap || rows > GLM53_PREFILL_MAX ||
+        !rows || rows > ctx_cap || rows > glm53_prefill_max() ||
         (window && (window != GLM53_PREFILL_WINDOW || window > ctx_cap ||
                     rows < GLM53_DENSE_MIN_ROWS)) ||
         (glm53_graph_diag() && ctx_cap > GLM53_DIAG_CTX_MAX)) { return 0u; }
