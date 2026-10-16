@@ -507,7 +507,7 @@ __global__ static void ds4_mmq_sanitize_bf16_kernel(float *p, uint64_t n) {
     p[i] = isfinite(v) ? __bfloat162float(__float2bfloat16_rn(v)) : 0.0f;
 }
 
-enum ds4_mmq_epilogue { DS4_MMQ_F32, DS4_MMQ_BF16 };
+enum ds4_mmq_epilogue { DS4_MMQ_F32, DS4_MMQ_BF16, DS4_MMQ_RAW };
 
 /* Q4_K/Q5_K decode vec is finite on finite activations (Ling).  Other
  * quants keep the scrub.  DS4_MMQ_VEC_SANITIZE=1 restores Q4/Q5 scrub. */
@@ -657,6 +657,7 @@ int ds4_mmq_dense_impl(
         return -3;
     }
     const uint64_t n = (uint64_t)M * (uint64_t)N;
+    if (epilogue == DS4_MMQ_RAW) { return 0; }
     if (epilogue == DS4_MMQ_BF16) {
         ds4_mmq_sanitize_bf16_kernel<<<(unsigned)((n + 255u) / 256u), 256, 0, stream>>>(out_f32, n);
         return 0;
@@ -984,6 +985,13 @@ extern "C" int ds4_mmq_q4_K_dense_bf16(
         int M, int N, int K, cudaStream_t stream) {
     return ds4_mmq_dense_impl<GGML_TYPE_Q4_K>("ds4_mmq_q4_K_dense_bf16", W, X, out, M, N, K, stream,
         DS4_MMQ_BF16);
+}
+
+extern "C" int ds4_mmq_q4_K_dense_raw(
+        const void * W, const float * X, float * out,
+        int M, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_impl<GGML_TYPE_Q4_K>("ds4_mmq_q4_K_dense_raw", W, X, out, M, N, K, stream,
+        DS4_MMQ_RAW);
 }
 
 // ----------------------------------------------------------------------------

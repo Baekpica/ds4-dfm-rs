@@ -364,6 +364,17 @@ int ds4_mmq_q4_K_dense_bf16(
     int           K,
     cudaStream_t  stream);
 
+/* As ds4_mmq_q4_K_dense without the output pass: Q4_K x Q8_1 outputs of
+ * finite activations are finite, and the caller keeps them in F32. */
+int ds4_mmq_q4_K_dense_raw(
+    const void  * W_q4_K,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 // MoE matmul entry points. For each (token, slot-within-token's-top-k) pair
 // the kernel computes:
 //

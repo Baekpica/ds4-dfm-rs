@@ -36,6 +36,7 @@ struct ds4_gvq_ctx {
     cudaStream_t stream;
     glmvq_restore_mode restore;
     bool direct_q4;
+    bool q4_round;
     bool direct_fp8;
     bool direct_kv;
     bool latent_attn;
@@ -293,6 +294,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_FLASH accepts 0 or 1\n");
         return nullptr;
     }
+    const char *q4_round = getenv("DS4_GLMVQ_Q4_ROUND");
+    if (q4_round && strcmp(q4_round, "0") && strcmp(q4_round, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_Q4_ROUND accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *kda = getenv("DS4_GLMVQ_KDA_CHUNK");
     if (kda && strcmp(kda, "0") && strcmp(kda, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_CHUNK accepts 0 or 1\n");
@@ -311,6 +317,7 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->decode_route = !route || strcmp(route, "0");
     ctx->direct_bf16 = !bf16 || strcmp(bf16, "0");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
+    ctx->q4_round = q4_round && !strcmp(q4_round, "1");
     ctx->flash = (!flash || strcmp(flash, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_fa_kernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_FA_SMEM), "GLM VQ flash attention shared memory");
     // Graphs size no expanded-attention fallback while flash is requested.
@@ -459,10 +466,13 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
                 s.rows, s.cols, rows, ctx->stream, &ctx->q4), "GLM VQ Q4 decode");
         }
         // Wide projections reuse the established Q4_K x Q8_1 MMQ primitive.
-        // Keep the source BF16 output boundary (rounded in its sanitize
-        // pass); Q8 input error is assessed separately from the weights.
-        return ds4_mmq_q4_K_dense_bf16(s.data, (const float *)input->ptr, (float *)out->ptr,
-            s.rows, rows, s.cols, ctx->stream) == 0 && cuda_ok(cudaGetLastError(), "GLM VQ Q4 MMQ");
+        // Prefill keeps its outputs in F32: the BF16 boundary pass cost 4.6%
+        // of an 8K prefill and moved frontier logits within the chunk-size
+        // noise band. DS4_GLMVQ_Q4_ROUND=1 restores the boundary.
+        const int status = ctx->q4_round
+            ? ds4_mmq_q4_K_dense_bf16(s.data, (const float *)input->ptr, (float *)out->ptr, s.rows, rows, s.cols, ctx->stream)
+            : ds4_mmq_q4_K_dense_raw(s.data, (const float *)input->ptr, (float *)out->ptr, s.rows, rows, s.cols, ctx->stream);
+        return status == 0 && cuda_ok(cudaGetLastError(), "GLM VQ Q4 MMQ");
     }
     return cublas_ok(glmvq_gemm(ctx->handle, s, (const float *)input->ptr, (float *)out->ptr,
         rows, (glmvq_compute)math, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream,
