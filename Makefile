@@ -2063,8 +2063,8 @@ test-glm-vq-restore: tests/libglm_vq_test.so
 test-glm-vq-ops: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
 
-.PHONY: test-glm-vq-kda
-test-glm-vq-kda: tests/libglm_vq_test.so
+.PHONY: test-glm-vq-kda-source
+test-glm-vq-kda-source: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_kda.py --lib tests/libglm_vq_test.so
 
 gguf-tools/libds4q.so: gguf-tools/quants.c gguf-tools/quants.h
