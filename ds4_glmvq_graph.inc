@@ -128,6 +128,17 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
         !gvq_mm_many(g, m, gates, gates_w, 3u, g->norm, rows) ||
         !gvq_mm(g, m, g->heads, l->kda_f_b, g->q_rank, rows, DS4_GVQ_BF16) ||
         !gvq_mm(g, m, g->ffn_gate, l->kda_g_b, g->q_rank_norm, rows, DS4_GVQ_BF16)) { return false; }
+    // Prefill: the tensor-core chunks also apply the gated output norm.
+    if (!g->mtp_capture) {
+        const int fused = ds4_gpu_gvq_kda_gated(g->gvq, g->heads, g->recurrent[il],
+            g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],
+            g->q, g->k, g->v, g->heads, g->kv_rank, g->q_conv_weight[il],
+            g->k_conv_weight[il], g->v_conv_weight[il], g->decay_scale[il],
+            g->dt_bias[il], g->ffn_gate, glmvq_index(m, l->kda_o_norm), rows, DS4_N_HEAD,
+            DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS);
+        if (fused == 0) { return false; }
+        if (fused > 0) { return gvq_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16); }
+    }
     // MTP verify: journal slot r+1 receives this layer's state after row r.
     ds4_gpu_tensor *snap = NULL;
     if (g->mtp_capture) {

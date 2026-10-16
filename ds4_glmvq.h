@@ -113,6 +113,17 @@ int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state
     const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
     const ds4_gpu_tensor *dt_bias, uint32_t rows, uint32_t heads, float lower_bound,
     ds4_gpu_tensor *snap, uint64_t stride);
+/* Prefill rows: KDA and the gated output norm in one call, writing the
+ * normed heads to `out`. Returns -1 when the rows take the recurrence or
+ * the separate norm (short appends, DS4_GLMVQ_KDA_MMA=0). */
+int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+    ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
+    const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+    const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
+    const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight,
+    const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
+    const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate, uint32_t norm,
+    uint32_t rows, uint32_t heads, float lower_bound, float eps);
 
 #ifdef __cplusplus
 }

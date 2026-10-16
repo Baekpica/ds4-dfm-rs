@@ -43,10 +43,12 @@ struct ds4_gvq_ctx {
     bool decode_route;
     bool direct_bf16;
     bool kda_chunk;
+    bool kda_mma;
     bool flash;
     bool index_fused;
     uint64_t flash_calls = 0;
     uint64_t kda_chunks = 0;
+    uint64_t kda_mma_calls = 0;
     uint64_t bf16_calls = 0;
     uint64_t latent_calls = 0;
     uint64_t kv_calls = 0;
@@ -227,6 +229,9 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     if (ctx->kda_chunk) {
         fprintf(stderr, "ds4: GLM VQ chunked KDA calls=%llu\n", (unsigned long long)ctx->kda_chunks);
     }
+    if (ctx->kda_mma) {
+        fprintf(stderr, "ds4: GLM VQ tensor-core KDA calls=%llu\n", (unsigned long long)ctx->kda_mma_calls);
+    }
     if (ctx->flash) {
         fprintf(stderr, "ds4: GLM VQ flash attention calls=%llu\n", (unsigned long long)ctx->flash_calls);
     }
@@ -305,6 +310,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_CHUNK accepts 0 or 1\n");
         return nullptr;
     }
+    const char *kda_mma = getenv("DS4_GLMVQ_KDA_MMA");
+    if (kda_mma && strcmp(kda_mma, "0") && strcmp(kda_mma, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_KDA_MMA accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *route = getenv("DS4_GLMVQ_DECODE_ROUTE");
     if (route && strcmp(route, "0") && strcmp(route, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_DECODE_ROUTE accepts 0 or 1\n");
@@ -318,6 +328,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->decode_route = !route || strcmp(route, "0");
     ctx->direct_bf16 = !bf16 || strcmp(bf16, "0");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
+    ctx->kda_mma = (!kda_mma || strcmp(kda_mma, "0")) &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_scan, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KSCAN_SMEM), "GLM VQ KDA scan shared memory");
     ctx->q4_round = q4_round && !strcmp(q4_round, "1");
     ctx->flash = (!flash || strcmp(flash, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_fa_kernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_FA_SMEM), "GLM VQ flash attention shared memory");
@@ -1001,7 +1016,44 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
 extern "C" uint64_t ds4_gpu_gvq_kda_bytes(uint32_t rows, uint32_t heads) {
     uint64_t planes = 0;
     if (!solar_kda_chunk_layout(rows, heads, GLMVQ_KDA_DIM, nullptr, nullptr, &planes)) { return 0; }
-    return planes + (uint64_t)rows * heads * sizeof(float);
+    const uint64_t records = (uint64_t)((rows + GLMVQ_KC - 1) / GLMVQ_KC) * heads * GLMVQ_KR_BYTES;
+    return std::max(planes + (uint64_t)rows * heads * sizeof(float), records);
+}
+
+extern "C" int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
+        const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight,
+        const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
+        const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate, uint32_t norm,
+        uint32_t rows, uint32_t heads, float lower_bound, float eps) {
+    if (!ctx || !ctx->kda_mma || rows < GLMVQ_KC) { return -1; }
+    const uint64_t width = (uint64_t)heads * GLMVQ_KDA_DIM, count = (uint64_t)rows * width;
+    const uint64_t tail = width * GLMVQ_CONV, chunks = (rows + GLMVQ_KC - 1) / GLMVQ_KC;
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, norm, GVQ_TYPE_BF16, GLMVQ_KDA_DIM);
+    if (!w || !gvq_floats(out, count) || !gvq_floats(q, count) || !gvq_floats(k, count) ||
+        !gvq_floats(v, count) || !gvq_floats(forget, count) || !gvq_floats(gate, count) ||
+        !gvq_floats(beta, (uint64_t)rows * heads) || !gvq_floats(state, width * GLMVQ_KDA_DIM) ||
+        !gvq_floats(q_tail, tail) || !gvq_floats(k_tail, tail) || !gvq_floats(v_tail, tail) ||
+        !gvq_floats(q_weight, tail) || !gvq_floats(k_weight, tail) || !gvq_floats(v_weight, tail) ||
+        !gvq_floats(a_log, heads) || !gvq_floats(dt_bias, width) ||
+        ctx->scratch->bytes < chunks * heads * GLMVQ_KR_BYTES) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    auto *records = (uint8_t *)ctx->scratch->ptr;
+    glmvq_kda_local<<<dim3((uint32_t)chunks, heads), GLMVQ_KLOCAL, GLMVQ_KLOCAL_SMEM, stream>>>(records,
+        (const float *)q_tail->ptr, (const float *)k_tail->ptr, (const float *)v_tail->ptr,
+        (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,
+        (const float *)forget->ptr, (const float *)beta->ptr,
+        (const float *)q_weight->ptr, (const float *)k_weight->ptr, (const float *)v_weight->ptr,
+        (const float *)a_log->ptr, (const float *)dt_bias->ptr, rows, heads, lower_bound);
+    solar_kda_chunk_conv_tail_kernel<<<(uint32_t)((width + 255) / 256), 256, 0, stream>>>(
+        (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
+        (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr, rows, width, GLMVQ_CONV);
+    glmvq_kda_scan<<<heads, GLMVQ_KSCAN, GLMVQ_KSCAN_SMEM, stream>>>((float *)out->ptr,
+        (float *)state->ptr, records, (const float *)gate->ptr, w, rows, heads, eps);
+    ctx->kda_mma_calls++;
+    return cuda_ok(cudaGetLastError(), "GLM VQ tensor-core KDA");
 }
 
 // Chunked prefill (Solar delta-rule UT kernels) on GLM's own token inputs.

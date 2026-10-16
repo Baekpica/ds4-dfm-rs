@@ -245,4 +245,5 @@ tests/naive_banks
 /tests/glm_vq_state
 /glm-vq-gate
 /tests/test_glm_vq_flash
+/tests/test_glm_vq_kda
 /tests/test_glm_vq_verify

@@ -90,9 +90,15 @@ per token with the same Q4_K choice for its nonexpert weights.
   A registers and B is eight source-order bytes. Items carry up to 64 tokens
   of one expert (two cp.async stages beside the 64 KiB book), so a weight tile
   is decoded about once per chunk; the reduce adds the shared expert.
-- **KDA.** A token-parallel prep reproduces the recurrence's q/k/v, BF16 beta
-  and decay argument exactly; the delta-rule chunk (UT transform) kernels
-  shared with Solar/GLM run on them. Appends under 64 rows keep the recurrence.
+- **KDA.** One CTA per (64-token chunk, head) reads the raw q/k/v/forget rows
+  once, reproduces the recurrence's inputs exactly and writes an operand record
+  (q e^G, (k e^(G_last-G))ᵀ, −W, causal q·k in F16; U in F32). One CTA per head
+  then walks the chunks with the state in F32 registers, runs every product on
+  F16 tensor cores (value-major, so state and V' accumulators repack in
+  registers) and applies the gated output norm. The shared Solar kernels kept
+  F32 planes and four passes (~2 GB per layer at 2,048 rows): 12.2 → 4.7 ms.
+  Appends under 64 rows keep the recurrence; `DS4_GLMVQ_KDA_MMA=0` restores
+  the Solar chunks.
 - **Attention.** One flash kernel per query row computes `softmax(q Cᵀ) C`
   over the latent rows with BF16 tensor cores, without expanding K/V. Index
   scores are BF16 MMAs folded over the 32 heads in registers, so no per-key
@@ -145,6 +151,12 @@ RMS 0.23, KL 2.3e-7.
 | Prefill mHC mix in one pass, narrow RMS | F32 order | RMS 0.20, KL 2.1e-7 | identical |
 | F32 Q4_K prefill outputs | no BF16 boundary after MMQ | RMS 0.24, KL 1.2e-7 | identical |
 | Expand fused with the next mix | F32 order through Sinkhorn | RMS 0.32, KL 1.8e-6 | identical |
+| Tensor-core KDA chunks | F16 operands (k F32, V' in two halves) | RMS 0.25, KL 7.9e-7 | identical |
+
+On the text-quality cases the tensor-core KDA moves the paired NLL by
++0.008 ± 0.006 (standard error) nat/token against the F32 recurrence, with
+the same mean KL as the F32 chunks (0.0056 vs 0.0054): within the model's
+chaos floor, where any F32 reordering already reaches that KL.
 
 Position, length, routing-table, cache and rollback state must stay exact;
 floating-point differences are judged by output quality, not bit identity.
@@ -175,6 +187,7 @@ first chunk paid lazy allocation and page-cache stalls).
 | Shared expert in the reduce | 881.8 | 24.51 | two passes per layer removed |
 | Expand fused with the next mix | 900.7 | 23.93 | residual read once |
 | Shared prepared inputs | 920.4 | 24.43 | one Q8_1/BF16 copy per input |
+| Tensor-core KDA chunks | 1042.3 | 24.49 | one operand record, F16 MMA scan |
 
 Decode varies ±1.5% between fresh runs here; the prefill rows are the
 measured trend. From the Q4_K v3 row on, the warm-up prefill matches the
