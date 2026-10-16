@@ -2,6 +2,7 @@
  * resolve before capture, and each session owns bounded GEMM scratch. */
 #include "ds4_glmvq.h"
 #include "cuda/glm_vq_linear.cuh"
+#include "cuda/glm_vq_q4m.cuh"
 #include "cuda/glm_vq_kda.cuh"
 #include "cuda/glm_vq_attention.cuh"
 #include "cuda/glm_vq_index.cuh"
@@ -41,6 +42,7 @@ struct ds4_gvq_ctx {
     cudaStream_t stream;
     glmvq_restore_mode restore;
     bool direct_q4;
+    bool q4_mma;
     bool q4_round;
     bool direct_fp8;
     bool direct_kv;
@@ -378,6 +380,14 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         return nullptr;
     }
     ctx->direct_q4 = !q4 || strcmp(q4, "0");
+    const char *q4_mma = getenv("DS4_GLMVQ_Q4_MMA");
+    if (q4_mma && strcmp(q4_mma, "0") && strcmp(q4_mma, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_Q4_MMA accepts 0 or 1\n");
+        delete ctx;
+        return nullptr;
+    }
+    ctx->q4_mma = (!q4_mma || strcmp(q4_mma, "0")) &&
+        cuda_ok(glmvq_q4m_prepare(), "GLM VQ Q4 MMA shared memory");
     const char *q4_stream = getenv("DS4_GLMVQ_Q4_STREAM");
     if (q4_stream && strcmp(q4_stream, "0") && strcmp(q4_stream, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_Q4_STREAM accepts 0 or 1\n");
@@ -505,6 +515,12 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     }
     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {
         if (math != DS4_GVQ_BF16) { return 0; }
+        // Verify widths read each weight once on tensor cores; one row keeps
+        // the SIMT stream. DS4_GLMVQ_Q4_MMA=0 keeps SIMT for every width.
+        if (rows > 1 && ctx->q4_mma && glmvq_q4m_fits(s.data, (const float *)input->ptr, s.cols, rows)) {
+            return cuda_ok(glmvq_q4m_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
+                s.rows, s.cols, rows, ctx->stream, gvq_mode(rows)), "GLM VQ Q4 MMA");
+        }
         if (rows <= GLMVQ_Q4_WARPS) {
             return cuda_ok(glmvq_q4_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
                 s.rows, s.cols, rows, ctx->stream, &ctx->q4), "GLM VQ Q4 decode");

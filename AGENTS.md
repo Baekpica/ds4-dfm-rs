@@ -169,7 +169,9 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
   tensor-core decode experts lost to SIMT (97 vs 212 GB/s, per-lane gathers).
 - **Multi-token SIMT GEMV is load-latency bound.** At three tokens the Q4_K
   dot stalls on each token's input loads (long scoreboard, 40% issue); the
-  vendored MMQ/MMVQ stay at 150–190 GB/s.
+  vendored MMQ/MMVQ stay at 150–190 GB/s. A BF16 MMA over the exact 4-bit
+  integers runs 2–8 tokens at the one-token cost; stage 2,304-byte row
+  segments (576-byte ones lost DRAM locality).
 
 # Agent Notes
 

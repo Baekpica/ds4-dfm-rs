@@ -2115,7 +2115,7 @@ tests/test_glm_vq_kda: tests/test_glm_vq_kda.cu cuda/glm_vq_kda.cuh cuda/glm_vq_
 test-glm-vq-kda: tests/test_glm_vq_kda
 	./tests/test_glm_vq_kda
 
-tests/test_glm_vq_verify: tests/test_glm_vq_verify.cu cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_gemv.cuh cuda/glm_vq_flash.cuh cuda/glm_vq_fp8.cuh cuda/glm_vq_index.cuh
+tests/test_glm_vq_verify: tests/test_glm_vq_verify.cu cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/glm_vq_q4m.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_gemv.cuh cuda/glm_vq_flash.cuh cuda/glm_vq_fp8.cuh cuda/glm_vq_index.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
 
 .PHONY: test-glm-vq-verify
@@ -2162,7 +2162,7 @@ GLMVQ_NATIVE_DEPS = ds4_glmvq.h ds4_glmvq_bind.inc ds4_glmvq_graph.inc ds4_glmvq
 ds4.o ds4_cpu.o: $(GLMVQ_NATIVE_DEPS)
 tests/test_glm_vq_quote.o: $(GLMVQ_NATIVE_DEPS) $(GLM53_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \
-	cuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh \
+	cuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/glm_vq_q4m.cuh cuda/q4_k.cuh \
 	cuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_index.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_fp8.cuh
 tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \

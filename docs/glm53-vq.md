@@ -129,8 +129,14 @@ accept: keep k rows; KDA state ◀── journal slot k, index tail ◀── re
 - **One verify forward.** The n candidates run as one forward, so each
   weight is read once. Every kernel has a 1–4 row path that reuses each
   weight load and keeps the one-row arithmetic: verify rows equal decode
-  rows bit for bit except the smallest Q4_K matrices and the attention
-  split count.
+  rows bit for bit except Q4_K and the attention split count.
+- **Verify-width Q4_K on tensor cores.** One BF16 `m16n8k16` MMA covers 16
+  rows and 8 tokens: A holds the exact 4-bit integers, B the inputs (BF16
+  values already), so products are exact and only the F32 order differs.
+  Each 32-element sub-block keeps its own partial scaled by d·sc; an MMA
+  with A = m adds the min term. Stages of 16 rows × 16 blocks are whole
+  lines and long DRAM runs. A forward's Q4_K at three tokens: 26.3 → 21.6 ms,
+  about the one-token cost. `DS4_GLMVQ_Q4_MMA=0` restores the SIMT stream.
 - **Rollback.** KDA writes its state after each row into a journal slot;
   index tails are replayed from stashed rows; latent, pool and draft-layer
   rows past the frontier are rewritten before any read.
@@ -157,6 +163,7 @@ RMS 0.23, KL 2.3e-7.
 | FP8 expert prefill | E4M3 activations, gain after the dot | RMS 0.20, KL 1.1e-7 | identical |
 | Flash DSA attention, absorption GEMVs | FP32 softmax/accumulation order | within noise band | identical |
 | MTP verify kernels | one-row order per row | not applicable | identical at 8K; near-tie flip on prose |
+| Tensor-core verify Q4_K | exact products, F32 sub-block order | not applicable | prose and code equal MTP off (128 ids) |
 | Prefill mHC mix in one pass, narrow RMS | F32 order | RMS 0.20, KL 2.1e-7 | identical |
 | F32 Q4_K prefill outputs | no BF16 boundary after MMQ | RMS 0.24, KL 1.2e-7 | identical |
 | Expand fused with the next mix | F32 order through Sinkhorn | RMS 0.32, KL 1.8e-6 | identical |
@@ -221,6 +228,12 @@ October 16 build in parentheses):
 | Prose (technical notes) | 25.20 (24.53) | 30.42 (30.42) | 32.92 (30.83) | 1.83 / 2.46 (1.80 / 2.33) |
 | Code (C source) | 24.87 (24.04) | 33.06 (32.46) | 35.24 (35.48) | 1.97 / 2.72 (1.97 / 2.72) |
 
+The tensor-core verify Q4_K then shortened a two-draft cycle from 76.8 to
+72.7 ms on code (35.5 → 37.5 tok/s, same text) and from 75.3 to 71.8 ms on
+prose (32.7 → 37.1 tok/s; its 128 tokens now equal the MTP-off decode, which
+the SIMT verify had left at token 27 on a near-tie, so acceptance moved to
+2.67 tokens per verify).
+
 ## Measured performance
 
 The [2K–64K README sweep](benchmarks/glm53-vq-spark-64k-2026-10-17/README.md)
@@ -239,11 +252,10 @@ against 2.26 tokens per verify), so compare per-token speed on the MTP-off line.
 - **Decode dispatch.** About 1,300 kernels per token. Dependent launch hides
   part of the gaps; CUDA graphs with device-resident positions remain (the
   DeepSeek VQ engine measured 43.9 → 32.5 ms per token).
-- **Verify width.** A two-draft cycle (three verify rows) takes ~78 ms on
-  prose. Three-token Q4_K runs at 126–224 GB/s: the SIMT dot loads every
-  token's input per weight block and stalls on those loads (NCU: long
-  scoreboard, 40% issue). Each verify row adds nearly a full routed-expert
-  pass at ~165 GB/s.
+- **Verify width.** A two-draft cycle (three verify rows) takes ~72 ms.
+  Q4_K now costs about one token's pass; each verify row still adds nearly
+  a full routed-expert pass (gate/up ~187 GB/s, down ~169 GB/s with its
+  mid-row groups).
 - **Prefill experts.** The FP8 kernel runs at ~25% of the FP8 tensor peak and
   is bound by shared-memory instruction pressure and barriers; at 2,048-token
   chunks the weight stream (~1.5 GB per layer) also sets a DRAM floor.

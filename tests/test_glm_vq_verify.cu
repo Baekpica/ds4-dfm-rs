@@ -3,11 +3,14 @@
 // bit on staged shapes (same per-token FMA order), and stay within BF16
 // rounding of it on scalar-baseline shapes. VQ experts, BF16 dots and DSA
 // absorption must reproduce their one-row kernels bit for bit per row.
+// Tensor-core Q4_K verify rows: exact products of BF16 inputs, so each token
+// stays within one BF16 ulp of an FP64 dot of the same weights.
 #include <cstdio>
 #include <cmath>
 #include <vector>
 #include <random>
 #include "../cuda/glm_vq_linear.cuh"
+#include "../cuda/glm_vq_q4m.cuh"
 #include "../cuda/glm_vq_decode.cuh"
 #include "../cuda/glm_vq_gemv.cuh"
 #include "../cuda/glm_vq_flash.cuh"
@@ -53,6 +56,56 @@ static int q4_case(uint32_t rows, uint32_t cols, uint32_t tokens, const glmvq_q4
     printf("q4 %ux%u tokens=%u %s: %u differ, worst rel %.2g %s\n", rows, cols, tokens,
         staged ? "staged" : "scalar-one", differ, worst, ok ? "ok" : "FAIL");
     cudaFree(dw); cudaFree(dx); cudaFree(dy); cudaFree(d1);
+    return !ok;
+}
+
+static float q4_host_value(const uint8_t *block, uint32_t i) {
+    const uint8_t *scales = block + 4;
+    const uint32_t pair = i / 64, sub = i / 32, j = i % 32;
+    const uint32_t q = sub & 1 ? block[16 + 32 * pair + j] >> 4 : block[16 + 32 * pair + j] & 15;
+    const uint32_t sc = sub < 4 ? scales[sub] & 63 : (scales[sub + 4] & 15) | ((scales[sub - 4] >> 6) << 4);
+    const uint32_t m = sub < 4 ? scales[sub + 4] & 63 : (scales[sub + 4] >> 4) | ((scales[sub] >> 6) << 4);
+    const float d = __half2float(*(const __half *)block), dmin = __half2float(*(const __half *)(block + 2));
+    return d * sc * q - dmin * m;
+}
+
+static int q4m_case(uint32_t rows, uint32_t cols, uint32_t tokens) {
+    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK;
+    std::vector<uint8_t> w((size_t)rows * blocks * GLMVQ_Q4_BYTES);
+    std::uniform_int_distribution<int> byte(0, 255);
+    std::uniform_real_distribution<float> scale(0.002f, 0.02f);
+    for (auto &b : w) { b = (uint8_t)byte(rng); }
+    for (size_t b = 0; b < (size_t)rows * blocks; b++) {
+        *(__half *)&w[b * GLMVQ_Q4_BYTES] = __float2half(scale(rng));
+        *(__half *)&w[b * GLMVQ_Q4_BYTES + 2] = __float2half(scale(rng) * 0.2f);
+    }
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<float> x((size_t)tokens * cols);
+    for (auto &v : x) { v = __bfloat162float(__float2bfloat16_rn(nd(rng))); }   // graph inputs are BF16-rounded
+    uint8_t *dw = up(w); float *dx = up(x), *dy;
+    CK(cudaMalloc(&dy, (size_t)tokens * rows * 4));
+    CK(glmvq_q4m_decode(dw, dx, dy, rows, cols, tokens, 0, GLMVQ_LAUNCH_PLAIN));
+    CK(cudaDeviceSynchronize());
+    auto got = down(dy, (size_t)tokens * rows);
+    uint32_t differ = 0, beyond = 0;
+    for (uint32_t r = 0; r < rows; r++) {
+        for (uint32_t t = 0; t < tokens; t++) {
+            double ref = 0;
+            for (uint32_t k = 0; k < cols; k++) {
+                const uint8_t *block = &w[((size_t)r * blocks + k / GLMVQ_Q4_BLOCK) * GLMVQ_Q4_BYTES];
+                ref += (double)q4_host_value(block, k % GLMVQ_Q4_BLOCK) * x[(size_t)t * cols + k];
+            }
+            const float want = __bfloat162float(__float2bfloat16_rn((float)ref));
+            const float have = got[(size_t)t * rows + r];
+            const float ulp = fmaxf(fabsf(want), 1e-30f) * 0x1p-7f;
+            differ += have != want;
+            beyond += fabsf(have - want) > ulp;
+        }
+    }
+    const bool ok = !beyond && differ * 50 <= rows * tokens;
+    printf("q4 mma %ux%u tokens=%u: %u differ by one ulp, %u beyond %s\n", rows, cols, tokens, differ, beyond,
+        ok ? "ok" : "FAIL");
+    cudaFree(dw); cudaFree(dx); cudaFree(dy);
     return !ok;
 }
 
@@ -315,6 +368,11 @@ int main() {
     glmvq_q4_config config;
     CK(glmvq_q4_prepare(&config, GLMVQ_Q4_AUTO));
     int failures = 0;
+    CK(glmvq_q4m_prepare());
+    for (uint32_t tokens : {2u, 3u, 8u}) {
+        failures += q4m_case(1024, 4096, tokens);   // KDA q/k/v rows
+        failures += q4m_case(1000, 1536, tokens);   // q_b: partial last stage and row tile
+    }
     for (uint32_t tokens : {2u, 3u, 4u, 8u}) {
         failures += q4_case(4096, 4096, tokens, &config);   // KDA q/k/v
         failures += q4_case(4096, 8192, tokens, &config);   // KDA output
