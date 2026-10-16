@@ -19,6 +19,9 @@ typedef struct ds4_gvq_ctx ds4_gvq_ctx;
 enum { DS4_GVQ_NO_LINK = UINT32_MAX, DS4_GVQ_CTX_MAX = 1048576 };
 typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32 } ds4_gvq_math;
 typedef enum { DS4_GVQ_RMS, DS4_GVQ_GATED_RMS, DS4_GVQ_PLAIN_RMS } ds4_gvq_norm;
+/* mHC residual rows: F32, or BF16 packed into the first half (the fused
+ * prefill expand writes them; the values are BF16-rounded either way). */
+typedef enum { DS4_GVQ_HC_F32, DS4_GVQ_HC_BF16 } ds4_gvq_hc;
 
 /* Native-only pointer plan. Rust has validated payloads and links; this
  * table names source intervals and never exposes device handles to hosts. */
@@ -46,19 +49,20 @@ int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
 /* With `norm`, also writes the ordinary RMS norm of `out` (bit-identical
  * to a separate ds4_gpu_gvq_rms). */
 int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *split,
-    const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
+    const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
     uint32_t scale, uint32_t base, uint32_t rows, uint32_t width,
     uint32_t iterations, float eps, ds4_gpu_tensor *norm, uint32_t norm_weight, float norm_eps);
 /* mHC RMS + F32 mapping dots; 0 when the shape needs the fallback. */
 int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
     const ds4_gpu_tensor *residual, uint32_t weight, uint32_t width, float eps, uint32_t rows);
-/* Prefill expand fused with the next mHC mix; 0 when rows or shape need the
- * separate kernels. */
+/* Prefill expand fused with the next mHC mix, writing BF16 rows; 0 when
+ * rows or shape need the separate kernels. */
 int ds4_gpu_gvq_expand_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *mix,
-    const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split,
-    uint32_t weight, uint32_t rows, uint32_t width, float eps);
+    const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
+    const ds4_gpu_tensor *split, uint32_t weight, uint32_t rows, uint32_t width, float eps);
 int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
-    const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split, uint32_t rows, uint32_t width);
+    const ds4_gpu_tensor *residual, ds4_gvq_hc format, const ds4_gpu_tensor *split,
+    uint32_t rows, uint32_t width);
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint64_t count, float limit);
 int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count);

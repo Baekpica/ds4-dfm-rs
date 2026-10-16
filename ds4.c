@@ -22782,6 +22782,7 @@ typedef struct {
     ds4_gvq_ctx *gvq;
     ds4_gpu_tensor *gvq_latent, *gvq_kv, *gvq_pos;
     bool gvq_mixed; /* hc_mix already holds the next mHC mix (fused expand). */
+    bool gvq_packed; /* hc_next holds BF16 rows from the fused expand. */
     bool gvq_borrowed; /* Banks share workspace; bank zero releases it. */
 #endif
 } ds4_glm53_gpu_graph;

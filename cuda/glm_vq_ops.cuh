@@ -225,11 +225,16 @@ __device__ void glmvq_hc_weights_warp(float *coeff, const float *mix,
 
 enum { GLMVQ_HC_BATCH = 4 };
 
+// mHC residual rows hold BF16-rounded values; prefill keeps them as BF16.
+__device__ __forceinline__ float glmvq_value(float v) { return v; }
+__device__ __forceinline__ float glmvq_value(__nv_bfloat16 v) { return __bfloat162float(v); }
+
 // With `norm`, the block also applies the following ordinary RMS norm to
 // its own output row: each thread squares its columns in glmvq_rms's order
 // and reduces with the same tree, so `norm` is bit-identical to a separate
 // glmvq_rms launch without that launch or the extra row round trip.
-__global__ void glmvq_hc_split(const float *mix, const float *residual,
+template <typename R>
+__global__ void glmvq_hc_split(const float *mix, const R *residual,
         const float *scale, const float *base, float *output, float *split,
         uint32_t width, uint32_t iters, float eps,
         const __nv_bfloat16 *norm_weight, float *norm, float norm_eps) {
@@ -243,7 +248,7 @@ __global__ void glmvq_hc_split(const float *mix, const float *residual,
     if (threadIdx.x < GLMVQ_HC_MIX) {
         split[(uint64_t)row * GLMVQ_HC_MIX + threadIdx.x] = coeff[threadIdx.x];
     }
-    const float *r = residual + (uint64_t)row * GLMVQ_HC * width;
+    const R *r = residual + (uint64_t)row * GLMVQ_HC * width;
     float *out = output + (uint64_t)row * width;
     float squares = 0.0f;
     // Batched loads expose several rows of latency at once; per-column order is unchanged.
@@ -254,7 +259,7 @@ __global__ void glmvq_hc_split(const float *mix, const float *residual,
             const uint32_t col = first + j * blockDim.x;
             #pragma unroll
             for (uint32_t h = 0; h < GLMVQ_HC; h++) {
-                x[j][h] = col < width ? r[(uint64_t)h * width + col] : 0.0f;
+                x[j][h] = col < width ? glmvq_value(r[(uint64_t)h * width + col]) : 0.0f;
             }
         }
         #pragma unroll
@@ -295,7 +300,8 @@ __global__ void glmvq_hc_split(const float *mix, const float *residual,
     }
 }
 
-__global__ void glmvq_hc_expand(const float *branch, const float *residual,
+template <typename R>
+__global__ void glmvq_hc_expand(const float *branch, const R *residual,
         const float *split, float *output, uint32_t width, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
@@ -305,7 +311,7 @@ __global__ void glmvq_hc_expand(const float *branch, const float *residual,
     float sum = 0.0f;
     for (uint32_t src = 0; src < GLMVQ_HC; src++) {
         const float c = glmvq_round(coeff[2 * GLMVQ_HC + src * GLMVQ_HC + dst]);
-        sum = glmvq_add(sum, glmvq_mul(c, residual[(row * GLMVQ_HC + src) * width + col]));
+        sum = glmvq_add(sum, glmvq_mul(c, glmvq_value(residual[(row * GLMVQ_HC + src) * width + col])));
     }
     const float part = glmvq_round(glmvq_mul(glmvq_round(coeff[GLMVQ_HC + dst]), branch[row * width + col]));
     output[i] = glmvq_round(glmvq_add(part, glmvq_round(sum)));

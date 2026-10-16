@@ -203,11 +203,25 @@ __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_mix_rows(const 
  * its row with glmvq_hc_expand's arithmetic and folds the new four-stream
  * values into the RMS and 24 dots (as glmvq_hc_mix_rows, in another F32
  * order), so the residual it writes is not read back for the mix. A W tile
- * covers 128 columns of all four streams. */
+ * covers 128 columns of all four streams. Residual values are BF16-rounded,
+ * so a BF16 output (O) is exact and halves the next expand's and split's
+ * reads. */
 enum { GLMVQ_XMIX_COLS = 128 };
 
+__device__ __forceinline__ float4 glmvq_load4(const float *p) { return *(const float4 *)p; }
+__device__ __forceinline__ float4 glmvq_load4(const __nv_bfloat16 *p) {
+    const uint2 v = *(const uint2 *)p;
+    return make_float4(glmvq_bf16_lo(v.x), glmvq_bf16_hi(v.x), glmvq_bf16_lo(v.y), glmvq_bf16_hi(v.y));
+}
+__device__ __forceinline__ void glmvq_store4(float *p, const float *v) { *(float4 *)p = make_float4(v[0], v[1], v[2], v[3]); }
+__device__ __forceinline__ void glmvq_store4(__nv_bfloat16 *p, const float *v) {
+    const __nv_bfloat162 lo = __floats2bfloat162_rn(v[0], v[1]), hi = __floats2bfloat162_rn(v[2], v[3]);
+    *(uint2 *)p = make_uint2(*(const uint32_t *)&lo, *(const uint32_t *)&hi);
+}
+
+template <typename R, typename O>
 __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_expand_mix(const float *branch,
-        const float *residual, const float *split, float *output, const __nv_bfloat16 *weight,
+        const R *residual, const float *split, O *output, const __nv_bfloat16 *weight,
         float *mix, uint32_t rows, uint32_t width, float eps) {
     __shared__ __align__(16) __nv_bfloat16 tile[GLMVQ_HC_MIX * GLMVQ_HC * GLMVQ_XMIX_COLS];
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32;
@@ -235,7 +249,7 @@ __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_expand_mix(cons
         float4 res[GLMVQ_HC];
         #pragma unroll
         for (uint32_t src = 0; src < GLMVQ_HC; src++) {
-            res[src] = *(const float4 *)(residual + ((uint64_t)rr * GLMVQ_HC + src) * width + c);
+            res[src] = glmvq_load4(residual + ((uint64_t)rr * GLMVQ_HC + src) * width + c);
         }
         const float4 b = *(const float4 *)(branch + (uint64_t)rr * width + c);
         #pragma unroll
@@ -253,7 +267,7 @@ __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_expand_mix(cons
                 squares = fmaf(v[e], v[e], squares);
             }
             if (row < rows) {
-                *(float4 *)(output + ((uint64_t)row * GLMVQ_HC + d) * width + c) = make_float4(v[0], v[1], v[2], v[3]);
+                glmvq_store4(output + ((uint64_t)row * GLMVQ_HC + d) * width + c, v);
             }
             #pragma unroll
             for (uint32_t o = 0; o < GLMVQ_HC_MIX; o++) {

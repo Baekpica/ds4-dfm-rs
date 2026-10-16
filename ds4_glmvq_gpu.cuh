@@ -582,7 +582,7 @@ extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
 }
 
 extern "C" int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *split,
-        const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
+        const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
         uint32_t scale, uint32_t base, uint32_t rows, uint32_t width, uint32_t iterations, float eps,
         ds4_gpu_tensor *norm, uint32_t norm_weight, float norm_eps) {
     const uint64_t count = (uint64_t)rows * width, coeff = (uint64_t)rows * GLMVQ_HC_MIX;
@@ -592,9 +592,13 @@ extern "C" int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_
     if (!s || !b || !rows || !width || !iterations || !gvq_floats(out, count) ||
         !gvq_floats(residual, count * GLMVQ_HC) || !gvq_floats(split, coeff) || !gvq_floats(mix, coeff) ||
         (norm && (!w || !gvq_floats(norm, count)))) { return 0; }
-    glmvq_hc_split<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>((const float *)mix->ptr,
-        (const float *)residual->ptr, s, b, (float *)out->ptr, (float *)split->ptr, width, iterations, eps,
-        w, norm ? (float *)norm->ptr : nullptr, norm_eps);
+    auto launch = [&](auto *r) {
+        glmvq_hc_split<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>((const float *)mix->ptr,
+            r, s, b, (float *)out->ptr, (float *)split->ptr, width, iterations, eps,
+            w, norm ? (float *)norm->ptr : nullptr, norm_eps);
+    };
+    if (format == DS4_GVQ_HC_BF16) { launch((const __nv_bfloat16 *)residual->ptr); }
+    else { launch((const float *)residual->ptr); }
     return cuda_ok(cudaGetLastError(), "GLM VQ mHC split");
 }
 
@@ -618,20 +622,24 @@ extern "C" int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
 }
 
 extern "C" int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
-        const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split, uint32_t rows, uint32_t width) {
+        const ds4_gpu_tensor *residual, ds4_gvq_hc format, const ds4_gpu_tensor *split,
+        uint32_t rows, uint32_t width) {
     const uint64_t count = (uint64_t)rows * width * GLMVQ_HC;
     if (!rows || !width || !gvq_floats(out, count) || !gvq_floats(residual, count) ||
         !gvq_floats(branch, count / GLMVQ_HC) || !gvq_floats(split, (uint64_t)rows * GLMVQ_HC_MIX)) { return 0; }
-    glmvq_hc_expand<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
-        (const float *)branch->ptr, (const float *)residual->ptr, (const float *)split->ptr,
-        (float *)out->ptr, width, count);
+    auto launch = [&](auto *r) {
+        glmvq_hc_expand<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+            (const float *)branch->ptr, r, (const float *)split->ptr, (float *)out->ptr, width, count);
+    };
+    if (format == DS4_GVQ_HC_BF16) { launch((const __nv_bfloat16 *)residual->ptr); }
+    else { launch((const float *)residual->ptr); }
     return cuda_ok(cudaGetLastError(), "GLM VQ mHC expand");
 }
 
 // Prefill rows only; 0 asks the caller for separate expand and mix.
 extern "C" int ds4_gpu_gvq_expand_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *mix,
-        const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split,
-        uint32_t weight, uint32_t rows, uint32_t width, float eps) {
+        const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
+        const ds4_gpu_tensor *split, uint32_t weight, uint32_t rows, uint32_t width, float eps) {
     const uint64_t count = (uint64_t)rows * width * GLMVQ_HC;
     const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16,
         (uint64_t)GLMVQ_HC_MIX * GLMVQ_HC * width);
@@ -640,9 +648,13 @@ extern "C" int ds4_gpu_gvq_expand_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4
         !gvq_floats(out, count) || !gvq_floats(residual, count) || !gvq_floats(branch, count / GLMVQ_HC) ||
         !gvq_floats(split, (uint64_t)rows * GLMVQ_HC_MIX) || !gvq_floats(mix, (uint64_t)rows * GLMVQ_HC_MIX) ||
         (uintptr_t)w % 16 || ((uintptr_t)residual->ptr | (uintptr_t)branch->ptr | (uintptr_t)out->ptr) % 16) { return 0; }
-    glmvq_hc_expand_mix<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32, 0, ds4_current_stream()>>>(
-        (const float *)branch->ptr, (const float *)residual->ptr, (const float *)split->ptr, (float *)out->ptr,
-        w, (float *)mix->ptr, rows, width, eps);
+    auto launch = [&](auto *r) {
+        glmvq_hc_expand_mix<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32, 0, ds4_current_stream()>>>(
+            (const float *)branch->ptr, r, (const float *)split->ptr, (__nv_bfloat16 *)out->ptr,
+            w, (float *)mix->ptr, rows, width, eps);
+    };
+    if (format == DS4_GVQ_HC_BF16) { launch((const __nv_bfloat16 *)residual->ptr); }
+    else { launch((const float *)residual->ptr); }
     return cuda_ok(cudaGetLastError(), "GLM VQ mHC expand mix");
 }
 

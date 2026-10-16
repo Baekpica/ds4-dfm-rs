@@ -100,18 +100,20 @@ static bool gvq_norm(ds4_glm53_gpu_graph *g, const ds4_model *m,
 
 static bool gvq_hc(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_tensor *fn, const ds4_tensor *scale, const ds4_tensor *base,
-        const ds4_tensor *norm, const ds4_gpu_tensor *residual, uint32_t rows) {
+        const ds4_tensor *norm, const ds4_gpu_tensor *residual, ds4_gvq_hc format, uint32_t rows) {
     // Source 286-329: mHC control arithmetic is FP32; collapse is BF16.
     // One kernel fuses the RMS and mapping dots (or the preceding expand
     // already did); the split applies the norm.
     const bool ready = g->gvq_mixed;
     g->gvq_mixed = false;
+    // Only the fused expand writes BF16 rows, and it also leaves their mix.
+    if (format == DS4_GVQ_HC_BF16 && !ready) { return false; }
     const bool mixed = ready || ds4_gpu_gvq_hc_mix(g->gvq, g->hc_mix, residual,
             glmvq_index(m, fn), DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS, rows) ||
         (ds4_gpu_gvq_rms(g->gvq, g->hc_flat, residual, NULL, DS4_GVQ_NO_LINK,
             rows, DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS, DS4_GVQ_PLAIN_RMS) &&
          gvq_mm(g, m, g->hc_mix, fn, g->hc_flat, rows, DS4_GVQ_F32));
-    return mixed && ds4_gpu_gvq_split(g->gvq, g->cur, g->hc_split, g->hc_mix, residual,
+    return mixed && ds4_gpu_gvq_split(g->gvq, g->cur, g->hc_split, g->hc_mix, residual, format,
             glmvq_index(m, scale), glmvq_index(m, base), rows, DS4_N_EMBD,
             DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS, g->norm, glmvq_index(m, norm), DS4_RMS_EPS);
 }
@@ -269,7 +271,9 @@ static bool gvq_trace(ds4_glm53_gpu_graph *g, uint32_t il, uint32_t rows, uint32
     const char *root = getenv("DS4_GLMVQ_TRACE");
     if (!root || !root[0] || pos) { return true; }
     const uint64_t hidden = (uint64_t)DS4_N_HC * DS4_N_EMBD * sizeof(float);
-    if (!gvq_trace_tensor(root, il, "last_hidden", g->hc_next, (rows - 1u) * hidden, hidden)) { return false; }
+    // BF16 rows trace as stored (half the bytes).
+    const uint64_t stored = g->gvq_packed ? hidden / 2u : hidden;
+    if (!gvq_trace_tensor(root, il, "last_hidden", g->hc_next, (rows - 1u) * stored, stored)) { return false; }
     if (il < DS4_N_LEADING_DENSE) { return true; }
     const uint64_t router = (uint64_t)DS4_N_EXPERT * sizeof(float);
     const uint64_t route = (uint64_t)DS4_N_EXPERT_USED * sizeof(float);
@@ -281,11 +285,13 @@ static bool gvq_trace(ds4_glm53_gpu_graph *g, uint32_t il, uint32_t rows, uint32
 // mHC expand; prefill rows also compute the next half's mix (`fn`) in the
 // same pass, consumed by the next gvq_hc. Windowed prefill revisits layers
 // per chunk, so it keeps them separate.
+// The fused expand writes BF16 rows (`out` then holds DS4_GVQ_HC_BF16).
 static bool gvq_expand(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
-        const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, const ds4_tensor *fn, uint32_t rows) {
+        const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, ds4_gvq_hc format,
+        const ds4_tensor *fn, uint32_t rows) {
     g->gvq_mixed = fn && !g->window_cap && ds4_gpu_gvq_expand_mix(g->gvq, out, g->hc_mix, branch, residual,
-        g->hc_split, glmvq_index(m, fn), rows, DS4_N_EMBD, DS4_RMS_EPS);
-    return g->gvq_mixed || ds4_gpu_gvq_expand(out, branch, residual, g->hc_split, rows, DS4_N_EMBD);
+        format, g->hc_split, glmvq_index(m, fn), rows, DS4_N_EMBD, DS4_RMS_EPS);
+    return g->gvq_mixed || ds4_gpu_gvq_expand(out, branch, residual, format, g->hc_split, rows, DS4_N_EMBD);
 }
 
 static bool gvq_layer(ds4_glm53_gpu_graph *g, const ds4_model *m,
@@ -293,16 +299,22 @@ static bool gvq_layer(ds4_glm53_gpu_graph *g, const ds4_model *m,
     const ds4_layer_weights *l = &w->layer[il];
     const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
     const ds4_tensor *next = il + 1u < layers ? w->layer[il + 1u].hc_attn_fn : NULL;
-    if (!gvq_hc(g, m, l->hc_attn_fn, l->hc_attn_scale, l->hc_attn_base, l->attn_norm, g->hc_cur, rows)) {
+    // hc_cur is the embedding (layer 0, MTP layer) or the previous layer's hc_next.
+    const ds4_gvq_hc cur = il && il < layers && !g->window_cap && g->gvq_packed ? DS4_GVQ_HC_BF16 : DS4_GVQ_HC_F32;
+    if (!gvq_hc(g, m, l->hc_attn_fn, l->hc_attn_scale, l->hc_attn_base, l->attn_norm, g->hc_cur, cur, rows)) {
         return false;
     }
     const bool attention = ds4_glm53_layer_is_kda(il)
         ? gvq_kda(g, m, l, il, rows) : gvq_dsa(g, m, l, il, pos, rows);
-    return attention && gvq_expand(g, m, g->hc_after_attn, g->attn_out, g->hc_cur, l->hc_ffn_fn, rows) &&
-        gvq_hc(g, m, l->hc_ffn_fn, l->hc_ffn_scale, l->hc_ffn_base, l->ffn_norm, g->hc_after_attn, rows) &&
+    if (!attention || !gvq_expand(g, m, g->hc_after_attn, g->attn_out, g->hc_cur, cur, l->hc_ffn_fn, rows)) {
+        return false;
+    }
+    const ds4_gvq_hc mid = g->gvq_mixed ? DS4_GVQ_HC_BF16 : DS4_GVQ_HC_F32;
+    const bool ok = gvq_hc(g, m, l->hc_ffn_fn, l->hc_ffn_scale, l->hc_ffn_base, l->ffn_norm, g->hc_after_attn, mid, rows) &&
         gvq_ffn(g, m, w, il, rows) &&
-        gvq_expand(g, m, g->hc_next, g->ffn_out, g->hc_after_attn, next, rows) &&
-        gvq_trace(g, il, rows, pos);
+        gvq_expand(g, m, g->hc_next, g->ffn_out, g->hc_after_attn, mid, next, rows);
+    g->gvq_packed = g->gvq_mixed;
+    return ok && gvq_trace(g, il, rows, pos);
 }
 
 static bool gvq_output(ds4_glm53_gpu_graph *g, const ds4_model *m,
