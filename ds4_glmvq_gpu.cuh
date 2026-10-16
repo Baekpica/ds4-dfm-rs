@@ -16,7 +16,7 @@ enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
-enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32 };
+enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32, GVQ_MMA8_TOKENS = 64 };
 // Widest MTP verify forward (first token + three drafts).
 enum { GVQ_VERIFY_ROWS = 4 };
 static_assert(GVQ_VERIFY_ROWS == GLMVQ_VER_ROWS, "verify kernels cover every MTP verify width");
@@ -56,6 +56,9 @@ struct ds4_gvq_ctx {
     int mma_blocks[3] = {};
     bool mma8 = false;
     int mma8_blocks[3] = {};
+    // 2,048-token chunks route ~57 tokens per expert: 64-token items decode
+    // each weight tile about once instead of twice (DS4_GLMVQ_MMA8_T64=0: 32).
+    uint32_t mma8_tokens = GVQ_MMA_TOKENS;
     std::vector<glmvq_mma_item> items;
     std::vector<uint32_t> order;
     std::vector<uint8_t> token_used;
@@ -352,12 +355,18 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         };
         if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) {
             if (!mma8 || strcmp(mma8, "0")) {
+                const char *t64 = getenv("DS4_GLMVQ_MMA8_T64");
+                const bool wide = !t64 || strcmp(t64, "0");
                 const cudaError_t fp8[] = {
-                    glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_GATE>(&ctx->mma8_blocks[0]),
-                    glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_UP>(&ctx->mma8_blocks[1]),
-                    glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_DOWN>(&ctx->mma8_blocks[2])
+                    wide ? glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA8_TOKENS, 1, GLMVQ_MMA_GATE>(&ctx->mma8_blocks[0])
+                         : glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_GATE>(&ctx->mma8_blocks[0]),
+                    wide ? glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA8_TOKENS, 1, GLMVQ_MMA_UP>(&ctx->mma8_blocks[1])
+                         : glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_UP>(&ctx->mma8_blocks[1]),
+                    wide ? glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA8_TOKENS, 1, GLMVQ_MMA_DOWN>(&ctx->mma8_blocks[2])
+                         : glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_DOWN>(&ctx->mma8_blocks[2])
                 };
                 ctx->mma8 = fp8[0] == cudaSuccess && fp8[1] == cudaSuccess && fp8[2] == cudaSuccess;
+                ctx->mma8_tokens = wide ? GVQ_MMA8_TOKENS : GVQ_MMA_TOKENS;
                 if (!ctx->mma8) {
                     (void)cudaGetLastError();
                     fprintf(stderr, "ds4: GLM VQ FP8 MMA unavailable; using BF16 register MMA\n");
@@ -1005,10 +1014,11 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     auto *work = (glmvq_mma_item *)cursor; cursor += pairs * sizeof(*work);
     auto *order = (uint32_t *)cursor;
     ctx->items.clear();
+    const uint32_t per_item = ctx->mma8 ? ctx->mma8_tokens : (uint32_t)GVQ_MMA_TOKENS;
     for (uint32_t e = 0; e < GVQ_EXPERTS; e++) {
-        for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += GVQ_MMA_TOKENS) {
+        for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += per_item) {
             ctx->items.push_back({{matrices[e], matrices[GVQ_EXPERTS + e], matrices[2 * GVQ_EXPERTS + e]},
-                start, min((uint32_t)GVQ_MMA_TOKENS, offsets[e + 1] - start)});
+                start, min(per_item, offsets[e + 1] - start)});
         }
     }
     std::fill(ctx->token_used.begin(), ctx->token_used.begin() + rows, 0);
@@ -1035,22 +1045,27 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         auto *xs = (float *)(x8 + count);
         auto *mid8 = (uint8_t *)(xs + count / GLMVQ_MMA8_K);
         auto *ms = (float *)(mid8 + pairs * GVQ_FFN);
-        constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, GVQ_MMA_TOKENS>();
-        constexpr uint32_t threads8 = glmvq_mma8_threads<GVQ_MMA_ROWS, 1>();
         const uint64_t xb = count / GLMVQ_MMA8_K, mb = pairs * GVQ_FFN / GLMVQ_MMA8_K;
         glmvq_mma8_quant<float><<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
             x8, xs, (const float *)input->ptr, xb);
-        glmvq_mma8_kernel<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_GATE><<<
-            min(nitems * (GVQ_FFN / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_blocks[0]), threads8, shared8, stream>>>(
-            source, work, nitems, book, x8, xs, grouped, GVQ_USED, gate, mid, down, GVQ_FFN, GVQ_HIDDEN, clamp);
-        glmvq_mma8_kernel<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_UP><<<
-            min(nitems * (GVQ_FFN / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_blocks[1]), threads8, shared8, stream>>>(
-            source, work, nitems, book, x8, xs, grouped, GVQ_USED, gate, mid, down, GVQ_FFN, GVQ_HIDDEN, clamp);
-        glmvq_mma8_quant<__nv_bfloat16><<<(uint32_t)((mb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
-            mid8, ms, mid, mb);
-        glmvq_mma8_kernel<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_DOWN><<<
-            min(nitems * (GVQ_HIDDEN / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_blocks[2]), threads8, shared8, stream>>>(
-            source, work, nitems, book, mid8, ms, grouped, GVQ_USED, gate, mid, down, GVQ_HIDDEN, GVQ_FFN, clamp);
+        auto launch = [&](auto tokens, auto mode, const uint8_t *in, const float *scale, uint32_t rows_out, uint32_t cols_in) {
+            constexpr uint32_t BT = decltype(tokens)::value;
+            constexpr glmvq_mma_stage MODE = decltype(mode)::value;
+            constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, BT>();
+            constexpr uint32_t threads8 = glmvq_mma8_threads<GVQ_MMA_ROWS, 1>();
+            glmvq_mma8_kernel<GVQ_MMA_ROWS, BT, 1, MODE><<<
+                min(nitems * (rows_out / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_blocks[MODE]), threads8, shared8, stream>>>(
+                source, work, nitems, book, in, scale, grouped, GVQ_USED, gate, mid, down, rows_out, cols_in, clamp);
+        };
+        auto stages = [&](auto tokens) {
+            launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_GATE>{}, x8, xs, GVQ_FFN, GVQ_HIDDEN);
+            launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, GVQ_FFN, GVQ_HIDDEN);
+            glmvq_mma8_quant<__nv_bfloat16><<<(uint32_t)((mb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
+                mid8, ms, mid, mb);
+            launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_DOWN>{}, mid8, ms, GVQ_HIDDEN, GVQ_FFN);
+        };
+        if (ctx->mma8_tokens == GVQ_MMA8_TOKENS) { stages(std::integral_constant<uint32_t, GVQ_MMA8_TOKENS>{}); }
+        else { stages(std::integral_constant<uint32_t, GVQ_MMA_TOKENS>{}); }
         glmvq_mma_reduce<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(
             (float *)out->ptr, down, (const float *)weights->ptr, grouped, order, GVQ_USED, GVQ_HIDDEN, count);
         return cuda_ok(cudaGetLastError(), "GLM VQ FP8 grouped MMA");

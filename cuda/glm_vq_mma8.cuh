@@ -35,9 +35,13 @@ __global__ void glmvq_mma8_quant(uint8_t *out, float *scales, const T *input, ui
     if (!lane) { scales[block] = scale; }
 }
 
+// 64-token items fit beside the 64 KiB book only with double buffering.
+template <uint32_t BT>
+__host__ __device__ constexpr uint32_t glmvq_mma8_stages() { return BT == 64 ? 2 : GLMVQ_MMA8_STAGES; }
+
 template <uint32_t BM, uint32_t BT>
 static constexpr uint32_t glmvq_mma8_bytes() {
-    return GLMVQ_BOOK_BYTES + GLMVQ_MMA8_STAGES *
+    return GLMVQ_BOOK_BYTES + glmvq_mma8_stages<BT>() *
         (BM * (GLMVQ_MMA8_INDEX + GLMVQ_MMA8_PLANE) + BT * (GLMVQ_MMA8_ROW + sizeof(float)));
 }
 
@@ -79,8 +83,10 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         const uint8_t *book, const uint8_t *act, const float *act_scale, const uint32_t *map,
         uint32_t used, float *gate, __nv_bfloat16 *mid, float *output,
         uint32_t rows, uint32_t cols, float limit) {
-    static_assert((BM == 128 || BM == 256) && (BT == 16 || BT == 32) && (MT == 1 || MT == 2), "bounded GLM tiles");
+    static_assert((BM == 128 || BM == 256) && (BT == 16 || BT == 32 || BT == 64) && (MT == 1 || MT == 2),
+        "bounded GLM tiles");
     constexpr uint32_t THREADS = glmvq_mma8_threads<BM, MT>(), NT = BT / 8, PREFETCH_AHEAD = 2;
+    constexpr uint32_t STAGES = glmvq_mma8_stages<BT>();
     constexpr uint32_t BSB = BM * GLMVQ_MMA8_INDEX, EXB = BM * GLMVQ_MMA8_PLANE;
     constexpr uint32_t ATB = BT * GLMVQ_MMA8_ROW, STB = BSB + EXB + ATB + BT * sizeof(float);
     static_assert(THREADS >= BT * 8 && THREADS >= BM, "one activation chunk and row per thread");
@@ -131,7 +137,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         const float *copy_scale = act_scale + (uint64_t)source_row(tid) * blocks;
         const uint32_t copy_dst = glmvq_mma8_swz(copy_t, copy_c / 2) + (copy_c % 2) * 16;
         auto issue = [&](uint32_t stage) {
-            uint8_t *dst = ring + (stage % GLMVQ_MMA8_STAGES) * STB;
+            uint8_t *dst = ring + (stage % STAGES) * STB;
             for (uint32_t i = tid; i < BM * 3; i += THREADS) {
                 const uint32_t r = i / 3, part = i % 3;
                 glmvq_mma_copy<8>(dst + r * GLMVQ_MMA8_INDEX + part * 8,
@@ -151,7 +157,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                     "l"(copy_scale + stage), "r"(tid < nt ? 4 : 0) : "memory");
             }
         };
-        for (uint32_t s0 = 0; s0 + 1 < GLMVQ_MMA8_STAGES; s0++) {
+        for (uint32_t s0 = 0; s0 + 1 < STAGES; s0++) {
             if (s0 < stages) { issue(s0); }
             asm volatile("cp.async.commit_group;" ::: "memory");
         }
@@ -161,14 +167,14 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
             constexpr uint32_t NNT = decltype(count)::value;
             for (uint32_t stage = 0; stage < stages; stage++) {
                 // Oldest group lands; the slot being refilled was read last stage.
-                asm volatile("cp.async.wait_group %0;" :: "n"(GLMVQ_MMA8_STAGES - 2) : "memory");
+                asm volatile("cp.async.wait_group %0;" :: "n"(STAGES - 2) : "memory");
                 __syncthreads();
-                if (stage + GLMVQ_MMA8_STAGES - 1 < stages) { issue(stage + GLMVQ_MMA8_STAGES - 1); }
+                if (stage + STAGES - 1 < stages) { issue(stage + STAGES - 1); }
                 asm volatile("cp.async.commit_group;" ::: "memory");
                 if (stage % (GLMVQ_PREFETCH_BYTES / GLMVQ_MMA8_INDEX) == 0) {
                     prefetch(stage / (GLMVQ_PREFETCH_BYTES / GLMVQ_MMA8_INDEX) + PREFETCH_AHEAD);
                 }
-                const uint8_t *src = ring + (stage % GLMVQ_MMA8_STAGES) * STB;
+                const uint8_t *src = ring + (stage % STAGES) * STB;
                 const uint32_t bit = (stage & 1u) * 16;
                 uint32_t w[MT][2][6], e[MT][2];
                 #pragma unroll
@@ -223,6 +229,8 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         if (nnt == 1) { run(std::integral_constant<uint32_t, 1>{}); }
         else if (nnt == 2) { run(std::integral_constant<uint32_t, 2>{}); }
         else if (nnt == 3) { run(std::integral_constant<uint32_t, (NT < 3 ? NT : 3)>{}); }
+        else if (nnt == 4 || NT == 4) { run(std::integral_constant<uint32_t, (NT < 4 ? NT : 4)>{}); }
+        else if (nnt <= 6) { run(std::integral_constant<uint32_t, (NT < 6 ? NT : 6)>{}); }
         else { run(std::integral_constant<uint32_t, NT>{}); }
         __syncthreads();
 
