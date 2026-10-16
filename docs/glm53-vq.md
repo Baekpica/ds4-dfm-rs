@@ -78,7 +78,7 @@ per token with the same Q4_K choice for its nonexpert weights.
   direct GEMVs for both absorptions and a single-pass flash kernel whose
   keys split across 48 CTAs, joined by a combine kernel.
 
-### Prefill (2048-token chunks)
+### Prefill (4096-row chunks)
 
 - **Experts on FP8 tensor cores.** The source model was trained and served
   with FP8 weights and dynamic 1×128 activation scaling. Codewords are E4M3,
@@ -87,15 +87,21 @@ per token with the same Q4_K choice for its nonexpert weights.
   its tensor-core partial sum to FP32 with its activation scale; the row gain
   multiplies the FP32 dot. The k32 reduction order is free as long as A and
   B agree, so lane q takes whole codeword 4k+q: one 8-byte book read fills two
-  A registers and B is eight source-order bytes. Three cp.async stages fit
-  beside the 64 KiB book in the 99 KiB opt-in shared-memory limit.
+  A registers and B is eight source-order bytes. Items carry up to 64 tokens
+  of one expert (two cp.async stages beside the 64 KiB book), so a weight tile
+  is decoded about once per chunk; the reduce adds the shared expert.
 - **KDA.** A token-parallel prep reproduces the recurrence's q/k/v, BF16 beta
   and decay argument exactly; the delta-rule chunk (UT transform) kernels
   shared with Solar/GLM run on them. Appends under 64 rows keep the recurrence.
 - **Attention.** One flash kernel per query row computes `softmax(q Cᵀ) C`
-  over the latent rows with BF16 tensor cores, without expanding K/V.
-- **Projections.** Q4_K uses the vendored MMQ path; FP8/BF16 restore to BF16
-  and use cuBLAS.
+  over the latent rows with BF16 tensor cores, without expanding K/V. Index
+  scores are BF16 MMAs folded over the 32 heads in registers, so no per-key
+  buffer exists and the context follows the model's native 1M.
+- **mHC.** Each expand writes the new four-stream residual and accumulates the
+  next half's RMS and 24 mapping dots in the same pass; the split collapses.
+- **Projections.** Q4_K uses the vendored MMQ path with F32 outputs; matrices
+  with one input (q/k/v, gate/up, q_a/kv_a) share one Q8_1 quantization.
+  FP8/BF16 restore to BF16 and use cuBLAS, sharing one BF16 input copy.
 
 ### MTP (one or two drafts)
 
@@ -136,6 +142,9 @@ RMS 0.23, KL 2.3e-7.
 | FP8 expert prefill | E4M3 activations, gain after the dot | RMS 0.20, KL 1.1e-7 | identical |
 | Flash DSA attention, absorption GEMVs | FP32 softmax/accumulation order | within noise band | identical |
 | MTP verify kernels | one-row order per row | not applicable | identical at 8K; near-tie flip on prose |
+| Prefill mHC mix in one pass, narrow RMS | F32 order | RMS 0.20, KL 2.1e-7 | identical |
+| F32 Q4_K prefill outputs | no BF16 boundary after MMQ | RMS 0.24, KL 1.2e-7 | identical |
+| Expand fused with the next mix | F32 order through Sinkhorn | RMS 0.32, KL 1.8e-6 | identical |
 
 Position, length, routing-table, cache and rollback state must stay exact;
 floating-point differences are judged by output quality, not bit identity.
@@ -158,6 +167,18 @@ first chunk paid lazy allocation and page-cache stalls).
 | Chunk 2,048 | 625.5 | 23.07 | fewer per-chunk weight passes |
 | Flash DSA attention | 688.4 | 23.39 | no K/V expansion, one pass |
 | Absorption GEMVs | 691.6 | 24.29 | direct q·W_k, low·W_v |
+| Fused mHC mix, Q4 epilogue, narrow RMS | 759.9 | 24.00 | one pass per row |
+| 64-token expert items | 794.5 | 23.69 | weight tiles decoded once |
+| 4,096-row chunks, lean attention buffers | 823.3 | 24.41 | workspace 12.0 → 7.1 GiB |
+| F32 Q4_K prefill outputs | 861.4 | 24.40 | no output pass |
+| Fused index scores | 874.3 | 23.42 | no per-key dot buffer |
+| Shared expert in the reduce | 881.8 | 24.51 | two passes per layer removed |
+| Expand fused with the next mix | 900.7 | 23.93 | residual read once |
+| Shared prepared inputs | 920.4 | 24.43 | one Q8_1/BF16 copy per input |
+
+Decode varies ±1.5% between fresh runs here; the prefill rows are the
+measured trend. From the Q4_K v3 row on, the warm-up prefill matches the
+chunk size.
 
 MTP, same artifact. The 8K bench continuation is a repeating loop (draft
 acceptance near 100% once the draft layer sees the prompt), so MTP gains
@@ -167,6 +188,13 @@ are reported on natural 3K-token prompts with 128 tokens:
 |---|---:|---:|---:|---|
 | Prose (technical notes) | 24.53 | 30.42 | 30.83 | 1.80 / 2.33 |
 | Code (C source) | 24.04 | 32.46 | 35.48 | 1.97 / 2.72 |
+
+## Measured performance
+
+The [2K–64K README sweep](benchmarks/glm53-vq-spark-64k-2026-10-16/README.md)
+(2,048-token incremental prefill, 128 tokens, three fresh processes) records
+826.7 prefill and 31.41 decode tok/s with two MTP drafts (24.07 without),
+falling 4.3% in prefill from 4K to 64K.
 
 ## Remaining bottlenecks
 

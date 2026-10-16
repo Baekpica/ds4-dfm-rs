@@ -147,6 +147,28 @@ The [September 30 index-packing pair](benchmarks/naive-2026-09-30/index-pack.md)
 remains historical. These results do not qualify DSpark acceleration or
 long-context serving; use the [family guide](naive-n05-flash.md) for those limits.
 
+## GLM-5.3 Flash VQ
+
+GLM-5.3 Flash with GVQ1 routed experts and the Q4_K nonexpert v3 selection
+([model card](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF)) recorded
+**826.7 prefill / 31.41 decode** with two embedded MTP drafts in the
+[October 16 2K–64K sweep](benchmarks/glm53-vq-spark-64k-2026-10-16/README.md).
+These are medians of three run means across 32 frontiers in three fresh
+`ds4-bench` processes on one DGX Spark / GB10: one warm session, 2,048-token
+incremental prefills and 128 forced greedy tokens per frontier. One MTP-off
+process records 830.6 / 24.07. Clock range 300–2200 MHz; busy clocks
+2,177–2,190 MHz.
+
+![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](benchmarks/glm53-vq-spark-64k-2026-10-16/throughput.png)
+
+Incremental prefill falls 4.3% from 4K (867.6) to 64K (830.2); the 2K point is
+each process's first prefill. MTP-off decode stays at 24.3 → 23.9. MTP decode
+follows draft acceptance on the generated text (25.8–39.3 per frontier). A cold
+8K prefill of the whole prompt measures 920 tok/s; the
+[GLM VQ page](glm53-vq.md) records the optimization steps, numerical contract
+and quality screens. Throughput does not qualify serving limits or long-context
+quality.
+
 ## DeepSeek V4.1
 
 DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and
