@@ -2062,6 +2062,10 @@ test-glm-vq-kda: tests/libglm_vq_test.so
 gguf-tools/libds4q.so: gguf-tools/quants.c gguf-tools/quants.h
 	$(CC) -O3 -fPIC -shared -o $@ $< -lm -pthread
 
+.PHONY: test-glm-vq-select-q4
+test-glm-vq-select-q4:
+	$(GLMVQ_PYTHON) tests/test_glm_vq_select_q4.py
+
 tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
 
