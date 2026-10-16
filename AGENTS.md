@@ -156,6 +156,20 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
   blind at first (GLM one-draft acceptance 0.63 → 0.97 within one run).
   Fill its KV during prefill. Check generated text for loops: a repeating
   bench continuation accepts ~100% and overstates MTP gains.
+- **Peaks.** `mma.sync` FP8/INT8 ~215 T(FL)OPS, F16/BF16 ~108; cuBLAS BF16
+  65–90 TFLOPS. Large sequential reads stream 250–265 GB/s.
+- **Store BF16-rounded rows as BF16.** F32 buffers of values already rounded
+  at a BF16 boundary doubled GLM residual and expert-output traffic; BF16
+  storage is lossless (prefill 1042 → 1121 tok/s).
+- **Dependent launch.** A GLM token runs ~1,300 kernels; PDL with weights
+  staged before the wait gave +1.8% decode, bit-identical. CUPTI durations
+  then include the wait: attribute with PDL off.
+- **Small copies and gathers lose.** TMA copies of 128-byte rows and
+  register-prefetched indices made the FP8 prefill kernel 31–50% slower;
+  tensor-core decode experts lost to SIMT (97 vs 212 GB/s, per-lane gathers).
+- **Multi-token SIMT GEMV is load-latency bound.** At three tokens the Q4_K
+  dot stalls on each token's input loads (long scoreboard, 40% issue); the
+  vendored MMQ/MMVQ stay at 150–190 GB/s.
 
 # Agent Notes
 

@@ -3,9 +3,11 @@
 
 Three fresh ds4-bench processes with two embedded MTP drafts, plus one
 MTP-off process for the plain decode reference. Requires matplotlib 3.11.
+usage: plot-glm53-vq-64k.py [DATA_DIR]   (default: the latest sweep)
 """
 import csv
 import json
+import sys
 from pathlib import Path
 from statistics import mean, median
 
@@ -15,7 +17,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-DATA = Path(__file__).with_name("glm53-vq-spark-64k-2026-10-16")
+DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("glm53-vq-spark-64k-2026-10-17")
+DATE = DATA.name[-10:]
 FRONTIERS = list(range(2048, 65537, 2048))
 GENERATED = 128
 RUNS = {"mtp2": 3, "plain": 1}
@@ -56,7 +59,7 @@ def plot(report):
                          "axes.spines.right": False, "savefig.facecolor": "white"})
     fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
     fig.suptitle("GLM-5.3 Flash · VQ + Q4_K nonexpert v3", fontsize=18, fontweight="bold", y=0.98)
-    fig.text(0.5, 0.93, "One DGX Spark / GB10 · 2K–64K card protocol · 2026-10-16",
+    fig.text(0.5, 0.93, f"One DGX Spark / GB10 · 2K–64K card protocol · {DATE}",
              ha="center", color="#4b5563")
     x = [f // 1024 for f in FRONTIERS]
     for ax, (metric, heading) in zip(axes, METRICS):

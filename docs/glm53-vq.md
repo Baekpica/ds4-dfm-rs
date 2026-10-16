@@ -52,7 +52,7 @@ parallel (about 20 s for the 74 GiB artifact on Spark).
 
 About 7.5 GB per token (9.6 GB with the source-precision projections and
 head). At the measured ~235–250 GB/s streaming ceiling that is a 30–32 ms
-wall; decode measures 41 ms. The DeepSeek V4.1 VQ engine reads about 6.3 GB
+wall; decode measures 40 ms. The DeepSeek V4.1 VQ engine reads about 6.3 GB
 per token with the same Q4_K choice for its nonexpert weights.
 
 ## Execution on GB10
@@ -77,6 +77,10 @@ per token with the same Q4_K choice for its nonexpert weights.
   latent attention (`(Q·W_k) Cᵀ`, `(P·C) W_vᵀ`) over the selected keys:
   direct GEMVs for both absorptions and a single-pass flash kernel whose
   keys split across 48 CTAs, joined by a combine kernel.
+- **Dependent launch.** A token runs about 1,300 short kernels. Decode and
+  verify widths launch them with programmatic dependent launch: each kernel
+  lets its successor start, which stages its constant weights (or prefetches
+  them to L2) and then waits for its inputs. `DS4_GLMVQ_PDL=0` turns it off.
 
 ### Prefill (4096-row chunks)
 
@@ -89,7 +93,9 @@ per token with the same Q4_K choice for its nonexpert weights.
   B agree, so lane q takes whole codeword 4k+q: one 8-byte book read fills two
   A registers and B is eight source-order bytes. Items carry up to 64 tokens
   of one expert (two cp.async stages beside the 64 KiB book), so a weight tile
-  is decoded about once per chunk; the reduce adds the shared expert.
+  is decoded about once per chunk; the reduce adds the shared expert. Gate
+  and down outputs are stored as BF16 (their rounding boundary), and the up
+  epilogue writes down's E4M3 rows and 1×128 scales itself.
 - **KDA.** One CTA per (64-token chunk, head) reads the raw q/k/v/forget rows
   once, reproduces the recurrence's inputs exactly and writes an operand record
   (q e^G, (k e^(G_last-G))ᵀ, −W, causal q·k in F16; U in F32). One CTA per head
@@ -97,6 +103,7 @@ per token with the same Q4_K choice for its nonexpert weights.
   F16 tensor cores (value-major, so state and V' accumulators repack in
   registers) and applies the gated output norm. The shared Solar kernels kept
   F32 planes and four passes (~2 GB per layer at 2,048 rows): 12.2 → 4.7 ms.
+  The forget and gate projections stay BF16 rows for these kernels.
   Appends under 64 rows keep the recurrence; `DS4_GLMVQ_KDA_MMA=0` restores
   the Solar chunks.
 - **Attention.** One flash kernel per query row computes `softmax(q Cᵀ) C`
@@ -105,6 +112,8 @@ per token with the same Q4_K choice for its nonexpert weights.
   buffer exists and the context follows the model's native 1M.
 - **mHC.** Each expand writes the new four-stream residual and accumulates the
   next half's RMS and 24 mapping dots in the same pass; the split collapses.
+  The residual holds BF16-rounded values, so prefill stores it as BF16
+  (32 KB per row instead of 64).
 - **Projections.** Q4_K uses the vendored MMQ path with F32 outputs; matrices
   with one input (q/k/v, gate/up, q_a/kv_a) share one Q8_1 quantization.
   FP8/BF16 restore to BF16 and use cuBLAS, sharing one BF16 input copy.
@@ -152,6 +161,8 @@ RMS 0.23, KL 2.3e-7.
 | F32 Q4_K prefill outputs | no BF16 boundary after MMQ | RMS 0.24, KL 1.2e-7 | identical |
 | Expand fused with the next mix | F32 order through Sinkhorn | RMS 0.32, KL 1.8e-6 | identical |
 | Tensor-core KDA chunks | F16 operands (k F32, V' in two halves) | RMS 0.25, KL 7.9e-7 | identical |
+| BF16 storage of BF16-rounded rows (residual, expert gate/down, KDA gates) | identical values | bit-identical | identical |
+| Fused down quantization, scan staging, dependent launch | identical order | bit-identical | identical |
 
 On the text-quality cases the tensor-core KDA moves the paired NLL by
 +0.008 ± 0.006 (standard error) nat/token against the F32 recurrence, with
@@ -188,36 +199,63 @@ first chunk paid lazy allocation and page-cache stalls).
 | Expand fused with the next mix | 900.7 | 23.93 | residual read once |
 | Shared prepared inputs | 920.4 | 24.43 | one Q8_1/BF16 copy per input |
 | Tensor-core KDA chunks | 1042.3 | 24.49 | one operand record, F16 MMA scan |
+| BF16 mHC residuals | 1081.3 | 23.72 | half the residual traffic |
+| BF16 expert gate/down outputs | 1120.9 | 23.81 | 400 MB less per layer at 2,048 rows |
+| Down input quantized in the up epilogue | 1132.8 | 23.78 | one pass removed |
+| BF16 KDA gate rows | 1145.7 | 24.33 | no widening pass |
+| Dependent decode launch | 1153.1 | 24.68 | kernels stage weights early |
 
 Decode varies ±1.5% between fresh runs here; the prefill rows are the
 measured trend. From the Q4_K v3 row on, the warm-up prefill matches the
-chunk size.
+chunk size. Rows from the BF16 residuals on were measured on 2026-10-17
+(two-run mean for that row). The dependent launch was judged on 512-token
+decodes at 2K, interleaved fresh runs: 24.55/24.78 → 25.09/25.12 tok/s.
 
 MTP, same artifact. The 8K bench continuation is a repeating loop (draft
 acceptance near 100% once the draft layer sees the prompt), so MTP gains
-are reported on natural 3K-token prompts with 128 tokens:
+are reported on natural 3K-token prompts with 128 tokens (`60d0b689`; the
+October 16 build in parentheses):
 
 | Prompt | MTP off | 1 draft | 2 drafts | Tokens per verify (1 / 2) |
 |---|---:|---:|---:|---|
-| Prose (technical notes) | 24.53 | 30.42 | 30.83 | 1.80 / 2.33 |
-| Code (C source) | 24.04 | 32.46 | 35.48 | 1.97 / 2.72 |
+| Prose (technical notes) | 25.20 (24.53) | 30.42 (30.42) | 32.92 (30.83) | 1.83 / 2.46 (1.80 / 2.33) |
+| Code (C source) | 24.87 (24.04) | 33.06 (32.46) | 35.24 (35.48) | 1.97 / 2.72 (1.97 / 2.72) |
 
 ## Measured performance
 
-The [2K–64K README sweep](benchmarks/glm53-vq-spark-64k-2026-10-16/README.md)
+The [2K–64K README sweep](benchmarks/glm53-vq-spark-64k-2026-10-17/README.md)
 (2,048-token incremental prefill, 128 tokens, three fresh processes) records
-826.7 prefill and 31.41 decode tok/s with two MTP drafts (24.07 without),
-falling 4.3% in prefill from 4K to 64K.
+1,030.9 prefill and 30.04 decode tok/s with two MTP drafts (1,022.6 / 24.82
+without), falling 5.6% in prefill from 4K to 64K. The
+[October 16 sweep](benchmarks/glm53-vq-spark-64k-2026-10-16/README.md) recorded
+826.7 / 31.41 (24.07 without); its continuations accepted more drafts (2.38
+against 2.26 tokens per verify), so compare per-token speed on the MTP-off line.
 
 ## Remaining bottlenecks
 
-- **Decode bytes and Q4_K rate.** Q4_K streams at ~211 GB/s and is half the
-  decode time; routed experts run at ~190–200 GB/s.
-- **Decode dispatch.** About 1,900 kernels per token; CUDA graphs with
-  device-resident positions and programmatic dependent launch are the next
-  structural step (the DeepSeek VQ engine measured 43.9 → 32.5 ms per token).
-- **Verify width.** Each MTP row adds nearly a full routed-expert pass;
-  multi-token Q4_K also slows past two tokens (L1/L2 input traffic).
-- **Prefill experts.** The FP8 kernel runs near 60 TFLOPS with hot weights and
+- **Decode bytes and Q4_K rate.** Q4_K (4.4 GB per token) is half the decode
+  time: one-token GEMVs stream at 160–264 GB/s by shape, routed experts at
+  ~210 GB/s. At ~250 GB/s the 7.5 GB floor is ~30 ms; decode measures 40 ms.
+- **Decode dispatch.** About 1,300 kernels per token. Dependent launch hides
+  part of the gaps; CUDA graphs with device-resident positions remain (the
+  DeepSeek VQ engine measured 43.9 → 32.5 ms per token).
+- **Verify width.** A two-draft cycle (three verify rows) takes ~78 ms on
+  prose. Three-token Q4_K runs at 126–224 GB/s: the SIMT dot loads every
+  token's input per weight block and stalls on those loads (NCU: long
+  scoreboard, 40% issue). Each verify row adds nearly a full routed-expert
+  pass at ~165 GB/s.
+- **Prefill experts.** The FP8 kernel runs at ~25% of the FP8 tensor peak and
   is bound by shared-memory instruction pressure and barriers; at 2,048-token
   chunks the weight stream (~1.5 GB per layer) also sets a DRAM floor.
+
+Measured and not kept, so they need a new idea before another attempt:
+
+| Variant | Result |
+|---|---|
+| Tensor-core decode experts (E4M3 activations, `m16n8k32`) | 97 GB/s at one row vs 212 SIMT: per-lane index gathers, register spills |
+| FP8 prefill experts: TMA copies of 128-byte token rows | bit-identical, 31% slower |
+| FP8 prefill experts: 8 warps, register-prefetched indices | bit-identical, 50% slower (barriers, latency) |
+| KDA local kernel: persistent CTAs / L2 prefetch of the next item | 11% / 25% slower |
+| Selected-pool sort before flash attention | +0.7% prefill; logit RMS 0.79, KL 2.4e-6 (beyond the noise band) |
+| Q4_K decode split capped at 18 KiB staging | 187 → 238 GB/s isolated on 4096×16384; decode −0.75% in the model |
+| Vendored MMQ / MMVQ at verify widths | flat 150–190 GB/s, no better than the SIMT kernel |
