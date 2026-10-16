@@ -51,6 +51,10 @@ pub(super) fn asset(root: &std::path::Path, name: &str) -> Result<Vec<u8>> {
     release::asset(root, name)
 }
 
+pub(super) fn part_bytes(root: &std::path::Path) -> Result<u64> {
+    release::part_bytes(root)
+}
+
 pub(super) fn metadata(root: &std::path::Path) -> Result<GgufFile> {
     let (path, _) = release::first_part(root)?;
     Ok(GgufFile::open(&path)?)

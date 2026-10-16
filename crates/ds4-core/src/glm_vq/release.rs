@@ -106,21 +106,38 @@ pub(super) fn asset(root: &Path, name: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(super) fn first_part(root: &Path) -> Result<(std::path::PathBuf, u32)> {
+// The `.gguf` parts files.json lists, sorted.
+fn parts(root: &Path) -> Result<Vec<String>> {
     let files = json(&json_bytes(&root.join("files.json"))?)?;
     let mut parts = Vec::new();
     for entry in array(&files, "files")? {
         let name = text(entry, "path")?;
         filename(name)?;
         if name.ends_with(".gguf") {
-            parts.push(name);
+            parts.push(name.to_owned());
         }
     }
     parts.sort_unstable();
     if parts.is_empty() || parts.windows(2).any(|p| p[0] == p[1]) {
         return Err(fail("missing/duplicate release parts"));
     }
-    Ok((root.join(parts[0]), parts.len() as u32))
+    Ok(parts)
+}
+
+pub(super) fn first_part(root: &Path) -> Result<(std::path::PathBuf, u32)> {
+    let parts = parts(root)?;
+    Ok((root.join(&parts[0]), parts.len() as u32))
+}
+
+/// On-disk bytes of every part: the span the model maps. Hashes are checked
+/// when the release opens, not here.
+pub(super) fn part_bytes(root: &Path) -> Result<u64> {
+    parts(root)?.iter().try_fold(0u64, |total, name| {
+        let len = std::fs::metadata(root.join(name))
+            .map_err(GgufError::Io)?
+            .len();
+        Ok(total.saturating_add(len))
+    })
 }
 
 fn check_tensor(g: &GgufFile, tensor: &TensorInfo, entry: &Value) -> Result<()> {

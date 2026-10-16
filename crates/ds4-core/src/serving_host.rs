@@ -830,6 +830,11 @@ fn artifact_span_bytes(path: Option<&Path>) -> u64 {
 }
 
 pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
+    // A GVQ1 release directory maps its named parts; an unreadable listing
+    // prices 0 here and fails validation when the model opens.
+    if path.is_dir() {
+        return crate::glm_vq::part_bytes(path).unwrap_or(0);
+    }
     let count = split_count.max(1);
     if count == 1 {
         return file_len(Some(path));
@@ -2914,6 +2919,25 @@ mod tests {
                 "env {mb}"
             );
         }
+    }
+
+    #[test]
+    fn gguf_span_bytes_sums_named_release_parts() {
+        // A GVQ1 release is a directory of named parts listed in files.json.
+        let dir = std::env::temp_dir().join(format!("ds4-quote-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, len) in [("a.gguf", 100usize), ("b.gguf", 40), ("README.md", 7)] {
+            std::fs::write(dir.join(name), vec![0u8; len]).unwrap();
+        }
+        std::fs::write(
+            dir.join("files.json"),
+            r#"{"files":[{"path":"a.gguf"},{"path":"b.gguf"},{"path":"README.md"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(gguf_span_bytes(&dir, 2), 140);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
