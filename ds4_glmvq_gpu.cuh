@@ -719,13 +719,20 @@ static int gvq_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor
     const uint64_t nq = (uint64_t)rows * heads * dim;
     const long long wstride = (long long)2 * dim * latent;
     const float alpha = 1.0f, beta = 0.0f;
-    glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
-        (const float *)query->ptr, q, nq);
+    // One decode row: direct GEMVs read F32 rows in place (cuBLAS N=1 ran
+    // at 90-215 GB/s). Wider rows keep the tensor-core GEMMs.
+    const bool gemv = rows == 1 && ctx->direct_bf16;
+    if (gemv) {
+        glmvq_absorb_k<<<heads, latent / 2, 0, ctx->stream>>>(qlow, (const float *)query->ptr, weight);
+    } else {
+        glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+            (const float *)query->ptr, q, nq);
+    }
     if (!cuda_ok(cudaGetLastError(), "GLM VQ flash query") ||
-        !cublas_ok(cublasGemmStridedBatchedEx(ctx->handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        (!gemv && !cublas_ok(cublasGemmStridedBatchedEx(ctx->handle, CUBLAS_OP_N, CUBLAS_OP_N,
             latent, rows, dim, &alpha, weight, CUDA_R_16BF, latent, wstride,
             q, CUDA_R_16BF, heads * dim, dim, &beta, qlow, CUDA_R_16BF, heads * latent, latent,
-            heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ flash q absorb")) { return 0; }
+            heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ flash q absorb"))) { return 0; }
     const uint32_t slots = selected ? stride : keys;
     const uint32_t tiles = (slots + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
     const uint32_t splits = rows == 1 ? min(tiles, (uint32_t)GVQ_FLASH_SPLITS) : 1;
@@ -738,6 +745,11 @@ static int gvq_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor
         splits > 1 ? per : UINT32_MAX, 1.0f / sqrtf((float)dim));
     if (splits > 1) {
         glmvq_fa_combine<<<dim3(rows, heads), latent / 2, 0, ctx->stream>>>(low, partial, stats, splits);
+    }
+    if (gemv) {
+        glmvq_absorb_v<<<heads * dim / 8, 256, 0, ctx->stream>>>((float *)out->ptr, low, weight);
+        ctx->flash_calls++;
+        return cuda_ok(cudaGetLastError(), "GLM VQ flash v absorb");
     }
     if (!cuda_ok(cudaGetLastError(), "GLM VQ flash attention") ||
         !cublas_ok(cublasGemmStridedBatchedEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N,

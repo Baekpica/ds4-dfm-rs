@@ -72,6 +72,36 @@ int main() {
         failures += !(sqrt(num / den) < 0.004);
         cudaFree(dq); cudaFree(dlow); cudaFree(dpos); cudaFree(dsel); if (part) { cudaFree(part); cudaFree(stats); }
     }
+    {   // decode absorption GEMVs vs FP64 on the same BF16-rounded inputs
+        const uint32_t A = GLMVQ_ABS_DIM;
+        std::vector<__nv_bfloat16> w((size_t)H * 2 * A * D), low((size_t)H * D);
+        std::vector<float> q((size_t)H * A);
+        for (auto &v : w) { v = __float2bfloat16_rn(nd(rng) * 0.05f); }
+        for (auto &v : low) { v = __float2bfloat16_rn(nd(rng)); }
+        for (auto &v : q) { v = nd(rng); }
+        __nv_bfloat16 *dw = up(w), *dlow = up(low), *dql; float *dqv = up(q), *dout;
+        CK(cudaMalloc(&dql, (size_t)H * D * 2)); CK(cudaMalloc(&dout, (size_t)H * A * 4));
+        glmvq_absorb_k<<<H, D / 2>>>(dql, dqv, dw);
+        glmvq_absorb_v<<<H * A / 8, 256>>>(dout, dlow, dw);
+        CK(cudaDeviceSynchronize());
+        auto ql = down(dql, (size_t)H * D); auto out = down(dout, (size_t)H * A);
+        double nk = 0, dk = 0, nv = 0, dv = 0;
+        for (uint32_t h = 0; h < H; h++) {
+            for (uint32_t l = 0; l < D; l++) {
+                double ref = 0;
+                for (uint32_t d = 0; d < A; d++) { ref += (double)__bfloat162float(__float2bfloat16_rn(q[(size_t)h * A + d])) * __bfloat162float(w[((size_t)h * 2 * A + d) * D + l]); }
+                const double g = __bfloat162float(ql[(size_t)h * D + l]); nk += (g - ref) * (g - ref); dk += ref * ref;
+            }
+            for (uint32_t c = 0; c < A; c++) {
+                double ref = 0;
+                for (uint32_t l = 0; l < D; l++) { ref += (double)__bfloat162float(low[(size_t)h * D + l]) * __bfloat162float(w[((size_t)h * 2 * A + A + c) * D + l]); }
+                const double g = out[(size_t)h * A + c]; nv += (g - ref) * (g - ref); dv += ref * ref;
+            }
+        }
+        printf("absorb k relRMS %.3g, v relRMS %.3g\n", sqrt(nk / dk), sqrt(nv / dv));
+        failures += !(sqrt(nk / dk) < 0.004) + !(sqrt(nv / dv) < 0.004);
+        cudaFree(dw); cudaFree(dlow); cudaFree(dql); cudaFree(dqv); cudaFree(dout);
+    }
     printf(failures ? "FAIL %d\n" : "GLMVQ_FLASH_PASS\n", failures);
     return failures != 0;
 }
