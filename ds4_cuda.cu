@@ -45853,10 +45853,13 @@ static __device__ __forceinline__ float solar_kda_silu(float x) {
  * a sigmoid decay by the same constant and use a plain sigmoid beta; they
  * differ only in how ssm_a reaches the kernel, which is A_log on GLM and
  * already exponentiated in the Ling artifact. */
-enum { DS4_KDA_SOLAR = 0u, DS4_KDA_GLM53 = 1u, DS4_KDA_LING3VL = 2u };
+enum { DS4_KDA_SOLAR = 0u, DS4_KDA_GLM53 = 1u, DS4_KDA_LING3VL = 2u, DS4_KDA_GLMVQ = 3u };
 
+/* GLMVQ passes betas its own prep already rounded at the source BF16
+ * boundary; the chunk factor kernel then takes them unchanged. */
 static __device__ __forceinline__ float kda_delta_beta(
         float logit, uint32_t variant) {
+    if (variant == DS4_KDA_GLMVQ) return logit;
     return (variant != DS4_KDA_SOLAR ? 1.0f : 2.0f) / (1.0f + expf(-logit));
 }
 

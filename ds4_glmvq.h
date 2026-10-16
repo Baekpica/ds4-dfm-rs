@@ -84,7 +84,9 @@ int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     ds4_gpu_tensor *mid, ds4_gpu_tensor *down, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
     const uint32_t *matrices, uint32_t rows, float clamp);
-int ds4_gpu_gvq_kda(ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+/* Chunked prefill planes for `rows` tokens; 0 when rows use the recurrence. */
+uint64_t ds4_gpu_gvq_kda_bytes(uint32_t rows, uint32_t heads);
+int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,
     ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
     const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
     const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,

@@ -11,6 +11,7 @@ static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
     const uint32_t head_type = direct && !strcmp(direct, "0") ? DS4_TENSOR_Q4_K : DS4_TENSOR_BF16;
     const uint64_t candidates[] = {
         ds4_gpu_gvq_index_bytes(rows, (ctx + DS4_GLM53_POOL_SIZE - 1u) / DS4_GLM53_POOL_SIZE),
+        ds4_gpu_gvq_kda_bytes(rows, DS4_N_HEAD),
         ds4_gpu_gvq_linear_bytes(DS4_N_FF_DENSE, DS4_N_EMBD, rows,
             DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(DS4_N_EMBD, DS4_N_HEAD * DS4_N_KEY_MLA, rows,
@@ -99,7 +100,7 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
         !gvq_mm(g, m, g->kv_rank, l->kda_beta, g->norm, rows, DS4_GVQ_BF16) ||
         !gvq_mm(g, m, g->q_rank, l->kda_g_a, g->norm, rows, DS4_GVQ_BF16) ||
         !gvq_mm(g, m, g->ffn_gate, l->kda_g_b, g->q_rank, rows, DS4_GVQ_BF16)) { return false; }
-    return ds4_gpu_gvq_kda(g->ffn_up, g->recurrent[il],
+    return ds4_gpu_gvq_kda(g->gvq, g->ffn_up, g->recurrent[il],
         g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],
         g->q, g->k, g->v, g->heads, g->kv_rank, g->q_conv_weight[il],
         g->k_conv_weight[il], g->v_conv_weight[il], g->decay_scale[il],

@@ -83,4 +83,56 @@ __global__ void glmvq_kda(float *output, float *state,
     }
 }
 
+/* Chunked-prefill inputs, token-parallel and bit-identical to glmvq_kda's
+ * per-token q/k/v, beta and decay argument: planes are head-major
+ * [head][token][dim] (the chunk factor/scan layout), the decay stays in log
+ * space and beta is already rounded at its BF16 boundary. Tokens 0-2 read
+ * the conv tail left by the previous call; the tail itself advances later. */
+__global__ void glmvq_kda_prep(float *qn, float *kn, float *vv, float *gl, float *betas,
+        const float *q_tail, const float *k_tail, const float *v_tail,
+        const float *q_raw, const float *k_raw, const float *v_raw,
+        const float *forget, const float *beta_logits,
+        const float *q_weight, const float *k_weight, const float *v_weight,
+        const float *a_log, const float *dt_bias, uint32_t rows,
+        uint32_t heads, float lower_bound) {
+    const uint32_t t = blockIdx.x, head = blockIdx.y, d = threadIdx.x;
+    const uint32_t dim = GLMVQ_KDA_DIM;
+    const uint64_t channel = (uint64_t)head * dim + d, width = (uint64_t)heads * dim;
+    __shared__ float qs[GLMVQ_KDA_DIM], ks[GLMVQ_KDA_DIM];
+    const float scale = __fdiv_rn(1.0f, __fsqrt_rn((float)dim));
+    float qc = 0.0f, kc = 0.0f, vc = 0.0f;
+    for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
+        const int32_t src = (int32_t)t - (int32_t)(GLMVQ_CONV - 1) + (int32_t)tap;
+        const uint64_t at = (uint64_t)src * width + channel;
+        const uint64_t slot = channel * GLMVQ_CONV + (uint32_t)((int32_t)GLMVQ_CONV + src);
+        const uint64_t w = channel * GLMVQ_CONV + tap;
+        qc = glmvq_add(qc, glmvq_mul(src >= 0 ? q_raw[at] : q_tail[slot], q_weight[w]));
+        kc = glmvq_add(kc, glmvq_mul(src >= 0 ? k_raw[at] : k_tail[slot], k_weight[w]));
+        vc = glmvq_add(vc, glmvq_mul(src >= 0 ? v_raw[at] : v_tail[slot], v_weight[w]));
+    }
+    qc = glmvq_round(qc); kc = glmvq_round(kc); vc = glmvq_round(vc);
+    float q = glmvq_round(__fdiv_rn(qc, glmvq_add(1.0f, expf(-qc))));
+    float k = glmvq_round(__fdiv_rn(kc, glmvq_add(1.0f, expf(-kc))));
+    const float v = glmvq_round(__fdiv_rn(vc, glmvq_add(1.0f, expf(-vc))));
+    qs[d] = glmvq_mul(q, q); ks[d] = glmvq_mul(k, k);
+    __syncthreads();
+    for (uint32_t stride = dim / 2; stride; stride /= 2) {
+        if (d < stride) {
+            qs[d] = glmvq_add(qs[d], qs[d + stride]);
+            ks[d] = glmvq_add(ks[d], ks[d + stride]);
+        }
+        __syncthreads();
+    }
+    q = glmvq_mul(__fdiv_rn(q, __fsqrt_rn(glmvq_add(qs[0], 1.0e-6f))), scale);
+    k = __fdiv_rn(k, __fsqrt_rn(glmvq_add(ks[0], 1.0e-6f)));
+    const float g = glmvq_add(forget[(uint64_t)t * width + channel], dt_bias[channel]);
+    const uint64_t row = ((uint64_t)head * rows + t) * dim + d;
+    qn[row] = q; kn[row] = k; vv[row] = v;
+    gl[row] = glmvq_mul(lower_bound, glmvq_sigmoid(glmvq_mul(expf(a_log[head]), g)));
+    if (!d) {
+        const uint64_t at = (uint64_t)t * heads + head;
+        betas[at] = glmvq_round(glmvq_sigmoid(beta_logits[at]));
+    }
+}
+
 #endif
