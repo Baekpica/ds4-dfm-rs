@@ -444,14 +444,10 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
                 s.rows, s.cols, rows, ctx->stream, &ctx->q4), "GLM VQ Q4 decode");
         }
         // Wide projections reuse the established Q4_K x Q8_1 MMQ primitive.
-        // Keep the source BF16 output boundary; Q8 input error is assessed
-        // separately from the new weight quantization.
-        if (ds4_mmq_q4_K_dense(s.data, (const float *)input->ptr, (float *)out->ptr,
-            s.rows, rows, s.cols, ctx->stream) != 0) { return 0; }
-        const uint64_t count = (uint64_t)rows * s.rows;
-        glmvq_round_rows<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
-            (float *)out->ptr, count);
-        return cuda_ok(cudaGetLastError(), "GLM VQ Q4 BF16 output");
+        // Keep the source BF16 output boundary (rounded in its sanitize
+        // pass); Q8 input error is assessed separately from the weights.
+        return ds4_mmq_q4_K_dense_bf16(s.data, (const float *)input->ptr, (float *)out->ptr,
+            s.rows, rows, s.cols, ctx->stream) == 0 && cuda_ok(cudaGetLastError(), "GLM VQ Q4 MMQ");
     }
     return cublas_ok(glmvq_gemm(ctx->handle, s, (const float *)input->ptr, (float *)out->ptr,
         rows, (glmvq_compute)math, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream,
@@ -467,6 +463,12 @@ extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const __nv_bfloat16 *w = kind == DS4_GVQ_PLAIN_RMS ? nullptr :
         (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, width);
     if ((kind != DS4_GVQ_PLAIN_RMS && !w) || kind > DS4_GVQ_PLAIN_RMS) { return 0; }
+    if (width <= GLMVQ_RMS_NARROW && width % 32 == 0) {
+        glmvq_rms_warp<<<(rows + GLMVQ_RMS_ROWS - 1) / GLMVQ_RMS_ROWS, GLMVQ_RMS_ROWS * 32, 0, ds4_current_stream()>>>(
+            (const float *)input->ptr, w, gate ? (const float *)gate->ptr : nullptr,
+            (float *)out->ptr, rows, width, eps, (glmvq_norm)kind);
+        return cuda_ok(cudaGetLastError(), "GLM VQ RMS");
+    }
     glmvq_rms<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
         (const float *)input->ptr, w, gate ? (const float *)gate->ptr : nullptr,
         (float *)out->ptr, width, eps, (glmvq_norm)kind);
@@ -494,11 +496,16 @@ extern "C" int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
         const ds4_gpu_tensor *residual, uint32_t weight, uint32_t width, float eps, uint32_t rows) {
     const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16,
         (uint64_t)GLMVQ_HC_MIX * width);
-    if (!ctx->direct_bf16 || !w || !width || width % (GLMVQ_THREADS * GLMVQ_DOT_VECTOR) ||
-        !rows || rows > GVQ_VERIFY_ROWS ||
+    if (!ctx->direct_bf16 || !w || !width || width % (GLMVQ_THREADS * GLMVQ_DOT_VECTOR) || !rows ||
         ctx->model->records[weight].rows != GLMVQ_HC_MIX || ctx->model->records[weight].cols != width ||
         !gvq_floats(mix, (uint64_t)rows * GLMVQ_HC_MIX) || !gvq_floats(residual, (uint64_t)rows * width) ||
         (uintptr_t)w % 16 || (uintptr_t)residual->ptr % 16) { return 0; }
+    // Decode and verify rows keep the one-row order; prefill rows share W tiles.
+    if (rows > GVQ_VERIFY_ROWS) {
+        glmvq_hc_mix_rows<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32, 0,
+            ds4_current_stream()>>>((const float *)residual->ptr, w, (float *)mix->ptr, rows, width, eps);
+        return cuda_ok(cudaGetLastError(), "GLM VQ mHC mix rows");
+    }
     glmvq_hc_mix<<<dim3(GLMVQ_HC_MIX, rows), GLMVQ_THREADS, 0, ds4_current_stream()>>>(
         (const float *)residual->ptr, w, (float *)mix->ptr, width, eps);
     return cuda_ok(cudaGetLastError(), "GLM VQ mHC mix");

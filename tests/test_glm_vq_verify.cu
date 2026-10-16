@@ -105,6 +105,28 @@ static int fp8_case(uint32_t rows, uint32_t cols, uint32_t tokens) {
     return differ != 0;
 }
 
+// Prefill mHC mix (inv * Σ W x, one pass) vs the decode kernel (Σ W (x * inv)).
+static int mix_case(uint32_t rows) {
+    const uint32_t width = 16384;
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<__nv_bfloat16> w((size_t)GLMVQ_HC_MIX * width);
+    std::vector<float> x((size_t)rows * width);
+    for (auto &v : w) { v = __float2bfloat16_rn(nd(rng) * 0.02f); }
+    for (auto &v : x) { v = nd(rng) * 3.0f; }
+    __nv_bfloat16 *dw = up(w); float *dx = up(x), *a, *b;
+    CK(cudaMalloc(&a, (size_t)rows * GLMVQ_HC_MIX * 4)); CK(cudaMalloc(&b, (size_t)rows * GLMVQ_HC_MIX * 4));
+    glmvq_hc_mix_rows<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32>>>(dx, dw, a, rows, width, 1e-6f);
+    glmvq_hc_mix<<<dim3(GLMVQ_HC_MIX, rows), GLMVQ_THREADS>>>(dx, dw, b, width, 1e-6f);
+    CK(cudaDeviceSynchronize());
+    auto ga = down(a, (size_t)rows * GLMVQ_HC_MIX), gb = down(b, (size_t)rows * GLMVQ_HC_MIX);
+    double num = 0, den = 0;
+    for (size_t i = 0; i < ga.size(); i++) { num += (ga[i] - gb[i]) * (ga[i] - gb[i]); den += (double)gb[i] * gb[i]; }
+    const double rel = sqrt(num / den);
+    printf("mHC mix rows=%u: relRMS %.2g %s\n", rows, rel, rel < 1e-5 ? "ok" : "FAIL");
+    cudaFree(dw); cudaFree(dx); cudaFree(a); cudaFree(b);
+    return !(rel < 1e-5);
+}
+
 static int absorb_case(uint32_t rows) {
     const uint32_t H = GLMVQ_FA_HEADS, A = GLMVQ_ABS_DIM, D = GLMVQ_FA_LATENT;
     std::normal_distribution<float> nd(0, 1);
@@ -246,6 +268,7 @@ int main() {
         failures += fp8_case(4096, 8192, tokens);   // MTP eh_proj
         failures += fp8_case(512, 4096, tokens);    // kv_a
     }
+    failures += mix_case(37);
     failures += vq_case(blocks);
     printf(failures ? "FAIL %d\n" : "GLMVQ_VERIFY_PASS\n", failures);
     return failures != 0;

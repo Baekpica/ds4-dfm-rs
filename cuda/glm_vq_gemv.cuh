@@ -152,4 +152,51 @@ __global__ void __launch_bounds__(GLMVQ_THREADS) glmvq_hc_mix(const float *resid
     mix[blockIdx.x] = dot;
 }
 
+/* Prefill mHC mix: the 16K-wide RMS (written out) plus a cuBLAS F32 GEMM
+ * with 24 outputs read every residual row twice and wrote it once, 0.9 s of
+ * an 8K prefill. One pass now accumulates each row's square sum and its 24
+ * raw dots, then scales by the RMS reciprocal: mix = inv * Σ W x instead of
+ * Σ W (x * inv), an F32 reordering. Warp w of a block owns row w; each
+ * 512-column W tile is staged once per block. */
+enum { GLMVQ_MIX_TILE = 512, GLMVQ_MIX_WARPS = 8 };
+
+__global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_mix_rows(const float *residual,
+        const __nv_bfloat16 *weight, float *mix, uint32_t rows, uint32_t width, float eps) {
+    __shared__ __align__(16) __nv_bfloat16 tile[GLMVQ_HC_MIX * GLMVQ_MIX_TILE];
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32;
+    const uint32_t row = blockIdx.x * GLMVQ_MIX_WARPS + warp;
+    const float *x = residual + (uint64_t)min(row, rows - 1u) * width;
+    float dot[GLMVQ_HC_MIX] = {}, squares = 0.0f;
+    for (uint32_t base = 0; base < width; base += GLMVQ_MIX_TILE) {
+        __syncthreads();
+        for (uint32_t i = threadIdx.x; i < GLMVQ_HC_MIX * GLMVQ_MIX_TILE / 8; i += blockDim.x) {
+            const uint32_t o = i / (GLMVQ_MIX_TILE / 8), c = i % (GLMVQ_MIX_TILE / 8) * 8;
+            *(uint4 *)(tile + o * GLMVQ_MIX_TILE + c) = *(const uint4 *)(weight + (uint64_t)o * width + base + c);
+        }
+        __syncthreads();
+        #pragma unroll
+        for (uint32_t k = 0; k < GLMVQ_MIX_TILE / 128; k++) {
+            const uint32_t c = k * 128 + lane * 4;
+            const float4 v = *(const float4 *)(x + base + c);
+            squares = fmaf(v.x, v.x, squares); squares = fmaf(v.y, v.y, squares);
+            squares = fmaf(v.z, v.z, squares); squares = fmaf(v.w, v.w, squares);
+            #pragma unroll
+            for (uint32_t o = 0; o < GLMVQ_HC_MIX; o++) {
+                const uint2 w = *(const uint2 *)(tile + o * GLMVQ_MIX_TILE + c);
+                dot[o] = fmaf(glmvq_bf16_lo(w.x), v.x, dot[o]); dot[o] = fmaf(glmvq_bf16_hi(w.x), v.y, dot[o]);
+                dot[o] = fmaf(glmvq_bf16_lo(w.y), v.z, dot[o]); dot[o] = fmaf(glmvq_bf16_hi(w.y), v.w, dot[o]);
+            }
+        }
+    }
+    for (uint32_t stride = 16; stride; stride >>= 1) { squares += __shfl_xor_sync(0xffffffffu, squares, stride); }
+    const float inv = __fdiv_rn(1.0f, __fsqrt_rn(glmvq_add(__fdiv_rn(squares, (float)width), eps)));
+    #pragma unroll
+    for (uint32_t o = 0; o < GLMVQ_HC_MIX; o++) {
+        for (uint32_t stride = 16; stride; stride >>= 1) { dot[o] += __shfl_xor_sync(0xffffffffu, dot[o], stride); }
+    }
+    if (lane || row >= rows) { return; }
+    #pragma unroll
+    for (uint32_t o = 0; o < GLMVQ_HC_MIX; o++) { mix[(uint64_t)row * GLMVQ_HC_MIX + o] = glmvq_mul(dot[o], inv); }
+}
+
 #endif

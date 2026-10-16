@@ -28,7 +28,19 @@ __global__ void glmvq_round_rows(float *values, uint64_t count) {
     if (i < count) { values[i] = glmvq_round(values[i]); }
 }
 
-enum { GLMVQ_RMS_BATCH = 16 };
+enum { GLMVQ_RMS_BATCH = 16, GLMVQ_RMS_NARROW = 512, GLMVQ_RMS_ROWS = 8 };
+
+// Per-element tail shared by the block and warp RMS kernels.
+__device__ __forceinline__ float glmvq_rms_value(float x, float inv, const __nv_bfloat16 *weight,
+        const float *gate, uint64_t at, uint32_t col, glmvq_norm kind) {
+    float value = glmvq_mul(x, inv);
+    if (kind == GLMVQ_RMS_PLAIN) { return value; }
+    // Ordinary RMS rounds before the weight; gated RMS rounds only last.
+    if (kind == GLMVQ_RMS_WEIGHTED) { value = glmvq_round(value); }
+    value = glmvq_mul(value, __bfloat162float(weight[col]));
+    if (kind == GLMVQ_RMS_GATED) { value = glmvq_mul(value, glmvq_sigmoid(gate[at])); }
+    return glmvq_round(value);
+}
 
 __global__ void glmvq_rms(const float *input, const __nv_bfloat16 *weight,
         const float *gate, float *output, uint32_t width, float eps, glmvq_norm kind) {
@@ -70,19 +82,36 @@ __global__ void glmvq_rms(const float *input, const __nv_bfloat16 *weight,
         for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
             const uint32_t col = first + j * blockDim.x;
             if (col >= width) { break; }
-            float value = glmvq_mul(x[j], inv);
-            if (kind == GLMVQ_RMS_PLAIN) {
-                output[base + col] = value;
-                continue;
-            }
-            // Ordinary RMS rounds before the weight; gated RMS rounds only last.
-            if (kind == GLMVQ_RMS_WEIGHTED) { value = glmvq_round(value); }
-            value = glmvq_mul(value, __bfloat162float(weight[col]));
-            if (kind == GLMVQ_RMS_GATED) {
-                value = glmvq_mul(value, glmvq_sigmoid(gate[base + col]));
-            }
-            output[base + col] = glmvq_round(value);
+            output[base + col] = glmvq_rms_value(x[j], inv, weight, gate, base + col, col, kind);
         }
+    }
+}
+
+/* Narrow rows (KDA heads are 128 wide, rows x 64 per call): a warp per row.
+ * The block kernel left half of its 256 lanes idle and paid two barriers
+ * per tree level (0.2 s of an 8K prefill). FP32 add order differs. */
+__global__ void __launch_bounds__(GLMVQ_RMS_ROWS * 32) glmvq_rms_warp(const float *input,
+        const __nv_bfloat16 *weight, const float *gate, float *output, uint32_t rows,
+        uint32_t width, float eps, glmvq_norm kind) {
+    const uint32_t lane = threadIdx.x & 31, row = blockIdx.x * GLMVQ_RMS_ROWS + threadIdx.x / 32;
+    if (row >= rows) { return; }
+    const uint64_t base = (uint64_t)row * width;
+    // All of a lane's loads issue before the dependent adds (decode rows).
+    float x[GLMVQ_RMS_NARROW / 32];
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_RMS_NARROW / 32; j++) {
+        const uint32_t col = lane + j * 32;
+        x[j] = col < width ? input[base + col] : 0.0f;
+    }
+    float sum = 0.0f;
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_RMS_NARROW / 32; j++) { sum = glmvq_add(sum, glmvq_mul(x[j], x[j])); }
+    for (uint32_t stride = 16; stride; stride >>= 1) { sum = glmvq_add(sum, __shfl_xor_sync(0xffffffffu, sum, stride)); }
+    const float inv = __fdiv_rn(1.0f, __fsqrt_rn(glmvq_add(__fdiv_rn(sum, (float)width), eps)));
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_RMS_NARROW / 32; j++) {
+        const uint32_t col = lane + j * 32;
+        if (col < width) { output[base + col] = glmvq_rms_value(x[j], inv, weight, gate, base + col, col, kind); }
     }
 }
 

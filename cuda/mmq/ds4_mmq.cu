@@ -499,6 +499,16 @@ static void ds4_mmq_sanitize_f32(float *p, uint64_t n, cudaStream_t stream) {
     ds4_mmq_sanitize_f32_kernel<<<(unsigned)((n + 255u) / 256u), 256, 0, stream>>>(p, n);
 }
 
+// Sanitize plus the caller's BF16 output boundary (GLM VQ) in one pass.
+__global__ static void ds4_mmq_sanitize_bf16_kernel(float *p, uint64_t n) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float v = p[i];
+    p[i] = isfinite(v) ? __bfloat162float(__float2bfloat16_rn(v)) : 0.0f;
+}
+
+enum ds4_mmq_epilogue { DS4_MMQ_F32, DS4_MMQ_BF16 };
+
 /* Q4_K/Q5_K decode vec is finite on finite activations (Ling).  Other
  * quants keep the scrub.  DS4_MMQ_VEC_SANITIZE=1 restores Q4/Q5 scrub. */
 static bool ds4_mmq_keep_vec_sanitize(ggml_type type) {
@@ -527,7 +537,8 @@ int ds4_mmq_dense_impl(
         int           M,
         int           N,
         int           K,
-        cudaStream_t  stream) {
+        cudaStream_t  stream,
+        ds4_mmq_epilogue epilogue = DS4_MMQ_F32) {
 
     if (!W || !X_f32 || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -645,7 +656,12 @@ int ds4_mmq_dense_impl(
         fprintf(stderr, "%s: mul_mat_q_case launch failed: %s\n", tag, cudaGetErrorString(err));
         return -3;
     }
-    ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)N, stream);
+    const uint64_t n = (uint64_t)M * (uint64_t)N;
+    if (epilogue == DS4_MMQ_BF16) {
+        ds4_mmq_sanitize_bf16_kernel<<<(unsigned)((n + 255u) / 256u), 256, 0, stream>>>(out_f32, n);
+        return 0;
+    }
+    ds4_mmq_sanitize_f32(out_f32, n, stream);
     return 0;
 }
 
@@ -961,6 +977,13 @@ extern "C" int ds4_mmq_q4_K_dense(
         const void * W, const float * X, float * out,
         int M, int N, int K, cudaStream_t stream) {
     return ds4_mmq_dense_impl<GGML_TYPE_Q4_K>("ds4_mmq_q4_K_dense", W, X, out, M, N, K, stream);
+}
+
+extern "C" int ds4_mmq_q4_K_dense_bf16(
+        const void * W, const float * X, float * out,
+        int M, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_impl<GGML_TYPE_Q4_K>("ds4_mmq_q4_K_dense_bf16", W, X, out, M, N, K, stream,
+        DS4_MMQ_BF16);
 }
 
 // ----------------------------------------------------------------------------

@@ -354,6 +354,16 @@ int ds4_mmq_q4_K_dense(
     int           K,
     cudaStream_t  stream);
 
+/* As ds4_mmq_q4_K_dense, with outputs rounded to BF16 in the sanitize pass. */
+int ds4_mmq_q4_K_dense_bf16(
+    const void  * W_q4_K,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 // MoE matmul entry points. For each (token, slot-within-token's-top-k) pair
 // the kernel computes:
 //
