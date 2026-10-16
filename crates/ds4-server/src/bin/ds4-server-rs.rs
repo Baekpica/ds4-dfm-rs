@@ -446,14 +446,13 @@ fn main() {
                 }
             });
             if cfg.eos_policy != EosPolicy::Default && facts.artifact_ok == Some(true) {
-                let gguf = GgufFile::open(Path::new(path))
-                    .unwrap_or_else(|error| cli_error(&format!("EOS policy GGUF: {error}")));
                 let family = ident
                     .as_ref()
                     .unwrap_or_else(|| cli_error("EOS policy requires an identified model"))
                     .shape
                     .family;
-                let vocab = Vocab::load(&gguf, family)
+                // A GVQ1 release directory keeps its tables beside the parts.
+                let vocab = Vocab::load_path(Path::new(path), family)
                     .unwrap_or_else(|error| cli_error(&format!("EOS policy vocab: {error}")));
                 if vocab.eos_id < 0 {
                     cli_error("EOS policy requires a model EOS token");

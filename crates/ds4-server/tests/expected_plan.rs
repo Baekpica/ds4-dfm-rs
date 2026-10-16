@@ -65,3 +65,28 @@ fn preflight_checks_policy_without_post_open_quote() {
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("mismatch: effective"));
 }
+
+#[test]
+#[ignore = "needs DS4_EXPECT_PLAN_SERVER and DS4_EXPECT_PLAN_MODEL"]
+fn preflight_loads_the_eos_policy_vocab() {
+    // A nondefault EOS policy makes the check load the vocabulary itself; a
+    // GVQ1 release directory has no single GGUF to open for it.
+    let server = std::env::var("DS4_EXPECT_PLAN_SERVER").expect("DS4_EXPECT_PLAN_SERVER");
+    let model = std::env::var("DS4_EXPECT_PLAN_MODEL").expect("DS4_EXPECT_PLAN_MODEL");
+    let mut command = Command::new(&server);
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("DS4_") {
+            command.env_remove(name);
+        }
+    }
+    let output = command
+        .args(["--model", &model, "--check-config", "--ignore-eos"])
+        .args(["--max-seqs", "1", "--ctx", "512", "--mtp-mode", "off"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
