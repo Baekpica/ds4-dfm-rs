@@ -1225,10 +1225,11 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         auto *xs = (float *)(x8 + count);
         auto *mid8 = (uint8_t *)(xs + count / GLMVQ_MMA8_K);
         auto *ms = (float *)(mid8 + pairs * GVQ_FFN);
-        const uint64_t xb = count / GLMVQ_MMA8_K, mb = pairs * GVQ_FFN / GLMVQ_MMA8_K;
+        const uint64_t xb = count / GLMVQ_MMA8_K;
         glmvq_mma8_quant<float><<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
             x8, xs, (const float *)input->ptr, xb);
-        auto launch = [&](auto tokens, auto mode, const uint8_t *in, const float *scale, uint32_t rows_out, uint32_t cols_in) {
+        auto launch = [&](auto tokens, auto mode, const uint8_t *in, const float *scale, uint32_t rows_out, uint32_t cols_in,
+                uint8_t *q8 = nullptr, float *q8_scale = nullptr) {
             constexpr uint32_t BT = decltype(tokens)::value;
             constexpr glmvq_mma_stage MODE = decltype(mode)::value;
             constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, BT>();
@@ -1236,13 +1237,12 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
             glmvq_mma8_kernel<GVQ_MMA_ROWS, BT, 1, MODE><<<
                 min(nitems * (rows_out / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_blocks[MODE]), threads8, shared8, stream>>>(
                 source, work, nitems, book, in, scale, grouped, GVQ_USED, (__nv_bfloat16 *)gate, mid,
-                (__nv_bfloat16 *)down, rows_out, cols_in, clamp);
+                (__nv_bfloat16 *)down, rows_out, cols_in, clamp, q8, q8_scale);
         };
         auto stages = [&](auto tokens) {
             launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_GATE>{}, x8, xs, GVQ_FFN, GVQ_HIDDEN);
-            launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, GVQ_FFN, GVQ_HIDDEN);
-            glmvq_mma8_quant<__nv_bfloat16><<<(uint32_t)((mb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
-                mid8, ms, mid, mb);
+            // The up epilogue writes down's E4M3 rows and scales directly.
+            launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, GVQ_FFN, GVQ_HIDDEN, mid8, ms);
             launch(tokens, std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_DOWN>{}, mid8, ms, GVQ_HIDDEN, GVQ_FFN);
         };
         if (ctx->mma8_tokens == GVQ_MMA8_TOKENS) { stages(std::integral_constant<uint32_t, GVQ_MMA8_TOKENS>{}); }

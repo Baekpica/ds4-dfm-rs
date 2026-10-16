@@ -72,7 +72,10 @@ __device__ __forceinline__ uint32_t glmvq_mma8_code(const uint32_t (&w)[6], uint
 // loads feeds MT MMAs. `map` turns a grouped pair into its token (pair / used)
 // for gate/up; down reads the per-pair intermediate rows. Gate and down
 // outputs are BF16-rounded, so they are stored as BF16 (half the traffic of
-// the up epilogue's and the reduce's reads).
+// the up epilogue's and the reduce's reads). With `mid8`, the up epilogue
+// also quantizes the SwiGLU rows for down as glmvq_mma8_quant would (each
+// 128-row block of a tile is one activation scale block), so the BF16
+// intermediate is never written or reread.
 // The k32 reduction order is free as long as A and B agree: lane q takes
 // whole codeword 4K+q (k 4q.. <- bytes 0-3, k 16+4q.. <- bytes 4-7), so one
 // 8-byte book read fills two A registers and B is 8 source-order bytes.
@@ -84,7 +87,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         const glmvq_source *sources, const glmvq_mma_item *items, uint32_t nitems,
         const uint8_t *book, const uint8_t *act, const float *act_scale, const uint32_t *map,
         uint32_t used, __nv_bfloat16 *gate, __nv_bfloat16 *mid, __nv_bfloat16 *output,
-        uint32_t rows, uint32_t cols, float limit) {
+        uint32_t rows, uint32_t cols, float limit, uint8_t *mid8 = nullptr, float *mid_scale = nullptr) {
     static_assert((BM == 128 || BM == 256) && (BT == 16 || BT == 32 || BT == 64) && (MT == 1 || MT == 2),
         "bounded GLM tiles");
     constexpr uint32_t THREADS = glmvq_mma8_threads<BM, MT>(), NT = BT / 8, PREFETCH_AHEAD = 2;
@@ -235,6 +238,69 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         else if (nnt <= 6) { run(std::integral_constant<uint32_t, (NT < 6 ? NT : 6)>{}); }
         else { run(std::integral_constant<uint32_t, NT>{}); }
         __syncthreads();
+
+        if (MODE == GLMVQ_MMA_UP && mid8) {
+            // amax per (128-row block, token) in the ring's first slot, as float bits.
+            constexpr uint32_t BLOCKS = BM / GLMVQ_MMA8_K;
+            uint32_t *amax = (uint32_t *)ring;
+            for (uint32_t i = tid; i < BLOCKS * BT; i += THREADS) { amax[i] = 0; }
+            __syncthreads();
+            const uint32_t block = warp * MT * 16 / GLMVQ_MMA8_K;
+            #pragma unroll
+            for (uint32_t j = 0; j < NT; j++) {
+                if (j >= nnt) { break; }
+                #pragma unroll
+                for (uint32_t e = 0; e < 2; e++) {
+                    const uint32_t t = j * 8 + q * 2 + e;
+                    const uint64_t base = (uint64_t)(item.offset + (t < nt ? t : 0)) * rows + row;
+                    float peak = 0.0f;
+                    #pragma unroll
+                    for (uint32_t m = 0; m < MT; m++) {
+                        #pragma unroll
+                        for (uint32_t side = 0; side < 2; side++) {
+                            const float value = glmvq_round(glmvq_mul(acc[m][j][side * 2 + e], gain[m][side]));
+                            const float g0 = fminf(__bfloat162float(gate[base + lr[m][side]]), limit);
+                            const float u0 = fminf(fmaxf(value, -limit), limit);
+                            const float silu = glmvq_round(__fdiv_rn(g0, glmvq_add(1.0f, expf(-g0))));
+                            const float v = glmvq_round(glmvq_mul(silu, u0));
+                            acc[m][j][side * 2 + e] = v;
+                            peak = fmaxf(peak, fabsf(v));
+                        }
+                    }
+                    for (uint32_t stride = 4; stride < 32; stride <<= 1) {
+                        peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, stride));
+                    }
+                    if (g == 0 && t < nt) { atomicMax(amax + block * BT + t, __float_as_uint(peak)); }
+                }
+            }
+            __syncthreads();
+            #pragma unroll
+            for (uint32_t j = 0; j < NT; j++) {
+                if (j >= nnt) { break; }
+                #pragma unroll
+                for (uint32_t e = 0; e < 2; e++) {
+                    const uint32_t t = j * 8 + q * 2 + e;
+                    if (t >= nt) { continue; }
+                    const float peak = __uint_as_float(amax[block * BT + t]);
+                    const float scale = peak / GLMVQ_E4M3_MAX;
+                    const uint64_t base = (uint64_t)(item.offset + t) * rows + row;
+                    #pragma unroll
+                    for (uint32_t m = 0; m < MT; m++) {
+                        #pragma unroll
+                        for (uint32_t side = 0; side < 2; side++) {
+                            const float v = peak > 0.0f ? __fdiv_rn(acc[m][j][side * 2 + e], scale) : 0.0f;
+                            const __nv_fp8x2_storage_t pair = __nv_cvt_float2_to_fp8x2(make_float2(v, 0.0f), __NV_SATFINITE, __NV_E4M3);
+                            mid8[base + lr[m][side]] = (uint8_t)(pair & 0xffu);
+                        }
+                    }
+                    if (g == 0 && warp % (GLMVQ_MMA8_K / (MT * 16)) == 0) {
+                        mid_scale[(uint64_t)(item.offset + t) * (rows / GLMVQ_MMA8_K) + row / GLMVQ_MMA8_K + block] = scale;
+                    }
+                }
+            }
+            __syncthreads();
+            continue;
+        }
 
         #pragma unroll
         for (uint32_t j = 0; j < NT; j++) {
