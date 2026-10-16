@@ -523,6 +523,25 @@ extern "C" int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gat
     return cuda_ok(cudaGetLastError(), "GLM VQ SwiGLU");
 }
 
+// MTP eh_proj input rows: [embedding norm | hidden norm] (SGLang nextn order).
+__global__ void gvq_concat(float *out, const float *left, const float *right,
+        uint32_t width, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const uint64_t row = i / (2u * width), col = i % (2u * width);
+    out[i] = col < width ? left[row * width + col] : right[row * width + col - width];
+}
+
+extern "C" int ds4_gpu_gvq_concat(ds4_gpu_tensor *out, const ds4_gpu_tensor *left,
+        const ds4_gpu_tensor *right, uint32_t rows, uint32_t width) {
+    const uint64_t count = 2u * (uint64_t)rows * width;
+    if (!rows || !width || !gvq_floats(out, count) || !gvq_floats(left, count / 2u) ||
+        !gvq_floats(right, count / 2u)) { return 0; }
+    gvq_concat<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)left->ptr, (const float *)right->ptr, width, count);
+    return cuda_ok(cudaGetLastError(), "GLM VQ MTP concat");
+}
+
 extern "C" int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count) {
     if (!count || !gvq_floats(values, count)) { return 0; }
     glmvq_round_rows<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(

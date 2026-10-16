@@ -809,9 +809,22 @@ static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
             glm53_stream_finish(g->stream);
             return false;
         }
-        const bool ok = glm53_graph_batch(&active, model, weights, tokens + done, chunk, pos0 + done,
+#ifndef __APPLE__
+        // GLM VQ MTP: park the previous chunk's last hidden for its KV row.
+        const uint32_t first = pos0 + done;
+        const bool draft_kv = g->gvq && g->mtp_ready && !host_embeddings;
+        const bool pending = draft_kv && g->mtp_len && g->mtp_len == first - 1u;
+        bool ok = !pending || ds4_gpu_tensor_copy(g->mtp_rows, 0u, g->last_hidden, 0u,
+            (uint64_t)DS4_N_EMBD * sizeof(float));
+#else
+        bool ok = true;
+#endif
+        ok = ok && glm53_graph_batch(&active, model, weights, tokens + done, chunk, pos0 + done,
             host_embeddings ? host_embeddings + (uint64_t)done * DS4_N_EMBD : NULL,
             done + chunk == rows ? host_logits : NULL);
+#ifndef __APPLE__
+        ok = ok && (!draft_kv || gvq_mtp_prefill(g, &active, model, weights, tokens + done, chunk, first, pending));
+#endif
         if (ok && ds4_gpu_tensor_ptr(active.hc_cur) != ds4_gpu_tensor_ptr(g->hc_cur)) {
             ds4_gpu_tensor *swap = g->hc_cur;
             g->hc_cur = g->hc_next;

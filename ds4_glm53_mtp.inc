@@ -318,32 +318,15 @@ static bool gvq_mtp_verify(ds4_glm53_gpu_graph *g, const ds4_model *m,
     return ok;
 }
 
-/* Draft-layer KV for rows pos..pos+n-1 from their true hidden (mtp_rows) and
- * next tokens: only the projections feeding the cache, as gvq_mtp_block. */
-static bool gvq_mtp_kv(ds4_glm53_gpu_graph *g, const ds4_model *m,
+// Draft-layer KV for verify rows pos..pos+n-1 (mtp_rows hold their hidden).
+static bool gvq_mtp_rows(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_weights *w, uint32_t n, uint32_t pos) {
-    const ds4_layer_weights *l = &w->layer[GLMVQ_TRUNK];
     const uint64_t bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
     ds4_glm53_gpu_graph a;
     if (!glm53_graph_bind(&a, g, n)) { return false; }
     ds4_gpu_tensor *hidden = ds4_gpu_tensor_view(g->mtp_rows, 0u, n * bytes);
-    ds4_gpu_tensor *concat = ds4_gpu_tensor_view(g->mtp_concat, 0u, 2u * n * bytes);
-    bool ok = hidden && concat &&
-        ds4_gpu_tensor_write(a.token, 0u, g->mtp_trial, (uint64_t)n * sizeof(int32_t)) &&
-        ds4_gpu_embed_tokens_quant_tensor(a.cur, a.token, m->map, m->size,
-            w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, DS4_N_EMBD) &&
-        gvq_norm(&a, m, a.norm, a.cur, l->nextn_enorm, n, DS4_N_EMBD) &&
-        gvq_norm(&a, m, a.attn_out, hidden, l->nextn_hnorm, n, DS4_N_EMBD);
-    for (uint32_t r = 0; ok && r < n; r++) {
-        ok = ds4_gpu_tensor_copy(concat, 2u * r * bytes, a.norm, r * bytes, bytes) &&
-            ds4_gpu_tensor_copy(concat, (2u * r + 1u) * bytes, a.attn_out, r * bytes, bytes);
-    }
-    ok = ok && gvq_mm(&a, m, a.cur, l->nextn_eh_proj, concat, n, DS4_GVQ_BF16) &&
-        gvq_norm(&a, m, a.norm, a.cur, l->attn_norm, n, DS4_N_EMBD) &&
-        gvq_mm(&a, m, a.kv_rank, l->attn_kv_a_mqa, a.norm, n, DS4_GVQ_BF16) &&
-        gvq_norm(&a, m, a.kv_rank_norm, a.kv_rank, l->attn_kv_a_norm, n, DS4_N_KV_LORA) &&
-        ds4_gpu_gvq_store(g->mtp_kv, a.kv_rank_norm, n, pos, g->ctx_cap, DS4_N_KV_LORA);
-    ds4_gpu_tensor_free(concat); ds4_gpu_tensor_free(hidden);
+    const bool ok = hidden && gvq_mtp_kv(&a, m, w, hidden, g->mtp_trial, n, pos, g->mtp_concat);
+    ds4_gpu_tensor_free(hidden);
     glm53_graph_unbind(&a);
     return ok;
 }
@@ -434,7 +417,7 @@ static bool glm53_mtp_trial(ds4_glm53_gpu_graph *g, const ds4_model *m,
         g->mtp_model = m;
         g->mtp_weights = w;
         if (!gvq_mtp_verify(g, m, w, n, start, target) ||
-            !gvq_mtp_kv(g, m, w, n, start - 1u)) { return false; }
+            !gvq_mtp_rows(g, m, w, n, start - 1u)) { return false; }
         g->cache_len = start + n;
         g->last_rows = 1u;
         g->mtp_len = start + n - 1u;

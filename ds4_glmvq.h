@@ -50,6 +50,9 @@ int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint64_t count, float limit);
 int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count);
+/* Rows of [left | right], each `width` floats: the MTP eh_proj input. */
+int ds4_gpu_gvq_concat(ds4_gpu_tensor *out, const ds4_gpu_tensor *left,
+    const ds4_gpu_tensor *right, uint32_t rows, uint32_t width);
 int ds4_gpu_gvq_control(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, uint64_t count);
 int ds4_gpu_gvq_unpack(ds4_gpu_tensor *out, const ds4_gpu_tensor *cache, uint64_t count);
 int ds4_gpu_gvq_store(ds4_gpu_tensor *cache, const ds4_gpu_tensor *input,
