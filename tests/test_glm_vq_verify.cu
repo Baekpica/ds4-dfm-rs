@@ -160,6 +160,35 @@ static int index_case(uint32_t rows, uint32_t first) {
     return !(rel < 1e-5 && !masks);
 }
 
+// Fused prefill expand + mix vs glmvq_hc_expand then glmvq_hc_mix_rows.
+static int expand_mix_case(uint32_t rows) {
+    const uint32_t width = 4096, flat = GLMVQ_HC * width;
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<__nv_bfloat16> w((size_t)GLMVQ_HC_MIX * flat);
+    std::vector<float> res((size_t)rows * flat), br((size_t)rows * width), split((size_t)rows * GLMVQ_HC_MIX);
+    for (auto &v : w) { v = __float2bfloat16_rn(nd(rng) * 0.02f); }
+    for (auto &v : res) { v = __bfloat162float(__float2bfloat16_rn(nd(rng))); }
+    for (auto &v : br) { v = __bfloat162float(__float2bfloat16_rn(nd(rng))); }
+    for (auto &v : split) { v = nd(rng) * 0.5f; }
+    __nv_bfloat16 *dw = up(w); float *dres = up(res), *dbr = up(br), *dsp = up(split), *o1, *o2, *m1, *m2;
+    CK(cudaMalloc(&o1, res.size() * 4)); CK(cudaMalloc(&o2, res.size() * 4));
+    CK(cudaMalloc(&m1, (size_t)rows * GLMVQ_HC_MIX * 4)); CK(cudaMalloc(&m2, (size_t)rows * GLMVQ_HC_MIX * 4));
+    glmvq_hc_expand<<<(res.size() + 255) / 256, 256>>>(dbr, dres, dsp, o1, width, res.size());
+    glmvq_hc_mix_rows<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32>>>(o1, dw, m1, rows, flat, 1e-6f);
+    glmvq_hc_expand_mix<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32>>>(dbr, dres, dsp, o2, dw, m2, rows, width, 1e-6f);
+    CK(cudaDeviceSynchronize());
+    auto a = down(o1, res.size()), b = down(o2, res.size());
+    auto ma = down(m1, (size_t)rows * GLMVQ_HC_MIX), mb = down(m2, (size_t)rows * GLMVQ_HC_MIX);
+    uint32_t differ = 0;
+    for (size_t i = 0; i < a.size(); i++) { differ += a[i] != b[i]; }
+    double num = 0, den = 0;
+    for (size_t i = 0; i < ma.size(); i++) { num += (ma[i] - mb[i]) * (ma[i] - mb[i]); den += (double)ma[i] * ma[i]; }
+    const double rel = sqrt(num / den);
+    printf("mHC expand+mix rows=%u: expand %u differ, mix relRMS %.2g %s\n", rows, differ, rel, !differ && rel < 1e-5 ? "ok" : "FAIL");
+    cudaFree(dw); cudaFree(dres); cudaFree(dbr); cudaFree(dsp); cudaFree(o1); cudaFree(o2); cudaFree(m1); cudaFree(m2);
+    return !(!differ && rel < 1e-5);
+}
+
 static int absorb_case(uint32_t rows) {
     const uint32_t H = GLMVQ_FA_HEADS, A = GLMVQ_ABS_DIM, D = GLMVQ_FA_LATENT;
     std::normal_distribution<float> nd(0, 1);
@@ -302,6 +331,7 @@ int main() {
         failures += fp8_case(512, 4096, tokens);    // kv_a
     }
     failures += mix_case(37);
+    failures += expand_mix_case(37);
     failures += index_case(37, 3000);
     failures += index_case(256, 8000);
     failures += vq_case(blocks);

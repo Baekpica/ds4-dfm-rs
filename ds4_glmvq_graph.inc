@@ -92,8 +92,11 @@ static bool gvq_hc(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_tensor *fn, const ds4_tensor *scale, const ds4_tensor *base,
         const ds4_tensor *norm, const ds4_gpu_tensor *residual, uint32_t rows) {
     // Source 286-329: mHC control arithmetic is FP32; collapse is BF16.
-    // One kernel fuses the RMS and mapping dots; the split applies the norm.
-    const bool mixed = ds4_gpu_gvq_hc_mix(g->gvq, g->hc_mix, residual,
+    // One kernel fuses the RMS and mapping dots (or the preceding expand
+    // already did); the split applies the norm.
+    const bool ready = g->gvq_mixed;
+    g->gvq_mixed = false;
+    const bool mixed = ready || ds4_gpu_gvq_hc_mix(g->gvq, g->hc_mix, residual,
             glmvq_index(m, fn), DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS, rows) ||
         (ds4_gpu_gvq_rms(g->gvq, g->hc_flat, residual, NULL, DS4_GVQ_NO_LINK,
             rows, DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS, DS4_GVQ_PLAIN_RMS) &&
@@ -249,19 +252,30 @@ static bool gvq_trace(ds4_glm53_gpu_graph *g, uint32_t il, uint32_t rows, uint32
         gvq_trace_tensor(root, il, "router_indices", g->selected, (rows - 1u) * route, route);
 }
 
+// mHC expand; prefill rows also compute the next half's mix (`fn`) in the
+// same pass, consumed by the next gvq_hc. Windowed prefill revisits layers
+// per chunk, so it keeps them separate.
+static bool gvq_expand(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
+        const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, const ds4_tensor *fn, uint32_t rows) {
+    g->gvq_mixed = fn && !g->window_cap && ds4_gpu_gvq_expand_mix(g->gvq, out, g->hc_mix, branch, residual,
+        g->hc_split, glmvq_index(m, fn), rows, DS4_N_EMBD, DS4_RMS_EPS);
+    return g->gvq_mixed || ds4_gpu_gvq_expand(out, branch, residual, g->hc_split, rows, DS4_N_EMBD);
+}
+
 static bool gvq_layer(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_weights *w, uint32_t il, uint32_t rows, uint32_t pos) {
     const ds4_layer_weights *l = &w->layer[il];
+    const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    const ds4_tensor *next = il + 1u < layers ? w->layer[il + 1u].hc_attn_fn : NULL;
     if (!gvq_hc(g, m, l->hc_attn_fn, l->hc_attn_scale, l->hc_attn_base, l->attn_norm, g->hc_cur, rows)) {
         return false;
     }
     const bool attention = ds4_glm53_layer_is_kda(il)
         ? gvq_kda(g, m, l, il, rows) : gvq_dsa(g, m, l, il, pos, rows);
-    return attention && ds4_gpu_gvq_expand(g->hc_after_attn, g->attn_out, g->hc_cur,
-            g->hc_split, rows, DS4_N_EMBD) &&
+    return attention && gvq_expand(g, m, g->hc_after_attn, g->attn_out, g->hc_cur, l->hc_ffn_fn, rows) &&
         gvq_hc(g, m, l->hc_ffn_fn, l->hc_ffn_scale, l->hc_ffn_base, l->ffn_norm, g->hc_after_attn, rows) &&
         gvq_ffn(g, m, w, il, rows) &&
-        ds4_gpu_gvq_expand(g->hc_next, g->ffn_out, g->hc_after_attn, g->hc_split, rows, DS4_N_EMBD) &&
+        gvq_expand(g, m, g->hc_next, g->ffn_out, g->hc_after_attn, next, rows) &&
         gvq_trace(g, il, rows, pos);
 }
 

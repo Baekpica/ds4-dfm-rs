@@ -49,6 +49,11 @@ int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *spl
 /* mHC RMS + F32 mapping dots; 0 when the shape needs the fallback. */
 int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
     const ds4_gpu_tensor *residual, uint32_t weight, uint32_t width, float eps, uint32_t rows);
+/* Prefill expand fused with the next mHC mix; 0 when rows or shape need the
+ * separate kernels. */
+int ds4_gpu_gvq_expand_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *mix,
+    const ds4_gpu_tensor *branch, const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split,
+    uint32_t weight, uint32_t rows, uint32_t width, float eps);
 int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
     const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split, uint32_t rows, uint32_t width);
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
