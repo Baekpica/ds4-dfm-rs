@@ -139,6 +139,19 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
 - **Numerical tolerance.** Use an existing configuration change as the noise
   reference (GLM 8K frontier, 512 vs 1024 chunks: logit RMS 0.23, KL 2.3e-7).
   Keep bit identity when only scheduling changes; it makes A/B trivial.
+- **MTP verify widths are their own regime.** A 2-4 row forward falls off
+  every one-row direct kernel onto convert + cuBLAS unless each kernel takes
+  rows; that fallback was 15 of 70 ms per GLM one-draft step. Give direct
+  kernels a token loop that reuses each weight load and keeps the one-row
+  FMA order, so verify rows equal decode rows bit for bit and A/B stays exact.
+- **Expert overlap decides draft depth.** Consecutive GLM tokens share few of
+  their top-8 experts (4 rows: ~26 unique of 32), so routed-expert bytes grow
+  almost linearly with verify rows; an expert-union kernel saved under 10%.
+  Prefer one or two drafts; measure the expert union before deeper drafts.
+- **Drafts need the prompt.** A draft layer whose KV starts at decode drafts
+  blind at first (GLM one-draft acceptance 0.63 → 0.97 within one run).
+  Fill its KV during prefill. Check generated text for loops: a repeating
+  bench continuation accepts ~100% and overstates MTP gains.
 
 # Agent Notes
 

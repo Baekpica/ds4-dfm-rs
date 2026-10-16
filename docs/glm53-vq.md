@@ -40,20 +40,20 @@ parts. Every tensor start is 128-byte aligned. The loader verifies all
 file, tensor and payload SHA256 values before use; workers verify parts in
 parallel (about 20 s for the 74 GiB artifact on Spark).
 
-| Component | Storage | Bytes read per decoded token |
+| Component | Storage (Q4_K v3 artifact) | Bytes read per decoded token |
 |---|---|---:|
 | Routed experts, 42 layers × top-8 | GVQ1, 1.625 bit | 1.72 GB |
-| KDA Q/K/V/O, 34 layers | Q4_K (active selection) | 2.57 GB |
-| Shared experts, dense FFN, DSA projections | source FP8 + 128×128 scales | 2.62 GB |
-| Output head | source BF16 | 1.27 GB |
+| KDA Q/K/V/O, 34 layers | Q4_K | 2.57 GB |
+| DSA q_a/q_b/kv_a/o, shared experts, dense FFN | Q4_K | 1.46 GB |
+| Output head | Q4_K | 0.36 GB |
 | KDA gates, indexer, router, mHC maps | source BF16 | 0.56 GB |
 | Latent attention (KV_B, cache at 8K) | BF16 | 0.55 GB |
 | KDA recurrent state (read + write) | F32 | 0.27 GB |
 
-About 9.6 GB per token: at the measured ~235–250 GB/s streaming ceiling the
-decode wall is 38–41 ms (24–26 tok/s). The DeepSeek V4.1 VQ engine reads
-about 6.3 GB per token because its attention, shared experts and head are
-Q4_K; the format difference, not the expert kernel, is most of the gap.
+About 7.5 GB per token (9.6 GB with the source-precision projections and
+head). At the measured ~235–250 GB/s streaming ceiling that is a 30–32 ms
+wall; decode measures 41 ms. The DeepSeek V4.1 VQ engine reads about 6.3 GB
+per token with the same Q4_K choice for its nonexpert weights.
 
 ## Execution on GB10
 
@@ -74,9 +74,11 @@ Q4_K; the format difference, not the expert kernel, is most of the gap.
   the Sinkhorn split runs one lane per element and also applies the
   following RMS norm.
 - **Attention.** KDA layers run the recurrence; DSA layers use the absorbed
-  latent attention (`(Q·W_k) Cᵀ`, `(P·C) W_vᵀ`) over the selected keys.
+  latent attention (`(Q·W_k) Cᵀ`, `(P·C) W_vᵀ`) over the selected keys:
+  direct GEMVs for both absorptions and a single-pass flash kernel whose
+  keys split across 48 CTAs, joined by a combine kernel.
 
-### Prefill (1024-token chunks)
+### Prefill (2048-token chunks)
 
 - **Experts on FP8 tensor cores.** The source model was trained and served
   with FP8 weights and dynamic 1×128 activation scaling. Codewords are E4M3,
@@ -90,8 +92,31 @@ Q4_K; the format difference, not the expert kernel, is most of the gap.
 - **KDA.** A token-parallel prep reproduces the recurrence's q/k/v, BF16 beta
   and decay argument exactly; the delta-rule chunk (UT transform) kernels
   shared with Solar/GLM run on them. Appends under 64 rows keep the recurrence.
+- **Attention.** One flash kernel per query row computes `softmax(q Cᵀ) C`
+  over the latent rows with BF16 tensor cores, without expanding K/V.
 - **Projections.** Q4_K uses the vendored MMQ path; FP8/BF16 restore to BF16
   and use cuBLAS.
+
+### MTP (one or two drafts)
+
+```
+draft:  h(s-1), token s ──MTP layer──▶ d1 ──▶ d2 …     (layer 45, own KV)
+verify: [token s, d1, …] as one n-row forward ──▶ n argmaxes
+accept: keep k rows; KDA state ◀── journal slot k, index tail ◀── replay
+```
+
+- **One verify forward.** The n candidates run as one forward, so each
+  weight is read once. Every kernel has a 1–4 row path that reuses each
+  weight load and keeps the one-row arithmetic: verify rows equal decode
+  rows bit for bit except the smallest Q4_K matrices and the attention
+  split count.
+- **Rollback.** KDA writes its state after each row into a journal slot;
+  index tails are replayed from stashed rows; latent, pool and draft-layer
+  rows past the frontier are rewritten before any read.
+- **Draft context.** Prefill fills the draft layer's KV from the prompt;
+  without it early drafts see only decoded tokens.
+- **Depth.** Routed-expert bytes grow almost linearly with verify rows
+  (consecutive tokens share few experts), so one or two drafts win.
 
 ## Numerical contract
 
@@ -107,32 +132,49 @@ RMS 0.23, KL 2.3e-7.
 | Direct BF16/F32 projections, mHC mix | FP32 accumulation order | ≤ 1 BF16 ulp, relRMS 2.3e-6 | identical |
 | Chunked KDA prefill | FP32 order of the recurrence | RMS 0.20, KL 2.2e-7 | identical |
 | FP8 expert prefill | E4M3 activations, gain after the dot | RMS 0.20, KL 1.1e-7 | identical |
+| Flash DSA attention, absorption GEMVs | FP32 softmax/accumulation order | within noise band | identical |
+| MTP verify kernels | one-row order per row | not applicable | identical at 8K; near-tie flip on prose |
 
 Position, length, routing-table, cache and rollback state must stay exact;
 floating-point differences are judged by output quality, not bit identity.
 
 ## Optimization log, 2026-10-16
 
-Workload: 7,936 input + 128 forced greedy tokens, context 8,192, chunk
-1,024, MTP and capture off, fresh process, busy SM clock 2,184–2,190 MHz.
+Workload: 7,936 input + 128 forced greedy tokens, context 8,192, MTP and
+capture off, fresh process, busy SM clock 2,184–2,190 MHz. From the Q4_K v3
+row on, one untimed 1,024-token prefill warms the process first (a cold
+first chunk paid lazy allocation and page-cache stalls).
 
 | Step | Prefill tok/s | Decode tok/s | Main mechanism |
 |---|---:|---:|---|
-| Start (`6c143772`) | 422.2 | 16.59 | — |
+| Start (`6c143772`), chunk 1,024 | 422.2 | 16.59 | — |
 | Decode overhead kernels | 424.6 | 18.25 | serial top-8/Sinkhorn removed, batched loads, no host route sync |
 | Direct BF16 projections | 429.5 | 20.33 | one kernel per projection, mHC fused |
 | Chunked KDA prefill | 506.5 | 20.20 | delta-rule chunks instead of 1024 serial steps |
 | FP8 expert prefill | 566.3 | 20.01 | mma.e4m3 on codewords |
+| Q4_K v3 artifact, warm-up | 594.4 | 23.47 | 316 nonexpert matrices Q4_K |
+| Chunk 2,048 | 625.5 | 23.07 | fewer per-chunk weight passes |
+| Flash DSA attention | 688.4 | 23.39 | no K/V expansion, one pass |
+| Absorption GEMVs | 691.6 | 24.29 | direct q·W_k, low·W_v |
+
+MTP, same artifact. The 8K bench continuation is a repeating loop (draft
+acceptance near 100% once the draft layer sees the prompt), so MTP gains
+are reported on natural 3K-token prompts with 128 tokens:
+
+| Prompt | MTP off | 1 draft | 2 drafts | Tokens per verify (1 / 2) |
+|---|---:|---:|---:|---|
+| Prose (technical notes) | 24.53 | 30.42 | 30.83 | 1.80 / 2.33 |
+| Code (C source) | 24.04 | 32.46 | 35.48 | 1.97 / 2.72 |
 
 ## Remaining bottlenecks
 
-- **Decode bytes.** FP8 shared/dense/DSA projections and the BF16 head are
-  3.9 GB of the 9.6 GB per token; Q4_K would bring the wall near 31 ms.
+- **Decode bytes and Q4_K rate.** Q4_K streams at ~211 GB/s and is half the
+  decode time; routed experts run at ~190–200 GB/s.
 - **Decode dispatch.** About 1,900 kernels per token; CUDA graphs with
   device-resident positions and programmatic dependent launch are the next
   structural step (the DeepSeek VQ engine measured 43.9 → 32.5 ms per token).
+- **Verify width.** Each MTP row adds nearly a full routed-expert pass;
+  multi-token Q4_K also slows past two tokens (L1/L2 input traffic).
 - **Prefill experts.** The FP8 kernel runs near 60 TFLOPS with hot weights and
-  is bound by shared-memory instruction pressure and barriers; at 1024-token
+  is bound by shared-memory instruction pressure and barriers; at 2,048-token
   chunks the weight stream (~1.5 GB per layer) also sets a DRAM floor.
-- **Prefill attention.** DSA attention still expands KV and runs cuBLAS
-  GEMMs plus a separate softmax.
