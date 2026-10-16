@@ -21,6 +21,7 @@ pub struct BenchArgs {
     ctx_alloc: i32,
     step_incr: i32,
     gen_tokens: i32,
+    warmup_prefill: i32,
     step_mul: f64,
     csv: Option<String>,
     quality: bool,
@@ -50,6 +51,7 @@ impl Default for BenchArgs {
             ctx_alloc: 0,
             step_incr: 2048,
             gen_tokens: 128,
+            warmup_prefill: 0,
             step_mul: 1.0,
             csv: None,
             quality: false,
@@ -135,6 +137,10 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<BenchArgs, S
             }
             "--gen-tokens" | "--tokens" | "-n" => {
                 parsed.gen_tokens =
+                    parse_nonnegative_i32(&arg, &require_value(&arg, iter.next())?)?;
+            }
+            "--warmup-prefill" => {
+                parsed.warmup_prefill =
                     parse_nonnegative_i32(&arg, &require_value(&arg, iter.next())?)?;
             }
             "--csv" => parsed.csv = Some(require_value(&arg, iter.next())?),
@@ -532,6 +538,17 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
             .map_err(|e| format!("output-head bench failed: {e}"))?;
         return Ok(0);
     }
+    // Lazy graph/workspace allocation and first kernel loads land in this
+    // untimed prefill; the session restarts at position 0 for the sweep.
+    if args.warmup_prefill > 0 {
+        if args.warmup_prefill > args.ctx_max {
+            return Err("--warmup-prefill must be <= --ctx-max".into());
+        }
+        let warm =
+            TokenBuffer::from_tokens(prompt.as_slice()[..args.warmup_prefill as usize].to_vec());
+        session.sync(&warm).map_err(|e| e.to_string())?;
+        session.invalidate();
+    }
     let mut snapshot = if uses_prefix_replay(&args, model.family()) {
         None
     } else {
@@ -849,6 +866,7 @@ fn help_text() -> &'static str {
      --step-mul F           Multiplicative step (default: 1)\n\
      --step-incr N          Linear step (default: 2048)\n\
      --gen-tokens N         Greedy decode tokens (default: 128)\n\
+     --warmup-prefill N     Prefill N prompt tokens, then reset, before measuring\n\
      --csv FILE             Write CSV instead of stdout\n\
      --output-head-bench N  CUDA output-head verifier at --ctx-start, then exit\n\
      --dump-frontier-logits-dir DIR\n\
@@ -1037,12 +1055,16 @@ mod tests {
             "--warm-weights",
             "--power",
             "37",
+            "--warmup-prefill",
+            "1024",
         ]))
         .unwrap();
 
         assert!(args.quality);
         assert!(args.warm_weights);
         assert_eq!(args.power_percent, 37);
+        assert_eq!(args.warmup_prefill, 1024);
+        assert!(help_text().contains("--warmup-prefill N"));
         assert!(help_text().contains("--quality"));
         assert!(help_text().contains("--warm-weights"));
         assert!(help_text().contains("--power N"));
