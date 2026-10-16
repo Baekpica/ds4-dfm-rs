@@ -341,8 +341,12 @@ pub(super) fn validate_part(
             F16 | BF16 => t.elements.checked_mul(2).ok_or(TensorError::Overflow)?,
             FP8 | CODEBOOK => t.elements,
             Q4_K => {
-                if g.get_string("glm_vq.native_policy") != Some(b"q4_k_nonexpert_v2")
+                // v3 adds the shared experts; a v2 artifact never carries them.
+                let policy = g.get_string("glm_vq.native_policy");
+                let v3 = policy == Some(b"q4_k_nonexpert_v3");
+                if !(v3 || policy == Some(b"q4_k_nonexpert_v2"))
                     || !layout::q4k_target(&t.name)
+                    || (!v3 && layout::q4k_shared(&t.name))
                     || t.ndim != 2
                     || t.dim[0] % Q4_BLOCK != 0
                 {

@@ -78,7 +78,24 @@ pub(super) fn q4k_target(name: &str) -> bool {
             | "mlp.gate_proj.weight"
             | "mlp.up_proj.weight"
             | "mlp.down_proj.weight"
-    )
+    ) || q4k_shared(name)
+}
+
+/// Trunk shared experts: Q4_K only under the v3 nonexpert recipe.
+pub(super) fn q4k_shared(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("model.language_model.layers.") else {
+        return false;
+    };
+    let Some((layer, role)) = rest.split_once('.') else {
+        return false;
+    };
+    layer.parse::<u32>().is_ok_and(|il| il < TRUNK)
+        && matches!(
+            role,
+            "mlp.shared_experts.gate_proj.weight"
+                | "mlp.shared_experts.up_proj.weight"
+                | "mlp.shared_experts.down_proj.weight"
+        )
 }
 
 fn matrix(out: &mut Vec<LayoutSpec>, prefix: &str, typ: u32, rows: u64, cols: u64) {

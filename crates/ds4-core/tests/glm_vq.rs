@@ -294,6 +294,18 @@ fn native_q4k_contract() {
         tensors[0].name = name;
         assert!(tmp.open(&container(&recipe, &tensors).0).is_err());
     }
+    // v3 adds the shared experts; v2 artifacts still reject them above.
+    let v3 = [("glm_vq.native_policy", "q4_k_nonexpert_v3")];
+    for name in [
+        "model.language_model.layers.3.mlp.shared_experts.gate_proj.weight",
+        "model.language_model.layers.44.mlp.shared_experts.down_proj.weight",
+        "model.language_model.layers.0.self_attn.q_proj.weight",
+    ] {
+        tensors[0].name = name;
+        assert!(tmp.open(&container(&v3, &tensors).0).is_ok(), "{name}");
+    }
+    tensors[0].name = "model.language_model.layers.45.mlp.shared_experts.up_proj.weight";
+    assert!(tmp.open(&container(&v3, &tensors).0).is_err());
     tensors[0].name = "lm_head.weight";
     tensors[0].dims[0] = 128;
     assert!(tmp.open(&container(&recipe, &tensors).0).is_err());

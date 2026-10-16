@@ -18,11 +18,13 @@ ALIGN = 128
 Q4_K, BF16, FP8 = 12, 30, 0x47514638
 BLOCK, BLOCK_BYTES = 256, 144
 ROWS = 128
-POLICY = 'q4_k_nonexpert_v2'
+# v3 adds the trunk shared experts (FP8, read every decoded token).
+POLICY = 'q4_k_nonexpert_v3'
 ROLES = {
     'self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj',
     'self_attn.q_a_proj', 'self_attn.q_b_proj', 'self_attn.kv_a_proj_with_mqa',
     'self_attn.kv_b_proj', 'mlp.gate_proj', 'mlp.up_proj', 'mlp.down_proj',
+    'mlp.shared_experts.gate_proj', 'mlp.shared_experts.up_proj', 'mlp.shared_experts.down_proj',
 }
 
 
@@ -254,7 +256,7 @@ def main():
     manifest['nonexpert_recipe'] = dict(name=POLICY, parent_manifest_sha256=digest(manifest_path),
         quantizer_sha256=digest(args.lib), converter_sha256=digest(Path(__file__)),
         input='source BF16; FP8 times original block scale rounded to BF16',
-        preserved='routed/shared experts, VQ/books, MTP, vision, router/norm/mHC/KDA gates/indexer',
+        preserved='routed experts, VQ/books, MTP, vision, router/norm/mHC/KDA gates/indexer',
         kept_tensors=sorted(keep),
         weights='Q4_K: 256 elements per 144-byte block, no imatrix')
     (output / 'tensor-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
