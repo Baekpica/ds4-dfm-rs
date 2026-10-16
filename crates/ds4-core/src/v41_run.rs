@@ -69,6 +69,17 @@ pub fn v41_kvreuse_last_reused() -> i32 {
     unsafe { ds4_bridge_v41_kvreuse_last_reused() }
 }
 
+/// The engine's `DS4_DEFAULT_MIN_P` (`ds4.h:54`, 0.02 since 2026-10-15,
+/// commit 59ee755): what the V4.1 route uses when the request omits min_p.
+/// 0.02 is the value that avoids both measured failure modes.  top_p 1.0 lets
+/// the flat 2-bit tail through, dropping a junk token about every 160 (the
+/// 2026-10-12 SVG).  top_p 0.95 -- and min_p 0.05, its twin -- collapse the
+/// kept set to top-1 in a high-confidence repetition region, so `</think>`,
+/// which the quantization presses down to 2-6%, can never be drawn and the
+/// loop becomes absorbing (the 2026-10-15 28-minute stall).  min_p cuts at
+/// 0.0198 relative to top-1: below the junk class (<9e-4), above `</think>`.
+pub const V41_DEFAULT_MIN_P: f32 = 0.02;
+
 /// The decode-sampling face for one V4.1 run (the engine's
 /// `ds4_decode_sampling`, `ds4_v41_api.h:69-75`): temperature > 0 with no
 /// penalties takes the device sampling kernel (speculation runs, rejection

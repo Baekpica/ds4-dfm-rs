@@ -149,7 +149,7 @@ pub use v41::{
 };
 pub use v41_run::{
     set_mem_budget_mb, v41_kvreuse_last_reused, v41_last_spec_stats, V41Feed, V41KvDisk, V41KvHit,
-    V41RunOptions, V41Sampling,
+    V41RunOptions, V41Sampling, V41_DEFAULT_MIN_P,
 };
 pub use validate::{
     dump_validate, host_compress_ratios, validate_file, validate_gguf, validate_qwen_inventory,

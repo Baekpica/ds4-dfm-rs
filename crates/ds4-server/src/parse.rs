@@ -149,6 +149,20 @@ pub fn default_temperature() -> f32 {
         .unwrap_or(DEFAULT_TEMPERATURE)
 }
 
+/// The V4.1 route's min_p default: the engine's `DS4_DEFAULT_MIN_P`
+/// (`ds4.h:54`, 0.02) unless the deployment overrides it through
+/// `DS4_SERVER_DEFAULT_MIN_P` -- the same shape as the temperature above, and
+/// the value install.sh carries as its own MIN_P constant.  Scoped to
+/// `ParseEnv::engine_defaults` (the V4.1 model set); the other families keep
+/// `DEFAULT_MIN_P`.
+pub fn default_min_p() -> f32 {
+    std::env::var("DS4_SERVER_DEFAULT_MIN_P")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(ds4_core::V41_DEFAULT_MIN_P)
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedRequest {
     pub kind: ReqKind,
@@ -216,7 +230,7 @@ impl ParsedRequest {
             temperature: env.default_temp,
             top_p: DEFAULT_TOP_P,
             min_p: if env.engine_defaults {
-                0.0
+                default_min_p()
             } else {
                 DEFAULT_MIN_P
             },

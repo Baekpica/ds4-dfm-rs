@@ -702,7 +702,7 @@ fn audio_image_budget_preflight() {
 /// server bin only on the V4.1 route).  References: server_parse_chat.c:16-17
 /// (thinking OFF, effort HIGH), server_msgs.c:194-215 (everything non-zero
 /// below max collapses to HIGH), ds4.h:54-56 (temp 1.0 / top_p 1.0 / min_p
-/// 0.0), server_parse_chat.c:91-127 (penalties + DRY).
+/// 0.02), server_parse_chat.c:91-127 (penalties + DRY).
 #[test]
 fn engine_defaults_think_and_sampling() {
     use ds4_server::ThinkMode;
@@ -751,11 +751,12 @@ fn engine_defaults_think_and_sampling() {
             .think_mode,
         ThinkMode::None
     );
-    // min_p defaults to the engine's 0.0 on this scope; the port's own default
+    // min_p defaults to the engine's DS4_DEFAULT_MIN_P (ds4.h:54, 0.02 since
+    // 2026-10-15 / commit 59ee755) on this scope; the port's own default
     // (0.05) stays for the other families.
     assert_eq!(
         chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#).min_p,
-        0.0
+        0.02
     );
     assert_eq!(
         parse_chat_request(&env(), r#"{"messages":[{"role":"user","content":"hi"}]}"#)

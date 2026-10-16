@@ -40,6 +40,13 @@
 #                      (finance only, the reference's own constraint)
 #   --host ADDR        listen address (default 0.0.0.0)
 #   --port N           listen port (default 8000)
+#   --min-p F          the V4.1 min_p default the server ships when a request
+#                      omits it (default 0.02 = the engine's DS4_DEFAULT_MIN_P,
+#                      ds4.h:54).  0.02 is the value that cuts the flat 2-bit
+#                      tail without erasing sampling in a high-confidence
+#                      repetition region; 0.05 there falls back to greedy (the
+#                      2026-09-28 death loop).  The server reads it from
+#                      DS4_SERVER_DEFAULT_MIN_P, V4.1 route only.
 #   --no-build         do not run `make ds4-server` even if the binary is stale
 #   --no-start         install/check only
 #
@@ -79,6 +86,11 @@ BUDGET_MB=110000        # engine install.sh BUDGET_MB
 START_FLOOR_MB=100000   # engine install.sh START_FLOOR_MB
 RUN_FLOOR_MB=10000      # engine install.sh RUN_FLOOR_MB
 KILL_MB=2500            # engine install.sh KILL_MB
+# Engine DS4_DEFAULT_MIN_P (ds4.h:54, 2026-10-15): the V4.1 request-omitted
+# min_p.  install.sh carries the value; the server reads it from
+# DS4_SERVER_DEFAULT_MIN_P (parse.rs default_min_p), so changing it here needs
+# no rebuild.
+MIN_P=0.02
 
 CMD="install"; DIR="$HOME/youngai"; HOST="0.0.0.0"; PORT=8000; DOMAIN="finance"
 WITH_PT=0; START=1; BUILD=1
@@ -90,6 +102,7 @@ while [ $# -gt 0 ]; do
         --posttrain) WITH_PT=1; shift;;
         --host) HOST="$2"; shift 2;;
         --port) PORT="$2"; shift 2;;
+        --min-p) MIN_P="$2"; shift 2;;
         --no-build) BUILD=0; shift;;
         --no-start) START=0; shift;;
         -h|--help) awk 'NR > 1 && /^#/ {sub(/^# ?/, ""); print; next} NR > 1 {exit}' "$0"; exit 0;;
@@ -182,7 +195,8 @@ start() {
         case "$help" in *--vision-gguf*) ;; *) die "ds4-server predates the vision tower: rebuild with 'make ds4-server'";; esac
         vis=(--vision-gguf "$MODEL/$VISION")
     fi
-    say "starting ./ds4-server on $HOST:$PORT, domain $DOMAIN${vis:+, images on} (loading takes ~2 minutes; log: $LOG)"
+    say "starting ./ds4-server on $HOST:$PORT, domain $DOMAIN${vis:+, images on} (min_p $MIN_P; loading takes ~2 minutes; log: $LOG)"
+    DS4_SERVER_DEFAULT_MIN_P="$MIN_P" \
     nohup "$REPO/ds4-server" --cuda -m "$MODEL/$GGUF" "${zc[@]}" --engram-dir "$ENGRAM" "${vis[@]}" "${pt[@]}" \
         --mem-budget-mb "$BUDGET_MB" --host "$HOST" --port "$PORT" >"$LOG" 2>&1 </dev/null &
     echo $! >"$PIDF"; echo "domain $DOMAIN on $HOST:$PORT" >"$INFOF"

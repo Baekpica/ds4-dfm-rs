@@ -761,10 +761,15 @@ fn run_v41_one_shot(
         sampling: Some(ds4_core::V41Sampling {
             temperature: args.temp,
             top_p: args.top_p,
-            // The engine CLI's min_p default is 0.0 (DS4_DEFAULT_MIN_P,
-            // ds4.h:56); the port CLI's shared default is 0.05 for the other
-            // families, so the v41 path takes 0.0 unless --min-p was given.
-            min_p: if args.min_p_set { args.min_p } else { 0.0 },
+            // The engine's min_p default is 0.02 (DS4_DEFAULT_MIN_P, ds4.h:54,
+            // 2026-10-15); the port CLI's shared default is 0.05 for the other
+            // families, so the v41 path takes the engine's value unless
+            // --min-p was given.
+            min_p: if args.min_p_set {
+                args.min_p
+            } else {
+                ds4_core::V41_DEFAULT_MIN_P
+            },
             top_k: 0,
             seed: args.seed,
             freq_penalty: 0.0,
