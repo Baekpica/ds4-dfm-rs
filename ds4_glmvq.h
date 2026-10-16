@@ -12,7 +12,7 @@ extern "C" {
 typedef struct ds4_gvq_model ds4_gvq_model;
 typedef struct ds4_gvq_ctx ds4_gvq_ctx;
 
-enum { DS4_GVQ_NO_LINK = UINT32_MAX };
+enum { DS4_GVQ_NO_LINK = UINT32_MAX, DS4_GVQ_CTX_MAX = 8192 };
 typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32 } ds4_gvq_math;
 typedef enum { DS4_GVQ_RMS, DS4_GVQ_GATED_RMS, DS4_GVQ_PLAIN_RMS } ds4_gvq_norm;
 
@@ -53,6 +53,15 @@ int ds4_gpu_gvq_positions(ds4_gpu_tensor *out, uint32_t first, uint32_t rows);
 int ds4_gpu_gvq_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected,
     ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits, uint32_t bias,
     uint32_t rows, float scale);
+uint64_t ds4_gpu_gvq_index_bytes(uint32_t rows, uint32_t pools);
+int ds4_gpu_gvq_pool(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache,
+    ds4_gpu_tensor *tail_k, ds4_gpu_tensor *tail_gate,
+    const ds4_gpu_tensor *raw, const ds4_gpu_tensor *gate,
+    uint32_t norm, uint32_t bias, uint32_t ape,
+    uint32_t first, uint32_t rows, uint32_t capacity);
+int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
+    const ds4_gpu_tensor *query, const ds4_gpu_tensor *weights,
+    const ds4_gpu_tensor *cache, uint32_t pools, uint32_t rows, uint32_t first);
 uint64_t ds4_gpu_gvq_attn_bytes(uint32_t rows, uint32_t keys, uint32_t heads, uint32_t dim);
 int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *kv,
@@ -63,7 +72,8 @@ int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
 int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *cache, uint32_t weight,
     ds4_gpu_tensor *latent, ds4_gpu_tensor *kv, ds4_gpu_tensor *positions,
-    uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim);
+    uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim,
+    const ds4_gpu_tensor *selected, uint32_t stride);
 int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     ds4_gpu_tensor *gathered, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
     ds4_gpu_tensor *mid, ds4_gpu_tensor *down, const ds4_gpu_tensor *input,

@@ -143,9 +143,10 @@ static cublasStatus_t glmvq_latent_attn(cublasHandle_t handle,
         const __nv_bfloat16 *weight, const __nv_bfloat16 *cache,
         const float *query, float *output, const uint32_t *positions,
         uint32_t rows, uint32_t keys, uint32_t heads, uint32_t dim,
-        uint32_t latent, void *scratch, uint64_t bytes, cudaStream_t stream) {
+        uint32_t latent, void *scratch, uint64_t bytes, cudaStream_t stream,
+        const int32_t *selected = nullptr, uint32_t stride = 0) {
     if (!handle || !weight || !cache || !query || !output || !positions || !scratch ||
-        rows != 1 || !keys || !heads || !dim || !latent ||
+        rows != 1 || !keys || !heads || !dim || !latent || (selected && !stride) ||
         (uint64_t)rows * heads > INT_MAX || keys > INT_MAX ||
         (uint64_t)heads * dim > INT_MAX || latent > INT_MAX) { return CUBLAS_STATUS_INVALID_VALUE; }
     const glmvq_attn_layout l = glmvq_attn_bytes(rows, keys, heads, dim);
@@ -159,6 +160,7 @@ static cublasStatus_t glmvq_latent_attn(cublasHandle_t handle,
     auto *qlow = (__nv_bfloat16 *)(base + l.kv), *low = qlow + nl;
     auto *scores = (__nv_bfloat16 *)(base + l.scores);
     auto *y = (__nv_bfloat16 *)(base + l.output);
+    auto *mask = selected ? (uint32_t *)(base + l.mask) : nullptr;
     const float alpha = 1.0f, beta = 0.0f;
     const long long wstride = (long long)2 * dim * latent;
     glmvq_convert<<<(nq + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(query, q, nq);
@@ -174,8 +176,9 @@ static cublasStatus_t glmvq_latent_attn(cublasHandle_t handle,
         qlow, CUDA_R_16BF, latent, &beta, scores, CUDA_R_16BF, keys,
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
     if (status != CUBLAS_STATUS_SUCCESS) { return status; }
+    if (selected) { glmvq_attn_mask<<<rows, GLMVQ_THREADS, 0, stream>>>(mask, selected, keys, stride); }
     glmvq_attn_softmax<<<dim3(rows, heads), GLMVQ_THREADS, 0, stream>>>(
-        scores, nullptr, positions, rows, keys, 1.0f / sqrtf((float)dim));
+        scores, mask, positions, rows, keys, 1.0f / sqrtf((float)dim));
     if (cudaGetLastError() != cudaSuccess) { return CUBLAS_STATUS_EXECUTION_FAILED; }
     // cuBLAS may reduce split-K partials in the output type. Keep only this
     // long PV reduction in FP32 without changing the caller's math policy.

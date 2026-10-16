@@ -1213,12 +1213,14 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
 
 - `DS4_GLMVQ_LATENT_ATTN=0` disables latent single-row attention.
   Default On for aligned BF16 KV_B/cache, 64 heads, dimension 256, latent
-  512 and 512–2048 keys. Factor query/value projections around the latent
+  512 and 512–8192 keys. Factor query/value projections around the latent
   cache, moving BF16 rounding boundaries; long PV partial sums stay FP32.
   Other widths/shapes retain expanded attention. A one-row prefill tail can
   select this path; disabling `DS4_GLMVQ_KV_BF16` also disables it. No extra
-  allocation or MTP/capture support. See the [2K Q4 evidence and short/long
-  workload distinction](../docs/glm53-vq-latent-2026-10-16.md).
+  allocation or MTP/capture support. Beyond 2048 keys, use the source
+  indexer's causal selection mask. See the [2K Q4 evidence and short/long
+  workload distinction](../docs/glm53-vq-latent-2026-10-16.md) and the
+  [8K sparse workload](../docs/glm53-vq-sparse-2026-10-16.md).
 
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/

@@ -4,6 +4,7 @@
 #include "cuda/glm_vq_linear.cuh"
 #include "cuda/glm_vq_kda.cuh"
 #include "cuda/glm_vq_attention.cuh"
+#include "cuda/glm_vq_index.cuh"
 #include "cuda/glm_vq_mma.cuh"
 #include "cuda/glm_vq_decode.cuh"
 #include "cuda/glm_vq_fp8.cuh"
@@ -13,7 +14,7 @@ enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
 enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32 };
-enum { GVQ_LATENT_MIN_KEYS = 512, GVQ_LATENT_MAX_KEYS = 2048,
+enum { GVQ_LATENT_MIN_KEYS = 512, GVQ_LATENT_MAX_KEYS = DS4_GVQ_CTX_MAX,
        GVQ_LATENT_HEADS = 64, GVQ_LATENT_DIM = 256, GVQ_LATENT_WIDTH = 512 };
 
 struct ds4_gvq_model {
@@ -515,6 +516,47 @@ extern "C" uint64_t ds4_gpu_gvq_attn_bytes(uint32_t rows, uint32_t keys, uint32_
     return glmvq_attn_bytes(rows, keys, heads, dim).bytes;
 }
 
+extern "C" uint64_t ds4_gpu_gvq_index_bytes(uint32_t rows, uint32_t pools) {
+    return glmvq_index_bytes(rows, pools);
+}
+
+extern "C" int ds4_gpu_gvq_pool(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache,
+        ds4_gpu_tensor *tail_k, ds4_gpu_tensor *tail_gate,
+        const ds4_gpu_tensor *raw, const ds4_gpu_tensor *gate,
+        uint32_t norm, uint32_t bias, uint32_t ape,
+        uint32_t first, uint32_t rows, uint32_t capacity) {
+    constexpr uint32_t width = DS4_GLM53_POOL_DIM, ratio = DS4_GLM53_POOL_SIZE;
+    if (!ctx || ds4_capture_active() || !rows || capacity > DS4_GVQ_CTX_MAX ||
+        first > capacity || rows > capacity - first ||
+        !cache || (uint64_t)((capacity + ratio - 1) / ratio) * width > cache->bytes / sizeof(__nv_bfloat16) ||
+        !gvq_floats(tail_k, ratio * width) || !gvq_floats(tail_gate, ratio * width) ||
+        !gvq_floats(raw, (uint64_t)rows * width) || !gvq_floats(gate, (uint64_t)rows * width) ||
+        !gvq_stream(ctx)) { return 0; }
+    const auto *n = (const __nv_bfloat16 *)gvq_weight(ctx, norm, GVQ_TYPE_BF16, width);
+    const auto *b = (const __nv_bfloat16 *)gvq_weight(ctx, bias, GVQ_TYPE_BF16, width);
+    const auto *a = (const __nv_bfloat16 *)gvq_weight(ctx, ape, GVQ_TYPE_BF16, ratio * width);
+    if (!n || !b || !a) { return 0; }
+    return cuda_ok(glmvq_pool_update((__nv_bfloat16 *)cache->ptr,
+        (float *)tail_k->ptr, (float *)tail_gate->ptr, (const float *)raw->ptr,
+        (const float *)gate->ptr, n, b, a, first, rows, ctx->stream), "GLM VQ key pools");
+}
+
+extern "C" int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
+        const ds4_gpu_tensor *query, const ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *cache, uint32_t pools, uint32_t rows, uint32_t first) {
+    if (!ctx || ds4_capture_active() || !rows || !pools || first > DS4_GVQ_CTX_MAX ||
+        rows > DS4_GVQ_CTX_MAX - first || pools != (first + rows) / DS4_GLM53_POOL_SIZE ||
+        !gvq_floats(scores, (uint64_t)rows * pools) ||
+        !gvq_floats(query, (uint64_t)rows * GLMVQ_INDEX_HEADS * DS4_GLM53_POOL_DIM) ||
+        !gvq_floats(weights, (uint64_t)rows * GLMVQ_INDEX_HEADS) ||
+        !cache || (uint64_t)pools * DS4_GLM53_POOL_DIM > cache->bytes / sizeof(__nv_bfloat16) ||
+        !gvq_stream(ctx)) { return 0; }
+    return cublas_ok(glmvq_index_score(ctx->handle, (float *)scores->ptr,
+        (const float *)query->ptr, (const float *)weights->ptr,
+        (const __nv_bfloat16 *)cache->ptr, pools, rows, first,
+        ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream), "GLM VQ index scores");
+}
+
 extern "C" int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *query, const ds4_gpu_tensor *kv,
         const ds4_gpu_tensor *positions, const ds4_gpu_tensor *selected,
@@ -532,7 +574,8 @@ extern "C" int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
 extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *query, const ds4_gpu_tensor *cache, uint32_t weight,
         ds4_gpu_tensor *latent, ds4_gpu_tensor *kv, ds4_gpu_tensor *positions,
-        uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim) {
+        uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim,
+        const ds4_gpu_tensor *selected, uint32_t stride) {
     if (!ctx || ds4_capture_active() || !rows || !heads || !dim ||
         first > INT_MAX || rows > (uint32_t)INT_MAX - first ||
         weight >= ctx->model->source.size() || (uint64_t)heads * dim > INT_MAX / 2u) { return 0; }
@@ -544,6 +587,7 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         !cache || nx > cache->bytes / sizeof(__nv_bfloat16) ||
         !gvq_floats(latent, nx) || !gvq_floats(kv, ny) ||
         !gvq_floats(query, nq) || !gvq_floats(out, nq) ||
+        (selected && (!stride || (uint64_t)rows * stride > selected->bytes / sizeof(int32_t))) ||
         !positions || rows > positions->bytes / sizeof(uint32_t) ||
         ctx->scratch->bytes < glmvq_attn_bytes(rows, keys, heads, dim).bytes ||
         !gvq_stream(ctx)) { return 0; }
@@ -555,11 +599,11 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         return ds4_gpu_gvq_unpack(latent, cache, nx) &&
             ds4_gpu_gvq_linear(ctx, kv, weight, latent, keys, DS4_GVQ_BF16) &&
             ds4_gpu_gvq_positions(positions, first, rows) &&
-            ds4_gpu_gvq_attn(ctx, out, query, kv, positions, nullptr, 0, rows, keys, heads, dim);
+            ds4_gpu_gvq_attn(ctx, out, query, kv, positions, selected, stride, rows, keys, heads, dim);
     }
 
     // Full-prefix expansion dominates longer N=1 decode. Other widths keep
-    // the measured expanded path; this does not qualify MTP or sparse DSA.
+    // the expanded path. Sparse queries use the same causal selection mask.
     if (ctx->latent_attn && rows == 1 && heads == GVQ_LATENT_HEADS &&
         dim == GVQ_LATENT_DIM && s.cols == GVQ_LATENT_WIDTH &&
         keys >= GVQ_LATENT_MIN_KEYS && keys <= GVQ_LATENT_MAX_KEYS) {
@@ -569,7 +613,8 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
             (const __nv_bfloat16 *)s.data, (const __nv_bfloat16 *)cache->ptr,
             (const float *)query->ptr, (float *)out->ptr, (const uint32_t *)positions->ptr,
             rows, keys, heads, dim, s.cols, ctx->scratch->ptr, ctx->scratch->bytes,
-            ctx->stream), "GLM VQ latent attention");
+            ctx->stream, selected ? (const int32_t *)selected->ptr : nullptr, stride),
+            "GLM VQ latent attention");
     }
 
     // Both latent cache and KV_B output are BF16 in the source model. Keep
@@ -583,7 +628,8 @@ extern "C" int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     ctx->kv_calls++;
     return cublas_ok(glmvq_attention(ctx->handle, (const float *)query->ptr,
         (const __nv_bfloat16 *)kv->ptr, (float *)out->ptr, (const uint32_t *)positions->ptr,
-        nullptr, 0, rows, keys, heads, dim, ctx->scratch->ptr, ctx->scratch->bytes,
+        selected ? (const int32_t *)selected->ptr : nullptr, stride,
+        rows, keys, heads, dim, ctx->scratch->ptr, ctx->scratch->bytes,
         ctx->stream), "GLM VQ BF16 KV attention");
 }
 

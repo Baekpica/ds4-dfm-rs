@@ -74353,7 +74353,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         return 1;
 #else
         const uint32_t ctx_max = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
-            ? DS4_GLM53_INDEX_TOPK : DS4_GLM53_RESIDENT_CTX_MAX;
+            ? DS4_GVQ_CTX_MAX : DS4_GLM53_RESIDENT_CTX_MAX;
         if ((uint32_t)ctx_size > ctx_max ||
             e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
             e->distributed.role != DS4_DISTRIBUTED_NONE ||

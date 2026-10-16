@@ -4,14 +4,22 @@ use serde_json::{json, Value};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-const CONTEXT: i32 = 2048;
+const DEFAULT_CONTEXT: i32 = 2048;
 const TARGET_LIMIT: usize = 24;
 const OUTPUT_LIMIT: usize = 96;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 3 {
-        return Err("usage: glm_vq_quality MODEL CASES_JSON OUTPUT_DIR".into());
+    if !(3..=4).contains(&args.len()) {
+        return Err("usage: glm_vq_quality MODEL CASES_JSON OUTPUT_DIR [CONTEXT]".into());
+    }
+    let context = args
+        .get(3)
+        .map(|value| value.parse::<i32>())
+        .transpose()?
+        .unwrap_or(DEFAULT_CONTEXT);
+    if context <= 0 {
+        return Err("context must be positive".into());
     }
     let cases: Vec<Value> = serde_json::from_slice(&std::fs::read(&args[1])?)?;
     let out = Path::new(&args[2]);
@@ -32,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         let mut targets = model.vocab().encode_bytes(target.as_bytes());
         targets.truncate(TARGET_LIMIT);
-        if targets.is_empty() || prompt.len() + OUTPUT_LIMIT >= CONTEXT as usize {
+        if targets.is_empty() || prompt.len() + OUTPUT_LIMIT >= context as usize {
             return Err("case exceeds bounded text quality scope".into());
         }
         let prefix = format!("case-{index}");
@@ -41,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Fixed target continuations keep the comparison on identical states
         // even when greedy samples differ near a logit tie.
         {
-            let mut session = model.session(CONTEXT)?;
+            let mut session = model.session(context)?;
             session.sync(&prompt)?;
             for (step, &token) in targets.iter().enumerate() {
                 let logits = session.copy_logits(vocab)?;
@@ -65,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut answer = Vec::new();
         let mut stopped = false;
         {
-            let mut session = model.session(CONTEXT)?;
+            let mut session = model.session(context)?;
             session.sync(&prompt)?;
             for step in 0..OUTPUT_LIMIT {
                 let token = session.argmax();
@@ -84,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let result = json!({"id": id, "prompt": question,
             "prompt_tokens": prompt.len(), "target_ids": targets, "target_nll": nll,
             "generated_ids": generated, "answer": String::from_utf8_lossy(&answer),
-            "stopped": stopped, "vocab": vocab, "context": CONTEXT,
+            "stopped": stopped, "vocab": vocab, "context": context,
             "mtp": false, "capture": false,
             "scope": "bounded text arithmetic quality; not API/tool/media/state qualification"});
         std::fs::write(out.join(format!("{prefix}.json")), serde_json::to_vec_pretty(&result)?)?;

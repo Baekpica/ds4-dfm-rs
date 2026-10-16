@@ -22,7 +22,7 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GLM_CTX_MAX: u32 = 1_048_576;
-const GLMVQ_EAGER_CTX_MAX: u32 = 2048;
+const GLMVQ_EAGER_CTX_MAX: u32 = 8192;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -2554,7 +2554,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
         Variant::Glm53Flash => "compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate",
-        Variant::Glm53FlashVq => "Eager CUDA source graph caps context at 2048; native serving and workload limits remain unqualified",
+        Variant::Glm53FlashVq => "Eager CUDA sparse graph caps context at 8192; native serving and workload limits remain unqualified",
         Variant::Dots3NotePrev => {
             "text banks, local-window partial reuse and serial MTP are present but unqualified"
         }
@@ -2693,7 +2693,7 @@ mod tests {
         let family = ModelFamily::Glm53Vq;
         let variant = Variant::Glm53FlashVq;
         let caps = caps(family, variant);
-        assert_eq!(caps.ctx_max, Some(2048));
+        assert_eq!(caps.ctx_max, Some(GLMVQ_EAGER_CTX_MAX));
         assert_eq!(caps.qualified_ctx, None);
         assert_eq!(caps.qualified_prompt, None);
         let request = ServingRequest {
@@ -2707,9 +2707,21 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(name, value)| { name == "DS4_GLMVQ_PREFILL_ROWS" && value == "512" }));
+        for ctx in [2049, 8192] {
+            let p = plan(
+                ServingRequest {
+                    ctx,
+                    ..request.clone()
+                },
+                family,
+                variant,
+            );
+            assert!(!p.issues.iter().any(|issue| issue.code == "ctx_unavailable"));
+            assert_eq!(p.qualified.ctx, None);
+        }
         let p = plan(
             ServingRequest {
-                ctx: 2049,
+                ctx: (GLMVQ_EAGER_CTX_MAX + 1) as i32,
                 ..request
             },
             family,

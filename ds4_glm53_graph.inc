@@ -150,7 +150,7 @@ static bool glm53_copy_control(ds4_glm53_gpu_graph *g,
 
 static uint64_t glm53_graph_bytes_plan(uint32_t ctx_cap, uint32_t rows, uint32_t window) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
-        (ctx_cap > DS4_GLM53_INDEX_TOPK || window)) { return 0u; }
+        (ctx_cap > DS4_GVQ_CTX_MAX || window)) { return 0u; }
     if (!ctx_cap || ctx_cap > DS4_GLM53_RESIDENT_CTX_MAX ||
         !rows || rows > ctx_cap || rows > GLM53_PREFILL_MAX ||
         (window && (window != GLM53_PREFILL_WINDOW || window > ctx_cap ||

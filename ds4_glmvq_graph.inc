@@ -1,8 +1,7 @@
 /* Source BF16 graph, independent of MXQ arithmetic. Source citations refer
  * to the pinned Transformers 5.19.0 modeling_glm5_next.py in the handoff.
- * This eager baseline expands latent KV; sparse/captured paths must qualify
- * against it before replacing its arithmetic or state transitions. */
-enum { GVQ_BASELINE_CTX = 2048u };
+ * Sparse index pools keep the source BF16 boundaries. Captured execution
+ * remains a separate state/position contract. */
 
 static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
     uint64_t bytes = ds4_gpu_gvq_attn_bytes(rows, ctx, DS4_N_HEAD, DS4_N_KEY_MLA);
@@ -11,6 +10,7 @@ static uint64_t gvq_scratch(uint32_t ctx, uint32_t rows) {
     const char *direct = getenv("DS4_GLMVQ_Q4_DIRECT");
     const uint32_t head_type = direct && !strcmp(direct, "0") ? DS4_TENSOR_Q4_K : DS4_TENSOR_BF16;
     const uint64_t candidates[] = {
+        ds4_gpu_gvq_index_bytes(rows, (ctx + DS4_GLM53_POOL_SIZE - 1u) / DS4_GLM53_POOL_SIZE),
         ds4_gpu_gvq_linear_bytes(DS4_N_FF_DENSE, DS4_N_EMBD, rows,
             DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(DS4_N_EMBD, DS4_N_HEAD * DS4_N_KEY_MLA, rows,
@@ -35,7 +35,7 @@ static uint64_t gvq_extra_bytes(uint32_t ctx, uint32_t rows) {
 }
 
 static bool gvq_graph_init(ds4_glm53_gpu_graph *g, const ds4_weights *w) {
-    if (g->ctx_cap > GVQ_BASELINE_CTX || !w->glmvq_gpu) { return false; }
+    if (g->ctx_cap > DS4_GVQ_CTX_MAX || !w->glmvq_gpu) { return false; }
     g->gvq = ds4_gpu_gvq_create(w->glmvq_gpu, gvq_scratch(g->ctx_cap, g->row_cap), g->row_cap);
     g->gvq_latent = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * DS4_N_KV_LORA * sizeof(float));
     g->gvq_kv = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * 2u * DS4_N_HEAD * DS4_N_KEY_MLA * sizeof(float));
@@ -107,21 +107,46 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
         gvq_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
 }
 
+static bool gvq_index(ds4_glm53_gpu_graph *g, const ds4_model *m,
+        const ds4_layer_weights *l, uint32_t il, uint32_t pos, uint32_t rows) {
+    if (g->ctx_cap <= DS4_GLM53_INDEX_TOPK) { return true; }
+    // Build pools during the dense prefix too: a later sparse continuation
+    // must see all prior keys and the same incomplete four-token tail.
+    if (!gvq_mm(g, m, g->idx_k, l->indexer_attn_k, g->norm, rows, DS4_GVQ_BF16) ||
+        !gvq_mm(g, m, g->idx_gate, l->indexer_compressor_gate, g->norm, rows, DS4_GVQ_BF16) ||
+        !ds4_gpu_gvq_pool(g->gvq, g->layer_pool[il], g->layer_tail_k[il], g->layer_tail_gate[il],
+            g->idx_k, g->idx_gate, glmvq_index(m, l->indexer_k_norm),
+            glmvq_index(m, l->indexer_k_norm_b), glmvq_index(m, l->indexer_compressor_ape),
+            pos, rows, g->ctx_cap)) { return false; }
+    if (pos + rows <= DS4_GLM53_INDEX_TOPK) { return true; }
+
+    const uint32_t pools = (pos + rows) / DS4_GLM53_POOL_SIZE;
+    const uint32_t topk = DS4_GLM53_INDEX_TOPK / DS4_GLM53_POOL_SIZE;
+    return gvq_mm(g, m, g->idx_q, l->indexer_attn_q_b, g->q_rank_norm, rows, DS4_GVQ_BF16) &&
+        gvq_mm(g, m, g->idx_weights, l->indexer_proj, g->norm, rows, DS4_GVQ_BF16) &&
+        ds4_gpu_gvq_index(g->gvq, g->idx_scores, g->idx_q, g->idx_weights,
+            g->layer_pool[il], pools, rows, pos) &&
+        ds4_gpu_indexer_topk_tensor(g->idx_pools, g->idx_scores, pools, rows, topk, 0u, UINT32_MAX) &&
+        ds4_gpu_glm53_pool_expand(g->idx_selected, g->idx_pools, rows, pos,
+            topk, DS4_GLM53_INDEX_TOPK, DS4_GLM53_MAX_SELECTED);
+}
+
 static bool gvq_dsa(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_layer_weights *l, uint32_t il, uint32_t pos, uint32_t rows) {
     const uint32_t keys = pos + rows;
-    // All causal keys are selected below index_topk. The adapter selects
-    // expanded BF16 attention or the qualified N=1 latent factorization.
-    if (keys > GVQ_BASELINE_CTX) { return false; }
+    const uint32_t stride = keys > DS4_GLM53_INDEX_TOPK ? DS4_GLM53_MAX_SELECTED : 0u;
+    if (keys > DS4_GVQ_CTX_MAX) { return false; }
     return gvq_mm(g, m, g->q_rank, l->attn_q_a, g->norm, rows, DS4_GVQ_BF16) &&
         gvq_norm(g, m, g->q_rank_norm, g->q_rank, l->attn_q_a_norm, rows, DS4_N_LORA_Q) &&
         gvq_mm(g, m, g->q, l->attn_q_b, g->q_rank_norm, rows, DS4_GVQ_BF16) &&
         gvq_mm(g, m, g->kv_rank, l->attn_kv_a_mqa, g->norm, rows, DS4_GVQ_BF16) &&
         gvq_norm(g, m, g->kv_rank_norm, g->kv_rank, l->attn_kv_a_norm, rows, DS4_N_KV_LORA) &&
+        gvq_index(g, m, l, il, pos, rows) &&
         ds4_gpu_gvq_store(g->layer_kv[il], g->kv_rank_norm, rows, pos, g->ctx_cap, DS4_N_KV_LORA) &&
         ds4_gpu_gvq_dsa(g->gvq, g->heads, g->q, g->layer_kv[il],
             glmvq_index(m, l->attn_kv_b), g->gvq_latent, g->gvq_kv,
-            g->gvq_pos, pos, rows, DS4_N_HEAD, DS4_N_KEY_MLA) &&
+            g->gvq_pos, pos, rows, DS4_N_HEAD, DS4_N_KEY_MLA,
+            stride ? g->idx_selected : NULL, stride) &&
         gvq_mm(g, m, g->attn_out, l->attn_output, g->heads, rows, DS4_GVQ_BF16);
 }
 

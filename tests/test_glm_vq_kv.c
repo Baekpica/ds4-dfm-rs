@@ -81,7 +81,7 @@ static void check_paths(const ds4_gvq_model *model) {
         CHECK(ds4_gpu_tensor_read(out, 0, reference, bytes));
         for (unsigned mode = 0; mode < 2; mode++) {
             CHECK(ds4_gpu_gvq_dsa(mode ? fast : old, out, q, input, 0, latent, kv, pos,
-                first, rows, HEADS, DIM));
+                first, rows, HEADS, DIM, NULL, 0));
             CHECK(ds4_gpu_tensor_read(out, 0, actual, bytes));
             for (uint64_t i = 0; i < bytes / sizeof(float); i++) {
                 CHECK(isfinite(actual[i]) && actual[i] == reference[i]);
@@ -95,12 +95,12 @@ static void check_paths(const ds4_gvq_model *model) {
             rows, first, input == unaligned, (unsigned long long)(bytes / sizeof(float)));
     }
     /* Invalid geometry/capacity must fail before enqueueing work. */
-    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, short_cache, 0, latent, kv, pos, 0, 1, HEADS, DIM));
-    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 1, latent, kv, pos, 0, 1, HEADS, DIM));
-    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, UINT32_MAX, 1, HEADS, DIM));
-    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, 0, 1, HEADS - 1, DIM));
-    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, 0, 1, UINT32_MAX, UINT32_MAX));
-    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, 0, 0, HEADS, DIM));
+    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, short_cache, 0, latent, kv, pos, 0, 1, HEADS, DIM, NULL, 0));
+    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 1, latent, kv, pos, 0, 1, HEADS, DIM, NULL, 0));
+    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, UINT32_MAX, 1, HEADS, DIM, NULL, 0));
+    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, 0, 1, HEADS - 1, DIM, NULL, 0));
+    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, 0, 1, UINT32_MAX, UINT32_MAX, NULL, 0));
+    CHECK(!ds4_gpu_gvq_dsa(fast, out, q, aligned, 0, latent, kv, pos, 0, 0, HEADS, DIM, NULL, 0));
     ds4_gpu_tensor_free(short_cache); ds4_gpu_tensor_free(pos);
     ds4_gpu_tensor_free(kv); ds4_gpu_tensor_free(latent);
     ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(q);
@@ -160,10 +160,10 @@ static void check_latent(const ds4_gvq_model *model, const char *path) {
         if (cases[c].fixture >= 0) {
             reference = expected + (uint64_t)cases[c].fixture * HEADS * DIM;
         } else {
-            CHECK(ds4_gpu_gvq_dsa(old, out, q, input, 0, latent, kv, pos, first, rows, HEADS, DIM));
+            CHECK(ds4_gpu_gvq_dsa(old, out, q, input, 0, latent, kv, pos, first, rows, HEADS, DIM, NULL, 0));
             CHECK(ds4_gpu_tensor_read(out, 0, control, bytes));
         }
-        CHECK(ds4_gpu_gvq_dsa(fast, out, q, input, 0, latent, kv, pos, first, rows, HEADS, DIM));
+        CHECK(ds4_gpu_gvq_dsa(fast, out, q, input, 0, latent, kv, pos, first, rows, HEADS, DIM, NULL, 0));
         CHECK(ds4_gpu_tensor_read(out, 0, actual, bytes));
         for (uint64_t i = 0; i < bytes / sizeof(float); i++) {
             CHECK(isfinite(actual[i]) && actual[i] == reference[i]);

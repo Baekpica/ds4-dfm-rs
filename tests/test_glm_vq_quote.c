@@ -8,7 +8,8 @@ int main(void) {
     model_apply_host_shape();
     ds4_host_shape_clear();
     const uint32_t cases[][2] = {{1, 1}, {256, 4}, {256, 256},
-        {2048, 1}, {2048, 512}, {2048, 2048}};
+        {2048, 1}, {2048, 512}, {2048, 2048},
+        {8192, 1}, {8192, 1024}, {8192, 2048}};
     unsigned count = 0, matrices = 0;
     if (scanf("%u", &count) != 1 || count != 39862) { return 1; }
     for (unsigned i = 0; i < count; i++) {
@@ -41,6 +42,6 @@ int main(void) {
         }
         matrices++;
     }
-    printf("GLM VQ scratch PASS: %u matrices, six context/width cases\n", matrices);
+    printf("GLM VQ scratch PASS: %u matrices, nine context/width cases\n", matrices);
     return 0;
 }

@@ -1989,6 +1989,20 @@ tests/test_glm_vq_kv.o: tests/test_glm_vq_kv.c ds4.h ds4_glmvq.h ds4_gpu.h
 tests/test_glm_vq_kv: tests/test_glm_vq_kv.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_glm_vq_sparse.o: tests/test_glm_vq_sparse.c ds4.h ds4_glmvq.h ds4_gpu.h ds4_glm53_compact.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm_vq_sparse: tests/test_glm_vq_sparse.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/libglm_vq_index.so: tests/test_glm_vq_index.cu cuda/glm_vq_index.cuh cuda/glm_vq_linear.cuh \
+	cuda/glm_vq_ops.cuh cuda/glm_vq.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_glm53_compact.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared --cudart shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-index
+test-glm-vq-index: tests/libglm_vq_index.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_index.py --lib $< --model "$(GLMVQ_MODEL)"
+
 .PHONY: test-glm-vq-cache
 test-glm-vq-cache: tests/test_glm_vq_cache
 	./tests/test_glm_vq_cache
@@ -2109,7 +2123,7 @@ ds4.o ds4_cpu.o: $(GLMVQ_NATIVE_DEPS)
 tests/test_glm_vq_quote.o: $(GLMVQ_NATIVE_DEPS) $(GLM53_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \
 	cuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh \
-	cuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_fp8.cuh
+	cuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_index.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_fp8.cuh
 tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
 	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
