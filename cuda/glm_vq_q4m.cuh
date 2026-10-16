@@ -2,9 +2,11 @@
 #define DS4_GLM_VQ_Q4M_CUH
 
 #include "glm_vq_q4.cuh"
+#include "glm_vq_ops.cuh"
 #include <cuda_bf16.h>
 
-// Verify-width Q4_K GEMV on BF16 tensor cores (2-8 tokens).
+// Verify-width Q4_K GEMV on BF16 tensor cores (2-8 tokens; the fused
+// gate/up also at one token).
 //
 // The SIMT dot reloads every token's input per weight block and stalls on
 // those loads (126-224 GB/s at three tokens). One m16n8k16 MMA covers 16
@@ -26,6 +28,10 @@
 //   STAGES - 1 stages ahead. Long row segments keep DRAM pages open: the
 //   4-block (576-byte) stages ran 6% below the SIMT stream on the head.
 enum { GLMVQ_Q4M_TOKENS = 8 };
+// SWIGLU: a 16-row tile holds 8 gate rows over the same 8 up rows, so each
+// lane ends with gate and up of one output row and writes the clamped
+// SwiGLU of their BF16 roundings, as the separate kernels do.
+enum glmvq_q4m_epilogue { GLMVQ_Q4M_PLAIN, GLMVQ_Q4M_SWIGLU };
 
 template <uint32_t TILES, uint32_t WARPS, uint32_t CHUNK, uint32_t STAGES>
 struct glmvq_q4m_shape {
@@ -129,17 +135,21 @@ __device__ __forceinline__ void glmvq_q4m_block(const uint8_t *rows, const float
     }
 }
 
-template <uint32_t TILES, uint32_t WARPS, uint32_t CHUNK, uint32_t STAGES>
-__global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight,
-        const float *input, float *out, uint32_t cols, uint32_t rows, uint32_t tokens) {
+template <uint32_t TILES, uint32_t WARPS, uint32_t CHUNK, uint32_t STAGES,
+    glmvq_q4m_epilogue EPI = GLMVQ_Q4M_PLAIN>
+__global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight, const uint8_t *up,
+        const float *input, float *out, uint32_t cols, uint32_t rows, uint32_t tokens, float limit) {
     using shape = glmvq_q4m_shape<TILES, WARPS, CHUNK, STAGES>;
+    static_assert(EPI == GLMVQ_Q4M_PLAIN || TILES == 1, "SwiGLU pairs one tile");
+    // Output rows per CTA: SWIGLU stages 8 gate and the same 8 up rows.
+    constexpr uint32_t outs = EPI == GLMVQ_Q4M_SWIGLU ? 8 : shape::rows;
     extern __shared__ uint4 glmvq_q4m_smem[];
     __shared__ float red[WARPS][shape::rows][GLMVQ_Q4M_TOKENS];
     uint8_t *staged = (uint8_t *)glmvq_q4m_smem;
     glmvq_pdl_open();
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, c = lane & 3;
     const uint32_t blocks = cols / GLMVQ_Q4_BLOCK, chunks = (blocks + CHUNK - 1) / CHUNK;
-    const uint32_t row0 = blockIdx.x * shape::rows;
+    const uint32_t row0 = blockIdx.x * outs;
     const uint64_t row_bytes = (uint64_t)blocks * GLMVQ_Q4_BYTES;
 
     // Stage j: blocks CHUNK*j.. of the CTA's rows; constant weights need no
@@ -148,11 +158,14 @@ __global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight,
         if (j < chunks) {
             const uint32_t first = j * CHUNK, pieces = min(CHUNK, blocks - first) * (GLMVQ_Q4_BYTES / 16);
             uint8_t *dst = staged + j % STAGES * shape::stage;
-            const uint8_t *src = weight + (uint64_t)row0 * row_bytes + first * GLMVQ_Q4_BYTES;
+            const uint64_t offset = (uint64_t)row0 * row_bytes + first * GLMVQ_Q4_BYTES;
             for (uint32_t i = threadIdx.x; i < shape::rows * shape::pieces; i += shape::threads) {
                 const uint32_t r = i / shape::pieces, piece = i % shape::pieces;
-                if (piece < pieces && row0 + r < rows) {
-                    __pipeline_memcpy_async(dst + r * shape::stride + piece * 16, src + r * row_bytes + piece * 16, 16);
+                // SWIGLU: staged rows 0-7 are gate rows row0.., rows 8-15 the same up rows.
+                const uint32_t local = EPI == GLMVQ_Q4M_SWIGLU ? r % outs : r;
+                const uint8_t *src = (EPI == GLMVQ_Q4M_SWIGLU && r >= outs ? up : weight) + offset;
+                if (piece < pieces && row0 + local < rows) {
+                    __pipeline_memcpy_async(dst + r * shape::stride + piece * 16, src + local * row_bytes + piece * 16, 16);
                 }
             }
         }
@@ -183,13 +196,17 @@ __global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight,
         red[warp][16 * t + g + 8][2 * c + 1] = sum[t][3];
     }
     __syncthreads();
-    for (uint32_t i = threadIdx.x; i < shape::rows * tokens; i += shape::threads) {
-        const uint32_t r = i % shape::rows, n = i / shape::rows;
-        if (row0 + r >= rows) { continue; }
+    auto total = [&](uint32_t r, uint32_t n) {
         float value = red[0][r][n];
         #pragma unroll
         for (uint32_t w = 1; w < WARPS; w++) { value += red[w][r][n]; }
-        out[(uint64_t)n * rows + row0 + r] = __bfloat162float(__float2bfloat16_rn(value));
+        return __bfloat162float(__float2bfloat16_rn(value));
+    };
+    for (uint32_t i = threadIdx.x; i < outs * tokens; i += shape::threads) {
+        const uint32_t r = i % outs, n = i / outs;
+        if (row0 + r >= rows) { continue; }
+        out[(uint64_t)n * rows + row0 + r] = EPI == GLMVQ_Q4M_SWIGLU
+            ? glmvq_swiglu_value(total(r, n), total(r + outs, n), limit) : total(r, n);
     }
 }
 
@@ -199,20 +216,42 @@ __global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight,
 enum { GLMVQ_Q4M_TILES = 1, GLMVQ_Q4M_WARPS = 16, GLMVQ_Q4M_CHUNK = 16, GLMVQ_Q4M_STAGES = 2 };
 using glmvq_q4m_prod = glmvq_q4m_shape<GLMVQ_Q4M_TILES, GLMVQ_Q4M_WARPS, GLMVQ_Q4M_CHUNK, GLMVQ_Q4M_STAGES>;
 
+template <glmvq_q4m_epilogue EPI>
+static constexpr auto glmvq_q4m_kernel =
+    glmvq_q4m<GLMVQ_Q4M_TILES, GLMVQ_Q4M_WARPS, GLMVQ_Q4M_CHUNK, GLMVQ_Q4M_STAGES, EPI>;
+
 static cudaError_t glmvq_q4m_prepare() {
-    return cudaFuncSetAttribute(glmvq_q4m<GLMVQ_Q4M_TILES, GLMVQ_Q4M_WARPS, GLMVQ_Q4M_CHUNK, GLMVQ_Q4M_STAGES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-        glmvq_q4m_prod::smem);
+    cudaError_t err = cudaFuncSetAttribute(glmvq_q4m_kernel<GLMVQ_Q4M_PLAIN>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, glmvq_q4m_prod::smem);
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_q4m_kernel<GLMVQ_Q4M_SWIGLU>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, glmvq_q4m_prod::smem);
+    }
+    return err;
 }
 
 static bool glmvq_q4m_fits(const void *weight, const float *input, uint32_t cols, uint32_t tokens) {
-    return tokens >= 2 && tokens <= GLMVQ_Q4M_TOKENS && cols && cols % GLMVQ_Q4_BLOCK == 0 &&
+    return tokens && tokens <= GLMVQ_Q4M_TOKENS && cols && cols % GLMVQ_Q4_BLOCK == 0 &&
         (uintptr_t)weight % 16 == 0 && (uintptr_t)input % 16 == 0;
 }
 
 static cudaError_t glmvq_q4m_decode(const void *weight, const float *input, float *out,
         uint32_t rows, uint32_t cols, uint32_t tokens, cudaStream_t stream, glmvq_launch launch) {
     if (!out || !rows || !glmvq_q4m_fits(weight, input, cols, tokens)) { return cudaErrorInvalidValue; }
-    return glmvq_launch_kernel(launch, glmvq_q4m<GLMVQ_Q4M_TILES, GLMVQ_Q4M_WARPS, GLMVQ_Q4M_CHUNK, GLMVQ_Q4M_STAGES>, (rows + glmvq_q4m_prod::rows - 1) / glmvq_q4m_prod::rows,
-        glmvq_q4m_prod::threads, glmvq_q4m_prod::smem, stream, (const uint8_t *)weight, input, out, cols, rows, tokens);
+    return glmvq_launch_kernel(launch, glmvq_q4m_kernel<GLMVQ_Q4M_PLAIN>, (rows + glmvq_q4m_prod::rows - 1) / glmvq_q4m_prod::rows,
+        glmvq_q4m_prod::threads, glmvq_q4m_prod::smem, stream, (const uint8_t *)weight, (const uint8_t *)nullptr,
+        input, out, cols, rows, tokens, 0.0f);
+}
+
+// Gate and up of one input with the clamped SwiGLU: `rows` mid rows.
+static cudaError_t glmvq_q4m_swiglu(const void *gate, const void *up, const float *input, float *mid,
+        uint32_t rows, uint32_t cols, uint32_t tokens, float limit, cudaStream_t stream, glmvq_launch launch) {
+    if (!mid || !rows || !glmvq_q4m_fits(gate, input, cols, tokens) || (uintptr_t)up % 16) {
+        return cudaErrorInvalidValue;
+    }
+    constexpr uint32_t outs = glmvq_q4m_prod::rows / 2;
+    return glmvq_launch_kernel(launch, glmvq_q4m_kernel<GLMVQ_Q4M_SWIGLU>, (rows + outs - 1) / outs,
+        glmvq_q4m_prod::threads, glmvq_q4m_prod::smem, stream, (const uint8_t *)gate, (const uint8_t *)up,
+        input, mid, cols, rows, tokens, limit);
 }
 #endif

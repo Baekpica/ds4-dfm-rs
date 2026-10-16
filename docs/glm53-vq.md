@@ -72,7 +72,12 @@ per token with the same Q4_K choice for its nonexpert weights.
 - **Non-expert projections.** Q4_K uses a cooperative stream kernel, FP8 a
   direct dot that rounds weights at the source BF16 boundary, BF16 a direct
   dot that reads the F32 activation row in place (the output head reaches
-  250 GB/s). Small matrices split a row across warps.
+  250 GB/s). Small matrices split a row across warps. Shared-expert and
+  dense gate/up run as one tensor-core pass that writes the clamped SwiGLU
+  (a tile holds 8 gate rows over the same 8 up rows): at one token for the
+  2,048-row shared expert (57 → 49 µs per pair) and at every verify width
+  (58 → 53 µs at three tokens). `DS4_GLMVQ_GATE_UP=0` restores the two
+  projections and the SwiGLU kernel.
 - **mHC.** One kernel computes the 4-stream RMS and the 24 F32 mapping dots;
   the Sinkhorn split runs one lane per element and also applies the
   following RMS norm.
@@ -168,6 +173,7 @@ RMS 0.23, KL 2.3e-7.
 | MTP verify kernels | one-row order per row | not applicable | identical at 8K; near-tie flip on prose |
 | Tensor-core verify Q4_K | exact products, F32 sub-block order | not applicable | prose and code equal MTP off (128 ids) |
 | Expert gain after the dot (decode, verify) | FP32 dot × gain, no per-weight BF16 rounding (relRMS 3e-3 vs it) | not applicable | 512 decode ids and MTP code ids identical |
+| Fused Q4_K gate/up/SwiGLU | verify: bit-identical; one-token shared expert: tensor-core F32 order | not applicable | 512 decode ids and MTP code ids identical |
 | Prefill mHC mix in one pass, narrow RMS | F32 order | RMS 0.20, KL 2.1e-7 | identical |
 | F32 Q4_K prefill outputs | no BF16 boundary after MMQ | RMS 0.24, KL 1.2e-7 | identical |
 | Expand fused with the next mix | F32 order through Sinkhorn | RMS 0.32, KL 1.8e-6 | identical |
@@ -238,7 +244,9 @@ prose (32.7 → 37.1 tok/s; its 128 tokens now equal the MTP-off decode, which
 the SIMT verify had left at token 27 on a near-tie, so acceptance moved to
 2.67 tokens per verify). Moving the expert gain after the dot took the code
 cycle to 69.0 ms (39.5 tok/s, same tokens); one-row decode stayed at
-24.8–25.3 tok/s with 512 identical tokens.
+24.8–25.3 tok/s with 512 identical tokens. The fused gate/up took the code
+cycle to 68.9 ms (two interleaved pairs, 39.51 → 39.58 tok/s); its 0.3 ms
+per decoded token stays inside the ±1.5% fresh-run spread.
 
 ## Measured performance
 

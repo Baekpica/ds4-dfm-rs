@@ -44,6 +44,7 @@ struct ds4_gvq_ctx {
     glmvq_restore_mode restore;
     bool direct_q4;
     bool q4_mma;
+    bool gate_up;
     bool gain_dot;
     bool q4_round;
     bool direct_fp8;
@@ -397,6 +398,13 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     }
     ctx->q4_mma = (!q4_mma || strcmp(q4_mma, "0")) &&
         cuda_ok(glmvq_q4m_prepare(), "GLM VQ Q4 MMA shared memory");
+    const char *gate_up = getenv("DS4_GLMVQ_GATE_UP");
+    if (gate_up && strcmp(gate_up, "0") && strcmp(gate_up, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_GATE_UP accepts 0 or 1\n");
+        delete ctx;
+        return nullptr;
+    }
+    ctx->gate_up = !gate_up || strcmp(gate_up, "0");
     const char *q4_stream = getenv("DS4_GLMVQ_Q4_STREAM");
     if (q4_stream && strcmp(q4_stream, "0") && strcmp(q4_stream, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_Q4_STREAM accepts 0 or 1\n");
@@ -549,6 +557,24 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     return cublas_ok(glmvq_gemm(ctx->handle, s, (const float *)input->ptr, (float *)out->ptr,
         rows, (glmvq_compute)math, ctx->scratch->ptr, ctx->scratch->bytes, ctx->stream,
         ctx->restore), "GLM VQ linear");
+}
+
+// One token: the SIMT stream beats the MMA kernel on the 12,288-row dense
+// FFN (231 vs 249 us per gate/up pair); the 2,048-row shared expert gains
+// 57 -> 49 us. Verify widths always fuse (shared pair 58 -> 53 us at three
+// tokens). DS4_GLMVQ_GATE_UP=0 restores the separate projections.
+enum { GVQ_GATE_UP_ONE_ROW_MAX = 4096 };
+
+extern "C" int ds4_gpu_gvq_gate_up(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mid, uint32_t gate, uint32_t up,
+        const ds4_gpu_tensor *input, uint32_t rows, float limit) {
+    if (!ctx || !ctx->gate_up || !rows || rows > GLMVQ_Q4M_TOKENS || !ctx->direct_q4 || !ctx->q4_mma ||
+        gate >= ctx->model->source.size() || up >= ctx->model->source.size()) { return 0; }
+    const glmvq_source &g = ctx->model->source[gate], &u = ctx->model->source[up];
+    if (ctx->model->records[gate].type != GVQ_TYPE_Q4 || ctx->model->records[up].type != GVQ_TYPE_Q4 ||
+        g.rows != u.rows || g.cols != u.cols || (rows == 1 && g.rows > GVQ_GATE_UP_ONE_ROW_MAX) ||
+        !gvq_floats(input, (uint64_t)rows * g.cols) || !gvq_floats(mid, (uint64_t)rows * g.rows)) { return 0; }
+    return cuda_ok(glmvq_q4m_swiglu(g.data, u.data, (const float *)input->ptr, (float *)mid->ptr,
+        g.rows, g.cols, rows, limit, ctx->stream, gvq_mode(rows)), "GLM VQ Q4 gate/up");
 }
 
 extern "C" int ds4_gpu_gvq_linear_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t index,

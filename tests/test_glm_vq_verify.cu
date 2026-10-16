@@ -109,6 +109,41 @@ static int q4m_case(uint32_t rows, uint32_t cols, uint32_t tokens) {
     return !ok;
 }
 
+// Fused gate/up/SwiGLU must equal the two plain MMA projections followed
+// by the SwiGLU kernel bit for bit (each row's dot is unchanged).
+static int q4m_swiglu_case(uint32_t rows, uint32_t cols, uint32_t tokens) {
+    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK;
+    std::uniform_int_distribution<int> byte(0, 255);
+    std::uniform_real_distribution<float> scale(0.002f, 0.02f);
+    std::vector<uint8_t> w[2];
+    for (auto &m : w) {
+        m.resize((size_t)rows * blocks * GLMVQ_Q4_BYTES);
+        for (auto &b : m) { b = (uint8_t)byte(rng); }
+        for (size_t b = 0; b < (size_t)rows * blocks; b++) {
+            *(__half *)&m[b * GLMVQ_Q4_BYTES] = __float2half(scale(rng) * 40.0f);
+            *(__half *)&m[b * GLMVQ_Q4_BYTES + 2] = __float2half(scale(rng) * 8.0f);
+        }
+    }
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<float> x((size_t)tokens * cols);
+    for (auto &v : x) { v = __bfloat162float(__float2bfloat16_rn(nd(rng))); }
+    uint8_t *dg = up(w[0]), *du = up(w[1]); float *dx = up(x), *gate, *upv, *ref, *got;
+    const size_t n = (size_t)tokens * rows;
+    CK(cudaMalloc(&gate, n * 4)); CK(cudaMalloc(&upv, n * 4)); CK(cudaMalloc(&ref, n * 4)); CK(cudaMalloc(&got, n * 4));
+    CK(glmvq_q4m_decode(dg, dx, gate, rows, cols, tokens, 0, GLMVQ_LAUNCH_PLAIN));
+    CK(glmvq_q4m_decode(du, dx, upv, rows, cols, tokens, 0, GLMVQ_LAUNCH_PLAIN));
+    glmvq_swiglu<<<(uint32_t)((n + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS>>>(gate, upv, ref, n, 10.0f);
+    CK(glmvq_q4m_swiglu(dg, du, dx, got, rows, cols, tokens, 10.0f, 0, GLMVQ_LAUNCH_PLAIN));
+    CK(cudaDeviceSynchronize());
+    auto a = down(ref, n), b = down(got, n);
+    uint32_t differ = 0, saturated = 0;
+    for (size_t i = 0; i < n; i++) { differ += a[i] != b[i]; saturated += fabsf(a[i]) > 50.0f; }
+    printf("q4 mma swiglu %ux%u tokens=%u: %u of %zu differ (%u large) %s\n", rows, cols, tokens, differ, n,
+        saturated, differ ? "FAIL" : "ok");
+    cudaFree(dg); cudaFree(du); cudaFree(dx); cudaFree(gate); cudaFree(upv); cudaFree(ref); cudaFree(got);
+    return differ != 0;
+}
+
 static int bf16_case(uint32_t rows, uint32_t cols, uint32_t tokens, glmvq_dot_math math) {
     std::normal_distribution<float> nd(0, 1);
     std::vector<__nv_bfloat16> w((size_t)rows * cols);
@@ -375,6 +410,10 @@ int main() {
     for (uint32_t tokens : {2u, 3u, 8u}) {
         failures += q4m_case(1024, 4096, tokens);   // KDA q/k/v rows
         failures += q4m_case(1000, 1536, tokens);   // q_b: partial last stage and row tile
+    }
+    for (uint32_t tokens : {1u, 3u, 8u}) {
+        failures += q4m_swiglu_case(2048, 4096, tokens);   // shared expert
+        failures += q4m_swiglu_case(1000, 1536, tokens);   // row and stage tails
     }
     for (uint32_t tokens : {2u, 3u, 4u, 8u}) {
         failures += q4_case(4096, 4096, tokens, &config);   // KDA q/k/v

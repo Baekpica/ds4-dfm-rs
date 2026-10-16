@@ -44,6 +44,11 @@ int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
 int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
+/* Q4_K gate and up of one input with the clamped SwiGLU in one pass, at
+ * decode and verify widths; 0 when the width or weights need the
+ * separate projections. */
+int ds4_gpu_gvq_gate_up(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mid, uint32_t gate, uint32_t up,
+    const ds4_gpu_tensor *input, uint32_t rows, float limit);
 /* BF16-weight prefill projection leaving BF16 rows in `out`; 0 when the
  * shape takes ds4_gpu_gvq_linear instead. */
 int ds4_gpu_gvq_linear_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,

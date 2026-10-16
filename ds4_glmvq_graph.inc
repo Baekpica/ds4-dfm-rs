@@ -232,9 +232,11 @@ static bool gvq_mlp(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_tensor *down, uint32_t rows) {
     ds4_gpu_tensor *const outs[] = {g->ffn_gate, g->ffn_up};
     const ds4_tensor *const ws[] = {gate, up};
-    return gvq_mm_many(g, m, outs, ws, 2u, g->norm, rows) &&
+    const bool fused = ds4_gpu_gvq_gate_up(g->gvq, g->ffn_mid, glmvq_index(m, gate), glmvq_index(m, up),
+        g->norm, rows, DS4_SWIGLU_CLAMP_EXP);
+    return (fused || (gvq_mm_many(g, m, outs, ws, 2u, g->norm, rows) &&
         ds4_gpu_gvq_swiglu(g->ffn_mid, g->ffn_gate, g->ffn_up,
-            rows, (uint32_t)gate->dim[1], DS4_SWIGLU_CLAMP_EXP) &&
+            rows, (uint32_t)gate->dim[1], DS4_SWIGLU_CLAMP_EXP))) &&
         gvq_mm(g, m, out, down, g->ffn_mid, rows, DS4_GVQ_BF16);
 }
 
