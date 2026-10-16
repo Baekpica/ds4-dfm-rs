@@ -36,10 +36,15 @@ int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
 int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const ds4_gpu_tensor *input, const ds4_gpu_tensor *gate, uint32_t weight,
     uint32_t rows, uint32_t width, float eps, ds4_gvq_norm kind);
+/* With `norm`, also writes the ordinary RMS norm of `out` (bit-identical
+ * to a separate ds4_gpu_gvq_rms). */
 int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *split,
     const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
     uint32_t scale, uint32_t base, uint32_t rows, uint32_t width,
-    uint32_t iterations, float eps);
+    uint32_t iterations, float eps, ds4_gpu_tensor *norm, uint32_t norm_weight, float norm_eps);
+/* One-row mHC RMS + F32 mapping dots; 0 when the shape needs the fallback. */
+int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
+    const ds4_gpu_tensor *residual, uint32_t weight, uint32_t width, float eps);
 int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
     const ds4_gpu_tensor *residual, const ds4_gpu_tensor *split, uint32_t rows, uint32_t width);
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,

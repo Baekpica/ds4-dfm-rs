@@ -196,11 +196,17 @@ __device__ void glmvq_hc_weights_warp(float *coeff, const float *mix,
 
 enum { GLMVQ_HC_BATCH = 4 };
 
+// With `norm`, the block also applies the following ordinary RMS norm to
+// its own output row: each thread squares its columns in glmvq_rms's order
+// and reduces with the same tree, so `norm` is bit-identical to a separate
+// glmvq_rms launch without that launch or the extra row round trip.
 __global__ void glmvq_hc_split(const float *mix, const float *residual,
         const float *scale, const float *base, float *output, float *split,
-        uint32_t width, uint32_t iters, float eps) {
+        uint32_t width, uint32_t iters, float eps,
+        const __nv_bfloat16 *norm_weight, float *norm, float norm_eps) {
     const uint32_t row = blockIdx.x;
     __shared__ float coeff[GLMVQ_HC_MIX];
+    __shared__ float partial[GLMVQ_THREADS];
     if (threadIdx.x < 32) {
         glmvq_hc_weights_warp(coeff, mix + (uint64_t)row * GLMVQ_HC_MIX, scale, base, iters, eps);
     }
@@ -209,6 +215,8 @@ __global__ void glmvq_hc_split(const float *mix, const float *residual,
         split[(uint64_t)row * GLMVQ_HC_MIX + threadIdx.x] = coeff[threadIdx.x];
     }
     const float *r = residual + (uint64_t)row * GLMVQ_HC * width;
+    float *out = output + (uint64_t)row * width;
+    float squares = 0.0f;
     // Batched loads expose several rows of latency at once; per-column order is unchanged.
     for (uint32_t first = threadIdx.x; first < width; first += GLMVQ_HC_BATCH * blockDim.x) {
         float x[GLMVQ_HC_BATCH][GLMVQ_HC];
@@ -227,7 +235,33 @@ __global__ void glmvq_hc_split(const float *mix, const float *residual,
             float sum = 0.0f;
             #pragma unroll
             for (uint32_t h = 0; h < GLMVQ_HC; h++) { sum = glmvq_add(sum, glmvq_mul(coeff[h], x[j][h])); }
-            output[(uint64_t)row * width + col] = glmvq_round(sum);
+            const float value = glmvq_round(sum);
+            out[col] = value;
+            squares = glmvq_add(squares, glmvq_mul(value, value));
+        }
+    }
+    if (!norm) { return; }
+    partial[threadIdx.x] = squares;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride /= 2) {
+        if (threadIdx.x < stride) { partial[threadIdx.x] = glmvq_add(partial[threadIdx.x], partial[threadIdx.x + stride]); }
+        __syncthreads();
+    }
+    const float inv = __fdiv_rn(1.0f, __fsqrt_rn(glmvq_add(__fdiv_rn(partial[0], (float)width), norm_eps)));
+    // Each thread rereads only the columns it wrote above, batched like glmvq_rms.
+    for (uint32_t first = threadIdx.x; first < width; first += GLMVQ_RMS_BATCH * blockDim.x) {
+        float x[GLMVQ_RMS_BATCH];
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+            const uint32_t col = first + j * blockDim.x;
+            x[j] = col < width ? out[col] : 0.0f;
+        }
+        #pragma unroll
+        for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+            const uint32_t col = first + j * blockDim.x;
+            if (col >= width) { break; }
+            const float value = glmvq_round(glmvq_mul(x[j], inv));
+            norm[(uint64_t)row * width + col] = glmvq_round(glmvq_mul(value, __bfloat162float(norm_weight[col])));
         }
     }
 }

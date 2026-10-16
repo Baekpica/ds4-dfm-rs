@@ -78,13 +78,15 @@ static bool gvq_hc(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_tensor *fn, const ds4_tensor *scale, const ds4_tensor *base,
         const ds4_tensor *norm, const ds4_gpu_tensor *residual, uint32_t rows) {
     // Source 286-329: mHC control arithmetic is FP32; collapse is BF16.
-    return ds4_gpu_gvq_rms(g->gvq, g->hc_flat, residual, NULL, DS4_GVQ_NO_LINK,
+    // Decode fuses the RMS and mapping dots; the split applies the norm.
+    const bool mixed = (rows == 1 && ds4_gpu_gvq_hc_mix(g->gvq, g->hc_mix, residual,
+            glmvq_index(m, fn), DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS)) ||
+        (ds4_gpu_gvq_rms(g->gvq, g->hc_flat, residual, NULL, DS4_GVQ_NO_LINK,
             rows, DS4_N_HC * DS4_N_EMBD, DS4_RMS_EPS, DS4_GVQ_PLAIN_RMS) &&
-        gvq_mm(g, m, g->hc_mix, fn, g->hc_flat, rows, DS4_GVQ_F32) &&
-        ds4_gpu_gvq_split(g->gvq, g->cur, g->hc_split, g->hc_mix, residual,
+         gvq_mm(g, m, g->hc_mix, fn, g->hc_flat, rows, DS4_GVQ_F32));
+    return mixed && ds4_gpu_gvq_split(g->gvq, g->cur, g->hc_split, g->hc_mix, residual,
             glmvq_index(m, scale), glmvq_index(m, base), rows, DS4_N_EMBD,
-            DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
-        gvq_norm(g, m, g->norm, g->cur, norm, rows, DS4_N_EMBD);
+            DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS, g->norm, glmvq_index(m, norm), DS4_RMS_EPS);
 }
 
 static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,

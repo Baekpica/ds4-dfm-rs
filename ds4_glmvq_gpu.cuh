@@ -8,6 +8,7 @@
 #include "cuda/glm_vq_mma.cuh"
 #include "cuda/glm_vq_decode.cuh"
 #include "cuda/glm_vq_fp8.cuh"
+#include "cuda/glm_vq_gemv.cuh"
 
 enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,
@@ -34,6 +35,8 @@ struct ds4_gvq_ctx {
     bool direct_kv;
     bool latent_attn;
     bool decode_route;
+    bool direct_bf16;
+    uint64_t bf16_calls = 0;
     uint64_t latent_calls = 0;
     uint64_t kv_calls = 0;
     uint64_t fp8_calls = 0;
@@ -195,6 +198,9 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     if (ctx->direct_fp8) {
         fprintf(stderr, "ds4: GLM VQ direct FP8 calls=%llu\n", (unsigned long long)ctx->fp8_calls);
     }
+    if (ctx->direct_bf16) {
+        fprintf(stderr, "ds4: GLM VQ direct BF16 calls=%llu\n", (unsigned long long)ctx->bf16_calls);
+    }
     if (ctx->mma) {
         fprintf(stderr, "ds4: GLM VQ MMA calls=%llu items=%llu workspace=%llu\n",
             (unsigned long long)ctx->mma_calls, (unsigned long long)ctx->mma_items,
@@ -245,6 +251,11 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         fprintf(stderr, "ds4: DS4_GLMVQ_LATENT_ATTN accepts 0 or 1\n");
         return nullptr;
     }
+    const char *bf16 = getenv("DS4_GLMVQ_BF16_DIRECT");
+    if (bf16 && strcmp(bf16, "0") && strcmp(bf16, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_BF16_DIRECT accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *route = getenv("DS4_GLMVQ_DECODE_ROUTE");
     if (route && strcmp(route, "0") && strcmp(route, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_DECODE_ROUTE accepts 0 or 1\n");
@@ -256,6 +267,7 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->direct_kv = !kv || strcmp(kv, "0");
     ctx->latent_attn = !latent_attn || strcmp(latent_attn, "0");
     ctx->decode_route = !route || strcmp(route, "0");
+    ctx->direct_bf16 = !bf16 || strcmp(bf16, "0");
     ctx->restore = restore && strcmp(restore, "0") == 0
         ? GLMVQ_RESTORE_SCALAR : GLMVQ_RESTORE_VECTOR;
     const char *q4 = getenv("DS4_GLMVQ_Q4_DIRECT");
@@ -364,6 +376,13 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
                 "GLM VQ FP8 decode");
         }
     }
+    if (type == GVQ_TYPE_BF16 && ctx->direct_bf16 && rows == 1 &&
+        glmvq_bf16_fits(s.data, input->ptr, out->ptr, s.cols)) {
+        ctx->bf16_calls++;
+        return cuda_ok(glmvq_bf16_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
+            s.rows, s.cols, math == DS4_GVQ_F32 ? GLMVQ_DOT_F32 : GLMVQ_DOT_BF16, ctx->stream),
+            "GLM VQ BF16 decode");
+    }
     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {
         if (math != DS4_GVQ_BF16) { return 0; }
         if (rows <= GLMVQ_Q4_WARPS) {
@@ -402,15 +421,32 @@ extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
 
 extern "C" int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *split,
         const ds4_gpu_tensor *mix, const ds4_gpu_tensor *residual,
-        uint32_t scale, uint32_t base, uint32_t rows, uint32_t width, uint32_t iterations, float eps) {
+        uint32_t scale, uint32_t base, uint32_t rows, uint32_t width, uint32_t iterations, float eps,
+        ds4_gpu_tensor *norm, uint32_t norm_weight, float norm_eps) {
     const uint64_t count = (uint64_t)rows * width, coeff = (uint64_t)rows * GLMVQ_HC_MIX;
     const float *s = (const float *)gvq_weight(ctx, scale, GVQ_TYPE_F32, 3);
     const float *b = (const float *)gvq_weight(ctx, base, GVQ_TYPE_F32, GLMVQ_HC_MIX);
+    const __nv_bfloat16 *w = norm ? (const __nv_bfloat16 *)gvq_weight(ctx, norm_weight, GVQ_TYPE_BF16, width) : nullptr;
     if (!s || !b || !rows || !width || !iterations || !gvq_floats(out, count) ||
-        !gvq_floats(residual, count * GLMVQ_HC) || !gvq_floats(split, coeff) || !gvq_floats(mix, coeff)) { return 0; }
+        !gvq_floats(residual, count * GLMVQ_HC) || !gvq_floats(split, coeff) || !gvq_floats(mix, coeff) ||
+        (norm && (!w || !gvq_floats(norm, count)))) { return 0; }
     glmvq_hc_split<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>((const float *)mix->ptr,
-        (const float *)residual->ptr, s, b, (float *)out->ptr, (float *)split->ptr, width, iterations, eps);
+        (const float *)residual->ptr, s, b, (float *)out->ptr, (float *)split->ptr, width, iterations, eps,
+        w, norm ? (float *)norm->ptr : nullptr, norm_eps);
     return cuda_ok(cudaGetLastError(), "GLM VQ mHC split");
+}
+
+extern "C" int ds4_gpu_gvq_hc_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mix,
+        const ds4_gpu_tensor *residual, uint32_t weight, uint32_t width, float eps) {
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16,
+        (uint64_t)GLMVQ_HC_MIX * width);
+    if (!ctx->direct_bf16 || !w || !width || width % (GLMVQ_THREADS * GLMVQ_DOT_VECTOR) ||
+        ctx->model->records[weight].rows != GLMVQ_HC_MIX || ctx->model->records[weight].cols != width ||
+        !gvq_floats(mix, GLMVQ_HC_MIX) || !gvq_floats(residual, width) ||
+        (uintptr_t)w % 16 || (uintptr_t)residual->ptr % 16) { return 0; }
+    glmvq_hc_mix<<<GLMVQ_HC_MIX, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (const float *)residual->ptr, w, (float *)mix->ptr, width, eps);
+    return cuda_ok(cudaGetLastError(), "GLM VQ mHC mix");
 }
 
 extern "C" int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
