@@ -86,13 +86,16 @@ int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const uint32_t *matrices, uint32_t rows, float clamp);
 /* Chunked prefill planes for `rows` tokens; 0 when rows use the recurrence. */
 uint64_t ds4_gpu_gvq_kda_bytes(uint32_t rows, uint32_t heads);
+/* `snap` (optional) receives the state and tails after each row but the
+ * last, one `stride`-byte slot per row, laid out like the state pool. */
 int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,
     ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
     const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
     const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
     const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight,
     const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
-    const ds4_gpu_tensor *dt_bias, uint32_t rows, uint32_t heads, float lower_bound);
+    const ds4_gpu_tensor *dt_bias, uint32_t rows, uint32_t heads, float lower_bound,
+    ds4_gpu_tensor *snap, uint64_t stride);
 
 #ifdef __cplusplus
 }

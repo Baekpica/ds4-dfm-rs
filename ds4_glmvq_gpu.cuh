@@ -17,6 +17,9 @@ enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
 enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32 };
+// Widest MTP verify forward (first token + three drafts).
+enum { GVQ_VERIFY_ROWS = 4 };
+static_assert(GVQ_VERIFY_ROWS == GLMVQ_VER_ROWS, "verify kernels cover every MTP verify width");
 enum { GVQ_LATENT_MIN_KEYS = 512, GVQ_LATENT_MAX_KEYS = DS4_GVQ_CTX_MAX,
        GVQ_LATENT_HEADS = 64, GVQ_LATENT_DIM = 256, GVQ_LATENT_WIDTH = 512 };
 
@@ -73,11 +76,18 @@ static constexpr uint64_t GVQ_DECODE_WORK =
 static constexpr uint64_t GVQ_DECODE_ROWS =
     GVQ_USED * (GVQ_FFN * sizeof(__nv_bfloat16) + GVQ_HIDDEN * sizeof(float));
 
+// Verify-width scratch after the tables: items, plan, mid and partial rows.
+static constexpr uint64_t GVQ_VERIFY_AT = (GVQ_DECODE_WORK + GVQ_DECODE_ROWS +
+    (uint64_t)GVQ_DECODE_LAYERS * GVQ_DECODE_TABLE * sizeof(uint32_t) + 255u) / 256u * 256u;
+static constexpr uint64_t GVQ_VERIFY_ITEMS = (sizeof(glmvq_verify_item) * GLMVQ_VER_PAIRS + 255u) / 256u * 256u;
+static constexpr uint64_t GVQ_VERIFY_PLAN = (sizeof(glmvq_verify_plan) + 255u) / 256u * 256u;
+static constexpr uint64_t GVQ_VERIFY_MID = GLMVQ_VER_PAIRS * GVQ_FFN * sizeof(__nv_bfloat16);
+
 static uint64_t gvq_decode_bytes() {
     const char *enabled = getenv("DS4_GLMVQ_DECODE");
     if (enabled && !strcmp(enabled, "0")) { return 0; }
-    return GVQ_DECODE_WORK + GVQ_DECODE_ROWS +
-        (uint64_t)GVQ_DECODE_LAYERS * GVQ_DECODE_TABLE * sizeof(uint32_t);
+    return GVQ_VERIFY_AT + GVQ_VERIFY_ITEMS + GVQ_VERIFY_PLAN + GVQ_VERIFY_MID +
+        GLMVQ_VER_PAIRS * GVQ_HIDDEN * sizeof(float);
 }
 
 static uint64_t gvq_mma_bytes(uint32_t rows) {
@@ -685,6 +695,11 @@ extern "C" int ds4_gpu_gvq_attn(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
 
 enum { GVQ_FLASH_SPLITS = 48, GVQ_FLASH_ALIGN = 256 };
 
+// Rows up to an MTP verify width split keys across CTAs like decode.
+static uint32_t gvq_flash_splits(uint32_t rows) {
+    return rows <= GVQ_VERIFY_ROWS ? GVQ_FLASH_SPLITS / rows : 1u;
+}
+
 struct gvq_flash_layout { uint64_t q, qlow, low, y, partial, stats, bytes; };
 
 // One query row splits its keys across CTAs; prefill rows each own a CTA.
@@ -699,7 +714,7 @@ static gvq_flash_layout gvq_flash_plan(uint32_t rows) {
     const uint64_t lbytes = (uint64_t)rows * GLMVQ_FA_HEADS * GLMVQ_FA_LATENT * sizeof(__nv_bfloat16);
     gvq_flash_layout l;
     l.q = take(qbytes); l.qlow = take(lbytes); l.low = take(lbytes); l.y = take(qbytes);
-    const uint64_t splits = rows == 1 ? GVQ_FLASH_SPLITS : 0;
+    const uint64_t splits = rows <= GVQ_VERIFY_ROWS ? (uint64_t)rows * gvq_flash_splits(rows) : 0;
     l.partial = take(splits * GLMVQ_FA_HEADS * GLMVQ_FA_LATENT * sizeof(float));
     l.stats = take(splits * GLMVQ_FA_HEADS * 2 * sizeof(float));
     l.bytes = cursor;
@@ -735,7 +750,7 @@ static int gvq_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor
             heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ flash q absorb"))) { return 0; }
     const uint32_t slots = selected ? stride : keys;
     const uint32_t tiles = (slots + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
-    const uint32_t splits = rows == 1 ? min(tiles, (uint32_t)GVQ_FLASH_SPLITS) : 1;
+    const uint32_t splits = min(tiles, gvq_flash_splits(rows));
     const uint32_t per = (tiles + splits - 1) / splits;
     float *partial = splits > 1 ? (float *)(base + l.partial) : nullptr;
     float *stats = splits > 1 ? (float *)(base + l.stats) : nullptr;
@@ -879,7 +894,8 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
         const ds4_gpu_tensor *forget, const ds4_gpu_tensor *beta,
         const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight,
         const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
-        const ds4_gpu_tensor *dt_bias, uint32_t rows, uint32_t heads, float lower_bound) {
+        const ds4_gpu_tensor *dt_bias, uint32_t rows, uint32_t heads, float lower_bound,
+        ds4_gpu_tensor *snap, uint64_t stride) {
     const uint64_t width = (uint64_t)heads * GLMVQ_KDA_DIM, count = (uint64_t)rows * width;
     const uint64_t tail = width * GLMVQ_CONV;
     if (!ctx || !rows || !heads || !gvq_floats(out, count) || !gvq_floats(q, count) ||
@@ -888,7 +904,19 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
         !gvq_floats(q_tail, tail) || !gvq_floats(k_tail, tail) || !gvq_floats(v_tail, tail) ||
         !gvq_floats(q_weight, tail) || !gvq_floats(k_weight, tail) || !gvq_floats(v_weight, tail) ||
         !gvq_floats(a_log, heads) || !gvq_floats(dt_bias, width)) { return 0; }
-    if (ctx->kda_chunk && rows >= SOLAR_KDA_CHUNK) {
+    // Snapshot slots mirror the state pool: tails sit after the matrix.
+    glmvq_kda_snap shot = {};
+    if (snap && rows > 1) {
+        const auto *origin = (const float *)state->ptr;
+        const int64_t qo = (const float *)q_tail->ptr - origin, ko = (const float *)k_tail->ptr - origin;
+        const int64_t vo = (const float *)v_tail->ptr - origin;
+        const uint64_t floats = stride / sizeof(float), last = (uint64_t)(rows - 2) * floats;
+        if (stride % sizeof(float) || qo < (int64_t)(width * GLMVQ_KDA_DIM) || ko < qo || vo < ko ||
+            !gvq_floats(snap, last + (uint64_t)vo + tail)) { return 0; }
+        auto *base = (float *)snap->ptr;
+        shot = {base, base + qo, base + ko, base + vo, floats};
+    }
+    if (ctx->kda_chunk && rows >= SOLAR_KDA_CHUNK && !shot.state) {
         const int chunked = gvq_kda_chunk(ctx, (float *)out->ptr, (float *)state->ptr,
             (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
             (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,
@@ -902,7 +930,7 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
         (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,
         (const float *)forget->ptr, (const float *)beta->ptr,
         (const float *)q_weight->ptr, (const float *)k_weight->ptr, (const float *)v_weight->ptr,
-        (const float *)a_log->ptr, (const float *)dt_bias->ptr, rows, heads, lower_bound);
+        (const float *)a_log->ptr, (const float *)dt_bias->ptr, rows, heads, lower_bound, shot);
     return cuda_ok(cudaGetLastError(), "GLM VQ KDA");
 }
 
@@ -1061,6 +1089,55 @@ __global__ void gvq_decode_route(glmvq_decode_item *items, const int32_t *select
         sources[table[2 * GVQ_EXPERTS + e]].vq, t};
 }
 
+// Union of 2-4 rows' experts in ascending expert order (see glm_vq_decode.cuh).
+__global__ void gvq_verify_route(glmvq_verify_item *items, glmvq_verify_plan *plan,
+        const int32_t *selected, uint32_t rows, const uint32_t *table, const glmvq_source *sources) {
+    __shared__ uint32_t expert[GLMVQ_VER_PAIRS], lead[GLMVQ_VER_PAIRS], width[GLMVQ_VER_PAIRS];
+    const uint32_t t = threadIdx.x, pairs = rows * GVQ_USED;
+    const bool live = t < pairs;
+    if (live) { expert[t] = min((uint32_t)selected[t], (uint32_t)GVQ_EXPERTS - 1u); }
+    __syncthreads();
+    uint32_t e = 0, before = 0, same = 0;
+    if (live) {
+        e = expert[t];
+        for (uint32_t j = 0; j < pairs; j++) {
+            same += expert[j] == e;
+            before += j < t && expert[j] == e;
+        }
+        lead[t] = before == 0;
+    }
+    __syncthreads();
+    if (live) {
+        uint32_t rank = 0, below = 0;
+        for (uint32_t j = 0; j < pairs; j++) { rank += lead[j] && expert[j] < e; }
+        if (!before) {
+            items[rank].gate = sources[table[e]].vq;
+            items[rank].up = sources[table[GVQ_EXPERTS + e]].vq;
+            items[rank].down = sources[table[2 * GVQ_EXPERTS + e]].vq;
+            items[rank].count = same;
+            width[rank] = same;
+        }
+        items[rank].pair[before] = t;
+        const uint32_t row = t / GVQ_USED;
+        for (uint32_t k = 0; k < GVQ_USED; k++) { below += expert[row * GVQ_USED + k] < e; }
+        plan->order[row * GVQ_USED + below] = t % GVQ_USED;
+    }
+    __syncthreads();
+    if (t) { return; }
+    uint32_t n = 0;
+    for (uint32_t j = 0; j < pairs; j++) { n += lead[j]; }
+    // Greedy groups at item boundaries: an item (<= 4 pairs) never splits.
+    uint32_t groups = 0, used = GLMVQ_VER_GROUP;
+    for (uint32_t i = 0; i < n; i++) {
+        if (used + width[i] > GLMVQ_VER_GROUP) { plan->group[groups++] = i; used = 0; }
+        items[i].slot = used;
+        used += width[i];
+    }
+    plan->group[groups] = n;
+    plan->items = n;
+    plan->groups = groups;
+}
+
 // The layer's device table, uploaded once; nullptr keeps the host-routed
 // fallback when any of its 864 matrices misses the direct layout.
 static const uint32_t *gvq_decode_table(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
@@ -1086,20 +1163,36 @@ static const uint32_t *gvq_decode_table(ds4_gvq_ctx *ctx, const uint32_t *matric
     return fit ? tables + slot * GVQ_DECODE_TABLE : nullptr;
 }
 
-static int gvq_decode_device(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
-        const ds4_gpu_tensor *input, const ds4_gpu_tensor *selected,
-        const ds4_gpu_tensor *weights, const uint32_t *table, const void *book, float clamp) {
+static int gvq_decode_device(ds4_gvq_ctx *ctx, float *out, const float *input,
+        const int32_t *selected, const float *weights, const uint32_t *table,
+        const void *book, float clamp) {
     uint8_t *base = (uint8_t *)ctx->decode->ptr;
     auto *items = (glmvq_decode_item *)base;
     auto *mid = (__nv_bfloat16 *)(base + GVQ_DECODE_WORK);
     auto *partial = (float *)(mid + GVQ_USED * GVQ_FFN);
     const cudaStream_t stream = ds4_current_stream();
-    gvq_decode_route<<<1, GVQ_USED, 0, stream>>>(items, (const int32_t *)selected->ptr,
+    gvq_decode_route<<<1, GVQ_USED, 0, stream>>>(items, selected,
         table, (const glmvq_source *)ctx->model->device->ptr);
     ctx->decode_calls++;
     return cuda_ok(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL>(items, book,
-        (const float *)input->ptr, mid, partial, (float *)out->ptr,
-        (const float *)weights->ptr, clamp, ctx->decode_blocks, stream), "GLM VQ routed decode");
+        input, mid, partial, out, weights, clamp, ctx->decode_blocks, stream), "GLM VQ routed decode");
+}
+
+// MTP verify widths: one pass over the rows' expert union.
+static int gvq_verify_device(ds4_gvq_ctx *ctx, float *out, const float *input,
+        const int32_t *selected, const float *weights, const uint32_t *table,
+        const void *book, uint32_t rows, float clamp) {
+    uint8_t *base = (uint8_t *)ctx->decode->ptr + GVQ_VERIFY_AT;
+    auto *items = (glmvq_verify_item *)base;
+    auto *plan = (glmvq_verify_plan *)(base + GVQ_VERIFY_ITEMS);
+    auto *mid = (__nv_bfloat16 *)(base + GVQ_VERIFY_ITEMS + GVQ_VERIFY_PLAN);
+    auto *partial = (float *)((uint8_t *)mid + GVQ_VERIFY_MID);
+    const cudaStream_t stream = ds4_current_stream();
+    gvq_verify_route<<<1, GLMVQ_VER_PAIRS, 0, stream>>>(items, plan, selected, rows,
+        table, (const glmvq_source *)ctx->model->device->ptr);
+    ctx->decode_calls++;
+    return cuda_ok(glmvq_verify_launch<13, 32>(items, plan, book, input, rows, mid, partial,
+        out, weights, clamp, ctx->decode_blocks, stream), "GLM VQ verify decode");
 }
 
 static int gvq_decode_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
@@ -1130,11 +1223,16 @@ extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     // The numerical baseline groups actual routes on the host. Captured
     // decode needs the later GPU-selected dispatch, never a captured readback.
     if (ds4_capture_active()) { return 0; }
-    if (ctx->decode && ctx->decode_route && rows == 1) {
+    if (ctx->decode && ctx->decode_route && rows <= GVQ_VERIFY_ROWS) {
         const uint32_t *table = gvq_decode_table(ctx, matrices);
+        const void *book = ctx->model->source[matrices[0]].vq.book;
+        if (table && rows == 1) {
+            return gvq_decode_device(ctx, (float *)out->ptr, (const float *)input->ptr,
+                (const int32_t *)selected->ptr, (const float *)weights->ptr, table, book, clamp);
+        }
         if (table) {
-            return gvq_decode_device(ctx, out, input, selected, weights, table,
-                ctx->model->source[matrices[0]].vq.book, clamp);
+            return gvq_verify_device(ctx, (float *)out->ptr, (const float *)input->ptr,
+                (const int32_t *)selected->ptr, (const float *)weights->ptr, table, book, rows, clamp);
         }
     }
     if (!ds4_gpu_tensor_read(selected, 0, ctx->routes.data(), pairs * sizeof(int32_t))) { return 0; }

@@ -21,6 +21,9 @@ static uint64_t glm53_dense_reserve(uint32_t rows, uint32_t ctx) {
     return glm53_dense_bytes(rows, ctx);
 }
 
+#ifndef __APPLE__
+#define GLM53_MTP_VERIFY  /* GLM VQ batched verify (ds4_glm53_mtp.inc) */
+#endif
 #define GLM53_MTP_STATE
 #include "ds4_glm53_mtp.inc"
 #undef GLM53_MTP_STATE

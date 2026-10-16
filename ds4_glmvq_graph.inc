@@ -100,15 +100,36 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
         !gvq_mm(g, m, g->kv_rank, l->kda_beta, g->norm, rows, DS4_GVQ_BF16) ||
         !gvq_mm(g, m, g->q_rank, l->kda_g_a, g->norm, rows, DS4_GVQ_BF16) ||
         !gvq_mm(g, m, g->ffn_gate, l->kda_g_b, g->q_rank, rows, DS4_GVQ_BF16)) { return false; }
-    return ds4_gpu_gvq_kda(g->gvq, g->ffn_up, g->recurrent[il],
+    // MTP verify: journal slot r+1 receives this layer's state after row r.
+    ds4_gpu_tensor *snap = NULL;
+    if (g->mtp_capture) {
+        const uint64_t offset = g->state_bytes + (uint64_t)((const uint8_t *)ds4_gpu_tensor_ptr(g->recurrent[il]) -
+            (const uint8_t *)ds4_gpu_tensor_ptr(g->state_pool));
+        snap = ds4_gpu_tensor_view(g->mtp_journal, offset, ds4_gpu_tensor_bytes(g->mtp_journal) - offset);
+        if (!snap) { return false; }
+    }
+    const bool recurred = ds4_gpu_gvq_kda(g->gvq, g->ffn_up, g->recurrent[il],
         g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],
         g->q, g->k, g->v, g->heads, g->kv_rank, g->q_conv_weight[il],
         g->k_conv_weight[il], g->v_conv_weight[il], g->decay_scale[il],
-        g->dt_bias[il], rows, DS4_N_HEAD, DS4_KDA_GATE_CLAMP_MIN) &&
+        g->dt_bias[il], rows, DS4_N_HEAD, DS4_KDA_GATE_CLAMP_MIN, snap, g->state_bytes);
+    ds4_gpu_tensor_free(snap);
+    return recurred &&
         ds4_gpu_gvq_rms(g->gvq, g->heads, g->ffn_up, g->ffn_gate,
             glmvq_index(m, l->kda_o_norm), rows * DS4_N_HEAD,
             DS4_N_KDA_HEAD_DIM, DS4_RMS_EPS, DS4_GVQ_GATED_RMS) &&
         gvq_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
+}
+
+// MTP verify: keep the pre-trial tails and raw rows for a rejection replay.
+static bool gvq_stash(ds4_glm53_gpu_graph *g, uint32_t il, uint32_t rows) {
+    const uint64_t slot = il * glm53_mtp_stash_slot(), row = DS4_N_INDEXER_HEAD_DIM * sizeof(float);
+    const uint64_t tail = DS4_GLM53_POOL_SIZE * row, keys = slot + 2u * tail;
+    return rows <= GLM53_MTP_ROWS &&
+        ds4_gpu_tensor_copy(g->mtp_stash, slot, g->layer_tail_k[il], 0u, tail) &&
+        ds4_gpu_tensor_copy(g->mtp_stash, slot + tail, g->layer_tail_gate[il], 0u, tail) &&
+        ds4_gpu_tensor_copy(g->mtp_stash, keys, g->idx_k, 0u, rows * row) &&
+        ds4_gpu_tensor_copy(g->mtp_stash, keys + GLM53_MTP_ROWS * row, g->idx_gate, 0u, rows * row);
 }
 
 static bool gvq_index(ds4_glm53_gpu_graph *g, const ds4_model *m,
@@ -118,6 +139,7 @@ static bool gvq_index(ds4_glm53_gpu_graph *g, const ds4_model *m,
     // must see all prior keys and the same incomplete four-token tail.
     if (!gvq_mm(g, m, g->idx_k, l->indexer_attn_k, g->norm, rows, DS4_GVQ_BF16) ||
         !gvq_mm(g, m, g->idx_gate, l->indexer_compressor_gate, g->norm, rows, DS4_GVQ_BF16) ||
+        (g->mtp_capture && !gvq_stash(g, il, rows)) ||
         !ds4_gpu_gvq_pool(g->gvq, g->layer_pool[il], g->layer_tail_k[il], g->layer_tail_gate[il],
             g->idx_k, g->idx_gate, glmvq_index(m, l->indexer_k_norm),
             glmvq_index(m, l->indexer_k_norm_b), glmvq_index(m, l->indexer_compressor_ape),

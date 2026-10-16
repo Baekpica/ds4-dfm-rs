@@ -5,6 +5,10 @@
 
 enum { GLMVQ_KDA_DIM = 128, GLMVQ_CONV = 4 };
 
+/* State after each row but the last, for MTP verify rollback: row t goes
+ * to slot t of `stride` floats, at the same offsets as the live state. */
+struct glmvq_kda_snap { float *state, *q, *k, *v; uint64_t stride; };
+
 /* Source baseline: modeling_glm5_next.py:340-369,409-449,453-514.
  * Conv and beta are BF16; the recurrent matrix is FP32. Sequence order is
  * explicit, so an append consumes exactly the prior state and raw conv tail.
@@ -15,7 +19,7 @@ __global__ void glmvq_kda(float *output, float *state,
         const float *forget, const float *beta_logits,
         const float *q_weight, const float *k_weight, const float *v_weight,
         const float *a_log, const float *dt_bias, uint32_t rows,
-        uint32_t heads, float lower_bound) {
+        uint32_t heads, float lower_bound, glmvq_kda_snap snap) {
     const uint32_t head = blockIdx.x, d = threadIdx.x;
     const uint32_t dim = GLMVQ_KDA_DIM;
     const uint64_t channel = (uint64_t)head * dim + d, width = (uint64_t)heads * dim;
@@ -35,6 +39,14 @@ __global__ void glmvq_kda(float *output, float *state,
         q_tail[tail + GLMVQ_CONV - 1] = q_raw[input];
         k_tail[tail + GLMVQ_CONV - 1] = k_raw[input];
         v_tail[tail + GLMVQ_CONV - 1] = v_raw[input];
+        const bool keep = snap.state && t + 1 < rows;
+        if (keep) {
+            for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
+                snap.q[t * snap.stride + tail + tap] = q_tail[tail + tap];
+                snap.k[t * snap.stride + tail + tap] = k_tail[tail + tap];
+                snap.v[t * snap.stride + tail + tap] = v_tail[tail + tap];
+            }
+        }
         float qc = 0.0f, kc = 0.0f, vc = 0.0f;
         for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
             qc = glmvq_add(qc, glmvq_mul(q_tail[tail + tap], q_weight[tail + tap]));
@@ -76,6 +88,7 @@ __global__ void glmvq_kda(float *output, float *state,
             const uint64_t at = state_base + (uint64_t)key * dim + d;
             const float updated = glmvq_add(state[at], glmvq_mul(k[key], delta));
             state[at] = updated;
+            if (keep) { snap.state[t * snap.stride + at] = updated; }
             result = glmvq_add(result, glmvq_mul(updated, q[key]));
         }
         output[input] = glmvq_round(result);

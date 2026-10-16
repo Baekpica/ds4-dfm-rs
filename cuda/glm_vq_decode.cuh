@@ -159,6 +159,185 @@ __global__ void glmvq_decode_reduce(float *out, const float *partial,
     out[row] = sum;
 }
 
+/* MTP verify widths (2-4 rows): one persistent pass over the union of the
+ * rows' experts, so an expert two rows share is streamed once. Per row the
+ * arithmetic is the one-row kernel's: same lanes, FMA order, rounding and
+ * ascending-expert reduction, so each row's output is bit-identical. */
+enum { GLMVQ_VER_ROWS = 4, GLMVQ_VER_PAIRS = GLMVQ_VER_ROWS * GLMVQ_DEC_USED, GLMVQ_VER_GROUP = 8 };
+
+struct glmvq_verify_item {
+    glmvq_matrix gate, up, down;
+    uint32_t count, slot;                // pairs on this expert; first mid slot in its group
+    uint32_t pair[GLMVQ_VER_ROWS];       // row * 8 + route slot, ascending row
+};
+
+// Down tasks run in groups of <= 8 pairs whose mid rows fit in shared memory.
+struct glmvq_verify_plan {
+    uint32_t items, groups;
+    uint32_t group[GLMVQ_VER_PAIRS + 1];  // first item of each group
+    uint32_t order[GLMVQ_VER_PAIRS];      // row * 8 + rank -> route slot, ascending expert
+};
+
+// sum[t] += w · x_t for one codeword's four scaled pairs (decode_pair order).
+__device__ __forceinline__ float glmvq_verify_fma(const uint32_t *w, const uint4 &x, float sum) {
+    const uint32_t xs[4] = {x.x, x.y, x.z, x.w};
+    #pragma unroll
+    for (uint32_t i = 0; i < 4; i++) {
+        sum = fmaf(__uint_as_float(w[i] << 16), __uint_as_float(xs[i] << 16), sum);
+        sum = fmaf(__uint_as_float(w[i] & 0xffff0000u), __uint_as_float(xs[i] & 0xffff0000u), sum);
+    }
+    return sum;
+}
+
+// glmvq_decode_dot for up to four inputs sharing one decoded weight row.
+template <uint32_t COLS, uint32_t BITS>
+__device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t row,
+        const __nv_bfloat16 *const *x, uint32_t count, const uint2 *book,
+        glmvq_decode_block *carry, const uint32_t *next, const uint32_t *next_plane, float *out) {
+    const uint32_t lane = threadIdx.x & 31, offset = lane * 12 / 32, shift = lane * 12 % 32;
+    const auto *main = (const uint32_t *)m.main + (uint64_t)row * COLS * 3 / 64;
+    const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + (uint64_t)row * COLS / 256 : nullptr;
+    const float gain = __half2float(m.gain[row]);
+    glmvq_decode_block cur = *carry;
+    float sum[GLMVQ_VER_ROWS] = {};
+    for (uint32_t b = 0; b < COLS / 2048; b++) {
+        glmvq_decode_block ahead = {};
+        if (b + 1 < COLS / 2048) {
+            ahead = glmvq_decode_load<BITS>(main + (b + 1) * 96,
+                BITS == 13 ? plane + (b + 1) * 8 : nullptr);
+        } else if (next) {
+            ahead = glmvq_decode_load<BITS>(next, next_plane);
+        }
+        #pragma unroll
+        for (uint32_t k = 0; k < 8; k++) {
+            const uint32_t first = k * 12;
+            const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
+            const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
+            const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
+            const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
+            uint32_t index = __funnelshift_r(lo, hi, shift) & 4095u;
+            if constexpr (BITS == 13) {
+                index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+            }
+            const uint2 word = book[index];
+            const uint32_t w[4] = {glmvq_scaled_pair(word.x, gain), glmvq_scaled_pair(word.x >> 16, gain),
+                glmvq_scaled_pair(word.y, gain), glmvq_scaled_pair(word.y >> 16, gain)};
+            const uint32_t at = b * 2048 + k * 256 + lane * GLMVQ_VECTOR;
+            #pragma unroll
+            for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+                if (t < count) { sum[t] = glmvq_verify_fma(w, *(const uint4 *)(x[t] + at), sum[t]); }
+            }
+        }
+        cur = ahead;
+    }
+    *carry = cur;
+    #pragma unroll
+    for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+        for (uint32_t stride = 16; stride; stride >>= 1) { sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], stride); }
+        out[t] = glmvq_round(sum[t]);
+    }
+}
+
+template <uint32_t BITS, uint32_t WARPS>
+__global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
+        const glmvq_verify_item *items, const glmvq_verify_plan *plan, const uint4 *book,
+        const float *input, uint32_t rows, __nv_bfloat16 *mid, float clamp) {
+    extern __shared__ __align__(16) uint8_t verify_stage[];
+    constexpr uint32_t book_bytes = (1u << BITS) * GLMVQ_VECTOR;
+    auto *x = (__nv_bfloat16 *)(verify_stage + book_bytes);
+    glmvq_decode_book<BITS>((uint4 *)verify_stage, book);
+    for (uint32_t i = threadIdx.x; i < rows * GLMVQ_DEC_HIDDEN; i += blockDim.x) {
+        x[i] = __float2bfloat16_rn(input[i]);
+    }
+    __syncthreads();
+    const uint32_t lane = threadIdx.x & 31, warp = blockIdx.x * WARPS + threadIdx.x / 32;
+    const uint32_t tasks = plan->items * GLMVQ_DEC_FFN;
+    for (uint32_t task = warp; task < tasks; task += gridDim.x * WARPS) {
+        const glmvq_verify_item &item = items[task / GLMVQ_DEC_FFN];
+        const uint32_t row = task % GLMVQ_DEC_FFN, count = item.count;
+        const __nv_bfloat16 *xs[GLMVQ_VER_ROWS];
+        #pragma unroll
+        for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+            xs[t] = x + (t < count ? item.pair[t] / GLMVQ_DEC_USED : 0u) * GLMVQ_DEC_HIDDEN;
+        }
+        const auto *gm = (const uint32_t *)item.gate.main + row * GLMVQ_DEC_HIDDEN * 3 / 64;
+        const auto *gp = BITS == 13 ? (const uint32_t *)item.gate.plane + row * GLMVQ_DEC_HIDDEN / 256 : nullptr;
+        const auto *um = (const uint32_t *)item.up.main + row * GLMVQ_DEC_HIDDEN * 3 / 64;
+        const auto *upl = BITS == 13 ? (const uint32_t *)item.up.plane + row * GLMVQ_DEC_HIDDEN / 256 : nullptr;
+        float g[GLMVQ_VER_ROWS], u[GLMVQ_VER_ROWS];
+        auto carry = glmvq_decode_load<BITS>(gm, gp);
+        glmvq_verify_dot<GLMVQ_DEC_HIDDEN, BITS>(item.gate, row, xs, count, (const uint2 *)verify_stage,
+            &carry, um, upl, g);
+        glmvq_verify_dot<GLMVQ_DEC_HIDDEN, BITS>(item.up, row, xs, count, (const uint2 *)verify_stage,
+            &carry, nullptr, nullptr, u);
+        if (lane) { continue; }
+        for (uint32_t t = 0; t < count; t++) {
+            mid[(uint64_t)item.pair[t] * GLMVQ_DEC_FFN + row] = __float2bfloat16_rn(glmvq_swiglu_value(g[t], u[t], clamp));
+        }
+    }
+}
+
+template <uint32_t BITS, uint32_t WARPS>
+__global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
+        const glmvq_verify_item *items, const glmvq_verify_plan *plan, const uint4 *book,
+        const __nv_bfloat16 *mid, float *partial) {
+    extern __shared__ __align__(16) uint8_t verify_stage[];
+    constexpr uint32_t book_bytes = (1u << BITS) * GLMVQ_VECTOR;
+    auto *x = (__nv_bfloat16 *)(verify_stage + book_bytes);
+    glmvq_decode_book<BITS>((uint4 *)verify_stage, book);
+    const uint32_t lane = threadIdx.x & 31, warp = blockIdx.x * WARPS + threadIdx.x / 32;
+    constexpr uint32_t row16 = GLMVQ_DEC_FFN * sizeof(__nv_bfloat16) / sizeof(uint4);
+    for (uint32_t g = 0; g < plan->groups; g++) {
+        const uint32_t first = plan->group[g], last = plan->group[g + 1];
+        __syncthreads();
+        for (uint32_t i = first; i < last; i++) {
+            const glmvq_verify_item &item = items[i];
+            for (uint32_t t = 0; t < item.count; t++) {
+                const uint4 *src = (const uint4 *)(mid + (uint64_t)item.pair[t] * GLMVQ_DEC_FFN);
+                uint4 *dst = (uint4 *)(x + (uint64_t)(item.slot + t) * GLMVQ_DEC_FFN);
+                for (uint32_t j = threadIdx.x; j < row16; j += blockDim.x) { dst[j] = src[j]; }
+            }
+        }
+        __syncthreads();
+        const uint32_t tasks = (last - first) * GLMVQ_DEC_HIDDEN;
+        for (uint32_t task = warp; task < tasks; task += gridDim.x * WARPS) {
+            const glmvq_verify_item &item = items[first + task / GLMVQ_DEC_HIDDEN];
+            const uint32_t row = task % GLMVQ_DEC_HIDDEN, count = item.count;
+            const __nv_bfloat16 *xs[GLMVQ_VER_ROWS];
+            #pragma unroll
+            for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+                xs[t] = x + (uint64_t)(item.slot + (t < count ? t : 0u)) * GLMVQ_DEC_FFN;
+            }
+            const glmvq_matrix m = item.down;
+            const auto *main = (const uint32_t *)m.main + row * GLMVQ_DEC_FFN * 3 / 64;
+            const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + row * GLMVQ_DEC_FFN / 256 : nullptr;
+            float value[GLMVQ_VER_ROWS];
+            auto carry = glmvq_decode_load<BITS>(main, plane);
+            glmvq_verify_dot<GLMVQ_DEC_FFN, BITS>(m, row, xs, count, (const uint2 *)verify_stage,
+                &carry, nullptr, nullptr, value);
+            if (lane) { continue; }
+            for (uint32_t t = 0; t < count; t++) {
+                partial[(uint64_t)item.pair[t] * GLMVQ_DEC_HIDDEN + row] = value[t];
+            }
+        }
+    }
+}
+
+// glmvq_decode_reduce per row: ascending expert order, same roundings.
+__global__ void glmvq_verify_reduce(float *out, const float *partial,
+        const float *weights, const glmvq_verify_plan *plan, uint32_t rows) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows * GLMVQ_DEC_HIDDEN) { return; }
+    const uint32_t r = i / GLMVQ_DEC_HIDDEN, h = i % GLMVQ_DEC_HIDDEN;
+    float sum = 0;
+    for (uint32_t e = 0; e < GLMVQ_DEC_USED; e++) {
+        const uint32_t pair = r * GLMVQ_DEC_USED + plan->order[r * GLMVQ_DEC_USED + e];
+        const float value = glmvq_round(glmvq_mul(partial[(uint64_t)pair * GLMVQ_DEC_HIDDEN + h], weights[pair]));
+        sum = glmvq_round(glmvq_add(sum, value));
+    }
+    out[i] = sum;
+}
+
 template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT>
 static cudaError_t glmvq_decode_prepare(uint32_t *blocks) {
     int device, shared, sms;
@@ -170,9 +349,18 @@ static cudaError_t glmvq_decode_prepare(uint32_t *blocks) {
     constexpr uint32_t gu = book + GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16);
     constexpr uint32_t dn = book + GLMVQ_DEC_USED * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16);
     if (dn > (uint32_t)shared) { return cudaErrorNotSupported; }
+    constexpr uint32_t vgu = book + GLMVQ_VER_ROWS * GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16);
+    constexpr uint32_t vdn = book + GLMVQ_VER_GROUP * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16);
+    if (vgu > (uint32_t)shared || vdn > (uint32_t)shared) { return cudaErrorNotSupported; }
     err = cudaFuncSetAttribute(glmvq_decode_gu<BITS, WARPS, OUTPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize, gu);
     if (err == cudaSuccess) {
         err = cudaFuncSetAttribute(glmvq_decode_down<BITS, WARPS>, cudaFuncAttributeMaxDynamicSharedMemorySize, dn);
+    }
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_verify_gu<BITS, WARPS>, cudaFuncAttributeMaxDynamicSharedMemorySize, vgu);
+    }
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_verify_down<BITS, WARPS>, cudaFuncAttributeMaxDynamicSharedMemorySize, vdn);
     }
     if (err == cudaSuccess) { *blocks = (uint32_t)sms; }
     return err;
@@ -189,6 +377,20 @@ static cudaError_t glmvq_decode_launch(const glmvq_decode_item *items, const voi
     glmvq_decode_down<BITS, WARPS><<<blocks, WARPS * 32,
         cb + GLMVQ_DEC_USED * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream>>>(items, (const uint4 *)book, mid, partial);
     glmvq_decode_reduce<<<GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, items);
+    return cudaGetLastError();
+}
+
+// Rows 2-4 after glmvq_verify_route filled items and plan on the device.
+template <uint32_t BITS, uint32_t WARPS>
+static cudaError_t glmvq_verify_launch(const glmvq_verify_item *items, const glmvq_verify_plan *plan,
+        const void *book, const float *input, uint32_t rows, __nv_bfloat16 *mid, float *partial,
+        float *out, const float *weights, float clamp, uint32_t blocks, cudaStream_t stream) {
+    constexpr uint32_t cb = (1u << BITS) * GLMVQ_VECTOR;
+    glmvq_verify_gu<BITS, WARPS><<<blocks, WARPS * 32, cb + rows * GLMVQ_DEC_HIDDEN * sizeof(__nv_bfloat16), stream>>>(
+        items, plan, (const uint4 *)book, input, rows, mid, clamp);
+    glmvq_verify_down<BITS, WARPS><<<blocks, WARPS * 32, cb + GLMVQ_VER_GROUP * GLMVQ_DEC_FFN * sizeof(__nv_bfloat16), stream>>>(
+        items, plan, (const uint4 *)book, mid, partial);
+    glmvq_verify_reduce<<<rows * GLMVQ_DEC_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream>>>(out, partial, weights, plan, rows);
     return cudaGetLastError();
 }
 

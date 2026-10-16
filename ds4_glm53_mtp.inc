@@ -12,14 +12,67 @@ static uint64_t glm53_mtp_kv_bytes(uint32_t ctx) {
     return (uint64_t)ctx * DS4_N_KV_LORA * sizeof(uint16_t);
 }
 
+#ifdef GLM53_MTP_VERIFY
+/* One stash slot per layer: the pre-trial index tails, then the verified
+ * rows' raw index keys and gates (GLM VQ tail replay on rejection). */
+static uint64_t glm53_mtp_stash_slot(void) {
+    return 2u * (DS4_GLM53_POOL_SIZE + GLM53_MTP_ROWS) * (uint64_t)DS4_N_INDEXER_HEAD_DIM * sizeof(float);
+}
+
+static uint64_t glm53_mtp_verify_bytes(void) {
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53_VQ) { return 0u; }
+    return DS4_N_LAYER * glm53_mtp_stash_slot() + (uint64_t)DS4_N_EMBD * sizeof(float) +
+        GLM53_MTP_ROWS * (uint64_t)(3u * DS4_N_EMBD + DS4_N_VOCAB) * sizeof(float);
+}
+
+static void glm53_mtp_verify_clear(ds4_glm53_gpu_graph *g) {
+    g->mtp_stash = NULL; g->mtp_rows = NULL; g->mtp_logits = NULL;
+}
+
+static void glm53_mtp_verify_free(ds4_glm53_gpu_graph *g) {
+    ds4_gpu_tensor_free(g->mtp_stash);
+    ds4_gpu_tensor_free(g->mtp_rows);
+    ds4_gpu_tensor_free(g->mtp_logits);
+    glm53_mtp_verify_clear(g);
+}
+
+static bool glm53_mtp_verify_alloc(ds4_glm53_gpu_graph *g) {
+    if (!glm53_mtp_verify_bytes()) { return true; }
+    g->mtp_stash = ds4_gpu_tensor_alloc(DS4_N_LAYER * glm53_mtp_stash_slot());
+    // Row 0 is the pre-trial hidden; row r+1 is verified row r.
+    g->mtp_rows = ds4_gpu_tensor_alloc((GLM53_MTP_ROWS + 1u) * (uint64_t)DS4_N_EMBD * sizeof(float));
+    g->mtp_logits = ds4_gpu_tensor_alloc(GLM53_MTP_ROWS * (uint64_t)DS4_N_VOCAB * sizeof(float));
+    return g->mtp_stash && g->mtp_rows && g->mtp_logits;
+}
+
+// Verify buffers follow the shared journal's single-live-trial epoch.
+static bool glm53_mtp_verify_share(ds4_glm53_gpu_graph *g, const ds4_glm53_gpu_graph *src) {
+    if (!src->mtp_stash) { return true; }
+    g->mtp_stash = ds4_gpu_tensor_view(src->mtp_stash, 0u, ds4_gpu_tensor_bytes(src->mtp_stash));
+    g->mtp_rows = ds4_gpu_tensor_view(src->mtp_rows, 0u, ds4_gpu_tensor_bytes(src->mtp_rows));
+    g->mtp_logits = ds4_gpu_tensor_view(src->mtp_logits, 0u, ds4_gpu_tensor_bytes(src->mtp_logits));
+    return g->mtp_stash && g->mtp_rows && g->mtp_logits;
+}
+#else
+static uint64_t glm53_mtp_verify_bytes(void) { return 0u; }
+static void glm53_mtp_verify_clear(ds4_glm53_gpu_graph *g) { (void)g; }
+static void glm53_mtp_verify_free(ds4_glm53_gpu_graph *g) { (void)g; }
+static bool glm53_mtp_verify_alloc(ds4_glm53_gpu_graph *g) { (void)g; return true; }
+static bool glm53_mtp_verify_share(ds4_glm53_gpu_graph *g, const ds4_glm53_gpu_graph *src) {
+    (void)g; (void)src;
+    return true;
+}
+#endif
+
 static uint64_t glm53_mtp_bytes(uint32_t ctx) {
-    return glm53_mtp_kv_bytes(ctx) + 2u * (uint64_t)DS4_N_EMBD * sizeof(float);
+    return glm53_mtp_kv_bytes(ctx) + 2u * (uint64_t)DS4_N_EMBD * sizeof(float) + glm53_mtp_verify_bytes();
 }
 
 static void glm53_mtp_free(ds4_glm53_gpu_graph *g) {
     ds4_gpu_tensor_free(g->mtp_kv);
     ds4_gpu_tensor_free(g->mtp_concat);
     ds4_gpu_tensor_free(g->mtp_journal);
+    glm53_mtp_verify_free(g);
     free(g->mtp_logit_rows);
     if (g->mtp_epoch && --g->mtp_epoch->refs == 0u) { free(g->mtp_epoch); }
     g->mtp_kv = NULL; g->mtp_concat = NULL; g->mtp_journal = NULL;
@@ -35,12 +88,15 @@ static bool glm53_mtp_enable(ds4_glm53_gpu_graph *g) {
     if (!g || !g->ready || !g->ctx_cap || !g->state_bytes) { return false; }
     if (g->mtp_ready) { return true; }
     g->mtp_kv = ds4_gpu_tensor_alloc(glm53_mtp_kv_bytes(g->ctx_cap));
-    g->mtp_concat = ds4_gpu_tensor_alloc(2u * (uint64_t)DS4_N_EMBD * sizeof(float));
+    const bool verify = glm53_mtp_verify_bytes() != 0u;
+    // Batched verify rebuilds draft-layer KV for every verified row at once.
+    g->mtp_concat = ds4_gpu_tensor_alloc((verify ? GLM53_MTP_ROWS : 1u) * 2u * (uint64_t)DS4_N_EMBD * sizeof(float));
     g->mtp_journal = ds4_gpu_tensor_alloc(GLM53_MTP_SAVES * g->state_bytes);
+    const bool funded = glm53_mtp_verify_alloc(g);
     g->mtp_logit_rows = calloc((size_t)GLM53_MTP_SAVES * DS4_N_VOCAB, sizeof(float));
     g->mtp_epoch = calloc(1u, sizeof(*g->mtp_epoch));
     if (g->mtp_epoch) { g->mtp_epoch->refs = 1u; }
-    if (!g->mtp_kv || !g->mtp_concat || !g->mtp_journal || !g->mtp_logit_rows || !g->mtp_epoch) {
+    if (!g->mtp_kv || !g->mtp_concat || !g->mtp_journal || !g->mtp_logit_rows || !g->mtp_epoch || !funded) {
         glm53_mtp_free(g);
         return false;
     }
@@ -52,6 +108,7 @@ static bool glm53_mtp_enable(ds4_glm53_gpu_graph *g) {
 static bool glm53_mtp_clone(ds4_glm53_gpu_graph *g,
                             const ds4_glm53_gpu_graph *src) {
     g->mtp_kv = NULL; g->mtp_concat = NULL; g->mtp_journal = NULL;
+    glm53_mtp_verify_clear(g);
     g->mtp_logit_rows = NULL;
     g->mtp_epoch = NULL;
     g->mtp_rewind_n = 0u;
@@ -65,8 +122,9 @@ static bool glm53_mtp_clone(ds4_glm53_gpu_graph *g,
     g->mtp_kv = ds4_gpu_tensor_alloc(glm53_mtp_kv_bytes(g->ctx_cap));
     g->mtp_concat = ds4_gpu_tensor_view(src->mtp_concat, 0u, ds4_gpu_tensor_bytes(src->mtp_concat));
     g->mtp_journal = ds4_gpu_tensor_view(src->mtp_journal, 0u, ds4_gpu_tensor_bytes(src->mtp_journal));
+    const bool shared = glm53_mtp_verify_share(g, src);
     g->mtp_logit_rows = calloc((size_t)GLM53_MTP_SAVES * DS4_N_VOCAB, sizeof(float));
-    if (!g->mtp_kv || !g->mtp_concat || !g->mtp_journal || !g->mtp_logit_rows) {
+    if (!g->mtp_kv || !g->mtp_concat || !g->mtp_journal || !g->mtp_logit_rows || !shared) {
         glm53_mtp_free(g);
         return false;
     }
@@ -221,6 +279,126 @@ static int glm53_mtp_argmax(const float *logits) {
     return (int)best;
 }
 
+#ifdef GLM53_MTP_VERIFY
+/* GLM VQ batched verify. The n candidates run as one n-row forward, so each
+ * weight is read once rather than n times. A rejection restores KDA from the
+ * per-row journal snapshots and replays the index tail from stashed rows;
+ * latent, pool and draft-layer rows past the frontier are rewritten before
+ * any read. Rewinding to the trial start is unsupported (no slot-0 copy). */
+static bool gvq_mtp_verify(ds4_glm53_gpu_graph *g, const ds4_model *m,
+        const ds4_weights *w, uint32_t n, uint32_t pos, int *target) {
+    const uint64_t hidden = (uint64_t)DS4_N_EMBD * sizeof(float);
+    ds4_glm53_gpu_graph a;
+    if (!glm53_graph_bind(&a, g, n)) { return false; }
+    a.mtp_capture = true;
+    bool ok = ds4_gpu_tensor_copy(g->mtp_rows, 0u, g->last_hidden, 0u, hidden) &&
+        glm53_graph_embed(&a, m, w, g->mtp_trial, n, NULL);
+    const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    for (uint32_t il = 0; ok && il < layers; il++) {
+        ok = gvq_layer(&a, m, w, il, n, pos);
+        ds4_gpu_tensor *swap = a.hc_cur; a.hc_cur = a.hc_next; a.hc_next = swap;
+    }
+    // Every row's final-norm hidden (draft input) and logits.
+    ds4_gpu_tensor *rows = ok ? ds4_gpu_tensor_view(g->mtp_rows, hidden, n * hidden) : NULL;
+    ds4_gpu_tensor *logits = ok ? ds4_gpu_tensor_view(g->mtp_logits, 0u,
+        (uint64_t)n * DS4_N_VOCAB * sizeof(float)) : NULL;
+    ok = ok && rows && logits &&
+        ds4_gpu_hc_weighted_sum_tensor(a.cur, a.hc_cur, a.hc_mean, DS4_N_EMBD, DS4_N_HC) &&
+        ds4_gpu_gvq_round(a.cur, (uint64_t)n * DS4_N_EMBD) &&
+        gvq_norm(&a, m, rows, a.cur, w->output_norm, n, DS4_N_EMBD) &&
+        gvq_mm(&a, m, logits, w->output, rows, n, DS4_GVQ_BF16) &&
+        ds4_gpu_argmax_rows_tensor(a.token, logits, DS4_N_VOCAB, n) &&
+        ds4_gpu_tensor_read(a.token, 0u, target, (uint64_t)n * sizeof(*target));
+    if (ok && ds4_gpu_tensor_ptr(a.hc_cur) != ds4_gpu_tensor_ptr(g->hc_cur)) {
+        ds4_gpu_tensor *swap = g->hc_cur; g->hc_cur = g->hc_next; g->hc_next = swap;
+    }
+    ds4_gpu_tensor_free(logits); ds4_gpu_tensor_free(rows);
+    glm53_graph_unbind(&a);
+    for (uint32_t i = 0; ok && i < n; i++) { ok = target[i] >= 0 && (uint32_t)target[i] < DS4_N_VOCAB; }
+    return ok;
+}
+
+/* Draft-layer KV for rows pos..pos+n-1 from their true hidden (mtp_rows) and
+ * next tokens: only the projections feeding the cache, as gvq_mtp_block. */
+static bool gvq_mtp_kv(ds4_glm53_gpu_graph *g, const ds4_model *m,
+        const ds4_weights *w, uint32_t n, uint32_t pos) {
+    const ds4_layer_weights *l = &w->layer[GLMVQ_TRUNK];
+    const uint64_t bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
+    ds4_glm53_gpu_graph a;
+    if (!glm53_graph_bind(&a, g, n)) { return false; }
+    ds4_gpu_tensor *hidden = ds4_gpu_tensor_view(g->mtp_rows, 0u, n * bytes);
+    ds4_gpu_tensor *concat = ds4_gpu_tensor_view(g->mtp_concat, 0u, 2u * n * bytes);
+    bool ok = hidden && concat &&
+        ds4_gpu_tensor_write(a.token, 0u, g->mtp_trial, (uint64_t)n * sizeof(int32_t)) &&
+        ds4_gpu_embed_tokens_quant_tensor(a.cur, a.token, m->map, m->size,
+            w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, DS4_N_EMBD) &&
+        gvq_norm(&a, m, a.norm, a.cur, l->nextn_enorm, n, DS4_N_EMBD) &&
+        gvq_norm(&a, m, a.attn_out, hidden, l->nextn_hnorm, n, DS4_N_EMBD);
+    for (uint32_t r = 0; ok && r < n; r++) {
+        ok = ds4_gpu_tensor_copy(concat, 2u * r * bytes, a.norm, r * bytes, bytes) &&
+            ds4_gpu_tensor_copy(concat, (2u * r + 1u) * bytes, a.attn_out, r * bytes, bytes);
+    }
+    ok = ok && gvq_mm(&a, m, a.cur, l->nextn_eh_proj, concat, n, DS4_GVQ_BF16) &&
+        gvq_norm(&a, m, a.norm, a.cur, l->attn_norm, n, DS4_N_EMBD) &&
+        gvq_mm(&a, m, a.kv_rank, l->attn_kv_a_mqa, a.norm, n, DS4_GVQ_BF16) &&
+        gvq_norm(&a, m, a.kv_rank_norm, a.kv_rank, l->attn_kv_a_norm, n, DS4_N_KV_LORA) &&
+        ds4_gpu_gvq_store(g->mtp_kv, a.kv_rank_norm, n, pos, g->ctx_cap, DS4_N_KV_LORA);
+    ds4_gpu_tensor_free(concat); ds4_gpu_tensor_free(hidden);
+    glm53_graph_unbind(&a);
+    return ok;
+}
+
+// State after `keep` verified rows (1 <= keep < verified rows).
+static bool gvq_mtp_restore(ds4_glm53_gpu_graph *g, uint32_t keep) {
+    const ds4_model *m = g->mtp_model;
+    const uint8_t *pool = (const uint8_t *)ds4_gpu_tensor_ptr(g->state_pool);
+    const uint64_t row = DS4_N_INDEXER_HEAD_DIM * sizeof(float), tail = DS4_GLM53_POOL_SIZE * row;
+    const uint32_t start = g->mtp_trial_start, end = start + keep;
+    const uint32_t base = end - end % DS4_GLM53_POOL_SIZE, first = base > start ? base : start;
+    const bool tails = g->ctx_cap > DS4_GLM53_INDEX_TOPK && end != base;
+    const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    for (uint32_t il = 0; il < layers; il++) {
+        if (ds4_glm53_layer_is_kda(il)) {
+            const uint8_t *at = (const uint8_t *)ds4_gpu_tensor_ptr(g->recurrent[il]);
+            const uint8_t *end_v = (const uint8_t *)ds4_gpu_tensor_ptr(g->v_conv_state[il]) +
+                ds4_gpu_tensor_bytes(g->v_conv_state[il]);
+            const uint64_t offset = (uint64_t)(at - pool);
+            if (!ds4_gpu_tensor_copy(g->state_pool, offset, g->mtp_journal,
+                    keep * g->state_bytes + offset, (uint64_t)(end_v - at))) { return false; }
+            continue;
+        }
+        if (!tails) { continue; }
+        // Pre-trial tail, then the accepted rows of the open pool.
+        const uint64_t slot = il * glm53_mtp_stash_slot(), keys = slot + 2u * tail + (first - start) * row;
+        ds4_gpu_tensor *k = ds4_gpu_tensor_view(g->mtp_stash, keys, (end - first) * row);
+        ds4_gpu_tensor *gate = ds4_gpu_tensor_view(g->mtp_stash, keys + GLM53_MTP_ROWS * row, (end - first) * row);
+        const ds4_layer_weights *l = &g->mtp_weights->layer[il];
+        const bool ok = k && gate &&
+            ds4_gpu_tensor_copy(g->layer_tail_k[il], 0u, g->mtp_stash, slot, tail) &&
+            ds4_gpu_tensor_copy(g->layer_tail_gate[il], 0u, g->mtp_stash, slot + tail, tail) &&
+            ds4_gpu_gvq_pool(g->gvq, g->layer_pool[il], g->layer_tail_k[il], g->layer_tail_gate[il],
+                k, gate, glmvq_index(m, l->indexer_k_norm), glmvq_index(m, l->indexer_k_norm_b),
+                glmvq_index(m, l->indexer_compressor_ape), first, end - first, g->ctx_cap);
+        ds4_gpu_tensor_free(gate); ds4_gpu_tensor_free(k);
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
+// Frontier after `keep` rows: state, last hidden, logits and cursors.
+static bool gvq_mtp_land(ds4_glm53_gpu_graph *g, uint32_t keep, uint32_t live, float *logits) {
+    const uint64_t vocab = (uint64_t)DS4_N_VOCAB * sizeof(float), hidden = (uint64_t)DS4_N_EMBD * sizeof(float);
+    if (!keep || (keep < live && !gvq_mtp_restore(g, keep)) ||
+        !ds4_gpu_tensor_copy(g->last_hidden, 0u, g->mtp_rows, keep * hidden, hidden) ||
+        !ds4_gpu_tensor_copy(g->logits, 0u, g->mtp_logits, (keep - 1u) * vocab, vocab) ||
+        !ds4_gpu_tensor_read(g->mtp_logits, (keep - 1u) * vocab, logits, vocab)) { return false; }
+    g->cache_len = g->mtp_trial_start + keep;
+    g->mtp_len = g->cache_len - 1u;
+    g->last_rows = 1u;
+    return true;
+}
+#endif
+
 static bool glm53_mtp_trial(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_weights *w, int first, uint32_t n, const float *logits,
         int *tokens, int *target) {
@@ -235,7 +413,13 @@ static bool glm53_mtp_trial(ds4_glm53_gpu_graph *g, const ds4_model *m,
     g->mtp_rewind_n = 0u;
     const uint64_t bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
     memcpy(g->mtp_logit_rows, logits, bytes);
-    if (!glm53_mtp_journal(g, 0u, GLM53_MTP_SAVE)) { return false; }
+#ifdef GLM53_MTP_VERIFY
+    // Drafting leaves target state alone; batched verify needs no slot 0.
+    const bool batched = g->gvq && g->mtp_stash;
+#else
+    const bool batched = false;
+#endif
+    if (!batched && !glm53_mtp_journal(g, 0u, GLM53_MTP_SAVE)) { return false; }
     if (g->mtp_len && g->mtp_len != start - 1u) { g->mtp_len = g->mtp_min = 0u; }
     g->mtp_trial[0] = first;
     for (uint32_t i = 0u; i + 1u < n; i++) {
@@ -243,6 +427,23 @@ static bool glm53_mtp_trial(ds4_glm53_gpu_graph *g, const ds4_model *m,
         if (!glm53_mtp_step(g, m, w, hidden, g->mtp_trial[i], start - 1u + i,
                             &g->mtp_trial[i + 1u])) { return false; }
     }
+#ifdef GLM53_MTP_VERIFY
+    if (batched) {
+        // Draft rows from start on used recursive hidden: rebuild them.
+        if (!g->mtp_len) { g->mtp_min = start - 1u; }
+        g->mtp_model = m;
+        g->mtp_weights = w;
+        if (!gvq_mtp_verify(g, m, w, n, start, target) ||
+            !gvq_mtp_kv(g, m, w, n, start - 1u)) { return false; }
+        g->cache_len = start + n;
+        g->last_rows = 1u;
+        g->mtp_len = start + n - 1u;
+        g->mtp_trial_start = start;
+        g->mtp_trial_n = n;
+        memcpy(tokens, g->mtp_trial, (size_t)n * sizeof(*tokens));
+        return true;
+    }
+#endif
     /* Proposals use approximate recursive hidden. Restore, then build each
      * accepted candidate's MTP row from the true preceding target hidden. */
     if (!glm53_mtp_journal(g, 0u, GLM53_MTP_RESTORE)) { return false; }
@@ -262,6 +463,14 @@ static bool glm53_mtp_accept(ds4_glm53_gpu_graph *g, uint32_t keep, float *logit
     if (!g || !g->mtp_trial_n || keep > g->mtp_trial_n || !logits ||
         !g->mtp_epoch || g->mtp_rewind_epoch != g->mtp_epoch->seq ||
         g->cache_len != g->mtp_trial_start + g->mtp_trial_n) { return false; }
+#ifdef GLM53_MTP_VERIFY
+    if (g->gvq && g->mtp_stash) {
+        if (!gvq_mtp_land(g, keep, g->mtp_trial_n, logits)) { return false; }
+        g->mtp_trial_n = 0u;
+        g->mtp_rewind_n = keep;
+        return true;
+    }
+#endif
     const uint64_t bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
     const float *row = g->mtp_logit_rows + (size_t)keep * DS4_N_VOCAB;
     if (!glm53_mtp_journal(g, keep, GLM53_MTP_RESTORE) ||
@@ -280,6 +489,13 @@ static bool glm53_mtp_rewind(ds4_glm53_gpu_graph *g, uint32_t pos, float *logits
         g->cache_len != g->mtp_trial_start + g->mtp_rewind_n ||
         pos < g->mtp_trial_start || pos >= g->cache_len || !logits) { return false; }
     const uint32_t keep = pos - g->mtp_trial_start;
+#ifdef GLM53_MTP_VERIFY
+    if (g->gvq && g->mtp_stash) {
+        if (!gvq_mtp_land(g, keep, g->mtp_rewind_n, logits)) { return false; }
+        g->mtp_rewind_n = keep;
+        return true;
+    }
+#endif
     const uint64_t bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
     const float *row = g->mtp_logit_rows + (size_t)keep * DS4_N_VOCAB;
     if (!glm53_mtp_journal(g, keep, GLM53_MTP_RESTORE) ||
@@ -326,6 +542,16 @@ int ds4_session_glm53_trial(ds4_session *s, int first, int max_tokens,
         n = (uint32_t)s->engine->mtp_draft_tokens + 1u;
     }
     if (n > g->ctx_cap - g->cache_len) { n = g->ctx_cap - g->cache_len; }
+#ifdef GLM53_MTP_VERIFY
+    // Diagnostic: drafts per GLM VQ verify. Consecutive tokens share few
+    // experts, so each verified row costs nearly a full expert pass.
+    static int draft_cap = -1;
+    if (draft_cap < 0) {
+        const char *value = getenv("DS4_GLMVQ_MTP_DRAFT");
+        draft_cap = value ? atoi(value) : 0;
+    }
+    if (g->gvq && draft_cap > 0 && n > (uint32_t)draft_cap + 1u) { n = (uint32_t)draft_cap + 1u; }
+#endif
     if (!glm53_mtp_trial(g, &s->engine->model, &s->engine->weights,
             first, n, s->logits, tokens, target)) { return glm53_mtp_fail(s, err, len); }
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1u);

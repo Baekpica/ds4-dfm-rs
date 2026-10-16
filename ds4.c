@@ -22750,6 +22750,12 @@ typedef struct {
     ds4_gpu_tensor *control_pool;
     ds4_gpu_tensor *last_hidden, *mtp_hidden;
     ds4_gpu_tensor *mtp_kv, *mtp_concat, *mtp_journal;
+    /* GLM VQ batched verify: stashed index rows, final-norm hidden and
+     * logits per verified row; capture is set on the bound verify graph. */
+    ds4_gpu_tensor *mtp_stash, *mtp_rows, *mtp_logits;
+    const ds4_model *mtp_model;
+    const ds4_weights *mtp_weights;
+    bool mtp_capture;
     float *mtp_logit_rows;
     struct glm53_mtp_epoch *mtp_epoch;
     uint64_t mtp_rewind_epoch;

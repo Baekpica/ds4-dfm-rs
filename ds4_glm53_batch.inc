@@ -40,7 +40,8 @@ static uint64_t glm53_bank_bytes_for(uint32_t ctx, uint32_t slots,
         (state + cache + (uint64_t)DS4_N_VOCAB * sizeof(float));
     if (mtp == GLM53_BANK_MTP_ON) {
         bytes += (uint64_t)banks * ctx * DS4_N_KV_LORA * sizeof(uint16_t) +
-                 2u * (uint64_t)DS4_N_EMBD * sizeof(float) + GLM53_MTP_SAVES * state;
+                 2u * (uint64_t)DS4_N_EMBD * sizeof(float) + GLM53_MTP_SAVES * state +
+                 glm53_mtp_verify_bytes();
     }
     return bytes;
 }
@@ -223,6 +224,7 @@ static bool glm53_bank_clone(ds4_glm53_gpu_graph *g,
     g->state_pool = NULL; g->control_pool = NULL; g->logits = NULL; g->kda_scratch = NULL;
     g->last_hidden = NULL; g->mtp_hidden = NULL;
     g->mtp_kv = NULL; g->mtp_concat = NULL; g->mtp_journal = NULL;
+    glm53_mtp_verify_clear(g);
     g->mtp_logit_rows = NULL;
     g->mtp_epoch = NULL;
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {

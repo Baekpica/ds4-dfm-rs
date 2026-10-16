@@ -60,7 +60,7 @@ extern "C" int test_glmvq_hc_split(const float *mix, const float *residual,
         const float *scale, const float *base, float *output, float *split,
         uint32_t rows, uint32_t width, uint32_t iters, float eps, cudaStream_t stream) {
     glmvq_hc_split<<<rows, GLMVQ_THREADS, 0, stream>>>(mix, residual, scale, base,
-        output, split, width, iters, eps);
+        output, split, width, iters, eps, nullptr, nullptr, 0.0f);
     return (int)cudaGetLastError();
 }
 
@@ -81,6 +81,6 @@ extern "C" int test_glmvq_kda(float *output, float *state,
         uint32_t heads, float lower_bound, cudaStream_t stream) {
     glmvq_kda<<<heads, GLMVQ_KDA_DIM, 0, stream>>>(output, state, q_tail, k_tail, v_tail,
         q_raw, k_raw, v_raw, forget, beta_logits, q_weight, k_weight, v_weight,
-        a_log, dt_bias, rows, heads, lower_bound);
+        a_log, dt_bias, rows, heads, lower_bound, glmvq_kda_snap{});
     return (int)cudaGetLastError();
 }

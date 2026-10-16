@@ -188,10 +188,12 @@ static cudaError_t glmvq_q4_prepare(glmvq_q4_config *config, glmvq_q4_load mode)
 static glmvq_q4_load glmvq_q4_select(const glmvq_q4_config *config, const float *input,
         uint64_t group_bytes, uint64_t weight_bytes, uint32_t tokens) {
     if (!config || config->mode == GLMVQ_Q4_SCALAR || (uintptr_t)input % 16) { return GLMVQ_Q4_SCALAR; }
-    // Actual GLM replays favor staging for large decode projections. Small
-    // matrices and verification widths retain their measured scalar baseline.
+    // Actual GLM replays favor staging for large decode projections; small
+    // one-token matrices keep their measured scalar baseline. Verify widths
+    // stage too: the scalar kernel dequantized each weight and loaded each
+    // token's input per element (2.7x one token's time at four tokens).
     constexpr uint64_t small_weight_bytes = 4ull << 20;
-    if (config->mode == GLMVQ_Q4_AUTO && (tokens != 1 || weight_bytes <= small_weight_bytes)) {
+    if (config->mode == GLMVQ_Q4_AUTO && tokens == 1 && weight_bytes <= small_weight_bytes) {
         return GLMVQ_Q4_SCALAR;
     }
     const uint32_t partial = GLMVQ_Q4_WARPS * (tokens == 1 ? 1 : GLMVQ_Q4_WARPS) * sizeof(float);
@@ -238,6 +240,8 @@ static cudaError_t glmvq_q4_decode(const void *weight, const float *input, float
         split * 2 <= cols / GLMVQ_Q4_BLOCK) { split *= 2; }
     if (tokens == 1) {
         glmvq_q4_launch<1>(weight, input, out, rows, cols, tokens, split, stream, config);
+    } else if (tokens <= 4) {
+        glmvq_q4_launch<4>(weight, input, out, rows, cols, tokens, split, stream, config);
     } else {
         glmvq_q4_launch<8>(weight, input, out, rows, cols, tokens, split, stream, config);
     }
