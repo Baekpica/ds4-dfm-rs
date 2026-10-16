@@ -81,6 +81,16 @@ static bool gvq_mm(ds4_glm53_gpu_graph *g, const ds4_model *m,
     return ok;
 }
 
+// Projections of one input (q/k/v, gate/up, ...): prefill prepares it once.
+static bool gvq_mm_many(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
+        const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
+    uint32_t index[4];
+    for (uint32_t c = 0; c < count; c++) { index[c] = glmvq_index(m, ws[c]); }
+    const bool ok = count <= 4 && ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
+    if (!ok) { fprintf(stderr, "ds4: GLM VQ linear group of %u failed (rows=%u)\n", count, rows); }
+    return ok;
+}
+
 static bool gvq_norm(ds4_glm53_gpu_graph *g, const ds4_model *m,
         ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_tensor *w,
         uint32_t rows, uint32_t width) {
@@ -108,14 +118,16 @@ static bool gvq_hc(ds4_glm53_gpu_graph *g, const ds4_model *m,
 
 static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
         const ds4_layer_weights *l, uint32_t il, uint32_t rows) {
-    if (!gvq_mm(g, m, g->q, l->kda_q, g->norm, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->k, l->kda_k, g->norm, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->v, l->kda_v, g->norm, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->q_rank, l->kda_f_a, g->norm, rows, DS4_GVQ_BF16) ||
+    // g_a's low rank lands in q_rank_norm (unused by KDA) so the three
+    // norm-input gate projections share one input pass.
+    ds4_gpu_tensor *const qkv[] = {g->q, g->k, g->v};
+    const ds4_tensor *const qkv_w[] = {l->kda_q, l->kda_k, l->kda_v};
+    ds4_gpu_tensor *const gates[] = {g->q_rank, g->kv_rank, g->q_rank_norm};
+    const ds4_tensor *const gates_w[] = {l->kda_f_a, l->kda_beta, l->kda_g_a};
+    if (!gvq_mm_many(g, m, qkv, qkv_w, 3u, g->norm, rows) ||
+        !gvq_mm_many(g, m, gates, gates_w, 3u, g->norm, rows) ||
         !gvq_mm(g, m, g->heads, l->kda_f_b, g->q_rank, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->kv_rank, l->kda_beta, g->norm, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->q_rank, l->kda_g_a, g->norm, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->ffn_gate, l->kda_g_b, g->q_rank, rows, DS4_GVQ_BF16)) { return false; }
+        !gvq_mm(g, m, g->ffn_gate, l->kda_g_b, g->q_rank_norm, rows, DS4_GVQ_BF16)) { return false; }
     // MTP verify: journal slot r+1 receives this layer's state after row r.
     ds4_gpu_tensor *snap = NULL;
     if (g->mtp_capture) {
@@ -153,8 +165,9 @@ static bool gvq_index(ds4_glm53_gpu_graph *g, const ds4_model *m,
     if (g->ctx_cap <= DS4_GLM53_INDEX_TOPK) { return true; }
     // Build pools during the dense prefix too: a later sparse continuation
     // must see all prior keys and the same incomplete four-token tail.
-    if (!gvq_mm(g, m, g->idx_k, l->indexer_attn_k, g->norm, rows, DS4_GVQ_BF16) ||
-        !gvq_mm(g, m, g->idx_gate, l->indexer_compressor_gate, g->norm, rows, DS4_GVQ_BF16) ||
+    ds4_gpu_tensor *const keys[] = {g->idx_k, g->idx_gate};
+    const ds4_tensor *const keys_w[] = {l->indexer_attn_k, l->indexer_compressor_gate};
+    if (!gvq_mm_many(g, m, keys, keys_w, 2u, g->norm, rows) ||
         (g->mtp_capture && !gvq_stash(g, il, rows)) ||
         !ds4_gpu_gvq_pool(g->gvq, g->layer_pool[il], g->layer_tail_k[il], g->layer_tail_gate[il],
             g->idx_k, g->idx_gate, glmvq_index(m, l->indexer_k_norm),
@@ -178,10 +191,11 @@ static bool gvq_dsa(ds4_glm53_gpu_graph *g, const ds4_model *m,
     const uint32_t keys = pos + rows;
     const uint32_t stride = keys > DS4_GLM53_INDEX_TOPK ? DS4_GLM53_MAX_SELECTED : 0u;
     if (keys > DS4_GVQ_CTX_MAX) { return false; }
-    return gvq_mm(g, m, g->q_rank, l->attn_q_a, g->norm, rows, DS4_GVQ_BF16) &&
+    ds4_gpu_tensor *const lows[] = {g->q_rank, g->kv_rank};
+    const ds4_tensor *const lows_w[] = {l->attn_q_a, l->attn_kv_a_mqa};
+    return gvq_mm_many(g, m, lows, lows_w, 2u, g->norm, rows) &&
         gvq_norm(g, m, g->q_rank_norm, g->q_rank, l->attn_q_a_norm, rows, DS4_N_LORA_Q) &&
         gvq_mm(g, m, g->q, l->attn_q_b, g->q_rank_norm, rows, DS4_GVQ_BF16) &&
-        gvq_mm(g, m, g->kv_rank, l->attn_kv_a_mqa, g->norm, rows, DS4_GVQ_BF16) &&
         gvq_norm(g, m, g->kv_rank_norm, g->kv_rank, l->attn_kv_a_norm, rows, DS4_N_KV_LORA) &&
         gvq_index(g, m, l, il, pos, rows) &&
         ds4_gpu_gvq_store(g->layer_kv[il], g->kv_rank_norm, rows, pos, g->ctx_cap, DS4_N_KV_LORA) &&
@@ -195,8 +209,9 @@ static bool gvq_dsa(ds4_glm53_gpu_graph *g, const ds4_model *m,
 static bool gvq_mlp(ds4_glm53_gpu_graph *g, const ds4_model *m,
         ds4_gpu_tensor *out, const ds4_tensor *gate, const ds4_tensor *up,
         const ds4_tensor *down, uint32_t rows) {
-    return gvq_mm(g, m, g->ffn_gate, gate, g->norm, rows, DS4_GVQ_BF16) &&
-        gvq_mm(g, m, g->ffn_up, up, g->norm, rows, DS4_GVQ_BF16) &&
+    ds4_gpu_tensor *const outs[] = {g->ffn_gate, g->ffn_up};
+    const ds4_tensor *const ws[] = {gate, up};
+    return gvq_mm_many(g, m, outs, ws, 2u, g->norm, rows) &&
         ds4_gpu_gvq_swiglu(g->ffn_mid, g->ffn_gate, g->ffn_up,
             (uint64_t)rows * gate->dim[1], DS4_SWIGLU_CLAMP_EXP) &&
         gvq_mm(g, m, out, down, g->ffn_mid, rows, DS4_GVQ_BF16);

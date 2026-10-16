@@ -35,6 +35,9 @@ uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
     uint32_t tokens, uint32_t type, ds4_gvq_math math);
 ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t scratch, uint32_t rows);
 void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx);
+/* Up to four matrices over one input; prefill shares its Q8_1/BF16 copy. */
+int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
 int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
 int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,

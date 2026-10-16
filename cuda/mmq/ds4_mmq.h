@@ -364,6 +364,17 @@ int ds4_mmq_q4_K_dense_bf16(
     int           K,
     cudaStream_t  stream);
 
+/* ds4_mmq_q4_K_dense_raw for `count` matrices sharing X: one Q8_1 pass. */
+int ds4_mmq_q4_K_dense_raw_many(
+    const void  * const * W_q4_K,
+    float       * const * out_f32,
+    const int   * M,
+    int           count,
+    const float * X_f32,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 /* As ds4_mmq_q4_K_dense without the output pass: Q4_K x Q8_1 outputs of
  * finite activations are finite, and the caller keeps them in F32. */
 int ds4_mmq_q4_K_dense_raw(

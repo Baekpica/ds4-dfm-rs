@@ -528,25 +528,30 @@ ggml_backend_cuda_context * get_ctx_for_device(int device) {
     return cached[device];
 }
 
+/* Dense matmuls of `count` weight matrices over one activation X [N x K]:
+ * X is quantized to Q8_1 once and every matrix reuses it. */
 template <ggml_type type>
-int ds4_mmq_dense_impl(
+int ds4_mmq_dense_many(
         const char  * tag,
-        const void  * W,
+        const void  * const * Ws,
+        float       * const * outs,
+        const int   * Ms,
+        int           count,
         const float * X_f32,
-        float       * out_f32,
-        int           M,
         int           N,
         int           K,
         cudaStream_t  stream,
-        ds4_mmq_epilogue epilogue = DS4_MMQ_F32) {
+        ds4_mmq_epilogue epilogue) {
 
-    if (!W || !X_f32 || !out_f32) {
+    if (!Ws || !outs || !Ms || count <= 0 || !X_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
         return -1;
     }
-    if (K <= 0 || M <= 0 || N <= 0) {
-        fprintf(stderr, "%s: bad shape M=%d N=%d K=%d\n", tag, M, N, K);
-        return -1;
+    for (int c = 0; c < count; c++) {
+        if (!Ws[c] || !outs[c] || Ms[c] <= 0 || K <= 0 || N <= 0) {
+            fprintf(stderr, "%s: bad shape M=%d N=%d K=%d\n", tag, Ms[c], N, K);
+            return -1;
+        }
     }
     if (K % 256 != 0) {
         // mmq requires K to be a multiple of the largest super-block size
@@ -620,50 +625,68 @@ int ds4_mmq_dense_impl(
     //    are K-quants with block size 256.
     const int64_t blck   = ggml_blck_size(type);
     const int64_t s01    = (int64_t)K / blck;
-    const int64_t s1     = (int64_t)M;
-    const int64_t s12    = ne11 * ne10_padded * sizeof(block_q8_1) / (QK8_1 * sizeof(int));
-    const int64_t s13    = ne12 * s12;
+    for (int c = 0; c < count; c++) {
+        const void  * W      = Ws[c];
+        float       * out_f32 = outs[c];
+        const int     M      = Ms[c];
+        const int64_t s1     = (int64_t)M;
+        const int64_t s12    = ne11 * ne10_padded * sizeof(block_q8_1) / (QK8_1 * sizeof(int));
+        const int64_t s13    = ne12 * s12;
 
-    const bool use_stream_k =
-        (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ||
-        GGML_CUDA_CC_IS_CDNA(cc);
+        const bool use_stream_k =
+            (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA) ||
+            GGML_CUDA_CC_IS_CDNA(cc);
 
-    if (out_memset_enabled()) {
-        cudaMemsetAsync(out_f32, 0, (size_t)M * (size_t)N * sizeof(float), stream);
+        if (out_memset_enabled()) {
+            cudaMemsetAsync(out_f32, 0, (size_t)M * (size_t)N * sizeof(float), stream);
+        }
+
+        const mmq_args args = {
+            /*x=*/(const char *)W,
+            /*type_x=*/type,
+            /*y=*/(const int *)src1_q8_1.get(),
+            /*ids_dst=*/nullptr,
+            /*expert_bounds=*/nullptr,
+            /*dst=*/out_f32,
+            /*ncols_x=*/ne00,    /*nrows_x=*/(int64_t)M,    /*ncols_dst=*/ne11,
+            /*stride_row_x=*/s01,/*ncols_y=*/ne11,          /*nrows_dst=*/s1,
+            /*nchannels_x=*/1,   /*nchannels_y=*/1,
+            /*stride_channel_x=*/0, /*stride_channel_y=*/s12, /*stride_channel_dst=*/0,
+            /*nsamples_x=*/1,    /*nsamples_y=*/1,
+            /*stride_sample_x=*/0, /*stride_sample_y=*/s13, /*stride_sample_dst=*/0,
+            /*use_stream_k=*/use_stream_k,
+            /*ncols_max=*/ne11,
+        };
+
+        mul_mat_q_case<type>(*ctx, args, stream);
+
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            fprintf(stderr, "%s: mul_mat_q_case launch failed: %s\n", tag, cudaGetErrorString(err));
+            return -3;
+        }
+        const uint64_t n = (uint64_t)M * (uint64_t)N;
+        if (epilogue == DS4_MMQ_BF16) {
+            ds4_mmq_sanitize_bf16_kernel<<<(unsigned)((n + 255u) / 256u), 256, 0, stream>>>(out_f32, n);
+        } else if (epilogue == DS4_MMQ_F32) {
+            ds4_mmq_sanitize_f32(out_f32, n, stream);
+        }
     }
-
-    const mmq_args args = {
-        /*x=*/(const char *)W,
-        /*type_x=*/type,
-        /*y=*/(const int *)src1_q8_1.get(),
-        /*ids_dst=*/nullptr,
-        /*expert_bounds=*/nullptr,
-        /*dst=*/out_f32,
-        /*ncols_x=*/ne00,    /*nrows_x=*/(int64_t)M,    /*ncols_dst=*/ne11,
-        /*stride_row_x=*/s01,/*ncols_y=*/ne11,          /*nrows_dst=*/s1,
-        /*nchannels_x=*/1,   /*nchannels_y=*/1,
-        /*stride_channel_x=*/0, /*stride_channel_y=*/s12, /*stride_channel_dst=*/0,
-        /*nsamples_x=*/1,    /*nsamples_y=*/1,
-        /*stride_sample_x=*/0, /*stride_sample_y=*/s13, /*stride_sample_dst=*/0,
-        /*use_stream_k=*/use_stream_k,
-        /*ncols_max=*/ne11,
-    };
-
-    mul_mat_q_case<type>(*ctx, args, stream);
-
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "%s: mul_mat_q_case launch failed: %s\n", tag, cudaGetErrorString(err));
-        return -3;
-    }
-    const uint64_t n = (uint64_t)M * (uint64_t)N;
-    if (epilogue == DS4_MMQ_RAW) { return 0; }
-    if (epilogue == DS4_MMQ_BF16) {
-        ds4_mmq_sanitize_bf16_kernel<<<(unsigned)((n + 255u) / 256u), 256, 0, stream>>>(out_f32, n);
-        return 0;
-    }
-    ds4_mmq_sanitize_f32(out_f32, n, stream);
     return 0;
+}
+
+template <ggml_type type>
+int ds4_mmq_dense_impl(
+        const char  * tag,
+        const void  * W,
+        const float * X_f32,
+        float       * out_f32,
+        int           M,
+        int           N,
+        int           K,
+        cudaStream_t  stream,
+        ds4_mmq_epilogue epilogue = DS4_MMQ_F32) {
+    return ds4_mmq_dense_many<type>(tag, &W, &out_f32, &M, 1, X_f32, N, K, stream, epilogue);
 }
 
 } // anonymous namespace
@@ -985,6 +1008,13 @@ extern "C" int ds4_mmq_q4_K_dense_bf16(
         int M, int N, int K, cudaStream_t stream) {
     return ds4_mmq_dense_impl<GGML_TYPE_Q4_K>("ds4_mmq_q4_K_dense_bf16", W, X, out, M, N, K, stream,
         DS4_MMQ_BF16);
+}
+
+extern "C" int ds4_mmq_q4_K_dense_raw_many(
+        const void * const * W, float * const * out, const int * M, int count,
+        const float * X, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_many<GGML_TYPE_Q4_K>("ds4_mmq_q4_K_dense_raw_many", W, out, M, count, X, N, K, stream,
+        DS4_MMQ_RAW);
 }
 
 extern "C" int ds4_mmq_q4_K_dense_raw(

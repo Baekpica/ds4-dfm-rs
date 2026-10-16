@@ -489,6 +489,62 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         ctx->restore), "GLM VQ linear");
 }
 
+enum { GVQ_LINEAR_MANY = 4 };
+
+/* Matrices sharing one input. Prefill Q4_K quantizes it to Q8_1 once and
+ * BF16 converts it once (each output otherwise as ds4_gpu_gvq_linear, so
+ * results are unchanged); other shapes and widths run one call each. */
+extern "C" int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math) {
+    if (!ctx || !outs || !weights || !count || count > GVQ_LINEAR_MANY || !rows || !gvq_stream(ctx)) { return 0; }
+    bool q4 = ctx->direct_q4 && !ctx->q4_round && rows > GLMVQ_Q4_WARPS && math == DS4_GVQ_BF16;
+    bool bf16 = rows > GLMVQ_DOT_TOKENS && math == DS4_GVQ_BF16;
+    uint32_t cols = 0, widest = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->model->source.size()) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        const uint32_t type = ctx->model->records[weights[c]].type;
+        if ((c && s.cols != cols) || !gvq_floats(outs[c], (uint64_t)rows * s.rows)) { q4 = bf16 = false; }
+        cols = s.cols;
+        widest = max(widest, s.rows);
+        q4 = q4 && type == GVQ_TYPE_Q4;
+        bf16 = bf16 && type == GVQ_TYPE_BF16 && s.storage == GLMVQ_WEIGHT_BF16 && s.data;
+    }
+    if (q4 && gvq_floats(input, (uint64_t)rows * cols)) {
+        const void *w[GVQ_LINEAR_MANY];
+        float *y[GVQ_LINEAR_MANY];
+        int m[GVQ_LINEAR_MANY];
+        for (uint32_t c = 0; c < count; c++) {
+            const glmvq_source &s = ctx->model->source[weights[c]];
+            w[c] = s.data; y[c] = (float *)outs[c]->ptr; m[c] = (int)s.rows;
+        }
+        return ds4_mmq_q4_K_dense_raw_many(w, y, m, (int)count, (const float *)input->ptr, (int)rows, (int)cols,
+            ctx->stream) == 0 && cuda_ok(cudaGetLastError(), "GLM VQ Q4 MMQ many");
+    }
+    const uint64_t nx = (uint64_t)rows * cols;
+    if (bf16 && gvq_floats(input, nx) && ctx->scratch->bytes >= (nx + (uint64_t)rows * widest) * sizeof(__nv_bfloat16)) {
+        auto *x = (__nv_bfloat16 *)ctx->scratch->ptr, *y = x + nx;
+        glmvq_convert<<<(nx + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+            (const float *)input->ptr, x, nx);
+        const float alpha = 1.0f, beta = 0.0f;
+        for (uint32_t c = 0; c < count; c++) {
+            const glmvq_source &s = ctx->model->source[weights[c]];
+            const uint64_t ny = (uint64_t)rows * s.rows;
+            if (!cuda_ok(cudaGetLastError(), "GLM VQ BF16 many input") ||
+                !cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, s.rows, rows, s.cols,
+                    &alpha, s.data, CUDA_R_16BF, s.cols, x, CUDA_R_16BF, s.cols, &beta, y, CUDA_R_16BF, s.rows,
+                    CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ BF16 many")) { return 0; }
+            glmvq_convert<<<(ny + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+                y, (float *)outs[c]->ptr, ny);
+        }
+        return cuda_ok(cudaGetLastError(), "GLM VQ BF16 many output");
+    }
+    for (uint32_t c = 0; c < count; c++) {
+        if (!ds4_gpu_gvq_linear(ctx, outs[c], weights[c], input, rows, math)) { return 0; }
+    }
+    return 1;
+}
+
 extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *gate, uint32_t weight,
         uint32_t rows, uint32_t width, float eps, ds4_gvq_norm kind) {
