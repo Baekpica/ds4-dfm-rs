@@ -12,7 +12,11 @@ extern "C" {
 typedef struct ds4_gvq_model ds4_gvq_model;
 typedef struct ds4_gvq_ctx ds4_gvq_ctx;
 
-enum { DS4_GVQ_NO_LINK = UINT32_MAX, DS4_GVQ_CTX_MAX = 8192 };
+/* The source model's native context (max_position_embeddings 1,048,576):
+ * a VQ artifact changes weights, not the context contract. Flash DSA
+ * attention and fused index scores keep no per-key scratch; latent, pool and
+ * draft caches grow linearly with the session context. */
+enum { DS4_GVQ_NO_LINK = UINT32_MAX, DS4_GVQ_CTX_MAX = 1048576 };
 typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32 } ds4_gvq_math;
 typedef enum { DS4_GVQ_RMS, DS4_GVQ_GATED_RMS, DS4_GVQ_PLAIN_RMS } ds4_gvq_norm;
 

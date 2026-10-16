@@ -155,4 +155,102 @@ static cublasStatus_t glmvq_index_score(cublasHandle_t handle, float *out,
     return cudaGetLastError() == cudaSuccess ? CUBLAS_STATUS_SUCCESS : CUBLAS_STATUS_EXECUTION_FAILED;
 }
 
+/* Prefill index scores without the [rows][heads][pools] F32 dot buffer that
+ * the cuBLAS path writes and rereads (4.3 GB per DSA layer for a 2K chunk at
+ * 64K context). A CTA scores 4 query rows x 128 pools: BF16 m16n8k16 MMAs
+ * over the 128-dim keys, then each warp folds its 32 heads in registers.
+ * F32 summation order across heads differs from glmvq_index_reduce. */
+enum { GLMVQ_IDX_ROWS = 4, GLMVQ_IDX_POOLS = 128, GLMVQ_IDX_PITCH = DS4_GLM53_POOL_DIM + 8,
+       GLMVQ_IDX_THREADS = 256 };
+static constexpr uint32_t GLMVQ_IDX_SMEM = (GLMVQ_IDX_ROWS * GLMVQ_INDEX_HEADS + GLMVQ_IDX_POOLS) *
+    GLMVQ_IDX_PITCH * sizeof(__nv_bfloat16) + GLMVQ_IDX_ROWS * GLMVQ_INDEX_HEADS * sizeof(float);
+
+__device__ __forceinline__ uint32_t glmvq_idx_pack(float lo, float hi) {
+    const __nv_bfloat162_raw v = __floats2bfloat162_rn(lo, hi);
+    return (uint32_t)v.x | ((uint32_t)v.y << 16);
+}
+
+__device__ __forceinline__ void glmvq_idx_mma(float *d, const uint32_t *a, uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+__global__ void __launch_bounds__(GLMVQ_IDX_THREADS) glmvq_index_fused(float *out,
+        const float *query, const float *weights, const __nv_bfloat16 *pool,
+        uint32_t pools, uint32_t rows, uint32_t first) {
+    extern __shared__ __align__(16) uint8_t idx_shared[];
+    // Rows padded by 8 BF16 (68 words): fragment loads hit distinct banks.
+    auto *qs = (__nv_bfloat16 *)idx_shared;
+    auto *ks = qs + GLMVQ_IDX_ROWS * GLMVQ_INDEX_HEADS * GLMVQ_IDX_PITCH;
+    auto *ws = (float *)(ks + GLMVQ_IDX_POOLS * GLMVQ_IDX_PITCH);
+    constexpr uint32_t D = DS4_GLM53_POOL_DIM;
+    const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
+    const uint32_t row0 = blockIdx.y * GLMVQ_IDX_ROWS, pool0 = blockIdx.x * GLMVQ_IDX_POOLS;
+    for (uint32_t i = tid; i < GLMVQ_IDX_ROWS * GLMVQ_INDEX_HEADS * D / 4; i += blockDim.x) {
+        const uint32_t m = i / (D / 4), c = i % (D / 4) * 4, r = row0 + m / GLMVQ_INDEX_HEADS;
+        const float4 v = r < rows ? *(const float4 *)(query + ((uint64_t)row0 * GLMVQ_INDEX_HEADS + m) * D + c)
+                                  : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        *(uint2 *)(qs + m * GLMVQ_IDX_PITCH + c) = make_uint2(glmvq_idx_pack(v.x, v.y), glmvq_idx_pack(v.z, v.w));
+    }
+    for (uint32_t i = tid; i < GLMVQ_IDX_POOLS * D / 8; i += blockDim.x) {
+        const uint32_t n = i / (D / 8), c = i % (D / 8) * 8;
+        const uint4 v = pool0 + n < pools ? *(const uint4 *)(pool + (uint64_t)(pool0 + n) * D + c) : make_uint4(0, 0, 0, 0);
+        *(uint4 *)(ks + n * GLMVQ_IDX_PITCH + c) = v;
+    }
+    const float w_scale = 1.0f / sqrtf((float)GLMVQ_INDEX_HEADS);
+    if (tid < GLMVQ_IDX_ROWS * GLMVQ_INDEX_HEADS) {
+        const uint32_t r = row0 + tid / GLMVQ_INDEX_HEADS;
+        ws[tid] = r < rows ? glmvq_mul(weights[(uint64_t)row0 * GLMVQ_INDEX_HEADS + tid], w_scale) : 0.0f;
+    }
+    __syncthreads();
+
+    // Warp w: query row w/2 (both head m16 tiles), pools (w%2)*64 .. +64.
+    const uint32_t g = lane >> 2, t = lane & 3u, local = warp >> 1, nbase = (warp & 1u) * 64;
+    float c[2][8][4] = {};
+    #pragma unroll
+    for (uint32_t k = 0; k < D; k += 16) {
+        uint32_t a[2][4];
+        #pragma unroll
+        for (uint32_t m = 0; m < 2; m++) {
+            const __nv_bfloat16 *base = qs + (local * GLMVQ_INDEX_HEADS + m * 16 + g) * GLMVQ_IDX_PITCH + k + 2 * t;
+            a[m][0] = *(const uint32_t *)base;
+            a[m][1] = *(const uint32_t *)(base + 8 * GLMVQ_IDX_PITCH);
+            a[m][2] = *(const uint32_t *)(base + 8);
+            a[m][3] = *(const uint32_t *)(base + 8 * GLMVQ_IDX_PITCH + 8);
+        }
+        #pragma unroll
+        for (uint32_t j = 0; j < 8; j++) {
+            const __nv_bfloat16 *base = ks + (nbase + j * 8 + g) * GLMVQ_IDX_PITCH + k + 2 * t;
+            const uint32_t b0 = *(const uint32_t *)base, b1 = *(const uint32_t *)(base + 8);
+            glmvq_idx_mma(c[0][j], a[0], b0, b1);
+            glmvq_idx_mma(c[1][j], a[1], b0, b1);
+        }
+    }
+    const float q_scale = 1.0f / sqrtf((float)D);
+    const uint32_t row = row0 + local;
+    const float *w = ws + local * GLMVQ_INDEX_HEADS;
+    const uint32_t visible = (first + row + 1u) / DS4_GLM53_POOL_SIZE;
+    #pragma unroll
+    for (uint32_t j = 0; j < 8; j++) {
+        float sum[2];
+        #pragma unroll
+        for (uint32_t e = 0; e < 2; e++) {
+            // Heads g, g+8, 16+g, 24+g of this lane, then the other 28 by shuffle.
+            sum[e] = fmaxf(glmvq_mul(c[0][j][e], q_scale), 0.0f) * w[g] +
+                fmaxf(glmvq_mul(c[0][j][2 + e], q_scale), 0.0f) * w[g + 8] +
+                fmaxf(glmvq_mul(c[1][j][e], q_scale), 0.0f) * w[16 + g] +
+                fmaxf(glmvq_mul(c[1][j][2 + e], q_scale), 0.0f) * w[24 + g];
+            for (uint32_t stride = 4; stride < 32; stride <<= 1) { sum[e] += __shfl_xor_sync(0xffffffffu, sum[e], stride); }
+        }
+        if (g || row >= rows) { continue; }
+        #pragma unroll
+        for (uint32_t e = 0; e < 2; e++) {
+            const uint32_t p = pool0 + nbase + j * 8 + 2 * t + e;
+            if (p < pools) { out[(uint64_t)row * pools + p] = p < visible ? sum[e] : -FLT_MAX; }
+        }
+    }
+}
+
 #endif

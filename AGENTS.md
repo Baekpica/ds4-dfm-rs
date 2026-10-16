@@ -46,6 +46,10 @@ the port is fixed.
   that it implements the new model family.
 - Keep per-kernel diagnostic knobs and kill switches family-specific. Select
   optimizations from each family's measured prefill and decode bottlenecks.
+- Context length defaults to the model's native maximum (for example
+  `max_position_embeddings`). A quantized or VQ artifact changes weights, not
+  the context contract: size scratch so it never scales with rows x keys
+  instead of capping context to fit it.
 
 ## Inference Performance Optimization Guidelines
 

@@ -44,6 +44,7 @@ struct ds4_gvq_ctx {
     bool direct_bf16;
     bool kda_chunk;
     bool flash;
+    bool index_fused;
     uint64_t flash_calls = 0;
     uint64_t kda_chunks = 0;
     uint64_t bf16_calls = 0;
@@ -320,6 +321,15 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->q4_round = q4_round && !strcmp(q4_round, "1");
     ctx->flash = (!flash || strcmp(flash, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_fa_kernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_FA_SMEM), "GLM VQ flash attention shared memory");
+    const char *fused = getenv("DS4_GLMVQ_INDEX_FUSED");
+    ctx->index_fused = (!fused || strcmp(fused, "0")) && cuda_ok(cudaFuncSetAttribute(glmvq_index_fused,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_IDX_SMEM), "GLM VQ fused index shared memory");
+    // Scratch omits the cuBLAS dot buffer for prefill rows while fused is on.
+    if ((!fused || strcmp(fused, "0")) && !ctx->index_fused) {
+        fprintf(stderr, "ds4: GLM VQ fused index unavailable; set DS4_GLMVQ_INDEX_FUSED=0\n");
+        delete ctx;
+        return nullptr;
+    }
     // Graphs size no expanded-attention fallback while flash is requested.
     if ((!flash || strcmp(flash, "0")) && !ctx->flash) {
         fprintf(stderr, "ds4: GLM VQ flash attention unavailable; set DS4_GLMVQ_FLASH=0\n");
@@ -691,8 +701,11 @@ extern "C" uint64_t ds4_gpu_gvq_attn_bytes(uint32_t rows, uint32_t keys, uint32_
 }
 
 
+// The fused prefill kernel needs no dot buffer; cuBLAS serves fewer rows.
 extern "C" uint64_t ds4_gpu_gvq_index_bytes(uint32_t rows, uint32_t pools) {
-    return glmvq_index_bytes(rows, pools);
+    const char *fused = getenv("DS4_GLMVQ_INDEX_FUSED");
+    const bool small = !fused || strcmp(fused, "0");
+    return glmvq_index_bytes(small && rows >= GLMVQ_IDX_ROWS ? GLMVQ_IDX_ROWS - 1 : rows, pools);
 }
 
 extern "C" int ds4_gpu_gvq_pool(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cache,
@@ -726,6 +739,13 @@ extern "C" int ds4_gpu_gvq_index(ds4_gvq_ctx *ctx, ds4_gpu_tensor *scores,
         !gvq_floats(weights, (uint64_t)rows * GLMVQ_INDEX_HEADS) ||
         !cache || (uint64_t)pools * DS4_GLM53_POOL_DIM > cache->bytes / sizeof(__nv_bfloat16) ||
         !gvq_stream(ctx)) { return 0; }
+    // Prefill rows score pools in registers; decode/verify rows keep cuBLAS.
+    if (ctx->index_fused && rows >= GLMVQ_IDX_ROWS) {
+        const dim3 grid((pools + GLMVQ_IDX_POOLS - 1) / GLMVQ_IDX_POOLS, (rows + GLMVQ_IDX_ROWS - 1) / GLMVQ_IDX_ROWS);
+        glmvq_index_fused<<<grid, GLMVQ_IDX_THREADS, GLMVQ_IDX_SMEM, ctx->stream>>>((float *)scores->ptr,
+            (const float *)query->ptr, (const float *)weights->ptr, (const __nv_bfloat16 *)cache->ptr, pools, rows, first);
+        return cuda_ok(cudaGetLastError(), "GLM VQ fused index scores");
+    }
     return cublas_ok(glmvq_index_score(ctx->handle, (float *)scores->ptr,
         (const float *)query->ptr, (const float *)weights->ptr,
         (const __nv_bfloat16 *)cache->ptr, pools, rows, first,

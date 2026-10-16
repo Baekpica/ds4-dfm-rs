@@ -12,6 +12,7 @@
 #include "../cuda/glm_vq_gemv.cuh"
 #include "../cuda/glm_vq_flash.cuh"
 #include "../cuda/glm_vq_fp8.cuh"
+#include "../cuda/glm_vq_index.cuh"
 #include <algorithm>
 #define CK(...) do { cudaError_t e_ = (__VA_ARGS__); if (e_ != cudaSuccess) { printf("CUDA %s line %d\n", cudaGetErrorString(e_), __LINE__); exit(2); } } while (0)
 static std::mt19937 rng(7);
@@ -125,6 +126,38 @@ static int mix_case(uint32_t rows) {
     printf("mHC mix rows=%u: relRMS %.2g %s\n", rows, rel, rel < 1e-5 ? "ok" : "FAIL");
     cudaFree(dw); cudaFree(dx); cudaFree(a); cudaFree(b);
     return !(rel < 1e-5);
+}
+
+// Fused prefill index scores vs cuBLAS dots + glmvq_index_reduce.
+static int index_case(uint32_t rows, uint32_t first) {
+    const uint32_t H = GLMVQ_INDEX_HEADS, D = DS4_GLM53_POOL_DIM, pools = (first + rows) / DS4_GLM53_POOL_SIZE;
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<float> q((size_t)rows * H * D), w((size_t)rows * H);
+    std::vector<__nv_bfloat16> k((size_t)pools * D);
+    for (auto &v : q) { v = __bfloat162float(__float2bfloat16_rn(nd(rng))); }
+    for (auto &v : w) { v = __bfloat162float(__float2bfloat16_rn(nd(rng))); }
+    for (auto &v : k) { v = __float2bfloat16_rn(nd(rng)); }
+    float *dq = up(q), *dw = up(w), *a, *b; __nv_bfloat16 *dk = up(k); void *scratch;
+    const uint64_t bytes = glmvq_index_bytes(rows, pools);
+    CK(cudaMalloc(&a, (size_t)rows * pools * 4)); CK(cudaMalloc(&b, (size_t)rows * pools * 4)); CK(cudaMalloc(&scratch, bytes));
+    cublasHandle_t handle; cublasCreate(&handle);
+    CK(cudaFuncSetAttribute(glmvq_index_fused, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_IDX_SMEM));
+    const dim3 grid((pools + GLMVQ_IDX_POOLS - 1) / GLMVQ_IDX_POOLS, (rows + GLMVQ_IDX_ROWS - 1) / GLMVQ_IDX_ROWS);
+    glmvq_index_fused<<<grid, GLMVQ_IDX_THREADS, GLMVQ_IDX_SMEM>>>(a, dq, dw, dk, pools, rows, first);
+    if (glmvq_index_score(handle, b, dq, dw, dk, pools, rows, first, scratch, bytes, 0) != CUBLAS_STATUS_SUCCESS) { return 1; }
+    CK(cudaDeviceSynchronize());
+    auto ga = down(a, (size_t)rows * pools), gb = down(b, (size_t)rows * pools);
+    double num = 0, den = 0; uint32_t masks = 0;
+    for (size_t i = 0; i < ga.size(); i++) {
+        if ((ga[i] == -FLT_MAX) != (gb[i] == -FLT_MAX)) { masks++; continue; }
+        if (gb[i] == -FLT_MAX) { continue; }
+        num += (ga[i] - gb[i]) * (ga[i] - gb[i]); den += (double)gb[i] * gb[i];
+    }
+    const double rel = sqrt(num / den);
+    printf("index fused rows=%u first=%u pools=%u: relRMS %.2g mask mismatches %u %s\n", rows, first, pools, rel, masks,
+        rel < 1e-5 && !masks ? "ok" : "FAIL");
+    cublasDestroy(handle); cudaFree(dq); cudaFree(dw); cudaFree(dk); cudaFree(a); cudaFree(b); cudaFree(scratch);
+    return !(rel < 1e-5 && !masks);
 }
 
 static int absorb_case(uint32_t rows) {
@@ -269,6 +302,8 @@ int main() {
         failures += fp8_case(512, 4096, tokens);    // kv_a
     }
     failures += mix_case(37);
+    failures += index_case(37, 3000);
+    failures += index_case(256, 8000);
     failures += vq_case(blocks);
     printf(failures ? "FAIL %d\n" : "GLMVQ_VERIFY_PASS\n", failures);
     return failures != 0;
