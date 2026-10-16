@@ -236,12 +236,21 @@ static bool gvq_output(ds4_glm53_gpu_graph *g, const ds4_model *m,
     ds4_gpu_tensor *norm = ds4_gpu_tensor_view(g->norm, (uint64_t)(rows - 1u) * bytes, bytes);
     bool ok = hc && cur && norm &&
         ds4_gpu_hc_weighted_sum_tensor(cur, hc, g->hc_mean, DS4_N_EMBD, DS4_N_HC) &&
-        ds4_gpu_gvq_round(cur, DS4_N_EMBD) && ds4_gpu_tensor_copy(g->last_hidden, 0u, cur, 0u, bytes);
+        ds4_gpu_gvq_round(cur, DS4_N_EMBD);
+    if (ok && (logits || g->mtp_ready)) {
+        ok = gvq_norm(g, m, norm, cur, w->output_norm, 1u, DS4_N_EMBD);
+    }
+    if (ok) {
+        // SGLang glm5_next.py:1223-1230 returns post-final-norm hidden to
+        // its MTP predictor. The MTP-off payload keeps its existing layout.
+        ok = ds4_gpu_tensor_copy(g->last_hidden, 0u, g->mtp_ready ? norm : cur, 0u, bytes);
+    }
     if (ok && logits) {
-        ok = gvq_norm(g, m, norm, cur, w->output_norm, 1u, DS4_N_EMBD) &&
-            gvq_mm(g, m, g->logits, w->output, norm, 1u, DS4_GVQ_BF16) &&
+        ok = gvq_mm(g, m, g->logits, w->output, norm, 1u, DS4_GVQ_BF16) &&
             ds4_gpu_tensor_read(g->logits, 0u, logits, (uint64_t)DS4_N_VOCAB * sizeof(float));
     }
     ds4_gpu_tensor_free(norm); ds4_gpu_tensor_free(cur); ds4_gpu_tensor_free(hc);
     return ok;
 }
+
+#include "ds4_glmvq_mtp.inc"

@@ -710,8 +710,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             disk: Support::Present,
             snapshot: Support::Present,
             mtp: MtpKind::Embedded,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(GLMVQ_EAGER_CTX_MAX),
@@ -1139,7 +1139,7 @@ pub fn resolve_plan(
     // A draft below the family minimum allocates no speculative runtime, so
     // the plan would claim a feature that runs ordinary decode.
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
-    if caps.family == ModelFamily::Glm53 {
+    if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
         if let Err(failure) = crate::check_mtp_draft(caps.family, draft as i32) {
             issues.push(error("mtp_draft", failure.message));
         }
@@ -1603,9 +1603,14 @@ impl ResolvedPlan {
                 .into(),
             ));
         }
-        if self.family == Some(ModelFamily::Glm53) {
+        if matches!(self.family, Some(ModelFamily::Glm53 | ModelFamily::Glm53Vq)) {
+            let name = if self.family == Some(ModelFamily::Glm53Vq) {
+                "DS4_GLMVQ_MTP"
+            } else {
+                "DS4_GLM53_MTP"
+            };
             out.push((
-                "DS4_GLM53_MTP".into(),
+                name.into(),
                 if self.effective.mtp_mode == MtpMode::On {
                     "1"
                 } else {
@@ -1613,6 +1618,8 @@ impl ResolvedPlan {
                 }
                 .into(),
             ));
+        }
+        if self.family == Some(ModelFamily::Glm53) {
             // Serial media graphs share this policy with continuous banks.
             out.push((
                 "DS4_GLM53_PREFILL_WINDOW".into(),
@@ -2739,7 +2746,7 @@ mod tests {
         assert_eq!(caps.reuse_support, Support::Present);
         assert_eq!(caps.disk, Support::Present);
         assert_eq!(caps.snapshot, Support::Present);
-        assert_eq!(caps.mtp_support, Support::None);
+        assert_eq!(caps.mtp_support, Support::Present);
         assert_eq!(caps.qualified_ctx, None);
         assert_eq!(caps.qualified_banks, None);
     }
@@ -3408,6 +3415,43 @@ mod tests {
         req.mtp_draft = Some(3);
         req.mtp_path = Some("mtp.gguf".into());
         assert!(plan(req, ModelFamily::Glm53, Variant::Glm53Flash)
+            .issues
+            .iter()
+            .any(|i| i.code == "mtp_contract"));
+    }
+
+    #[test]
+    fn glm_vq_mtp_contract() {
+        let family = ModelFamily::Glm53Vq;
+        let variant = Variant::Glm53FlashVq;
+        let mut req = ServingRequest {
+            ctx: 8192,
+            mtp_mode: MtpMode::On,
+            mtp_draft: Some(3),
+            ..ServingRequest::default()
+        };
+        let p = plan(req.clone(), family, variant);
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
+        assert_eq!(p.qualified.mtp, Support::Present);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_GLMVQ_MTP" && v == "1"));
+        req.mtp_mode = MtpMode::Auto;
+        assert_eq!(
+            plan(req.clone(), family, variant).effective.mtp_mode,
+            MtpMode::Off
+        );
+        req.mtp_mode = MtpMode::On;
+        req.mtp_draft = Some(4);
+        assert!(plan(req.clone(), family, variant)
+            .issues
+            .iter()
+            .any(|i| i.code == "mtp_draft"));
+        req.mtp_draft = Some(3);
+        req.mtp_path = Some("mtp.gguf".into());
+        assert!(plan(req, family, variant)
             .issues
             .iter()
             .any(|i| i.code == "mtp_contract"));

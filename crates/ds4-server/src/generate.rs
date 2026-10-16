@@ -3867,7 +3867,9 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 #[cfg(any(feature = "native", test))]
 fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, draft: i32) -> bool {
     match family {
-        ds4_core::ModelFamily::Glm53 => ds4_core::check_mtp_draft(family, draft).is_ok(),
+        ds4_core::ModelFamily::Glm53 | ds4_core::ModelFamily::Glm53Vq => {
+            ds4_core::check_mtp_draft(family, draft).is_ok()
+        }
         ds4_core::ModelFamily::IQuestQ1 => {
             (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
         }
@@ -3891,11 +3893,13 @@ fn iquest_embedded_mtp_uses_serial_greedy_route() {
 
 #[test]
 fn glm_serial_mtp_gate() {
-    use ds4_core::ModelFamily::Glm53;
-    assert!(serial_mtp_ready(Glm53, false, false, 1));
-    assert!(serial_mtp_ready(Glm53, false, false, 3));
-    assert!(!serial_mtp_ready(Glm53, false, false, 0));
-    assert!(!serial_mtp_ready(Glm53, false, false, 4));
+    use ds4_core::ModelFamily::{Glm53, Glm53Vq};
+    for family in [Glm53, Glm53Vq] {
+        assert!(serial_mtp_ready(family, false, false, 1));
+        assert!(serial_mtp_ready(family, false, false, 3));
+        assert!(!serial_mtp_ready(family, false, false, 0));
+        assert!(!serial_mtp_ready(family, false, false, 4));
+    }
 }
 
 #[test]
@@ -4618,7 +4622,10 @@ impl DecodeIo for NativeDecode<'_> {
     }
 
     fn trim_greedy(&mut self, pos: i32) -> Result<(), GenerateError> {
-        if self.model.family() != ds4_core::ModelFamily::Glm53 {
+        if !matches!(
+            self.model.family(),
+            ds4_core::ModelFamily::Glm53 | ds4_core::ModelFamily::Glm53Vq
+        ) {
             self.invalidate();
             return Ok(());
         }

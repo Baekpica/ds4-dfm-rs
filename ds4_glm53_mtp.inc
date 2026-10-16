@@ -147,6 +147,16 @@ static bool glm53_mtp_step(ds4_glm53_gpu_graph *owner, const ds4_model *m,
     ds4_glm53_gpu_graph active;
     if (!glm53_graph_bind(&active, owner, 1u)) { return false; }
     ds4_glm53_gpu_graph *g = &active;
+#ifndef __APPLE__
+    if (g->gvq) {
+        const bool ok = gvq_mtp_block(g, m, w, hidden, token, pos, owner->mtp_min) &&
+            ds4_gpu_argmax_tensor(g->token, g->logits, DS4_N_VOCAB) &&
+            ds4_gpu_tensor_read(g->token, 0u, next, sizeof(*next));
+        glm53_graph_unbind(g);
+        if (ok) { owner->mtp_len = pos + 1u; }
+        return ok && *next >= 0 && (uint32_t)*next < DS4_N_VOCAB;
+    }
+#endif
     const uint32_t il = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
     const ds4_layer_weights *l = &w->layer[il];
     const uint64_t bytes = (uint64_t)DS4_N_EMBD * sizeof(float);

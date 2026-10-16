@@ -54271,7 +54271,7 @@ int ds4_engine_routed_quant_bits(ds4_engine *e) {
 bool ds4_engine_has_mtp(ds4_engine *e) {
     if (!e || e->backend == DS4_BACKEND_CPU ||
         e->distributed.role != DS4_DISTRIBUTED_NONE) return false;
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) { return e->glm53_mtp; }
+    if (ds4_model_is_glm()) { return e->glm53_mtp; }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
         const char *enable = getenv("DS4_DOTS3_MTP");
         return e->backend == DS4_BACKEND_CUDA && enable && !strcmp(enable, "1") &&
@@ -72076,7 +72076,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         *out = NULL;
         return 1;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53 && opt->mtp_draft_tokens > GLM53_MTP_DRAFTS) {
+    if (ds4_model_is_glm() && opt->mtp_draft_tokens > GLM53_MTP_DRAFTS) {
         fprintf(stderr, "ds4: GLM-5.3 accepts at most %d recursive draft tokens (requested %d)\n",
                 GLM53_MTP_DRAFTS, opt->mtp_draft_tokens);
         ds4_engine_close(e);
@@ -72199,9 +72199,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                  load_layer_end,
                  load_output,
                  false);
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
-        const char *enable = getenv("DS4_GLM53_MTP");
+        const char *enable = getenv(DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
+            ? "DS4_GLMVQ_MTP" : "DS4_GLM53_MTP");
         e->glm53_mtp = e->backend == DS4_BACKEND_CUDA &&
             (e->mtp_draft_tokens > 1 || (enable && !strcmp(enable, "1"))) &&
             !(disable && disable[0] == '1' && disable[1] == '\0');

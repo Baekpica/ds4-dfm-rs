@@ -2028,6 +2028,14 @@ tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc 
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
+tests/test_glm_vq_mtp_mode: tests/test_glm_vq_mtp_mode.c ds4.c ds4.h ds4_model_catalog.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-glm-vq-mtp-mode
+test-glm-vq-mtp-mode: tests/test_glm_vq_mtp_mode
+	./tests/test_glm_vq_mtp_mode
+
 .PHONY: test-glm-vq-bind
 test-glm-vq-bind: tests/test_glm_vq_bind
 	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_bind --model "$(GLMVQ_MODEL)"
@@ -2129,7 +2137,7 @@ GLM53_NATIVE_DEPS = ds4_glm53_cache.h ds4_glm53_stream.inc ds4_glm53_compact.h \
 	ds4_glm53_graph.inc ds4_glm53_payload.inc ds4_glm53_mtp.inc ds4_glm53_batch.inc \
 	ds4_glm53_image.inc
 ds4.o: $(GLM53_NATIVE_DEPS)
-GLMVQ_NATIVE_DEPS = ds4_glmvq.h ds4_glmvq_bind.inc ds4_glmvq_graph.inc
+GLMVQ_NATIVE_DEPS = ds4_glmvq.h ds4_glmvq_bind.inc ds4_glmvq_graph.inc ds4_glmvq_mtp.inc
 ds4.o ds4_cpu.o: $(GLMVQ_NATIVE_DEPS)
 tests/test_glm_vq_quote.o: $(GLMVQ_NATIVE_DEPS) $(GLM53_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \
@@ -2614,6 +2622,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/test_glm_vq_mtp_mode
 	rm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate
 	rm -f tests/test_glm_vq_kv tests/test_glm_vq_kv.o
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared

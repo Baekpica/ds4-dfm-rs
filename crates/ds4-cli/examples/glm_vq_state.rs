@@ -1,7 +1,7 @@
 //! Bounded VQ snapshot/bank state gate, one model owner and forced tokens.
 use ds4_core::{
     cont_sample_token, Backend, BatchCtx, ContAdmit, ContDone, ContDriver, Model, ModelFamily,
-    SessionSnapshot, TokenBuffer,
+    ModelOpenOption, SessionSnapshot, TokenBuffer,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -14,6 +14,13 @@ const PREFIX: usize = 6147;
 const CUT: usize = 4097;
 const GENERATED: i32 = 3;
 const FORCED_TOKEN: i32 = 100;
+const MTP_DRAFTS: i32 = 3;
+const MTP_TOKENS: usize = 32;
+
+enum DraftMode {
+    Off,
+    On,
+}
 
 fn same_file(a: &Path, b: &Path) -> Result<()> {
     let mut a = std::fs::File::open(a)?;
@@ -69,6 +76,83 @@ fn session_gate(model: &Model, prompt: &[i32], out: &Path) -> Result<()> {
         json!({"session_snapshot":"byte_exact", "disk_restore":"byte_exact",
         "dense_to_sparse":"rejected_without_mutation", "snapshot_bytes":snapshot.len()})
     );
+    Ok(())
+}
+
+fn mtp_gate(model: &Model, prompt: &[i32], out: &Path) -> Result<()> {
+    let mut session = model.session(CONTEXT)?;
+    session.sync(&TokenBuffer::from_tokens(prompt.to_vec()))?;
+    let baseline = out.join("mtp-baseline.bin");
+    let restored = out.join("mtp-restored.bin");
+    let committed = out.join("mtp-committed.bin");
+    let cropped = out.join("mtp-cropped.bin");
+    let replay = out.join("mtp-replay.bin");
+    let mut snapshot = SessionSnapshot::new()?;
+    let mut generated = Vec::new();
+    let mut counts = Vec::new();
+    let mut crop_checked = false;
+    while generated.len() < MTP_TOKENS {
+        let start = session.pos();
+        session.save_payload(&baseline)?;
+        session.save_snapshot(&mut snapshot)?;
+        let first = session.argmax();
+        let budget = (MTP_TOKENS - generated.len()) as i32;
+        let accepted = session.eval_speculative_argmax(first, budget, model.token_eos())?;
+        assert!(!accepted.is_empty() && accepted.len() <= (MTP_DRAFTS + 1) as usize);
+        let logits = session.copy_logits(model.vocab().n_vocab() as usize)?;
+        assert!(logits.iter().all(|value| value.is_finite()));
+        session.save_payload(&committed)?;
+
+        // A stop inside an accepted prefix uses the still-live trial journal.
+        // Exercise it before another forward replaces that journal.
+        let crop = accepted.len() > 1 && !crop_checked;
+        if crop {
+            session.rewind(start + 1);
+            assert_eq!(session.pos(), start + 1);
+            assert_eq!(session.generation(), session.native_generation());
+            session.save_payload(&cropped)?;
+        }
+        session.load_snapshot(&snapshot)?;
+        session.save_payload(&restored)?;
+        same_file(&baseline, &restored)?;
+        for (index, &token) in accepted.iter().enumerate() {
+            assert_eq!(session.argmax(), token, "draft differs from target argmax");
+            session.eval(token)?;
+            if crop && index == 0 {
+                session.save_payload(&replay)?;
+                same_file(&cropped, &replay)?;
+                crop_checked = true;
+            }
+        }
+        session.save_payload(&replay)?;
+        same_file(&committed, &replay)?;
+        assert_eq!(logits, session.copy_logits(logits.len())?);
+        generated.extend_from_slice(&accepted);
+        counts.push(accepted.len());
+        assert_eq!(session.pos() as usize, prompt.len() + generated.len());
+        assert_eq!(&session.host().tokens()[prompt.len()..], generated);
+        assert_eq!(session.generation(), session.native_generation());
+        if accepted.iter().any(|&token| model.token_is_stop(token)) {
+            break;
+        }
+    }
+    let mut text = Vec::new();
+    for &token in &generated {
+        if !model.token_is_stop(token) {
+            text.extend(model.token_text(token)?);
+        }
+    }
+    println!(
+        "{}",
+        json!({"mtp":if crop_checked { "PASS" } else { "NO_MULTI_TOKEN_ACCEPTANCE" },
+        "accepted_counts":counts, "generated_ids":generated,
+        "generated_text":String::from_utf8_lossy(&text), "crop_checked":crop_checked,
+        "snapshot_restore":"byte_exact", "target_state":"byte_exact",
+        "target_argmax":"all_ids_equal", "target_logits":"equal_same_width"})
+    );
+    if !crop_checked {
+        return Err("prompt did not exercise a multi-token accepted prefix".into());
+    }
     Ok(())
 }
 
@@ -239,17 +323,33 @@ fn bank_gate(model: &Model, prompt: &[i32], out: &Path) -> Result<()> {
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 3 {
-        return Err("usage: glm_vq_state MODEL PROMPT_FILE OUTPUT_DIR".into());
+    if args.len() < 3 || args.len() > 4 || args.get(3).is_some_and(|arg| arg != "--mtp") {
+        return Err("usage: glm_vq_state MODEL PROMPT_FILE OUTPUT_DIR [--mtp]".into());
     }
+    let mode = if args.len() == 4 {
+        DraftMode::On
+    } else {
+        DraftMode::Off
+    };
     let out = Path::new(&args[2]);
     std::fs::create_dir_all(out)?;
-    let model = Model::open(&args[0], Backend::Cuda, 8, true)?;
+    let options = match mode {
+        DraftMode::Off => Vec::new(),
+        DraftMode::On => vec![
+            ModelOpenOption::MtpDraftTokens(MTP_DRAFTS),
+            ModelOpenOption::MtpMargin(0.0),
+        ],
+    };
+    let model = Model::open_configured(&args[0], Backend::Cuda, 8, true, None, &options)?;
     assert_eq!(model.family(), ModelFamily::Glm53Vq);
     let mut prompt = model.vocab().encode_bytes(&std::fs::read(&args[1])?);
     assert!(prompt.len() >= PREFIX);
     prompt.truncate(PREFIX);
     let start = Instant::now();
+    if matches!(mode, DraftMode::On) {
+        mtp_gate(&model, &prompt, out)?;
+        std::io::stdout().flush()?;
+    }
     session_gate(&model, &prompt, out)?;
     std::io::stdout().flush()?;
     bank_gate(&model, &prompt, out)?;
@@ -257,7 +357,8 @@ fn main() -> Result<()> {
         "{}",
         json!({"result":"GLMVQ_STATE_PASS", "seconds":start.elapsed().as_secs_f64(),
         "context":CONTEXT, "prompt_tokens":PREFIX, "checkpoint":CUT,
-        "scope":"single-owner native state and Rust host; no HTTP/MTP/capture/vision qualification"})
+        "mtp":matches!(mode, DraftMode::On),
+        "scope":"single-owner native state and Rust host; no HTTP/capture/vision qualification"})
     );
     Ok(())
 }

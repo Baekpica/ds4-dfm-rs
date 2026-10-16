@@ -298,7 +298,9 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "MTP draft tokens must be positive"
     } else if family == ModelFamily::IQuestQ1 && draft > iquest::DRAFT_SLOTS as i32 {
         "IQuest-Q1 accepts at most seven recursive draft tokens"
-    } else if family == ModelFamily::Glm53 && draft > glm_mtp::DRAFT_MAX {
+    } else if matches!(family, ModelFamily::Glm53 | ModelFamily::Glm53Vq)
+        && draft > glm_mtp::DRAFT_MAX
+    {
         "GLM-5.3 accepts at most three recursive draft tokens"
     } else {
         return Ok(());
@@ -1495,12 +1497,11 @@ impl Model {
                 || distributed.is_some()
                 || mtp_path.is_some()
                 || dspark_path.is_some()
-                || tuning.vision_path.is_some()
-                || tuning.mtp_draft_tokens > 1)
+                || tuning.vision_path.is_some())
         {
             return Err(Error {
                 code: 1,
-                message: "GLM VQ baseline requires one CUDA model with MTP and vision disabled"
+                message: "GLM VQ requires one CUDA model with embedded MTP and vision disabled"
                     .into(),
             });
         }
@@ -2346,6 +2347,7 @@ impl Session<'_> {
                 | ModelFamily::Mimo2
                 | ModelFamily::IQuestQ1
                 | ModelFamily::Glm53
+                | ModelFamily::Glm53Vq
         ) {
             return;
         }
@@ -2922,7 +2924,7 @@ impl Session<'_> {
         max_tokens: i32,
         eos: i32,
     ) -> Result<Vec<i32>> {
-        if self.host.family == ModelFamily::Glm53 {
+        if matches!(self.host.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
             return self.eval_glm_argmax(first, max_tokens, eos);
         }
         if self.host.family == ModelFamily::Inkling {
@@ -4218,15 +4220,14 @@ mod tests {
         iquest_error_ledger(IQuestFailure::Reject);
     }
 
-    #[test]
-    fn glm_mtp_dispatch_ledger() {
+    fn glm_mtp_ledger(family: ModelFamily) {
         for first in [10, -1, -2, 3, 30] {
             STEP_GENERATION.with(|value| value.set(1));
             GLM_TRIAL_CALLS.with(|value| value.set(0));
             GLM_KEEP.with(|value| value.set(0));
             let mut session = std::mem::ManuallyDrop::new(Session {
                 raw: NonNull::<ds4_bridge_session>::dangling(),
-                host: SessionLedger::new(ModelFamily::Glm53, SessionBackend::Cuda, 1024, 64),
+                host: SessionLedger::new(family, SessionBackend::Cuda, 1024, 64),
                 _model: PhantomData,
                 _not_send: PhantomData,
             });
@@ -4247,6 +4248,26 @@ mod tests {
             } else {
                 assert!(session.host.tokens().is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn glm_mtp_dispatch_ledger() {
+        glm_mtp_ledger(ModelFamily::Glm53);
+    }
+
+    #[test]
+    fn glm_vq_mtp_dispatch_ledger() {
+        glm_mtp_ledger(ModelFamily::Glm53Vq);
+    }
+
+    #[test]
+    fn glm_vq_mtp_draft_limit() {
+        for draft in [1, 2, 3] {
+            assert!(check_mtp_draft(ModelFamily::Glm53Vq, draft).is_ok());
+        }
+        for draft in [0, 4] {
+            assert!(check_mtp_draft(ModelFamily::Glm53Vq, draft).is_err());
         }
     }
 
