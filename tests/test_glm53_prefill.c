@@ -119,9 +119,9 @@ static void *ds4_gpu_tensor_ptr(const ds4_gpu_tensor *t) {
     return (void *)t;
 }
 
-static int ds4_gpu_tensor_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
-        const ds4_gpu_tensor *src, uint64_t src_offset, uint64_t bytes) {
-    (void)dst; (void)dst_offset; (void)src; (void)src_offset; (void)bytes;
+static int ds4_gpu_gvq_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
+        const ds4_gpu_tensor *src, uint64_t src_offset, uint64_t bytes, uint32_t rows) {
+    (void)dst; (void)dst_offset; (void)src; (void)src_offset; (void)bytes; (void)rows;
     return 0;
 }
 

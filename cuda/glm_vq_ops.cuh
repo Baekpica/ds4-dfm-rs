@@ -28,6 +28,14 @@ __global__ void glmvq_round_rows(float *values, uint64_t count) {
     if (i < count) { values[i] = glmvq_round(values[i]); }
 }
 
+// Device copy inside a dependent-launch chain (see ds4_gpu_gvq_copy).
+__global__ void glmvq_copy(uint32_t *dst, const uint32_t *src, uint64_t count) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < count) { dst[i] = src[i]; }
+}
+
 enum { GLMVQ_RMS_BATCH = 16, GLMVQ_RMS_NARROW = 512, GLMVQ_RMS_ROWS = 8 };
 
 // Per-element tail shared by the block and warp RMS kernels.

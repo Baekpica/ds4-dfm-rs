@@ -175,10 +175,10 @@ static bool gvq_stash(ds4_glm53_gpu_graph *g, uint32_t il, uint32_t rows) {
     const uint64_t slot = il * glm53_mtp_stash_slot(), row = DS4_N_INDEXER_HEAD_DIM * sizeof(float);
     const uint64_t tail = DS4_GLM53_POOL_SIZE * row, keys = slot + 2u * tail;
     return rows <= GLM53_MTP_ROWS &&
-        ds4_gpu_tensor_copy(g->mtp_stash, slot, g->layer_tail_k[il], 0u, tail) &&
-        ds4_gpu_tensor_copy(g->mtp_stash, slot + tail, g->layer_tail_gate[il], 0u, tail) &&
-        ds4_gpu_tensor_copy(g->mtp_stash, keys, g->idx_k, 0u, rows * row) &&
-        ds4_gpu_tensor_copy(g->mtp_stash, keys + GLM53_MTP_ROWS * row, g->idx_gate, 0u, rows * row);
+        ds4_gpu_gvq_copy(g->mtp_stash, slot, g->layer_tail_k[il], 0u, tail, rows) &&
+        ds4_gpu_gvq_copy(g->mtp_stash, slot + tail, g->layer_tail_gate[il], 0u, tail, rows) &&
+        ds4_gpu_gvq_copy(g->mtp_stash, keys, g->idx_k, 0u, rows * row, rows) &&
+        ds4_gpu_gvq_copy(g->mtp_stash, keys + GLM53_MTP_ROWS * row, g->idx_gate, 0u, rows * row, rows);
 }
 
 static bool gvq_index(ds4_glm53_gpu_graph *g, const ds4_model *m,
@@ -343,7 +343,7 @@ static bool gvq_output(ds4_glm53_gpu_graph *g, const ds4_model *m,
     if (ok) {
         // SGLang glm5_next.py:1223-1230 returns post-final-norm hidden to
         // its MTP predictor. The MTP-off payload keeps its existing layout.
-        ok = ds4_gpu_tensor_copy(g->last_hidden, 0u, g->mtp_ready ? norm : cur, 0u, bytes);
+        ok = ds4_gpu_gvq_copy(g->last_hidden, 0u, g->mtp_ready ? norm : cur, 0u, bytes, 1u);
     }
     if (ok && logits) {
         ok = gvq_mm(g, m, g->logits, w->output, norm, 1u, DS4_GVQ_BF16) &&

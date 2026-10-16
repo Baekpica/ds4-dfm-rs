@@ -291,7 +291,7 @@ static bool gvq_mtp_verify(ds4_glm53_gpu_graph *g, const ds4_model *m,
     ds4_glm53_gpu_graph a;
     if (!glm53_graph_bind(&a, g, n)) { return false; }
     a.mtp_capture = true;
-    bool ok = ds4_gpu_tensor_copy(g->mtp_rows, 0u, g->last_hidden, 0u, hidden) &&
+    bool ok = ds4_gpu_gvq_copy(g->mtp_rows, 0u, g->last_hidden, 0u, hidden, n) &&
         glm53_graph_embed(&a, m, w, g->mtp_trial, n, NULL);
     const uint32_t layers = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
     for (uint32_t il = 0; ok && il < layers; il++) {
@@ -346,8 +346,8 @@ static bool gvq_mtp_restore(ds4_glm53_gpu_graph *g, uint32_t keep) {
             const uint8_t *end_v = (const uint8_t *)ds4_gpu_tensor_ptr(g->v_conv_state[il]) +
                 ds4_gpu_tensor_bytes(g->v_conv_state[il]);
             const uint64_t offset = (uint64_t)(at - pool);
-            if (!ds4_gpu_tensor_copy(g->state_pool, offset, g->mtp_journal,
-                    keep * g->state_bytes + offset, (uint64_t)(end_v - at))) { return false; }
+            if (!ds4_gpu_gvq_copy(g->state_pool, offset, g->mtp_journal,
+                    keep * g->state_bytes + offset, (uint64_t)(end_v - at), 1u)) { return false; }
             continue;
         }
         if (!tails) { continue; }
@@ -357,8 +357,8 @@ static bool gvq_mtp_restore(ds4_glm53_gpu_graph *g, uint32_t keep) {
         ds4_gpu_tensor *gate = ds4_gpu_tensor_view(g->mtp_stash, keys + GLM53_MTP_ROWS * row, (end - first) * row);
         const ds4_layer_weights *l = &g->mtp_weights->layer[il];
         const bool ok = k && gate &&
-            ds4_gpu_tensor_copy(g->layer_tail_k[il], 0u, g->mtp_stash, slot, tail) &&
-            ds4_gpu_tensor_copy(g->layer_tail_gate[il], 0u, g->mtp_stash, slot + tail, tail) &&
+            ds4_gpu_gvq_copy(g->layer_tail_k[il], 0u, g->mtp_stash, slot, tail, 1u) &&
+            ds4_gpu_gvq_copy(g->layer_tail_gate[il], 0u, g->mtp_stash, slot + tail, tail, 1u) &&
             ds4_gpu_gvq_pool(g->gvq, g->layer_pool[il], g->layer_tail_k[il], g->layer_tail_gate[il],
                 k, gate, glmvq_index(m, l->indexer_k_norm), glmvq_index(m, l->indexer_k_norm_b),
                 glmvq_index(m, l->indexer_compressor_ape), first, end - first, g->ctx_cap);
@@ -372,8 +372,8 @@ static bool gvq_mtp_restore(ds4_glm53_gpu_graph *g, uint32_t keep) {
 static bool gvq_mtp_land(ds4_glm53_gpu_graph *g, uint32_t keep, uint32_t live, float *logits) {
     const uint64_t vocab = (uint64_t)DS4_N_VOCAB * sizeof(float), hidden = (uint64_t)DS4_N_EMBD * sizeof(float);
     if (!keep || (keep < live && !gvq_mtp_restore(g, keep)) ||
-        !ds4_gpu_tensor_copy(g->last_hidden, 0u, g->mtp_rows, keep * hidden, hidden) ||
-        !ds4_gpu_tensor_copy(g->logits, 0u, g->mtp_logits, (keep - 1u) * vocab, vocab) ||
+        !ds4_gpu_gvq_copy(g->last_hidden, 0u, g->mtp_rows, keep * hidden, hidden, 1u) ||
+        !ds4_gpu_gvq_copy(g->logits, 0u, g->mtp_logits, (keep - 1u) * vocab, vocab, 1u) ||
         !ds4_gpu_tensor_read(g->mtp_logits, (keep - 1u) * vocab, logits, vocab)) { return false; }
     g->cache_len = g->mtp_trial_start + keep;
     g->mtp_len = g->cache_len - 1u;

@@ -164,6 +164,10 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
 - **Dependent launch.** A GLM token runs ~1,300 kernels; PDL with weights
   staged before the wait gave +1.8% decode, bit-identical. CUPTI durations
   then include the wait: attribute with PDL off.
+- **Keep copies inside the dependent-launch chain as kernels.** A driver
+  `cudaMemcpy` D2D between two PDL launches hung the GLM VQ MTP prefill in
+  ~60% of CLI runs (GPU idle, host spinning in the next copy; never under
+  nsys or gdb). A copy kernel that waits like its neighbours fixed it.
 - **Small copies and gathers lose.** TMA copies of 128-byte rows and
   register-prefetched indices made the FP8 prefill kernel 31–50% slower;
   tensor-core decode experts lost to SIMT (97 vs 212 GB/s, per-lane gathers).

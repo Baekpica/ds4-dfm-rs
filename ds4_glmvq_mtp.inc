@@ -37,7 +37,7 @@ static bool gvq_mtp_block(ds4_glm53_gpu_graph *g, const ds4_model *m,
         ds4_gpu_add_tensor(g->mtp_hidden, g->mtp_hidden, g->ffn_out, DS4_N_EMBD) &&
         ds4_gpu_gvq_round(g->mtp_hidden, DS4_N_EMBD) &&
         gvq_norm(g, m, g->norm, g->mtp_hidden, l->nextn_shared_head_norm, 1u, DS4_N_EMBD) &&
-        ds4_gpu_tensor_copy(g->mtp_hidden, 0u, g->norm, 0u, bytes) &&
+        ds4_gpu_gvq_copy(g->mtp_hidden, 0u, g->norm, 0u, bytes, 1u) &&
         gvq_mm(g, m, g->logits, w->output, g->norm, 1u, DS4_GVQ_BF16);
     ds4_gpu_tensor_free(cache);
     ds4_gpu_tensor_free(right);

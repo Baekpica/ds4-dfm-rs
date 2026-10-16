@@ -773,6 +773,19 @@ extern "C" int ds4_gpu_gvq_concat(ds4_gpu_tensor *out, const ds4_gpu_tensor *lef
     return cuda_ok(cudaGetLastError(), "GLM VQ MTP concat");
 }
 
+extern "C" int ds4_gpu_gvq_copy(ds4_gpu_tensor *dst, uint64_t dst_offset, const ds4_gpu_tensor *src,
+        uint64_t src_offset, uint64_t bytes, uint32_t rows) {
+    if (!dst || !src || bytes % sizeof(uint32_t) || dst_offset % sizeof(uint32_t) || src_offset % sizeof(uint32_t) ||
+        dst_offset > dst->bytes || bytes > dst->bytes - dst_offset ||
+        src_offset > src->bytes || bytes > src->bytes - src_offset) { return 0; }
+    if (!bytes) { return 1; }
+    const uint64_t count = bytes / sizeof(uint32_t);
+    glmvq_launch_kernel(gvq_mode(rows), glmvq_copy, (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS),
+        GLMVQ_THREADS, 0, ds4_current_stream(), (uint32_t *)((char *)dst->ptr + dst_offset),
+        (const uint32_t *)((const char *)src->ptr + src_offset), count);
+    return cuda_ok(cudaGetLastError(), "GLM VQ copy");
+}
+
 extern "C" int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count) {
     if (!count || !gvq_floats(values, count)) { return 0; }
     glmvq_round_rows<<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ds4_current_stream()>>>(

@@ -76,6 +76,10 @@ int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, float limit);
 int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count);
+/* Stream-ordered device copy launched like the `rows`-wide kernels around
+ * it; a driver memcpy between dependent launches stalled MTP prefill. */
+int ds4_gpu_gvq_copy(ds4_gpu_tensor *dst, uint64_t dst_offset, const ds4_gpu_tensor *src,
+    uint64_t src_offset, uint64_t bytes, uint32_t rows);
 /* Rows of [left | right], each `width` floats: the MTP eh_proj input. */
 int ds4_gpu_gvq_concat(ds4_gpu_tensor *out, const ds4_gpu_tensor *left,
     const ds4_gpu_tensor *right, uint32_t rows, uint32_t width);

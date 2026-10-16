@@ -88,7 +88,9 @@ per token with the same Q4_K choice for its nonexpert weights.
 - **Dependent launch.** A token runs about 1,300 short kernels. Decode and
   verify widths launch them with programmatic dependent launch: each kernel
   lets its successor start, which stages its constant weights (or prefetches
-  them to L2) and then waits for its inputs. `DS4_GLMVQ_PDL=0` turns it off.
+  them to L2) and then waits for its inputs. Device copies inside the chain
+  are kernels too: a driver `cudaMemcpy` between two dependent launches hung
+  two-draft prompt processing in most CLI runs. `DS4_GLMVQ_PDL=0` turns it off.
 
 ### Prefill (4096-row chunks)
 

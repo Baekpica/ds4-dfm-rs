@@ -821,8 +821,8 @@ static bool glm53_graph_prefill(ds4_glm53_gpu_graph *g, const ds4_model *model,
         const uint32_t first = pos0 + done;
         const bool draft_kv = g->gvq && g->mtp_ready && !host_embeddings;
         const bool pending = draft_kv && g->mtp_len && g->mtp_len == first - 1u;
-        bool ok = !pending || ds4_gpu_tensor_copy(g->mtp_rows, 0u, g->last_hidden, 0u,
-            (uint64_t)DS4_N_EMBD * sizeof(float));
+        bool ok = !pending || ds4_gpu_gvq_copy(g->mtp_rows, 0u, g->last_hidden, 0u,
+            (uint64_t)DS4_N_EMBD * sizeof(float), 1u);
 #else
         bool ok = true;
 #endif
