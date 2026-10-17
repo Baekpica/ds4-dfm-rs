@@ -178,8 +178,10 @@ pub struct GlmValues {
     pub top_p: f32,
     pub min_p: f32,
     pub effort: ThinkMode,
-    /// Sampler ceiling: 0.0 leaves the request's own temperature alone.
-    pub temp_max: f32,
+    /// Sampler ceiling: `None` serves the request's own temperature.  A value
+    /// pins it (0.0 = greedy, the only regime the artifact's own temperature
+    /// family measured stable).
+    pub temp_max: Option<f32>,
     /// Penalty face (core_decode_penalty.c).  GLM-5.3-VQ's own card measures the
     /// VQ conversion as lossy (held-out prose PPL 4.8555 -> 8.0797) and records a
     /// greedy-degeneration case; on this engine the artifact answers and then
@@ -203,19 +205,32 @@ const GLM53_DEFAULT_MIN_P: f32 = 0.0;
 const GLM53_DEFAULT_EFFORT: ThinkMode = ThinkMode::Max;
 /// Measured on the Spark (2026-10-17, docs/glm53-vq-sampler-2026-10-17.md):
 /// at the artifact's own temperature the model answers and then keeps going
-/// (5/5 runs hit the token cap with no end token); greedy stops 5/5 but locks
-/// onto a repeated phrase on a "fill N words" prompt.  DRY is the reference's
-/// cure for exactly that pair -- it penalizes only a candidate that continues
-/// an already-seen sequence, so a deterministic direct output stays
-/// deterministic and still ends.  The floor knobs stay at the artifact's own
-/// values; only DRY ships on by default, because a plain repetition loop is
-/// the failure the deployment cannot tolerate.
-const GLM53_DEFAULT_DRY_MULTIPLIER: f32 = 0.8;
+/// (5/5 runs hit the token cap with no end token, at every effort level);
+/// greedy stops 5/5 but can lock onto a repeated phrase on a "fill N words"
+/// prompt.  DRY (the reference's own cure) removes the literal repeat and is
+/// therefore available, but it does NOT stop the runaway, and because a
+/// penalty reads the token history it also switches the GLM drafts off -- a
+/// ~2x decode cost.  It therefore ships OFF and the deployment turns it on
+/// when it wants the loop protection more than the drafting.
+const GLM53_DEFAULT_DRY_MULTIPLIER: f32 = 0.0;
 /// Dry's own contract (llama.cpp): 1.75^L from the allowed length up.
 const GLM53_DEFAULT_DRY_BASE: f32 = 1.75;
 const GLM53_DEFAULT_DRY_ALLOWED_LENGTH: i32 = 2;
 /// No ceiling: the request's temperature is served as sent (the host rule).
-const GLM53_DEFAULT_TEMP_MAX: f32 = 0.0;
+const GLM53_DEFAULT_TEMP_MAX: Option<f32> = None;
+
+/// The deployment's temperature ceiling.  Absent (or empty) is no ceiling;
+/// any value in [0, 2] pins every GLM request's temperature to at most it,
+/// with 0.0 meaning greedy -- the only regime the artifact measured stable.
+fn resolve_temp_max(raw: Option<&str>) -> Option<f32> {
+    let raw = raw.filter(|s| !s.is_empty())?;
+    Some(resolve_number(
+        "DS4_SERVER_GLM_TEMP_MAX",
+        Some(raw),
+        0.0,
+        0.0..=2.0,
+    ))
+}
 
 /// top_p and min_p are probabilities, so a value outside [0, 1] is a typo.
 const UNIT_BOUNDS: std::ops::RangeInclusive<f32> = 0.0..=1.0;
@@ -304,12 +319,7 @@ pub fn glm_values() -> &'static GlmValues {
             GLM53_DEFAULT_MIN_P,
         ),
         effort: resolve_effort(std::env::var("DS4_SERVER_DEFAULT_EFFORT").ok().as_deref()),
-        temp_max: resolve_number(
-            "DS4_SERVER_GLM_TEMP_MAX",
-            std::env::var("DS4_SERVER_GLM_TEMP_MAX").ok().as_deref(),
-            GLM53_DEFAULT_TEMP_MAX,
-            0.0..=2.0,
-        ),
+        temp_max: resolve_temp_max(std::env::var("DS4_SERVER_GLM_TEMP_MAX").ok().as_deref()),
         freq_penalty: resolve_number(
             "DS4_SERVER_DEFAULT_FREQ_PENALTY",
             std::env::var("DS4_SERVER_DEFAULT_FREQ_PENALTY").ok().as_deref(),
@@ -354,7 +364,10 @@ pub fn glm_values_report() -> String {
         v.top_p,
         v.min_p,
         v.effort,
-        v.temp_max,
+        match v.temp_max {
+            Some(max) => format!("{max}"),
+            None => "as-requested".to_string(),
+        },
         v.freq_penalty,
         v.presence_penalty,
         v.dry_multiplier,
@@ -448,10 +461,11 @@ impl ParsedRequest {
             max_tokens: env.default_tokens,
             max_tokens_set: false,
             top_k: 0,
-            temperature: if env.glm_values && glm_values().temp_max > 0.0
-                && env.default_temp > glm_values().temp_max
-            {
-                glm_values().temp_max
+            temperature: if env.glm_values {
+                match glm_values().temp_max {
+                    Some(max) if env.default_temp > max => max,
+                    _ => env.default_temp,
+                }
             } else {
                 env.default_temp
             },
@@ -4012,7 +4026,6 @@ mod glm_value_tests {
         use super::{resolve_number, GLM53_DEFAULT_DRY_MULTIPLIER};
         let v = super::glm_values();
         assert_eq!(v.dry_multiplier, GLM53_DEFAULT_DRY_MULTIPLIER);
-        assert!(v.dry_multiplier > 0.0, "DRY is the loop cure and ships on");
         assert_eq!(v.dry_base, 1.75);
         assert_eq!(v.dry_allowed_length, 2);
         assert_eq!(v.min_p, GLM53_DEFAULT_MIN_P);
@@ -4023,6 +4036,19 @@ mod glm_value_tests {
         for raw in ["", "abc", "3", "nan"] {
             assert_eq!(resolve_number("T", Some(raw), 0.0, -2.0..=2.0), 0.0, "{raw}");
         }
+    }
+
+    // The deployment ceiling: absent is no ceiling, 0.0 means greedy, and a
+    // typo is reported rather than silently disabling the pin.
+    #[test]
+    fn temp_ceiling_is_opt_in() {
+        use super::resolve_temp_max;
+        assert_eq!(resolve_temp_max(None), None);
+        assert_eq!(resolve_temp_max(Some("")), None);
+        assert_eq!(resolve_temp_max(Some("0")), Some(0.0));
+        assert_eq!(resolve_temp_max(Some("0.5")), Some(0.5));
+        assert_eq!(resolve_temp_max(Some("3")), Some(0.0));
+        assert_eq!(resolve_temp_max(Some("banana")), Some(0.0));
     }
 }
 
