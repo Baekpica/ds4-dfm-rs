@@ -255,13 +255,16 @@ per decoded token stays inside the ±1.5% fresh-run spread.
 
 ## Measured performance
 
-The [2K–64K README sweep](benchmarks/glm53-vq-spark-64k-2026-10-17/README.md)
-(2,048-token incremental prefill, 128 tokens, three fresh processes) records
-1,030.9 prefill and 30.04 decode tok/s with two MTP drafts (1,022.6 / 24.82
-without), falling 5.6% in prefill from 4K to 64K. The
-[October 16 sweep](benchmarks/glm53-vq-spark-64k-2026-10-16/README.md) recorded
-826.7 / 31.41 (24.07 without); its continuations accepted more drafts (2.38
-against 2.26 tokens per verify), so compare per-token speed on the MTP-off line.
+The [2K–64K README sweep at merged `main`](benchmarks/glm53-vq-spark-64k-main-2026-10-17/README.md)
+(`c5384b5e`; 2,048-token incremental prefill, 128 tokens, three fresh
+processes) records 1,042.2 prefill and 35.12 decode tok/s with two MTP drafts
+(2.34 tokens per verify), falling 5.8% in prefill from 4K to 64K. The
+[earlier October 17 sweep](benchmarks/glm53-vq-spark-64k-2026-10-17/README.md)
+(`60d0b689`) recorded 1,030.9 / 30.04 (1,022.6 / 24.82 without MTP, 2.26
+tokens per verify) and the [October 16 sweep](benchmarks/glm53-vq-spark-64k-2026-10-16/README.md)
+826.7 / 31.41 (24.07 without, 2.38 tokens per verify); acceptance differs
+with the continuations, so compare verify cycles (75.3 → 66.7 ms since
+`60d0b689`) or MTP-off decode (25.9 tok/s at 2K on the merged code).
 
 ## Remaining bottlenecks
 

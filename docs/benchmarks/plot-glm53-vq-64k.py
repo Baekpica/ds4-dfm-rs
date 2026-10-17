@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Render the GLM-5.3 Flash VQ 2K-64K sweeps in the Qwen model-card style.
 
-Three fresh ds4-bench processes with two embedded MTP drafts, plus one
-MTP-off process for the plain decode reference. Requires matplotlib 3.11.
+Three fresh ds4-bench processes with two embedded MTP drafts, plus (when
+present) one MTP-off process for the plain decode reference. Requires
+matplotlib 3.11.
 usage: plot-glm53-vq-64k.py [DATA_DIR]   (default: the latest sweep)
 """
 import csv
@@ -21,7 +22,8 @@ DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("glm
 DATE = DATA.name[-10:]
 FRONTIERS = list(range(2048, 65537, 2048))
 GENERATED = 128
-RUNS = {"mtp2": 3, "plain": 1}
+# Runs present in DATA: name-1.csv, name-2.csv, ...
+RUNS = {name: n for name in ("mtp2", "plain") if (n := len(list(DATA.glob(f"{name}-*.csv"))))}
 COLORS = {"mtp2": "#087f8c", "plain": "#687789"}
 LABELS = {"mtp2": "MTP draft 2", "plain": "MTP off"}
 METRICS = (("prefill_tps", "Incremental prefill"), ("gen_tps", "Decode"))
@@ -86,7 +88,8 @@ def plot(report):
     axes[-1].set_xlabel("Context tokens (K = 1,024)")
     axes[-1].set_xticks([2, 8, 16, 24, 32, 40, 48, 56, 64])
     axes[-1].set_xlim(2, 64)
-    fig.text(0.5, 0.06, "Curves: per-frontier medians; bands: observed min–max of 3 fresh MTP runs (MTP off: 1 run).\n"
+    plain = " (MTP off: 1 run)" if "plain" in RUNS else ""
+    fig.text(0.5, 0.06, f"Curves: per-frontier medians; bands: observed min–max of {RUNS['mtp2']} fresh MTP runs{plain}.\n"
              "Legend: median of run means. 2,048-token incremental prefill + 128 forced greedy tokens per frontier.\n"
              "ds4-bench · embedded MTP layer · forced non-EOS greedy · CUDA 13.4 · 300–2200 MHz",
              ha="center", va="center", fontsize=9, color="#4b5563", linespacing=1.6)
@@ -99,13 +102,13 @@ def tables(report):
     lines = ["# GLM-5.3 Flash VQ 2K–64K samples", "",
              "Per-frontier medians (min–max across the three MTP runs). 2,048-token",
              "incremental prefill and 128 forced greedy tokens per frontier.", "",
-             "| Frontier | Prefill, MTP 2 | Decode, MTP 2 | Prefill, MTP off | Decode, MTP off |",
-             "|---:|---:|---:|---:|---:|"]
-    mtp, plain = report["variants"]["mtp2"], report["variants"]["plain"]
+             "| Frontier | Prefill, MTP 2 | Decode, MTP 2 |" + (" Prefill, MTP off | Decode, MTP off |" if "plain" in RUNS else ""),
+             "|---:|---:|---:|" + ("---:|---:|" if "plain" in RUNS else "")]
+    mtp, plain = report["variants"]["mtp2"], report["variants"].get("plain")
     for i, frontier in enumerate(FRONTIERS):
         cell = lambda d: f"{d['median'][i]:.1f} ({d['min'][i]:.1f}–{d['max'][i]:.1f})"
-        lines.append(f"| {frontier // 1024}K | {cell(mtp['prefill_tps'])} | {cell(mtp['gen_tps'])} | "
-                     f"{plain['prefill_tps']['median'][i]:.1f} | {plain['gen_tps']['median'][i]:.1f} |")
+        off = f" {plain['prefill_tps']['median'][i]:.1f} | {plain['gen_tps']['median'][i]:.1f} |" if plain else ""
+        lines.append(f"| {frontier // 1024}K | {cell(mtp['prefill_tps'])} | {cell(mtp['gen_tps'])} |{off}")
     (DATA / "tables.md").write_text("\n".join(lines) + "\n")
 
 
