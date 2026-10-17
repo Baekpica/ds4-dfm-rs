@@ -14,6 +14,7 @@ use crate::TokenBuffer;
 
 mod glm_vq;
 mod inkling;
+mod ling31;
 mod ling3vl;
 mod mimo2;
 mod naive;
@@ -364,6 +365,7 @@ impl Vocab {
             ModelFamily::Inkling => inkling::specials(self)?,
             ModelFamily::Step37 => step37::specials(self, g)?,
             ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
+            ModelFamily::Ling31Vq => ling31::specials(self, g)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -660,6 +662,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("GLM VQ release metadata"))?;
             return Self::load_tables(&g, family, Some(glm_vq::tables(path)?));
         }
+        if family == ModelFamily::Ling31Vq {
+            let g = crate::ling31_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("Ling-3.1 release metadata"))?;
+            return Self::load_tables(&g, family, Some(ling31::tables(path)?));
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -670,7 +677,10 @@ impl Vocab {
 
     pub fn encode_bytes(&self, text: &[u8]) -> Vec<i32> {
         let mut out = Vec::new();
-        if matches!(self.family, ModelFamily::IQuestQ1 | ModelFamily::Glm53Vq) {
+        if matches!(
+            self.family,
+            ModelFamily::IQuestQ1 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+        ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
             bpe_tokenize_text(self, text, &mut out);
@@ -710,6 +720,9 @@ impl Vocab {
             )),
             ModelFamily::Ling3Vl => Some(TokError::InvalidTokenizer(
                 "Ling-3.0-flash-VL chat requires official Jinja",
+            )),
+            ModelFamily::Ling31Vq => Some(TokError::InvalidTokenizer(
+                "Ling-3.1-flash VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -826,6 +839,7 @@ impl Vocab {
             ModelFamily::Inkling => return inkling::message(self, tokens, role, content),
             ModelFamily::Step37
             | ModelFamily::Ling3Vl
+            | ModelFamily::Ling31Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -1025,6 +1039,7 @@ impl Vocab {
             ModelFamily::Inkling => tokens.push(self.assistant_id),
             ModelFamily::Step37
             | ModelFamily::Ling3Vl
+            | ModelFamily::Ling31Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -1189,7 +1204,7 @@ impl Vocab {
             | ModelFamily::NaiveN05 => self.eot_id >= 0 && token == self.eot_id,
             // `<|endoftext|>` is the second official end token, and `<role>`
             // opens the next turn: neither may leak into assistant content.
-            ModelFamily::Ling3Vl => {
+            ModelFamily::Ling3Vl | ModelFamily::Ling31Vq => {
                 (self.eot_id >= 0 && token == self.eot_id)
                     || (self.im_start_id >= 0 && token == self.im_start_id)
             }
@@ -2285,6 +2300,17 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
             step37::encode(vocab, normalized.as_bytes(), out);
         }
         ModelFamily::Ling3Vl => bpe_tokenize_text_solar(vocab, text, out),
+        // tokenizer.json normalizes ordinary spans to NFC before splitting.
+        ModelFamily::Ling31Vq => {
+            use unicode_normalization::UnicodeNormalization;
+
+            let Ok(text) = std::str::from_utf8(text) else {
+                bpe_tokenize_text_solar(vocab, text, out);
+                return;
+            };
+            let normalized: String = text.nfc().collect();
+            bpe_tokenize_text_solar(vocab, normalized.as_bytes(), out);
+        }
         ModelFamily::Mimo2 | ModelFamily::NaiveN05 => mimo2::encode(vocab, text, out),
         ModelFamily::Glm53 | ModelFamily::Glm53Vq => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
@@ -2306,6 +2332,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::Glm53Vq
             | ModelFamily::Step37
             | ModelFamily::Ling3Vl
+            | ModelFamily::Ling31Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1

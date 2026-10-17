@@ -23,6 +23,7 @@ mod inkling_media;
 mod inkling_mtp;
 mod iquest;
 mod layout;
+mod ling31_vq;
 mod ling3vl;
 mod mapped;
 mod mem;
@@ -81,6 +82,7 @@ pub use layout::{
     expected_mtp_layouts, validate_dspark_layouts, validate_layouts, validate_layouts_v41,
     validate_mtp_layouts, validate_support_layouts, LayoutError, LayoutSpec, TypeClass,
 };
+pub use ling31_vq::Feature as Ling31Feature;
 pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
@@ -1267,6 +1269,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Ling31Vq {
+        let g = ling31_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1505,6 +1513,19 @@ impl Model {
                     .into(),
             });
         }
+        if identified.shape.family == ModelFamily::Ling31Vq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "Ling-3.1 requires one CUDA model with embedded MTP and no sidecars"
+                    .into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -1559,7 +1580,16 @@ impl Model {
         }
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
         let mut ffi_vocab = pack_host_vocab(&vocab);
-        let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
+        // Ling-3.1 maps its MTP part only when the open drafts with it.
+        let inventory = if identified.shape.family == ModelFamily::Ling31Vq {
+            TensorInventory::open_ling31(
+                Path::new(path),
+                ling31_vq::feature(tuning.mtp_draft_tokens),
+            )
+        } else {
+            TensorInventory::open(std::path::Path::new(path))
+        }
+        .map_err(|e| Error {
             code: 1,
             message: format!("tensor inventory failed: {}", e.token()),
         })?;

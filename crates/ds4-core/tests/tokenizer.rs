@@ -353,6 +353,7 @@ fn write_family(family: ModelFamily) -> PathBuf {
         ModelFamily::Inkling
         | ModelFamily::Step37
         | ModelFamily::Ling3Vl
+        | ModelFamily::Ling31Vq
         | ModelFamily::Mimo2
         | ModelFamily::NaiveN05
         | ModelFamily::IQuestQ1
@@ -566,6 +567,7 @@ fn family_cases(family: ModelFamily) {
         ModelFamily::Inkling
         | ModelFamily::Step37
         | ModelFamily::Ling3Vl
+        | ModelFamily::Ling31Vq
         | ModelFamily::Mimo2
         | ModelFamily::NaiveN05
         | ModelFamily::IQuestQ1
@@ -681,6 +683,7 @@ fn family_cases(family: ModelFamily) {
         ModelFamily::Inkling
         | ModelFamily::Step37
         | ModelFamily::Ling3Vl
+        | ModelFamily::Ling31Vq
         | ModelFamily::Mimo2
         | ModelFamily::NaiveN05
         | ModelFamily::IQuestQ1

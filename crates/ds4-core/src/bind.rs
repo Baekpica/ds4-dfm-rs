@@ -955,6 +955,22 @@ fn inkling_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
         .collect()
 }
 
+/// Required names, except OptionalExact specs (Ling-3.1's MTP block, whose
+/// parts the release maps only when MTP is enabled).
+fn layout_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
+    layouts
+        .into_iter()
+        .map(|s| BindName {
+            need: if matches!(s.class, crate::TypeClass::OptionalExact(_)) {
+                BindNeed::Optional
+            } else {
+                BindNeed::Required
+            },
+            name: s.name,
+        })
+        .collect()
+}
+
 fn mtp_names(shape: &Shape) -> Vec<BindName> {
     if shape.family == ModelFamily::Step37 {
         return inkling_names(crate::Step37SidecarPlan::layouts(crate::Step37Sidecar::Mtp));
@@ -970,6 +986,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
     let mut out = Vec::new();
     match shape.family {
         ModelFamily::Glm53Vq => return inkling_names(crate::glm_vq::layouts()),
+        ModelFamily::Ling31Vq => return layout_names(crate::ling31_vq::layouts()),
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output_norm.weight");

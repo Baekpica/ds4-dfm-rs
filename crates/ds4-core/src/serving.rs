@@ -22,6 +22,8 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GLM_CTX_MAX: u32 = 1_048_576;
+/// Ling-3.1's max_position_embeddings (rope_scaling null).
+const LING31_CTX_MAX: u32 = 262_144;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -649,7 +651,7 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 /// contract defaults to it (GLM VQ follows max_position_embeddings); None
 /// keeps the host default.
 pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
-    if caps.family == ModelFamily::Glm53Vq {
+    if matches!(caps.family, ModelFamily::Glm53Vq | ModelFamily::Ling31Vq) {
         caps.ctx_max
     } else {
         None
@@ -863,6 +865,28 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         // Ling matches the Qwen text-bank surface: two persistent banks,
         // partial reuse and disk KV. Images stay serial beside those banks
         // (Step), not on Qwen's bank-image path. No MTP predictor.
+        // One serial CUDA session for now; banks, reuse, disk KV and the
+        // embedded MTP block land as the native runtime grows them.
+        ModelFamily::Ling31Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::Exact,
+            reuse_support: Support::Present,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(LING31_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         ModelFamily::Ling3Vl => ServingCaps {
             family,
             variant,
@@ -1483,6 +1507,7 @@ impl ServingCaps {
             Variant::Qwen38FlashNext => "qwen4exp",
             Variant::Glm53Flash => "glm5-next",
             Variant::Glm53FlashVq => "GLM-5.3-Flash-VQ",
+            Variant::Ling31FlashVq => "ling31_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",

@@ -83,6 +83,9 @@ const GLM_NATIVE_MAX: u32 = 2048;
 // GLM53_VQ_PREFILL_MAX: VQ rereads every routed expert once per chunk.
 const GLMVQ_NATIVE_DEFAULT: u32 = 4096;
 const GLMVQ_NATIVE_MAX: u32 = 4096;
+const LING31_PREFILL_CHUNK_ENV: &str = "DS4_LING31_PREFILL_CHUNK";
+const LING31_NATIVE_DEFAULT: u32 = 4096;
+const LING31_NATIVE_MAX: u32 = 4096;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -688,6 +691,14 @@ pub fn attach_host_quote(
             .unwrap_or(0)
     };
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
+    // Ling-3.1 maps its embedded MTP part beside the trunk only when drafting.
+    if let (ModelFamily::Ling31Vq, MtpMode::On, Some(path)) =
+        (caps.family, req.mtp_mode, model_path)
+    {
+        let part = |feature| crate::ling31_vq::part_bytes(path, feature).unwrap_or(0);
+        mtp_bytes =
+            part(crate::Ling31Feature::Mtp).saturating_sub(part(crate::Ling31Feature::Trunk));
+    }
     let vision_bytes = artifact_span_bytes(vision_path);
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
     let drafter_pending = req.backend == Backend::Cuda
@@ -862,6 +873,9 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
     // A GVQ1 release directory maps its named parts; an unreadable listing
     // prices 0 here and fails validation when the model opens.
     if path.is_dir() {
+        if crate::ling31_vq::is_release(path) {
+            return crate::ling31_vq::part_bytes(path, crate::Ling31Feature::Trunk).unwrap_or(0);
+        }
         return crate::glm_vq::part_bytes(path).unwrap_or(0);
     }
     let count = split_count.max(1);
@@ -1039,6 +1053,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Inkling => INKLING_NATIVE_MAX,
         ModelFamily::Glm53 => GLM_NATIVE_MAX,
         ModelFamily::Glm53Vq => GLMVQ_NATIVE_MAX,
+        ModelFamily::Ling31Vq => LING31_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1103,6 +1118,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             GLMVQ_NATIVE_DEFAULT,
             1,
             GLMVQ_NATIVE_MAX,
+        ),
+        ModelFamily::Ling31Vq => env_u32(
+            LING31_PREFILL_CHUNK_ENV,
+            LING31_NATIVE_DEFAULT,
+            1,
+            LING31_NATIVE_MAX,
         ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,

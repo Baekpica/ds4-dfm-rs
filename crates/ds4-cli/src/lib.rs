@@ -487,6 +487,7 @@ fn mtp_open_options(
                 ds4_core::ModelFamily::IQuestQ1
                     | ds4_core::ModelFamily::Glm53
                     | ds4_core::ModelFamily::Glm53Vq
+                    | ds4_core::ModelFamily::Ling31Vq
             )
         ) && args.mtp_draft > 1)
     {
