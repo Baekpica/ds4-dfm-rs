@@ -72561,6 +72561,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * startup promotion and any cold fallback copy from the merged map. */
         (void)ds4_gpu_set_model_fd(e->model.split_count > 1u
                                    ? -1 : e->model.fd);
+        if (e->model.split_count > 1u) {
+            int *fds = xmalloc((size_t)e->model.split_count * sizeof(*fds));
+            fds[0] = e->model.fd;
+            for (uint32_t k = 1; k < e->model.split_count; k++) { fds[k] = e->model.split_fds[k - 1u]; }
+            (void)ds4_gpu_set_model_shard_fds(e->model.map, fds, e->model.split_count);
+            free(fds);
+        }
         /* memgov D3-2: resolve the per-source residency policy ONCE, here,
          * from ONE read of the environment -- the handles carry it and no
          * consumer reads these knobs again.  Legacy levers stay legal as

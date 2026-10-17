@@ -159,6 +159,11 @@ static int g_model_fd = -1;
 // (e.g. a separately-mmap'd model registered via a second set_model_map_range
 // call would otherwise read bytes from g_model_fd at the wrong offsets).
 static const void *g_model_fd_host_base;
+// Split/named GGUF parts mapped back to back at page-aligned bases (the
+// layout both openers build): each part's fd returns its copied pages.
+static const void *g_model_shard_map;
+static std::vector<int> g_model_shard_fds;
+static std::vector<uint64_t> g_model_shard_bases, g_model_shard_sizes;
 static int g_model_direct_fd = -1;
 static uint64_t g_model_direct_align = 1;
 static uint64_t g_model_file_size;
@@ -3192,7 +3197,26 @@ static void cuda_model_discard_source_pages(const void *model_map, uint64_t mode
     const uintptr_t h1 = h0 + bytes;
     const uintptr_t p0 = h0 & ~(uintptr_t)(page_sz - 1u);
     const uintptr_t p1 = (h1 + page_sz - 1u) & ~(uintptr_t)(page_sz - 1u);
-    if (p1 > p0) (void)madvise((void *)p0, (size_t)(p1 - p0), MADV_DONTNEED);
+    if (p1 <= p0) return;
+    (void)madvise((void *)p0, (size_t)(p1 - p0), MADV_DONTNEED);
+#if defined(POSIX_FADV_DONTNEED)
+    /* MADV_DONTNEED only unmaps file pages. Split parts have no single fd
+     * (g_model_fd is -1), so evict the copied range through each part's own
+     * fd; otherwise the page cache keeps a second weight copy. */
+    if (model_map == g_model_shard_map) {
+        const uint64_t lo = (uint64_t)(p0 - (uintptr_t)model_map);
+        const uint64_t hi = (uint64_t)(p1 - (uintptr_t)model_map);
+        for (size_t k = 0; k < g_model_shard_fds.size(); k++) {
+            const uint64_t base = g_model_shard_bases[k];
+            const uint64_t end = base + g_model_shard_sizes[k];
+            if (hi <= base || lo >= end) continue;
+            const uint64_t from = lo > base ? lo : base;
+            const uint64_t to = hi < end ? hi : end;
+            (void)posix_fadvise(g_model_shard_fds[k], (off_t)(from - base),
+                                (off_t)(to - from), POSIX_FADV_DONTNEED);
+        }
+    }
+#endif
 #else
     (void)model_map;
     (void)model_size;
@@ -5820,6 +5844,31 @@ extern "C" int ds4_gpu_set_model_map_spans(
 
 extern "C" {
 #include "ds4_glm53_map.inc"
+}
+
+extern "C" int ds4_gpu_set_model_shard_fds(const void *model_map, const int *fds, uint32_t count) {
+    g_model_shard_map = NULL;
+    g_model_shard_fds.clear();
+    g_model_shard_bases.clear();
+    g_model_shard_sizes.clear();
+    const long page_l = sysconf(_SC_PAGESIZE);
+    const uint64_t page = page_l > 0 ? (uint64_t)page_l : 4096u;
+    uint64_t base = 0;
+    for (uint32_t k = 0; k < count; k++) {
+        struct stat st;
+        if (!fds || fds[k] < 0 || fstat(fds[k], &st) != 0 || st.st_size <= 0) {
+            g_model_shard_fds.clear();
+            g_model_shard_bases.clear();
+            g_model_shard_sizes.clear();
+            return 0;
+        }
+        g_model_shard_fds.push_back(fds[k]);
+        g_model_shard_bases.push_back(base);
+        g_model_shard_sizes.push_back((uint64_t)st.st_size);
+        base += ((uint64_t)st.st_size + page - 1u) / page * page;
+    }
+    g_model_shard_map = count ? model_map : NULL;
+    return 1;
 }
 
 extern "C" int ds4_gpu_set_model_fd(int fd) {

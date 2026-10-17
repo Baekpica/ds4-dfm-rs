@@ -543,6 +543,9 @@ void     ds4_cuda_probe_layer_rows_at_slot(uint32_t il,
 
 int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size);
 int ds4_gpu_set_model_fd(int fd);
+/* Parts of a split/named GGUF mapped back to back at page-aligned bases:
+ * copied weight ranges leave the page cache through each part's fd. */
+int ds4_gpu_set_model_shard_fds(const void *model_map, const int *fds, uint32_t count);
 int ds4_gpu_set_model_map_range(const void *model_map, uint64_t model_size, uint64_t map_offset, uint64_t map_size, uint64_t max_tensor_bytes);
 /* Add a secondary GGUF mapping without replacing the primary model mapping. */
 int ds4_gpu_set_aux_model_map_range(const void *model_map,
