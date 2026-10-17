@@ -127,6 +127,30 @@ launcher) rather than changing the artifact's values in the code: the cap
 is a deployment decision, visible in the startup report, and one variable
 to loosen (`0.7` restores sampled output at a measured 3/5 stop rate).
 
+With the cap live (`GLM values: ... temp_max=0 ... dry=0.8x1.75^L from
+L=2`, glm53unc.log:1122) the reproduced session stops:
+
+| Deployment run | Result |
+| --- | --- |
+| same 13,335-token replay, client `temperature` 1.0, five seeds | **5/5 stop**, 557 tokens, 42 s wall each |
+| "write about 800 words about bicycles" | 1,500 tokens, `length` -- see below |
+
+Two things that run does NOT fix, and the owner should read them here
+rather than discover them:
+
+- **The answer it stops on is not always the answer.** In the replay the
+  content is meta-commentary about how the model would source a citation
+  ("I will first verify the source ... then the rustwright browser"),
+  because the replayed request carries open-grok's system prompt but no
+  tools. With tools present it emits tool calls instead (the live session
+  did exactly that). Stopping is fixed; usefulness in an agent context is
+  a separate question that only a live tool task answers.
+- **A length-padding prompt still decays.** Asked for "about 800 words",
+  the capped run reaches the essay length and then walks off into
+  `T-tt-T-t-tt-Tt-t-...` character salad before the cap. DRY removed the
+  literal repeats, not the decay; that is the quantization's damage, not a
+  sampler setting.
+
 ## Limits, stated rather than implied
 
 - **The serial path and the CLI take no penalties.** Both sample through
