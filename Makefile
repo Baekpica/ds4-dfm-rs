@@ -2080,6 +2080,14 @@ tests/test_ling31_residual: tests/test_ling31_residual.cu cuda/l31_residual.cuh 
 test-ling31-residual: tests/test_ling31_residual
 	./tests/test_ling31_residual
 
+tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -Xptxas -v -o $@ $< 2> $@.ptxas || { cat $@.ptxas >&2; exit 1; }
+	@grep -A1 "l31_fa_kernel" $@.ptxas | grep -E "registers|spill" || true
+
+.PHONY: test-ling31-flash
+test-ling31-flash: tests/test_ling31_flash
+	./tests/test_ling31_flash
+
 .PHONY: test-glm-vq-ops
 test-glm-vq-ops: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
@@ -2201,7 +2209,7 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh 
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh cuda/l31_flash.cuh
 
 tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
 	$(CC) $(CFLAGS) -Werror -o $@ $<

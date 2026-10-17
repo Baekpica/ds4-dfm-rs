@@ -238,6 +238,8 @@ tests/naive_banks
 /tests/ling31_quality
 /tests/ling31_mtp_gate
 /tests/test_ling31_residual
+/tests/test_ling31_flash
+/tests/test_ling31_flash.ptxas
 /gguf-tools/libds4q.so
 /tests/test_glm_vq_cache
 /tests/test_glm_vq_q4

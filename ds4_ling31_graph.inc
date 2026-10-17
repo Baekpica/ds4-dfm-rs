@@ -18,8 +18,9 @@ typedef struct {
     bool ready, failed, borrowed;
     /* Diagnostic switches, default on: fused residual-norm passes and BF16
      * decay/gate/heads rows (DS4_LING31_FUSED=0, bit-identical either way),
-     * BF16 q/k/v prefill rows (DS4_LING31_QKV_BF16=0 keeps them F32). */
-    bool fused, qkv_bf16;
+     * BF16 q/k/v prefill rows (DS4_LING31_QKV_BF16=0 keeps them F32), the
+     * tensor-core decode/verify attention (DS4_LING31_FLASH=0: Motif's). */
+    bool fused, qkv_bf16, flash;
     uint64_t workspace_bytes, state_bytes, control_bytes, kv_bytes;
 #define L31_FIELD(field, cols, type) ds4_gpu_tensor *field;
     L31_ROW_BUFFERS(L31_FIELD)
@@ -255,7 +256,9 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     }
     g->workspace_bytes = ling31_workspace_bytes(cap);
     const char *fused = getenv("DS4_LING31_FUSED"), *qkv = getenv("DS4_LING31_QKV_BF16");
+    const char *flash = getenv("DS4_LING31_FLASH");
     g->fused = !(fused && !strcmp(fused, "0"));
+    g->flash = !(flash && !strcmp(flash, "0"));
     g->qkv_bf16 = !(qkv && !strcmp(qkv, "0"));
     g->ready = true;
     if (!ling31_graph_reset(g)) { ling31_graph_free(g); return false; }
@@ -416,6 +419,12 @@ static bool l31_mla_expanded(ds4_ling31_graph *g, uint32_t il, uint32_t rows, ui
  * then v_b expands the latent-basis output (decode, verify, short appends). */
 static bool l31_mla_absorbed(ds4_ling31_graph *g, uint32_t il, uint32_t rows, uint32_t pos, float scale) {
     if (!ds4_gpu_l31_absorb(g->q_abs, g->q, g->k_b[il], rows)) { return false; }
+    // Decode and verify rows stream every latent key once on tensor cores:
+    // 64K keys 1.7 ms -> 0.33 ms per layer against Motif's FP32 kernel.
+    if (g->flash && ds4_gpu_l31_flash(g->gvq, g->latent_out, g->q, g->q_abs, g->latent[il], g->k_pe[il],
+            rows, pos, scale)) {
+        return ds4_gpu_l31_value(g->heads, g->latent_out, g->v_b[il], rows);
+    }
     // MTP verify widths below the tensor-core kernel's 8 rows would take
     // Motif's general kernel (1.4 ms per call against 80 us for the split
     // decode kernel): attend each row at its own position, as decode does.

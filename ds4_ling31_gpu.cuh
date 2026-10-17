@@ -11,6 +11,7 @@
  *   DS4_LING31_MOE_RESTORE=1: BF16 restore + cuBLAS per expert (reference) */
 #include "ds4_ling31.h"
 #include "cuda/l31_residual.cuh"
+#include "cuda/l31_flash.cuh"
 
 enum { L31_EXPERTS = DS4_L31_EXPERTS, L31_USED = DS4_L31_USED, L31_HIDDEN = DS4_L31_HIDDEN,
        L31_FFN = DS4_L31_FFN, L31_TABLE = 3 * L31_EXPERTS, L31_LAYERS = DS4_L31_MOE_LAYERS,
@@ -560,6 +561,29 @@ extern "C" int ds4_gpu_l31_absorb(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
         (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)k_b->ptr, rows,
         DS4_L31_HEADS, key, DS4_L31_NOPE, DS4_L31_LATENT);
     return cuda_ok(cudaGetLastError(), "Ling-3.1 MLA absorb");
+}
+
+// Tensor-core absorbed attention for decode and verify rows (cuda/l31_flash.cuh),
+// its split partials in the GVQ scratch; 0 leaves the caller's Motif path.
+extern "C" int ds4_gpu_l31_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *q_abs, const ds4_gpu_tensor *latent, const ds4_gpu_tensor *k_pe,
+        uint32_t rows, uint32_t pos0, float scale) {
+    static int shared = -1;
+    if (shared < 0) {
+        shared = cuda_ok(cudaFuncSetAttribute(l31_fa_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)L31_FA_SMEM), "Ling-3.1 flash shared memory");
+    }
+    const uint64_t keys = (uint64_t)pos0 + rows;
+    if (!shared || !ctx || !out || !q || !q_abs || !latent || !k_pe || !rows || rows > L31_FA_ROWS ||
+        !gvq_stream(ctx) || ctx->scratch->bytes < l31_fa_scratch_bytes() ||
+        !gvq_floats(out, (uint64_t)rows * DS4_L31_HEADS * DS4_L31_LATENT) ||
+        !gvq_floats(q_abs, (uint64_t)rows * DS4_L31_HEADS * DS4_L31_LATENT) ||
+        !gvq_floats(q, (uint64_t)rows * DS4_L31_HEADS * (DS4_L31_NOPE + DS4_L31_ROPE)) ||
+        latent->bytes < keys * DS4_L31_LATENT * sizeof(__nv_bfloat16) ||
+        k_pe->bytes < keys * DS4_L31_ROPE * sizeof(__nv_bfloat16)) { return 0; }
+    return cuda_ok(l31_fa_launch((float *)out->ptr, ctx->scratch->ptr, (const float *)q->ptr,
+        (const float *)q_abs->ptr, (const __nv_bfloat16 *)latent->ptr, (const __nv_bfloat16 *)k_pe->ptr,
+        rows, pos0, scale, gvq_mode(rows), ctx->stream), "Ling-3.1 flash attention");
 }
 
 extern "C" int ds4_gpu_l31_value(ds4_gpu_tensor *out, const ds4_gpu_tensor *latent,

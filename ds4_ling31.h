@@ -43,6 +43,12 @@ int ds4_gpu_l31_gate_up(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mid, uint32_t gate, ui
 int ds4_gpu_l31_kv_b(ds4_gvq_ctx *ctx, ds4_gpu_tensor *k_b, ds4_gpu_tensor *v_b, uint32_t kv_b);
 int ds4_gpu_l31_absorb(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
     const ds4_gpu_tensor *k_b, uint32_t rows);
+/* Absorbed attention of 1-4 rows at pos0.. over every cached latent and
+ * rope key on tensor cores (normalized F32 latent rows); 0 when the shape
+ * or scratch needs the FP32 kernel. */
+int ds4_gpu_l31_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+    const ds4_gpu_tensor *q_abs, const ds4_gpu_tensor *latent, const ds4_gpu_tensor *k_pe,
+    uint32_t rows, uint32_t pos0, float scale);
 int ds4_gpu_l31_value(ds4_gpu_tensor *out, const ds4_gpu_tensor *latent,
     const ds4_gpu_tensor *v_b, uint32_t rows);
 /* Expanded-MLA prefill operand for latent rows [slot0, slot0 + rows). */
