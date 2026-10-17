@@ -128,7 +128,8 @@ per token with the same Q4_K choice for its nonexpert weights.
   registers, so no per-key buffer exists and the context follows the
   model's native 1M.
 - **mHC.** Each expand writes the new four-stream residual and accumulates the
-  next half's RMS and 24 mapping dots in the same pass; the split collapses.
+  next half's RMS and 24 mapping dots in the same pass, with cp.async staging
+  the next W tile and rows behind the current ones; the split collapses.
   The residual holds BF16-rounded values, so prefill stores it as BF16
   (32 KB per row instead of 64).
 - **Projections.** Q4_K from 256 tokens runs on FP16 tensor cores
@@ -196,7 +197,7 @@ RMS 0.23, KL 2.3e-7.
 | Tensor-core KDA chunks | F16 operands (k F32, V' in two halves) | RMS 0.25, KL 7.9e-7 | identical |
 | BF16 storage of BF16-rounded rows (residual, expert gate/down, KDA gates) | identical values | bit-identical | identical |
 | Fused down quantization, scan staging, dependent launch, mHC split preload | identical order | bit-identical | identical |
-| Eight-warp flash attention | identical order | bit-identical | identical |
+| Eight-warp flash attention, staged expand-mix | identical order | bit-identical | identical |
 | FP16 Q4_K prefill (q4p) | FP16 activations and dequantized weights instead of Q8_1 | RMS 0.26, KL 1.0e-6 | identical |
 | BF16 KDA q/k/v rows from q4p | decode's BF16 output rounding | RMS 0.23, KL 9.7e-7 | identical (512 decode ids too) |
 
@@ -248,6 +249,7 @@ first chunk paid lazy allocation and page-cache stalls).
 | Eight-warp flash attention | 1205.4 | 25.54 | no register spills |
 | FP16 Q4_K prefill | 1274.6 | 25.31 | weights dequantized once, FP16 MMA |
 | BF16 KDA q/k/v rows | 1300.2 | 25.29 | half the q/k/v traffic |
+| Staged expand-mix loads | 1300.9 | 25.58 | loads one W tile ahead (1290.4 in the same pairs) |
 
 Decode varies ±1.5% between fresh runs here; the prefill rows are the
 measured trend. The last three rows are means of two interleaved fresh-process

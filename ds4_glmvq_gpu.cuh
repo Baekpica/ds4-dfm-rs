@@ -55,6 +55,7 @@ struct ds4_gvq_ctx {
     bool latent_attn;
     bool decode_route;
     bool direct_bf16;
+    bool expand_mix;
     bool kda_chunk;
     bool kda_mma;
     bool flash;
@@ -377,6 +378,10 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     ctx->latent_attn = !latent_attn || strcmp(latent_attn, "0");
     ctx->decode_route = !route || strcmp(route, "0");
     ctx->direct_bf16 = !bf16 || strcmp(bf16, "0");
+    ctx->expand_mix = cuda_ok(cudaFuncSetAttribute(glmvq_hc_expand_mix<float, __nv_bfloat16>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, (int)glmvq_xmix_smem<float>()), "GLM VQ mHC expand mix shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_hc_expand_mix<__nv_bfloat16, __nv_bfloat16>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, (int)glmvq_xmix_smem<__nv_bfloat16>()), "GLM VQ mHC expand mix shared memory");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
     // Decode-width kernels launch with programmatic dependent launch.
     ctx->launch = !pdl || strcmp(pdl, "0") ? GLMVQ_LAUNCH_PDL : GLMVQ_LAUNCH_PLAIN;
@@ -852,13 +857,15 @@ extern "C" int ds4_gpu_gvq_expand_mix(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4
     const uint64_t count = (uint64_t)rows * width * GLMVQ_HC;
     const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16,
         (uint64_t)GLMVQ_HC_MIX * GLMVQ_HC * width);
-    if (!ctx->direct_bf16 || !w || rows <= GVQ_VERIFY_ROWS || !width || width % GLMVQ_XMIX_COLS ||
+    if (!ctx->direct_bf16 || !ctx->expand_mix || !w || rows <= GVQ_VERIFY_ROWS || !width || width % GLMVQ_XMIX_COLS ||
         ctx->model->records[weight].rows != GLMVQ_HC_MIX || ctx->model->records[weight].cols != GLMVQ_HC * width ||
         !gvq_floats(out, count) || !gvq_floats(residual, count) || !gvq_floats(branch, count / GLMVQ_HC) ||
         !gvq_floats(split, (uint64_t)rows * GLMVQ_HC_MIX) || !gvq_floats(mix, (uint64_t)rows * GLMVQ_HC_MIX) ||
         (uintptr_t)w % 16 || ((uintptr_t)residual->ptr | (uintptr_t)branch->ptr | (uintptr_t)out->ptr) % 16) { return 0; }
     auto launch = [&](auto *r) {
-        glmvq_hc_expand_mix<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32, 0, ds4_current_stream()>>>(
+        using R = std::remove_cv_t<std::remove_pointer_t<decltype(r)>>;
+        glmvq_hc_expand_mix<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32,
+            glmvq_xmix_smem<R>(), ds4_current_stream()>>>(
             (const float *)branch->ptr, r, (const float *)split->ptr, (__nv_bfloat16 *)out->ptr,
             w, (float *)mix->ptr, rows, width, eps);
     };
