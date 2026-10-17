@@ -63,6 +63,7 @@
 #include "ds41_forward.h"
 #ifndef __APPLE__
 #include "ds4_glmvq.h"
+#include "ds4_ling31.h"
 #endif
 #endif
 
@@ -378,6 +379,7 @@ typedef enum {
     DS4_MODEL_FAMILY_NAIVE       = 11,
     DS4_MODEL_FAMILY_IQUEST      = 13,
     DS4_MODEL_FAMILY_GLM53_VQ    = 14,
+    DS4_MODEL_FAMILY_LING31_VQ   = 15,
 } ds4_model_family;
 
 typedef enum {
@@ -401,6 +403,7 @@ typedef enum {
      * (crates/ds4-core/src/shape.rs:97). */
     DS4_VARIANT_V41             = 16,
     DS4_VARIANT_GLM53_FLASH_VQ  = 17,
+    DS4_VARIANT_LING31_FLASH_VQ = 18,
 } ds4_variant;
 
 typedef struct {
@@ -643,6 +646,33 @@ static const ds4_shape DS4_SHAPE_LING30_FLASH_VL = {
     .expert_weight_scale = 2.5f,
     .rope_freq_base = 6000000.0f, .rope_scale_factor = 1.0f,
     .rope_orig_ctx = UINT64_C(131072),
+};
+
+enum { LING31_LAYERS = 72, LING31_MTP = 72, LING31_LAYER_GROUP = 8, LING31_DENSE = 4,
+       LING31_EXPERTS = 512, LING31_MLA_LAYERS = 9 };
+
+/* Ling-3.0's hybrid at width 4096: 63 KDA and 9 MLA trunk blocks plus the
+ * MLA/MoE MTP block, which n_layer counts (crates/ds4-core/src/shape.rs). */
+static const ds4_shape DS4_SHAPE_LING31_VQ = {
+    .name = "Ling-3.1-flash-VQ",
+    .family = DS4_MODEL_FAMILY_LING31_VQ,
+    .variant = DS4_VARIANT_LING31_FLASH_VQ,
+    .n_layer = LING31_LAYERS + 1,
+    .n_embd = 4096, .n_vocab = 157184,
+    .n_head = 64, .n_head_kv = 1,
+    .n_head_dim = 576, .n_value_dim = 128, .n_rot = 64,
+    .n_lora_q = 1536,
+    .n_kv_lora = 512, .n_key_mla = 192, .n_value_mla = 128,
+    .n_full_attn_count = LING31_MLA_LAYERS,
+    .n_kda_head_dim = 128, .n_ssm_conv = 4,
+    .n_expert = LING31_EXPERTS, .n_expert_used = 8, .n_expert_shared = 1,
+    .n_ff_exp = 1280, .n_ff_dense = 10240, .n_ff_shexp = 1280,
+    .n_nextn_predict = 1, .n_leading_dense = LING31_DENSE,
+    .use_rope = true, .use_qk_norm = true,
+    .rms_eps = 1e-6f, .kda_l2_eps = 1e-6f, .kda_gate_clamp_min = -5.0f,
+    .expert_weight_scale = 2.5f,
+    .rope_freq_base = 6000000.0f, .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = UINT64_C(262144),
 };
 
 static const ds4_shape DS4_SHAPE_FLASH = {
@@ -2810,6 +2840,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_LING30_FLASH_VL:
         g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
+        break;
+    case DS4_VARIANT_LING31_FLASH_VQ:
+        g_ds4_shape = DS4_SHAPE_LING31_VQ;
         break;
     case DS4_VARIANT_QWEN35_27B:
         g_ds4_shape = DS4_SHAPE_QWEN35;
@@ -5424,6 +5457,13 @@ typedef struct {
 } ds4_glmvq_experts;
 
 typedef struct {
+    ds4_tensor *book;
+    ds4_tensor *gate[LING31_EXPERTS];
+    ds4_tensor *up[LING31_EXPERTS];
+    ds4_tensor *down[LING31_EXPERTS];
+} ds4_ling31_experts;
+
+typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
     ds4_tensor *output_hc_fn;
@@ -5432,6 +5472,7 @@ typedef struct {
     ds4_tensor *output;
     ds4_layer_weights layer[DS4_MAX_LAYER];
     ds4_glmvq_experts *glmvq; /* Allocated only for the named GVQ1 family. */
+    ds4_ling31_experts *ling31; /* Ling-3.1 VQ layers 4-72; glmvq_gpu is its plan. */
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gvq_model *glmvq_gpu;
 #endif
@@ -9689,6 +9730,7 @@ static void weights_bind_glm53(ds4_weights *w, const ds4_model *m) {
 }
 
 #include "ds4_glmvq_bind.inc"
+#include "ds4_ling31_bind.inc"
 
 static ds4_tensor *inkling_tensor(const ds4_model *m, const char *prefix,
                                   const char *suffix) {
@@ -10190,6 +10232,11 @@ static void weights_bind(
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) {
         glmvq_bind(w, m);
+        return;
+    }
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        ling31_bind(w, m);
         return;
     }
 
@@ -10783,6 +10830,7 @@ static void weights_free(ds4_weights *w) {
     ds4_gpu_gvq_unbind(w->glmvq_gpu);
 #endif
     free(w->glmvq);
+    free(w->ling31);
     memset(w, 0, sizeof(*w));
 }
 
@@ -36879,6 +36927,9 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
         return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? iquest_memory(ctx, iquest_prefill_cap(ctx)) : m;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        return backend == DS4_BACKEND_CUDA && ctx_size > 0 ? ling31_memory(ctx, ling31_prefill_cap(ctx)) : m;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return backend == DS4_BACKEND_CUDA && ctx_size > 0
             ? naive_context_memory(ctx, naive_prefill_cap(ctx)) : m;
@@ -45193,6 +45244,10 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
         const unsigned ctx = ctx_size > 0 ? (unsigned)ctx_size : 0;
         return iquest_memory(ctx, iquest_prefill_cap(ctx));
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        const uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 0;
+        return ling31_memory(ctx, ling31_prefill_cap(ctx));
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         const unsigned ctx = ctx_size > 0 ? (unsigned)ctx_size : 0;
         return naive_context_memory(ctx, naive_prefill_cap(ctx));
@@ -46228,6 +46283,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 #include "ds4_naive_draft.inc"
 #include "ds4_naive_graph.inc"
 #include "ds4_iquest_graph.inc"
+#include "ds4_ling31_graph.inc"
 #include "ds4_mimo2_dflash.inc"
 
 /* Shared partial-prefix checkpoint bookkeeping.  A slot is an immutable
@@ -47712,6 +47768,8 @@ struct ds4_session {
     bool mimo2_graph_ready;
     ds4_iquest_graph iquest_graph;
     bool iquest_graph_ready;
+    ds4_ling31_graph ling31_graph;
+    bool ling31_graph_ready;
     ds4_naive_graph naive_graph;
     bool naive_graph_ready;
     ds4_inkling_graph inkling_graph;
@@ -51149,6 +51207,10 @@ int ds4_session_output_head_bench(ds4_session *s, int iters, FILE *fp, char *err
         ds4_output_bench_set_err(err, errlen, "output-head bench does not yet support the IQuest graph");
         return 1;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        ds4_output_bench_set_err(err, errlen, "output-head bench does not support the Ling-3.1 graph");
+        return 1;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         ds4_output_bench_set_err(err, errlen, "output-head bench does not support the Naive graph");
         return 1;
@@ -52479,6 +52541,7 @@ static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
 #include "ds4_mimo2_payload.inc"
 #include "ds4_naive_payload.inc"
 #include "ds4_iquest_payload.inc"
+#include "ds4_ling31_payload.inc"
 
 static uint64_t step37_payload_bytes_for_graph(const ds4_step37_graph *g,
                                                const ds4_step37_spec *spec, uint32_t n) {
@@ -53224,6 +53287,10 @@ static bool ds4_session_is_iquest(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST;
 }
 
+static bool ds4_session_is_ling31(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ;
+}
+
 static bool ds4_session_is_naive(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE;
 }
@@ -53318,7 +53385,8 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         return 0;
     }
     if (ds4_session_is_cpu(s)) return 0;
@@ -53789,7 +53857,8 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -53994,7 +54063,8 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -55562,6 +55632,10 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
     if (ds4_session_is_iquest(s)) {
         return s->checkpoint_valid && s->iquest_graph_ready ? iquest_payload_bytes(&s->iquest_graph, (unsigned)s->checkpoint.len) : 0;
     }
+    if (ds4_session_is_ling31(s)) {
+        return s->checkpoint_valid && s->ling31_graph_ready
+            ? ling31_payload_bytes(&s->ling31_graph, (uint32_t)s->checkpoint.len) : 0;
+    }
     if (ds4_session_is_naive(s)) {
         return s->checkpoint_valid && s->naive_graph_ready
             ? naive_payload_bytes(&s->naive_graph, (unsigned)s->checkpoint.len) : 0;
@@ -55776,6 +55850,10 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
     if (ds4_session_is_iquest(s)) {
         if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "IQuest-Q1 has no snapshot-ready checkpoint"); return 1; }
         return iquest_payload_save(&s->iquest_graph, s->checkpoint.v, (unsigned)s->checkpoint.len, s->logits, fp, err, errlen);
+    }
+    if (ds4_session_is_ling31(s)) {
+        if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "Ling-3.1 has no snapshot-ready checkpoint"); return 1; }
+        return ling31_payload_save(&s->ling31_graph, s->checkpoint.v, (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
     }
     if (ds4_session_is_naive(s)) {
         if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "Naive has no snapshot-ready checkpoint"); return 1; }
@@ -56295,6 +56373,10 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
         s->iquest_graph.failed = true; s->iquest_graph.position = 0; s->iquest_graph.trial_n = 0;
     }
+    if (ds4_session_is_ling31(s)) {
+        s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
+        s->ling31_graph.failed = true; s->ling31_graph.position = 0;
+    }
     if (ds4_session_is_naive(s)) {
         s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
         s->naive_graph.failed = true; s->naive_graph.position = 0;
@@ -56395,7 +56477,8 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     if (ds4_session_is_glm53(s) || ds4_session_is_qwen4exp(s) || ds4_session_is_motif3(s) ||
         ds4_session_is_exaone(s) || ds4_session_is_dots3(s) ||
-        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         float *new_logits = xmalloc(
             (size_t)DS4_N_VOCAB * sizeof(*new_logits));
@@ -56405,6 +56488,8 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
                   &tokens, new_logits, err, errlen)
             : ds4_session_is_iquest(s)
             ? iquest_payload_restore(&s->iquest_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
+            : ds4_session_is_ling31(s)
+            ? ling31_payload_restore(&s->ling31_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_naive(s)
             ? naive_payload_restore(&s->naive_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_mimo2(s)
@@ -60147,6 +60232,10 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (!e || ctx <= 0) return 0;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
         return e->backend == DS4_BACKEND_CUDA ? iquest_memory((unsigned)ctx, iquest_prefill_cap((unsigned)ctx)).total_bytes : 0;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        return e->backend == DS4_BACKEND_CUDA
+            ? ling31_memory((uint32_t)ctx, ling31_prefill_cap((uint32_t)ctx)).total_bytes : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return e->backend == DS4_BACKEND_CUDA
@@ -71879,7 +71968,7 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
      * DS4_NO_BOOT_PREWARM=1). */
     if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) return;
     // VQ owns its source graph scratch; generic DeepSeek prewarm is unrelated.
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return; }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) { return; }
     e->boot_prewarm_done = true;
     const double warm_t0 = now_sec();
     /* memgov D0b-3 (S8): prewarm allocates by design (post-placement
@@ -72112,6 +72201,17 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             fprintf(stderr, "ds4: IQuest-Q1 requires one full CUDA model and its integrated MTP\n");
             ds4_engine_close(e); *out = NULL; return 1;
         }
+    }
+    if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ &&
+        (e->backend != DS4_BACKEND_CUDA || load_slice || opt->ssd_streaming ||
+         opt->distributed.role != DS4_DISTRIBUTED_NONE ||
+         (opt->mtp_path && opt->mtp_path[0]) || (opt->dspark_path && opt->dspark_path[0]) ||
+         (e->directional_steering_file && e->directional_steering_file[0]) ||
+         e->directional_steering_attn_scale != 0.0f || e->directional_steering_ffn_scale != 0.0f)) {
+        fprintf(stderr, "ds4: Ling-3.1 requires one full CUDA model and its embedded MTP\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
     }
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE &&
         (e->backend != DS4_BACKEND_CUDA || load_slice ||
@@ -72509,9 +72609,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     glob || rsrc[0].ov || rsrc[1].ov || rsrc[2].ov
                         ? "explicit" : "legacy-alias");
         }
-        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
+        if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) &&
             res_pol[0] != DS4_RESIDENCY_EAGER_DEVICE) {
-            fprintf(stderr, "ds4: GLM VQ source baseline requires eager weight residency\n");
+            fprintf(stderr, "ds4: VQ source pointer plans require eager weight residency\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -72921,7 +73021,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 // Fund their resident units before resolving any pointers;
                 // page-overlapping cold registrations cannot supply this plan.
                 up.promote_experts = needs_device_copy ||
-                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ;
+                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ ||
+                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
                     : ds4_units_verify(tin, n, &up, units, nu);
@@ -73002,6 +73103,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
             !glmvq_gpu_bind(&e->weights, &e->model)) {
             fprintf(stderr, "ds4: GLM VQ source pointer binding failed\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ &&
+            !ling31_gpu_bind(&e->weights, &e->model)) {
+            fprintf(stderr, "ds4: Ling-3.1 source pointer binding failed\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -73178,7 +73286,8 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
         return (uint64_t)DS4_N_EMBD;
     }
     return (uint64_t)DS4_N_HC * DS4_N_EMBD;
@@ -73194,7 +73303,8 @@ int ds4_engine_n_hc(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
         return 1;
     }
     return (int)DS4_N_HC;
@@ -73580,6 +73690,29 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     return fits;
 }
 
+static bool ling31_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
+                               ds4_session_graph_fit_quote *q) {
+    const uint64_t need = ling31_memory(ctx, cap).total_bytes;
+    if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
+    if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    uint64_t available = 0, total = 0;
+    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+        if (q) { q->fits = 1; q->fail_open = 1; }
+        return true;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    const uint64_t margin = ds4_session_graph_headroom_bytes();
+    const uint64_t ask = need > UINT64_MAX - margin ? UINT64_MAX : need + margin;
+    const bool fits = available >= ask;
+    if (q) {
+        q->fits = fits; q->avail_bytes = available; q->headroom_bytes = margin;
+        q->deficit_bytes = fits ? 0 : ask - available;
+    }
+    return fits;
+}
+
 static bool naive_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
                                ds4_session_graph_fit_quote *q) {
     const uint64_t need = naive_session_bytes(e, ctx, cap);
@@ -73729,6 +73862,25 @@ static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
 
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
+    if (ds4_session_is_ling31(s)) {
+        const uint32_t ctx = (uint32_t)s->ctx_size;
+        const uint64_t estimate = ling31_memory(ctx, s->prefill_cap).total_bytes;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
+        const uint64_t before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = ling31_session_fit(e, ctx, s->prefill_cap, NULL) &&
+            ling31_graph_alloc(&s->ling31_graph, &e->model, &e->weights, ctx, s->prefill_cap);
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            ling31_graph_free(&s->ling31_graph); s->ling31_graph_ready = false;
+            s->graph_alloc_bytes = 0; ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0); return 1;
+        }
+        s->ling31_graph_ready = true;
+        const uint64_t after = session_tensors_census_live();
+        s->graph_alloc_bytes = after > before ? after - before : estimate;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, s->graph_alloc_bytes, s->graph_alloc_bytes);
+        return 0;
+    }
     if (ds4_session_is_iquest(s)) {
         const unsigned ctx = (unsigned)s->ctx_size;
         const uint64_t estimate = iquest_memory(ctx, s->prefill_cap).total_bytes;
@@ -74156,6 +74308,9 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
         return iquest_session_fit(e, (unsigned)ctx_size, iquest_prefill_cap((unsigned)ctx_size), q);
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        return ling31_session_fit(e, (uint32_t)ctx_size, ling31_prefill_cap((uint32_t)ctx_size), q);
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return naive_session_fit(e, (unsigned)ctx_size, naive_prefill_cap((unsigned)ctx_size), q);
     }
@@ -74244,6 +74399,22 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+#ifdef DS4_NO_GPU
+        return 1;
+#else
+        if ((uint32_t)ctx_size > L31_CONTEXT || e->backend != DS4_BACKEND_CUDA ||
+            !e->metal_ready || e->distributed.role != DS4_DISTRIBUTED_NONE) { return 1; }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e; s->ctx_size = ctx_size; s->generation = 1;
+        s->prefill_cap = ling31_prefill_cap((uint32_t)ctx_size);
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
+        if (ds4_session_lazy_graph_enabled()) { s->graph_pending = true; }
+        else if (ds4_session_alloc_graph(s) != 0) { free(s->logits); free(s); return 1; }
+        *out = s;
+        return 0;
+#endif
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
 #ifdef DS4_NO_GPU
         return 1;
@@ -74667,6 +74838,9 @@ void ds4_session_free(ds4_session *s) {
         if (ds4_session_is_iquest(s)) {
             iquest_graph_free(&s->iquest_graph); s->iquest_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_ling31(s)) {
+            ling31_graph_free(&s->ling31_graph); s->ling31_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
         } else if (ds4_session_is_naive(s)) {
             naive_graph_free(&s->naive_graph); s->naive_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -74768,7 +74942,8 @@ int ds4_session_set_power(ds4_session *s, int power_percent) {
         !ds4_session_is_exaone(s) && !ds4_session_is_dots3(s) &&
         !ds4_session_is_qwen4exp(s) && !ds4_session_is_glm53(s) &&
         !ds4_session_is_inkling(s) && !ds4_session_is_step37(s) &&
-        !ds4_session_is_ling3vl(s) && !ds4_session_is_mimo2(s) && !ds4_session_is_naive(s) && !ds4_session_is_iquest(s)) {
+        !ds4_session_is_ling3vl(s) && !ds4_session_is_mimo2(s) && !ds4_session_is_naive(s) && !ds4_session_is_iquest(s) &&
+        !ds4_session_is_ling31(s)) {
         s->graph.power_percent = (uint32_t)power_percent;
     }
 #endif
@@ -74801,7 +74976,8 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
         ds4_session_is_motif3(s) || ds4_session_is_dots3(s) ||
         ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         if (errlen) snprintf(err, errlen,
                              "layer-slice sessions do not support this model family");
         return 1;
@@ -74838,7 +75014,8 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
     }
     if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not expose the DeepSeek HC output-head ABI");
         return 1;
@@ -74942,7 +75119,8 @@ int ds4_session_eval_layer_slice(ds4_session *s,
     }
     if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not support layer-slice execution");
         return 1;
@@ -75475,6 +75653,7 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 #include "ds4_mimo2_session.inc"
 #include "ds4_naive_session.inc"
 #include "ds4_iquest_session.inc"
+#include "ds4_ling31_session.inc"
 #include "ds4_naive_mtp.inc"
 #define MIMO2_DFLASH_TRIAL
 #include "ds4_mimo2_dflash.inc"
@@ -75978,6 +76157,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_iquest(s)) { return iquest_session_sync(s, prompt, err, errlen); }
+    if (ds4_session_is_ling31(s)) { return ling31_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_naive(s)) { return naive_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_mimo2(s)) { return mimo2_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_ling3vl(s)) {
@@ -76858,6 +77038,10 @@ static bool session_logits_unready(const ds4_session *s) {
         return !s->checkpoint_valid || !s->iquest_graph_ready || s->iquest_graph.failed ||
             s->iquest_graph.position != (unsigned)s->checkpoint.len || s->iquest_graph.trial_n;
     }
+    if (ds4_session_is_ling31(s)) {
+        return !s->checkpoint_valid || !s->ling31_graph_ready || s->ling31_graph.failed ||
+            s->ling31_graph.position != (uint32_t)s->checkpoint.len;
+    }
     if (ds4_session_is_naive(s)) {
         return !s->checkpoint_valid || !s->naive_graph_ready || s->naive_graph.failed ||
             s->naive_graph.position != (unsigned)s->checkpoint.len;
@@ -77012,6 +77196,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
     }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_iquest(s)) { return iquest_session_eval(s, token, err, errlen); }
+    if (ds4_session_is_ling31(s)) { return ling31_session_eval(s, token, err, errlen); }
     if (ds4_session_is_naive(s)) { return naive_session_eval(s, token, err, errlen); }
     if (ds4_session_is_mimo2(s)) { return mimo2_session_eval(s, token, err, errlen); }
     if (ds4_session_is_ling3vl(s)) {
@@ -77728,7 +77913,8 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
     }
     if (ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) ||
-        ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
+        ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
+        ds4_session_is_ling31(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) {
             return -1;
         }
@@ -78986,6 +79172,8 @@ void ds4_session_invalidate(ds4_session *s) {
         qwen35_session_reset(s);
     } else if (ds4_session_is_iquest(s) && s->iquest_graph_ready) {
         (void)iquest_reset(&s->iquest_graph);
+    } else if (ds4_session_is_ling31(s) && s->ling31_graph_ready) {
+        (void)ling31_graph_reset(&s->ling31_graph);
     } else if (ds4_session_is_naive(s) && s->naive_graph_ready) {
         (void)naive_reset(&s->naive_graph);
     } else if (ds4_session_is_mimo2(s) && s->mimo2_graph_ready) {
@@ -79048,6 +79236,9 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     } else if (ds4_session_is_iquest(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->iquest_graph_ready) { (void)iquest_reset(&s->iquest_graph); }
+    } else if (ds4_session_is_ling31(s) && pos != old_pos) {
+        s->checkpoint_valid = false;
+        if (s->ling31_graph_ready) { (void)ling31_graph_reset(&s->ling31_graph); }
     } else if (ds4_session_is_naive(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->naive_graph_ready) { (void)naive_reset(&s->naive_graph); }
