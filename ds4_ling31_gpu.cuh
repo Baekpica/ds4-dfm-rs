@@ -10,6 +10,7 @@
  *   rows >= 5     prefill: host grouping, FP8 MMA on the E4M3 codewords
  *   DS4_LING31_MOE_RESTORE=1: BF16 restore + cuBLAS per expert (reference) */
 #include "ds4_ling31.h"
+#include "cuda/l31_residual.cuh"
 
 enum { L31_EXPERTS = DS4_L31_EXPERTS, L31_USED = DS4_L31_USED, L31_HIDDEN = DS4_L31_HIDDEN,
        L31_FFN = DS4_L31_FFN, L31_TABLE = 3 * L31_EXPERTS, L31_LAYERS = DS4_L31_MOE_LAYERS,
@@ -617,4 +618,16 @@ extern "C" int ds4_gpu_l31_latent_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor
     ling3vl_rms_norm<<<rows, 256, 0, ds4_current_stream()>>>((float *)out->ptr, (const float *)in->ptr,
         (const float *)weight->ptr, DS4_L31_LATENT, row, rows, eps);
     return cuda_ok(cudaGetLastError(), "Ling-3.1 latent RMSNorm");
+}
+
+extern "C" int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
+        ds4_gpu_tensor *norm, uint32_t weight, uint32_t rows, uint32_t width, float eps) {
+    const uint64_t count = (uint64_t)rows * width;
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, width);
+    // The block RMS kernel's widths only: one register batch per lane.
+    if (!w || !rows || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
+        !gvq_floats(cur, count) || !gvq_floats(branch, count) || !gvq_floats(norm, count)) { return 0; }
+    glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
+        (float *)cur->ptr, (const float *)branch->ptr, w, (float *)norm->ptr, width, eps);
+    return cuda_ok(cudaGetLastError(), "Ling-3.1 residual RMS");
 }

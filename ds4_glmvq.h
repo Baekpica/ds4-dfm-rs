@@ -50,6 +50,10 @@ int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
  * when the rows or weights keep F32 outputs. */
 int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows);
+/* Prefill FP8 matrices over one input as BF16 rows (the BF16 GEMM results
+ * the F32 path widens); 0 (outputs untouched) at other widths or weights. */
+int ds4_gpu_gvq_fp8_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows);
 int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
 /* Whether ds4_gpu_gvq_linear_rows reads BF16 input rows of `weight` at

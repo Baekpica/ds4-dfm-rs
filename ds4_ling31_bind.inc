@@ -137,8 +137,9 @@ enum {
     L31_KEY = L31_NOPE + L31_ROPE, L31_VALUE = 128, L31_KV_ROW = L31_KV_LORA + L31_ROPE,
     L31_QDIM = L31_HEADS * L31_KEY, L31_VDIM = L31_HEADS * L31_VALUE, L31_LATENT = L31_HEADS * L31_KV_LORA,
     L31_DENSE_FF = 10240, L31_FF = 1280, L31_EXPERTS = 512, L31_USED = 8,
-    // 2048-row chunks beat 4096 on a cold 16K prompt (777 vs 646 tok/s) and need
-    // 1.2 GiB less workspace.
+    // 4096-row chunks prefill 10-14% faster once allocated (8K/16K; a cold first
+    // allocation stalled them below 2048) but need 1.2 GiB more workspace, which a
+    // 128 GB Spark lacks beside the trunk and a bank.
     L31_CONTEXT = 262144, L31_PREFILL_DEFAULT = 2048, L31_PREFILL_MAX = 4096,
     // Absorbed MLA below one expanded query tile (decode, verify, short appends);
     // the tensor-core absorbed kernel starts at 8 rows.

@@ -2073,6 +2073,13 @@ test-glm-vq-restore: tests/libglm_vq_test.so
 		{ echo "set GLMVQ_FIXTURES to the immutable golden-fixtures directory" >&2; exit 2; }
 	$(GLMVQ_PYTHON) tests/test_glm_vq_cuda.py --lib tests/libglm_vq_test.so --fixtures "$(GLMVQ_FIXTURES)"
 
+tests/test_ling31_residual: tests/test_ling31_residual.cu cuda/l31_residual.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+.PHONY: test-ling31-residual
+test-ling31-residual: tests/test_ling31_residual
+	./tests/test_ling31_residual
+
 .PHONY: test-glm-vq-ops
 test-glm-vq-ops: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
@@ -2194,7 +2201,7 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh 
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh
 
 tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
 	$(CC) $(CFLAGS) -Werror -o $@ $<

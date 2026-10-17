@@ -829,6 +829,43 @@ extern "C" int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *co
     return gvq_q4p_run<__nv_bfloat16>(ctx, outs, weights, count, input, rows);
 }
 
+/* FP8 prefill projections of one input as BF16 rows: one BF16 copy of the
+ * input, then the restore + cuBLAS of ds4_gpu_gvq_linear per matrix with
+ * its BF16 result left in place (the F32 path only widens these values). */
+extern "C" int ds4_gpu_gvq_fp8_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || !outs || !weights || !count || count > GVQ_LINEAR_MANY || rows <= GLMVQ_FP8_TOKENS ||
+        !gvq_stream(ctx)) { return 0; }
+    uint32_t cols = 0;
+    uint64_t widest = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->model->source.size()) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        if ((c && s.cols != cols) || ctx->model->records[weights[c]].type != GVQ_TYPE_FP8 ||
+            s.storage != GLMVQ_WEIGHT_FP8 || !s.data || !s.scale || s.cols % GLMVQ_SCALE_BLOCK ||
+            !gvq_floats(outs[c], (uint64_t)rows * s.rows / 2)) { return 0; }
+        cols = s.cols;
+        widest = max(widest, (uint64_t)s.rows * s.cols);
+    }
+    const uint64_t nx = (uint64_t)rows * cols;
+    if (!gvq_floats(input, nx) || ctx->scratch->bytes < (widest + nx) * sizeof(__nv_bfloat16)) { return 0; }
+    auto *weight = (__nv_bfloat16 *)ctx->scratch->ptr, *x = weight + widest;
+    glmvq_convert<<<(nx + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+        (const float *)input->ptr, x, nx);
+    const float alpha = 1.0f, beta = 0.0f;
+    for (uint32_t c = 0; c < count; c++) {
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        const uint64_t n = (uint64_t)s.rows * s.cols;
+        glmvq_fp8_restore<<<(unsigned)((n + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, ctx->stream>>>(
+            (const uint8_t *)s.data, s.scale, s.rows, s.cols, weight);
+        if (!cuda_ok(cudaGetLastError(), "GLM VQ FP8 BF16 restore") ||
+            !cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, s.rows, rows, s.cols,
+                &alpha, weight, CUDA_R_16BF, s.cols, x, CUDA_R_16BF, s.cols, &beta, outs[c]->ptr, CUDA_R_16BF, s.rows,
+                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ FP8 BF16 rows")) { return 0; }
+    }
+    return 1;
+}
+
 extern "C" int ds4_gpu_gvq_bf16_input(ds4_gvq_ctx *ctx, uint32_t weight, uint32_t rows) {
     return ctx && ctx->direct_q4 && ctx->q4_prefill && !ctx->q4_round && rows >= GVQ_Q4P_MIN_TOKENS &&
         weight < ctx->q4p_fit.size() && ctx->q4p_fit[weight] &&

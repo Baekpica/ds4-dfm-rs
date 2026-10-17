@@ -52,6 +52,10 @@ int ds4_gpu_l31_expand(ds4_gpu_tensor *k_full, ds4_gpu_tensor *value,
 /* RMS norm of each 576-wide kv_a row's first 512 values (F32 weight copy). */
 int ds4_gpu_l31_latent_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
     const ds4_gpu_tensor *weight, uint32_t rows, float eps);
+/* cur = bf16(cur + branch) and norm = weighted RMS of cur (BF16 weight
+ * `weight`), bit-identical to the separate add, rounding and RMS kernels. */
+int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
+    ds4_gpu_tensor *norm, uint32_t weight, uint32_t rows, uint32_t width, float eps);
 
 #ifdef __cplusplus
 }

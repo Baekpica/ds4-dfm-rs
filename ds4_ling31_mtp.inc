@@ -81,8 +81,7 @@ static bool l31_mtp_verify(ds4_ling31_graph *g, const ds4_model *m, const ds4_we
     if (!ds4_gpu_gvq_copy(g->mtp_rows, 0u, g->last_hidden, 0u, bytes, 1u) ||
         !l31_embed(g, m, w, g->mtp_trial, n, pos)) { return false; }
     g->mtp_capture = true;
-    bool ok = true;
-    for (uint32_t il = 0; ok && il < LING31_LAYERS; il++) { ok = l31_layer(g, m, w, il, n, pos); }
+    bool ok = l31_trunk(g, m, w, n, pos);
     g->mtp_capture = false;
     ds4_gpu_tensor *rows = ok ? ds4_gpu_tensor_view(g->mtp_rows, bytes, n * bytes) : NULL;
     ds4_gpu_tensor *all = ok ? ds4_gpu_tensor_view(g->mtp_rows, 0u, n * bytes) : NULL;
