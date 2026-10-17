@@ -4,6 +4,7 @@
 #include <type_traits>
 #include "cuda/glm_vq_linear.cuh"
 #include "cuda/glm_vq_q4m.cuh"
+#include "cuda/glm_vq_q4p.cuh"
 #include "cuda/glm_vq_kda.cuh"
 #include "cuda/glm_vq_attention.cuh"
 #include "cuda/glm_vq_index.cuh"
@@ -48,6 +49,7 @@ struct ds4_gvq_ctx {
     bool split_row;
     bool gain_dot;
     bool q4_round;
+    bool q4_prefill;
     bool direct_fp8;
     bool direct_kv;
     bool latent_attn;
@@ -66,6 +68,7 @@ struct ds4_gvq_ctx {
     uint64_t kv_calls = 0;
     uint64_t fp8_calls = 0;
     glmvq_q4_config q4;
+    std::vector<uint8_t> q4p_fit;
     std::vector<int32_t> routes;
     std::vector<uint32_t> grouped;
     ds4_gpu_tensor *mma = nullptr;
@@ -265,6 +268,36 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
     delete ctx;
 }
 
+// Q4_K matrices whose shapes and scales fit the q4p FP16 folding: one
+// header pass per matrix at creation, then one readback.
+static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
+    const size_t count = ctx->model->source.size();
+    ctx->q4p_fit.assign(count, 0);
+    ds4_gpu_tensor *flags = count ? ds4_gpu_tensor_alloc(count * sizeof(uint32_t)) : nullptr;
+    if (!flags) { return false; }
+    const cudaStream_t stream = ds4_current_stream();
+    bool ok = cuda_ok(cudaMemsetAsync(flags->ptr, 0, count * sizeof(uint32_t), stream), "GLM VQ Q4 prefill scan");
+    for (size_t i = 0; ok && i < count; i++) {
+        const glmvq_source &s = ctx->model->source[i];
+        if (ctx->model->records[i].type != GVQ_TYPE_Q4 || !s.data || !glmvq_q4p_fits(s.rows, s.cols)) { continue; }
+        const uint64_t blocks = (uint64_t)s.rows * s.cols / GLMVQ_Q4_BLOCK;
+        glmvq_q4p_check<<<(unsigned)((blocks + 255) / 256), 256, 0, stream>>>(
+            (const uint8_t *)s.data, blocks, (uint32_t *)flags->ptr + i);
+        ok = cuda_ok(cudaGetLastError(), "GLM VQ Q4 prefill scan");
+        ctx->q4p_fit[i] = 1;
+    }
+    std::vector<uint32_t> bad(count);
+    ok = ok && cuda_ok(cudaStreamSynchronize(stream), "GLM VQ Q4 prefill scan") &&
+        ds4_gpu_tensor_read(flags, 0, bad.data(), count * sizeof(uint32_t));
+    uint32_t rejected = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (ctx->q4p_fit[i] && (!ok || bad[i])) { ctx->q4p_fit[i] = 0; rejected++; }
+    }
+    if (rejected) { fprintf(stderr, "ds4: GLM VQ Q4 prefill keeps MMQ for %u matrices (scale range)\n", rejected); }
+    ds4_gpu_tensor_free(flags);
+    return ok;
+}
+
 extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint32_t rows) {
     if (!model || !bytes || !rows) { return nullptr; }
     const char *restore = getenv("DS4_GLMVQ_RESTORE_VEC");
@@ -413,6 +446,14 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         return nullptr;
     }
     ctx->split_row = !split_row || strcmp(split_row, "0");
+    const char *q4_prefill = getenv("DS4_GLMVQ_Q4_PREFILL");
+    if (q4_prefill && strcmp(q4_prefill, "0") && strcmp(q4_prefill, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_Q4_PREFILL accepts 0 or 1\n");
+        delete ctx;
+        return nullptr;
+    }
+    ctx->q4_prefill = (!q4_prefill || strcmp(q4_prefill, "0")) &&
+        cuda_ok(glmvq_q4p_init(), "GLM VQ Q4 prefill shared memory");
     const char *q4_stream = getenv("DS4_GLMVQ_Q4_STREAM");
     if (q4_stream && strcmp(q4_stream, "0") && strcmp(q4_stream, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_Q4_STREAM accepts 0 or 1\n");
@@ -490,6 +531,7 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
             fprintf(stderr, "ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\n");
         }
     }
+    if (ctx->q4_prefill && !gvq_q4p_scan(ctx)) { ctx->q4_prefill = false; }
     return ctx;
 }
 
@@ -514,6 +556,44 @@ static const void *gvq_weight(const ds4_gvq_ctx *ctx, uint32_t index,
     const ds4_gvq_record &r = ctx->model->records[index];
     const uint32_t size = type == GVQ_TYPE_F32 ? sizeof(float) : sizeof(__nv_bfloat16);
     return r.type == type && count <= r.bytes / size ? ctx->model->source[index].data : nullptr;
+}
+
+/* Prefill Q4_K on FP16 tensor cores (cuda/glm_vq_q4p.cuh) from 256 tokens:
+ * below that MMQ's narrow tiles stream the weights faster (8192 x 4096 at
+ * 64 tokens: 0.064 vs 0.147 ms; at 256: 0.343 vs 0.288). The prepared input
+ * lives in scratch, so an input or output inside it keeps MMQ.
+ * DS4_GLMVQ_Q4_PREFILL=0 keeps MMQ everywhere. */
+enum { GVQ_Q4P_MIN_TOKENS = 256 };
+
+static bool gvq_q4p_ready(const ds4_gvq_ctx *ctx, const uint32_t *weights, uint32_t count,
+        const ds4_gpu_tensor *input, ds4_gpu_tensor *const *outs, uint32_t rows) {
+    if (!ctx->q4_prefill || ctx->q4_round || rows < GVQ_Q4P_MIN_TOKENS || !count) { return false; }
+    const uint8_t *lo = (const uint8_t *)ctx->scratch->ptr, *hi = lo + ctx->scratch->bytes;
+    auto inside = [&](const ds4_gpu_tensor *t) {
+        const uint8_t *p = (const uint8_t *)t->ptr;
+        return p < hi && p + t->bytes > lo;
+    };
+    if (inside(input) ||
+        glmvq_q4p_bytes(rows, ctx->model->source[weights[0]].cols) > ctx->scratch->bytes) { return false; }
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->q4p_fit.size() || !ctx->q4p_fit[weights[c]] || inside(outs[c])) { return false; }
+    }
+    return true;
+}
+
+static int gvq_q4p_run(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
+        uint32_t count, const ds4_gpu_tensor *input, uint32_t rows) {
+    const uint32_t cols = ctx->model->source[weights[0]].cols;
+    const glmvq_q4p_input in = glmvq_q4p_layout(ctx->scratch->ptr, rows, cols);
+    if (!cuda_ok(glmvq_q4p_prepare(in, (const float *)input->ptr, rows, cols, ctx->stream), "GLM VQ Q4 prefill input")) {
+        return 0;
+    }
+    for (uint32_t c = 0; c < count; c++) {
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        if (!cuda_ok(glmvq_q4p_gemm((const uint8_t *)s.data, in, (float *)outs[c]->ptr, s.rows, s.cols, rows,
+                ctx->stream), "GLM VQ Q4 prefill")) { return 0; }
+    }
+    return 1;
 }
 
 extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t index,
@@ -553,6 +633,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
             return cuda_ok(glmvq_q4_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
                 s.rows, s.cols, rows, ctx->stream, &ctx->q4), "GLM VQ Q4 decode");
         }
+        if (gvq_q4p_ready(ctx, &index, 1, input, &out, rows)) { return gvq_q4p_run(ctx, &out, &index, 1, input, rows); }
         // Wide projections reuse the established Q4_K x Q8_1 MMQ primitive.
         // Prefill keeps its outputs in F32: the BF16 boundary pass cost 4.6%
         // of an 8K prefill and moved frontier logits within the chunk-size
@@ -616,6 +697,9 @@ extern "C" int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *
         widest = max(widest, s.rows);
         q4 = q4 && type == GVQ_TYPE_Q4;
         bf16 = bf16 && type == GVQ_TYPE_BF16 && s.storage == GLMVQ_WEIGHT_BF16 && s.data;
+    }
+    if (q4 && gvq_floats(input, (uint64_t)rows * cols) && gvq_q4p_ready(ctx, weights, count, input, outs, rows)) {
+        return gvq_q4p_run(ctx, outs, weights, count, input, rows);
     }
     if (q4 && gvq_floats(input, (uint64_t)rows * cols)) {
         const void *w[GVQ_LINEAR_MANY];

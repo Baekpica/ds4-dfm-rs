@@ -2108,6 +2108,13 @@ tests/test_glm_vq_flash: tests/test_glm_vq_flash.cu cuda/glm_vq_flash.cuh cuda/g
 test-glm-vq-flash: tests/test_glm_vq_flash
 	./tests/test_glm_vq_flash
 
+tests/test_glm_vq_q4p: tests/test_glm_vq_q4p.cu cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $<
+
+.PHONY: test-glm-vq-q4p
+test-glm-vq-q4p: tests/test_glm_vq_q4p
+	./tests/test_glm_vq_q4p
+
 tests/test_glm_vq_kda: tests/test_glm_vq_kda.cu cuda/glm_vq_kda.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $<
 
@@ -2164,7 +2171,7 @@ tests/test_glm_vq_quote.o: $(GLMVQ_NATIVE_DEPS) $(GLM53_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \
 	cuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/glm_vq_q4m.cuh cuda/q4_k.cuh \
 	cuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_index.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_fp8.cuh \
-	cuda/glm_vq_flash.cuh cuda/glm_vq_gemv.cuh cuda/glm_vq_mma8.cuh
+	cuda/glm_vq_flash.cuh cuda/glm_vq_gemv.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq_q4p.cuh
 tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
 	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
