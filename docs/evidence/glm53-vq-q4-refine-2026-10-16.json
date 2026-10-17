@@ -1,0 +1,593 @@
+{
+  "decision": "Reject these isolated candidates; production unchanged",
+  "baseline": "de0ee6a4be4c426ba06076a7d06369e836f3591d",
+  "scope": "Two actual layer-0 Q4 matrices, saved source BF16 inputs; 4 copies (72 MiB), 32 warmup + 256 timed calls per observation, three interleaved observations per mode; no intervening model kernels.",
+  "numerical": "Same Q4 restore, FP32 FMA/order, reduction and BF16 output; all 24 replay outputs equal current baseline. Reuse independent dot proof; no new approximation adopted.",
+  "modes": [
+    "current generic staging",
+    "constant-shape synchronous staging",
+    "constant-shape single-stage cp.async",
+    "constant-shape cp.async and next-input prefetch"
+  ],
+  "summary": [
+    {
+      "shape": [
+        8192,
+        4096
+      ],
+      "median_us": [
+        83.27475190162659,
+        82.24724978208542,
+        107.35487192869186,
+        105.23087531328201
+      ]
+    },
+    {
+      "shape": [
+        4096,
+        8192
+      ],
+      "median_us": [
+        83.33899825811386,
+        85.80274879932404,
+        107.9307496547699,
+        115.82237482070923
+      ]
+    }
+  ],
+  "observations": [
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 0,
+      "mode": 0,
+      "ms": 0.08327475190162659,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 0,
+      "mode": 1,
+      "ms": 0.08698412775993347,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 0,
+      "mode": 2,
+      "ms": 0.11194275319576263,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 0,
+      "mode": 3,
+      "ms": 0.10700024664402008,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 1,
+      "mode": 3,
+      "ms": 0.1038956269621849,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 1,
+      "mode": 2,
+      "ms": 0.102055124938488,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 1,
+      "mode": 1,
+      "ms": 0.08209999650716782,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 1,
+      "mode": 0,
+      "ms": 0.08595862239599228,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 2,
+      "mode": 0,
+      "ms": 0.08173850178718567,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 2,
+      "mode": 1,
+      "ms": 0.08224724978208542,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 2,
+      "mode": 2,
+      "ms": 0.10735487192869186,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "shape": [
+        8192,
+        4096
+      ],
+      "iteration": 2,
+      "mode": 3,
+      "ms": 0.10523087531328201,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "d7b2df4702e923a9964f7920aa50e7d5da04c9294516011cf51dda6377b27f49",
+      "input_sha256": "e2ffff386360bbaedee33c2496c5022ab5315462aa54993feb3df3daeb47fc63"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 0,
+      "mode": 0,
+      "ms": 0.08853037655353546,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 0,
+      "mode": 1,
+      "ms": 0.08716637641191483,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 0,
+      "mode": 2,
+      "ms": 0.1053868755698204,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 0,
+      "mode": 3,
+      "ms": 0.11477512866258621,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 1,
+      "mode": 3,
+      "ms": 0.11582237482070923,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 1,
+      "mode": 2,
+      "ms": 0.1079307496547699,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 1,
+      "mode": 1,
+      "ms": 0.08148200064897537,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 1,
+      "mode": 0,
+      "ms": 0.08259875327348709,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 2,
+      "mode": 0,
+      "ms": 0.08333899825811386,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 2,
+      "mode": 1,
+      "ms": 0.08580274879932404,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 2,
+      "mode": 2,
+      "ms": 0.10881450027227402,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    },
+    {
+      "matrix": "model.language_model.layers.0.self_attn.o_proj.weight",
+      "shape": [
+        4096,
+        8192
+      ],
+      "iteration": 2,
+      "mode": 3,
+      "ms": 0.11793450266122818,
+      "bit_equal": true,
+      "max_error": 0.0,
+      "matrix_sha256": "817b797927e1b45eecfb1e16bc093e36d72371cec6a82aabc53849eec9cd7b20",
+      "input_sha256": "7364897564b8576f071a0a5067ea3861484515a33a025eeb62b5c16d1f10d2e8"
+    }
+  ],
+  "build": {
+    "command": [
+      "/usr/local/cuda-13.4/bin/nvcc",
+      "-O3",
+      "-lineinfo",
+      "--use_fast_math",
+      "-std=c++17",
+      "-arch=sm_121a",
+      "--shared",
+      "--cudart",
+      "shared",
+      "-Xcompiler",
+      "-fPIC",
+      "-I.",
+      "-Xptxas=-v",
+      "scratch/glm-vq/q4_refine.cu",
+      "-o",
+      "scratch/glm-vq/libq4_refine.so",
+      "-lcublas"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 2.7907949250075035,
+    "sources": {
+      "scratch/glm-vq/q4_refine.cu": "cf2f08f344d1f534155a4bff0db3903854d9c9f007df668607552216ecb808d4",
+      "cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76"
+    },
+    "binary_sha256": "9690f170c3665f6bb7ff11ba3d02389d0f3a55e941acec0bf18951123702bf90"
+  },
+  "receipt": {
+    "command": [
+      "python3",
+      "tools/host_memory_guard.py",
+      "--max-gib",
+      "8",
+      "--high-gib",
+      "6",
+      "--reserve-gib",
+      "12",
+      "--trip-gib",
+      "12",
+      "--psi-full-limit",
+      "0",
+      "--timeout",
+      "300",
+      "--log",
+      "scratch/glm-vq/q4-refine-memory.jsonl",
+      "--",
+      "scratch/glm-vq/venv/bin/python",
+      "scratch/glm-vq/q4_refine_probe.py"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 1.7355893359926995,
+    "source_commit": "de0ee6a4be4c426ba06076a7d06369e836f3591d",
+    "probe_sha256": "7c65819f46cf232b8264b6e84b7d555ae9c67647a7107f8afe31a1eaf289a065"
+  },
+  "libraries": [
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/libq4_refine.so",
+    "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+    "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+  ],
+  "clocks": [
+    {
+      "timestamp": "2026/10/16 08:22:51.757",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.40 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:51.866",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.40 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:51.966",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.40 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.066",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.40 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.167",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.40 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.267",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.54 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.367",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.54 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.468",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.54 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.568",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.54 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.669",
+      " clocks.current.sm [MHz]": " 305 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 4.54 W",
+      " utilization.gpu [%]": " 0 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.769",
+      " clocks.current.sm [MHz]": " 2190 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 10.44 W",
+      " utilization.gpu [%]": " 76 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.869",
+      " clocks.current.sm [MHz]": " 2190 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 10.44 W",
+      " utilization.gpu [%]": " 76 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:52.970",
+      " clocks.current.sm [MHz]": " 2190 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 10.44 W",
+      " utilization.gpu [%]": " 76 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:53.071",
+      " clocks.current.sm [MHz]": " 2190 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 10.44 W",
+      " utilization.gpu [%]": " 76 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:53.171",
+      " clocks.current.sm [MHz]": " 2190 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 10.44 W",
+      " utilization.gpu [%]": " 76 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:53.271",
+      " clocks.current.sm [MHz]": " 2184 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 29.56 W",
+      " utilization.gpu [%]": " 83 %"
+    },
+    {
+      "timestamp": "2026/10/16 08:22:53.372",
+      " clocks.current.sm [MHz]": " 2184 MHz",
+      " clocks.current.memory [MHz]": " [N/A]",
+      " power.draw [W]": " 29.56 W",
+      " utilization.gpu [%]": " 83 %"
+    }
+  ],
+  "target": {
+    "current_decode_s": 0.434276411,
+    "decode_wall_s": 1.928119037,
+    "logical_q4_bytes_per_token": 2566914048,
+    "logical_payload_GBs": 189.14508698930925,
+    "source_unchanged": true,
+    "all_136_selected_weight_hashes_match_prior": true,
+    "reused_ncu": "q4-stage-ncu.ncu-repz; unchanged kernel/shape path, prior isolated protocol, not a new current-model counter capture",
+    "source_counter_samples": {
+      "first_input_dependent_fma_long_scoreboard": 1670,
+      "weight_staging_stores_long_scoreboard": 1666
+    }
+  },
+  "resources": {
+    "dynamic_shared_bytes": 18432,
+    "baseline_registers": 51,
+    "specialized_registers": 40,
+    "prefetch_q_registers": 51,
+    "prefetch_o_registers": 48,
+    "spills": 0
+  },
+  "limits": [
+    "No end-to-end candidate claim. No model, broad quality or primitive gate rerun.",
+    "Fewer registers alone do not establish occupancy or latency improvement.",
+    "No detailed counter capture of rejected variants; precise cause of async slowdown unproven."
+  ],
+  "reproducer_sources": {
+    "scratch/glm-vq/q4_refine.cu": "// Bounded experiment: current Q4 dot/reduction with shape specialization,\n// single-stage asynchronous transport and optional next-block input prefetch.\n#include \"cuda/glm_vq_linear.cuh\"\n__device__ __forceinline__ void q4_acc_reg(const uint8_t *block, const float4 lo, const float4 hi, float *sum) {\n    const uint32_t lane = threadIdx.x & 31, group = lane >> 3, offset = (lane & 7) * 4;\n    const uint4 h = *(const uint4 *)block;\n    const uint32_t packed = *(const uint32_t *)(block + 16 + lane * 4);\n    const float d = __half2float(__ushort_as_half(h.x & 65535u));\n    const float dm = __half2float(__ushort_as_half(h.x >> 16));\n    float sl, ml, sh, mh;\n    glmvq_q4_scales(h, group * 2, &sl, &ml);\n    glmvq_q4_scales(h, group * 2 + 1, &sh, &mh);\n    sl *= d; sh *= d; ml *= dm; mh *= dm;\n    float low[4], high[4];\n    #pragma unroll\n    for (uint32_t j = 0; j < 4; j++) {\n        const uint32_t byte = packed >> (j * 8) & 255u;\n        low[j] = sl * (byte & 15u) - ml;\n        high[j] = sh * (byte >> 4) - mh;\n    }\n    *sum = fmaf(low[0], lo.x, *sum); *sum = fmaf(low[1], lo.y, *sum);\n    *sum = fmaf(low[2], lo.z, *sum); *sum = fmaf(low[3], lo.w, *sum);\n    *sum = fmaf(high[0], hi.x, *sum); *sum = fmaf(high[1], hi.y, *sum);\n    *sum = fmaf(high[2], hi.z, *sum); *sum = fmaf(high[3], hi.w, *sum);\n}\n\ntemplate <uint32_t COLS, uint32_t SPLIT, bool ASYNC, bool PREFETCH>\n__global__ void __launch_bounds__(256, 4) q4_refine(const uint8_t *weight,\n        const float *input, float *out, uint32_t rows) {\n    extern __shared__ uint4 staged[];\n    __shared__ float partial[GLMVQ_Q4_WARPS];\n    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5;\n    constexpr uint32_t rpb = GLMVQ_Q4_WARPS / SPLIT, blocks = COLS / GLMVQ_Q4_BLOCK;\n    constexpr uint32_t row16 = blocks * (GLMVQ_Q4_BYTES / sizeof(uint4));\n    const uint32_t local = warp / SPLIT, part = warp % SPLIT;\n    const uint32_t first = blockIdx.x * rpb, row = first + local;\n    const uint32_t count = min(rpb, rows - first) * row16;\n    const uint4 *src = (const uint4 *)weight + (uint64_t)first * row16;\n    for (uint32_t i = threadIdx.x; i < count; i += blockDim.x) {\n        if constexpr (ASYNC) { __pipeline_memcpy_async(staged + i, src + i, sizeof(uint4)); }\n        else { staged[i] = __ldcs(src + i); }\n    }\n    if constexpr (ASYNC) { __pipeline_commit(); __pipeline_wait_prior(0); }\n    __syncthreads();\n    float sum = 0;\n    if (row < rows) {\n        const uint8_t *w = (const uint8_t *)(staged + local * row16);\n        if constexpr (PREFETCH) {\n            constexpr uint32_t stride = SPLIT * GLMVQ_Q4_BLOCK;\n            const float *x = input + part * GLMVQ_Q4_BLOCK + (lane >> 3) * 64 + (lane & 7) * 4;\n            float4 lo = *(const float4 *)x, hi = *(const float4 *)(x + 32);\n            #pragma unroll 1\n            for (uint32_t b = part; b < blocks; b += SPLIT, x += stride) {\n                float4 next_lo{}, next_hi{};\n                if (b + SPLIT < blocks) {\n                    next_lo = *(const float4 *)(x + stride);\n                    next_hi = *(const float4 *)(x + stride + 32);\n                }\n                q4_acc_reg(w + b * GLMVQ_Q4_BYTES, lo, hi, &sum);\n                lo = next_lo; hi = next_hi;\n            }\n        } else {\n            #pragma unroll 1\n            for (uint32_t b = part; b < blocks; b += SPLIT) {\n                glmvq_q4_acc<1>(w + b * GLMVQ_Q4_BYTES, input, COLS,\n                    b * GLMVQ_Q4_BLOCK, 1, &sum);\n            }\n        }\n    }\n    for (int stride = 16; stride; stride >>= 1) { sum += __shfl_xor_sync(0xffffffffu, sum, stride); }\n    if (!lane) { partial[warp] = sum; }\n    __syncthreads();\n    if (row >= rows || lane || part) { return; }\n    float value = 0;\n    #pragma unroll\n    for (uint32_t p = 0; p < SPLIT; p++) { value += partial[warp + p]; }\n    out[row] = __bfloat162float(__float2bfloat16_rn(value));\n}\n\ntemplate <uint32_t COLS, uint32_t SPLIT>\nstatic void q4_launch(const uint8_t *w, const float *x, float *y, uint32_t rows, uint32_t mode) {\n    constexpr uint32_t rpb = GLMVQ_Q4_WARPS / SPLIT;\n    constexpr uint32_t shared = rpb * COLS / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;\n    const uint32_t grid = (rows + rpb - 1) / rpb;\n    if (mode == 1) { q4_refine<COLS,SPLIT,false,false><<<grid,256,shared>>>(w,x,y,rows); }\n    if (mode == 2) { q4_refine<COLS,SPLIT,true,false><<<grid,256,shared>>>(w,x,y,rows); }\n    if (mode == 3) { q4_refine<COLS,SPLIT,true,true><<<grid,256,shared>>>(w,x,y,rows); }\n}\nextern \"C\" int bench_q4_refine(const uint8_t *packed, const float *input, float *output,\n        uint32_t rows, uint32_t cols, uint32_t tokens, uint32_t repeats, uint32_t mode, float *ms) {\n    if (!packed || !input || !output || !ms || !rows || !cols || cols % GLMVQ_Q4_BLOCK ||\n        !tokens || tokens > GLMVQ_Q4_WARPS || !repeats || mode > 3 || tokens != 1 || (cols != 4096 && cols != 8192)) { return -1; }\n    constexpr uint64_t rotation_bytes = 64ull << 20;\n    constexpr uint32_t warmup = 32;\n    const uint64_t wb = (uint64_t)rows * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;\n    const uint32_t copies = (uint32_t)((rotation_bytes + wb - 1) / wb);\n    const uint64_t xb = (uint64_t)tokens * cols * sizeof(float), yb = (uint64_t)tokens * rows * sizeof(float);\n    uint8_t *w = nullptr;\n    float *x = nullptr, *y = nullptr;\n    cudaEvent_t begin = nullptr, end = nullptr;\n    glmvq_q4_config config;\n    cudaError_t err = glmvq_q4_prepare(&config, GLMVQ_Q4_STAGE);\n    if (err == cudaSuccess) { err = cudaMalloc(&w, wb * copies); }\n    if (err == cudaSuccess) { err = cudaMalloc(&x, xb); }\n    if (err == cudaSuccess) { err = cudaMalloc(&y, yb); }\n    if (err == cudaSuccess) { err = cudaEventCreate(&begin); }\n    if (err == cudaSuccess) { err = cudaEventCreate(&end); }\n    for (uint32_t i = 0; i < copies && err == cudaSuccess; i++) {\n        err = cudaMemcpy(w + i * wb, packed, wb, cudaMemcpyHostToDevice);\n    }\n    if (err == cudaSuccess) { err = cudaMemcpy(x, input, xb, cudaMemcpyHostToDevice); }\n    // A one-launch request is for NCU, which supplies its own replay protocol.\n    for (uint32_t i = 0; i < (repeats == 1 ? 0u : warmup) && err == cudaSuccess; i++) {\n        if (mode == 0) {\n            err = glmvq_q4_decode(w + i % copies * wb, x, y, rows, cols, tokens, 0, &config);\n        } else {\n            if (cols == 4096) { q4_launch<4096,1>(w + i % copies * wb,x,y,rows,mode); }\n            else { q4_launch<8192,2>(w + i % copies * wb,x,y,rows,mode); }\n            err = cudaGetLastError();\n        }\n    }\n    if (err == cudaSuccess) { err = cudaEventRecord(begin); }\n    for (uint32_t i = 0; i < repeats && err == cudaSuccess; i++) {\n        if (mode == 0) {\n            err = glmvq_q4_decode(w + i % copies * wb, x, y, rows, cols, tokens, 0, &config);\n        } else {\n            if (cols == 4096) { q4_launch<4096,1>(w + i % copies * wb,x,y,rows,mode); }\n            else { q4_launch<8192,2>(w + i % copies * wb,x,y,rows,mode); }\n            err = cudaGetLastError();\n        }\n    }\n    if (err == cudaSuccess) { err = cudaEventRecord(end); }\n    if (err == cudaSuccess) { err = cudaEventSynchronize(end); }\n    if (err == cudaSuccess) { err = cudaEventElapsedTime(ms, begin, end); }\n    if (err == cudaSuccess) { *ms /= repeats; }\n    if (err == cudaSuccess) { err = cudaMemcpy(output, y, yb, cudaMemcpyDeviceToHost); }\n    if (end) { cudaEventDestroy(end); }\n    if (begin) { cudaEventDestroy(begin); }\n    cudaFree(y); cudaFree(x); cudaFree(w);\n    return (int)err;\n}\n",
+    "scratch/glm-vq/q4_refine_probe.py": "import ctypes as ct\nimport hashlib\nimport importlib.util\nimport json\nfrom pathlib import Path\nimport sys\nimport numpy as np\n\nroot=Path.cwd();p=root/'scratch/glm-vq'\nspec=importlib.util.spec_from_file_location('gate',root/'tests/test_glm_vq_q4k.py')\ngate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)\nmodel=Path('/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-KDA-GGUF')\nrecords=json.loads((model/'tensor-manifest.json').read_text())['tensors']\nlib=p/'libq4_refine.so';fn=ct.CDLL(str(lib)).bench_q4_refine\nfn.argtypes=[ct.c_void_p]*3+[ct.c_uint32]*5+[ct.POINTER(ct.c_float)];fn.restype=ct.c_int\nresults=[]\nfor suffix,input_name in [('q_proj','input_layernorm'),('o_proj','self_attn.o_norm')]:\n name=f'model.language_model.layers.0.self_attn.{suffix}.weight'\n t=next(t for t in records if t['name']==name); rows,cols=t['shape']\n with (model/t['part']).open('rb') as f:\n  _,entries,base=gate.q4.read_header(f);e=next(e for e in entries if e['name']==name)\n  f.seek(base+e['offset']);raw=f.read(t['payload_bytes'])\n assert hashlib.sha256(raw).hexdigest()==t['payload_sha256']\n w=np.frombuffer(raw,np.uint8).copy()\n x=np.fromfile(p/f'layer-fixture/{input_name}.f32',np.float32).reshape(-1,cols)[:1].copy()\n assert x.ctypes.data%16==0\n expected=None\n for iteration,order in enumerate([[0,1,2,3],[3,2,1,0],[0,1,2,3]]):\n  for mode in order:\n   y=np.empty((1,rows),np.float32);elapsed=ct.c_float()\n   assert fn(w.ctypes.data,x.ctypes.data,y.ctypes.data,rows,cols,1,256,mode,ct.byref(elapsed))==0\n   assert np.isfinite(y).all()\n   if expected is None:expected=y.copy()\n   r=dict(matrix=name,shape=[rows,cols],iteration=iteration,mode=mode,ms=elapsed.value,\n      bit_equal=bool(np.array_equal(y,expected)),max_error=float(np.max(np.abs(y-expected))),\n      matrix_sha256=t['payload_sha256'],input_sha256=hashlib.sha256(x).hexdigest())\n   if not r['bit_equal']:\n    restored=gate.unpack(raw,rows,cols);ref=x.astype(np.float64)@restored.T\n    mag=np.abs(x.astype(np.float64))@np.abs(restored.T);u=2**-24;gamma=(cols+32)*u/(1-(cols+32)*u)\n    bound=gamma*mag+np.exp2(np.floor(np.log2(np.maximum(np.abs(ref),2**-126)))-8)+2**-126\n    r['max_bound_ratio']=float(np.max(np.abs(y-ref)/bound));assert r['max_bound_ratio']<=1,r\n   results.append(r);print(json.dumps(r),flush=True)\n   (p/'q4-refine-results.json').write_text(json.dumps(results,indent=2))\nmaps=Path('/proc/self/maps').read_text().splitlines()\nlibs=sorted(set(line.split()[-1] for line in maps if any(s in line for s in ['libcuda','libcublas','libq4_refine','libtorch'])))\n(p/'q4-refine-libraries.json').write_text(json.dumps(libs,indent=2))\nprint('Q4_REFINE_SCREEN_PASS',len(results),libs,flush=True)\n"
+  },
+  "local_files": {
+    "scratch/glm-vq/q4-refine-build.log": "d702238dac3a3cde1aae71f63ac19f4c20b7eed0ce01e5059f2a2a5a522a9a8d",
+    "scratch/glm-vq/q4-refine-memory.jsonl": "553d6ed7edc8b6c7d99cb9be4b7573b2055b0eb7abd4f6d56aaf546efc715afb",
+    "scratch/glm-vq/q4-refine-probe.log": "9afed17dddffe8977ddd895c94c67c467e2d509377786ed79b00a9e2dcf84c4d",
+    "scratch/glm-vq/q4-stage-source.csv": "c559e3e8970eba72d3b2d2f952555f86c8045731ce4760c8774573c62e9e2adb"
+  }
+}

@@ -37,6 +37,7 @@
 #include "ds4_weight_identity.h" /* rider #48: manifest content fingerprint */
 #include "ds4_mem_gov.h"      /* memgov D0b: epoch protocol primitives */
 #include "ds41_vq_fmt.h"      /* DQVL blob header/slot helpers for the vq-align copy */
+#include "cuda/q4_k.cuh"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -21345,6 +21346,9 @@ static uint64_t embed_quant_row_bytes(uint32_t type, uint32_t n_embd) {
     if (type == 0u) { return (uint64_t)n_embd * 4u; }
     if (type == 1u || type == 30u) { return (uint64_t)n_embd * 2u; }
     if (type == 8u && (n_embd & 31u) == 0u) { return ((uint64_t)n_embd / 32u) * 34u; }
+    if (type == 12u && n_embd % DS4_Q4_K_BLOCK == 0u) {
+        return (uint64_t)n_embd / DS4_Q4_K_BLOCK * DS4_Q4_K_BYTES;
+    }
     if (type == 14u && (n_embd & 255u) == 0u) { return ((uint64_t)n_embd / 256u) * 210u; }
     return 0;
 }
@@ -21354,6 +21358,10 @@ __device__ static float embed_quant_value(const unsigned char *weights,
     if (type == 0u) { return ((const float *)weights)[index]; }
     if (type == 1u) { return __half2float(((const __half *)weights)[index]); }
     if (type == 30u) { return __uint_as_float((uint32_t)((const uint16_t *)weights)[index] << 16); }
+    if (type == 12u) {
+        return ds4_q4_k_value(weights + index / DS4_Q4_K_BLOCK * DS4_Q4_K_BYTES,
+            index % DS4_Q4_K_BLOCK);
+    }
     // Q6_K: ql[128], qh[64], signed scales[16], FP16 d.
     const unsigned char *block = weights + (index / 256u) * 210u;
     const unsigned j = index & 255u, half = j / 128u;
@@ -45845,10 +45853,13 @@ static __device__ __forceinline__ float solar_kda_silu(float x) {
  * a sigmoid decay by the same constant and use a plain sigmoid beta; they
  * differ only in how ssm_a reaches the kernel, which is A_log on GLM and
  * already exponentiated in the Ling artifact. */
-enum { DS4_KDA_SOLAR = 0u, DS4_KDA_GLM53 = 1u, DS4_KDA_LING3VL = 2u };
+enum { DS4_KDA_SOLAR = 0u, DS4_KDA_GLM53 = 1u, DS4_KDA_LING3VL = 2u, DS4_KDA_GLMVQ = 3u };
 
+/* GLMVQ passes betas its own prep already rounded at the source BF16
+ * boundary; the chunk factor kernel then takes them unchanged. */
 static __device__ __forceinline__ float kda_delta_beta(
         float logit, uint32_t variant) {
+    if (variant == DS4_KDA_GLMVQ) return logit;
     return (variant != DS4_KDA_SOLAR ? 1.0f : 2.0f) / (1.0f + expf(-logit));
 }
 
@@ -49411,6 +49422,7 @@ static int ds4_gpu_glm53_matmul_bf16(
 #define DS4_GLM53_VISION_STREAM cuda_decode_stream()
 #include "ds4_glm53_vision_gpu.cuh"
 #include "ds4_glm53_compact_gpu.cuh"
+#include "ds4_glmvq_gpu.cuh"
 #include "ds4_inkling_gpu.cuh"
 #include "ds4_ling3vl_gpu.cuh"
 #include "ds4_step37_gpu.cuh"

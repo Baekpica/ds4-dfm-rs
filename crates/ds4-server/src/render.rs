@@ -165,7 +165,8 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         4 => ModelSyntax::Exaone,
         5 => ModelSyntax::Dots3,
         6 => ModelSyntax::Qwen4Exp,
-        7 => ModelSyntax::Glm53,
+        // 17: GLM VQ keeps GLM-5.3's template, tool markers and parser.
+        7 | 17 => ModelSyntax::Glm53,
         8 => ModelSyntax::K2Horizon,
         9 => ModelSyntax::Inkling,
         10 => ModelSyntax::Step37,

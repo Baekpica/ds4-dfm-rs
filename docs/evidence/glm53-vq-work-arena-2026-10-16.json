@@ -1,0 +1,2732 @@
+{
+  "build": {
+    "command": [
+      "make",
+      "-j2",
+      "CUDA_ARCH=sm_121",
+      "CUDA_HOME=/usr/local/cuda-13.4",
+      "ds4-bench-perf",
+      "tests/test_glm_vq_work",
+      "tests/glm_vq_quality"
+    ],
+    "head": "b6e2f5c7e598ba7e5f2f23494a1edf314ef03d0e",
+    "diff": "diff --git a/Makefile b/Makefile\nindex b5ae4869..f92e173a 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -1997,6 +1997,16 @@ tests/test_glm_vq_owner: tests/test_glm_vq_owner.o $(DS4_CUDA_CORE_OBJS)\n test-glm-vq-owner: tests/test_glm_vq_owner\n \t./tests/test_glm_vq_owner\n \n+tests/test_glm_vq_work.o: tests/test_glm_vq_work.c ds4.h ds4_glmvq.h ds4_gpu.h\n+\t$(CC) $(CFLAGS) -I. -c -o $@ $<\n+\n+tests/test_glm_vq_work: tests/test_glm_vq_work.o $(DS4_CUDA_CORE_OBJS)\n+\t$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)\n+\n+.PHONY: test-glm-vq-work\n+test-glm-vq-work: tests/test_glm_vq_work\n+\t./tests/test_glm_vq_work\n+\n tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc ds4_model_catalog.h\n \t$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \\\n \t\t-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)\n@@ -2583,7 +2593,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS\n endif\n \n clean:\n-\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate\n+\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_work tests/test_glm_vq_quote glm-vq-gate\n \trm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared\n \trm -f tests/bench_glm53_stream tests/bench_glm53_stream.o\n \trm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o\ndiff --git a/ds4_glmvq_gpu.cuh b/ds4_glmvq_gpu.cuh\nindex 19b9c28d..8521016d 100644\n--- a/ds4_glmvq_gpu.cuh\n+++ b/ds4_glmvq_gpu.cuh\n@@ -23,6 +23,8 @@ struct ds4_gvq_model {\n struct ds4_gvq_ctx {\n     const ds4_gvq_model *model;\n     ds4_gpu_tensor *scratch, *workspace, *pairs;\n+    ds4_gpu_tensor *arena = nullptr;\n+    uint64_t arena_cursor = 0;\n     cublasHandle_t handle;\n     cudaStream_t stream;\n     glmvq_restore_mode restore;\n@@ -62,6 +64,48 @@ static uint64_t gvq_mma_bytes(uint32_t rows) {\n     return (uint64_t)rows * GVQ_USED * per_pair;\n }\n \n+static uint64_t gvq_mma_reserve(ds4_gvq_ctx *ctx, uint32_t rows) {\n+    const uint64_t bytes = gvq_mma_bytes(rows);\n+    if (!bytes) { return 0; }\n+    const cudaError_t status[] = {\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n+    };\n+    if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static uint64_t gvq_decode_reserve(ds4_gvq_ctx *ctx) {\n+    const uint64_t bytes = gvq_decode_bytes();\n+    if (!bytes) { return 0; }\n+    if (glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks) == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static bool gvq_arena_span(const uint64_t *sizes, size_t count, uint64_t *bytes) {\n+    constexpr uint64_t ALIGN = 256;\n+    *bytes = 0;\n+    for (size_t i = 0; i < count; i++) {\n+        if (!sizes[i]) { continue; }\n+        // Preserve CUDA/cuBLAS alignment without inflating the existing quote.\n+        if (*bytes % ALIGN || sizes[i] > UINT64_MAX - *bytes) { return false; }\n+        *bytes += sizes[i];\n+    }\n+    return true;\n+}\n+\n+static ds4_gpu_tensor *gvq_work_alloc(ds4_gvq_ctx *ctx, uint64_t bytes) {\n+    if (!ctx->arena) { return ds4_gpu_tensor_alloc(bytes); }\n+    ds4_gpu_tensor *view = ds4_gpu_tensor_view(ctx->arena, ctx->arena_cursor, bytes);\n+    if (view) { ctx->arena_cursor += bytes; }\n+    return view;\n+}\n+\n static bool gvq_span(uint64_t off, uint64_t bytes, uint64_t size) {\n     return off <= size && bytes <= size - off;\n }\n@@ -188,6 +232,8 @@ extern \"C\" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {\n     ds4_gpu_tensor_free(ctx->pairs);\n     ds4_gpu_tensor_free(ctx->workspace);\n     ds4_gpu_tensor_free(ctx->scratch);\n+    // Views die before their one owner; cuBLAS no longer retains workspace.\n+    ds4_gpu_tensor_free(ctx->arena);\n     delete ctx;\n }\n \n@@ -213,6 +259,12 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         fprintf(stderr, \"ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\\n\");\n         return nullptr;\n     }\n+    const char *arena = getenv(\"DS4_GLMVQ_WORK_ARENA\");\n+    if (arena && strcmp(arena, \"0\") && strcmp(arena, \"1\")) {\n+        fprintf(stderr, \"ds4: DS4_GLMVQ_WORK_ARENA accepts 0 or 1\\n\");\n+        return nullptr;\n+    }\n+    const bool want_arena = arena && !strcmp(arena, \"1\");\n     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};\n     if (!ctx) { return nullptr; }\n     ctx->direct_fp8 = !fp8 || strcmp(fp8, \"0\");\n@@ -237,9 +289,24 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         return nullptr;\n     }\n     ctx->model = model;\n-    ctx->scratch = ds4_gpu_tensor_alloc(bytes);\n-    ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);\n-    ctx->pairs = ds4_gpu_tensor_alloc((uint64_t)rows * GVQ_USED * sizeof(uint32_t));\n+    uint64_t mma_bytes = 0, decode_bytes = 0;\n+    const uint64_t pair_bytes = (uint64_t)rows * GVQ_USED * sizeof(uint32_t);\n+    if (want_arena) {\n+        // Only reserve supported paths. This session owns every slice until\n+        // destruction; no global pool, aliasing or deferred first-touch work.\n+        mma_bytes = gvq_mma_reserve(ctx, rows);\n+        decode_bytes = gvq_decode_reserve(ctx);\n+        const uint64_t sizes[] = {bytes, GVQ_CUBLAS_WORKSPACE, pair_bytes, mma_bytes, decode_bytes};\n+        uint64_t total = 0;\n+        if (gvq_arena_span(sizes, sizeof(sizes) / sizeof(sizes[0]), &total)) {\n+            ctx->arena = ds4_gpu_tensor_alloc(total);\n+            if (!ctx->arena) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+            fprintf(stderr, \"ds4: GLM VQ work arena %.2f MiB\\n\", (double)total / 1048576.0);\n+        }\n+    }\n+    ctx->scratch = gvq_work_alloc(ctx, bytes);\n+    ctx->workspace = gvq_work_alloc(ctx, GVQ_CUBLAS_WORKSPACE);\n+    ctx->pairs = gvq_work_alloc(ctx, pair_bytes);\n     ctx->routes.resize((uint64_t)rows * GVQ_USED);\n     ctx->grouped.resize((uint64_t)rows * GVQ_USED);\n     if (!ctx->scratch || !ctx->workspace || !ctx->pairs || !cublas_ok(cublasCreate(&ctx->handle), \"GLM VQ cuBLAS create\") ||\n@@ -248,37 +315,18 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         ds4_gpu_gvq_free(ctx);\n         return nullptr;\n     }\n-    const uint64_t mma_bytes = gvq_mma_bytes(rows);\n+    if (!want_arena) { mma_bytes = gvq_mma_reserve(ctx, rows); }\n     if (mma_bytes) {\n-        // Reserve before execution/capture; shape/resource failures keep GEMM.\n-        const cudaError_t status[] = {\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n-        };\n-        if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) {\n-            ctx->mma = ds4_gpu_tensor_alloc(mma_bytes);\n-            if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-            ctx->items.reserve((uint64_t)rows * GVQ_USED);\n-            ctx->order.resize((uint64_t)rows * GVQ_USED);\n-            ctx->token_used.resize(rows);\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->mma = gvq_work_alloc(ctx, mma_bytes);\n+        if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+        ctx->items.reserve((uint64_t)rows * GVQ_USED);\n+        ctx->order.resize((uint64_t)rows * GVQ_USED);\n+        ctx->token_used.resize(rows);\n     }\n-    const uint64_t decode_bytes = gvq_decode_bytes();\n+    if (!want_arena) { decode_bytes = gvq_decode_reserve(ctx); }\n     if (decode_bytes) {\n-        // The published artifact uses a shared 8192-word E4M3 layer book.\n-        // Reserve descriptors and intermediate rows before any execution.\n-        const cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);\n-        if (status == cudaSuccess) {\n-            ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);\n-            if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->decode = gvq_work_alloc(ctx, decode_bytes);\n+        if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n     }\n     return ctx;\n }\n",
+    "sources": {
+      "ds4_glmvq_gpu.cuh": "247ec102c4c336f4112b0d5a792f5f35325dbdb36391c7d1e4761ee2c85fd133",
+      "Makefile": "b0ff44b968f70a514870fe508704d1a2af08742248c12fa6f9ded8bf656c5d79",
+      "tests/test_glm_vq_work.c": "d6c04aeea4636689079a6816c1117c80c07c8d589dfb66bc87d7a777e72a83c6"
+    },
+    "test_source": "/* Exercise session-owned work buffers without loading a model artifact. */\n#include \"ds4.h\"\n#include \"ds4_gpu.h\"\n#include \"ds4_glmvq.h\"\n#include <stdio.h>\n#include <stdlib.h>\n#include <sys/mman.h>\n#include <unistd.h>\n\nenum { DIM = 128, ROWS = 4, BF16_TYPE = 30, SCRATCH = 64 * 1024 };\n\nstatic int check_dot(ds4_gvq_ctx *ctx, ds4_gpu_tensor *input,\n        ds4_gpu_tensor *output, uint32_t rows, float value) {\n    float x[ROWS * DIM], y[ROWS * DIM];\n    const uint64_t bytes = (uint64_t)rows * DIM * sizeof(float);\n    for (uint32_t i = 0; i < rows * DIM; i++) { x[i] = value; }\n    if (!ds4_gpu_tensor_write(input, 0, x, bytes) ||\n        !ds4_gpu_gvq_linear(ctx, output, 0, input, rows, DS4_GVQ_BF16) ||\n        !ds4_gpu_tensor_read(output, 0, y, bytes)) { return 0; }\n\n    /* These small binary fractions and sums are exactly representable. */\n    for (uint32_t i = 0; i < rows * DIM; i++) {\n        if (y[i] != DIM * value) {\n            fprintf(stderr, \"GLM VQ work: row element %u: %g != %g\\n\",\n                i, y[i], DIM * value);\n            return 0;\n        }\n    }\n    return 1;\n}\n\nstatic int check_sessions(const ds4_gvq_model *model) {\n    const struct { uint32_t capacity, extra; } cases[] = {\n        {1, 0}, {8, 0}, {32, 0}, {512, 0}, {1024, 0}, {2048, 0},\n        {32, 1} /* An unaligned scratch size must retain separate allocations. */\n    };\n    if (setenv(\"DS4_GLMVQ_WORK_ARENA\", \"1\", 1)) { return 0; }\n    ds4_gvq_ctx *keeper = ds4_gpu_gvq_create(model, SCRATCH, 32);\n    ds4_gpu_tensor *input = ds4_gpu_tensor_alloc(ROWS * DIM * sizeof(float));\n    ds4_gpu_tensor *output = ds4_gpu_tensor_alloc(ROWS * DIM * sizeof(float));\n    int ok = keeper && input && output;\n\n    for (unsigned mode = 0; ok && mode < 2; mode++) {\n        if (setenv(\"DS4_GLMVQ_WORK_ARENA\", mode ? \"1\" : \"0\", 1)) { ok = 0; break; }\n        for (unsigned i = 0; ok && i < sizeof(cases) / sizeof(cases[0]); i++) {\n            const uint32_t rows = cases[i].capacity < ROWS ? cases[i].capacity : ROWS;\n            ds4_gvq_ctx *other = ds4_gpu_gvq_create(model, SCRATCH + cases[i].extra,\n                cases[i].capacity);\n            ok = other && check_dot(other, input, output, rows, 0.5f) &&\n                check_dot(keeper, input, output, ROWS, -0.25f);\n            ds4_gpu_gvq_free(other);\n            /* Freeing another session must not invalidate this workspace. */\n            ok = ok && check_dot(keeper, input, output, ROWS, 0.125f);\n            if (!ok) {\n                fprintf(stderr, \"GLM VQ work: mode=%u capacity=%u extra=%u failed\\n\",\n                    mode, cases[i].capacity, cases[i].extra);\n            }\n        }\n    }\n    ds4_gpu_tensor_free(output);\n    ds4_gpu_tensor_free(input);\n    ds4_gpu_gvq_free(keeper);\n    return ok;\n}\n\nint main(void) {\n    const uint64_t matrix = DIM * DIM * sizeof(uint16_t);\n    const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);\n    const uint64_t bytes = (matrix + page - 1u) / page * page;\n    uint16_t *map = mmap(NULL, bytes, PROT_READ | PROT_WRITE,\n        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);\n    if (map == MAP_FAILED || !ds4_gpu_init()) { return 1; }\n    for (unsigned i = 0; i < DIM * DIM; i++) { map[i] = 0x3f80u; }\n    if (mprotect(map, bytes, PROT_READ) ||\n        ds4_gpu_model_source_bind(map, bytes, DS4_MSRC_ROLE_PRIMARY, -1,\n            DS4_RESIDENCY_EAGER_DEVICE, \"base\", \"GVQ work buffers\") < 0 ||\n        !ds4_gpu_set_model_map_range(map, bytes, 0u, bytes, matrix)) { return 1; }\n\n    ds4_gvq_record record = {0, matrix, BF16_TYPE, DIM, DIM,\n        DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK};\n    ds4_unit_tensor_in tensor = {0, matrix, DS4_TCAT_ROUTED_EXPERT, 1u};\n    ds4_unit_compile_params params = {0};\n    params.max_unit_bytes = bytes;\n    params.vmm_granularity = 256u;\n    params.device_promote = 1u;\n    params.promote_experts = 1u;\n    ds4_phys_unit unit;\n    const int count = ds4_units_compile(&tensor, 1, &params, &unit);\n    uint64_t populated = 0;\n    if (count != 1 || ds4_units_verify(&tensor, 1, &params, &unit, count) ||\n        ds4_gpu_model_units_bind(map, &unit, count) ||\n        !ds4_gpu_materialize_model_plan(map, bytes, &populated)) { return 1; }\n\n    ds4_gvq_model *model = ds4_gpu_gvq_bind(map, bytes, &record, 1);\n    const int ok = model && check_sessions(model);\n    ds4_gpu_gvq_unbind(model);\n    ds4_gpu_unregister_model_map(map);\n    ds4_gpu_cleanup();\n    munmap(map, bytes);\n    printf(\"GLM VQ work lifetime and independent contexts: %s\\n\", ok ? \"PASS\" : \"FAIL\");\n    return ok ? 0 : 1;\n}\n",
+    "exit_code": 0,
+    "wall_seconds": 75.57784467400052,
+    "binaries": {
+      "ds4-bench-perf": "21a6ae086b5194796481572de4dfb471863ddbaa77f53befa5561172cdabb148",
+      "tests/test_glm_vq_work": "3ee1fc6b1f1f6de3fb1d9eefa191674e981415ea947f99932055ed4fc7be30c7",
+      "tests/glm_vq_quality": "737d2438e81dac0276539bb52da94428003a3ce57d8e3a1425f37a23e9e7afa8"
+    }
+  },
+  "matched_plain_runs": {
+    "identity": {
+      "head": "b6e2f5c7e598ba7e5f2f23494a1edf314ef03d0e",
+      "binary_sha256": "21a6ae086b5194796481572de4dfb471863ddbaa77f53befa5561172cdabb148",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "247ec102c4c336f4112b0d5a792f5f35325dbdb36391c7d1e4761ee2c85fd133",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_RESTORE_VEC": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ]
+    },
+    "runs": [
+      {
+        "label": "work-arena-off-1",
+        "chunk": 1024,
+        "mode": "0",
+        "prefill_tps": 459.6,
+        "decode_tps": 7.32,
+        "steady_decode_tps": 7.35,
+        "inferred_prefill_seconds": 4.316797214969538,
+        "inferred_decode_seconds": 4.371584699453551,
+        "inferred_inference_seconds": 8.68838191442309,
+        "first_decode_seconds": 0.15,
+        "process_wall_seconds": 199.0001286220213,
+        "minimum_system_available_gib": 34.389915466308594,
+        "observed_busy_sm_mhz": [
+          2184,
+          2190.0,
+          2190
+        ],
+        "mma_calls": 84,
+        "mma_workitems": 33435,
+        "mma_workspace_bytes": 302186496,
+        "max32_slot_use": 0.6230596680125617,
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      },
+      {
+        "label": "work-arena-on-1",
+        "chunk": 1024,
+        "mode": "1",
+        "prefill_tps": 345.87,
+        "decode_tps": 7.31,
+        "steady_decode_tps": 7.34,
+        "inferred_prefill_seconds": 5.736259288171857,
+        "inferred_decode_seconds": 4.377564979480164,
+        "inferred_inference_seconds": 10.11382426765202,
+        "first_decode_seconds": 0.152,
+        "process_wall_seconds": 233.99657226598356,
+        "minimum_system_available_gib": 34.576011657714844,
+        "observed_busy_sm_mhz": [
+          2184,
+          2187.0,
+          2190
+        ],
+        "mma_calls": 84,
+        "mma_workitems": 33435,
+        "mma_workspace_bytes": 302186496,
+        "max32_slot_use": 0.6230596680125617,
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      },
+      {
+        "label": "work-arena-on-2",
+        "chunk": 1024,
+        "mode": "1",
+        "prefill_tps": 459.85,
+        "decode_tps": 7.34,
+        "steady_decode_tps": 7.37,
+        "inferred_prefill_seconds": 4.314450364249211,
+        "inferred_decode_seconds": 4.359673024523161,
+        "inferred_inference_seconds": 8.674123388772372,
+        "first_decode_seconds": 0.1528,
+        "process_wall_seconds": 206.03597479700693,
+        "minimum_system_available_gib": 34.40849304199219,
+        "observed_busy_sm_mhz": [
+          2184,
+          2190.0,
+          2190
+        ],
+        "mma_calls": 84,
+        "mma_workitems": 33435,
+        "mma_workspace_bytes": 302186496,
+        "max32_slot_use": 0.6230596680125617,
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      },
+      {
+        "label": "work-arena-off-2",
+        "chunk": 1024,
+        "mode": "0",
+        "prefill_tps": 368.17,
+        "decode_tps": 7.37,
+        "steady_decode_tps": 7.38,
+        "inferred_prefill_seconds": 5.388814949615666,
+        "inferred_decode_seconds": 4.341926729986431,
+        "inferred_inference_seconds": 9.730741679602097,
+        "first_decode_seconds": 0.1467,
+        "process_wall_seconds": 238.29548739397433,
+        "minimum_system_available_gib": 34.51862716674805,
+        "observed_busy_sm_mhz": [
+          2184,
+          2187.0,
+          2190
+        ],
+        "mma_calls": 84,
+        "mma_workitems": 33435,
+        "mma_workspace_bytes": 302186496,
+        "max32_slot_use": 0.6230596680125617,
+        "logit_max_abs": 0.0,
+        "logit_rms": 0.0,
+        "kl_ref_candidate": 0.0,
+        "tv": 0.0,
+        "argmax_equal": true,
+        "generated_ids_equal": true,
+        "generated_common_prefix": 32
+      }
+    ],
+    "medians": {
+      "0": {
+        "runs": 2,
+        "prefill_tps": 413.885,
+        "decode_tps": 7.345000000000001,
+        "inferred_inference_seconds": 9.209561797012594,
+        "mma_workitems": 33435.0,
+        "max32_slot_use": 0.6230596680125617
+      },
+      "1": {
+        "runs": 2,
+        "prefill_tps": 402.86,
+        "decode_tps": 7.324999999999999,
+        "inferred_inference_seconds": 9.393973828212197,
+        "mma_workitems": 33435.0,
+        "max32_slot_use": 0.6230596680125617
+      }
+    },
+    "scope": "Original artifact, unchanged arithmetic, context work arena off/on; 1984 raw-code tokens +32 forced greedy tokens, ctx2048, chunk1024, MTP/capture off. Inference time inferred from rounded phase throughput; not HTTP TTFT. max32 slot use is weight-reuse capacity, not tensor arithmetic utilization; kernel already skips empty n8 subtiles. Long-prefix quality assessed separately."
+  },
+  "receipts": {
+    "work-arena-off-1": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-off-1/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-off-1/proof"
+      ],
+      "head": "b6e2f5c7e598ba7e5f2f23494a1edf314ef03d0e",
+      "diff": "diff --git a/Makefile b/Makefile\nindex b5ae4869..f92e173a 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -1997,6 +1997,16 @@ tests/test_glm_vq_owner: tests/test_glm_vq_owner.o $(DS4_CUDA_CORE_OBJS)\n test-glm-vq-owner: tests/test_glm_vq_owner\n \t./tests/test_glm_vq_owner\n \n+tests/test_glm_vq_work.o: tests/test_glm_vq_work.c ds4.h ds4_glmvq.h ds4_gpu.h\n+\t$(CC) $(CFLAGS) -I. -c -o $@ $<\n+\n+tests/test_glm_vq_work: tests/test_glm_vq_work.o $(DS4_CUDA_CORE_OBJS)\n+\t$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)\n+\n+.PHONY: test-glm-vq-work\n+test-glm-vq-work: tests/test_glm_vq_work\n+\t./tests/test_glm_vq_work\n+\n tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc ds4_model_catalog.h\n \t$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \\\n \t\t-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)\n@@ -2583,7 +2593,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS\n endif\n \n clean:\n-\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate\n+\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_work tests/test_glm_vq_quote glm-vq-gate\n \trm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared\n \trm -f tests/bench_glm53_stream tests/bench_glm53_stream.o\n \trm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o\ndiff --git a/ds4_glmvq_gpu.cuh b/ds4_glmvq_gpu.cuh\nindex 19b9c28d..8521016d 100644\n--- a/ds4_glmvq_gpu.cuh\n+++ b/ds4_glmvq_gpu.cuh\n@@ -23,6 +23,8 @@ struct ds4_gvq_model {\n struct ds4_gvq_ctx {\n     const ds4_gvq_model *model;\n     ds4_gpu_tensor *scratch, *workspace, *pairs;\n+    ds4_gpu_tensor *arena = nullptr;\n+    uint64_t arena_cursor = 0;\n     cublasHandle_t handle;\n     cudaStream_t stream;\n     glmvq_restore_mode restore;\n@@ -62,6 +64,48 @@ static uint64_t gvq_mma_bytes(uint32_t rows) {\n     return (uint64_t)rows * GVQ_USED * per_pair;\n }\n \n+static uint64_t gvq_mma_reserve(ds4_gvq_ctx *ctx, uint32_t rows) {\n+    const uint64_t bytes = gvq_mma_bytes(rows);\n+    if (!bytes) { return 0; }\n+    const cudaError_t status[] = {\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n+    };\n+    if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static uint64_t gvq_decode_reserve(ds4_gvq_ctx *ctx) {\n+    const uint64_t bytes = gvq_decode_bytes();\n+    if (!bytes) { return 0; }\n+    if (glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks) == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static bool gvq_arena_span(const uint64_t *sizes, size_t count, uint64_t *bytes) {\n+    constexpr uint64_t ALIGN = 256;\n+    *bytes = 0;\n+    for (size_t i = 0; i < count; i++) {\n+        if (!sizes[i]) { continue; }\n+        // Preserve CUDA/cuBLAS alignment without inflating the existing quote.\n+        if (*bytes % ALIGN || sizes[i] > UINT64_MAX - *bytes) { return false; }\n+        *bytes += sizes[i];\n+    }\n+    return true;\n+}\n+\n+static ds4_gpu_tensor *gvq_work_alloc(ds4_gvq_ctx *ctx, uint64_t bytes) {\n+    if (!ctx->arena) { return ds4_gpu_tensor_alloc(bytes); }\n+    ds4_gpu_tensor *view = ds4_gpu_tensor_view(ctx->arena, ctx->arena_cursor, bytes);\n+    if (view) { ctx->arena_cursor += bytes; }\n+    return view;\n+}\n+\n static bool gvq_span(uint64_t off, uint64_t bytes, uint64_t size) {\n     return off <= size && bytes <= size - off;\n }\n@@ -188,6 +232,8 @@ extern \"C\" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {\n     ds4_gpu_tensor_free(ctx->pairs);\n     ds4_gpu_tensor_free(ctx->workspace);\n     ds4_gpu_tensor_free(ctx->scratch);\n+    // Views die before their one owner; cuBLAS no longer retains workspace.\n+    ds4_gpu_tensor_free(ctx->arena);\n     delete ctx;\n }\n \n@@ -213,6 +259,12 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         fprintf(stderr, \"ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\\n\");\n         return nullptr;\n     }\n+    const char *arena = getenv(\"DS4_GLMVQ_WORK_ARENA\");\n+    if (arena && strcmp(arena, \"0\") && strcmp(arena, \"1\")) {\n+        fprintf(stderr, \"ds4: DS4_GLMVQ_WORK_ARENA accepts 0 or 1\\n\");\n+        return nullptr;\n+    }\n+    const bool want_arena = arena && !strcmp(arena, \"1\");\n     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};\n     if (!ctx) { return nullptr; }\n     ctx->direct_fp8 = !fp8 || strcmp(fp8, \"0\");\n@@ -237,9 +289,24 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         return nullptr;\n     }\n     ctx->model = model;\n-    ctx->scratch = ds4_gpu_tensor_alloc(bytes);\n-    ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);\n-    ctx->pairs = ds4_gpu_tensor_alloc((uint64_t)rows * GVQ_USED * sizeof(uint32_t));\n+    uint64_t mma_bytes = 0, decode_bytes = 0;\n+    const uint64_t pair_bytes = (uint64_t)rows * GVQ_USED * sizeof(uint32_t);\n+    if (want_arena) {\n+        // Only reserve supported paths. This session owns every slice until\n+        // destruction; no global pool, aliasing or deferred first-touch work.\n+        mma_bytes = gvq_mma_reserve(ctx, rows);\n+        decode_bytes = gvq_decode_reserve(ctx);\n+        const uint64_t sizes[] = {bytes, GVQ_CUBLAS_WORKSPACE, pair_bytes, mma_bytes, decode_bytes};\n+        uint64_t total = 0;\n+        if (gvq_arena_span(sizes, sizeof(sizes) / sizeof(sizes[0]), &total)) {\n+            ctx->arena = ds4_gpu_tensor_alloc(total);\n+            if (!ctx->arena) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+            fprintf(stderr, \"ds4: GLM VQ work arena %.2f MiB\\n\", (double)total / 1048576.0);\n+        }\n+    }\n+    ctx->scratch = gvq_work_alloc(ctx, bytes);\n+    ctx->workspace = gvq_work_alloc(ctx, GVQ_CUBLAS_WORKSPACE);\n+    ctx->pairs = gvq_work_alloc(ctx, pair_bytes);\n     ctx->routes.resize((uint64_t)rows * GVQ_USED);\n     ctx->grouped.resize((uint64_t)rows * GVQ_USED);\n     if (!ctx->scratch || !ctx->workspace || !ctx->pairs || !cublas_ok(cublasCreate(&ctx->handle), \"GLM VQ cuBLAS create\") ||\n@@ -248,37 +315,18 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         ds4_gpu_gvq_free(ctx);\n         return nullptr;\n     }\n-    const uint64_t mma_bytes = gvq_mma_bytes(rows);\n+    if (!want_arena) { mma_bytes = gvq_mma_reserve(ctx, rows); }\n     if (mma_bytes) {\n-        // Reserve before execution/capture; shape/resource failures keep GEMM.\n-        const cudaError_t status[] = {\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n-        };\n-        if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) {\n-            ctx->mma = ds4_gpu_tensor_alloc(mma_bytes);\n-            if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-            ctx->items.reserve((uint64_t)rows * GVQ_USED);\n-            ctx->order.resize((uint64_t)rows * GVQ_USED);\n-            ctx->token_used.resize(rows);\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->mma = gvq_work_alloc(ctx, mma_bytes);\n+        if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+        ctx->items.reserve((uint64_t)rows * GVQ_USED);\n+        ctx->order.resize((uint64_t)rows * GVQ_USED);\n+        ctx->token_used.resize(rows);\n     }\n-    const uint64_t decode_bytes = gvq_decode_bytes();\n+    if (!want_arena) { decode_bytes = gvq_decode_reserve(ctx); }\n     if (decode_bytes) {\n-        // The published artifact uses a shared 8192-word E4M3 layer book.\n-        // Reserve descriptors and intermediate rows before any execution.\n-        const cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);\n-        if (status == cudaSuccess) {\n-            ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);\n-            if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->decode = gvq_work_alloc(ctx, decode_bytes);\n+        if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n     }\n     return ctx;\n }\n",
+      "binary_sha256": "21a6ae086b5194796481572de4dfb471863ddbaa77f53befa5561172cdabb148",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "247ec102c4c336f4112b0d5a792f5f35325dbdb36391c7d1e4761ee2c85fd133",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000f42f098d9000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f42f05af0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f42f05a40000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f42f05880000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000f42f057a0000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000f42f01200000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000f42f00f70000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f42f09890000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f42f05770000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f42f05740000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f42f05710000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000f42ed3c00000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_WORK_ARENA": "0",
+        "DS4_GLMVQ_RESTORE_VEC": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 199.0001286220213
+    },
+    "work-arena-on-1": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-on-1/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-on-1/proof"
+      ],
+      "head": "b6e2f5c7e598ba7e5f2f23494a1edf314ef03d0e",
+      "diff": "diff --git a/.gitignore b/.gitignore\nindex 2e889fa2..bcbff7c2 100644\n--- a/.gitignore\n+++ b/.gitignore\n@@ -238,5 +238,6 @@ tests/naive_banks\n /tests/test_glm_vq_cache\n /tests/test_glm_vq_q4\n /tests/test_glm_vq_owner\n+/tests/test_glm_vq_work\n /tests/test_glm_vq_quote\n /glm-vq-gate\ndiff --git a/Makefile b/Makefile\nindex b5ae4869..f92e173a 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -1997,6 +1997,16 @@ tests/test_glm_vq_owner: tests/test_glm_vq_owner.o $(DS4_CUDA_CORE_OBJS)\n test-glm-vq-owner: tests/test_glm_vq_owner\n \t./tests/test_glm_vq_owner\n \n+tests/test_glm_vq_work.o: tests/test_glm_vq_work.c ds4.h ds4_glmvq.h ds4_gpu.h\n+\t$(CC) $(CFLAGS) -I. -c -o $@ $<\n+\n+tests/test_glm_vq_work: tests/test_glm_vq_work.o $(DS4_CUDA_CORE_OBJS)\n+\t$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)\n+\n+.PHONY: test-glm-vq-work\n+test-glm-vq-work: tests/test_glm_vq_work\n+\t./tests/test_glm_vq_work\n+\n tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc ds4_model_catalog.h\n \t$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \\\n \t\t-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)\n@@ -2583,7 +2593,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS\n endif\n \n clean:\n-\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate\n+\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_work tests/test_glm_vq_quote glm-vq-gate\n \trm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared\n \trm -f tests/bench_glm53_stream tests/bench_glm53_stream.o\n \trm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o\ndiff --git a/ds4_glmvq_gpu.cuh b/ds4_glmvq_gpu.cuh\nindex 19b9c28d..8521016d 100644\n--- a/ds4_glmvq_gpu.cuh\n+++ b/ds4_glmvq_gpu.cuh\n@@ -23,6 +23,8 @@ struct ds4_gvq_model {\n struct ds4_gvq_ctx {\n     const ds4_gvq_model *model;\n     ds4_gpu_tensor *scratch, *workspace, *pairs;\n+    ds4_gpu_tensor *arena = nullptr;\n+    uint64_t arena_cursor = 0;\n     cublasHandle_t handle;\n     cudaStream_t stream;\n     glmvq_restore_mode restore;\n@@ -62,6 +64,48 @@ static uint64_t gvq_mma_bytes(uint32_t rows) {\n     return (uint64_t)rows * GVQ_USED * per_pair;\n }\n \n+static uint64_t gvq_mma_reserve(ds4_gvq_ctx *ctx, uint32_t rows) {\n+    const uint64_t bytes = gvq_mma_bytes(rows);\n+    if (!bytes) { return 0; }\n+    const cudaError_t status[] = {\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n+    };\n+    if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static uint64_t gvq_decode_reserve(ds4_gvq_ctx *ctx) {\n+    const uint64_t bytes = gvq_decode_bytes();\n+    if (!bytes) { return 0; }\n+    if (glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks) == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static bool gvq_arena_span(const uint64_t *sizes, size_t count, uint64_t *bytes) {\n+    constexpr uint64_t ALIGN = 256;\n+    *bytes = 0;\n+    for (size_t i = 0; i < count; i++) {\n+        if (!sizes[i]) { continue; }\n+        // Preserve CUDA/cuBLAS alignment without inflating the existing quote.\n+        if (*bytes % ALIGN || sizes[i] > UINT64_MAX - *bytes) { return false; }\n+        *bytes += sizes[i];\n+    }\n+    return true;\n+}\n+\n+static ds4_gpu_tensor *gvq_work_alloc(ds4_gvq_ctx *ctx, uint64_t bytes) {\n+    if (!ctx->arena) { return ds4_gpu_tensor_alloc(bytes); }\n+    ds4_gpu_tensor *view = ds4_gpu_tensor_view(ctx->arena, ctx->arena_cursor, bytes);\n+    if (view) { ctx->arena_cursor += bytes; }\n+    return view;\n+}\n+\n static bool gvq_span(uint64_t off, uint64_t bytes, uint64_t size) {\n     return off <= size && bytes <= size - off;\n }\n@@ -188,6 +232,8 @@ extern \"C\" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {\n     ds4_gpu_tensor_free(ctx->pairs);\n     ds4_gpu_tensor_free(ctx->workspace);\n     ds4_gpu_tensor_free(ctx->scratch);\n+    // Views die before their one owner; cuBLAS no longer retains workspace.\n+    ds4_gpu_tensor_free(ctx->arena);\n     delete ctx;\n }\n \n@@ -213,6 +259,12 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         fprintf(stderr, \"ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\\n\");\n         return nullptr;\n     }\n+    const char *arena = getenv(\"DS4_GLMVQ_WORK_ARENA\");\n+    if (arena && strcmp(arena, \"0\") && strcmp(arena, \"1\")) {\n+        fprintf(stderr, \"ds4: DS4_GLMVQ_WORK_ARENA accepts 0 or 1\\n\");\n+        return nullptr;\n+    }\n+    const bool want_arena = arena && !strcmp(arena, \"1\");\n     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};\n     if (!ctx) { return nullptr; }\n     ctx->direct_fp8 = !fp8 || strcmp(fp8, \"0\");\n@@ -237,9 +289,24 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         return nullptr;\n     }\n     ctx->model = model;\n-    ctx->scratch = ds4_gpu_tensor_alloc(bytes);\n-    ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);\n-    ctx->pairs = ds4_gpu_tensor_alloc((uint64_t)rows * GVQ_USED * sizeof(uint32_t));\n+    uint64_t mma_bytes = 0, decode_bytes = 0;\n+    const uint64_t pair_bytes = (uint64_t)rows * GVQ_USED * sizeof(uint32_t);\n+    if (want_arena) {\n+        // Only reserve supported paths. This session owns every slice until\n+        // destruction; no global pool, aliasing or deferred first-touch work.\n+        mma_bytes = gvq_mma_reserve(ctx, rows);\n+        decode_bytes = gvq_decode_reserve(ctx);\n+        const uint64_t sizes[] = {bytes, GVQ_CUBLAS_WORKSPACE, pair_bytes, mma_bytes, decode_bytes};\n+        uint64_t total = 0;\n+        if (gvq_arena_span(sizes, sizeof(sizes) / sizeof(sizes[0]), &total)) {\n+            ctx->arena = ds4_gpu_tensor_alloc(total);\n+            if (!ctx->arena) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+            fprintf(stderr, \"ds4: GLM VQ work arena %.2f MiB\\n\", (double)total / 1048576.0);\n+        }\n+    }\n+    ctx->scratch = gvq_work_alloc(ctx, bytes);\n+    ctx->workspace = gvq_work_alloc(ctx, GVQ_CUBLAS_WORKSPACE);\n+    ctx->pairs = gvq_work_alloc(ctx, pair_bytes);\n     ctx->routes.resize((uint64_t)rows * GVQ_USED);\n     ctx->grouped.resize((uint64_t)rows * GVQ_USED);\n     if (!ctx->scratch || !ctx->workspace || !ctx->pairs || !cublas_ok(cublasCreate(&ctx->handle), \"GLM VQ cuBLAS create\") ||\n@@ -248,37 +315,18 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         ds4_gpu_gvq_free(ctx);\n         return nullptr;\n     }\n-    const uint64_t mma_bytes = gvq_mma_bytes(rows);\n+    if (!want_arena) { mma_bytes = gvq_mma_reserve(ctx, rows); }\n     if (mma_bytes) {\n-        // Reserve before execution/capture; shape/resource failures keep GEMM.\n-        const cudaError_t status[] = {\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n-        };\n-        if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) {\n-            ctx->mma = ds4_gpu_tensor_alloc(mma_bytes);\n-            if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-            ctx->items.reserve((uint64_t)rows * GVQ_USED);\n-            ctx->order.resize((uint64_t)rows * GVQ_USED);\n-            ctx->token_used.resize(rows);\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->mma = gvq_work_alloc(ctx, mma_bytes);\n+        if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+        ctx->items.reserve((uint64_t)rows * GVQ_USED);\n+        ctx->order.resize((uint64_t)rows * GVQ_USED);\n+        ctx->token_used.resize(rows);\n     }\n-    const uint64_t decode_bytes = gvq_decode_bytes();\n+    if (!want_arena) { decode_bytes = gvq_decode_reserve(ctx); }\n     if (decode_bytes) {\n-        // The published artifact uses a shared 8192-word E4M3 layer book.\n-        // Reserve descriptors and intermediate rows before any execution.\n-        const cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);\n-        if (status == cudaSuccess) {\n-            ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);\n-            if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->decode = gvq_work_alloc(ctx, decode_bytes);\n+        if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n     }\n     return ctx;\n }\n",
+      "binary_sha256": "21a6ae086b5194796481572de4dfb471863ddbaa77f53befa5561172cdabb148",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "247ec102c4c336f4112b0d5a792f5f35325dbdb36391c7d1e4761ee2c85fd133",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000f72b47acd000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f72b43ce0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f72b43c30000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f72b43a70000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000f72b43990000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000f72b3f400000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000f72b3f170000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f72b47a80000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f72b43960000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f72b43930000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f72b43900000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000f72b11e00000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_WORK_ARENA": "1",
+        "DS4_GLMVQ_RESTORE_VEC": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 233.99657226598356
+    },
+    "work-arena-on-2": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-on-2/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-on-2/proof"
+      ],
+      "head": "b6e2f5c7e598ba7e5f2f23494a1edf314ef03d0e",
+      "diff": "diff --git a/.gitignore b/.gitignore\nindex 2e889fa2..bcbff7c2 100644\n--- a/.gitignore\n+++ b/.gitignore\n@@ -238,5 +238,6 @@ tests/naive_banks\n /tests/test_glm_vq_cache\n /tests/test_glm_vq_q4\n /tests/test_glm_vq_owner\n+/tests/test_glm_vq_work\n /tests/test_glm_vq_quote\n /glm-vq-gate\ndiff --git a/Makefile b/Makefile\nindex b5ae4869..f92e173a 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -1997,6 +1997,16 @@ tests/test_glm_vq_owner: tests/test_glm_vq_owner.o $(DS4_CUDA_CORE_OBJS)\n test-glm-vq-owner: tests/test_glm_vq_owner\n \t./tests/test_glm_vq_owner\n \n+tests/test_glm_vq_work.o: tests/test_glm_vq_work.c ds4.h ds4_glmvq.h ds4_gpu.h\n+\t$(CC) $(CFLAGS) -I. -c -o $@ $<\n+\n+tests/test_glm_vq_work: tests/test_glm_vq_work.o $(DS4_CUDA_CORE_OBJS)\n+\t$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)\n+\n+.PHONY: test-glm-vq-work\n+test-glm-vq-work: tests/test_glm_vq_work\n+\t./tests/test_glm_vq_work\n+\n tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc ds4_model_catalog.h\n \t$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \\\n \t\t-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)\n@@ -2583,7 +2593,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS\n endif\n \n clean:\n-\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate\n+\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_work tests/test_glm_vq_quote glm-vq-gate\n \trm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared\n \trm -f tests/bench_glm53_stream tests/bench_glm53_stream.o\n \trm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o\ndiff --git a/ds4_glmvq_gpu.cuh b/ds4_glmvq_gpu.cuh\nindex 19b9c28d..8521016d 100644\n--- a/ds4_glmvq_gpu.cuh\n+++ b/ds4_glmvq_gpu.cuh\n@@ -23,6 +23,8 @@ struct ds4_gvq_model {\n struct ds4_gvq_ctx {\n     const ds4_gvq_model *model;\n     ds4_gpu_tensor *scratch, *workspace, *pairs;\n+    ds4_gpu_tensor *arena = nullptr;\n+    uint64_t arena_cursor = 0;\n     cublasHandle_t handle;\n     cudaStream_t stream;\n     glmvq_restore_mode restore;\n@@ -62,6 +64,48 @@ static uint64_t gvq_mma_bytes(uint32_t rows) {\n     return (uint64_t)rows * GVQ_USED * per_pair;\n }\n \n+static uint64_t gvq_mma_reserve(ds4_gvq_ctx *ctx, uint32_t rows) {\n+    const uint64_t bytes = gvq_mma_bytes(rows);\n+    if (!bytes) { return 0; }\n+    const cudaError_t status[] = {\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n+    };\n+    if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static uint64_t gvq_decode_reserve(ds4_gvq_ctx *ctx) {\n+    const uint64_t bytes = gvq_decode_bytes();\n+    if (!bytes) { return 0; }\n+    if (glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks) == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static bool gvq_arena_span(const uint64_t *sizes, size_t count, uint64_t *bytes) {\n+    constexpr uint64_t ALIGN = 256;\n+    *bytes = 0;\n+    for (size_t i = 0; i < count; i++) {\n+        if (!sizes[i]) { continue; }\n+        // Preserve CUDA/cuBLAS alignment without inflating the existing quote.\n+        if (*bytes % ALIGN || sizes[i] > UINT64_MAX - *bytes) { return false; }\n+        *bytes += sizes[i];\n+    }\n+    return true;\n+}\n+\n+static ds4_gpu_tensor *gvq_work_alloc(ds4_gvq_ctx *ctx, uint64_t bytes) {\n+    if (!ctx->arena) { return ds4_gpu_tensor_alloc(bytes); }\n+    ds4_gpu_tensor *view = ds4_gpu_tensor_view(ctx->arena, ctx->arena_cursor, bytes);\n+    if (view) { ctx->arena_cursor += bytes; }\n+    return view;\n+}\n+\n static bool gvq_span(uint64_t off, uint64_t bytes, uint64_t size) {\n     return off <= size && bytes <= size - off;\n }\n@@ -188,6 +232,8 @@ extern \"C\" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {\n     ds4_gpu_tensor_free(ctx->pairs);\n     ds4_gpu_tensor_free(ctx->workspace);\n     ds4_gpu_tensor_free(ctx->scratch);\n+    // Views die before their one owner; cuBLAS no longer retains workspace.\n+    ds4_gpu_tensor_free(ctx->arena);\n     delete ctx;\n }\n \n@@ -213,6 +259,12 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         fprintf(stderr, \"ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\\n\");\n         return nullptr;\n     }\n+    const char *arena = getenv(\"DS4_GLMVQ_WORK_ARENA\");\n+    if (arena && strcmp(arena, \"0\") && strcmp(arena, \"1\")) {\n+        fprintf(stderr, \"ds4: DS4_GLMVQ_WORK_ARENA accepts 0 or 1\\n\");\n+        return nullptr;\n+    }\n+    const bool want_arena = arena && !strcmp(arena, \"1\");\n     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};\n     if (!ctx) { return nullptr; }\n     ctx->direct_fp8 = !fp8 || strcmp(fp8, \"0\");\n@@ -237,9 +289,24 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         return nullptr;\n     }\n     ctx->model = model;\n-    ctx->scratch = ds4_gpu_tensor_alloc(bytes);\n-    ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);\n-    ctx->pairs = ds4_gpu_tensor_alloc((uint64_t)rows * GVQ_USED * sizeof(uint32_t));\n+    uint64_t mma_bytes = 0, decode_bytes = 0;\n+    const uint64_t pair_bytes = (uint64_t)rows * GVQ_USED * sizeof(uint32_t);\n+    if (want_arena) {\n+        // Only reserve supported paths. This session owns every slice until\n+        // destruction; no global pool, aliasing or deferred first-touch work.\n+        mma_bytes = gvq_mma_reserve(ctx, rows);\n+        decode_bytes = gvq_decode_reserve(ctx);\n+        const uint64_t sizes[] = {bytes, GVQ_CUBLAS_WORKSPACE, pair_bytes, mma_bytes, decode_bytes};\n+        uint64_t total = 0;\n+        if (gvq_arena_span(sizes, sizeof(sizes) / sizeof(sizes[0]), &total)) {\n+            ctx->arena = ds4_gpu_tensor_alloc(total);\n+            if (!ctx->arena) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+            fprintf(stderr, \"ds4: GLM VQ work arena %.2f MiB\\n\", (double)total / 1048576.0);\n+        }\n+    }\n+    ctx->scratch = gvq_work_alloc(ctx, bytes);\n+    ctx->workspace = gvq_work_alloc(ctx, GVQ_CUBLAS_WORKSPACE);\n+    ctx->pairs = gvq_work_alloc(ctx, pair_bytes);\n     ctx->routes.resize((uint64_t)rows * GVQ_USED);\n     ctx->grouped.resize((uint64_t)rows * GVQ_USED);\n     if (!ctx->scratch || !ctx->workspace || !ctx->pairs || !cublas_ok(cublasCreate(&ctx->handle), \"GLM VQ cuBLAS create\") ||\n@@ -248,37 +315,18 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         ds4_gpu_gvq_free(ctx);\n         return nullptr;\n     }\n-    const uint64_t mma_bytes = gvq_mma_bytes(rows);\n+    if (!want_arena) { mma_bytes = gvq_mma_reserve(ctx, rows); }\n     if (mma_bytes) {\n-        // Reserve before execution/capture; shape/resource failures keep GEMM.\n-        const cudaError_t status[] = {\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n-        };\n-        if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) {\n-            ctx->mma = ds4_gpu_tensor_alloc(mma_bytes);\n-            if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-            ctx->items.reserve((uint64_t)rows * GVQ_USED);\n-            ctx->order.resize((uint64_t)rows * GVQ_USED);\n-            ctx->token_used.resize(rows);\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->mma = gvq_work_alloc(ctx, mma_bytes);\n+        if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+        ctx->items.reserve((uint64_t)rows * GVQ_USED);\n+        ctx->order.resize((uint64_t)rows * GVQ_USED);\n+        ctx->token_used.resize(rows);\n     }\n-    const uint64_t decode_bytes = gvq_decode_bytes();\n+    if (!want_arena) { decode_bytes = gvq_decode_reserve(ctx); }\n     if (decode_bytes) {\n-        // The published artifact uses a shared 8192-word E4M3 layer book.\n-        // Reserve descriptors and intermediate rows before any execution.\n-        const cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);\n-        if (status == cudaSuccess) {\n-            ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);\n-            if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->decode = gvq_work_alloc(ctx, decode_bytes);\n+        if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n     }\n     return ctx;\n }\n",
+      "binary_sha256": "21a6ae086b5194796481572de4dfb471863ddbaa77f53befa5561172cdabb148",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "247ec102c4c336f4112b0d5a792f5f35325dbdb36391c7d1e4761ee2c85fd133",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000f49d3f9ad000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f49d3bbc0000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f49d3bb10000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f49d3b950000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000f49d3b870000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000f49d37200000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000f49d36f70000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f49d3f960000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f49d3b840000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f49d3b810000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f49d3b7e0000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000f49d09c00000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_WORK_ARENA": "1",
+        "DS4_GLMVQ_RESTORE_VEC": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 206.03597479700693
+    },
+    "work-arena-off-2": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "104",
+        "--high-gib",
+        "100",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "1800",
+        "--psi-full-limit",
+        "0",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-off-2/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+        "--prompt-file",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test-vectors/prompts/long_code_audit.txt",
+        "--ctx-start",
+        "1984",
+        "--ctx-max",
+        "1984",
+        "--ctx-alloc",
+        "2048",
+        "--gen-tokens",
+        "32",
+        "--mtp-draft",
+        "1",
+        "--threads",
+        "8",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-off-2/proof"
+      ],
+      "head": "b6e2f5c7e598ba7e5f2f23494a1edf314ef03d0e",
+      "diff": "diff --git a/.gitignore b/.gitignore\nindex 2e889fa2..bcbff7c2 100644\n--- a/.gitignore\n+++ b/.gitignore\n@@ -238,5 +238,6 @@ tests/naive_banks\n /tests/test_glm_vq_cache\n /tests/test_glm_vq_q4\n /tests/test_glm_vq_owner\n+/tests/test_glm_vq_work\n /tests/test_glm_vq_quote\n /glm-vq-gate\ndiff --git a/Makefile b/Makefile\nindex b5ae4869..f92e173a 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -1997,6 +1997,16 @@ tests/test_glm_vq_owner: tests/test_glm_vq_owner.o $(DS4_CUDA_CORE_OBJS)\n test-glm-vq-owner: tests/test_glm_vq_owner\n \t./tests/test_glm_vq_owner\n \n+tests/test_glm_vq_work.o: tests/test_glm_vq_work.c ds4.h ds4_glmvq.h ds4_gpu.h\n+\t$(CC) $(CFLAGS) -I. -c -o $@ $<\n+\n+tests/test_glm_vq_work: tests/test_glm_vq_work.o $(DS4_CUDA_CORE_OBJS)\n+\t$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)\n+\n+.PHONY: test-glm-vq-work\n+test-glm-vq-work: tests/test_glm_vq_work\n+\t./tests/test_glm_vq_work\n+\n tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc ds4_model_catalog.h\n \t$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \\\n \t\t-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)\n@@ -2583,7 +2593,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS\n endif\n \n clean:\n-\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate\n+\trm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_work tests/test_glm_vq_quote glm-vq-gate\n \trm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared\n \trm -f tests/bench_glm53_stream tests/bench_glm53_stream.o\n \trm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o\ndiff --git a/ds4_glmvq_gpu.cuh b/ds4_glmvq_gpu.cuh\nindex 19b9c28d..8521016d 100644\n--- a/ds4_glmvq_gpu.cuh\n+++ b/ds4_glmvq_gpu.cuh\n@@ -23,6 +23,8 @@ struct ds4_gvq_model {\n struct ds4_gvq_ctx {\n     const ds4_gvq_model *model;\n     ds4_gpu_tensor *scratch, *workspace, *pairs;\n+    ds4_gpu_tensor *arena = nullptr;\n+    uint64_t arena_cursor = 0;\n     cublasHandle_t handle;\n     cudaStream_t stream;\n     glmvq_restore_mode restore;\n@@ -62,6 +64,48 @@ static uint64_t gvq_mma_bytes(uint32_t rows) {\n     return (uint64_t)rows * GVQ_USED * per_pair;\n }\n \n+static uint64_t gvq_mma_reserve(ds4_gvq_ctx *ctx, uint32_t rows) {\n+    const uint64_t bytes = gvq_mma_bytes(rows);\n+    if (!bytes) { return 0; }\n+    const cudaError_t status[] = {\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n+        glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n+    };\n+    if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static uint64_t gvq_decode_reserve(ds4_gvq_ctx *ctx) {\n+    const uint64_t bytes = gvq_decode_bytes();\n+    if (!bytes) { return 0; }\n+    if (glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks) == cudaSuccess) { return bytes; }\n+    (void)cudaGetLastError();\n+    fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n+    return 0;\n+}\n+\n+static bool gvq_arena_span(const uint64_t *sizes, size_t count, uint64_t *bytes) {\n+    constexpr uint64_t ALIGN = 256;\n+    *bytes = 0;\n+    for (size_t i = 0; i < count; i++) {\n+        if (!sizes[i]) { continue; }\n+        // Preserve CUDA/cuBLAS alignment without inflating the existing quote.\n+        if (*bytes % ALIGN || sizes[i] > UINT64_MAX - *bytes) { return false; }\n+        *bytes += sizes[i];\n+    }\n+    return true;\n+}\n+\n+static ds4_gpu_tensor *gvq_work_alloc(ds4_gvq_ctx *ctx, uint64_t bytes) {\n+    if (!ctx->arena) { return ds4_gpu_tensor_alloc(bytes); }\n+    ds4_gpu_tensor *view = ds4_gpu_tensor_view(ctx->arena, ctx->arena_cursor, bytes);\n+    if (view) { ctx->arena_cursor += bytes; }\n+    return view;\n+}\n+\n static bool gvq_span(uint64_t off, uint64_t bytes, uint64_t size) {\n     return off <= size && bytes <= size - off;\n }\n@@ -188,6 +232,8 @@ extern \"C\" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {\n     ds4_gpu_tensor_free(ctx->pairs);\n     ds4_gpu_tensor_free(ctx->workspace);\n     ds4_gpu_tensor_free(ctx->scratch);\n+    // Views die before their one owner; cuBLAS no longer retains workspace.\n+    ds4_gpu_tensor_free(ctx->arena);\n     delete ctx;\n }\n \n@@ -213,6 +259,12 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         fprintf(stderr, \"ds4: DS4_GLMVQ_FP8_DIRECT accepts 0 or 1\\n\");\n         return nullptr;\n     }\n+    const char *arena = getenv(\"DS4_GLMVQ_WORK_ARENA\");\n+    if (arena && strcmp(arena, \"0\") && strcmp(arena, \"1\")) {\n+        fprintf(stderr, \"ds4: DS4_GLMVQ_WORK_ARENA accepts 0 or 1\\n\");\n+        return nullptr;\n+    }\n+    const bool want_arena = arena && !strcmp(arena, \"1\");\n     ds4_gvq_ctx *ctx = new (std::nothrow) ds4_gvq_ctx{};\n     if (!ctx) { return nullptr; }\n     ctx->direct_fp8 = !fp8 || strcmp(fp8, \"0\");\n@@ -237,9 +289,24 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         return nullptr;\n     }\n     ctx->model = model;\n-    ctx->scratch = ds4_gpu_tensor_alloc(bytes);\n-    ctx->workspace = ds4_gpu_tensor_alloc(GVQ_CUBLAS_WORKSPACE);\n-    ctx->pairs = ds4_gpu_tensor_alloc((uint64_t)rows * GVQ_USED * sizeof(uint32_t));\n+    uint64_t mma_bytes = 0, decode_bytes = 0;\n+    const uint64_t pair_bytes = (uint64_t)rows * GVQ_USED * sizeof(uint32_t);\n+    if (want_arena) {\n+        // Only reserve supported paths. This session owns every slice until\n+        // destruction; no global pool, aliasing or deferred first-touch work.\n+        mma_bytes = gvq_mma_reserve(ctx, rows);\n+        decode_bytes = gvq_decode_reserve(ctx);\n+        const uint64_t sizes[] = {bytes, GVQ_CUBLAS_WORKSPACE, pair_bytes, mma_bytes, decode_bytes};\n+        uint64_t total = 0;\n+        if (gvq_arena_span(sizes, sizeof(sizes) / sizeof(sizes[0]), &total)) {\n+            ctx->arena = ds4_gpu_tensor_alloc(total);\n+            if (!ctx->arena) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+            fprintf(stderr, \"ds4: GLM VQ work arena %.2f MiB\\n\", (double)total / 1048576.0);\n+        }\n+    }\n+    ctx->scratch = gvq_work_alloc(ctx, bytes);\n+    ctx->workspace = gvq_work_alloc(ctx, GVQ_CUBLAS_WORKSPACE);\n+    ctx->pairs = gvq_work_alloc(ctx, pair_bytes);\n     ctx->routes.resize((uint64_t)rows * GVQ_USED);\n     ctx->grouped.resize((uint64_t)rows * GVQ_USED);\n     if (!ctx->scratch || !ctx->workspace || !ctx->pairs || !cublas_ok(cublasCreate(&ctx->handle), \"GLM VQ cuBLAS create\") ||\n@@ -248,37 +315,18 @@ extern \"C\" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t\n         ds4_gpu_gvq_free(ctx);\n         return nullptr;\n     }\n-    const uint64_t mma_bytes = gvq_mma_bytes(rows);\n+    if (!want_arena) { mma_bytes = gvq_mma_reserve(ctx, rows); }\n     if (mma_bytes) {\n-        // Reserve before execution/capture; shape/resource failures keep GEMM.\n-        const cudaError_t status[] = {\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_GATE>(&ctx->mma_blocks[0]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_UP>(&ctx->mma_blocks[1]),\n-            glmvq_mma_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, GLMVQ_MMA_DOWN>(&ctx->mma_blocks[2])\n-        };\n-        if (status[0] == cudaSuccess && status[1] == cudaSuccess && status[2] == cudaSuccess) {\n-            ctx->mma = ds4_gpu_tensor_alloc(mma_bytes);\n-            if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-            ctx->items.reserve((uint64_t)rows * GVQ_USED);\n-            ctx->order.resize((uint64_t)rows * GVQ_USED);\n-            ctx->token_used.resize(rows);\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ MMA resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->mma = gvq_work_alloc(ctx, mma_bytes);\n+        if (!ctx->mma) { ds4_gpu_gvq_free(ctx); return nullptr; }\n+        ctx->items.reserve((uint64_t)rows * GVQ_USED);\n+        ctx->order.resize((uint64_t)rows * GVQ_USED);\n+        ctx->token_used.resize(rows);\n     }\n-    const uint64_t decode_bytes = gvq_decode_bytes();\n+    if (!want_arena) { decode_bytes = gvq_decode_reserve(ctx); }\n     if (decode_bytes) {\n-        // The published artifact uses a shared 8192-word E4M3 layer book.\n-        // Reserve descriptors and intermediate rows before any execution.\n-        const cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);\n-        if (status == cudaSuccess) {\n-            ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);\n-            if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n-        } else {\n-            (void)cudaGetLastError();\n-            fprintf(stderr, \"ds4: GLM VQ direct decode resources unavailable; using restore+GEMM\\n\");\n-        }\n+        ctx->decode = gvq_work_alloc(ctx, decode_bytes);\n+        if (!ctx->decode) { ds4_gpu_gvq_free(ctx); return nullptr; }\n     }\n     return ctx;\n }\n",
+      "binary_sha256": "21a6ae086b5194796481572de4dfb471863ddbaa77f53befa5561172cdabb148",
+      "prompt_sha256": "efae39172d088e3b8da70f408e53eeebe0f5b17fa407a440ed969cd85e4784dd",
+      "artifact_revision": "fe2a446e774624ef8d397136d81524c61db77f65",
+      "source_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+      "artifact_hash_receipt": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/native-third/receipt.json",
+      "manifest_sha256": "c3c35fe33c2ac7075f2b46ef234179b0521e2a3b590d71e3ba1e367917d201cf",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-GGUF",
+      "native_sources": {
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.cu": "3a07e7148887dc7a1b16bfa3288ff5f46e9aacf5fca3a77a0132418f9df82547",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_gpu.cuh": "247ec102c4c336f4112b0d5a792f5f35325dbdb36391c7d1e4761ee2c85fd133",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_bind.inc": "dd32616008acad0716763b6d0e1504807ae29f3a2693dd6c1d60cb68bd5c1ac8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glmvq_graph.inc": "4e3c6095e7645265bdd309426af452d5091be81e937d05f58ff8f5bbe88aeaa0",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_glm53_graph.inc": "e0fbebb48c6bab6f4c6b0c89feeb9d46dfffafd17415b452125ff636434c17d8",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_q4.cuh": "ae148677b8ede9caf3e3422fc20d725c2fea9419b701d9af3f6c7972a6756a76",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/q4_k.cuh": "9e9552f5d0be17890cf65f03823721e48ae3c2d668b11488033090a78b4228cb",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_mma.cuh": "2a574820031b9feda0fdc2e1c9df6c15eff8e1d185f6c10801eb0a3eea33413f",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_decode.cuh": "0e9fa4ca9d789d5cc95faf1f473c0e8e477773121eafd187bda706ea314c8486",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/glm_vq_fp8.cuh": "1f8720fc3b73d8e26e9870532c8c7a772a0fccf7419118e51a68c8ce8bb816f8"
+      },
+      "nonexpert_recipe": null,
+      "libraries": "\tlinux-vdso.so.1 (0x0000f61bea66c000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f61be6890000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f61be67e0000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f61be6620000)\n\tlibcudart.so.13 => /usr/local/cuda-13.4/lib64/libcudart.so.13 (0x0000f61be6540000)\n\tlibcublas.so.13 => /usr/local/cuda-13.4/lib64/libcublas.so.13 (0x0000f61be2000000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000000000400000)\n\tlibstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000f61be1d70000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f61bea630000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f61be6510000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f61be64e0000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f61be64b0000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.4/lib64/libcublasLt.so.13 (0x0000f61bb4a00000)\n",
+      "environment": {
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+        "DS4_GLMVQ_WORK_ARENA": "0",
+        "DS4_GLMVQ_RESTORE_VEC": "1",
+        "DS4_GLMVQ_DECODE": "1",
+        "DS4_GLMVQ_MMA": "1",
+        "DS4_GLMVQ_FP8_DIRECT": "1",
+        "DS4_GLMVQ_PREFILL_ROWS": "1024",
+        "DS4_MTP_SPEC_DISABLE": "1"
+      },
+      "prompt": 1984,
+      "decode": 32,
+      "context": 2048,
+      "prefill_rows": 1024,
+      "mtp": false,
+      "capture": false,
+      "sampling": "forced non-EOS greedy",
+      "weight_owner": "single in-process VMM",
+      "cache": "fresh process, inherited OS file cache; no warmup protocol",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "profiler": false,
+      "cuda_memory_trace": false,
+      "scope": "exploratory whole-workload attribution; no comparative performance or quality qualification",
+      "exit_code": 0,
+      "wall_seconds": 238.29548739397433
+    }
+  },
+  "lifecycle": {
+    "command": [
+      "python3",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+      "--max-gib",
+      "8",
+      "--high-gib",
+      "6",
+      "--reserve-gib",
+      "12",
+      "--timeout",
+      "300",
+      "--log",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/work-arena-lifetime/memory.jsonl",
+      "--",
+      "compute-sanitizer",
+      "--tool",
+      "memcheck",
+      "--leak-check",
+      "full",
+      "--error-exitcode",
+      "99",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/test_glm_vq_work"
+    ],
+    "binary_sha256": "3ee1fc6b1f1f6de3fb1d9eefa191674e981415ea947f99932055ed4fc7be30c7",
+    "build_receipt": "work-arena-build.json",
+    "environment": {
+      "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64",
+      "DS4_GLMVQ_MMA": "1",
+      "DS4_GLMVQ_DECODE": "1",
+      "DS4_GLMVQ_RESTORE_VEC": "1",
+      "DS4_GLMVQ_FP8_DIRECT": "1"
+    },
+    "clock_policy_mhz": [
+      300,
+      2200
+    ],
+    "exit_code": 0,
+    "wall_seconds": 1.5631762120174244
+  },
+  "isolated_vmm_proxy": {
+    "alloc-vmm-separate-1": {
+      "mode": "separate",
+      "fixture_sha256": "ef44d13af267c8e6a12353d10509d4c06eacc6731999247e6ae4a7d691443c1c",
+      "script_sha256": "8dd106a72f6c397edff4536f64b81e7e71a0821908d43db297ebb69d708b3251",
+      "vmm_helper_sha256": "493a32fec77700e79b68f190f8db1f3b3bd2fa75a989675a910a7f7c7b6eda49",
+      "resident_bytes": 86093807872,
+      "resident_allocations": 122,
+      "payload_bytes": 2605228736,
+      "payload_allocations": 71,
+      "kernel": "7.0.0-1019-nvidia",
+      "kho_off": true,
+      "before": {
+        "MemFree": 30402812,
+        "MemAvailable": 124815736,
+        "KReclaimable": 87292444,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "scope": "Fresh CUDA context; saved DEVICE allocation sizes/APItypes,108VMM and14ordinary dummy initialized resident blocks. No artifact mmap/pagecache, cuBLAS handles or inference. Arena preserves3opaque cuBLAS allocations separately. Allocation+firsttouch/free only; full model must decide adoption.",
+      "resident_seconds": 0.6848419359885156,
+      "resident_memory": {
+        "MemFree": 29447328,
+        "MemAvailable": 39581232,
+        "KReclaimable": 3013404,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "allocation_seconds": 0.020184531022096053,
+      "allocation_vmstat_delta": {
+        "allocstall_dma": 0,
+        "allocstall_dma32": 0,
+        "allocstall_normal": 0,
+        "allocstall_movable": 0,
+        "allocstall_device": 0,
+        "pgmigrate_success": 0,
+        "pgmigrate_fail": 0,
+        "compact_migrate_scanned": 0,
+        "compact_free_scanned": 0,
+        "compact_isolated": 0,
+        "compact_stall": 0,
+        "compact_fail": 0,
+        "compact_success": 0,
+        "compact_daemon_wake": 0,
+        "compact_daemon_migrate_scanned": 0,
+        "compact_daemon_free_scanned": 0
+      },
+      "allocation_memory": {
+        "MemFree": 29440152,
+        "MemAvailable": 37024296,
+        "KReclaimable": 463644,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "individual_allocation_seconds": [
+        0.006854113016743213,
+        0.00023423900711350143,
+        1.0880001354962587e-05,
+        2.5439949240535498e-06,
+        1.7120037227869034e-06,
+        0.0004071989969816059,
+        0.0016687160241417587,
+        4.2719766497612e-06,
+        6.744000711478293e-05,
+        0.00148668498150073,
+        4.384026397019625e-06,
+        1.5360128600150347e-06,
+        0.00012918401625938714,
+        0.00012105499627068639,
+        0.00041259100544266403,
+        0.00040435101254843175,
+        0.000410048000048846,
+        4.0000013541430235e-06,
+        1.6319972928613424e-06,
+        0.0004046869871672243,
+        2.5439949240535498e-06,
+        7.265497697517276e-05,
+        6.132799899205565e-05,
+        4.3616018956527114e-05,
+        4.278399865143001e-05,
+        0.00040603100205771625,
+        0.00040942299528978765,
+        0.0004072470183018595,
+        0.0004043669905513525,
+        0.00013102401862852275,
+        0.00040182299562729895,
+        0.0004011830023955554,
+        0.00039990298682823777,
+        0.00012710399460047483,
+        0.0007706060132477432,
+        3.1199888326227665e-06,
+        1.248001353815198e-06,
+        0.0007661910203751177,
+        0.0007591980102006346,
+        0.00012891198275610805,
+        2.4799956008791924e-06,
+        1.5039986465126276e-06,
+        4.601498949341476e-05,
+        4.64320182800293e-05,
+        4.252800135873258e-05,
+        8.700799662619829e-05,
+        2.8479844331741333e-06,
+        0.0008953420037869364,
+        0.00011439999798312783,
+        4.414399154484272e-05,
+        2.1599989850074053e-06,
+        4.780801828019321e-05,
+        1.8720165826380253e-06,
+        3.9614998968318105e-05,
+        1.6159901861101389e-06,
+        4.225599695928395e-05,
+        1.5840050764381886e-06,
+        4.233597428537905e-05,
+        1.487991539761424e-06,
+        4.73919790238142e-05,
+        1.2959935702383518e-06,
+        3.97120020352304e-05,
+        2.383982064202428e-06,
+        4.150401218794286e-05,
+        5.904003046452999e-06,
+        3.854400711134076e-05,
+        2.5120098143815994e-06,
+        4.0000013541430235e-05,
+        2.496002707630396e-06,
+        4.260800778865814e-05,
+        4.068799898959696e-05
+      ],
+      "first_touch_seconds": 0.013523792993510142,
+      "boundary_bytes_checked": 142,
+      "free_seconds": 0.002579305990366265,
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "status": "ok",
+      "after_free_memory": {
+        "MemFree": 30302672,
+        "MemAvailable": 124517232,
+        "KReclaimable": 87094044,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      }
+    },
+    "alloc-vmm-arena-1": {
+      "mode": "arena",
+      "fixture_sha256": "ef44d13af267c8e6a12353d10509d4c06eacc6731999247e6ae4a7d691443c1c",
+      "script_sha256": "8dd106a72f6c397edff4536f64b81e7e71a0821908d43db297ebb69d708b3251",
+      "vmm_helper_sha256": "493a32fec77700e79b68f190f8db1f3b3bd2fa75a989675a910a7f7c7b6eda49",
+      "resident_bytes": 86093807872,
+      "resident_allocations": 122,
+      "payload_bytes": 2605228736,
+      "payload_allocations": 71,
+      "kernel": "7.0.0-1019-nvidia",
+      "kho_off": true,
+      "before": {
+        "MemFree": 30398772,
+        "MemAvailable": 124811912,
+        "KReclaimable": 87292444,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "scope": "Fresh CUDA context; saved DEVICE allocation sizes/APItypes,108VMM and14ordinary dummy initialized resident blocks. No artifact mmap/pagecache, cuBLAS handles or inference. Arena preserves3opaque cuBLAS allocations separately. Allocation+firsttouch/free only; full model must decide adoption.",
+      "resident_seconds": 0.686433347989805,
+      "resident_memory": {
+        "MemFree": 29463380,
+        "MemAvailable": 39597496,
+        "KReclaimable": 3013384,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "arena_bytes": 2537987840,
+      "allocation_seconds": 0.014999772974988446,
+      "allocation_vmstat_delta": {
+        "allocstall_dma": 0,
+        "allocstall_dma32": 0,
+        "allocstall_normal": 0,
+        "allocstall_movable": 0,
+        "allocstall_device": 0,
+        "pgmigrate_success": 0,
+        "pgmigrate_fail": 0,
+        "compact_migrate_scanned": 0,
+        "compact_free_scanned": 0,
+        "compact_isolated": 0,
+        "compact_stall": 0,
+        "compact_fail": 0,
+        "compact_success": 0,
+        "compact_daemon_wake": 0,
+        "compact_daemon_migrate_scanned": 0,
+        "compact_daemon_free_scanned": 0
+      },
+      "allocation_memory": {
+        "MemFree": 29415824,
+        "MemAvailable": 37004276,
+        "KReclaimable": 467720,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "individual_allocation_seconds": [
+        0.01446473499527201,
+        1.364797935821116e-05,
+        2.5920162443071604e-06,
+        0.00046727899461984634
+      ],
+      "first_touch_seconds": 0.01448436701321043,
+      "boundary_bytes_checked": 142,
+      "free_seconds": 0.0066718079906422645,
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "status": "ok",
+      "after_free_memory": {
+        "MemFree": 30213056,
+        "MemAvailable": 124427900,
+        "KReclaimable": 87094024,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      }
+    },
+    "alloc-vmm-arena-2": {
+      "mode": "arena",
+      "fixture_sha256": "ef44d13af267c8e6a12353d10509d4c06eacc6731999247e6ae4a7d691443c1c",
+      "script_sha256": "8dd106a72f6c397edff4536f64b81e7e71a0821908d43db297ebb69d708b3251",
+      "vmm_helper_sha256": "493a32fec77700e79b68f190f8db1f3b3bd2fa75a989675a910a7f7c7b6eda49",
+      "resident_bytes": 86093807872,
+      "resident_allocations": 122,
+      "payload_bytes": 2605228736,
+      "payload_allocations": 71,
+      "kernel": "7.0.0-1019-nvidia",
+      "kho_off": true,
+      "before": {
+        "MemFree": 30307548,
+        "MemAvailable": 124720832,
+        "KReclaimable": 87292444,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "scope": "Fresh CUDA context; saved DEVICE allocation sizes/APItypes,108VMM and14ordinary dummy initialized resident blocks. No artifact mmap/pagecache, cuBLAS handles or inference. Arena preserves3opaque cuBLAS allocations separately. Allocation+firsttouch/free only; full model must decide adoption.",
+      "resident_seconds": 0.6963211260153912,
+      "resident_memory": {
+        "MemFree": 29353228,
+        "MemAvailable": 39487452,
+        "KReclaimable": 3013384,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "arena_bytes": 2537987840,
+      "allocation_seconds": 0.016059706977102906,
+      "allocation_vmstat_delta": {
+        "allocstall_dma": 0,
+        "allocstall_dma32": 0,
+        "allocstall_normal": 0,
+        "allocstall_movable": 0,
+        "allocstall_device": 0,
+        "pgmigrate_success": 10676,
+        "pgmigrate_fail": 36,
+        "compact_migrate_scanned": 0,
+        "compact_free_scanned": 0,
+        "compact_isolated": 21560,
+        "compact_stall": 0,
+        "compact_fail": 0,
+        "compact_success": 0,
+        "compact_daemon_wake": 1,
+        "compact_daemon_migrate_scanned": 0,
+        "compact_daemon_free_scanned": 0
+      },
+      "allocation_memory": {
+        "MemFree": 29638972,
+        "MemAvailable": 36928532,
+        "KReclaimable": 467720,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "individual_allocation_seconds": [
+        0.0154670040064957,
+        2.15519976336509e-05,
+        2.863991539925337e-06,
+        0.000491695012897253
+      ],
+      "first_touch_seconds": 0.01480062198243104,
+      "boundary_bytes_checked": 142,
+      "free_seconds": 0.0033716720063239336,
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "status": "ok",
+      "after_free_memory": {
+        "MemFree": 30479756,
+        "MemAvailable": 124395388,
+        "KReclaimable": 87094024,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      }
+    },
+    "alloc-vmm-separate-2": {
+      "mode": "separate",
+      "fixture_sha256": "ef44d13af267c8e6a12353d10509d4c06eacc6731999247e6ae4a7d691443c1c",
+      "script_sha256": "8dd106a72f6c397edff4536f64b81e7e71a0821908d43db297ebb69d708b3251",
+      "vmm_helper_sha256": "493a32fec77700e79b68f190f8db1f3b3bd2fa75a989675a910a7f7c7b6eda49",
+      "resident_bytes": 86093807872,
+      "resident_allocations": 122,
+      "payload_bytes": 2605228736,
+      "payload_allocations": 71,
+      "kernel": "7.0.0-1019-nvidia",
+      "kho_off": true,
+      "before": {
+        "MemFree": 30571520,
+        "MemAvailable": 124685700,
+        "KReclaimable": 87292444,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "scope": "Fresh CUDA context; saved DEVICE allocation sizes/APItypes,108VMM and14ordinary dummy initialized resident blocks. No artifact mmap/pagecache, cuBLAS handles or inference. Arena preserves3opaque cuBLAS allocations separately. Allocation+firsttouch/free only; full model must decide adoption.",
+      "resident_seconds": 0.6955896309809759,
+      "resident_memory": {
+        "MemFree": 29640836,
+        "MemAvailable": 39475956,
+        "KReclaimable": 3013384,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "allocation_seconds": 0.02757428798940964,
+      "allocation_vmstat_delta": {
+        "allocstall_dma": 0,
+        "allocstall_dma32": 0,
+        "allocstall_normal": 0,
+        "allocstall_movable": 0,
+        "allocstall_device": 0,
+        "pgmigrate_success": 0,
+        "pgmigrate_fail": 0,
+        "compact_migrate_scanned": 0,
+        "compact_free_scanned": 0,
+        "compact_isolated": 0,
+        "compact_stall": 0,
+        "compact_fail": 0,
+        "compact_success": 0,
+        "compact_daemon_wake": 0,
+        "compact_daemon_migrate_scanned": 0,
+        "compact_daemon_free_scanned": 0
+      },
+      "allocation_memory": {
+        "MemFree": 29618264,
+        "MemAvailable": 36903624,
+        "KReclaimable": 463624,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      },
+      "individual_allocation_seconds": [
+        0.0027768250147346407,
+        0.00023401601356454194,
+        6.640009814873338e-06,
+        2.4320033844560385e-06,
+        5.056004738435149e-06,
+        0.00043164700036868453,
+        0.001729003997752443,
+        9.15199052542448e-06,
+        6.766399019397795e-05,
+        0.0015232599980663508,
+        9.63200000114739e-06,
+        1.4719844330102205e-06,
+        0.00013761600712314248,
+        0.00012955200509168208,
+        0.0005986059841234237,
+        0.0005255670112092048,
+        0.0018491960072424263,
+        4.6079803723841906e-06,
+        1.6799895092844963e-06,
+        0.0013461399939842522,
+        1.2623990187421441e-05,
+        0.00011945600272156298,
+        7.835199357941747e-05,
+        4.764800542034209e-05,
+        4.824000643566251e-05,
+        0.0004220789996907115,
+        0.00041687898919917643,
+        0.00042259099427610636,
+        0.00041467099799774587,
+        0.00012820801930502057,
+        0.0004091510199941695,
+        0.00042092701187357306,
+        0.00040692699258215725,
+        0.00012870298814959824,
+        0.0007902549987193197,
+        4.656001692637801e-06,
+        2.8479844331741333e-06,
+        0.0008493580098729581,
+        0.00845242801005952,
+        0.0006198229966685176,
+        1.7632002709433436e-05,
+        1.1023978004232049e-05,
+        7.76310043875128e-05,
+        4.998399526812136e-05,
+        5.3759984439238906e-05,
+        8.867200813256204e-05,
+        2.0799925550818443e-06,
+        0.0009307499858550727,
+        0.00012451197835616767,
+        5.100699490867555e-05,
+        2.2239983081817627e-06,
+        5.6944001698866487e-05,
+        2.080021658912301e-06,
+        5.307199899107218e-05,
+        1.8400023691356182e-06,
+        4.3472013203427196e-05,
+        1.648004399612546e-06,
+        5.1776005420833826e-05,
+        1.567997969686985e-06,
+        3.9664009818807244e-05,
+        1.3920071069151163e-06,
+        4.860799526795745e-05,
+        1.5039986465126276e-06,
+        4.084798274561763e-05,
+        1.3920071069151163e-06,
+        4.836800508201122e-05,
+        1.7279817257076502e-06,
+        3.891100641340017e-05,
+        1.7919810488820076e-06,
+        4.068799898959696e-05,
+        3.72159993276e-05
+      ],
+      "first_touch_seconds": 0.013621168007375672,
+      "boundary_bytes_checked": 142,
+      "free_seconds": 0.002957193006295711,
+      "libraries": [
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+        "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+      ],
+      "status": "ok",
+      "after_free_memory": {
+        "MemFree": 30552764,
+        "MemAvailable": 124468524,
+        "KReclaimable": 87094024,
+        "CmaTotal": 0,
+        "CmaFree": 0
+      }
+    }
+  },
+  "layout": {
+    "source": "chunk-1024-profile/trace.sqlite",
+    "before_prefill_allocations": [
+      1024,
+      131072,
+      67108864,
+      33554432,
+      4194304,
+      1024,
+      65536,
+      131072,
+      9232,
+      9216,
+      9232,
+      9216,
+      16842752,
+      1067450368,
+      933232640,
+      1067450368,
+      933232640,
+      1067450368,
+      1067450368,
+      1067450368,
+      304087040,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1073741824,
+      404750336,
+      1268776960,
+      1268776960,
+      1027604480,
+      1025507328,
+      1025507328,
+      1046478848,
+      1025507328,
+      1025507328,
+      1069547520,
+      1012924416,
+      1025507328,
+      1025507328,
+      1025507328,
+      1069547520,
+      1073741824,
+      348127232,
+      3188960
+    ],
+    "before_prefill_bytes": 86093807872,
+    "prefill_allocations": [
+      478150656,
+      33554432,
+      32768,
+      1024,
+      131072,
+      67108864,
+      302186496,
+      165056,
+      4194304,
+      268435456,
+      4096,
+      4096,
+      16777216,
+      16777216,
+      67108864,
+      67108864,
+      67108864,
+      98304,
+      98304,
+      67108864,
+      16384,
+      6291456,
+      6291456,
+      2097152,
+      2097152,
+      67108864,
+      67108864,
+      67108864,
+      67108864,
+      16777216,
+      67108864,
+      67108864,
+      67108864,
+      16777216,
+      134217728,
+      32768,
+      32768,
+      134217728,
+      134217728,
+      16777216,
+      524288,
+      524288,
+      131072,
+      2097152,
+      2097152,
+      8400896,
+      619520,
+      156053504,
+      14509568,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072,
+      2097152,
+      131072
+    ],
+    "prefill_bytes": 2605228736,
+    "cuda_malloc": [
+      {
+        "index": 0,
+        "bytes": [
+          478150656
+        ],
+        "ms": 125.687956,
+        "start_s": 0.001872674
+      },
+      {
+        "index": 1,
+        "bytes": [
+          33554432
+        ],
+        "ms": 64.699716,
+        "start_s": 0.127564646
+      },
+      {
+        "index": 2,
+        "bytes": [
+          32768
+        ],
+        "ms": 0.011728,
+        "start_s": 0.192268266
+      },
+      {
+        "index": 3,
+        "bytes": [
+          1024
+        ],
+        "ms": 0.003536,
+        "start_s": 0.19230921
+      },
+      {
+        "index": 4,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001376,
+        "start_s": 0.192319738
+      },
+      {
+        "index": 5,
+        "bytes": [
+          67108864
+        ],
+        "ms": 134.969649,
+        "start_s": 0.19232537
+      },
+      {
+        "index": 6,
+        "bytes": [
+          302186496
+        ],
+        "ms": 617.854125,
+        "start_s": 0.329680234
+      },
+      {
+        "index": 7,
+        "bytes": [
+          165056
+        ],
+        "ms": 0.006912,
+        "start_s": 0.94762039
+      },
+      {
+        "index": 8,
+        "bytes": [
+          4194304
+        ],
+        "ms": 13.80883,
+        "start_s": 0.947627942
+      },
+      {
+        "index": 9,
+        "bytes": [
+          268435456
+        ],
+        "ms": 448.441679,
+        "start_s": 0.961439796
+      },
+      {
+        "index": 10,
+        "bytes": [
+          4096
+        ],
+        "ms": 0.01552,
+        "start_s": 1.409885107
+      },
+      {
+        "index": 11,
+        "bytes": [
+          4096
+        ],
+        "ms": 0.001584,
+        "start_s": 1.409903267
+      },
+      {
+        "index": 12,
+        "bytes": [
+          16777216
+        ],
+        "ms": 0.485341,
+        "start_s": 1.409905123
+      },
+      {
+        "index": 13,
+        "bytes": [
+          16777216
+        ],
+        "ms": 0.448412,
+        "start_s": 1.410391584
+      },
+      {
+        "index": 14,
+        "bytes": [
+          67108864
+        ],
+        "ms": 1.526774,
+        "start_s": 1.4108411
+      },
+      {
+        "index": 15,
+        "bytes": [
+          67108864
+        ],
+        "ms": 1.472821,
+        "start_s": 1.41236957
+      },
+      {
+        "index": 16,
+        "bytes": [
+          67108864
+        ],
+        "ms": 2.916443,
+        "start_s": 1.413843927
+      },
+      {
+        "index": 17,
+        "bytes": [
+          98304
+        ],
+        "ms": 0.006672,
+        "start_s": 1.416761954
+      },
+      {
+        "index": 18,
+        "bytes": [
+          98304
+        ],
+        "ms": 0.001216,
+        "start_s": 1.416768946
+      },
+      {
+        "index": 19,
+        "bytes": [
+          67108864
+        ],
+        "ms": 2.532654,
+        "start_s": 1.416770274
+      },
+      {
+        "index": 20,
+        "bytes": [
+          16384
+        ],
+        "ms": 0.012672,
+        "start_s": 1.419306544
+      },
+      {
+        "index": 21,
+        "bytes": [
+          6291456
+        ],
+        "ms": 0.490461,
+        "start_s": 1.419319488
+      },
+      {
+        "index": 22,
+        "bytes": [
+          6291456
+        ],
+        "ms": 0.196078,
+        "start_s": 1.419813085
+      },
+      {
+        "index": 23,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.090288,
+        "start_s": 1.420009963
+      },
+      {
+        "index": 24,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.072079,
+        "start_s": 1.420100635
+      },
+      {
+        "index": 25,
+        "bytes": [
+          67108864
+        ],
+        "ms": 2.298192,
+        "start_s": 1.420172858
+      },
+      {
+        "index": 26,
+        "bytes": [
+          67108864
+        ],
+        "ms": 50.569721,
+        "start_s": 1.422471962
+      },
+      {
+        "index": 27,
+        "bytes": [
+          67108864
+        ],
+        "ms": 25.588698,
+        "start_s": 1.473043667
+      },
+      {
+        "index": 28,
+        "bytes": [
+          67108864
+        ],
+        "ms": 24.091013,
+        "start_s": 1.498636333
+      },
+      {
+        "index": 29,
+        "bytes": [
+          16777216
+        ],
+        "ms": 7.739017,
+        "start_s": 1.522731138
+      },
+      {
+        "index": 30,
+        "bytes": [
+          67108864
+        ],
+        "ms": 19.103112,
+        "start_s": 1.530473387
+      },
+      {
+        "index": 31,
+        "bytes": [
+          67108864
+        ],
+        "ms": 47.911628,
+        "start_s": 1.549577555
+      },
+      {
+        "index": 32,
+        "bytes": [
+          67108864
+        ],
+        "ms": 27.997545,
+        "start_s": 1.597491615
+      },
+      {
+        "index": 33,
+        "bytes": [
+          16777216
+        ],
+        "ms": 0.5603,
+        "start_s": 1.625491192
+      },
+      {
+        "index": 34,
+        "bytes": [
+          134217728
+        ],
+        "ms": 4.239602,
+        "start_s": 1.626053044
+      },
+      {
+        "index": 35,
+        "bytes": [
+          32768
+        ],
+        "ms": 0.009824,
+        "start_s": 1.630294294
+      },
+      {
+        "index": 36,
+        "bytes": [
+          32768
+        ],
+        "ms": 0.001312,
+        "start_s": 1.630304342
+      },
+      {
+        "index": 37,
+        "bytes": [
+          134217728
+        ],
+        "ms": 3.986164,
+        "start_s": 1.63030591
+      },
+      {
+        "index": 38,
+        "bytes": [
+          134217728
+        ],
+        "ms": 3.785477,
+        "start_s": 1.63429385
+      },
+      {
+        "index": 39,
+        "bytes": [
+          16777216
+        ],
+        "ms": 0.480524,
+        "start_s": 1.638080959
+      },
+      {
+        "index": 40,
+        "bytes": [
+          524288
+        ],
+        "ms": 0.006112,
+        "start_s": 1.638563019
+      },
+      {
+        "index": 41,
+        "bytes": [
+          524288
+        ],
+        "ms": 0.001664,
+        "start_s": 1.638569243
+      },
+      {
+        "index": 42,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.099615,
+        "start_s": 1.638571003
+      },
+      {
+        "index": 43,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.07968,
+        "start_s": 1.638671114
+      },
+      {
+        "index": 44,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.079503,
+        "start_s": 1.638751066
+      },
+      {
+        "index": 45,
+        "bytes": [
+          8400896
+        ],
+        "ms": 0.293054,
+        "start_s": 1.638830793
+      },
+      {
+        "index": 46,
+        "bytes": [
+          619520
+        ],
+        "ms": 0.005008,
+        "start_s": 1.639124439
+      },
+      {
+        "index": 47,
+        "bytes": [
+          156053504
+        ],
+        "ms": 6.954959,
+        "start_s": 1.639129735
+      },
+      {
+        "index": 48,
+        "bytes": [
+          14509568
+        ],
+        "ms": 0.456365,
+        "start_s": 1.646086838
+      },
+      {
+        "index": 49,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.19595,
+        "start_s": 1.647536764
+      },
+      {
+        "index": 50,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.004064,
+        "start_s": 1.647733242
+      },
+      {
+        "index": 51,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.089103,
+        "start_s": 1.647798106
+      },
+      {
+        "index": 52,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001552,
+        "start_s": 1.647887385
+      },
+      {
+        "index": 53,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.100143,
+        "start_s": 1.647945961
+      },
+      {
+        "index": 54,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001776,
+        "start_s": 1.648046376
+      },
+      {
+        "index": 55,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.081744,
+        "start_s": 1.648104567
+      },
+      {
+        "index": 56,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001632,
+        "start_s": 1.648186471
+      },
+      {
+        "index": 57,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.077503,
+        "start_s": 1.648244407
+      },
+      {
+        "index": 58,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001952,
+        "start_s": 1.648322182
+      },
+      {
+        "index": 59,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.075503,
+        "start_s": 1.64838167
+      },
+      {
+        "index": 60,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001424,
+        "start_s": 1.648457429
+      },
+      {
+        "index": 61,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.077487,
+        "start_s": 1.648515845
+      },
+      {
+        "index": 62,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001728,
+        "start_s": 1.648593588
+      },
+      {
+        "index": 63,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.073263,
+        "start_s": 1.648652708
+      },
+      {
+        "index": 64,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001632,
+        "start_s": 1.648726227
+      },
+      {
+        "index": 65,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.079775,
+        "start_s": 1.648784899
+      },
+      {
+        "index": 66,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.001968,
+        "start_s": 1.648864914
+      },
+      {
+        "index": 67,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.081535,
+        "start_s": 1.648923266
+      },
+      {
+        "index": 68,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.002144,
+        "start_s": 1.649005041
+      },
+      {
+        "index": 69,
+        "bytes": [
+          2097152
+        ],
+        "ms": 0.074639,
+        "start_s": 1.649064001
+      },
+      {
+        "index": 70,
+        "bytes": [
+          131072
+        ],
+        "ms": 0.073168,
+        "start_s": 1.649138896
+      }
+    ],
+    "resident_plan": [
+      {
+        "bytes": 1024,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 131072,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 67108864,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 33554432,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 4194304,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 1024,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 65536,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 131072,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 9232,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 9216,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 9232,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 9216,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 16842752,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      },
+      {
+        "bytes": 1067450368,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 933232640,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1067450368,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 933232640,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1067450368,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1067450368,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1067450368,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 304087040,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 404750336,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1268776960,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1268776960,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1027604480,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1025507328,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1025507328,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1046478848,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1025507328,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1025507328,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1069547520,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1012924416,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1025507328,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1025507328,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1025507328,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1069547520,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 1073741824,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 348127232,
+        "api": "cuMemCreate",
+        "event_api": "cuMemSetAccess"
+      },
+      {
+        "bytes": 3188960,
+        "api": "cudaMalloc_v3020",
+        "event_api": "cudaMalloc_v3020"
+      }
+    ],
+    "opaque_prefill_allocations": [
+      3,
+      4,
+      5
+    ]
+  },
+  "limitations": "The VMM proxy matches allocation sizes/APIs but omits artifact mmap/pagecache, loading history, cuBLAS handles and inference. It did not reproduce the original delay. Full-model raw-code frontier and 32 greedy IDs do not imply general quality. No arithmetic or weights change; no API/state-reuse/8K/MTP/vision qualification.",
+  "raw_sha256": {
+    "work-arena-off-1/receipt.json": "2fcc5603d429d48b1e849d4d1cef30240a9f3782e2cfc08407647ef1afe13711",
+    "work-arena-off-1/run.log": "f164a7021458865e253822e77447d97425d9f9caaafad419b6881f33f624b0c8",
+    "work-arena-off-1/memory.jsonl": "fbbf7ef35d586689a9a0cfe13d1aab6b7076d8e7c2d3a01640fd304e8a0c5922",
+    "work-arena-off-1/clocks.csv": "3d020f6233e9d255456f54c0ae604a996ea0559d35c8b6ccda295beafaef6c15",
+    "work-arena-off-1/loaded-libraries.json": "e986eaa70ee24994f4884564f635454be7a7e482a41e1476a92592ca5800f7a2",
+    "work-arena-off-1/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "work-arena-off-1/proof/frontier_001984.logits.json": "8b319fe89716a13e3553fe805c888ee814912c51db548e374d6f751983f176e0",
+    "work-arena-on-1/receipt.json": "f449a8396f817639f7a01e97c588c1384479d188ecb08c41c751ad6eb0f9adfd",
+    "work-arena-on-1/run.log": "eb524a482ea90ab4e0ecd434c98a57d845e41e3c7abe84535cd0dd877d4ff2c4",
+    "work-arena-on-1/memory.jsonl": "d320fa643a7e10a72b0bfc63c584d08899a8b1358d92434e3493e8bbd0bb95fc",
+    "work-arena-on-1/clocks.csv": "8cb33b81dc95d833605f881616e7c964fbf29d4fddd57e3be18817353e978a3a",
+    "work-arena-on-1/loaded-libraries.json": "89d358f7a0b39d6f1df48fa1074281310edcfb87df6cf0a8222e27417d039cb1",
+    "work-arena-on-1/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "work-arena-on-1/proof/frontier_001984.logits.json": "8b319fe89716a13e3553fe805c888ee814912c51db548e374d6f751983f176e0",
+    "work-arena-on-2/receipt.json": "8ea059d150a380f0fa143d6a69d8b8df739d2bb4fa7078e6c028a3dd444caacc",
+    "work-arena-on-2/run.log": "70337420bcc5e910e41692c6db4607a8e685e213947d752395b322af91a2b268",
+    "work-arena-on-2/memory.jsonl": "d0d01ee222e31fe871cc8e2c34eb3ca127e6a1090e5ccb785c1d6f6c6de03c35",
+    "work-arena-on-2/clocks.csv": "beb6d31e64d823b6b534c54441ac0147d4fb64a3ae788d8a933d3c4914d6b891",
+    "work-arena-on-2/loaded-libraries.json": "05897fa950fd3df5899c826c9724cbfc15064a26a0137e9489e9742122fcce45",
+    "work-arena-on-2/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "work-arena-on-2/proof/frontier_001984.logits.json": "8b319fe89716a13e3553fe805c888ee814912c51db548e374d6f751983f176e0",
+    "work-arena-off-2/receipt.json": "08755da7e2d3c0f387d6f9898424e002961f4b9553600b7d09e8341ade83d141",
+    "work-arena-off-2/run.log": "3076d32f99f3b83f4a96fb286a4ef6b4c8194f2909e1e0287ac1a9a2de2e4cd0",
+    "work-arena-off-2/memory.jsonl": "53375d4617e149f293090cfb18ab5923c8a259a4f17710538ccf92f68c11eafb",
+    "work-arena-off-2/clocks.csv": "6cb367f4d88295e35a7772cf7806de9021ca5f95279a7260a008ad8f538d2b85",
+    "work-arena-off-2/loaded-libraries.json": "a2f6e40c20e5e7721ed71be2eb70410a1c582f7840da4d3f78e450112a199e99",
+    "work-arena-off-2/proof/tokens-1984.json": "1dbaad3823652b867e774f2aea292a3d79525e900c9728047cdde0876e39972e",
+    "work-arena-off-2/proof/frontier_001984.logits.json": "8b319fe89716a13e3553fe805c888ee814912c51db548e374d6f751983f176e0",
+    "work-arena-build.log": "99596711d5214497bc5090617d63cbd8b0b90c56787c718aeda52215dc4f8f18",
+    "work-arena-lifetime/run.log": "31590085393cfa63bb43fd21455f15c7871d888030d71ce53fa6c0da438f35f9",
+    "work-arena-lifetime/memory.jsonl": "80c1601e5d0297178e761c7c544ccbcef532aacda1beb08d5db3cf19402a49bc",
+    "compare_work_arena.py": "a9a7167b78baf3d81c939a0cf66adde273318ed92ebf1b4618badc769276b06f",
+    "alloc_vmm_replay.py": "8dd106a72f6c397edff4536f64b81e7e71a0821908d43db297ebb69d708b3251",
+    "vmm_replay.py": "493a32fec77700e79b68f190f8db1f3b3bd2fa75a989675a910a7f7c7b6eda49",
+    "alloc-vmm-separate-1/receipt.json": "eab0f7a2bd9976683002e5c8cf11c39a823b1a5a5497bc3108654ba45b31e270",
+    "alloc-vmm-separate-1/run.log": "3681b931abcf9090449a2c7c774a533ef885b91d42725edc94bf899e050e3dfc",
+    "alloc-vmm-separate-1/memory.jsonl": "0f841c7cafa3dcdc1bb7b2bd26328ecf24e59761097abf41058ef383c655cedb",
+    "alloc-vmm-separate-1/clocks.csv": "3369665043e5d4a2079aad3b8e38f7294b414127ad690404d01bc1e82e83217b",
+    "alloc-vmm-separate-1/result.json": "3b07f85c5d85e6085471536b75f71b536ce799eca7176ddc46e5eefb332e2019",
+    "alloc-vmm-arena-1/receipt.json": "e72a8ce1207bc8c2c1954086dbc4ac5fc3aec9f8b81e98f87c99e37e323e9011",
+    "alloc-vmm-arena-1/run.log": "a69037ad868b4b6be828def8e6e6337dc0a2c5f0257501c2db0bf8eada980dec",
+    "alloc-vmm-arena-1/memory.jsonl": "695ebd729a6e98cc3d1e5bae5d845d0e34cd5f948f6247ec19453308dc8aa573",
+    "alloc-vmm-arena-1/clocks.csv": "e62637b6def8164798279d1fa074c65b51c739364250dbfa6927fccde22eb9dd",
+    "alloc-vmm-arena-1/result.json": "ca789d383f3f6a1b2f641d0885600b0c594535d3bf9320ae5b2e9c82b89f3d23",
+    "alloc-vmm-arena-2/receipt.json": "2e400161b44ab93150a527e2a1fd7e3597485199a2d083e30bf948d09b45a599",
+    "alloc-vmm-arena-2/run.log": "23f710c0ec1dbdaf8a3b5b7d47755c399575cd6c0e840f72be5a2ab1682f16ed",
+    "alloc-vmm-arena-2/memory.jsonl": "d62691e001d8f70b290ee7dbd9eeb920ec4e40c08f698cff7ce7466bfc3b41e9",
+    "alloc-vmm-arena-2/clocks.csv": "98e44f09852952d42ad325f006953dd3c14a376c147631f221719675f4348a7e",
+    "alloc-vmm-arena-2/result.json": "38da0bd8c897a438189eadac1b092fca97a5be301effa9d5c63912c7fae88d5d",
+    "alloc-vmm-separate-2/receipt.json": "84a13df995e10b0d8e16b20546c6353b997b338a2dff94a64d6fba25ec3a9e2d",
+    "alloc-vmm-separate-2/run.log": "553d7099741c82fcb1f6d7fb1a44f2dc55a07d3bd140c37a018d741278a0ae6f",
+    "alloc-vmm-separate-2/memory.jsonl": "00cf4265f6483cacff20723105ac0dd8322094d265b99aef090047cf67296b0b",
+    "alloc-vmm-separate-2/clocks.csv": "6ad088d08756502250a14b48bbfb48586492fcd5183dc63491fecd9ea35fa130",
+    "alloc-vmm-separate-2/result.json": "621395d503282f4f8b0ae65635845e2af522a32e711b6e85fd41ae1ad4ddb7ab",
+    "work-arena-candidate.patch": "ef7c41c7a526e1195a9dcb8d981445e63af05b6c8006786f885ac48d4bf708c4",
+    "expanded-kv-conversions.json": "09bf2d89c377b37c68844cbea7c16a2771d87720b446f98d6706e2d9065f8561",
+    "kv_convert_probe.cu": "5ac6150ffd07c35d32f1542c8deace448e9f8edad48ddd27c1f7ca442b1ac019",
+    "kv-convert-ncu.ncu-repz": "1df9f6be718d364b5cc70db0c95ac808b64e93db8b0ca55acc821b83e256aa53",
+    "kv-convert-ncu.csv": "bdf7cf51b0fa2d8ea2085d28b08370cdfd652065b496b7f9e481497be4d805c2",
+    "kv-convert-plain/run.log": "4e7c523984c5ac94f08282d935badbc137d2c81ea16c7c5c94c0d59c87cf850c",
+    "kv-convert-ncu/run.log": "eb4e7fef284c056a358c4ca696eca27856557f9fa9355ac0591e5bf792dc5c7e",
+    "work-arena-lifetime/run_perf.py": "e21907bcf270db67a385c94a82f12d191fa879e7b3cfbe55658dc49fe2312261"
+  },
+  "decision": "Rejected and removed candidate: no repeatable whole-inference gain; phase median9.209562->9.393974s.",
+  "quality_followup": "Skipped adoption-only quality pair and candidate trace after speed rejection; existing arithmetic proofs reused.",
+  "subsequent_user_selection": "User selected136KDA Q/K/V/O Q4_K artifact for speed work despite prior quality differences. This supersedes previous artifact rejection; allocation A/B above remains original-artifact evidence.",
+  "expanded_kv_target": {
+    "whole_trace": {
+      "ds4.prefill": {
+        "wall_seconds": 5.979311457,
+        "large_conversion_groups": {
+          "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)": {
+            "calls": 22,
+            "seconds": 0.026940099000000006,
+            "elements_upper_bound": 1084227584
+          },
+          "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)": {
+            "calls": 22,
+            "seconds": 0.026546785,
+            "elements_upper_bound": 1084227584
+          }
+        },
+        "selection": "launch grid*block >32000000 elements; grid count is an upper bound, not runtime scalar argument"
+      },
+      "ds4.decode": {
+        "wall_seconds": 4.378621625,
+        "large_conversion_groups": {
+          "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)": {
+            "calls": 352,
+            "seconds": 0.5683825520000005,
+            "elements_upper_bound": 23074439168
+          },
+          "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)": {
+            "calls": 352,
+            "seconds": 0.562375387,
+            "elements_upper_bound": 23074439168
+          }
+        },
+        "selection": "launch grid*block >32000000 elements; grid count is an upper bound, not runtime scalar argument"
+      }
+    },
+    "micro_build": {
+      "command": [
+        "/usr/local/cuda-13.4/bin/nvcc",
+        "-O3",
+        "-lineinfo",
+        "--use_fast_math",
+        "-std=c++17",
+        "-arch=sm_121a",
+        "-I.",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/kv_convert_probe.cu",
+        "-o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/kv_convert_probe"
+      ],
+      "source_sha256": "5ac6150ffd07c35d32f1542c8deace448e9f8edad48ddd27c1f7ca442b1ac019",
+      "headers": {
+        "cuda/glm_vq_linear.cuh": "178d742415aab09c53aed804a5450954b16ebd2539cb9acde43c2da2eb67ebcd",
+        "cuda/glm_vq_ops.cuh": "cdd1c0f21260a29a9952a1419be5ac17ccfc8ddbc0dde9142167f554085f1d5e"
+      },
+      "head": "b6e2f5c7e598ba7e5f2f23494a1edf314ef03d0e",
+      "scope": "Timing-only replay of unchanged conversion kernels; no production rebuild or new numerical qualification",
+      "exit_code": 0,
+      "wall_seconds": 2.608294689009199,
+      "binary_sha256": "3ee55f318d39b50790e6670a7548a08a3953f91bd9f745d7af50f330aee069d6"
+    },
+    "micro_plain": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "8",
+        "--high-gib",
+        "6",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "300",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/kv-convert-plain/memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/kv_convert_probe"
+      ],
+      "binary_sha256": "3ee55f318d39b50790e6670a7548a08a3953f91bd9f745d7af50f330aee069d6",
+      "build": "kv-convert-build.json",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "scope": "Existing two conversions, first decode shape1985x64x2x256. Synthetic finite BF16 input, no artifact/state or interposed cuBLAS; distinct BF16 source/destination. Target memory counters only, not candidate speed or numeric qualification.",
+      "exit_code": 0,
+      "wall_seconds": 1.028521232015919
+    },
+    "ncu": {
+      "command": [
+        "python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+        "--max-gib",
+        "8",
+        "--high-gib",
+        "6",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "300",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/kv-convert-ncu/memory.jsonl",
+        "--",
+        "ncu",
+        "--set",
+        "full",
+        "--replay-mode",
+        "kernel",
+        "--cache-control",
+        "none",
+        "--clock-control",
+        "none",
+        "--profile-from-start",
+        "off",
+        "--kernel-name",
+        "regex:.*glmvq_convert.*",
+        "--target-processes",
+        "all",
+        "--export",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/kv-convert-ncu",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/kv_convert_probe",
+        "--profile"
+      ],
+      "binary_sha256": "3ee55f318d39b50790e6670a7548a08a3953f91bd9f745d7af50f330aee069d6",
+      "build": "kv-convert-build.json",
+      "clock_policy_mhz": [
+        300,
+        2200
+      ],
+      "scope": "Existing two conversions, first decode shape1985x64x2x256. Synthetic finite BF16 input, no artifact/state or interposed cuBLAS; distinct BF16 source/destination. Target memory counters only, not candidate speed or numeric qualification.",
+      "exit_code": 0,
+      "wall_seconds": 7.268587931001093
+    },
+    "metrics": {
+      "kernels": [
+        {
+          "kernel": "void glmvq_convert<float, __nv_bfloat16>(const T2 *, T1 *, unsigned long)",
+          "metrics": {
+            "gpc__cycles_elapsed.avg.per_second": {
+              "value": "2.196701",
+              "unit": "Ghz"
+            },
+            "gpu__time_duration.sum": {
+              "value": "1.629568",
+              "unit": "ms"
+            },
+            "launch__registers_per_thread": {
+              "value": "16",
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": "83.793178",
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": "0.016500",
+              "unit": "%"
+            },
+            "lts__t_sectors_srcunit_tex_op_read.sum": {
+              "value": "4065280.000000",
+              "unit": "sector"
+            },
+            "lts__t_sectors_srcunit_tex_op_write.sum": {
+              "value": "8130560.000000",
+              "unit": "sector"
+            }
+          }
+        },
+        {
+          "kernel": "void glmvq_convert<__nv_bfloat16, float>(const T2 *, T1 *, unsigned long)",
+          "metrics": {
+            "gpc__cycles_elapsed.avg.per_second": {
+              "value": "2.196773",
+              "unit": "Ghz"
+            },
+            "gpu__time_duration.sum": {
+              "value": "1.594272",
+              "unit": "ms"
+            },
+            "launch__registers_per_thread": {
+              "value": "16",
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": "79.337395",
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": "16.074707",
+              "unit": "%"
+            },
+            "lts__t_sectors_srcunit_tex_op_read.sum": {
+              "value": "8130560.000000",
+              "unit": "sector"
+            },
+            "lts__t_sectors_srcunit_tex_op_write.sum": {
+              "value": "4065280.000000",
+              "unit": "sector"
+            }
+          }
+        }
+      ],
+      "plain_pair_ms": 3.16748857,
+      "logical_roundtrip_bytes": 780533760,
+      "logical_bandwidth_GBps": 246.42038724073436,
+      "limitations": "No dram__ counters in this full capture. Logical bytes/time is not measured DRAM bandwidth. L2 read/write sectors retained separately. Ignore application event timing under replay; use plain64-repeat timing and per-kernel profiler durations."
+    }
+  }
+}

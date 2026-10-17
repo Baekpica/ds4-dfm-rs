@@ -32,6 +32,7 @@ pub enum ModelFamily {
     Qwen35 = 12,
     NaiveN05 = 11,
     IQuestQ1 = 13,
+    Glm53Vq = 14,
 }
 
 impl ModelFamily {
@@ -44,6 +45,7 @@ impl ModelFamily {
             "dots3note" | "dots3-note" => Some(Self::Dots3Note),
             "qwen4exp" => Some(Self::Qwen4Exp),
             "glm5-next" => Some(Self::Glm53),
+            "glm5-next-vq" => Some(Self::Glm53Vq),
             "inkling" => Some(Self::Inkling),
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
@@ -64,6 +66,7 @@ impl ModelFamily {
             Self::Dots3Note => "dots3-note",
             Self::Qwen4Exp => "qwen4exp",
             Self::Glm53 => "glm5-next",
+            Self::Glm53Vq => "glm5-next-vq",
             Self::Inkling => "inkling",
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
@@ -95,6 +98,7 @@ pub enum Variant {
     NaiveN05Flash = 13,
     IQuestQ1 = 15,
     DeepSeek41Flash = 16,
+    Glm53FlashVq = 17,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -342,6 +346,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"dots3note") | Some(b"dots3-note") => ArchRoute::Fixed(Variant::Dots3NotePrev),
         Some(b"qwen4exp") => ArchRoute::Fixed(Variant::Qwen38FlashNext),
         Some(b"glm5-next") => ArchRoute::Fixed(Variant::Glm53Flash),
+        Some(b"glm5_next") => ArchRoute::Fixed(Variant::Glm53FlashVq),
         Some(b"k2-horizon") => ArchRoute::Fixed(Variant::K2Horizon375B),
         Some(b"inkling") => ArchRoute::Fixed(Variant::InklingSmall),
         Some(b"step35") => ArchRoute::Fixed(Variant::Step37Flash),
@@ -364,6 +369,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Dots3NotePrev => SHAPE_DOTS3_NOTE_PREV,
         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
+        Variant::Glm53FlashVq => SHAPE_GLM53_VQ,
         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
         Variant::InklingSmall => SHAPE_INKLING_SMALL,
         Variant::Step37Flash => SHAPE_STEP37_FLASH,
@@ -1110,6 +1116,14 @@ pub(crate) const SHAPE_INKLING_SMALL: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 1_048_576,
+};
+
+pub(crate) const SHAPE_GLM53_VQ: Shape = Shape {
+    name: "GLM-5.3-Flash-VQ",
+    family: ModelFamily::Glm53Vq,
+    variant: Variant::Glm53FlashVq,
+    // Topology is shared; weight format, execution and qualification are not.
+    ..SHAPE_GLM53_FLASH
 };
 
 pub const SHAPE_GLM53_FLASH: Shape = Shape {

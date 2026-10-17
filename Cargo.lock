@@ -345,6 +345,7 @@ dependencies = [
  "regex",
  "rustfft",
  "serde_json",
+ "sha2",
  "unicode-normalization",
 ]
 

@@ -51,7 +51,7 @@ def main():
     before = {str(path): digest(path) for path in [source, fixture]}
     graph = source.read_text()
     code = "\n".join(body(graph, name) for name in (
-        "glm53_graph_row_cap", "glm53_window_cap", "glm53_graph_prefill"))
+        "glm53_prefill_max", "glm53_graph_row_cap", "glm53_window_cap", "glm53_graph_prefill"))
     header = output / "prefill.inc"
     header.write_text(code)
     (output / "graph-source.inc").write_bytes(source.read_bytes())

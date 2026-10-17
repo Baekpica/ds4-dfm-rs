@@ -505,6 +505,15 @@ fn syntax_for_model_id_matches_c() {
 }
 
 #[test]
+fn glm_vq_uses_glm_syntax() {
+    // GLM VQ keeps GLM-5.3's chat template, tool markers and output parser.
+    assert_eq!(
+        ds4_server::syntax_for_model_id(ds4_core::Variant::Glm53FlashVq as i32),
+        ModelSyntax::Glm53
+    );
+}
+
+#[test]
 fn k2_horizon_chat_uses_ifm_not_exaone() {
     let prompt = render_chat(
         ModelSyntax::K2Horizon,

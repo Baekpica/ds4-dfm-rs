@@ -41,7 +41,7 @@ def main():
                    graph.index("static void glm53_graph_layers")]
     schema_path = output / "rows.inc"
     schema_path.write_text(schema)
-    helpers = ["glm53_graph_row_cap", "glm53_window_cap", "glm53_prefill_cap",
+    helpers = ["glm53_prefill_max", "glm53_graph_row_cap", "glm53_window_cap", "glm53_prefill_cap",
                "glm53_window_bytes", "glm53_graph_diag", "glm53_graph_ffn_cols",
                "glm53_graph_layers", "glm53_graph_state_bytes"]
     if "static uint64_t glm53_graph_bytes_plan(" in graph:
@@ -55,7 +55,7 @@ def main():
     code += body(graph, allocation_helper)
     code += body(native, "glm53_graph_session_fit_check")
     allocation = branch(native, "ds4_session_alloc_graph", "ds4_session_is_glm53(s)")
-    creation = branch(native, "ds4_session_create", "DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53")
+    creation = branch(native, "ds4_session_create", "ds4_model_is_glm()")
     code += "static int ds4_session_alloc_graph(ds4_session *s) {\n"
     code += "    ds4_engine *e = s->engine;\n" + allocation + "}\n"
     code += "static int create(ds4_session **out, ds4_engine *e, int ctx_size) {\n"

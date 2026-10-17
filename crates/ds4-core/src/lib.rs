@@ -15,6 +15,7 @@ mod dots3_mtp;
 mod engram;
 mod gguf;
 mod glm_mtp;
+mod glm_vq;
 mod identify;
 mod inkling;
 mod inkling_audio;
@@ -108,12 +109,12 @@ pub use payload::{
 };
 pub use progress::PrefillCheckpoint;
 pub use serving::{
-    caps_from_ident, caps_from_shape, host_reuse, open_draft_tokens, parse_disk_space,
-    resolve_plan, serving_caps, ChunkFence, Distribution, EffectiveView, EngineFacts, HostNeed,
-    IssueLevel, LaneMode, MaxSeqs, MtpMode, PlanIssue, PrefixReuse, QualifiedView, RequestTrace,
-    RequestedView, ResolvedPlan, ReuseKind, ReuseMiss, ReuseTaken, ServingCaps, ServingQuote,
-    ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS,
-    DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE, VERIFIED_PREFILL_CHUNKS,
+    caps_from_ident, caps_from_shape, host_reuse, native_ctx_default, open_draft_tokens,
+    parse_disk_space, resolve_plan, serving_caps, ChunkFence, Distribution, EffectiveView,
+    EngineFacts, HostNeed, IssueLevel, LaneMode, MaxSeqs, MtpMode, PlanIssue, PrefixReuse,
+    QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind, ReuseMiss, ReuseTaken,
+    ServingCaps, ServingQuote, ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST,
+    DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE, VERIFIED_PREFILL_CHUNKS,
 };
 pub use serving_host::{
     attach_host_quote, fill_quote_facts, gguf_slice_span_bytes, gguf_span_bytes,
@@ -297,7 +298,9 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "MTP draft tokens must be positive"
     } else if family == ModelFamily::IQuestQ1 && draft > iquest::DRAFT_SLOTS as i32 {
         "IQuest-Q1 accepts at most seven recursive draft tokens"
-    } else if family == ModelFamily::Glm53 && draft > glm_mtp::DRAFT_MAX {
+    } else if matches!(family, ModelFamily::Glm53 | ModelFamily::Glm53Vq)
+        && draft > glm_mtp::DRAFT_MAX
+    {
         "GLM-5.3 accepts at most three recursive draft tokens"
     } else {
         return Ok(());
@@ -861,11 +864,18 @@ fn pack_bind_plan(plan: &BindPlan, inventory: &TensorInventory) -> Result<FfiBin
 
 struct FfiTensorDir {
     _names: Vec<CString>,
+    _paths: Vec<CString>,
+    shards: Vec<ds4_sys::ds4_host_shard>,
     rows: Vec<ds4_host_tensor>,
     dir: ds4_host_tensor_dir,
 }
 
-fn pack_tensor_dir(inventory: &TensorInventory) -> Result<FfiTensorDir> {
+enum ShardMapping {
+    Legacy,
+    Named,
+}
+
+fn pack_tensor_dir(inventory: &TensorInventory, mapping: ShardMapping) -> Result<FfiTensorDir> {
     let mut names = Vec::with_capacity(inventory.tensors.len());
     for t in &inventory.tensors {
         names.push(CString::new(t.name.as_str()).map_err(|_| Error {
@@ -891,14 +901,44 @@ fn pack_tensor_dir(inventory: &TensorInventory) -> Result<FfiTensorDir> {
             }
         })
         .collect();
+    let paths = match mapping {
+        ShardMapping::Legacy => Vec::new(),
+        ShardMapping::Named => inventory
+            .shards
+            .iter()
+            .map(|sh| {
+                CString::new(sh.path.as_os_str().as_encoded_bytes()).map_err(|_| Error {
+                    code: 1,
+                    message: "shard path contains NUL".into(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
+    let shards: Vec<_> = paths
+        .iter()
+        .zip(&inventory.shards)
+        .map(|(path, sh)| ds4_sys::ds4_host_shard {
+            path: path.as_ptr(),
+            size: sh.size,
+            base: sh.base,
+        })
+        .collect();
     let dir = ds4_host_tensor_dir {
         n: rows.len() as u32,
         v: rows.as_ptr(),
         data_pos: inventory.data_pos,
         alignment: inventory.alignment,
+        n_shards: shards.len() as u32,
+        shards: if shards.is_empty() {
+            ptr::null()
+        } else {
+            shards.as_ptr()
+        },
     };
     Ok(FfiTensorDir {
         _names: names,
+        _paths: paths,
+        shards,
         rows,
         dir,
     })
@@ -907,6 +947,9 @@ fn pack_tensor_dir(inventory: &TensorInventory) -> Result<FfiTensorDir> {
 impl FfiTensorDir {
     fn as_c(&mut self) -> *const ds4_host_tensor_dir {
         self.dir.v = self.rows.as_ptr();
+        if !self.shards.is_empty() {
+            self.dir.shards = self.shards.as_ptr();
+        }
         &self.dir
     }
 }
@@ -1194,6 +1237,12 @@ fn open_bind_plan(
         Some(w) => BindPlan::resolve_v41(shape, w, inventory),
         None => BindPlan::resolve(shape, inventory),
     };
+    if shape.family == ModelFamily::Glm53Vq && plan.slots.len() != inventory.tensors.len() {
+        return Err(Error {
+            code: 1,
+            message: "GLM VQ tensor set mismatch".into(),
+        });
+    }
     if let Some(name) = plan.missing_required().first() {
         return Err(Error {
             code: 1,
@@ -1211,6 +1260,34 @@ fn open_bind_plan(
     Ok((plan, wire))
 }
 
+fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
+    let (g, vocab) = if shape.family == ModelFamily::Glm53Vq {
+        let g = glm_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
+    } else {
+        let g = GgufFile::open(path).map_err(|e| Error {
+            code: 1,
+            message: format!("validate failed: {}", e.token()),
+        })?;
+        validate_file(&g, shape).map_err(|e| Error {
+            code: 1,
+            message: format!("validate failed: {}", e.token()),
+        })?;
+        let vocab = Vocab::load(&g, shape.family);
+        (g, vocab)
+    };
+    Ok((
+        g,
+        vocab.map_err(|e| Error {
+            code: 1,
+            message: format!("vocab failed: {e}"),
+        })?,
+    ))
+}
+
 /// Everything `Model::open` checks before it touches the device: identify,
 /// family validation, vocab, chat template, tensor inventory, required
 /// tensors and layouts. `--check-config` runs it so an artifact that cannot
@@ -1220,18 +1297,7 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
         code: 1,
         message: format!("identify failed: {}", e.token()),
     })?;
-    let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
-        code: 1,
-        message: format!("validate failed: {}", e.token()),
-    })?;
-    validate_file(&g, &identified.shape).map_err(|e| Error {
-        code: 1,
-        message: format!("validate failed: {}", e.token()),
-    })?;
-    Vocab::load(&g, identified.shape.family).map_err(|e| Error {
-        code: 1,
-        message: format!("vocab failed: {e}"),
-    })?;
+    let (g, _) = open_input_assets(Path::new(path), &identified.shape)?;
     chat_template::Template::load(std::path::Path::new(path), &g)?;
     let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
         code: 1,
@@ -1426,6 +1492,19 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::Glm53Vq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "GLM VQ requires one CUDA model with embedded MTP and vision disabled"
+                    .into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -1471,24 +1550,13 @@ impl Model {
                 },
             )?;
         }
-        let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
-            code: 1,
-            message: format!("validate failed: {}", e.token()),
-        })?;
-        validate_file(&g, &identified.shape).map_err(|e| Error {
-            code: 1,
-            message: format!("validate failed: {}", e.token()),
-        })?;
+        let (g, vocab) = open_input_assets(Path::new(path), &identified.shape)?;
         if identified.shape.family == ModelFamily::Inkling {
             inkling_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
         }
         if identified.shape.family == ModelFamily::Ling3Vl {
             ling_open_check(backend, &tuning, dspark_path, distributed)?;
         }
-        let vocab = Vocab::load(&g, identified.shape.family).map_err(|e| Error {
-            code: 1,
-            message: format!("vocab failed: {e}"),
-        })?;
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
         let mut ffi_vocab = pack_host_vocab(&vocab);
         let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
@@ -1701,7 +1769,12 @@ impl Model {
         };
         let mut ffi_plan = pack_bind_plan(&bind_plan, &inventory)?;
         let mut ffi_bind = pack_host_bind_map(&bind_plan)?;
-        let mut ffi_dir = pack_tensor_dir(&inventory)?;
+        let mapping = if Path::new(path).is_dir() {
+            ShardMapping::Named
+        } else {
+            ShardMapping::Legacy
+        };
+        let mut ffi_dir = pack_tensor_dir(&inventory, mapping)?;
         let (mtp, dspark) = sibling::attach_siblings(
             identified.shape.family,
             identified.shape,
@@ -2274,6 +2347,7 @@ impl Session<'_> {
                 | ModelFamily::Mimo2
                 | ModelFamily::IQuestQ1
                 | ModelFamily::Glm53
+                | ModelFamily::Glm53Vq
         ) {
             return;
         }
@@ -2850,7 +2924,7 @@ impl Session<'_> {
         max_tokens: i32,
         eos: i32,
     ) -> Result<Vec<i32>> {
-        if self.host.family == ModelFamily::Glm53 {
+        if matches!(self.host.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
             return self.eval_glm_argmax(first, max_tokens, eos);
         }
         if self.host.family == ModelFamily::Inkling {
@@ -3347,6 +3421,50 @@ impl Drop for Session<'_> {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn named_mapping_keeps_ffi_paths() {
+        let inventory = TensorInventory {
+            shards: vec![
+                tensors::ShardPlan {
+                    path: "native.gguf".into(),
+                    size: 128,
+                    base: 0,
+                },
+                tensors::ShardPlan {
+                    path: "expert.gguf".into(),
+                    size: 512,
+                    base: 4096,
+                },
+            ],
+            tensors: Vec::new(),
+            data_pos: 128,
+            alignment: 128,
+            page: 4096,
+        };
+        let mut legacy = pack_tensor_dir(&inventory, ShardMapping::Legacy).unwrap();
+        let mut named = pack_tensor_dir(&inventory, ShardMapping::Named).unwrap();
+        // Move the owner before use: the borrowed paths must remain valid for
+        // the entire synchronous native open, including its map-plan walk.
+        let mut moved = std::mem::replace(
+            &mut named,
+            pack_tensor_dir(&inventory, ShardMapping::Legacy).unwrap(),
+        );
+        // SAFETY: both FFI descriptors borrow allocations owned by these live
+        // wrappers. Exactly n_shards entries were initialized by the packer.
+        unsafe {
+            assert_eq!((*legacy.as_c()).n_shards, 0);
+            assert!((*legacy.as_c()).shards.is_null());
+            let dir = &*moved.as_c();
+            assert_eq!(dir.n_shards, 2);
+            let parts = std::slice::from_raw_parts(dir.shards, dir.n_shards as usize);
+            assert_eq!(
+                std::ffi::CStr::from_ptr(parts[1].path).to_bytes(),
+                b"expert.gguf"
+            );
+            assert_eq!((parts[1].size, parts[1].base), (512, 4096));
+        }
+    }
 
     #[test]
     fn glm_serial_budget_keeps_banks() {
@@ -4102,15 +4220,14 @@ mod tests {
         iquest_error_ledger(IQuestFailure::Reject);
     }
 
-    #[test]
-    fn glm_mtp_dispatch_ledger() {
+    fn glm_mtp_ledger(family: ModelFamily) {
         for first in [10, -1, -2, 3, 30] {
             STEP_GENERATION.with(|value| value.set(1));
             GLM_TRIAL_CALLS.with(|value| value.set(0));
             GLM_KEEP.with(|value| value.set(0));
             let mut session = std::mem::ManuallyDrop::new(Session {
                 raw: NonNull::<ds4_bridge_session>::dangling(),
-                host: SessionLedger::new(ModelFamily::Glm53, SessionBackend::Cuda, 1024, 64),
+                host: SessionLedger::new(family, SessionBackend::Cuda, 1024, 64),
                 _model: PhantomData,
                 _not_send: PhantomData,
             });
@@ -4131,6 +4248,26 @@ mod tests {
             } else {
                 assert!(session.host.tokens().is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn glm_mtp_dispatch_ledger() {
+        glm_mtp_ledger(ModelFamily::Glm53);
+    }
+
+    #[test]
+    fn glm_vq_mtp_dispatch_ledger() {
+        glm_mtp_ledger(ModelFamily::Glm53Vq);
+    }
+
+    #[test]
+    fn glm_vq_mtp_draft_limit() {
+        for draft in [1, 2, 3] {
+            assert!(check_mtp_draft(ModelFamily::Glm53Vq, draft).is_ok());
+        }
+        for draft in [0, 4] {
+            assert!(check_mtp_draft(ModelFamily::Glm53Vq, draft).is_err());
         }
     }
 

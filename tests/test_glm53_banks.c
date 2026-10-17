@@ -38,6 +38,8 @@ typedef struct {
     ds4_gpu_tensor *dt_bias[DS4_MAX_LAYER], *o_norm[DS4_MAX_LAYER];
     ds4_gpu_tensor *layer_tail_k[DS4_MAX_LAYER], *layer_tail_gate[DS4_MAX_LAYER];
     ds4_gpu_tensor *layer_kv[DS4_MAX_LAYER], *layer_pool[DS4_MAX_LAYER];
+    void *gvq;
+    bool gvq_borrowed;
 } ds4_glm53_gpu_graph;
 typedef struct { ds4_model model; ds4_weights weights; ds4_glm53_stream glm53_stream; } ds4_engine;
 typedef enum { GLM53_MTP_SAVE, GLM53_MTP_RESTORE } glm53_mtp_move;
@@ -212,7 +214,11 @@ static void clone_test(void) {
     source.layer_tail_gate[1] = ds4_gpu_tensor_view(source.state_pool, 80u, 16u);
     source.q_conv_weight[0] = ds4_gpu_tensor_view(source.control_pool, 0u, 8u);
     memset(source.state_pool->data, 37, source.state_bytes);
+    source.gvq = &source;
     assert(glm53_bank_clone(&bank, &source));
+#ifndef __APPLE__
+    assert(bank.gvq == source.gvq && bank.gvq_borrowed && !source.gvq_borrowed);
+#endif
     assert(bank.state_pool->data != source.state_pool->data);
     assert(bank.layer_kv[1]->data != source.layer_kv[1]->data);
     assert(bank.layer_pool[1]->data != source.layer_pool[1]->data);

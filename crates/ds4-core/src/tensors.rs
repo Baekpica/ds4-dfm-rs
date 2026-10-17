@@ -21,6 +21,7 @@ pub enum TensorError {
     SplitPath,
     SplitFirst,
     ExpectedTensors { declared: u32, got: u64 },
+    GlmVq(&'static str),
 }
 
 impl TensorError {
@@ -35,6 +36,7 @@ impl TensorError {
             TensorError::ExpectedTensors { declared, got } => {
                 format!("split-tensors {declared}!={got}")
             }
+            TensorError::GlmVq(reason) => format!("glm-vq {reason}"),
         }
     }
 }
@@ -304,6 +306,7 @@ fn parse_one(
             return Err(TensorError::OutsideFile);
         }
     }
+    crate::glm_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     Ok((data_pos, tensors))
 }
 
@@ -354,6 +357,9 @@ fn file_len(path: &Path) -> Result<u64, TensorError> {
 
 impl TensorInventory {
     pub fn open(path: &Path) -> Result<Self, TensorError> {
+        if path.is_dir() {
+            return crate::glm_vq::open_dir(path);
+        }
         let g = GgufFile::open(path)?;
         Self::from_file(path, &g)
     }

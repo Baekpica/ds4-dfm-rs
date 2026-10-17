@@ -11,6 +11,7 @@ typedef struct {
     ds4_gpu_tensor *state_pool;
     ds4_gpu_tensor *mtp_kv;
     ds4_gpu_tensor *layer_kv[DS4_MAX_LAYER], *layer_pool[DS4_MAX_LAYER];
+    void *gvq;
 } ds4_glm53_gpu_graph;
 
 static int write_fail, sync_fail;
@@ -56,7 +57,7 @@ static bool glm53_graph_reset(ds4_glm53_gpu_graph *g) {
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "GLM payload FAIL %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 enum { CAP = 2056, POISON = 0xa5 };
-typedef enum { FIXTURE_COMPACT, FIXTURE_EXPANDED } fixture_layout;
+typedef enum { FIXTURE_COMPACT, FIXTURE_EXPANDED, FIXTURE_VQ } fixture_layout;
 typedef enum { FIXTURE_MTP_OFF, FIXTURE_MTP_ON } fixture_mtp;
 
 static ds4_gpu_tensor *tensor(uint64_t bytes) {
@@ -74,6 +75,7 @@ static void init(ds4_glm53_gpu_graph *g, fixture_layout layout, fixture_mtp mtp)
         .ctx_cap = CAP, .row_cap = 128, .pool_cap = CAP / DS4_GLM53_POOL_SIZE,
         .state_bytes = 4096};
     g->state_pool = tensor(g->state_bytes);
+    if (layout == FIXTURE_VQ) { g->gvq = g; }
     g->mtp_ready = mtp == FIXTURE_MTP_ON;
     if (g->mtp_ready) { g->mtp_kv = tensor(CAP * DS4_N_KV_LORA * sizeof(uint16_t)); }
     for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
@@ -124,6 +126,7 @@ static void roundtrip(uint32_t n, fixture_layout layout, fixture_mtp mtp) {
     uint64_t left = total;
     uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS];
     for (unsigned i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++) { CHECK(!payload_read_u32(fp, &h[i], &left, err, sizeof(err))); }
+    if (layout == FIXTURE_VQ) { CHECK(h[5] == UINT32_C(0x31515647)); /* GVQ1 */ }
     int *got = NULL;
     CHECK(!glm53_payload_restore(&dst, fp, &left, h, &got, restored, err, sizeof(err)));
     CHECK(left == 0 && dst.cache_len == n);
@@ -151,6 +154,17 @@ static void roundtrip(uint32_t n, fixture_layout layout, fixture_mtp mtp) {
     free(got);
     const long body = DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t);
     const uint64_t body_bytes = total - (uint64_t)body;
+    if (layout == FIXTURE_VQ && n <= DS4_GLM53_INDEX_TOPK) {
+        /* Reject before touching state: dense-only snapshots lack pools. */
+        h[2] = DS4_GLM53_INDEX_TOPK;
+        fseek(fp, body, SEEK_SET); left = body_bytes; got = NULL;
+        CHECK(glm53_payload_restore(&dst, fp, &left, h, &got, restored, err, sizeof(err)) != 0 && !got);
+        CHECK(dst.cache_len == n && !memcmp(src.state_pool->data, dst.state_pool->data, src.state_bytes));
+        h[2] = CAP;
+        dst.gvq = NULL;
+        CHECK(glm53_payload_restore(&dst, fp, &left, h, &got, restored, err, sizeof(err)) != 0 && !got);
+        dst.gvq = src.gvq;
+    }
     if (src.mtp_ready) {
         const long frontier = body + n * sizeof(uint32_t) + DS4_N_VOCAB * sizeof(float);
         const uint32_t invalid[][2] = {{n, n - 2u}, {n - 1u, n}, {0u, 1u}};
@@ -202,6 +216,11 @@ int main(void) {
     roundtrip(2049, FIXTURE_COMPACT, FIXTURE_MTP_OFF);
     roundtrip(5, FIXTURE_EXPANDED, FIXTURE_MTP_OFF);
     roundtrip(5, FIXTURE_COMPACT, FIXTURE_MTP_ON);
+#ifndef __APPLE__
+    roundtrip(3, FIXTURE_VQ, FIXTURE_MTP_OFF);
+    roundtrip(5, FIXTURE_VQ, FIXTURE_MTP_OFF);
+    roundtrip(2049, FIXTURE_VQ, FIXTURE_MTP_OFF);
+#endif
     puts("GLM payload: byte-exact state/latent/pools, split tail, layout and failure gates PASS");
     return 0;
 }

@@ -1955,6 +1955,9 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::NaiveN05 => crate::naive::validate_metadata(g),
         ModelFamily::IQuestQ1 => crate::iquest::validate(g),
         ModelFamily::Glm53 => validate_glm53(g, shape),
+        ModelFamily::Glm53Vq => Err(ValidateError::Token(
+            "GLM VQ requires a complete release directory",
+        )),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::Qwen35 => validate_qwen35(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
@@ -1969,6 +1972,13 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
 }
 
 pub fn validate_gguf(path: &std::path::Path) -> Result<Shape, ValidateError> {
+    if path.is_dir() {
+        let id = crate::glm_vq::identify(path)?;
+        let inventory = TensorInventory::open(path)
+            .map_err(|e| ValidateError::TokenKey("GLM VQ inventory", e.token()))?;
+        crate::glm_vq::validate_inventory(&inventory)?;
+        return Ok(id.shape);
+    }
     let g = GgufFile::open(path)?;
     let id = identify_file(&g)?;
     validate_file(&g, &id.shape)?;
@@ -1986,6 +1996,13 @@ pub fn host_compress_ratios(shape: &Shape) -> Vec<u32> {
 
 /// C `validate_c_oracle PATH` stdout (one token line).
 pub fn dump_validate(path: &std::path::Path) -> String {
+    // A GVQ1 release is a directory of named parts, never one GGUF.
+    if path.is_dir() {
+        return match validate_gguf(path) {
+            Ok(_) => "ok\n".into(),
+            Err(e) => format!("{}\n", e.token()),
+        };
+    }
     match GgufFile::open(path) {
         Ok(g) => {
             let arch = g.get_string("general.architecture");
@@ -2011,6 +2028,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
                         Variant::Qwen35_27B => SHAPE_QWEN35,
                         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
+                        Variant::Glm53FlashVq => crate::shape::SHAPE_GLM53_VQ,
                         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,
                         Variant::Step37Flash => crate::shape::SHAPE_STEP37_FLASH,
@@ -2036,6 +2054,27 @@ pub fn dump_validate(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::qwen_source_revision_supported;
+
+    #[test]
+    fn dump_validate_routes_release_directories() {
+        // An empty directory is no GVQ1 release: the report must come from
+        // the directory validator, not from opening the path as one GGUF.
+        let dir = std::env::temp_dir().join(format!("ds4-validate-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let expected = match super::validate_gguf(&dir) {
+            Ok(_) => "ok\n".to_string(),
+            Err(e) => format!("{}\n", e.token()),
+        };
+        assert_eq!(super::dump_validate(&dir), expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "requires DS4_GLM_VQ_MODEL, the pinned release directory"]
+    fn dump_validate_accepts_the_release() {
+        let root = std::env::var_os("DS4_GLM_VQ_MODEL").expect("DS4_GLM_VQ_MODEL");
+        assert_eq!(super::dump_validate(std::path::Path::new(&root)), "ok\n");
+    }
 
     #[test]
     fn qwen_source_pins_are_exact() {

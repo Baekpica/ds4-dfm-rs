@@ -1156,6 +1156,72 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   the model. See `misc/proof-harness/README.md` for the sidecar
   lifecycle.
 
+- `DS4_GLMVQ_RESTORE_VEC=0` restores scalar GLM VQ weight restoration.
+  Default On: packed E4M3 loads and BF16 vector stores for aligned GLM VQ
+  gate/up/down matrices. Other shapes, formats or
+  alignments retain scalar restore. Gain multiplication and BF16 rounding
+  are unchanged. This knob belongs to the separate GLM VQ family. See the
+  [bounded 2K A/B](../docs/glm53-vq-restore-2026-10-15.md).
+
+- `DS4_GLMVQ_MMA=0` disables grouped register-BF16 VQ MMA for prefill
+  widths >=32. Default On after bounded 2K A/B, text and combined-path
+  checks. Aligned
+  13-bit E4M3 GLM shapes with a shared codebook use persistent CTAs and
+  fused up/SwiGLU; other cases retain restore+GEMM. Gain/BF16 boundaries
+  remain, while accumulation order differs. Adds 144.094 MiB of grouped
+  activation/worklist workspace at 512 rows. Single-token decode uses its
+  separate dispatch. See the [qualification](../docs/glm53-vq-mma-2026-10-15.md).
+
+- `DS4_GLMVQ_Q4_DIRECT=0` restores BF16 dequantization plus cuBLAS for the
+  separate `q4_k_nonexpert_v2` artifact. Default On uses direct Q4_K dots at
+  widths 1–8 and Q4_K/Q8_1 MMQ above 8. The output retains the BF16 boundary;
+  direct weight reconstruction and MMQ activation quantization change arithmetic.
+  This candidate needs artifact-specific quality/performance qualification.
+  Original BF16/FP8 tensors and VQ experts do not use this switch.
+
+- `DS4_GLMVQ_Q4_STREAM=0` disables cooperative Q4_K weight loads. Default On
+  stages aligned matrices larger than 4 MiB for single-token decode, within
+  the device's shared-memory limit. Small matrices and widths 2–8 retain
+  scalar dots. Packed values and the BF16 output boundary remain; FP32
+  reduction order changes. Double buffering lost the measured GLM replay
+  comparison and remains available only in the diagnostic harness.
+
+- `DS4_GLMVQ_DECODE=0` disables persistent direct VQ expert decode.
+  Default On after bounded 2K workload and changed-arithmetic text checks. Eligible
+  single-token calls use a shared E4M3 codebook and cooperative packed
+  loads, with fused gate/up/SwiGLU. Per-weight gain/BF16 boundaries remain;
+  FP32 reduction order changes. Unsupported shape/alignment/resources and
+  verification batches use restore+GEMM. See the
+  [qualification](../docs/glm53-vq-decode-2026-10-16.md);
+  no MTP or graph support is implied.
+
+- `DS4_GLMVQ_FP8_DIRECT=0` disables fused FP8 decode projections.
+  Default On after bounded 2K A/B and arithmetic/output checks. Single-token BF16 math
+  on measured original FP8 matrix shapes uses coalesced loads and in-register
+  block-scale restoration. Original weight/input/output BF16 boundaries
+  remain; FP32 reduction order changes. Other widths, shapes or alignments
+  retain restore+cuBLAS. Artifact precision and workspace sizes are unchanged.
+  See the [evidence and output-format limits](../docs/glm53-vq-fp8-2026-10-16.md).
+
+- `DS4_GLMVQ_KV_BF16=0` restores the latent/expanded KV conversion path.
+  Default On after matched 2K off/on checks. Aligned BF16 KV_B projections
+  read the BF16 latent cache and feed BF16 output directly to attention.
+  GEMM, softmax and PV rounding boundaries, cache ownership and workspace
+  capacities are unchanged. Other supported formats/alignments retain the
+  previous path; capture remains unsupported. See the
+  [handoff evidence](../docs/glm53-vq-kv-bf16-2026-10-16.md).
+
+- `DS4_GLMVQ_LATENT_ATTN=0` disables latent single-row attention.
+  Default On for aligned BF16 KV_B/cache, 64 heads, dimension 256, latent
+  512 and 512–8192 keys. Factor query/value projections around the latent
+  cache, moving BF16 rounding boundaries; long PV partial sums stay FP32.
+  Other widths/shapes retain expanded attention. A one-row prefill tail can
+  select this path; disabling `DS4_GLMVQ_KV_BF16` also disables it. No extra
+  allocation or MTP/capture support. Beyond 2048 keys, use the source
+  indexer's causal selection mask. See the [2K Q4 evidence and short/long
+  workload distinction](../docs/glm53-vq-latent-2026-10-16.md) and the
+  [8K sparse workload](../docs/glm53-vq-sparse-2026-10-16.md).
+
 - `DS4_GLM53_LOW_ATTN=0` restores reference GLM-5.3 compact attention.
   Default enabled: pair latent outputs only for selected2051/128-row/
   64-head/latent512 prefill. Preserve each output's FMA order; no added

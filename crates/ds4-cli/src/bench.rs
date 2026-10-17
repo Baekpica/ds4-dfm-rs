@@ -21,6 +21,7 @@ pub struct BenchArgs {
     ctx_alloc: i32,
     step_incr: i32,
     gen_tokens: i32,
+    warmup_prefill: i32,
     step_mul: f64,
     csv: Option<String>,
     quality: bool,
@@ -50,6 +51,7 @@ impl Default for BenchArgs {
             ctx_alloc: 0,
             step_incr: 2048,
             gen_tokens: 128,
+            warmup_prefill: 0,
             step_mul: 1.0,
             csv: None,
             quality: false,
@@ -135,6 +137,10 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<BenchArgs, S
             }
             "--gen-tokens" | "--tokens" | "-n" => {
                 parsed.gen_tokens =
+                    parse_nonnegative_i32(&arg, &require_value(&arg, iter.next())?)?;
+            }
+            "--warmup-prefill" => {
+                parsed.warmup_prefill =
                     parse_nonnegative_i32(&arg, &require_value(&arg, iter.next())?)?;
             }
             "--csv" => parsed.csv = Some(require_value(&arg, iter.next())?),
@@ -231,7 +237,7 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
-    if family == ModelFamily::Glm53 {
+    if matches!(family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
         return mtp.is_none()
             && draft > 1
             && ds4_core::check_mtp_draft(family, draft).is_ok()
@@ -532,6 +538,17 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
             .map_err(|e| format!("output-head bench failed: {e}"))?;
         return Ok(0);
     }
+    // Lazy graph/workspace allocation and first kernel loads land in this
+    // untimed prefill; the session restarts at position 0 for the sweep.
+    if args.warmup_prefill > 0 {
+        if args.warmup_prefill > args.ctx_max {
+            return Err("--warmup-prefill must be <= --ctx-max".into());
+        }
+        let warm =
+            TokenBuffer::from_tokens(prompt.as_slice()[..args.warmup_prefill as usize].to_vec());
+        session.sync(&warm).map_err(|e| e.to_string())?;
+        session.invalidate();
+    }
     let mut snapshot = if uses_prefix_replay(&args, model.family()) {
         None
     } else {
@@ -611,6 +628,7 @@ fn run_sweep<W: Write>(
         let mut after_first = None;
         let mut first_call_tokens = 0;
         let mut decoded = args.dump_frontier_logits_dir.as_ref().map(|_| Vec::new());
+        let mut cycles = args.dump_frontier_logits_dir.as_ref().map(|_| Vec::new());
         while generated < args.gen_tokens {
             if session.pos().saturating_add(1) >= session.ctx() {
                 return Err(format!(
@@ -629,6 +647,12 @@ fn run_sweep<W: Write>(
                     .map_err(|e| {
                         format!("speculative decode at frontier {frontier} failed: {e}")
                     })?;
+                if let Some(rows) = cycles.as_mut() {
+                    rows.push((
+                        accepted.len(),
+                        accepted.iter().filter(|&&t| t != eos).count(),
+                    ));
+                }
                 for t in accepted {
                     if t != eos && generated < args.gen_tokens {
                         if let Some(ids) = decoded.as_mut() {
@@ -644,6 +668,9 @@ fn run_sweep<W: Write>(
                 if let Some(ids) = decoded.as_mut() {
                     ids.push(token);
                 }
+                if let Some(rows) = cycles.as_mut() {
+                    rows.push((1, 1));
+                }
                 generated += 1;
             }
             if after_first.is_none() {
@@ -658,6 +685,16 @@ fn run_sweep<W: Write>(
             // Keep greedy-token evidence with the logits, outside timed I/O.
             let path = std::path::Path::new(dir).join(format!("tokens-{frontier}.json"));
             std::fs::write(&path, format!("{ids:?}\n"))
+                .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            // Keep acceptance separate from emitted IDs: a speculative call
+            // may accept EOS, which this forced-length benchmark omits.
+            let path = std::path::Path::new(dir).join(format!("cycles-{frontier}.json"));
+            let data = serde_json::to_vec(&serde_json::json!({
+                "speculative":use_mtp, "draft":args.mtp_draft,
+                "columns":["accepted", "emitted_non_eos"], "cycles":cycles,
+            }))
+            .map_err(|e| e.to_string())?;
+            std::fs::write(&path, data)
                 .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
         }
 
@@ -829,6 +866,7 @@ fn help_text() -> &'static str {
      --step-mul F           Multiplicative step (default: 1)\n\
      --step-incr N          Linear step (default: 2048)\n\
      --gen-tokens N         Greedy decode tokens (default: 128)\n\
+     --warmup-prefill N     Prefill N prompt tokens, then reset, before measuring\n\
      --csv FILE             Write CSV instead of stdout\n\
      --output-head-bench N  CUDA output-head verifier at --ctx-start, then exit\n\
      --dump-frontier-logits-dir DIR\n\
@@ -1017,12 +1055,16 @@ mod tests {
             "--warm-weights",
             "--power",
             "37",
+            "--warmup-prefill",
+            "1024",
         ]))
         .unwrap();
 
         assert!(args.quality);
         assert!(args.warm_weights);
         assert_eq!(args.power_percent, 37);
+        assert_eq!(args.warmup_prefill, 1024);
+        assert!(help_text().contains("--warmup-prefill N"));
         assert!(help_text().contains("--quality"));
         assert!(help_text().contains("--warm-weights"));
         assert!(help_text().contains("--power N"));
@@ -1345,11 +1387,13 @@ mod tests {
     #[test]
     fn glm_embedded_mtp_gate() {
         let _disabled = SavedEnv::unset("DS4_MTP_SPEC_DISABLE");
-        assert!(use_mtp_spec(ModelFamily::Glm53, None, 2));
-        assert!(use_mtp_spec(ModelFamily::Glm53, None, 3));
-        assert!(!use_mtp_spec(ModelFamily::Glm53, None, 1));
-        assert!(!use_mtp_spec(ModelFamily::Glm53, None, 4));
-        assert!(!use_mtp_spec(ModelFamily::Glm53, Some("mtp.gguf"), 3));
+        for family in [ModelFamily::Glm53, ModelFamily::Glm53Vq] {
+            assert!(use_mtp_spec(family, None, 2));
+            assert!(use_mtp_spec(family, None, 3));
+            assert!(!use_mtp_spec(family, None, 1));
+            assert!(!use_mtp_spec(family, None, 4));
+            assert!(!use_mtp_spec(family, Some("mtp.gguf"), 3));
+        }
     }
 
     #[test]

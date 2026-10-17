@@ -5,6 +5,7 @@
  * addressable through the engine's existing map + abs_offset contract.
  */
 #include "../ds4.c"
+#include <sys/wait.h>
 
 static int test_failures;
 
@@ -85,6 +86,72 @@ static float tensor_scalar(const ds4_model *m, const char *name) {
     return value;
 }
 
+static void reject_named_plan(ds4_host_tensor_dir *dir) {
+    const pid_t child = fork();
+    TEST_ASSERT(child >= 0);
+    if (child < 0) { return; }
+    if (child == 0) {
+        (void)freopen("/dev/null", "w", stderr);
+        ds4_host_tensor_dir_install(dir);
+        ds4_model m;
+        model_open(&m, "/not/a/model/file", false, false);
+        model_close(&m);
+        _exit(0);
+    }
+    int status = 0;
+    TEST_ASSERT(waitpid(child, &status, 0) == child);
+    TEST_ASSERT(WIFEXITED(status) && WEXITSTATUS(status) != 0);
+}
+
+static void test_named_shards(const char *a, const char *b) {
+    const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
+    ds4_host_shard shards[2] = {{.path = a}, {.path = b}};
+    ds4_host_tensor tensors[2] = {0};
+    const char *names[] = {"second.weight", "single.weight"};
+    uint64_t base = 0, data_pos = 0;
+    for (uint32_t k = 0; k < 2; k++) {
+        ds4_model part;
+        model_open(&part, shards[k].path, false, false);
+        const ds4_tensor *t = model_find_tensor(&part, names[k]);
+        TEST_ASSERT(t != NULL);
+        if (!t) { model_close(&part); return; }
+        shards[k].size = part.size;
+        shards[k].base = base;
+        tensors[k] = (ds4_host_tensor){.name = names[k], .ndim = 1, .dim = {1},
+            .type = DS4_TENSOR_F32, .abs_offset = base + t->abs_offset,
+            .rel_offset = t->rel_offset, .bytes = sizeof(float)};
+        if (k == 0) { data_pos = part.tensor_data_pos; }
+        base += align_up(part.size, page);
+        model_close(&part);
+    }
+    ds4_host_tensor_dir dir = {.n = 2, .v = tensors, .data_pos = data_pos,
+        .alignment = 32, .n_shards = 2, .shards = shards};
+    ds4_host_tensor_dir_install(&dir);
+    ds4_model model;
+    model_open(&model, "/not/a/model/file", false, false);
+    ds4_host_tensor_dir_clear();
+    TEST_ASSERT(model.n_tensors == 2 && model.split_count == 2);
+    TEST_ASSERT(tensor_scalar(&model, "second.weight") == -2.5f);
+    TEST_ASSERT(tensor_scalar(&model, "single.weight") == 3.75f);
+    TEST_ASSERT(model.tensor_traits != NULL && model.size == base);
+    const int fd0 = model.fd, fd1 = model.split_fds[0];
+    model_close(&model);
+    TEST_ASSERT(fcntl(fd0, F_GETFD) == -1 && errno == EBADF);
+    TEST_ASSERT(fcntl(fd1, F_GETFD) == -1 && errno == EBADF);
+
+    shards[1].base++;
+    reject_named_plan(&dir);
+    shards[1].base--;
+    shards[1].size++;
+    reject_named_plan(&dir);
+    shards[1].size--;
+    tensors[0].bytes++;
+    reject_named_plan(&dir);
+    tensors[0].bytes--;
+    dir.shards = NULL;
+    reject_named_plan(&dir);
+}
+
 int main(int argc, char **argv) {
     if (argc > 2) {
         fprintf(stderr, "usage: %s [split-model-00001-of-N.gguf]\n", argv[0]);
@@ -124,6 +191,8 @@ int main(int argc, char **argv) {
     TEST_ASSERT(model.n_tensors == 1);
     TEST_ASSERT(fabsf(tensor_scalar(&model, "single.weight") - 3.75f) < 1e-7f);
     model_close(&model);
+
+    test_named_shards(second, single);
 
     TEST_ASSERT(unlink(first) == 0);
     TEST_ASSERT(unlink(second) == 0);

@@ -61,6 +61,9 @@
 #ifndef DS4_NO_GPU
 #include "ds4_gpu.h"
 #include "ds41_forward.h"
+#ifndef __APPLE__
+#include "ds4_glmvq.h"
+#endif
 #endif
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
@@ -374,6 +377,7 @@ typedef enum {
     DS4_MODEL_FAMILY_QWEN35      = 12,
     DS4_MODEL_FAMILY_NAIVE       = 11,
     DS4_MODEL_FAMILY_IQUEST      = 13,
+    DS4_MODEL_FAMILY_GLM53_VQ    = 14,
 } ds4_model_family;
 
 typedef enum {
@@ -396,6 +400,7 @@ typedef enum {
     /* DeepSeek V4.1 Flash; 16 mirrors the Rust Variant::DeepSeek41Flash
      * (crates/ds4-core/src/shape.rs:97). */
     DS4_VARIANT_V41             = 16,
+    DS4_VARIANT_GLM53_FLASH_VQ  = 17,
 } ds4_variant;
 
 typedef struct {
@@ -1609,8 +1614,13 @@ static bool ds4_solar_layer_is_gqa(uint32_t il) {
     return (il % 4u) == 0u;
 }
 
+static bool ds4_model_is_glm(void) {
+    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53 ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ;
+}
+
 static bool ds4_glm53_layer_is_kda(uint32_t il) {
-    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) return false;
+    if (!ds4_model_is_glm()) { return false; }
     if (il >= DS4_N_LAYER)
         ds4_die("GLM 5.3 layer index is outside the loaded model layout");
     return il + DS4_N_NEXTN_PREDICT < DS4_N_LAYER && (il % 4u) != 3u;
@@ -2409,6 +2419,10 @@ enum {
     DS4_TENSOR_FP4X32   = 43,
     DS4_TENSOR_FP8_32X32 = 44,
     DS4_TENSOR_PQ2_0    = 142,
+    /* GVQ1 private storage types; scale and codebook links stay separate. */
+    DS4_TENSOR_GLM_FP8  = 0x47514638,
+    DS4_TENSOR_GLM_BOOK = 0x47564342,
+    DS4_TENSOR_GLM_VQ   = 0x47565138,
 };
 
 typedef struct ds4_tensor ds4_tensor;
@@ -2513,6 +2527,7 @@ struct ds4_tensor {
     uint64_t abs_offset;
     uint64_t elements;
     uint64_t bytes;
+    ds4_tensor *source_scale; /* Original FP8's multiplicative F32 blocks. */
 };
 
 typedef struct {
@@ -2768,6 +2783,12 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_GLM53_FLASH:
         g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+        break;
+    case DS4_VARIANT_GLM53_FLASH_VQ:
+        g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+        g_ds4_shape.family = DS4_MODEL_FAMILY_GLM53_VQ;
+        g_ds4_shape.variant = DS4_VARIANT_GLM53_FLASH_VQ;
+        g_ds4_shape.name = "GLM-5.3-Flash-VQ";
         break;
     case DS4_VARIANT_K2_HORIZON_375B:
         g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
@@ -3457,6 +3478,18 @@ static void model_parse_shard(ds4_model *shard, const uint8_t *base,
 static void model_open_split(ds4_model *m, const char *path, uint32_t count,
                              int mmap_flags);
 
+#include "native/bridge/ds4_named_map.inc"
+
+static void model_build_catalog(ds4_model *m) {
+    if (!m->n_tensors) { return; }
+    m->tensor_traits = xmalloc((size_t)m->n_tensors);
+    for (uint64_t i = 0; i < m->n_tensors; i++) {
+        const ds4_tensor *t = &m->tensors[i];
+        m->tensor_traits[i] = (uint8_t)ds4_tensor_catalog_classify(
+            t->name.ptr, t->name.len, t->ndim, t->type, t->dim, t->bytes);
+    }
+}
+
 /* Open and map the GGUF once.  Metal needs a shared mapping for no-copy
  * MTLBuffers; CPU uses a private read-only mapping to avoid Darwin VM stress.
  * Tokenizer-only callers pass prefetch_cpu=false so inspecting tokens never
@@ -3465,6 +3498,13 @@ static void model_open(ds4_model *m, const char *path, bool metal_mapping,
                        bool prefetch_cpu) {
     memset(m, 0, sizeof(*m));
     m->fd = -1;
+
+    if (g_host_tensor_dir && g_host_tensor_dir->n_shards) {
+        model_open_named(m, metal_mapping ? MAP_SHARED : MAP_PRIVATE);
+        model_build_catalog(m);
+        if (!metal_mapping && prefetch_cpu) { model_prefetch_cpu_mapping(m); }
+        return;
+    }
 
     int fd = open(path, O_RDONLY);
     if (fd == -1) ds4_die_errno("cannot open model", path);
@@ -3560,14 +3600,7 @@ static void model_open(ds4_model *m, const char *path, bool metal_mapping,
     }
     /* memgov D1a-2: build the semantic catalog after tensors are final
      * (including after a split remap). */
-    if (m->n_tensors != 0) {
-        m->tensor_traits = xmalloc((size_t)m->n_tensors);
-        for (uint64_t i = 0; i < m->n_tensors; i++) {
-            const ds4_tensor *t = &m->tensors[i];
-            m->tensor_traits[i] = (uint8_t)ds4_tensor_catalog_classify(
-                t->name.ptr, t->name.len, t->ndim, t->type, t->dim, t->bytes);
-        }
-    }
+    model_build_catalog(m);
 
     if (!metal_mapping && prefetch_cpu) model_prefetch_cpu_mapping(m);
 }
@@ -5382,6 +5415,14 @@ typedef struct {
     ds4_inkling_block layer[INKLING_DRAFT_LAYERS];
 } ds4_inkling_draft;
 
+enum { GLMVQ_EXPERTS = 288, GLMVQ_LAYERS = 46, GLMVQ_TRUNK = 45 };
+typedef struct {
+    ds4_tensor *book;
+    ds4_tensor *gate[GLMVQ_EXPERTS];
+    ds4_tensor *up[GLMVQ_EXPERTS];
+    ds4_tensor *down[GLMVQ_EXPERTS];
+} ds4_glmvq_experts;
+
 typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
@@ -5390,6 +5431,10 @@ typedef struct {
     ds4_tensor *output_norm;
     ds4_tensor *output;
     ds4_layer_weights layer[DS4_MAX_LAYER];
+    ds4_glmvq_experts *glmvq; /* Allocated only for the named GVQ1 family. */
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+    ds4_gvq_model *glmvq_gpu;
+#endif
     /* The official checkpoint carries one dense MTP block in the same GGUF.
      * It is bound separately from the 53 executable target-model layers. */
     ds4_tensor *motif_mtp_embed_norm;
@@ -9643,6 +9688,8 @@ static void weights_bind_glm53(ds4_weights *w, const ds4_model *m) {
         weights_bind_glm53_layer(&w->layer[il], m, il);
 }
 
+#include "ds4_glmvq_bind.inc"
+
 static ds4_tensor *inkling_tensor(const ds4_model *m, const char *prefix,
                                   const char *suffix) {
     char name[192];
@@ -10138,6 +10185,11 @@ static void weights_bind(
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         inkling_bind(w, m);
+        return;
+    }
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) {
+        glmvq_bind(w, m);
         return;
     }
 
@@ -10727,6 +10779,10 @@ int ds4_dspark_validate(const char *path) {
 }
 
 static void weights_free(ds4_weights *w) {
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+    ds4_gpu_gvq_unbind(w->glmvq_gpu);
+#endif
+    free(w->glmvq);
     memset(w, 0, sizeof(*w));
 }
 
@@ -22694,6 +22750,12 @@ typedef struct {
     ds4_gpu_tensor *control_pool;
     ds4_gpu_tensor *last_hidden, *mtp_hidden;
     ds4_gpu_tensor *mtp_kv, *mtp_concat, *mtp_journal;
+    /* GLM VQ batched verify: stashed index rows, final-norm hidden and
+     * logits per verified row; capture is set on the bound verify graph. */
+    ds4_gpu_tensor *mtp_stash, *mtp_rows, *mtp_logits;
+    const ds4_model *mtp_model;
+    const ds4_weights *mtp_weights;
+    bool mtp_capture;
     float *mtp_logit_rows;
     struct glm53_mtp_epoch *mtp_epoch;
     uint64_t mtp_rewind_epoch;
@@ -22716,6 +22778,13 @@ typedef struct {
     ds4_gpu_tensor *layer_pool[DS4_MAX_LAYER];
     ds4_gpu_tensor *layer_tail_k[DS4_MAX_LAYER];
     ds4_gpu_tensor *layer_tail_gate[DS4_MAX_LAYER];
+#ifndef __APPLE__
+    ds4_gvq_ctx *gvq;
+    ds4_gpu_tensor *gvq_latent, *gvq_kv, *gvq_pos;
+    bool gvq_mixed; /* hc_mix already holds the next mHC mix (fused expand). */
+    bool gvq_packed; /* hc_next holds BF16 rows from the fused expand. */
+    bool gvq_borrowed; /* Banks share workspace; bank zero releases it. */
+#endif
 } ds4_glm53_gpu_graph;
 
 enum {
@@ -53189,7 +53258,7 @@ static DS4_MAYBE_UNUSED bool ds4_session_is_qwen4exp(const ds4_session *s) {
 }
 
 static DS4_MAYBE_UNUSED bool ds4_session_is_glm53(const ds4_session *s) {
-    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53;
+    return s && s->engine && ds4_model_is_glm();
 }
 static uint32_t session_cpu_raw_live_rows(const ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
@@ -54210,7 +54279,7 @@ int ds4_engine_routed_quant_bits(ds4_engine *e) {
 bool ds4_engine_has_mtp(ds4_engine *e) {
     if (!e || e->backend == DS4_BACKEND_CPU ||
         e->distributed.role != DS4_DISTRIBUTED_NONE) return false;
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) { return e->glm53_mtp; }
+    if (ds4_model_is_glm()) { return e->glm53_mtp; }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
         const char *enable = getenv("DS4_DOTS3_MTP");
         return e->backend == DS4_BACKEND_CUDA && enable && !strcmp(enable, "1") &&
@@ -60092,7 +60161,7 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
             ? ling3vl_session_bytes(e, (uint32_t)ctx,
                                     ling3vl_prefill_cap((uint32_t)ctx)) : 0;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         /* GLM owns KDA/latent state; DeepSeek's raw cache shape is unrelated. */
         return e->backend == DS4_BACKEND_CUDA
             ? glm53_session_bytes((uint32_t)ctx,
@@ -61853,7 +61922,7 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
         BC_ERR("batch_ctx_create: this model does not yet implement the multi-sequence graph");
         return 1;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         return glm53_batch_ctx_create(e, ctx_size, max_seq,
             fit ? GLM53_FIT_BANKS : GLM53_STRICT_BANKS, out, err, errlen);
     }
@@ -71809,6 +71878,8 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
      * plan note; the same boot reaches "listening on" under
      * DS4_NO_BOOT_PREWARM=1). */
     if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) return;
+    // VQ owns its source graph scratch; generic DeepSeek prewarm is unrelated.
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return; }
     e->boot_prewarm_done = true;
     const double warm_t0 = now_sec();
     /* memgov D0b-3 (S8): prewarm allocates by design (post-placement
@@ -72013,7 +72084,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         *out = NULL;
         return 1;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53 && opt->mtp_draft_tokens > GLM53_MTP_DRAFTS) {
+    if (ds4_model_is_glm() && opt->mtp_draft_tokens > GLM53_MTP_DRAFTS) {
         fprintf(stderr, "ds4: GLM-5.3 accepts at most %d recursive draft tokens (requested %d)\n",
                 GLM53_MTP_DRAFTS, opt->mtp_draft_tokens);
         ds4_engine_close(e);
@@ -72136,9 +72207,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                  load_layer_end,
                  load_output,
                  false);
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
-        const char *enable = getenv("DS4_GLM53_MTP");
+        const char *enable = getenv(DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
+            ? "DS4_GLMVQ_MTP" : "DS4_GLM53_MTP");
         e->glm53_mtp = e->backend == DS4_BACKEND_CUDA &&
             (e->mtp_draft_tokens > 1 || (enable && !strcmp(enable, "1"))) &&
             !(disable && disable[0] == '1' && disable[1] == '\0');
@@ -72436,6 +72508,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     ds4_residency_name(res_pol[2]),
                     glob || rsrc[0].ov || rsrc[1].ov || rsrc[2].ov
                         ? "explicit" : "legacy-alias");
+        }
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
+            res_pol[0] != DS4_RESIDENCY_EAGER_DEVICE) {
+            fprintf(stderr, "ds4: GLM VQ source baseline requires eager weight residency\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
         }
         /* memgov D1a-1: declare every served mmap as a model source BEFORE
          * its first weight-class allocation (the artifact build below is
@@ -72838,7 +72917,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     res_pol[si] != DS4_RESIDENCY_HOST_MAPPED;
                 up.replaces_complete =
                     ds4_gpu_model_map_replaces_complete(mm->map) != 0;
-                up.promote_experts = needs_device_copy;
+                // VQ's pointer plan retains every independent source matrix.
+                // Fund their resident units before resolving any pointers;
+                // page-overlapping cold registrations cannot supply this plan.
+                up.promote_experts = needs_device_copy ||
+                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
                     : ds4_units_verify(tin, n, &up, units, nu);
@@ -72915,6 +72998,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * interesting snapshot; the reconciliation invariant itself holds at
          * any instant by the dual-write construction. */
         ds4_gpu_report_model_sources();
+#ifndef __APPLE__
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ &&
+            !glmvq_gpu_bind(&e->weights, &e->model)) {
+            fprintf(stderr, "ds4: GLM VQ source pointer binding failed\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+#endif
         fprintf(stderr, "ds4: %s backend initialized for graph diagnostics\n",
                 ds4_backend_name(e->backend));
         /* v0.5 inc-14b: boot prewarm (see ds4_engine_boot_prewarm).  Callers
@@ -73127,7 +73219,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
         const char *enabled = getenv("DS4_DOTS3_BATCH");
         return enabled && strcmp(enabled, "1") == 0;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) { return e->backend == DS4_BACKEND_CUDA; }
+    if (ds4_model_is_glm()) { return e->backend == DS4_BACKEND_CUDA; }
     /* Bonsai's session IS the trunk state (the CUDA graph or the CPU reference)
      * and there is no multi-sequence graph for it, so the DeepSeek slab body
      * would read a layout this family does not have. */
@@ -74103,7 +74195,7 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
         q->fits = (e->backend == DS4_BACKEND_CUDA && ctx_size <= 524288) ? 1 : 0;
         return q->fits;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
         q->fits = glm53_graph_session_fit_check(
             e->backend, (uint32_t)ctx_size,
             glm53_graph_row_cap((uint32_t)ctx_size, e->glm53_stream.count),
@@ -74264,19 +74356,21 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         return 0;
 #endif
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+    if (ds4_model_is_glm()) {
 #ifdef DS4_NO_GPU
         fprintf(stderr, "ds4: GLM-5.3 sessions require the CUDA backend\n");
         return 1;
 #else
-        if ((uint32_t)ctx_size > DS4_GLM53_RESIDENT_CTX_MAX ||
+        const uint32_t ctx_max = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ
+            ? DS4_GVQ_CTX_MAX : DS4_GLM53_RESIDENT_CTX_MAX;
+        if ((uint32_t)ctx_size > ctx_max ||
             e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
             e->distributed.role != DS4_DISTRIBUTED_NONE ||
             e->dspark_ready) {
             fprintf(stderr,
                     "ds4: GLM-5.3 sessions require one resident CUDA model, "
                     "no DeepSeek sidecars, and ctx <= %u\n",
-                    DS4_GLM53_RESIDENT_CTX_MAX);
+                    ctx_max);
             return 1;
         }
         ds4_session *s = xcalloc(1, sizeof(*s));

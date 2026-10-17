@@ -835,6 +835,8 @@ ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_m
 # Native checkpoint changes must reach incremental production/test builds.
 ds4.o ds4_cuda_test_hooks.o: ds4_ds41_kvreuse.inc
 
+ds4.o ds4_cpu.o ds4_cuda_test_hooks.o: native/bridge/ds4_host_load.h native/bridge/ds4_named_map.inc
+
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_cli.c
 
@@ -1815,7 +1817,7 @@ tests/test_exaone_tokenizer: tests/test_exaone_tokenizer.o
 	$(CC) $(CFLAGS) -O0 -o $@ $^ -Wl,--gc-sections $(LDLIBS)
 endif
 
-tests/test_split_gguf: tests/test_split_gguf.c ds4.c ds4.h
+tests/test_split_gguf: tests/test_split_gguf.c ds4.c ds4.h native/bridge/ds4_host_load.h native/bridge/ds4_named_map.inc
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
@@ -1953,6 +1955,173 @@ tests/test_glm53_mixed: tests/test_glm53_mixed.o $(DS4_CUDA_CORE_OBJS)
 test-glm53-mixed: tests/test_glm53_mixed
 	./tests/test_glm53_mixed
 
+GLMVQ_PYTHON ?= python3
+
+glm-vq-gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example glm_vq_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_gate" $@
+
+tests/glm_vq_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example glm_vq_quality --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_quality" $@
+
+tests/glm_vq_state: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example glm_vq_state --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_state" $@
+
+tests/test_glm_vq_cache.o: tests/test_glm_vq_cache.c ds4_glmvq.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm_vq_cache: tests/test_glm_vq_cache.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_glm_vq_q4.o: tests/test_glm_vq_q4.c ds4.h ds4_glmvq.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm_vq_q4: tests/test_glm_vq_q4.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_glm_vq_kv.o: tests/test_glm_vq_kv.c ds4.h ds4_glmvq.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm_vq_kv: tests/test_glm_vq_kv.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_glm_vq_sparse.o: tests/test_glm_vq_sparse.c ds4.h ds4_glmvq.h ds4_gpu.h ds4_glm53_compact.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm_vq_sparse: tests/test_glm_vq_sparse.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/libglm_vq_index.so: tests/test_glm_vq_index.cu cuda/glm_vq_index.cuh cuda/glm_vq_linear.cuh \
+	cuda/glm_vq_ops.cuh cuda/glm_vq.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_glm53_compact.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared --cudart shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-index
+test-glm-vq-index: tests/libglm_vq_index.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_index.py --lib $< --model "$(GLMVQ_MODEL)"
+
+.PHONY: test-glm-vq-cache
+test-glm-vq-cache: tests/test_glm_vq_cache
+	./tests/test_glm_vq_cache
+
+tests/test_glm_vq_owner.o: tests/test_glm_vq_owner.c ds4.h ds4_glmvq.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_glm_vq_owner: tests/test_glm_vq_owner.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-glm-vq-owner
+test-glm-vq-owner: tests/test_glm_vq_owner
+	./tests/test_glm_vq_owner
+
+tests/test_glm_vq_bind: tests/test_glm_vq_bind.c ds4.c ds4.h ds4_glmvq_bind.inc ds4_model_catalog.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+tests/test_glm_vq_mtp_mode: tests/test_glm_vq_mtp_mode.c ds4.c ds4.h ds4_model_catalog.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-glm-vq-mtp-mode
+test-glm-vq-mtp-mode: tests/test_glm_vq_mtp_mode
+	./tests/test_glm_vq_mtp_mode
+
+.PHONY: test-glm-vq-bind
+test-glm-vq-bind: tests/test_glm_vq_bind
+	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_bind --model "$(GLMVQ_MODEL)"
+
+tests/test_glm_vq_quote.o: tests/test_glm_vq_quote.c ds4.c
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -Wno-unused-function -I. -c -o $@ $<
+
+tests/test_glm_vq_quote: tests/test_glm_vq_quote.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ -Xlinker --gc-sections $(CUDA_LDLIBS)
+
+.PHONY: test-glm-vq-quote
+test-glm-vq-quote: tests/test_glm_vq_quote
+	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_quote --model "$(GLMVQ_MODEL)"
+
+tests/libglm_vq_test.so: tests/test_glm_vq_cuda.cu cuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_kda.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $<
+
+.PHONY: test-glm-vq-restore
+test-glm-vq-restore: tests/libglm_vq_test.so
+	@test -n "$(GLMVQ_FIXTURES)" || \
+		{ echo "set GLMVQ_FIXTURES to the immutable golden-fixtures directory" >&2; exit 2; }
+	$(GLMVQ_PYTHON) tests/test_glm_vq_cuda.py --lib tests/libglm_vq_test.so --fixtures "$(GLMVQ_FIXTURES)"
+
+.PHONY: test-glm-vq-ops
+test-glm-vq-ops: tests/libglm_vq_test.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
+
+.PHONY: test-glm-vq-kda-source
+test-glm-vq-kda-source: tests/libglm_vq_test.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_kda.py --lib tests/libglm_vq_test.so
+
+gguf-tools/libds4q.so: gguf-tools/quants.c gguf-tools/quants.h
+	$(CC) -O3 -fPIC -shared -o $@ $< -lm -pthread
+
+.PHONY: test-glm-vq-select-q4
+test-glm-vq-select-q4:
+	$(GLMVQ_PYTHON) tests/test_glm_vq_select_q4.py
+
+tests/libglm_vq_linear.so: tests/test_glm_vq_linear.cu cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
+
+tests/libglm_vq_decode.so: tests/test_glm_vq_decode.cu cuda/glm_vq_decode.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -shared -Xcompiler -fPIC -I. -o $@ $< $(CUDA_LDLIBS)
+
+tests/libglm_vq_fp8.so: tests/test_glm_vq_fp8.cu cuda/glm_vq_fp8.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -shared -Xcompiler -fPIC -I. -o $@ $< $(CUDA_LDLIBS)
+
+.PHONY: test-glm-vq-linear
+test-glm-vq-linear: tests/libglm_vq_linear.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_linear.py --lib tests/libglm_vq_linear.so --fixtures "$(GLMVQ_FIXTURES)"
+
+tests/libglm_vq_attention.so: tests/test_glm_vq_attention.cu cuda/glm_vq_attention.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
+
+tests/libglm_vq_mma.so: tests/test_glm_vq_mma.cu cuda/glm_vq_mma.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -shared -Xcompiler -fPIC -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-mma-map
+test-glm-vq-mma-map: tests/libglm_vq_mma.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_mma.py --lib tests/libglm_vq_mma.so --mapping-only
+
+.PHONY: test-glm-vq-attention
+test-glm-vq-attention: tests/libglm_vq_attention.so
+	$(GLMVQ_PYTHON) tests/test_glm_vq_attention.py --lib tests/libglm_vq_attention.so
+
+tests/test_glm_vq_flash: tests/test_glm_vq_flash.cu cuda/glm_vq_flash.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $<
+
+.PHONY: test-glm-vq-flash
+test-glm-vq-flash: tests/test_glm_vq_flash
+	./tests/test_glm_vq_flash
+
+tests/test_glm_vq_kda: tests/test_glm_vq_kda.cu cuda/glm_vq_kda.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $<
+
+.PHONY: test-glm-vq-kda
+test-glm-vq-kda: tests/test_glm_vq_kda
+	./tests/test_glm_vq_kda
+
+tests/test_glm_vq_verify: tests/test_glm_vq_verify.cu cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/glm_vq_q4m.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_gemv.cuh cuda/glm_vq_flash.cuh cuda/glm_vq_fp8.cuh cuda/glm_vq_index.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
+
+.PHONY: test-glm-vq-verify
+test-glm-vq-verify: tests/test_glm_vq_verify
+	./tests/test_glm_vq_verify
+
 tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
@@ -1989,6 +2158,12 @@ GLM53_NATIVE_DEPS = ds4_glm53_cache.h ds4_glm53_stream.inc ds4_glm53_compact.h \
 	ds4_glm53_graph.inc ds4_glm53_payload.inc ds4_glm53_mtp.inc ds4_glm53_batch.inc \
 	ds4_glm53_image.inc
 ds4.o: $(GLM53_NATIVE_DEPS)
+GLMVQ_NATIVE_DEPS = ds4_glmvq.h ds4_glmvq_bind.inc ds4_glmvq_graph.inc ds4_glmvq_mtp.inc
+ds4.o ds4_cpu.o: $(GLMVQ_NATIVE_DEPS)
+tests/test_glm_vq_quote.o: $(GLMVQ_NATIVE_DEPS) $(GLM53_NATIVE_DEPS)
+ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \
+	cuda/glm_vq.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/glm_vq_q4m.cuh cuda/q4_k.cuh \
+	cuda/glm_vq_kda.cuh cuda/glm_vq_attention.cuh cuda/glm_vq_index.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_fp8.cuh
 tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
 	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
@@ -2468,11 +2643,14 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/test_glm_vq_mtp_mode
+	rm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate
+	rm -f tests/test_glm_vq_kv tests/test_glm_vq_kv.o
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
 	rm -f tests/test_glm53_compare tests/test_glm53_mtp_long tests/test_glm53_mtp_long.o
-	rm -f tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
+	rm -f tests/libglm_vq_test.so tests/test_glm_vq_bind tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
 	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o
@@ -2518,6 +2696,7 @@ clean:
 	rm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
 	rm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o tests/test_glm53_bounds tests/test_glm53_bounds.o tests/test_k2_lifecycle tests/test_k2_lifecycle.o
+	rm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so
 	rm -f tests/test_k2_rewind tests/test_deepseek_budget
 	rm -f ds4 ds4-server ds4-bench ds4-bench-perf ds4-eval ds4-agent ds4-c ds4-server-c ds4-bench-c ds4-agent-c ds4-rs ds4-bench-rs ds4-server-rs ds4-agent-rs ds4_weight_server tests/parity/shape_c_oracle tests/parity/shape_c_oracle.o tests/parity/catalog_c_oracle tests/parity/catalog_c_oracle.o tests/parity/tensor_c_oracle tests/parity/tensor_c_oracle.o tests/parity/bind_c_oracle tests/parity/bind_c_oracle.o tests/parity/bind_lookup_c_oracle tests/parity/bind_lookup_c_oracle.o tests/parity/load_c_oracle tests/parity/load_c_oracle.o tests/parity/validate_c_oracle tests/parity/validate_c_oracle.o tests/parity/layout_c_oracle tests/parity/layout_c_oracle.o tests/parity/vocab_c_oracle tests/parity/vocab_c_oracle.o tests/parity/tokenizer_c_oracle tests/parity/tokenizer_c_oracle.o tests/parity/session_c_oracle tests/parity/session_c_oracle.o tests/parity/payload_c_oracle tests/parity/payload_c_oracle.o tests/parity/kv_c_oracle tests/parity/kv_c_oracle.o tests/parity/kv_c_stubs.o tests/parity/web_c_oracle tests/parity/web_c_oracle.o tests/parity/dist_c_oracle tests/parity/dist_c_oracle.o tests/parity/route_c_oracle tests/parity/route_c_oracle.o tests/parity/server_c_oracle tests/parity/server_c_oracle.o tests/parity/parse_c_oracle tests/parity/parse_c_oracle.o tests/parity/stream_c_oracle tests/parity/stream_c_oracle.o tests/parity/tool_stream_c_oracle tests/parity/tool_stream_c_oracle.o tests/parity/dsml_c_oracle tests/parity/dsml_c_oracle.o tests/parity/retry_c_oracle tests/parity/retry_c_oracle.o tests/parity/admit_c_oracle tests/parity/admit_c_oracle.o tests/parity/render_c_oracle tests/parity/render_c_oracle.o tests/parity/bridge_null_oracle tests/parity/bridge_null_oracle.o tests/parity/bridge_null_stubs.o tests/parity/cont_c_oracle tests/parity/cont_c_oracle.o tests/parity/memgov_c_oracle tests/parity/memgov_c_oracle.o ds4_cpu ds4_native ds4_server_test ds4_test tests/test_motif3_loader tests/test_motif3_reference tests/test_motif3_tokenizer tests/test_motif3_cuda tests/test_motif3_resident tests/test_motif3_batch tests/test_motif3_long tests/test_motif3_resident.o tests/test_motif3_batch.o tests/test_motif3_long.o tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_batch tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_batch.o *.o cuda/mmq/test/test_mmq_parity.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o tests/cuda_tokentile_ldmatrix tests/cuda_tokentile_ldmatrix.o tests/test_split_gguf tests/test_solar_loader tests/test_solar_tokenizer tests/test_repack_premapped tests/test_mmq_parity tests/test_mmid_fast tests/test_mmid_fast.o tests/test_model_family_kernels tests/test_model_family_kernels.o tests/test_solar_forward tests/test_solar_forward.o tests/test_solar_session tests/test_solar_session.o tests/test_solar_kda tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_solar_gates tests/test_solar_kv tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_kda_chunk.o tests/test_solar_gates.o tests/test_solar_kv.o native/bridge/ds4_bridge.o
 	rm -f tests/test_qwen4exp_loader tests/test_qwen4exp_tokenizer tests/test_qwen4exp_ple tests/test_qwen4exp_ple_cuda tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_primitives tests/test_qwen4exp_primitives.o tests/test_qwen4exp_hc_forward tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_ple_forward tests/test_qwen4exp_ple_forward.o tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_batch tests/test_qwen4exp_batch.o tests/libds4ple_test.so cuda/qwen38_ple.o

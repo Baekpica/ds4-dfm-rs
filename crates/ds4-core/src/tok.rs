@@ -12,6 +12,7 @@ use crate::gguf::{GgufError, GgufFile, GGUF_VALUE_INT32, GGUF_VALUE_STRING, GGUF
 use crate::shape::ModelFamily;
 use crate::TokenBuffer;
 
+mod glm_vq;
 mod inkling;
 mod ling3vl;
 mod mimo2;
@@ -193,12 +194,25 @@ impl Vocab {
     }
 
     pub fn load(g: &GgufFile, family: ModelFamily) -> Result<Self, TokError> {
+        Self::load_tables(g, family, None)
+    }
+
+    fn load_tables(
+        g: &GgufFile,
+        family: ModelFamily,
+        external: Option<glm_vq::Tables>,
+    ) -> Result<Self, TokError> {
         let qwen_input = family == ModelFamily::Qwen4Exp && qwen4exp::enabled(g)?;
         let is_k2_horizon = family == ModelFamily::ExaoneMoe
             && (g.get_string("general.architecture") == Some(b"k2-horizon")
                 || g.get_string("tokenizer.ggml.pre") == Some(b"k2-horizon"));
         let inkling_tables;
-        let (token_bytes, merge_bytes) = if family == ModelFamily::Inkling {
+        let (token_bytes, merge_bytes) = if let Some(tables) = &external {
+            (
+                tables.tokens.iter().map(Vec::as_slice).collect(),
+                tables.merges.iter().map(Vec::as_slice).collect(),
+            )
+        } else if family == ModelFamily::Inkling {
             inkling_tables = inkling::tables(g)?;
             (
                 inkling_tables
@@ -238,7 +252,14 @@ impl Vocab {
         let mut user_defined = HashMap::new();
         let mut user_defined_max_len = 0u32;
         let mut user_defined_first = [false; 256];
-        if let Some(types) = g
+        if let Some(tables) = &external {
+            for &id in &tables.added {
+                let token = &tokens[id];
+                user_defined.insert(token.clone(), id as i32);
+                user_defined_max_len = user_defined_max_len.max(token.len() as u32);
+                user_defined_first[token[0] as usize] = true;
+            }
+        } else if let Some(types) = g
             .get_array("tokenizer.ggml.token_type")
             .filter(|_| family != ModelFamily::Inkling)
         {
@@ -362,10 +383,13 @@ impl Vocab {
                     return Err(TokError::InvalidTokenizer("IQuest-Q1 vocabulary"));
                 }
             }
-            ModelFamily::Glm53 => {
+            ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
                     .unwrap_or_else(|| self.lookup_opt("<sop>"));
+                if self.family == ModelFamily::Glm53Vq {
+                    self.bos_id = self.lookup("[gMASK]")?;
+                }
                 self.eos_id = g
                     .get_token_id("tokenizer.ggml.eos_token_id")
                     .unwrap_or_else(|| self.lookup_opt("<|endoftext|>"));
@@ -631,6 +655,11 @@ impl Vocab {
     }
 
     pub fn load_path(path: &Path, family: ModelFamily) -> Result<Self, TokError> {
+        if family == ModelFamily::Glm53Vq {
+            let g = crate::glm_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("GLM VQ release metadata"))?;
+            return Self::load_tables(&g, family, Some(glm_vq::tables(path)?));
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -641,7 +670,7 @@ impl Vocab {
 
     pub fn encode_bytes(&self, text: &[u8]) -> Vec<i32> {
         let mut out = Vec::new();
-        if self.family == ModelFamily::IQuestQ1 {
+        if matches!(self.family, ModelFamily::IQuestQ1 | ModelFamily::Glm53Vq) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
             bpe_tokenize_text(self, text, &mut out);
@@ -664,6 +693,9 @@ impl Vocab {
     /// emitting an approximation.
     fn jinja_only(&self) -> Option<TokError> {
         match self.family {
+            ModelFamily::Glm53Vq => Some(TokError::InvalidTokenizer(
+                "GLM VQ chat requires official Jinja",
+            )),
             ModelFamily::IQuestQ1 => Some(TokError::InvalidTokenizer(
                 "IQuest-Q1 chat requires official Jinja",
             )),
@@ -689,7 +721,7 @@ impl Vocab {
         }
         if self.family == ModelFamily::ExaoneMoe {
             self.require_chat_ids(&[(self.bos_id, "[BOS]")])?;
-        } else if self.family == ModelFamily::Glm53 {
+        } else if matches!(self.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
             self.require_chat_ids(&[(self.bos_id, "[gMASK]"), (self.sop_id, "<sop>")])?;
         }
         if !matches!(
@@ -701,7 +733,8 @@ impl Vocab {
                 | ModelFamily::Inkling
         ) {
             tokens.push(self.bos_id);
-            if self.family == ModelFamily::Glm53 && self.sop_id >= 0 {
+            if matches!(self.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) && self.sop_id >= 0
+            {
                 tokens.push(self.sop_id);
             }
         }
@@ -719,7 +752,7 @@ impl Vocab {
         if self.is_k2_horizon {
             return;
         }
-        if self.family == ModelFamily::Glm53 {
+        if matches!(self.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
             let effort = match mode {
                 ChatThinkMode::High => "Reasoning Effort: High",
                 ChatThinkMode::Max => "Reasoning Effort: Max",
@@ -798,7 +831,7 @@ impl Vocab {
             | ModelFamily::IQuestQ1 => {
                 return Err(self.jinja_only().unwrap());
             }
-            ModelFamily::Glm53 => {
+            ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
                 if role == "system" || role == "developer" {
                     self.require_chat_ids(&[(self.system_id, "<|system|>")])?;
                     tokens.push(self.system_id);
@@ -997,7 +1030,7 @@ impl Vocab {
             | ModelFamily::IQuestQ1 => {
                 return Err(self.jinja_only().unwrap());
             }
-            ModelFamily::Glm53 => {
+            ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
                 self.require_chat_ids(&[
                     (self.assistant_id, "<|assistant|>"),
                     (self.think_start_id, "<think>"),
@@ -1143,7 +1176,7 @@ impl Vocab {
             return true;
         }
         match self.family {
-            ModelFamily::Glm53 => {
+            ModelFamily::Glm53 | ModelFamily::Glm53Vq => {
                 // Official generation_config stops at user/observation too;
                 // a role transition must not leak into assistant content.
                 (self.user_id >= 0 && token == self.user_id)
@@ -1260,9 +1293,9 @@ fn bpe_rank(vocab: &Vocab, a: &[u8], b: &[u8]) -> i32 {
 
 fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
     let encoded = byte_encode(raw);
-    // Inkling's source BPE has ignore_merges=true: whole vocabulary pieces
+    // Source BPE with ignore_merges=true: whole vocabulary pieces
     // win even when applying the merge table would produce a different split.
-    if vocab.family == ModelFamily::Inkling {
+    if matches!(vocab.family, ModelFamily::Inkling | ModelFamily::Glm53Vq) {
         if let Some(&id) = vocab.token_to_id.get(&encoded) {
             out.push(id);
             return;
@@ -2253,7 +2286,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         }
         ModelFamily::Ling3Vl => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Mimo2 | ModelFamily::NaiveN05 => mimo2::encode(vocab, text, out),
-        ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Dots3Note => bpe_tokenize_text_dots3(vocab, text, out),
@@ -2270,6 +2303,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
     if matches!(
         vocab.family,
         ModelFamily::Inkling
+            | ModelFamily::Glm53Vq
             | ModelFamily::Step37
             | ModelFamily::Ling3Vl
             | ModelFamily::Mimo2
@@ -2329,7 +2363,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"[gMASK]",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 vocab.bos_id
             } else {
                 -1
@@ -2337,7 +2371,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<sop>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 vocab.sop_id
             } else {
                 -1
@@ -2345,7 +2379,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|system|>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 vocab.system_id
             } else {
                 -1
@@ -2353,7 +2387,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|user|>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 vocab.user_id
             } else {
                 -1
@@ -2361,7 +2395,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|assistant|>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 vocab.assistant_id
             } else {
                 -1
@@ -2369,7 +2403,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|observation|>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 vocab.observation_id
             } else {
                 -1
@@ -2377,7 +2411,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|begin_of_image|>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 154830
             } else {
                 -1
@@ -2385,7 +2419,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|image|>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 154854
             } else {
                 -1
@@ -2393,7 +2427,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|end_of_image|>",
-            if vocab.family == ModelFamily::Glm53 {
+            if matches!(vocab.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
                 154831
             } else {
                 -1

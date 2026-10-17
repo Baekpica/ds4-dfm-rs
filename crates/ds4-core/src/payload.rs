@@ -32,6 +32,9 @@ const LAYOUT_GLM_COMPACT: u32 = u32::from_le_bytes(*b"GLC5");
 const LAYOUT_GLM_EXPANDED: u32 = u32::from_le_bytes(*b"GLE5");
 const LAYOUT_GLM_MTP_COMPACT: u32 = u32::from_le_bytes(*b"GCM5");
 const LAYOUT_GLM_MTP_EXPANDED: u32 = u32::from_le_bytes(*b"GEM5");
+const LAYOUT_GLM_VQ: u32 = u32::from_le_bytes(*b"GVQ1");
+const LAYOUT_GLM_VQ_MTP: u32 = u32::from_le_bytes(*b"GVM1");
+const GLMVQ_DENSE_KEYS: u32 = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -48,6 +51,7 @@ pub enum PayloadLayout {
     Naive,
     IQuestQ1,
     Glm53,
+    Glm53Vq,
 }
 
 impl PayloadLayout {
@@ -68,6 +72,7 @@ impl PayloadLayout {
             | LAYOUT_GLM_EXPANDED
             | LAYOUT_GLM_MTP_COMPACT
             | LAYOUT_GLM_MTP_EXPANDED => Self::Glm53,
+            LAYOUT_GLM_VQ | LAYOUT_GLM_VQ_MTP => Self::Glm53Vq,
             _ => Self::DeepSeek,
         }
     }
@@ -87,6 +92,7 @@ impl PayloadLayout {
             Self::IQuestQ1 => ModelFamily::IQuestQ1,
             Self::Naive => ModelFamily::NaiveN05,
             Self::Glm53 => ModelFamily::Glm53,
+            Self::Glm53Vq => ModelFamily::Glm53Vq,
         }
     }
 
@@ -97,8 +103,19 @@ impl PayloadLayout {
             || (tokens == ctx as usize
                 && !matches!(
                     self,
-                    Self::Qwen4Exp | Self::Naive | Self::IQuestQ1 | Self::Glm53
+                    Self::Qwen4Exp | Self::Naive | Self::IQuestQ1 | Self::Glm53 | Self::Glm53Vq
                 ))
+    }
+
+    fn incompatible_ctx(self, saved: u32, ctx: i32) -> bool {
+        let ctx = ctx.max(0) as u32;
+        match self {
+            Self::Glm53 => saved > ctx,
+            // Dense-only VQ sessions skip pool construction. Growing across
+            // that boundary requires replay, not a byte restore.
+            Self::Glm53Vq => saved > ctx || (saved > GLMVQ_DENSE_KEYS) != (ctx > GLMVQ_DENSE_KEYS),
+            _ => false,
+        }
     }
 
     pub fn oracle_name(self) -> &'static str {
@@ -251,9 +268,12 @@ pub(crate) fn read_prefix_range(
     }
     let n = fields[7] as usize;
     let layout = PayloadLayout::from_fields(&fields);
-    if layout.exceeds_context(n, ctx) || (layout == PayloadLayout::Glm53 && fields[2] > ctx as u32)
-    {
-        return Err(invalid_data("session payload exceeds context"));
+    if layout.exceeds_context(n, ctx) || layout.incompatible_ctx(fields[2], ctx) {
+        return Err(invalid_data(if layout == PayloadLayout::Glm53Vq {
+            "VQ session payload has incompatible context or indexer regime"
+        } else {
+            "session payload exceeds context"
+        }));
     }
     let prefix_len = HEADER_BYTES as u64 + fields[7] as u64 * 4;
     if prefix_len > length {
@@ -286,7 +306,7 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 return Err(err("session payload token count does not match live rows"));
             }
         }
-        PayloadLayout::Glm53 => {
+        PayloadLayout::Glm53 | PayloadLayout::Glm53Vq => {
             // Native owns the tensor tail and MTP cursor checks. Word 12 is
             // state bytes; the host validates only the serialized timeline.
             if p.version() != VERSION
@@ -397,13 +417,17 @@ impl SessionLedger {
             ));
         }
         let layout = prefix.layout();
-        if layout == PayloadLayout::Glm53 {
+        if matches!(layout, PayloadLayout::Glm53 | PayloadLayout::Glm53Vq) {
             validate_layout(prefix)?;
         }
         if layout.exceeds_context(prefix.tokens.len(), self.ctx)
-            || (layout == PayloadLayout::Glm53 && prefix.ctx() > self.ctx as u32)
+            || layout.incompatible_ctx(prefix.ctx(), self.ctx)
         {
-            return Err(err("session payload exceeds context"));
+            return Err(err(if layout == PayloadLayout::Glm53Vq {
+                "VQ session payload has incompatible context or indexer regime"
+            } else {
+                "session payload exceeds context"
+            }));
         }
         let tokens: Vec<i32> = prefix.tokens.iter().map(|&t| t as i32).collect();
         self.replace_checkpoint(&tokens);
@@ -685,6 +709,80 @@ mod tests {
                 156053504,
             ],
             tokens: vec![7, 8, 9],
+        }
+    }
+
+    #[test]
+    fn vq_prefix_identity() {
+        let prefix = glm_prefix(*b"GVQ1");
+        assert_eq!(prefix.layout().family(), ModelFamily::Glm53Vq);
+        let bytes = prefix.encode();
+        let parsed = read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Glm53Vq,
+            8192,
+        )
+        .unwrap();
+        let mut host = SessionLedger::new(
+            ModelFamily::Glm53Vq,
+            crate::session::SessionBackend::Cuda,
+            8192,
+            128,
+        );
+        host.apply_payload(&parsed).unwrap();
+        assert_eq!(host.tokens(), &[7, 8, 9]);
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Glm53,
+            8192,
+        )
+        .is_err());
+        let mut bad = prefix.clone();
+        bad.tokens[0] = bad.fields[11];
+        assert!(parse_prefix(&bad.encode()).is_err());
+        assert!(host.apply_payload(&bad).is_err());
+        assert_eq!(host.tokens(), &[7, 8, 9]);
+    }
+
+    #[test]
+    fn vq_prefix_regime() {
+        // A dense-only session never built the pools needed above 2K.
+        for (saved, ctx, valid) in [
+            (1024, 2048, true),
+            (2048, 2048, true),
+            (2048, 2049, false),
+            (2048, 8192, false),
+            (4096, 8192, true),
+            (8192, 8192, true),
+            (8192, 4096, false),
+            (8192, 0, false),
+        ] {
+            let mut prefix = glm_prefix(*b"GVQ1");
+            prefix.fields[2] = saved;
+            let bytes = prefix.encode();
+            assert_eq!(
+                read_prefix_range(
+                    &mut Cursor::new(&bytes),
+                    0,
+                    bytes.len() as u64,
+                    ModelFamily::Glm53Vq,
+                    ctx,
+                )
+                .is_ok(),
+                valid,
+                "saved={saved}, ctx={ctx}"
+            );
+            let mut host = SessionLedger::new(
+                ModelFamily::Glm53Vq,
+                crate::session::SessionBackend::Cuda,
+                ctx,
+                128,
+            );
+            assert_eq!(host.apply_payload(&prefix).is_ok(), valid);
         }
     }
 

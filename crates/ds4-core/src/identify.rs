@@ -19,6 +19,7 @@ pub enum IdentifyError {
     MissingKey(&'static str),
     UnsupportedShape,
     UnsupportedArch(Vec<u8>),
+    Artifact(String),
 }
 
 impl IdentifyError {
@@ -27,6 +28,7 @@ impl IdentifyError {
             IdentifyError::Gguf(e) => e.token(),
             IdentifyError::MissingKey(k) => format!("missing-key {k}"),
             IdentifyError::UnsupportedShape => "unsupported".into(),
+            IdentifyError::Artifact(e) => format!("invalid-artifact {e}"),
             IdentifyError::UnsupportedArch(a) => {
                 format!("unsupported-arch {}", String::from_utf8_lossy(a))
             }
@@ -178,6 +180,10 @@ pub fn identify_file(g: &GgufFile) -> Result<Identified, IdentifyError> {
             ));
         }
     };
+    if shape.family == crate::ModelFamily::Glm53Vq && g.get_u32("glm_vq.format_version") != Some(1)
+    {
+        return Err(IdentifyError::MissingKey("glm_vq.format_version=1"));
+    }
     Ok(Identified {
         shape,
         architecture,
@@ -190,6 +196,9 @@ pub fn identify_file(g: &GgufFile) -> Result<Identified, IdentifyError> {
 }
 
 pub fn identify_gguf(path: &Path) -> Result<Identified, IdentifyError> {
+    if path.is_dir() {
+        return crate::glm_vq::identify(path);
+    }
     let g = GgufFile::open(path)?;
     identify_file(&g)
 }

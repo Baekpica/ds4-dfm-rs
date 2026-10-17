@@ -46,6 +46,10 @@ the port is fixed.
   that it implements the new model family.
 - Keep per-kernel diagnostic knobs and kill switches family-specific. Select
   optimizations from each family's measured prefill and decode bottlenecks.
+- Context length defaults to the model's native maximum (for example
+  `max_position_embeddings`). A quantized or VQ artifact changes weights, not
+  the context contract: size scratch so it never scales with rows x keys
+  instead of capping context to fit it.
 
 ## Inference Performance Optimization Guidelines
 
@@ -98,6 +102,87 @@ unexpected fallback paths → repeated transformations → redundant memory traf
 The guiding principle is:
 
 **Measure the whole workload, explain the specific bottleneck, and validate the change end to end.** Consider execution-path topology as well as individual kernels.
+
+## GB10 (DGX Spark) bottleneck know-how
+
+Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
+300–2,200 MHz policy. Background and history: [GLM VQ](docs/glm53-vq.md).
+
+- **Attribute first.** Export the Nsight trace to SQLite and sum kernels inside
+  the `ds4.prefill` / `ds4.decode` NVTX ranges; divide by tokens. For each
+  decode kernel compute bytes moved / time: anything far below ~235 GB/s is a
+  target, anything near it only shrinks with fewer bytes.
+- **Decode is bytes per token.** Streaming kernels reach ~250 GB/s (BF16
+  dot), 233–237 (FP8 dot), 216 (Q4_K stream). Below ~5 µs a kernel is
+  latency-bound: launch, tail and exposed DRAM latency dominate.
+- **Never leave a serial loop on one thread.** A one-thread top-8 over 288
+  experts cost 56 µs per layer; a one-thread 20-iteration Sinkhorn 25 µs. Use
+  warp argmax / one lane per element with the same operation order.
+- **Batch loads in single-block kernels.** One load per dependent add exposes
+  ~1 µs per iteration: a one-block 16K RMS took 19 µs, 6.8 µs with 16 loads in
+  flight per thread and the same accumulation order.
+- **No host syncs on the hot path.** Any `ds4_gpu_tensor_read/write`
+  (`cudaMemcpy`) drains the stream; per-layer routing readback plus an item
+  upload cost ~1.3 ms per decoded token. Keep routing and tables on device.
+- **Fuse conversion chains.** Convert → cuBLAS GEMV → convert is three launches
+  and ran at 147–178 GB/s; one direct kernel reading the F32 row reached 250.
+- **Shared memory caps tiling.** 99 KiB opt-in per block (101,376 B). A 64 KiB
+  E4M3 codebook leaves ~35 KiB for staging, so one CTA per SM; stage sizes and
+  pipeline depth must be budgeted against it (BT=64 BF16 staging does not fit).
+- **Tensor-core VQ is fragment-bound, not FLOP-bound.** Rebuilding BF16 weights
+  per fragment cost 23 issued instructions per MMA (28% tensor use). E4M3
+  codewords feed `mma.m16n8k32.e4m3` unconverted; promote every 128 K to FP32
+  (tensor-core accumulation truncates). Choose the k order freely when A and B
+  agree so each lane loads whole codewords. Next limits: MIO queue, barriers,
+  operand-register MOVs (`"+f"` constraints), and the weight stream DRAM floor.
+- **L2 is small for MoE streams.** Bulk-prefetching each row's 384-byte chunks
+  helps; prefetching the next work unit early made the FP8 kernel slower.
+- **Noise.** With the model's page cache evicted, the first prefill chunk's
+  lazy workspace allocation can stall (PSI spike) and cost 4–7% of prefill.
+  Record load time and PSI; prefer repeated fast-load runs.
+- **Numerical tolerance.** Use an existing configuration change as the noise
+  reference (GLM 8K frontier, 512 vs 1024 chunks: logit RMS 0.23, KL 2.3e-7).
+  Keep bit identity when only scheduling changes; it makes A/B trivial.
+- **MTP verify widths are their own regime.** A 2-4 row forward falls off
+  every one-row direct kernel onto convert + cuBLAS unless each kernel takes
+  rows; that fallback was 15 of 70 ms per GLM one-draft step. Give direct
+  kernels a token loop that reuses each weight load and keeps the one-row
+  FMA order, so verify rows equal decode rows bit for bit and A/B stays exact.
+- **Expert overlap decides draft depth.** Consecutive GLM tokens share few of
+  their top-8 experts (4 rows: ~26 unique of 32), so routed-expert bytes grow
+  almost linearly with verify rows; an expert-union kernel saved under 10%.
+  Prefer one or two drafts; measure the expert union before deeper drafts.
+- **Drafts need the prompt.** A draft layer whose KV starts at decode drafts
+  blind at first (GLM one-draft acceptance 0.63 → 0.97 within one run).
+  Fill its KV during prefill. Check generated text for loops: a repeating
+  bench continuation accepts ~100% and overstates MTP gains.
+- **Peaks.** `mma.sync` FP8/INT8 ~215 T(FL)OPS, F16/BF16 ~108; cuBLAS BF16
+  65–90 TFLOPS. Large sequential reads stream 250–265 GB/s.
+- **Store BF16-rounded rows as BF16.** F32 buffers of values already rounded
+  at a BF16 boundary doubled GLM residual and expert-output traffic; BF16
+  storage is lossless (prefill 1042 → 1121 tok/s).
+- **Dependent launch.** A GLM token runs ~1,300 kernels; PDL with weights
+  staged before the wait gave +1.8% decode, bit-identical. CUPTI durations
+  then include the wait: attribute with PDL off.
+- **Keep copies inside the dependent-launch chain as kernels.** A driver
+  `cudaMemcpy` D2D between two PDL launches hung the GLM VQ MTP prefill in
+  ~60% of CLI runs (GPU idle, host spinning in the next copy; never under
+  nsys or gdb). A copy kernel that waits like its neighbours fixed it.
+- **Small copies and gathers lose.** TMA copies of 128-byte rows and
+  register-prefetched indices made the FP8 prefill kernel 31–50% slower;
+  tensor-core decode experts lost to SIMT (97 vs 212 GB/s, per-lane gathers).
+- **Multi-token SIMT GEMV is load-latency bound.** At three tokens the Q4_K
+  dot stalls on each token's input loads (long scoreboard, 40% issue); the
+  vendored MMQ/MMVQ stay at 150–190 GB/s. A BF16 MMA over the exact 4-bit
+  integers runs 2–8 tokens at the one-token cost; stage 2,304-byte row
+  segments (576-byte ones lost DRAM locality).
+- **Diff the SASS of paths a refactor keeps.** Adding an epilogue template
+  to the verify Q4_K kernel moved its row address math into the load loop:
+  identical results, MTP decode 0.9% slower. Compare `cuobjdump -sass` of
+  the old and new kernels (constant-bank offsets masked) before an A/B.
+- **Apply the VQ gain after the dot.** Rounding gain·codeword to BF16 per
+  weight was half the expert dot's instructions; one FP32 multiply after
+  the dot made 2–4-row verify experts 10–13% faster (one row is DRAM-bound).
 
 # Agent Notes
 

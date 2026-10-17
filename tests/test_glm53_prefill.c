@@ -10,7 +10,9 @@
 enum { ROW_CAP = 2048u, WINDOW = 4096u, MAX_ROWS = WINDOW + 1u,
        CONTEXT = WINDOW * 4u, DS4_N_VOCAB = 1024u, DS4_N_EMBD = 4u, MAX_CALLS = 3u };
 enum { GLM53_PREFILL_DEFAULT = ROW_CAP, GLM53_PREFILL_MAX = ROW_CAP,
-       GLM53_PREFILL_WINDOW = WINDOW, GLM53_DENSE_MIN_ROWS = 128u, DS4_N_EXPERT = 288u };
+       GLM53_PREFILL_WINDOW = WINDOW, GLM53_DENSE_MIN_ROWS = 128u, DS4_N_EXPERT = 288u,
+       GLM53_VQ_PREFILL_MAX = 4096u, DS4_MODEL_FAMILY_GLM53 = 1, DS4_MODEL_FAMILY_GLM53_VQ = 14,
+       DS4_MODEL_FAMILY = DS4_MODEL_FAMILY_GLM53 };
 #define CHECK(x) do { if (!(x)) { \
     fprintf(stderr, "GLM prefill FAIL %d: %s\n", __LINE__, #x); exit(1); \
 } } while (0)
@@ -24,6 +26,10 @@ typedef struct {
     uint32_t cache_len, ctx_cap, row_cap, window_cap, last_rows;
     ds4_glm53_stream *stream;
     ds4_gpu_tensor *hc_cur, *hc_next;
+    void *gvq;  /* GLM VQ MTP KV fill; null here, as for GLM-5.3 */
+    bool mtp_ready;
+    uint32_t mtp_len;
+    ds4_gpu_tensor *mtp_rows, *last_hidden;
 } ds4_glm53_gpu_graph;
 typedef struct { uint32_t unused; } glm53_stream_stats;
 enum call_kind { CALL_WINDOW, CALL_BATCH };
@@ -111,6 +117,19 @@ static bool glm53_graph_batch(ds4_glm53_gpu_graph *g, const ds4_model *m,
 
 static void *ds4_gpu_tensor_ptr(const ds4_gpu_tensor *t) {
     return (void *)t;
+}
+
+static int ds4_gpu_gvq_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
+        const ds4_gpu_tensor *src, uint64_t src_offset, uint64_t bytes, uint32_t rows) {
+    (void)dst; (void)dst_offset; (void)src; (void)src_offset; (void)bytes; (void)rows;
+    return 0;
+}
+
+static bool gvq_mtp_prefill(ds4_glm53_gpu_graph *g, ds4_glm53_gpu_graph *a,
+        const ds4_model *m, const ds4_weights *w, const int *tokens, uint32_t rows,
+        uint32_t first, bool pending) {
+    (void)g; (void)a; (void)m; (void)w; (void)tokens; (void)rows; (void)first; (void)pending;
+    return false;
 }
 
 #include GLM53_PREFILL_FIXTURE

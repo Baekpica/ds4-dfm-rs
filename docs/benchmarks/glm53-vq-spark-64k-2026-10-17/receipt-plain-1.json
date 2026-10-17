@@ -1,0 +1,70 @@
+{
+  "command": [
+    "python3",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+    "--max-gib",
+    "108",
+    "--high-gib",
+    "104",
+    "--reserve-gib",
+    "10",
+    "--timeout",
+    "3600",
+    "--psi-full-limit",
+    "0",
+    "--log",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/sweep/c17-plain-1/memory.jsonl",
+    "--",
+    "scratch/glm-vq/binaries/ds4-bench-perf-60d0b689",
+    "--cuda",
+    "-m",
+    "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-v3-GGUF",
+    "--prompt-file",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/speed-bench/promessi_sposi.txt",
+    "--ctx-start",
+    "2048",
+    "--ctx-max",
+    "65536",
+    "--step-incr",
+    "2048",
+    "--gen-tokens",
+    "128",
+    "--mtp-draft",
+    "1",
+    "--mtp-margin",
+    "0",
+    "--threads",
+    "8",
+    "--csv",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/sweep/c17-plain-1/sweep.csv"
+  ],
+  "head": "60d0b68947281e2727cb58ced37f4e6cd29a39dd",
+  "diff_sha256": "e7b32503a078839f28f48d27a1a23a9018500c3880c6bb152961536e36354bbf",
+  "binary": "scratch/glm-vq/binaries/ds4-bench-perf-60d0b689",
+  "binary_sha256": "a21a00397a9cc518a3b3e59ce6d48132947d588a419aecaa57a66b4b6d2f5c24",
+  "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-v3-GGUF",
+  "manifest_sha256": "18b997f2524c67fb97be08df561c336af91a2b700e0164cdcd9616b15ffb4848",
+  "environment": {
+    "DS4_GLMVQ_MTP": "0",
+    "DS4_MTP_SPEC_DISABLE": "1"
+  },
+  "frontiers": [
+    2048,
+    65536,
+    2048
+  ],
+  "gen": 128,
+  "mtp_draft": 0,
+  "sampling": "forced non-EOS greedy",
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "exit_code": 0,
+  "wall_seconds": 355.0868156599972,
+  "busy_sm_mhz": [
+    2177,
+    2184
+  ]
+}

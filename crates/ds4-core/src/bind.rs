@@ -969,6 +969,7 @@ fn mtp_names(shape: &Shape) -> Vec<BindName> {
 pub fn bind_names(shape: &Shape) -> Vec<BindName> {
     let mut out = Vec::new();
     match shape.family {
+        ModelFamily::Glm53Vq => return inkling_names(crate::glm_vq::layouts()),
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output_norm.weight");

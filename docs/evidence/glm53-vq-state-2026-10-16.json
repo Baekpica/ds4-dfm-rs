@@ -1,0 +1,2129 @@
+{
+  "feature": "GLM VQ session/bank state and payload identity",
+  "summary": {
+    "exit_code": 0,
+    "wall_seconds": 263.91722018201835,
+    "results": [
+      {
+        "session_snapshot": "byte_exact",
+        "disk_restore": "byte_exact",
+        "dense_to_sparse": "rejected_without_mutation",
+        "snapshot_bytes": 205721656
+      },
+      {
+        "banks": 2,
+        "isolation": "byte_exact",
+        "partial_prefix": 4097,
+        "disk_prefix": 6149,
+        "continuation": "byte_exact_vs_same_state_serial",
+        "sampling": "forced token 100"
+      },
+      {
+        "result": "GLMVQ_STATE_PASS",
+        "seconds": 39.500859878,
+        "context": 8192,
+        "prompt_tokens": 6147,
+        "checkpoint": 4097,
+        "scope": "single-owner native state and Rust host; no HTTP/MTP/capture/vision qualification"
+      }
+    ],
+    "min_system_available_gib": 33.023014068603516,
+    "busy_sm_mhz": [
+      2184,
+      2190
+    ],
+    "busy_clock_definition": "GPU utilization >=50 percent, sampled once per second",
+    "busy_clock_samples": 34,
+    "payload_bytes": {
+      "bank0-after.bin": 230288200,
+      "bank-checkpoint.bin": 205721656,
+      "bank1-partial.bin": 205828700,
+      "warm-reference.bin": 230395244,
+      "bank1-imported.bin": 230288200,
+      "session-saved.bin": 205721656,
+      "session-restored.bin": 205721656,
+      "bank0-saved.bin": 230288200,
+      "partial-reference.bin": 205828700,
+      "bank1-warm.bin": 230395244,
+      "dense-only.bin": 168943672
+    }
+  },
+  "live": {
+    "command": [
+      "python3",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tools/host_memory_guard.py",
+      "--max-gib",
+      "104",
+      "--high-gib",
+      "100",
+      "--reserve-gib",
+      "12",
+      "--timeout",
+      "1800",
+      "--psi-full-limit",
+      "0",
+      "--log",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/state-live/memory.jsonl",
+      "--",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/glm_vq_state",
+      "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-KDA-GGUF",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/sparse-bench-prompt.txt",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/state-live/payloads"
+    ],
+    "build": {
+      "command": [
+        "make",
+        "-j2",
+        "CUDA_ARCH=sm_121",
+        "CUDA_HOME=/usr/local/cuda-13.4",
+        "tests/glm_vq_state"
+      ],
+      "head": "48a18e5b62b80860bb23d8f47f46f123f6de44d6",
+      "diff": "diff --git a/.gitignore b/.gitignore\nindex fddba098..593dd41b 100644\n--- a/.gitignore\n+++ b/.gitignore\n@@ -242,4 +242,5 @@ tests/naive_banks\n /tests/test_glm_vq_quote\n /tests/test_glm_vq_sparse\n /tests/libglm_vq_index.so\n+/tests/glm_vq_state\n /glm-vq-gate\ndiff --git a/Makefile b/Makefile\nindex ee8b1f23..7bd0ffa8 100644\n--- a/Makefile\n+++ b/Makefile\n@@ -1971,6 +1971,13 @@ tests/glm_vq_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)\n \t\t$(DS4_RS_LIBS)\n \tcp -f \"$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_quality\" $@\n \n+tests/glm_vq_state: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)\n+\tcargo rustc -p ds4-cli --example glm_vq_state --release --features native -- \\\n+\t\t-C metadata=$(DS4_RS_LINK_FINGERPRINT) \\\n+\t\t$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \\\n+\t\t$(DS4_RS_LIBS)\n+\tcp -f \"$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_state\" $@\n+\n tests/test_glm_vq_cache.o: tests/test_glm_vq_cache.c ds4_glmvq.h ds4_gpu.h\n \t$(CC) $(CFLAGS) -I. -c -o $@ $<\n \ndiff --git a/crates/ds4-core/src/payload.rs b/crates/ds4-core/src/payload.rs\nindex 53bb6184..f77c7118 100644\n--- a/crates/ds4-core/src/payload.rs\n+++ b/crates/ds4-core/src/payload.rs\n@@ -32,6 +32,9 @@ const LAYOUT_GLM_COMPACT: u32 = u32::from_le_bytes(*b\"GLC5\");\n const LAYOUT_GLM_EXPANDED: u32 = u32::from_le_bytes(*b\"GLE5\");\n const LAYOUT_GLM_MTP_COMPACT: u32 = u32::from_le_bytes(*b\"GCM5\");\n const LAYOUT_GLM_MTP_EXPANDED: u32 = u32::from_le_bytes(*b\"GEM5\");\n+const LAYOUT_GLM_VQ: u32 = u32::from_le_bytes(*b\"GVQ1\");\n+const LAYOUT_GLM_VQ_MTP: u32 = u32::from_le_bytes(*b\"GVM1\");\n+const GLMVQ_DENSE_KEYS: u32 = 2048;\n \n #[derive(Clone, Copy, Debug, PartialEq, Eq)]\n pub enum PayloadLayout {\n@@ -48,6 +51,7 @@ pub enum PayloadLayout {\n     Naive,\n     IQuestQ1,\n     Glm53,\n+    Glm53Vq,\n }\n \n impl PayloadLayout {\n@@ -68,6 +72,7 @@ impl PayloadLayout {\n             | LAYOUT_GLM_EXPANDED\n             | LAYOUT_GLM_MTP_COMPACT\n             | LAYOUT_GLM_MTP_EXPANDED => Self::Glm53,\n+            LAYOUT_GLM_VQ | LAYOUT_GLM_VQ_MTP => Self::Glm53Vq,\n             _ => Self::DeepSeek,\n         }\n     }\n@@ -87,6 +92,7 @@ impl PayloadLayout {\n             Self::IQuestQ1 => ModelFamily::IQuestQ1,\n             Self::Naive => ModelFamily::NaiveN05,\n             Self::Glm53 => ModelFamily::Glm53,\n+            Self::Glm53Vq => ModelFamily::Glm53Vq,\n         }\n     }\n \n@@ -97,10 +103,21 @@ impl PayloadLayout {\n             || (tokens == ctx as usize\n                 && !matches!(\n                     self,\n-                    Self::Qwen4Exp | Self::Naive | Self::IQuestQ1 | Self::Glm53\n+                    Self::Qwen4Exp | Self::Naive | Self::IQuestQ1 | Self::Glm53 | Self::Glm53Vq\n                 ))\n     }\n \n+    fn incompatible_ctx(self, saved: u32, ctx: i32) -> bool {\n+        let ctx = ctx.max(0) as u32;\n+        match self {\n+            Self::Glm53 => saved > ctx,\n+            // Dense-only VQ sessions skip pool construction. Growing across\n+            // that boundary requires replay, not a byte restore.\n+            Self::Glm53Vq => saved > ctx || (saved > GLMVQ_DENSE_KEYS) != (ctx > GLMVQ_DENSE_KEYS),\n+            _ => false,\n+        }\n+    }\n+\n     pub fn oracle_name(self) -> &'static str {\n         self.family().oracle_name()\n     }\n@@ -251,9 +268,12 @@ pub(crate) fn read_prefix_range(\n     }\n     let n = fields[7] as usize;\n     let layout = PayloadLayout::from_fields(&fields);\n-    if layout.exceeds_context(n, ctx) || (layout == PayloadLayout::Glm53 && fields[2] > ctx as u32)\n-    {\n-        return Err(invalid_data(\"session payload exceeds context\"));\n+    if layout.exceeds_context(n, ctx) || layout.incompatible_ctx(fields[2], ctx) {\n+        return Err(invalid_data(if layout == PayloadLayout::Glm53Vq {\n+            \"VQ session payload has incompatible context or indexer regime\"\n+        } else {\n+            \"session payload exceeds context\"\n+        }));\n     }\n     let prefix_len = HEADER_BYTES as u64 + fields[7] as u64 * 4;\n     if prefix_len > length {\n@@ -286,7 +306,7 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {\n                 return Err(err(\"session payload token count does not match live rows\"));\n             }\n         }\n-        PayloadLayout::Glm53 => {\n+        PayloadLayout::Glm53 | PayloadLayout::Glm53Vq => {\n             // Native owns the tensor tail and MTP cursor checks. Word 12 is\n             // state bytes; the host validates only the serialized timeline.\n             if p.version() != VERSION\n@@ -397,13 +417,17 @@ impl SessionLedger {\n             ));\n         }\n         let layout = prefix.layout();\n-        if layout == PayloadLayout::Glm53 {\n+        if matches!(layout, PayloadLayout::Glm53 | PayloadLayout::Glm53Vq) {\n             validate_layout(prefix)?;\n         }\n         if layout.exceeds_context(prefix.tokens.len(), self.ctx)\n-            || (layout == PayloadLayout::Glm53 && prefix.ctx() > self.ctx as u32)\n+            || layout.incompatible_ctx(prefix.ctx(), self.ctx)\n         {\n-            return Err(err(\"session payload exceeds context\"));\n+            return Err(err(if layout == PayloadLayout::Glm53Vq {\n+                \"VQ session payload has incompatible context or indexer regime\"\n+            } else {\n+                \"session payload exceeds context\"\n+            }));\n         }\n         let tokens: Vec<i32> = prefix.tokens.iter().map(|&t| t as i32).collect();\n         self.replace_checkpoint(&tokens);\n@@ -688,6 +712,80 @@ mod tests {\n         }\n     }\n \n+    #[test]\n+    fn vq_prefix_identity() {\n+        let prefix = glm_prefix(*b\"GVQ1\");\n+        assert_eq!(prefix.layout().family(), ModelFamily::Glm53Vq);\n+        let bytes = prefix.encode();\n+        let parsed = read_prefix_range(\n+            &mut Cursor::new(&bytes),\n+            0,\n+            bytes.len() as u64,\n+            ModelFamily::Glm53Vq,\n+            8192,\n+        )\n+        .unwrap();\n+        let mut host = SessionLedger::new(\n+            ModelFamily::Glm53Vq,\n+            crate::session::SessionBackend::Cuda,\n+            8192,\n+            128,\n+        );\n+        host.apply_payload(&parsed).unwrap();\n+        assert_eq!(host.tokens(), &[7, 8, 9]);\n+        assert!(read_prefix_range(\n+            &mut Cursor::new(&bytes),\n+            0,\n+            bytes.len() as u64,\n+            ModelFamily::Glm53,\n+            8192,\n+        )\n+        .is_err());\n+        let mut bad = prefix.clone();\n+        bad.tokens[0] = bad.fields[11];\n+        assert!(parse_prefix(&bad.encode()).is_err());\n+        assert!(host.apply_payload(&bad).is_err());\n+        assert_eq!(host.tokens(), &[7, 8, 9]);\n+    }\n+\n+    #[test]\n+    fn vq_prefix_regime() {\n+        // A dense-only session never built the pools needed above 2K.\n+        for (saved, ctx, valid) in [\n+            (1024, 2048, true),\n+            (2048, 2048, true),\n+            (2048, 2049, false),\n+            (2048, 8192, false),\n+            (4096, 8192, true),\n+            (8192, 8192, true),\n+            (8192, 4096, false),\n+            (8192, 0, false),\n+        ] {\n+            let mut prefix = glm_prefix(*b\"GVQ1\");\n+            prefix.fields[2] = saved;\n+            let bytes = prefix.encode();\n+            assert_eq!(\n+                read_prefix_range(\n+                    &mut Cursor::new(&bytes),\n+                    0,\n+                    bytes.len() as u64,\n+                    ModelFamily::Glm53Vq,\n+                    ctx,\n+                )\n+                .is_ok(),\n+                valid,\n+                \"saved={saved}, ctx={ctx}\"\n+            );\n+            let mut host = SessionLedger::new(\n+                ModelFamily::Glm53Vq,\n+                crate::session::SessionBackend::Cuda,\n+                ctx,\n+                128,\n+            );\n+            assert_eq!(host.apply_payload(&prefix).is_ok(), valid);\n+        }\n+    }\n+\n     #[test]\n     fn glm_prefix_tags() {\n         for tag in [*b\"GLC5\", *b\"GCM5\", *b\"GLE5\", *b\"GEM5\"] {\ndiff --git a/crates/ds4-core/src/serving.rs b/crates/ds4-core/src/serving.rs\nindex 62fb6353..daae8bdf 100644\n--- a/crates/ds4-core/src/serving.rs\n+++ b/crates/ds4-core/src/serving.rs\n@@ -703,12 +703,12 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {\n         ModelFamily::Glm53Vq => ServingCaps {\n             family,\n             variant,\n-            banks: BankLane::Serial,\n-            bank_support: Support::None,\n-            reuse: ReuseKind::None,\n-            reuse_support: Support::None,\n-            disk: Support::None,\n-            snapshot: Support::None,\n+            banks: BankLane::Persistent,\n+            bank_support: Support::Present,\n+            reuse: ReuseKind::Partial,\n+            reuse_support: Support::Present,\n+            disk: Support::Present,\n+            snapshot: Support::Present,\n             mtp: MtpKind::Embedded,\n             mtp_support: Support::None,\n             spec_lane: SpecLane::None,\n@@ -2554,7 +2554,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {\n             \"32K one-bank serving is qualified; disk KV and external owner import are not\"\n         }\n         Variant::Glm53Flash => \"compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate\",\n-        Variant::Glm53FlashVq => \"Eager CUDA sparse graph caps context at 8192; native serving and workload limits remain unqualified\",\n+        Variant::Glm53FlashVq => \"Eager CUDA sparse graph caps context at 8192; banks, partial reuse and VQ snapshots are present; serving workload limits remain unqualified\",\n         Variant::Dots3NotePrev => {\n             \"text banks, local-window partial reuse and serial MTP are present but unqualified\"\n         }\n@@ -2730,6 +2730,20 @@ mod tests {\n         assert!(p.issues.iter().any(|issue| issue.code == \"ctx_unavailable\"));\n     }\n \n+    #[test]\n+    fn vq_state_caps() {\n+        let caps = caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq);\n+        assert_eq!(caps.banks, BankLane::Persistent);\n+        assert_eq!(caps.bank_support, Support::Present);\n+        assert_eq!(caps.reuse, ReuseKind::Partial);\n+        assert_eq!(caps.reuse_support, Support::Present);\n+        assert_eq!(caps.disk, Support::Present);\n+        assert_eq!(caps.snapshot, Support::Present);\n+        assert_eq!(caps.mtp_support, Support::None);\n+        assert_eq!(caps.qualified_ctx, None);\n+        assert_eq!(caps.qualified_banks, None);\n+    }\n+\n     #[test]\n     fn ssd_request_admission() {\n         for req in [\ndiff --git a/ds4.c b/ds4.c\nindex 30a46d76..bea6263a 100644\n--- a/ds4.c\n+++ b/ds4.c\n@@ -22775,6 +22775,7 @@ typedef struct {\n #ifndef __APPLE__\n     ds4_gvq_ctx *gvq;\n     ds4_gpu_tensor *gvq_latent, *gvq_kv, *gvq_pos;\n+    bool gvq_borrowed; /* Banks share workspace; bank zero releases it. */\n #endif\n } ds4_glm53_gpu_graph;\n \n@@ -61913,7 +61914,7 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i\n         BC_ERR(\"batch_ctx_create: this model does not yet implement the multi-sequence graph\");\n         return 1;\n     }\n-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {\n+    if (ds4_model_is_glm()) {\n         return glm53_batch_ctx_create(e, ctx_size, max_seq,\n             fit ? GLM53_FIT_BANKS : GLM53_STRICT_BANKS, out, err, errlen);\n     }\n@@ -73209,8 +73210,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {\n         const char *enabled = getenv(\"DS4_DOTS3_BATCH\");\n         return enabled && strcmp(enabled, \"1\") == 0;\n     }\n-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ) { return false; }\n-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) { return e->backend == DS4_BACKEND_CUDA; }\n+    if (ds4_model_is_glm()) { return e->backend == DS4_BACKEND_CUDA; }\n     /* Bonsai's session IS the trunk state (the CUDA graph or the CPU reference)\n      * and there is no multi-sequence graph for it, so the DeepSeek slab body\n      * would read a layout this family does not have. */\ndiff --git a/ds4_glm53_batch.inc b/ds4_glm53_batch.inc\nindex 01d3b5e2..5fe0132b 100644\n--- a/ds4_glm53_batch.inc\n+++ b/ds4_glm53_batch.inc\n@@ -215,6 +215,11 @@ static bool glm53_bank_clone(ds4_glm53_gpu_graph *g,\n         memset(g, 0, sizeof(*g));\n         return false;\n     }\n+#ifndef __APPLE__\n+    // Bank forwards are serialized. Share VQ handles/scratch, while the\n+    // cloned state, latent history and partial pools below remain private.\n+    g->gvq_borrowed = source->gvq != NULL;\n+#endif\n     g->state_pool = NULL; g->control_pool = NULL; g->logits = NULL; g->kda_scratch = NULL;\n     g->last_hidden = NULL; g->mtp_hidden = NULL;\n     g->mtp_kv = NULL; g->mtp_concat = NULL; g->mtp_journal = NULL;\ndiff --git a/ds4_glm53_payload.inc b/ds4_glm53_payload.inc\nindex ccde1fd8..99b6b6ba 100644\n--- a/ds4_glm53_payload.inc\n+++ b/ds4_glm53_payload.inc\n@@ -4,6 +4,8 @@\n #define GLM53_PAYLOAD_EXPANDED UINT32_C(0x35454c47) /* \"GLE5\" */\n #define GLM53_PAYLOAD_MTP_COMPACT UINT32_C(0x354d4347) /* \"GCM5\" */\n #define GLM53_PAYLOAD_MTP_EXPANDED UINT32_C(0x354d4547) /* \"GEM5\" */\n+#define GLMVQ_PAYLOAD UINT32_C(0x31515647) /* \"GVQ1\": BF16 latent/pools */\n+#define GLMVQ_PAYLOAD_MTP UINT32_C(0x314d5647) /* \"GVM1\" */\n typedef enum { GLM53_PAYLOAD_SAVE, GLM53_PAYLOAD_LOAD } glm53_payload_dir;\n \n static uint64_t glm53_payload_row_bytes(const ds4_glm53_gpu_graph *g) {\n@@ -84,12 +86,26 @@ static int glm53_payload_state(ds4_glm53_gpu_graph *g, FILE *fp, uint32_t n,\n }\n \n static uint32_t glm53_payload_tag(const ds4_glm53_gpu_graph *g) {\n+#ifndef __APPLE__\n+    if (g->gvq) { return g->mtp_ready ? GLMVQ_PAYLOAD_MTP : GLMVQ_PAYLOAD; }\n+#endif\n     if (g->mtp_ready) {\n         return g->expanded_diag ? GLM53_PAYLOAD_MTP_EXPANDED : GLM53_PAYLOAD_MTP_COMPACT;\n     }\n     return g->expanded_diag ? GLM53_PAYLOAD_EXPANDED : GLM53_PAYLOAD_COMPACT;\n }\n \n+static bool glm53_payload_ctx(const ds4_glm53_gpu_graph *g, uint32_t saved) {\n+    if (!saved || saved > g->ctx_cap) { return false; }\n+#ifndef __APPLE__\n+    // A <=2K VQ graph never built index pools; its prefix cannot become a\n+    // sparse session merely by loading the same bytes into a larger graph.\n+    if (g->gvq && (saved > DS4_GLM53_INDEX_TOPK) !=\n+        (g->ctx_cap > DS4_GLM53_INDEX_TOPK)) { return false; }\n+#endif\n+    return true;\n+}\n+\n static int glm53_payload_save(ds4_glm53_gpu_graph *g, const int *tokens,\n         uint32_t n, const float *logits, FILE *fp, char *err, size_t errlen) {\n     if (!fp || !tokens || !logits || !glm53_payload_bytes(g, n) || g->cache_len != n) {\n@@ -133,7 +149,7 @@ static int glm53_payload_restore(ds4_glm53_gpu_graph *g, FILE *fp,\n     glm53_graph_layers(&kda, &dsa);\n     if (!g || !g->ready || !fp || !remaining || !tokens_out || !logits ||\n         h[0] != DS4_SESSION_PAYLOAD_MAGIC || h[1] != DS4_SESSION_PAYLOAD_VERSION ||\n-        !h[2] || h[2] > g->ctx_cap || h[3] != DS4_N_KV_LORA ||\n+        !glm53_payload_ctx(g, h[2]) || h[3] != DS4_N_KV_LORA ||\n         h[4] != dsa || h[5] != glm53_payload_tag(g) ||\n         h[6] != glm53_payload_row_bytes(g) || !h[7] || h[7] > h[2] ||\n         h[8] != DS4_N_LAYER - DS4_N_NEXTN_PREDICT || h[9] != DS4_N_SSM_CONV ||\ndiff --git a/ds4_glmvq_graph.inc b/ds4_glmvq_graph.inc\nindex 35651edd..5f3d6bd3 100644\n--- a/ds4_glmvq_graph.inc\n+++ b/ds4_glmvq_graph.inc\n@@ -45,6 +45,7 @@ static bool gvq_graph_init(ds4_glm53_gpu_graph *g, const ds4_weights *w) {\n }\n \n static void gvq_graph_free(ds4_glm53_gpu_graph *g) {\n+    if (g->gvq_borrowed) { return; }\n     ds4_gpu_gvq_free(g->gvq);\n     ds4_gpu_tensor_free(g->gvq_pos);\n     ds4_gpu_tensor_free(g->gvq_kv);\ndiff --git a/tests/test_glm53_banks.c b/tests/test_glm53_banks.c\nindex f2248ca2..719ca1f1 100644\n--- a/tests/test_glm53_banks.c\n+++ b/tests/test_glm53_banks.c\n@@ -38,6 +38,8 @@ typedef struct {\n     ds4_gpu_tensor *dt_bias[DS4_MAX_LAYER], *o_norm[DS4_MAX_LAYER];\n     ds4_gpu_tensor *layer_tail_k[DS4_MAX_LAYER], *layer_tail_gate[DS4_MAX_LAYER];\n     ds4_gpu_tensor *layer_kv[DS4_MAX_LAYER], *layer_pool[DS4_MAX_LAYER];\n+    void *gvq;\n+    bool gvq_borrowed;\n } ds4_glm53_gpu_graph;\n typedef struct { ds4_model model; ds4_weights weights; ds4_glm53_stream glm53_stream; } ds4_engine;\n typedef enum { GLM53_MTP_SAVE, GLM53_MTP_RESTORE } glm53_mtp_move;\n@@ -212,7 +214,9 @@ static void clone_test(void) {\n     source.layer_tail_gate[1] = ds4_gpu_tensor_view(source.state_pool, 80u, 16u);\n     source.q_conv_weight[0] = ds4_gpu_tensor_view(source.control_pool, 0u, 8u);\n     memset(source.state_pool->data, 37, source.state_bytes);\n+    source.gvq = &source;\n     assert(glm53_bank_clone(&bank, &source));\n+    assert(bank.gvq == source.gvq && bank.gvq_borrowed && !source.gvq_borrowed);\n     assert(bank.state_pool->data != source.state_pool->data);\n     assert(bank.layer_kv[1]->data != source.layer_kv[1]->data);\n     assert(bank.layer_pool[1]->data != source.layer_pool[1]->data);\ndiff --git a/tests/test_glm53_payload.c b/tests/test_glm53_payload.c\nindex 6cba7385..e3ee48a4 100644\n--- a/tests/test_glm53_payload.c\n+++ b/tests/test_glm53_payload.c\n@@ -11,6 +11,7 @@ typedef struct {\n     ds4_gpu_tensor *state_pool;\n     ds4_gpu_tensor *mtp_kv;\n     ds4_gpu_tensor *layer_kv[DS4_MAX_LAYER], *layer_pool[DS4_MAX_LAYER];\n+    void *gvq;\n } ds4_glm53_gpu_graph;\n \n static int write_fail, sync_fail;\n@@ -56,7 +57,7 @@ static bool glm53_graph_reset(ds4_glm53_gpu_graph *g) {\n \n #define CHECK(x) do { if (!(x)) { fprintf(stderr, \"GLM payload FAIL %d: %s\\n\", __LINE__, #x); exit(1); } } while (0)\n enum { CAP = 2056, POISON = 0xa5 };\n-typedef enum { FIXTURE_COMPACT, FIXTURE_EXPANDED } fixture_layout;\n+typedef enum { FIXTURE_COMPACT, FIXTURE_EXPANDED, FIXTURE_VQ } fixture_layout;\n typedef enum { FIXTURE_MTP_OFF, FIXTURE_MTP_ON } fixture_mtp;\n \n static ds4_gpu_tensor *tensor(uint64_t bytes) {\n@@ -74,6 +75,7 @@ static void init(ds4_glm53_gpu_graph *g, fixture_layout layout, fixture_mtp mtp)\n         .ctx_cap = CAP, .row_cap = 128, .pool_cap = CAP / DS4_GLM53_POOL_SIZE,\n         .state_bytes = 4096};\n     g->state_pool = tensor(g->state_bytes);\n+    if (layout == FIXTURE_VQ) { g->gvq = g; }\n     g->mtp_ready = mtp == FIXTURE_MTP_ON;\n     if (g->mtp_ready) { g->mtp_kv = tensor(CAP * DS4_N_KV_LORA * sizeof(uint16_t)); }\n     for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {\n@@ -124,6 +126,7 @@ static void roundtrip(uint32_t n, fixture_layout layout, fixture_mtp mtp) {\n     uint64_t left = total;\n     uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS];\n     for (unsigned i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++) { CHECK(!payload_read_u32(fp, &h[i], &left, err, sizeof(err))); }\n+    if (layout == FIXTURE_VQ) { CHECK(h[5] == UINT32_C(0x31515647)); /* GVQ1 */ }\n     int *got = NULL;\n     CHECK(!glm53_payload_restore(&dst, fp, &left, h, &got, restored, err, sizeof(err)));\n     CHECK(left == 0 && dst.cache_len == n);\n@@ -151,6 +154,17 @@ static void roundtrip(uint32_t n, fixture_layout layout, fixture_mtp mtp) {\n     free(got);\n     const long body = DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t);\n     const uint64_t body_bytes = total - (uint64_t)body;\n+    if (layout == FIXTURE_VQ && n <= DS4_GLM53_INDEX_TOPK) {\n+        /* Reject before touching state: dense-only snapshots lack pools. */\n+        h[2] = DS4_GLM53_INDEX_TOPK;\n+        fseek(fp, body, SEEK_SET); left = body_bytes; got = NULL;\n+        CHECK(glm53_payload_restore(&dst, fp, &left, h, &got, restored, err, sizeof(err)) != 0 && !got);\n+        CHECK(dst.cache_len == n && !memcmp(src.state_pool->data, dst.state_pool->data, src.state_bytes));\n+        h[2] = CAP;\n+        dst.gvq = NULL;\n+        CHECK(glm53_payload_restore(&dst, fp, &left, h, &got, restored, err, sizeof(err)) != 0 && !got);\n+        dst.gvq = src.gvq;\n+    }\n     if (src.mtp_ready) {\n         const long frontier = body + n * sizeof(uint32_t) + DS4_N_VOCAB * sizeof(float);\n         const uint32_t invalid[][2] = {{n, n - 2u}, {n - 1u, n}, {0u, 1u}};\n@@ -202,6 +216,9 @@ int main(void) {\n     roundtrip(2049, FIXTURE_COMPACT, FIXTURE_MTP_OFF);\n     roundtrip(5, FIXTURE_EXPANDED, FIXTURE_MTP_OFF);\n     roundtrip(5, FIXTURE_COMPACT, FIXTURE_MTP_ON);\n+    roundtrip(3, FIXTURE_VQ, FIXTURE_MTP_OFF);\n+    roundtrip(5, FIXTURE_VQ, FIXTURE_MTP_OFF);\n+    roundtrip(2049, FIXTURE_VQ, FIXTURE_MTP_OFF);\n     puts(\"GLM payload: byte-exact state/latent/pools, split tail, layout and failure gates PASS\");\n     return 0;\n }\n",
+      "sources": {
+        "ds4.c": "89f8ca7de515f75aa135728e584e0173bba2f98bc8c5688da8e4e94eeb4d8ced",
+        "ds4_glm53_payload.inc": "02c894c3ebced2d39a6877ddd143e4f07834044c3a163baa1c1f7e2862783502",
+        "ds4_glm53_batch.inc": "9901e62c137ad60c240378d3371b39dffc675383aa69349cb74da19b628ba349",
+        "ds4_glmvq_graph.inc": "b63cafe7721d9bf528ca6b88d66dfc62a4ff0add575a2b98a0cf3eb521ed775b",
+        "crates/ds4-core/src/payload.rs": "56b0e2f046464f1e09df63a75ec5d0d7c6fb18873b21220df908fb64a47ce7ce",
+        "crates/ds4-core/src/serving.rs": "d7c9bee3312f3ccb93ddbada3f1895126fe6961b802199dcf8701c0da7a9b710",
+        "crates/ds4-cli/examples/glm_vq_state.rs": "e7554397c83c6e8a677e0b1f54de1d77675fe0d478eb73bda997937a4d909a7e"
+      },
+      "exit_code": 0,
+      "wall_seconds": 1.097281219001161,
+      "binary_sha256": "99ff2b05770128f9e8758bafc6ab856f99b9bb84abe55ba1db880fbe28c9339e"
+    },
+    "model": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-KDA-GGUF",
+    "manifest_sha256": "6ea4054b04cfb1bd2e26db318e022a5918b49c8002d7d5e1cf17e502a074a044",
+    "prompt_sha256": "ac0772499aaf6c538e3eb6ca3b19b2db650af339a247fcc1080446c99fed0626",
+    "environment": {
+      "LD_LIBRARY_PATH": "/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:/usr/local/cuda-13.4/lib64:",
+      "DS4_GLMVQ_PREFILL_ROWS": "1024",
+      "DS4_GLMVQ_MMA": "1",
+      "DS4_GLMVQ_DECODE": "1",
+      "DS4_GLMVQ_RESTORE_VEC": "1",
+      "DS4_GLMVQ_Q4_DIRECT": "1",
+      "DS4_GLMVQ_Q4_STREAM": "1",
+      "DS4_GLMVQ_FP8_DIRECT": "1",
+      "DS4_GLMVQ_KV_BF16": "1",
+      "DS4_GLMVQ_LATENT_ATTN": "1",
+      "DS4_MTP_SPEC_DISABLE": "1",
+      "DS4_SERVER_FORK_PARTIAL": "1"
+    },
+    "scope": "One model owner, eager8K text, serial snapshots and two persistent banks; forced token100, not text quality or performance A/B. Full payload byte equality covers actual carried state.",
+    "clock_policy_mhz": [
+      300,
+      2200
+    ],
+    "context": 8192,
+    "prompt": 6147,
+    "checkpoint": 4097,
+    "mtp": false,
+    "capture": false,
+    "exit_code": 0,
+    "wall_seconds": 263.91722018201835
+  },
+  "model_free_and_failed_builds": {
+    "state-prefix-red": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ds4-core",
+        "--lib",
+        "payload::tests::vq_"
+      ],
+      "exit_code": 101,
+      "wall_seconds": 4.715828164014965,
+      "log": "   Compiling ds4-core v0.1.3 (/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/crates/ds4-core)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.63s\n     Running unittests src/lib.rs (target/debug/deps/ds4_core-f90e4294b934f3db)\n\nrunning 2 tests\ntest payload::tests::vq_prefix_identity ... FAILED\ntest payload::tests::vq_prefix_regime ... FAILED\n\nfailures:\n\n---- payload::tests::vq_prefix_identity stdout ----\n\nthread 'payload::tests::vq_prefix_identity' (511449) panicked at crates/ds4-core/src/payload.rs:694:9:\nassertion `left == right` failed\n  left: DeepSeek4\n right: Glm53Vq\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- payload::tests::vq_prefix_regime stdout ----\n\nthread 'payload::tests::vq_prefix_regime' (511450) panicked at crates/ds4-core/src/payload.rs:728:13:\nassertion `left == right` failed: saved=1024, ctx=2048\n  left: false\n right: true\n\n\nfailures:\n    payload::tests::vq_prefix_identity\n    payload::tests::vq_prefix_regime\n\ntest result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 416 filtered out; finished in 0.00s\n\nerror: test failed, to rerun pass `-p ds4-core --lib`\n"
+    },
+    "state-payload-red": {
+      "command": [
+        "make",
+        "test-glm53-payload"
+      ],
+      "exit_code": 2,
+      "wall_seconds": 1.3627811910118908,
+      "log": "cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -O0 -fno-fast-math -ffunction-sections -fdata-sections \\\n\t-Wno-unused-function -I. -o tests/test_glm53_payload tests/test_glm53_payload.c -Wl,--gc-sections -lm -pthread\ntests/test_glm53_payload.c:14:5: error: unknown type name \u2018ds4_gvq_ctx\u2019\n   14 |     ds4_gvq_ctx *gvq;\n      |     ^~~~~~~~~~~\ntests/test_glm53_payload.c: In function \u2018init\u2019:\ntests/test_glm53_payload.c:78:43: error: \u2018ds4_gvq_ctx\u2019 undeclared (first use in this function)\n   78 |     if (layout == FIXTURE_VQ) { g->gvq = (ds4_gvq_ctx *)(uintptr_t)1; }\n      |                                           ^~~~~~~~~~~\ntests/test_glm53_payload.c:78:43: note: each undeclared identifier is reported only once for each function it appears in\ntests/test_glm53_payload.c:78:56: error: expected expression before \u2018)\u2019 token\n   78 |     if (layout == FIXTURE_VQ) { g->gvq = (ds4_gvq_ctx *)(uintptr_t)1; }\n      |                                                        ^\ntests/test_glm53_payload.c:78:68: error: expected \u2018;\u2019 before numeric constant\n   78 |     if (layout == FIXTURE_VQ) { g->gvq = (ds4_gvq_ctx *)(uintptr_t)1; }\n      |                                                                    ^\n      |                                                                    ;\nmake: *** [Makefile:2190: tests/test_glm53_payload] Error 1\n"
+    },
+    "state-payload-red-2": {
+      "command": [
+        "make",
+        "test-glm53-payload"
+      ],
+      "exit_code": 2,
+      "wall_seconds": 2.0310669030004647,
+      "log": "cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -O0 -fno-fast-math -ffunction-sections -fdata-sections \\\n\t-Wno-unused-function -I. -o tests/test_glm53_payload tests/test_glm53_payload.c -Wl,--gc-sections -lm -pthread\n./tests/test_glm53_payload\nGLM payload FAIL 129: h[5] == UINT32_C(0x31515647)\nmake: *** [Makefile:2194: test-glm53-payload] Error 1\n"
+    },
+    "state-bank-red": {
+      "command": [
+        "make",
+        "test-glm53-banks"
+      ],
+      "exit_code": 2,
+      "wall_seconds": 1.333988312020665,
+      "log": "cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -Werror -I. -o tests/test_glm53_banks tests/test_glm53_banks.c -lm\n./tests/test_glm53_banks\ntest_glm53_banks: tests/test_glm53_banks.c:219: clone_test: Assertion `bank.gvq == source.gvq && bank.gvq_borrowed && !source.gvq_borrowed' failed.\nmake: *** [Makefile:2218: test-glm53-banks] Aborted (core dumped)\n"
+    },
+    "state-prefix-green": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ds4-core",
+        "--lib",
+        "payload::tests::"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 2.5772947070072405,
+      "log": "   Compiling ds4-core v0.1.3 (/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/crates/ds4-core)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.54s\n     Running unittests src/lib.rs (target/debug/deps/ds4_core-f90e4294b934f3db)\n\nrunning 12 tests\ntest payload::tests::qwen_prefix_restores_ledger ... ok\ntest payload::tests::qwen_fp8_full_ctx_ledger ... ok\ntest payload::tests::naive_prefix_keeps_family ... ok\ntest payload::tests::vq_prefix_identity ... ok\ntest payload::tests::qwen_full_context_payload ... ok\ntest payload::tests::glm_prefix_tags ... ok\ntest payload::tests::step37_prefix_restores_ledger ... ok\ntest payload::tests::range_reader_validates_prefix_without_reading_native_tail ... ok\ntest payload::tests::glm_prefix_bounds ... ok\ntest payload::tests::glm_prefix_tokens ... ok\ntest payload::tests::vq_prefix_regime ... ok\ntest payload::tests::glm_native_prefixes ... ok\n\ntest result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 407 filtered out; finished in 0.00s\n\n"
+    },
+    "state-caps-green": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ds4-core",
+        "--lib",
+        "serving::tests::vq_"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.045042193989502266,
+      "log": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s\n     Running unittests src/lib.rs (target/debug/deps/ds4_core-f90e4294b934f3db)\n\nrunning 2 tests\ntest serving::tests::vq_state_caps ... ok\ntest serving::tests::vq_baseline_limits ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 417 filtered out; finished in 0.00s\n\n"
+    },
+    "state-payload-green": {
+      "command": [
+        "make",
+        "test-glm53-payload"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 2.0213977319945116,
+      "log": "cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -O0 -fno-fast-math -ffunction-sections -fdata-sections \\\n\t-Wno-unused-function -I. -o tests/test_glm53_payload tests/test_glm53_payload.c -Wl,--gc-sections -lm -pthread\n./tests/test_glm53_payload\nGLM payload: byte-exact state/latent/pools, split tail, layout and failure gates PASS\n"
+    },
+    "state-bank-green": {
+      "command": [
+        "make",
+        "test-glm53-banks"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 0.26704984199022874,
+      "log": "cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -Werror -I. -o tests/test_glm53_banks tests/test_glm53_banks.c -lm\n./tests/test_glm53_banks\nGLM compact bank frontier: PASS\n"
+    },
+    "state-native-build-first": {
+      "command": [
+        "make",
+        "-j2",
+        "CUDA_ARCH=sm_121",
+        "CUDA_HOME=/usr/local/cuda-13.4",
+        "tests/glm_vq_state"
+      ],
+      "head": "48a18e5b62b80860bb23d8f47f46f123f6de44d6",
+      "sources": {
+        "ds4.c": "89f8ca7de515f75aa135728e584e0173bba2f98bc8c5688da8e4e94eeb4d8ced",
+        "ds4_glm53_payload.inc": "02c894c3ebced2d39a6877ddd143e4f07834044c3a163baa1c1f7e2862783502",
+        "ds4_glm53_batch.inc": "9901e62c137ad60c240378d3371b39dffc675383aa69349cb74da19b628ba349",
+        "ds4_glmvq_graph.inc": "b63cafe7721d9bf528ca6b88d66dfc62a4ff0add575a2b98a0cf3eb521ed775b",
+        "crates/ds4-core/src/payload.rs": "56b0e2f046464f1e09df63a75ec5d0d7c6fb18873b21220df908fb64a47ce7ce",
+        "crates/ds4-core/src/serving.rs": "d7c9bee3312f3ccb93ddbada3f1895126fe6961b802199dcf8701c0da7a9b710",
+        "crates/ds4-cli/examples/glm_vq_state.rs": "1fbb38ae5d94b52ff00a000fb0ac17c2ab5463fcb9b524f81625cd5fcd35d040"
+      },
+      "exit_code": 2,
+      "wall_seconds": 42.14910504000727,
+      "log": "cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -c -o ds4.o ds4.c\nIn file included from ds4.c:79218:\nds4_ds41_vision.inc: In function \u2018ds4_v41_images_build\u2019:\nds4_ds41_vision.inc:316:22: warning: comparison is always false due to limited range of data type [-Wtype-limits]\n  316 |     if ((uint64_t)np > SIZE_MAX / sizeof *sig_of ||\n      |                      ^\nds4.c: At top level:\nds4.c:50111:17: warning: \u2018motif3_batch_runtime_trim_unused_checkpoints\u2019 defined but not used [-Wunused-function]\n50111 | static uint64_t motif3_batch_runtime_trim_unused_checkpoints(\n      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nIn file included from ds4.c:47665:\nds4_glm53_graph.inc:199:17: warning: \u2018glm53_graph_bytes_estimate\u2019 defined but not used [-Wunused-function]\n  199 | static uint64_t glm53_graph_bytes_estimate(uint32_t ctx_cap) {\n      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~\nds4_glm53_graph.inc:59:17: warning: \u2018glm53_prefill_cap\u2019 defined but not used [-Wunused-function]\n   59 | static uint32_t glm53_prefill_cap(uint32_t ctx, uint32_t slots) {\n      |                 ^~~~~~~~~~~~~~~~~\nds4.c:16621:13: warning: \u2018exaone_forward_token_cpu\u2019 defined but not used [-Wunused-function]\n16621 | static void exaone_forward_token_cpu(float *logits, const ds4_model *m,\n      |             ^~~~~~~~~~~~~~~~~~~~~~~~\nds4.c:16365:13: warning: \u2018exaone_kv_cache_free\u2019 defined but not used [-Wunused-function]\n16365 | static void exaone_kv_cache_free(exaone_kv_cache *c) {\n      |             ^~~~~~~~~~~~~~~~~~~~\nds4.c:16354:13: warning: \u2018exaone_kv_cache_init\u2019 defined but not used [-Wunused-function]\n16354 | static void exaone_kv_cache_init(exaone_kv_cache *c, uint32_t cap) {\n      |             ^~~~~~~~~~~~~~~~~~~~\nds4.c:3093:13: warning: \u2018model_get_u64\u2019 defined but not used [-Wunused-function]\n 3093 | static bool model_get_u64(const ds4_model *m, const char *key, uint64_t *out) {\n      |             ^~~~~~~~~~~~~\ncargo rustc -p ds4-cli --example glm_vq_state --release --features native -- \\\n\t-C metadata=1132548401 \\\n\t-C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/native/bridge/ds4_bridge.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_ple.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_distributed.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_ggml_stubs.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_mmq.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_mmq_d2r.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/quantize.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/mmid.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/mmvq.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_repack.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_fattn.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/qwen38_ple.o \\\n\t-C link-arg=-L/usr/local/cuda-13.4/targets/sbsa-linux/lib -C link-arg=-L/usr/local/cuda-13.4/lib64 -C link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/13/ -C link-arg=-lcudart -C link-arg=-lcublas -C link-arg=-lcuda -C link-arg=-lstdc++ -C link-arg=-latomic -C link-arg=-lgcc -C link-arg=-ldl -C link-arg=-lm -C link-arg=-lpthread -C link-arg=-lc\nwarning: failed to connect to jobserver from environment variable `MAKEFLAGS=\" -j2 --jobserver-auth=3,4 -- CUDA_HOME=/usr/local/cuda-13.4 CUDA_ARCH=sm_121\"`: cannot open file descriptor 3 from the jobserver environment variable value: Bad file descriptor (os error 9)\nwarning: constant `SESSION_U32_FIELDS` is never used\n  --> crates/ds4-dist/src/snapshot_merge.rs:13:11\n   |\n13 | pub const SESSION_U32_FIELDS: usize = 13;\n   |           ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `ds4-dist` (lib) generated 1 warning\n   Compiling ds4-core v0.1.3 (/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/crates/ds4-core)\nwarning: field `window` is never read\n  --> crates/ds4-core/src/step37/media.rs:32:5\n   |\n28 | struct ImagePlan {\n   |        --------- field in this struct\n...\n32 |     window: u32,\n   |     ^^^^^^\n   |\n   = note: `ImagePlan` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\n   Compiling ds4-server v0.1.3 (/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/crates/ds4-server)\nwarning: unused import: `ds4_kv::PrefixAnswer`\n  --> crates/ds4-server/src/generate.rs:20:5\n   |\n20 | use ds4_kv::PrefixAnswer;\n   |     ^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `render_model` is never used\n  --> crates/ds4-server/src/chat_input.rs:12:15\n   |\n12 | pub(crate) fn render_model(\n   |               ^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: struct `History` is never constructed\n   --> crates/ds4-server/src/chat_input.rs:251:19\n    |\n251 | pub(crate) struct History {\n    |                   ^^^^^^^\n\nwarning: associated items `capture`, `matches`, and `restore` are never used\n   --> crates/ds4-server/src/chat_input.rs:257:19\n    |\n256 | impl History {\n    | ------------ associated items in this implementation\n257 |     pub(crate) fn capture(\n    |                   ^^^^^^^\n...\n274 |     pub(crate) fn matches(&self, parsed: &ParsedRequest) -> bool {\n    |                   ^^^^^^^\n...\n283 |     pub(crate) fn restore(&self, parsed: &mut ParsedRequest) -> Result<bool, GenerateError> {\n    |                   ^^^^^^^\n\nwarning: constant `CONT_ADMIT_REFUSED` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:11:18\n   |\n11 | pub(crate) const CONT_ADMIT_REFUSED: &str = \"continuous admission rejected; serial fallback\";\n   |                  ^^^^^^^^^^^^^^^^^^\n\nwarning: enum `GovStatus` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:15:17\n   |\n15 | pub(crate) enum GovStatus {\n   |                 ^^^^^^^^^\n\nwarning: variants `ClassBudget`, `ObsRetry`, `Unsupported`, `Fault`, `DeepPolicy`, and `LaneDisabled` are never constructed\n  --> crates/ds4-server/src/serve_cont_roll.rs:28:5\n   |\n27 | pub(crate) enum RejectReason {\n   |                 ------------ variants in this enum\n28 |     ClassBudget = 0,\n   |     ^^^^^^^^^^^\n29 |     LiveHeadroom = 1,\n30 |     ObsRetry = 2,\n   |     ^^^^^^^^\n31 |     Unsupported = 3,\n   |     ^^^^^^^^^^^\n32 |     Fault = 4,\n   |     ^^^^^\n33 |     DeepPolicy = 5,\n   |     ^^^^^^^^^^\n34 |     LaneDisabled = 6,\n   |     ^^^^^^^^^^^^\n   |\n   = note: `RejectReason` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis\n\nwarning: method `name` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:38:25\n   |\n37 | impl RejectReason {\n   | ----------------- method in this implementation\n38 |     pub(crate) const fn name(self) -> &'static str {\n   |                         ^^^^\n\nwarning: function `reject_reason_from_gov` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:45:21\n   |\n45 | pub(crate) const fn reject_reason_from_gov(status: GovStatus) -> Option<RejectReason> {\n   |                     ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: trait `ContMemGov` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:59:18\n   |\n59 | pub(crate) trait ContMemGov {\n   |                  ^^^^^^^^^^\n\nwarning: struct `AdmitAlways` is never constructed\n  --> crates/ds4-server/src/serve_cont_roll.rs:64:19\n   |\n64 | pub(crate) struct AdmitAlways;\n   |                   ^^^^^^^^^^^\n\nwarning: function `charge_roll_admit` is never used\n   --> crates/ds4-server/src/serve_cont_roll.rs:103:15\n    |\n103 | pub(crate) fn charge_roll_admit(\n    |               ^^^^^^^^^^^^^^^^^\n\nwarning: struct `RollReserve` is never constructed\n   --> crates/ds4-server/src/serve_cont_roll.rs:118:19\n    |\n118 | pub(crate) struct RollReserve {\n    |                   ^^^^^^^^^^^\n\nwarning: associated items `new`, `note_place`, `contains`, and `protect` are never used\n   --> crates/ds4-server/src/serve_cont_roll.rs:123:19\n    |\n122 | impl RollReserve {\n    | ---------------- associated items in this implementation\n123 |     pub(crate) fn new() -> Self {\n    |                   ^^^\n...\n128 |     pub(crate) fn note_place(&mut self, place_bank: i32) {\n    |                   ^^^^^^^^^^\n...\n140 |     pub(crate) fn contains(&self, bank: i32) -> bool {\n    |                   ^^^^^^^^\n...\n146 |     pub(crate) fn protect(&self, hold: &[bool]) -> Vec<bool> {\n    |                   ^^^^^^^\n\nwarning: struct `ContRoll` is never constructed\n   --> crates/ds4-server/src/serve_cont_roll.rs:161:19\n    |\n161 | pub(crate) struct ContRoll {\n    |                   ^^^^^^^^\n\nwarning: associated items `new`, `enqueue`, `admit`, `live_count`, `complete`, and `completed` are never used\n   --> crates/ds4-server/src/serve_cont_roll.rs:168:19\n    |\n167 | impl ContRoll {\n    | ------------- associated items in this implementation\n168 |     pub(crate) fn new() -> Self {\n    |                   ^^^\n...\n172 |     pub(crate) fn enqueue(&mut self, user: usize) {\n    |                   ^^^^^^^\n...\n178 |     pub(crate) fn admit(&mut self) -> Option<usize> {\n    |                   ^^^^^\n...\n184 |     pub(crate) fn live_count(&self) -> usize {\n    |                   ^^^^^^^^^^\n...\n188 |     pub(crate) fn complete(&mut self, user: usize) {\n    |                   ^^^^^^^^\n...\n194 |     pub(crate) fn completed(&self) -> &[usize] {\n    |                   ^^^^^^^^^\n\nwarning: method `reclaimed` is never used\n   --> crates/ds4-server/src/serve_serial_reclaim.rs:195:25\n    |\n194 | impl SerialReclaimOutcome {\n    | ------------------------- method in this implementation\n195 |     pub(crate) const fn reclaimed(self) -> u64 {\n    |                         ^^^^^^^^^\n\nwarning: struct `ReclaimBank` is never constructed\n   --> crates/ds4-server/src/serve_serial_reclaim.rs:216:19\n    |\n216 | pub(crate) struct ReclaimBank {\n    |                   ^^^^^^^^^^^\n\nwarning: function `serial_reclaim_rank` is never used\n   --> crates/ds4-server/src/serve_serial_reclaim.rs:265:15\n    |\n265 | pub(crate) fn serial_reclaim_rank(banks: &[ReclaimBank], warm_pin_min: i32) -> Vec<u32> {\n    |               ^^^^^^^^^^^^^^^^^^^\n\n   Compiling ds4-cli v0.1.3 (/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/crates/ds4-cli)\nwarning: unused import: `catalog::ListedSession`\n  --> crates/ds4-cli/src/agent/kv/mod.rs:12:16\n   |\n12 | pub(crate) use catalog::ListedSession;\n   |                ^^^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused import: `identity_sha`\n  --> crates/ds4-cli/src/agent/kv/mod.rs:14:27\n   |\n14 | pub(crate) use identity::{identity_sha, SessionIdentity};\n   |                           ^^^^^^^^^^^^\n\nwarning: unused import: `SaveSpec`\n  --> crates/ds4-cli/src/agent/kv/mod.rs:15:24\n   |\n15 | pub(crate) use store::{SaveSpec, SessionStore};\n   |                        ^^^^^^^^\n\nwarning: function `edit_result` is never used\n  --> crates/ds4-cli/src/agent/edit.rs:18:15\n   |\n18 | pub(crate) fn edit_result(path: Option<&str>, old: Option<&str>, new: Option<&str>) -> Vec<u8> {\n   |               ^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `escape` is never used\n  --> crates/ds4-cli/src/agent/trace.rs:76:15\n   |\n76 | pub(super) fn escape(bytes: &[u8]) -> Vec<u8> {\n   |               ^^^^^^\n\nwarning: variants `Idle`, `Compacting`, `Draining`, `Saving`, `Error`, and `Stopped` are never constructed\n  --> crates/ds4-cli/src/agent/tui/mod.rs:40:5\n   |\n39 | pub(super) enum WorkerPhase {\n   |                 ----------- variants in this enum\n40 |     Idle,\n   |     ^^^^\n...\n43 |     Compacting,\n   |     ^^^^^^^^^^\n44 |     Draining,\n   |     ^^^^^^^^\n45 |     Saving,\n   |     ^^^^^^\n46 |     Error,\n   |     ^^^^^\n47 |     Stopped,\n   |     ^^^^^^^\n   |\n   = note: `WorkerPhase` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis\n\nwarning: function `write_result` is never used\n --> crates/ds4-cli/src/agent/write.rs:9:15\n  |\n9 | pub(crate) fn write_result(path: Option<&str>, content: Option<&str>) -> Vec<u8> {\n  |               ^^^^^^^^^^^^\n\nwarning: `ds4-core` (lib) generated 1 warning\nwarning: `ds4-server` (lib) generated 19 warnings (run `cargo fix --lib -p ds4-server` to apply 1 suggestion)\nwarning: `ds4-cli` (lib) generated 7 warnings (run `cargo fix --lib -p ds4-cli` to apply 3 suggestions)\nerror[E0603]: module `batch` is private\n  --> crates/ds4-cli/examples/glm_vq_state.rs:2:15\n   |\n 2 | use ds4_core::batch::{cont_sample_token, BatchCtx, ContAdmit, ContDone, ContDriver};\n   |               ^^^^^   ----------------- function `cont_sample_token` is not publicly re-exported\n   |               |\n   |               private module\n   |\nnote: the module `batch` is defined here\n  --> crates/ds4-core/src/lib.rs:11:1\n   |\n11 | mod batch;\n   | ^^^^^^^^^\n\nerror[E0603]: module `batch` is private\n  --> crates/ds4-cli/examples/glm_vq_state.rs:2:15\n   |\n 2 | use ds4_core::batch::{cont_sample_token, BatchCtx, ContAdmit, ContDone, ContDriver};\n   |               ^^^^^ private module       -------- struct `BatchCtx` is not publicly re-exported\n   |\nnote: the module `batch` is defined here\n  --> crates/ds4-core/src/lib.rs:11:1\n   |\n11 | mod batch;\n   | ^^^^^^^^^\n\nerror[E0603]: module `batch` is private\n  --> crates/ds4-cli/examples/glm_vq_state.rs:2:15\n   |\n 2 | use ds4_core::batch::{cont_sample_token, BatchCtx, ContAdmit, ContDone, ContDriver};\n   |               ^^^^^ private module                 --------- struct `ContAdmit` is not publicly re-exported\n   |\nnote: the module `batch` is defined here\n  --> crates/ds4-core/src/lib.rs:11:1\n   |\n11 | mod batch;\n   | ^^^^^^^^^\n\nerror[E0603]: module `batch` is private\n  --> crates/ds4-cli/examples/glm_vq_state.rs:2:15\n   |\n 2 | use ds4_core::batch::{cont_sample_token, BatchCtx, ContAdmit, ContDone, ContDriver};\n   |               ^^^^^ private module                            -------- struct `ContDone` is not publicly re-exported\n   |\nnote: the module `batch` is defined here\n  --> crates/ds4-core/src/lib.rs:11:1\n   |\n11 | mod batch;\n   | ^^^^^^^^^\n\nerror[E0603]: module `batch` is private\n  --> crates/ds4-cli/examples/glm_vq_state.rs:2:15\n   |\n 2 | use ds4_core::batch::{cont_sample_token, BatchCtx, ContAdmit, ContDone, ContDriver};\n   |               ^^^^^ private module                                      ---------- trait `ContDriver` is not publicly re-exported\n   |\nnote: the module `batch` is defined here\n  --> crates/ds4-core/src/lib.rs:11:1\n   |\n11 | mod batch;\n   | ^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0603`.\nerror: could not compile `ds4-cli` (example \"glm_vq_state\") due to 5 previous errors\nmake: *** [Makefile:1975: tests/glm_vq_state] Error 101\n"
+    },
+    "state-native-build-second": {
+      "command": [
+        "make",
+        "-j2",
+        "CUDA_ARCH=sm_121",
+        "CUDA_HOME=/usr/local/cuda-13.4",
+        "tests/glm_vq_state"
+      ],
+      "head": "48a18e5b62b80860bb23d8f47f46f123f6de44d6",
+      "sources": {
+        "ds4.c": "89f8ca7de515f75aa135728e584e0173bba2f98bc8c5688da8e4e94eeb4d8ced",
+        "ds4_glm53_payload.inc": "02c894c3ebced2d39a6877ddd143e4f07834044c3a163baa1c1f7e2862783502",
+        "ds4_glm53_batch.inc": "9901e62c137ad60c240378d3371b39dffc675383aa69349cb74da19b628ba349",
+        "ds4_glmvq_graph.inc": "b63cafe7721d9bf528ca6b88d66dfc62a4ff0add575a2b98a0cf3eb521ed775b",
+        "crates/ds4-core/src/payload.rs": "56b0e2f046464f1e09df63a75ec5d0d7c6fb18873b21220df908fb64a47ce7ce",
+        "crates/ds4-core/src/serving.rs": "d7c9bee3312f3ccb93ddbada3f1895126fe6961b802199dcf8701c0da7a9b710",
+        "crates/ds4-cli/examples/glm_vq_state.rs": "e5270b9336822e3f6aa12a181baaa72bb73d426ed589d13ca591b0111e4d029b"
+      },
+      "exit_code": 2,
+      "wall_seconds": 0.4126550600049086,
+      "log": "cargo rustc -p ds4-cli --example glm_vq_state --release --features native -- \\\n\t-C metadata=1132548401 \\\n\t-C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/native/bridge/ds4_bridge.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_ple.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_distributed.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/ds4_cuda.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_ggml_stubs.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_mmq.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_mmq_d2r.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/quantize.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/mmid.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/mmvq.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_repack.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/mmq/ds4_fattn.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/cuda/qwen38_ple.o \\\n\t-C link-arg=-L/usr/local/cuda-13.4/targets/sbsa-linux/lib -C link-arg=-L/usr/local/cuda-13.4/lib64 -C link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/13/ -C link-arg=-lcudart -C link-arg=-lcublas -C link-arg=-lcuda -C link-arg=-lstdc++ -C link-arg=-latomic -C link-arg=-lgcc -C link-arg=-ldl -C link-arg=-lm -C link-arg=-lpthread -C link-arg=-lc\nwarning: failed to connect to jobserver from environment variable `MAKEFLAGS=\" -j2 --jobserver-auth=3,4 -- CUDA_HOME=/usr/local/cuda-13.4 CUDA_ARCH=sm_121\"`: cannot open file descriptor 3 from the jobserver environment variable value: Bad file descriptor (os error 9)\nwarning: constant `SESSION_U32_FIELDS` is never used\n  --> crates/ds4-dist/src/snapshot_merge.rs:13:11\n   |\n13 | pub const SESSION_U32_FIELDS: usize = 13;\n   |           ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `ds4-dist` (lib) generated 1 warning\nwarning: field `window` is never read\n  --> crates/ds4-core/src/step37/media.rs:32:5\n   |\n28 | struct ImagePlan {\n   |        --------- field in this struct\n...\n32 |     window: u32,\n   |     ^^^^^^\n   |\n   = note: `ImagePlan` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `ds4-core` (lib) generated 1 warning\nwarning: unused import: `ds4_kv::PrefixAnswer`\n  --> crates/ds4-server/src/generate.rs:20:5\n   |\n20 | use ds4_kv::PrefixAnswer;\n   |     ^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `render_model` is never used\n  --> crates/ds4-server/src/chat_input.rs:12:15\n   |\n12 | pub(crate) fn render_model(\n   |               ^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: struct `History` is never constructed\n   --> crates/ds4-server/src/chat_input.rs:251:19\n    |\n251 | pub(crate) struct History {\n    |                   ^^^^^^^\n\nwarning: associated items `capture`, `matches`, and `restore` are never used\n   --> crates/ds4-server/src/chat_input.rs:257:19\n    |\n256 | impl History {\n    | ------------ associated items in this implementation\n257 |     pub(crate) fn capture(\n    |                   ^^^^^^^\n...\n274 |     pub(crate) fn matches(&self, parsed: &ParsedRequest) -> bool {\n    |                   ^^^^^^^\n...\n283 |     pub(crate) fn restore(&self, parsed: &mut ParsedRequest) -> Result<bool, GenerateError> {\n    |                   ^^^^^^^\n\nwarning: constant `CONT_ADMIT_REFUSED` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:11:18\n   |\n11 | pub(crate) const CONT_ADMIT_REFUSED: &str = \"continuous admission rejected; serial fallback\";\n   |                  ^^^^^^^^^^^^^^^^^^\n\nwarning: enum `GovStatus` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:15:17\n   |\n15 | pub(crate) enum GovStatus {\n   |                 ^^^^^^^^^\n\nwarning: variants `ClassBudget`, `ObsRetry`, `Unsupported`, `Fault`, `DeepPolicy`, and `LaneDisabled` are never constructed\n  --> crates/ds4-server/src/serve_cont_roll.rs:28:5\n   |\n27 | pub(crate) enum RejectReason {\n   |                 ------------ variants in this enum\n28 |     ClassBudget = 0,\n   |     ^^^^^^^^^^^\n29 |     LiveHeadroom = 1,\n30 |     ObsRetry = 2,\n   |     ^^^^^^^^\n31 |     Unsupported = 3,\n   |     ^^^^^^^^^^^\n32 |     Fault = 4,\n   |     ^^^^^\n33 |     DeepPolicy = 5,\n   |     ^^^^^^^^^^\n34 |     LaneDisabled = 6,\n   |     ^^^^^^^^^^^^\n   |\n   = note: `RejectReason` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis\n\nwarning: method `name` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:38:25\n   |\n37 | impl RejectReason {\n   | ----------------- method in this implementation\n38 |     pub(crate) const fn name(self) -> &'static str {\n   |                         ^^^^\n\nwarning: function `reject_reason_from_gov` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:45:21\n   |\n45 | pub(crate) const fn reject_reason_from_gov(status: GovStatus) -> Option<RejectReason> {\n   |                     ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: trait `ContMemGov` is never used\n  --> crates/ds4-server/src/serve_cont_roll.rs:59:18\n   |\n59 | pub(crate) trait ContMemGov {\n   |                  ^^^^^^^^^^\n\nwarning: struct `AdmitAlways` is never constructed\n  --> crates/ds4-server/src/serve_cont_roll.rs:64:19\n   |\n64 | pub(crate) struct AdmitAlways;\n   |                   ^^^^^^^^^^^\n\nwarning: function `charge_roll_admit` is never used\n   --> crates/ds4-server/src/serve_cont_roll.rs:103:15\n    |\n103 | pub(crate) fn charge_roll_admit(\n    |               ^^^^^^^^^^^^^^^^^\n\nwarning: struct `RollReserve` is never constructed\n   --> crates/ds4-server/src/serve_cont_roll.rs:118:19\n    |\n118 | pub(crate) struct RollReserve {\n    |                   ^^^^^^^^^^^\n\nwarning: associated items `new`, `note_place`, `contains`, and `protect` are never used\n   --> crates/ds4-server/src/serve_cont_roll.rs:123:19\n    |\n122 | impl RollReserve {\n    | ---------------- associated items in this implementation\n123 |     pub(crate) fn new() -> Self {\n    |                   ^^^\n...\n128 |     pub(crate) fn note_place(&mut self, place_bank: i32) {\n    |                   ^^^^^^^^^^\n...\n140 |     pub(crate) fn contains(&self, bank: i32) -> bool {\n    |                   ^^^^^^^^\n...\n146 |     pub(crate) fn protect(&self, hold: &[bool]) -> Vec<bool> {\n    |                   ^^^^^^^\n\nwarning: struct `ContRoll` is never constructed\n   --> crates/ds4-server/src/serve_cont_roll.rs:161:19\n    |\n161 | pub(crate) struct ContRoll {\n    |                   ^^^^^^^^\n\nwarning: associated items `new`, `enqueue`, `admit`, `live_count`, `complete`, and `completed` are never used\n   --> crates/ds4-server/src/serve_cont_roll.rs:168:19\n    |\n167 | impl ContRoll {\n    | ------------- associated items in this implementation\n168 |     pub(crate) fn new() -> Self {\n    |                   ^^^\n...\n172 |     pub(crate) fn enqueue(&mut self, user: usize) {\n    |                   ^^^^^^^\n...\n178 |     pub(crate) fn admit(&mut self) -> Option<usize> {\n    |                   ^^^^^\n...\n184 |     pub(crate) fn live_count(&self) -> usize {\n    |                   ^^^^^^^^^^\n...\n188 |     pub(crate) fn complete(&mut self, user: usize) {\n    |                   ^^^^^^^^\n...\n194 |     pub(crate) fn completed(&self) -> &[usize] {\n    |                   ^^^^^^^^^\n\nwarning: method `reclaimed` is never used\n   --> crates/ds4-server/src/serve_serial_reclaim.rs:195:25\n    |\n194 | impl SerialReclaimOutcome {\n    | ------------------------- method in this implementation\n195 |     pub(crate) const fn reclaimed(self) -> u64 {\n    |                         ^^^^^^^^^\n\nwarning: struct `ReclaimBank` is never constructed\n   --> crates/ds4-server/src/serve_serial_reclaim.rs:216:19\n    |\n216 | pub(crate) struct ReclaimBank {\n    |                   ^^^^^^^^^^^\n\nwarning: function `serial_reclaim_rank` is never used\n   --> crates/ds4-server/src/serve_serial_reclaim.rs:265:15\n    |\n265 | pub(crate) fn serial_reclaim_rank(banks: &[ReclaimBank], warm_pin_min: i32) -> Vec<u32> {\n    |               ^^^^^^^^^^^^^^^^^^^\n\nwarning: `ds4-server` (lib) generated 19 warnings (run `cargo fix --lib -p ds4-server` to apply 1 suggestion)\nwarning: unused import: `catalog::ListedSession`\n  --> crates/ds4-cli/src/agent/kv/mod.rs:12:16\n   |\n12 | pub(crate) use catalog::ListedSession;\n   |                ^^^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused import: `identity_sha`\n  --> crates/ds4-cli/src/agent/kv/mod.rs:14:27\n   |\n14 | pub(crate) use identity::{identity_sha, SessionIdentity};\n   |                           ^^^^^^^^^^^^\n\nwarning: unused import: `SaveSpec`\n  --> crates/ds4-cli/src/agent/kv/mod.rs:15:24\n   |\n15 | pub(crate) use store::{SaveSpec, SessionStore};\n   |                        ^^^^^^^^\n\nwarning: function `edit_result` is never used\n  --> crates/ds4-cli/src/agent/edit.rs:18:15\n   |\n18 | pub(crate) fn edit_result(path: Option<&str>, old: Option<&str>, new: Option<&str>) -> Vec<u8> {\n   |               ^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `escape` is never used\n  --> crates/ds4-cli/src/agent/trace.rs:76:15\n   |\n76 | pub(super) fn escape(bytes: &[u8]) -> Vec<u8> {\n   |               ^^^^^^\n\nwarning: variants `Idle`, `Compacting`, `Draining`, `Saving`, `Error`, and `Stopped` are never constructed\n  --> crates/ds4-cli/src/agent/tui/mod.rs:40:5\n   |\n39 | pub(super) enum WorkerPhase {\n   |                 ----------- variants in this enum\n40 |     Idle,\n   |     ^^^^\n...\n43 |     Compacting,\n   |     ^^^^^^^^^^\n44 |     Draining,\n   |     ^^^^^^^^\n45 |     Saving,\n   |     ^^^^^^\n46 |     Error,\n   |     ^^^^^\n47 |     Stopped,\n   |     ^^^^^^^\n   |\n   = note: `WorkerPhase` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis\n\nwarning: function `write_result` is never used\n --> crates/ds4-cli/src/agent/write.rs:9:15\n  |\n9 | pub(crate) fn write_result(path: Option<&str>, content: Option<&str>) -> Vec<u8> {\n  |               ^^^^^^^^^^^^\n\nwarning: `ds4-cli` (lib) generated 7 warnings (run `cargo fix --lib -p ds4-cli` to apply 3 suggestions)\n   Compiling ds4-cli v0.1.3 (/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/crates/ds4-cli)\nerror[E0308]: mismatched types\n    --> crates/ds4-cli/examples/glm_vq_state.rs:40:18\n     |\n  40 |     session.sync(&prompt[..CUT])?;\n     |             ---- ^^^^^^^^^^^^^^ expected `&TokenBuffer`, found `&[i32]`\n     |             |\n     |             arguments to this method are incorrect\n     |\n     = note: expected reference `&TokenBuffer`\n                found reference `&[i32]`\nnote: method defined here\n    --> crates/ds4-core/src/lib.rs:2399:12\n     |\n2399 |     pub fn sync(&mut self, tokens: &TokenBuffer) -> Result<()> {\n     |            ^^^^\n\nerror[E0308]: mismatched types\n    --> crates/ds4-cli/examples/glm_vq_state.rs:46:18\n     |\n  46 |     session.sync(prompt)?;\n     |             ---- ^^^^^^ expected `&TokenBuffer`, found `&[i32]`\n     |             |\n     |             arguments to this method are incorrect\n     |\n     = note: expected reference `&TokenBuffer`\n                found reference `&[i32]`\nnote: method defined here\n    --> crates/ds4-core/src/lib.rs:2399:12\n     |\n2399 |     pub fn sync(&mut self, tokens: &TokenBuffer) -> Result<()> {\n     |            ^^^^\n\nerror[E0308]: mismatched types\n    --> crates/ds4-cli/examples/glm_vq_state.rs:61:20\n     |\n  61 |         dense.sync(&prompt[..1025])?;\n     |               ---- ^^^^^^^^^^^^^^^ expected `&TokenBuffer`, found `&[i32]`\n     |               |\n     |               arguments to this method are incorrect\n     |\n     = note: expected reference `&TokenBuffer`\n                found reference `&[i32]`\nnote: method defined here\n    --> crates/ds4-core/src/lib.rs:2399:12\n     |\n2399 |     pub fn sync(&mut self, tokens: &TokenBuffer) -> Result<()> {\n     |            ^^^^\n\nerror[E0308]: mismatched types\n    --> crates/ds4-cli/examples/glm_vq_state.rs:186:24\n     |\n 186 |         reference.sync(&fork)?;\n     |                   ---- ^^^^^ expected `&TokenBuffer`, found `&Vec<i32>`\n     |                   |\n     |                   arguments to this method are incorrect\n     |\n     = note: expected reference `&TokenBuffer`\n                found reference `&Vec<i32>`\nnote: method defined here\n    --> crates/ds4-core/src/lib.rs:2399:12\n     |\n2399 |     pub fn sync(&mut self, tokens: &TokenBuffer) -> Result<()> {\n     |            ^^^^\n\nerror[E0308]: mismatched types\n    --> crates/ds4-cli/examples/glm_vq_state.rs:221:24\n     |\n 221 |         reference.sync(&warm)?;\n     |                   ---- ^^^^^ expected `&TokenBuffer`, found `&Vec<i32>`\n     |                   |\n     |                   arguments to this method are incorrect\n     |\n     = note: expected reference `&TokenBuffer`\n                found reference `&Vec<i32>`\nnote: method defined here\n    --> crates/ds4-core/src/lib.rs:2399:12\n     |\n2399 |     pub fn sync(&mut self, tokens: &TokenBuffer) -> Result<()> {\n     |            ^^^^\n\nFor more information about this error, try `rustc --explain E0308`.\nerror: could not compile `ds4-cli` (example \"glm_vq_state\") due to 5 previous errors\nmake: *** [Makefile:1975: tests/glm_vq_state] Error 101\n"
+    }
+  },
+  "loaded_libraries": {
+    "pid": 514459,
+    "libraries": [
+      "/usr/lib/aarch64-linux-gnu/libcuda.so.615.71.09",
+      "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.8.0.4",
+      "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.8.0.4",
+      "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.92"
+    ],
+    "source": "live /proc/PID/maps"
+  },
+  "live_log": "host-memory-guard: available=118.93 GiB, scope max/high=104.00/100.00, reserve=12.00, trip=12.00, PSI limit=0% (0=record only)\nds4: CUDA backend initialized on NVIDIA GB10 (sm_121)\nds4: weight residency: base=eager mtp=eager drafter=eager (legacy-alias)\nds4: model catalog base: 39862 tensors, 37152 routed-expert, 0 artifact-replaced, 0 artifact-additive, 0 optional\nds4: --repack-q2k-aligned found no candidate tensors in base\nds4: q2k aligned repack base: 0 tensors 0.00 GiB in 0.0s (threads=1)\nds4: --repack-iq2-aligned found no candidate tensors in base\nds4: iq2 aligned repack base: 0 tensors 0.00 GiB in 0.0s (threads=1)\nds4: iq2 xs aligned repack found no candidate tensors in base\nds4: iq2 xs aligned repack base: 0 tensors 0.00 GiB in 0.0s (threads=1)\nds4: --repack-q8-aligned found no candidate tensors in base\nds4: q8 aligned repack base: 0 tensors 0.00 GiB in 0.0s (threads=1)\nds4: Motif-3 kv_b value repack found no candidate tensors in base\nds4: Motif-3 kv_b value repack base: 0 tensors 0.00 MiB in 0.0s (threads=1)\nds4: CUDA unified eager copy: skipping full host registration (73.88 GiB mmap staged within the existing cache budget)\nds4: aligned artifacts: none \u2014 raw-layout dispatch tier (no candidate tensors in this GGUF)\nds4: model units base: 101 units, covered 73.88 GiB, planned 73.88 GiB, promote 73.88 GiB, cold 0.00 GiB (verify=0)\nds4: CUDA loading model tensors into device cache\nds4: CUDA loading model tensors 9.92 GiB cached\nds4: CUDA loading model tensors 16.05 GiB cached\nds4: CUDA loading model tensors 27.11 GiB cached\nds4: CUDA loading model tensors 32.05 GiB cached\nds4: CUDA loading model tensors 48.06 GiB cached\nds4: CUDA loading model tensors 58.57 GiB cached\nds4: CUDA loading model tensors 64.01 GiB cached\nds4: materialize base: funded 101/101 promote units (0 unfunded), populated 101 (73.88 GiB), ready 0, import 0, mapped-policy 0, lazy-policy 0, failed 0\nds4: CUDA startup model cache prepared 73.88 GiB of tensor spans in 59.482s\nds4: model source base [primary]: map 73.88 GiB, device 73.95 GiB, host-pinned 0.00 GiB (/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-KDA-GGUF)\nds4: model-source ledger reconciled: 7 weight classes x 2 domains == census cells (1 sources)\nds4: range plan base: model 101/101 planned, derived 0/0, q8 0/0, multi 0, refused 0\nds4: cuda backend initialized for graph diagnostics\nds4: GLM-5.3 VQ source eager graph: ctx 8192, prefill 1024, KV 0.09 GiB, state 148.82 MiB, workspace 4196.38 MiB\nds4: session graph allocated lazily (ctx=8192 prefill_cap=1024)\nds4: GLM-5.3 VQ source eager graph: ctx 2048, prefill 1024, KV 0.02 GiB, state 148.82 MiB, workspace 2234.38 MiB\nds4: session graph allocated lazily (ctx=2048 prefill_cap=1024)\nds4: GLM VQ latent attention calls=11\nds4: GLM VQ BF16 KV calls=11\nds4: GLM VQ direct FP8 calls=179\nds4: GLM VQ MMA calls=42 items=17241 workspace=302186496\nds4: GLM VQ direct decode calls=42 workspace=165056\n{\"session_snapshot\":\"byte_exact\",\"disk_restore\":\"byte_exact\",\"dense_to_sparse\":\"rejected_without_mutation\",\"snapshot_bytes\":205721656}\nds4: GLM VQ latent attention calls=22\nds4: GLM VQ BF16 KV calls=77\nds4: GLM VQ direct FP8 calls=358\nds4: GLM VQ MMA calls=252 items=100990 workspace=302186496\nds4: GLM VQ direct decode calls=84 workspace=165056\nds4: batch fit headroom: floor 4.00 GiB + boot-burst 2.00 GiB = 6.00 GiB (derived; DS4_BATCH_FIT_HEADROOM_MB pins, DS4_BATCH_FIT_HEADROOM_DERIVED=0 restores static 6144)\nds4: GLM-5.3 VQ source eager graph: ctx 8192, prefill 1024, KV 0.09 GiB, state 148.82 MiB, workspace 4196.38 MiB\nds4: mem observation source=meminfo-available\nds4: GLM-5.3 VQ source eager graph: ctx 8192, prefill 1024, KV 0.09 GiB, state 148.82 MiB, workspace 4196.38 MiB\nds4: session graph allocated lazily (ctx=8192 prefill_cap=1024)\nds4: GLM VQ latent attention calls=22\nds4: GLM VQ BF16 KV calls=11\nds4: GLM VQ direct FP8 calls=358\nds4: GLM VQ MMA calls=0 items=0 workspace=302186496\nds4: GLM VQ direct decode calls=84 workspace=165056\nds4: GLM-5.3 VQ source eager graph: ctx 8192, prefill 1024, KV 0.09 GiB, state 148.82 MiB, workspace 4196.38 MiB\nds4: session graph allocated lazily (ctx=8192 prefill_cap=1024)\nds4: GLM VQ latent attention calls=22\nds4: GLM VQ BF16 KV calls=11\nds4: GLM VQ direct FP8 calls=358\nds4: GLM VQ MMA calls=0 items=0 workspace=302186496\nds4: GLM VQ direct decode calls=84 workspace=165056\n{\"banks\":2,\"isolation\":\"byte_exact\",\"partial_prefix\":4097,\"disk_prefix\":6149,\"continuation\":\"byte_exact_vs_same_state_serial\",\"sampling\":\"forced token 100\"}\nds4: GLM VQ latent attention calls=77\nds4: GLM VQ BF16 KV calls=132\nds4: GLM VQ direct FP8 calls=1611\nds4: GLM VQ MMA calls=294 items=105294 workspace=302186496\nds4: GLM VQ direct decode calls=378 workspace=165056\n{\"result\":\"GLMVQ_STATE_PASS\",\"seconds\":39.500859878,\"context\":8192,\"prompt_tokens\":6147,\"checkpoint\":4097,\"scope\":\"single-owner native state and Rust host; no HTTP/MTP/capture/vision qualification\"}\nds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)\nds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)\n",
+  "memory_log": [
+    {
+      "time": 1792111137.9924967,
+      "event": "start",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.927978515625,
+      "psi_full_avg10": 0.0,
+      "max_gib": 104.0,
+      "high_gib": 100.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "psi_full_limit": 0.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/tests/glm_vq_state",
+        "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-VQ-Q4K-KDA-GGUF",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/sparse-bench-prompt.txt",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-glm-vq/scratch/glm-vq/state-live/payloads"
+      ]
+    },
+    {
+      "time": 1792111139.0028536,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.57749557495117,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111140.008193,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.57838439941406,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111141.0138345,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58816909790039,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111142.0215626,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.56527328491211,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111143.027627,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5600700378418,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111144.032477,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.57131958007812,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111145.0378718,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.57413101196289,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111146.0431113,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.56646347045898,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111147.0496447,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5776252746582,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111148.0569375,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.56992721557617,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111149.0638874,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.54890823364258,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111150.0683663,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.57685852050781,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111151.0749118,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.57870864868164,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111152.0814383,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5897102355957,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111153.0878696,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.55923843383789,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111154.0942118,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58427810668945,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111155.1006887,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58191680908203,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111156.1058204,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.55932235717773,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111157.1116002,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.54591369628906,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111158.1187873,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.55168533325195,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111159.1247501,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.53571319580078,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111160.129511,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5306167602539,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111161.1365876,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5453109741211,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111162.1418285,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5286979675293,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111163.1466172,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.56764221191406,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111164.1530209,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.56711959838867,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111165.1610816,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.55668258666992,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111166.16842,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.53247451782227,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111167.1788754,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.51700973510742,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111168.1876512,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.51473999023438,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111169.1976705,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.50014877319336,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111170.2080467,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.50127410888672,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111171.2205079,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.48031997680664,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111172.2293324,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.48256301879883,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111173.2393758,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.49880981445312,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111174.250292,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5023422241211,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111175.2651126,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.4981918334961,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111176.2730718,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.49969482421875,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111177.281301,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.48827362060547,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111178.289138,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.50804901123047,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111179.2979176,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.51011276245117,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111180.3083534,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.51189804077148,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111181.3153553,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.50334548950195,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111182.3200774,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.50885391235352,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111183.3265803,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.54726791381836,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111184.3337765,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58130645751953,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111185.338502,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58713912963867,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111186.34513,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5893440246582,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111187.3536634,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58856201171875,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111188.3612344,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.57225799560547,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111189.3702433,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58016586303711,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111190.379982,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58240127563477,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111191.3874512,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58293914794922,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111192.398458,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.5771484375,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111193.4085844,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.58941268920898,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111194.418254,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60223388671875,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111195.4269443,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60468292236328,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111196.4364092,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60380935668945,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111197.4428806,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60223770141602,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111198.4474711,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60251235961914,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111199.45513,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60892868041992,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111200.4610598,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68871307373047,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111201.4652634,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6890869140625,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111202.472484,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.67383575439453,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111203.4779556,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68683624267578,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111204.4828603,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6744384765625,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111205.4902558,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6754150390625,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111206.4959893,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68988037109375,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111207.5010834,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68082427978516,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111208.5070448,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64530181884766,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111209.5135562,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68598937988281,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111210.519683,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.65754699707031,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111211.5247602,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64205169677734,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111212.531205,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.67202758789062,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111213.5353844,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6475830078125,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111214.5401874,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63677215576172,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111215.546533,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6899528503418,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111216.5512614,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.66963577270508,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111217.556428,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.65726852416992,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111218.5628762,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70074462890625,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111219.568128,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6870002746582,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111220.572315,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.67022323608398,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111221.578951,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70132064819336,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111222.586968,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6990852355957,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111223.5935078,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68341827392578,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111224.602152,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70318603515625,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111225.6090503,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68873977661133,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111226.6162224,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68730926513672,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111227.6256626,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68918228149414,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111228.6352632,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.67679214477539,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111229.6445565,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63008880615234,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111230.6555989,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70294952392578,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111231.6633155,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.67908477783203,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111232.671502,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62342071533203,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111233.6796944,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.69813537597656,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111234.6846075,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.66906356811523,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111235.6900225,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62120056152344,
+      "psi_full_avg10": 0.18
+    },
+    {
+      "time": 1792111236.696744,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.69816970825195,
+      "psi_full_avg10": 0.18
+    },
+    {
+      "time": 1792111237.7036948,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70312118530273,
+      "psi_full_avg10": 0.14
+    },
+    {
+      "time": 1792111238.7091737,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.66267776489258,
+      "psi_full_avg10": 0.14
+    },
+    {
+      "time": 1792111239.7165668,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6534194946289,
+      "psi_full_avg10": 0.48
+    },
+    {
+      "time": 1792111240.7224436,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.65702438354492,
+      "psi_full_avg10": 0.48
+    },
+    {
+      "time": 1792111241.7274263,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63949966430664,
+      "psi_full_avg10": 0.39
+    },
+    {
+      "time": 1792111242.735564,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64014434814453,
+      "psi_full_avg10": 0.39
+    },
+    {
+      "time": 1792111243.7414587,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70553207397461,
+      "psi_full_avg10": 0.5
+    },
+    {
+      "time": 1792111244.7474973,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.67363739013672,
+      "psi_full_avg10": 0.5
+    },
+    {
+      "time": 1792111245.7529316,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64496994018555,
+      "psi_full_avg10": 1.13
+    },
+    {
+      "time": 1792111246.7577994,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63274383544922,
+      "psi_full_avg10": 1.13
+    },
+    {
+      "time": 1792111247.7634337,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.69173812866211,
+      "psi_full_avg10": 0.93
+    },
+    {
+      "time": 1792111248.768844,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.65371322631836,
+      "psi_full_avg10": 0.93
+    },
+    {
+      "time": 1792111249.7742867,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.66277313232422,
+      "psi_full_avg10": 0.76
+    },
+    {
+      "time": 1792111250.779228,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64654541015625,
+      "psi_full_avg10": 0.76
+    },
+    {
+      "time": 1792111251.7858145,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62594985961914,
+      "psi_full_avg10": 0.62
+    },
+    {
+      "time": 1792111252.791206,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60165405273438,
+      "psi_full_avg10": 0.62
+    },
+    {
+      "time": 1792111253.7954838,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61444854736328,
+      "psi_full_avg10": 0.51
+    },
+    {
+      "time": 1792111254.8028214,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62309646606445,
+      "psi_full_avg10": 0.51
+    },
+    {
+      "time": 1792111255.808521,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61351776123047,
+      "psi_full_avg10": 0.41
+    },
+    {
+      "time": 1792111256.8146627,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6072883605957,
+      "psi_full_avg10": 0.41
+    },
+    {
+      "time": 1792111257.8196926,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62551498413086,
+      "psi_full_avg10": 0.34
+    },
+    {
+      "time": 1792111258.8262053,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63632202148438,
+      "psi_full_avg10": 0.34
+    },
+    {
+      "time": 1792111259.8352003,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.65473556518555,
+      "psi_full_avg10": 0.28
+    },
+    {
+      "time": 1792111260.8451579,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63177108764648,
+      "psi_full_avg10": 0.28
+    },
+    {
+      "time": 1792111261.8549488,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6313362121582,
+      "psi_full_avg10": 0.22
+    },
+    {
+      "time": 1792111262.8635337,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62567138671875,
+      "psi_full_avg10": 0.22
+    },
+    {
+      "time": 1792111263.8728244,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61355209350586,
+      "psi_full_avg10": 0.18
+    },
+    {
+      "time": 1792111264.881822,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62286758422852,
+      "psi_full_avg10": 0.18
+    },
+    {
+      "time": 1792111265.8890488,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61021041870117,
+      "psi_full_avg10": 0.15
+    },
+    {
+      "time": 1792111266.8998837,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61021041870117,
+      "psi_full_avg10": 0.15
+    },
+    {
+      "time": 1792111267.9080036,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61747741699219,
+      "psi_full_avg10": 0.12
+    },
+    {
+      "time": 1792111268.913482,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61782455444336,
+      "psi_full_avg10": 0.12
+    },
+    {
+      "time": 1792111269.917829,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62461853027344,
+      "psi_full_avg10": 0.1
+    },
+    {
+      "time": 1792111270.9228563,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61705017089844,
+      "psi_full_avg10": 0.1
+    },
+    {
+      "time": 1792111271.9288628,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61248016357422,
+      "psi_full_avg10": 0.08
+    },
+    {
+      "time": 1792111272.9343042,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.62356948852539,
+      "psi_full_avg10": 0.08
+    },
+    {
+      "time": 1792111273.9410915,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63711929321289,
+      "psi_full_avg10": 0.06
+    },
+    {
+      "time": 1792111274.946505,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64470291137695,
+      "psi_full_avg10": 0.06
+    },
+    {
+      "time": 1792111275.951219,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64852523803711,
+      "psi_full_avg10": 0.05
+    },
+    {
+      "time": 1792111276.9574492,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.64801025390625,
+      "psi_full_avg10": 0.05
+    },
+    {
+      "time": 1792111277.9658976,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.61628723144531,
+      "psi_full_avg10": 0.04
+    },
+    {
+      "time": 1792111278.9706156,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60779571533203,
+      "psi_full_avg10": 0.04
+    },
+    {
+      "time": 1792111279.9767601,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.612548828125,
+      "psi_full_avg10": 0.03
+    },
+    {
+      "time": 1792111280.9830194,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.59872055053711,
+      "psi_full_avg10": 0.03
+    },
+    {
+      "time": 1792111281.9895108,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60563659667969,
+      "psi_full_avg10": 0.03
+    },
+    {
+      "time": 1792111282.9944246,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.60820007324219,
+      "psi_full_avg10": 0.03
+    },
+    {
+      "time": 1792111284.0052133,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.59957504272461,
+      "psi_full_avg10": 0.02
+    },
+    {
+      "time": 1792111285.0152392,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.69968032836914,
+      "psi_full_avg10": 0.02
+    },
+    {
+      "time": 1792111286.0237308,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68207931518555,
+      "psi_full_avg10": 0.01
+    },
+    {
+      "time": 1792111287.034325,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.69558715820312,
+      "psi_full_avg10": 0.01
+    },
+    {
+      "time": 1792111288.0422475,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6850814819336,
+      "psi_full_avg10": 0.01
+    },
+    {
+      "time": 1792111289.0507872,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.66967391967773,
+      "psi_full_avg10": 0.01
+    },
+    {
+      "time": 1792111290.059154,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6449089050293,
+      "psi_full_avg10": 0.01
+    },
+    {
+      "time": 1792111291.064999,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.6309585571289,
+      "psi_full_avg10": 0.01
+    },
+    {
+      "time": 1792111292.0704067,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.63740158081055,
+      "psi_full_avg10": 0.01
+    },
+    {
+      "time": 1792111293.0755193,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70674133300781,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111294.0815597,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.70647430419922,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111295.088373,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68228912353516,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111296.0931373,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.68670654296875,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111297.1013358,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 116.98382568359375,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111298.1111505,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 116.11291122436523,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111299.1195853,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 115.11169815063477,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111300.128891,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 114.20830535888672,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111301.1368258,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 113.20755767822266,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111302.1453524,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 112.28359603881836,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111303.1550896,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 111.26385116577148,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111304.164088,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 110.96332168579102,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111305.1732345,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 109.9553108215332,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111306.182036,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 108.54991912841797,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111307.1901705,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 107.18602752685547,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111308.1992292,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 106.80304336547852,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111309.2089405,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 105.77238464355469,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111310.2182944,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 104.3824577331543,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111311.2284718,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 104.01348495483398,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111312.2366686,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 102.61902236938477,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111313.2456336,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 101.59868240356445,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111314.2548587,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 100.20460510253906,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111315.2639022,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 99.82611083984375,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111316.27415,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 98.80326843261719,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111317.2814922,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 97.41292190551758,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111318.2893221,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 97.17020034790039,
+      "psi_full_avg10": 0.0
+    },
+    {
+      "time": 1792111319.2976034,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 96.14413070678711,
+      "psi_full_avg10": 0.9
+    },
+    {
+      "time": 1792111320.3063362,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 94.74280548095703,
+      "psi_full_avg10": 0.9
+    },
+    {
+      "time": 1792111321.3153512,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 93.3532485961914,
+      "psi_full_avg10": 0.74
+    },
+    {
+      "time": 1792111322.322992,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 92.96303939819336,
+      "psi_full_avg10": 0.74
+    },
+    {
+      "time": 1792111323.3321447,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 90.52763748168945,
+      "psi_full_avg10": 0.6
+    },
+    {
+      "time": 1792111324.3403225,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 87.74348449707031,
+      "psi_full_avg10": 0.6
+    },
+    {
+      "time": 1792111325.3499787,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 82.2020263671875,
+      "psi_full_avg10": 0.49
+    },
+    {
+      "time": 1792111326.3574696,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 73.91110229492188,
+      "psi_full_avg10": 0.49
+    },
+    {
+      "time": 1792111327.3630507,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 71.69390487670898,
+      "psi_full_avg10": 3.84
+    },
+    {
+      "time": 1792111328.3698406,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 71.25225830078125,
+      "psi_full_avg10": 3.84
+    },
+    {
+      "time": 1792111329.37762,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 69.8669662475586,
+      "psi_full_avg10": 7.13
+    },
+    {
+      "time": 1792111330.3840632,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 69.8371696472168,
+      "psi_full_avg10": 7.13
+    },
+    {
+      "time": 1792111331.3894026,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 68.44320678710938,
+      "psi_full_avg10": 5.84
+    },
+    {
+      "time": 1792111332.396582,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 68.05171966552734,
+      "psi_full_avg10": 5.84
+    },
+    {
+      "time": 1792111333.4054718,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 67.03054428100586,
+      "psi_full_avg10": 4.78
+    },
+    {
+      "time": 1792111334.4159908,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 65.6415901184082,
+      "psi_full_avg10": 4.78
+    },
+    {
+      "time": 1792111335.424291,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 64.24838256835938,
+      "psi_full_avg10": 3.91
+    },
+    {
+      "time": 1792111336.433907,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 64.24143600463867,
+      "psi_full_avg10": 3.91
+    },
+    {
+      "time": 1792111337.441828,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 62.902347564697266,
+      "psi_full_avg10": 3.2
+    },
+    {
+      "time": 1792111338.4498014,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 61.49777603149414,
+      "psi_full_avg10": 3.2
+    },
+    {
+      "time": 1792111339.4581907,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 59.74263000488281,
+      "psi_full_avg10": 2.98
+    },
+    {
+      "time": 1792111340.4655054,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 58.706703186035156,
+      "psi_full_avg10": 2.98
+    },
+    {
+      "time": 1792111341.4701674,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 58.30744934082031,
+      "psi_full_avg10": 2.44
+    },
+    {
+      "time": 1792111342.4761543,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 56.927978515625,
+      "psi_full_avg10": 2.44
+    },
+    {
+      "time": 1792111343.4833407,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 55.95005416870117,
+      "psi_full_avg10": 2.0
+    },
+    {
+      "time": 1792111344.4889095,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 54.544410705566406,
+      "psi_full_avg10": 2.0
+    },
+    {
+      "time": 1792111345.4953744,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 54.534217834472656,
+      "psi_full_avg10": 1.64
+    },
+    {
+      "time": 1792111346.5023699,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 53.15488052368164,
+      "psi_full_avg10": 1.64
+    },
+    {
+      "time": 1792111347.509311,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 52.75825881958008,
+      "psi_full_avg10": 1.34
+    },
+    {
+      "time": 1792111348.5156782,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 51.5981559753418,
+      "psi_full_avg10": 1.34
+    },
+    {
+      "time": 1792111349.5226269,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 50.37813949584961,
+      "psi_full_avg10": 1.64
+    },
+    {
+      "time": 1792111350.5283635,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 49.415557861328125,
+      "psi_full_avg10": 1.64
+    },
+    {
+      "time": 1792111351.5358412,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 48.415809631347656,
+      "psi_full_avg10": 1.7
+    },
+    {
+      "time": 1792111352.5413473,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 47.403663635253906,
+      "psi_full_avg10": 1.7
+    },
+    {
+      "time": 1792111353.5478132,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 46.370243072509766,
+      "psi_full_avg10": 2.48
+    },
+    {
+      "time": 1792111354.5547955,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 45.37238311767578,
+      "psi_full_avg10": 2.48
+    },
+    {
+      "time": 1792111355.5613983,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 44.35081100463867,
+      "psi_full_avg10": 2.03
+    },
+    {
+      "time": 1792111356.5709157,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 43.75750732421875,
+      "psi_full_avg10": 2.03
+    },
+    {
+      "time": 1792111357.5791218,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 43.802738189697266,
+      "psi_full_avg10": 1.84
+    },
+    {
+      "time": 1792111358.589109,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 43.7850227355957,
+      "psi_full_avg10": 1.84
+    },
+    {
+      "time": 1792111359.598044,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 43.75245666503906,
+      "psi_full_avg10": 1.51
+    },
+    {
+      "time": 1792111360.6070547,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 43.72469711303711,
+      "psi_full_avg10": 1.51
+    },
+    {
+      "time": 1792111361.6169984,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 39.3944206237793,
+      "psi_full_avg10": 1.23
+    },
+    {
+      "time": 1792111362.6230984,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.53042221069336,
+      "psi_full_avg10": 1.23
+    },
+    {
+      "time": 1792111363.6325488,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.51478958129883,
+      "psi_full_avg10": 4.45
+    },
+    {
+      "time": 1792111364.6427069,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.520999908447266,
+      "psi_full_avg10": 4.45
+    },
+    {
+      "time": 1792111365.6505504,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.51127243041992,
+      "psi_full_avg10": 3.64
+    },
+    {
+      "time": 1792111366.6594653,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.483951568603516,
+      "psi_full_avg10": 3.64
+    },
+    {
+      "time": 1792111367.6696289,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.40972900390625,
+      "psi_full_avg10": 2.98
+    },
+    {
+      "time": 1792111368.6778247,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.415931701660156,
+      "psi_full_avg10": 2.98
+    },
+    {
+      "time": 1792111369.6863847,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.38752365112305,
+      "psi_full_avg10": 2.44
+    },
+    {
+      "time": 1792111370.69307,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.387168884277344,
+      "psi_full_avg10": 2.44
+    },
+    {
+      "time": 1792111371.7020297,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.12958526611328,
+      "psi_full_avg10": 2.0
+    },
+    {
+      "time": 1792111372.7088459,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.13363265991211,
+      "psi_full_avg10": 2.0
+    },
+    {
+      "time": 1792111373.7171292,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.135501861572266,
+      "psi_full_avg10": 1.63
+    },
+    {
+      "time": 1792111374.7254303,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.1412467956543,
+      "psi_full_avg10": 1.63
+    },
+    {
+      "time": 1792111375.732497,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.142578125,
+      "psi_full_avg10": 1.34
+    },
+    {
+      "time": 1792111376.7421942,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.119754791259766,
+      "psi_full_avg10": 1.34
+    },
+    {
+      "time": 1792111377.7498794,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 35.7524299621582,
+      "psi_full_avg10": 1.09
+    },
+    {
+      "time": 1792111378.7582514,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 35.73545455932617,
+      "psi_full_avg10": 1.09
+    },
+    {
+      "time": 1792111379.7678182,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 35.718265533447266,
+      "psi_full_avg10": 4.16
+    },
+    {
+      "time": 1792111380.7784922,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.11360168457031,
+      "psi_full_avg10": 4.16
+    },
+    {
+      "time": 1792111381.7846096,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.103397369384766,
+      "psi_full_avg10": 4.67
+    },
+    {
+      "time": 1792111382.792296,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.09999465942383,
+      "psi_full_avg10": 4.67
+    },
+    {
+      "time": 1792111383.800941,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.05859375,
+      "psi_full_avg10": 3.82
+    },
+    {
+      "time": 1792111384.8067555,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.04665756225586,
+      "psi_full_avg10": 3.82
+    },
+    {
+      "time": 1792111385.8127837,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.02052688598633,
+      "psi_full_avg10": 3.13
+    },
+    {
+      "time": 1792111386.8197541,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.01917266845703,
+      "psi_full_avg10": 3.13
+    },
+    {
+      "time": 1792111387.826854,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.01752471923828,
+      "psi_full_avg10": 2.56
+    },
+    {
+      "time": 1792111388.835597,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 38.03013229370117,
+      "psi_full_avg10": 2.56
+    },
+    {
+      "time": 1792111389.8428044,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.70432662963867,
+      "psi_full_avg10": 2.1
+    },
+    {
+      "time": 1792111390.8518884,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.72773361206055,
+      "psi_full_avg10": 2.1
+    },
+    {
+      "time": 1792111391.859649,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.72468948364258,
+      "psi_full_avg10": 1.72
+    },
+    {
+      "time": 1792111392.8667295,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.730316162109375,
+      "psi_full_avg10": 1.72
+    },
+    {
+      "time": 1792111393.8717768,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.73204040527344,
+      "psi_full_avg10": 1.4
+    },
+    {
+      "time": 1792111394.8788385,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.61376953125,
+      "psi_full_avg10": 1.4
+    },
+    {
+      "time": 1792111395.8857822,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.444095611572266,
+      "psi_full_avg10": 1.15
+    },
+    {
+      "time": 1792111396.8931677,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 33.13481140136719,
+      "psi_full_avg10": 1.15
+    },
+    {
+      "time": 1792111397.9032035,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 33.4007682800293,
+      "psi_full_avg10": 3.48
+    },
+    {
+      "time": 1792111398.9126163,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 37.32835388183594,
+      "psi_full_avg10": 3.48
+    },
+    {
+      "time": 1792111399.9231086,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 33.023014068603516,
+      "psi_full_avg10": 3.75
+    },
+    {
+      "time": 1792111400.9294815,
+      "event": "sample",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "available_gib": 118.32763290405273,
+      "psi_full_avg10": 3.75
+    },
+    {
+      "time": 1792111401.1509964,
+      "event": "exit",
+      "unit": "ds4-hostguard-514455-1792111137987830837.scope",
+      "status": 0,
+      "payload_status": 0
+    }
+  ],
+  "clock_csv": "2026/10/16 09:38:57.981, 305, 0, 35, 4.31\n2026/10/16 09:38:59.019, 305, 0, 35, 4.33\n2026/10/16 09:39:00.056, 305, 0, 35, 4.43\n2026/10/16 09:39:01.088, 305, 0, 35, 4.53\n2026/10/16 09:39:02.121, 305, 0, 35, 4.53\n2026/10/16 09:39:03.155, 305, 0, 35, 4.50\n2026/10/16 09:39:04.187, 305, 0, 35, 4.56\n2026/10/16 09:39:05.220, 305, 0, 35, 4.55\n2026/10/16 09:39:06.253, 305, 0, 35, 4.50\n2026/10/16 09:39:07.285, 305, 0, 35, 4.51\n2026/10/16 09:39:08.318, 305, 0, 35, 4.48\n2026/10/16 09:39:09.351, 305, 0, 35, 4.49\n2026/10/16 09:39:10.384, 305, 0, 35, 4.50\n2026/10/16 09:39:11.416, 305, 0, 35, 4.54\n2026/10/16 09:39:12.450, 305, 0, 35, 4.53\n2026/10/16 09:39:13.482, 305, 0, 35, 4.51\n2026/10/16 09:39:14.516, 305, 0, 35, 4.48\n2026/10/16 09:39:15.548, 305, 0, 35, 4.48\n2026/10/16 09:39:16.581, 305, 0, 35, 4.50\n2026/10/16 09:39:17.613, 305, 0, 35, 4.47\n2026/10/16 09:39:18.646, 305, 0, 35, 4.48\n2026/10/16 09:39:19.679, 305, 0, 35, 4.53\n2026/10/16 09:39:20.713, 305, 0, 35, 4.51\n2026/10/16 09:39:21.744, 305, 0, 35, 4.50\n2026/10/16 09:39:22.777, 305, 0, 35, 4.55\n2026/10/16 09:39:23.809, 305, 0, 35, 4.54\n2026/10/16 09:39:24.843, 305, 0, 35, 4.49\n2026/10/16 09:39:25.875, 305, 0, 35, 4.48\n2026/10/16 09:39:26.909, 305, 0, 35, 4.44\n2026/10/16 09:39:27.942, 305, 0, 35, 4.44\n2026/10/16 09:39:28.975, 305, 0, 35, 4.49\n2026/10/16 09:39:30.008, 305, 0, 35, 4.52\n2026/10/16 09:39:31.040, 305, 0, 35, 4.49\n2026/10/16 09:39:32.073, 305, 0, 35, 4.51\n2026/10/16 09:39:33.106, 305, 0, 35, 4.54\n2026/10/16 09:39:34.139, 305, 0, 35, 4.51\n2026/10/16 09:39:35.203, 305, 0, 35, 4.51\n2026/10/16 09:39:36.236, 305, 0, 35, 4.55\n2026/10/16 09:39:37.270, 305, 0, 35, 4.51\n2026/10/16 09:39:38.303, 305, 0, 35, 4.50\n2026/10/16 09:39:39.335, 305, 0, 35, 4.54\n2026/10/16 09:39:40.367, 305, 0, 35, 4.47\n2026/10/16 09:39:41.401, 305, 0, 35, 4.45\n2026/10/16 09:39:42.434, 305, 0, 35, 4.51\n2026/10/16 09:39:43.467, 305, 0, 35, 4.49\n2026/10/16 09:39:44.502, 305, 0, 35, 4.51\n2026/10/16 09:39:45.534, 305, 0, 35, 4.53\n2026/10/16 09:39:46.567, 305, 0, 35, 4.45\n2026/10/16 09:39:47.600, 305, 0, 35, 4.44\n2026/10/16 09:39:48.634, 305, 0, 35, 4.44\n2026/10/16 09:39:49.666, 305, 0, 35, 4.47\n2026/10/16 09:39:50.700, 305, 0, 35, 4.49\n2026/10/16 09:39:51.733, 305, 0, 35, 4.53\n2026/10/16 09:39:52.768, 305, 0, 35, 4.49\n2026/10/16 09:39:53.830, 305, 0, 35, 4.46\n2026/10/16 09:39:54.864, 305, 0, 35, 4.54\n2026/10/16 09:39:55.897, 305, 0, 36, 4.51\n2026/10/16 09:39:56.930, 305, 0, 36, 4.46\n2026/10/16 09:39:57.963, 305, 0, 36, 4.46\n2026/10/16 09:39:58.997, 305, 0, 35, 4.45\n2026/10/16 09:40:00.030, 305, 0, 36, 4.46\n2026/10/16 09:40:01.062, 305, 0, 36, 4.49\n2026/10/16 09:40:02.097, 305, 0, 36, 4.55\n2026/10/16 09:40:03.129, 305, 0, 36, 4.54\n2026/10/16 09:40:04.164, 305, 0, 36, 4.56\n2026/10/16 09:40:05.196, 305, 0, 36, 4.57\n2026/10/16 09:40:06.230, 305, 0, 36, 4.50\n2026/10/16 09:40:07.261, 305, 0, 36, 4.51\n2026/10/16 09:40:08.295, 305, 0, 36, 4.54\n2026/10/16 09:40:09.329, 305, 0, 36, 4.53\n2026/10/16 09:40:10.360, 305, 0, 36, 4.61\n2026/10/16 09:40:11.394, 305, 0, 36, 4.59\n2026/10/16 09:40:12.427, 305, 0, 36, 4.57\n2026/10/16 09:40:13.460, 305, 0, 36, 4.58\n2026/10/16 09:40:14.493, 305, 0, 36, 4.59\n2026/10/16 09:40:15.526, 305, 0, 36, 4.55\n2026/10/16 09:40:16.561, 305, 0, 36, 4.57\n2026/10/16 09:40:17.627, 305, 0, 36, 4.57\n2026/10/16 09:40:18.661, 305, 0, 36, 4.57\n2026/10/16 09:40:19.692, 305, 0, 36, 4.61\n2026/10/16 09:40:20.727, 305, 0, 36, 4.60\n2026/10/16 09:40:21.758, 305, 0, 36, 4.54\n2026/10/16 09:40:22.793, 305, 0, 36, 4.55\n2026/10/16 09:40:23.825, 305, 0, 36, 4.46\n2026/10/16 09:40:24.860, 305, 0, 36, 4.47\n2026/10/16 09:40:25.895, 305, 0, 36, 4.55\n2026/10/16 09:40:26.926, 305, 0, 36, 4.54\n2026/10/16 09:40:27.959, 305, 0, 36, 4.45\n2026/10/16 09:40:28.992, 305, 0, 36, 4.49\n2026/10/16 09:40:30.025, 305, 0, 36, 4.50\n2026/10/16 09:40:31.059, 305, 0, 36, 4.46\n2026/10/16 09:40:32.092, 305, 0, 36, 4.55\n2026/10/16 09:40:33.125, 305, 0, 36, 4.55\n2026/10/16 09:40:34.157, 305, 0, 36, 4.49\n2026/10/16 09:40:35.191, 305, 0, 36, 4.54\n2026/10/16 09:40:36.223, 305, 0, 36, 4.55\n2026/10/16 09:40:37.257, 305, 0, 36, 4.51\n2026/10/16 09:40:38.292, 305, 0, 36, 4.57\n2026/10/16 09:40:39.322, 305, 0, 36, 4.58\n2026/10/16 09:40:40.356, 305, 0, 36, 4.60\n2026/10/16 09:40:41.388, 305, 0, 36, 4.58\n2026/10/16 09:40:42.422, 305, 0, 36, 4.59\n2026/10/16 09:40:43.457, 305, 0, 36, 4.58\n2026/10/16 09:40:44.521, 305, 0, 36, 4.60\n2026/10/16 09:40:45.554, 305, 0, 36, 4.54\n2026/10/16 09:40:46.588, 305, 0, 36, 4.60\n2026/10/16 09:40:47.620, 305, 0, 36, 4.59\n2026/10/16 09:40:48.653, 305, 0, 36, 4.56\n2026/10/16 09:40:49.687, 305, 0, 36, 4.55\n2026/10/16 09:40:50.719, 305, 0, 36, 4.57\n2026/10/16 09:40:51.751, 305, 0, 36, 4.55\n2026/10/16 09:40:52.784, 305, 0, 36, 4.55\n2026/10/16 09:40:53.817, 305, 0, 36, 4.58\n2026/10/16 09:40:54.850, 305, 0, 36, 4.57\n2026/10/16 09:40:55.883, 305, 0, 36, 4.54\n2026/10/16 09:40:56.916, 305, 0, 36, 4.55\n2026/10/16 09:40:57.950, 305, 0, 36, 4.56\n2026/10/16 09:40:58.984, 305, 0, 36, 4.55\n2026/10/16 09:41:00.016, 299, 0, 36, 4.57\n2026/10/16 09:41:01.081, 305, 0, 36, 4.54\n2026/10/16 09:41:02.116, 305, 0, 36, 4.52\n2026/10/16 09:41:03.149, 305, 0, 36, 4.57\n2026/10/16 09:41:04.182, 305, 0, 36, 4.55\n2026/10/16 09:41:05.216, 305, 0, 36, 4.46\n2026/10/16 09:41:06.246, 305, 0, 36, 4.51\n2026/10/16 09:41:07.281, 305, 0, 36, 4.54\n2026/10/16 09:41:08.315, 305, 0, 36, 4.47\n2026/10/16 09:41:09.348, 305, 0, 36, 4.48\n2026/10/16 09:41:10.381, 305, 0, 36, 4.49\n2026/10/16 09:41:11.413, 305, 0, 36, 4.51\n2026/10/16 09:41:12.447, 305, 0, 36, 4.56\n2026/10/16 09:41:13.483, 305, 0, 36, 4.53\n2026/10/16 09:41:14.546, 305, 0, 36, 4.56\n2026/10/16 09:41:15.579, 305, 0, 36, 4.57\n2026/10/16 09:41:16.612, 305, 0, 36, 4.56\n2026/10/16 09:41:17.646, 305, 0, 36, 4.55\n2026/10/16 09:41:18.677, 305, 0, 36, 4.57\n2026/10/16 09:41:19.710, 305, 0, 36, 4.56\n2026/10/16 09:41:20.744, 305, 0, 36, 4.55\n2026/10/16 09:41:21.778, 305, 0, 36, 4.52\n2026/10/16 09:41:22.809, 305, 0, 36, 4.52\n2026/10/16 09:41:23.843, 305, 0, 36, 4.55\n2026/10/16 09:41:24.877, 305, 0, 36, 4.58\n2026/10/16 09:41:25.910, 305, 0, 36, 4.57\n2026/10/16 09:41:26.943, 305, 0, 36, 4.54\n2026/10/16 09:41:27.975, 299, 0, 36, 4.53\n2026/10/16 09:41:29.007, 305, 0, 36, 4.54\n2026/10/16 09:41:30.040, 305, 0, 36, 4.55\n2026/10/16 09:41:31.075, 305, 0, 36, 4.52\n2026/10/16 09:41:32.108, 305, 0, 36, 4.53\n2026/10/16 09:41:33.141, 305, 0, 36, 4.58\n2026/10/16 09:41:34.174, 305, 0, 36, 4.57\n2026/10/16 09:41:35.207, 305, 0, 36, 4.61\n2026/10/16 09:41:36.240, 305, 0, 36, 4.61\n2026/10/16 09:41:37.270, 2190, 0, 37, 5.44\n2026/10/16 09:41:38.305, 2190, 2, 37, 8.54\n2026/10/16 09:41:39.339, 2190, 2, 37, 8.51\n2026/10/16 09:41:40.372, 2190, 1, 37, 8.51\n2026/10/16 09:41:41.404, 2190, 2, 37, 8.52\n2026/10/16 09:41:42.440, 2190, 2, 37, 8.52\n2026/10/16 09:41:43.470, 2190, 2, 37, 8.53\n2026/10/16 09:41:44.505, 2190, 2, 37, 8.52\n2026/10/16 09:41:45.537, 2190, 2, 37, 8.52\n2026/10/16 09:41:46.569, 2190, 2, 37, 8.55\n2026/10/16 09:41:47.604, 2190, 2, 37, 8.52\n2026/10/16 09:41:48.636, 2190, 2, 37, 8.52\n2026/10/16 09:41:49.669, 2190, 2, 37, 8.52\n2026/10/16 09:41:50.703, 2190, 2, 37, 8.51\n2026/10/16 09:41:51.736, 2190, 2, 37, 8.52\n2026/10/16 09:41:52.768, 2190, 2, 37, 8.52\n2026/10/16 09:41:53.800, 2190, 2, 37, 8.52\n2026/10/16 09:41:54.836, 2190, 1, 37, 8.53\n2026/10/16 09:41:55.868, 2190, 2, 37, 8.53\n2026/10/16 09:41:56.901, 2190, 2, 37, 8.52\n2026/10/16 09:41:57.934, 2190, 2, 37, 8.52\n2026/10/16 09:41:58.968, 2190, 1, 37, 8.59\n2026/10/16 09:42:00.000, 2190, 2, 37, 8.54\n2026/10/16 09:42:01.033, 2190, 2, 37, 8.56\n2026/10/16 09:42:02.068, 2190, 2, 37, 8.55\n2026/10/16 09:42:03.099, 2190, 7, 37, 8.58\n2026/10/16 09:42:04.132, 2190, 6, 37, 8.64\n2026/10/16 09:42:05.164, 2190, 15, 37, 8.71\n2026/10/16 09:42:06.197, 2190, 19, 38, 8.85\n2026/10/16 09:42:07.807, 2190, 3, 38, 9.64\n2026/10/16 09:42:08.861, 2190, 2, 38, 9.04\n2026/10/16 09:42:09.915, 2190, 2, 38, 8.67\n2026/10/16 09:42:10.947, 2190, 1, 38, 8.76\n2026/10/16 09:42:11.980, 2190, 2, 38, 8.80\n2026/10/16 09:42:13.047, 2190, 2, 38, 8.59\n2026/10/16 09:42:14.080, 2190, 1, 38, 8.58\n2026/10/16 09:42:15.113, 2190, 2, 38, 8.59\n2026/10/16 09:42:16.146, 2190, 2, 38, 8.59\n2026/10/16 09:42:17.182, 2190, 1, 38, 8.66\n2026/10/16 09:42:18.221, 2190, 1, 38, 8.58\n2026/10/16 09:42:19.279, 2190, 3, 38, 8.69\n2026/10/16 09:42:20.313, 2190, 2, 38, 8.55\n2026/10/16 09:42:21.348, 2190, 2, 38, 8.59\n2026/10/16 09:42:22.380, 2190, 3, 38, 8.68\n2026/10/16 09:42:23.414, 2197, 2, 38, 8.48\n2026/10/16 09:42:24.448, 2190, 1, 38, 8.53\n2026/10/16 09:42:25.482, 2190, 1, 38, 8.46\n2026/10/16 09:42:26.516, 2190, 1, 38, 8.52\n2026/10/16 09:42:27.552, 2190, 2, 38, 8.45\n2026/10/16 09:42:28.585, 2190, 4, 38, 8.55\n2026/10/16 09:42:29.617, 2190, 2, 38, 8.53\n2026/10/16 09:42:30.651, 2190, 2, 38, 8.54\n2026/10/16 09:42:31.684, 2190, 4, 38, 8.65\n2026/10/16 09:42:32.718, 2190, 2, 38, 8.66\n2026/10/16 09:42:33.752, 2190, 3, 38, 8.54\n2026/10/16 09:42:34.782, 2190, 2, 38, 8.55\n2026/10/16 09:42:35.816, 2190, 2, 38, 8.55\n2026/10/16 09:42:36.847, 2190, 2, 38, 8.61\n2026/10/16 09:42:37.879, 2190, 0, 38, 8.51\n2026/10/16 09:42:38.912, 2190, 0, 38, 8.48\n2026/10/16 09:42:39.946, 2190, 0, 38, 8.51\n2026/10/16 09:42:40.980, 2190, 0, 38, 8.48\n2026/10/16 09:42:42.013, 2190, 0, 38, 8.82\n2026/10/16 09:42:43.052, 2184, 96, 45, 34.24\n2026/10/16 09:42:44.080, 2184, 96, 47, 44.57\n2026/10/16 09:42:45.118, 2184, 96, 47, 44.36\n2026/10/16 09:42:46.178, 2184, 96, 48, 45.38\n2026/10/16 09:42:47.212, 2184, 96, 47, 43.00\n2026/10/16 09:42:48.245, 2184, 96, 48, 45.11\n2026/10/16 09:42:49.282, 2184, 96, 50, 44.44\n2026/10/16 09:42:50.345, 2184, 96, 48, 44.15\n2026/10/16 09:42:51.376, 2184, 96, 49, 44.27\n2026/10/16 09:42:52.412, 2184, 96, 49, 36.04\n2026/10/16 09:42:53.454, 2184, 96, 49, 43.95\n2026/10/16 09:42:54.513, 2184, 96, 49, 43.91\n2026/10/16 09:42:55.544, 2184, 96, 51, 43.81\n2026/10/16 09:42:56.578, 2184, 96, 52, 43.35\n2026/10/16 09:42:57.628, 2190, 1, 44, 20.18\n2026/10/16 09:42:58.674, 2184, 96, 50, 36.12\n2026/10/16 09:42:59.710, 2184, 96, 52, 45.80\n2026/10/16 09:43:00.750, 2190, 37, 48, 32.28\n2026/10/16 09:43:01.809, 2184, 96, 50, 45.27\n2026/10/16 09:43:02.873, 2184, 96, 51, 45.48\n2026/10/16 09:43:03.940, 2184, 96, 54, 45.23\n2026/10/16 09:43:05.009, 2184, 96, 52, 46.15\n2026/10/16 09:43:06.038, 2184, 96, 53, 45.97\n2026/10/16 09:43:07.101, 2190, 96, 53, 45.47\n2026/10/16 09:43:08.134, 2184, 96, 55, 44.67\n2026/10/16 09:43:09.202, 2190, 96, 52, 45.04\n2026/10/16 09:43:10.268, 2184, 96, 53, 39.80\n2026/10/16 09:43:11.305, 2184, 96, 55, 45.03\n2026/10/16 09:43:12.366, 2190, 96, 53, 44.69\n2026/10/16 09:43:13.398, 2184, 96, 54, 44.41\n2026/10/16 09:43:14.467, 2190, 96, 55, 44.95\n2026/10/16 09:43:15.529, 2190, 51, 48, 32.55\n2026/10/16 09:43:16.592, 2190, 84, 50, 26.82\n2026/10/16 09:43:17.637, 2184, 96, 51, 20.12\n2026/10/16 09:43:18.700, 2184, 96, 52, 25.09\n2026/10/16 09:43:19.772, 2190, 0, 46, 20.05\n2026/10/16 09:43:20.853, 2190, 52, 48, 27.58\n",
+  "final_test_sha256": {
+    "tests/test_glm53_banks.c": "1208d9e4f576db5eb15663a9ca942be0afecf1f0d2b88f9a25b9fd1e0ff885a0",
+    "tests/test_glm53_payload.c": "e9643b1c820a7532aa7aab8229f8f3a69ba18c57962316a589069e15dcf4a5f0"
+  },
+  "test_change_after_green": "Only __APPLE__ guards exclude unsupported VQ fixtures on Apple. Linux preprocessor/executed path unchanged; no repeated Linux tests.",
+  "scope": "One model owner; eager CUDA ctx8192, chunk1024, two persistent banks executed serially, forced token100 x3 per bank request. Structural restore/isolation/continuation proof, not throughput, quality, simultaneous batch, HTTP, MTP, captured decode or vision qualification.",
+  "unchanged": "Active136 KDA Q/K/V/O Q4_K artifact and numerical kernels unchanged. Reuse closed packing, source arithmetic, quality and performance evidence."
+}

@@ -178,6 +178,13 @@ SSD enable/cold flags and expert-count/byte budgets cross as scalar options;
 file I/O, cache slots and device handles remain native. The POD layouts are
 source-matched: rebuild Rust and the bridge together after an options change.
 
+`ds4_host_tensor_dir` can carry a named-part mapping plan (`n_shards`,
+`shards`). Zero retains the legacy single-file/numbered-split loader.
+Rust validates the manifest and supplies borrowed path/size/base descriptors;
+native rechecks sizes, page placement and tensor bounds before mapping each
+file into the reserved range. It retains file descriptors, not the borrowed
+paths. No tensor payload or device handle crosses this boundary.
+
 Token arrays are `const int32_t *` + length. Do not export
 `ds4_tokens`.
 

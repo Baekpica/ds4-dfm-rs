@@ -4,6 +4,8 @@
 #define GLM53_PAYLOAD_EXPANDED UINT32_C(0x35454c47) /* "GLE5" */
 #define GLM53_PAYLOAD_MTP_COMPACT UINT32_C(0x354d4347) /* "GCM5" */
 #define GLM53_PAYLOAD_MTP_EXPANDED UINT32_C(0x354d4547) /* "GEM5" */
+#define GLMVQ_PAYLOAD UINT32_C(0x31515647) /* "GVQ1": BF16 latent/pools */
+#define GLMVQ_PAYLOAD_MTP UINT32_C(0x314d5647) /* "GVM1" */
 typedef enum { GLM53_PAYLOAD_SAVE, GLM53_PAYLOAD_LOAD } glm53_payload_dir;
 
 static uint64_t glm53_payload_row_bytes(const ds4_glm53_gpu_graph *g) {
@@ -84,10 +86,24 @@ static int glm53_payload_state(ds4_glm53_gpu_graph *g, FILE *fp, uint32_t n,
 }
 
 static uint32_t glm53_payload_tag(const ds4_glm53_gpu_graph *g) {
+#ifndef __APPLE__
+    if (g->gvq) { return g->mtp_ready ? GLMVQ_PAYLOAD_MTP : GLMVQ_PAYLOAD; }
+#endif
     if (g->mtp_ready) {
         return g->expanded_diag ? GLM53_PAYLOAD_MTP_EXPANDED : GLM53_PAYLOAD_MTP_COMPACT;
     }
     return g->expanded_diag ? GLM53_PAYLOAD_EXPANDED : GLM53_PAYLOAD_COMPACT;
+}
+
+static bool glm53_payload_ctx(const ds4_glm53_gpu_graph *g, uint32_t saved) {
+    if (!saved || saved > g->ctx_cap) { return false; }
+#ifndef __APPLE__
+    // A <=2K VQ graph never built index pools; its prefix cannot become a
+    // sparse session merely by loading the same bytes into a larger graph.
+    if (g->gvq && (saved > DS4_GLM53_INDEX_TOPK) !=
+        (g->ctx_cap > DS4_GLM53_INDEX_TOPK)) { return false; }
+#endif
+    return true;
 }
 
 static int glm53_payload_save(ds4_glm53_gpu_graph *g, const int *tokens,
@@ -133,7 +149,7 @@ static int glm53_payload_restore(ds4_glm53_gpu_graph *g, FILE *fp,
     glm53_graph_layers(&kda, &dsa);
     if (!g || !g->ready || !fp || !remaining || !tokens_out || !logits ||
         h[0] != DS4_SESSION_PAYLOAD_MAGIC || h[1] != DS4_SESSION_PAYLOAD_VERSION ||
-        !h[2] || h[2] > g->ctx_cap || h[3] != DS4_N_KV_LORA ||
+        !glm53_payload_ctx(g, h[2]) || h[3] != DS4_N_KV_LORA ||
         h[4] != dsa || h[5] != glm53_payload_tag(g) ||
         h[6] != glm53_payload_row_bytes(g) || !h[7] || h[7] > h[2] ||
         h[8] != DS4_N_LAYER - DS4_N_NEXTN_PREDICT || h[9] != DS4_N_SSM_CONV ||

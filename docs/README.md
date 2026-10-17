@@ -41,6 +41,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Qwen benchmark reference](qwen38-benchmark-reference.md) | Consolidated source limits, protocols, campaign numbers, candidate adoption and optimization target |
 | [GLM](ds4-dfm-model-families.md#glm-53-flash-release-scope) | Q2 + vision; recorded serial 2K qualification |
 | [GLM Uncensored](glm53-uncensored.md) | Mixed recipe, SSD/bank contracts and current verification boundaries |
+| [GLM VQ](glm53-vq.md) | GVQ1 format concept, GB10 execution paths, numerical contract and optimization log |
 | [K2](ds4-dfm-model-families.md#k2-horizon-375b-release-scope) | MQ87, IFM tools, one-bank serving and disk limits |
 | [dots3](ds4-dfm-model-families.md#dots3-serving) | Separate opt-in text banks and serial MTP |
 | [Bonsai](BONSAI.md) | Pinned ternary PQ2_0, CPU reference and serial CUDA |
@@ -101,6 +102,21 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [August 21 partial reuse](solar-partial-reuse-2026-08-21.md).
 - **Motif:** [historical throughput and integration gates](model-family-history.md),
   [August 22 partial reuse](motif3-partial-reuse-2026-08-22.md).
+- **GLM VQ:** [packed restore](glm53-vq-restore-2026-10-15.md),
+  [register MMA prefill](glm53-vq-mma-2026-10-15.md),
+  [nonexpert Q4_K candidate](glm53-vq-q4k-2026-10-15.md),
+  [cooperative Q4 decode](glm53-vq-q4-stream-2026-10-16.md),
+  [direct VQ expert decode](glm53-vq-decode-2026-10-16.md),
+  [fused FP8 projections](glm53-vq-fp8-2026-10-16.md),
+  [selective KDA Q4 assessment](glm53-vq-kda-q4-2026-10-16.md),
+  [KDA Q4 speed baseline](glm53-vq-kda-q4-speed-2026-10-16.md),
+  [direct BF16 KV handoff](glm53-vq-kv-bf16-2026-10-16.md),
+  [latent decode attention](glm53-vq-latent-2026-10-16.md),
+  [sparse attention through 8K](glm53-vq-sparse-2026-10-16.md),
+  [VQ banks and snapshots](glm53-vq-state-2026-10-16.md),
+  [selective DSA Q4 assessment](glm53-vq-dsa-q4-2026-10-16.md),
+  [prefill chunk assessment](glm53-vq-chunks-2026-10-16.md),
+  [workspace allocation assessment](glm53-vq-work-arena-2026-10-16.md).
 - **dots3:** [September 6 optimization](dots3-optimization-2026-09-06.md).
 - **K2:** [September 5](k2-optimization-2026-09-05.md),
   [continuation campaign](k2-optimization-2026-09-05-cont.md).

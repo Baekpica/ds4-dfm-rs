@@ -211,10 +211,19 @@ typedef struct {
 } ds4_host_tensor;
 
 typedef struct {
+    const char *path; /* borrowed until model_open returns */
+    uint64_t size;
+    uint64_t base;
+} ds4_host_shard;
+
+typedef struct {
     uint32_t n;
     const ds4_host_tensor *v;
     uint64_t data_pos;
     uint64_t alignment;
+    /* Zero preserves the legacy single-file/numbered-split loader. */
+    uint32_t n_shards;
+    const ds4_host_shard *shards;
 } ds4_host_tensor_dir;
 
 /* Native parsed row (name points into the GGUF map).  Consume writes host
