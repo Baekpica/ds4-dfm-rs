@@ -728,7 +728,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
-            media_serial: true,
+            // The VQ release opens without its vision tower.
+            media_serial: false,
         },
         ModelFamily::IQuestQ1 => ServingCaps {
             family,

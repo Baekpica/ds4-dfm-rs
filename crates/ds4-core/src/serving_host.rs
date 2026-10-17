@@ -2831,6 +2831,14 @@ mod tests {
     }
 
     #[test]
+    fn glm_vq_reserves_no_media_lane() {
+        // The VQ artifact opens without a vision tower: no image lane to fund.
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
+        assert_eq!(glm_vq_quote(8192, None).media_reserve_bytes, Some(0));
+    }
+
+    #[test]
     fn glm_vq_prefill_keeps_4096_rows() {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
