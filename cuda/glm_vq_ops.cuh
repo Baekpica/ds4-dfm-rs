@@ -134,12 +134,14 @@ __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float 
     return glmvq_round(glmvq_mul(silu, u));
 }
 
-__global__ void glmvq_swiglu(const float *gate, const float *up, float *output,
+// BF16 output rows hold the same BF16-rounded values.
+template <typename O = float>
+__global__ void glmvq_swiglu(const float *gate, const float *up, O *output,
         uint64_t count, float limit) {
     glmvq_pdl_open();
     glmvq_pdl_wait();
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < count) { output[i] = glmvq_swiglu_value(gate[i], up[i], limit); }
+    if (i < count) { output[i] = glmvq_cast<O>(glmvq_swiglu_value(gate[i], up[i], limit)); }
 }
 
 __device__ void glmvq_hc_weights(float *split, const float *mix,

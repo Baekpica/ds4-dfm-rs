@@ -116,20 +116,34 @@ per token with the same Q4_K choice for its nonexpert weights.
   F16 tensor cores (value-major, so state and V' accumulators repack in
   registers) and applies the gated output norm. The shared Solar kernels kept
   F32 planes and four passes (~2 GB per layer at 2,048 rows): 12.2 → 4.7 ms.
-  The forget and gate projections stay BF16 rows for these kernels.
+  The forget and gate projections stay BF16 rows for these kernels, and so do
+  q/k/v when q4p computes them (the rounding decode and verify already keep).
   Appends under 64 rows keep the recurrence; `DS4_GLMVQ_KDA_MMA=0` restores
   the Solar chunks.
 - **Attention.** One flash kernel per query row computes `softmax(q Cᵀ) C`
-  over the latent rows with BF16 tensor cores, without expanding K/V. Index
-  scores are BF16 MMAs folded over the 32 heads in registers, so no per-key
-  buffer exists and the context follows the model's native 1M.
+  over the latent rows with BF16 tensor cores, without expanding K/V. Eight
+  warps (4 head groups × 2 latent halves) of 255 registers hold O and Q:
+  sixteen warps of 128 registers spilled them (34 GB of local traffic per
+  3,840-row call). Index scores are BF16 MMAs folded over the 32 heads in
+  registers, so no per-key buffer exists and the context follows the
+  model's native 1M.
 - **mHC.** Each expand writes the new four-stream residual and accumulates the
-  next half's RMS and 24 mapping dots in the same pass; the split collapses.
+  next half's RMS and 24 mapping dots in the same pass, with cp.async staging
+  the next W tile and rows behind the current ones; the split collapses.
   The residual holds BF16-rounded values, so prefill stores it as BF16
   (32 KB per row instead of 64).
-- **Projections.** Q4_K uses the vendored MMQ path with F32 outputs; matrices
-  with one input (q/k/v, gate/up, q_a/kv_a) share one Q8_1 quantization.
+- **Projections.** Q4_K from 256 tokens runs on FP16 tensor cores
+  (`cuda/glm_vq_q4p.cuh`): producer warps dequantize each weight once,
+  `fp16(fp16(q·S) − M)` with `S = fp16(64·d·sc)`, `M = fp16(64·dmin·m)`, into
+  the A fragment order; consumer warps run a plain FP16 GEMM on the FP16
+  input (scaled by 2^-e only past 2^15). The vendored MMQ spent 74% of its
+  instructions on per-k32 scales (29% tensor pipe); this reaches 82–84
+  TFLOPS (8192 × 4096 × 4096: 4.48 → 3.37 ms) and is 30× closer to an FP64
+  dot. Below 256 tokens, and with `DS4_GLMVQ_Q4_PREFILL=0`, MMQ keeps F32
+  outputs and one Q8_1 pass per shared input (q/k/v, gate/up, q_a/kv_a).
   FP8/BF16 restore to BF16 and use cuBLAS, sharing one BF16 input copy.
+  DSA q leaves q4p as BF16 rows; the DSA and KDA heads and the SwiGLU rows
+  enter it as BF16 rows, prepared directly.
 
 ### MTP (one or two drafts)
 
@@ -185,6 +199,14 @@ RMS 0.23, KL 2.3e-7.
 | Tensor-core KDA chunks | F16 operands (k F32, V' in two halves) | RMS 0.25, KL 7.9e-7 | identical |
 | BF16 storage of BF16-rounded rows (residual, expert gate/down, KDA gates) | identical values | bit-identical | identical |
 | Fused down quantization, scan staging, dependent launch, mHC split preload | identical order | bit-identical | identical |
+| Eight-warp flash attention, staged expand-mix, up-epilogue gate loads, BF16 q4p input rows | identical order | bit-identical | identical |
+| FP16 Q4_K prefill (q4p) | FP16 activations and dequantized weights instead of Q8_1 | RMS 0.26, KL 1.0e-6 | identical |
+| BF16 KDA q/k/v rows from q4p | decode's BF16 output rounding | RMS 0.23, KL 9.7e-7 | identical (512 decode ids too) |
+
+On the long-prompt cases (four prompts, 76 teacher-forced targets) q4p sits
+closer than MMQ to a BF16 restore of the same Q4_K weights (mean KL 0.0024
+vs 0.0045, paired NLL −0.0007 vs −0.012 nat/token), every argmax and answer
+unchanged; a 4096 → 1024 chunk change alone reaches KL 0.0034.
 
 On the text-quality cases the tensor-core KDA moves the paired NLL by
 +0.008 ± 0.006 (standard error) nat/token against the F32 recurrence, with
@@ -226,9 +248,18 @@ first chunk paid lazy allocation and page-cache stalls).
 | Down input quantized in the up epilogue | 1132.8 | 23.78 | one pass removed |
 | BF16 KDA gate rows | 1145.7 | 24.33 | no widening pass |
 | Dependent decode launch | 1153.1 | 24.68 | kernels stage weights early |
+| Eight-warp flash attention | 1205.4 | 25.54 | no register spills |
+| FP16 Q4_K prefill | 1274.6 | 25.31 | weights dequantized once, FP16 MMA |
+| BF16 KDA q/k/v rows | 1300.2 | 25.29 | half the q/k/v traffic |
+| Staged expand-mix loads | 1300.9 | 25.58 | loads one W tile ahead (1290.4 in the same pairs) |
+| Up-epilogue gate loads | 1296.6 | 24.93 | up kernel 791 → 751 ms in the model; end to end within noise (1298.5) |
+| BF16 rows into q4p | 1343.8 | 25.40 | no F32 copies of BF16 rows (1298.8 in the same pairs, without the row above) |
 
 Decode varies ±1.5% between fresh runs here; the prefill rows are the
-measured trend. From the Q4_K v3 row on, the warm-up prefill matches the
+measured trend. The flash, FP16 Q4_K and q/k/v rows are means of two interleaved fresh-process
+pairs, against merged `main` (`c5384b5e`, 1148.6), against
+`DS4_GLMVQ_Q4_PREFILL=0` (1200.9) and against F32 q/k/v (1281.6); a 2K
+decode pair of 512 tokens stayed at 25.8–25.9 tok/s. From the Q4_K v3 row on, the warm-up prefill matches the
 chunk size. Rows from the BF16 residuals on were measured on 2026-10-17
 (two-run mean for that row). The dependent launch was judged on 512-token
 decodes at 2K, interleaved fresh runs: 24.55/24.78 → 25.09/25.12 tok/s.
@@ -277,9 +308,16 @@ with the continuations, so compare verify cycles (75.3 → 66.7 ms since
 - **Verify width.** A two-draft cycle (three verify rows) takes ~69 ms.
   Q4_K now costs about one token's pass; each verify row still adds nearly
   a full routed-expert pass at ~175 GB/s.
-- **Prefill experts.** The FP8 kernel runs at ~25% of the FP8 tensor peak and
-  is bound by shared-memory instruction pressure and barriers; at 2,048-token
-  chunks the weight stream (~1.5 GB per layer) also sets a DRAM floor.
+- **Prefill experts.** The FP8 kernel runs at ~30% of the FP8 tensor peak
+  (tensor pipe 34%) and is 37% of an 8K prefill. Each 128-K stage needs
+  ~2,900 shared-memory wavefronts (B fragments 35%, codeword gathers at ~3×
+  their conflict-free cost 27%) against ~2,050 tensor cycles, but one barrier
+  per stage aligns all 16 warps: gathers, then MMAs (stall samples: MIO queue
+  29%, tensor pipe 18%, barrier 14%). Overlapping them needs a ring deeper
+  than the 64 KiB book leaves room for, or fewer bytes per MMA.
+- **Prefill input passes.** q4p still converts the shared F32 norm rows to
+  FP16 in a pass of its own (81 ms per 8K prefill); the norm kernel could
+  write them.
 
 Measured and not kept, so they need a new idea before another attempt:
 
@@ -294,3 +332,7 @@ Measured and not kept, so they need a new idea before another attempt:
 | Vendored MMQ / MMVQ at verify widths | flat 150–190 GB/s, no better than the SIMT kernel |
 | Verify down without mid-row groups (contiguous tasks per CTA, L1 reads) | bit-identical, 3–25% slower |
 | Persistent grid / 576-byte stages for the verify Q4_K MMA | 1–2% / 6% slower (short strided row segments) |
+| FP8 prefill experts: producer warp + mbarrier ring, MT = 2 | bit-identical, 1–8% slower: a 288-thread block allocates registers as 384 (168 per thread, MT = 2 needs ~242), and the 64 KiB book leaves no room for a third stage |
+| q4p: 4 stages / raw rows two stages ahead | 3–5% / 2% slower than 3 stages, one ahead |
+| FP8 prefill experts: one n8 tile at a time (one live partial) | bit-identical, 4% slower |
+| FP8 prefill experts: codeword halves stored apart (LDS.32 into the A registers, no MOVs) / copy addresses fixed per item | bit-identical, unchanged |

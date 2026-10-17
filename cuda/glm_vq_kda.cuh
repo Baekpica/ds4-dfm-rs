@@ -209,11 +209,11 @@ __device__ __forceinline__ float4 glmvq_kda_load4(const __nv_bfloat16 *p) {
     return make_float4(__low2float(lo), __high2float(lo), __low2float(hi), __high2float(hi));
 }
 
-// F (forget) is F32 or the BF16 projection output read in place.
-template <typename F>
+// Q (raw q/k/v) and F (forget) are F32 or BF16 projection outputs read in place.
+template <typename Q, typename F>
 __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *records,
         const float *q_tail, const float *k_tail, const float *v_tail,
-        const float *q_raw, const float *k_raw, const float *v_raw,
+        const Q *q_raw, const Q *k_raw, const Q *v_raw,
         const F *forget, const float *beta_logits,
         const float *q_weight, const float *k_weight, const float *v_weight,
         const float *a_log, const float *dt_bias, uint32_t rows,
@@ -239,7 +239,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
         const float scale = __fdiv_rn(1.0f, __fsqrt_rn((float)D));
         #pragma unroll
         for (uint32_t x = 0; x < 3; x++) {
-            const float *raw = x == 0 ? q_raw : x == 1 ? k_raw : v_raw;
+            const Q *raw = x == 0 ? q_raw : x == 1 ? k_raw : v_raw;
             const float *tail = x == 0 ? q_tail : x == 1 ? k_tail : v_tail;
             const float *weight = x == 0 ? q_weight : x == 1 ? k_weight : v_weight;
             float4 win[GLMVQ_CONV + 3], tap[4];
@@ -249,7 +249,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
             for (uint32_t r = 0; r < GLMVQ_CONV + 3; r++) {
                 const int32_t src = (int32_t)(t0 + 4 * warp + r) - (int32_t)(GLMVQ_CONV - 1);
                 if (src >= (int32_t)rows) { win[r] = make_float4(0.0f, 0.0f, 0.0f, 0.0f); }
-                else if (src >= 0) { win[r] = *(const float4 *)(raw + (uint64_t)src * width + ch); }
+                else if (src >= 0) { win[r] = glmvq_kda_load4(raw + (uint64_t)src * width + ch); }
                 else {
                     const uint32_t slot = (uint32_t)((int32_t)GLMVQ_CONV + src);
                     win[r] = make_float4(tail[(ch + 0) * GLMVQ_CONV + slot], tail[(ch + 1) * GLMVQ_CONV + slot],
@@ -508,6 +508,31 @@ __device__ __forceinline__ void glmvq_kda_mma(float *d, const uint32_t *a, uint3
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
+// The last GLMVQ_CONV raw rows become the F32 conv tails (BF16 rows widen
+// exactly); fewer rows shift the older tail entries down, as the Solar
+// chunk kernels do.
+template <typename Q>
+__global__ void glmvq_kda_tail(float *q_tail, float *k_tail, float *v_tail,
+        const Q *q_raw, const Q *k_raw, const Q *v_raw, uint32_t rows, uint64_t width) {
+    const uint64_t channel = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (channel >= width) { return; }
+    for (uint32_t i = 0; i < GLMVQ_CONV; i++) {
+        const int32_t src = (int32_t)rows - (int32_t)GLMVQ_CONV + (int32_t)i;
+        const uint64_t slot = channel * GLMVQ_CONV + i;
+        if (src >= 0) {
+            const uint64_t at = (uint64_t)src * width + channel;
+            q_tail[slot] = (float)q_raw[at];
+            k_tail[slot] = (float)k_raw[at];
+            v_tail[slot] = (float)v_raw[at];
+        } else {
+            const uint64_t from = channel * GLMVQ_CONV + (uint32_t)((int32_t)GLMVQ_CONV + src);
+            q_tail[slot] = q_tail[from];
+            k_tail[slot] = k_tail[from];
+            v_tail[slot] = v_tail[from];
+        }
+    }
+}
+
 // Shared staging rows are padded by 16 bytes: an 8-row ldmatrix then
 // touches 32 distinct banks (row stride 68 or 36 words).
 enum { GLMVQ_KS_WIDE = GLMVQ_KDA_DIM + 8, GLMVQ_KS_NARROW = GLMVQ_KC + 8, GLMVQ_KS_UROW = GLMVQ_KDA_DIM + 4 };
@@ -549,9 +574,10 @@ __device__ __forceinline__ uint32_t glmvq_h2_rest(float lo, float hi, uint32_t r
     return glmvq_h2(lo - __low2float(r), hi - __high2float(r));
 }
 
-// G (gate) is F32 or the BF16 projection output read in place.
-template <typename G>
-__global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, float *state,
+// G (gate) is F32 or the BF16 projection output read in place; O (out)
+// is F32 or BF16 rows for a q4p projection.
+template <typename G, typename O = float>
+__global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(O *out, float *state,
         const uint8_t *records, const G *gate, const __nv_bfloat16 *norm, uint32_t rows,
         uint32_t heads, float eps) {
     constexpr uint32_t C = GLMVQ_KC, D = GLMVQ_KDA_DIM, W = GLMVQ_KS_WIDE, N = GLMVQ_KS_NARROW;
@@ -718,7 +744,7 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
                 const uint32_t col = lane + 32 * i;
                 const float value = glmvq_mul(glmvq_mul(glmvq_mul(x[i], inv), __bfloat162float(norm[col])),
                     glmvq_sigmoid(gv[r][i]));
-                out[base + col] = glmvq_round(value);
+                out[base + col] = glmvq_cast<O>(glmvq_round(value));
             }
         }
         __syncthreads();

@@ -218,9 +218,11 @@ __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_mix_rows(const 
  * its row with glmvq_hc_expand's arithmetic and folds the new four-stream
  * values into the RMS and 24 dots (as glmvq_hc_mix_rows, in another F32
  * order), so the residual it writes is not read back for the mix. A W tile
- * covers 128 columns of all four streams. Residual values are BF16-rounded,
+ * covers COLS columns of all four streams. Residual values are BF16-rounded,
  * so a BF16 output (O) is exact and halves the next expand's and split's
- * reads. */
+ * reads. cp.async stages the next W tile and each warp's residual and branch
+ * columns into a second slot while the current one is consumed: loading them
+ * at use left the kernel on long-scoreboard stalls at 175 GB/s. */
 enum { GLMVQ_XMIX_COLS = 128 };
 
 __device__ __forceinline__ float4 glmvq_load4(const float *p) { return *(const float4 *)p; }
@@ -234,14 +236,53 @@ __device__ __forceinline__ void glmvq_store4(__nv_bfloat16 *p, const float *v) {
     *(uint2 *)p = make_uint2(*(const uint32_t *)&lo, *(const uint32_t *)&hi);
 }
 
+// One slot: [W tile][per warp: four residual stream columns][per warp: branch columns].
+template <typename R>
+__host__ __device__ constexpr uint32_t glmvq_xmix_slot() {
+    return GLMVQ_HC_MIX * GLMVQ_HC * GLMVQ_XMIX_COLS * sizeof(__nv_bfloat16) +
+        GLMVQ_MIX_WARPS * GLMVQ_XMIX_COLS * (GLMVQ_HC * sizeof(R) + sizeof(float));
+}
+template <typename R>
+__host__ __device__ constexpr uint32_t glmvq_xmix_smem() { return 2 * glmvq_xmix_slot<R>(); }
+
+__device__ __forceinline__ void glmvq_xmix_copy(void *dst, const void *src) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::
+        "r"((uint32_t)__cvta_generic_to_shared(dst)), "l"(src) : "memory");
+}
+
 template <typename R, typename O>
 __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_expand_mix(const float *branch,
         const R *residual, const float *split, O *output, const __nv_bfloat16 *weight,
         float *mix, uint32_t rows, uint32_t width, float eps) {
-    __shared__ __align__(16) __nv_bfloat16 tile[GLMVQ_HC_MIX * GLMVQ_HC * GLMVQ_XMIX_COLS];
+    constexpr uint32_t COLS = GLMVQ_XMIX_COLS, SLOT = glmvq_xmix_slot<R>();
+    constexpr uint32_t TILE = GLMVQ_HC_MIX * GLMVQ_HC * COLS, RES = GLMVQ_HC * COLS;
+    extern __shared__ __align__(16) uint8_t xmix_shared[];
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32;
     const uint32_t row = blockIdx.x * GLMVQ_MIX_WARPS + warp, rr = min(row, rows - 1u);
     const uint32_t flat = GLMVQ_HC * width;
+    auto tile_at = [&](uint32_t slot) { return (__nv_bfloat16 *)(xmix_shared + slot * SLOT); };
+    auto res_at = [&](uint32_t slot) { return (R *)(xmix_shared + slot * SLOT + TILE * sizeof(__nv_bfloat16)) + warp * RES; };
+    auto branch_at = [&](uint32_t slot) {
+        return (float *)(xmix_shared + slot * SLOT + TILE * sizeof(__nv_bfloat16) + GLMVQ_MIX_WARPS * RES * sizeof(R)) + warp * COLS;
+    };
+    // The block's W tile and this warp's row for columns base..base+COLS-1.
+    auto issue = [&](uint32_t base, uint32_t slot) {
+        for (uint32_t i = threadIdx.x; i < TILE / 8; i += blockDim.x) {
+            const uint32_t line = i / (COLS / 8), c = i % (COLS / 8) * 8;
+            const uint32_t o = line / GLMVQ_HC, h = line % GLMVQ_HC;
+            glmvq_xmix_copy(tile_at(slot) + line * COLS + c, weight + (uint64_t)o * flat + h * width + base + c);
+        }
+        constexpr uint32_t PER = 16 / sizeof(R);
+        for (uint32_t i = lane; i < RES / PER; i += 32) {
+            const uint32_t src = i / (COLS / PER), c = i % (COLS / PER) * PER;
+            glmvq_xmix_copy(res_at(slot) + src * COLS + c, residual + ((uint64_t)rr * GLMVQ_HC + src) * width + base + c);
+        }
+        for (uint32_t i = lane; i < COLS / 4; i += 32) {
+            glmvq_xmix_copy(branch_at(slot) + 4 * i, branch + (uint64_t)rr * width + base + 4 * i);
+        }
+        asm volatile("cp.async.commit_group;" ::: "memory");
+    };
+
     const float *coeff = split + (uint64_t)rr * GLMVQ_HC_MIX;
     float post[GLMVQ_HC], comb[GLMVQ_HC][GLMVQ_HC];
     #pragma unroll
@@ -251,22 +292,18 @@ __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_expand_mix(cons
         for (uint32_t src = 0; src < GLMVQ_HC; src++) { comb[src][d] = glmvq_round(coeff[2 * GLMVQ_HC + src * GLMVQ_HC + d]); }
     }
     float dot[GLMVQ_HC_MIX] = {}, squares = 0.0f;
-    for (uint32_t base = 0; base < width; base += GLMVQ_XMIX_COLS) {
+    issue(0, 0);
+    for (uint32_t base = 0, slot = 0; base < width; base += COLS, slot ^= 1) {
+        // The slot lands; every warp has left the other slot, so it refills.
+        asm volatile("cp.async.wait_group 0;" ::: "memory");
         __syncthreads();
-        for (uint32_t i = threadIdx.x; i < GLMVQ_HC_MIX * GLMVQ_HC * GLMVQ_XMIX_COLS / 8; i += blockDim.x) {
-            const uint32_t line = i / (GLMVQ_XMIX_COLS / 8), c = i % (GLMVQ_XMIX_COLS / 8) * 8;
-            const uint32_t o = line / GLMVQ_HC, h = line % GLMVQ_HC;
-            *(uint4 *)(tile + line * GLMVQ_XMIX_COLS + c) =
-                *(const uint4 *)(weight + (uint64_t)o * flat + h * width + base + c);
-        }
-        __syncthreads();
+        if (base + COLS < width) { issue(base + COLS, slot ^ 1); }
+        const __nv_bfloat16 *tile = tile_at(slot);
         const uint32_t c = base + lane * 4;
         float4 res[GLMVQ_HC];
         #pragma unroll
-        for (uint32_t src = 0; src < GLMVQ_HC; src++) {
-            res[src] = glmvq_load4(residual + ((uint64_t)rr * GLMVQ_HC + src) * width + c);
-        }
-        const float4 b = *(const float4 *)(branch + (uint64_t)rr * width + c);
+        for (uint32_t src = 0; src < GLMVQ_HC; src++) { res[src] = glmvq_load4(res_at(slot) + src * COLS + lane * 4); }
+        const float4 b = *(const float4 *)(branch_at(slot) + lane * 4);
         #pragma unroll
         for (uint32_t d = 0; d < GLMVQ_HC; d++) {
             float v[4];
@@ -286,7 +323,7 @@ __global__ void __launch_bounds__(GLMVQ_MIX_WARPS * 32) glmvq_hc_expand_mix(cons
             }
             #pragma unroll
             for (uint32_t o = 0; o < GLMVQ_HC_MIX; o++) {
-                const uint2 w = *(const uint2 *)(tile + (o * GLMVQ_HC + d) * GLMVQ_XMIX_COLS + lane * 4);
+                const uint2 w = *(const uint2 *)(tile + (o * GLMVQ_HC + d) * COLS + lane * 4);
                 dot[o] = fmaf(glmvq_bf16_lo(w.x), v[0], dot[o]); dot[o] = fmaf(glmvq_bf16_hi(w.x), v[1], dot[o]);
                 dot[o] = fmaf(glmvq_bf16_lo(w.y), v[2], dot[o]); dot[o] = fmaf(glmvq_bf16_hi(w.y), v[3], dot[o]);
             }

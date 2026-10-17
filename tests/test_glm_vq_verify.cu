@@ -263,7 +263,10 @@ static int expand_mix_case(uint32_t rows) {
     CK(cudaMalloc(&m1, (size_t)rows * GLMVQ_HC_MIX * 4)); CK(cudaMalloc(&m2, (size_t)rows * GLMVQ_HC_MIX * 4));
     glmvq_hc_expand<<<(res.size() + 255) / 256, 256>>>(dbr, dres, dsp, o1, width, res.size());
     glmvq_hc_mix_rows<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32>>>(o1, dw, m1, rows, flat, 1e-6f);
-    glmvq_hc_expand_mix<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32>>>(dbr, dres, dsp, o2, dw, m2, rows, width, 1e-6f);
+    CK(cudaFuncSetAttribute(glmvq_hc_expand_mix<float, float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)glmvq_xmix_smem<float>()));
+    glmvq_hc_expand_mix<<<(rows + GLMVQ_MIX_WARPS - 1) / GLMVQ_MIX_WARPS, GLMVQ_MIX_WARPS * 32, glmvq_xmix_smem<float>()>>>(
+        dbr, dres, dsp, o2, dw, m2, rows, width, 1e-6f);
     CK(cudaDeviceSynchronize());
     auto a = down(o1, res.size()), b = down(o2, res.size());
     auto ma = down(m1, (size_t)rows * GLMVQ_HC_MIX), mb = down(m2, (size_t)rows * GLMVQ_HC_MIX);

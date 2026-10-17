@@ -246,20 +246,37 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
             for (uint32_t i = tid; i < BLOCKS * BT; i += THREADS) { amax[i] = 0; }
             __syncthreads();
             const uint32_t block = warp * MT * 16 / GLMVQ_MMA8_K;
+            // All gate values load before any use: one latency per item
+            // instead of one per element (17% of this kernel, NCU).
+            __nv_bfloat16 gv[NT][2][MT][2];
+            #pragma unroll
+            for (uint32_t j = 0; j < NT; j++) {
+                #pragma unroll
+                for (uint32_t e = 0; e < 2; e++) {
+                    const uint32_t t = j * 8 + q * 2 + e;
+                    const uint64_t base = (uint64_t)(item.offset + (t < nt ? t : 0)) * rows + row;
+                    #pragma unroll
+                    for (uint32_t m = 0; m < MT; m++) {
+                        #pragma unroll
+                        for (uint32_t side = 0; side < 2; side++) {
+                            gv[j][e][m][side] = j < nnt ? gate[base + lr[m][side]] : __nv_bfloat16();
+                        }
+                    }
+                }
+            }
             #pragma unroll
             for (uint32_t j = 0; j < NT; j++) {
                 if (j >= nnt) { break; }
                 #pragma unroll
                 for (uint32_t e = 0; e < 2; e++) {
                     const uint32_t t = j * 8 + q * 2 + e;
-                    const uint64_t base = (uint64_t)(item.offset + (t < nt ? t : 0)) * rows + row;
                     float peak = 0.0f;
                     #pragma unroll
                     for (uint32_t m = 0; m < MT; m++) {
                         #pragma unroll
                         for (uint32_t side = 0; side < 2; side++) {
                             const float value = glmvq_round(glmvq_mul(acc[m][j][side * 2 + e], gain[m][side]));
-                            const float g0 = fminf(__bfloat162float(gate[base + lr[m][side]]), limit);
+                            const float g0 = fminf(__bfloat162float(gv[j][e][m][side]), limit);
                             const float u0 = fminf(fmaxf(value, -limit), limit);
                             const float silu = glmvq_round(__fdiv_rn(g0, glmvq_add(1.0f, expf(-g0))));
                             const float v = glmvq_round(glmvq_mul(silu, u0));

@@ -10,17 +10,21 @@
  * separate softmax; here scores stay FP32 in registers, the softmax is online
  * and each selected key row is gathered once per query.
  *
- * One CTA per query (and key split): 16 warps = 4 head groups x 4 latent
- * quarters. A warp's QK covers its quarter of the 512 latent dims; the four
- * quarter partials meet in shared memory, so each warp holds the full scores
- * of its 16 heads and accumulates P·V for its 128 output columns.
+ * One CTA per query (and key split): 8 warps = 4 head groups x 2 latent
+ * halves. A warp's QK covers its half of the 512 latent dims as two quarter
+ * partials; the four quarter partials meet in shared memory and add in
+ * quarter order, so each warp holds the full scores of its 16 heads and
+ * accumulates P·V for its 256 output columns. (Sixteen warps of 128
+ * registers spilled O and Q: 34 GB of local traffic per 3,840-row call.)
  * Arithmetic change against the expanded path: scores are not rounded to BF16
  * before softmax, P rounds to BF16 for the PV MMA, O accumulates in FP32. */
 enum { GLMVQ_FA_HEADS = 64, GLMVQ_FA_LATENT = 512, GLMVQ_FA_KEYS = 32,
-       GLMVQ_FA_WARPS = 16, GLMVQ_FA_THREADS = GLMVQ_FA_WARPS * 32,
-       GLMVQ_FA_QUARTER = GLMVQ_FA_LATENT / 4, GLMVQ_FA_ROW = GLMVQ_FA_LATENT * 2 };
+       GLMVQ_FA_WARPS = 8, GLMVQ_FA_THREADS = GLMVQ_FA_WARPS * 32,
+       GLMVQ_FA_QUARTER = GLMVQ_FA_LATENT / 4, GLMVQ_FA_HALF = GLMVQ_FA_LATENT / 2,
+       GLMVQ_FA_ROW = GLMVQ_FA_LATENT * 2, GLMVQ_FA_PARTIALS = 16 };
 static constexpr uint32_t GLMVQ_FA_TILE = GLMVQ_FA_KEYS * GLMVQ_FA_ROW;
-static constexpr uint32_t GLMVQ_FA_EXCHANGE = GLMVQ_FA_WARPS * 16 * GLMVQ_FA_KEYS * sizeof(float);
+// One 16 x 32 score partial per (head group, latent quarter).
+static constexpr uint32_t GLMVQ_FA_EXCHANGE = GLMVQ_FA_PARTIALS * 16 * GLMVQ_FA_KEYS * sizeof(float);
 static constexpr uint32_t GLMVQ_FA_SMEM = 2 * GLMVQ_FA_TILE + GLMVQ_FA_EXCHANGE +
     2 * GLMVQ_FA_KEYS * sizeof(uint32_t);
 static constexpr uint32_t GLMVQ_FA_NONE = 0xffffffffu;
@@ -81,7 +85,7 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
     float *exchange = (float *)(fa_shared + 2 * GLMVQ_FA_TILE);
     uint32_t *kidx = (uint32_t *)(fa_shared + 2 * GLMVQ_FA_TILE + GLMVQ_FA_EXCHANGE);
     const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
-    const uint32_t g = lane >> 2, q = lane & 3u, group = warp & 3u, quarter = warp >> 2;
+    const uint32_t g = lane >> 2, q = lane & 3u, group = warp & 3u, half = warp >> 2;
     const uint32_t row = blockIdx.x, split = blockIdx.y;
     const uint32_t position = positions[row];
     const uint32_t slots = selected ? stride : position + 1;
@@ -90,12 +94,12 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
     const uint32_t last = min(total, first + tiles_per_split);
     const uint32_t head0 = group * 16;
 
-    // Q fragments for this warp's 16 heads and latent quarter, kept in registers.
-    uint32_t qa[8][4];
+    // Q fragments for this warp's 16 heads and latent half, kept in registers.
+    uint32_t qa[16][4];
     const __nv_bfloat16 *qrow = qlow + ((uint64_t)row * GLMVQ_FA_HEADS + head0) * GLMVQ_FA_LATENT +
-        quarter * GLMVQ_FA_QUARTER;
+        half * GLMVQ_FA_HALF;
     #pragma unroll
-    for (uint32_t k = 0; k < 8; k++) {
+    for (uint32_t k = 0; k < 16; k++) {
         const uint32_t col = k * 16 + 2 * q;
         qa[k][0] = *(const uint32_t *)(qrow + (uint64_t)g * GLMVQ_FA_LATENT + col);
         qa[k][1] = *(const uint32_t *)(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col);
@@ -103,24 +107,29 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
         qa[k][3] = *(const uint32_t *)(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col + 8);
     }
 
-    // Each of 16 threads per key copies four 16-byte chunks of its row.
+    // Warp w copies keys 4w..4w+3, each 1 KB row as two 512-byte warp copies:
+    // every 32-byte sector is requested once (16-byte copies 64 bytes apart
+    // fetched each sector twice).
     auto issue = [&](uint32_t tile, uint32_t buf) {
-        const uint32_t key_slot = tid >> 4, part = tid & 15u;
-        const uint32_t slot = tile * GLMVQ_FA_KEYS + key_slot;
-        uint32_t key = GLMVQ_FA_NONE;
-        if (slot < slots) { key = selected ? selected[(uint64_t)row * stride + slot] : slot; }
-        if (key != GLMVQ_FA_NONE && key > position) { key = GLMVQ_FA_NONE; }
-        if (!part) { kidx[buf * GLMVQ_FA_KEYS + key_slot] = key; }
-        const uint8_t *src = (const uint8_t *)(cache + (uint64_t)(key == GLMVQ_FA_NONE ? 0 : key) * GLMVQ_FA_LATENT);
         uint8_t *dst = tiles + buf * GLMVQ_FA_TILE;
         #pragma unroll
-        for (uint32_t i = 0; i < 4; i++) {
-            const uint32_t chunk = part * 4 + i;
-            glmvq_fa_copy(dst + glmvq_fa_swz(key_slot, chunk), src + chunk * 16, key == GLMVQ_FA_NONE ? 0 : 16);
+        for (uint32_t i = 0; i < GLMVQ_FA_KEYS / GLMVQ_FA_WARPS; i++) {
+            const uint32_t key_slot = warp * (GLMVQ_FA_KEYS / GLMVQ_FA_WARPS) + i;
+            const uint32_t slot = tile * GLMVQ_FA_KEYS + key_slot;
+            uint32_t key = GLMVQ_FA_NONE;
+            if (slot < slots) { key = selected ? selected[(uint64_t)row * stride + slot] : slot; }
+            if (key != GLMVQ_FA_NONE && key > position) { key = GLMVQ_FA_NONE; }
+            if (!lane) { kidx[buf * GLMVQ_FA_KEYS + key_slot] = key; }
+            const uint8_t *src = (const uint8_t *)(cache + (uint64_t)(key == GLMVQ_FA_NONE ? 0 : key) * GLMVQ_FA_LATENT);
+            #pragma unroll
+            for (uint32_t c = 0; c < GLMVQ_FA_ROW / 16; c += 32) {
+                glmvq_fa_copy(dst + glmvq_fa_swz(key_slot, c + lane), src + (c + lane) * 16,
+                    key == GLMVQ_FA_NONE ? 0 : 16);
+            }
         }
     };
 
-    float o[16][4] = {};
+    float o[32][4] = {};
     float m[2] = {-INFINITY, -INFINITY}, l[2] = {0.0f, 0.0f};
     const float log2_scale = scale * 1.4426950408889634f;
     if (first < last) { issue(first, 0); }
@@ -133,31 +142,34 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
         asm volatile("cp.async.commit_group;" ::: "memory");
         const uint8_t *kt = tiles + buf * GLMVQ_FA_TILE;
 
-        // Partial scores over this warp's latent quarter: 16 heads x 32 keys.
-        float s[4][4] = {};
+        // Partial scores over this warp's two latent quarters: 16 heads x 32 keys each.
         #pragma unroll
-        for (uint32_t k = 0; k < 8; k++) {
+        for (uint32_t part = 0; part < 2; part++) {
+            const uint32_t quarter = 2 * half + part;
+            float s[4][4] = {};
             #pragma unroll
-            for (uint32_t j = 0; j < 4; j += 2) {
-                uint32_t b[4];
-                const uint32_t mat = lane >> 3;
-                const uint32_t key = (j + (mat >> 1)) * 8 + (lane & 7u);
-                const uint32_t chunk = quarter * 16 + k * 2 + (mat & 1u);
-                glmvq_fa_ldsm4(b, kt + glmvq_fa_swz(key, chunk), false);
-                glmvq_fa_mma(s[j], qa[k], b[0], b[1]);
-                glmvq_fa_mma(s[j + 1], qa[k], b[2], b[3]);
+            for (uint32_t k = 0; k < 8; k++) {
+                #pragma unroll
+                for (uint32_t j = 0; j < 4; j += 2) {
+                    uint32_t b[4];
+                    const uint32_t mat = lane >> 3;
+                    const uint32_t key = (j + (mat >> 1)) * 8 + (lane & 7u);
+                    const uint32_t chunk = quarter * 16 + k * 2 + (mat & 1u);
+                    glmvq_fa_ldsm4(b, kt + glmvq_fa_swz(key, chunk), false);
+                    glmvq_fa_mma(s[j], qa[part * 8 + k], b[0], b[1]);
+                    glmvq_fa_mma(s[j + 1], qa[part * 8 + k], b[2], b[3]);
+                }
+            }
+            float *mine = exchange + (group + 4 * quarter) * 16 * GLMVQ_FA_KEYS;
+            #pragma unroll
+            for (uint32_t j = 0; j < 4; j++) {
+                *(float2 *)(mine + glmvq_fa_slot(g, 4 * j + q)) = make_float2(s[j][0], s[j][1]);
+                *(float2 *)(mine + glmvq_fa_slot(g + 8, 4 * j + q)) = make_float2(s[j][2], s[j][3]);
             }
         }
-        float *mine = exchange + warp * 16 * GLMVQ_FA_KEYS;
-        #pragma unroll
-        for (uint32_t j = 0; j < 4; j++) {
-            *(float2 *)(mine + glmvq_fa_slot(g, 4 * j + q)) = make_float2(s[j][0], s[j][1]);
-            *(float2 *)(mine + glmvq_fa_slot(g + 8, 4 * j + q)) = make_float2(s[j][2], s[j][3]);
-        }
-        // The four quarter warps of a head group meet on their own barrier.
-        asm volatile("bar.sync %0, %1;" :: "r"(1 + group), "r"(128) : "memory");
-        #pragma unroll
-        for (uint32_t j = 0; j < 4; j++) { s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.0f; }
+        // The two half warps of a head group meet on their own barrier.
+        asm volatile("bar.sync %0, %1;" :: "r"(1 + group), "r"(64) : "memory");
+        float s[4][4] = {};
         #pragma unroll
         for (uint32_t part = 0; part < 4; part++) {
             const float *other = exchange + (group + 4 * part) * 16 * GLMVQ_FA_KEYS;
@@ -207,10 +219,10 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
             l[h] = l[h] * alpha[h] + sum[h];
         }
         #pragma unroll
-        for (uint32_t t = 0; t < 16; t++) {
+        for (uint32_t t = 0; t < 32; t++) {
             o[t][0] *= alpha[0]; o[t][1] *= alpha[0]; o[t][2] *= alpha[1]; o[t][3] *= alpha[1];
         }
-        // P (16 heads x 32 keys) as two k16 A fragments times V's 128 columns.
+        // P (16 heads x 32 keys) as two k16 A fragments times V's 256 columns.
         #pragma unroll
         for (uint32_t kk = 0; kk < 2; kk++) {
             const uint32_t pa[4] = {glmvq_fa_pack(s[2 * kk][0], s[2 * kk][1]),
@@ -218,11 +230,11 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
                 glmvq_fa_pack(s[2 * kk + 1][0], s[2 * kk + 1][1]),
                 glmvq_fa_pack(s[2 * kk + 1][2], s[2 * kk + 1][3])};
             #pragma unroll
-            for (uint32_t t = 0; t < 16; t += 2) {
+            for (uint32_t t = 0; t < 32; t += 2) {
                 uint32_t b[4];
                 const uint32_t mat = lane >> 3;
                 const uint32_t key = kk * 16 + (mat & 1u) * 8 + (lane & 7u);
-                const uint32_t chunk = quarter * 16 + t + (mat >> 1);
+                const uint32_t chunk = half * 32 + t + (mat >> 1);
                 glmvq_fa_ldsm4(b, kt + glmvq_fa_swz(key, chunk), true);
                 glmvq_fa_mma(o[t], pa, b[0], b[1]);
                 glmvq_fa_mma(o[t + 1], pa, b[2], b[3]);
@@ -235,10 +247,10 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
         const uint64_t base = ((uint64_t)row * gridDim.y + split) * GLMVQ_FA_HEADS;
         #pragma unroll
         for (uint32_t h = 0; h < 2; h++) {
-            float *dst = partial + (base + heads[h]) * GLMVQ_FA_LATENT + quarter * GLMVQ_FA_QUARTER + 2 * q;
+            float *dst = partial + (base + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q;
             #pragma unroll
-            for (uint32_t t = 0; t < 16; t++) { *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h], o[t][2 * h + 1]); }
-            if (!quarter && !q) { stats[(base + heads[h]) * 2] = m[h]; stats[(base + heads[h]) * 2 + 1] = l[h]; }
+            for (uint32_t t = 0; t < 32; t++) { *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h], o[t][2 * h + 1]); }
+            if (!half && !q) { stats[(base + heads[h]) * 2] = m[h]; stats[(base + heads[h]) * 2 + 1] = l[h]; }
         }
         return;
     }
@@ -246,9 +258,9 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) glmvq_fa_kernel(
     for (uint32_t h = 0; h < 2; h++) {
         const float inv = l[h] > 0.0f ? 1.0f / l[h] : 0.0f;
         __nv_bfloat16 *dst = low + ((uint64_t)row * GLMVQ_FA_HEADS + heads[h]) * GLMVQ_FA_LATENT +
-            quarter * GLMVQ_FA_QUARTER + 2 * q;
+            half * GLMVQ_FA_HALF + 2 * q;
         #pragma unroll
-        for (uint32_t t = 0; t < 16; t++) {
+        for (uint32_t t = 0; t < 32; t++) {
             *(uint32_t *)(dst + t * 8) = glmvq_fa_pack(o[t][2 * h] * inv, o[t][2 * h + 1] * inv);
         }
     }
