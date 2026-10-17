@@ -46,13 +46,25 @@ typedef struct {
 #endif
 } ds4_ling31_graph;
 
+/* Every graph owns its state pool (and the views into it) and its latent
+ * rows. A bank graph borrows everything else from graph 0: forwards are
+ * serialized, so scratch, controls and MTP verify buffers are shared. */
 static void ling31_graph_free(ds4_ling31_graph *g) {
     if (!g) { return; }
-#ifndef __APPLE__
-    if (!g->borrowed) {
-        ds4_gpu_l31_moe_free(g->moe);
-        ds4_gpu_gvq_free(g->gvq);
+    for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
+        ds4_gpu_tensor *t[] = {g->recurrent[il], g->q_tail[il], g->k_tail[il], g->v_tail[il],
+            g->latent[il], g->k_pe[il]};
+        for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) { ds4_gpu_tensor_free(t[i]); }
     }
+    ds4_gpu_tensor_free(g->last_hidden);
+    ds4_gpu_tensor_free(g->state_pool);
+    if (g->borrowed) {
+        memset(g, 0, sizeof(*g));
+        return;
+    }
+#ifndef __APPLE__
+    ds4_gpu_l31_moe_free(g->moe);
+    ds4_gpu_gvq_free(g->gvq);
 #endif
 #define L31_FREE(field, cols, type) ds4_gpu_tensor_free(g->field);
     L31_ROW_BUFFERS(L31_FREE)
@@ -60,20 +72,17 @@ static void ling31_graph_free(ds4_ling31_graph *g) {
     ds4_gpu_tensor *views[] = {g->k_full, g->value, g->attn_tmp, g->lse, g->lse_tmp};
     for (size_t i = 0; i < sizeof(views) / sizeof(views[0]); i++) { ds4_gpu_tensor_free(views[i]); }
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
-        ds4_gpu_tensor *t[] = {g->recurrent[il], g->q_tail[il], g->k_tail[il], g->v_tail[il],
-            g->q_conv[il], g->k_conv[il], g->v_conv[il], g->a_log[il], g->dt_bias[il],
-            g->kv_norm_w[il], g->k_b[il], g->v_b[il], g->latent[il], g->k_pe[il]};
+        ds4_gpu_tensor *t[] = {g->q_conv[il], g->k_conv[il], g->v_conv[il], g->a_log[il],
+            g->dt_bias[il], g->kv_norm_w[il], g->k_b[il], g->v_b[il]};
         for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) { ds4_gpu_tensor_free(t[i]); }
     }
     ds4_gpu_tensor_free(g->q_abs);
     ds4_gpu_tensor_free(g->latent_out);
     ds4_gpu_tensor_free(g->logits);
     ds4_gpu_tensor_free(g->inv_freq);
-    ds4_gpu_tensor_free(g->last_hidden);
     ds4_gpu_tensor *mtp[] = {g->mtp_hidden, g->mtp_rows, g->mtp_logits, g->mtp_journal};
     for (size_t i = 0; i < sizeof(mtp) / sizeof(mtp[0]); i++) { ds4_gpu_tensor_free(mtp[i]); }
-    ds4_gpu_tensor_free(g->state_pool);
-    if (!g->borrowed) { ds4_gpu_tensor_free(g->control_pool); }
+    ds4_gpu_tensor_free(g->control_pool);
     free(g->host_positions);
     memset(g, 0, sizeof(*g));
 }
@@ -248,6 +257,26 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
         "workspace=%.2f GiB\n", ctx, cap, (double)g->kv_bytes / 1073741824.0,
         (double)g->state_bytes / 1048576.0, (double)g->control_bytes / 1048576.0,
         (double)g->workspace_bytes / 1073741824.0);
+    return true;
+}
+
+// A bank graph: its own state pool and latent rows, everything else borrowed.
+static bool ling31_graph_bank(ds4_ling31_graph *g, const ds4_ling31_graph *owner) {
+    *g = *owner;
+    g->borrowed = true;
+    g->state_pool = g->last_hidden = NULL;
+    for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
+        g->recurrent[il] = g->q_tail[il] = g->k_tail[il] = g->v_tail[il] = NULL;
+        g->latent[il] = g->k_pe[il] = NULL;
+    }
+    g->kv_bytes = 0;
+    g->ready = false;
+    if (!ling31_graph_state(g, owner->mtp_drafts ? LING31_LAYERS + 1u : LING31_LAYERS)) {
+        ling31_graph_free(g);
+        return false;
+    }
+    g->ready = true;
+    if (!ling31_graph_reset(g)) { ling31_graph_free(g); return false; }
     return true;
 }
 
@@ -503,6 +532,11 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
 static bool ling31_forward(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
         const int *tokens, uint32_t rows, uint32_t pos, ling31_head_mode head) {
     (void)g; (void)m; (void)w; (void)tokens; (void)rows; (void)pos; (void)head;
+    return false;
+}
+
+static bool ling31_graph_bank(ds4_ling31_graph *g, const ds4_ling31_graph *owner) {
+    (void)g; (void)owner;
     return false;
 }
 #endif

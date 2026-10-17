@@ -86,6 +86,17 @@ const GLMVQ_NATIVE_MAX: u32 = 4096;
 const LING31_PREFILL_CHUNK_ENV: &str = "DS4_LING31_PREFILL_CHUNK";
 const LING31_NATIVE_DEFAULT: u32 = 2048;
 const LING31_NATIVE_MAX: u32 = 4096;
+// ds4_ling31_bind.inc / ds4_ling31_gpu.cuh terms on the Ling-3.1 shape.
+// l31_decode_plan: decode and verify items, mid and partial rows, the verify
+// plan, then 69 MoE layers' 3 x 512 device routing tables.
+const LING31_DECODE_BYTES: u64 = 1_188_864;
+const LING31_MLA_EXPAND_MIN: u64 = 64;
+const LING31_MTP_DRAFTS: u64 = 3;
+const LING31_MTP_ROWS: u64 = LING31_MTP_DRAFTS + 1;
+const LING31_ALIGN: u64 = 256;
+// FP8 MMA activation scales cover 128 inputs; glmvq_mma_item is five words.
+const LING31_SCALE_BLOCK: u64 = 128;
+const LING31_MMA_ITEM_BYTES: u64 = 20;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -131,6 +142,8 @@ const FIT_DERIVED_ENV: &str = "DS4_BATCH_FIT_HEADROOM_DERIVED";
 const FIT_BURST_ENV: &str = "DS4_BATCH_FIT_BURST_MB";
 const FIT_STATIC_MB: u64 = 6144;
 const FIT_BURST_MB: u64 = 2048;
+// Ling-3.1 preallocates its graphs; first requests grew it ~0.65 GiB.
+const LING31_FIT_BURST_MB: u64 = 1024;
 const SESSION_FIT_ENV: &str = "DS4_SESSION_GRAPH_FIT";
 const SESSION_HEADROOM_ENV: &str = "DS4_SESSION_GRAPH_HEADROOM_MB";
 const SESSION_HEADROOM_MB: u64 = 1024;
@@ -313,6 +326,35 @@ pub fn fill_quote_facts(
                 .saturating_add(ling_state_bytes(s))
                 .saturating_add(ling_graph_bytes(s, native));
             (bank, 0, 0, pool)
+        }
+        (ModelFamily::Ling31Vq, Some(s)) => {
+            // Graph 0 owns scratch, controls and the MTP journal/verify rows;
+            // each bank adds its state pool, latent rows, logits and history.
+            let drafts = if req.mtp_mode == MtpMode::On {
+                u64::from(draft.clamp(1, LING31_MTP_DRAFTS as i32) as u32)
+            } else {
+                0
+            };
+            let state = ling31_state_bytes(s);
+            let mla = u64::from(s.n_full_attn_count) + u64::from(drafts > 0);
+            let logits = u64::from(s.n_vocab) * SIZEOF_F32;
+            let bank = state
+                + mla * ctx * u64::from(s.n_head_dim) * SIZEOF_U16
+                + logits
+                + ctx * SIZEOF_I32;
+            let scratch = ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s);
+            let mtp = if drafts > 0 {
+                drafts * state
+                    + (LING31_MTP_ROWS + 2) * u64::from(s.n_embd) * SIZEOF_F32
+                    + LING31_MTP_ROWS * logits
+            } else {
+                0
+            };
+            // Checkpoint slots (276 MiB each) take what the native fit leaves
+            // after the banks, at most eight, funded at capture as V4.1 funds
+            // its prefix checkpoint per request: eight rarely fit beside the
+            // 108 GiB trunk.
+            (bank, scratch, mtp, 0)
         }
         (ModelFamily::Inkling, Some(s)) => {
             let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
@@ -2400,6 +2442,97 @@ fn glm_mtp_bytes(s: Shape, ctx: u64, kind: GlmGraph) -> u64 {
         + glm_mtp_verify_bytes(s, kind)
 }
 
+// C ling31_state_bytes: every KDA tile and convolution tail plus the carried
+// hidden row; one per bank, checkpoint slot and MTP journal slot.
+fn ling31_state_bytes(s: Shape) -> u64 {
+    let dim = u64::from(s.n_head) * u64::from(s.n_kda_head_dim);
+    let tile = (dim * u64::from(s.n_kda_head_dim) + 3 * dim * u64::from(s.n_ssm_conv)) * SIZEOF_F32;
+    ling31_kda_layers(s) * tile + u64::from(s.n_embd) * SIZEOF_F32
+}
+
+// 72 trunk blocks: 9 MLA at (il + 1) % 8 == 0, the rest KDA.
+fn ling31_kda_layers(s: Shape) -> u64 {
+    u64::from(s.n_layer - s.n_nextn_predict - s.n_full_attn_count)
+}
+
+// C ling31_control_bytes: KDA convolution, decay and norm weights, then each
+// MLA block's latent norm and BF16 k_b/v_b (the MTP block's included).
+fn ling31_control_bytes(s: Shape) -> u64 {
+    let heads = u64::from(s.n_head);
+    let dim = heads * u64::from(s.n_kda_head_dim);
+    let lora = u64::from(s.n_kv_lora);
+    let nope = u64::from(s.n_key_mla - s.n_rot);
+    let kda = (3 * dim * u64::from(s.n_ssm_conv) + heads + dim) * SIZEOF_F32;
+    let mla = lora * SIZEOF_F32 + 2 * heads * lora * nope * SIZEOF_U16;
+    ling31_kda_layers(s) * kda + (u64::from(s.n_full_attn_count) + 1) * mla
+}
+
+// C ling31_workspace_bytes on the CUDA kernels: logits, the L31_ROW_BUFFERS
+// rows, absorbed-MLA scores, the largest GVQ temporary, cuBLAS and experts.
+fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
+    let hidden = u64::from(s.n_embd);
+    let heads = u64::from(s.n_head);
+    let dim = heads * u64::from(s.n_kda_head_dim);
+    let dense = u64::from(s.n_ff_dense);
+    let used = u64::from(s.n_expert_used);
+    let ff = u64::from(s.n_ff_exp);
+    // Four-byte rows: token, 3 positions, cur/norm/attn_out/ffn_out, q, k/v/f,
+    // g/heads, q ranks, kv_raw, kv_norm, head gate/beta, router, routes.
+    let row = 4
+        + 4 * hidden
+        + heads * u64::from(s.n_key_mla)
+        + 3 * dense
+        + 2 * dim
+        + 2 * u64::from(s.n_lora_q)
+        + u64::from(s.n_head_dim)
+        + u64::from(s.n_kv_lora)
+        + 2 * heads
+        + u64::from(s.n_expert)
+        + 2 * used;
+    let absorbed = 2 * rows.min(LING31_MLA_EXPAND_MIN) * heads * u64::from(s.n_kv_lora);
+    // ling31_gvq_scratch: chunked KDA planes or records, FP8 restores beside
+    // BF16 rows, the F32 router weight, BF16 rows, the q4p dense-down input.
+    let planes = kda_prefill_scratch_bytes(rows, heads, u64::from(s.n_kda_head_dim));
+    let kda = if planes == 0 {
+        0
+    } else {
+        (planes + rows * heads * SIZEOF_F32).max(rows.div_ceil(64) * heads * GLMVQ_KDA_RECORD_BYTES)
+    };
+    let gvq = [
+        kda,
+        (dim * hidden + rows * (dim + hidden)) * SIZEOF_U16,
+        u64::from(s.n_expert) * hidden * SIZEOF_F32,
+        rows * (heads + hidden) * SIZEOF_U16,
+        rows * 3 * hidden * SIZEOF_U16,
+        rows * dense * 2 * SIZEOF_U16,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
+    // l31_mma_plan above verify widths: E4M3 rows and scales, gate, SwiGLU
+    // E4M3 rows and scales, down, worklist and order.
+    let align = |n: u64| n.div_ceil(LING31_ALIGN) * LING31_ALIGN;
+    let pairs = rows * used;
+    let mma = if rows > GLMVQ_VERIFY_ROWS {
+        align(rows * hidden)
+            + align(rows * hidden / LING31_SCALE_BLOCK * SIZEOF_F32)
+            + align(pairs * ff * SIZEOF_U16)
+            + align(pairs * ff)
+            + align(pairs * ff / LING31_SCALE_BLOCK * SIZEOF_F32)
+            + align(pairs * hidden * SIZEOF_U16)
+            + align(pairs * LING31_MMA_ITEM_BYTES)
+            + align(pairs * SIZEOF_U32)
+    } else {
+        0
+    };
+    (u64::from(s.n_vocab) + u64::from(s.n_rot) / 2 + rows * row + absorbed) * SIZEOF_F32
+        + gvq
+        + GLMVQ_CUBLAS_WORKSPACE
+        + rows * used * SIZEOF_U32
+        + LING31_DECODE_BYTES
+        + mma
+}
+
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
 fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
@@ -2450,6 +2583,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::Step37
                 | ModelFamily::Glm53
                 | ModelFamily::DeepSeek4
+                | ModelFamily::Ling31Vq
         )
     {
         return serial;
@@ -2460,7 +2594,12 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
     if std::env::var(FIT_DERIVED_ENV).as_deref() == Ok("0") {
         return (FIT_STATIC_MB * MIB).max(serial);
     }
-    let burst = env_nonnegative_mb(FIT_BURST_ENV).unwrap_or(FIT_BURST_MB);
+    let burst =
+        env_nonnegative_mb(FIT_BURST_ENV).unwrap_or(if caps.family == ModelFamily::Ling31Vq {
+            LING31_FIT_BURST_MB
+        } else {
+            FIT_BURST_MB
+        });
     req.mem_floor_gb
         .saturating_mul(GIB)
         .saturating_add(burst.saturating_mul(MIB))
@@ -2820,8 +2959,8 @@ mod tests {
     };
     use crate::shape::{
         Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_GLM53_FLASH, SHAPE_GLM53_VQ, SHAPE_INKLING_SMALL,
-        SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_LING30_FLASH_VL, SHAPE_MOTIF3,
-        SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
+        SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_LING30_FLASH_VL, SHAPE_LING31_VQ,
+        SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
 
@@ -2886,6 +3025,60 @@ mod tests {
                 "ctx {ctx}: {quoted} vs {native}"
             );
         }
+    }
+
+    #[test]
+    fn ling31_quote_matches_the_native_graph() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
+        // Native graph logs: workspace GiB per prefill chunk, state and
+        // control MiB.
+        let s = SHAPE_LING31_VQ;
+        for (rows, gib) in [(1024u64, 0.66), (2048, 1.26), (4096, 2.48)] {
+            let quoted = ling31_workspace_bytes(s, rows) as f64 / GIB as f64;
+            assert!((quoted - gib).abs() < 0.005, "{rows}: {quoted} GiB");
+        }
+        assert!((ling31_state_bytes(s) as f64 / MIB as f64 - 275.6).abs() < 0.05);
+        assert!((ling31_control_bytes(s) as f64 / MIB as f64 - 185.6).abs() < 0.05);
+
+        // Two 32K banks drafting twice: graph 0 is ling31_memory +
+        // ling31_mtp_bytes, the second bank ling31_bank_bytes.
+        let req = ServingRequest {
+            ctx: 32768,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::On,
+            mtp_draft: Some(2),
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq),
+            Some(s),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let state = ling31_state_bytes(s);
+        let latent = 32768 * 576 * SIZEOF_U16;
+        let host = 157_184 * SIZEOF_F32 + 32768 * SIZEOF_I32;
+        assert_eq!(facts.native_chunk, Some(2048));
+        assert_eq!(facts.per_bank_bytes, Some(state + 10 * latent + host));
+        assert_eq!(
+            facts.scratch_bytes,
+            Some(ling31_workspace_bytes(s, 2048) + ling31_control_bytes(s))
+        );
+        assert_eq!(
+            facts.mtp_state_bytes,
+            Some(2 * state + 6 * 4096 * SIZEOF_F32 + 4 * 157_184 * SIZEOF_F32)
+        );
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
     }
 
     #[test]

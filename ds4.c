@@ -47725,6 +47725,7 @@ static bool step37_batch_runtime_decode(ds4_step37_batch_runtime *rt, ds4_engine
 #include "ds4_mimo2_batch.inc"
 #include "ds4_naive_batch.inc"
 #include "ds4_iquest_batch.inc"
+#include "ds4_ling31_batch.inc"
 
 #include "ds4_glm53_graph.inc"
 #include "ds4_glm53_batch.inc"
@@ -58195,6 +58196,7 @@ struct ds4_batch_ctx {
     ds4_ling3vl_batch_runtime *ling3vl; /* non-NULL selects the Ling bank dispatch */
     ds4_mimo2_batch_runtime *mimo2; /* shared scratch, independent MiMo KV */
     ds4_iquest_batch_runtime *iquest;
+    ds4_ling31_batch_runtime *ling31; /* shared scratch, bank-owned state and latent rows */
     ds4_glm53_batch_runtime *glm53; /* shared scratch, private compact frontiers */
     ds4_naive_batch_runtime *naive; /* full DSA KV plus indexer history per bank */
     ds4_dots3_batch_runtime *dots3; /* independent latent/DSA text banks */
@@ -58963,6 +58965,7 @@ static int ling3vl_cont_bank_restore_payload(
 
 #include "ds4_naive_bank_payload.inc"
 #include "ds4_iquest_bank_payload.inc"
+#include "ds4_ling31_bank_payload.inc"
 #define GLM53_BATCH_API
 #include "ds4_glm53_batch.inc"
 #undef GLM53_BATCH_API
@@ -59112,6 +59115,7 @@ uint64_t ds4_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->step37) return step37_cont_bank_payload_bytes(ctx, bank);
     if (ctx->ling3vl) return ling3vl_cont_bank_payload_bytes(ctx, bank);
     if (ctx->iquest) return iquest_bank_payload_bytes(ctx, bank);
+    if (ctx->ling31) return ling31_bank_payload_bytes(ctx, bank);
     if (ctx->glm53) { return glm53_bank_payload_bytes(ctx, bank); }
     if (ctx->naive) return naive_bank_payload_bytes(ctx, bank);
     if (ctx->mimo2) return mimo2_bank_payload_bytes(ctx, bank);
@@ -59175,6 +59179,8 @@ int ds4_cont_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return ling3vl_cont_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->iquest)
         return iquest_bank_save_payload(ctx, bank, fp, err, errlen);
+    if (ctx->ling31)
+        return ling31_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->glm53) { return glm53_bank_save_payload(ctx, bank, fp, err, errlen); }
     if (ctx->naive)
         return naive_bank_save_payload(ctx, bank, fp, err, errlen);
@@ -59280,6 +59286,8 @@ int ds4_cont_bank_restore_payload(ds4_batch_ctx *ctx, uint32_t bank,
     if (ctx->iquest)
         return iquest_bank_load_payload(
             ctx, bank, fp, payload_bytes, err, errlen);
+    if (ctx->ling31)
+        return ling31_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->glm53) { return glm53_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen); }
     if (ctx->naive)
         return naive_bank_load_payload(
@@ -59700,7 +59708,8 @@ static uint64_t ds4_batch_fit_headroom_bytes(int ctx_size) {
     { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
       if (de && de[0] == '0' && de[1] == '\0')
           return 6144ull << 20; }      /* kill switch: the V7 static */
-    uint64_t burst = 2048ull << 20;
+    /* Ling-3.1 preallocates its graphs; first requests grew it ~0.65 GiB. */
+    uint64_t burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 1024ull << 20 : 2048ull << 20;
     { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
       if (be && be[0]) {
           const long bv = atol(be);
@@ -60827,6 +60836,7 @@ uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
     if (ctx->step37) { return step37_ckpt_trim(ctx->step37, want_bytes); }
     if (ctx->ling3vl) { return ling3vl_ckpt_trim(ctx->ling3vl, want_bytes); }
     if (ctx->iquest) { return iquest_ckpt_trim(ctx->iquest, want_bytes); }
+    if (ctx->ling31) { return ling31_ckpt_trim(ctx->ling31, want_bytes); }
     if (ctx->glm53) { return glm53_ckpt_trim(ctx->glm53, want_bytes); }
     if (ctx->naive) { return naive_ckpt_trim(ctx->naive, want_bytes); }
     if (ctx->mimo2) { return mimo2_ckpt_trim(ctx->mimo2, want_bytes); }
@@ -61086,7 +61096,7 @@ int ds4_batch_ctx_reclaim_prepare(ds4_batch_ctx *ctx, const uint32_t *ordered_id
     plan->want_bytes = want_bytes;
     if (!ctx || !ds4_batch_trim_enabled()) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl ||
-        ctx->mimo2 || ctx->naive || ctx->iquest || ctx->glm53) {
+        ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53) {
         return DS4_RECLAIM_UNSUPPORTED;
     }
     if (ctx->solar) return DS4_RECLAIM_UNSUPPORTED;
@@ -61691,6 +61701,83 @@ static int ling3vl_batch_ctx_create_impl(
 #undef LBC_ERR
 }
 
+static uint32_t ling31_session_drafts(const ds4_engine *e);
+
+/* Banks after graph 0 add only their state pool and latent rows; the fit
+ * drops banks until they and the serving headroom fit free memory, and
+ * what remains funds the checkpoint slots. */
+static int ling31_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
+        ling31_fit_mode mode, ds4_batch_ctx **out, char *err, size_t errlen) {
+#define LBC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
+    const uint32_t ctx = (uint32_t)ctx_size, cap = ling31_prefill_cap(ctx);
+    const uint32_t drafts = ling31_session_drafts(e);
+    const uint64_t base = ling31_memory(ctx, cap).total_bytes + ling31_mtp_bytes(ctx, drafts);
+    if (ctx_size <= 0 || !base) {
+        LBC_ERR("batch_ctx_create: Ling-3.1 needs a valid context");
+        return 1;
+    }
+    uint32_t chosen = (uint32_t)max_seq;
+    if (chosen > L31_BANK_MAX && mode == L31_STRICT_BANKS) {
+        LBC_ERR("batch_ctx_create: Ling-3.1 supports at most %d banks", L31_BANK_MAX);
+        return 1;
+    }
+    if (chosen > L31_BANK_MAX) { chosen = L31_BANK_MAX; }
+    uint32_t slots = L31_BANK_CHECKPOINTS;
+    uint64_t free_b = 0, total_b = 0;
+    if (ds4_gpu_mem_info(&free_b, &total_b) == 0) {
+        const uint64_t outstanding = ds4_gpu_substrate_outstanding();
+        free_b = free_b > outstanding ? free_b - outstanding : 0;
+        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+        while (chosen && base + (uint64_t)(chosen - 1u) * ling31_bank_bytes(ctx, drafts) + headroom > free_b) {
+            chosen--;
+        }
+        if (!chosen || (mode == L31_STRICT_BANKS && chosen < (uint32_t)max_seq)) {
+            LBC_ERR("batch_ctx_create: Ling-3.1 banks and headroom exceed free memory"
+                    " (ctx=%d max_seq=%d free=%.2f GiB)", ctx_size, max_seq, (double)free_b / 1073741824.0);
+            return 1;
+        }
+        const uint64_t spare = free_b - (base + (uint64_t)(chosen - 1u) * ling31_bank_bytes(ctx, drafts) + headroom);
+        const uint64_t fit = spare / ling31_state_bytes();
+        slots = fit < L31_BANK_CHECKPOINTS ? (uint32_t)fit : L31_BANK_CHECKPOINTS;
+        fprintf(stderr, "ds4: Ling-3.1 banks=%u checkpoint slots=%u (%.2f GiB spare)\n",
+                chosen, slots, (double)spare / 1073741824.0);
+    }
+    ds4_batch_ctx *bc = xcalloc(1, sizeof(*bc));
+    bc->e = e;
+    bc->ctx_size = ctx;
+    bc->prefill_cap = cap;
+    bc->raw_cap = ctx;
+    bc->seq_cap = ctx;
+    bc->max_seq = chosen;
+    for (;;) {
+        bc->ling31 = ling31_batch_create(e, ctx, bc->max_seq, cap, drafts, slots);
+        if (bc->ling31) { break; }
+        if (mode == L31_STRICT_BANKS || bc->max_seq <= 1u) {
+            LBC_ERR("batch_ctx_create: Ling-3.1 bank allocation failed (ctx=%d max_seq=%u)", ctx_size, bc->max_seq);
+            free(bc);
+            return 1;
+        }
+        bc->max_seq--;
+    }
+    if ((uint64_t)bc->max_seq * bc->seq_cap > SIZE_MAX / sizeof(*bc->bank_hist)) {
+        LBC_ERR("batch_ctx_create: Ling-3.1 bank history size overflow");
+        ling31_batch_free(bc->ling31);
+        free(bc);
+        return 1;
+    }
+    bc->bank_hist = xmalloc((size_t)bc->max_seq * bc->seq_cap * sizeof(int));
+    bc->bank_hist_len = xcalloc(bc->max_seq, sizeof(*bc->bank_hist_len));
+    bc->bank_hist_valid = xcalloc(bc->max_seq, sizeof(*bc->bank_hist_valid));
+    bc->bank_gen = xmalloc(bc->max_seq * sizeof(*bc->bank_gen));
+    for (uint32_t b = 0; b < bc->max_seq; b++) { bc->bank_gen[b] = 1u; }
+    bc->bank_last_use = xcalloc(bc->max_seq, sizeof(*bc->bank_last_use));
+    bc->supports_partial_reuse = bc->ling31->checkpoint_slab != NULL;
+    ds4_metric_set(&ds4_metrics_get()->banks_total, bc->max_seq);
+    *out = bc;
+    return 0;
+#undef LBC_ERR
+}
+
 static int iquest_batch_ctx_create_impl(
         ds4_engine *e, int ctx_size, int max_seq, iquest_fit_mode mode,
         ds4_batch_ctx **out, char *err, size_t errlen) {
@@ -62056,6 +62143,9 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) {
         return iquest_batch_ctx_create_impl(e, ctx_size, max_seq, fit ? IQ_FIT_BANKS : IQ_STRICT_BANKS, out, err, errlen);
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        return ling31_batch_ctx_create_impl(e, ctx_size, max_seq, fit ? L31_FIT_BANKS : L31_STRICT_BANKS, out, err, errlen);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return naive_batch_ctx_create_impl(
@@ -62724,7 +62814,8 @@ void ds4_batch_ctx_destroy(ds4_batch_ctx *ctx) {
         free(ctx);
         return;
     }
-    if (ctx->step37 || ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->glm53) {
+    if (ctx->step37 || ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53) {
+        ling31_batch_free(ctx->ling31);
         step37_batch_runtime_free(ctx->step37);
         ling3vl_batch_runtime_free(ctx->ling3vl);
         mimo2_batch_free(ctx->mimo2);
@@ -62780,6 +62871,7 @@ static void bank_hist_invalidate_all(ds4_batch_ctx *ctx) {
         ctx->bank_gen[b]++;   /* Inc 5a */
         if (ctx->dots3) { dots3_ckpt_drop(ctx->dots3, b); }
         if (ctx->iquest) { iquest_ckpt_drop(ctx->iquest, b); }
+        if (ctx->ling31) { ling31_ckpt_drop(ctx->ling31, b); }
         if (ctx->glm53) { glm53_ckpt_drop(ctx->glm53, b); }
         if (ctx->naive) { naive_ckpt_drop(ctx->naive, b); }
         if (ctx->mimo2) { mimo2_ckpt_drop(ctx->mimo2, b); }
@@ -63289,7 +63381,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         if (prompts[i].len <= 0) { BCG_ERR("batched_generate_ctx: prompt %d is empty", i); return 1; }
         const uint32_t L = (uint32_t)prompts[i].len;
         if ((ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-             ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->glm53) && L > ctx->seq_cap) {
+             ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53) && L > ctx->seq_cap) {
             BCG_ERR("batched_generate_ctx: family prompt %d length %u "
                     "exceeds context %u", i, L, ctx->seq_cap);
             return 1;
@@ -63302,7 +63394,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         n_packed += L;
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-        ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->glm53) {
+        ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53) {
         return family_engine_batched_generate_ctx(
             ctx, prompts, n, max_new_tokens, eos_ids, out, err, errlen);
     }
@@ -64721,6 +64813,7 @@ static uint32_t family_banked_prefill_cap(const ds4_batch_ctx *ctx) {
     if (ctx->step37) return ctx->step37->prefill_cap;
     if (ctx->ling3vl) return ctx->ling3vl->prefill_cap;
     if (ctx->iquest) return ctx->iquest->prefill_cap;
+    if (ctx->ling31) return ctx->ling31->prefill_cap;
     if (ctx->naive) return ctx->naive->prefill_cap;
     if (ctx->mimo2) return ctx->mimo2->prefill_cap;
     return ctx->motif3 ? ctx->motif3->prefill_cap
@@ -64747,6 +64840,7 @@ static bool family_banked_logits_valid(
     if (ctx->step37) return ctx->step37->bank_logits_valid[bank] != 0u;
     if (ctx->ling3vl) return ctx->ling3vl->bank_logits_valid[bank] != 0u;
     if (ctx->iquest) return ctx->iquest->bank_logits_valid[bank] != 0u;
+    if (ctx->ling31) return ctx->ling31->bank_logits_valid[bank] != 0u;
     if (ctx->naive) return ctx->naive->bank_logits_valid[bank] != 0u;
     if (ctx->mimo2) return ctx->mimo2->bank_logits_valid[bank] != 0u;
     return ctx->motif3 ? ctx->motif3->bank_logits_valid[bank] != 0u
@@ -64764,6 +64858,8 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
         return ctx->ling3vl->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->iquest)
         return ctx->iquest->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (ctx->ling31)
+        return ctx->ling31->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->naive)
         return ctx->naive->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->mimo2)
@@ -64777,6 +64873,7 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->glm53) { glm53_bank_reset(ctx->glm53, bank); return; }
     if (ctx->dots3) { dots3_bank_reset(ctx->dots3, bank); return; }
     if (ctx->iquest) { iquest_bank_reset(ctx->iquest, bank); return; }
+    if (ctx->ling31) { ling31_bank_reset(ctx->ling31, bank); return; }
     if (ctx->naive) { naive_bank_reset(ctx->naive, bank); return; }
     if (ctx->mimo2) { mimo2_bank_reset(ctx->mimo2, bank); return; }
     if (ctx->qwen) {
@@ -64802,6 +64899,7 @@ static bool family_banked_copy(
     if (ctx->glm53) { return glm53_bank_copy(ctx->glm53, src, dst, tokens); }
     if (ctx->dots3) { return dots3_bank_copy(ctx->dots3, src, dst, tokens); }
     if (ctx->iquest) { return iquest_bank_copy(ctx->iquest, src, dst, tokens); }
+    if (ctx->ling31) { return ling31_bank_copy(ctx->ling31, src, dst, tokens); }
     if (ctx->naive) { return naive_bank_copy(ctx->naive, src, dst, tokens); }
     if (ctx->mimo2) { return mimo2_bank_copy(ctx->mimo2, src, dst, tokens); }
     if (ctx->qwen) {
@@ -64842,6 +64940,10 @@ static bool family_banked_prefill(
     if (ctx->iquest) {
         return iquest_bank_prefill(ctx->iquest, ctx->e, bank, tokens, rows, pos,
                                   final ? IQ_FINAL_ROWS : IQ_MORE_ROWS);
+    }
+    if (ctx->ling31) {
+        return ling31_bank_prefill(ctx->ling31, ctx->e, bank, tokens, rows, pos,
+                                   final ? L31_FINAL_ROWS : L31_MORE_ROWS);
     }
     if (ctx->naive) {
         return naive_bank_prefill(ctx->naive, ctx->e, bank, tokens, rows, pos,
@@ -64897,6 +64999,9 @@ static bool family_banked_decode(
     if (ctx->iquest) {
         return iquest_bank_decode(ctx->iquest, ctx->e, banks, tokens, positions, rows);
     }
+    if (ctx->ling31) {
+        return ling31_bank_decode(ctx->ling31, ctx->e, banks, tokens, positions, rows);
+    }
     if (ctx->naive) {
         return naive_bank_decode(ctx->naive, ctx->e, banks, tokens, positions, rows);
     }
@@ -64941,6 +65046,10 @@ static bool family_banked_checkpoint_due(
         const uint32_t stride = ctx->iquest->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
     }
+    if (ctx->ling31) {
+        const uint32_t stride = ctx->ling31->checkpoint_stride;
+        return stride && after > before && before / stride != after / stride;
+    }
     if (ctx->naive) {
         const uint32_t stride = ctx->naive->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
@@ -64979,6 +65088,8 @@ static void family_banked_capture_checkpoint(
         (void)iquest_ckpt_capture(ctx->iquest, bank, pos,
                                  logits_valid ? IQ_HAS_LOGITS : IQ_NO_LOGITS,
                                  ctx->serial_reserve);
+    } else if (ctx->ling31) {
+        (void)ling31_ckpt_capture(ctx->ling31, bank, pos, logits_valid, ctx->serial_reserve);
     } else if (ctx->naive) {
         (void)naive_ckpt_capture(ctx->naive, bank, pos,
                                  logits_valid ? N05_HAS_LOGITS : N05_NO_LOGITS,
@@ -65002,6 +65113,12 @@ static void family_banked_capture_checkpoint(
     }
 }
 
+#ifndef __APPLE__
+static int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
+        int *tokens, int *target, int capacity, char *err, size_t errlen);
+static int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t errlen);
+#endif
+
 /* Borrow one bank as a serial session for the family device trial and
  * commit. Rust selects the accepted prefix; callbacks may shorten it further
  * on cancellation or a newly required protocol token. Commit only what was
@@ -65014,24 +65131,32 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     ds4_naive_batch_runtime *nr = ctx->naive;
     ds4_iquest_batch_runtime *ir = ctx->iquest;
     ds4_glm53_batch_runtime *gr = ctx->glm53;
+#ifndef __APPLE__
+    ds4_ling31_batch_runtime *lr = ctx->ling31;
+#else
+    ds4_ling31_batch_runtime *lr = NULL;
+#endif
     ds4_family_cont_bank *cb = &banks[bank];
-    const int current_excluded = (ir || gr) && cb->sample_exclude
+    const int current_excluded = (ir || gr || lr) && cb->sample_exclude
         ? cb->sample_exclude(ud, cb->user) : -1;
-    if ((!gr && !ir && !nr && (!rt || !rt->spec)) || (nr && !nr->graph[bank].draft.ws) ||
+    if ((!gr && !ir && !lr && !nr && (!rt || !rt->spec)) || (nr && !nr->graph[bank].draft.ws) ||
         (gr && (!gr->graph[bank].mtp_ready || gr->failed[bank])) ||
-        (ir && !ir->graph[bank].mtp_enabled) ||
-        !cb->step_accept || (!gr && !ir && cb->sample_exclude) || current_excluded >= 0 ||
+        (ir && !ir->graph[bank].mtp_enabled) || (lr && !lr->graph[bank].mtp_drafts) ||
+        !cb->step_accept || (!gr && !ir && !lr && cb->sample_exclude) || current_excluded >= 0 ||
         cb->temperature > 0.0f ||
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
     ds4_session s = {.engine = ctx->e, .checkpoint_valid = true,
-        .logits = (gr ? gr->bank_logits : ir ? ir->bank_logits : nr ? nr->bank_logits : rt->bank_logits) + (size_t)bank * DS4_N_VOCAB,
+        .logits = (gr ? gr->bank_logits : ir ? ir->bank_logits : lr ? lr->bank_logits
+                   : nr ? nr->bank_logits : rt->bank_logits) + (size_t)bank * DS4_N_VOCAB,
         .checkpoint = {.v = ctx->bank_hist + (size_t)bank * ctx->seq_cap,
                        .len = (int)pos, .cap = (int)ctx->seq_cap}};
     if (gr) {
         s.glm53_graph_ready = true; s.glm53_graph = gr->graph[bank];
     } else if (ir) {
         s.iquest_graph_ready = true; s.iquest_graph = ir->graph[bank];
+    } else if (lr) {
+        s.ling31_graph_ready = true; s.ling31_graph = lr->graph[bank];
     } else if (nr) {
         s.naive_graph_ready = true; s.naive_graph = nr->graph[bank];
     } else {
@@ -65040,7 +65165,8 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     const int first_override = cb->sample_override
         ? cb->sample_override(ud, cb->user) : DS4_SAMPLE_OVERRIDE_NONE;
     uint32_t budget = cb->max_new - cb->generated_len + 1;
-    const unsigned capacity = gr ? GLM53_MTP_ROWS : ir ? IQ_DRAFT_SLOTS + 1 : nr ? N05_DF_BLOCK : S37_VERIFY;
+    const unsigned capacity = gr ? GLM53_MTP_ROWS : ir ? IQ_DRAFT_SLOTS + 1 : lr ? L31_MTP_ROWS
+        : nr ? N05_DF_BLOCK : S37_VERIFY;
     if (budget > capacity) { budget = capacity; }
     if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(first_override)) { budget = 1; }
     int tokens[IQ_DRAFT_SLOTS + 1], target[IQ_DRAFT_SLOTS + 1];
@@ -65048,6 +65174,10 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         ? ds4_session_glm53_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
         : ir
         ? ds4_session_iquest_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
+#ifndef __APPLE__
+        : lr
+        ? ds4_session_ling31_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
+#endif
         : nr
         ? ds4_session_naive_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
         : ds4_session_step37_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen);
@@ -65083,6 +65213,9 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     }
     const int rc = gr ? ds4_session_glm53_commit(&s, emitted, err, errlen)
                       : ir ? ds4_session_iquest_commit(&s, emitted, err, errlen)
+#ifndef __APPLE__
+                      : lr ? ds4_session_ling31_commit(&s, emitted, err, errlen)
+#endif
                       : nr ? ds4_session_naive_commit(&s, emitted, err, errlen)
                       : ds4_session_step37_commit(&s, emitted, err, errlen);
     if (rc) { goto fail; }
@@ -65090,6 +65223,8 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         gr->graph[bank] = s.glm53_graph; gr->bank_logits_valid[bank] = 1u;
     } else if (ir) {
         ir->graph[bank] = s.iquest_graph; ir->bank_logits_valid[bank] = 1;
+    } else if (lr) {
+        lr->graph[bank] = s.ling31_graph; lr->bank_logits_valid[bank] = 1;
     } else if (nr) {
         nr->graph[bank] = s.naive_graph; nr->bank_logits_valid[bank] = 1;
     } else {
@@ -65131,6 +65266,8 @@ fail:
         gr->graph[bank] = s.glm53_graph; gr->bank_logits_valid[bank] = 0u; gr->failed[bank] = 1u;
     } else if (ir) {
         ir->graph[bank] = s.iquest_graph; ir->bank_logits_valid[bank] = 0;
+    } else if (lr) {
+        lr->graph[bank] = s.ling31_graph; lr->bank_logits_valid[bank] = 0;
     } else if (nr) {
         nr->graph[bank] = s.naive_graph; nr->bank_logits_valid[bank] = 0;
     } else {
@@ -65155,7 +65292,7 @@ static int family_banked_engine_continuous_generate(
     bool ok = ctx->dots3 != NULL || ctx->exaone != NULL || ctx->motif3 != NULL ||
               ctx->qwen != NULL || ctx->step37 != NULL ||
               ctx->ling3vl != NULL || ctx->mimo2 != NULL || ctx->naive != NULL ||
-              ctx->iquest != NULL || ctx->glm53 != NULL;
+              ctx->iquest != NULL || ctx->ling31 != NULL || ctx->glm53 != NULL;
     bool rehydrate_blocked = false;
     ctx->last_done_set = 0u;
     ds4_metric_set(&ds4_metrics_get()->banks_live, 0u);
@@ -65351,6 +65488,33 @@ static int family_banked_engine_continuous_generate(
                         ctx->bank_hist_valid[b] = 0u;
                         glm53_ckpt_drop(ctx->glm53, b);
                         FCG_ERR("continuous_generate: GLM-5.3 checkpoint restore failed src=%d dst=%u", src, b);
+                        ok = false;
+                        break;
+                    } else {
+                        if ((uint32_t)src != b) {
+                            memcpy(ctx->bank_hist + (size_t)b * ctx->seq_cap,
+                                   ctx->bank_hist + (size_t)src * ctx->seq_cap,
+                                   (size_t)pos * sizeof(int));
+                        }
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_len[b] = pos;
+                        ctx->bank_hist_valid[b] = 1u;
+                        cached = pos;
+                        forked = partial = true;
+                    }
+                } else if (source_prefix &&
+                           requested_cached < source_frontier && ctx->ling31) {
+                    const int checkpoint = ling31_ckpt_find(
+                        ctx->ling31, (uint32_t)src, requested_cached, (uint32_t)req.n);
+                    uint32_t pos = 0;
+                    if (checkpoint < 0) {
+                        ctx->fork_rejects++;
+                    } else if (!ling31_ckpt_restore(ctx->ling31, (uint32_t)src, b,
+                                                    (uint32_t)checkpoint, requested_cached, &pos)) {
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_valid[b] = 0;
+                        ling31_ckpt_drop(ctx->ling31, b);
+                        FCG_ERR("continuous_generate: Ling-3.1 checkpoint restore failed src=%d dst=%u", src, b);
                         ok = false;
                         break;
                     } else {
@@ -65652,7 +65816,8 @@ static int family_banked_engine_continuous_generate(
             cb->sample_exclude = req.sample_exclude;
             cb->step_accept = req.step_accept;
             cb->alive = req.alive;
-            cb->checkpoint_at = (ctx->step37 || ctx->motif3 || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->glm53) &&
+            cb->checkpoint_at = (ctx->step37 || ctx->motif3 || ctx->mimo2 || ctx->naive || ctx->iquest ||
+                                 ctx->ling31 || ctx->glm53) &&
                 req.checkpoint_at > 0 &&
                 (uint32_t)req.checkpoint_at > cached && req.checkpoint_at < req.n
                 ? (uint32_t)req.checkpoint_at : 0u;
@@ -65821,7 +65986,7 @@ static int family_banked_engine_continuous_generate(
                 ok = false;
                 break;
             }
-            if (ctx->step37 || ctx->naive || ctx->iquest || ctx->glm53) {
+            if (ctx->step37 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53) {
                 const int spec = family_cont_spec(ctx, bank, b, on_token, on_done, ud, err, errlen);
                 if (spec < 0) { ok = false; break; }
                 if (spec > 0) { continue; }
@@ -66048,7 +66213,7 @@ static int family_engine_batched_generate_ctx(
         .n = n,
     };
     const int rc = (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-                    ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->glm53)
+                    ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53)
         ? family_banked_engine_continuous_generate(
               ctx, family_static_admit, NULL, family_static_done,
               &batch, err, errlen)
@@ -66110,7 +66275,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
         return 1;
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-        ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->glm53) {
+        ctx->ling3vl || ctx->mimo2 || ctx->naive || ctx->iquest || ctx->ling31 || ctx->glm53) {
         return family_banked_engine_continuous_generate(
             ctx, admit, on_token, on_done, ud, err, errlen);
     }
@@ -73336,7 +73501,9 @@ int ds4_engine_n_hc(ds4_engine *e) {
 }
 
 bool ds4_engine_supports_batching(ds4_engine *e) {
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST) { return e && e->backend == DS4_BACKEND_CUDA; }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        return e && e->backend == DS4_BACKEND_CUDA;
+    }
     if (!e || !ds4_backend_uses_graph(e->backend) || !e->metal_ready) {
         return false;
     }

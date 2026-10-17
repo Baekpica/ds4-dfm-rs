@@ -862,23 +862,20 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: Some(6300),
             media_serial: true,
         },
-        // Ling matches the Qwen text-bank surface: two persistent banks,
-        // partial reuse and disk KV. Images stay serial beside those banks
-        // (Step), not on Qwen's bank-image path. No MTP predictor.
-        // One serial CUDA session for now; banks, reuse, disk KV and the
-        // embedded MTP block land as the native runtime grows them.
+        // GLM VQ's surface: banks own KDA state and latent rows over shared
+        // scratch; free memory beside the 108 GiB trunk bounds their count.
         ModelFamily::Ling31Vq => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
-            bank_support: Support::None,
-            reuse: ReuseKind::Exact,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
             reuse_support: Support::Present,
-            disk: Support::None,
-            snapshot: Support::None,
-            mtp: MtpKind::None,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(LING31_CTX_MAX),
@@ -887,6 +884,9 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
+        // Ling matches the Qwen text-bank surface: two persistent banks,
+        // partial reuse and disk KV. Images stay serial beside those banks
+        // (Step), not on Qwen's bank-image path. No MTP predictor.
         ModelFamily::Ling3Vl => ServingCaps {
             family,
             variant,
@@ -1174,7 +1174,10 @@ pub fn resolve_plan(
     // A draft below the family minimum allocates no speculative runtime, so
     // the plan would claim a feature that runs ordinary decode.
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
-    if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
+    if matches!(
+        caps.family,
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+    ) {
         if let Err(failure) = crate::check_mtp_draft(caps.family, draft as i32) {
             issues.push(error("mtp_draft", failure.message));
         }
@@ -1639,11 +1642,14 @@ impl ResolvedPlan {
                 .into(),
             ));
         }
-        if matches!(self.family, Some(ModelFamily::Glm53 | ModelFamily::Glm53Vq)) {
-            let name = if self.family == Some(ModelFamily::Glm53Vq) {
-                "DS4_GLMVQ_MTP"
-            } else {
-                "DS4_GLM53_MTP"
+        if matches!(
+            self.family,
+            Some(ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq)
+        ) {
+            let name = match self.family {
+                Some(ModelFamily::Glm53Vq) => "DS4_GLMVQ_MTP",
+                Some(ModelFamily::Ling31Vq) => "DS4_LING31_MTP",
+                _ => "DS4_GLM53_MTP",
             };
             out.push((
                 name.into(),
@@ -1704,6 +1710,7 @@ impl ResolvedPlan {
             Some(ModelFamily::NaiveN05) => Some("DS4_NAIVE_PREFILL_CHUNK"),
             Some(ModelFamily::Glm53) => Some("DS4_GLM53_PREFILL_ROWS"),
             Some(ModelFamily::Glm53Vq) => Some("DS4_GLMVQ_PREFILL_ROWS"),
+            Some(ModelFamily::Ling31Vq) => Some("DS4_LING31_PREFILL_CHUNK"),
             _ => None,
         }
     }
