@@ -162,8 +162,9 @@ static const void *g_model_fd_host_base;
 // Split/named GGUF parts mapped back to back at page-aligned bases (the
 // layout both openers build): each part's fd returns its copied pages.
 static const void *g_model_shard_map;
-static std::vector<int> g_model_shard_fds;
+static std::vector<int> g_model_shard_fds, g_model_shard_direct;
 static std::vector<uint64_t> g_model_shard_bases, g_model_shard_sizes;
+static uint64_t g_model_shard_align = 1;
 static int g_model_direct_fd = -1;
 static uint64_t g_model_direct_align = 1;
 static uint64_t g_model_file_size;
@@ -3361,6 +3362,37 @@ static int cuda_model_stage_read(void *stage, uint64_t stage_bytes,
     return cuda_pread_full(g_model_fd, stage, bytes, offset);
 }
 
+/* A copy chunk of a split/named-part map, read through its part's fd
+ * (O_DIRECT when the part allows it) so the eager copy never fills the
+ * page cache. Returns 0 when no part holds the whole chunk; the caller
+ * then copies from the map. */
+static int cuda_shard_stage_read(void *stage, uint64_t stage_bytes,
+                                 uint64_t offset, uint64_t bytes,
+                                 const char **payload) {
+    size_t k = 0;
+    while (k < g_model_shard_fds.size() &&
+           offset >= g_model_shard_bases[k] + g_model_shard_sizes[k]) k++;
+    if (k == g_model_shard_fds.size() || offset < g_model_shard_bases[k] ||
+        bytes > g_model_shard_bases[k] + g_model_shard_sizes[k] - offset) return 0;
+    const uint64_t local = offset - g_model_shard_bases[k];
+    *payload = (const char *)stage;
+#if defined(__linux__) && defined(O_DIRECT)
+    const uint64_t align = g_model_shard_align;
+    const uint64_t aligned_off = cuda_round_down(local, align);
+    const uint64_t delta = local - aligned_off;
+    const uint64_t read_size = cuda_round_up(delta + bytes, align);
+    if (g_model_shard_direct[k] >= 0 && read_size <= stage_bytes &&
+        read_size <= g_model_shard_sizes[k] - aligned_off &&
+        cuda_pread_full(g_model_shard_direct[k], stage, read_size, aligned_off)) {
+        *payload = (const char *)stage + delta;
+        return 1;
+    }
+#else
+    (void)stage_bytes;
+#endif
+    return cuda_pread_full(g_model_shard_fds[k], stage, bytes, local);
+}
+
 static uint64_t cuda_model_cache_limit_bytes(void) {
     return cuda_weight_env().cache_limit_bytes;
 }
@@ -3729,12 +3761,14 @@ static int cuda_stage_copy_to_dev(const void *model_map, uint64_t offset,
                                   int direct_discard, const char *what) {
     const int fd_source = g_model_fd >= 0 && g_model_fd_host_base &&
                           model_map == g_model_fd_host_base;
+    const int shard_source = direct_discard && model_map == g_model_shard_map;
     const int src = cuda_mem_src_index(model_map);
     const uint64_t model_size = src >= 0 && src < DS4_MSRC_MAX
         ? g_model_srcs.v[src].map_len : g_model_registered_size;
     cudaError_t err = cudaSuccess;
     const uint64_t chunk = cuda_model_copy_chunk_bytes();
-    const uint64_t stage_bytes = chunk + (g_model_direct_align > 1 ? g_model_direct_align : 1);
+    const uint64_t align = shard_source ? g_model_shard_align : g_model_direct_align;
+    const uint64_t stage_bytes = chunk + (align > 1 ? align : 1);
     if (!cuda_model_stage_pool_alloc(stage_bytes)) return 0;
 
     uint64_t copied = 0;
@@ -3761,7 +3795,9 @@ static int cuda_stage_copy_to_dev(const void *model_map, uint64_t offset,
                         strerror(errno));
                 return 0;
             }
-        } else {
+        } else if (!shard_source ||
+                   !cuda_shard_stage_read(g_model_stage[bi], g_model_stage_bytes,
+                                          offset + copied, n, &payload)) {
             /* Map source: faults MAPPED file pages, the pre-D1b walk's
              * exact cache shape (the fit-time credit, see above). */
             memcpy(g_model_stage[bi],
@@ -5846,23 +5882,40 @@ extern "C" {
 #include "ds4_glm53_map.inc"
 }
 
-extern "C" int ds4_gpu_set_model_shard_fds(const void *model_map, const int *fds, uint32_t count) {
+static void cuda_model_shards_clear(void) {
     g_model_shard_map = NULL;
+    for (int fd : g_model_shard_direct) {
+        if (fd >= 0) (void)close(fd);
+    }
+    g_model_shard_direct.clear();
     g_model_shard_fds.clear();
     g_model_shard_bases.clear();
     g_model_shard_sizes.clear();
+    g_model_shard_align = 512;
+}
+
+extern "C" int ds4_gpu_set_model_shard_fds(const void *model_map, const int *fds, uint32_t count) {
+    cuda_model_shards_clear();
     const long page_l = sysconf(_SC_PAGESIZE);
     const uint64_t page = page_l > 0 ? (uint64_t)page_l : 4096u;
     uint64_t base = 0;
     for (uint32_t k = 0; k < count; k++) {
         struct stat st;
         if (!fds || fds[k] < 0 || fstat(fds[k], &st) != 0 || st.st_size <= 0) {
-            g_model_shard_fds.clear();
-            g_model_shard_bases.clear();
-            g_model_shard_sizes.clear();
+            cuda_model_shards_clear();
             return 0;
         }
         g_model_shard_fds.push_back(fds[k]);
+        int direct = -1;
+#if defined(__linux__) && defined(O_DIRECT)
+        if (getenv("DS4_CUDA_NO_DIRECT_IO") == NULL) {
+            char proc_path[64];
+            snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fds[k]);
+            direct = open(proc_path, O_RDONLY | O_DIRECT);
+        }
+#endif
+        g_model_shard_direct.push_back(direct);
+        if ((uint64_t)st.st_blksize > g_model_shard_align) g_model_shard_align = (uint64_t)st.st_blksize;
         g_model_shard_bases.push_back(base);
         g_model_shard_sizes.push_back((uint64_t)st.st_size);
         base += ((uint64_t)st.st_size + page - 1u) / page * page;
