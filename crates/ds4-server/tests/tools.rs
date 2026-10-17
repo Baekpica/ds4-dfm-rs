@@ -282,6 +282,62 @@ fn parse_glm53_native_tool_call() {
     assert!(p.raw_dsml.starts_with("\n\n<tool_call>bash"));
 }
 
+/// The harness declares Rust wire types in the request schema (open-grok
+/// `search_tool` carries `limit: Option<u8>`,
+/// crates/codegen/xai-grok-tools/src/implementations/search_tool/types.rs:15),
+/// and rejects a numeric property that arrives as a JSON string with
+/// `invalid type: string "3", expected u8`.  The Glm53 branch of
+/// parse_glm_generated resolves each value through the declared type, so a
+/// spelling it does not know must not fall back to a string.
+#[test]
+fn parse_glm53_types_a_u8_property_from_the_declared_schema() {
+    let orders = [ToolSchemaOrder {
+        name: "search_tool".into(),
+        prop: vec!["query".into(), "limit".into()],
+        prop_type: vec!["string".into(), "u8".into()],
+        ..Default::default()
+    }];
+    let generated = b"<tool_call>search_tool\
+        <arg_key>query</arg_key><arg_value>solidcraft</arg_value>\
+        <arg_key>limit</arg_key><arg_value>3</arg_value>\
+        </tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert!(p.ok);
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(
+        p.calls[0].arguments,
+        r#"{"query": "solidcraft", "limit": 3}"#
+    );
+}
+
+/// The control for the test above: a JSON Schema spelling already resolves, so
+/// the fix must not change it.
+#[test]
+fn parse_glm53_types_an_integer_property_from_the_declared_schema() {
+    let orders = [ToolSchemaOrder {
+        name: "search_tool".into(),
+        prop: vec!["limit".into()],
+        prop_type: vec!["integer".into()],
+        ..Default::default()
+    }];
+    let generated =
+        b"<tool_call>search_tool<arg_key>limit</arg_key><arg_value>3</arg_value></tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert_eq!(p.calls[0].arguments, r#"{"limit": 3}"#);
+}
+
 #[test]
 fn qwen_stream_observes_native_tool_markers_without_dsml_verdict() {
     let mut acc = SemAccum::init(true, true, false, ChatFormat::Qwen4Exp, b"");

@@ -1675,11 +1675,34 @@ fn parse_qwen_generated(
     })
 }
 
+/// The request's declared property type, normalised to the JSON Schema
+/// spelling the GLM value typing works in.  A client declares Rust wire types
+/// as readily as JSON Schema ones: open-grok's `search_tool` declares `limit`
+/// as `u8` (crates/codegen/xai-grok-tools/src/implementations/
+/// search_tool/types.rs:15), and a spelling the engine does not recognise used
+/// to fall through to a JSON string, which the client then rejects --
+/// `invalid type: string "3", expected u8` (Spark session 01a14a82,
+/// 2026-10-17, search_tool rejected, the call looped).  None means "no
+/// declared type the engine knows", and the caller keeps the value as text.
+fn glm_declared_type(expected: Option<&str>) -> Option<&'static str> {
+    Some(match expected?.trim() {
+        "string" | "str" | "String" | "char" => "string",
+        "integer" | "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64"
+        | "isize" => "integer",
+        "number" | "f32" | "f64" => "number",
+        "boolean" | "bool" => "boolean",
+        "array" => "array",
+        "object" => "object",
+        "null" => "null",
+        _ => return None,
+    })
+}
+
 fn glm_arg_type(raw: &[u8], expected: Option<&str>) -> bool {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) else {
         return false;
     };
-    match expected {
+    match glm_declared_type(expected) {
         Some("number") => value.is_number(),
         Some("integer") => value.as_number().is_some_and(|n| n.is_i64() || n.is_u64()),
         Some("boolean") => value.is_boolean(),
