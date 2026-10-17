@@ -235,6 +235,7 @@ tests/naive_banks
 /tests/libglm_vq_attention.so
 /tests/libglm_vq_mma.so
 /tests/glm_vq_quality
+/tests/ling31_quality
 /gguf-tools/libds4q.so
 /tests/test_glm_vq_cache
 /tests/test_glm_vq_q4
