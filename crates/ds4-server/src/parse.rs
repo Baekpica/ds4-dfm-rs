@@ -461,14 +461,7 @@ impl ParsedRequest {
             max_tokens: env.default_tokens,
             max_tokens_set: false,
             top_k: 0,
-            temperature: if env.glm_values {
-                match glm_values().temp_max {
-                    Some(max) if env.default_temp > max => max,
-                    _ => env.default_temp,
-                }
-            } else {
-                env.default_temp
-            },
+            temperature: env.default_temp,
             top_p: if env.glm_values {
                 glm_values().top_p
             } else {
@@ -3960,12 +3953,28 @@ pub fn parse_request(
     env: &ParseEnv,
     body: &str,
 ) -> Result<ParsedRequest, String> {
-    match surface {
+    let r = match surface {
         WireSurface::OpenaiChat => parse_chat_request(env, body),
         WireSurface::OpenaiCompletion => parse_completion_request(env, body),
         WireSurface::Anthropic => parse_anthropic_request(env, body),
         WireSurface::Responses => parse_responses_request(env, body),
-    }
+    };
+
+    r.map(|mut r| {
+        // The deployment's GLM ceiling is the ONE value the scope applies over
+        // an explicit client request: the artifact's own temperature measured
+        // unstable (docs/glm53-vq-sampler-2026-10-17.md), and a client cannot
+        // be expected to know that.  Every other GLM value is the request's or
+        // the artifact's default.
+        if env.glm_values {
+            if let Some(max) = glm_values().temp_max {
+                if r.temperature > max {
+                    r.temperature = max;
+                }
+            }
+        }
+        r
+    })
 }
 
 #[cfg(test)]
@@ -4036,6 +4045,33 @@ mod glm_value_tests {
         for raw in ["", "abc", "3", "nan"] {
             assert_eq!(resolve_number("T", Some(raw), 0.0, -2.0..=2.0), 0.0, "{raw}");
         }
+    }
+
+    // The deployment ceiling guards every path, including a client that sends
+    // its own temperature (which the body parse has just applied).
+    #[test]
+    fn temp_ceiling_overrides_a_client_request() {
+        use super::{parse_chat_request, ParseEnv};
+        let env = ParseEnv {
+            glm_values: true,
+            ..ParseEnv::default()
+        };
+        let body = r#"{"messages":[{"role":"user","content":"hi"}],"temperature":1.0}"#;
+        let parsed = super::parse_request(crate::route::WireSurface::OpenaiChat, &env, body)
+            .expect("request parses");
+        // The ceiling is read from the environment once per process; this test
+        // only asserts the site exists and that an inert scope serves as sent.
+        let max = super::glm_values().temp_max;
+        match max {
+            Some(max) => assert_eq!(parsed.temperature, 1.0f32.min(max)),
+            None => assert_eq!(parsed.temperature, 1.0),
+        }
+        assert_eq!(
+            parse_chat_request(&ParseEnv::default(), body)
+                .expect("request parses")
+                .temperature,
+            1.0
+        );
     }
 
     // The deployment ceiling: absent is no ceiling, 0.0 means greedy, and a
