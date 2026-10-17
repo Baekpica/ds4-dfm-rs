@@ -15,7 +15,10 @@ use std::time::{Duration, SystemTime};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{fail, Result, ALIGN, FORMAT_VERSION, RECIPE, VARIANT};
+use super::{
+    fail, fp8_finite, q4_scales_finite, Result, ALIGN, FORMAT_VERSION, FP8, Q4_BYTES, Q4_K, RECIPE,
+    VARIANT,
+};
 use crate::gguf::{GgufError, GgufFile};
 use crate::mapped::page_size;
 use crate::tensors::{ShardPlan, TensorError, TensorInventory};
@@ -84,10 +87,13 @@ fn filename(name: &str) -> Result<()> {
 }
 
 fn check_hash(bytes: &[u8], expected: &str) -> Result<()> {
+    check_digest(&Sha256::digest(bytes), expected)
+}
+
+fn check_digest(digest: &[u8], expected: &str) -> Result<()> {
     if expected.len() != 64 || !expected.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err(fail("invalid release SHA256"));
     }
-    let digest = Sha256::digest(bytes);
     for (i, byte) in digest.iter().enumerate() {
         if u8::from_str_radix(&expected[2 * i..2 * i + 2], 16).ok() != Some(*byte) {
             return Err(fail("release SHA256 mismatch"));
@@ -300,6 +306,7 @@ pub(super) fn open_dir(root: &Path, feature: Feature) -> Result<TensorInventory>
 fn verify_part(root: &Path, part: &Part) -> Result<(PathBuf, u64, TensorInventory)> {
     let path = root.join(&part.name);
     let g = GgufFile::open(&path)?;
+    random_access(g.as_bytes());
     let role: &[u8] = if part.role == Feature::Trunk {
         b"trunk"
     } else {
@@ -310,20 +317,148 @@ fn verify_part(root: &Path, part: &Part) -> Result<(PathBuf, u64, TensorInventor
     {
         return Err(fail("part role/source revision mismatch"));
     }
-    let inv = TensorInventory::from_file(&path, &g)?;
+    let inv = super::streamed(|| TensorInventory::from_file(&path, &g))?;
     if inv.shards.len() != 1 || inv.alignment != ALIGN {
         return Err(fail("part is not one aligned GGUF"));
     }
-    check_file(g.as_bytes(), &part.entry)?;
+    if number(&part.entry, "bytes")? != g.as_bytes().len() as u64 {
+        return Err(fail("release file size mismatch"));
+    }
+    let spans = |typ| -> Vec<(u64, u64)> {
+        inv.tensors
+            .iter()
+            .filter(|t| t.typ == typ)
+            .map(|t| (t.abs_offset, t.bytes))
+            .collect()
+    };
+    let (q4, fp8) = (spans(Q4_K), spans(FP8));
+    let digest = part_digest(&path, g.as_bytes(), Scan::new(&q4, &fp8))?;
+    check_digest(&digest, text(&part.entry, "sha256")?)?;
     let size = g.as_bytes().len() as u64;
     drop(g);
     drop_cache(&path);
     Ok((path, size, inv))
 }
 
-/// Hashing reads all ~110 GiB. Cached, those pages compete with the native
-/// device copy for the same UMA memory (GB10: the load reclaims them under
-/// pressure), so return them once a part is verified.
+/// Parts hash through O_DIRECT reads: streaming ~110 GiB through the page
+/// cache fragments the free memory the native 2 MiB device pages come from
+/// (GB10 UMA). The mapped bytes are the fallback.
+/// The same pass runs the whole-tensor content checks of `scan`.
+fn part_digest(path: &Path, mapped: &[u8], mut scan: Scan) -> Result<Vec<u8>> {
+    #[cfg(target_os = "linux")]
+    if let Some(digest) = direct_digest(path, &mut scan)? {
+        return Ok(digest);
+    }
+    scan.feed(0, mapped)?;
+    Ok(Sha256::digest(mapped).to_vec())
+}
+
+/// Content checks run as a part streams by (spans in part offsets): every
+/// Q4_K block's f16 scales and every FP8 byte. A block's four scale bytes
+/// may straddle two chunks; the previous chunk's last three bytes carry.
+struct Scan<'a> {
+    q4: &'a [(u64, u64)],
+    fp8: &'a [(u64, u64)],
+    tail: [u8; 3],
+}
+
+impl<'a> Scan<'a> {
+    fn new(q4: &'a [(u64, u64)], fp8: &'a [(u64, u64)]) -> Self {
+        Self {
+            q4,
+            fp8,
+            tail: [0; 3],
+        }
+    }
+
+    fn feed(&mut self, pos: u64, chunk: &[u8]) -> Result<()> {
+        let end = pos + chunk.len() as u64;
+        for &(start, bytes) in self.fp8 {
+            let (from, to) = (start.max(pos), (start + bytes).min(end));
+            if from < to && !fp8_finite(&chunk[(from - pos) as usize..(to - pos) as usize]) {
+                return Err(fail("nonfinite FP8 weight"));
+            }
+        }
+        // Blocks starting in the previous chunk's last three bytes waited.
+        let from = pos.saturating_sub(3);
+        let tail = self.tail;
+        let byte = |at: u64| {
+            if at >= pos {
+                chunk[(at - pos) as usize]
+            } else {
+                tail[(3 - (pos - at)) as usize]
+            }
+        };
+        for &(start, bytes) in self.q4 {
+            let stop = start + bytes;
+            if stop <= from || start >= end {
+                continue;
+            }
+            let mut at = start + from.saturating_sub(start).div_ceil(Q4_BYTES) * Q4_BYTES;
+            while at < stop && at + 4 <= end {
+                if !q4_scales_finite(&[byte(at), byte(at + 1), byte(at + 2), byte(at + 3)]) {
+                    return Err(fail("nonfinite Q4_K scale"));
+                }
+                at += Q4_BYTES;
+            }
+        }
+        // The last three bytes of tail ++ chunk.
+        let take = chunk.len().min(3);
+        self.tail.copy_within(take.., 0);
+        self.tail[3 - take..].copy_from_slice(&chunk[chunk.len() - take..]);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn direct_digest(path: &Path, scan: &mut Scan) -> Result<Option<Vec<u8>>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    const DIRECT_ALIGN: usize = 4096;
+    const DIRECT_CHUNK: usize = 16 << 20;
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(path)
+    else {
+        return Ok(None);
+    };
+    let mut raw = vec![0u8; DIRECT_CHUNK + DIRECT_ALIGN];
+    let start = raw.as_ptr().align_offset(DIRECT_ALIGN);
+    let buf = &mut raw[start..start + DIRECT_CHUNK];
+    let mut hasher = Sha256::new();
+    let mut pos = 0u64;
+    loop {
+        match file.read(buf) {
+            Ok(0) => return Ok(Some(hasher.finalize().to_vec())),
+            Ok(n) => {
+                hasher.update(&buf[..n]);
+                scan.feed(pos, &buf[..n])?;
+                pos += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
+/// Validation reads headers, gains, books and padding through the map;
+/// readahead around each would cache ~200 MiB per part.
+#[cfg(target_os = "linux")]
+fn random_access(bytes: &[u8]) {
+    unsafe {
+        libc::madvise(
+            bytes.as_ptr() as *mut libc::c_void,
+            bytes.len(),
+            libc::MADV_RANDOM,
+        )
+    };
+}
+
+#[cfg(not(target_os = "linux"))]
+fn random_access(_: &[u8]) {}
+
+/// Validation still faults headers, books and scales through the map;
+/// return those pages once a part is verified.
 #[cfg(target_os = "linux")]
 fn drop_cache(path: &Path) {
     use std::os::fd::AsRawFd;
@@ -400,4 +535,57 @@ fn verify_dir(root: &Path, feature: Feature) -> Result<TensorInventory> {
         base = base.checked_add(span).ok_or(TensorError::Overflow)?;
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Two Q4_K spans of three blocks; any chunking must find a NaN scale,
+    // including one whose four bytes straddle a chunk boundary.
+    fn scan(data: &[u8], spans: &[(u64, u64)], chunk: usize) -> Result<()> {
+        scan_fp8(data, spans, &[], chunk)
+    }
+
+    fn scan_fp8(data: &[u8], q4: &[(u64, u64)], fp8: &[(u64, u64)], chunk: usize) -> Result<()> {
+        let mut scan = Scan::new(q4, fp8);
+        for (i, part) in data.chunks(chunk).enumerate() {
+            scan.feed((i * chunk) as u64, part)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn q4_scan_finds_straddling_scales() {
+        let spans = [(128, 3 * Q4_BYTES), (1024, 3 * Q4_BYTES)];
+        let clean = vec![0u8; 1536];
+        let at = 1024 + 2 * Q4_BYTES as usize;
+        // +inf d (high byte at +1) or dmin (+3) of the last block.
+        for byte in [at + 1, at + 3] {
+            let mut bad = clean.clone();
+            bad[byte] = 0x7c;
+            for chunk in [1, 2, 3, 7, 144, at + 2, 1536] {
+                assert!(scan(&clean, &spans, chunk).is_ok(), "chunk {chunk}");
+                assert!(
+                    scan(&bad, &spans, chunk).is_err(),
+                    "byte {byte} chunk {chunk}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fp8_scan_finds_nan_bytes() {
+        let fp8 = [(64, 50)];
+        let clean = vec![0x7eu8; 256];
+        for chunk in [1, 7, 33, 256] {
+            assert!(scan_fp8(&clean, &[], &fp8, chunk).is_ok(), "chunk {chunk}");
+            let mut bad = clean.clone();
+            bad[113] = 0xff; // last byte of the span: E4M3FN NaN
+            assert!(scan_fp8(&bad, &[], &fp8, chunk).is_err(), "chunk {chunk}");
+            bad[113] = 0x7e;
+            bad[114] = 0x7f; // outside the span
+            assert!(scan_fp8(&bad, &[], &fp8, chunk).is_ok(), "chunk {chunk}");
+        }
+    }
 }

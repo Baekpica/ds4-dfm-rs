@@ -9,6 +9,7 @@ mod layout;
 mod model;
 mod release;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
@@ -38,6 +39,32 @@ const Q4_BYTES: u64 = 144;
 const SCALE_BLOCK: u64 = 128;
 
 type Result<T> = std::result::Result<T, TensorError>;
+
+thread_local! {
+    /// Set while the release reader parses a part: its O_DIRECT hashing
+    /// pass checks Q4_K scales and FP8 weights, so the map never streams.
+    static STREAMED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` with the whole-tensor content scans left to the caller's stream.
+pub(super) fn streamed<T>(f: impl FnOnce() -> T) -> T {
+    STREAMED.with(|s| s.set(true));
+    let out = f();
+    STREAMED.with(|s| s.set(false));
+    out
+}
+
+/// E4M3FN NaN encodings are rejected in the source weights.
+pub(super) fn fp8_finite(bytes: &[u8]) -> bool {
+    !bytes.iter().any(|x| x & 0x7f == 0x7f)
+}
+
+/// Both f16 scales (d, dmin) at the start of a Q4_K block are finite.
+pub(super) fn q4_scales_finite(scales: &[u8]) -> bool {
+    scales[..4]
+        .chunks_exact(2)
+        .all(|s| u16::from_le_bytes([s[0], s[1]]) & 0x7c00 != 0x7c00)
+}
 
 pub(super) fn open_dir(
     path: &std::path::Path,
@@ -299,8 +326,7 @@ fn validate_native(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
                 return Err(fail("nonpositive/nonfinite FP8 scale"));
             }
         }
-        // E4M3FN NaN encodings are rejected in the source weights as well.
-        if raw(g.as_bytes(), t)?.iter().any(|x| x & 0x7f == 0x7f) {
+        if !STREAMED.with(Cell::get) && !fp8_finite(raw(g.as_bytes(), t)?) {
             return Err(fail("nonfinite FP8 weight"));
         }
         seen += 1;
@@ -384,12 +410,10 @@ pub(super) fn validate_part(
             _ => return Err(fail("unsupported tensor type")),
         };
         let bytes = raw(g.as_bytes(), t)?;
-        if t.typ == Q4_K {
+        if t.typ == Q4_K && !STREAMED.with(Cell::get) {
             for block in bytes.chunks_exact(Q4_BYTES as usize) {
-                for scale in [&block[..2], &block[2..4]] {
-                    if u16::from_le_bytes(scale.try_into().unwrap()) & 0x7c00 == 0x7c00 {
-                        return Err(fail("nonfinite Q4_K scale"));
-                    }
+                if !q4_scales_finite(block) {
+                    return Err(fail("nonfinite Q4_K scale"));
                 }
             }
         }
