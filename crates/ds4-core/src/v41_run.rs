@@ -69,6 +69,17 @@ pub fn v41_kvreuse_last_reused() -> i32 {
     unsafe { ds4_bridge_v41_kvreuse_last_reused() }
 }
 
+/// The engine's `DS4_DEFAULT_MIN_P` (`ds4.h:54`, 0.02 since 2026-10-15,
+/// commit 59ee755): what the V4.1 route uses when the request omits min_p.
+/// 0.02 is the value that avoids both measured failure modes.  top_p 1.0 lets
+/// the flat 2-bit tail through, dropping a junk token about every 160 (the
+/// 2026-10-12 SVG).  top_p 0.95 -- and min_p 0.05, its twin -- collapse the
+/// kept set to top-1 in a high-confidence repetition region, so `</think>`,
+/// which the quantization presses down to 2-6%, can never be drawn and the
+/// loop becomes absorbing (the 2026-10-15 28-minute stall).  min_p cuts at
+/// 0.0198 relative to top-1: below the junk class (<9e-4), above `</think>`.
+pub const V41_DEFAULT_MIN_P: f32 = 0.02;
+
 /// The decode-sampling face for one V4.1 run (the engine's
 /// `ds4_decode_sampling`, `ds4_v41_api.h:69-75`): temperature > 0 with no
 /// penalties takes the device sampling kernel (speculation runs, rejection
@@ -177,7 +188,7 @@ pub struct V41RunOptions<'a> {
     /// The tool-syntax greedy hook (the engine's ds4_greedy_fn, c6e2706): the
     /// serve's closure; the native asks once per position.  None = no hook.
     pub greedy: Option<&'a mut dyn FnMut(*const i32, u32) -> bool>,
-    /// `--zchain <dir>`: the ② anti-repair sidecar (install.sh's own
+    /// `--zchain <dir>`: the ② anti-repair sidecar (ds41_install.sh's own
     /// spelling; the deployment's third file next to the GGUF).  The engine
     /// carries it to the per-state mount (`core_engine_open.c:120-124` ->
     /// `v41_state_plugins`, `core_v41_state.c:77-87`); the port mounts it
@@ -186,7 +197,7 @@ pub struct V41RunOptions<'a> {
     pub zchain: Option<&'a str>,
     /// `--posttrain <dir>`: the ③ post-train gain directory (the
     /// `base.fnv`-gated third file; finance-only in the deployment,
-    /// install.sh).  Merged with ② exactly as `core_v41_amp.c:227-270`.
+    /// ds41_install.sh).  Merged with ② exactly as `core_v41_amp.c:227-270`.
     pub posttrain: Option<&'a str>,
     /// The request's images (the engine's `ds4_v41_images`, core_v41.h:409):
     /// the Rust host preprocesses and expands the prompt, then borrows this in

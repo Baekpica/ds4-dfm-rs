@@ -24,7 +24,7 @@ GGUF=${GGUF:-$MODEL_DIR/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf}
 SIDECAR=${SIDECAR:-$MODEL_DIR/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative-grrb-vqfin41_vqhalf_a_n8192-engine}
 BIN=${BIN:-$MODEL_DIR/bin/ds4}
 OUT=${OUT:-$MODEL_DIR/golden}
-# The two official n-gram shards, installed by install.sh. The deployed path
+# The two official n-gram shards, installed by ds41_install.sh. The deployed path
 # uses them (the README's server and CLI examples both pass --engram-dir);
 # NO_ENGRAM=1 captures the fixture variant instead.
 ENGRAM_DIR=${ENGRAM_DIR:-$HOME/youngai/deepseek-engram}

@@ -15,7 +15,7 @@
 # usage: ds41_sampling_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port> [zchain_dir]
 #
 # With [zchain_dir] both sides boot with --zchain <dir>: the engine's own
-# deployment spelling (install.sh passes --zchain "$MODEL/$SIDECAR"; the
+# deployment spelling (ds41_install.sh passes --zchain "$MODEL/$SIDECAR"; the
 # finance sidecar …-grrb-vqfin41_vqhalf_a_n8192-engine is the default
 # domain).  The dir must have no spaces.
 set -u
@@ -23,7 +23,7 @@ set -u
 ENG="$1" SRV="$2" MODEL="$3" ENGRAM="$4" PORT="$5"
 ZC="${6:-}"
 ZFLAG=""
-# The canonical install.sh line: --zchain <sidecar> --mem-budget-mb 110000
+# The canonical ds41_install.sh line: --zchain <sidecar> --mem-budget-mb 110000
 # (its BUDGET_MB).  The budget is inert for the ids; carrying it exercises
 # both sides' flag acceptance and the L1 load gate at boot.
 [ -n "$ZC" ] && ZFLAG="--zchain $ZC --mem-budget-mb 110000"

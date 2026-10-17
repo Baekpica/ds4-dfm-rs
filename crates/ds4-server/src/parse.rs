@@ -149,6 +149,54 @@ pub fn default_temperature() -> f32 {
         .unwrap_or(DEFAULT_TEMPERATURE)
 }
 
+/// min_p is a fraction of the top-1 probability, so the engine's window for
+/// it is [0, 1]; anything outside that is a typo, not a setting.
+const MIN_P_BOUNDS: std::ops::RangeInclusive<f32> = 0.0..=1.0;
+
+/// Resolve a raw `DS4_SERVER_DEFAULT_MIN_P` against the engine default.
+/// Unparseable or out-of-range values are reported once at startup instead
+/// of being clamped (0.2 and 2.0 are equally likely to be typos) or silently
+/// falling back to the engine default.
+fn resolve_min_p(raw: Option<&str>) -> f32 {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+        return ds4_core::V41_DEFAULT_MIN_P;
+    };
+
+    let Ok(value) = raw.parse::<f32>() else {
+        eprintln!(
+            "ds4-server: DS4_SERVER_DEFAULT_MIN_P={raw:?} is not a number; using {}",
+            ds4_core::V41_DEFAULT_MIN_P
+        );
+        return ds4_core::V41_DEFAULT_MIN_P;
+    };
+
+    if !value.is_finite() || !MIN_P_BOUNDS.contains(&value) {
+        eprintln!(
+            "ds4-server: DS4_SERVER_DEFAULT_MIN_P={raw:?} is outside [0, 1]; using {}",
+            ds4_core::V41_DEFAULT_MIN_P
+        );
+        return ds4_core::V41_DEFAULT_MIN_P;
+    }
+
+    value
+}
+
+/// The V4.1 route's min_p default: the engine's `DS4_DEFAULT_MIN_P`
+/// (`ds4.h:54`, 0.02) unless the deployment overrides it through
+/// `DS4_SERVER_DEFAULT_MIN_P` -- the same shape as the temperature above, and
+/// the value ds41_install.sh carries as its own MIN_P constant.  Scoped to
+/// `ParseEnv::engine_defaults` (the V4.1 model set); the other families keep
+/// `DEFAULT_MIN_P`.  The environment is read once per process: it is a
+/// deployment setting fixed at server start, not a per-request input.
+pub fn default_min_p() -> f32 {
+    static RESOLVED: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+    *RESOLVED.get_or_init(|| {
+        let raw = std::env::var("DS4_SERVER_DEFAULT_MIN_P").ok();
+        resolve_min_p(raw.as_deref())
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedRequest {
     pub kind: ReqKind,
@@ -216,7 +264,7 @@ impl ParsedRequest {
             temperature: env.default_temp,
             top_p: DEFAULT_TOP_P,
             min_p: if env.engine_defaults {
-                0.0
+                default_min_p()
             } else {
                 DEFAULT_MIN_P
             },
@@ -3665,5 +3713,35 @@ mod eos_policy_tests {
             EosPolicy::Global.excluded(EOS, acc.thinking_inside()),
             Some(EOS)
         );
+    }
+}
+
+#[cfg(test)]
+mod default_min_p_tests {
+    use super::{resolve_min_p, DEFAULT_MIN_P};
+    use ds4_core::V41_DEFAULT_MIN_P;
+
+    // The deployment override is accepted only inside min_p's [0, 1] window;
+    // everything else is reported and falls back to the engine default.
+    #[test]
+    fn resolves_valid_override() {
+        assert_eq!(resolve_min_p(Some("0.02")), 0.02);
+        assert_eq!(resolve_min_p(Some("0")), 0.0);
+        assert_eq!(resolve_min_p(Some("1")), 1.0);
+    }
+
+    #[test]
+    fn rejects_bad_override() {
+        for raw in ["", "abc", "-0.1", "1.5", "2", "nan", "inf"] {
+            assert_eq!(resolve_min_p(Some(raw)), V41_DEFAULT_MIN_P, "{raw}");
+        }
+
+        assert_eq!(resolve_min_p(None), V41_DEFAULT_MIN_P);
+    }
+
+    // The port's own families never see the engine default.
+    #[test]
+    fn other_families_keep_their_default() {
+        assert_eq!(DEFAULT_MIN_P, 0.05);
     }
 }

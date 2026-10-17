@@ -11,7 +11,7 @@
 # usage: ds41_chat_gate.sh <engine_server> <port_server> <gguf> <engram_dir> <port> [zchain_dir]
 #
 # With [zchain_dir] both sides boot with the deployment's own line
-# (--zchain <dir> --mem-budget-mb 110000, install.sh's start); the dir must
+# (--zchain <dir> --mem-budget-mb 110000, ds41_install.sh's start); the dir must
 # have no spaces.
 set -u
 

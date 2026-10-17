@@ -230,7 +230,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
             "--engram-dir" => {
                 parsed.engram_dir = Some(require_value(&arg, iter.next())?);
             }
-            /* Unit Z: the deployment's sidecar spelling (install.sh boots
+            /* Unit Z: the deployment's sidecar spelling (ds41_install.sh boots
              * with --zchain <domain dir> [--posttrain <dir>]). */
             "--zchain" => {
                 parsed.zchain = Some(require_value(&arg, iter.next())?);
@@ -251,7 +251,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
                 parsed.vision_golden = Some(require_value(&arg, iter.next())?);
             }
             /* Unit Z: the engine's process red line (core_util.c:198-200);
-             * install.sh boots the server with 110000. */
+             * ds41_install.sh boots the server with 110000. */
             "--mem-budget-mb" => {
                 let v = require_value(&arg, iter.next())?;
                 parsed.mem_budget_mb = Some(parse_i32(&arg, &v)?);
@@ -775,10 +775,15 @@ fn run_v41_one_shot(
         sampling: Some(ds4_core::V41Sampling {
             temperature: args.temp,
             top_p: args.top_p,
-            // The engine CLI's min_p default is 0.0 (DS4_DEFAULT_MIN_P,
-            // ds4.h:56); the port CLI's shared default is 0.05 for the other
-            // families, so the v41 path takes 0.0 unless --min-p was given.
-            min_p: if args.min_p_set { args.min_p } else { 0.0 },
+            // The engine's min_p default is 0.02 (DS4_DEFAULT_MIN_P, ds4.h:54,
+            // 2026-10-15); the port CLI's shared default is 0.05 for the other
+            // families, so the v41 path takes the engine's value unless
+            // --min-p was given.
+            min_p: if args.min_p_set {
+                args.min_p
+            } else {
+                ds4_core::V41_DEFAULT_MIN_P
+            },
             top_k: 0,
             seed: args.seed,
             freq_penalty: 0.0,
