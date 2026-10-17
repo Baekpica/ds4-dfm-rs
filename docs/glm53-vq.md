@@ -116,7 +116,8 @@ per token with the same Q4_K choice for its nonexpert weights.
   F16 tensor cores (value-major, so state and V' accumulators repack in
   registers) and applies the gated output norm. The shared Solar kernels kept
   F32 planes and four passes (~2 GB per layer at 2,048 rows): 12.2 → 4.7 ms.
-  The forget and gate projections stay BF16 rows for these kernels.
+  The forget and gate projections stay BF16 rows for these kernels, and so do
+  q/k/v when q4p computes them (the rounding decode and verify already keep).
   Appends under 64 rows keep the recurrence; `DS4_GLMVQ_KDA_MMA=0` restores
   the Solar chunks.
 - **Attention.** One flash kernel per query row computes `softmax(q Cᵀ) C`
@@ -197,6 +198,7 @@ RMS 0.23, KL 2.3e-7.
 | Fused down quantization, scan staging, dependent launch, mHC split preload | identical order | bit-identical | identical |
 | Eight-warp flash attention | identical order | bit-identical | identical |
 | FP16 Q4_K prefill (q4p) | FP16 activations and dequantized weights instead of Q8_1 | RMS 0.26, KL 1.0e-6 | identical |
+| BF16 KDA q/k/v rows from q4p | decode's BF16 output rounding | RMS 0.23, KL 9.7e-7 | identical (512 decode ids too) |
 
 On the long-prompt cases (four prompts, 76 teacher-forced targets) q4p sits
 closer than MMQ to a BF16 restore of the same Q4_K weights (mean KL 0.0024
@@ -245,11 +247,13 @@ first chunk paid lazy allocation and page-cache stalls).
 | Dependent decode launch | 1153.1 | 24.68 | kernels stage weights early |
 | Eight-warp flash attention | 1205.4 | 25.54 | no register spills |
 | FP16 Q4_K prefill | 1274.6 | 25.31 | weights dequantized once, FP16 MMA |
+| BF16 KDA q/k/v rows | 1300.2 | 25.29 | half the q/k/v traffic |
 
 Decode varies ±1.5% between fresh runs here; the prefill rows are the
-measured trend. The last two rows are means of two interleaved fresh-process
-pairs, against merged `main` (`c5384b5e`, 1148.6) and against
-`DS4_GLMVQ_Q4_PREFILL=0` (1200.9). From the Q4_K v3 row on, the warm-up prefill matches the
+measured trend. The last three rows are means of two interleaved fresh-process
+pairs, against merged `main` (`c5384b5e`, 1148.6), against
+`DS4_GLMVQ_Q4_PREFILL=0` (1200.9) and against F32 q/k/v (1281.6); a 2K
+decode pair of 512 tokens stayed at 25.8–25.9 tok/s. From the Q4_K v3 row on, the warm-up prefill matches the
 chunk size. Rows from the BF16 residuals on were measured on 2026-10-17
 (two-run mean for that row). The dependent launch was judged on 512-token
 decodes at 2K, interleaved fresh runs: 24.55/24.78 → 25.09/25.12 tok/s.
@@ -319,3 +323,5 @@ Measured and not kept, so they need a new idea before another attempt:
 | Vendored MMQ / MMVQ at verify widths | flat 150–190 GB/s, no better than the SIMT kernel |
 | Verify down without mid-row groups (contiguous tasks per CTA, L1 reads) | bit-identical, 3–25% slower |
 | Persistent grid / 576-byte stages for the verify Q4_K MMA | 1–2% / 6% slower (short strided row segments) |
+| FP8 prefill experts: producer warp + mbarrier ring, MT = 2 | bit-identical, 1–8% slower: a 288-thread block allocates registers as 384 (168 per thread, MT = 2 needs ~242), and the 64 KiB book leaves no room for a third stage |
+| q4p: 4 stages / raw rows two stages ahead | 3–5% / 2% slower than 3 stages, one ahead |

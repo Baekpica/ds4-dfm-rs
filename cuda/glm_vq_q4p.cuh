@@ -149,12 +149,13 @@ __device__ __forceinline__ void glmvq_q4p_mma(float c[4], const uint4 &a, uint32
         : "r"(a.x), "r"(a.y), "r"(a.z), "r"(a.w), "r"(b0), "r"(b1));
 }
 
-/* y[token][row] for rows multiple of 128 and cols of 512. Fragment lane
- * (g, c) owns elements 8c..8c+7 of every sub-block: bytes 8c..8c+7 of a
- * row's qs chunk and one 16-byte token load, in the q4m element order. */
-template <bool TAIL>
+/* y[token][row] for rows multiple of 128 and cols of 512, as F32 or as the
+ * BF16 rounding decode and verify store. Fragment lane (g, c) owns elements
+ * 8c..8c+7 of every sub-block: bytes 8c..8c+7 of a row's qs chunk and one
+ * 16-byte token load, in the q4m element order. */
+template <bool TAIL, typename OUT>
 __global__ void __launch_bounds__(GLMVQ_Q4P_THREADS, 1) glmvq_q4p(const uint8_t *weight,
-        const __half *xh, const float *xscale, float *out, uint32_t rows, uint32_t cols, uint32_t tokens) {
+        const __half *xh, const float *xscale, OUT *out, uint32_t rows, uint32_t cols, uint32_t tokens) {
     constexpr uint32_t BM = GLMVQ_Q4P_BM, BN = GLMVQ_Q4P_BN, STAGES = GLMVQ_Q4P_STAGES;
     constexpr uint32_t NT = GLMVQ_Q4P_NT, CONSUMERS = GLMVQ_Q4P_CONSUMERS, PRODUCERS = GLMVQ_Q4P_PRODUCERS;
     extern __shared__ __align__(16) uint8_t q4p_shared[];
@@ -321,9 +322,9 @@ __global__ void __launch_bounds__(GLMVQ_Q4P_THREADS, 1) glmvq_q4p(const uint8_t 
                 const float s = xscale[token];
                 #pragma unroll
                 for (uint32_t mt = 0; mt < 2; mt++) {
-                    float *dst = out + (uint64_t)token * rows + m0 + wm * 32 + 16 * mt + g;
-                    dst[0] = acc[mt][j][e] * s;
-                    dst[8] = acc[mt][j][e + 2] * s;
+                    OUT *dst = out + (uint64_t)token * rows + m0 + wm * 32 + 16 * mt + g;
+                    dst[0] = glmvq_cast<OUT>(acc[mt][j][e] * s);
+                    dst[8] = glmvq_cast<OUT>(acc[mt][j][e + 2] * s);
                 }
             }
         }
@@ -352,7 +353,8 @@ static cudaError_t glmvq_q4p_prepare(const glmvq_q4p_input &in, const float *inp
     return cudaGetLastError();
 }
 
-static cudaError_t glmvq_q4p_gemm(const uint8_t *weight, const glmvq_q4p_input &in, float *out,
+template <typename OUT>
+static cudaError_t glmvq_q4p_gemm(const uint8_t *weight, const glmvq_q4p_input &in, OUT *out,
         uint32_t rows, uint32_t cols, uint32_t tokens, cudaStream_t stream) {
     // One persistent CTA per SM.
     int device = 0, sms = 0;
@@ -361,20 +363,23 @@ static cudaError_t glmvq_q4p_gemm(const uint8_t *weight, const glmvq_q4p_input &
     const uint32_t tiles = rows / GLMVQ_Q4P_BM * ((tokens + GLMVQ_Q4P_BN - 1) / GLMVQ_Q4P_BN);
     const uint32_t ctas = min(tiles, (uint32_t)sms);
     if (tokens % GLMVQ_Q4P_BN) {
-        glmvq_q4p<true><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
+        glmvq_q4p<true, OUT><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
             weight, in.xh, in.xscale, out, rows, cols, tokens);
     } else {
-        glmvq_q4p<false><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
+        glmvq_q4p<false, OUT><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
             weight, in.xh, in.xscale, out, rows, cols, tokens);
     }
     return cudaGetLastError();
 }
 
 static cudaError_t glmvq_q4p_init(void) {
-    const cudaError_t a = cudaFuncSetAttribute(glmvq_q4p<true>,
-        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_Q4P_SMEM);
-    return a != cudaSuccess ? a : cudaFuncSetAttribute(glmvq_q4p<false>,
-        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_Q4P_SMEM);
+    const void *kernels[] = {(const void *)glmvq_q4p<true, float>, (const void *)glmvq_q4p<false, float>,
+        (const void *)glmvq_q4p<true, __nv_bfloat16>, (const void *)glmvq_q4p<false, __nv_bfloat16>};
+    for (const void *kernel : kernels) {
+        const cudaError_t e = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_Q4P_SMEM);
+        if (e != cudaSuccess) { return e; }
+    }
+    return cudaSuccess;
 }
 
 #endif

@@ -42,6 +42,10 @@ void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx);
 /* Up to four matrices over one input; prefill shares its Q8_1/BF16 copy. */
 int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
+/* Prefill Q4_K matrices over one input as BF16 rows; 0 (outputs untouched)
+ * when the rows or weights keep F32 outputs. */
+int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows);
 int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
 /* Q4_K gate and up of one input with the clamped SwiGLU in one pass, at
@@ -139,7 +143,7 @@ int ds4_gpu_gvq_kda_fused(ds4_gvq_ctx *ctx, uint32_t rows);
  * the separate norm. */
 int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,
     ds4_gpu_tensor *q_tail, ds4_gpu_tensor *k_tail, ds4_gpu_tensor *v_tail,
-    const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+    const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, ds4_gvq_rows qkv_rows,
     const ds4_gpu_tensor *forget, ds4_gvq_rows forget_rows, const ds4_gpu_tensor *beta,
     const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight,
     const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,

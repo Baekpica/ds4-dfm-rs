@@ -126,11 +126,14 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
     const ds4_tensor *const qkv_w[] = {l->kda_q, l->kda_k, l->kda_v};
     ds4_gpu_tensor *const gates[] = {g->q_rank, g->kv_rank, g->q_rank_norm};
     const ds4_tensor *const gates_w[] = {l->kda_f_a, l->kda_beta, l->kda_g_a};
-    if (!gvq_mm_many(g, m, qkv, qkv_w, 3u, g->norm, rows) ||
-        !gvq_mm_many(g, m, gates, gates_w, 3u, g->norm, rows)) { return false; }
-    // Prefill: the tensor-core chunks read the forget and output-gate
-    // projections as BF16 rows and also apply the gated output norm.
+    // Prefill: the tensor-core chunks read q/k/v, the forget and output-gate
+    // projections as BF16 rows (decode's rounding) and apply the gated norm.
     const bool fused = !g->mtp_capture && ds4_gpu_gvq_kda_fused(g->gvq, rows);
+    const uint32_t qkv_index[] = {glmvq_index(m, l->kda_q), glmvq_index(m, l->kda_k), glmvq_index(m, l->kda_v)};
+    const ds4_gvq_rows qkv_rows = fused && ds4_gpu_gvq_linear_many_bf16(g->gvq, qkv, qkv_index, 3u, g->norm, rows)
+        ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+    if ((qkv_rows == DS4_GVQ_ROWS_F32 && !gvq_mm_many(g, m, qkv, qkv_w, 3u, g->norm, rows)) ||
+        !gvq_mm_many(g, m, gates, gates_w, 3u, g->norm, rows)) { return false; }
     const ds4_gvq_rows forget = fused && ds4_gpu_gvq_linear_bf16(g->gvq, g->heads,
         glmvq_index(m, l->kda_f_b), g->q_rank, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     const ds4_gvq_rows gate = fused && ds4_gpu_gvq_linear_bf16(g->gvq, g->ffn_gate,
@@ -142,7 +145,7 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
     if (fused) {
         const int done = ds4_gpu_gvq_kda_gated(g->gvq, g->heads, g->recurrent[il],
             g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],
-            g->q, g->k, g->v, g->heads, forget, g->kv_rank, g->q_conv_weight[il],
+            g->q, g->k, g->v, qkv_rows, g->heads, forget, g->kv_rank, g->q_conv_weight[il],
             g->k_conv_weight[il], g->v_conv_weight[il], g->decay_scale[il],
             g->dt_bias[il], g->ffn_gate, gate, glmvq_index(m, l->kda_o_norm), rows, DS4_N_HEAD,
             DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS);
