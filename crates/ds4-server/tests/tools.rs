@@ -278,7 +278,10 @@ fn parse_glm53_native_tool_call() {
     // With no schema at all the reference's GLM rule stands: every argument is
     // text (ds4_server.c:6435, and the reference test at :19262 asserts the
     // same string).  A declared type is what makes a numeric argument a number.
-    assert_eq!(p.calls[0].arguments, r#"{"command": "echo hi", "timeout": "10"}"#);
+    assert_eq!(
+        p.calls[0].arguments,
+        r#"{"command": "echo hi", "timeout": "10"}"#
+    );
     // The sampled block rides raw_tool_text, the field the reference fills and
     // its GLM renderer splices back (ds4_server.c:19288, :2979-2983).
     assert!(p.raw_tool_text.starts_with("\n\n<tool_call>bash"));

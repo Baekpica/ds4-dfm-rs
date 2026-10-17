@@ -91,10 +91,9 @@ fn render_glm53_drops_old_reasoning_without_tools() {
     assistant.reasoning = "old hidden reasoning".into();
     let msgs = [msg("user", "first"), assistant, msg("user", "second")];
 
-    let prompt = String::from_utf8(
-        render_chat(ModelSyntax::Glm53, &msgs, "", ThinkMode::High).unwrap(),
-    )
-    .unwrap();
+    let prompt =
+        String::from_utf8(render_chat(ModelSyntax::Glm53, &msgs, "", ThinkMode::High).unwrap())
+            .unwrap();
 
     assert!(!prompt.contains("old hidden reasoning"));
     assert!(prompt.contains("<|assistant|>\x3cthink\x3e\x3c/think\x3efirst answer"));
@@ -266,7 +265,9 @@ fn glm53_parse_tool_call_message_matches_c() {
     assert_eq!(parsed.content, b"OK");
     assert_eq!(parsed.calls.len(), 1);
     assert_eq!(parsed.calls[0].name, "bash");
-    assert!(parsed.calls[0].arguments.contains("\"command\": \"echo hi\""));
+    assert!(parsed.calls[0]
+        .arguments
+        .contains("\"command\": \"echo hi\""));
     assert!(parsed.calls[0].arguments.contains("\"timeout\": \"10\""));
     // C keeps the sampled block on `calls.raw_tool_text` (ds4_server.c:19262).
     assert!(parsed.raw_tool_text.starts_with("\n\n<tool_call>bash"));
