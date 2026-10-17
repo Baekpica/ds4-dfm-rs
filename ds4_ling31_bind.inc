@@ -137,7 +137,9 @@ enum {
     L31_KEY = L31_NOPE + L31_ROPE, L31_VALUE = 128, L31_KV_ROW = L31_KV_LORA + L31_ROPE,
     L31_QDIM = L31_HEADS * L31_KEY, L31_VDIM = L31_HEADS * L31_VALUE, L31_LATENT = L31_HEADS * L31_KV_LORA,
     L31_DENSE_FF = 10240, L31_FF = 1280, L31_EXPERTS = 512, L31_USED = 8,
-    L31_CONTEXT = 262144, L31_PREFILL_DEFAULT = 4096, L31_PREFILL_MAX = 4096,
+    // 2048-row chunks beat 4096 on a cold 16K prompt (777 vs 646 tok/s) and need
+    // 1.2 GiB less workspace.
+    L31_CONTEXT = 262144, L31_PREFILL_DEFAULT = 2048, L31_PREFILL_MAX = 4096,
     // Absorbed MLA below one expanded query tile (decode, verify, short appends).
     L31_MLA_EXPAND_MIN = 64,
 };
