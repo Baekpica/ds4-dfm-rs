@@ -48,6 +48,12 @@ int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows);
 int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
+/* Whether ds4_gpu_gvq_linear_rows reads BF16 input rows of `weight` at
+ * these rows (prefill Q4_K), so their producer can store BF16 rows. */
+int ds4_gpu_gvq_bf16_input(ds4_gvq_ctx *ctx, uint32_t weight, uint32_t rows);
+/* ds4_gpu_gvq_linear (BF16 math) of F32 or BF16 input rows. */
+int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+    const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows);
 /* Q4_K gate and up of one input with the clamped SwiGLU in one pass, at
  * decode and verify widths; 0 when the width or weights need the
  * separate projections. */
@@ -78,7 +84,7 @@ int ds4_gpu_gvq_expand(ds4_gpu_tensor *out, const ds4_gpu_tensor *branch,
     const ds4_gpu_tensor *residual, ds4_gvq_rows format, const ds4_gpu_tensor *split,
     uint32_t rows, uint32_t width);
 int ds4_gpu_gvq_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
-    const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, float limit);
+    const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, float limit, ds4_gvq_rows out_rows);
 int ds4_gpu_gvq_round(ds4_gpu_tensor *values, uint64_t count);
 /* Stream-ordered device copy launched like the `rows`-wide kernels around
  * it; a driver memcpy between dependent launches stalled MTP prefill. */
@@ -118,6 +124,13 @@ int ds4_gpu_gvq_dsa(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     ds4_gpu_tensor *latent, ds4_gpu_tensor *kv, ds4_gpu_tensor *positions,
     uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim,
     const ds4_gpu_tensor *selected, uint32_t stride);
+/* ds4_gpu_gvq_dsa with BF16 query or output rows, which only the prefill
+ * flash path takes (0 otherwise). */
+int ds4_gpu_gvq_dsa_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gvq_rows out_rows,
+    const ds4_gpu_tensor *query, ds4_gvq_rows query_rows, const ds4_gpu_tensor *cache, uint32_t weight,
+    ds4_gpu_tensor *latent, ds4_gpu_tensor *kv, ds4_gpu_tensor *positions,
+    uint32_t first, uint32_t rows, uint32_t heads, uint32_t dim,
+    const ds4_gpu_tensor *selected, uint32_t stride);
 int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     ds4_gpu_tensor *gathered, ds4_gpu_tensor *gate, ds4_gpu_tensor *up,
     ds4_gpu_tensor *mid, ds4_gpu_tensor *down, const ds4_gpu_tensor *input,
@@ -148,7 +161,7 @@ int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor 
     const ds4_gpu_tensor *q_weight, const ds4_gpu_tensor *k_weight,
     const ds4_gpu_tensor *v_weight, const ds4_gpu_tensor *a_log,
     const ds4_gpu_tensor *dt_bias, const ds4_gpu_tensor *gate, ds4_gvq_rows gate_rows, uint32_t norm,
-    uint32_t rows, uint32_t heads, float lower_bound, float eps);
+    uint32_t rows, uint32_t heads, float lower_bound, float eps, ds4_gvq_rows out_rows);
 
 #ifdef __cplusplus
 }

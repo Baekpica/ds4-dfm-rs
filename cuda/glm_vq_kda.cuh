@@ -574,9 +574,10 @@ __device__ __forceinline__ uint32_t glmvq_h2_rest(float lo, float hi, uint32_t r
     return glmvq_h2(lo - __low2float(r), hi - __high2float(r));
 }
 
-// G (gate) is F32 or the BF16 projection output read in place.
-template <typename G>
-__global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, float *state,
+// G (gate) is F32 or the BF16 projection output read in place; O (out)
+// is F32 or BF16 rows for a q4p projection.
+template <typename G, typename O = float>
+__global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(O *out, float *state,
         const uint8_t *records, const G *gate, const __nv_bfloat16 *norm, uint32_t rows,
         uint32_t heads, float eps) {
     constexpr uint32_t C = GLMVQ_KC, D = GLMVQ_KDA_DIM, W = GLMVQ_KS_WIDE, N = GLMVQ_KS_NARROW;
@@ -743,7 +744,7 @@ __global__ void __launch_bounds__(GLMVQ_KSCAN, 1) glmvq_kda_scan(float *out, flo
                 const uint32_t col = lane + 32 * i;
                 const float value = glmvq_mul(glmvq_mul(glmvq_mul(x[i], inv), __bfloat162float(norm[col])),
                     glmvq_sigmoid(gv[r][i]));
-                out[base + col] = glmvq_round(value);
+                out[base + col] = glmvq_cast<O>(glmvq_round(value));
             }
         }
         __syncthreads();

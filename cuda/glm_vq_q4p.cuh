@@ -50,11 +50,21 @@ __device__ __forceinline__ uint32_t glmvq_q4p_h2(__half lo, __half hi) {
     return (uint32_t)__half_as_ushort(lo) | ((uint32_t)__half_as_ushort(hi) << 16);
 }
 
+__device__ __forceinline__ float4 glmvq_q4p_quad(const float *x, uint32_t i) { return ((const float4 *)x)[i]; }
+
+// BF16 rows hold the same BF16-rounded values in half the bytes.
+__device__ __forceinline__ float4 glmvq_q4p_quad(const __nv_bfloat16 *x, uint32_t i) {
+    const uint2 v = ((const uint2 *)x)[i];
+    return make_float4(__uint_as_float(v.x << 16), __uint_as_float(v.x & 0xffff0000u),
+        __uint_as_float(v.y << 16), __uint_as_float(v.y & 0xffff0000u));
+}
+
 // x' for `scale`; returns the row's max |x| (before scaling).
-__device__ __forceinline__ float glmvq_q4p_row(const float4 *x, __half *out, uint32_t quads, float scale) {
+template <typename T>
+__device__ __forceinline__ float glmvq_q4p_row(const T *x, __half *out, uint32_t quads, float scale) {
     float peak = 0.0f;
     for (uint32_t i = threadIdx.x; i < quads; i += GLMVQ_Q4P_PREP) {
-        const float4 v = x[i];
+        const float4 v = glmvq_q4p_quad(x, i);
         peak = fmaxf(peak, fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w))));
         const __half h0 = __float2half_rn(v.x * scale), h1 = __float2half_rn(v.y * scale);
         const __half h2 = __float2half_rn(v.z * scale), h3 = __float2half_rn(v.w * scale);
@@ -66,11 +76,12 @@ __device__ __forceinline__ float glmvq_q4p_row(const float4 *x, __half *out, uin
 /* One CTA per token: x' as FP16 with each four values stored (0, 2, 1, 3),
  * so one 32-bit load is an MMA register pair, and the 2^(e-6) output scale.
  * A token beyond 2^15 (none in GLM so far) runs a second pass. */
-__global__ void __launch_bounds__(GLMVQ_Q4P_PREP) glmvq_q4p_prep(const float *input,
+template <typename T>
+__global__ void __launch_bounds__(GLMVQ_Q4P_PREP) glmvq_q4p_prep(const T *input,
         __half *xh, float *xscale, uint32_t cols) {
     __shared__ float peaks[GLMVQ_Q4P_PREP / 32];
     const uint32_t token = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-    const float4 *x = (const float4 *)(input + (uint64_t)token * cols);
+    const T *x = input + (uint64_t)token * cols;
     __half *out = xh + (uint64_t)token * cols;
     float peak = glmvq_q4p_row(x, out, cols / 4, 1.0f);
     for (uint32_t s = 16; s; s >>= 1) { peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, s)); }
@@ -347,7 +358,8 @@ static glmvq_q4p_input glmvq_q4p_layout(void *scratch, uint32_t tokens, uint32_t
     return {(__half *)base, (float *)(base + ((uint64_t)tokens * cols * sizeof(__half) + 255) / 256 * 256)};
 }
 
-static cudaError_t glmvq_q4p_prepare(const glmvq_q4p_input &in, const float *input,
+template <typename T>
+static cudaError_t glmvq_q4p_prepare(const glmvq_q4p_input &in, const T *input,
         uint32_t tokens, uint32_t cols, cudaStream_t stream) {
     glmvq_q4p_prep<<<tokens, GLMVQ_Q4P_PREP, 0, stream>>>(input, in.xh, in.xscale, cols);
     return cudaGetLastError();

@@ -81,6 +81,16 @@ static bool gvq_mm(ds4_glm53_gpu_graph *g, const ds4_model *m,
     return ok;
 }
 
+// BF16 input rows (when ds4_gpu_gvq_bf16_input said so) or F32 rows.
+static bool gvq_mm_rows(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
+        const ds4_tensor *w, const ds4_gpu_tensor *x, ds4_gvq_rows format, uint32_t rows) {
+    const bool ok = ds4_gpu_gvq_linear_rows(g->gvq, out, glmvq_index(m, w), x, format, rows);
+    if (!ok && w) {
+        fprintf(stderr, "ds4: GLM VQ linear %.*s failed (rows=%u)\n", (int)w->name.len, w->name.ptr, rows);
+    }
+    return ok;
+}
+
 // Projections of one input (q/k/v, gate/up, ...): prefill prepares it once.
 static bool gvq_mm_many(ds4_glm53_gpu_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
@@ -143,14 +153,17 @@ static bool gvq_kda(ds4_glm53_gpu_graph *g, const ds4_model *m,
         return false;
     }
     if (fused) {
+        // The output projection prepares BF16 normed heads directly.
+        const ds4_gvq_rows heads = ds4_gpu_gvq_bf16_input(g->gvq, glmvq_index(m, l->kda_output), rows)
+            ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
         const int done = ds4_gpu_gvq_kda_gated(g->gvq, g->heads, g->recurrent[il],
             g->q_conv_state[il], g->k_conv_state[il], g->v_conv_state[il],
             g->q, g->k, g->v, qkv_rows, g->heads, forget, g->kv_rank, g->q_conv_weight[il],
             g->k_conv_weight[il], g->v_conv_weight[il], g->decay_scale[il],
             g->dt_bias[il], g->ffn_gate, gate, glmvq_index(m, l->kda_o_norm), rows, DS4_N_HEAD,
-            DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS);
+            DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS, heads);
         if (done <= 0) { return false; }
-        return gvq_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
+        return gvq_mm_rows(g, m, g->attn_out, l->kda_output, g->heads, heads, rows);
     }
     // MTP verify: journal slot r+1 receives this layer's state after row r.
     ds4_gpu_tensor *snap = NULL;
@@ -217,17 +230,33 @@ static bool gvq_dsa(ds4_glm53_gpu_graph *g, const ds4_model *m,
     if (keys > DS4_GVQ_CTX_MAX) { return false; }
     ds4_gpu_tensor *const lows[] = {g->q_rank, g->kv_rank};
     const ds4_tensor *const lows_w[] = {l->attn_q_a, l->attn_kv_a_mqa};
-    return gvq_mm_many(g, m, lows, lows_w, 2u, g->norm, rows) &&
-        gvq_norm(g, m, g->q_rank_norm, g->q_rank, l->attn_q_a_norm, rows, DS4_N_LORA_Q) &&
-        gvq_mm(g, m, g->q, l->attn_q_b, g->q_rank_norm, rows, DS4_GVQ_BF16) &&
-        gvq_norm(g, m, g->kv_rank_norm, g->kv_rank, l->attn_kv_a_norm, rows, DS4_N_KV_LORA) &&
-        gvq_index(g, m, l, il, pos, rows) &&
-        ds4_gpu_gvq_store(g->layer_kv[il], g->kv_rank_norm, rows, pos, g->ctx_cap, DS4_N_KV_LORA) &&
-        ds4_gpu_gvq_dsa(g->gvq, g->heads, g->q, g->layer_kv[il],
-            glmvq_index(m, l->attn_kv_b), g->gvq_latent, g->gvq_kv,
-            g->gvq_pos, pos, rows, DS4_N_HEAD, DS4_N_KEY_MLA,
-            stride ? g->idx_selected : NULL, stride) &&
-        gvq_mm(g, m, g->attn_out, l->attn_output, g->heads, rows, DS4_GVQ_BF16);
+    if (!gvq_mm_many(g, m, lows, lows_w, 2u, g->norm, rows) ||
+        !gvq_norm(g, m, g->q_rank_norm, g->q_rank, l->attn_q_a_norm, rows, DS4_N_LORA_Q)) { return false; }
+    // Prefill flash reads q and writes the heads as BF16 rows (its GEMMs'
+    // operands), so neither side needs an F32 copy.
+    const uint32_t q_b = glmvq_index(m, l->attn_q_b);
+    const ds4_gvq_rows query = ds4_gpu_gvq_linear_many_bf16(g->gvq, &g->q, &q_b, 1u, g->q_rank_norm, rows)
+        ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+    ds4_gvq_rows heads = ds4_gpu_gvq_bf16_input(g->gvq, glmvq_index(m, l->attn_output), rows)
+        ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+    if ((query == DS4_GVQ_ROWS_F32 && !gvq_mm(g, m, g->q, l->attn_q_b, g->q_rank_norm, rows, DS4_GVQ_BF16)) ||
+        !gvq_norm(g, m, g->kv_rank_norm, g->kv_rank, l->attn_kv_a_norm, rows, DS4_N_KV_LORA) ||
+        !gvq_index(g, m, l, il, pos, rows) ||
+        !ds4_gpu_gvq_store(g->layer_kv[il], g->kv_rank_norm, rows, pos, g->ctx_cap, DS4_N_KV_LORA)) { return false; }
+    const uint32_t kv_b = glmvq_index(m, l->attn_kv_b);
+    const ds4_gpu_tensor *selected = stride ? g->idx_selected : NULL;
+    if (!ds4_gpu_gvq_dsa_rows(g->gvq, g->heads, heads, g->q, query, g->layer_kv[il], kv_b, g->gvq_latent,
+            g->gvq_kv, g->gvq_pos, pos, rows, DS4_N_HEAD, DS4_N_KEY_MLA, selected, stride)) {
+        // Another attention path took these rows: retry with F32 rows.
+        if (query == DS4_GVQ_ROWS_F32 && heads == DS4_GVQ_ROWS_F32) { return false; }
+        if (query == DS4_GVQ_ROWS_BF16 && !gvq_mm(g, m, g->q, l->attn_q_b, g->q_rank_norm, rows, DS4_GVQ_BF16)) {
+            return false;
+        }
+        heads = DS4_GVQ_ROWS_F32;
+        if (!ds4_gpu_gvq_dsa(g->gvq, g->heads, g->q, g->layer_kv[il], kv_b, g->gvq_latent, g->gvq_kv,
+                g->gvq_pos, pos, rows, DS4_N_HEAD, DS4_N_KEY_MLA, selected, stride)) { return false; }
+    }
+    return gvq_mm_rows(g, m, g->attn_out, l->attn_output, g->heads, heads, rows);
 }
 
 static bool gvq_mlp(ds4_glm53_gpu_graph *g, const ds4_model *m,
@@ -237,10 +266,13 @@ static bool gvq_mlp(ds4_glm53_gpu_graph *g, const ds4_model *m,
     const ds4_tensor *const ws[] = {gate, up};
     const bool fused = ds4_gpu_gvq_gate_up(g->gvq, g->ffn_mid, glmvq_index(m, gate), glmvq_index(m, up),
         g->norm, rows, DS4_SWIGLU_CLAMP_EXP);
+    // Prefill: the down projection prepares BF16 SwiGLU rows directly.
+    const ds4_gvq_rows mid = !fused && ds4_gpu_gvq_bf16_input(g->gvq, glmvq_index(m, down), rows)
+        ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     return (fused || (gvq_mm_many(g, m, outs, ws, 2u, g->norm, rows) &&
         ds4_gpu_gvq_swiglu(g->ffn_mid, g->ffn_gate, g->ffn_up,
-            rows, (uint32_t)gate->dim[1], DS4_SWIGLU_CLAMP_EXP))) &&
-        gvq_mm(g, m, out, down, g->ffn_mid, rows, DS4_GVQ_BF16);
+            rows, (uint32_t)gate->dim[1], DS4_SWIGLU_CLAMP_EXP, mid))) &&
+        gvq_mm_rows(g, m, out, down, g->ffn_mid, mid, rows);
 }
 
 static bool gvq_ffn(ds4_glm53_gpu_graph *g, const ds4_model *m,

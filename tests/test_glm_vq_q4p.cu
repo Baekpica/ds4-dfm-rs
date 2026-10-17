@@ -1,7 +1,8 @@
 // glmvq_q4p (FP16 prefill Q4_K GEMM) vs an FP64 dot of the dequantized
 // Q4_K weights. FP16 activations and the folded weight roundings measure
 // ~4e-4 relative RMS; the bound is 1e-3. Cases cover token tails, more
-// tiles than SMs (persistent CTAs) and a token beyond the FP16 range.
+// tiles than SMs (persistent CTAs) and a token beyond the FP16 range;
+// BF16 input rows must prepare the same bytes as their F32 values.
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -78,6 +79,22 @@ int main() {
         glmvq_q4p_check<<<(c.rows * blocks + 255) / 256, 256>>>(dw, (uint64_t)c.rows * blocks, bad);
         uint32_t flagged = 0; CK(cudaMemcpy(&flagged, bad, 4, cudaMemcpyDeviceToHost));
         if (flag || !flagged) { printf("  check: in-range %u, out-of-range %u\n", flag, flagged); failures++; }
+        // BF16 rows of BF16-rounded values prepare the same FP16 operand.
+        std::vector<__nv_bfloat16> xb(x.size());
+        for (size_t i = 0; i < x.size(); i++) { xb[i] = __float2bfloat16_rn(x[i]); x[i] = __bfloat162float(xb[i]); }
+        __nv_bfloat16 *dxb; void *scratch_b;
+        CK(cudaMalloc(&dxb, xb.size() * 2)); CK(cudaMalloc(&scratch_b, glmvq_q4p_bytes(c.tokens, c.cols)));
+        CK(cudaMemcpy(dxb, xb.data(), xb.size() * 2, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice));
+        const glmvq_q4p_input in_b = glmvq_q4p_layout(scratch_b, c.tokens, c.cols);
+        CK(glmvq_q4p_prepare(in, dx, c.tokens, c.cols, 0));
+        CK(glmvq_q4p_prepare(in_b, dxb, c.tokens, c.cols, 0));
+        const size_t bytes = glmvq_q4p_bytes(c.tokens, c.cols);
+        std::vector<uint8_t> pf(bytes), pb(bytes);
+        CK(cudaMemcpy(pf.data(), scratch, bytes, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(pb.data(), scratch_b, bytes, cudaMemcpyDeviceToHost));
+        if (pf != pb) { printf("  BF16 rows prepare a different operand\n"); failures++; }
+        CK(cudaFree(dxb)); CK(cudaFree(scratch_b));
         CK(cudaFree(dw)); CK(cudaFree(dx)); CK(cudaFree(dy)); CK(cudaFree(scratch)); CK(cudaFree(bad));
     }
     puts(failures ? "GLMVQ_Q4P_FAIL" : "GLMVQ_Q4P_PASS");
