@@ -89,10 +89,10 @@ for g in "${FIXTURES[@]}"; do
 done
 
 # The engine's preflight: a live production model subprocess refuses the run
-# (the caller stops it: the port's install.sh stop), and the box must have
+# (the caller stops it: the port's ds41_install.sh stop), and the box must have
 # room for the one model copy this gate loads.
 if pgrep -f 'ds4-serve[r]' >/dev/null; then
-    die "a production ds4-server is running; stop it first (bash install.sh stop --dir <dir>)"
+    die "a production ds4-server is running; stop it first (bash ds41_install.sh stop --dir <dir>)"
 fi
 AV=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
 [ "$AV" -ge 100000 ] || die "MemAvailable ${AV} MB < 100000; not enough room for the model"

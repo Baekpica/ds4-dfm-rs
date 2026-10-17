@@ -188,7 +188,7 @@ pub struct V41RunOptions<'a> {
     /// The tool-syntax greedy hook (the engine's ds4_greedy_fn, c6e2706): the
     /// serve's closure; the native asks once per position.  None = no hook.
     pub greedy: Option<&'a mut dyn FnMut(*const i32, u32) -> bool>,
-    /// `--zchain <dir>`: the ② anti-repair sidecar (install.sh's own
+    /// `--zchain <dir>`: the ② anti-repair sidecar (ds41_install.sh's own
     /// spelling; the deployment's third file next to the GGUF).  The engine
     /// carries it to the per-state mount (`core_engine_open.c:120-124` ->
     /// `v41_state_plugins`, `core_v41_state.c:77-87`); the port mounts it
@@ -197,7 +197,7 @@ pub struct V41RunOptions<'a> {
     pub zchain: Option<&'a str>,
     /// `--posttrain <dir>`: the ③ post-train gain directory (the
     /// `base.fnv`-gated third file; finance-only in the deployment,
-    /// install.sh).  Merged with ② exactly as `core_v41_amp.c:227-270`.
+    /// ds41_install.sh).  Merged with ② exactly as `core_v41_amp.c:227-270`.
     pub posttrain: Option<&'a str>,
     /// The request's images (the engine's `ds4_v41_images`, core_v41.h:409):
     /// the Rust host preprocesses and expands the prompt, then borrows this in

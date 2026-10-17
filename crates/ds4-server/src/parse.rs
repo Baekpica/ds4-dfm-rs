@@ -184,7 +184,7 @@ fn resolve_min_p(raw: Option<&str>) -> f32 {
 /// The V4.1 route's min_p default: the engine's `DS4_DEFAULT_MIN_P`
 /// (`ds4.h:54`, 0.02) unless the deployment overrides it through
 /// `DS4_SERVER_DEFAULT_MIN_P` -- the same shape as the temperature above, and
-/// the value install.sh carries as its own MIN_P constant.  Scoped to
+/// the value ds41_install.sh carries as its own MIN_P constant.  Scoped to
 /// `ParseEnv::engine_defaults` (the V4.1 model set); the other families keep
 /// `DEFAULT_MIN_P`.  The environment is read once per process: it is a
 /// deployment setting fixed at server start, not a per-request input.

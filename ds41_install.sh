@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh - deploy and start the ds4-dfm-rs V4.1 server (the port) on a
+# ds41_install.sh - deploy and start the ds4-dfm-rs V4.1 server (the port) on a
 # DGX Spark: the port's own binary, built from THIS tree (`make ds4-server`),
 # over the model artifact files (the GGUF, the n-gram shards, the domain
 # sidecars) that live in --dir.
@@ -15,21 +15,21 @@
 # their oracle, but only the SOURCE-BUILT one, per the owner's rule; see
 # docs/deepseek41-port-plan.md 6.4.)
 #
-#   bash install.sh                  check the machine, check the artifact
-#                                    files, build the port, start it on
-#                                    0.0.0.0:8000 and run the same smoke
-#                                    test the reference install.sh runs.
-#                                    If model/DeepSeek-V4.1-Flash.vision.gguf
-#                                    is present, images (OpenAI image_url /
-#                                    Anthropic image blocks, as data: URLs) go
-#                                    through the model's own vision tower
-#                                    (bin/ds4-server --vision-gguf; read from
-#                                    disk when an image arrives, not resident)
-#   bash install.sh --domain code    the same, serving with the coding sidecar
-#                                    (domains: finance, code, law, medicine,
-#                                    science, none; finance is the default)
-#   bash install.sh --no-start       everything except starting the server
-#   bash install.sh start | stop | status
+#   bash ds41_install.sh                  check the machine, check the artifact
+#                                         files, build the port, start it on
+#                                         0.0.0.0:8000 and run the same smoke
+#                                         test the reference install.sh runs.
+#                                         If model/DeepSeek-V4.1-Flash.vision.gguf
+#                                         is present, images (OpenAI image_url /
+#                                         Anthropic image blocks, as data: URLs) go
+#                                         through the model's own vision tower
+#                                         (bin/ds4-server --vision-gguf; read from
+#                                         disk when an image arrives, not resident)
+#   bash ds41_install.sh --domain code    the same, serving with the coding sidecar
+#                                         (domains: finance, code, law, medicine,
+#                                         science, none; finance is the default)
+#   bash ds41_install.sh --no-start       everything except starting the server
+#   bash ds41_install.sh start | stop | status
 #
 # Options:
 #   --dir DIR          where the artifact files live (default: $HOME/youngai:
@@ -87,7 +87,7 @@ START_FLOOR_MB=100000   # engine install.sh START_FLOOR_MB
 RUN_FLOOR_MB=10000      # engine install.sh RUN_FLOOR_MB
 KILL_MB=2500            # engine install.sh KILL_MB
 # Engine DS4_DEFAULT_MIN_P (ds4.h:54, 2026-10-15): the V4.1 request-omitted
-# min_p.  install.sh carries the value; the server reads it from
+# min_p.  ds41_install.sh carries the value; the server reads it from
 # DS4_SERVER_DEFAULT_MIN_P (parse.rs default_min_p), so changing it here needs
 # no rebuild.
 MIN_P=0.02
@@ -237,7 +237,7 @@ start() {
     printf '%s' "$out" | grep -q '"choices"' || { echo "$out" | head -c 400; stop; die "the smoke request failed"; }
     printf '%s\n' "$out" | sed -n 's/.*"content":"\([^"]*\)".*/  -> \1/p' | head -1
     say "ready: http://$HOST:$PORT/v1, domain $DOMAIN  (OpenAI: /v1/chat/completions /v1/completions /v1/responses | Anthropic: /v1/messages)"
-    say "stop with: bash install.sh stop --dir $DIR"
+    say "stop with: bash ds41_install.sh stop --dir $DIR"
 }
 
 case "$CMD" in

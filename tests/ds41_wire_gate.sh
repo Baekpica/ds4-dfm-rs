@@ -9,10 +9,10 @@
 # Three greedy requests (reasoning off) through one boot per side:
 #   1  POST /v1/messages   messages + max_tokens + reasoning_effort
 #   2  POST /v1/responses  input + max_output_tokens + reasoning.effort
-#   3  POST /v1/chat/completions  THE install.sh smoke request verbatim
+#   3  POST /v1/chat/completions  THE ds41_install.sh smoke request verbatim
 #      (model "deepseek-chat" = the alias that disables thinking,
 #      server_msgs.c:300-301; temperature 0, max_tokens 48, the finance
-#      question -- install.sh's own smoke)
+#      question -- ds41_install.sh's own smoke)
 #   4  POST /v1/messages   the chat gate's weather+tool request, Anthropic shape
 #   5  POST /v1/responses  the same, in the Responses shape
 #      The tools legs: the engine's one-style parser rejects the artifact's
@@ -25,14 +25,14 @@
 #
 # With [zchain_dir] both sides boot with the deployment's own line:
 # --cuda -m <gguf> --zchain <dir> --engram-dir <dir> --mem-budget-mb 110000
-# --host 127.0.0.1 --port <port> (install.sh's start, verbatim modulo the
+# --host 127.0.0.1 --port <port> (ds41_install.sh's start, verbatim modulo the
 # trace instruments).  The dir must have no spaces.
 set -u
 
 ENG="$1" SRV="$2" MODEL="$3" ENGRAM="$4" PORT="$5"
 ZC="${6:-}"
 ZFLAG=""
-# The canonical install.sh line: --zchain <sidecar> --mem-budget-mb 110000
+# The canonical ds41_install.sh line: --zchain <sidecar> --mem-budget-mb 110000
 # (its BUDGET_MB).  The budget is inert for the ids; carrying it exercises
 # both sides' flag acceptance and the L1 load gate at boot.
 [ -n "$ZC" ] && ZFLAG="--zchain $ZC --mem-budget-mb 110000"
@@ -248,4 +248,4 @@ else
     echo "  responses-tools: ids identical; both sides parsed the call"
 fi
 
-echo "ds41 wire gate: PASS (anthropic + responses + the install.sh smoke + the two tools legs: prompt ids, generated ids equal the engine's; tool items parsed or traced to the engine's text)"
+echo "ds41 wire gate: PASS (anthropic + responses + the ds41_install.sh smoke + the two tools legs: prompt ids, generated ids equal the engine's; tool items parsed or traced to the engine's text)"

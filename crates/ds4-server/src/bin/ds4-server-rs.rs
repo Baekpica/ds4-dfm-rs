@@ -228,7 +228,7 @@ fn main() {
                 serve_req.mem_floor_gb = cfg.mem_floor_gb;
             }
             // Unit Z: the engine's process red line (core_util.c:198-200);
-            // install.sh boots with --mem-budget-mb 110000.  Armed before
+            // ds41_install.sh boots with --mem-budget-mb 110000.  Armed before
             // the model open so the L1 gate sees it.
             "--mem-budget-mb" => {
                 mem_budget_mb = Some(
@@ -259,7 +259,7 @@ fn main() {
             "--emit-trace" => v41_flags.emit_trace = true,
             "--v41-prof" => v41_flags.prof = true,
             // Unit Z: the sidecar mount the deployment boots with
-            // (install.sh: --zchain <domain sidecar> [--posttrain <dir>]).
+            // (ds41_install.sh: --zchain <domain sidecar> [--posttrain <dir>]).
             "--zchain" => {
                 v41_flags.zchain = Some(args.next().unwrap_or_else(|| usage()));
             }

@@ -72683,7 +72683,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              * spans, not the raw range: the vq blobs are not typed tensors,
              * and the engine's own offload branch (forced for the blobs,
              * core_engine_open.c:331-338) gates the 4.44 GiB backbone --
-             * measured on the Spark 2026-10-10 with install.sh's own
+             * measured on the Spark 2026-10-10 with ds41_install.sh's own
              * --mem-budget-mb 110000: "L1 budget gate: planned resident
              * 4.44 GiB within 107.42 GiB budget".  The port mirrors that
              * figure so the gate fires on the same plans the engine's does.

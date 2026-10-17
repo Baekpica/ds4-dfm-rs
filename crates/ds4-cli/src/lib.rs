@@ -230,7 +230,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
             "--engram-dir" => {
                 parsed.engram_dir = Some(require_value(&arg, iter.next())?);
             }
-            /* Unit Z: the deployment's sidecar spelling (install.sh boots
+            /* Unit Z: the deployment's sidecar spelling (ds41_install.sh boots
              * with --zchain <domain dir> [--posttrain <dir>]). */
             "--zchain" => {
                 parsed.zchain = Some(require_value(&arg, iter.next())?);
@@ -251,7 +251,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<ShadowArgs, 
                 parsed.vision_golden = Some(require_value(&arg, iter.next())?);
             }
             /* Unit Z: the engine's process red line (core_util.c:198-200);
-             * install.sh boots the server with 110000. */
+             * ds41_install.sh boots the server with 110000. */
             "--mem-budget-mb" => {
                 let v = require_value(&arg, iter.next())?;
                 parsed.mem_budget_mb = Some(parse_i32(&arg, &v)?);
