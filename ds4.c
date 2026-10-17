@@ -59708,8 +59708,9 @@ static uint64_t ds4_batch_fit_headroom_bytes(int ctx_size) {
     { const char *de = getenv("DS4_BATCH_FIT_HEADROOM_DERIVED");
       if (de && de[0] == '0' && de[1] == '\0')
           return 6144ull << 20; }      /* kill switch: the V7 static */
-    /* Ling-3.1 preallocates its graphs; first requests grew it ~0.65 GiB. */
-    uint64_t burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 1024ull << 20 : 2048ull << 20;
+    /* Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
+     * (cuBLASLt and MMQ kernel images the driver loads on first use). */
+    uint64_t burst = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ? 640ull << 20 : 2048ull << 20;
     { const char *be = getenv("DS4_BATCH_FIT_BURST_MB");
       if (be && be[0]) {
           const long bv = atol(be);

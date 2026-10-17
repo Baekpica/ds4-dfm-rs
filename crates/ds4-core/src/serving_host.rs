@@ -86,6 +86,9 @@ const GLMVQ_NATIVE_MAX: u32 = 4096;
 const LING31_PREFILL_CHUNK_ENV: &str = "DS4_LING31_PREFILL_CHUNK";
 const LING31_NATIVE_DEFAULT: u32 = 2048;
 const LING31_NATIVE_MAX: u32 = 4096;
+// Halving floor when the quote does not fit: 512 rows keep 0.35 GiB of
+// workspace, most of it fixed; 1,024 rows prefill 9% below 2,048.
+const LING31_NATIVE_MIN: u32 = 512;
 // ds4_ling31_bind.inc / ds4_ling31_gpu.cuh terms on the Ling-3.1 shape.
 // l31_decode_plan: decode and verify items, mid and partial rows, the verify
 // plan, then 69 MoE layers' 3 x 512 device routing tables.
@@ -142,8 +145,9 @@ const FIT_DERIVED_ENV: &str = "DS4_BATCH_FIT_HEADROOM_DERIVED";
 const FIT_BURST_ENV: &str = "DS4_BATCH_FIT_BURST_MB";
 const FIT_STATIC_MB: u64 = 6144;
 const FIT_BURST_MB: u64 = 2048;
-// Ling-3.1 preallocates its graphs; first requests grew it ~0.65 GiB.
-const LING31_FIT_BURST_MB: u64 = 1024;
+// Ling-3.1 preallocates its graphs; first requests grew it 0.41-0.48 GiB
+// (cuBLASLt and MMQ kernel images the driver loads on first use).
+const LING31_FIT_BURST_MB: u64 = 640;
 const SESSION_FIT_ENV: &str = "DS4_SESSION_GRAPH_FIT";
 const SESSION_HEADROOM_ENV: &str = "DS4_SESSION_GRAPH_HEADROOM_MB";
 const SESSION_HEADROOM_MB: u64 = 1024;
@@ -661,19 +665,24 @@ pub fn fill_quote_facts(
     facts.host_available_bytes = (host.available_bytes > 0).then_some(host.available_bytes);
     facts.native_chunk = Some(native);
 
-    if caps.family != ModelFamily::Glm53
-        || native <= 1
-        || host.available_bytes == 0
-        || facts.cont_lane == Some(true)
-    {
+    // Ling-3.1 halves rows only down to LING31_NATIVE_MIN: below it the
+    // fixed workspace terms dominate.
+    let halves = match caps.family {
+        ModelFamily::Glm53 => native > 1,
+        ModelFamily::Ling31Vq => native > LING31_NATIVE_MIN,
+        _ => false,
+    };
+    if !halves || host.available_bytes == 0 || facts.cont_lane == Some(true) {
         return;
     }
     let mut fitted = req.clone();
     // Price the requested banks before reducing their count. Width changes
     // workspace, while context, MTP and checkpoint state retain their budget.
+    // Free memory bounds Ling-3.1's banks, so it prices one at Auto.
     fitted.max_seqs = match req.max_seqs {
         MaxSeqs::Fixed(n) => MaxSeqs::Fixed(n),
         MaxSeqs::Off => MaxSeqs::Off,
+        MaxSeqs::Auto if caps.family == ModelFamily::Ling31Vq => MaxSeqs::Fixed(1),
         MaxSeqs::Auto if caps.banks == BankLane::Persistent => {
             MaxSeqs::Fixed(caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS))
         }
@@ -3079,6 +3088,94 @@ mod tests {
             Some(2 * state + 6 * 4096 * SIZEOF_F32 + 4 * 157_184 * SIZEOF_F32)
         );
         assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+    }
+
+    #[test]
+    fn ling31_halves_rows_before_the_native_context() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
+        let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
+        let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        // One 262,144-token bank beside the trunk: 2,048-row workspace does
+        // not fit the floor, 1,024 rows do; banks drop before rows.
+        let s = SHAPE_LING31_VQ;
+        let ctx = 262_144u64;
+        let weights = 108 * GIB;
+        let bank = ling31_state_bytes(s)
+            + 9 * ctx * u64::from(s.n_head_dim) * SIZEOF_U16
+            + u64::from(s.n_vocab) * SIZEOF_F32
+            + ctx * SIZEOF_I32;
+        let fixed = ling31_control_bytes(s) + 4 * GIB + (LING31_FIT_BURST_MB + 64) * MIB;
+        let quote = |available: u64| {
+            let req = ServingRequest {
+                ctx: ctx as i32,
+                ..ServingRequest::default()
+            };
+            let mut facts = EngineFacts::default();
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq),
+                Some(s),
+                QuoteHost {
+                    weights_bytes: weights,
+                    mtp_bytes: 0,
+                    available_bytes: available,
+                    native_chunk: None,
+                    vision: false,
+                },
+            );
+            facts.native_chunk
+        };
+        let room = |rows| weights + bank + ling31_workspace_bytes(s, rows) + fixed;
+        assert_eq!(quote(room(2048)), Some(2048));
+        assert_eq!(quote(room(1024)), Some(1024));
+        assert_eq!(quote(room(512)), Some(512));
+        assert_eq!(quote(room(512) - GIB), Some(512));
+    }
+
+    #[test]
+    fn ling31_serial_fallback_fits() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
+        let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
+        let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        // The server's facts after the 262K bank fit is refused. The serial
+        // gate never spends the floor, so first-request growth stays priced.
+        // Live: 8.17 GiB free beside the trunk boots 512 rows.
+        let req = ServingRequest {
+            ctx: 262_144,
+            mem_floor_gb: 4,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq);
+        let weights = 108 * GIB;
+        let mut facts = EngineFacts {
+            banks_fitted: Some(1),
+            cont_lane: Some(false),
+            partial_reuse: Some(false),
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_LING31_VQ),
+            QuoteHost {
+                weights_bytes: weights,
+                mtp_bytes: 0,
+                available_bytes: weights + 8 * GIB + 170 * MIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(plan.may_listen(), "{:?}", plan.issues);
+        assert_eq!(facts.native_chunk, Some(512));
+        assert_eq!(
+            plan.quote.unwrap().floor,
+            4 * GIB + LING31_FIT_BURST_MB * MIB
+        );
     }
 
     #[test]
