@@ -1996,6 +1996,13 @@ pub fn host_compress_ratios(shape: &Shape) -> Vec<u32> {
 
 /// C `validate_c_oracle PATH` stdout (one token line).
 pub fn dump_validate(path: &std::path::Path) -> String {
+    // A GVQ1 release is a directory of named parts, never one GGUF.
+    if path.is_dir() {
+        return match validate_gguf(path) {
+            Ok(_) => "ok\n".into(),
+            Err(e) => format!("{}\n", e.token()),
+        };
+    }
     match GgufFile::open(path) {
         Ok(g) => {
             let arch = g.get_string("general.architecture");
@@ -2047,6 +2054,27 @@ pub fn dump_validate(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::qwen_source_revision_supported;
+
+    #[test]
+    fn dump_validate_routes_release_directories() {
+        // An empty directory is no GVQ1 release: the report must come from
+        // the directory validator, not from opening the path as one GGUF.
+        let dir = std::env::temp_dir().join(format!("ds4-validate-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let expected = match super::validate_gguf(&dir) {
+            Ok(_) => "ok\n".to_string(),
+            Err(e) => format!("{}\n", e.token()),
+        };
+        assert_eq!(super::dump_validate(&dir), expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "requires DS4_GLM_VQ_MODEL, the pinned release directory"]
+    fn dump_validate_accepts_the_release() {
+        let root = std::env::var_os("DS4_GLM_VQ_MODEL").expect("DS4_GLM_VQ_MODEL");
+        assert_eq!(super::dump_validate(std::path::Path::new(&root)), "ok\n");
+    }
 
     #[test]
     fn qwen_source_pins_are_exact() {
