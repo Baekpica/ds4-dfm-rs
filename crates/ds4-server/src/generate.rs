@@ -1689,10 +1689,11 @@ fn retry_chat(
     detail: &str,
 ) -> Result<(), GenerateError> {
     if engine.template().is_none() {
-        let format = chat_format_for_syntax(syntax_for_model_id(engine.model_id()));
+        let syntax = syntax_for_model_id(engine.model_id());
+        let format = chat_format_for_syntax(syntax);
         return append_recovery_suffix(
             engine,
-            &build_recovery_suffix(format, parsed.think_mode, prompt, acc, detail),
+            &build_recovery_suffix(syntax, format, parsed.think_mode, prompt, acc, detail),
         )
         .map(|_| ());
     }

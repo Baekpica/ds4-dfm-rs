@@ -62,7 +62,7 @@ fn count_marker(s: &[u8], marker: &[u8]) -> usize {
 pub fn syntax_skips_recovery(syntax: ModelSyntax) -> bool {
     matches!(
         syntax,
-        ModelSyntax::Motif3 | ModelSyntax::Exaone | ModelSyntax::Dots3 | ModelSyntax::Glm53
+        ModelSyntax::Motif3 | ModelSyntax::Exaone | ModelSyntax::Dots3
     )
 }
 
@@ -371,17 +371,81 @@ Emit a new valid DSML tool call, or answer normally if no tool is needed.",
     suffix
 }
 
+fn build_glm_tool_error_suffix(
+    think_mode: ThinkMode,
+    thinking_inside: bool,
+    detail: &str,
+) -> Vec<u8> {
+    let mut error = b"Tool error: invalid GLM tool call".to_vec();
+    if !detail.is_empty() {
+        error.extend_from_slice(b": ");
+        error.extend_from_slice(detail.as_bytes());
+    }
+    error.extend_from_slice(b"\nThe previous assistant output was not executed because the <tool_call> syntax was malformed. Emit a new valid <tool_call>, or answer normally if no tool is needed.");
+
+    let mut suffix = Vec::new();
+    if think_mode_enabled(think_mode) && thinking_inside {
+        suffix.extend_from_slice(b"</think>");
+    }
+    suffix.extend_from_slice(b"<|observation|><tool_response>");
+    for index in 0..error.len() {
+        if error[index..].starts_with(b"</tool_response>") {
+            suffix.extend_from_slice(b"&lt;");
+        } else {
+            suffix.push(error[index]);
+        }
+    }
+    suffix.extend_from_slice(b"</tool_response><|assistant|>");
+    if think_mode_enabled(think_mode) {
+        suffix.extend_from_slice(b"<think>");
+    } else {
+        suffix.extend_from_slice(b"<think></think>");
+    }
+    suffix
+}
+
 pub(crate) fn build_recovery_suffix(
+    syntax: ModelSyntax,
     format: ChatFormat,
     think_mode: ThinkMode,
     prompt: &[u8],
     acc: &crate::tools::SemAccum,
     detail: &str,
 ) -> Vec<u8> {
+    if syntax == ModelSyntax::Glm53 {
+        return build_glm_tool_error_suffix(think_mode, acc.thinking_inside(), detail);
+    }
     if format == ChatFormat::Inkling {
         return crate::render::inkling::recovery(&acc.text, detail);
     }
     build_invalid_tool_error_suffix(format, think_mode, acc.thinking_inside(), prompt, detail)
+}
+
+#[cfg(test)]
+mod glm_recovery_tests {
+    use super::*;
+    use crate::tools::SemAccum;
+
+    #[test]
+    fn glm_retry_uses_native_observation() {
+        assert!(!syntax_skips_recovery(ModelSyntax::Glm53));
+        let prompt = b"<|assistant|><think>";
+        let acc = SemAccum::init(true, true, true, ChatFormat::DeepSeek, prompt);
+        let suffix = build_recovery_suffix(
+            ModelSyntax::Glm53,
+            ChatFormat::DeepSeek,
+            ThinkMode::High,
+            prompt,
+            &acc,
+            "missing arg_value",
+        );
+        let suffix = String::from_utf8(suffix).unwrap();
+        assert!(suffix.starts_with("</think><|observation|><tool_response>"));
+        assert!(suffix.contains("Tool error: invalid GLM tool call: missing arg_value"));
+        assert!(suffix.contains("<tool_call> syntax was malformed"));
+        assert!(suffix.ends_with("</tool_response><|assistant|><think>"));
+        assert!(!suffix.contains("DSML"));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
