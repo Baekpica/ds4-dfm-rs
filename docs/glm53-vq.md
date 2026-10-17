@@ -286,10 +286,12 @@ per decoded token stays inside the ±1.5% fresh-run spread.
 
 ## Measured performance
 
-The [2K–64K README sweep at merged `main`](benchmarks/glm53-vq-spark-64k-main-2026-10-17/README.md)
-(`c5384b5e`; 2,048-token incremental prefill, 128 tokens, three fresh
-processes) records 1,042.2 prefill and 35.12 decode tok/s with two MTP drafts
-(2.34 tokens per verify), falling 5.8% in prefill from 4K to 64K. The
+The [2K–64K README sweep after #88](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/README.md)
+(`3dd964ba`; 2,048-token incremental prefill, 128 tokens, three fresh
+processes) records 1,163.5 prefill and 35.08 decode tok/s with two MTP drafts
+(2.32 tokens per verify), falling 7.1% in prefill from 4K to 64K; a whole 8K
+prompt prefills at 1,343.8 tok/s. The [sweep at merged `main` before it](benchmarks/glm53-vq-spark-64k-main-2026-10-17/README.md)
+(`c5384b5e`) recorded 1,042.2 / 35.12 (2.34 tokens per verify, 5.8% fall). The
 [earlier October 17 sweep](benchmarks/glm53-vq-spark-64k-2026-10-17/README.md)
 (`60d0b689`) recorded 1,030.9 / 30.04 (1,022.6 / 24.82 without MTP, 2.26
 tokens per verify) and the [October 16 sweep](benchmarks/glm53-vq-spark-64k-2026-10-16/README.md)

@@ -151,23 +151,26 @@ long-context serving; use the [family guide](naive-n05-flash.md) for those limit
 
 GLM-5.3 Flash with GVQ1 routed experts and the Q4_K nonexpert v3 selection
 ([model card](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF)) recorded
-**1,042.2 prefill / 35.12 decode** with two embedded MTP drafts in the
-[2K–64K sweep at merged `main`](benchmarks/glm53-vq-spark-64k-main-2026-10-17/README.md)
-(`c5384b5e`). These are medians of three run means across 32 frontiers in three
-fresh `ds4-bench` processes on one DGX Spark / GB10: one warm session,
+**1,163.5 prefill / 35.08 decode** with two embedded MTP drafts in the
+[2K–64K sweep after the prefill PR](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/README.md)
+(`3dd964ba`, #88). These are medians of three run means across 32 frontiers in
+three fresh `ds4-bench` processes on one DGX Spark / GB10: one warm session,
 2,048-token incremental prefills and 128 forced greedy tokens per frontier.
 Clock range 300–2200 MHz; busy clocks 2,184–2,190 MHz.
 
-![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](benchmarks/glm53-vq-spark-64k-main-2026-10-17/throughput.png)
+![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/throughput.png)
 
-Incremental prefill falls 5.8% from 4K (1,092.2) to 64K (1,028.5); the 2K point
+Incremental prefill falls 7.1% from 4K (1,238.0) to 64K (1,149.9); the 2K point
 is each process's first prefill. MTP decode follows draft acceptance on the
-generated text (28.9–43.1 per frontier, 2.34 tokens per verify); a verify
-cycle averages 66.7 ms. The [earlier October 17 sweep](benchmarks/glm53-vq-spark-64k-2026-10-17/README.md)
-(`60d0b689`) recorded 1,030.9 / 30.04 with 2.26 tokens per verify and
-1,022.6 / 24.82 with MTP off; on the merged code 512-token decodes at 2K with
-MTP off measure 25.9 tok/s. The [GLM VQ page](glm53-vq.md) records the
-optimization steps, numerical contract and quality screens. Throughput does not
+generated text (28.7–44.4 per frontier, 2.32 tokens per verify); a verify
+cycle averages 66.2 ms. The [sweep at `c5384b5e`](benchmarks/glm53-vq-spark-64k-main-2026-10-17/README.md)
+recorded 1,042.2 / 35.12 (2.34 tokens per verify): #88 changed prefill only.
+The [earlier October 17 sweep](benchmarks/glm53-vq-spark-64k-2026-10-17/README.md)
+(`60d0b689`) recorded 1,022.6 / 24.82 with MTP off; 512-token decodes at 2K
+with MTP off measure 25.9 tok/s since `c5384b5e`. A whole 8K prompt (7,936
+tokens) prefills at 1,343.8 tok/s (two fresh runs, MTP off). The
+[GLM VQ page](glm53-vq.md) records the optimization steps, numerical contract
+and quality screens. Throughput does not
 qualify serving limits or long-context quality.
 
 ## DeepSeek V4.1

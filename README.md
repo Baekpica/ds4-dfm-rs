@@ -46,7 +46,7 @@ documented whole-model results are omitted.
 | MiMo-V2.6-Flash-RL mixed quant | 1,217.76 | 24.44 | [8K + 128, plain](docs/performance.md#mimo) |
 | MiMo-V2.6-Flash-MOPD mixed quant | 1,206.29 | 24.18 | [8K + 128, plain](docs/performance.md#mimo-mopd) |
 | GLM-5.3 Flash Uncensored mixed quant | 137.31 | 14.70 | [8K + 64, raw owner, SSD/MTP off](docs/glm53-uncensored.md#measured-performance) |
-| GLM-5.3 Flash VQ + Q4_K v3 | 1,042.2 | 35.12 | [2K–64K sweep, MTP 2](docs/performance.md#glm-53-flash-vq) |
+| GLM-5.3 Flash VQ + Q4_K v3 | 1,163.5 | 35.08 | [2K–64K sweep, MTP 2](docs/performance.md#glm-53-flash-vq) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
@@ -61,7 +61,7 @@ documented whole-model results are omitted.
 *DeepSeek-v4.1-Flash on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#deepseek-v41).*
 *DeepSeek V4.1 Flash ported to ds4-dfm-rs by [JLFN](https://github.com/JLFN) ([#80](https://github.com/Baekpica/ds4-dfm-rs/pull/80)), using [YoungAi's VQ model artifacts](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash).*
 
-![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](docs/benchmarks/glm53-vq-spark-64k-main-2026-10-17/throughput.png)
+![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](docs/benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/throughput.png)
 
 *GLM-5.3-Flash VQ on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#glm-53-flash-vq).*
 
