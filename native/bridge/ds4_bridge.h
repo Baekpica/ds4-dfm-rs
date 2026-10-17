@@ -660,6 +660,14 @@ typedef struct {
     int32_t top_k;
     float top_p;
     float min_p;
+    /* Penalty face (core_decode_penalty.c); all zero = the default row,
+     * untouched.  Any non-zero penalty also turns speculation off for the
+     * request (penalties read the token history). */
+    float freq_penalty;
+    float presence_penalty;
+    float dry_multiplier;
+    float dry_base;            /* <= 1 => engine fallback 1.75 */
+    int32_t dry_allowed_length;/* <= 0 => engine fallback 2 */
     uint64_t seed;
     /* Optional (NULL disables).  Same contracts as ds4_cont_request:
      * sample_override returns DS4_SAMPLE_OVERRIDE_* encoding; alive

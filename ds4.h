@@ -715,6 +715,18 @@ typedef struct {
     int        top_k;       /* <= 0 => full vocab                              */
     float      top_p;       /* nucleus; <=0 or >1 treated as 1.0               */
     float      min_p;       /* relative floor; <0 => 0                         */
+    /* Penalty face (core_decode_penalty.c, the same code the V4.1 route runs;
+     * all-zero = the default face and the row is left untouched).  Frequency
+     * and presence count the row's own GENERATED tokens; DRY subtracts an
+     * exponential penalty from a candidate that continues an already-seen
+     * sequence.  Unlike temperature they read history, so they also act at
+     * temperature <= 0 (greedy) -- the only loop cure that keeps a
+     * deterministic direct output deterministic. */
+    float      freq_penalty;
+    float      presence_penalty;
+    float      dry_multiplier;
+    float      dry_base;           /* <= 1 => engine fallback 1.75            */
+    int        dry_allowed_length; /* <= 0 => engine fallback 2               */
     uint64_t   seed;        /* per-seq RNG seed (caller resolves 0 if it wants */
                             /* distinct streams; 0 is a fixed, valid sequence) */
     /* Per-token sampling override (NULL = none).  The callback result is one

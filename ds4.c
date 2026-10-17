@@ -64026,6 +64026,14 @@ typedef struct {
     int top_k;
     float top_p;
     float min_p;
+    /* Penalty face (ds4_cont_request.freq_penalty .. dry_allowed_length), all
+     * zero by default.  Read from THIS bank's generated segment, so concurrent
+     * rows never penalize each other's tokens. */
+    float freq_penalty;
+    float presence_penalty;
+    float dry_multiplier;
+    float dry_base;
+    int dry_allowed_length;
     uint64_t rng;
     int (*sample_override)(void *ud, void *user);
     int (*sample_exclude)(void *ud, void *user);
@@ -64909,6 +64917,36 @@ static void family_banked_capture_checkpoint(
     }
 }
 
+/* Penalty face for the family lane, the same core_decode_penalty.c code the
+ * V4.1 route runs (ds4_ds41_sample.inc defines both; forward-declared here
+ * because the lane sits earlier in the TU).  Applied to the bank's host logits
+ * row from the bank's OWN generated segment (cb->generated), never the prompt:
+ * a request that carries no penalty leaves the row byte-identical. */
+#ifndef DS4_NO_GPU
+static uint8_t *ds4_decode_breakers(ds4_engine *e, uint32_t n_vocab);
+static void ds4_decode_penalize(float *logits, uint32_t n_vocab,
+                                const int32_t *gen, uint32_t n,
+                                const uint8_t *breaker, float freq,
+                                float presence, float dry_mult, float dry_base,
+                                int dry_allowed);
+#endif
+
+static void family_cont_penalize(ds4_batch_ctx *ctx, ds4_family_cont_bank *cb,
+                                 float *row) {
+#ifdef DS4_NO_GPU
+    (void)ctx; (void)cb; (void)row;
+#else
+    if (!row || cb->generated_len == 0u) { return; }
+    if (cb->freq_penalty == 0.0f && cb->presence_penalty == 0.0f &&
+        cb->dry_multiplier <= 0.0f) { return; }
+    ds4_decode_penalize(row, DS4_N_VOCAB, cb->generated, cb->generated_len,
+                        ds4_decode_breakers(ctx->e, DS4_N_VOCAB),
+                        cb->freq_penalty, cb->presence_penalty,
+                        cb->dry_multiplier, cb->dry_base,
+                        cb->dry_allowed_length);
+#endif
+}
+
 /* Borrow one bank as a serial session for the family device trial and
  * commit. Rust selects the accepted prefix; callbacks may shorten it further
  * on cancellation or a newly required protocol token. Commit only what was
@@ -64928,6 +64966,13 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         (gr && (!gr->graph[bank].mtp_ready || gr->failed[bank])) ||
         (ir && !ir->graph[bank].mtp_enabled) ||
         !cb->step_accept || (!gr && !ir && cb->sample_exclude) || current_excluded >= 0 ||
+        /* Penalties read the token history, so the device trial (whose target
+         * rows are picked by argmax on the device) cannot carry them.  The
+         * request serves plain with the host sampler instead, which is where
+         * core_decode_penalty.c runs; speculation keeps its own no-penalty
+         * face (the V4.1 route's same rule for --dspark). */
+        cb->freq_penalty != 0.0f || cb->presence_penalty != 0.0f ||
+        cb->dry_multiplier > 0.0f ||
         cb->temperature > 0.0f ||
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
@@ -65554,6 +65599,12 @@ static int family_banked_engine_continuous_generate(
             cb->top_k = req.top_k;
             cb->top_p = req.top_p;
             cb->min_p = req.min_p;
+            cb->freq_penalty = req.freq_penalty;
+            cb->presence_penalty = req.presence_penalty;
+            cb->dry_multiplier = req.dry_multiplier;
+            cb->dry_base = req.dry_base > 1.0f ? req.dry_base : 1.75f;
+            cb->dry_allowed_length = req.dry_allowed_length > 0
+                ? req.dry_allowed_length : 2;
             cb->rng = req.seed;
             cb->sample_override = req.sample_override;
             cb->sample_exclude = req.sample_exclude;
@@ -65817,6 +65868,7 @@ static int family_banked_engine_continuous_generate(
                 : DS4_SAMPLE_OVERRIDE_NONE;
             const int excluded_id = cb->sample_exclude
                 ? cb->sample_exclude(ud, cb->user) : -1;
+            family_cont_penalize(ctx, cb, family_banked_logits(ctx, b));
             int token = qwen_mtp ? decode_next[row]
                 : sample_top_p_min_p_override_excluding(
                     family_banked_logits(ctx, b),
@@ -65846,6 +65898,7 @@ static int family_banked_engine_continuous_generate(
                     : DS4_SAMPLE_OVERRIDE_NONE;
                 const int next_excluded_id = cb->sample_exclude
                     ? cb->sample_exclude(ud, cb->user) : -1;
+                family_cont_penalize(ctx, cb, family_banked_logits(ctx, b));
                 token = sample_top_p_min_p_override_excluding(
                     family_banked_logits(ctx, b),
                     DS4_N_VOCAB, cb->temperature, cb->top_k,
@@ -66054,6 +66107,15 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
     int      *btopk = xcalloc(MS, sizeof(int));
     float    *btopp = xcalloc(MS, sizeof(float));
     float    *bminp = xcalloc(MS, sizeof(float));
+    /* Penalty face (ds4_cont_request.freq_penalty .. dry_allowed_length): all
+     * zero leaves every row untouched, so the default path is unchanged.
+     * Applied from the bank's own generated history (gbuf/glen) right before
+     * the sample at the three sites below. */
+    float    *bfreq = xcalloc(MS, sizeof(float));
+    float    *bpres = xcalloc(MS, sizeof(float));
+    float    *bdry  = xcalloc(MS, sizeof(float));
+    float    *bdrybase = xcalloc(MS, sizeof(float));
+    int      *bdrylen  = xcalloc(MS, sizeof(int));
     uint64_t *brng  = xcalloc(MS, sizeof(uint64_t));
     /* Per-token sampling override (ds4_cont_request.sample_override): queried
      * right before EVERY target sample of the row; nonzero => that one token
@@ -68139,6 +68201,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
     if (pftok) for (uint32_t b = 0; b < MS; b++) free(pftok[b]);
     free(live); free(usr); free(posv); free(cur); free(beos); free(bmax); free(glen); free(gbuf);
     free(btemp); free(btopk); free(btopp); free(bminp); free(brng); free(bsoc); free(bsec);
+    free(bfreq); free(bpres); free(bdry); free(bdrybase); free(bdrylen);
     free(balive);
     free(bcancel);
     free(pftok); free(pflen); free(pfoff); free(pfbase); free(credit); free(btgt); free(pft0); free(sst);

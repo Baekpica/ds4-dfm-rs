@@ -178,6 +178,20 @@ pub struct GlmValues {
     pub top_p: f32,
     pub min_p: f32,
     pub effort: ThinkMode,
+    /// Sampler ceiling: 0.0 leaves the request's own temperature alone.
+    pub temp_max: f32,
+    /// Penalty face (core_decode_penalty.c).  GLM-5.3-VQ's own card measures the
+    /// VQ conversion as lossy (held-out prose PPL 4.8555 -> 8.0797) and records a
+    /// greedy-degeneration case; on this engine the artifact answers and then
+    /// runs on without an end token unless the sampling is held down.  A penalty
+    /// is the reference's own cure for that (it reads history, so it also acts at
+    /// temperature 0), and the engine serves such a request plain -- the device
+    /// trial cannot carry a penalty.
+    pub freq_penalty: f32,
+    pub presence_penalty: f32,
+    pub dry_multiplier: f32,
+    pub dry_base: f32,
+    pub dry_allowed_length: i32,
 }
 
 /// generation_config.json: top_p 0.95, temperature 1.0, and nothing else --
@@ -187,6 +201,21 @@ const GLM53_DEFAULT_TOP_P: f32 = 0.95;
 const GLM53_DEFAULT_MIN_P: f32 = 0.0;
 /// The template's own default: anything unlisted, `max` included, is max.
 const GLM53_DEFAULT_EFFORT: ThinkMode = ThinkMode::Max;
+/// Measured on the Spark (2026-10-17, docs/glm53-vq-sampler-2026-10-17.md):
+/// at the artifact's own temperature the model answers and then keeps going
+/// (5/5 runs hit the token cap with no end token); greedy stops 5/5 but locks
+/// onto a repeated phrase on a "fill N words" prompt.  DRY is the reference's
+/// cure for exactly that pair -- it penalizes only a candidate that continues
+/// an already-seen sequence, so a deterministic direct output stays
+/// deterministic and still ends.  The floor knobs stay at the artifact's own
+/// values; only DRY ships on by default, because a plain repetition loop is
+/// the failure the deployment cannot tolerate.
+const GLM53_DEFAULT_DRY_MULTIPLIER: f32 = 0.8;
+/// Dry's own contract (llama.cpp): 1.75^L from the allowed length up.
+const GLM53_DEFAULT_DRY_BASE: f32 = 1.75;
+const GLM53_DEFAULT_DRY_ALLOWED_LENGTH: i32 = 2;
+/// No ceiling: the request's temperature is served as sent (the host rule).
+const GLM53_DEFAULT_TEMP_MAX: f32 = 0.0;
 
 /// top_p and min_p are probabilities, so a value outside [0, 1] is a typo.
 const UNIT_BOUNDS: std::ops::RangeInclusive<f32> = 0.0..=1.0;
@@ -207,6 +236,30 @@ fn resolve_unit(name: &str, raw: Option<&str>, fallback: f32) -> f32 {
 
     if !value.is_finite() || !UNIT_BOUNDS.contains(&value) {
         eprintln!("ds4-server: {name}={raw:?} is outside [0, 1]; using {fallback}");
+        return fallback;
+    }
+
+    value
+}
+
+/// Resolve one numeric `DS4_SERVER_*` setting against its fallback, with the
+/// same rule as resolve_unit: a bad value is reported once, never clamped.
+fn resolve_number(name: &str, raw: Option<&str>, fallback: f32, bounds: std::ops::RangeInclusive<f32>) -> f32 {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+        return fallback;
+    };
+
+    let Ok(value) = raw.parse::<f32>() else {
+        eprintln!("ds4-server: {name}={raw:?} is not a number; using {fallback}");
+        return fallback;
+    };
+
+    if !value.is_finite() || !bounds.contains(&value) {
+        eprintln!(
+            "ds4-server: {name}={raw:?} is outside [{}, {}]; using {fallback}",
+            bounds.start(),
+            bounds.end()
+        );
         return fallback;
     }
 
@@ -251,6 +304,42 @@ pub fn glm_values() -> &'static GlmValues {
             GLM53_DEFAULT_MIN_P,
         ),
         effort: resolve_effort(std::env::var("DS4_SERVER_DEFAULT_EFFORT").ok().as_deref()),
+        temp_max: resolve_number(
+            "DS4_SERVER_GLM_TEMP_MAX",
+            std::env::var("DS4_SERVER_GLM_TEMP_MAX").ok().as_deref(),
+            GLM53_DEFAULT_TEMP_MAX,
+            0.0..=2.0,
+        ),
+        freq_penalty: resolve_number(
+            "DS4_SERVER_DEFAULT_FREQ_PENALTY",
+            std::env::var("DS4_SERVER_DEFAULT_FREQ_PENALTY").ok().as_deref(),
+            0.0,
+            -2.0..=2.0,
+        ),
+        presence_penalty: resolve_number(
+            "DS4_SERVER_DEFAULT_PRESENCE_PENALTY",
+            std::env::var("DS4_SERVER_DEFAULT_PRESENCE_PENALTY").ok().as_deref(),
+            0.0,
+            -2.0..=2.0,
+        ),
+        dry_multiplier: resolve_number(
+            "DS4_SERVER_DEFAULT_DRY_MULTIPLIER",
+            std::env::var("DS4_SERVER_DEFAULT_DRY_MULTIPLIER").ok().as_deref(),
+            GLM53_DEFAULT_DRY_MULTIPLIER,
+            0.0..=64.0,
+        ),
+        dry_base: resolve_number(
+            "DS4_SERVER_DEFAULT_DRY_BASE",
+            std::env::var("DS4_SERVER_DEFAULT_DRY_BASE").ok().as_deref(),
+            GLM53_DEFAULT_DRY_BASE,
+            1.0..=64.0,
+        ),
+        dry_allowed_length: resolve_number(
+            "DS4_SERVER_DEFAULT_DRY_ALLOWED_LENGTH",
+            std::env::var("DS4_SERVER_DEFAULT_DRY_ALLOWED_LENGTH").ok().as_deref(),
+            GLM53_DEFAULT_DRY_ALLOWED_LENGTH as f32,
+            0.0..=64.0,
+        ) as i32,
     })
 }
 
@@ -259,11 +348,18 @@ pub fn glm_values() -> &'static GlmValues {
 pub fn glm_values_report() -> String {
     let v = glm_values();
     format!(
-        "GLM values: temperature={} top_p={} min_p={} effort={:?}",
+        "GLM values: temperature={} top_p={} min_p={} effort={:?} temp_max={} \
+         freq_penalty={} presence_penalty={} dry={}x{}^L from L={}",
         default_temperature(),
         v.top_p,
         v.min_p,
-        v.effort
+        v.effort,
+        v.temp_max,
+        v.freq_penalty,
+        v.presence_penalty,
+        v.dry_multiplier,
+        v.dry_base,
+        v.dry_allowed_length
     )
 }
 
@@ -352,7 +448,13 @@ impl ParsedRequest {
             max_tokens: env.default_tokens,
             max_tokens_set: false,
             top_k: 0,
-            temperature: env.default_temp,
+            temperature: if env.glm_values && glm_values().temp_max > 0.0
+                && env.default_temp > glm_values().temp_max
+            {
+                glm_values().temp_max
+            } else {
+                env.default_temp
+            },
             top_p: if env.glm_values {
                 glm_values().top_p
             } else {
@@ -366,12 +468,32 @@ impl ParsedRequest {
                 DEFAULT_MIN_P
             },
             seed: 0,
-            frequency_penalty: 0.0,
-            presence_penalty: 0.0,
-            dry_multiplier: 0.0,
-            dry_base: 0.0,
-            dry_allowed_length: 0,
-            dry_set: false,
+            frequency_penalty: if env.glm_values {
+                glm_values().freq_penalty
+            } else {
+                0.0
+            },
+            presence_penalty: if env.glm_values {
+                glm_values().presence_penalty
+            } else {
+                0.0
+            },
+            dry_multiplier: if env.glm_values {
+                glm_values().dry_multiplier
+            } else {
+                0.0
+            },
+            dry_base: if env.glm_values {
+                glm_values().dry_base
+            } else {
+                0.0
+            },
+            dry_allowed_length: if env.glm_values {
+                glm_values().dry_allowed_length
+            } else {
+                0
+            },
+            dry_set: env.glm_values,
             stream: false,
             stream_include_usage: false,
             return_token_ids: false,
@@ -3834,7 +3956,10 @@ pub fn parse_request(
 
 #[cfg(test)]
 mod glm_value_tests {
-    use super::{default_effort, resolve_effort, resolve_unit, GLM53_DEFAULT_EFFORT};
+    use super::{
+        default_effort, resolve_effort, resolve_unit, GLM53_DEFAULT_EFFORT,
+        GLM53_DEFAULT_MIN_P, GLM53_DEFAULT_TEMP_MAX,
+    };
     use crate::route::ThinkMode;
 
     // The deployment override is accepted only inside the probability window;
@@ -3877,6 +4002,27 @@ mod glm_value_tests {
         // max unless DS4_SERVER_DEFAULT_EFFORT says otherwise).
         assert_eq!(default_effort(true), super::glm_values().effort);
         assert_ne!(GLM53_DEFAULT_EFFORT, ThinkMode::Low);
+    }
+
+    // The GLM scope's sampler guard: DRY ships on (the artifact's own measured
+    // failure is answering and then running on), the floors stay at the
+    // artifact's values, and a numeric override is range-checked like top_p.
+    #[test]
+    fn scope_carries_the_sampler_guard() {
+        use super::{resolve_number, GLM53_DEFAULT_DRY_MULTIPLIER};
+        let v = super::glm_values();
+        assert_eq!(v.dry_multiplier, GLM53_DEFAULT_DRY_MULTIPLIER);
+        assert!(v.dry_multiplier > 0.0, "DRY is the loop cure and ships on");
+        assert_eq!(v.dry_base, 1.75);
+        assert_eq!(v.dry_allowed_length, 2);
+        assert_eq!(v.min_p, GLM53_DEFAULT_MIN_P);
+        assert_eq!(v.temp_max, GLM53_DEFAULT_TEMP_MAX);
+
+        assert_eq!(resolve_number("T", Some("0.8"), 0.0, -2.0..=2.0), 0.8);
+        assert_eq!(resolve_number("T", Some("-0.5"), 0.0, -2.0..=2.0), -0.5);
+        for raw in ["", "abc", "3", "nan"] {
+            assert_eq!(resolve_number("T", Some(raw), 0.0, -2.0..=2.0), 0.0, "{raw}");
+        }
     }
 }
 

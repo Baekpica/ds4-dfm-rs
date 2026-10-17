@@ -2170,6 +2170,11 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
     req->top_k = br.top_k;
     req->top_p = br.top_p;
     req->min_p = br.min_p;
+    req->freq_penalty = br.freq_penalty;
+    req->presence_penalty = br.presence_penalty;
+    req->dry_multiplier = br.dry_multiplier;
+    req->dry_base = br.dry_base;
+    req->dry_allowed_length = br.dry_allowed_length;
     req->seed = br.seed;
     req->step_accept = br.step_accept;
     /* The engine calls these with ITS ud (this frame), so the request

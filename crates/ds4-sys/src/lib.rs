@@ -1304,6 +1304,12 @@ pub struct ds4_bridge_cont_request {
     pub top_k: i32,
     pub top_p: c_float,
     pub min_p: c_float,
+    /// Penalty face (core_decode_penalty.c); all zero leaves the row untouched.
+    pub freq_penalty: c_float,
+    pub presence_penalty: c_float,
+    pub dry_multiplier: c_float,
+    pub dry_base: c_float,
+    pub dry_allowed_length: c_int,
     pub seed: u64,
     pub sample_override: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
     pub sample_exclude: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
