@@ -90,3 +90,33 @@ fn preflight_loads_the_eos_policy_vocab() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+#[ignore = "needs DS4_EXPECT_PLAN_SERVER and a GLM VQ DS4_EXPECT_PLAN_MODEL"]
+fn glm_vq_context_defaults_to_native() {
+    // Omitted --ctx follows the family's native maximum; explicit --ctx stays.
+    let server = std::env::var("DS4_EXPECT_PLAN_SERVER").expect("DS4_EXPECT_PLAN_SERVER");
+    let model = std::env::var("DS4_EXPECT_PLAN_MODEL").expect("DS4_EXPECT_PLAN_MODEL");
+    let effective_ctx = |extra: &[&str]| {
+        let mut command = Command::new(&server);
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("DS4_") {
+                command.env_remove(name);
+            }
+        }
+        let output = command
+            .args(["--model", &model, "--check-config", "--max-seqs", "1"])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let plan: Value = serde_json::from_slice(&output.stdout).unwrap();
+        plan["effective"]["ctx"].as_u64().unwrap()
+    };
+    assert_eq!(effective_ctx(&[]), 1_048_576);
+    assert_eq!(effective_ctx(&["--ctx", "16384"]), 16_384);
+}

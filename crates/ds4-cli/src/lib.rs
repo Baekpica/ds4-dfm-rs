@@ -496,6 +496,14 @@ fn mtp_open_options(
     Ok(options)
 }
 
+/// -c, else the family's native context default (GLM VQ), else the host default.
+fn session_ctx(args: &ShadowArgs, caps: ds4_core::ServingCaps) -> i32 {
+    if args.ctx_set {
+        return args.ctx;
+    }
+    ds4_core::native_ctx_default(caps).map_or(args.ctx, |ctx| ctx as i32)
+}
+
 fn generation_limit(ctx: i32, pos: i32, requested: i32) -> i32 {
     let room = ctx.saturating_sub(pos);
     requested.min(room).max(0)
@@ -1359,7 +1367,7 @@ CMD is specials | encode HEX | render HEX | decode ID | stop ID.
     )
 }
 
-pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
+pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     if args.help {
         print!("{}", help_text(name));
         return Ok(0);
@@ -1548,6 +1556,7 @@ pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
         ),
     }
     .map_err(|e| e.to_string())?;
+    args.ctx = session_ctx(&args, ds4_core::caps_from_shape(model.shape()));
 
     /* The engine's --vision-golden gate (cli_main.c:193-195): a run mode of
      * its own, before any generate; exactly one --image names the picture. */
@@ -2209,6 +2218,21 @@ mod tests {
         let mut too_many = parsed;
         too_many.mtp_draft = 4;
         assert!(mtp_open_options(&too_many, Some(ds4_core::ModelFamily::Glm53)).is_err());
+    }
+
+    #[test]
+    fn glm_vq_context_defaults_to_native() {
+        let vq = ds4_core::serving_caps(
+            ds4_core::ModelFamily::Glm53Vq,
+            ds4_core::Variant::Glm53FlashVq,
+        );
+        let omitted = parse_args(args(&[])).unwrap();
+        assert_eq!(session_ctx(&omitted, vq), 1_048_576);
+        let explicit = parse_args(args(&["-c", "16384"])).unwrap();
+        assert_eq!(session_ctx(&explicit, vq), 16_384);
+        let source =
+            ds4_core::serving_caps(ds4_core::ModelFamily::Glm53, ds4_core::Variant::Glm53Flash);
+        assert_eq!(session_ctx(&omitted, source), omitted.ctx);
     }
 
     #[test]

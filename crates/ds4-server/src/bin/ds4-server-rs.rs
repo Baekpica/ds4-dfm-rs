@@ -321,6 +321,16 @@ fn main() {
     let ident = model_path
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
+    // A family whose context contract is its native maximum follows it
+    // unless --ctx was given (GLM VQ: 1,048,576 tokens).
+    if let Some(ctx) = ident
+        .as_ref()
+        .filter(|_| !ctx_set)
+        .and_then(|id| ds4_core::native_ctx_default(caps_from_ident(id)))
+    {
+        cfg.ctx = ctx as i32;
+        serve_req.ctx = cfg.ctx;
+    }
     // V4.1 (ds41): the context comes only from the metadata
     // (core_validate_v41.c:51-53) — refuse --ctx before the model load, not
     // after it (the engine refuses it at parse time, cli_opts.c:285-293).

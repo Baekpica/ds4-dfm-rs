@@ -2847,7 +2847,7 @@ mod tests {
         let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
         // Native eager graph logs at 4096 rows (KV, state, workspace MiB);
         // KV is exact here: 11 DSA layers of FP16 latent and pool rows.
-        for (ctx, workspace) in [(4096u64, 6817.05), (32768, 6929.05)] {
+        for (ctx, workspace) in [(4096u64, 6817.05), (32768, 6929.05), (1 << 20, 10897.05)] {
             let kv = 11 * (ctx * 512 + ctx / 4 * 128) * SIZEOF_U16;
             let native = (workspace + 148.82) * MIB as f64 + kv as f64;
             let facts = glm_vq_quote(ctx as i32, None);

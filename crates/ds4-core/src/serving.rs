@@ -645,6 +645,17 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
     Ok(mb)
 }
 
+/// Context for a run that gives none: the native maximum where the family's
+/// contract defaults to it (GLM VQ follows max_position_embeddings); None
+/// keeps the host default.
+pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
+    if caps.family == ModelFamily::Glm53Vq {
+        caps.ctx_max
+    } else {
+        None
+    }
+}
+
 pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
     // V4.1 has no ds4_session, but its native prompt-end checkpoint provides
     // exact prefix reuse and KVC disk restoration. Common off|exact|auto
@@ -3417,6 +3428,14 @@ mod tests {
             .issues
             .iter()
             .any(|i| i.code == "mtp_contract"));
+    }
+
+    #[test]
+    fn glm_vq_context_defaults_to_native() {
+        let vq = serving_caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq);
+        assert_eq!(native_ctx_default(vq), Some(1_048_576));
+        let source = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        assert_eq!(native_ctx_default(source), None);
     }
 
     #[test]
