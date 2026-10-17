@@ -20,6 +20,8 @@ enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
 enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32, GVQ_MMA8_TOKENS = 64 };
+// GVQ1 header bytes in front of every VQ matrix.
+enum { GVQ_HEADER = 128 };
 // Widest MTP verify forward (first token + three drafts).
 enum { GVQ_VERIFY_ROWS = 4 };
 static_assert(GVQ_VERIFY_ROWS == GLMVQ_VER_ROWS, "verify kernels cover every MTP verify width");
@@ -138,7 +140,7 @@ static uint32_t gvq_u32(const uint8_t *data, size_t offset) {
     return value;
 }
 
-static bool gvq_link(ds4_gvq_model *plan, const void *map, uint32_t index) {
+static bool gvq_link(ds4_gvq_model *plan, const uint8_t *h, uint32_t index) {
     const ds4_gvq_record &r = plan->records[index];
     glmvq_source &s = plan->source[index];
     if (r.type == GVQ_TYPE_Q4) {
@@ -150,34 +152,74 @@ static bool gvq_link(ds4_gvq_model *plan, const void *map, uint32_t index) {
     if (r.type == GVQ_TYPE_FP8) {
         if (r.scale >= plan->source.size()) { return false; }
         const ds4_gvq_record &scale = plan->records[r.scale];
+        // A last row block may be partial (Ling MTP kv_a [576,4096]: 5 x 32).
         if (r.bytes != (uint64_t)r.rows * r.cols || scale.type != GVQ_TYPE_F32 ||
-            r.cols % GLMVQ_SCALE_BLOCK || r.rows % GLMVQ_SCALE_BLOCK ||
-            scale.rows != r.rows / GLMVQ_SCALE_BLOCK || scale.cols != r.cols / GLMVQ_SCALE_BLOCK ||
+            r.cols % GLMVQ_SCALE_BLOCK ||
+            scale.rows != (r.rows + GLMVQ_SCALE_BLOCK - 1) / GLMVQ_SCALE_BLOCK ||
+            scale.cols != r.cols / GLMVQ_SCALE_BLOCK ||
             scale.bytes != (uint64_t)scale.rows * scale.cols * sizeof(float)) { return false; }
         s.storage = GLMVQ_WEIGHT_FP8;
         s.scale = (const float *)plan->source[r.scale].data;
         return true;
     }
     if (r.type != GVQ_TYPE_VQ) { return true; }
-    if (r.book >= plan->source.size() || r.bytes < 128) { return false; }
-    const uint8_t *h = (const uint8_t *)map + r.offset;
+    if (!h || r.book >= plan->source.size() || r.bytes < GVQ_HEADER) { return false; }
     const ds4_gvq_record &book = plan->records[r.book];
     const uint32_t precision = gvq_u32(h, 20), words = gvq_u32(h, 16);
     const uint64_t gain = gvq_u64(h, 32), main = gvq_u64(h, 40), plane = gvq_u64(h, 48);
     const uint64_t elements = (uint64_t)r.rows * r.cols;
-    if (memcmp(h, "GVQ1", 4) || h[4] != 1 || h[5] || h[6] != 13 || h[7] != GLMVQ_VECTOR ||
+    // E4M3 books only: K8192 rows carry the 13th-bit plane, K4096 rows none.
+    const bool wide = h[6] == 13 && words == 8192 && plane;
+    const bool narrow = h[6] == 12 && words == 4096 && !plane;
+    if (memcmp(h, "GVQ1", 4) || h[4] != 1 || h[5] || (!wide && !narrow) || h[7] != GLMVQ_VECTOR ||
         gvq_u32(h, 8) != r.rows || gvq_u32(h, 12) != r.cols ||
-        precision != GLMVQ_E4M3 || words != GVQ_WORDS || book.type != GVQ_TYPE_BOOK ||
+        precision != GLMVQ_E4M3 || book.type != GVQ_TYPE_BOOK ||
         book.bytes != (uint64_t)words * GLMVQ_VECTOR || gvq_u64(h, 56) != r.bytes ||
         !gvq_span(gain, (uint64_t)r.rows * sizeof(__half), r.bytes) ||
-        !gvq_span(main, elements * 3 / 16, r.bytes) || !plane ||
-        !gvq_span(plane, elements / 64, r.bytes)) { return false; }
-    // Only the published uniform8192 E4M3 model contract reaches this adapter.
+        !gvq_span(main, elements * 3 / 16, r.bytes) ||
+        (wide && !gvq_span(plane, elements / 64, r.bytes))) { return false; }
     const uint8_t *data = (const uint8_t *)s.data;
     s.storage = GLMVQ_WEIGHT_VQ;
-    s.vq = {data + main, data + plane, plan->source[r.book].data,
+    s.vq = {data + main, wide ? data + plane : nullptr, plan->source[r.book].data,
         (const __half *)(data + gain), r.rows, r.cols, GLMVQ_E4M3};
     return true;
+}
+
+// One warp per VQ matrix copies its GVQ1 header out of the device copy, so
+// linking never faults the host map: the loader returned those pages, and
+// ~10^5 header faults would read gigabytes back through readahead.
+static __global__ void gvq_header_gather(uint32_t *out, const uint32_t *const *src, uint32_t count) {
+    if (blockIdx.x < count) {
+        out[(uint64_t)blockIdx.x * (GVQ_HEADER / 4u) + threadIdx.x] = src[blockIdx.x][threadIdx.x];
+    }
+}
+
+// `slot[i]` indexes record i's header in `out` (UINT32_MAX: not VQ).
+static bool gvq_headers(const ds4_gvq_model *plan, std::vector<uint32_t> &slot,
+        std::vector<uint8_t> &out) {
+    std::vector<const uint32_t *> src;
+    slot.assign(plan->records.size(), UINT32_MAX);
+    for (size_t i = 0; i < plan->records.size(); i++) {
+        if (plan->records[i].type != GVQ_TYPE_VQ || plan->records[i].bytes < GVQ_HEADER) { continue; }
+        slot[i] = (uint32_t)src.size();
+        src.push_back((const uint32_t *)plan->source[i].data);
+    }
+    out.resize(src.size() * GVQ_HEADER);
+    if (src.empty()) { return true; }
+    const cudaStream_t stream = ds4_current_stream();
+    ds4_gpu_tensor *ptrs = ds4_gpu_tensor_alloc(src.size() * sizeof(src[0]));
+    ds4_gpu_tensor *heads = ds4_gpu_tensor_alloc(out.size());
+    bool ok = ptrs && heads && ds4_gpu_tensor_write(ptrs, 0, src.data(), src.size() * sizeof(src[0]));
+    if (ok) {
+        gvq_header_gather<<<(unsigned)src.size(), GVQ_HEADER / 4u, 0, stream>>>(
+            (uint32_t *)heads->ptr, (const uint32_t *const *)ptrs->ptr, (uint32_t)src.size());
+        ok = cuda_ok(cudaGetLastError(), "GLM VQ header gather") &&
+            cuda_ok(cudaStreamSynchronize(stream), "GLM VQ header gather") &&
+            ds4_gpu_tensor_read(heads, 0, out.data(), out.size());
+    }
+    ds4_gpu_tensor_free(heads);
+    ds4_gpu_tensor_free(ptrs);
+    return ok;
 }
 
 extern "C" void ds4_gpu_gvq_unbind(ds4_gvq_model *model) {
@@ -203,8 +245,12 @@ extern "C" ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
         if (!data) { ds4_gpu_gvq_unbind(plan); return nullptr; }
         plan->source[i] = {data, nullptr, {}, r.rows, r.cols, GLMVQ_WEIGHT_BF16};
     }
+    std::vector<uint32_t> slot;
+    std::vector<uint8_t> headers;
+    if (!gvq_headers(plan, slot, headers)) { ds4_gpu_gvq_unbind(plan); return nullptr; }
     for (uint32_t i = 0; i < count; i++) {
-        if (!gvq_link(plan, map, i)) { ds4_gpu_gvq_unbind(plan); return nullptr; }
+        const uint8_t *h = slot[i] == UINT32_MAX ? nullptr : headers.data() + (uint64_t)slot[i] * GVQ_HEADER;
+        if (!gvq_link(plan, h, i)) { ds4_gpu_gvq_unbind(plan); return nullptr; }
     }
     const uint64_t bytes = (uint64_t)count * sizeof(glmvq_source);
     plan->device = ds4_gpu_tensor_alloc(bytes);
@@ -218,6 +264,11 @@ extern "C" ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
 extern "C" uint64_t ds4_gpu_gvq_workspace(uint32_t rows) {
     return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t) +
         gvq_mma_bytes(rows) + gvq_decode_bytes();
+}
+
+// A context for another family's linear/KDA/norm work: no GLM expert scratch.
+extern "C" uint64_t ds4_gpu_gvq_workspace_linear(uint32_t rows) {
+    return GVQ_CUBLAS_WORKSPACE + (uint64_t)rows * GVQ_USED * sizeof(uint32_t);
 }
 
 extern "C" uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
@@ -299,7 +350,9 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
     return ok;
 }
 
-extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint32_t rows) {
+// `experts` funds GLM's routed-expert MMA and decode tables; another family
+// with its own routed runtime (Ling-3.1) borrows only the linear kernels.
+static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint32_t rows, bool experts) {
     if (!model || !bytes || !rows) { return nullptr; }
     const char *restore = getenv("DS4_GLMVQ_RESTORE_VEC");
     if (restore && strcmp(restore, "0") && strcmp(restore, "1")) {
@@ -491,7 +544,7 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         ds4_gpu_gvq_free(ctx);
         return nullptr;
     }
-    const uint64_t mma_bytes = gvq_mma_bytes(rows);
+    const uint64_t mma_bytes = experts ? gvq_mma_bytes(rows) : 0;
     if (mma_bytes) {
         // Reserve before execution/capture; shape/resource failures keep GEMM.
         const cudaError_t status[] = {
@@ -528,7 +581,7 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
             fprintf(stderr, "ds4: GLM VQ MMA resources unavailable; using restore+GEMM\n");
         }
     }
-    const uint64_t decode_bytes = gvq_decode_bytes();
+    const uint64_t decode_bytes = experts ? gvq_decode_bytes() : 0;
     if (decode_bytes) {
         // The published artifact uses a shared 8192-word E4M3 layer book.
         // Reserve descriptors and intermediate rows before any execution.
@@ -546,6 +599,14 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
     }
     if (ctx->q4_prefill && !gvq_q4p_scan(ctx)) { ctx->q4_prefill = false; }
     return ctx;
+}
+
+extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint32_t rows) {
+    return gvq_create(model, bytes, rows, true);
+}
+
+extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create_linear(const ds4_gvq_model *model, uint64_t bytes, uint32_t rows) {
+    return gvq_create(model, bytes, rows, false);
 }
 
 static bool gvq_stream(ds4_gvq_ctx *ctx) {

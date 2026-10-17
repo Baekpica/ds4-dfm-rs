@@ -36,7 +36,7 @@ __global__ void glmvq_mma_gather(__nv_bfloat16 *output, const float *input,
 
 // `shared` (optional): the shared expert's output, added at the same BF16
 // boundary the separate add + round passes applied.
-template <typename T>
+template <typename T, glmvq_reduce REDUCE = GLMVQ_REDUCE_BF16>
 __global__ void glmvq_mma_reduce(float *output, const T *input,
         const float *weights, const uint32_t *pairs, const uint32_t *order,
         uint32_t used, uint32_t width, uint64_t count, const float *shared = nullptr) {
@@ -48,10 +48,18 @@ __global__ void glmvq_mma_reduce(float *output, const T *input,
     // multiply/add boundary without atomics or cross-token reductions.
     for (uint32_t k = 0; k < used; k++) {
         const uint32_t row = order[(uint64_t)token * used + k];
-        const float value = glmvq_round(glmvq_mul(glmvq_value(input[(uint64_t)row * width + col]), weights[pairs[row]]));
-        sum = glmvq_round(glmvq_add(sum, value));
+        if constexpr (REDUCE == GLMVQ_REDUCE_F32) {
+            sum = glmvq_reduce_add<REDUCE>(sum, glmvq_value(input[(uint64_t)row * width + col]), weights[pairs[row]]);
+        } else {
+            const float value = glmvq_round(glmvq_mul(glmvq_value(input[(uint64_t)row * width + col]), weights[pairs[row]]));
+            sum = glmvq_round(glmvq_add(sum, value));
+        }
     }
-    output[i] = shared ? glmvq_round(glmvq_add(sum, shared[i])) : sum;
+    if constexpr (REDUCE == GLMVQ_REDUCE_F32) {
+        output[i] = glmvq_reduce_end<REDUCE>(sum, shared, i);
+    } else {
+        output[i] = shared ? glmvq_round(glmvq_add(sum, shared[i])) : sum;
+    }
 }
 
 __device__ __forceinline__ uint32_t glmvq_mma_code(uint32_t a, uint32_t b,
