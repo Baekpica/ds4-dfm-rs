@@ -504,6 +504,38 @@ fn glm_source_stops() {
     fs::remove_file(path).unwrap();
 }
 
+/// The artifact's template names low and high and reads every other level as
+/// max (chat_template.jinja:2-3), so the CLI's effort prefix must write Low
+/// for the low level -- it used to drop the line entirely.
+#[test]
+fn glm_effort_prefix_names_the_level() {
+    let path = tmp("glm-effort-prefix.gguf");
+    let mut builder = Builder::with_bytes();
+    let bos = builder.push_str("[gMASK]", 3);
+    let eos = builder.push_str("<|endoftext|>", 3);
+    builder.push_str("<|system|>", 3);
+    builder.write_specials(&path, "glm5-next", bos, eos);
+    let vocab = Vocab::load_path(&path, ModelFamily::Glm53).unwrap();
+
+    for (mode, text) in [
+        (ChatThinkMode::Low, "Reasoning Effort: Low"),
+        (ChatThinkMode::High, "Reasoning Effort: High"),
+        (ChatThinkMode::Max, "Reasoning Effort: Max"),
+    ] {
+        let mut tokens = TokenBuffer::new();
+        vocab.chat_append_effort_prefix(&mut tokens, mode);
+        let mut expected = vec![vocab.system_id];
+        expected.extend(vocab.encode_rendered_chat(text));
+        assert_eq!(tokens.as_slice(), expected, "{text}");
+    }
+
+    // Thinking off writes no level line at all.
+    let mut tokens = TokenBuffer::new();
+    vocab.chat_append_effort_prefix(&mut tokens, ChatThinkMode::None);
+    assert!(tokens.as_slice().is_empty());
+    fs::remove_file(path).unwrap();
+}
+
 fn load(family: ModelFamily, path: &Path) -> Vocab {
     Vocab::load_path(path, family).expect("rust vocab_load")
 }

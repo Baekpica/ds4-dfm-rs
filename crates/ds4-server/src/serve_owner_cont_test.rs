@@ -207,6 +207,7 @@ fn cont_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, JobDr
         default_temp: 0.0,
         live_ids: Vec::new(),
         engine_defaults: false,
+        glm_values: false,
     };
     let body = format!(
         r#"{{"messages":[{{"role":"user","content":"{tag}"}}],"thinking":{{"type":"disabled"}},"temperature":0}}"#
@@ -521,6 +522,7 @@ fn parse_env() -> ParseEnv {
         default_temp: 0.0,
         live_ids: Vec::new(),
         engine_defaults: false,
+        glm_values: false,
     }
 }
 

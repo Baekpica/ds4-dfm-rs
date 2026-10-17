@@ -605,6 +605,15 @@ fn main() {
                             "ds4-server-rs: warning: V4.1 flags given but the model is not V4.1; they are ignored"
                         );
                     }
+                    // The GLM-5.3 scope: the artifact's own request-omitted
+                    // values and level (chat_template.jinja:2-3,
+                    // generation_config.json), each settable per deployment.
+                    if ds4_server::syntax_for_model_id(m.model_id())
+                        == ds4_server::ModelSyntax::Glm53
+                    {
+                        cfg.glm_values = true;
+                        eprintln!("ds4-server-rs: {}", ds4_server::glm_values_report());
+                    }
                     cfg.have_engine = true;
                     Some(m)
                 }

@@ -24,8 +24,8 @@ use crate::generate::{
     prepare_required_prefixes, render_prompt_ex, responses_ids, stream_req_from_parsed,
     GenerateError, GenerateOutcome,
 };
+use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{EosPolicy, ParsedRequest, ToolCall, ToolChoice};
-use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 #[cfg(feature = "native")]
 use crate::render::render_live_tool_tail;
 use crate::render::syntax_for_model_id;
@@ -259,11 +259,12 @@ impl ContStepper {
             .unwrap_or(-1)
     }
 
-    /// Match serial sampling: IQuest keeps the requested sampler in thinking;
-    /// other families retain their legacy thinking defaults.
+    /// Match serial sampling: IQuest and the GLM-5.3 scope keep the values
+    /// the request resolved to (the GLM scope resolved the artifact's own);
+    /// the other families retain their legacy thinking defaults.
     pub fn sampling(&self, parsed: &ParsedRequest) -> (f32, i32, f32, f32) {
         if think_mode_enabled(parsed.think_mode)
-            && syntax_for_model_id(self.model_id) != crate::render::ModelSyntax::IQuestQ1
+            && fixed_thinking_sampling(syntax_for_model_id(self.model_id))
         {
             (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
         } else {
@@ -4024,6 +4025,45 @@ mod bank_tests {
                 assert_eq!(stepper.sampling(&parsed), expected);
             }
         }
+    }
+
+    #[test]
+    fn glm_thinking_keeps_the_resolved_sampler() {
+        let glm = ParseEnv {
+            glm_values: true,
+            ..ParseEnv::default()
+        };
+        let model_id = ds4_core::Variant::Glm53FlashVq as i32;
+        let step = |body: &str| {
+            let parsed = parse_chat_request(&glm, body).unwrap();
+            let (stepper, _) = ContStepper::new(
+                &parsed,
+                model_id,
+                "glm-sample",
+                0,
+                false,
+                16,
+                b"<think>".to_vec(),
+                1,
+                8192,
+            );
+            stepper.sampling(&parsed)
+        };
+
+        // An explicit value wins in thinking, as in the host
+        // (ds4_server.c:13951-13959: only knobs the client left out take the
+        // default).
+        assert_eq!(
+            step(
+                r#"{"messages":[{"role":"user","content":"2 + 2"}],"reasoning_effort":"high","temperature":0.7,"top_k":9,"top_p":0.9,"min_p":0.03}"#
+            ),
+            (0.7, 9, 0.9, 0.03)
+        );
+        // Omitted knobs take the artifact's values, not the host's tuple.
+        assert_eq!(
+            step(r#"{"messages":[{"role":"user","content":"2 + 2"}],"reasoning_effort":"high"}"#),
+            (1.0, 0, 0.95, 0.0)
+        );
     }
 
     #[test]

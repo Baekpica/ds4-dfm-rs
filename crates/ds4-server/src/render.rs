@@ -971,6 +971,21 @@ fn append_glm_assistant_prefix(out: &mut Vec<u8>, m: &ChatMsg, preserve_reasonin
     put(out, "</think>");
 }
 
+/// The level line the artifact's template writes into its first system turn
+/// (`<|system|>Reasoning Effort: X`, chat_template.jinja:3).  The template
+/// honours only `low` and `high` by name and reads every other level as max
+/// (chat_template.jinja:2), so the two named levels say themselves and
+/// everything else is max.
+fn glm_effort_text(mode: ThinkMode) -> &'static str {
+    match mode {
+        ThinkMode::Low => "Reasoning Effort: Low",
+        ThinkMode::High => "Reasoning Effort: High",
+        // The template's else branch; None never reaches here (thinking off
+        // is rendered without the line at all).
+        ThinkMode::Max | ThinkMode::None => "Reasoning Effort: Max",
+    }
+}
+
 pub fn render_glm_chat_ex(
     msgs: &[ChatMsg],
     tool_schemas: &str,
@@ -987,15 +1002,7 @@ pub fn render_glm_chat_ex(
     let mut out = GLM_BOS.as_bytes().to_vec();
     if think {
         put(&mut out, "<|system|>");
-        put(
-            &mut out,
-            match think_mode {
-                ThinkMode::High => "Reasoning Effort: High",
-                ThinkMode::Max => "Reasoning Effort: Max",
-                ThinkMode::Low => "Reasoning Effort: Max",
-                ThinkMode::None => "",
-            },
-        );
+        put(&mut out, glm_effort_text(think_mode));
     }
     if !tool_schemas.is_empty() {
         let mut tools = Vec::new();

@@ -9,7 +9,7 @@ use crate::json::{
     json_string, Json,
 };
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
-use crate::render::DSML_IMAGE;
+use crate::render::{ModelSyntax, DSML_IMAGE};
 use crate::route::{
     compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
 };
@@ -134,6 +134,11 @@ pub struct ParseEnv {
     /// other families keep the port's own wire vocabulary (their references
     /// are their own stacks, not this engine).
     pub engine_defaults: bool,
+    /// The GLM-5.3 scope: the artifact's own request-omitted values
+    /// (`GlmValues`) instead of the fixed DeepSeek-style sampler this port
+    /// applies to every other syntax.  The bin sets it when the model it
+    /// opened is GLM-5.3, either variant.
+    pub glm_values: bool,
 }
 
 impl Default for ParseEnv {
@@ -145,6 +150,7 @@ impl Default for ParseEnv {
             default_temp: default_temperature(),
             live_ids: Vec::new(),
             engine_defaults: false,
+            glm_values: false,
         }
     }
 }
@@ -155,6 +161,131 @@ pub fn default_temperature() -> f32 {
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_TEMPERATURE)
+}
+
+/// The GLM-5.3 scope's request-omitted sampler and effort level.  The
+/// artifact states its own: the template honours `low` and `high` and reads
+/// every other level as max (chat_template.jinja:2-3), and its
+/// generation_config pins temperature 1.0 with top_p 0.95 and no min_p or
+/// top_k key at all (generation_config.json, zai-org/GLM-5.3-Flash
+/// @84c6a6a).  The host's own 1.0/1.0/0.05 sampler (ds4.h:52-54) is a
+/// different model's contract, so the GLM scope carries its own values, each
+/// one settable per deployment through the same knob family as ds41's
+/// (DS4_SERVER_DEFAULT_TEMP / _MIN_P): the server serves one family per
+/// process, so one set of environment values is enough.  Temperature stays
+/// with `default_temperature` (1.0 on both contracts).
+pub struct GlmValues {
+    pub top_p: f32,
+    pub min_p: f32,
+    pub effort: ThinkMode,
+}
+
+/// generation_config.json: top_p 0.95, temperature 1.0, and nothing else --
+/// an absent min_p key means the artifact does not truncate below the
+/// nucleus, so the port's 0.05 (ds4.h:54) must not apply here.
+const GLM53_DEFAULT_TOP_P: f32 = 0.95;
+const GLM53_DEFAULT_MIN_P: f32 = 0.0;
+/// The template's own default: anything unlisted, `max` included, is max.
+const GLM53_DEFAULT_EFFORT: ThinkMode = ThinkMode::Max;
+
+/// top_p and min_p are probabilities, so a value outside [0, 1] is a typo.
+const UNIT_BOUNDS: std::ops::RangeInclusive<f32> = 0.0..=1.0;
+
+/// Resolve one `DS4_SERVER_DEFAULT_*` probability against the artifact's
+/// value.  An unparseable or out-of-range setting is reported once at
+/// startup instead of being clamped (0.2 and 2.0 are equally likely to be
+/// typos) or silently ignored.
+fn resolve_unit(name: &str, raw: Option<&str>, fallback: f32) -> f32 {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+        return fallback;
+    };
+
+    let Ok(value) = raw.parse::<f32>() else {
+        eprintln!("ds4-server: {name}={raw:?} is not a number; using {fallback}");
+        return fallback;
+    };
+
+    if !value.is_finite() || !UNIT_BOUNDS.contains(&value) {
+        eprintln!("ds4-server: {name}={raw:?} is outside [0, 1]; using {fallback}");
+        return fallback;
+    }
+
+    value
+}
+
+/// The effort level a GLM request that does not name one gets.  The knob
+/// names the artifact's own three levels; any other name is a typo and is
+/// reported rather than mapped onto a level the template would not read.
+fn resolve_effort(raw: Option<&str>) -> ThinkMode {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+        return GLM53_DEFAULT_EFFORT;
+    };
+
+    match raw.trim() {
+        "low" => ThinkMode::Low,
+        "high" => ThinkMode::High,
+        "max" => ThinkMode::Max,
+        _ => {
+            eprintln!(
+                "ds4-server: DS4_SERVER_DEFAULT_EFFORT={raw:?} is not low, high or max; using max"
+            );
+            GLM53_DEFAULT_EFFORT
+        }
+    }
+}
+
+/// The GLM scope's values, read from the environment once per process: these
+/// are deployment settings fixed at server start, not per-request inputs.
+pub fn glm_values() -> &'static GlmValues {
+    static RESOLVED: std::sync::OnceLock<GlmValues> = std::sync::OnceLock::new();
+
+    RESOLVED.get_or_init(|| GlmValues {
+        top_p: resolve_unit(
+            "DS4_SERVER_DEFAULT_TOP_P",
+            std::env::var("DS4_SERVER_DEFAULT_TOP_P").ok().as_deref(),
+            GLM53_DEFAULT_TOP_P,
+        ),
+        min_p: resolve_unit(
+            "DS4_SERVER_DEFAULT_MIN_P",
+            std::env::var("DS4_SERVER_DEFAULT_MIN_P").ok().as_deref(),
+            GLM53_DEFAULT_MIN_P,
+        ),
+        effort: resolve_effort(std::env::var("DS4_SERVER_DEFAULT_EFFORT").ok().as_deref()),
+    })
+}
+
+/// The startup line for the GLM scope, so the deployment can read back what
+/// it actually serves.
+pub fn glm_values_report() -> String {
+    let v = glm_values();
+    format!(
+        "GLM values: temperature={} top_p={} min_p={} effort={:?}",
+        default_temperature(),
+        v.top_p,
+        v.min_p,
+        v.effort
+    )
+}
+
+/// The request-omitted effort level for a scope.  The GLM-5.3 scope takes the
+/// artifact's own default (max, or the deployment's override); every other
+/// family keeps the port's low.
+pub fn default_effort(glm: bool) -> ThinkMode {
+    if glm {
+        glm_values().effort
+    } else {
+        ThinkMode::Low
+    }
+}
+
+/// The syntaxes that keep the port's fixed thinking sampler rather than the
+/// request's own knobs.  The host applies that sampler only to values the
+/// client left out (ds4_server.c:13951-13959); the port's other families do
+/// not track which knobs were sent, so they keep the fixed tuple.  GLM-5.3 is
+/// the exception both ways: its request-omitted values are the artifact's own
+/// (GlmValues) and an explicit client value must win, as in the host.
+pub fn fixed_thinking_sampling(syntax: ModelSyntax) -> bool {
+    !matches!(syntax, ModelSyntax::IQuestQ1 | ModelSyntax::Glm53)
 }
 
 #[derive(Debug, Clone)]
@@ -222,9 +353,15 @@ impl ParsedRequest {
             max_tokens_set: false,
             top_k: 0,
             temperature: env.default_temp,
-            top_p: DEFAULT_TOP_P,
+            top_p: if env.glm_values {
+                glm_values().top_p
+            } else {
+                DEFAULT_TOP_P
+            },
             min_p: if env.engine_defaults {
                 0.0
+            } else if env.glm_values {
+                glm_values().min_p
             } else {
                 DEFAULT_MIN_P
             },
@@ -3692,6 +3829,54 @@ pub fn parse_request(
         WireSurface::OpenaiCompletion => parse_completion_request(env, body),
         WireSurface::Anthropic => parse_anthropic_request(env, body),
         WireSurface::Responses => parse_responses_request(env, body),
+    }
+}
+
+#[cfg(test)]
+mod glm_value_tests {
+    use super::{default_effort, resolve_effort, resolve_unit, GLM53_DEFAULT_EFFORT};
+    use crate::route::ThinkMode;
+
+    // The deployment override is accepted only inside the probability window;
+    // everything else is reported and falls back to the artifact's value.
+    #[test]
+    fn resolves_valid_unit_override() {
+        assert_eq!(resolve_unit("T", Some("0.95"), 0.95), 0.95);
+        assert_eq!(resolve_unit("T", Some("0"), 1.0), 0.0);
+        assert_eq!(resolve_unit("T", Some("1"), 1.0), 1.0);
+    }
+
+    #[test]
+    fn rejects_bad_unit_override() {
+        for raw in ["", "abc", "-0.1", "1.5", "2", "nan", "inf"] {
+            assert_eq!(resolve_unit("T", Some(raw), 0.95), 0.95, "{raw}");
+        }
+
+        assert_eq!(resolve_unit("T", None, 0.95), 0.95);
+    }
+
+    // The template's own default, and only its two named levels, are real for
+    // this artifact (chat_template.jinja:2-3).
+    #[test]
+    fn resolves_only_the_template_levels() {
+        assert_eq!(resolve_effort(None), GLM53_DEFAULT_EFFORT);
+        assert_eq!(resolve_effort(Some("low")), ThinkMode::Low);
+        assert_eq!(resolve_effort(Some("high")), ThinkMode::High);
+        assert_eq!(resolve_effort(Some("max")), ThinkMode::Max);
+        for raw in ["", "banana", "xhigh", "none", "off"] {
+            assert_eq!(resolve_effort(Some(raw)), GLM53_DEFAULT_EFFORT, "{raw}");
+        }
+    }
+
+    // Only the GLM scope takes the artifact default; the other families keep
+    // the port's low.
+    #[test]
+    fn scope_selects_the_default_level() {
+        assert_eq!(default_effort(false), ThinkMode::Low);
+        // The GLM scope takes the resolved deployment value (the artifact's
+        // max unless DS4_SERVER_DEFAULT_EFFORT says otherwise).
+        assert_eq!(default_effort(true), super::glm_values().effort);
+        assert_ne!(GLM53_DEFAULT_EFFORT, ThinkMode::Low);
     }
 }
 

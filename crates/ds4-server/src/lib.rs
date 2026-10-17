@@ -101,8 +101,9 @@ pub use models::{
     model_one_json, models_list_json,
 };
 pub use parse::{
-    default_temperature, parse_anthropic_request, parse_chat_request, parse_completion_request,
-    parse_request, parse_responses_request, ChatMsg, ChatPart, ImageMime, ParseEnv, ParsedRequest,
+    default_effort, default_temperature, fixed_thinking_sampling, glm_values, glm_values_report,
+    parse_anthropic_request, parse_chat_request, parse_completion_request, parse_request,
+    parse_responses_request, ChatMsg, ChatPart, GlmValues, ImageMime, ParseEnv, ParsedRequest,
     RequestImage, ToolCall, ToolChoice, ToolSchemaOrder, DEFAULT_MIN_P, DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
 };

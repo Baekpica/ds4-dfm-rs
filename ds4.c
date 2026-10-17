@@ -39578,7 +39578,14 @@ static void chat_push_bos_sequence(const ds4_vocab *vocab, token_vec *out) {
         token_vec_push(out, vocab->sop_id);
 }
 
+/* GLM-5.3's levels are the artifact's own: its embedded template names low and
+ * high and reads every other level as max (chat_template.jinja:2-3), so LOW
+ * writes its own text here rather than nothing.  The DS4 "low adds nothing"
+ * convention above does not hold for this family -- its template always writes
+ * the line -- and upstream's own GLM fixture tooling renders the same official
+ * "Reasoning Effort: Low" text (gguf-tools/quality-testing/README.md). */
 static const char *glm53_reasoning_effort(ds4_think_mode mode) {
+    if (mode == DS4_THINK_LOW) return "Reasoning Effort: Low";
     if (mode == DS4_THINK_HIGH) return "Reasoning Effort: High";
     if (mode == DS4_THINK_MAX) return "Reasoning Effort: Max";
     return NULL;

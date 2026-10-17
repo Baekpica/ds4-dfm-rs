@@ -27,8 +27,8 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
+use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{ChatMsg, ChatPart, EosPolicy, ParsedRequest, ToolCall, ToolChoice};
-use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::render::{
     render_chat_choice_ex, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError,
     DSML_EOS, QWEN_IM_END, SOLAR_IM_END,
@@ -1762,10 +1762,13 @@ fn decode_pass(
         let mut top_k = parsed.top_k;
         let mut top_p = parsed.top_p;
         let mut min_p = parsed.min_p;
-        // IQuest uses the requested sampler in both channels. Greedy thinking
-        // must remain eligible for its embedded target-verified MTP path.
+        // IQuest uses the requested sampler in both channels, and the GLM-5.3
+        // scope already carries its own request-omitted values
+        // (parse::GlmValues), so both keep what the request resolved to.
+        // Greedy thinking must remain eligible for IQuest's embedded
+        // target-verified MTP path.
         if think_mode_enabled(parsed.think_mode)
-            && syntax_for_model_id(engine.model_id()) != ModelSyntax::IQuestQ1
+            && fixed_thinking_sampling(syntax_for_model_id(engine.model_id()))
         {
             temperature = DEFAULT_TEMPERATURE;
             top_k = 0;
@@ -6748,6 +6751,7 @@ mod disk_sync_tests {
             default_temp: 0.0,
             live_ids: Vec::new(),
             engine_defaults: false,
+            glm_values: false,
         };
         let ordinary = parse_request(
             WireSurface::OpenaiChat,

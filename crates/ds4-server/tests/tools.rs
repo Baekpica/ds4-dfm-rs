@@ -389,6 +389,7 @@ fn parse_chat_request_keeps_a_type_list_head() {
         default_temp: ds4_server::default_temperature(),
         live_ids: Vec::new(),
         engine_defaults: false,
+        glm_values: false,
     };
     let request = r#"{"messages":[{"role":"user","content":"find it"}],
         "tools":[{"type":"function","function":{"name":"search_tool","parameters":
