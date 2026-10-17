@@ -514,6 +514,18 @@ fn glm_vq_uses_glm_syntax() {
 }
 
 #[test]
+fn ling31_uses_bailing_syntax() {
+    // Ling-3.1 keeps Bailing V3's chat template, tool markers and parser.
+    let id = ds4_core::Variant::Ling31FlashVq as i32;
+    assert_eq!(ds4_server::syntax_for_model_id(id), ModelSyntax::Ling3Vl);
+    let raw = b"read it</think><tool_call>read\n<arg_key>path</arg_key>\n<arg_value>a.rs</arg_value>\n</tool_call>";
+    let parsed = ds4_server::parse_generated_for_model_id(id, raw, true, &[]);
+    assert_eq!(parsed.reasoning, b"read it");
+    assert_eq!(parsed.calls.len(), 1);
+    assert_eq!(parsed.calls[0].name, "read");
+}
+
+#[test]
 fn k2_horizon_chat_uses_ifm_not_exaone() {
     let prompt = render_chat(
         ModelSyntax::K2Horizon,
