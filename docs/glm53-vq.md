@@ -80,7 +80,10 @@ per token with the same Q4_K choice for its nonexpert weights.
   projections and the SwiGLU kernel.
 - **mHC.** One kernel computes the 4-stream RMS and the 24 F32 mapping dots;
   the Sinkhorn split runs one lane per element and also applies the
-  following RMS norm.
+  following RMS norm. Each thread loads its 16 columns of the four streams
+  and their norm weights before warp 0's Sinkhorn, whose iterations then
+  hide that latency (6.3 vs 11.6 µs per one-row call, bit-identical;
+  `DS4_GLMVQ_SPLIT_PRELOAD=0` keeps the generic loop).
 - **Attention.** KDA layers run the recurrence; DSA layers use the absorbed
   latent attention (`(Q·W_k) Cᵀ`, `(P·C) W_vᵀ`) over the selected keys:
   direct GEMVs for both absorptions and a single-pass flash kernel whose
@@ -181,7 +184,7 @@ RMS 0.23, KL 2.3e-7.
 | Expand fused with the next mix | F32 order through Sinkhorn | RMS 0.32, KL 1.8e-6 | identical |
 | Tensor-core KDA chunks | F16 operands (k F32, V' in two halves) | RMS 0.25, KL 7.9e-7 | identical |
 | BF16 storage of BF16-rounded rows (residual, expert gate/down, KDA gates) | identical values | bit-identical | identical |
-| Fused down quantization, scan staging, dependent launch | identical order | bit-identical | identical |
+| Fused down quantization, scan staging, dependent launch, mHC split preload | identical order | bit-identical | identical |
 
 On the text-quality cases the tensor-core KDA moves the paired NLL by
 +0.008 ± 0.006 (standard error) nat/token against the F32 recurrence, with

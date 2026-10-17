@@ -45,6 +45,7 @@ struct ds4_gvq_ctx {
     bool direct_q4;
     bool q4_mma;
     bool gate_up;
+    bool split_row;
     bool gain_dot;
     bool q4_round;
     bool direct_fp8;
@@ -405,6 +406,13 @@ extern "C" ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t 
         return nullptr;
     }
     ctx->gate_up = !gate_up || strcmp(gate_up, "0");
+    const char *split_row = getenv("DS4_GLMVQ_SPLIT_PRELOAD");
+    if (split_row && strcmp(split_row, "0") && strcmp(split_row, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_SPLIT_PRELOAD accepts 0 or 1\n");
+        delete ctx;
+        return nullptr;
+    }
+    ctx->split_row = !split_row || strcmp(split_row, "0");
     const char *q4_stream = getenv("DS4_GLMVQ_Q4_STREAM");
     if (q4_stream && strcmp(q4_stream, "0") && strcmp(q4_stream, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_Q4_STREAM accepts 0 or 1\n");
@@ -677,10 +685,18 @@ extern "C" int ds4_gpu_gvq_split(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_
         !gvq_floats(residual, count * GLMVQ_HC) || !gvq_floats(split, coeff) || !gvq_floats(mix, coeff) ||
         (norm && (!w || !gvq_floats(norm, count)))) { return 0; }
     auto launch = [&](auto *r) {
-        glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_split<std::remove_const_t<std::remove_pointer_t<decltype(r)>>>,
+        using R = std::remove_const_t<std::remove_pointer_t<decltype(r)>>;
+        float *n = norm ? (float *)norm->ptr : nullptr;
+        // GLM rows preload their streams under the Sinkhorn (bit-identical);
+        // DS4_GLMVQ_SPLIT_PRELOAD=0 keeps the generic loop.
+        if (ctx->split_row && width == GLMVQ_HC_WIDTH) {
+            glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_split_row<R>, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
+                (const float *)mix->ptr, r, s, b, (float *)out->ptr, (float *)split->ptr, iterations, eps, w, n, norm_eps);
+            return;
+        }
+        glmvq_launch_kernel(gvq_mode(rows), glmvq_hc_split<R>,
             rows, GLMVQ_THREADS, 0, ds4_current_stream(), (const float *)mix->ptr,
-            r, s, b, (float *)out->ptr, (float *)split->ptr, width, iterations, eps,
-            w, norm ? (float *)norm->ptr : nullptr, norm_eps);
+            r, s, b, (float *)out->ptr, (float *)split->ptr, width, iterations, eps, w, n, norm_eps);
     };
     if (format == DS4_GVQ_ROWS_BF16) { launch((const __nv_bfloat16 *)residual->ptr); }
     else { launch((const float *)residual->ptr); }

@@ -277,6 +277,39 @@ static int expand_mix_case(uint32_t rows) {
     return !(!differ && rel < 1e-5);
 }
 
+// GLM-width mHC split with preloaded rows vs the generic split kernel.
+template <typename R>
+static int split_row_case(uint32_t rows) {
+    const uint32_t width = GLMVQ_HC_WIDTH;
+    std::normal_distribution<float> nd(0, 1);
+    std::vector<R> res((size_t)rows * GLMVQ_HC * width);
+    std::vector<float> mix((size_t)rows * GLMVQ_HC_MIX), scale = {0.5f, 0.7f, 0.9f}, base(GLMVQ_HC_MIX);
+    std::vector<__nv_bfloat16> nw(width);
+    for (auto &v : res) { v = (R)__bfloat162float(__float2bfloat16_rn(nd(rng))); }
+    for (auto &v : mix) { v = nd(rng); }
+    for (auto &v : base) { v = 0.1f * nd(rng); }
+    for (auto &v : nw) { v = __float2bfloat16_rn(1.0f + 0.1f * nd(rng)); }
+    R *dres = up(res); float *dmix = up(mix), *dscale = up(scale), *dbase = up(base); __nv_bfloat16 *dnw = up(nw);
+    float *out[2], *split[2], *norm[2];
+    for (int v = 0; v < 2; v++) {
+        CK(cudaMalloc(&out[v], (size_t)rows * width * 4)); CK(cudaMalloc(&split[v], (size_t)rows * GLMVQ_HC_MIX * 4));
+        CK(cudaMalloc(&norm[v], (size_t)rows * width * 4));
+    }
+    glmvq_hc_split<R><<<rows, GLMVQ_THREADS>>>(dmix, dres, dscale, dbase, out[0], split[0], width, 20u, 1e-6f, dnw, norm[0], 1e-5f);
+    glmvq_hc_split_row<R><<<rows, GLMVQ_THREADS>>>(dmix, dres, dscale, dbase, out[1], split[1], 20u, 1e-6f, dnw, norm[1], 1e-5f);
+    CK(cudaDeviceSynchronize());
+    size_t differ = 0;
+    for (auto *pair : {out, split, norm}) {
+        const size_t n = pair == split ? (size_t)rows * GLMVQ_HC_MIX : (size_t)rows * width;
+        auto a = down(pair[0], n), b = down(pair[1], n);
+        for (size_t i = 0; i < n; i++) { differ += a[i] != b[i]; }
+    }
+    printf("mHC split row rows=%u %s: %zu differ %s\n", rows, sizeof(R) == 2 ? "bf16" : "f32", differ, differ ? "FAIL" : "ok");
+    cudaFree(dres); cudaFree(dmix); cudaFree(dscale); cudaFree(dbase); cudaFree(dnw);
+    for (int v = 0; v < 2; v++) { cudaFree(out[v]); cudaFree(split[v]); cudaFree(norm[v]); }
+    return differ != 0;
+}
+
 static int absorb_case(uint32_t rows) {
     const uint32_t H = GLMVQ_FA_HEADS, A = GLMVQ_ABS_DIM, D = GLMVQ_FA_LATENT;
     std::normal_distribution<float> nd(0, 1);
@@ -406,6 +439,10 @@ int main() {
     glmvq_q4_config config;
     CK(glmvq_q4_prepare(&config, GLMVQ_Q4_AUTO));
     int failures = 0;
+    for (uint32_t rows : {1u, 3u, 64u}) {
+        failures += split_row_case<__nv_bfloat16>(rows);
+        failures += split_row_case<float>(rows);
+    }
     CK(glmvq_q4m_prepare());
     for (uint32_t tokens : {2u, 3u, 8u}) {
         failures += q4m_case(1024, 4096, tokens);   // KDA q/k/v rows

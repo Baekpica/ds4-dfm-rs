@@ -312,6 +312,67 @@ __global__ void glmvq_hc_split(const float *mix, const R *residual,
     }
 }
 
+// glmvq_hc_split for the GLM row width with the same arithmetic order: each
+// thread loads its 16 columns of the four streams and their norm weights
+// before warp 0's Sinkhorn (the loads do not depend on the coefficients),
+// keeps its outputs for the norm, and folds the last tree levels by shuffle
+// (lane l adds lane l + stride: glmvq_rms's pairs). Outputs are bit-identical.
+enum { GLMVQ_HC_WIDTH = 4096, GLMVQ_HC_COLS = GLMVQ_HC_WIDTH / GLMVQ_THREADS };
+
+template <typename R>
+__global__ void __launch_bounds__(GLMVQ_THREADS) glmvq_hc_split_row(const float *mix, const R *residual,
+        const float *scale, const float *base, float *output, float *split, uint32_t iters, float eps,
+        const __nv_bfloat16 *norm_weight, float *norm, float norm_eps) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
+    const uint32_t row = blockIdx.x, t = threadIdx.x;
+    __shared__ float coeff[GLMVQ_HC_MIX];
+    __shared__ float partial[GLMVQ_THREADS];
+    __shared__ float inv_shared;
+    const R *r = residual + (uint64_t)row * GLMVQ_HC * GLMVQ_HC_WIDTH;
+    float x[GLMVQ_HC_COLS][GLMVQ_HC], weight[GLMVQ_HC_COLS];
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_HC_COLS; j++) {
+        const uint32_t col = t + j * GLMVQ_THREADS;
+        #pragma unroll
+        for (uint32_t h = 0; h < GLMVQ_HC; h++) { x[j][h] = glmvq_value(r[(uint64_t)h * GLMVQ_HC_WIDTH + col]); }
+        weight[j] = norm ? __bfloat162float(norm_weight[col]) : 0.0f;
+    }
+    if (t < 32) { glmvq_hc_weights_warp(coeff, mix + (uint64_t)row * GLMVQ_HC_MIX, scale, base, iters, eps); }
+    __syncthreads();
+    if (t < GLMVQ_HC_MIX) { split[(uint64_t)row * GLMVQ_HC_MIX + t] = coeff[t]; }
+    float *out = output + (uint64_t)row * GLMVQ_HC_WIDTH;
+    float value[GLMVQ_HC_COLS], squares = 0.0f;
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_HC_COLS; j++) {
+        float sum = 0.0f;
+        #pragma unroll
+        for (uint32_t h = 0; h < GLMVQ_HC; h++) { sum = glmvq_add(sum, glmvq_mul(coeff[h], x[j][h])); }
+        value[j] = glmvq_round(sum);
+        out[t + j * GLMVQ_THREADS] = value[j];
+        squares = glmvq_add(squares, glmvq_mul(value[j], value[j]));
+    }
+    if (!norm) { return; }
+    partial[t] = squares;
+    __syncthreads();
+    for (uint32_t stride = GLMVQ_THREADS / 2; stride >= 32; stride /= 2) {
+        if (t < stride) { partial[t] = glmvq_add(partial[t], partial[t + stride]); }
+        __syncthreads();
+    }
+    if (t < 32) {
+        float sum = partial[t];
+        for (uint32_t stride = 16; stride; stride /= 2) { sum = glmvq_add(sum, __shfl_down_sync(0xffffffffu, sum, stride)); }
+        if (!t) { inv_shared = __fdiv_rn(1.0f, __fsqrt_rn(glmvq_add(__fdiv_rn(sum, (float)GLMVQ_HC_WIDTH), norm_eps))); }
+    }
+    __syncthreads();
+    const float inv = inv_shared;
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_HC_COLS; j++) {
+        const float v = glmvq_round(glmvq_mul(value[j], inv));
+        norm[(uint64_t)row * GLMVQ_HC_WIDTH + t + j * GLMVQ_THREADS] = glmvq_round(glmvq_mul(v, weight[j]));
+    }
+}
+
 template <typename R>
 __global__ void glmvq_hc_expand(const float *branch, const R *residual,
         const float *split, float *output, uint32_t width, uint64_t count) {
