@@ -1904,7 +1904,6 @@ fn parse_glm_generated(
         },
         ok: true,
         recovered: recovered_unclosed_tool,
-        ..Default::default()
     })
 }
 
