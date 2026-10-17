@@ -83,6 +83,20 @@ const GLM_NATIVE_MAX: u32 = 2048;
 // GLM53_VQ_PREFILL_MAX: VQ rereads every routed expert once per chunk.
 const GLMVQ_NATIVE_DEFAULT: u32 = 4096;
 const GLMVQ_NATIVE_MAX: u32 = 4096;
+// ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
+const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
+const GLMVQ_MMA_TOKENS: u64 = 32;
+// (hidden + ffn) x (F32 + BF16) + glmvq_mma_item + index, per routed pair.
+const GLMVQ_MMA_PAIR_BYTES: u64 = (4096 + 2048) * 6 + 20 + 4;
+// gvq_decode_bytes: decode items, rows and tables, then verify items, plan,
+// mid and partial rows (the native decode log prints the same total).
+const GLMVQ_DECODE_BYTES: u64 = 985_344;
+const GLMVQ_VERIFY_ROWS: u64 = 4;
+const GLMVQ_FLASH_SPLITS: u64 = 48;
+const GLMVQ_FLASH_ALIGN: u64 = 256;
+// glmvq_kda_local record per (64-token chunk, head).
+const GLMVQ_KDA_RECORD_BYTES: u64 = 3 * 64 * 128 * 2 + 64 * 64 * 2 + 64 * 128 * 4 + 128 * 4;
+const GLM_MTP_ROWS: u64 = 4;
 const GLM_DENSE_GROUP: u64 = 8;
 const GLM_DENSE_MIN_ROWS: u64 = 128;
 const GLM_DENSE_ALIGN: u64 = 256;
@@ -322,10 +336,15 @@ pub fn fill_quote_facts(
                 },
             )
         }
-        (ModelFamily::Glm53, Some(s)) => {
-            let graph = glm_graph_bytes(s, ctx, u64::from(native)).saturating_add(
-                crate::ssd_quote::window_bytes(req, s, native, facts.ssd_cache_experts),
-            );
+        (ModelFamily::Glm53 | ModelFamily::Glm53Vq, Some(s)) => {
+            let kind = GlmGraph::of(caps.family);
+            let graph = if kind == GlmGraph::Vq {
+                glm_graph_bytes(s, ctx, u64::from(native), kind)
+            } else {
+                glm_graph_bytes(s, ctx, u64::from(native), kind).saturating_add(
+                    crate::ssd_quote::window_bytes(req, s, native, facts.ssd_cache_experts),
+                )
+            };
             let mtp = req.mtp_mode == MtpMode::On;
             if quote_batch_alloc(req, caps, facts) && graph != u64::MAX {
                 let logits = u64::from(s.n_vocab) * SIZEOF_F32;
@@ -339,7 +358,9 @@ pub fn fill_quote_facts(
                     0
                 };
                 let shared = if mtp {
-                    2 * u64::from(s.n_embd) * SIZEOF_F32 + GLM_MTP_SAVES * glm_state_bytes(s)
+                    2 * u64::from(s.n_embd) * SIZEOF_F32
+                        + GLM_MTP_SAVES * glm_state_bytes(s)
+                        + glm_mtp_verify_bytes(s, kind)
                 } else {
                     0
                 };
@@ -354,7 +375,12 @@ pub fn fill_quote_facts(
                     },
                 )
             } else {
-                (graph, 0, if mtp { glm_mtp_bytes(s, ctx) } else { 0 }, 0)
+                (
+                    graph,
+                    0,
+                    if mtp { glm_mtp_bytes(s, ctx, kind) } else { 0 },
+                    0,
+                )
             }
         }
         (ModelFamily::IQuestQ1, Some(_)) => {
@@ -542,9 +568,9 @@ pub fn fill_quote_facts(
             let serial = if quote_batch_alloc(req, caps, facts) {
                 shape
                     .map(|s| {
-                        glm_graph_bytes(s, ctx, u64::from(native)).saturating_add(
+                        glm_graph_bytes(s, ctx, u64::from(native), GlmGraph::Source).saturating_add(
                             if req.mtp_mode == MtpMode::On {
-                                glm_mtp_bytes(s, ctx)
+                                glm_mtp_bytes(s, ctx, GlmGraph::Source)
                             } else {
                                 0
                             },
@@ -2129,10 +2155,28 @@ fn dots3_mtp_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
         + (DOTS3_TRIAL_ROWS + 1) * u64::from(s.n_vocab) * SIZEOF_F32
 }
 
+/// Which native graph a GLM quote mirrors: the source KDA/dense scratch or
+/// the VQ engine's own (gvq_extra_bytes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlmGraph {
+    Source,
+    Vq,
+}
+
+impl GlmGraph {
+    fn of(family: ModelFamily) -> Self {
+        if family == ModelFamily::Glm53Vq {
+            Self::Vq
+        } else {
+            Self::Source
+        }
+    }
+}
+
 // C glm53_graph_bytes_for: batched row views, KDA state/control/tails,
 // FP16 latent/pool cache and delta-rule scratch. Both predictor carries
 // exist even with MTP disabled, so snapshots have one state layout.
-fn glm_graph_bytes(s: Shape, ctx: u64, rows: u64) -> u64 {
+fn glm_graph_bytes(s: Shape, ctx: u64, rows: u64, kind: GlmGraph) -> u64 {
     let expanded = std::env::var(GLM_DSA_DIAG_ENV).ok().as_deref() == Some("1");
     if rows == 0 || (expanded && ctx > 2048) {
         return u64::MAX;
@@ -2182,10 +2226,16 @@ fn glm_graph_bytes(s: Shape, ctx: u64, rows: u64) -> u64 {
     } else {
         0
     };
+    let scratch = match kind {
+        GlmGraph::Source => kda_prefill_scratch_bytes(rows, heads, kda_head) + dense,
+        GlmGraph::Vq => glm_vq_extra_bytes(s, ctx, rows),
+    };
+    if scratch == u64::MAX {
+        return u64::MAX;
+    }
     let workspace = u64::from(s.n_vocab) * SIZEOF_F32
         + rows * (indices * SIZEOF_I32 + floats * SIZEOF_F32)
-        + kda_prefill_scratch_bytes(rows, heads, kda_head)
-        + dense;
+        + scratch;
     let conv = kda_dim * u64::from(s.n_ssm_conv) * SIZEOF_F32;
     let controls = 3 * conv + (heads + kda_dim + kda_head) * SIZEOF_F32;
     let state = kda_dim * kda_head * SIZEOF_F32 + 3 * conv;
@@ -2203,6 +2253,89 @@ fn glm_graph_bytes(s: Shape, ctx: u64, rows: u64) -> u64 {
         + (u64::from(exec) - dsa) * (state + controls)
         + dsa * (tail + cache)
         + 2 * hidden * SIZEOF_F32
+}
+
+// C gvq_extra_bytes on the default kernels (flash attention, fused prefill
+// index scores, direct Q4_K head): the largest per-forward scratch, cuBLAS
+// and expert-item workspace, decode/verify buffers and row positions.
+// Diagnostic paths that allocate more refuse the quote.
+fn glm_vq_extra_bytes(s: Shape, ctx: u64, rows: u64) -> u64 {
+    let off = |name: &str| std::env::var(name).ok().as_deref() == Some("0");
+    if off("DS4_GLMVQ_FLASH") || off("DS4_GLMVQ_INDEX_FUSED") || off("DS4_GLMVQ_Q4_DIRECT") {
+        return u64::MAX;
+    }
+    let hidden = u64::from(s.n_embd);
+    let heads = u64::from(s.n_head);
+    let latent = u64::from(s.n_kv_lora);
+    let align = |n: u64| n.div_ceil(GLMVQ_FLASH_ALIGN) * GLMVQ_FLASH_ALIGN;
+    // gvq_flash_plan: BF16 query/output and latent rows; verify widths split keys.
+    let query = align(rows * heads * u64::from(s.n_key_mla) * SIZEOF_U16);
+    let low = align(rows * heads * latent * SIZEOF_U16);
+    let splits = if rows <= GLMVQ_VERIFY_ROWS {
+        rows * (GLMVQ_FLASH_SPLITS / rows.max(1))
+    } else {
+        0
+    };
+    let flash = 2 * query
+        + 2 * low
+        + align(splits * heads * latent * SIZEOF_F32)
+        + align(splits * heads * 2 * SIZEOF_F32);
+    // cuBLAS index scores serve at most three rows next to the fused kernel.
+    let index_rows = if rows > GLMVQ_VERIFY_ROWS - 1 {
+        GLMVQ_VERIFY_ROWS - 1
+    } else {
+        rows
+    };
+    let index_heads = u64::from(s.n_indexer_head);
+    let index = index_rows
+        * index_heads
+        * (u64::from(s.n_indexer_head_dim) * SIZEOF_U16 + ctx.div_ceil(GLM_POOL_SIZE) * SIZEOF_F32);
+    let kda_head = u64::from(s.n_kda_head_dim);
+    let planes = kda_prefill_scratch_bytes(rows, heads, kda_head);
+    let kda = if planes == 0 {
+        0
+    } else {
+        (planes + rows * heads * SIZEOF_F32).max(rows.div_ceil(64) * heads * GLMVQ_KDA_RECORD_BYTES)
+    };
+    // FP8 projections restore their BF16 weights beside BF16 rows.
+    let fp8 = |out: u64, cols: u64| (out * cols + rows * (out + cols)) * SIZEOF_U16;
+    let scratch = [
+        flash,
+        index,
+        kda,
+        fp8(u64::from(s.n_ff_dense), hidden),
+        fp8(hidden, heads * u64::from(s.n_key_mla)),
+        u64::from(s.n_expert) * hidden * SIZEOF_F32,
+        (u64::from(s.n_vocab) + hidden) * SIZEOF_U16,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
+    let used = u64::from(s.n_expert_used);
+    let mma = if rows >= GLMVQ_MMA_TOKENS {
+        rows * used * GLMVQ_MMA_PAIR_BYTES
+    } else {
+        0
+    };
+    scratch
+        + GLMVQ_CUBLAS_WORKSPACE
+        + rows * used * SIZEOF_U32
+        + mma
+        + GLMVQ_DECODE_BYTES
+        + rows * SIZEOF_U32
+}
+
+// C glm53_mtp_verify_bytes: per-layer index stash, verified hidden rows and
+// logits for the batched verify. Shared by every bank.
+fn glm_mtp_verify_bytes(s: Shape, kind: GlmGraph) -> u64 {
+    if kind != GlmGraph::Vq {
+        return 0;
+    }
+    let slot = 2 * (GLM_POOL_SIZE + GLM_MTP_ROWS) * u64::from(s.n_indexer_head_dim) * SIZEOF_F32;
+    let hidden = u64::from(s.n_embd);
+    u64::from(s.n_layer) * slot
+        + hidden * SIZEOF_F32
+        + GLM_MTP_ROWS * (3 * hidden + u64::from(s.n_vocab)) * SIZEOF_F32
 }
 
 fn glm_state_bytes(s: Shape) -> u64 {
@@ -2237,12 +2370,13 @@ fn glm_checkpoint_bytes(s: Shape, mtp: bool) -> u64 {
         + GLM_CHECKPOINT_SLOTS * u64::from(s.n_vocab) * SIZEOF_F32
 }
 
-fn glm_mtp_bytes(s: Shape, ctx: u64) -> u64 {
+fn glm_mtp_bytes(s: Shape, ctx: u64, kind: GlmGraph) -> u64 {
     // Native session quote covers KV, concat and rollback state. The host
     // also keeps five target-logit rows until accepted-prefix commit.
     ctx * u64::from(s.n_kv_lora) * SIZEOF_U16
         + 2 * u64::from(s.n_embd) * SIZEOF_F32
         + GLM_MTP_SAVES * (glm_state_bytes(s) + u64::from(s.n_vocab) * SIZEOF_F32)
+        + glm_mtp_verify_bytes(s, kind)
 }
 
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
@@ -2705,6 +2839,24 @@ mod tests {
         assert_eq!(family_native_chunk(caps, 1 << 20), 4096);
         assert_eq!(glm_vq_quote(8192, None).native_chunk, Some(4096));
         assert_eq!(glm_vq_quote(8192, Some(4096)).native_chunk, Some(4096));
+    }
+
+    #[test]
+    fn glm_vq_quote_matches_the_native_graph() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
+        // Native eager graph logs at 4096 rows (KV, state, workspace MiB);
+        // KV is exact here: 11 DSA layers of FP16 latent and pool rows.
+        for (ctx, workspace) in [(4096u64, 6817.05), (32768, 6929.05)] {
+            let kv = 11 * (ctx * 512 + ctx / 4 * 128) * SIZEOF_U16;
+            let native = (workspace + 148.82) * MIB as f64 + kv as f64;
+            let facts = glm_vq_quote(ctx as i32, None);
+            let quoted = (facts.per_bank_bytes.unwrap() + facts.scratch_bytes.unwrap()) as f64;
+            assert!(
+                (quoted / native - 1.0).abs() < 0.005,
+                "ctx {ctx}: {quoted} vs {native}"
+            );
+        }
     }
 
     #[test]
