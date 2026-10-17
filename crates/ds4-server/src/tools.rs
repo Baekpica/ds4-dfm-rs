@@ -1281,6 +1281,23 @@ fn tool_schema_order_prop_type<'a>(
         .map(|(_, t)| t.as_str())
 }
 
+/// The declared type when the client wrote it as a list (`Option<T>` under
+/// schemars).  Empty entries mean the client declared nothing usable, so the
+/// caller falls back to the reference's own rule for GLM: text.
+fn tool_schema_order_prop_type_first<'a>(
+    order: Option<&'a ToolSchemaOrder>,
+    name: &str,
+) -> Option<&'a str> {
+    let order = order?;
+    order
+        .prop
+        .iter()
+        .zip(order.prop_type_first.iter())
+        .find(|(p, _)| p.as_str() == name)
+        .map(|(_, t)| t.as_str())
+        .filter(|t| !t.is_empty())
+}
+
 fn parse_solar_generated(
     text: &[u8],
     require_thinking_closed: bool,
@@ -1713,18 +1730,6 @@ fn glm_arg_type(raw: &[u8], expected: Option<&str>) -> bool {
     }
 }
 
-/// True when the value is a complete JSON literal that is not a JSON string.
-/// The template writes strings verbatim and other values as JSON, so a
-/// property whose declared type the engine could not resolve is still typed by
-/// the value itself -- a number stays a number instead of being stringified
-/// into a client rejection (`invalid type: string "15", expected usize`).
-fn glm_json_value_is_bare_literal(raw: &[u8]) -> bool {
-    match serde_json::from_slice::<serde_json::Value>(raw) {
-        Ok(value) => !value.is_string(),
-        Err(_) => false,
-    }
-}
-
 fn parse_glm_generated(
     syntax: ModelSyntax,
     text: &[u8],
@@ -1838,19 +1843,20 @@ fn parse_glm_generated(
             let raw_value = &text[p..value_end];
             if syntax == ModelSyntax::Glm53 {
                 // The embedded template writes strings verbatim and other
-                // values as JSON (chat_template.jinja:50).  The request's
-                // declared type resolves that ambiguity whenever the engine can
-                // read it; when it cannot -- an undeclared property, or a type
-                // the client wrote as a list, the way schemars renders
-                // Option<usize> as {"type":["integer","null"]} -- the value's
-                // own shape decides, rather than stringifying a number the
-                // client then rejects ('invalid type: string "15", expected
-                // usize', metasearch, session 01a14aaa, 2026-10-17).
-                let expected = tool_schema_order_prop_type(order, &String::from_utf8_lossy(&key));
-                let is_string = match glm_declared_type(expected) {
-                    Some(_) => !glm_arg_type(raw_value, expected),
-                    None => !glm_json_value_is_bare_literal(raw_value),
-                };
+                // values as JSON (chat_template.jinja:50), so the text alone is
+                // ambiguous and the request's declared type decides.  schemars
+                // renders Option<T> as a type list ({"type":["integer","null"]}),
+                // which the scalar reader cannot see, so the list's head is
+                // consulted too.  With nothing declared the reference's GLM
+                // rule stands: the value is text (ds4_server.c:6435).  Without
+                // this, a numeric argument went out as a string and the client
+                // rejected it ('invalid type: string "15", expected usize',
+                // metasearch, session 01a14aaa, 2026-10-17).
+                let name = String::from_utf8_lossy(&key);
+                let expected = tool_schema_order_prop_type(order, &name)
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| tool_schema_order_prop_type_first(order, &name));
+                let is_string = !glm_arg_type(raw_value, expected);
                 tool_call_json_args_add(&mut args, &key, raw_value, is_string);
             } else {
                 let value = dsml_unescape_text(raw_value);
@@ -1886,7 +1892,16 @@ fn parse_glm_generated(
         content,
         reasoning,
         calls,
-        raw_dsml: String::from_utf8_lossy(&text[raw_start..p]).into_owned(),
+        raw_dsml: if syntax == ModelSyntax::Glm53 {
+            String::new()
+        } else {
+            String::from_utf8_lossy(&text[raw_start..p]).into_owned()
+        },
+        raw_tool_text: if syntax == ModelSyntax::Glm53 {
+            String::from_utf8_lossy(&text[raw_start..p]).into_owned()
+        } else {
+            String::new()
+        },
         ok: true,
         recovered: recovered_unclosed_tool,
         ..Default::default()

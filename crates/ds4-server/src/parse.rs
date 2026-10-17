@@ -106,6 +106,14 @@ pub struct ToolSchemaOrder {
     pub responses_tool_search: bool,
     pub prop: Vec<String>,
     pub prop_type: Vec<String>,
+    /// The leading non-null member of a `type` array.  A client that renders an
+    /// optional field the way schemars does -- `Option<u8>` goes out as
+    /// `{"type":["integer","null"]}` -- writes no scalar type at all, so
+    /// `prop_type` is empty for it.  Only the GLM path reads this, because
+    /// GLM's template writes a string verbatim and every other value as JSON
+    /// (chat_template.jinja:50) and the declared type is the only way to tell
+    /// the two apart; the tolerant paths keep reading `prop_type` alone.
+    pub prop_type_first: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1902,6 +1910,64 @@ fn schema_property_type(json: &str) -> Option<String> {
     None
 }
 
+/// The head of a `type` array, skipping "null": schemars renders `Option<u8>`
+/// as `{"type":["integer","null"]}`, and `schema_property_type` reads only the
+/// scalar spelling, so the GLM path needs this to learn the declared type.
+fn schema_property_type_first(json: &str) -> Option<String> {
+    let mut p = Json::new(json);
+    p.ws();
+    if p.bump() != Some(b'{') {
+        return None;
+    }
+    p.ws();
+    while p.peek().is_some() && p.peek() != Some(b'}') {
+        let key = json_string(&mut p)?;
+        p.ws();
+        if p.bump() != Some(b':') {
+            return None;
+        }
+        if key == "type" {
+            return json_type_list_first(&mut p);
+        }
+        json_skip_ok(&mut p)?;
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    None
+}
+
+/// Reads a `type` value written as an array and returns its first member that
+/// is not "null" (the first member when every entry is "null"); a scalar type
+/// or anything unreadable yields None.
+fn json_type_list_first(p: &mut Json) -> Option<String> {
+    p.ws();
+    if p.peek() != Some(b'[') {
+        return None;
+    }
+    p.i += 1;
+    let mut head: Option<String> = None;
+    loop {
+        p.ws();
+        if p.peek() != Some(b'"') {
+            return head;
+        }
+        let member = json_string(p)?;
+        if head.is_none() {
+            head = Some(member.clone());
+        }
+        if member != "null" {
+            return Some(member);
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+    }
+}
+
 fn parse_schema_properties(json: &str, order: &mut ToolSchemaOrder) -> bool {
     let mut p = Json::new(json);
     p.ws();
@@ -1935,8 +2001,10 @@ fn parse_schema_properties(json: &str, order: &mut ToolSchemaOrder) -> bool {
                     return false;
                 };
                 let typ = schema_property_type(&property).unwrap_or_default();
+                let typ_first = schema_property_type_first(&property).unwrap_or_default();
                 order.prop.push(prop);
                 order.prop_type.push(typ);
+                order.prop_type_first.push(typ_first);
                 p.ws();
                 if p.peek() == Some(b',') {
                     p.i += 1;

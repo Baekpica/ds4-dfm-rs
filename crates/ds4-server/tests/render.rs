@@ -644,9 +644,9 @@ fn glm53_tools_filter_deferred_schema_and_preserve_argument_order() {
     assert!(!prompt.contains("strict"));
     assert!(prompt.contains(r#"{"name": "bash", "parameters": {"type":"object"}}"#));
     assert!(prompt.contains(concat!(
-        "<|assistant|><think>need shell</think>\n",
+        "<|assistant|><think>need shell</think>",
         "<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>",
-        "<arg_key>timeout</arg_key><arg_value>10</arg_value></tool_call>\n",
+        "<arg_key>timeout</arg_key><arg_value>10</arg_value></tool_call>",
         "<|observation|><tool_response>ok&lt;/tool_response>done</tool_response>",
         "<|assistant|><think>"
     )));

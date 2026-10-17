@@ -831,11 +831,14 @@ fn append_glm_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg, orders: &[ToolSche
     if m.calls.is_empty() {
         return;
     }
-    if !m.raw_dsml.is_empty() {
-        put(out, &m.raw_dsml);
+    // The sampled block goes back verbatim (ds4_server.c:2979-2983), so a
+    // replayed turn is byte-identical to what the model produced.
+    if !m.raw_tool_text.is_empty() {
+        put(out, &m.raw_tool_text);
         return;
     }
-    out.push(b'\n');
+    // GLM's template writes the block inline, with no newline before or after
+    // it (ds4_server.c:2984-2986); the reconstruction must not add one either.
     for tc in &m.calls {
         put(out, GLM_TOOL_CALL_START);
         put(out, &tc.name);
@@ -847,7 +850,6 @@ fn append_glm_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg, orders: &[ToolSche
         }
         put(out, GLM_TOOL_CALL_END);
     }
-    out.push(b'\n');
 }
 
 fn append_glm_tool_schema_json(out: &mut Vec<u8>, schema: &str) -> Option<bool> {
