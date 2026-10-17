@@ -2185,7 +2185,7 @@ tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc cuda/glm53_dense_attn.cuh \
 	cuda/glm53_vision_norm.cuh ds4_glm53_attn.h cuda/glm53_low_attn.cuh cuda/glm53_pool_score.cuh
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
-	ds4_ling31_session.inc
+	ds4_ling31_session.inc ds4_ling31_mtp.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh
 

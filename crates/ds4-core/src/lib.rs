@@ -295,6 +295,9 @@ impl Default for OpenTuning {
 }
 
 /// Validate common draft controls before metadata validation or GPU allocation.
+/// Native L31_MTP_DRAFTS: each draft adds one 276 MiB KDA journal slot.
+const LING31_MTP_DRAFTS: i32 = 3;
+
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
         "MTP draft tokens must be positive"
@@ -304,6 +307,8 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         && draft > glm_mtp::DRAFT_MAX
     {
         "GLM-5.3 accepts at most three recursive draft tokens"
+    } else if family == ModelFamily::Ling31Vq && draft > LING31_MTP_DRAFTS {
+        "Ling-3.1 accepts at most three recursive draft tokens"
     } else {
         return Ok(());
     };

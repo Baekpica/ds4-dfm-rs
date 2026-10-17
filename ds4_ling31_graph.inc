@@ -32,6 +32,14 @@ typedef struct {
     ds4_gpu_tensor *latent[DS4_MAX_LAYER], *k_pe[DS4_MAX_LAYER];
     uint32_t matrices[LING31_LAYERS + 1u][3u * L31_EXPERTS];
     int32_t *host_positions;
+    /* MTP (mtp_drafts > 0): the recursive draft hidden, a verify's hidden
+     * rows (row 0 is the pre-trial hidden) and logits, and the KDA journal
+     * (slot r: state after verify row r). Draft-layer rows [0, mtp_len) are
+     * filled from true hidden rows. */
+    ds4_gpu_tensor *mtp_hidden, *mtp_rows, *mtp_logits, *mtp_journal;
+    uint32_t mtp_drafts, mtp_len, mtp_start, mtp_n;
+    bool mtp_capture;
+    int mtp_trial[L31_MTP_ROWS];
 #ifndef __APPLE__
     ds4_gvq_ctx *gvq;
     ds4_l31_moe *moe;
@@ -62,6 +70,8 @@ static void ling31_graph_free(ds4_ling31_graph *g) {
     ds4_gpu_tensor_free(g->logits);
     ds4_gpu_tensor_free(g->inv_freq);
     ds4_gpu_tensor_free(g->last_hidden);
+    ds4_gpu_tensor *mtp[] = {g->mtp_hidden, g->mtp_rows, g->mtp_logits, g->mtp_journal};
+    for (size_t i = 0; i < sizeof(mtp) / sizeof(mtp[0]); i++) { ds4_gpu_tensor_free(mtp[i]); }
     ds4_gpu_tensor_free(g->state_pool);
     if (!g->borrowed) { ds4_gpu_tensor_free(g->control_pool); }
     free(g->host_positions);
@@ -73,6 +83,7 @@ static bool ling31_graph_reset(ds4_ling31_graph *g) {
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
     g->position = 0u;
     g->failed = false;
+    g->mtp_len = g->mtp_n = 0u;
     /* A recurrent block's state is its history: a reset zeroes it. */
     return ds4_gpu_tensor_fill_f32(g->state_pool, 0.0f, g->state_bytes / sizeof(float)) != 0;
 }
@@ -162,18 +173,26 @@ static bool ling31_rope_table(ds4_ling31_graph *g) {
     return ds4_gpu_tensor_write(g->inv_freq, 0, inv, sizeof(inv)) != 0;
 }
 
-static uint32_t ling31_model_layers(const ds4_model *m) {
-    return ling31_has_mtp(m) ? LING31_LAYERS + 1u : LING31_LAYERS;
+static bool ling31_mtp_alloc(ds4_ling31_graph *g, uint32_t drafts) {
+    if (!drafts) { return true; }
+    g->mtp_drafts = drafts;
+    g->mtp_hidden = ds4_gpu_tensor_alloc((uint64_t)L31_EMBD * sizeof(float));
+    g->mtp_rows = ds4_gpu_tensor_alloc((L31_MTP_ROWS + 1u) * (uint64_t)L31_EMBD * sizeof(float));
+    g->mtp_logits = ds4_gpu_tensor_alloc((uint64_t)L31_MTP_ROWS * DS4_N_VOCAB * sizeof(float));
+    g->mtp_journal = ds4_gpu_tensor_alloc((uint64_t)drafts * g->state_bytes);
+    return g->mtp_hidden && g->mtp_rows && g->mtp_logits && g->mtp_journal;
 }
 
+// `drafts` > 0 runs the MTP layer (its part must be mapped).
 static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
-        uint32_t ctx, uint32_t cap) {
+        uint32_t ctx, uint32_t cap, uint32_t drafts) {
     memset(g, 0, sizeof(*g));
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_LING31_VQ || !w->glmvq_gpu || !ctx || !cap ||
-        cap > ctx || ctx > L31_CONTEXT) { return false; }
+        cap > ctx || ctx > L31_CONTEXT || drafts > L31_MTP_DRAFTS ||
+        (drafts && !ling31_has_mtp(m))) { return false; }
     g->ctx_cap = ctx;
     g->row_cap = cap;
-    const uint32_t layers = ling31_model_layers(m);
+    const uint32_t layers = drafts ? LING31_LAYERS + 1u : LING31_LAYERS;
     g->gvq = ds4_gpu_gvq_create_linear(w->glmvq_gpu, ling31_gvq_scratch(cap), cap);
     g->moe = g->gvq ? ds4_gpu_l31_moe_create(g->gvq, cap) : NULL;
     if (!g->gvq || !g->moe) { ling31_graph_free(g); return false; }
@@ -207,7 +226,8 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     if (!g->q_abs || !g->latent_out || !g->logits || !g->inv_freq || !g->k_full || !g->value ||
         !g->attn_tmp || !g->lse || !g->lse_tmp || k_bytes > ds4_gpu_tensor_bytes(g->k) ||
         v_bytes > ds4_gpu_tensor_bytes(g->v) || !ling31_rope_table(g) ||
-        !ling31_graph_controls(g, m, w, layers) || !ling31_graph_state(g, layers)) {
+        !ling31_graph_controls(g, m, w, layers) || !ling31_graph_state(g, layers) ||
+        !ling31_mtp_alloc(g, drafts)) {
         fprintf(stderr, "ds4: Ling-3.1 graph allocation failed\n");
         ling31_graph_free(g);
         return false;
@@ -274,7 +294,7 @@ static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
     if (!l31_mm_many(g, m, qkv, qkv_w, 3u, g->norm, rows) ||
         !l31_mm_many(g, m, gates, gates_w, 2u, g->norm, rows) ||
         !l31_mm(g, m, g->beta, l->kda_beta, g->norm, rows, DS4_GVQ_BF16)) { return false; }
-    if (ds4_gpu_gvq_kda_fused(g->gvq, rows)) {
+    if (!g->mtp_capture && ds4_gpu_gvq_kda_fused(g->gvq, rows)) {
         const int done = ds4_gpu_gvq_kda_gated(g->gvq, g->heads, g->recurrent[il],
             g->q_tail[il], g->k_tail[il], g->v_tail[il], g->q, g->k, g->v, DS4_GVQ_ROWS_F32,
             g->f, DS4_GVQ_ROWS_F32, g->beta, g->q_conv[il], g->k_conv[il], g->v_conv[il],
@@ -283,12 +303,23 @@ static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
         if (done <= 0) { return false; }
         return l31_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
     }
+    // MTP verify: journal slot r receives this layer's state after row r
+    // (the kernel snapshots every row but the last; slots mirror the pool).
+    ds4_gpu_tensor *snap = NULL;
+    if (g->mtp_capture) {
+        const uint64_t offset = (uint64_t)((const uint8_t *)ds4_gpu_tensor_ptr(g->recurrent[il]) -
+            (const uint8_t *)ds4_gpu_tensor_ptr(g->state_pool));
+        snap = ds4_gpu_tensor_view(g->mtp_journal, offset, ds4_gpu_tensor_bytes(g->mtp_journal) - offset);
+        if (!snap) { return false; }
+    }
     // The 128-wide gated norm runs a warp per row that loads before it
     // stores, so it normalizes the recurrence output in place.
-    return ds4_gpu_gvq_kda(g->gvq, g->heads, g->recurrent[il], g->q_tail[il], g->k_tail[il],
-            g->v_tail[il], g->q, g->k, g->v, g->f, g->beta, g->q_conv[il], g->k_conv[il],
-            g->v_conv[il], g->a_log[il], g->dt_bias[il], rows, L31_HEADS, DS4_KDA_GATE_CLAMP_MIN,
-            NULL, 0u) &&
+    const bool recurred = ds4_gpu_gvq_kda(g->gvq, g->heads, g->recurrent[il], g->q_tail[il],
+        g->k_tail[il], g->v_tail[il], g->q, g->k, g->v, g->f, g->beta, g->q_conv[il], g->k_conv[il],
+        g->v_conv[il], g->a_log[il], g->dt_bias[il], rows, L31_HEADS, DS4_KDA_GATE_CLAMP_MIN,
+        snap, g->state_bytes);
+    ds4_gpu_tensor_free(snap);
+    return recurred &&
         ds4_gpu_gvq_rms(g->gvq, g->heads, g->heads, g->g, ling31_index(m, l->kda_o_norm),
             rows * L31_HEADS, L31_KDA_HEAD, DS4_RMS_EPS, DS4_GVQ_GATED_RMS) &&
         l31_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
@@ -321,10 +352,24 @@ static bool l31_mla_expanded(ds4_ling31_graph *g, uint32_t il, uint32_t rows, ui
 /* Absorbed MLA: k_b folded into Q so scores land on the stored latent row,
  * then v_b expands the latent-basis output (decode, verify, short appends). */
 static bool l31_mla_absorbed(ds4_ling31_graph *g, uint32_t il, uint32_t rows, uint32_t pos, float scale) {
-    return ds4_gpu_l31_absorb(g->q_abs, g->q, g->k_b[il], rows) &&
-        ds4_gpu_ling3vl_latent_attn(g->latent_out, g->q, g->q_abs, g->latent[il], g->k_pe[il],
-            rows, pos, g->ctx_cap, 0u, L31_HEADS, L31_KV_LORA, L31_NOPE, L31_ROPE, scale) &&
-        ds4_gpu_l31_value(g->heads, g->latent_out, g->v_b[il], rows);
+    if (!ds4_gpu_l31_absorb(g->q_abs, g->q, g->k_b[il], rows)) { return false; }
+    // MTP verify widths below the tensor-core kernel's 8 rows would take
+    // Motif's general kernel (1.4 ms per call against 80 us for the split
+    // decode kernel): attend each row at its own position, as decode does.
+    const uint32_t step = rows < L31_MLA_TC_MIN ? 1u : rows;
+    const uint64_t qb = (uint64_t)L31_QDIM * sizeof(float), lb = (uint64_t)L31_LATENT * sizeof(float);
+    bool ok = true;
+    for (uint32_t r = 0; ok && r < rows; r += step) {
+        ds4_gpu_tensor *q = ds4_gpu_tensor_view(g->q, r * qb, step * qb);
+        ds4_gpu_tensor *q_abs = ds4_gpu_tensor_view(g->q_abs, r * lb, step * lb);
+        ds4_gpu_tensor *out = ds4_gpu_tensor_view(g->latent_out, r * lb, step * lb);
+        ok = q && q_abs && out && ds4_gpu_ling3vl_latent_attn(out, q, q_abs, g->latent[il], g->k_pe[il],
+            step, pos + r, g->ctx_cap, 0u, L31_HEADS, L31_KV_LORA, L31_NOPE, L31_ROPE, scale);
+        ds4_gpu_tensor_free(out);
+        ds4_gpu_tensor_free(q_abs);
+        ds4_gpu_tensor_free(q);
+    }
+    return ok && ds4_gpu_l31_value(g->heads, g->latent_out, g->v_b[il], rows);
 }
 
 static bool l31_mla(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_weights *l,
@@ -424,6 +469,8 @@ static bool l31_head(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights 
     return ok;
 }
 
+#include "ds4_ling31_mtp.inc"
+
 static bool ling31_forward(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
         const int *tokens, uint32_t rows, uint32_t pos, ling31_head_mode head) {
     if (g->failed || !g->ready || !rows || rows > g->row_cap || pos != g->position ||
@@ -438,7 +485,9 @@ static bool ling31_forward(ds4_ling31_graph *g, const ds4_model *m, const ds4_we
     for (uint32_t il = 0; il < LING31_LAYERS; il++) {
         if (!l31_layer(g, m, w, il, rows, pos)) { return false; }
     }
-    if (!l31_head(g, m, w, rows - 1u, head == LING31_HEAD_LAST)) { return false; }
+    const bool logits = head == LING31_HEAD_LAST;
+    if (!(g->mtp_drafts ? l31_mtp_head(g, m, w, tokens, rows, pos, logits)
+                        : l31_head(g, m, w, rows - 1u, logits))) { return false; }
     g->position = pos + rows;
     g->failed = false;
     return true;
@@ -446,8 +495,8 @@ static bool ling31_forward(ds4_ling31_graph *g, const ds4_model *m, const ds4_we
 #else
 // Ling-3.1 is CUDA-only; Metal keeps linkage and refuses the graph.
 static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
-        uint32_t ctx, uint32_t cap) {
-    (void)g; (void)m; (void)w; (void)ctx; (void)cap;
+        uint32_t ctx, uint32_t cap, uint32_t drafts) {
+    (void)g; (void)m; (void)w; (void)ctx; (void)cap; (void)drafts;
     return false;
 }
 

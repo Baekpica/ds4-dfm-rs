@@ -54362,6 +54362,14 @@ bool ds4_engine_has_mtp(ds4_engine *e) {
         return e->backend == DS4_BACKEND_CUDA && e->mtp_draft_tokens > 1 &&
             !(disable && disable[0] == '1' && disable[1] == '\0');
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        // Rust maps the MTP part under the same rule (ling31_vq::feature).
+        const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
+        const char *enable = getenv("DS4_LING31_MTP");
+        return e->backend == DS4_BACKEND_CUDA && ling31_has_mtp(&e->model) &&
+            (e->mtp_draft_tokens > 1 || (enable && !strcmp(enable, "1"))) &&
+            !(disable && disable[0] == '1' && disable[1] == '\0');
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
         return e->backend == DS4_BACKEND_CUDA && e->mtp_draft_tokens > 1 &&
@@ -60234,8 +60242,11 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
         return e->backend == DS4_BACKEND_CUDA ? iquest_memory((unsigned)ctx, iquest_prefill_cap((unsigned)ctx)).total_bytes : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
+        const uint32_t drafts = !ds4_engine_has_mtp(e) ? 0u
+            : e->mtp_draft_tokens < L31_MTP_DRAFTS ? (uint32_t)e->mtp_draft_tokens : L31_MTP_DRAFTS;
         return e->backend == DS4_BACKEND_CUDA
-            ? ling31_memory((uint32_t)ctx, ling31_prefill_cap((uint32_t)ctx)).total_bytes : 0;
+            ? ling31_memory((uint32_t)ctx, ling31_prefill_cap((uint32_t)ctx)).total_bytes +
+                ling31_mtp_bytes((uint32_t)ctx, drafts) : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return e->backend == DS4_BACKEND_CUDA
@@ -72202,6 +72213,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             ds4_engine_close(e); *out = NULL; return 1;
         }
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ && opt->mtp_draft_tokens > L31_MTP_DRAFTS) {
+        fprintf(stderr, "ds4: Ling-3.1 accepts at most %d recursive draft tokens (requested %d)\n",
+                L31_MTP_DRAFTS, opt->mtp_draft_tokens);
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ &&
         (e->backend != DS4_BACKEND_CUDA || load_slice || opt->ssd_streaming ||
          opt->distributed.role != DS4_DISTRIBUTED_NONE ||
@@ -73697,9 +73715,14 @@ static bool iquest_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
     return fits;
 }
 
+static uint32_t ling31_session_drafts(const ds4_engine *e) {
+    if (!ds4_engine_has_mtp((ds4_engine *)e)) { return 0; }
+    return e->mtp_draft_tokens < L31_MTP_DRAFTS ? (uint32_t)e->mtp_draft_tokens : L31_MTP_DRAFTS;
+}
+
 static bool ling31_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                ds4_session_graph_fit_quote *q) {
-    const uint64_t need = ling31_memory(ctx, cap).total_bytes;
+    const uint64_t need = ling31_memory(ctx, cap).total_bytes + ling31_mtp_bytes(ctx, ling31_session_drafts(e));
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
@@ -73871,12 +73894,13 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
     if (ds4_session_is_ling31(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
-        const uint64_t estimate = ling31_memory(ctx, s->prefill_cap).total_bytes;
+        const uint32_t drafts = ling31_session_drafts(e);
+        const uint64_t estimate = ling31_memory(ctx, s->prefill_cap).total_bytes + ling31_mtp_bytes(ctx, drafts);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = ling31_session_fit(e, ctx, s->prefill_cap, NULL) &&
-            ling31_graph_alloc(&s->ling31_graph, &e->model, &e->weights, ctx, s->prefill_cap);
+            ling31_graph_alloc(&s->ling31_graph, &e->model, &e->weights, ctx, s->prefill_cap, drafts);
         ds4_gpu_mem_scope_end();
         if (!ok) {
             ling31_graph_free(&s->ling31_graph); s->ling31_graph_ready = false;
@@ -77047,7 +77071,7 @@ static bool session_logits_unready(const ds4_session *s) {
     }
     if (ds4_session_is_ling31(s)) {
         return !s->checkpoint_valid || !s->ling31_graph_ready || s->ling31_graph.failed ||
-            s->ling31_graph.position != (uint32_t)s->checkpoint.len;
+            s->ling31_graph.mtp_n || s->ling31_graph.position != (uint32_t)s->checkpoint.len;
     }
     if (ds4_session_is_naive(s)) {
         return !s->checkpoint_valid || !s->naive_graph_ready || s->naive_graph.failed ||
@@ -77907,6 +77931,27 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         accepted[0] = first_token;
         return 1;
     }
+    if (ds4_session_is_ling31(s)) {
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+        int tokens[L31_MTP_ROWS], target[L31_MTP_ROWS];
+        const int cap = accepted_cap < max_tokens ? accepted_cap : max_tokens;
+        const int n = ds4_session_ling31_trial(s, first_token, cap, tokens, target,
+            cap < L31_MTP_ROWS ? cap : L31_MTP_ROWS, err, errlen);
+        if (n < 0) { return -1; }
+        if (n) {
+            int keep = 1;
+            while (keep < n && tokens[keep] == target[keep - 1] &&
+                tokens[keep - 1] != eos_token &&
+                !ds4_token_is_stop(s->engine, tokens[keep - 1])) { keep++; }
+            if (ds4_session_ling31_commit(s, keep, err, errlen)) { return -1; }
+            memcpy(accepted, tokens, (size_t)keep * sizeof(*accepted));
+            return keep;
+        }
+#endif
+        if (ds4_session_eval(s, first_token, err, errlen)) { return -1; }
+        accepted[0] = first_token;
+        return 1;
+    }
     if (ds4_session_is_qwen4exp(s)) {
 #ifdef DS4_NO_GPU
         if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
@@ -77920,8 +77965,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
     }
     if (ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
         ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) ||
-        ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s) ||
-        ds4_session_is_ling31(s)) {
+        ds4_session_is_qwen35(s) || ds4_session_is_naive(s) || ds4_session_is_iquest(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) {
             return -1;
         }

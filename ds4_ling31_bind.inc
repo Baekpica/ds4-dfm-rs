@@ -140,8 +140,11 @@ enum {
     // 2048-row chunks beat 4096 on a cold 16K prompt (777 vs 646 tok/s) and need
     // 1.2 GiB less workspace.
     L31_CONTEXT = 262144, L31_PREFILL_DEFAULT = 2048, L31_PREFILL_MAX = 4096,
-    // Absorbed MLA below one expanded query tile (decode, verify, short appends).
-    L31_MLA_EXPAND_MIN = 64,
+    // Absorbed MLA below one expanded query tile (decode, verify, short appends);
+    // the tensor-core absorbed kernel starts at 8 rows.
+    L31_MLA_EXPAND_MIN = 64, L31_MLA_TC_MIN = 8,
+    // Recursive MTP drafts per verify; each costs one 276 MiB KDA journal slot.
+    L31_MTP_DRAFTS = 3, L31_MTP_ROWS = L31_MTP_DRAFTS + 1,
 };
 static const float L31_ROPE_THETA = 6000000.0f;
 
@@ -249,6 +252,15 @@ static uint64_t ling31_workspace_bytes(uint32_t rows) {
     bytes += ling31_gvq_scratch(rows) + ds4_gpu_gvq_workspace_linear(rows) + ds4_gpu_l31_moe_bytes(rows);
 #endif
     return bytes;
+}
+
+// MTP: the draft layer's latent rows, the KDA journal (one slot per draft)
+// and the hidden/logit rows of a verify.
+static uint64_t ling31_mtp_bytes(uint32_t ctx, uint32_t drafts) {
+    if (!drafts) { return 0; }
+    return ling31_latent_bytes(ctx) + (uint64_t)drafts * ling31_state_bytes() +
+        (L31_MTP_ROWS + 2u) * (uint64_t)L31_EMBD * sizeof(float) +
+        (uint64_t)L31_MTP_ROWS * DS4_N_VOCAB * sizeof(float);
 }
 
 static ds4_context_memory ling31_memory(uint32_t ctx, uint32_t cap) {
