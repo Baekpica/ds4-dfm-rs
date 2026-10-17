@@ -863,8 +863,13 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.
 cuda/mmq/ds4_ggml_stubs.o: cuda/mmq/ds4_ggml_stubs.cu cuda/mmq/ds4_ggml_stubs.h cuda/mmq/common.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
 
+# -lineinfo adds 118 MB of PTX text and line tables to this TU's cubin
+# (159 MB, 41 MB without; identical SASS). The driver keeps about four
+# copies in host memory once the first MMQ kernel loads: 0.6 GiB of the
+# first request. MMQ_LINEINFO=-lineinfo restores it for profiling.
+MMQ_LINEINFO ?=
 cuda/mmq/ds4_mmq.o: cuda/mmq/ds4_mmq.cu cuda/mmq/ds4_mmq.h cuda/mmq/ds4_mmq_d2r.cuh cuda/mmq/ds4_mmq_pipe.cuh cuda/mmq/mmq.cuh cuda/mmq/common.cuh cuda/mmq/quantize.cuh cuda/mmq/mmid.cuh cuda/mmq/mmvq.cuh cuda/mmq/vecdotq.cuh cuda/mmq/mma.cuh cuda/mmq/ds4_mimo2_swiglu.cuh cuda/mmq/ds4_glm_q2.h cuda/mmq/ds4_glm_shared.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(MMQ_LINEINFO) $(MMQ_INCLUDES) -c -o $@ $<
 
 cuda/mmq/ds4_mmq_d2r.o: cuda/mmq/ds4_mmq_d2r.cu cuda/mmq/ds4_mmq_d2r.cuh cuda/mmq/mmq.cuh cuda/mmq/common.cuh cuda/mmq/vecdotq.cuh cuda/mmq/mma.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
