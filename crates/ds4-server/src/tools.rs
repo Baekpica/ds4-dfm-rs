@@ -1713,6 +1713,18 @@ fn glm_arg_type(raw: &[u8], expected: Option<&str>) -> bool {
     }
 }
 
+/// True when the value is a complete JSON literal that is not a JSON string.
+/// The template writes strings verbatim and other values as JSON, so a
+/// property whose declared type the engine could not resolve is still typed by
+/// the value itself -- a number stays a number instead of being stringified
+/// into a client rejection (`invalid type: string "15", expected usize`).
+fn glm_json_value_is_bare_literal(raw: &[u8]) -> bool {
+    match serde_json::from_slice::<serde_json::Value>(raw) {
+        Ok(value) => !value.is_string(),
+        Err(_) => false,
+    }
+}
+
 fn parse_glm_generated(
     syntax: ModelSyntax,
     text: &[u8],
@@ -1826,14 +1838,20 @@ fn parse_glm_generated(
             let raw_value = &text[p..value_end];
             if syntax == ModelSyntax::Glm53 {
                 // The embedded template writes strings verbatim and other
-                // values as JSON. Only an explicit schema resolves that ambiguity.
+                // values as JSON (chat_template.jinja:50).  The request's
+                // declared type resolves that ambiguity whenever the engine can
+                // read it; when it cannot -- an undeclared property, or a type
+                // the client wrote as a list, the way schemars renders
+                // Option<usize> as {"type":["integer","null"]} -- the value's
+                // own shape decides, rather than stringifying a number the
+                // client then rejects ('invalid type: string "15", expected
+                // usize', metasearch, session 01a14aaa, 2026-10-17).
                 let expected = tool_schema_order_prop_type(order, &String::from_utf8_lossy(&key));
-                tool_call_json_args_add(
-                    &mut args,
-                    &key,
-                    raw_value,
-                    !glm_arg_type(raw_value, expected),
-                );
+                let is_string = match glm_declared_type(expected) {
+                    Some(_) => !glm_arg_type(raw_value, expected),
+                    None => !glm_json_value_is_bare_literal(raw_value),
+                };
+                tool_call_json_args_add(&mut args, &key, raw_value, is_string);
             } else {
                 let value = dsml_unescape_text(raw_value);
                 tool_call_json_args_add(&mut args, &key, &value, true);

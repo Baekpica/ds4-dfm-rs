@@ -275,10 +275,11 @@ fn parse_glm53_native_tool_call() {
     assert_eq!(p.content, b"OK");
     assert_eq!(p.calls.len(), 1);
     assert_eq!(p.calls[0].name, "bash");
-    assert_eq!(
-        p.calls[0].arguments,
-        r#"{"command": "echo hi", "timeout": "10"}"#
-    );
+    // With no schema at all the value's own shape decides, per the template's
+    // contract (strings verbatim, other values as JSON): `echo hi` stays text,
+    // `10` is a number.  This expectation used to read "10" as a string, which
+    // is the behaviour that made a client reject a numeric argument.
+    assert_eq!(p.calls[0].arguments, r#"{"command": "echo hi", "timeout": 10}"#);
     assert!(p.raw_dsml.starts_with("\n\n<tool_call>bash"));
 }
 
@@ -336,6 +337,62 @@ fn parse_glm53_types_an_integer_property_from_the_declared_schema() {
         &orders,
     );
     assert_eq!(p.calls[0].arguments, r#"{"limit": 3}"#);
+}
+
+/// A client that renders `Option<usize>` as `{"type":["integer","null"]}`
+/// (schemars does exactly that) reaches the engine with no usable declared
+/// type, because the schema reader keeps only a string `type`.  The harness
+/// then rejects the stringified number -- `invalid type: string "15",
+/// expected usize` -- and the model repeats the call (metasearch loop of
+/// session 01a14aaa, 2026-10-17).  The artifact's template writes strings
+/// verbatim and other values as JSON, so an unresolved property is typed by
+/// its own shape.
+#[test]
+fn parse_glm53_types_an_unresolved_property_by_its_json_shape() {
+    let orders = [ToolSchemaOrder {
+        name: "metasearch".into(),
+        prop: vec!["query".into(), "max_results".into()],
+        prop_type: vec!["string".into(), "".into()],
+        ..Default::default()
+    }];
+    let generated = b"<tool_call>metasearch\
+        <arg_key>query</arg_key><arg_value>silicon photonics</arg_value>\
+        <arg_key>max_results</arg_key><arg_value>15</arg_value>\
+        </tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert_eq!(
+        p.calls[0].arguments,
+        r#"{"query": "silicon photonics", "max_results": 15}"#
+    );
+}
+
+/// The other half of the rule above: text that is not a JSON literal stays
+/// text, so a bare-word value is never turned into null or JSON.
+#[test]
+fn parse_glm53_keeps_a_bare_word_value_text() {
+    let orders = [ToolSchemaOrder {
+        name: "metasearch".into(),
+        prop: vec!["query".into()],
+        prop_type: vec!["".into()],
+        ..Default::default()
+    }];
+    let generated = b"<tool_call>metasearch\
+        <arg_key>query</arg_key><arg_value>silicon photonics</arg_value>\
+        </tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert_eq!(p.calls[0].arguments, r#"{"query": "silicon photonics"}"#);
 }
 
 #[test]
