@@ -5,7 +5,10 @@ use ds4_server::tools::{
     DSML_INVOKE_END_SPACED, DSML_INVOKE_START_SPACED, DSML_PARAM_END_SPACED,
     DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START_SPACED,
 };
-use ds4_server::{dsml_decode_state_for_text, ChatFormat, DsmlDecodeState, SemAccum};
+use ds4_server::{
+    dsml_decode_state_for_text, ChatFormat, DsmlDecodeState, DsmlDecodeTracker, ModelSyntax,
+    SemAccum, ToolSyntax,
+};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -50,6 +53,10 @@ fn assert_script(name: &str) {
 #[test]
 fn dsml_states_match_c() {
     for name in [
+        // The GLM vectors are the reference's own (ds4_server.c:20571, :20608).
+        "glm-boundaries-token",
+        "glm-boundaries-byte",
+        "glm-control-text",
         "state-prefix",
         "state-path-param",
         "state-path-closing",
@@ -164,4 +171,105 @@ fn tracker_accepts_bare_parameter_tags() {
         dsml_decode_state_for_text(block.as_bytes()),
         DsmlDecodeState::Outside
     );
+}
+
+/// The reference's GLM tracker vectors, ds4_server.c:20571
+/// (`test_glm_decode_tracker_boundaries` in /data/ds4): the block's fragments,
+/// token-sized and byte-by-byte, must land on the states the reference asserts.
+/// GLM's block is not in the DSML syntax table, so before the dialect the
+/// tracker never left Outside and every structural position kept the request's
+/// draw instead of the raw argmax.
+#[test]
+fn glm_tracker_boundaries_match_the_reference() {
+    let parts = [
+        "prose <tool_call>bash<arg_key>command</arg_key>",
+        "<arg_value>printf '<html>'",
+        "<",
+        "/arg_",
+        "value>",
+        "<arg_key>description</arg_key><arg_value>test",
+        "</arg_value></tool_call>",
+    ];
+    let expected = [
+        DsmlDecodeState::Structural,
+        DsmlDecodeState::StringBody,
+        // A lone '<' stays payload; two bytes of the close marker are structure.
+        DsmlDecodeState::StringBody,
+        DsmlDecodeState::Structural,
+        DsmlDecodeState::Structural,
+        DsmlDecodeState::StringBody,
+        DsmlDecodeState::Outside,
+    ];
+    for bytewise in [false, true] {
+        let mut tracker = DsmlDecodeTracker::default();
+        tracker.set_tool_syntax(ToolSyntax::Glm);
+        let mut raw = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            if bytewise {
+                for byte in part.bytes() {
+                    raw.push(byte);
+                    tracker.update(&raw);
+                }
+            } else {
+                raw.extend_from_slice(part.as_bytes());
+                tracker.update(&raw);
+            }
+            assert_eq!(
+                tracker.decode,
+                expected[i],
+                "fragment {i} bytewise={bytewise} raw={}",
+                String::from_utf8_lossy(&raw)
+            );
+        }
+    }
+}
+
+/// Before the dialect the tracker recognized no GLM block at all: `<tool_call>`
+/// is not one of the DSML spellings (dsml.rs `SYNTAXES`), so the whole block read
+/// Outside and every structural position kept the request's draw.  This test
+/// pins the defect the GLM dialect fixes.
+#[test]
+fn glm_text_under_the_dsml_dialect_is_untracked() {
+    let raw = b"prose <tool_call>bash<arg_key>command</arg_key><arg_value>ls -la";
+    let mut tracker = DsmlDecodeTracker::default();
+    tracker.set_tool_syntax(ToolSyntax::Dsml);
+    tracker.update(raw);
+    assert_eq!(tracker.decode, DsmlDecodeState::Outside);
+}
+
+/// ds4_server.c (test_tool_control_text_inside_arguments): protocol-looking
+/// bytes inside an `<arg_value>` body are payload.  The block stays open, so the
+/// stream does not cut the argument at a `</tool_call>` the model wrote as text.
+#[test]
+fn glm_control_text_inside_an_argument_is_payload() {
+    // The reference body (ds4_server.c:20609): control-looking text written
+    // INTO the argument value.
+    let body = "literal </tool_call> </\u{ff5c}DSML\u{ff5c}tool_calls> </think> <think>";
+    let raw =
+        format!("<think>reason</think><tool_call>write<arg_key>content</arg_key><arg_value>{body}");
+    let mut acc = SemAccum::init(true, true, false, ChatFormat::DeepSeek, b"");
+    acc.set_model_syntax(ModelSyntax::Glm53);
+    acc.feed(raw.as_bytes(), &[]);
+    assert_eq!(acc.dsml_state(), DsmlDecodeState::StringBody);
+    assert!(acc.saw_tool_start, "the block opened");
+    assert!(
+        !acc.saw_tool_end,
+        "an argument body must not close the block (the reference reads the tracker, ds4_server.c:7755)"
+    );
+}
+
+/// The sampling consequence of the dialect: the tag head and the argument tags
+/// take the raw argmax, the value body keeps the request's draw
+/// (ds4_server.c:7575 `dsml_decode_state_is_syntax`).
+#[test]
+fn glm_structural_positions_take_the_argmax() {
+    let mut acc = SemAccum::init(true, true, false, ChatFormat::DeepSeek, b"");
+    acc.set_model_syntax(ModelSyntax::Glm53);
+    acc.feed(b"prose <tool_call>bash<arg_key>command</arg_key>", &[]);
+    assert!(acc.dsml_state().is_tool(), "the GLM block opens tool mode");
+    assert!(acc.syntax_greedy(&[]), "the tag head is structural");
+    acc.feed(b"<arg_value>ls -la", &[]);
+    assert!(!acc.syntax_greedy(&[]), "an argument body keeps the draw");
+    acc.feed(b"</arg_value></tool_call>", &[]);
+    assert!(!acc.dsml_state().is_tool(), "the block closed");
 }

@@ -2528,6 +2528,9 @@ pub(crate) fn generate_terminal_prepared(
             req.chat_format,
             &prompt,
         );
+        // The tool dialect is a property of the served family, chosen before the
+        // first update (ds4_server.c:20591); GLM's block is not a DSML spelling.
+        acc.set_model_syntax(syntax);
         finish = "length";
         token_ids.clear();
 
@@ -3158,13 +3161,17 @@ fn generate_terminal_v41(
         job_id,
         stop_requested,
         max_tokens,
-        acc: SemAccum::init(
-            parsed.kind == ReqKind::Chat,
-            parsed.has_tools,
-            think_mode_enabled(parsed.think_mode),
-            chat_format,
-            prompt,
-        ),
+        acc: {
+            let mut acc = SemAccum::init(
+                parsed.kind == ReqKind::Chat,
+                parsed.has_tools,
+                think_mode_enabled(parsed.think_mode),
+                chat_format,
+                prompt,
+            );
+            acc.set_model_syntax(syntax);
+            acc
+        },
         w: &mut w,
         out,
         oa,

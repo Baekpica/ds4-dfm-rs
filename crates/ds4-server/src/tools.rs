@@ -4,6 +4,7 @@
 
 use crate::dsml::{
     dsml_decode_state_is_syntax, DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy,
+    ToolSyntax,
 };
 use crate::json::{json_escape_bytes, json_minify_raw_value, json_raw_value, json_string, Json};
 use crate::parse::{ToolCall, ToolSchemaOrder};
@@ -2548,11 +2549,20 @@ impl SemAccum {
                 if start.is_some() {
                     self.saw_tool_start = true;
                 }
-                let end_off = if old_start { Some(0) } else { start };
-                if end_off
-                    .and_then(|o| find_tool_end(&scan[o..], self.chat_format))
-                    .is_some()
-                {
+                // The reference reads the tracker for the block's markers
+                // (ds4_server.c:7755 observe_tool_markers).  GLM's argument
+                // values are free text, so a `</tool_call>` written into one is
+                // payload; the text scan would close the block there and cut
+                // the call (ds4_server.c:20608 test_tool_control_text_inside_arguments).
+                let closed = if self.dsml.tool_syntax() == ToolSyntax::Glm {
+                    self.dsml.block_closed()
+                } else {
+                    let end_off = if old_start { Some(0) } else { start };
+                    end_off
+                        .and_then(|o| find_tool_end(&scan[o..], self.chat_format))
+                        .is_some()
+                };
+                if closed {
                     self.saw_tool_end = true;
                 }
                 f.entered_tool_block = self.saw_tool_start && !old_start;
@@ -2611,6 +2621,18 @@ impl SemAccum {
         } else {
             DsmlDecodeState::Outside
         }
+    }
+
+    /// C `tracker.model_syntax = ...` (ds4_server.c:7595, :20591): the dialect is
+    /// chosen from the served family before the first update, because the start
+    /// search differs per dialect.  GLM's `<tool_call>` block is not in the DSML
+    /// syntax table, so without this its structural bytes were never recognized
+    /// and every position kept the request's draw instead of the raw argmax.
+    pub fn set_model_syntax(&mut self, syntax: ModelSyntax) {
+        self.dsml.set_tool_syntax(match syntax {
+            ModelSyntax::Glm53 => ToolSyntax::Glm,
+            _ => ToolSyntax::Dsml,
+        });
     }
 
     pub fn sampling_override(&mut self, p: &SamplePolicy<'_>) -> SampleOverride {

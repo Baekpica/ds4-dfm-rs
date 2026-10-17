@@ -58,8 +58,8 @@ pub use cont::{
 pub use dist_cli::DistArgs;
 pub use dsml::{
     agent_turn_reasoning_cap, dsml_decode_state_for_text, dump_script as dsml_dump_script,
-    DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy, SAMPLE_OVERRIDE_GREEDY,
-    SAMPLE_OVERRIDE_NONE,
+    DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePolicy, ToolSyntax,
+    SAMPLE_OVERRIDE_GREEDY, SAMPLE_OVERRIDE_NONE,
 };
 pub use error::{
     anthropic_error_body, anthropic_error_type, http_head, http_reason, http_response_bytes,

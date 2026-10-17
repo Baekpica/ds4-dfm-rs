@@ -21,6 +21,17 @@
 #define DS4_PARAM_START_SHORT "<DSML｜parameter"
 #define DS4_PARAM_END_SHORT "</DSML｜parameter>"
 
+/* /data/ds4/ds4_server.c:7376 glm_tool_syntax, :7595-7611 dialect select. */
+#define GLM_TOOL_CALLS_START "<tool_call>"
+#define GLM_TOOL_CALLS_END "</tool_call>"
+#define GLM_ARG_KEY_START "<arg_key>"
+#define GLM_ARG_KEY_END "</arg_key>"
+#define GLM_ARG_VALUE_START "<arg_value>"
+#define GLM_ARG_VALUE_END "</arg_value>"
+
+#define SERVER_MODEL_SYNTAX_DEEPSEEK 0
+#define SERVER_MODEL_SYNTAX_GLM 3
+
 #define DS4_SAMPLE_OVERRIDE_NONE 0
 #define DS4_SAMPLE_OVERRIDE_GREEDY 1
 #define DS4_SAMPLE_OVERRIDE_TOKEN(t) ((t) + 2)
@@ -32,6 +43,7 @@
 #define DS4_THINK_LOW 1
 #define DS4_THINK_HIGH 2
 #define DS4_THINK_MAX 3
+
 
 typedef enum {
     DSML_DECODE_OUTSIDE = 0,
@@ -53,6 +65,11 @@ typedef struct {
     const char *tool_calls_start, *tool_calls_end, *invoke_start, *invoke_end, *param_start, *param_end;
 } dsml_syntax;
 
+static const dsml_syntax glm_tool_syntax = {
+    GLM_TOOL_CALLS_START, GLM_TOOL_CALLS_END,
+    GLM_ARG_KEY_START, GLM_ARG_KEY_END, GLM_ARG_VALUE_START, GLM_ARG_VALUE_END,
+};
+
 static const dsml_syntax dsml_syntaxes[] = {
     { DS4_TOOL_CALLS_START, DS4_TOOL_CALLS_END, DS4_INVOKE_START, DS4_INVOKE_END, DS4_PARAM_START, DS4_PARAM_END },
     { DS4_TOOL_CALLS_START_SHORT, DS4_TOOL_CALLS_END_SHORT, DS4_INVOKE_START_SHORT, DS4_INVOKE_END_SHORT, DS4_PARAM_START_SHORT, DS4_PARAM_END_SHORT },
@@ -65,7 +82,37 @@ typedef struct {
     const dsml_syntax *syn;
     size_t pos;
     bool json_in_string, json_escaped;
+    int model_syntax;
 } dsml_decode_tracker;
+
+/* C raw_partial_lit: any proper prefix of the literal. */
+static bool raw_partial_any(const char *raw, size_t raw_len, size_t pos, const char *lit) {
+    size_t n = strlen(lit);
+    if (pos > raw_len || raw_len - pos >= n) return false;
+    return !memcmp(raw + pos, lit, raw_len - pos);
+}
+
+/* ds4_server.c:7755 observe_tool_markers reads the tracker, not the text. */
+static const char *find_any_tool_end(const char *s) {
+    const char *best = NULL;
+    const char *cands[] = {
+        DS4_TOOL_CALLS_END, DS4_TOOL_CALLS_END_SHORT,
+        "</tool_calls>", "</tool_call>",
+    };
+    for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
+        const char *p = strstr(s, cands[i]);
+        if (p && (!best || p < best)) best = p;
+    }
+    return best;
+}
+static void observe_tool_markers(const dsml_decode_tracker *tracker, const char *scan,
+                                 bool *saw_start, bool *saw_end, bool *orphan_end) {
+    if (tracker->syn) *saw_start = true;
+    if (tracker->mode == DSML_TRACK_DONE) *saw_end = true;
+    else if (!*saw_start && scan && find_any_tool_end(scan) && orphan_end) *orphan_end = true;
+}
+
+
 
 static void die(const char *m) { fprintf(stderr, "dsml_c_oracle: %s\n", m); exit(2); }
 static char *xstrndup(const char *s, size_t n) {
@@ -221,7 +268,17 @@ static void dsml_decode_tracker_update(dsml_decode_tracker *dt, const char *raw,
         if (dt->mode == DSML_TRACK_DONE) { dt->decode = DSML_DECODE_OUTSIDE; return; }
         if (dt->mode == DSML_TRACK_SEARCH) {
             size_t pos = 0; const dsml_syntax *syn = NULL;
-            if (!dsml_find_tool_start_from(raw, raw_len, dt->pos, &pos, &syn)) {
+            bool found;
+            if (dt->model_syntax == SERVER_MODEL_SYNTAX_GLM) {
+                syn = &glm_tool_syntax;
+                const char *start = find_lit_bounded(raw + dt->pos, raw_len - dt->pos,
+                                                     syn->tool_calls_start);
+                found = start != NULL;
+                if (found) pos = (size_t)(start - raw) + strlen(syn->tool_calls_start);
+            } else {
+                found = dsml_find_tool_start_from(raw, raw_len, dt->pos, &pos, &syn);
+            }
+            if (!found) {
                 size_t hold = dsml_max_tool_start_len();
                 dt->pos = raw_len > hold ? raw_len - hold : 0;
                 dt->decode = DSML_DECODE_OUTSIDE; return;
@@ -234,7 +291,10 @@ static void dsml_decode_tracker_update(dsml_decode_tracker *dt, const char *raw,
                     dt->pos += strlen(dt->syn->param_end);
                     dt->mode = DSML_TRACK_STRUCTURAL; dt->decode = DSML_DECODE_STRUCTURAL; goto structural;
                 }
-                if (raw_partial_lit_min(raw, raw_len, dt->pos, dt->syn->param_end, 2)) { dt->decode = DSML_DECODE_STRUCTURAL; return; }
+                if (raw_partial_any(raw, raw_len, dt->pos, dt->syn->param_end)) {
+                    dt->decode = raw_len - dt->pos >= 2 ? DSML_DECODE_STRUCTURAL : DSML_DECODE_STRING_BODY;
+                    return;
+                }
                 dt->pos++;
             }
             dt->decode = DSML_DECODE_STRING_BODY; return;
@@ -277,7 +337,8 @@ structural:
                 const char *tag_end = memchr(raw + dt->pos, '>', raw_len - dt->pos);
                 if (!tag_end) { dt->decode = DSML_DECODE_STRUCTURAL; return; }
                 size_t tag_after = (size_t)(tag_end - raw) + 1;
-                bool string_value = dsml_attr_is_string_true(raw, raw_len, tag_start, tag_after);
+                bool string_value = dt->model_syntax == SERVER_MODEL_SYNTAX_GLM ||
+                    dsml_attr_is_string_true(raw, raw_len, tag_start, tag_after);
                 dt->pos = tag_after;
                 if (string_value) { dt->mode = DSML_TRACK_STRING_BODY; dt->decode = DSML_DECODE_STRING_BODY; }
                 else { dt->mode = DSML_TRACK_JSON_PARAM; dt->json_in_string = false; dt->json_escaped = false; dt->decode = DSML_DECODE_JSON_STRUCTURAL; }
@@ -290,10 +351,14 @@ structural:
                 raw_partial_lit(raw, raw_len, dt->pos, dt->syn->param_end)) {
                 dt->decode = DSML_DECODE_STRUCTURAL; return;
             }
+            /* GLM puts the function and argument names between tags
+             * (/data/ds4/ds4_server.c:7746-7752). */
+            if (dt->model_syntax == SERVER_MODEL_SYNTAX_GLM) { dt->pos++; continue; }
             dt->decode = DSML_DECODE_STRUCTURAL; return;
         }
     }
 }
+
 
 static const char *state_name(dsml_decode_state s) {
     switch (s) {
@@ -311,6 +376,56 @@ static void dump_state(const char *raw) {
     dsml_decode_tracker tr; dsml_decode_tracker_init(&tr);
     dsml_decode_tracker_update(&tr, raw, n);
     printf("ref=%s tracker=%s\n", state_name(ref), state_name(tr.decode));
+}
+
+/* The reference's GLM vectors (ds4_server.c:20571, :20608): the accumulated
+ * text is fed fragment by fragment against the GLM dialect, and the state after
+ * each fragment is printed.  `bytewise` feeds one byte at a time, which is what
+ * the reference's own loop does in its second pass. */
+static const char *const glm_parts[] = {
+    "prose <tool_call>bash<arg_key>command</arg_key>",
+    "<arg_value>printf '<html>'",
+    "<",
+    "/arg_",
+    "value>",
+    "<arg_key>description</arg_key><arg_value>test",
+    "</arg_value></tool_call>",
+};
+
+static void dump_glm_boundaries(bool bytewise) {
+    dsml_decode_tracker tr; dsml_decode_tracker_init(&tr);
+    tr.model_syntax = SERVER_MODEL_SYNTAX_GLM;
+    char raw[512]; size_t used = 0; raw[0] = 0;
+    printf("states=");
+    for (size_t i = 0; i < sizeof(glm_parts) / sizeof(glm_parts[0]); i++) {
+        const char *part = glm_parts[i];
+        if (bytewise) {
+            for (const char *c = part; *c; c++) {
+                raw[used++] = *c; raw[used] = 0;
+                dsml_decode_tracker_update(&tr, raw, used);
+            }
+        } else {
+            size_t n = strlen(part);
+            memcpy(raw + used, part, n); used += n; raw[used] = 0;
+            dsml_decode_tracker_update(&tr, raw, used);
+        }
+        printf("%s%s", i ? "," : "", state_name(tr.decode));
+    }
+    printf("\n");
+}
+
+static void dump_glm_control_text(void) {
+    char raw[512];
+    snprintf(raw, sizeof(raw),
+        "<think>reason</think><tool_call>write<arg_key>content</arg_key><arg_value>"
+        "literal </tool_call> " DS4_TOOL_CALLS_END " </think> <think>");
+    dsml_decode_tracker tr; dsml_decode_tracker_init(&tr);
+    tr.model_syntax = SERVER_MODEL_SYNTAX_GLM;
+    size_t n = strlen(raw);
+    for (size_t i = 1; i <= n; i++) dsml_decode_tracker_update(&tr, raw, i);
+    bool start = false, end = false, orphan = false;
+    observe_tool_markers(&tr, raw, &start, &end, &orphan);
+    printf("tracker=%s start=%d end=%d\n", state_name(tr.decode), start ? 1 : 0, end ? 1 : 0);
 }
 
 static int agent_turn_reasoning_cap(int think_mode, int max_tokens) {
@@ -373,6 +488,12 @@ int main(int argc, char **argv) {
             "%s\n%s name=\"edit\">\n%s name=\"edits\" string=\"false\">[]%s\n%s\n%s",
             DS4_TOOL_CALLS_START, DS4_INVOKE_START, DS4_PARAM_START, DS4_PARAM_END, DS4_INVOKE_END, DS4_TOOL_CALLS_END);
         dump_state(raw);
+    } else if (!strcmp(name, "glm-boundaries-token")) {
+        dump_glm_boundaries(false);
+    } else if (!strcmp(name, "glm-boundaries-byte")) {
+        dump_glm_boundaries(true);
+    } else if (!strcmp(name, "glm-control-text")) {
+        dump_glm_control_text();
     } else if (!strcmp(name, "override-required")) {
         int tool[] = {101, 202}; int tp = 0, hp = 0;
         int a = sampling_override(true, false, false, 0, 1, DSML_DECODE_OUTSIDE, &tp, &hp,
