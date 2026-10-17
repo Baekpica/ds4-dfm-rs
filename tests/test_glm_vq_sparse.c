@@ -166,6 +166,8 @@ static void check_attention(ds4_gvq_ctx *ctx, FILE *file) {
 
 int main(int argc, char **argv) {
     CHECK(argc == 3);
+    // References follow the expanded/latent adapters; flash has its own test.
+    CHECK(!setenv("DS4_GLMVQ_FLASH", "0", 1));
     const uint64_t kb = (uint64_t)HEADS * 2 * DIM * LATENT * sizeof(uint16_t);
     const uint64_t bytes = kb + (2 + RATIO) * WIDTH * sizeof(uint16_t);
     FILE *weights = fopen(argv[1], "rb"), *fixture = fopen(argv[2], "rb");

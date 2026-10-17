@@ -184,6 +184,8 @@ static void check_latent(const ds4_gvq_model *model, const char *path) {
 
 int main(int argc, char **argv) {
     CHECK(argc == 2 || argc == 3);
+    // References follow the expanded/latent adapters; flash has its own test.
+    CHECK(!setenv("DS4_GLMVQ_FLASH", "0", 1));
     const uint64_t bytes = (uint64_t)HEADS * 2 * DIM * LATENT * sizeof(uint16_t);
     FILE *file = fopen(argv[1], "rb");
     CHECK(file && !fseek(file, 0, SEEK_END) && ftell(file) == (long)bytes);
