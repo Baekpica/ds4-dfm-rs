@@ -80,6 +80,9 @@ const STEP_SOURCE_EDGE: u64 = 3024;
 const STEP_PIXELS_PER_TOKEN: u64 = 56 * 56 * 3;
 const GLM_NATIVE_DEFAULT: u32 = 2048;
 const GLM_NATIVE_MAX: u32 = 2048;
+// GLM53_VQ_PREFILL_MAX: VQ rereads every routed expert once per chunk.
+const GLMVQ_NATIVE_DEFAULT: u32 = 4096;
+const GLMVQ_NATIVE_MAX: u32 = 4096;
 const GLM_DENSE_GROUP: u64 = 8;
 const GLM_DENSE_MIN_ROWS: u64 = 128;
 const GLM_DENSE_ALIGN: u64 = 256;
@@ -1009,7 +1012,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Ling3Vl => LING_NATIVE_MAX,
         ModelFamily::Inkling => INKLING_NATIVE_MAX,
         ModelFamily::Glm53 => GLM_NATIVE_MAX,
-        ModelFamily::Glm53Vq => GLM_NATIVE_MAX,
+        ModelFamily::Glm53Vq => GLMVQ_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1071,9 +1074,9 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
         ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
         ModelFamily::Glm53Vq => env_u32(
             "DS4_GLMVQ_PREFILL_ROWS",
-            GLM_NATIVE_DEFAULT,
+            GLMVQ_NATIVE_DEFAULT,
             1,
-            GLM_NATIVE_MAX,
+            GLMVQ_NATIVE_MAX,
         ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
@@ -2661,11 +2664,48 @@ mod tests {
         resolve_plan, serving_caps, MaxSeqs, MtpMode, PrefixReuse, ReuseKind, PREFILL_CHUNK_FENCE,
     };
     use crate::shape::{
-        Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_GLM53_FLASH, SHAPE_INKLING_SMALL,
+        Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_GLM53_FLASH, SHAPE_GLM53_VQ, SHAPE_INKLING_SMALL,
         SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_LING30_FLASH_VL, SHAPE_MOTIF3,
         SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
+
+    fn glm_vq_quote(ctx: i32, native_chunk: Option<u32>) -> EngineFacts {
+        let req = ServingRequest {
+            ctx,
+            native_chunk,
+            max_seqs: MaxSeqs::Off,
+            prefix_reuse: PrefixReuse::Off,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            serving_caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq),
+            Some(SHAPE_GLM53_VQ),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        facts
+    }
+
+    #[test]
+    fn glm_vq_prefill_keeps_4096_rows() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset("DS4_GLMVQ_PREFILL_ROWS");
+        let caps = serving_caps(ModelFamily::Glm53Vq, Variant::Glm53FlashVq);
+        assert_eq!(family_native_limit(caps), 4096);
+        assert_eq!(family_native_chunk(caps, 1 << 20), 4096);
+        assert_eq!(glm_vq_quote(8192, None).native_chunk, Some(4096));
+        assert_eq!(glm_vq_quote(8192, Some(4096)).native_chunk, Some(4096));
+    }
 
     #[test]
     fn ssd_quote_uses_resident_spans() {
