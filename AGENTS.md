@@ -183,6 +183,18 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
 - **Apply the VQ gain after the dot.** Rounding gain·codeword to BF16 per
   weight was half the expert dot's instructions; one FP32 multiply after
   the dot made 2–4-row verify experts 10–13% faster (one row is DRAM-bound).
+- **Read ptxas spills before tuning.** Sixteen warps of 128 registers
+  spilled the GLM flash kernel's O and Q (34 GB of local traffic per 8K
+  call, L2 at 84%); eight warps of 255 registers held them: 32.3 → 18.2 ms,
+  bit-identical. 16-byte cp.async copies 64 bytes apart fetch each 32-byte
+  sector twice; copy rows as contiguous 512-byte warp spans.
+- **Mixed-input GEMMs: dequantize in producer warps.** HMMA saturates with
+  four warps per SM on an MMA-dense stream. Consumers that convert 4-bit
+  weights between MMAs, synchronized per stage, alternate conversion and
+  MMA bursts: 62% tensor pipe. Producer warps writing dequantized A
+  fragments (full/empty mbarriers, persistent CTAs) leave consumers LDS +
+  HMMA: 82–84 TFLOPS of the 108 FP16 peak, against MMQ's 61 TOPS of INT8,
+  whose per-k32 scale epilogue was 74% of its instructions.
 
 # Agent Notes
 
