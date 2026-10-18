@@ -682,7 +682,9 @@ fn run_chat_turn(
     let gen_start = session.pos();
 
     while generated < max_tokens && !repl::interrupt_requested() {
-        let token = sample_next(&mut session, args, dry, gen_start, &mut rng);
+        // `session` is already the caller's `&mut Session`: pass it straight
+        // (reborrow) instead of borrowing the binding, which is not `mut`.
+        let token = sample_next(session, args, dry, gen_start, &mut rng);
         if token < 0 {
             eprintln!("ds4: decode failed: failed to sample the next token");
             failed = true;
