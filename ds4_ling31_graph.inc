@@ -19,8 +19,10 @@ typedef struct {
     /* Diagnostic switches, default on: fused residual-norm passes and BF16
      * decay/gate/heads rows (DS4_LING31_FUSED=0, bit-identical either way),
      * BF16 q/k/v prefill rows (DS4_LING31_QKV_BF16=0 keeps them F32), the
-     * tensor-core decode/verify attention (DS4_LING31_FLASH=0: Motif's). */
-    bool fused, qkv_bf16, flash;
+     * tensor-core decode/verify attention (DS4_LING31_FLASH=0: Motif's) and
+     * the pipelined prefill range attention (DS4_LING31_FA_PIPE=0: Ling-3.0's,
+     * bit-identical). */
+    bool fused, qkv_bf16, flash, pipe;
     uint64_t workspace_bytes, state_bytes, control_bytes, kv_bytes;
 #define L31_FIELD(field, cols, type) ds4_gpu_tensor *field;
     L31_ROW_BUFFERS(L31_FIELD)
@@ -256,9 +258,10 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     }
     g->workspace_bytes = ling31_workspace_bytes(cap);
     const char *fused = getenv("DS4_LING31_FUSED"), *qkv = getenv("DS4_LING31_QKV_BF16");
-    const char *flash = getenv("DS4_LING31_FLASH");
+    const char *flash = getenv("DS4_LING31_FLASH"), *pipe = getenv("DS4_LING31_FA_PIPE");
     g->fused = !(fused && !strcmp(fused, "0"));
     g->flash = !(flash && !strcmp(flash, "0"));
+    g->pipe = !(pipe && !strcmp(pipe, "0"));
     g->qkv_bf16 = !(qkv && !strcmp(qkv, "0"));
     g->ready = true;
     if (!ling31_graph_reset(g)) { ling31_graph_free(g); return false; }
@@ -407,6 +410,16 @@ static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
         l31_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
 }
 
+// Range attention of the rows over one expanded segment.
+static bool l31_range_attn(ds4_ling31_graph *g, ds4_gpu_tensor *out, ds4_gpu_tensor *lse,
+        uint32_t rows, uint32_t pos, uint32_t len, uint32_t seg0, float scale) {
+    if (g->pipe) {
+        return ds4_gpu_l31_expanded_attn(out, lse, g->q, g->k_full, g->value, rows, pos, len, seg0, scale);
+    }
+    return ds4_gpu_ling3vl_expanded_attn(out, lse, g->q, g->k_full, g->value, rows, pos, len, seg0,
+        L31_HEADS, L31_KEY, L31_VALUE, scale, 1);
+}
+
 /* Expanded MLA prefill (Ling-3.0's split): each key segment of the latent
  * cache becomes per-head BF16 K (192) / V (128), the range kernel attends
  * it and segments merge through their log-sum-exp. Prefix segments end at
@@ -421,8 +434,7 @@ static bool l31_mla_expanded(ds4_ling31_graph *g, uint32_t il, uint32_t rows, ui
         ds4_gpu_tensor *lse = first ? g->lse : g->lse_tmp;
         if (!ds4_gpu_l31_expand(g->k_full, g->value, g->latent[il], g->k_pe[il], g->k_b[il], g->v_b[il],
                 seg0, len) ||
-            !ds4_gpu_ling3vl_expanded_attn(out, lse, g->q, g->k_full, g->value, rows, pos, len, seg0,
-                L31_HEADS, L31_KEY, L31_VALUE, scale, 1) ||
+            !l31_range_attn(g, out, lse, rows, pos, len, seg0, scale) ||
             (!first && !ds4_gpu_motif3_merge_attention_states_tensor(g->heads, g->lse, g->attn_tmp,
                 g->lse_tmp, rows, L31_HEADS, L31_VALUE))) { return false; }
         first = false;
