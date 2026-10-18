@@ -621,7 +621,8 @@ fn iquest_thinking_sampling() {
     use ds4_core::chat_template::{RenderClock, Template};
     use ds4_server::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
     let iquest = ds4_core::Variant::IQuestQ1 as i32;
-    for model_id in [iquest, 0] {
+    let glm = ds4_core::Variant::Glm53FlashVq as i32;
+    for model_id in [iquest, glm, 0] {
         for temperature in [0.0, 0.4] {
             let parsed = parse_request(
                 WireSurface::OpenaiChat,
@@ -650,7 +651,7 @@ fn iquest_thinking_sampling() {
                 &mut out,
             )
             .unwrap();
-            let expected = if model_id == iquest {
+            let expected = if model_id == iquest || model_id == glm {
                 (temperature, 9, 0.9, 0.03)
             } else {
                 (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
@@ -664,9 +665,12 @@ fn iquest_thinking_sampling() {
                 "model {model_id}, requested {temperature}: {:?}",
                 engine.sample_params
             );
+            // Greedy thinking reaches the engine's greedy commit, where the
+            // embedded MTP drafts run, only on the families that keep the
+            // request's sampler.
             assert_eq!(
                 !engine.prefix_budgets.is_empty(),
-                model_id == iquest && temperature == 0.0
+                (model_id == iquest || model_id == glm) && temperature == 0.0
             );
         }
     }

@@ -626,6 +626,18 @@ fn glm53_chat_and_image_protocol_match_official_template() {
     );
 }
 
+/// The artifact's own template honours the two named levels and reads
+/// everything else as max (chat_template.jinja:2-3, `low`/`high` in a set,
+/// else 'max'), so the low level must reach the model as Low. The port wrote
+/// "Reasoning Effort: Max" for it.
+#[test]
+fn glm53_low_effort_renders_low() {
+    assert_eq!(
+        render_chat(ModelSyntax::Glm53, &[msg("user", "hi")], "", ThinkMode::Low).unwrap(),
+        b"[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>hi<|assistant|><think>"
+    );
+}
+
 #[test]
 fn glm53_tools_filter_deferred_schema_and_preserve_argument_order() {
     let schemas = concat!(
@@ -656,9 +668,9 @@ fn glm53_tools_filter_deferred_schema_and_preserve_argument_order() {
     assert!(!prompt.contains("strict"));
     assert!(prompt.contains(r#"{"name": "bash", "parameters": {"type":"object"}}"#));
     assert!(prompt.contains(concat!(
-        "<|assistant|><think>need shell</think>\n",
+        "<|assistant|><think>need shell</think>",
         "<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>",
-        "<arg_key>timeout</arg_key><arg_value>10</arg_value></tool_call>\n",
+        "<arg_key>timeout</arg_key><arg_value>10</arg_value></tool_call>",
         "<|observation|><tool_response>ok&lt;/tool_response>done</tool_response>",
         "<|assistant|><think>"
     )));

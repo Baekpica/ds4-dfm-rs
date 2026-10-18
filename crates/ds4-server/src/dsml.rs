@@ -67,6 +67,31 @@ enum TrackMode {
     Done,
 }
 
+/// The tool dialect the tracker recognizes: C `dsml_decode_tracker::model_syntax`
+/// (ds4_server.c:7364).  GLM's `<tool_call>/<arg_key>/<arg_value>` block is
+/// deliberately NOT a member of the DSML syntax table; the reference selects it
+/// by model syntax (ds4_server.c:7595-7611) so the dialects never recognize each
+/// other's bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolSyntax {
+    #[default]
+    Dsml,
+    Glm,
+}
+
+/// GLM's tool block (ds4_server.c:7376 `glm_tool_syntax`): the function name
+/// sits between `<tool_call>` and the first `<arg_key>`, and argument values are
+/// text, so every value body is a string body.
+const GLM_SYNTAX: DsmlSyntax = DsmlSyntax {
+    tool_calls_start: b"<tool_call>",
+    tool_calls_end: b"</tool_call>",
+    invoke_start: b"<arg_key>",
+    invoke_end: b"</arg_key>",
+    param_start: b"<arg_value>",
+    param_end: b"</arg_value>",
+    entity_values: false,
+};
+
 const SYNTAXES: [DsmlSyntax; 4] = [
     DsmlSyntax {
         tool_calls_start: DSML_TOOL_CALLS_START.as_bytes(),
@@ -116,6 +141,7 @@ pub struct DsmlDecodeTracker {
     pos: usize,
     json_in_string: bool,
     json_escaped: bool,
+    syntax: ToolSyntax,
 }
 
 impl Default for DsmlDecodeTracker {
@@ -127,11 +153,43 @@ impl Default for DsmlDecodeTracker {
             pos: 0,
             json_in_string: false,
             json_escaped: false,
+            syntax: ToolSyntax::Dsml,
         }
     }
 }
 
 impl DsmlDecodeTracker {
+    /// C: `tracker.model_syntax = ...`, assigned before the first update
+    /// (ds4_server.c:20591).  A dialect must be chosen before the block opens:
+    /// the start search is dialect-specific.
+    pub fn set_tool_syntax(&mut self, syntax: ToolSyntax) {
+        self.syntax = syntax;
+    }
+
+    /// The `<parameter ` / `</parameter>` bare spellings (f302be7) belong to the
+    /// DSML dialects; GLM's block has `<arg_key>`/`<arg_value>` only, so its
+    /// dialect must not accept the aliases.
+    fn alias(&self) -> bool {
+        self.syntax == ToolSyntax::Dsml
+    }
+
+    /// C `tracker->syn` (ds4_server.c:7758): a tool block has been opened since
+    /// the last reset.
+    pub fn block_started(&self) -> bool {
+        self.syn.is_some()
+    }
+
+    /// The dialect the tracker was told to recognize.
+    pub fn tool_syntax(&self) -> ToolSyntax {
+        self.syntax
+    }
+
+    /// C `tracker->mode == DSML_TRACK_DONE` (ds4_server.c:7759): the block that
+    /// was opened has been closed by its own end marker.
+    pub fn block_closed(&self) -> bool {
+        self.mode == TrackMode::Done
+    }
+
     pub fn update(&mut self, raw: &[u8]) {
         loop {
             if self.mode == TrackMode::Done {
@@ -139,7 +197,18 @@ impl DsmlDecodeTracker {
                 return;
             }
             if self.mode == TrackMode::Search {
-                match dsml_find_tool_start_from(raw, self.pos) {
+                let found = match self.syntax {
+                    // The GLM dialect searches only its own start marker
+                    // (ds4_server.c:7595-7611): `<tool_call>` is not one of the
+                    // DSML spellings, and the DSML list must not see GLM bytes.
+                    ToolSyntax::Glm => {
+                        let from = self.pos.min(raw.len());
+                        find_lit_bounded(&raw[from..], GLM_SYNTAX.tool_calls_start)
+                            .map(|rel| (from + rel + GLM_SYNTAX.tool_calls_start.len(), GLM_SYNTAX))
+                    }
+                    ToolSyntax::Dsml => dsml_find_tool_start_from(raw, self.pos),
+                };
+                match found {
                     None => {
                         let hold = dsml_max_tool_start_len();
                         self.pos = if raw.len() > hold {
@@ -161,15 +230,23 @@ impl DsmlDecodeTracker {
             if self.mode == TrackMode::StringBody {
                 let syn = self.syn.unwrap();
                 while self.pos < raw.len() {
-                    let end_len = param_close_len(&syn, raw, self.pos);
+                    let end_len = param_close_len(&syn, raw, self.pos, self.alias());
                     if end_len > 0 {
                         self.pos += end_len;
                         self.mode = TrackMode::Structural;
                         self.decode = DsmlDecodeState::Structural;
                         break;
                     }
-                    if param_close_partial(&syn, raw, self.pos, 2) {
-                        self.decode = DsmlDecodeState::Structural;
+                    if param_close_partial_any(&syn, raw, self.pos, self.alias()) {
+                        // A tail that is a proper prefix of the close spelling
+                        // holds the position: the stream may cut the marker
+                        // between two tokens, and the next update re-reads it
+                        // (ds4_server.c:7635-7641).  A lone '<' is payload.
+                        self.decode = if raw.len() - self.pos >= 2 {
+                            DsmlDecodeState::Structural
+                        } else {
+                            DsmlDecodeState::StringBody
+                        };
                         return;
                     }
                     self.pos += 1;
@@ -183,14 +260,14 @@ impl DsmlDecodeTracker {
                 let syn = self.syn.unwrap();
                 while self.pos < raw.len() {
                     if !self.json_in_string {
-                        let end_len = param_close_len(&syn, raw, self.pos);
+                        let end_len = param_close_len(&syn, raw, self.pos, self.alias());
                         if end_len > 0 {
                             self.pos += end_len;
                             self.mode = TrackMode::Structural;
                             self.decode = DsmlDecodeState::Structural;
                             break;
                         }
-                        if param_close_partial(&syn, raw, self.pos, 2) {
+                        if param_close_partial(&syn, raw, self.pos, 2, self.alias()) {
                             self.decode = DsmlDecodeState::Structural;
                             return;
                         }
@@ -249,14 +326,17 @@ impl DsmlDecodeTracker {
                         }
                     }
                 }
-                if param_open_full(&syn, raw, self.pos) {
+                if param_open_full(&syn, raw, self.pos, self.alias()) {
                     let tag_start = self.pos;
                     let Some(rel) = raw[self.pos..].iter().position(|&c| c == b'>') else {
                         self.decode = DsmlDecodeState::Structural;
                         return;
                     };
                     let tag_after = self.pos + rel + 1;
-                    let string_value = dsml_attr_is_string_true(raw, tag_start, tag_after);
+                    // GLM argument values carry no type attribute: every value
+                    // body is text (ds4_server.c:7731-7739 over glm_tool_syntax).
+                    let string_value = self.syntax == ToolSyntax::Glm
+                        || dsml_attr_is_string_true(raw, tag_start, tag_after);
                     self.pos = tag_after;
                     if string_value {
                         self.mode = TrackMode::StringBody;
@@ -272,11 +352,17 @@ impl DsmlDecodeTracker {
                 if raw_partial_lit(raw, self.pos, syn.tool_calls_end)
                     || raw_partial_lit(raw, self.pos, syn.invoke_start)
                     || raw_partial_lit(raw, self.pos, syn.invoke_end)
-                    || param_open_partial(&syn, raw, self.pos)
-                    || param_close_partial(&syn, raw, self.pos, 1)
+                    || param_open_partial(&syn, raw, self.pos, self.alias())
+                    || param_close_partial(&syn, raw, self.pos, 1, self.alias())
                 {
                     self.decode = DsmlDecodeState::Structural;
                     return;
+                }
+                if self.syntax == ToolSyntax::Glm {
+                    // GLM puts the function and argument names between tags;
+                    // unknown structural bytes advance (ds4_server.c:7746-7752).
+                    self.pos += 1;
+                    continue;
                 }
                 self.decode = DsmlDecodeState::Structural;
                 return;
@@ -357,31 +443,44 @@ fn bare_param_alias(syn: &DsmlSyntax) -> bool {
     syn.param_start != &b"<parameter"[..]
 }
 
-fn param_open_full(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
-    raw_full_lit(raw, pos, syn.param_start)
-        || (bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_START))
+fn param_open_full(syn: &DsmlSyntax, raw: &[u8], pos: usize, alias: bool) -> bool {
+    raw_full_lit(raw, pos, syn.param_start) || (alias && raw_full_lit(raw, pos, BARE_PARAM_START))
 }
 
-fn param_open_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> bool {
+fn param_open_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize, alias: bool) -> bool {
     raw_partial_lit(raw, pos, syn.param_start)
-        || (bare_param_alias(syn) && raw_partial_lit(raw, pos, BARE_PARAM_START))
+        || (alias && raw_partial_lit(raw, pos, BARE_PARAM_START))
 }
 
 /// Length of the close at pos in either spelling (f302be7,
 /// server_dsml_parse.c:31-38); 0 when neither matches.
-fn param_close_len(syn: &DsmlSyntax, raw: &[u8], pos: usize) -> usize {
+fn param_close_len(syn: &DsmlSyntax, raw: &[u8], pos: usize, alias: bool) -> usize {
     if raw_full_lit(raw, pos, syn.param_end) {
         return syn.param_end.len();
     }
-    if bare_param_alias(syn) && raw_full_lit(raw, pos, BARE_PARAM_END) {
+    if alias && raw_full_lit(raw, pos, BARE_PARAM_END) {
         return BARE_PARAM_END.len();
     }
     0
 }
 
-fn param_close_partial(syn: &DsmlSyntax, raw: &[u8], pos: usize, min_len: usize) -> bool {
+fn param_close_partial(
+    syn: &DsmlSyntax,
+    raw: &[u8],
+    pos: usize,
+    min_len: usize,
+    alias: bool,
+) -> bool {
     raw_partial_lit_min(raw, pos, syn.param_end, min_len)
-        || (bare_param_alias(syn) && raw_partial_lit_min(raw, pos, BARE_PARAM_END, min_len))
+        || (alias && raw_partial_lit_min(raw, pos, BARE_PARAM_END, min_len))
+}
+
+/// Any proper prefix of the close spelling (C `raw_partial_lit`, ds4_server.c:
+/// 7636): the tracker holds its position on one, so a marker cut between tokens
+/// is re-read by the next update.  `param_close_partial` is the >= min_len form
+/// used where only the decoded state matters.
+fn param_close_partial_any(syn: &DsmlSyntax, raw: &[u8], pos: usize, alias: bool) -> bool {
+    raw_partial_lit(raw, pos, syn.param_end) || (alias && raw_partial_lit(raw, pos, BARE_PARAM_END))
 }
 
 /// Earliest close in either spelling from `from`, as (offset, len)
@@ -400,10 +499,10 @@ fn param_close_find(syn: &DsmlSyntax, raw: &[u8], from: usize) -> Option<(usize,
 /// The buffer tail is a proper prefix of either close spelling (>= min_len
 /// bytes): the stream holds it back until the next token proves it (f302be7,
 /// server_dsml_stream.c:104-110).
-fn raw_suffix_partial_close(syn: &DsmlSyntax, raw: &[u8], min_len: usize) -> bool {
+fn raw_suffix_partial_close(syn: &DsmlSyntax, raw: &[u8], min_len: usize, alias: bool) -> bool {
     let mut n = min_len;
     while n <= raw.len() && n < 32 {
-        if param_close_partial(syn, raw, raw.len() - n, min_len) {
+        if param_close_partial(syn, raw, raw.len() - n, min_len, alias) {
             return true;
         }
         n += 1;
@@ -411,11 +510,16 @@ fn raw_suffix_partial_close(syn: &DsmlSyntax, raw: &[u8], min_len: usize) -> boo
     false
 }
 
-fn dsml_decode_scan_json_param(raw: &[u8], mut pos: usize, syn: DsmlSyntax) -> DsmlDecodeState {
+fn dsml_decode_scan_json_param(
+    raw: &[u8],
+    mut pos: usize,
+    syn: DsmlSyntax,
+    alias: bool,
+) -> DsmlDecodeState {
     let mut in_string = false;
     let mut escaped = false;
     while pos < raw.len() {
-        if !in_string && param_close_len(&syn, raw, pos) > 0 {
+        if !in_string && param_close_len(&syn, raw, pos, alias) > 0 {
             return DsmlDecodeState::Structural;
         }
         let c = raw[pos];
@@ -432,7 +536,7 @@ fn dsml_decode_scan_json_param(raw: &[u8], mut pos: usize, syn: DsmlSyntax) -> D
             in_string = true;
         }
     }
-    if !in_string && raw_suffix_partial_close(&syn, raw, 2) {
+    if !in_string && raw_suffix_partial_close(&syn, raw, 2, bare_param_alias(&syn)) {
         return DsmlDecodeState::Structural;
     }
     if in_string {
@@ -473,7 +577,7 @@ pub fn dsml_decode_state_for_text(raw: &[u8]) -> DsmlDecodeState {
                 }
             }
         }
-        if param_open_full(&syn, raw, pos) {
+        if param_open_full(&syn, raw, pos, bare_param_alias(&syn)) {
             let tag_start = pos;
             let Some(rel) = raw[pos..].iter().position(|&c| c == b'>') else {
                 return DsmlDecodeState::Structural;
@@ -484,7 +588,7 @@ pub fn dsml_decode_state_for_text(raw: &[u8]) -> DsmlDecodeState {
             if string_value {
                 match param_close_find(&syn, raw, pos) {
                     None => {
-                        if raw_suffix_partial_close(&syn, raw, 2) {
+                        if raw_suffix_partial_close(&syn, raw, 2, bare_param_alias(&syn)) {
                             return DsmlDecodeState::Structural;
                         }
                         return DsmlDecodeState::StringBody;
@@ -495,7 +599,7 @@ pub fn dsml_decode_state_for_text(raw: &[u8]) -> DsmlDecodeState {
                     }
                 }
             }
-            let json_state = dsml_decode_scan_json_param(raw, pos, syn);
+            let json_state = dsml_decode_scan_json_param(raw, pos, syn, bare_param_alias(&syn));
             if json_state == DsmlDecodeState::Structural {
                 match param_close_find(&syn, raw, pos) {
                     None => return DsmlDecodeState::Structural,
@@ -626,8 +730,67 @@ pub fn dump_script(name: &str) -> String {
         "cap-low-128" => format!("{}\n", agent_turn_reasoning_cap(ThinkMode::Low, 128)),
         "cap-high-128" => format!("{}\n", agent_turn_reasoning_cap(ThinkMode::High, 128)),
         "cap-max-600" => format!("{}\n", agent_turn_reasoning_cap(ThinkMode::Max, 600)),
+        "glm-boundaries-token" => dump_glm_boundaries(false),
+        "glm-boundaries-byte" => dump_glm_boundaries(true),
+        "glm-control-text" => dump_glm_control_text(),
         _ => "ERROR unknown-script\n".into(),
     }
+}
+
+/// The reference's GLM fragments, ds4_server.c:20572
+/// (`test_glm_decode_tracker_boundaries` in /data/ds4).
+fn glm_parts() -> [&'static str; 7] {
+    [
+        "prose <tool_call>bash<arg_key>command</arg_key>",
+        "<arg_value>printf '<html>'",
+        "<",
+        "/arg_",
+        "value>",
+        "<arg_key>description</arg_key><arg_value>test",
+        "</arg_value></tool_call>",
+    ]
+}
+
+/// Feed the accumulated text fragment by fragment against the GLM dialect and
+/// print the state after each one, so a dialect drift shows as a tape line.
+fn dump_glm_boundaries(bytewise: bool) -> String {
+    let mut tracker = DsmlDecodeTracker::default();
+    tracker.set_tool_syntax(ToolSyntax::Glm);
+    let mut raw = Vec::new();
+    let mut states = Vec::new();
+    for part in glm_parts() {
+        if bytewise {
+            for byte in part.bytes() {
+                raw.push(byte);
+                tracker.update(&raw);
+            }
+        } else {
+            raw.extend_from_slice(part.as_bytes());
+            tracker.update(&raw);
+        }
+        states.push(tracker.decode.name());
+    }
+    format!("states={}\n", states.join(","))
+}
+
+/// ds4_server.c:20608 (`test_tool_control_text_inside_arguments`): control
+/// markers written into an argument value are payload, so the block stays open.
+fn dump_glm_control_text() -> String {
+    let raw = format!(
+        "<think>reason</think><tool_call>write<arg_key>content</arg_key><arg_value>\
+         literal </tool_call> {DSML_TOOL_CALLS_END} </think> <think>"
+    );
+    let mut tracker = DsmlDecodeTracker::default();
+    tracker.set_tool_syntax(ToolSyntax::Glm);
+    for n in 1..=raw.len() {
+        tracker.update(&raw.as_bytes()[..n]);
+    }
+    format!(
+        "tracker={} start={} end={}\n",
+        tracker.decode.name(),
+        u8::from(tracker.block_started()),
+        u8::from(tracker.block_closed())
+    )
 }
 
 fn state_prefix() -> String {

@@ -1,9 +1,9 @@
 //! Generated-message parse + SemAccum goldens from `ds4_server.c` unit tests.
 
 use ds4_server::{
-    append_tool_calls_json, assign_tool_ids, parse_dsml_tolerant, parse_generated_for_response,
-    parse_generated_message, think_start, ChatFormat, ModelSyntax, SemAccum, ToolCall,
-    ToolSchemaOrder,
+    append_tool_calls_json, assign_tool_ids, parse_chat_request, parse_dsml_tolerant,
+    parse_generated_for_response, parse_generated_message, think_start, ChatFormat, ModelSyntax,
+    ParseEnv, SemAccum, ThinkMode, ToolCall, ToolSchemaOrder,
 };
 
 const DSML_START: &str = "<｜DSML｜tool_calls>";
@@ -275,11 +275,157 @@ fn parse_glm53_native_tool_call() {
     assert_eq!(p.content, b"OK");
     assert_eq!(p.calls.len(), 1);
     assert_eq!(p.calls[0].name, "bash");
+    // With no schema at all the reference's GLM rule stands: every argument is
+    // text (ds4_server.c:6435, and the reference test at :19262 asserts the
+    // same string).  A declared type is what makes a numeric argument a number.
     assert_eq!(
         p.calls[0].arguments,
         r#"{"command": "echo hi", "timeout": "10"}"#
     );
-    assert!(p.raw_dsml.starts_with("\n\n<tool_call>bash"));
+    // The sampled block rides raw_tool_text, the field the reference fills and
+    // its GLM renderer splices back (ds4_server.c:19288, :2979-2983).
+    assert!(p.raw_tool_text.starts_with("\n\n<tool_call>bash"));
+}
+
+/// The harness declares Rust wire types in the request schema (open-grok
+/// `search_tool` carries `limit: Option<u8>`,
+/// crates/codegen/xai-grok-tools/src/implementations/search_tool/types.rs:15),
+/// and rejects a numeric property that arrives as a JSON string with
+/// `invalid type: string "3", expected u8`.  The Glm53 branch of
+/// parse_glm_generated resolves each value through the declared type, so a
+/// spelling it does not know must not fall back to a string.
+#[test]
+fn parse_glm53_types_a_u8_property_from_the_declared_schema() {
+    let orders = [ToolSchemaOrder {
+        name: "search_tool".into(),
+        prop: vec!["query".into(), "limit".into()],
+        prop_type: vec!["string".into(), "u8".into()],
+        ..Default::default()
+    }];
+    let generated = b"<tool_call>search_tool\
+        <arg_key>query</arg_key><arg_value>solidcraft</arg_value>\
+        <arg_key>limit</arg_key><arg_value>3</arg_value>\
+        </tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert!(p.ok);
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(
+        p.calls[0].arguments,
+        r#"{"query": "solidcraft", "limit": 3}"#
+    );
+}
+
+/// The control for the test above: a JSON Schema spelling already resolves, so
+/// the fix must not change it.
+#[test]
+fn parse_glm53_types_an_integer_property_from_the_declared_schema() {
+    let orders = [ToolSchemaOrder {
+        name: "search_tool".into(),
+        prop: vec!["limit".into()],
+        prop_type: vec!["integer".into()],
+        ..Default::default()
+    }];
+    let generated =
+        b"<tool_call>search_tool<arg_key>limit</arg_key><arg_value>3</arg_value></tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert_eq!(p.calls[0].arguments, r#"{"limit": 3}"#);
+}
+
+/// A client that renders `Option<usize>` as `{"type":["integer","null"]}`
+/// (schemars does exactly that) used to reach the engine with no usable
+/// declared type, because the schema reader keeps only a string `type`.  The
+/// harness then rejected the stringified number -- `invalid type: string "15",
+/// expected usize` -- and the model repeated the call (metasearch loop of
+/// session 01a14aaa, 2026-10-17).  The reader now keeps the head of the list
+/// (`prop_type_first`), and the GLM path consults it before falling back to the
+/// reference's text rule.
+#[test]
+fn parse_glm53_types_a_type_list_property_from_its_head() {
+    let orders = [ToolSchemaOrder {
+        name: "metasearch".into(),
+        prop: vec!["query".into(), "max_results".into()],
+        prop_type: vec!["string".into(), "".into()],
+        prop_type_first: vec!["".into(), "integer".into()],
+        ..Default::default()
+    }];
+    let generated = b"<tool_call>metasearch\
+        <arg_key>query</arg_key><arg_value>silicon photonics</arg_value>\
+        <arg_key>max_results</arg_key><arg_value>15</arg_value>\
+        </tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert_eq!(
+        p.calls[0].arguments,
+        r#"{"query": "silicon photonics", "max_results": 15}"#
+    );
+}
+
+/// The reader must keep the head of a `type` list while leaving `prop_type` the
+/// scalar reading the tolerant paths use, so a `["string","null"]` property is
+/// still readable by the GLM path.
+#[test]
+fn parse_chat_request_keeps_a_type_list_head() {
+    let env = ParseEnv {
+        default_model: "glm-5.3-flash".into(),
+        default_tokens: 2048,
+        default_effort: ThinkMode::None,
+        default_temp: ds4_server::default_temperature(),
+        live_ids: Vec::new(),
+        engine_defaults: false,
+    };
+    let request = r#"{"messages":[{"role":"user","content":"find it"}],
+        "tools":[{"type":"function","function":{"name":"search_tool","parameters":
+        {"type":"object","properties":{"query":{"type":["string","null"]},
+        "limit":{"type":["integer","null"],"format":"uint"}}}}}]}"#;
+    let parsed = parse_chat_request(&env, request).unwrap();
+    let order = parsed
+        .tool_orders
+        .iter()
+        .find(|o| o.name == "search_tool")
+        .unwrap();
+    assert_eq!(order.prop, vec!["query", "limit"]);
+    assert_eq!(order.prop_type, vec!["", ""]);
+    assert_eq!(order.prop_type_first, vec!["string", "integer"]);
+}
+
+/// An undeclared property keeps the reference's own GLM rule
+/// (ds4_server.c:6435): the value is text, never reinterpreted.
+#[test]
+fn parse_glm53_keeps_a_bare_word_value_text() {
+    let orders = [ToolSchemaOrder {
+        name: "metasearch".into(),
+        prop: vec!["query".into()],
+        prop_type: vec!["".into()],
+        ..Default::default()
+    }];
+    let generated = b"<tool_call>metasearch\
+        <arg_key>query</arg_key><arg_value>silicon photonics</arg_value>\
+        </tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        false,
+        ChatFormat::DeepSeek,
+        &orders,
+    );
+    assert_eq!(p.calls[0].arguments, r#"{"query": "silicon photonics"}"#);
 }
 
 #[test]

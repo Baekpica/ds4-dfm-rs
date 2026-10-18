@@ -26,7 +26,11 @@ PROFILES = {
     "motif": {"names": ["motif3"], "reuse": "partial"},
     "naive": {"names": ["naive_n05_flash"], "reuse": "partial"},
     "iquest": {"names": ["iquest_q1"], "reuse": "partial"},
-    "glm": {"names": ["glm5-next"], "reuse": "partial"},
+    # The served plan's family string is the variant, not the artifact family:
+    # "glm5-next" is GLM-5.3 Flash and "GLM-5.3-Flash-VQ" its VQ release
+    # (crates/ds4-core/src/serving.rs:1484-1485; read live from /v1/stats
+    # serving.family on the Spark, 2026-10-18).
+    "glm": {"names": ["glm5-next", "GLM-5.3-Flash-VQ"], "reuse": "partial"},
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"

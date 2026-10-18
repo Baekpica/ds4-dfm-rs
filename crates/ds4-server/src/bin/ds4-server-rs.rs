@@ -612,6 +612,8 @@ fn main() {
                             "ds4-server-rs: warning: V4.1 flags given but the model is not V4.1; they are ignored"
                         );
                     }
+                    cfg.glm53 = ds4_server::syntax_for_model_id(m.model_id())
+                        == ds4_server::ModelSyntax::Glm53;
                     cfg.have_engine = true;
                     Some(m)
                 }

@@ -27,8 +27,8 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
+use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{ChatMsg, ChatPart, EosPolicy, ParsedRequest, ToolCall, ToolChoice};
-use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::render::{
     render_chat_choice_ex, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError,
     DSML_EOS, QWEN_IM_END, SOLAR_IM_END,
@@ -1689,10 +1689,11 @@ fn retry_chat(
     detail: &str,
 ) -> Result<(), GenerateError> {
     if engine.template().is_none() {
-        let format = chat_format_for_syntax(syntax_for_model_id(engine.model_id()));
+        let syntax = syntax_for_model_id(engine.model_id());
+        let format = chat_format_for_syntax(syntax);
         return append_recovery_suffix(
             engine,
-            &build_recovery_suffix(format, parsed.think_mode, prompt, acc, detail),
+            &build_recovery_suffix(syntax, format, parsed.think_mode, prompt, acc, detail),
         )
         .map(|_| ());
     }
@@ -1761,10 +1762,10 @@ fn decode_pass(
         let mut top_k = parsed.top_k;
         let mut top_p = parsed.top_p;
         let mut min_p = parsed.min_p;
-        // IQuest uses the requested sampler in both channels. Greedy thinking
-        // must remain eligible for its embedded target-verified MTP path.
+        // IQuest and GLM-5.3 use the requested sampler in both channels.
+        // Greedy thinking must remain eligible for their embedded MTP paths.
         if think_mode_enabled(parsed.think_mode)
-            && syntax_for_model_id(engine.model_id()) != ModelSyntax::IQuestQ1
+            && fixed_thinking_sampling(syntax_for_model_id(engine.model_id()))
         {
             temperature = DEFAULT_TEMPERATURE;
             top_k = 0;
@@ -2527,6 +2528,9 @@ pub(crate) fn generate_terminal_prepared(
             req.chat_format,
             &prompt,
         );
+        // The tool dialect is a property of the served family, chosen before the
+        // first update (ds4_server.c:20591); GLM's block is not a DSML spelling.
+        acc.set_model_syntax(syntax);
         finish = "length";
         token_ids.clear();
 
@@ -3157,13 +3161,17 @@ fn generate_terminal_v41(
         job_id,
         stop_requested,
         max_tokens,
-        acc: SemAccum::init(
-            parsed.kind == ReqKind::Chat,
-            parsed.has_tools,
-            think_mode_enabled(parsed.think_mode),
-            chat_format,
-            prompt,
-        ),
+        acc: {
+            let mut acc = SemAccum::init(
+                parsed.kind == ReqKind::Chat,
+                parsed.has_tools,
+                think_mode_enabled(parsed.think_mode),
+                chat_format,
+                prompt,
+            );
+            acc.set_model_syntax(syntax);
+            acc
+        },
         w: &mut w,
         out,
         oa,

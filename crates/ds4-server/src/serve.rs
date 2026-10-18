@@ -73,6 +73,10 @@ pub struct ServerConfig {
     /// this only when the model is V4.1 (the v41 route branch); every other
     /// family keeps the port's wire vocabulary and defaults.
     pub engine_defaults: bool,
+    /// The served model is GLM-5.3: a request that names no level gets the
+    /// level its template writes for an absent one, max (chat_template.jinja:2).
+    /// The bin sets it from the opened model.
+    pub glm53: bool,
     pub ctx: i32,
     pub default_tokens: i32,
     pub eos_policy: EosPolicy,
@@ -174,6 +178,7 @@ impl Default for ServerConfig {
             model_id: "ds4".into(),
             model_name: "ds4".into(),
             engine_defaults: false,
+            glm53: false,
             ctx: 8192,
             default_tokens: 393216,
             eos_policy: EosPolicy::Default,
@@ -1125,6 +1130,16 @@ pub fn handle_client_inner(
     enqueue_release(&mut lock_inner(inner).admit, body_bytes);
 }
 
+/// The level of a request that names none: the template's own default for
+/// GLM-5.3 (max), the port's low for every other family.
+fn default_effort(cfg: &ServerConfig) -> ThinkMode {
+    if cfg.glm53 {
+        ThinkMode::Max
+    } else {
+        ThinkMode::Low
+    }
+}
+
 fn prepare_client(
     cfg: &ServerConfig,
     inner: &Mutex<ServerInner>,
@@ -1245,7 +1260,7 @@ fn prepare_client(
             let env = ParseEnv {
                 default_model: cfg.model_id.clone(),
                 default_tokens: cfg.default_tokens,
-                default_effort: ThinkMode::Low,
+                default_effort: default_effort(cfg),
                 default_temp: crate::parse::default_temperature(),
                 live_ids,
                 engine_defaults: cfg.engine_defaults,
@@ -2485,6 +2500,16 @@ mod owner_tests {
     static TEST_STOP: AtomicBool = AtomicBool::new(false);
     static TEST_STOP_POLLS: AtomicUsize = AtomicUsize::new(0);
     static DECODE_STOP: AtomicBool = AtomicBool::new(false);
+
+    // A GLM-5.3 request that names no level takes its template's max; every
+    // other family keeps the port's low.
+    #[test]
+    fn glm53_requests_default_to_max_effort() {
+        let mut cfg = ServerConfig::default();
+        assert_eq!(default_effort(&cfg), ThinkMode::Low);
+        cfg.glm53 = true;
+        assert_eq!(default_effort(&cfg), ThinkMode::Max);
+    }
 
     #[test]
     fn mimo_image_keeps_serial_lane() {
