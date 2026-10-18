@@ -63,9 +63,10 @@
 #include "ds41_forward.h"
 #ifndef __APPLE__
 #include "ds4_glmvq.h"
+#endif
+#endif
+/* Declarations only: every build sizes Ling-3.1 banks by its latent layout. */
 #include "ds4_ling31.h"
-#endif
-#endif
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
  * builds too.  ds4_gpu.h owns the same ABI enum in accelerator builds. */
@@ -2453,6 +2454,7 @@ enum {
     DS4_TENSOR_GLM_FP8  = 0x47514638,
     DS4_TENSOR_GLM_BOOK = 0x47564342,
     DS4_TENSOR_GLM_VQ   = 0x47565138,
+    DS4_TENSOR_GLM_RES  = 0x47565238, /* GVR8 residual indices (container v2) */
 };
 
 typedef struct ds4_tensor ds4_tensor;
@@ -5454,6 +5456,11 @@ typedef struct {
     ds4_tensor *gate[GLMVQ_EXPERTS];
     ds4_tensor *up[GLMVQ_EXPERTS];
     ds4_tensor *down[GLMVQ_EXPERTS];
+    /* R13+8 layers only: K=256 residual book and one GVR8 per matrix. */
+    ds4_tensor *res_book;
+    ds4_tensor *gate_res[GLMVQ_EXPERTS];
+    ds4_tensor *up_res[GLMVQ_EXPERTS];
+    ds4_tensor *down_res[GLMVQ_EXPERTS];
 } ds4_glmvq_experts;
 
 typedef struct {
@@ -65306,14 +65313,19 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
             break;
         }
     }
-    const int rc = gr ? ds4_session_glm53_commit(&s, emitted, err, errlen)
-                      : ir ? ds4_session_iquest_commit(&s, emitted, err, errlen)
+    /* A finish inside the prefix leaves its last token pending, as ordinary
+     * decode does: the server keys the bank by every generated token but the
+     * last, so landing that row would make the next turn miss. */
+    const int rows = finished ? emitted - 1 : emitted;
+    const int rc = gr ? ds4_session_glm53_commit(&s, rows, err, errlen)
+                      : ir ? ds4_session_iquest_commit(&s, rows, err, errlen)
 #ifndef __APPLE__
-                      : lr ? ds4_session_ling31_commit(&s, emitted, err, errlen)
+                      : lr ? ds4_session_ling31_commit(&s, rows, err, errlen)
 #endif
-                      : nr ? ds4_session_naive_commit(&s, emitted, err, errlen)
-                      : ds4_session_step37_commit(&s, emitted, err, errlen);
+                      : nr ? ds4_session_naive_commit(&s, rows, err, errlen)
+                      : ds4_session_step37_commit(&s, rows, err, errlen);
     if (rc) { goto fail; }
+    if (rows < emitted) { ds4_metric_add(&ds4_metrics_get()->spec_hits, 1u); }
     if (gr) {
         gr->graph[bank] = s.glm53_graph; gr->bank_logits_valid[bank] = 1u;
     } else if (ir) {

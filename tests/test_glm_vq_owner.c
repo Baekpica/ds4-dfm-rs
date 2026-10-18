@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < MATRICES; i++) {
         const uint64_t offset = ALIGNMENT + i * matrix;
         records[i] = (ds4_gvq_record){offset, matrix, BF16_TYPE, MATRIX_DIM, MATRIX_DIM,
-            DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK};
+            DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK};
         tensors[i] = (ds4_unit_tensor_in){offset, matrix, DS4_TCAT_ROUTED_EXPERT, 1u};
     }
     ds4_unit_compile_params params = {0};

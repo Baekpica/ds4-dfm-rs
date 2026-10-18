@@ -46,8 +46,8 @@ documented whole-model results are omitted.
 | MiMo-V2.6-Flash-RL mixed quant | 1,217.76 | 24.44 | [8K + 128, plain](docs/performance.md#mimo) |
 | MiMo-V2.6-Flash-MOPD mixed quant | 1,206.29 | 24.18 | [8K + 128, plain](docs/performance.md#mimo-mopd) |
 | GLM-5.3 Flash Uncensored mixed quant | 137.31 | 14.70 | [8K + 64, raw owner, SSD/MTP off](docs/glm53-uncensored.md#measured-performance) |
-| GLM-5.3 Flash VQ + Q4_K v3 | 1,163.5 | 35.08 | [2K–64K sweep, MTP 2](docs/performance.md#glm-53-flash-vq) |
-| Ling-3.1-flash VQ + Q4_K/FP8 | 778.8 | 14.86 | [2K–64K sweep, plain; MTP 2 to 32K: 21.15](docs/performance.md#ling-31-flash-vq) |
+| GLM-5.3 Flash VQ R13+8 + Q4_K | 1,113.7 | 31.81 | [2K–64K sweep, MTP 2](docs/performance.md#glm-53-flash-vq) |
+| Ling-3.1-flash VQ v2 + Q4_K/FP8 | 774.1 | 17.70 | [2K–64K sweep, plain; MTP 2 to 32K: 23.58](docs/performance.md#ling-31-flash-vq) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
@@ -62,7 +62,7 @@ documented whole-model results are omitted.
 *DeepSeek-v4.1-Flash on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#deepseek-v41).*
 *DeepSeek V4.1 Flash ported to ds4-dfm-rs by [JLFN](https://github.com/JLFN) ([#80](https://github.com/Baekpica/ds4-dfm-rs/pull/80)), using [YoungAi's VQ model artifacts](https://huggingface.co/wenzhouwu/YoungAi-DeepSeek-V4.1-Flash).*
 
-![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](docs/benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/throughput.png)
+![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](docs/benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/throughput.png)
 
 *GLM-5.3-Flash VQ on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#glm-53-flash-vq).*
 
@@ -169,12 +169,12 @@ collection. Feature and context limits remain specific to each artifact.
 | Prism Bonsai 2 27B | `qwen35` | [Pinned PQ2_0](docs/BONSAI.md) | Serial CUDA text and CPU reference; [limits](docs/BONSAI.md) |
 | GLM 5.3 Flash | `glm5-next` | [antirez Q2](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [vision](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [Historical 2K text/image qualification](docs/ds4-dfm-model-families.md#glm-53-flash-release-scope) |
 | GLM 5.3 Flash Uncensored | `glm5-next` | [Baekpica mixed IQ2_XXS/IQ2_XS/Q2_K + BF16 vision](https://huggingface.co/Baekpica/GLM-5.3-Flash-Uncensored-Mixed-Quant-GGUF) | [Optional SSD streaming, banks, MTP, native 1M and cached HTTP/image gates](docs/glm53-uncensored.md) |
-| GLM 5.3 Flash VQ | `glm5-next` (GVQ1 parts) | [Baekpica VQ experts + Q4_K nonexperts](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF) | [GVQ1 format, embedded MTP (two drafts), native 1M context; 2K–64K measured](docs/glm53-vq.md) |
+| GLM 5.3 Flash VQ | `glm5-next` (GVQ1 parts) | [Baekpica VQ experts (R13+8 layers 3–16) + Q4_K nonexperts](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF) | [GVQ1 v2 format, embedded MTP (two drafts), native 1M context; 2K–64K measured](docs/glm53-vq.md) |
 | K2-Horizon 375B A23B | `k2-horizon` | [Baekpica MQ87](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [32K one bank, IFM tools, no MTP](docs/ds4-dfm-model-families.md#k2-horizon-375b-release-scope) |
 | Inkling Small | `inkling` | [Baekpica MQ85GB](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + [MTP-BF16](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [Serial text/image/audio input](docs/inkling-small.md) |
 | Step 3.7 Flash | `step35` | [Baekpica MQ83 + MTP + vision](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [Opt-in text banks/MTP, disk KV; images serial](docs/step37-serving-2026-09-13.md) |
 | Ling-3.0-flash-VL | `bailingmoe3` | [Baekpica MQ-Q5 + BF16 mmproj](https://huggingface.co/Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF) | [Images, persistent banks, disk KV and YaRN](docs/ling3-flash-vl.md) |
-| Ling-3.1-flash VQ | `ling31_vq` (GVQ1 release directory) | [Baekpica VQ experts + Q4_K/FP8 nonexperts](https://huggingface.co/Baekpica/Ling-3.1-flash-VQ-GGUF) | [Embedded MTP (two drafts), native 262K in one bank, two banks at 32K; 2K–64K measured](docs/ling31-flash-vq.md) |
+| Ling-3.1-flash VQ | `ling31_vq` (GVQ1 release directory) | [Baekpica VQ experts + Q4_K/FP8 nonexperts](https://huggingface.co/Baekpica/Ling-3.1-flash-VQ-GGUF) | [Embedded MTP (two drafts), FP8 latent KV, native 262K in two banks or one MTP bank; 2K–64K measured](docs/ling31-flash-vq.md) |
 | MiMo-V2.6-Flash-RL | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF) | [256K two-bank text and serial media; longer-context limits](docs/mimo2-serving-2026-09-25.md) |
 | MiMo-V2.6-Flash-MOPD | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF) | [Own text/performance gates; drafting remains separate](docs/ds4-dfm-model-families.md#mimo-mopd) |
 | Naive-N0.5-Flash | `naive_n05_flash` | [Baekpica MQ87](https://huggingface.co/Baekpica/Naive-N0.5-Flash-Mixed-Quant-GGUF) | [Banks, partial reuse and disk KV; draft acceleration unqualified](docs/naive-n05-flash.md) |

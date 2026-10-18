@@ -2,6 +2,7 @@
 #define DS4_L31_FLASH_CUH
 
 #include "glm_vq_flash.cuh"
+#include "l31_latent.cuh"
 
 /* Ling-3.1 absorbed MLA attention for decode and MTP verify rows on tensor
  * cores: GLM VQ's flash tile (8 warps = 4 groups of 16 heads x 2 latent
@@ -21,6 +22,12 @@ static constexpr uint32_t L31_FA_QPE = GLMVQ_FA_HEADS * L31_FA_PE_ROW;
 static constexpr uint32_t L31_FA_SMEM = 2 * GLMVQ_FA_TILE + 2 * L31_FA_PE_TILE + L31_FA_EXCHANGE +
     L31_FA_QPE + 2 * GLMVQ_FA_KEYS * sizeof(uint32_t);
 static_assert(L31_FA_SMEM <= 101376, "one CTA per SM");
+/* FP8 latents land in the second BF16 tile's slot as two 16 KiB stages with
+ * their row exponents after the key ids; each tile is converted into the
+ * first slot's BF16 tile, which the BF16 kernel's MMAs then read unchanged. */
+static constexpr uint32_t L31_FA8_STAGE = GLMVQ_FA_KEYS * GLMVQ_FA_LATENT;
+static constexpr uint32_t L31_FA8_SMEM = L31_FA_SMEM + 2 * GLMVQ_FA_KEYS;
+static_assert(2 * L31_FA8_STAGE == GLMVQ_FA_TILE && L31_FA8_SMEM <= 101376, "FP8 stages in one tile");
 
 // Rope rows are eight 16-byte chunks; chunk ^ (row & 7) spreads an ldmatrix.
 __device__ __forceinline__ uint32_t l31_fa_pe_swz(uint32_t row, uint32_t chunk) {
@@ -29,18 +36,21 @@ __device__ __forceinline__ uint32_t l31_fa_pe_swz(uint32_t row, uint32_t chunk) 
 
 __device__ __forceinline__ uint32_t l31_fa_pack2(const float *x) { return glmvq_fa_pack(x[0], x[1]); }
 
+template <bool FP8>
 __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
         float *out, float *partial, float *stats, const float *q, const float *q_abs,
-        const __nv_bfloat16 *latent, const __nv_bfloat16 *k_pe, uint32_t pos0,
+        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, uint32_t pos0,
         uint32_t tiles_per_split, float scale) {
     extern __shared__ __align__(16) uint8_t fa_shared[];
     glmvq_pdl_open();
     glmvq_pdl_wait();
     uint8_t *tiles = fa_shared;
+    uint8_t *stages = fa_shared + GLMVQ_FA_TILE;
     uint8_t *pe_tiles = fa_shared + 2 * GLMVQ_FA_TILE;
     float *exchange = (float *)(pe_tiles + 2 * L31_FA_PE_TILE);
     uint8_t *qpe = (uint8_t *)exchange + L31_FA_EXCHANGE;
     uint32_t *kidx = (uint32_t *)(qpe + L31_FA_QPE);
+    int8_t *kexp = (int8_t *)(kidx + 2 * GLMVQ_FA_KEYS);
     const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
     const uint32_t g = lane >> 2, q4 = lane & 3u, group = warp & 3u, half = warp >> 2;
     const uint32_t row = blockIdx.x, split = blockIdx.y;
@@ -69,10 +79,11 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
         qa[k][3] = l31_fa_pack2(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col + 8);
     }
 
-    // Warp w copies keys 4w..4w+3: latent rows as two 512-byte warp copies,
-    // rope rows by lanes 0-7 (eight 16-byte chunks each).
+    // Warp w copies keys 4w..4w+3: BF16 latent rows as two 512-byte warp
+    // copies (an FP8 row as one, unswizzled into its stage), rope rows by
+    // lanes 0-7 (eight 16-byte chunks each).
     auto issue = [&](uint32_t tile, uint32_t buf) {
-        uint8_t *dst = tiles + buf * GLMVQ_FA_TILE;
+        uint8_t *dst = FP8 ? stages + buf * L31_FA8_STAGE : tiles + buf * GLMVQ_FA_TILE;
         uint8_t *pe = pe_tiles + buf * L31_FA_PE_TILE;
         #pragma unroll
         for (uint32_t i = 0; i < GLMVQ_FA_KEYS / GLMVQ_FA_WARPS; i++) {
@@ -82,14 +93,24 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
             if (!lane) { kidx[buf * GLMVQ_FA_KEYS + key_slot] = key; }
             const uint32_t bytes = key == GLMVQ_FA_NONE ? 0 : 16;
             const uint64_t at = key == GLMVQ_FA_NONE ? 0 : key;
-            const uint8_t *src = (const uint8_t *)(latent + at * GLMVQ_FA_LATENT);
-            #pragma unroll
-            for (uint32_t c = 0; c < GLMVQ_FA_ROW / 16; c += 32) {
-                glmvq_fa_copy(dst + glmvq_fa_swz(key_slot, c + lane), src + (c + lane) * 16, bytes);
+            if (FP8) {
+                glmvq_fa_copy(dst + key_slot * GLMVQ_FA_LATENT + lane * 16,
+                    (const uint8_t *)latent + at * GLMVQ_FA_LATENT + lane * 16, bytes);
+            } else {
+                const uint8_t *src = (const uint8_t *)latent + at * GLMVQ_FA_ROW;
+                #pragma unroll
+                for (uint32_t c = 0; c < GLMVQ_FA_ROW / 16; c += 32) {
+                    glmvq_fa_copy(dst + glmvq_fa_swz(key_slot, c + lane), src + (c + lane) * 16, bytes);
+                }
             }
             if (lane < L31_FA_PE_ROW / 16) {
                 glmvq_fa_copy(pe + l31_fa_pe_swz(key_slot, lane), (const uint8_t *)(k_pe + at * L31_FA_ROPE) + lane * 16, bytes);
             }
+        }
+        // The tile's row exponents. Masked rows are zero-filled and every
+        // stored exponent is finite (the cache starts zeroed), so they stay 0.
+        if (FP8 && tid < GLMVQ_FA_KEYS / 16) {
+            glmvq_fa_copy(kexp + buf * GLMVQ_FA_KEYS + tid * 16, exps + (uint64_t)tile * GLMVQ_FA_KEYS + tid * 16, 16);
         }
     };
 
@@ -104,8 +125,23 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) l31_fa_kernel(
         __syncthreads();
         if (tile + 1 < last) { issue(tile + 1, buf ^ 1u); }
         asm volatile("cp.async.commit_group;" ::: "memory");
-        const uint8_t *kt = tiles + buf * GLMVQ_FA_TILE;
+        const uint8_t *kt = FP8 ? tiles : tiles + buf * GLMVQ_FA_TILE;
         const uint8_t *pt = pe_tiles + buf * L31_FA_PE_TILE;
+        if (FP8) {
+            // The stage's 32 rows x 32 chunks of 16 E4M3 bytes into the BF16
+            // tile; every warp finished the previous tile at the barrier above.
+            const uint8_t *stage = stages + buf * L31_FA8_STAGE;
+            #pragma unroll
+            for (uint32_t i = 0; i < GLMVQ_FA_KEYS * GLMVQ_FA_LATENT / 16 / GLMVQ_FA_THREADS; i++) {
+                const uint32_t id = i * GLMVQ_FA_THREADS + tid, key = id / 32, c = id % 32;
+                uint4 lo, hi;
+                l31_latent_bf16x16(*(const uint4 *)(stage + key * GLMVQ_FA_LATENT + c * 16),
+                    l31_pow2(kexp[buf * GLMVQ_FA_KEYS + key]), &lo, &hi);
+                *(uint4 *)(tiles + glmvq_fa_swz(key, 2 * c)) = lo;
+                *(uint4 *)(tiles + glmvq_fa_swz(key, 2 * c + 1)) = hi;
+            }
+            __syncthreads();
+        }
 
         // This warp's partial scores (16 heads x 32 keys): its two latent
         // quarters, and for half 0 the rope dims.
@@ -266,25 +302,32 @@ __global__ void l31_fa_combine(float *out, const float *partial, const float *st
 }
 
 /* Decode and verify rows (1-4) split their keys over GLM's 48 CTAs. Scratch
- * holds every split's unnormalized O and its per-head max and sum. */
-enum { L31_FA_ROWS = 4, L31_FA_SPLITS = 48 };
+ * holds every split's unnormalized O and its per-head max and sum. FP8
+ * latents have no Motif fallback: short appends below the expanded path's
+ * 64 rows take one CTA per row. */
+enum { L31_FA_ROWS = 4, L31_FA8_ROWS = 63, L31_FA_SPLITS = 48 };
 
 static uint64_t l31_fa_scratch_bytes(void) {
     return (uint64_t)L31_FA_SPLITS * GLMVQ_FA_HEADS * (GLMVQ_FA_LATENT + 2) * sizeof(float);
 }
 
+// `exps` (the FP8 cache's row exponents) selects the FP8 kernel.
 static cudaError_t l31_fa_launch(float *out, void *scratch, const float *q, const float *q_abs,
-        const __nv_bfloat16 *latent, const __nv_bfloat16 *k_pe, uint32_t rows, uint32_t pos0,
+        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, uint32_t rows, uint32_t pos0,
         float scale, glmvq_launch mode, cudaStream_t stream) {
-    if (!rows || rows > L31_FA_ROWS) { return cudaErrorInvalidValue; }
+    if (!rows || rows > (exps ? L31_FA8_ROWS : L31_FA_ROWS)) { return cudaErrorInvalidValue; }
     const uint32_t tiles = (pos0 + rows + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
-    const uint32_t splits = min(tiles, (uint32_t)L31_FA_SPLITS / rows);
+    const uint32_t splits = max(1u, min(tiles, (uint32_t)L31_FA_SPLITS / rows));
     const uint32_t per = (tiles + splits - 1) / splits;
     float *partial = (float *)scratch;
     float *stats = partial + (uint64_t)rows * splits * GLMVQ_FA_HEADS * GLMVQ_FA_LATENT;
-    cudaError_t err = glmvq_launch_kernel(mode, l31_fa_kernel, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA_SMEM,
-        stream, out, splits > 1 ? partial : nullptr, stats, q, q_abs, latent, k_pe, pos0,
-        splits > 1 ? per : UINT32_MAX, scale);
+    cudaError_t err = exps
+        ? glmvq_launch_kernel(mode, l31_fa_kernel<true>, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA8_SMEM,
+            stream, out, splits > 1 ? partial : nullptr, stats, q, q_abs, latent, exps, k_pe, pos0,
+            splits > 1 ? per : UINT32_MAX, scale)
+        : glmvq_launch_kernel(mode, l31_fa_kernel<false>, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA_SMEM,
+            stream, out, splits > 1 ? partial : nullptr, stats, q, q_abs, latent, exps, k_pe, pos0,
+            splits > 1 ? per : UINT32_MAX, scale);
     if (err == cudaSuccess && splits > 1) {
         err = glmvq_launch_kernel(mode, l31_fa_combine, dim3(rows, GLMVQ_FA_HEADS), GLMVQ_FA_LATENT / 2, 0,
             stream, out, (const float *)partial, (const float *)stats, splits);

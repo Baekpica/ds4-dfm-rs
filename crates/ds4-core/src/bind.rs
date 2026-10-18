@@ -956,12 +956,17 @@ fn inkling_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
 }
 
 /// Required names, except OptionalExact specs (Ling-3.1's MTP block, whose
-/// parts the release maps only when MTP is enabled).
+/// parts the release maps only when MTP is enabled), Ling-3.1 FP8 scales
+/// (absent beside a v2 recipe's Q4_K weight) and GLM VQ residual stages
+/// (present on upgraded layers only).
 fn layout_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
     layouts
         .into_iter()
         .map(|s| BindName {
-            need: if matches!(s.class, crate::TypeClass::OptionalExact(_)) {
+            need: if matches!(
+                s.class,
+                crate::TypeClass::OptionalExact(_) | crate::TypeClass::Ling31Scale
+            ) {
                 BindNeed::Optional
             } else {
                 BindNeed::Required
@@ -985,7 +990,7 @@ fn mtp_names(shape: &Shape) -> Vec<BindName> {
 pub fn bind_names(shape: &Shape) -> Vec<BindName> {
     let mut out = Vec::new();
     match shape.family {
-        ModelFamily::Glm53Vq => return inkling_names(crate::glm_vq::layouts()),
+        ModelFamily::Glm53Vq => return layout_names(crate::glm_vq::layouts()),
         ModelFamily::Ling31Vq => return layout_names(crate::ling31_vq::layouts()),
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
@@ -1716,6 +1721,17 @@ mod tests {
         )]);
         p.shape = crate::shape::SHAPE_LING31_VQ;
         assert_eq!(p.routed_quant_bits(), 2);
+    }
+
+    #[test]
+    fn glm_vq_residual_stage_is_optional() {
+        // v1 releases have no residual stage; v2 has it on some layers only.
+        let names = bind_names(&crate::shape::SHAPE_GLM53_VQ);
+        let need = |name: &str| names.iter().find(|b| b.name == name).map(|b| b.need);
+        let residual = "model.language_model.layers.3.mlp.experts.0.gate_proj.weight_residual";
+        assert_eq!(need(residual), Some(BindNeed::Optional));
+        assert_eq!(need("glm_vq.layer.3.codebook.1"), Some(BindNeed::Optional));
+        assert_eq!(need("glm_vq.layer.3.codebook.0"), Some(BindNeed::Required));
     }
 
     #[test]

@@ -56,6 +56,10 @@ pub enum TypeClass {
     GlmDense,
     /// GVQ1 keeps its original type or uses the named nonexpert Q4_K recipe.
     GlmVqNative(u32),
+    /// Ling-3.1 v1 type or its v2 recipe's (the recipe pins which one).
+    Ling31Native(u32, u32),
+    /// An F32 FP8 block scale, present exactly when its weight is FP8.
+    Ling31Scale,
     GlmRouted,
     /// V4.1 main skeleton: fp4x32 or q4_K, nothing else (`expect_skel`,
     /// core_bind_v41.c:36-39).
@@ -90,6 +94,14 @@ impl TypeClass {
             TypeClass::QwenMtpRouted => "qwen-mtp-routed".into(),
             TypeClass::GlmDense => "glm-dense".into(),
             TypeClass::GlmVqNative(t) => format!("glm-vq-native:{}|q4_K", tensor_type_name(t)),
+            TypeClass::Ling31Native(t, v2) => {
+                format!(
+                    "ling31-native:{}|{}",
+                    tensor_type_name(t),
+                    tensor_type_name(v2)
+                )
+            }
+            TypeClass::Ling31Scale => "ling31-scale:f32".into(),
             TypeClass::GlmRouted => "glm-routed".into(),
             TypeClass::V41Skel => "v41-skel".into(),
             TypeClass::V41Dense => "v41-dense".into(),
@@ -99,7 +111,7 @@ impl TypeClass {
     }
 
     fn optional(self) -> bool {
-        matches!(self, TypeClass::OptionalExact(_))
+        matches!(self, TypeClass::OptionalExact(_) | TypeClass::Ling31Scale)
     }
 }
 
@@ -187,6 +199,8 @@ fn type_ok(class: TypeClass, typ: u32) -> bool {
     match class {
         TypeClass::Exact(t) | TypeClass::OptionalExact(t) => typ == t,
         TypeClass::GlmVqNative(t) => typ == t || typ == T_Q4_K,
+        TypeClass::Ling31Native(t, v2) => typ == t || typ == v2,
+        TypeClass::Ling31Scale => typ == T_F32,
         TypeClass::Plain => typ == T_F16 || typ == T_F32,
         TypeClass::MotifProj => typ == T_F16 || typ == T_BF16,
         TypeClass::Routed => typ == T_IQ2_XXS || typ == T_Q2_K || typ == T_Q4_K,

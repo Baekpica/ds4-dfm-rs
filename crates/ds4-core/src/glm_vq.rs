@@ -18,10 +18,16 @@ use crate::tensors::{TensorError, TensorInfo};
 const ALIGN: u64 = 128;
 const HEADER: u64 = 128;
 const VECTOR: u8 = 8;
-const FORMAT_VERSION: u32 = 1;
+/// Container 1 holds R13 layers; 2 adds GVR8 residual stages (R13+8).
+const FORMAT_VERSIONS: std::ops::RangeInclusive<u32> = 1..=2;
+const RESIDUAL_VERSION: u32 = 2;
 const FP8: u32 = 0x4751_4638;
 const CODEBOOK: u32 = 0x4756_4342;
 const VQ: u32 = 0x4756_5138;
+const RESIDUAL: u32 = 0x4756_5238;
+const RESIDUAL_BITS: u8 = 8;
+const RESIDUAL_WORDS: u32 = 256;
+const E4M3: u32 = 1;
 const F32: u32 = 0;
 const F16: u32 = 1;
 const BF16: u32 = 30;
@@ -64,7 +70,9 @@ pub(super) fn validate_inventory(
     inventory: &crate::TensorInventory,
 ) -> std::result::Result<(), crate::ValidateError> {
     let plan = crate::BindPlan::resolve(crate::shape::SHAPE_GLM53_VQ, inventory);
-    if plan.slots.len() != inventory.tensors.len() {
+    // Residual stages are optional layout entries; every present tensor binds.
+    let bound = plan.slots.iter().filter(|s| s.index.is_some()).count();
+    if bound != inventory.tensors.len() {
         return Err(crate::ValidateError::Token("GLM VQ tensor set mismatch"));
     }
     crate::validate_layouts(&plan)
@@ -174,6 +182,61 @@ impl Header {
     }
 }
 
+/// GVR8: one index byte per 8-weight vector into a K=256 E4M3 book; the
+/// parent GVQ1 matrix supplies the row gain. Canonical 128-byte layout.
+struct ResidualHeader {
+    book: u32,
+    size: u64,
+}
+
+impl ResidualHeader {
+    fn parse(data: &[u8], tensor: &TensorInfo) -> Result<Self> {
+        let h = span(data, tensor.abs_offset, HEADER)?;
+        let rows = u64::from(u32_at(h, 8));
+        let cols = u64::from(u32_at(h, 12));
+        if &h[..4] != b"GVR1"
+            || h[4..6] != [1, 0]
+            || h[6] != RESIDUAL_BITS
+            || h[7] != VECTOR
+            || u32_at(h, 16) != RESIDUAL_WORDS
+            || u32_at(h, 20) != E4M3
+            || u32_at(h, 28) != 0
+            || rows == 0
+            || cols == 0
+            || cols % 64 != 0
+            || tensor.ndim != 2
+            || tensor.dim[..2] != [cols, rows]
+        {
+            return Err(fail("invalid GVR1 header/shape"));
+        }
+        let end = rows
+            .checked_mul(cols / u64::from(VECTOR))
+            .and_then(|n| n.checked_add(HEADER))
+            .ok_or(TensorError::Overflow)?;
+        let size = align(end)?;
+        if [u64_at(h, 32), u64_at(h, 40), u64_at(h, 48), u64_at(h, 56)] != [HEADER, 0, 0, size] {
+            return Err(fail("noncanonical GVR1 offsets"));
+        }
+        let payload = span(data, tensor.abs_offset, size)?;
+        if Sha256::digest(&payload[HEADER as usize..])[..] != h[96..128] {
+            return Err(fail("GVR1 payload checksum"));
+        }
+        zeros(payload, end, size)?;
+        Ok(Self {
+            book: u32_at(h, 24),
+            size,
+        })
+    }
+}
+
+/// A payload's codebook reference: tensor index, book ID, words, precision.
+struct BookLink {
+    tensor: usize,
+    book: u32,
+    k: u32,
+    precision: u32,
+}
+
 fn object(g: &GgufFile, key: &str) -> Result<Map<String, Value>> {
     let Some(bytes) = g.get_string(key) else {
         if g.kv_entries()
@@ -209,19 +272,24 @@ fn book_hash(data: &[u8], book: &TensorInfo) -> Result<[u8; 32]> {
     Ok(Sha256::digest(bytes).into())
 }
 
-fn validate_books(g: &GgufFile, tensors: &[TensorInfo], headers: &[(usize, Header)]) -> Result<()> {
+fn validate_books(g: &GgufFile, tensors: &[TensorInfo], headers: &[BookLink]) -> Result<()> {
     let links = object(g, "glm_vq.codebooks")?;
     let by_name: HashMap<_, _> = tensors.iter().map(|t| (t.name.as_str(), t)).collect();
     let mut used = HashSet::new();
     let mut hashes = HashMap::new();
-    for (i, header) in headers {
+    for header in headers {
+        let i = &header.tensor;
         let id = header.book.to_string();
         let name = links
             .get(&id)
             .and_then(Value::as_str)
             .ok_or(fail("missing codebook link"))?;
         let book = by_name.get(name).ok_or(fail("missing codebook tensor"))?;
-        let typ = if header.precision == 1 { CODEBOOK } else { F16 };
+        let typ = if header.precision == E4M3 {
+            CODEBOOK
+        } else {
+            F16
+        };
         if book.typ != typ
             || book.ndim != 2
             || book.dim[..2] != [u64::from(VECTOR), u64::from(header.k)]
@@ -301,6 +369,51 @@ fn validate_native(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
     Ok(())
 }
 
+/// `glm_vq.residuals` maps each GVQ1 matrix of an R13+8 part to its GVR8
+/// tensor. A part's residual stage is all-or-none: every 13-bit matrix of
+/// the layer has exactly one residual and every residual one parent.
+fn validate_residuals(
+    g: &GgufFile,
+    tensors: &[TensorInfo],
+    stage1: &HashMap<usize, u32>,
+    version: u32,
+) -> Result<()> {
+    let links = object(g, "glm_vq.residuals")?;
+    let index: HashMap<_, _> = tensors
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.as_str(), i))
+        .collect();
+    let residuals = tensors.iter().filter(|t| t.typ == RESIDUAL).count();
+    if residuals == 0 && links.is_empty() {
+        return Ok(());
+    }
+    if version < RESIDUAL_VERSION {
+        return Err(fail("residual stage needs container version 2"));
+    }
+    let mut linked = HashSet::new();
+    for (parent, value) in &links {
+        let name = value.as_str().ok_or(fail("invalid residual link"))?;
+        let (Some(&p), Some(&r)) = (index.get(parent.as_str()), index.get(name)) else {
+            return Err(fail("missing residual parent/tensor"));
+        };
+        let (pt, rt) = (&tensors[p], &tensors[r]);
+        if pt.typ != VQ
+            || rt.typ != RESIDUAL
+            || stage1.get(&p) != Some(&8192)
+            || pt.dim[..2] != rt.dim[..2]
+            || !linked.insert(r)
+        {
+            return Err(fail("residual link type/shape/duplicate"));
+        }
+    }
+    let parents = tensors.iter().filter(|t| t.typ == VQ).count();
+    if linked.len() != residuals || residuals != parents {
+        return Err(fail("partial or unlinked residual stage"));
+    }
+    Ok(())
+}
+
 /// Only the GVQ1 format opts into this validator. Unknown private tensors
 /// cannot silently inherit the generic parser's zero-byte fallback.
 pub(super) fn validate_part(
@@ -313,13 +426,16 @@ pub(super) fn validate_part(
         || g.kv_entries()
             .iter()
             .any(|e| g.key_bytes(e).starts_with(b"glm_vq."))
-        || tensors.iter().any(|t| matches!(t.typ, FP8 | CODEBOOK | VQ));
+        || tensors
+            .iter()
+            .any(|t| matches!(t.typ, FP8 | CODEBOOK | VQ | RESIDUAL));
     if !requested {
         return Ok(());
     }
+    let version = g.get_u32("glm_vq.format_version").unwrap_or(0);
     if g.get_string("general.architecture") != Some(b"glm5_next")
         || g.alignment != ALIGN
-        || g.get_u32("glm_vq.format_version") != Some(FORMAT_VERSION)
+        || !FORMAT_VERSIONS.contains(&version)
         || g.split_count() > 1
     {
         return Err(fail("unsupported format/version/alignment"));
@@ -332,6 +448,7 @@ pub(super) fn validate_part(
     }
     let mut names = HashSet::new();
     let mut headers = Vec::new();
+    let mut stage1 = HashMap::new();
     for (i, t) in tensors.iter_mut().enumerate() {
         if !names.insert(t.name.clone())
             || t.ndim > 4
@@ -363,9 +480,24 @@ pub(super) fn validate_part(
             }
             VQ => {
                 let header = Header::parse(g.as_bytes(), t)?;
-                let bytes = header.size;
-                headers.push((i, header));
-                bytes
+                stage1.insert(i, header.k);
+                headers.push(BookLink {
+                    tensor: i,
+                    book: header.book,
+                    k: header.k,
+                    precision: header.precision,
+                });
+                header.size
+            }
+            RESIDUAL => {
+                let header = ResidualHeader::parse(g.as_bytes(), t)?;
+                headers.push(BookLink {
+                    tensor: i,
+                    book: header.book,
+                    k: RESIDUAL_WORDS,
+                    precision: E4M3,
+                });
+                header.size
             }
             _ => return Err(fail("unsupported tensor type")),
         };
@@ -398,5 +530,6 @@ pub(super) fn validate_part(
         return Err(fail("trailing/missing bytes"));
     }
     validate_books(g, tensors, &headers)?;
+    validate_residuals(g, tensors, &stage1, version)?;
     validate_native(g, tensors)
 }

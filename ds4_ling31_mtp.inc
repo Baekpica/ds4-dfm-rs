@@ -22,8 +22,8 @@ static bool l31_mtp_kv(ds4_ling31_graph *g, const ds4_model *m, const ds4_weight
         ds4_gpu_ling3vl_mrope(g->kv_raw, g->positions, g->inv_freq, n, 1u, L31_KV_ROW,
             L31_KV_LORA, L31_ROPE, L31_ROPE / 2u, 0u, 1.0f) &&
         ds4_gpu_l31_latent_norm(g->kv_norm, g->kv_raw, g->kv_norm_w[LING31_MTP], n, DS4_RMS_EPS) &&
-        ds4_gpu_ling3vl_store_latent(g->latent[LING31_MTP], g->k_pe[LING31_MTP], g->kv_norm,
-            g->kv_raw, n, pos, g->ctx_cap, L31_KV_ROW, L31_KV_LORA, L31_ROPE);
+        ds4_gpu_l31_store_latent(g->latent[LING31_MTP], g->k_pe[LING31_MTP], g->kv_norm,
+            g->kv_raw, n, pos, g->ctx_cap, g->latent_mode);
 }
 
 /* Trunk head of an MTP graph: every row's final norm feeds the draft layer.

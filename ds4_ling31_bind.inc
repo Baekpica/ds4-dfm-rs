@@ -220,8 +220,18 @@ static uint64_t ling31_control_bytes(void) {
     return kda * kda_ctl + (mla + 1u) * mla_ctl;
 }
 
+/* FP8 latent rows by default: 641 bytes per token and MLA layer against
+ * 1,152 (ds4_l31_latent_bytes). DS4_LING31_LATENT=bf16 keeps BF16 rows, sim
+ * stores FP8's values in them; Motif's kernels (DS4_LING31_FLASH=0) read BF16. */
+static ds4_l31_latent ling31_latent_mode(void) {
+    const char *latent = getenv("DS4_LING31_LATENT"), *flash = getenv("DS4_LING31_FLASH");
+    if (latent && !strcmp(latent, "sim")) { return DS4_L31_LATENT_SIM; }
+    if ((latent && !strcmp(latent, "bf16")) || (flash && !strcmp(flash, "0"))) { return DS4_L31_LATENT_BF16; }
+    return DS4_L31_LATENT_FP8;
+}
+
 static uint64_t ling31_latent_bytes(uint32_t ctx) {
-    return (uint64_t)ctx * L31_KV_ROW * sizeof(uint16_t);
+    return ds4_l31_latent_bytes(ctx, ling31_latent_mode()) + (uint64_t)ctx * L31_ROPE * sizeof(uint16_t);
 }
 
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
@@ -300,7 +310,8 @@ static bool ling31_gpu_bind(ds4_weights *w, const ds4_model *m) {
             return false;
         }
         records[i] = (ds4_gvq_record){t->abs_offset, t->bytes, t->type,
-            (uint32_t)rows, (uint32_t)cols, ling31_index(m, t->source_scale), DS4_GVQ_NO_LINK};
+            (uint32_t)rows, (uint32_t)cols, ling31_index(m, t->source_scale), DS4_GVQ_NO_LINK,
+            DS4_GVQ_NO_LINK};
     }
     for (uint32_t il = LING31_DENSE; il <= LING31_LAYERS; il++) {
         const ds4_ling31_experts *e = &w->ling31[il];
