@@ -88,6 +88,10 @@ const LING31_LATENT_ENV: &str = "DS4_LING31_LATENT";
 const LING31_FLASH_ENV: &str = "DS4_LING31_FLASH";
 // FP8 latent caches round their per-row exponents up to 32 rows.
 const LING31_EXP_ALIGN: u64 = 32;
+// With FP8 latent rows one 262,144-token bank and a 2,048-row workspace
+// fit beside either release (7.7 GiB with the floor against 8.0 left by v1).
+// The chunk is part of the disk-KV identity, so it does not follow the
+// context; live-memory halving covers MTP, extra banks and BF16 latents.
 const LING31_NATIVE_DEFAULT: u32 = 2048;
 const LING31_NATIVE_MAX: u32 = 4096;
 // Halving floor when the quote does not fit: 512 rows keep 0.35 GiB of
@@ -1173,7 +1177,7 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
         ),
         ModelFamily::Ling31Vq => env_u32(
             LING31_PREFILL_CHUNK_ENV,
-            ling31_native_default(ctx),
+            LING31_NATIVE_DEFAULT,
             1,
             LING31_NATIVE_MAX,
         ),
@@ -1203,18 +1207,6 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
         ),
     };
     cap.min(ctx)
-}
-
-// One bank's latent rows and a 2,048-row workspace outgrow the ~8 GiB beside
-// the trunk above 128K tokens. A context-keyed default keeps the chunk, part
-// of the disk-KV identity, fixed across boots; live-memory halving would let
-// it move with free memory (512 or 1,024 rows at 262K).
-fn ling31_native_default(ctx: u32) -> u32 {
-    match ctx {
-        0..=131_072 => LING31_NATIVE_DEFAULT,
-        131_073..=196_608 => LING31_NATIVE_DEFAULT / 2,
-        _ => LING31_NATIVE_MIN,
-    }
 }
 
 fn metal_native_chunk(ctx: u32, default: u32) -> u32 {
@@ -3199,33 +3191,29 @@ mod tests {
     }
 
     #[test]
-    fn ling31_default_rows_follow_the_context() {
+    fn ling31_default_rows_hold_to_the_native_context() {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
         let caps = serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq);
-        for (ctx, rows) in [
-            (4096, 2048),
-            (131_072, 2048),
-            (131_073, 1024),
-            (196_608, 1024),
-            (262_144, 512),
-        ] {
-            assert_eq!(family_native_chunk(caps, ctx), rows, "ctx {ctx}");
+        for ctx in [4096, 131_072, 196_608, 262_144] {
+            assert_eq!(family_native_chunk(caps, ctx), 2048, "ctx {ctx}");
         }
         assert_eq!(family_native_chunk(caps, 1000), 1000);
-        let _pinned = EnvGuard::set(LING31_PREFILL_CHUNK_ENV, "2048");
-        assert_eq!(family_native_chunk(caps, 262_144), 2048);
+        let _pinned = EnvGuard::set(LING31_PREFILL_CHUNK_ENV, "1024");
+        assert_eq!(family_native_chunk(caps, 262_144), 1024);
     }
 
     #[test]
     fn ling31_serial_fallback_fits() {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
+        let _latent = EnvGuard::unset(LING31_LATENT_ENV);
+        let _flash = EnvGuard::unset(LING31_FLASH_ENV);
         let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
         let _burst = EnvGuard::unset(FIT_BURST_ENV);
         // The server's facts after the 262K bank fit is refused. The serial
         // gate never spends the floor, so first-request growth stays priced.
-        // Live: 8.17 GiB free beside the trunk boots 512 rows.
+        // 8.17 GiB free beside v1's trunk keeps 2,048 rows with FP8 latents.
         let req = ServingRequest {
             ctx: 262_144,
             mem_floor_gb: 4,
@@ -3254,7 +3242,7 @@ mod tests {
         );
         let plan = resolve_plan(&req, Some(caps), &facts);
         assert!(plan.may_listen(), "{:?}", plan.issues);
-        assert_eq!(facts.native_chunk, Some(512));
+        assert_eq!(facts.native_chunk, Some(2048));
         assert_eq!(
             plan.quote.unwrap().floor,
             4 * GIB + LING31_FIT_BURST_MB * MIB
