@@ -715,27 +715,6 @@ typedef struct {
     int        top_k;       /* <= 0 => full vocab                              */
     float      top_p;       /* nucleus; <=0 or >1 treated as 1.0               */
     float      min_p;       /* relative floor; <0 => 0                         */
-    /* Penalty face (core_decode_penalty.c, the same code the V4.1 route runs;
-     * all-zero = the default face and the row is left untouched).  Frequency
-     * and presence count the row's own GENERATED tokens; DRY subtracts an
-     * exponential penalty from a candidate that continues an already-seen
-     * sequence.  Unlike temperature they read history, so they also act at
-     * temperature <= 0 (greedy) -- the only loop cure that keeps a
-     * deterministic direct output deterministic. */
-    float      freq_penalty;
-    float      presence_penalty;
-    float      dry_multiplier;
-    float      dry_base;           /* <= 1 => engine fallback 1.75            */
-    int        dry_allowed_length; /* <= 0 => engine fallback 2               */
-    /* Penalty lookback in tokens: 0 -- the default, and the only value any
-     * family but GLM-5.3 sends -- keeps the face over this bank's GENERATED
-     * segment.  N > 0 widens it to the last N tokens of the bank's committed
-     * history, prompt included, which is the ordering the artifact's own
-     * runtime uses (llama.cpp feeds every prompt token to its sampler chain,
-     * tools/server/server-context.cpp:433, bounded by repeat_last_n /
-     * dry_penalty_last_n: server README, default 64, 0 disabled).  A face
-     * without a penalty stays inert, so this alone touches no row. */
-    int        penalty_window;
     uint64_t   seed;        /* per-seq RNG seed (caller resolves 0 if it wants */
                             /* distinct streams; 0 is a fixed, valid sequence) */
     /* Per-token sampling override (NULL = none).  The callback result is one
@@ -1420,19 +1399,6 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
 int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                  int top_k, float top_p, float min_p,
                                  uint64_t *rng, int excluded_id);
-/* The serial lane's penalty face.  gen_start is the position this request's
- * generation began at (its prompt length): with penalty_window 0 the
- * penalized segment is [gen_start, committed tokens), the prompt-excluded
- * scope the continuous lane's family_cont_penalize uses, and penalty_window
- * N > 0 widens it to the last N tokens of the committed history (prompt
- * included).  A zero face, an unusable gen_start or no committed checkpoint
- * all take the plain sampler. */
-int ds4_session_sample_penalized(ds4_session *s, int gen_start,
-                                 float temperature, int top_k, float top_p,
-                                 float min_p, uint64_t *rng, int excluded_id,
-                                 float freq, float presence, float dry_mult,
-                                 float dry_base, int dry_allowed,
-                                 int penalty_window);
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k);
 int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out);
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap);

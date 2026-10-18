@@ -664,19 +664,6 @@ pub struct SamplePolicy<'a> {
     pub max_tokens: i32,
     pub required_tool_prefix: &'a [i32],
     pub required_think_end_prefix: &'a [i32],
-    /// Forced-thought budget in tokens; 0 is OFF and keeps the tool-turn cap
-    /// below.  A non-zero value also bounds THIS turn, which is the only
-    /// reason a GLM chat turn (no tool start, no tool result) closes its
-    /// thought at all.
-    ///
-    /// Named deviation: the reference reserves post-thinking only for a
-    /// required tool start or a tool result (tests/parity/dsml_c_oracle.c:
-    /// 445-446, from ds4_server.c at v0.6.3-dfm), so a chat turn runs to the
-    /// token cap -- measured on the Spark as 4 of 5 runs at effort low never
-    /// leaving the scratchpad (docs/glm53-vq-sampler-2026-10-17.md).  Every
-    /// other format and every tool turn keeps the reference behaviour byte
-    /// for byte, and the deployment opts in per level.
-    pub think_cap: i32,
 }
 
 pub fn sampling_override(
@@ -700,17 +687,11 @@ pub fn sampling_override(
         && saw_tool_start
         && !thinking_inside
         && (*tool_pos as usize) < p.required_tool_prefix.len();
-    // A deployment bound (GLM chat turns) replaces the tool-turn cap and is
-    // itself the reason to reserve post-thinking; at 0 the two lines below
-    // are exactly what they were.
-    let cap = if p.think_cap > 0 {
-        p.think_cap
-    } else {
-        agent_turn_reasoning_cap(p.think_mode, p.max_tokens)
-    };
-    let reserve_post_thinking = required_pending || p.has_tool_results || p.think_cap > 0;
+    let reserve_post_thinking = required_pending || p.has_tool_results;
     if reserve_post_thinking && thinking_inside {
-        if completion >= cap && (*think_pos as usize) < p.required_think_end_prefix.len() {
+        if completion >= agent_turn_reasoning_cap(p.think_mode, p.max_tokens)
+            && (*think_pos as usize) < p.required_think_end_prefix.len()
+        {
             let token = p.required_think_end_prefix[*think_pos as usize];
             *think_pos += 1;
             return SampleOverride::Token(token);
@@ -869,7 +850,6 @@ fn dump_override_required() -> String {
         max_tokens: 128,
         required_tool_prefix: &[101, 202],
         required_think_end_prefix: &[],
-        think_cap: 0,
     };
     let mut tool_pos = 0;
     let mut think_pos = 0;
@@ -906,7 +886,6 @@ fn dump_override_think_cap() -> String {
         max_tokens: 128,
         required_tool_prefix: &[],
         required_think_end_prefix: &[303],
-        think_cap: 0,
     };
     let mut tool_pos = 0;
     let mut think_pos = 0;
@@ -943,7 +922,6 @@ fn dump_override_tool_result() -> String {
         max_tokens: 128,
         required_tool_prefix: &[],
         required_think_end_prefix: &[303],
-        think_cap: 0,
     };
     let mut tool_pos = 0;
     let mut think_pos = 0;
@@ -988,7 +966,6 @@ mod override_tests {
             max_tokens: 128,
             required_tool_prefix: &[101, 202],
             required_think_end_prefix: &[],
-            think_cap: 0,
         };
         let mut tool_pos = 0;
         let mut think_pos = 0;
@@ -1018,7 +995,6 @@ mod override_tests {
             max_tokens: 128,
             required_tool_prefix: &[202],
             required_think_end_prefix: &[],
-            think_cap: 0,
         };
         let mut tool_pos = 0;
         let mut think_pos = 0;
@@ -1038,69 +1014,5 @@ mod override_tests {
         assert_eq!(sample(false), SampleOverride::None);
         assert_eq!(sample(true), SampleOverride::Token(202));
         assert_eq!(sample(true), SampleOverride::None);
-    }
-
-    // A GLM chat turn carries no tool results, so nothing reserves post-
-    // thinking and the turn never leaves the scratchpad (the measured
-    // runaway: 4 of 5 runs at effort low never closed the thought).  The
-    // deployment's per-level budget is the only reason to force the close.
-    #[test]
-    fn glm_chat_cap_forces_the_think_close() {
-        let policy = SamplePolicy {
-            tool_choice: ToolChoice::Auto,
-            has_tool_results: false,
-            think_mode: ThinkMode::Low,
-            max_tokens: 4096,
-            required_tool_prefix: &[],
-            required_think_end_prefix: &[303],
-            think_cap: 64,
-        };
-        let mut tool_pos = 0;
-        let mut think_pos = 0;
-        let mut sample = |completion| {
-            sampling_override(
-                true,
-                false,
-                true,
-                completion,
-                ChatFormat::DeepSeek,
-                DsmlDecodeState::Outside,
-                &mut tool_pos,
-                &mut think_pos,
-                &policy,
-            )
-        };
-        assert_eq!(sample(63), SampleOverride::None);
-        assert_eq!(sample(64), SampleOverride::Token(303));
-        assert_eq!(sample(65), SampleOverride::None);
-    }
-
-    // Unset (0) is today's behaviour exactly: the level's own cap governs a
-    // tool turn, and a chat turn stays the turn's budget.
-    #[test]
-    fn glm_chat_without_a_cap_is_unbounded() {
-        let policy = SamplePolicy {
-            tool_choice: ToolChoice::Auto,
-            has_tool_results: false,
-            think_mode: ThinkMode::Low,
-            max_tokens: 4096,
-            required_tool_prefix: &[],
-            required_think_end_prefix: &[303],
-            think_cap: 0,
-        };
-        let mut tool_pos = 0;
-        let mut think_pos = 0;
-        let ov = sampling_override(
-            true,
-            false,
-            true,
-            4096,
-            ChatFormat::DeepSeek,
-            DsmlDecodeState::Outside,
-            &mut tool_pos,
-            &mut think_pos,
-            &policy,
-        );
-        assert_eq!(ov, SampleOverride::None);
     }
 }

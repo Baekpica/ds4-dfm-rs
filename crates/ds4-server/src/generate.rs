@@ -27,8 +27,8 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
-use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{ChatMsg, ChatPart, EosPolicy, ParsedRequest, ToolCall, ToolChoice};
+use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::render::{
     render_chat_choice_ex, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError,
     DSML_EOS, QWEN_IM_END, SOLAR_IM_END,
@@ -133,62 +133,6 @@ pub struct SerialSessionProbe {
     /// deferred (including "no session yet"). A pending session can be
     /// re-created at another ctx for free.
     pub graph_pending: bool,
-}
-
-/// The repetition-penalty face a request carries: frequency, presence and DRY
-/// from `core_decode_penalty.c`, the same five values the continuous lane hands
-/// to the bank (`serve_cont.rs` admit) and the V4.1 route to `V41Sampling`. All
-/// zero = no lane's sampler is touched.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Penalty {
-    pub frequency: f32,
-    pub presence: f32,
-    pub dry_multiplier: f32,
-    pub dry_base: f32,
-    pub dry_allowed_length: i32,
-    /// Penalty lookback in tokens of the committed history, prompt included;
-    /// 0 keeps the face over the generated segment alone (ds4.c
-    /// family_cont_penalize, ds4_session_sample_penalized).  The deployment
-    /// sets it (`parse.rs` GLM53_DEFAULT_PENALTY_WINDOW carries the evidence
-    /// and the llama.cpp ordering it copies).
-    pub penalty_window: i32,
-}
-
-impl Penalty {
-    /// The request's face with the engine's own fallbacks: the request values
-    /// win, an omitted base / allowed length take 1.75 / 2 (parse.rs's DRY note
-    /// cites server_generate_v41.c:363-365 for that rule, and the V4.1 face
-    /// applies it here too). Without them `ds4_decode_penalize` refuses the
-    /// face outright (`dry_base <= 1.f`), so a client that sends only
-    /// `dry_multiplier` would carry an inert penalty.
-    pub fn of(parsed: &ParsedRequest) -> Self {
-        Self {
-            frequency: parsed.frequency_penalty,
-            presence: parsed.presence_penalty,
-            dry_multiplier: if parsed.dry_set {
-                parsed.dry_multiplier
-            } else {
-                0.0
-            },
-            dry_base: if parsed.dry_set && parsed.dry_base > 1.0 {
-                parsed.dry_base
-            } else {
-                1.75
-            },
-            dry_allowed_length: if parsed.dry_set && parsed.dry_allowed_length > 0 {
-                parsed.dry_allowed_length
-            } else {
-                2
-            },
-            penalty_window: parsed.penalty_window,
-        }
-    }
-
-    /// True when the face asks for anything at all. False keeps every caller's
-    /// sampler byte-identical.
-    pub fn is_set(&self) -> bool {
-        self.frequency != 0.0 || self.presence != 0.0 || self.dry_multiplier > 0.0
-    }
 }
 
 pub trait DecodeIo {
@@ -409,33 +353,6 @@ pub trait DecodeIo {
     ) -> i32 {
         if excluded_id >= 0 {
             return -1;
-        }
-        self.sample(temperature, top_k, top_p, min_p, rng)
-    }
-    /// Sample with the request's penalty face applied over the tokens this
-    /// request has already emitted (`gen_start` is where its generation began,
-    /// so the prompt stays unpenalized). This is the serial lane's counterpart
-    /// of the continuous lane's `family_cont_penalize` (ds4.c:64936): the lane
-    /// is reachable whenever continuous admission refuses (serve_cont.rs), and
-    /// a penalty dropped there is dropped silently.
-    ///
-    /// The default is the plain sample, so an engine with no penalty lane
-    /// keeps its exact behavior; a zero face never reaches here at all
-    /// (`Penalty::is_set`).
-    #[allow(clippy::too_many_arguments)]
-    fn sample_penalized(
-        &mut self,
-        temperature: f32,
-        top_k: i32,
-        top_p: f32,
-        min_p: f32,
-        rng: &mut u64,
-        excluded_id: i32,
-        _gen_start: i32,
-        _penalty: Penalty,
-    ) -> i32 {
-        if excluded_id >= 0 {
-            return self.sample_excluding(temperature, top_k, top_p, min_p, rng, excluded_id);
         }
         self.sample(temperature, top_k, top_p, min_p, rng)
     }
@@ -1569,17 +1486,11 @@ pub(crate) fn prepare_required_prefixes(
         && parsed.has_tools
         && parsed.tool_choice == ToolChoice::Auto
         && !think_mode_enabled(parsed.think_mode);
-    if parsed.tool_choice != ToolChoice::Required
-        && !parsed.has_tool_results
-        && !mimo_auto
-        && parsed.think_cap <= 0
-    {
+    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results && !mimo_auto {
         return Ok(());
     }
     let format = chat_format_for_syntax(syntax);
     if !mimo_auto && parsed.required_think_end_prefix.is_empty() {
-        // A bounded thought needs the same close the tool turns force, and it
-        // is the ONLY thing a GLM chat turn needs (no tool head to complete).
         let toks = tokenize(think_end(format).as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
@@ -1671,38 +1582,6 @@ mod required_prefix_tests {
         })
         .unwrap();
         assert_eq!(parsed.required_tool_prefix, [17]);
-    }
-
-    // A GLM chat turn has no tool to reserve post-thinking for, so the bound
-    // is the only reason to tokenize the close.  Without it the prefix stays
-    // empty and the turn is today's turn byte for byte.
-    #[test]
-    fn glm_chat_bound_fills_the_close_prefix() {
-        let body = r#"{"messages":[{"role":"user","content":"weather"}]}"#;
-        let mut bounded = parse_chat_request(&ParseEnv::default(), body).unwrap();
-        bounded.think_cap = 64;
-        prepare_required_prefixes(&mut bounded, ModelSyntax::Glm53, |literal| {
-            Ok(if literal == b"</think>" {
-                vec![303]
-            } else {
-                vec![99]
-            })
-        })
-        .unwrap();
-        assert_eq!(bounded.required_think_end_prefix, [303]);
-        assert!(bounded.required_tool_prefix.is_empty());
-
-        let mut unbounded = parse_chat_request(&ParseEnv::default(), body).unwrap();
-        prepare_required_prefixes(&mut unbounded, ModelSyntax::Glm53, |literal| {
-            Ok(if literal == b"</think>" {
-                vec![303]
-            } else {
-                vec![99]
-            })
-        })
-        .unwrap();
-        assert!(unbounded.required_think_end_prefix.is_empty());
-        assert!(unbounded.required_tool_prefix.is_empty());
     }
 }
 
@@ -1870,11 +1749,6 @@ fn decode_pass(
     token_ids: &mut Vec<i32>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
-    // Where this request's own generation begins. The penalty face reads back
-    // only what the request itself emitted, never the prompt -- the continuous
-    // lane's cb->generated scope (ds4.c family_cont_penalize).
-    let gen_start = engine.pos();
-    let penalty = Penalty::of(parsed);
     'decode: while acc.completion < max_tokens && engine.pos() < engine.ctx() {
         if stop_requested.is_some_and(|stop| stop()) {
             *finish = "error";
@@ -1888,13 +1762,10 @@ fn decode_pass(
         let mut top_k = parsed.top_k;
         let mut top_p = parsed.top_p;
         let mut min_p = parsed.min_p;
-        // IQuest uses the requested sampler in both channels, and the GLM-5.3
-        // scope already carries its own request-omitted values
-        // (parse::GlmValues), so both keep what the request resolved to.
-        // Greedy thinking must remain eligible for IQuest's embedded
-        // target-verified MTP path.
+        // IQuest uses the requested sampler in both channels. Greedy thinking
+        // must remain eligible for its embedded target-verified MTP path.
         if think_mode_enabled(parsed.think_mode)
-            && fixed_thinking_sampling(syntax_for_model_id(engine.model_id()))
+            && syntax_for_model_id(engine.model_id()) != ModelSyntax::IQuestQ1
         {
             temperature = DEFAULT_TEMPERATURE;
             top_k = 0;
@@ -1908,7 +1779,6 @@ fn decode_pass(
             max_tokens: parsed.max_tokens,
             required_tool_prefix: &parsed.required_tool_prefix,
             required_think_end_prefix: &parsed.required_think_end_prefix,
-            think_cap: parsed.think_cap,
         };
         let ov = acc.sampling_override(&policy);
         if matches!(ov, SampleOverride::Greedy) {
@@ -1932,17 +1802,6 @@ fn decode_pass(
                 ));
             }
             t
-        } else if penalty.is_set() {
-            engine.sample_penalized(
-                temperature,
-                top_k,
-                top_p,
-                min_p,
-                rng,
-                excluded.unwrap_or(-1),
-                gen_start,
-                penalty,
-            )
         } else if let Some(excluded_id) = excluded {
             engine.sample_excluding(temperature, top_k, top_p, min_p, rng, excluded_id)
         } else {
@@ -1960,18 +1819,12 @@ fn decode_pass(
         let budget = (max_tokens - acc.completion).min(engine.ctx() - engine.pos());
         // Forced control prefixes can change policy between tokens. Only
         // an unconstrained greedy segment may be committed ahead of output.
-        // A penalty face forbids the commit: the committed tail is an argmax
-        // chain inside the engine that has no token history and cannot carry
-        // the face, the same reason the continuous lane's device trial stands
-        // down under a penalty (`family_cont_spec`). A greedy GLM turn with
-        // DRY would otherwise penalize only the segment's first token.
         let prefix_start = engine.pos();
         let accepted = if temperature <= 0.0
             && parsed.eos_policy == EosPolicy::Default
             && matches!(ov, SampleOverride::None)
             && parsed.required_tool_prefix.is_empty()
             && parsed.required_think_end_prefix.is_empty()
-            && !penalty.is_set()
         {
             let accepted = engine.eval_greedy(token, budget)?;
             if engine.last_eval_speculated() {
@@ -4838,38 +4691,6 @@ impl DecodeIo for NativeDecode<'_> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn sample_penalized(
-        &mut self,
-        temperature: f32,
-        top_k: i32,
-        top_p: f32,
-        min_p: f32,
-        rng: &mut u64,
-        excluded_id: i32,
-        gen_start: i32,
-        penalty: Penalty,
-    ) -> i32 {
-        match self.session() {
-            Ok(s) => s.sample_penalized(
-                gen_start,
-                temperature,
-                top_k,
-                top_p,
-                min_p,
-                rng,
-                excluded_id,
-                penalty.frequency,
-                penalty.presence,
-                penalty.dry_multiplier,
-                penalty.dry_base,
-                penalty.dry_allowed_length,
-                penalty.penalty_window,
-            ),
-            Err(_) => -1,
-        }
-    }
-
     fn pos(&self) -> i32 {
         self.session.as_ref().map(|s| s.pos()).unwrap_or(0)
     }
@@ -6927,7 +6748,6 @@ mod disk_sync_tests {
             default_temp: 0.0,
             live_ids: Vec::new(),
             engine_defaults: false,
-            glm_values: false,
         };
         let ordinary = parse_request(
             WireSurface::OpenaiChat,

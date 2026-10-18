@@ -356,20 +356,6 @@ int ds4_session_sample_excluding(ds4_session *s, float temperature,
     (void)min_p; (void)rng; (void)excluded_id;
     STUB("ds4_session_sample_excluding");
 }
-/* The bridge's penalized sampler (the GLM scope's face) needs a stub like every
- * other ds4_session_* entry the bridge calls, or the oracle cannot link without
- * the engine (CI: undefined reference at ds4_bridge.c:1154). */
-int ds4_session_sample_penalized(ds4_session *s, int gen_start,
-                                 float temperature, int top_k, float top_p,
-                                 float min_p, uint64_t *rng, int excluded_id,
-                                 float freq, float presence, float dry_mult,
-                                 float dry_base, int dry_allowed,
-                                 int penalty_window) {
-    (void)s; (void)gen_start; (void)temperature; (void)top_k; (void)top_p;
-    (void)min_p; (void)rng; (void)excluded_id; (void)freq; (void)presence;
-    (void)dry_mult; (void)dry_base; (void)dry_allowed; (void)penalty_window;
-    STUB("ds4_session_sample_penalized");
-}
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
     (void)s; (void)fp; (void)err; (void)errlen; STUB("ds4_session_save_payload");
 }

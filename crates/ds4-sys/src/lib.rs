@@ -1026,24 +1026,6 @@ extern "C" {
         excluded_id: c_int,
     ) -> c_int;
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn ds4_bridge_session_sample_penalized(
-        s: *mut ds4_bridge_session,
-        gen_start: c_int,
-        temperature: c_float,
-        top_k: c_int,
-        top_p: c_float,
-        min_p: c_float,
-        rng: *mut u64,
-        excluded_id: c_int,
-        freq: c_float,
-        presence: c_float,
-        dry_mult: c_float,
-        dry_base: c_float,
-        dry_allowed: c_int,
-        penalty_window: c_int,
-    ) -> c_int;
-
     pub fn ds4_bridge_session_save_payload(
         s: *mut ds4_bridge_session,
         path: *const c_char,
@@ -1322,15 +1304,6 @@ pub struct ds4_bridge_cont_request {
     pub top_k: i32,
     pub top_p: c_float,
     pub min_p: c_float,
-    /// Penalty face (core_decode_penalty.c); all zero leaves the row untouched.
-    pub freq_penalty: c_float,
-    pub presence_penalty: c_float,
-    pub dry_multiplier: c_float,
-    pub dry_base: c_float,
-    pub dry_allowed_length: c_int,
-    /// Penalty lookback in tokens of the bank's committed history, prompt
-    /// included; 0 keeps the face over the generated segment alone.
-    pub penalty_window: c_int,
     pub seed: u64,
     pub sample_override: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
     pub sample_exclude: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,

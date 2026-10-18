@@ -113,17 +113,6 @@ pub struct ContAdmit {
     pub top_k: i32,
     pub top_p: f32,
     pub min_p: f32,
-    /// Penalty face (core_decode_penalty.c), all zero by default.  Any non-zero
-    /// value makes the engine serve this request plain: the penalties read the
-    /// generated token history, so the device trial cannot carry them.
-    pub freq_penalty: f32,
-    pub presence_penalty: f32,
-    pub dry_multiplier: f32,
-    pub dry_base: f32,
-    pub dry_allowed_length: i32,
-    /// Penalty lookback in tokens of the bank's committed history, prompt
-    /// included; 0 keeps the face over the bank's generated segment alone.
-    pub penalty_window: i32,
     pub seed: u64,
     /// Register the per-token EOS exclusion callback for this request.
     pub exclude_eos: bool,
@@ -149,12 +138,6 @@ impl ContAdmit {
             top_k: 0,
             top_p: 0.0,
             min_p: 0.0,
-            freq_penalty: 0.0,
-            presence_penalty: 0.0,
-            dry_multiplier: 0.0,
-            dry_base: 0.0,
-            dry_allowed_length: 0,
-            penalty_window: 0,
             seed: 0,
             exclude_eos: false,
             place_bank: 0,
@@ -246,12 +229,6 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     r.top_k = a.top_k;
     r.top_p = a.top_p;
     r.min_p = a.min_p;
-    r.freq_penalty = a.freq_penalty;
-    r.presence_penalty = a.presence_penalty;
-    r.dry_multiplier = a.dry_multiplier;
-    r.dry_base = a.dry_base;
-    r.dry_allowed_length = a.dry_allowed_length;
-    r.penalty_window = a.penalty_window;
     r.seed = a.seed;
     r.sample_override = Some(tramp_sample_override);
     r.sample_exclude = a.exclude_eos.then_some(tramp_sample_exclude);

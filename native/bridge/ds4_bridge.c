@@ -1142,21 +1142,6 @@ int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,
                                         top_p, min_p, rng, excluded_id);
 }
 
-int ds4_bridge_session_sample_penalized(ds4_bridge_session *s, int gen_start,
-                                        float temperature, int top_k,
-                                        float top_p, float min_p,
-                                        uint64_t *rng, int excluded_id,
-                                        float freq, float presence,
-                                        float dry_mult, float dry_base,
-                                        int dry_allowed, int penalty_window)
-{
-    if (!s || !s->session) { return -1; }
-    return ds4_session_sample_penalized(s->session, gen_start, temperature,
-                                        top_k, top_p, min_p, rng, excluded_id,
-                                        freq, presence, dry_mult, dry_base,
-                                        dry_allowed, penalty_window);
-}
-
 int ds4_bridge_session_save_payload(ds4_bridge_session *s, const char *path,
                                     char *err, size_t errlen)
 {
@@ -2185,12 +2170,6 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
     req->top_k = br.top_k;
     req->top_p = br.top_p;
     req->min_p = br.min_p;
-    req->freq_penalty = br.freq_penalty;
-    req->presence_penalty = br.presence_penalty;
-    req->dry_multiplier = br.dry_multiplier;
-    req->dry_base = br.dry_base;
-    req->dry_allowed_length = br.dry_allowed_length;
-    req->penalty_window = br.penalty_window;
     req->seed = br.seed;
     req->step_accept = br.step_accept;
     /* The engine calls these with ITS ud (this frame), so the request

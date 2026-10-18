@@ -73,11 +73,6 @@ pub struct ServerConfig {
     /// this only when the model is V4.1 (the v41 route branch); every other
     /// family keeps the port's wire vocabulary and defaults.
     pub engine_defaults: bool,
-    /// The GLM-5.3 scope: the artifact's own request-omitted values and level
-    /// instead of the fixed DeepSeek-style sampler -- see
-    /// `ParseEnv::glm_values`.  The bin sets it when the opened model is
-    /// GLM-5.3.
-    pub glm_values: bool,
     pub ctx: i32,
     pub default_tokens: i32,
     pub eos_policy: EosPolicy,
@@ -179,7 +174,6 @@ impl Default for ServerConfig {
             model_id: "ds4".into(),
             model_name: "ds4".into(),
             engine_defaults: false,
-            glm_values: false,
             ctx: 8192,
             default_tokens: 393216,
             eos_policy: EosPolicy::Default,
@@ -1251,15 +1245,10 @@ fn prepare_client(
             let env = ParseEnv {
                 default_model: cfg.model_id.clone(),
                 default_tokens: cfg.default_tokens,
-                // A GLM request that names no level gets the artifact's own
-                // default (max unless the deployment set
-                // DS4_SERVER_DEFAULT_EFFORT); every other family keeps the
-                // port's low.
-                default_effort: crate::parse::default_effort(cfg.glm_values),
+                default_effort: ThinkMode::Low,
                 default_temp: crate::parse::default_temperature(),
                 live_ids,
                 engine_defaults: cfg.engine_defaults,
-                glm_values: cfg.glm_values,
             };
             let body = std::str::from_utf8(&req.body).unwrap_or("");
             match parse_request(surf, &env, body) {
@@ -3561,7 +3550,6 @@ mod owner_tests {
             default_temp: 0.0,
             live_ids: Vec::new(),
             engine_defaults: false,
-            glm_values: false,
         };
         let mut parsed = parse_request(
             WireSurface::Anthropic,
@@ -3668,7 +3656,6 @@ mod owner_tests {
             default_temp: 0.0,
             live_ids: Vec::new(),
             engine_defaults: false,
-            glm_values: false,
         };
         let parsed = parse_request(
             WireSurface::Anthropic,
@@ -3724,7 +3711,6 @@ mod owner_tests {
             default_temp: 0.0,
             live_ids: Vec::new(),
             engine_defaults: false,
-            glm_values: false,
         };
         let body = format!(r#"{{"prompt":"{prompt}","max_tokens":0}}"#);
         let parsed = parse_request(WireSurface::OpenaiCompletion, &env, &body).unwrap();

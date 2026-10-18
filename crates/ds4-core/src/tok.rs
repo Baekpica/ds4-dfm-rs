@@ -766,14 +766,10 @@ impl Vocab {
             return;
         }
         if matches!(self.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
-            // The template's own levels: it names low and high and reads
-            // everything else as max (chat_template.jinja:2-3), so the port
-            // must not fold low into max here either.
             let effort = match mode {
-                ChatThinkMode::Low => "Reasoning Effort: Low",
                 ChatThinkMode::High => "Reasoning Effort: High",
                 ChatThinkMode::Max => "Reasoning Effort: Max",
-                ChatThinkMode::None => return,
+                ChatThinkMode::None | ChatThinkMode::Low => return,
             };
             tokens.push(self.system_id);
             bpe_tokenize_text(self, effort.as_bytes(), &mut tokens.tokens);

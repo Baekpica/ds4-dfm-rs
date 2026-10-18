@@ -24,8 +24,8 @@ use crate::generate::{
     prepare_required_prefixes, render_prompt_ex, responses_ids, stream_req_from_parsed,
     GenerateError, GenerateOutcome,
 };
-use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{EosPolicy, ParsedRequest, ToolCall, ToolChoice};
+use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 #[cfg(feature = "native")]
 use crate::render::render_live_tool_tail;
 use crate::render::syntax_for_model_id;
@@ -97,7 +97,6 @@ pub struct ContStepper {
     parsed_max_tokens: i32,
     required_tool_prefix: Vec<i32>,
     required_think_end_prefix: Vec<i32>,
-    think_cap: i32,
     tool_replay: Option<(Vec<ToolCall>, String)>,
     started: bool,
     #[cfg(any(feature = "native", test))]
@@ -202,7 +201,6 @@ impl ContStepper {
                 parsed_max_tokens: parsed.max_tokens,
                 required_tool_prefix: parsed.required_tool_prefix.clone(),
                 required_think_end_prefix: parsed.required_think_end_prefix.clone(),
-                think_cap: parsed.think_cap,
                 tool_replay: None,
                 started: true,
                 #[cfg(any(feature = "native", test))]
@@ -251,7 +249,6 @@ impl ContStepper {
             max_tokens: self.parsed_max_tokens,
             required_tool_prefix: &self.required_tool_prefix,
             required_think_end_prefix: &self.required_think_end_prefix,
-            think_cap: self.think_cap,
         };
         self.acc.sampling_override(&policy)
     }
@@ -262,12 +259,11 @@ impl ContStepper {
             .unwrap_or(-1)
     }
 
-    /// Match serial sampling: IQuest and the GLM-5.3 scope keep the values
-    /// the request resolved to (the GLM scope resolved the artifact's own);
-    /// the other families retain their legacy thinking defaults.
+    /// Match serial sampling: IQuest keeps the requested sampler in thinking;
+    /// other families retain their legacy thinking defaults.
     pub fn sampling(&self, parsed: &ParsedRequest) -> (f32, i32, f32, f32) {
         if think_mode_enabled(parsed.think_mode)
-            && fixed_thinking_sampling(syntax_for_model_id(self.model_id))
+            && syntax_for_model_id(self.model_id) != crate::render::ModelSyntax::IQuestQ1
         {
             (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
         } else {
@@ -896,15 +892,6 @@ fn warm_match_pick(
         }
     }
     best
-}
-
-/// Warm-path diagnostic. Off unless `DS4_SERVER_WARM_TRACE` is set. The
-/// request's own `reuse_miss` is written by the store-backed producer, which
-/// cannot name a live-bank refusal, so the picker's view needs its own print.
-#[cfg(feature = "native")]
-fn warm_trace_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("DS4_SERVER_WARM_TRACE").is_some_and(|value| value != "0"))
 }
 
 #[cfg(any(feature = "native", test))]
@@ -2618,64 +2605,6 @@ mod native {
             }
         }
 
-        /// One line per bank behind `DS4_SERVER_WARM_TRACE`, so a cold
-        /// outcome names the picker's own refusal instead of the store's.
-        /// A `cached` of -1 means that plan was refused.
-        fn warm_trace(
-            &self,
-            batch: &BatchCtx<'_>,
-            prompt: &[u8],
-            cache_prompt: Option<&[u8]>,
-            full: Option<&WarmAdmitPlan>,
-            partial: Option<&WarmAdmitPlan>,
-        ) {
-            let key = cache_prompt.unwrap_or(prompt);
-            eprintln!(
-                "ds4-server-rs: warm trace key={} cache_key={} reuse={:?} full={} partial={}",
-                key.len(),
-                cache_prompt.is_some(),
-                self.warm_reuse,
-                full.map_or(-1, |plan| i64::from(plan.cached)),
-                partial.map_or(-1, |plan| i64::from(plan.cached)),
-            );
-            for (bank, state) in self.warm.iter().enumerate() {
-                let live = batch
-                    .bank_snapshot(i32::try_from(bank).unwrap_or(-1))
-                    .map_or((0, 0), |snapshot| {
-                        (snapshot.generation, snapshot.tokens.len())
-                    });
-                let Some(record) = state.record.as_ref() else {
-                    eprintln!(
-                        "ds4-server-rs: warm trace   bank={bank} record=none committed={} \
-                         live_gen={} live_tokens={}",
-                        state.committed_tokens, live.0, live.1
-                    );
-                    continue;
-                };
-                let lcp = |text: &[u8]| {
-                    key.iter()
-                        .zip(text)
-                        .take_while(|(left, right)| left == right)
-                        .count()
-                };
-                eprintln!(
-                    "ds4-server-rs: warm trace   bank={bank} text={} lcp={} partial_only={} \
-                     cache_text={:?} exact={:?} exact_cache={:?} gen={} live_gen={} \
-                     committed={} live_tokens={}",
-                    record.text.len(),
-                    lcp(&record.text),
-                    record.partial_only,
-                    record.cache_text.as_ref().map(Vec::len),
-                    record.exact_text.as_ref().map(Vec::len),
-                    record.exact_cache_text.as_ref().map(Vec::len),
-                    record.generation,
-                    live.0,
-                    state.committed_tokens,
-                    live.1,
-                );
-            }
-        }
-
         fn warm_plan(
             &mut self,
             batch: &BatchCtx<'_>,
@@ -2695,19 +2624,6 @@ mod native {
                     if !kept {
                         // A live bank held this conversation; the template
                         // re-rendered it.
-                        if warm_trace_on() {
-                            eprintln!(
-                                "ds4-server-rs: warm trace   full plan_tokens={} request_tokens={} \
-                                 cached={} first_diff={:?}",
-                                plan.tokens.len(),
-                                prompt_tokens.len(),
-                                plan.cached,
-                                plan.tokens
-                                    .iter()
-                                    .zip(prompt_tokens)
-                                    .position(|(left, right)| left != right),
-                            );
-                        }
                         Self::note_miss(miss, ReuseMiss::RenderedPrefix);
                     }
                     kept
@@ -2720,9 +2636,6 @@ mod native {
                 prompt_tokens,
                 miss,
             );
-            if warm_trace_on() {
-                self.warm_trace(batch, prompt, cache_prompt, full.as_ref(), partial.as_ref());
-            }
             match (full, partial) {
                 (Some(full), Some(partial)) if partial.cached > full.cached => Some(partial),
                 (Some(full), _) => Some(full),
@@ -3408,12 +3321,6 @@ mod native {
             } else {
                 let (hold, hold_retry) = self.protected_banks(bank_hold_retry);
                 let protected = reserve.protect(&hold);
-                if warm_trace_on() && (self.warm_reuse == ReuseKind::None || !capture_done) {
-                    eprintln!(
-                        "ds4-server-rs: warm trace skipped reuse={:?} capture_done={capture_done}",
-                        self.warm_reuse
-                    );
-                }
                 let warm = if capture_done && self.warm_reuse != ReuseKind::None {
                     self.warm_plan(
                         batch,
@@ -3575,18 +3482,6 @@ mod native {
             admit.top_k = top_k;
             admit.top_p = top_p;
             admit.min_p = min_p;
-            // One face build for both lanes: the serial fallback builds the
-            // same one (generate.rs Penalty::of), so a request that lands on
-            // either lane carries the same penalty -- including DRY's base /
-            // allowed-length fallbacks, which ds4_decode_penalize needs
-            // (dry_base <= 1.0 refuses the whole face).
-            let penalty = crate::generate::Penalty::of(parsed);
-            admit.freq_penalty = penalty.frequency;
-            admit.presence_penalty = penalty.presence;
-            admit.dry_multiplier = penalty.dry_multiplier;
-            admit.dry_base = penalty.dry_base;
-            admit.dry_allowed_length = penalty.dry_allowed_length;
-            admit.penalty_window = penalty.penalty_window;
             admit.seed = parsed.seed;
             admit.images = images;
             let frontier = (self.template.is_some()
@@ -4131,45 +4026,6 @@ mod bank_tests {
                 assert_eq!(stepper.sampling(&parsed), expected);
             }
         }
-    }
-
-    #[test]
-    fn glm_thinking_keeps_the_resolved_sampler() {
-        let glm = ParseEnv {
-            glm_values: true,
-            ..ParseEnv::default()
-        };
-        let model_id = ds4_core::Variant::Glm53FlashVq as i32;
-        let step = |body: &str| {
-            let parsed = parse_chat_request(&glm, body).unwrap();
-            let (stepper, _) = ContStepper::new(
-                &parsed,
-                model_id,
-                "glm-sample",
-                0,
-                false,
-                16,
-                b"<think>".to_vec(),
-                1,
-                8192,
-            );
-            stepper.sampling(&parsed)
-        };
-
-        // An explicit value wins in thinking, as in the host
-        // (ds4_server.c:13951-13959: only knobs the client left out take the
-        // default).
-        assert_eq!(
-            step(
-                r#"{"messages":[{"role":"user","content":"2 + 2"}],"reasoning_effort":"high","temperature":0.7,"top_k":9,"top_p":0.9,"min_p":0.03}"#
-            ),
-            (0.7, 9, 0.9, 0.03)
-        );
-        // Omitted knobs take the artifact's values, not the host's tuple.
-        assert_eq!(
-            step(r#"{"messages":[{"role":"user","content":"2 + 2"}],"reasoning_effort":"high"}"#),
-            (1.0, 0, 0.95, 0.0)
-        );
     }
 
     #[test]

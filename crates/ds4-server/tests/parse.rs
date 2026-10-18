@@ -49,7 +49,6 @@ fn env() -> ParseEnv {
         default_temp: ds4_server::default_temperature(),
         live_ids: Vec::new(),
         engine_defaults: false,
-        glm_values: false,
     }
 }
 
@@ -698,40 +697,6 @@ fn audio_image_budget_preflight() {
     );
 }
 
-/// The GLM-5.3 scope: the request-omitted sampler is the artifact's own
-/// (generation_config.json: temperature 1.0, top_p 0.95, no min_p key) rather
-/// than the host's 1.0/1.0/0.05 (ds4.h:52-54), and an explicit client value
-/// still wins -- the host's rule (ds4_server.c:13951-13959) applied to the
-/// values this artifact actually declares.
-#[test]
-fn glm_scope_defaults_and_overrides() {
-    let glm = ParseEnv {
-        glm_values: true,
-        ..env()
-    };
-    let chat = |body: &str| parse_chat_request(&glm, body).unwrap();
-
-    let r = chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#);
-    assert_eq!(r.temperature, 1.0);
-    assert_eq!(r.top_p, 0.95);
-    assert_eq!(r.min_p, 0.0);
-    assert_eq!(r.top_k, 0);
-
-    let r = chat(
-        r#"{"messages":[{"role":"user","content":"hi"}],"temperature":0.7,"top_p":0.5,"min_p":0.03,"top_k":9}"#,
-    );
-    assert_eq!(r.temperature, 0.7);
-    assert_eq!(r.top_p, 0.5);
-    assert_eq!(r.min_p, 0.03);
-    assert_eq!(r.top_k, 9);
-
-    // Every other family keeps the port's fixed sampler.
-    let plain =
-        parse_chat_request(&env(), r#"{"messages":[{"role":"user","content":"hi"}]}"#).unwrap();
-    assert_eq!(plain.top_p, 1.0);
-    assert_eq!(plain.min_p, 0.05);
-}
-
 /// Unit H: the engine's request-omitted parse defaults and effort-name
 /// collapse for its own model set (ParseEnv::engine_defaults, set by the
 /// server bin only on the V4.1 route).  References: server_parse_chat.c:16-17
@@ -743,7 +708,6 @@ fn engine_defaults_think_and_sampling() {
     use ds4_server::ThinkMode;
     let eng = ParseEnv {
         engine_defaults: true,
-        glm_values: true,
         ..env()
     };
     let chat = |body: &str| parse_chat_request(&eng, body).unwrap();

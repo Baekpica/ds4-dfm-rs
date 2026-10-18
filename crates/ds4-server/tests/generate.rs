@@ -9,9 +9,9 @@ use ds4_server::tools::{
 use ds4_server::{
     generate_and_write, generation_blocked, handle_client_inner, render_prompt,
     stop_list_find_from, think_start, ChatFormat, ContStepper, DecodeIo, GenerateError, ParseEnv,
-    ParsedRequest, Penalty, ReqTimings, ScriptedDecode, ScriptedStep, ServerConfig, ServerInner,
-    ThinkMode, CREATED_TEST, DSML_ASSISTANT, DSML_BOS, DSML_SYSTEM_TOKEN, DSML_THINK_END,
-    DSML_USER, TAPE_PLAIN,
+    ParsedRequest, ReqTimings, ScriptedDecode, ScriptedStep, ServerConfig, ServerInner, ThinkMode,
+    CREATED_TEST, DSML_ASSISTANT, DSML_BOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_USER,
+    TAPE_PLAIN,
 };
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -29,7 +29,6 @@ fn env() -> ParseEnv {
         default_temp: 0.0,
         live_ids: Vec::new(),
         engine_defaults: false,
-        glm_values: false,
     }
 }
 
@@ -101,16 +100,6 @@ struct PromptSyncDecode {
     prefix_budgets: Vec<i32>,
     trimmed_positions: Vec<i32>,
     sample_params: Vec<(f32, i32, f32, f32)>,
-    penalty_calls: Vec<PenaltyCall>,
-}
-
-/// One penalized sample: the token index generation began at, the excluded id
-/// the EOS policy asked for (-1 = none), and the face the request carried.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct PenaltyCall {
-    gen_start: i32,
-    excluded_id: i32,
-    penalty: Penalty,
 }
 
 impl PromptSyncDecode {
@@ -141,7 +130,6 @@ impl PromptSyncDecode {
             prefix_budgets: Vec::new(),
             trimmed_positions: Vec::new(),
             sample_params: Vec::new(),
-            penalty_calls: Vec::new(),
         }
     }
 }
@@ -312,26 +300,6 @@ impl DecodeIo for PromptSyncDecode {
     ) -> i32 {
         self.events.push("sample");
         self.sample_params.push((temperature, top_k, top_p, min_p));
-        self.inner.sample(temperature, top_k, top_p, min_p, rng)
-    }
-
-    fn sample_penalized(
-        &mut self,
-        temperature: f32,
-        top_k: i32,
-        top_p: f32,
-        min_p: f32,
-        rng: &mut u64,
-        excluded_id: i32,
-        gen_start: i32,
-        penalty: Penalty,
-    ) -> i32 {
-        self.events.push("sample_penalized");
-        self.penalty_calls.push(PenaltyCall {
-            gen_start,
-            excluded_id,
-            penalty,
-        });
         self.inner.sample(temperature, top_k, top_p, min_p, rng)
     }
 
@@ -989,146 +957,6 @@ fn continued_store_is_best_effort_and_runs_before_sampling_without_final_catchup
         ]
     );
     assert_eq!(engine.pos(), 3);
-}
-
-#[test]
-fn serial_lane_applies_the_request_penalty_over_the_generated_segment() {
-    // A GLM turn that carries a penalty must be sampled with it on the serial
-    // lane too. The continuous lane applies the face to the bank's own
-    // generated segment (ds4.c family_cont_penalize); the serial lane reaches
-    // the sampler through ds4_session_sample (ds4.c:76977), which has no token
-    // history, and the lane is the designed fallback whenever continuous
-    // admission refuses (serve_cont.rs, "continuous admission rejected; serial
-    // fallback"). DRY is half of the pair that stops this artifact
-    // (docs/glm53-vq-think-cap-2026-10-18.md), so dropping it silently there
-    // returns the runaway the deployment exists to prevent.
-    let mut parsed = parse_request(
-        WireSurface::OpenaiChat,
-        &env(),
-        r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,
-            "thinking":{"type":"disabled"},"dry_multiplier":0.8}"#,
-    )
-    .unwrap();
-    parsed.think_mode = ThinkMode::None;
-    parsed.temperature = 0.0;
-    let mut script =
-        ScriptedDecode::from_pieces(&TAPE_PLAIN.iter().map(|s| s.as_bytes()).collect::<Vec<_>>());
-    script.model_id = 17;
-    let mut engine = PromptSyncDecode::new(script, 0, 1);
-    generate_and_write(
-        &mut engine,
-        &parsed,
-        "glm-penalty-serial",
-        CREATED_TEST,
-        false,
-        4,
-        &mut Vec::new(),
-    )
-    .unwrap();
-
-    let penalized = engine
-        .events
-        .iter()
-        .filter(|event| **event == "sample_penalized")
-        .count();
-    let plain = engine
-        .events
-        .iter()
-        .filter(|event| **event == "sample")
-        .count();
-    assert_eq!(
-        (penalized, plain),
-        (4, 0),
-        "every serial sample of a penalty-carrying request goes through the \
-         penalized sampler, and none through the plain one: {:?}",
-        engine.events
-    );
-    let first = engine.penalty_calls[0];
-    assert_eq!(first.penalty.dry_multiplier, 0.8);
-    assert_eq!(first.penalty.dry_base, 1.75, "the face's own base fallback");
-    assert_eq!(first.penalty.dry_allowed_length, 2);
-    assert_eq!(first.excluded_id, -1);
-    // The scripted prompt is one token, so generation starts at 1 and the
-    // prompt stays outside the penalized segment.
-    assert_eq!(first.gen_start, 1);
-    assert!(
-        engine.prefix_budgets.is_empty(),
-        "a greedy turn under a face must not commit a prefix: the committed \
-         tail is an engine-internal argmax chain that carries no history"
-    );
-}
-
-#[test]
-fn the_glm_penalty_window_reaches_the_serial_sampler() {
-    // The repeated ACTION an agent loop copies lives in the PROMPT, so the
-    // face that reads the generated segment alone cannot see it: on the live
-    // 8009 serve a reproduced web_fetch loop answered byte-identically with
-    // DRY 0.8, DRY 2.0 and frequency/presence 1.0, and at every temperature
-    // from 0 to 1.0 (2026-10-17/18, session 01a14d9a).  `penalty_window` is
-    // the window the deployment widens the face to -- the committed history
-    // including the prompt, llama.cpp's ordering.  0 is the default and the
-    // generated segment alone, the shape every earlier measurement used.
-    let mut parsed = parse_request(
-        WireSurface::OpenaiChat,
-        &env(),
-        r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,
-            "thinking":{"type":"disabled"},"dry_multiplier":0.8}"#,
-    )
-    .unwrap();
-    parsed.think_mode = ThinkMode::None;
-    parsed.temperature = 0.0;
-    assert_eq!(
-        Penalty::of(&parsed).penalty_window,
-        0,
-        "an omitted window keeps the generated-segment face"
-    );
-    parsed.penalty_window = 1024;
-
-    let mut script =
-        ScriptedDecode::from_pieces(&TAPE_PLAIN.iter().map(|s| s.as_bytes()).collect::<Vec<_>>());
-    script.model_id = 17;
-    let mut engine = PromptSyncDecode::new(script, 0, 1);
-    generate_and_write(
-        &mut engine,
-        &parsed,
-        "glm-window-serial",
-        CREATED_TEST,
-        false,
-        4,
-        &mut Vec::new(),
-    )
-    .unwrap();
-
-    let first = engine.penalty_calls[0];
-    assert_eq!(first.penalty.penalty_window, 1024);
-    assert_eq!(first.penalty.dry_multiplier, 0.8);
-    assert_eq!(first.gen_start, 1);
-}
-
-#[test]
-fn serial_lane_keeps_the_greedy_commit_without_a_penalty() {
-    // The face is what stands the greedy commit down. Without one, the same
-    // greedy turn still commits its prefix in one call, so the gate above
-    // narrows exactly the penalty case.
-    let mut parsed = user_req();
-    parsed.temperature = 0.0;
-    let mut script =
-        ScriptedDecode::from_pieces(&TAPE_PLAIN.iter().map(|s| s.as_bytes()).collect::<Vec<_>>());
-    script.model_id = 17;
-    let mut engine = PromptSyncDecode::new(script, 0, 1);
-    generate_and_write(
-        &mut engine,
-        &parsed,
-        "glm-plain-serial",
-        CREATED_TEST,
-        false,
-        4,
-        &mut Vec::new(),
-    )
-    .unwrap();
-
-    assert!(!engine.prefix_budgets.is_empty());
-    assert!(engine.penalty_calls.is_empty());
 }
 
 #[test]

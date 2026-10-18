@@ -9,7 +9,7 @@ use crate::json::{
     json_string, Json,
 };
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
-use crate::render::{ModelSyntax, DSML_IMAGE};
+use crate::render::DSML_IMAGE;
 use crate::route::{
     compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
 };
@@ -134,11 +134,6 @@ pub struct ParseEnv {
     /// other families keep the port's own wire vocabulary (their references
     /// are their own stacks, not this engine).
     pub engine_defaults: bool,
-    /// The GLM-5.3 scope: the artifact's own request-omitted values
-    /// (`GlmValues`) instead of the fixed DeepSeek-style sampler this port
-    /// applies to every other syntax.  The bin sets it when the model it
-    /// opened is GLM-5.3, either variant.
-    pub glm_values: bool,
 }
 
 impl Default for ParseEnv {
@@ -150,7 +145,6 @@ impl Default for ParseEnv {
             default_temp: default_temperature(),
             live_ids: Vec::new(),
             engine_defaults: false,
-            glm_values: false,
         }
     }
 }
@@ -161,343 +155,6 @@ pub fn default_temperature() -> f32 {
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_TEMPERATURE)
-}
-
-/// The GLM-5.3 scope's request-omitted sampler and effort level.  The
-/// artifact states its own: the template honours `low` and `high` and reads
-/// every other level as max (chat_template.jinja:2-3), and its
-/// generation_config pins temperature 1.0 with top_p 0.95 and no min_p or
-/// top_k key at all (generation_config.json, zai-org/GLM-5.3-Flash
-/// @84c6a6a).  The host's own 1.0/1.0/0.05 sampler (ds4.h:52-54) is a
-/// different model's contract, so the GLM scope carries its own values, each
-/// one settable per deployment through the same knob family as ds41's
-/// (DS4_SERVER_DEFAULT_TEMP / _MIN_P): the server serves one family per
-/// process, so one set of environment values is enough.  Temperature stays
-/// with `default_temperature` (1.0 on both contracts).
-pub struct GlmValues {
-    pub top_p: f32,
-    pub min_p: f32,
-    pub effort: ThinkMode,
-    /// Sampler ceiling: `None` serves the request's own temperature.  A value
-    /// pins it (0.0 = greedy, the only regime the artifact's own temperature
-    /// family measured stable).
-    pub temp_max: Option<f32>,
-    /// Penalty face (core_decode_penalty.c).  GLM-5.3-VQ's own card measures the
-    /// VQ conversion as lossy (held-out prose PPL 4.8555 -> 8.0797) and records a
-    /// greedy-degeneration case; on this engine the artifact answers and then
-    /// runs on without an end token unless the sampling is held down.  A penalty
-    /// is the reference's own cure for that (it reads history, so it also acts at
-    /// temperature 0), and the engine serves such a request plain -- the device
-    /// trial cannot carry a penalty.
-    pub freq_penalty: f32,
-    pub presence_penalty: f32,
-    pub dry_multiplier: f32,
-    pub dry_base: f32,
-    pub dry_allowed_length: i32,
-    /// Penalty lookback in tokens of the committed history, prompt included;
-    /// 0 keeps the face over the generated segment alone.
-    /// `GLM53_DEFAULT_PENALTY_WINDOW` carries the evidence.
-    pub penalty_window: i32,
-    /// Forced-thought budgets, in tokens, one per effort level (the same
-    /// three the template knows).  0 is OFF.  A GLM chat turn reserves
-    /// nothing post-thinking, so without a bound it never emits the close and
-    /// runs to the token cap (the measured runaway); the machinery
-    /// (`dsml.rs` sampling_override) forced the close for tool turns only.
-    /// A non-zero budget replaces the tool-turn cap for that level, so one
-    /// number governs both kinds of turn; 0 keeps the reference's 64/256/512
-    /// and leaves a chat turn unbounded.
-    pub think_cap_low: i32,
-    pub think_cap_high: i32,
-    pub think_cap_max: i32,
-}
-
-impl GlmValues {
-    /// The forced-thought budget for one level; 0 leaves the turn to its own
-    /// budget and the model's own end token.
-    pub fn think_cap(&self, mode: ThinkMode) -> i32 {
-        match mode {
-            ThinkMode::Low => self.think_cap_low,
-            ThinkMode::High => self.think_cap_high,
-            ThinkMode::Max => self.think_cap_max,
-            ThinkMode::None => 0,
-        }
-    }
-}
-
-/// generation_config.json: top_p 0.95, temperature 1.0, and nothing else --
-/// an absent min_p key means the artifact does not truncate below the
-/// nucleus, so the port's 0.05 (ds4.h:54) must not apply here.
-const GLM53_DEFAULT_TOP_P: f32 = 0.95;
-const GLM53_DEFAULT_MIN_P: f32 = 0.0;
-/// The template's own default: anything unlisted, `max` included, is max.
-const GLM53_DEFAULT_EFFORT: ThinkMode = ThinkMode::Max;
-/// Measured on the Spark (2026-10-17, docs/glm53-vq-sampler-2026-10-17.md):
-/// at the artifact's own temperature the model answers and then keeps going
-/// (5/5 runs hit the token cap with no end token, at every effort level);
-/// greedy stops 5/5 but can lock onto a repeated phrase on a "fill N words"
-/// prompt.  DRY (the reference's own cure) removes the literal repeat and is
-/// therefore available, but it does NOT stop the runaway, and because a
-/// penalty reads the token history it also switches the GLM drafts off -- a
-/// ~2x decode cost.  It therefore ships OFF and the deployment turns it on
-/// when it wants the loop protection more than the drafting.
-const GLM53_DEFAULT_DRY_MULTIPLIER: f32 = 0.0;
-/// Dry's own contract (llama.cpp): 1.75^L from the allowed length up.
-const GLM53_DEFAULT_DRY_BASE: f32 = 1.75;
-const GLM53_DEFAULT_DRY_ALLOWED_LENGTH: i32 = 2;
-/// No ceiling: the request's temperature is served as sent (the host rule).
-const GLM53_DEFAULT_TEMP_MAX: Option<f32> = None;
-/// The forced-thought budgets ship OFF: the deployment opts in per level, so
-/// the bound is measured rather than assumed to help.
-const GLM53_DEFAULT_THINK_CAP: i32 = 0;
-/// The knob window.  A budget this large is inert (the turn's own budget is
-/// the binding limit), so the bound only catches a typo.
-const GLM53_THINK_CAP_MAX: i32 = 1_000_000;
-/// The penalty face's lookback, in tokens of the committed history, prompt
-/// included.  0 -- the default -- keeps the face over the generated segment
-/// alone (ds4.c family_cont_penalize), the shape every earlier measurement
-/// used; the deployment widens it when it wants a loop breaker that can see
-/// the repeated ACTION, which lives in the prompt rather than in the turn's
-/// own few generated tokens.  The ordering is the artifact runtime's own:
-/// llama.cpp feeds every prompt token into the sampler chain
-/// (tools/server/server-context.cpp:433) and bounds the lookback with
-/// repeat_last_n / dry_penalty_last_n (its server README: default 64, 0
-/// disabled).
-const GLM53_DEFAULT_PENALTY_WINDOW: i32 = 0;
-/// A window this large is inert (the sequence's own length binds first), so
-/// the bound only catches a typo.
-const GLM53_PENALTY_WINDOW_MAX: i32 = 1_000_000;
-
-/// The forced-thought budget one deployment knob names.  0 is OFF; a bad
-/// value is reported and disables the bound rather than picking a number.
-fn resolve_think_cap(name: &str, raw: Option<&str>) -> i32 {
-    resolve_number(
-        name,
-        raw,
-        GLM53_DEFAULT_THINK_CAP as f32,
-        0.0..=GLM53_THINK_CAP_MAX as f32,
-    ) as i32
-}
-
-/// The deployment's temperature ceiling.  Absent (or empty) is no ceiling;
-/// any value in [0, 2] pins every GLM request's temperature to at most it,
-/// with 0.0 meaning greedy -- the only regime the artifact measured stable.
-fn resolve_temp_max(raw: Option<&str>) -> Option<f32> {
-    let raw = raw.filter(|s| !s.is_empty())?;
-    Some(resolve_number(
-        "DS4_SERVER_GLM_TEMP_MAX",
-        Some(raw),
-        0.0,
-        0.0..=2.0,
-    ))
-}
-
-/// top_p and min_p are probabilities, so a value outside [0, 1] is a typo.
-const UNIT_BOUNDS: std::ops::RangeInclusive<f32> = 0.0..=1.0;
-
-/// Resolve one `DS4_SERVER_DEFAULT_*` probability against the artifact's
-/// value.  An unparseable or out-of-range setting is reported once at
-/// startup instead of being clamped (0.2 and 2.0 are equally likely to be
-/// typos) or silently ignored.
-fn resolve_unit(name: &str, raw: Option<&str>, fallback: f32) -> f32 {
-    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
-        return fallback;
-    };
-
-    let Ok(value) = raw.parse::<f32>() else {
-        eprintln!("ds4-server: {name}={raw:?} is not a number; using {fallback}");
-        return fallback;
-    };
-
-    if !value.is_finite() || !UNIT_BOUNDS.contains(&value) {
-        eprintln!("ds4-server: {name}={raw:?} is outside [0, 1]; using {fallback}");
-        return fallback;
-    }
-
-    value
-}
-
-/// Resolve one numeric `DS4_SERVER_*` setting against its fallback, with the
-/// same rule as resolve_unit: a bad value is reported once, never clamped.
-fn resolve_number(
-    name: &str,
-    raw: Option<&str>,
-    fallback: f32,
-    bounds: std::ops::RangeInclusive<f32>,
-) -> f32 {
-    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
-        return fallback;
-    };
-
-    let Ok(value) = raw.parse::<f32>() else {
-        eprintln!("ds4-server: {name}={raw:?} is not a number; using {fallback}");
-        return fallback;
-    };
-
-    if !value.is_finite() || !bounds.contains(&value) {
-        eprintln!(
-            "ds4-server: {name}={raw:?} is outside [{}, {}]; using {fallback}",
-            bounds.start(),
-            bounds.end()
-        );
-        return fallback;
-    }
-
-    value
-}
-
-/// The effort level a GLM request that does not name one gets.  The knob
-/// names the artifact's own three levels; any other name is a typo and is
-/// reported rather than mapped onto a level the template would not read.
-fn resolve_effort(raw: Option<&str>) -> ThinkMode {
-    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
-        return GLM53_DEFAULT_EFFORT;
-    };
-
-    match raw.trim() {
-        "low" => ThinkMode::Low,
-        "high" => ThinkMode::High,
-        "max" => ThinkMode::Max,
-        _ => {
-            eprintln!(
-                "ds4-server: DS4_SERVER_DEFAULT_EFFORT={raw:?} is not low, high or max; using max"
-            );
-            GLM53_DEFAULT_EFFORT
-        }
-    }
-}
-
-/// The GLM scope's values, read from the environment once per process: these
-/// are deployment settings fixed at server start, not per-request inputs.
-pub fn glm_values() -> &'static GlmValues {
-    static RESOLVED: std::sync::OnceLock<GlmValues> = std::sync::OnceLock::new();
-
-    RESOLVED.get_or_init(|| GlmValues {
-        top_p: resolve_unit(
-            "DS4_SERVER_DEFAULT_TOP_P",
-            std::env::var("DS4_SERVER_DEFAULT_TOP_P").ok().as_deref(),
-            GLM53_DEFAULT_TOP_P,
-        ),
-        min_p: resolve_unit(
-            "DS4_SERVER_DEFAULT_MIN_P",
-            std::env::var("DS4_SERVER_DEFAULT_MIN_P").ok().as_deref(),
-            GLM53_DEFAULT_MIN_P,
-        ),
-        effort: resolve_effort(std::env::var("DS4_SERVER_DEFAULT_EFFORT").ok().as_deref()),
-        temp_max: resolve_temp_max(std::env::var("DS4_SERVER_GLM_TEMP_MAX").ok().as_deref()),
-        freq_penalty: resolve_number(
-            "DS4_SERVER_DEFAULT_FREQ_PENALTY",
-            std::env::var("DS4_SERVER_DEFAULT_FREQ_PENALTY")
-                .ok()
-                .as_deref(),
-            0.0,
-            -2.0..=2.0,
-        ),
-        presence_penalty: resolve_number(
-            "DS4_SERVER_DEFAULT_PRESENCE_PENALTY",
-            std::env::var("DS4_SERVER_DEFAULT_PRESENCE_PENALTY")
-                .ok()
-                .as_deref(),
-            0.0,
-            -2.0..=2.0,
-        ),
-        dry_multiplier: resolve_number(
-            "DS4_SERVER_DEFAULT_DRY_MULTIPLIER",
-            std::env::var("DS4_SERVER_DEFAULT_DRY_MULTIPLIER")
-                .ok()
-                .as_deref(),
-            GLM53_DEFAULT_DRY_MULTIPLIER,
-            0.0..=64.0,
-        ),
-        dry_base: resolve_number(
-            "DS4_SERVER_DEFAULT_DRY_BASE",
-            std::env::var("DS4_SERVER_DEFAULT_DRY_BASE").ok().as_deref(),
-            GLM53_DEFAULT_DRY_BASE,
-            1.0..=64.0,
-        ),
-        dry_allowed_length: resolve_number(
-            "DS4_SERVER_DEFAULT_DRY_ALLOWED_LENGTH",
-            std::env::var("DS4_SERVER_DEFAULT_DRY_ALLOWED_LENGTH")
-                .ok()
-                .as_deref(),
-            GLM53_DEFAULT_DRY_ALLOWED_LENGTH as f32,
-            0.0..=64.0,
-        ) as i32,
-        penalty_window: resolve_number(
-            "DS4_SERVER_GLM_PENALTY_WINDOW",
-            std::env::var("DS4_SERVER_GLM_PENALTY_WINDOW")
-                .ok()
-                .as_deref(),
-            GLM53_DEFAULT_PENALTY_WINDOW as f32,
-            0.0..=GLM53_PENALTY_WINDOW_MAX as f32,
-        ) as i32,
-        think_cap_low: resolve_think_cap(
-            "DS4_SERVER_GLM_THINK_CAP_LOW",
-            std::env::var("DS4_SERVER_GLM_THINK_CAP_LOW")
-                .ok()
-                .as_deref(),
-        ),
-        think_cap_high: resolve_think_cap(
-            "DS4_SERVER_GLM_THINK_CAP_HIGH",
-            std::env::var("DS4_SERVER_GLM_THINK_CAP_HIGH")
-                .ok()
-                .as_deref(),
-        ),
-        think_cap_max: resolve_think_cap(
-            "DS4_SERVER_GLM_THINK_CAP_MAX",
-            std::env::var("DS4_SERVER_GLM_THINK_CAP_MAX")
-                .ok()
-                .as_deref(),
-        ),
-    })
-}
-
-/// The startup line for the GLM scope, so the deployment can read back what
-/// it actually serves.  The three budgets are low/high/max; 0 is off.
-pub fn glm_values_report() -> String {
-    let v = glm_values();
-    format!(
-        "GLM values: temperature={} top_p={} min_p={} effort={:?} temp_max={} \
-         freq_penalty={} presence_penalty={} dry={}x{}^L from L={} \
-         penalty_window={} think_cap={}/{}/{}",
-        default_temperature(),
-        v.top_p,
-        v.min_p,
-        v.effort,
-        match v.temp_max {
-            Some(max) => format!("{max}"),
-            None => "as-requested".to_string(),
-        },
-        v.freq_penalty,
-        v.presence_penalty,
-        v.dry_multiplier,
-        v.dry_base,
-        v.dry_allowed_length,
-        v.penalty_window,
-        v.think_cap_low,
-        v.think_cap_high,
-        v.think_cap_max
-    )
-}
-
-/// The request-omitted effort level for a scope.  The GLM-5.3 scope takes the
-/// artifact's own default (max, or the deployment's override); every other
-/// family keeps the port's low.
-pub fn default_effort(glm: bool) -> ThinkMode {
-    if glm {
-        glm_values().effort
-    } else {
-        ThinkMode::Low
-    }
-}
-
-/// The syntaxes that keep the port's fixed thinking sampler rather than the
-/// request's own knobs.  The host applies that sampler only to values the
-/// client left out (ds4_server.c:13951-13959); the port's other families do
-/// not track which knobs were sent, so they keep the fixed tuple.  GLM-5.3 is
-/// the exception both ways: its request-omitted values are the artifact's own
-/// (GlmValues) and an explicit client value must win, as in the host.
-pub fn fixed_thinking_sampling(syntax: ModelSyntax) -> bool {
-    !matches!(syntax, ModelSyntax::IQuestQ1 | ModelSyntax::Glm53)
 }
 
 #[derive(Debug, Clone)]
@@ -526,11 +183,6 @@ pub struct ParsedRequest {
     pub dry_base: f32,
     pub dry_allowed_length: i32,
     pub dry_set: bool,
-    /// Penalty lookback in tokens of the committed history, prompt included.
-    /// Deployment-scoped like `think_cap` (the GLM scope supplies it, no wire
-    /// field does), so a request that leaves it alone reads the generated
-    /// segment exactly as before.
-    pub penalty_window: i32,
     pub stream: bool,
     pub stream_include_usage: bool,
     pub return_token_ids: bool,
@@ -541,10 +193,6 @@ pub struct ParsedRequest {
     pub tool_choice: ToolChoice,
     pub required_tool_prefix: Vec<i32>,
     pub required_think_end_prefix: Vec<i32>,
-    /// Forced-thought budget in tokens; 0 is OFF.  Set from the GLM scope by
-    /// the level this request resolved to (parse_request), so a bounded
-    /// thought applies to chat turns the tool-turn gate would never reach.
-    pub think_cap: i32,
     pub stops: Vec<String>,
     pub reasoning_summary_emit: bool,
     pub responses_requires_live_tool_state: bool,
@@ -574,50 +222,19 @@ impl ParsedRequest {
             max_tokens_set: false,
             top_k: 0,
             temperature: env.default_temp,
-            top_p: if env.glm_values {
-                glm_values().top_p
-            } else {
-                DEFAULT_TOP_P
-            },
+            top_p: DEFAULT_TOP_P,
             min_p: if env.engine_defaults {
                 0.0
-            } else if env.glm_values {
-                glm_values().min_p
             } else {
                 DEFAULT_MIN_P
             },
             seed: 0,
-            frequency_penalty: if env.glm_values {
-                glm_values().freq_penalty
-            } else {
-                0.0
-            },
-            presence_penalty: if env.glm_values {
-                glm_values().presence_penalty
-            } else {
-                0.0
-            },
-            dry_multiplier: if env.glm_values {
-                glm_values().dry_multiplier
-            } else {
-                0.0
-            },
-            dry_base: if env.glm_values {
-                glm_values().dry_base
-            } else {
-                0.0
-            },
-            dry_allowed_length: if env.glm_values {
-                glm_values().dry_allowed_length
-            } else {
-                0
-            },
-            dry_set: env.glm_values,
-            penalty_window: if env.glm_values {
-                glm_values().penalty_window
-            } else {
-                0
-            },
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: 0.0,
+            dry_allowed_length: 0,
+            dry_set: false,
             stream: false,
             stream_include_usage: false,
             return_token_ids: false,
@@ -628,7 +245,6 @@ impl ParsedRequest {
             tool_choice: ToolChoice::Auto,
             required_tool_prefix: Vec::new(),
             required_think_end_prefix: Vec::new(),
-            think_cap: 0,
             stops: Vec::new(),
             reasoning_summary_emit: false,
             responses_requires_live_tool_state: false,
@@ -4071,240 +3687,11 @@ pub fn parse_request(
     env: &ParseEnv,
     body: &str,
 ) -> Result<ParsedRequest, String> {
-    let r = match surface {
+    match surface {
         WireSurface::OpenaiChat => parse_chat_request(env, body),
         WireSurface::OpenaiCompletion => parse_completion_request(env, body),
         WireSurface::Anthropic => parse_anthropic_request(env, body),
         WireSurface::Responses => parse_responses_request(env, body),
-    };
-
-    r.map(|mut r| {
-        // The deployment's GLM ceiling is the ONE value the scope applies over
-        // an explicit client request: the artifact's own temperature measured
-        // unstable (docs/glm53-vq-sampler-2026-10-17.md), and a client cannot
-        // be expected to know that.  Every other GLM value is the request's or
-        // the artifact's default.
-        if env.glm_values {
-            if let Some(max) = glm_values().temp_max {
-                if r.temperature > max {
-                    r.temperature = max;
-                }
-            }
-            // The bound is per level, and the level is only known once the
-            // body has been parsed.
-            r.think_cap = glm_values().think_cap(r.think_mode);
-        }
-        r
-    })
-}
-
-#[cfg(test)]
-mod glm_value_tests {
-    use super::{
-        default_effort, resolve_effort, resolve_unit, GLM53_DEFAULT_EFFORT, GLM53_DEFAULT_MIN_P,
-        GLM53_DEFAULT_TEMP_MAX,
-    };
-    use crate::route::ThinkMode;
-
-    // The deployment override is accepted only inside the probability window;
-    // everything else is reported and falls back to the artifact's value.
-    #[test]
-    fn resolves_valid_unit_override() {
-        assert_eq!(resolve_unit("T", Some("0.95"), 0.95), 0.95);
-        assert_eq!(resolve_unit("T", Some("0"), 1.0), 0.0);
-        assert_eq!(resolve_unit("T", Some("1"), 1.0), 1.0);
-    }
-
-    #[test]
-    fn rejects_bad_unit_override() {
-        for raw in ["", "abc", "-0.1", "1.5", "2", "nan", "inf"] {
-            assert_eq!(resolve_unit("T", Some(raw), 0.95), 0.95, "{raw}");
-        }
-
-        assert_eq!(resolve_unit("T", None, 0.95), 0.95);
-    }
-
-    // The template's own default, and only its two named levels, are real for
-    // this artifact (chat_template.jinja:2-3).
-    #[test]
-    fn resolves_only_the_template_levels() {
-        assert_eq!(resolve_effort(None), GLM53_DEFAULT_EFFORT);
-        assert_eq!(resolve_effort(Some("low")), ThinkMode::Low);
-        assert_eq!(resolve_effort(Some("high")), ThinkMode::High);
-        assert_eq!(resolve_effort(Some("max")), ThinkMode::Max);
-        for raw in ["", "banana", "xhigh", "none", "off"] {
-            assert_eq!(resolve_effort(Some(raw)), GLM53_DEFAULT_EFFORT, "{raw}");
-        }
-    }
-
-    // Only the GLM scope takes the artifact default; the other families keep
-    // the port's low.
-    #[test]
-    fn scope_selects_the_default_level() {
-        assert_eq!(default_effort(false), ThinkMode::Low);
-        // The GLM scope takes the resolved deployment value (the artifact's
-        // max unless DS4_SERVER_DEFAULT_EFFORT says otherwise).
-        assert_eq!(default_effort(true), super::glm_values().effort);
-        assert_ne!(GLM53_DEFAULT_EFFORT, ThinkMode::Low);
-    }
-
-    // The penalty window is the deployment's knob, not a wire field.  The
-    // artifact's runtime feeds every prompt token into its sampler chain
-    // (llama.cpp tools/server/server-context.cpp:433) and bounds the penalty
-    // lookback with repeat_last_n / dry_penalty_last_n (its server README:
-    // default 64, 0 disabled).  The GLM scope copies that ordering; 0 -- the
-    // default -- leaves the face over the generated segment alone, so every
-    // lane stays byte-identical until a deployment asks for the window.
-    #[test]
-    fn penalty_window_is_deployment_scoped_and_off_by_default() {
-        use super::{resolve_number, GLM53_DEFAULT_PENALTY_WINDOW, GLM53_PENALTY_WINDOW_MAX};
-        assert_eq!(GLM53_DEFAULT_PENALTY_WINDOW, 0);
-        let resolve = |raw: Option<&str>| {
-            resolve_number(
-                "DS4_SERVER_GLM_PENALTY_WINDOW",
-                raw,
-                GLM53_DEFAULT_PENALTY_WINDOW as f32,
-                0.0..=GLM53_PENALTY_WINDOW_MAX as f32,
-            ) as i32
-        };
-        assert_eq!(resolve(None), 0);
-        assert_eq!(resolve(Some("1024")), 1024);
-        for raw in ["", "abc", "-1", "nan", "2000000"] {
-            assert_eq!(resolve(Some(raw)), 0, "{raw}");
-        }
-    }
-
-    // The window is reachable by the GLM scope alone.  A V4.1 / Qwen process
-    // (env.glm_values false) leaves it 0 whatever the deployment exports, so
-    // those families keep the exact face and the exact code path they had.
-    #[test]
-    fn only_the_glm_scope_can_carry_a_penalty_window() {
-        use super::{parse_request, ParseEnv};
-        use crate::route::{ThinkMode, WireSurface};
-        let body = r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4}"#;
-        let env = |glm_values: bool| ParseEnv {
-            default_model: "ds4".into(),
-            default_tokens: 16,
-            default_effort: ThinkMode::None,
-            default_temp: 0.0,
-            live_ids: Vec::new(),
-            engine_defaults: false,
-            glm_values,
-        };
-        let glm = env(true);
-        let glm_req = parse_request(WireSurface::OpenaiChat, &glm, body).unwrap();
-        assert_eq!(
-            glm_req.penalty_window,
-            super::GLM53_DEFAULT_PENALTY_WINDOW,
-            "the GLM scope takes the deployment's window"
-        );
-
-        let other_req = parse_request(WireSurface::OpenaiChat, &env(false), body).unwrap();
-        assert_eq!(
-            other_req.penalty_window, 0,
-            "every other family keeps the generated-segment face"
-        );
-    }
-
-    // The GLM scope's sampler guard: DRY ships on (the artifact's own measured
-    // failure is answering and then running on), the floors stay at the
-    // artifact's values, and a numeric override is range-checked like top_p.
-    #[test]
-    fn scope_carries_the_sampler_guard() {
-        use super::{resolve_number, GLM53_DEFAULT_DRY_MULTIPLIER};
-        let v = super::glm_values();
-        assert_eq!(v.dry_multiplier, GLM53_DEFAULT_DRY_MULTIPLIER);
-        assert_eq!(v.dry_base, 1.75);
-        assert_eq!(v.dry_allowed_length, 2);
-        assert_eq!(v.min_p, GLM53_DEFAULT_MIN_P);
-        assert_eq!(v.temp_max, GLM53_DEFAULT_TEMP_MAX);
-
-        assert_eq!(resolve_number("T", Some("0.8"), 0.0, -2.0..=2.0), 0.8);
-        assert_eq!(resolve_number("T", Some("-0.5"), 0.0, -2.0..=2.0), -0.5);
-        for raw in ["", "abc", "3", "nan"] {
-            assert_eq!(
-                resolve_number("T", Some(raw), 0.0, -2.0..=2.0),
-                0.0,
-                "{raw}"
-            );
-        }
-    }
-
-    // The forced-thought budget is per level and OFF by default: the unit is
-    // measured, not assumed, so an unset deployment serves today's bytes.
-    #[test]
-    fn think_cap_is_per_level_and_off_by_default() {
-        use super::{resolve_think_cap, GlmValues};
-        let v = GlmValues {
-            top_p: 0.95,
-            min_p: 0.0,
-            effort: ThinkMode::Max,
-            temp_max: None,
-            freq_penalty: 0.0,
-            presence_penalty: 0.0,
-            dry_multiplier: 0.0,
-            dry_base: 1.75,
-            dry_allowed_length: 2,
-            penalty_window: 0,
-            think_cap_low: 64,
-            think_cap_high: 256,
-            think_cap_max: 512,
-        };
-        assert_eq!(v.think_cap(ThinkMode::Low), 64);
-        assert_eq!(v.think_cap(ThinkMode::High), 256);
-        assert_eq!(v.think_cap(ThinkMode::Max), 512);
-        // Nothing to bound when the turn does not think.
-        assert_eq!(v.think_cap(ThinkMode::None), 0);
-
-        // The shipped scope has no bound until the deployment sets one.
-        assert_eq!(super::glm_values().think_cap(ThinkMode::Low), 0);
-
-        assert_eq!(resolve_think_cap("T", None), 0);
-        assert_eq!(resolve_think_cap("T", Some("")), 0);
-        assert_eq!(resolve_think_cap("T", Some("64")), 64);
-        for raw in ["-1", "abc", "nan", "2000000"] {
-            assert_eq!(resolve_think_cap("T", Some(raw)), 0, "{raw}");
-        }
-    }
-
-    // The deployment ceiling guards every path, including a client that sends
-    // its own temperature (which the body parse has just applied).
-    #[test]
-    fn temp_ceiling_overrides_a_client_request() {
-        use super::{parse_chat_request, ParseEnv};
-        let env = ParseEnv {
-            glm_values: true,
-            ..ParseEnv::default()
-        };
-        let body = r#"{"messages":[{"role":"user","content":"hi"}],"temperature":1.0}"#;
-        let parsed = super::parse_request(crate::route::WireSurface::OpenaiChat, &env, body)
-            .expect("request parses");
-        // The ceiling is read from the environment once per process; this test
-        // only asserts the site exists and that an inert scope serves as sent.
-        let max = super::glm_values().temp_max;
-        match max {
-            Some(max) => assert_eq!(parsed.temperature, 1.0f32.min(max)),
-            None => assert_eq!(parsed.temperature, 1.0),
-        }
-        assert_eq!(
-            parse_chat_request(&ParseEnv::default(), body)
-                .expect("request parses")
-                .temperature,
-            1.0
-        );
-    }
-
-    // The deployment ceiling: absent is no ceiling, 0.0 means greedy, and a
-    // typo is reported rather than silently disabling the pin.
-    #[test]
-    fn temp_ceiling_is_opt_in() {
-        use super::resolve_temp_max;
-        assert_eq!(resolve_temp_max(None), None);
-        assert_eq!(resolve_temp_max(Some("")), None);
-        assert_eq!(resolve_temp_max(Some("0")), Some(0.0));
-        assert_eq!(resolve_temp_max(Some("0.5")), Some(0.5));
-        assert_eq!(resolve_temp_max(Some("3")), Some(0.0));
-        assert_eq!(resolve_temp_max(Some("banana")), Some(0.0));
     }
 }
 

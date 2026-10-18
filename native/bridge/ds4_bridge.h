@@ -442,13 +442,6 @@ int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,
                                         float temperature, int top_k,
                                         float top_p, float min_p,
                                         uint64_t *rng, int excluded_id);
-int ds4_bridge_session_sample_penalized(ds4_bridge_session *s, int gen_start,
-                                        float temperature, int top_k,
-                                        float top_p, float min_p,
-                                        uint64_t *rng, int excluded_id,
-                                        float freq, float presence,
-                                        float dry_mult, float dry_base,
-                                        int dry_allowed, int penalty_window);
 int ds4_bridge_session_save_payload(ds4_bridge_session *s, const char *path,
                                     char *err, size_t errlen);
 int ds4_bridge_session_load_payload(ds4_bridge_session *s, const char *path,
@@ -667,18 +660,6 @@ typedef struct {
     int32_t top_k;
     float top_p;
     float min_p;
-    /* Penalty face (core_decode_penalty.c); all zero = the default row,
-     * untouched.  Any non-zero penalty also turns speculation off for the
-     * request (penalties read the token history). */
-    float freq_penalty;
-    float presence_penalty;
-    float dry_multiplier;
-    float dry_base;            /* <= 1 => engine fallback 1.75 */
-    int32_t dry_allowed_length;/* <= 0 => engine fallback 2 */
-    /* Penalty lookback in tokens of the bank's committed history, prompt
-     * included; 0 -- the default -- keeps the face over the generated segment
-     * alone.  Only the GLM scope sets it (parse.rs). */
-    int32_t penalty_window;
     uint64_t seed;
     /* Optional (NULL disables).  Same contracts as ds4_cont_request:
      * sample_override returns DS4_SAMPLE_OVERRIDE_* encoding; alive

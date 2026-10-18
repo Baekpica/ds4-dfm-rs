@@ -76,7 +76,7 @@ pub use generate::NativeDecode;
 pub use generate::V41ServeRoute;
 pub use generate::{
     generate_and_write, generation_blocked, render_prompt, stop_list_find_from, DecodeIo,
-    GenerateError, GenerateOutcome, Penalty, ScriptedDecode, ScriptedStep,
+    GenerateError, GenerateOutcome, ScriptedDecode, ScriptedStep,
 };
 pub use http::{
     chunked_enabled, content_length, header_accepts_json, header_chunked, header_end,
@@ -101,9 +101,8 @@ pub use models::{
     model_one_json, models_list_json,
 };
 pub use parse::{
-    default_effort, default_temperature, fixed_thinking_sampling, glm_values, glm_values_report,
-    parse_anthropic_request, parse_chat_request, parse_completion_request, parse_request,
-    parse_responses_request, ChatMsg, ChatPart, GlmValues, ImageMime, ParseEnv, ParsedRequest,
+    default_temperature, parse_anthropic_request, parse_chat_request, parse_completion_request,
+    parse_request, parse_responses_request, ChatMsg, ChatPart, ImageMime, ParseEnv, ParsedRequest,
     RequestImage, ToolCall, ToolChoice, ToolSchemaOrder, DEFAULT_MIN_P, DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
 };
