@@ -4157,9 +4157,7 @@ mod glm_value_tests {
     // lane stays byte-identical until a deployment asks for the window.
     #[test]
     fn penalty_window_is_deployment_scoped_and_off_by_default() {
-        use super::{
-            resolve_number, GLM53_DEFAULT_PENALTY_WINDOW, GLM53_PENALTY_WINDOW_MAX,
-        };
+        use super::{resolve_number, GLM53_DEFAULT_PENALTY_WINDOW, GLM53_PENALTY_WINDOW_MAX};
         assert_eq!(GLM53_DEFAULT_PENALTY_WINDOW, 0);
         let resolve = |raw: Option<&str>| {
             resolve_number(
