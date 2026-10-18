@@ -63,9 +63,10 @@
 #include "ds41_forward.h"
 #ifndef __APPLE__
 #include "ds4_glmvq.h"
+#endif
+#endif
+/* Declarations only: every build sizes Ling-3.1 banks by its latent layout. */
 #include "ds4_ling31.h"
-#endif
-#endif
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
  * builds too.  ds4_gpu.h owns the same ABI enum in accelerator builds. */
