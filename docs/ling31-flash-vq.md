@@ -34,7 +34,9 @@ parts per feature (trunk 113,960,788,096 bytes, v1 116,415,118,208; MTP adds
 `body-nonexpert.gguf`: [tools/ling31_vq_v2.py](../tools/ling31_vq_v2.py)
 re-encodes v1's FP8 f/g and BF16 embeddings with the converter's quantizer,
 built with `-ffp-contract=off` so it reproduces v1's Q4_K/Q8_0 fixtures byte
-for byte. The host accepts both recipes. It checks the pinned recipe, roles
+for byte; [tests/ling31_release_check.py](../tests/ling31_release_check.py)
+checks that a release's indexes agree. The host accepts both recipes. It
+checks the pinned recipe, roles
 and SHA-256 of every part, reading
 them with `O_DIRECT` and scanning Q4_K scales and FP8 bytes while hashing, so
 validation leaves no page cache for the device copy to compete with. The

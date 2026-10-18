@@ -343,7 +343,7 @@ def main():
 
     body = next(part for part in release['parts'] if part['path'] == BODY)
     body.update(bytes=(output / BODY).stat().st_size, sha256=digest(output / BODY))
-    release['recipe_id'] = V2
+    release.update(recipe_id=V2, recipe_sha256=digest(output / 'recipe.json'))
     (output / 'release.json').write_text(json.dumps(release, indent=2, sort_keys=True) + '\n')
 
     report = dict(recipe_id=V2, parent_recipe_id=V1, parent_part_sha256=manifest['derivation']['parent_part_sha256'],
