@@ -112,6 +112,18 @@ the cap:
 | `temperature` 1.0, effort none (thought closed) | 0/5 | 5/5 |
 | `temperature` 1.0, effort high | 0/5 | 5/5 |
 
+CORRECTION (2026-10-18, `docs/glm53-vq-think-cap-2026-10-18.md`): the
+`temperature` 0.0 row above is NOT greedy alone. The server it ran against was
+started with `DS4_SERVER_GLM_TEMP_MAX=0` AND
+`DS4_SERVER_DEFAULT_DRY_MULTIPLIER=0.8` (this record's own config history,
+`glm53unc.log:983`, `:1058`), so the arm was greedy plus DRY. Measured inside
+one process on one build, greedy with DRY off stops 0/3 runs of the same
+prompt (the thought runs to the token budget), and greedy with DRY 0.8 stops
+3/3. The stopping configuration is the PAIR; the sentence below, "the lever
+that did change the outcome was temperature, and only at 0", holds only
+together with the penalty, and the seeded greedy row should be re-measured
+rather than cited (it does not reproduce on later processes).
+
 DRY is a real control and a partial one: at greedy on a "write about 800
 words" prompt the old run locked onto `gas-lit, gas-powered` and the
 DRY-0.8 run has no repeated span of that shape at all -- but at the

@@ -199,6 +199,9 @@ pub struct GlmValues {
     /// nothing post-thinking, so without a bound it never emits the close and
     /// runs to the token cap (the measured runaway); the machinery
     /// (`dsml.rs` sampling_override) forced the close for tool turns only.
+    /// A non-zero budget replaces the tool-turn cap for that level, so one
+    /// number governs both kinds of turn; 0 keeps the reference's 64/256/512
+    /// and leaves a chat turn unbounded.
     pub think_cap_low: i32,
     pub think_cap_high: i32,
     pub think_cap_max: i32,
