@@ -2545,17 +2545,27 @@ impl SemAccum {
                 let scan = &self.text[self.tool_scan_from..];
                 let old_start = self.saw_tool_start;
                 let old_end = self.saw_tool_end;
-                let start = find_tool_start(scan, self.chat_format);
-                if start.is_some() {
-                    self.saw_tool_start = true;
-                }
                 // The reference reads the tracker for the block's markers
                 // (ds4_server.c:7755 observe_tool_markers).  GLM's argument
                 // values are free text, so a `</tool_call>` written into one is
                 // payload; the text scan would close the block there and cut
                 // the call (ds4_server.c:20608 test_tool_control_text_inside_arguments).
-                let closed = if self.dsml.tool_syntax() == ToolSyntax::Glm {
-                    self.dsml.block_closed()
+                // The opening follows the same tracker: a DSML spelling in GLM
+                // prose is text, and opening on it would leave a block the GLM
+                // tracker never closes.
+                let glm = self.dsml.tool_syntax() == ToolSyntax::Glm;
+                let start = if !glm {
+                    find_tool_start(scan, self.chat_format)
+                } else if self.dsml.block_started() {
+                    find_substr(scan, GLM_TOOL_CALL_START.as_bytes())
+                } else {
+                    None
+                };
+                if start.is_some() {
+                    self.saw_tool_start = true;
+                }
+                let closed = if glm {
+                    self.saw_tool_start && self.dsml.block_closed()
                 } else {
                     let end_off = if old_start { Some(0) } else { start };
                     end_off
@@ -2568,7 +2578,7 @@ impl SemAccum {
                 f.entered_tool_block = self.saw_tool_start && !old_start;
                 f.tool_block_closed = self.saw_tool_end && !old_end;
                 if f.entered_tool_block && self.cut_tool_syntax {
-                    if let Some(m) = find_tool_start(scan, self.chat_format) {
+                    if let Some(m) = start {
                         cut_pos = Some(self.tool_scan_from + m);
                     }
                 }

@@ -258,6 +258,32 @@ fn glm_control_text_inside_an_argument_is_payload() {
     );
 }
 
+/// GLM's block opens only on its own `<tool_call>`.  A DSML spelling such as
+/// `<tool_calls>` in GLM prose is text: if it opened the block, the GLM tracker
+/// would never close it, and the turn's EOS would read as an unterminated call
+/// (non-streaming retries it, streaming reports an error).
+#[test]
+fn glm_dsml_spelling_in_prose_does_not_open_a_block() {
+    let mut acc = SemAccum::init(true, true, false, ChatFormat::DeepSeek, b"");
+    acc.set_model_syntax(ModelSyntax::Glm53);
+    acc.feed(
+        b"DeepSeek wraps calls in <tool_calls> blocks; GLM does not.",
+        &[],
+    );
+    assert!(
+        !acc.saw_tool_start,
+        "a DSML spelling is not GLM's opening marker"
+    );
+    assert!(!acc.saw_tool_end);
+
+    acc.feed(
+        b" <tool_call>bash<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call>",
+        &[],
+    );
+    assert!(acc.saw_tool_start, "GLM's own marker opens the block");
+    assert!(acc.saw_tool_end, "and its tracker closes it");
+}
+
 /// The sampling consequence of the dialect: the tag head and the argument tags
 /// take the raw argmax, the value body keeps the request's draw
 /// (ds4_server.c:7575 `dsml_decode_state_is_syntax`).
