@@ -66,10 +66,6 @@ documented whole-model results are omitted.
 
 *GLM-5.3-Flash VQ on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#glm-53-flash-vq).*
 
-![Ling-3.1-flash VQ prefill and decode on one DGX Spark](docs/benchmarks/ling31-vq-spark-64k-2026-10-18/throughput.png)
-
-*Ling-3.1-flash VQ on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#ling-31-flash-vq).*
-
 The [performance guide](docs/performance.md) collects these references and the
 other published curves. The [release ledgers](docs/README.md#release-ledgers)
 record qualification separately from throughput.
