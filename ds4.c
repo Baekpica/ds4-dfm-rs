@@ -63,9 +63,10 @@
 #include "ds41_forward.h"
 #ifndef __APPLE__
 #include "ds4_glmvq.h"
+#endif
+#endif
+/* Declarations only: every build sizes Ling-3.1 banks by its latent layout. */
 #include "ds4_ling31.h"
-#endif
-#endif
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
  * builds too.  ds4_gpu.h owns the same ABI enum in accelerator builds. */
@@ -65213,14 +65214,19 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
             break;
         }
     }
-    const int rc = gr ? ds4_session_glm53_commit(&s, emitted, err, errlen)
-                      : ir ? ds4_session_iquest_commit(&s, emitted, err, errlen)
+    /* A finish inside the prefix leaves its last token pending, as ordinary
+     * decode does: the server keys the bank by every generated token but the
+     * last, so landing that row would make the next turn miss. */
+    const int rows = finished ? emitted - 1 : emitted;
+    const int rc = gr ? ds4_session_glm53_commit(&s, rows, err, errlen)
+                      : ir ? ds4_session_iquest_commit(&s, rows, err, errlen)
 #ifndef __APPLE__
-                      : lr ? ds4_session_ling31_commit(&s, emitted, err, errlen)
+                      : lr ? ds4_session_ling31_commit(&s, rows, err, errlen)
 #endif
-                      : nr ? ds4_session_naive_commit(&s, emitted, err, errlen)
-                      : ds4_session_step37_commit(&s, emitted, err, errlen);
+                      : nr ? ds4_session_naive_commit(&s, rows, err, errlen)
+                      : ds4_session_step37_commit(&s, rows, err, errlen);
     if (rc) { goto fail; }
+    if (rows < emitted) { ds4_metric_add(&ds4_metrics_get()->spec_hits, 1u); }
     if (gr) {
         gr->graph[bank] = s.glm53_graph; gr->bank_logits_valid[bank] = 1u;
     } else if (ir) {

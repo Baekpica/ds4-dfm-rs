@@ -190,6 +190,20 @@ static int test_q8_candidate_shapes() {
         return fail("Qwen GDN in_a should not allocate an artifact");
     }
 
+    // Embeddings are gathered by row, never multiplied: GGUF's token_embd
+    // and HF-named parts' word_embeddings (Ling-3.1 v2 stores it Q8_0).
+    ds4_repack_tensor embedding = qwen_qkv;
+    embedding.dims[0] = 4096u;
+    embedding.dims[1] = 157184u;
+    embedding.elements = embedding.dims[0] * embedding.dims[1];
+    embedding.bytes = (embedding.dims[0] / 32u) * embedding.dims[1] * 34u;
+    for (const char *name : {"token_embd.weight", "model.word_embeddings.weight"}) {
+        embedding.name = name;
+        if (ds4_repack_q8_candidate(embedding)) {
+            return fail("a Q8 embedding should not allocate an aligned artifact");
+        }
+    }
+
     ds4_repack_tensor kv_b;
     kv_b.name = "blk.1.attn_kv_b.weight";
     kv_b.type = 8u;

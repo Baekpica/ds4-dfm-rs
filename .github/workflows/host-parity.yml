@@ -50,6 +50,8 @@ jobs:
         run: make test-ple-formats
       - name: GLM bank fallback
         run: make test-glm53-fit
+      - name: Bank speculative finish
+        run: make test-family-cont-spec-finish
       - name: Bonsai CPU reference
         run: make pq2-0-test test-qwen35-ref
       - name: All host targets

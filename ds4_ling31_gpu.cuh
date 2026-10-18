@@ -11,6 +11,7 @@
  *   DS4_LING31_MOE_RESTORE=1: BF16 restore + cuBLAS per expert (reference) */
 #include "ds4_ling31.h"
 #include "cuda/l31_residual.cuh"
+#include "cuda/l31_latent.cuh"
 #include "cuda/l31_flash.cuh"
 
 enum { L31_EXPERTS = DS4_L31_EXPERTS, L31_USED = DS4_L31_USED, L31_HIDDEN = DS4_L31_HIDDEN,
@@ -567,23 +568,27 @@ extern "C" int ds4_gpu_l31_absorb(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
 // its split partials in the GVQ scratch; 0 leaves the caller's Motif path.
 extern "C" int ds4_gpu_l31_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
         const ds4_gpu_tensor *q_abs, const ds4_gpu_tensor *latent, const ds4_gpu_tensor *k_pe,
-        uint32_t rows, uint32_t pos0, float scale) {
+        uint32_t rows, uint32_t pos0, float scale, uint32_t cap, ds4_l31_latent mode) {
     static int shared = -1;
     if (shared < 0) {
-        shared = cuda_ok(cudaFuncSetAttribute(l31_fa_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-            (int)L31_FA_SMEM), "Ling-3.1 flash shared memory");
+        shared = cuda_ok(cudaFuncSetAttribute(l31_fa_kernel<false>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)L31_FA_SMEM), "Ling-3.1 flash shared memory") &&
+            cuda_ok(cudaFuncSetAttribute(l31_fa_kernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)L31_FA8_SMEM), "Ling-3.1 FP8 flash shared memory");
     }
+    const bool fp8 = mode == DS4_L31_LATENT_FP8;
     const uint64_t keys = (uint64_t)pos0 + rows;
-    if (!shared || !ctx || !out || !q || !q_abs || !latent || !k_pe || !rows || rows > L31_FA_ROWS ||
+    if (!shared || !ctx || !out || !q || !q_abs || !latent || !k_pe || !rows || keys > cap ||
+        rows > (fp8 ? L31_FA8_ROWS : L31_FA_ROWS) ||
         !gvq_stream(ctx) || ctx->scratch->bytes < l31_fa_scratch_bytes() ||
         !gvq_floats(out, (uint64_t)rows * DS4_L31_HEADS * DS4_L31_LATENT) ||
         !gvq_floats(q_abs, (uint64_t)rows * DS4_L31_HEADS * DS4_L31_LATENT) ||
         !gvq_floats(q, (uint64_t)rows * DS4_L31_HEADS * (DS4_L31_NOPE + DS4_L31_ROPE)) ||
-        latent->bytes < keys * DS4_L31_LATENT * sizeof(__nv_bfloat16) ||
+        latent->bytes < ds4_l31_latent_bytes(cap, mode) ||
         k_pe->bytes < keys * DS4_L31_ROPE * sizeof(__nv_bfloat16)) { return 0; }
     return cuda_ok(l31_fa_launch((float *)out->ptr, ctx->scratch->ptr, (const float *)q->ptr,
-        (const float *)q_abs->ptr, (const __nv_bfloat16 *)latent->ptr, (const __nv_bfloat16 *)k_pe->ptr,
-        rows, pos0, scale, gvq_mode(rows), ctx->stream), "Ling-3.1 flash attention");
+        (const float *)q_abs->ptr, latent->ptr, fp8 ? (const int8_t *)latent->ptr + (uint64_t)cap * DS4_L31_LATENT : nullptr,
+        (const __nv_bfloat16 *)k_pe->ptr, rows, pos0, scale, gvq_mode(rows), ctx->stream), "Ling-3.1 flash attention");
 }
 
 extern "C" int ds4_gpu_l31_expanded_attn(ds4_gpu_tensor *out, ds4_gpu_tensor *lse, const ds4_gpu_tensor *q,
@@ -619,16 +624,25 @@ extern "C" int ds4_gpu_l31_value(ds4_gpu_tensor *out, const ds4_gpu_tensor *late
  * rows [rows][heads][dim] (ds4_gpu_ling3vl_expand_kv with device weights). */
 extern "C" int ds4_gpu_l31_expand(ds4_gpu_tensor *k_full, ds4_gpu_tensor *value,
         const ds4_gpu_tensor *latent_cache, const ds4_gpu_tensor *k_pe_cache,
-        const ds4_gpu_tensor *k_b, const ds4_gpu_tensor *v_b, uint32_t slot0, uint32_t rows) {
+        const ds4_gpu_tensor *k_b, const ds4_gpu_tensor *v_b, uint32_t slot0, uint32_t rows,
+        uint32_t cap, ds4_l31_latent mode, ds4_gpu_tensor *scratch) {
     constexpr uint32_t heads = DS4_L31_HEADS, key = DS4_L31_NOPE + DS4_L31_ROPE;
     const uint64_t end = (uint64_t)slot0 + rows, elem = sizeof(__nv_bfloat16);
+    const bool fp8 = mode == DS4_L31_LATENT_FP8;
     if (!k_full || !value || !latent_cache || !k_pe_cache || !k_b || !v_b || !rows || !g_cublas_ready ||
-        k_full->bytes < (uint64_t)rows * heads * key * elem ||
+        end > cap || k_full->bytes < (uint64_t)rows * heads * key * elem ||
         value->bytes < (uint64_t)rows * heads * DS4_L31_VALUE * elem ||
-        latent_cache->bytes < end * DS4_L31_LATENT * elem || k_pe_cache->bytes < end * DS4_L31_ROPE * elem) {
+        latent_cache->bytes < ds4_l31_latent_bytes(cap, mode) || k_pe_cache->bytes < end * DS4_L31_ROPE * elem ||
+        (fp8 && (!scratch || scratch->bytes < (uint64_t)rows * DS4_L31_LATENT * elem))) {
         return 0;
     }
     const auto *latent = (const __nv_bfloat16 *)latent_cache->ptr + (uint64_t)slot0 * DS4_L31_LATENT;
+    if (fp8) {
+        l31_latent_dequant<<<rows, DS4_L31_LATENT / 16, 0, ds4_current_stream()>>>(
+            (__nv_bfloat16 *)scratch->ptr, (const uint8_t *)latent_cache->ptr, slot0, cap);
+        if (!cuda_ok(cudaGetLastError(), "Ling-3.1 FP8 latent rows")) { return 0; }
+        latent = (const __nv_bfloat16 *)scratch->ptr;
+    }
     const float alpha = 1.0f, beta = 0.0f;
     cublasStatus_t st = cublasGemmStridedBatchedEx(g_cublas, CUBLAS_OP_N, CUBLAS_OP_N,
         (int)DS4_L31_NOPE, (int)rows, (int)DS4_L31_LATENT, &alpha,
@@ -659,6 +673,24 @@ extern "C" int ds4_gpu_l31_latent_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor
     ling3vl_rms_norm<<<rows, 256, 0, ds4_current_stream()>>>((float *)out->ptr, (const float *)in->ptr,
         (const float *)weight->ptr, DS4_L31_LATENT, row, rows, eps);
     return cuda_ok(cudaGetLastError(), "Ling-3.1 latent RMSNorm");
+}
+
+extern "C" int ds4_gpu_l31_store_latent(ds4_gpu_tensor *latent, ds4_gpu_tensor *k_pe,
+        const ds4_gpu_tensor *kv_norm, const ds4_gpu_tensor *kv_raw, uint32_t rows, uint32_t pos0,
+        uint32_t cap, ds4_l31_latent mode) {
+    if (mode == DS4_L31_LATENT_BF16) {
+        return ds4_gpu_ling3vl_store_latent(latent, k_pe, kv_norm, kv_raw, rows, pos0, cap,
+            DS4_L31_LATENT + DS4_L31_ROPE, DS4_L31_LATENT, DS4_L31_ROPE);
+    }
+    if (!latent || !k_pe || !rows || pos0 > cap || rows > cap - pos0 ||
+        latent->bytes < ds4_l31_latent_bytes(cap, mode) ||
+        k_pe->bytes < (uint64_t)cap * DS4_L31_ROPE * sizeof(__nv_bfloat16) ||
+        !gvq_floats(kv_norm, (uint64_t)rows * DS4_L31_LATENT) ||
+        !gvq_floats(kv_raw, (uint64_t)rows * (DS4_L31_LATENT + DS4_L31_ROPE))) { return 0; }
+    auto kernel = mode == DS4_L31_LATENT_FP8 ? l31_store_latent<DS4_L31_LATENT_FP8> : l31_store_latent<DS4_L31_LATENT_SIM>;
+    kernel<<<rows, L31_LATENT_THREADS, 0, ds4_current_stream()>>>(latent->ptr, (__nv_bfloat16 *)k_pe->ptr,
+        (const float *)kv_norm->ptr, (const float *)kv_raw->ptr, pos0, cap);
+    return cuda_ok(cudaGetLastError(), "Ling-3.1 FP8 latent store");
 }
 
 extern "C" int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
