@@ -135,6 +135,55 @@ pub struct SerialSessionProbe {
     pub graph_pending: bool,
 }
 
+/// The repetition-penalty face a request carries: frequency, presence and DRY
+/// from `core_decode_penalty.c`, the same five values the continuous lane hands
+/// to the bank (`serve_cont.rs` admit) and the V4.1 route to `V41Sampling`. All
+/// zero = no lane's sampler is touched.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Penalty {
+    pub frequency: f32,
+    pub presence: f32,
+    pub dry_multiplier: f32,
+    pub dry_base: f32,
+    pub dry_allowed_length: i32,
+}
+
+impl Penalty {
+    /// The request's face with the engine's own fallbacks: the request values
+    /// win, an omitted base / allowed length take 1.75 / 2 (parse.rs's DRY note
+    /// cites server_generate_v41.c:363-365 for that rule, and the V4.1 face
+    /// applies it here too). Without them `ds4_decode_penalize` refuses the
+    /// face outright (`dry_base <= 1.f`), so a client that sends only
+    /// `dry_multiplier` would carry an inert penalty.
+    pub fn of(parsed: &ParsedRequest) -> Self {
+        Self {
+            frequency: parsed.frequency_penalty,
+            presence: parsed.presence_penalty,
+            dry_multiplier: if parsed.dry_set {
+                parsed.dry_multiplier
+            } else {
+                0.0
+            },
+            dry_base: if parsed.dry_set && parsed.dry_base > 1.0 {
+                parsed.dry_base
+            } else {
+                1.75
+            },
+            dry_allowed_length: if parsed.dry_set && parsed.dry_allowed_length > 0 {
+                parsed.dry_allowed_length
+            } else {
+                2
+            },
+        }
+    }
+
+    /// True when the face asks for anything at all. False keeps every caller's
+    /// sampler byte-identical.
+    pub fn is_set(&self) -> bool {
+        self.frequency != 0.0 || self.presence != 0.0 || self.dry_multiplier > 0.0
+    }
+}
+
 pub trait DecodeIo {
     fn model_id(&self) -> i32;
     /// True when this engine serves the V4.1 (ds41) family: no ds4_session
@@ -353,6 +402,33 @@ pub trait DecodeIo {
     ) -> i32 {
         if excluded_id >= 0 {
             return -1;
+        }
+        self.sample(temperature, top_k, top_p, min_p, rng)
+    }
+    /// Sample with the request's penalty face applied over the tokens this
+    /// request has already emitted (`gen_start` is where its generation began,
+    /// so the prompt stays unpenalized). This is the serial lane's counterpart
+    /// of the continuous lane's `family_cont_penalize` (ds4.c:64936): the lane
+    /// is reachable whenever continuous admission refuses (serve_cont.rs), and
+    /// a penalty dropped there is dropped silently.
+    ///
+    /// The default is the plain sample, so an engine with no penalty lane
+    /// keeps its exact behavior; a zero face never reaches here at all
+    /// (`Penalty::is_set`).
+    #[allow(clippy::too_many_arguments)]
+    fn sample_penalized(
+        &mut self,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        rng: &mut u64,
+        excluded_id: i32,
+        _gen_start: i32,
+        _penalty: Penalty,
+    ) -> i32 {
+        if excluded_id >= 0 {
+            return self.sample_excluding(temperature, top_k, top_p, min_p, rng, excluded_id);
         }
         self.sample(temperature, top_k, top_p, min_p, rng)
     }
@@ -1486,7 +1562,9 @@ pub(crate) fn prepare_required_prefixes(
         && parsed.has_tools
         && parsed.tool_choice == ToolChoice::Auto
         && !think_mode_enabled(parsed.think_mode);
-    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results && !mimo_auto
+    if parsed.tool_choice != ToolChoice::Required
+        && !parsed.has_tool_results
+        && !mimo_auto
         && parsed.think_cap <= 0
     {
         return Ok(());
@@ -1597,7 +1675,11 @@ mod required_prefix_tests {
         let mut bounded = parse_chat_request(&ParseEnv::default(), body).unwrap();
         bounded.think_cap = 64;
         prepare_required_prefixes(&mut bounded, ModelSyntax::Glm53, |literal| {
-            Ok(if literal == b"</think>" { vec![303] } else { vec![99] })
+            Ok(if literal == b"</think>" {
+                vec![303]
+            } else {
+                vec![99]
+            })
         })
         .unwrap();
         assert_eq!(bounded.required_think_end_prefix, [303]);
@@ -1605,7 +1687,11 @@ mod required_prefix_tests {
 
         let mut unbounded = parse_chat_request(&ParseEnv::default(), body).unwrap();
         prepare_required_prefixes(&mut unbounded, ModelSyntax::Glm53, |literal| {
-            Ok(if literal == b"</think>" { vec![303] } else { vec![99] })
+            Ok(if literal == b"</think>" {
+                vec![303]
+            } else {
+                vec![99]
+            })
         })
         .unwrap();
         assert!(unbounded.required_think_end_prefix.is_empty());
@@ -1777,6 +1863,11 @@ fn decode_pass(
     token_ids: &mut Vec<i32>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
+    // Where this request's own generation begins. The penalty face reads back
+    // only what the request itself emitted, never the prompt -- the continuous
+    // lane's cb->generated scope (ds4.c family_cont_penalize).
+    let gen_start = engine.pos();
+    let penalty = Penalty::of(parsed);
     'decode: while acc.completion < max_tokens && engine.pos() < engine.ctx() {
         if stop_requested.is_some_and(|stop| stop()) {
             *finish = "error";
@@ -1834,6 +1925,17 @@ fn decode_pass(
                 ));
             }
             t
+        } else if penalty.is_set() {
+            engine.sample_penalized(
+                temperature,
+                top_k,
+                top_p,
+                min_p,
+                rng,
+                excluded.unwrap_or(-1),
+                gen_start,
+                penalty,
+            )
         } else if let Some(excluded_id) = excluded {
             engine.sample_excluding(temperature, top_k, top_p, min_p, rng, excluded_id)
         } else {
@@ -4719,6 +4821,37 @@ impl DecodeIo for NativeDecode<'_> {
     ) -> i32 {
         match self.session() {
             Ok(s) => s.sample_excluding(temperature, top_k, top_p, min_p, rng, excluded_id),
+            Err(_) => -1,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sample_penalized(
+        &mut self,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        rng: &mut u64,
+        excluded_id: i32,
+        gen_start: i32,
+        penalty: Penalty,
+    ) -> i32 {
+        match self.session() {
+            Ok(s) => s.sample_penalized(
+                gen_start,
+                temperature,
+                top_k,
+                top_p,
+                min_p,
+                rng,
+                excluded_id,
+                penalty.frequency,
+                penalty.presence,
+                penalty.dry_multiplier,
+                penalty.dry_base,
+                penalty.dry_allowed_length,
+            ),
             Err(_) => -1,
         }
     }

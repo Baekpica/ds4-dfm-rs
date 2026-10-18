@@ -76,7 +76,7 @@ pub use generate::NativeDecode;
 pub use generate::V41ServeRoute;
 pub use generate::{
     generate_and_write, generation_blocked, render_prompt, stop_list_find_from, DecodeIo,
-    GenerateError, GenerateOutcome, ScriptedDecode, ScriptedStep,
+    GenerateError, GenerateOutcome, Penalty, ScriptedDecode, ScriptedStep,
 };
 pub use http::{
     chunked_enabled, content_length, header_accepts_json, header_chunked, header_end,

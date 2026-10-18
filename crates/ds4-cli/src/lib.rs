@@ -454,6 +454,48 @@ fn use_glm_spec(temp: f32, family: ds4_core::ModelFamily, draft: i32) -> bool {
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
+/// The CLI's own DRY face (`--dry-multiplier`; frequency and presence have no
+/// flags here). `None` = no face, so the sampler stays byte-identical. The
+/// base / allowed fallbacks are the engine's own (server_generate_v41.c:363-365):
+/// `ds4_decode_penalize` refuses a face whose base is <= 1.0.
+fn dry_face(args: &ShadowArgs) -> Option<(f32, f32, i32)> {
+    (args.dry_multiplier > 0.0).then(|| {
+        (
+            args.dry_multiplier,
+            if args.dry_base > 1.0 {
+                args.dry_base
+            } else {
+                1.75
+            },
+            if args.dry_allowed_length > 0 {
+                args.dry_allowed_length
+            } else {
+                2
+            },
+        )
+    })
+}
+
+/// The next token with `face` applied over the tokens generated since
+/// `gen_start`. A face also switches speculation off, the served lanes' rule:
+/// the verify rows are picked by argmax on the device and cannot carry a
+/// penalty (ds4.c:family_cont_spec).
+fn sample_next(
+    session: &mut ds4_core::Session<'_>,
+    args: &ShadowArgs,
+    face: Option<(f32, f32, i32)>,
+    gen_start: i32,
+    rng: &mut u64,
+) -> i32 {
+    match face {
+        Some((multiplier, base, allowed)) => session.sample_penalized(
+            gen_start, args.temp, 0, args.top_p, args.min_p, rng, -1, 0.0, 0.0, multiplier, base,
+            allowed,
+        ),
+        None => session.sample(args.temp, 0, args.top_p, args.min_p, rng),
+    }
+}
+
 fn use_naive_spec(temp: f32, dspark: Option<&str>, draft: i32) -> bool {
     temp <= 0.0
         && dspark.is_some()
@@ -622,19 +664,22 @@ fn run_chat_turn(
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut printer = TokenPrinter::new(model.family(), chat.thinking_enabled());
-    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
-        || use_iquest_spec(args.temp, model.family(), args.mtp_draft)
-        || use_glm_spec(args.temp, model.family(), args.mtp_draft)
-        || (model.family() == ds4_core::ModelFamily::NaiveN05
-            && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft));
+    let dry = dry_face(args);
+    let use_mtp = dry.is_none()
+        && (use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
+            || use_iquest_spec(args.temp, model.family(), args.mtp_draft)
+            || use_glm_spec(args.temp, model.family(), args.mtp_draft)
+            || (model.family() == ds4_core::ModelFamily::NaiveN05
+                && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft)));
     let eos = model.token_eos();
     let mut generated = 0i32;
     let mut raw = Vec::new();
     let mut failed = false;
     repl::interrupt_clear();
+    let gen_start = session.pos();
 
     while generated < max_tokens && !repl::interrupt_requested() {
-        let token = session.sample(args.temp, 0, args.top_p, args.min_p, &mut rng);
+        let token = sample_next(&mut session, args, dry, gen_start, &mut rng);
         if token < 0 {
             eprintln!("ds4: decode failed: failed to sample the next token");
             failed = true;
@@ -884,17 +929,20 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
     let mut out = stdout.lock();
     let mut printer = TokenPrinter::new(model.family(), !args.nothink);
     let mut decode_error = None;
-    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
-        || use_iquest_spec(args.temp, model.family(), args.mtp_draft)
-        || use_glm_spec(args.temp, model.family(), args.mtp_draft)
-        || (model.family() == ds4_core::ModelFamily::NaiveN05
-            && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft));
+    let dry = dry_face(args);
+    let use_mtp = dry.is_none()
+        && (use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
+            || use_iquest_spec(args.temp, model.family(), args.mtp_draft)
+            || use_glm_spec(args.temp, model.family(), args.mtp_draft)
+            || (model.family() == ds4_core::ModelFamily::NaiveN05
+                && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft)));
     let eos = model.token_eos();
     let mut generated = 0;
+    let gen_start = session.pos();
 
     while generated < max_tokens {
         let token = if sampled {
-            session.sample(args.temp, 0, args.top_p, args.min_p, &mut rng)
+            sample_next(&mut session, args, dry, gen_start, &mut rng)
         } else {
             session.argmax()
         };

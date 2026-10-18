@@ -3484,11 +3484,17 @@ mod native {
             admit.top_k = top_k;
             admit.top_p = top_p;
             admit.min_p = min_p;
-            admit.freq_penalty = parsed.frequency_penalty;
-            admit.presence_penalty = parsed.presence_penalty;
-            admit.dry_multiplier = parsed.dry_multiplier;
-            admit.dry_base = parsed.dry_base;
-            admit.dry_allowed_length = parsed.dry_allowed_length;
+            // One face build for both lanes: the serial fallback builds the
+            // same one (generate.rs Penalty::of), so a request that lands on
+            // either lane carries the same penalty -- including DRY's base /
+            // allowed-length fallbacks, which ds4_decode_penalize needs
+            // (dry_base <= 1.0 refuses the whole face).
+            let penalty = crate::generate::Penalty::of(parsed);
+            admit.freq_penalty = penalty.frequency;
+            admit.presence_penalty = penalty.presence;
+            admit.dry_multiplier = penalty.dry_multiplier;
+            admit.dry_base = penalty.dry_base;
+            admit.dry_allowed_length = penalty.dry_allowed_length;
             admit.seed = parsed.seed;
             admit.images = images;
             let frontier = (self.template.is_some()

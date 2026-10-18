@@ -442,6 +442,13 @@ int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,
                                         float temperature, int top_k,
                                         float top_p, float min_p,
                                         uint64_t *rng, int excluded_id);
+int ds4_bridge_session_sample_penalized(ds4_bridge_session *s, int gen_start,
+                                        float temperature, int top_k,
+                                        float top_p, float min_p,
+                                        uint64_t *rng, int excluded_id,
+                                        float freq, float presence,
+                                        float dry_mult, float dry_base,
+                                        int dry_allowed);
 int ds4_bridge_session_save_payload(ds4_bridge_session *s, const char *path,
                                     char *err, size_t errlen);
 int ds4_bridge_session_load_payload(ds4_bridge_session *s, const char *path,

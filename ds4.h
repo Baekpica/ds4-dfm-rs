@@ -1411,6 +1411,16 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
 int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                  int top_k, float top_p, float min_p,
                                  uint64_t *rng, int excluded_id);
+/* The serial lane's penalty face.  gen_start is the position this request's
+ * generation began at (its prompt length): the penalized segment is
+ * [gen_start, committed tokens), the prompt-excluded scope the continuous
+ * lane's family_cont_penalize uses.  A zero face, an unusable gen_start or no
+ * committed checkpoint all take the plain sampler. */
+int ds4_session_sample_penalized(ds4_session *s, int gen_start,
+                                 float temperature, int top_k, float top_p,
+                                 float min_p, uint64_t *rng, int excluded_id,
+                                 float freq, float presence, float dry_mult,
+                                 float dry_base, int dry_allowed);
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k);
 int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out);
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap);

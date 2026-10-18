@@ -76990,6 +76990,56 @@ int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                                              excluded_id));
 }
 
+/* The serial lane's penalty face: the same core_decode_penalty.c code the
+ * continuous lane applies (family_cont_penalize above), sourced from the
+ * session's OWN committed tokens instead of a bank's generated segment.  The
+ * lane samples through ds4_session_sample, which carries no history, and it is
+ * the designed fallback whenever continuous admission refuses -- so a penalty
+ * on a request that lands here would otherwise be dropped silently.
+ *
+ * The row is copied before penalizing: ds4_decode_penalize subtracts in place,
+ * and s->logits must stay the model's own row for the logprob readers and for
+ * the next step's sampler (the V4.1 route reads its row into rowbuf for the
+ * same reason, ds4_ds41_sample.inc:203-222).  No face, an unusable gen_start
+ * or an uncommitted checkpoint take the plain sampler, so a request that
+ * carries no penalty is byte-identical to ds4_session_sample. */
+int ds4_session_sample_penalized(ds4_session *s, int gen_start,
+                                 float temperature, int top_k, float top_p,
+                                 float min_p, uint64_t *rng, int excluded_id,
+                                 float freq, float presence, float dry_mult,
+                                 float dry_base, int dry_allowed) {
+    if (session_logits_unready(s)) { return -1; }
+    const int excluded_eot = excluded_id >= 0
+        ? sample_eot_exclusion(&s->engine->vocab, excluded_id) : -1;
+    const float *row = s->logits;
+    float *penalized = NULL;
+#ifndef DS4_NO_GPU
+    const uint32_t n_gen = (s->checkpoint_valid && gen_start >= 0 &&
+                            (uint32_t)gen_start < s->checkpoint.len)
+        ? s->checkpoint.len - (uint32_t)gen_start : 0u;
+    if (n_gen > 0u &&
+        (freq != 0.0f || presence != 0.0f || dry_mult > 0.0f)) {
+        static float *rowbuf = NULL;
+        if (!rowbuf) { rowbuf = xmalloc((size_t)DS4_N_VOCAB * sizeof(float)); }
+        memcpy(rowbuf, s->logits, (size_t)DS4_N_VOCAB * sizeof(float));
+        ds4_decode_penalize(rowbuf, DS4_N_VOCAB, s->checkpoint.v + gen_start,
+                            n_gen, ds4_decode_breakers(s->engine, DS4_N_VOCAB),
+                            freq, presence, dry_mult, dry_base, dry_allowed);
+        penalized = rowbuf;
+    }
+#else
+    (void)gen_start; (void)freq; (void)presence;
+    (void)dry_mult; (void)dry_base; (void)dry_allowed;
+#endif
+    if (penalized) { row = penalized; }
+    return excluded_id >= 0
+        ? sample_top_p_min_p_excluding(row, DS4_N_VOCAB, temperature, top_k,
+                                       top_p, min_p, rng, excluded_id,
+                                       excluded_eot)
+        : sample_top_p_min_p(row, DS4_N_VOCAB, temperature, top_k, top_p,
+                             min_p, rng);
+}
+
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k) {
     if (session_logits_unready(s)) { return 0; }
     if (!s || !out || k <= 0) return 0;

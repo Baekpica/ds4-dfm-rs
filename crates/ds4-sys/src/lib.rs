@@ -1026,6 +1026,23 @@ extern "C" {
         excluded_id: c_int,
     ) -> c_int;
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn ds4_bridge_session_sample_penalized(
+        s: *mut ds4_bridge_session,
+        gen_start: c_int,
+        temperature: c_float,
+        top_k: c_int,
+        top_p: c_float,
+        min_p: c_float,
+        rng: *mut u64,
+        excluded_id: c_int,
+        freq: c_float,
+        presence: c_float,
+        dry_mult: c_float,
+        dry_base: c_float,
+        dry_allowed: c_int,
+    ) -> c_int;
+
     pub fn ds4_bridge_session_save_payload(
         s: *mut ds4_bridge_session,
         path: *const c_char,
