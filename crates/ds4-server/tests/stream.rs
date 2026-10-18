@@ -338,6 +338,65 @@ fn responses_thinking_tape_matches_c() {
     assert!(!out.contains("</think>"));
 }
 
+/// A model can emit a byte that starts no valid UTF-8 sequence mid-text (GLM-5.3
+/// VQ wrote "서", a lone 0xEB, then "ving"). The buffered bodies are built as
+/// strings, so such a byte must become U+FFFD instead of panicking the
+/// request into a 500; the C reference passes the byte through raw.
+#[test]
+fn buffered_finals_replace_invalid_utf8() {
+    let text: &[u8] = b"\xec\x84\x9c\xebving";
+    let want = "서\u{fffd}ving";
+    let mut chat = StreamReq::default();
+    chat.stream = false;
+    let bodies = [
+        final_response(
+            &chat,
+            "chatcmpl_bad",
+            text,
+            Some(text),
+            "stop",
+            4,
+            4,
+            CREATED_TEST,
+            false,
+            &[],
+            &[],
+        ),
+        anthropic_final_response(
+            &chat,
+            "msg_bad",
+            text,
+            Some(text),
+            "stop",
+            None,
+            4,
+            4,
+            false,
+            &[],
+        ),
+        responses_final_response(
+            &chat,
+            text,
+            Some(text),
+            "stop",
+            ThinkBlock::Closed,
+            4,
+            4,
+            0,
+            CREATED_TEST,
+            false,
+            TEST_RESP_ID,
+            TEST_RS_ID,
+            TEST_MSG_ID,
+            &[],
+        ),
+    ];
+    for body in bodies {
+        let body = String::from_utf8(body).expect("the body is valid UTF-8");
+        assert!(body.contains(want), "{body}");
+    }
+}
+
 #[test]
 fn buffered_finals_match_c() {
     let mut chat = StreamReq::default();
