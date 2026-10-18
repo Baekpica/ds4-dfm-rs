@@ -300,7 +300,12 @@ fn resolve_unit(name: &str, raw: Option<&str>, fallback: f32) -> f32 {
 
 /// Resolve one numeric `DS4_SERVER_*` setting against its fallback, with the
 /// same rule as resolve_unit: a bad value is reported once, never clamped.
-fn resolve_number(name: &str, raw: Option<&str>, fallback: f32, bounds: std::ops::RangeInclusive<f32>) -> f32 {
+fn resolve_number(
+    name: &str,
+    raw: Option<&str>,
+    fallback: f32,
+    bounds: std::ops::RangeInclusive<f32>,
+) -> f32 {
     let Some(raw) = raw.filter(|s| !s.is_empty()) else {
         return fallback;
     };
@@ -363,19 +368,25 @@ pub fn glm_values() -> &'static GlmValues {
         temp_max: resolve_temp_max(std::env::var("DS4_SERVER_GLM_TEMP_MAX").ok().as_deref()),
         freq_penalty: resolve_number(
             "DS4_SERVER_DEFAULT_FREQ_PENALTY",
-            std::env::var("DS4_SERVER_DEFAULT_FREQ_PENALTY").ok().as_deref(),
+            std::env::var("DS4_SERVER_DEFAULT_FREQ_PENALTY")
+                .ok()
+                .as_deref(),
             0.0,
             -2.0..=2.0,
         ),
         presence_penalty: resolve_number(
             "DS4_SERVER_DEFAULT_PRESENCE_PENALTY",
-            std::env::var("DS4_SERVER_DEFAULT_PRESENCE_PENALTY").ok().as_deref(),
+            std::env::var("DS4_SERVER_DEFAULT_PRESENCE_PENALTY")
+                .ok()
+                .as_deref(),
             0.0,
             -2.0..=2.0,
         ),
         dry_multiplier: resolve_number(
             "DS4_SERVER_DEFAULT_DRY_MULTIPLIER",
-            std::env::var("DS4_SERVER_DEFAULT_DRY_MULTIPLIER").ok().as_deref(),
+            std::env::var("DS4_SERVER_DEFAULT_DRY_MULTIPLIER")
+                .ok()
+                .as_deref(),
             GLM53_DEFAULT_DRY_MULTIPLIER,
             0.0..=64.0,
         ),
@@ -387,21 +398,29 @@ pub fn glm_values() -> &'static GlmValues {
         ),
         dry_allowed_length: resolve_number(
             "DS4_SERVER_DEFAULT_DRY_ALLOWED_LENGTH",
-            std::env::var("DS4_SERVER_DEFAULT_DRY_ALLOWED_LENGTH").ok().as_deref(),
+            std::env::var("DS4_SERVER_DEFAULT_DRY_ALLOWED_LENGTH")
+                .ok()
+                .as_deref(),
             GLM53_DEFAULT_DRY_ALLOWED_LENGTH as f32,
             0.0..=64.0,
         ) as i32,
         think_cap_low: resolve_think_cap(
             "DS4_SERVER_GLM_THINK_CAP_LOW",
-            std::env::var("DS4_SERVER_GLM_THINK_CAP_LOW").ok().as_deref(),
+            std::env::var("DS4_SERVER_GLM_THINK_CAP_LOW")
+                .ok()
+                .as_deref(),
         ),
         think_cap_high: resolve_think_cap(
             "DS4_SERVER_GLM_THINK_CAP_HIGH",
-            std::env::var("DS4_SERVER_GLM_THINK_CAP_HIGH").ok().as_deref(),
+            std::env::var("DS4_SERVER_GLM_THINK_CAP_HIGH")
+                .ok()
+                .as_deref(),
         ),
         think_cap_max: resolve_think_cap(
             "DS4_SERVER_GLM_THINK_CAP_MAX",
-            std::env::var("DS4_SERVER_GLM_THINK_CAP_MAX").ok().as_deref(),
+            std::env::var("DS4_SERVER_GLM_THINK_CAP_MAX")
+                .ok()
+                .as_deref(),
         ),
     })
 }
@@ -4044,8 +4063,8 @@ pub fn parse_request(
 #[cfg(test)]
 mod glm_value_tests {
     use super::{
-        default_effort, resolve_effort, resolve_unit, GLM53_DEFAULT_EFFORT,
-        GLM53_DEFAULT_MIN_P, GLM53_DEFAULT_TEMP_MAX,
+        default_effort, resolve_effort, resolve_unit, GLM53_DEFAULT_EFFORT, GLM53_DEFAULT_MIN_P,
+        GLM53_DEFAULT_TEMP_MAX,
     };
     use crate::route::ThinkMode;
 
@@ -4107,7 +4126,11 @@ mod glm_value_tests {
         assert_eq!(resolve_number("T", Some("0.8"), 0.0, -2.0..=2.0), 0.8);
         assert_eq!(resolve_number("T", Some("-0.5"), 0.0, -2.0..=2.0), -0.5);
         for raw in ["", "abc", "3", "nan"] {
-            assert_eq!(resolve_number("T", Some(raw), 0.0, -2.0..=2.0), 0.0, "{raw}");
+            assert_eq!(
+                resolve_number("T", Some(raw), 0.0, -2.0..=2.0),
+                0.0,
+                "{raw}"
+            );
         }
     }
 

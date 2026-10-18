@@ -1953,12 +1953,18 @@ fn decode_pass(
         let budget = (max_tokens - acc.completion).min(engine.ctx() - engine.pos());
         // Forced control prefixes can change policy between tokens. Only
         // an unconstrained greedy segment may be committed ahead of output.
+        // A penalty face forbids the commit: the committed tail is an argmax
+        // chain inside the engine that has no token history and cannot carry
+        // the face, the same reason the continuous lane's device trial stands
+        // down under a penalty (`family_cont_spec`). A greedy GLM turn with
+        // DRY would otherwise penalize only the segment's first token.
         let prefix_start = engine.pos();
         let accepted = if temperature <= 0.0
             && parsed.eos_policy == EosPolicy::Default
             && matches!(ov, SampleOverride::None)
             && parsed.required_tool_prefix.is_empty()
             && parsed.required_think_end_prefix.is_empty()
+            && !penalty.is_set()
         {
             let accepted = engine.eval_greedy(token, budget)?;
             if engine.last_eval_speculated() {

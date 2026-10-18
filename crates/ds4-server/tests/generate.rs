@@ -1051,6 +1051,37 @@ fn serial_lane_applies_the_request_penalty_over_the_generated_segment() {
     // The scripted prompt is one token, so generation starts at 1 and the
     // prompt stays outside the penalized segment.
     assert_eq!(first.gen_start, 1);
+    assert!(
+        engine.prefix_budgets.is_empty(),
+        "a greedy turn under a face must not commit a prefix: the committed \
+         tail is an engine-internal argmax chain that carries no history"
+    );
+}
+
+#[test]
+fn serial_lane_keeps_the_greedy_commit_without_a_penalty() {
+    // The face is what stands the greedy commit down. Without one, the same
+    // greedy turn still commits its prefix in one call, so the gate above
+    // narrows exactly the penalty case.
+    let mut parsed = user_req();
+    parsed.temperature = 0.0;
+    let mut script =
+        ScriptedDecode::from_pieces(&TAPE_PLAIN.iter().map(|s| s.as_bytes()).collect::<Vec<_>>());
+    script.model_id = 17;
+    let mut engine = PromptSyncDecode::new(script, 0, 1);
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "glm-plain-serial",
+        CREATED_TEST,
+        false,
+        4,
+        &mut Vec::new(),
+    )
+    .unwrap();
+
+    assert!(!engine.prefix_budgets.is_empty());
+    assert!(engine.penalty_calls.is_empty());
 }
 
 #[test]
