@@ -898,6 +898,15 @@ fn warm_match_pick(
     best
 }
 
+/// Warm-path diagnostic. Off unless `DS4_SERVER_WARM_TRACE` is set. The
+/// request's own `reuse_miss` is written by the store-backed producer, which
+/// cannot name a live-bank refusal, so the picker's view needs its own print.
+#[cfg(feature = "native")]
+fn warm_trace_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("DS4_SERVER_WARM_TRACE").is_some_and(|value| value != "0"))
+}
+
 #[cfg(any(feature = "native", test))]
 fn warm_partial_match_pick(
     banks: &[WarmBank],
@@ -2607,6 +2616,64 @@ mod native {
             }
         }
 
+        /// One line per bank behind `DS4_SERVER_WARM_TRACE`, so a cold
+        /// outcome names the picker's own refusal instead of the store's.
+        /// A `cached` of -1 means that plan was refused.
+        fn warm_trace(
+            &self,
+            batch: &BatchCtx<'_>,
+            prompt: &[u8],
+            cache_prompt: Option<&[u8]>,
+            full: Option<&WarmAdmitPlan>,
+            partial: Option<&WarmAdmitPlan>,
+        ) {
+            let key = cache_prompt.unwrap_or(prompt);
+            eprintln!(
+                "ds4-server-rs: warm trace key={} cache_key={} reuse={:?} full={} partial={}",
+                key.len(),
+                cache_prompt.is_some(),
+                self.warm_reuse,
+                full.map_or(-1, |plan| i64::from(plan.cached)),
+                partial.map_or(-1, |plan| i64::from(plan.cached)),
+            );
+            for (bank, state) in self.warm.iter().enumerate() {
+                let live = batch
+                    .bank_snapshot(i32::try_from(bank).unwrap_or(-1))
+                    .map_or((0, 0), |snapshot| {
+                        (snapshot.generation, snapshot.tokens.len())
+                    });
+                let Some(record) = state.record.as_ref() else {
+                    eprintln!(
+                        "ds4-server-rs: warm trace   bank={bank} record=none committed={} \
+                         live_gen={} live_tokens={}",
+                        state.committed_tokens, live.0, live.1
+                    );
+                    continue;
+                };
+                let lcp = |text: &[u8]| {
+                    key.iter()
+                        .zip(text)
+                        .take_while(|(left, right)| left == right)
+                        .count()
+                };
+                eprintln!(
+                    "ds4-server-rs: warm trace   bank={bank} text={} lcp={} partial_only={} \
+                     cache_text={:?} exact={:?} exact_cache={:?} gen={} live_gen={} \
+                     committed={} live_tokens={}",
+                    record.text.len(),
+                    lcp(&record.text),
+                    record.partial_only,
+                    record.cache_text.as_ref().map(Vec::len),
+                    record.exact_text.as_ref().map(Vec::len),
+                    record.exact_cache_text.as_ref().map(Vec::len),
+                    record.generation,
+                    live.0,
+                    state.committed_tokens,
+                    live.1,
+                );
+            }
+        }
+
         fn warm_plan(
             &mut self,
             batch: &BatchCtx<'_>,
@@ -2638,6 +2705,9 @@ mod native {
                 prompt_tokens,
                 miss,
             );
+            if warm_trace_on() {
+                self.warm_trace(batch, prompt, cache_prompt, full.as_ref(), partial.as_ref());
+            }
             match (full, partial) {
                 (Some(full), Some(partial)) if partial.cached > full.cached => Some(partial),
                 (Some(full), _) => Some(full),
@@ -3323,6 +3393,12 @@ mod native {
             } else {
                 let (hold, hold_retry) = self.protected_banks(bank_hold_retry);
                 let protected = reserve.protect(&hold);
+                if warm_trace_on() && (self.warm_reuse == ReuseKind::None || !capture_done) {
+                    eprintln!(
+                        "ds4-server-rs: warm trace skipped reuse={:?} capture_done={capture_done}",
+                        self.warm_reuse
+                    );
+                }
                 let warm = if capture_done && self.warm_reuse != ReuseKind::None {
                     self.warm_plan(
                         batch,
