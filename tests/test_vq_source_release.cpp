@@ -25,6 +25,9 @@ static uint64_t g_model_registered_size, g_model_range_bytes;
 static struct { struct { uint64_t map_len; } v[DS4_MSRC_MAX]; } g_model_srcs;
 static struct { int keep_model_pages, verbose; } env;
 static const auto &cuda_weight_env() { return env; }
+static const void *g_model_shard_map;
+static std::vector<int> g_model_shard_fds;
+static std::vector<uint64_t> g_model_shard_bases, g_model_shard_sizes;
 #include "release.inc"
 
 enum class Copy { Aligned, Flat, Failed };
@@ -80,6 +83,25 @@ static Mapping mapping() {
     return {fd, static_cast<char *>(ptr), page, bytes};
 }
 
+// Split parts map back to back with no single fd: pages 0-1 come from the
+// first part file, pages 2-4 from the second, so a unit spans both.
+static Mapping split(int fds[2]) {
+    const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    const size_t sizes[2] = {2 * page, 3 * page};
+    void *base = mmap(nullptr, 5 * page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(base != MAP_FAILED);
+    size_t offset = 0;
+    for (int k = 0; k < 2; ++k) {
+        char path[] = ".vq-source-release-XXXXXX";
+        fds[k] = mkstemp(path);
+        CHECK(fds[k] >= 0 && unlink(path) == 0 && ftruncate(fds[k], sizes[k]) == 0);
+        void *at = static_cast<char *>(base) + offset;
+        CHECK(mmap(at, sizes[k], PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fds[k], 0) == at);
+        offset += sizes[k];
+    }
+    return {fds[0], static_cast<char *>(base), page, 5 * page};
+}
+
 static void fill(const Mapping &map) {
     for (size_t i = 0; i < map.bytes; ++i) { map.data[i] = static_cast<char>(i % 127); }
     CHECK(msync(map.data, map.bytes, MS_SYNC) == 0);
@@ -101,8 +123,21 @@ static void reset(const Mapping &map) {
     g_model_fd_host_base = map.data;
     g_model_srcs.v[0].map_len = g_model_registered_size = map.bytes;
     g_model_range_bytes = 0;
+    g_model_shard_map = nullptr;
+    g_model_shard_fds.clear();
+    g_model_shard_bases.clear();
+    g_model_shard_sizes.clear();
     publications = staged = 0;
     device.clear();
+}
+
+static void shard(const Mapping &map, const int fds[2]) {
+    reset(map);
+    g_model_fd = -1;
+    g_model_shard_map = map.data;
+    g_model_shard_fds = {fds[0], fds[1]};
+    g_model_shard_bases = {0, 2 * map.page};
+    g_model_shard_sizes = {2 * map.page, 3 * map.page};
 }
 
 static int promote(const Mapping &map, int discard) {
@@ -142,6 +177,17 @@ int main() {
     CHECK(promote(primary, 1) == DS4_RESUNIT_POPULATED);
     CHECK(resident(primary) == 3);
 
+    int parts[2];
+    Mapping split_map = split(parts);
+    shard(split_map, parts);
+    CHECK(promote(split_map, 1) == DS4_RESUNIT_POPULATED);
+    CHECK(resident(split_map) == 0);  /* Each part's own fd released its pages. */
+
+    shard(split_map, parts);
+    env.keep_model_pages = 1;
+    CHECK(promote(split_map, 1) == DS4_RESUNIT_POPULATED);
+    CHECK(resident(split_map) == 3);
+
     reset(primary);
     copy_mode = Copy::Failed;
     CHECK(promote(primary, 1) == DS4_RESUNIT_FAILED);
@@ -154,5 +200,7 @@ int main() {
 
     CHECK(munmap(primary.data, primary.bytes) == 0 && close(primary.fd) == 0);
     CHECK(munmap(aux.data, aux.bytes) == 0 && close(aux.fd) == 0);
-    std::puts("VQ source release PASS: seven cache/copy policies");
+    CHECK(munmap(split_map.data, split_map.bytes) == 0);
+    CHECK(close(parts[0]) == 0 && close(parts[1]) == 0);
+    std::puts("VQ source release PASS: nine cache/copy policies");
 }
