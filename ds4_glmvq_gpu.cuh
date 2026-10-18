@@ -71,7 +71,7 @@ struct ds4_gvq_ctx {
     uint64_t kv_calls = 0;
     uint64_t fp8_calls = 0;
     glmvq_q4_config q4;
-    std::vector<uint8_t> q4p_fit;
+    std::vector<uint8_t> q4p_fit, fp8p_fit;
     std::vector<int32_t> routes;
     std::vector<uint32_t> grouped;
     ds4_gpu_tensor *mma = nullptr;
@@ -325,12 +325,23 @@ extern "C" void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx) {
 static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
     const size_t count = ctx->model->source.size();
     ctx->q4p_fit.assign(count, 0);
+    ctx->fp8p_fit.assign(count, 0);
     ds4_gpu_tensor *flags = count ? ds4_gpu_tensor_alloc(count * sizeof(uint32_t)) : nullptr;
     if (!flags) { return false; }
     const cudaStream_t stream = ds4_current_stream();
     bool ok = cuda_ok(cudaMemsetAsync(flags->ptr, 0, count * sizeof(uint32_t), stream), "GLM VQ Q4 prefill scan");
     for (size_t i = 0; ok && i < count; i++) {
         const glmvq_source &s = ctx->model->source[i];
+        // FP8 matrices with 128 x 128 scales fold into the same FP16 operand.
+        if (ctx->model->records[i].type == GVQ_TYPE_FP8 && s.storage == GLMVQ_WEIGHT_FP8 && s.data && s.scale &&
+            glmvq_q4p_fits(s.rows, s.cols)) {
+            const uint64_t blocks = (uint64_t)s.rows / GLMVQ_SCALE_BLOCK * (s.cols / GLMVQ_SCALE_BLOCK);
+            glmvq_q4p_check_fp8<<<(unsigned)((blocks + 255) / 256), 256, 0, stream>>>(
+                s.scale, blocks, (uint32_t *)flags->ptr + i);
+            ok = cuda_ok(cudaGetLastError(), "GLM VQ FP8 prefill scan");
+            ctx->fp8p_fit[i] = 1;
+            continue;
+        }
         if (ctx->model->records[i].type != GVQ_TYPE_Q4 || !s.data || !glmvq_q4p_fits(s.rows, s.cols)) { continue; }
         const uint64_t blocks = (uint64_t)s.rows * s.cols / GLMVQ_Q4_BLOCK;
         glmvq_q4p_check<<<(unsigned)((blocks + 255) / 256), 256, 0, stream>>>(
@@ -344,6 +355,7 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
     uint32_t rejected = 0;
     for (size_t i = 0; i < count; i++) {
         if (ctx->q4p_fit[i] && (!ok || bad[i])) { ctx->q4p_fit[i] = 0; rejected++; }
+        if (ctx->fp8p_fit[i] && (!ok || bad[i])) { ctx->fp8p_fit[i] = 0; rejected++; }
     }
     if (rejected) { fprintf(stderr, "ds4: GLM VQ Q4 prefill keeps MMQ for %u matrices (scale range)\n", rejected); }
     ds4_gpu_tensor_free(flags);
@@ -848,7 +860,28 @@ extern "C" int ds4_gpu_gvq_fp8_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const
         widest = max(widest, (uint64_t)s.rows * s.cols);
     }
     const uint64_t nx = (uint64_t)rows * cols;
-    if (!gvq_floats(input, nx) || ctx->scratch->bytes < (widest + nx) * sizeof(__nv_bfloat16)) { return 0; }
+    if (!gvq_floats(input, nx)) { return 0; }
+    // q4p's FP16 operands from the FP8 bytes directly: no restored weight and
+    // no BF16 input copy (DS4_LING31_FP8_Q4P=0 keeps restore + cuBLAS).
+    static const int fp8p = [] { const char *e = getenv("DS4_LING31_FP8_Q4P"); return !(e && !strcmp(e, "0")); }();
+    bool direct = fp8p && ctx->q4_prefill && rows >= GVQ_Q4P_MIN_TOKENS &&
+        glmvq_q4p_bytes(rows, cols) <= ctx->scratch->bytes;
+    for (uint32_t c = 0; direct && c < count; c++) {
+        direct = weights[c] < ctx->fp8p_fit.size() && ctx->fp8p_fit[weights[c]];
+    }
+    if (direct) {
+        const glmvq_q4p_input in = glmvq_q4p_layout(ctx->scratch->ptr, rows, cols);
+        if (!cuda_ok(glmvq_q4p_prepare(in, (const float *)input->ptr, rows, cols, ctx->stream), "GLM VQ FP8 prefill input")) {
+            return 0;
+        }
+        for (uint32_t c = 0; c < count; c++) {
+            const glmvq_source &s = ctx->model->source[weights[c]];
+            if (!cuda_ok(glmvq_q4p_gemm_fp8((const uint8_t *)s.data, s.scale, in, (__nv_bfloat16 *)outs[c]->ptr,
+                    s.rows, s.cols, rows, ctx->stream), "GLM VQ FP8 prefill")) { return 0; }
+        }
+        return 1;
+    }
+    if (ctx->scratch->bytes < (widest + nx) * sizeof(__nv_bfloat16)) { return 0; }
     auto *weight = (__nv_bfloat16 *)ctx->scratch->ptr, *x = weight + widest;
     glmvq_convert<<<(nx + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
         (const float *)input->ptr, x, nx);

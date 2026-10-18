@@ -2,7 +2,9 @@
 // Q4_K weights. FP16 activations and the folded weight roundings measure
 // ~4e-4 relative RMS; the bound is 1e-3. Cases cover token tails, more
 // tiles than SMs (persistent CTAs) and a token beyond the FP16 range;
-// BF16 input rows must prepare the same bytes as their F32 values.
+// BF16 input rows must prepare the same bytes as their F32 values. The FP8
+// variant (E4M3 rows, F32 128 x 128 scales, BF16 out) adds the BF16 output
+// rounding to its bound.
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -24,9 +26,69 @@ static double weight(const uint8_t *block, uint32_t j) {
     return (double)h2f(block) * sc * value - (double)h2f(block + 2) * m;
 }
 
+static double e4m3(uint8_t b) {
+    const int e = (b >> 3) & 15, m = b & 7;
+    const double v = e ? ldexp(1.0 + m / 8.0, e - 7) : ldexp((double)m, -9);
+    return b & 0x80 ? -v : v;
+}
+
+static int fp8_case(uint32_t rows, uint32_t cols, uint32_t tokens, bool big) {
+    std::vector<uint8_t> w((size_t)rows * cols);
+    for (auto &b : w) { do { b = rng() & 0xff; } while ((b & 0x7f) == 0x7f); }
+    std::vector<float> sc((size_t)rows / GLMVQ_SCALE_BLOCK * (cols / GLMVQ_SCALE_BLOCK));
+    for (auto &v : sc) { v = 1e-4f * (1.0f + (rng() % 1000) * 1e-3f); }
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    std::vector<float> x((size_t)tokens * cols);
+    for (auto &v : x) { v = nd(rng); }
+    const uint32_t hot = 3;
+    if (big) { for (uint32_t k = 0; k < cols; k++) { x[(size_t)hot * cols + k] *= 1e5f; } }
+    uint8_t *dw; float *ds, *dx; __nv_bfloat16 *dy; void *scratch; uint32_t *bad;
+    CK(cudaMalloc(&dw, w.size())); CK(cudaMalloc(&ds, sc.size() * 4)); CK(cudaMalloc(&dx, x.size() * 4));
+    CK(cudaMalloc(&dy, (size_t)tokens * rows * 2)); CK(cudaMalloc(&scratch, glmvq_q4p_bytes(tokens, cols)));
+    CK(cudaMalloc(&bad, 4));
+    CK(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(ds, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice));
+    const glmvq_q4p_input in = glmvq_q4p_layout(scratch, tokens, cols);
+    CK(glmvq_q4p_prepare(in, dx, tokens, cols, 0));
+    CK(glmvq_q4p_gemm_fp8(dw, ds, in, dy, rows, cols, tokens, 0));
+    std::vector<__nv_bfloat16> y((size_t)tokens * rows);
+    CK(cudaMemcpy(y.data(), dy, y.size() * 2, cudaMemcpyDeviceToHost));
+    double err = 0, ref2 = 0;
+    for (uint32_t i = 0; i < 2048 + (big ? rows : 0); i++) {
+        const uint32_t t = i < 2048 ? rng() % tokens : hot, r = i < 2048 ? rng() % rows : i - 2048;
+        double ref = 0;
+        for (uint32_t k = 0; k < cols; k++) {
+            ref += e4m3(w[(size_t)r * cols + k]) *
+                sc[(size_t)(r / GLMVQ_SCALE_BLOCK) * (cols / GLMVQ_SCALE_BLOCK) + k / GLMVQ_SCALE_BLOCK] *
+                x[(size_t)t * cols + k];
+        }
+        const double scale = t == hot && big ? 1e-5 : 1.0, got = __bfloat162float(y[(size_t)t * rows + r]);
+        err += (got - ref) * (got - ref) * scale * scale;
+        ref2 += ref * ref * scale * scale;
+    }
+    const double rel = sqrt(err / ref2);
+    printf("fp8 rows=%u cols=%u tokens=%u big=%d: relRMS %.3g\n", rows, cols, tokens, (int)big, rel);
+    int failures = !(rel < 4e-3);
+    // Scales that would overflow the folded FP16 weight are rejected.
+    const uint64_t blocks = sc.size();
+    CK(cudaMemset(bad, 0, 4));
+    glmvq_q4p_check_fp8<<<(unsigned)((blocks + 255) / 256), 256>>>(ds, blocks, bad);
+    uint32_t flag = 1; CK(cudaMemcpy(&flag, bad, 4, cudaMemcpyDeviceToHost));
+    const float huge = 3.0f;
+    CK(cudaMemcpy(ds + blocks - 1, &huge, 4, cudaMemcpyHostToDevice)); CK(cudaMemset(bad, 0, 4));
+    glmvq_q4p_check_fp8<<<(unsigned)((blocks + 255) / 256), 256>>>(ds, blocks, bad);
+    uint32_t flagged = 0; CK(cudaMemcpy(&flagged, bad, 4, cudaMemcpyDeviceToHost));
+    if (flag || !flagged) { printf("  fp8 check: in-range %u, out-of-range %u\n", flag, flagged); failures++; }
+    CK(cudaFree(dw)); CK(cudaFree(ds)); CK(cudaFree(dx)); CK(cudaFree(dy)); CK(cudaFree(scratch)); CK(cudaFree(bad));
+    return failures;
+}
+
 int main() {
     CK(glmvq_q4p_init());
     int failures = 0;
+    failures += fp8_case(8192, 4096, 640, false);
+    failures += fp8_case(1024, 512, 300, true);
     struct Case { uint32_t rows, cols, tokens; bool big; };
     for (Case c : {Case{2048, 1536, 640, false}, Case{512, 4096, 300, true}, Case{2048, 1536, 1000, false}}) {
         const uint32_t blocks = c.cols / GLMVQ_Q4_BLOCK;
