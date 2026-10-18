@@ -3152,7 +3152,13 @@ mod tests {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
         let caps = serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq);
-        for (ctx, rows) in [(4096, 2048), (131_072, 2048), (131_073, 1024), (196_608, 1024), (262_144, 512)] {
+        for (ctx, rows) in [
+            (4096, 2048),
+            (131_072, 2048),
+            (131_073, 1024),
+            (196_608, 1024),
+            (262_144, 512),
+        ] {
             assert_eq!(family_native_chunk(caps, ctx), rows, "ctx {ctx}");
         }
         assert_eq!(family_native_chunk(caps, 1000), 1000);
