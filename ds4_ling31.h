@@ -52,10 +52,12 @@ int ds4_gpu_l31_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tenso
 int ds4_gpu_l31_value(ds4_gpu_tensor *out, const ds4_gpu_tensor *latent,
     const ds4_gpu_tensor *v_b, uint32_t rows);
 /* Range attention of n_query rows at query_pos0 over one expanded segment
- * [kv_pos0, kv_pos0 + n_kv): normalized heads and their LSE for the merge. */
+ * [kv_pos0, kv_pos0 + n_kv). The first segment writes normalized heads and
+ * their LSE; a merged one folds into them in place. */
+typedef enum { DS4_L31_SEGMENT_FIRST, DS4_L31_SEGMENT_MERGE } ds4_l31_segment;
 int ds4_gpu_l31_expanded_attn(ds4_gpu_tensor *out, ds4_gpu_tensor *lse, const ds4_gpu_tensor *q,
     const ds4_gpu_tensor *k_full, const ds4_gpu_tensor *value, uint32_t n_query,
-    uint32_t query_pos0, uint32_t n_kv, uint32_t kv_pos0, float scale);
+    uint32_t query_pos0, uint32_t n_kv, uint32_t kv_pos0, float scale, ds4_l31_segment segment);
 /* Expanded-MLA prefill operand for latent rows [slot0, slot0 + rows). */
 int ds4_gpu_l31_expand(ds4_gpu_tensor *k_full, ds4_gpu_tensor *value,
     const ds4_gpu_tensor *latent_cache, const ds4_gpu_tensor *k_pe_cache,

@@ -410,14 +410,19 @@ static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
         l31_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16);
 }
 
-// Range attention of the rows over one expanded segment.
-static bool l31_range_attn(ds4_ling31_graph *g, ds4_gpu_tensor *out, ds4_gpu_tensor *lse,
-        uint32_t rows, uint32_t pos, uint32_t len, uint32_t seg0, float scale) {
+// Range attention of the rows over one expanded segment into heads/lse. The
+// pipelined kernel merges in place; Ling-3.0's writes a partial to merge.
+static bool l31_range_attn(ds4_ling31_graph *g, uint32_t rows, uint32_t pos, uint32_t len,
+        uint32_t seg0, float scale, ds4_l31_segment segment) {
     if (g->pipe) {
-        return ds4_gpu_l31_expanded_attn(out, lse, g->q, g->k_full, g->value, rows, pos, len, seg0, scale);
+        return ds4_gpu_l31_expanded_attn(g->heads, g->lse, g->q, g->k_full, g->value, rows, pos, len, seg0,
+            scale, segment);
     }
-    return ds4_gpu_ling3vl_expanded_attn(out, lse, g->q, g->k_full, g->value, rows, pos, len, seg0,
-        L31_HEADS, L31_KEY, L31_VALUE, scale, 1);
+    const bool first = segment == DS4_L31_SEGMENT_FIRST;
+    return ds4_gpu_ling3vl_expanded_attn(first ? g->heads : g->attn_tmp, first ? g->lse : g->lse_tmp,
+            g->q, g->k_full, g->value, rows, pos, len, seg0, L31_HEADS, L31_KEY, L31_VALUE, scale, 1) &&
+        (first || ds4_gpu_motif3_merge_attention_states_tensor(g->heads, g->lse, g->attn_tmp, g->lse_tmp,
+            rows, L31_HEADS, L31_VALUE));
 }
 
 /* Expanded MLA prefill (Ling-3.0's split): each key segment of the latent
@@ -426,18 +431,14 @@ static bool l31_range_attn(ds4_ling31_graph *g, ds4_gpu_tensor *out, ds4_gpu_ten
  * pos so every segment starts at or before the first query. */
 static bool l31_mla_expanded(ds4_ling31_graph *g, uint32_t il, uint32_t rows, uint32_t pos, float scale) {
     const uint32_t end = pos + rows;
-    bool first = true;
+    ds4_l31_segment segment = DS4_L31_SEGMENT_FIRST;
     for (uint32_t seg0 = 0; seg0 < end;) {
         const uint32_t limit = seg0 < pos ? pos : end;
         const uint32_t len = limit - seg0 < g->row_cap ? limit - seg0 : g->row_cap;
-        ds4_gpu_tensor *out = first ? g->heads : g->attn_tmp;
-        ds4_gpu_tensor *lse = first ? g->lse : g->lse_tmp;
         if (!ds4_gpu_l31_expand(g->k_full, g->value, g->latent[il], g->k_pe[il], g->k_b[il], g->v_b[il],
                 seg0, len) ||
-            !l31_range_attn(g, out, lse, rows, pos, len, seg0, scale) ||
-            (!first && !ds4_gpu_motif3_merge_attention_states_tensor(g->heads, g->lse, g->attn_tmp,
-                g->lse_tmp, rows, L31_HEADS, L31_VALUE))) { return false; }
-        first = false;
+            !l31_range_attn(g, rows, pos, len, seg0, scale, segment)) { return false; }
+        segment = DS4_L31_SEGMENT_MERGE;
         seg0 += len;
     }
     return true;

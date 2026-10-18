@@ -2042,7 +2042,10 @@ void ling3vl_fattn_hmma_kernel(
  * land in shared memory while the previous tile computes, and 128 queries
  * share each K/V tile.  Each warp still owns 16 query rows and runs the same
  * MMA, mask and online-softmax sequence over the same keys, so outputs and
- * LSE are bit-identical to ling3vl_fattn_hmma_kernel<64>. */
+ * LSE are bit-identical to ling3vl_fattn_hmma_kernel<64>.  With MERGE the
+ * epilogue folds the segment into the running heads/LSE in place with
+ * motif3_merge_attention_states_kernel's arithmetic, so no partial is
+ * written and reread. */
 enum {
     L31_PF_WARPS  = 8,
     L31_PF_TQ     = L31_PF_WARPS * 16,
@@ -2055,6 +2058,7 @@ __device__ __forceinline__ void l31_pf_cp_wait_0() {
     asm volatile("cp.async.wait_group 0;\n" ::);
 }
 
+template <bool MERGE>
 __global__ __launch_bounds__(L31_PF_WARPS * 32, 1)
 void ling31_fattn_pipe_kernel(
         float * __restrict__ heads,
@@ -2269,6 +2273,32 @@ void ling31_fattn_pipe_kernel(
         slot ^= 1u;
     }
 
+    // Merge weights of the running state (s) and this segment (p); without
+    // MERGE the segment is the state.
+    float keep[2] = {0.0f, 0.0f}, take[2] = {1.0f, 1.0f}, merged[2];
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        const uint32_t token = tq0 + qrow[r];
+        const float p = row_l[r] > 0.0f ? row_m[r] + logf(row_l[r]) : -INFINITY;
+        merged[r] = p;
+        if (!MERGE || !alive[r]) continue;
+        const float s_lse = lse[(size_t)token * n_head + h];
+        const float m = fmaxf(s_lse, p);
+        if (isinf(m) && m < 0.0f) {
+            keep[r] = take[r] = 0.0f;
+            merged[r] = -INFINITY;
+        } else {
+            const float sw = expf(s_lse - m);
+            const float pw = expf(p - m);
+            const float inv = 1.0f / (sw + pw);
+            keep[r] = sw * inv;
+            take[r] = pw * inv;
+            merged[r] = m + logf(sw + pw);
+        }
+    }
+    // Every lane of a row reads its running LSE before lane 0 replaces it.
+    if (MERGE) __syncwarp();
+
 #pragma unroll
     for (int cb = 0; cb < L3_FA_V / 8; cb++) {
 #pragma unroll
@@ -2277,17 +2307,16 @@ void ling31_fattn_pipe_kernel(
             if (!alive[r]) continue;
             const uint32_t token = tq0 + qrow[r];
             const int col = (int)(lane % 4) * 2 + (l % 2);
-            heads[((size_t)token * n_head + h) * L3_FA_V + cb * 8 + col] =
-                row_l[r] > 0.0f ? output[cb].x[l] / row_l[r] : 0.0f;
+            const size_t at = ((size_t)token * n_head + h) * L3_FA_V + cb * 8 + col;
+            const float value = row_l[r] > 0.0f ? output[cb].x[l] / row_l[r] : 0.0f;
+            heads[at] = MERGE ? heads[at] * keep[r] + value * take[r] : value;
         }
     }
     if (lse && (lane & 3u) == 0u) {
 #pragma unroll
         for (int r = 0; r < 2; r++) {
             if (!alive[r]) continue;
-            const uint32_t token = tq0 + qrow[r];
-            lse[(size_t)token * n_head + h] =
-                row_l[r] > 0.0f ? row_m[r] + logf(row_l[r]) : -INFINITY;
+            lse[(size_t)(tq0 + qrow[r]) * n_head + h] = merged[r];
         }
     }
 }
@@ -3236,20 +3265,23 @@ extern "C" int ds4_mmq_ling31_prefill_attn_pipe(
         float *heads, float *lse, const float *q,
         const void *k, const void *v,
         int n_query, int query_pos0, int n_kv, int kv_pos0,
-        int n_head, int qk_dim, int v_dim, float scale, cudaStream_t stream) {
+        int n_head, int qk_dim, int v_dim, float scale, int merge, cudaStream_t stream) {
     if (!heads || !q || !k || !v || n_query <= 0 || query_pos0 < 0 ||
         n_kv <= 0 || kv_pos0 < 0 || n_head <= 0 || qk_dim != L3_FA_QK ||
-        v_dim != L3_FA_V || kv_pos0 > query_pos0) {
+        v_dim != L3_FA_V || kv_pos0 > query_pos0 || (merge && !lse)) {
         return -1;
     }
     static int smem_ok = -1;
     if (smem_ok < 0) {
-        smem_ok = cudaFuncSetAttribute(ling31_fattn_pipe_kernel,
+        smem_ok = cudaFuncSetAttribute(ling31_fattn_pipe_kernel<false>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, L31_PF_SMEM) == cudaSuccess &&
+            cudaFuncSetAttribute(ling31_fattn_pipe_kernel<true>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, L31_PF_SMEM) == cudaSuccess;
     }
     if (!smem_ok) return -2;
     const dim3 grid((n_query + L31_PF_TQ - 1) / L31_PF_TQ, n_head, 1);
-    ling31_fattn_pipe_kernel<<<grid, L31_PF_WARPS * 32, L31_PF_SMEM, stream>>>(
+    auto kernel = merge ? ling31_fattn_pipe_kernel<true> : ling31_fattn_pipe_kernel<false>;
+    kernel<<<grid, L31_PF_WARPS * 32, L31_PF_SMEM, stream>>>(
         heads, lse, q, (const __nv_bfloat16 *)k, (const __nv_bfloat16 *)v,
         (uint32_t)n_query, (uint32_t)query_pos0, (uint32_t)n_kv, (uint32_t)kv_pos0,
         (uint32_t)n_head, scale);
