@@ -61,7 +61,7 @@ static cublasStatus_t glmvq_gemm(cublasHandle_t handle, const glmvq_source &w,
     __nv_bfloat16 *cursor = (__nv_bfloat16 *)scratch;
     const __nv_bfloat16 *weight = (const __nv_bfloat16 *)w.data;
     if (w.storage == GLMVQ_WEIGHT_FP8) {
-        if (!w.data || !w.scale || w.rows % GLMVQ_SCALE_BLOCK || w.cols % GLMVQ_SCALE_BLOCK) {
+        if (!w.data || !w.scale || w.cols % GLMVQ_SCALE_BLOCK) {
             return CUBLAS_STATUS_INVALID_VALUE;
         }
         glmvq_fp8_restore<<<blocks, GLMVQ_THREADS, 0, stream>>>(

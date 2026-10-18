@@ -31,7 +31,8 @@ enum { GLMVQ_Q4M_TOKENS = 8 };
 // SWIGLU: a 16-row tile holds 8 gate rows over the same 8 up rows, so each
 // lane ends with gate and up of one output row and writes the clamped
 // SwiGLU of their BF16 roundings, as the separate kernels do.
-enum glmvq_q4m_epilogue { GLMVQ_Q4M_PLAIN, GLMVQ_Q4M_SWIGLU };
+// SWIGLU_SILU: the same gate/up pair with Ling's post-SiLU clamp form.
+enum glmvq_q4m_epilogue { GLMVQ_Q4M_PLAIN, GLMVQ_Q4M_SWIGLU, GLMVQ_Q4M_SWIGLU_SILU };
 
 template <uint32_t TILES, uint32_t WARPS, uint32_t CHUNK, uint32_t STAGES>
 struct glmvq_q4m_shape {
@@ -141,8 +142,9 @@ __global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight, c
         const float *input, float *out, uint32_t cols, uint32_t rows, uint32_t tokens, float limit) {
     using shape = glmvq_q4m_shape<TILES, WARPS, CHUNK, STAGES>;
     static_assert(EPI == GLMVQ_Q4M_PLAIN || TILES == 1, "SwiGLU pairs one tile");
+    constexpr bool pair = EPI != GLMVQ_Q4M_PLAIN;
     // Output rows per CTA: SWIGLU stages 8 gate and the same 8 up rows.
-    constexpr uint32_t outs = EPI == GLMVQ_Q4M_SWIGLU ? 8 : shape::rows;
+    constexpr uint32_t outs = pair ? 8 : shape::rows;
     extern __shared__ uint4 glmvq_q4m_smem[];
     __shared__ float red[WARPS][shape::rows][GLMVQ_Q4M_TOKENS];
     uint8_t *staged = (uint8_t *)glmvq_q4m_smem;
@@ -162,8 +164,8 @@ __global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight, c
             for (uint32_t i = threadIdx.x; i < shape::rows * shape::pieces; i += shape::threads) {
                 const uint32_t r = i / shape::pieces, piece = i % shape::pieces;
                 // SWIGLU: staged rows 0-7 are gate rows row0.., rows 8-15 the same up rows.
-                const uint32_t local = EPI == GLMVQ_Q4M_SWIGLU ? r % outs : r;
-                const uint8_t *src = (EPI == GLMVQ_Q4M_SWIGLU && r >= outs ? up : weight) + offset;
+                const uint32_t local = pair ? r % outs : r;
+                const uint8_t *src = (pair && r >= outs ? up : weight) + offset;
                 if (piece < pieces && row0 + local < rows) {
                     __pipeline_memcpy_async(dst + r * shape::stride + piece * 16, src + local * row_bytes + piece * 16, 16);
                 }
@@ -205,8 +207,13 @@ __global__ void __launch_bounds__(WARPS * 32) glmvq_q4m(const uint8_t *weight, c
     for (uint32_t i = threadIdx.x; i < outs * tokens; i += shape::threads) {
         const uint32_t r = i % outs, n = i / outs;
         if (row0 + r >= rows) { continue; }
-        out[(uint64_t)n * rows + row0 + r] = EPI == GLMVQ_Q4M_SWIGLU
-            ? glmvq_swiglu_value(total(r, n), total(r + outs, n), limit) : total(r, n);
+        if constexpr (EPI == GLMVQ_Q4M_SWIGLU_SILU) {
+            out[(uint64_t)n * rows + row0 + r] =
+                glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(total(r, n), total(r + outs, n), limit);
+        } else {
+            out[(uint64_t)n * rows + row0 + r] = EPI == GLMVQ_Q4M_SWIGLU
+                ? glmvq_swiglu_value(total(r, n), total(r + outs, n), limit) : total(r, n);
+        }
     }
 }
 
@@ -227,6 +234,10 @@ static cudaError_t glmvq_q4m_prepare() {
         err = cudaFuncSetAttribute(glmvq_q4m_kernel<GLMVQ_Q4M_SWIGLU>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, glmvq_q4m_prod::smem);
     }
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_q4m_kernel<GLMVQ_Q4M_SWIGLU_SILU>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, glmvq_q4m_prod::smem);
+    }
     return err;
 }
 
@@ -244,13 +255,15 @@ static cudaError_t glmvq_q4m_decode(const void *weight, const float *input, floa
 }
 
 // Gate and up of one input with the clamped SwiGLU: `rows` mid rows.
+template <glmvq_q4m_epilogue EPI = GLMVQ_Q4M_SWIGLU>
 static cudaError_t glmvq_q4m_swiglu(const void *gate, const void *up, const float *input, float *mid,
         uint32_t rows, uint32_t cols, uint32_t tokens, float limit, cudaStream_t stream, glmvq_launch launch) {
+    static_assert(EPI != GLMVQ_Q4M_PLAIN, "a gate/up pair");
     if (!mid || !rows || !glmvq_q4m_fits(gate, input, cols, tokens) || (uintptr_t)up % 16) {
         return cudaErrorInvalidValue;
     }
     constexpr uint32_t outs = glmvq_q4m_prod::rows / 2;
-    return glmvq_launch_kernel(launch, glmvq_q4m_kernel<GLMVQ_Q4M_SWIGLU>, (rows + outs - 1) / outs,
+    return glmvq_launch_kernel(launch, glmvq_q4m_kernel<EPI>, (rows + outs - 1) / outs,
         glmvq_q4m_prod::threads, glmvq_q4m_prod::smem, stream, (const uint8_t *)gate, (const uint8_t *)up,
         input, mid, cols, rows, tokens, limit);
 }

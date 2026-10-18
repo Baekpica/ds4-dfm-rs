@@ -955,6 +955,22 @@ fn inkling_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
         .collect()
 }
 
+/// Required names, except OptionalExact specs (Ling-3.1's MTP block, whose
+/// parts the release maps only when MTP is enabled).
+fn layout_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
+    layouts
+        .into_iter()
+        .map(|s| BindName {
+            need: if matches!(s.class, crate::TypeClass::OptionalExact(_)) {
+                BindNeed::Optional
+            } else {
+                BindNeed::Required
+            },
+            name: s.name,
+        })
+        .collect()
+}
+
 fn mtp_names(shape: &Shape) -> Vec<BindName> {
     if shape.family == ModelFamily::Step37 {
         return inkling_names(crate::Step37SidecarPlan::layouts(crate::Step37Sidecar::Mtp));
@@ -970,6 +986,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
     let mut out = Vec::new();
     match shape.family {
         ModelFamily::Glm53Vq => return inkling_names(crate::glm_vq::layouts()),
+        ModelFamily::Ling31Vq => return layout_names(crate::ling31_vq::layouts()),
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output_norm.weight");
@@ -1187,11 +1204,17 @@ impl BindPlan {
             if slot.name.starts_with("mtp.") || slot.name.starts_with("dspark.") {
                 continue;
             }
-            let routed = if self.shape.family == ModelFamily::Inkling {
-                slot.name.starts_with("model.llm.layers.")
-                    && slot.name.ends_with(".mlp.experts.w13_weight")
-            } else {
-                slot.name.contains("ffn_gate_exps")
+            // Ling-3.1 keeps HF expert names; its GVQ1 codes count as 2-bit
+            // (disk KV records accept only 2 or 4).
+            let routed = match self.shape.family {
+                ModelFamily::Inkling => {
+                    slot.name.starts_with("model.llm.layers.")
+                        && slot.name.ends_with(".mlp.experts.w13_weight")
+                }
+                ModelFamily::Ling31Vq => {
+                    slot.name.contains(".mlp.experts.") && slot.name.ends_with(".gate_proj.weight")
+                }
+                _ => slot.name.contains("ffn_gate_exps"),
             };
             if !routed {
                 continue;
@@ -1681,6 +1704,17 @@ mod tests {
             gate("model.llm.layers.2.mlp.experts.w13_weight", 8),
         ]);
         p.shape = crate::shape::SHAPE_INKLING_SMALL;
+        assert_eq!(p.routed_quant_bits(), 2);
+    }
+
+    #[test]
+    fn ling31_kv_quant_identity() {
+        // GVQ1 experts (0x47565138) take the 2-bit KV identity class.
+        let mut p = plan(vec![gate(
+            "model.layers.4.mlp.experts.0.gate_proj.weight",
+            0x4756_5138,
+        )]);
+        p.shape = crate::shape::SHAPE_LING31_VQ;
         assert_eq!(p.routed_quant_bits(), 2);
     }
 

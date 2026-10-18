@@ -197,6 +197,9 @@ pub fn identify_file(g: &GgufFile) -> Result<Identified, IdentifyError> {
 
 pub fn identify_gguf(path: &Path) -> Result<Identified, IdentifyError> {
     if path.is_dir() {
+        if crate::ling31_vq::is_release(path) {
+            return crate::ling31_vq::identify(path);
+        }
         return crate::glm_vq::identify(path);
     }
     let g = GgufFile::open(path)?;

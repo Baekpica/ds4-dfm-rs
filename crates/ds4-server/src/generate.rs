@@ -3867,9 +3867,9 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 #[cfg(any(feature = "native", test))]
 fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, draft: i32) -> bool {
     match family {
-        ds4_core::ModelFamily::Glm53 | ds4_core::ModelFamily::Glm53Vq => {
-            ds4_core::check_mtp_draft(family, draft).is_ok()
-        }
+        ds4_core::ModelFamily::Glm53
+        | ds4_core::ModelFamily::Glm53Vq
+        | ds4_core::ModelFamily::Ling31Vq => ds4_core::check_mtp_draft(family, draft).is_ok(),
         ds4_core::ModelFamily::IQuestQ1 => {
             (2..=ds4_core::IQuestPlan::MAX_MTP_DRAFT as i32).contains(&draft)
         }

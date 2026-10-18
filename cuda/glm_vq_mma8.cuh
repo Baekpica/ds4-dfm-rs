@@ -35,14 +35,18 @@ __global__ void glmvq_mma8_quant(uint8_t *out, float *scales, const T *input, ui
     if (!lane) { scales[block] = scale; }
 }
 
-// 64-token items fit beside the 64 KiB book only with double buffering.
-template <uint32_t BT>
-__host__ __device__ constexpr uint32_t glmvq_mma8_stages() { return BT == 64 ? 2 : GLMVQ_MMA8_STAGES; }
+// 64-token items fit beside the 64 KiB book only with double buffering;
+// a 12-bit (K4096) layer's 32 KiB book leaves room for three stages.
+template <uint32_t BT, uint32_t BITS = 13>
+__host__ __device__ constexpr uint32_t glmvq_mma8_stages() { return BT == 64 && BITS == 13 ? 2 : GLMVQ_MMA8_STAGES; }
 
-template <uint32_t BM, uint32_t BT>
+template <uint32_t BITS>
+__host__ __device__ constexpr uint32_t glmvq_mma8_book() { return (1u << BITS) * GLMVQ_VECTOR; }
+
+template <uint32_t BM, uint32_t BT, uint32_t BITS = 13>
 static constexpr uint32_t glmvq_mma8_bytes() {
-    return GLMVQ_BOOK_BYTES + glmvq_mma8_stages<BT>() *
-        (BM * (GLMVQ_MMA8_INDEX + GLMVQ_MMA8_PLANE) + BT * (GLMVQ_MMA8_ROW + sizeof(float)));
+    return glmvq_mma8_book<BITS>() + glmvq_mma8_stages<BT, BITS>() *
+        (BM * (GLMVQ_MMA8_INDEX + (BITS == 13 ? GLMVQ_MMA8_PLANE : 0u)) + BT * (GLMVQ_MMA8_ROW + sizeof(float)));
 }
 
 // Staged token rows keep 128 bytes; their 32-byte k32 groups rotate by
@@ -82,7 +86,8 @@ __device__ __forceinline__ uint32_t glmvq_mma8_code(const uint32_t (&w)[6], uint
 template <uint32_t BM, uint32_t MT>
 __host__ __device__ constexpr uint32_t glmvq_mma8_threads() { return BM / (16 * MT) * 32; }
 
-template <uint32_t BM, uint32_t BT, uint32_t MT, glmvq_mma_stage MODE>
+template <uint32_t BM, uint32_t BT, uint32_t MT, glmvq_mma_stage MODE, uint32_t BITS = 13,
+          glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE>
 __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_kernel(
         const glmvq_source *sources, const glmvq_mma_item *items, uint32_t nitems,
         const uint8_t *book, const uint8_t *act, const float *act_scale, const uint32_t *map,
@@ -91,15 +96,16 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
     static_assert((BM == 128 || BM == 256) && (BT == 16 || BT == 32 || BT == 64) && (MT == 1 || MT == 2),
         "bounded GLM tiles");
     constexpr uint32_t THREADS = glmvq_mma8_threads<BM, MT>(), NT = BT / 8, PREFETCH_AHEAD = 2;
-    constexpr uint32_t STAGES = glmvq_mma8_stages<BT>();
-    constexpr uint32_t BSB = BM * GLMVQ_MMA8_INDEX, EXB = BM * GLMVQ_MMA8_PLANE;
+    constexpr uint32_t STAGES = glmvq_mma8_stages<BT, BITS>(), BOOK = glmvq_mma8_book<BITS>();
+    constexpr uint32_t BSB = BM * GLMVQ_MMA8_INDEX, EXB = BITS == 13 ? BM * GLMVQ_MMA8_PLANE : 0u;
     constexpr uint32_t ATB = BT * GLMVQ_MMA8_ROW, STB = BSB + EXB + ATB + BT * sizeof(float);
+    static_assert(BITS == 12 || BITS == 13, "GVQ1 stores 12- or 13-bit indices");
     static_assert(THREADS >= BT * 8 && THREADS >= BM, "one activation chunk and row per thread");
     extern __shared__ __align__(16) uint8_t memory[];
-    uint8_t *ring = memory + GLMVQ_BOOK_BYTES;
+    uint8_t *ring = memory + BOOK;
     const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
     const uint32_t g = lane >> 2, q = lane & 3u;
-    for (uint32_t i = tid * 16; i < GLMVQ_BOOK_BYTES; i += THREADS * 16) {
+    for (uint32_t i = tid * 16; i < BOOK; i += THREADS * 16) {
         glmvq_mma_copy<16>(memory + i, book + i);
     }
     asm volatile("cp.async.commit_group;" ::: "memory");
@@ -133,7 +139,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
             }
         };
         for (uint32_t chunk = 0; chunk < PREFETCH_AHEAD; chunk++) { prefetch(chunk); }
-        if (tid == 0) { glmvq_mma_prefetch(mat.plane + (uint64_t)row * plane_stride, BM * plane_stride); }
+        if (BITS == 13 && tid == 0) { glmvq_mma_prefetch(mat.plane + (uint64_t)row * plane_stride, BM * plane_stride); }
 
         const uint32_t padded = (nt + 7) / 8 * 8;
         // Each thread copies the same token chunk (and scale) at every stage.
@@ -148,7 +154,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                 glmvq_mma_copy<8>(dst + r * GLMVQ_MMA8_INDEX + part * 8,
                     mat.main + (uint64_t)(row + r) * main_stride + stage * GLMVQ_MMA8_INDEX + part * 8);
             }
-            if (tid < BM) {
+            if (BITS == 13 && tid < BM) {
                 glmvq_mma_copy<4>(dst + BSB + tid * 4,
                     mat.plane + (uint64_t)(row + tid) * plane_stride + 4 * (stage / 2));
             }
@@ -191,7 +197,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                             const uint2 v = *(const uint2 *)(src + lr[m][side] * GLMVQ_MMA8_INDEX + k * 8);
                             w[m][side][2 * k] = v.x; w[m][side][2 * k + 1] = v.y;
                         }
-                        e[m][side] = *(const uint32_t *)(src + BSB + lr[m][side] * 4) >> bit;
+                        e[m][side] = BITS == 13 ? *(const uint32_t *)(src + BSB + lr[m][side] * 4) >> bit : 0u;
                     }
                 }
                 const uint8_t *activation = src + BSB + EXB + q * 8;
@@ -276,10 +282,15 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                         #pragma unroll
                         for (uint32_t side = 0; side < 2; side++) {
                             const float value = glmvq_round(glmvq_mul(acc[m][j][side * 2 + e], gain[m][side]));
-                            const float g0 = fminf(__bfloat162float(gv[j][e][m][side]), limit);
-                            const float u0 = fminf(fmaxf(value, -limit), limit);
-                            const float silu = glmvq_round(__fdiv_rn(g0, glmvq_add(1.0f, expf(-g0))));
-                            const float v = glmvq_round(glmvq_mul(silu, u0));
+                            float v;
+                            if constexpr (CLAMP == GLMVQ_CLAMP_GATE) {
+                                const float g0 = fminf(__bfloat162float(gv[j][e][m][side]), limit);
+                                const float u0 = fminf(fmaxf(value, -limit), limit);
+                                const float silu = glmvq_round(__fdiv_rn(g0, glmvq_add(1.0f, expf(-g0))));
+                                v = glmvq_round(glmvq_mul(silu, u0));
+                            } else {
+                                v = glmvq_swiglu_value<CLAMP>(__bfloat162float(gv[j][e][m][side]), value, limit);
+                            }
                             acc[m][j][side * 2 + e] = v;
                             peak = fmaxf(peak, fabsf(v));
                         }
@@ -335,11 +346,13 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                         const float value = glmvq_round(glmvq_mul(acc[m][j][side * 2 + e], gain[m][side]));
                         if (MODE == GLMVQ_MMA_GATE) { gate[index] = __float2bfloat16_rn(value); }
                         else if (MODE == GLMVQ_MMA_DOWN) { output[index] = __float2bfloat16_rn(value); }
-                        else {
+                        else if constexpr (CLAMP == GLMVQ_CLAMP_GATE) {
                             const float g0 = fminf(__bfloat162float(gate[index]), limit);
                             const float u0 = fminf(fmaxf(value, -limit), limit);
                             const float silu = glmvq_round(__fdiv_rn(g0, glmvq_add(1.0f, expf(-g0))));
                             mid[index] = __float2bfloat16_rn(glmvq_mul(silu, u0));
+                        } else {
+                            mid[index] = __float2bfloat16_rn(glmvq_swiglu_value<CLAMP>(__bfloat162float(gate[index]), value, limit));
                         }
                     }
                 }
@@ -348,18 +361,20 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
     }
 }
 
-template <uint32_t BM, uint32_t BT, uint32_t MT, glmvq_mma_stage MODE>
+template <uint32_t BM, uint32_t BT, uint32_t MT, glmvq_mma_stage MODE, uint32_t BITS = 13,
+          glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE>
 static cudaError_t glmvq_mma8_prepare(int *blocks) {
     int device = 0, limit = 0, sms = 0, active = 0;
     cudaError_t error = cudaGetDevice(&device);
     if (error != cudaSuccess) { return error; }
     error = cudaDeviceGetAttribute(&limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
     if (error != cudaSuccess) { return error; }
-    const uint32_t bytes = glmvq_mma8_bytes<BM, BT>();
+    const uint32_t bytes = glmvq_mma8_bytes<BM, BT, BITS>();
     if (bytes > (uint32_t)limit) { return cudaErrorNotSupported; }
-    error = cudaFuncSetAttribute(glmvq_mma8_kernel<BM, BT, MT, MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
+    error = cudaFuncSetAttribute(glmvq_mma8_kernel<BM, BT, MT, MODE, BITS, CLAMP>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
     if (error != cudaSuccess) { return error; }
-    error = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active, glmvq_mma8_kernel<BM, BT, MT, MODE>,
+    error = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active, glmvq_mma8_kernel<BM, BT, MT, MODE, BITS, CLAMP>,
         glmvq_mma8_threads<BM, MT>(), bytes);
     if (error != cudaSuccess || !active) { return error != cudaSuccess ? error : cudaErrorNotSupported; }
     error = cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);

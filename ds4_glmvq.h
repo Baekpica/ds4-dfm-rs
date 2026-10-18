@@ -38,6 +38,10 @@ uint64_t ds4_gpu_gvq_workspace(uint32_t rows);
 uint64_t ds4_gpu_gvq_linear_bytes(uint32_t rows, uint32_t cols,
     uint32_t tokens, uint32_t type, ds4_gvq_math math);
 ds4_gvq_ctx *ds4_gpu_gvq_create(const ds4_gvq_model *model, uint64_t scratch, uint32_t rows);
+/* Linear, KDA, norm and copy kernels only: no GLM routed-expert scratch
+ * (Ling-3.1 runs its own expert runtime). */
+uint64_t ds4_gpu_gvq_workspace_linear(uint32_t rows);
+ds4_gvq_ctx *ds4_gpu_gvq_create_linear(const ds4_gvq_model *model, uint64_t scratch, uint32_t rows);
 void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx);
 /* Up to four matrices over one input; prefill shares its Q8_1/BF16 copy. */
 int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
@@ -45,6 +49,10 @@ int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
 /* Prefill Q4_K matrices over one input as BF16 rows; 0 (outputs untouched)
  * when the rows or weights keep F32 outputs. */
 int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows);
+/* Prefill FP8 matrices over one input as BF16 rows (the BF16 GEMM results
+ * the F32 path widens); 0 (outputs untouched) at other widths or weights. */
+int ds4_gpu_gvq_fp8_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows);
 int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);

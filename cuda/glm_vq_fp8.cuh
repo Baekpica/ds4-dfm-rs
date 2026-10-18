@@ -8,6 +8,10 @@ enum { GLMVQ_FP8_WARPS = 8, GLMVQ_FP8_VECTOR = 8, GLMVQ_FP8_MAX_COLS = 16384 };
 enum { GLMVQ_FP8_HIDDEN = 4096, GLMVQ_FP8_SHARED_FFN = 2048, GLMVQ_FP8_DENSE_FFN = 12288,
        GLMVQ_FP8_Q_RANK = 1536, GLMVQ_FP8_KV_RANK = 512, GLMVQ_FP8_Q_WIDTH = 16384,
        GLMVQ_FP8_CONCAT = 2 * GLMVQ_FP8_HIDDEN, GLMVQ_FP8_TOKENS = 4 };
+// Ling-3.1: KDA f/g [8192,4096]; MTP q_b [12288,1536], kv_a [576,4096],
+// head gate [64,4096] and shared experts [1280,4096] / [4096,1280].
+enum { LING31_FP8_KDA = 8192, LING31_FP8_Q_WIDTH = 12288, LING31_FP8_KV_ROW = 576,
+       LING31_FP8_GATE = 64, LING31_FP8_FFN = 1280 };
 
 static uint32_t glmvq_fp8_split(uint32_t rows, uint32_t cols) {
     // Only measured original-artifact shapes use this N1 specialization.
@@ -17,6 +21,10 @@ static uint32_t glmvq_fp8_split(uint32_t rows, uint32_t cols) {
     // CONCAT: the MTP layer's eh_proj over [embedding norm, hidden norm].
     if (rows == GLMVQ_FP8_HIDDEN && (cols == GLMVQ_FP8_SHARED_FFN || cols == GLMVQ_FP8_DENSE_FFN ||
         cols == GLMVQ_FP8_Q_WIDTH || cols == GLMVQ_FP8_CONCAT)) { return GLMVQ_FP8_WARPS; }
+    if (rows == LING31_FP8_Q_WIDTH && cols == GLMVQ_FP8_Q_RANK) { return 2; }
+    if (cols == GLMVQ_FP8_HIDDEN && (rows == LING31_FP8_KDA || rows == LING31_FP8_KV_ROW ||
+        rows == LING31_FP8_GATE || rows == LING31_FP8_FFN)) { return GLMVQ_FP8_WARPS; }
+    if (rows == GLMVQ_FP8_HIDDEN && cols == LING31_FP8_FFN) { return GLMVQ_FP8_WARPS; }
     return 0;
 }
 
@@ -96,8 +104,9 @@ __global__ void glmvq_fp8_dot(const uint8_t *weight, const float *scales,
 
 static bool glmvq_fp8_fits(const void *weight, const void *scale,
         const void *input, const void *output, uint32_t rows, uint32_t cols) {
+    // Rows index ceil-division scale rows; columns stay whole 128-blocks.
     return weight && scale && input && output && rows && cols &&
-        rows % GLMVQ_SCALE_BLOCK == 0 && cols % (32 * GLMVQ_FP8_VECTOR) == 0 &&
+        cols % (32 * GLMVQ_FP8_VECTOR) == 0 &&
         cols <= GLMVQ_FP8_MAX_COLS && (uintptr_t)weight % sizeof(uint2) == 0 &&
         (uintptr_t)scale % sizeof(float) == 0 && (uintptr_t)input % sizeof(float4) == 0 &&
         (uintptr_t)output % sizeof(float) == 0;

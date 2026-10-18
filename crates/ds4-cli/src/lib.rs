@@ -447,7 +447,9 @@ fn use_iquest_spec(temp: f32, family: ds4_core::ModelFamily, draft: i32) -> bool
 fn use_glm_spec(temp: f32, family: ds4_core::ModelFamily, draft: i32) -> bool {
     matches!(
         family,
-        ds4_core::ModelFamily::Glm53 | ds4_core::ModelFamily::Glm53Vq
+        ds4_core::ModelFamily::Glm53
+            | ds4_core::ModelFamily::Glm53Vq
+            | ds4_core::ModelFamily::Ling31Vq
     ) && temp <= 0.0
         && draft > 1
         && ds4_core::check_mtp_draft(family, draft).is_ok()
@@ -487,6 +489,7 @@ fn mtp_open_options(
                 ds4_core::ModelFamily::IQuestQ1
                     | ds4_core::ModelFamily::Glm53
                     | ds4_core::ModelFamily::Glm53Vq
+                    | ds4_core::ModelFamily::Ling31Vq
             )
         ) && args.mtp_draft > 1)
     {

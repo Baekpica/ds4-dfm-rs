@@ -34,6 +34,7 @@ const LAYOUT_GLM_MTP_COMPACT: u32 = u32::from_le_bytes(*b"GCM5");
 const LAYOUT_GLM_MTP_EXPANDED: u32 = u32::from_le_bytes(*b"GEM5");
 const LAYOUT_GLM_VQ: u32 = u32::from_le_bytes(*b"GVQ1");
 const LAYOUT_GLM_VQ_MTP: u32 = u32::from_le_bytes(*b"GVM1");
+const LAYOUT_LING31: u32 = u32::from_le_bytes(*b"LG31");
 const GLMVQ_DENSE_KEYS: u32 = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +53,7 @@ pub enum PayloadLayout {
     IQuestQ1,
     Glm53,
     Glm53Vq,
+    Ling31Vq,
 }
 
 impl PayloadLayout {
@@ -73,6 +75,7 @@ impl PayloadLayout {
             | LAYOUT_GLM_MTP_COMPACT
             | LAYOUT_GLM_MTP_EXPANDED => Self::Glm53,
             LAYOUT_GLM_VQ | LAYOUT_GLM_VQ_MTP => Self::Glm53Vq,
+            LAYOUT_LING31 => Self::Ling31Vq,
             _ => Self::DeepSeek,
         }
     }
@@ -93,6 +96,7 @@ impl PayloadLayout {
             Self::Naive => ModelFamily::NaiveN05,
             Self::Glm53 => ModelFamily::Glm53,
             Self::Glm53Vq => ModelFamily::Glm53Vq,
+            Self::Ling31Vq => ModelFamily::Ling31Vq,
         }
     }
 
@@ -103,7 +107,12 @@ impl PayloadLayout {
             || (tokens == ctx as usize
                 && !matches!(
                     self,
-                    Self::Qwen4Exp | Self::Naive | Self::IQuestQ1 | Self::Glm53 | Self::Glm53Vq
+                    Self::Qwen4Exp
+                        | Self::Naive
+                        | Self::IQuestQ1
+                        | Self::Glm53
+                        | Self::Glm53Vq
+                        | Self::Ling31Vq
                 ))
     }
 
@@ -301,7 +310,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::Inkling
         | PayloadLayout::Mimo2
         | PayloadLayout::Naive
-        | PayloadLayout::IQuestQ1 => {
+        | PayloadLayout::IQuestQ1
+        | PayloadLayout::Ling31Vq => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }
@@ -746,6 +756,45 @@ mod tests {
         assert!(parse_prefix(&bad.encode()).is_err());
         assert!(host.apply_payload(&bad).is_err());
         assert_eq!(host.tokens(), &[7, 8, 9]);
+    }
+
+    #[test]
+    fn ling31_prefix_identity() {
+        // Native LG31 header: ctx, row cap, layers, tag, state bytes, n, MTP,
+        // latent row width, MLA layers, vocab, live rows (= n).
+        let prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                262144,
+                512,
+                72,
+                u32::from_le_bytes(*b"LG31"),
+                288_997_376,
+                3,
+                0,
+                576,
+                9,
+                157184,
+                3,
+            ],
+            tokens: vec![7, 8, 9],
+        };
+        assert_eq!(prefix.layout().family(), ModelFamily::Ling31Vq);
+        let read = |p: &HostPrefix, family, ctx| {
+            let bytes = p.encode();
+            read_prefix_range(&mut Cursor::new(&bytes), 0, bytes.len() as u64, family, ctx)
+        };
+        // Native restores into any context that holds the rows, full ones too.
+        assert_eq!(
+            read(&prefix, ModelFamily::Ling31Vq, 3).unwrap().tokens,
+            [7, 8, 9]
+        );
+        assert!(read(&prefix, ModelFamily::Ling31Vq, 2).is_err());
+        assert!(read(&prefix, ModelFamily::Ling3Vl, 262144).is_err());
+        let mut bad = prefix.clone();
+        bad.fields[12] = 2;
+        assert!(read(&bad, ModelFamily::Ling31Vq, 262144).is_err());
     }
 
     #[test]

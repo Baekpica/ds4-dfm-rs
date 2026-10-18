@@ -22,6 +22,8 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GLM_CTX_MAX: u32 = 1_048_576;
+/// Ling-3.1's max_position_embeddings (rope_scaling null).
+const LING31_CTX_MAX: u32 = 262_144;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -649,7 +651,7 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 /// contract defaults to it (GLM VQ follows max_position_embeddings); None
 /// keeps the host default.
 pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
-    if caps.family == ModelFamily::Glm53Vq {
+    if matches!(caps.family, ModelFamily::Glm53Vq | ModelFamily::Ling31Vq) {
         caps.ctx_max
     } else {
         None
@@ -859,6 +861,28 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_banks: Some(2),
             qualified_prompt: Some(6300),
             media_serial: true,
+        },
+        // GLM VQ's surface: banks own KDA state and latent rows over shared
+        // scratch; free memory beside the 108 GiB trunk bounds their count.
+        ModelFamily::Ling31Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(LING31_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
         },
         // Ling matches the Qwen text-bank surface: two persistent banks,
         // partial reuse and disk KV. Images stay serial beside those banks
@@ -1150,7 +1174,10 @@ pub fn resolve_plan(
     // A draft below the family minimum allocates no speculative runtime, so
     // the plan would claim a feature that runs ordinary decode.
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
-    if matches!(caps.family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
+    if matches!(
+        caps.family,
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+    ) {
         if let Err(failure) = crate::check_mtp_draft(caps.family, draft as i32) {
             issues.push(error("mtp_draft", failure.message));
         }
@@ -1483,6 +1510,7 @@ impl ServingCaps {
             Variant::Qwen38FlashNext => "qwen4exp",
             Variant::Glm53Flash => "glm5-next",
             Variant::Glm53FlashVq => "GLM-5.3-Flash-VQ",
+            Variant::Ling31FlashVq => "ling31_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1614,11 +1642,14 @@ impl ResolvedPlan {
                 .into(),
             ));
         }
-        if matches!(self.family, Some(ModelFamily::Glm53 | ModelFamily::Glm53Vq)) {
-            let name = if self.family == Some(ModelFamily::Glm53Vq) {
-                "DS4_GLMVQ_MTP"
-            } else {
-                "DS4_GLM53_MTP"
+        if matches!(
+            self.family,
+            Some(ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq)
+        ) {
+            let name = match self.family {
+                Some(ModelFamily::Glm53Vq) => "DS4_GLMVQ_MTP",
+                Some(ModelFamily::Ling31Vq) => "DS4_LING31_MTP",
+                _ => "DS4_GLM53_MTP",
             };
             out.push((
                 name.into(),
@@ -1679,6 +1710,7 @@ impl ResolvedPlan {
             Some(ModelFamily::NaiveN05) => Some("DS4_NAIVE_PREFILL_CHUNK"),
             Some(ModelFamily::Glm53) => Some("DS4_GLM53_PREFILL_ROWS"),
             Some(ModelFamily::Glm53Vq) => Some("DS4_GLMVQ_PREFILL_ROWS"),
+            Some(ModelFamily::Ling31Vq) => Some("DS4_LING31_PREFILL_CHUNK"),
             _ => None,
         }
     }
