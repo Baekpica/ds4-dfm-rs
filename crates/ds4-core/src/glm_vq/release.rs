@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{fail, raw, Result, ALIGN, FORMAT_VERSION, PATCH};
+use super::{fail, raw, Result, ALIGN, FORMAT_VERSIONS, PATCH};
 use crate::gguf::{GgufError, GgufFile};
 use crate::mapped::page_size;
 use crate::tensors::{ShardPlan, TensorError, TensorInfo, TensorInventory};
@@ -221,17 +221,21 @@ pub(super) fn open_dir(root: &Path) -> Result<TensorInventory> {
 }
 
 /// Hash and parse one part with part-relative offsets.
+// A version-2 release keeps its unchanged R13 parts at version 1.
 fn verify_part(
     root: &Path,
     part: &str,
     expected: &HashMap<&str, &Value>,
     entry: &Value,
     revision: &str,
+    release: u32,
 ) -> Result<(PathBuf, u64, TensorInventory)> {
     let path = root.join(part);
     let g = GgufFile::open(&path)?;
+    let version = g.get_u32("glm_vq.format_version").unwrap_or(0);
     if g.get_string("glm_vq.source_revision") != Some(revision.as_bytes())
-        || g.get_u32("glm_vq.format_version") != Some(FORMAT_VERSION)
+        || !FORMAT_VERSIONS.contains(&version)
+        || version > release
     {
         return Err(fail("part format/source revision mismatch"));
     }
@@ -268,7 +272,8 @@ fn verify_dir(root: &Path) -> Result<TensorInventory> {
     )?;
     let manifest = json(&bytes)?;
     let revision = text(&manifest, "source_revision")?;
-    if number(&manifest, "format_version")? != u64::from(FORMAT_VERSION)
+    let release = u32::try_from(number(&manifest, "format_version")?).unwrap_or(0);
+    if !FORMAT_VERSIONS.contains(&release)
         || revision.len() != 40
         || !revision.bytes().all(|b| b.is_ascii_hexdigit())
     {
@@ -343,7 +348,10 @@ fn verify_dir(root: &Path) -> Result<TensorInventory> {
                             return done;
                         };
                         let entry = file_index[part];
-                        done.push((i, verify_part(root, part, expected, entry, revision)));
+                        done.push((
+                            i,
+                            verify_part(root, part, expected, entry, revision, release),
+                        ));
                     }
                 })
             })

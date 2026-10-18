@@ -55,6 +55,57 @@ head). At the measured ~235–250 GB/s streaming ceiling that is a 30–32 ms
 wall; decode measures 40 ms. The DeepSeek V4.1 VQ engine reads about 6.3 GB
 per token with the same Q4_K choice for its nonexpert weights.
 
+## R13+8 residual stage (container v2)
+
+The 1.625-bit experts were the main source of quality loss. Container v2
+adds an optional 8-bit residual stage to selected layers:
+
+```
+w[r, 8j : 8j+8]  ≈  g_r · (C1[i1[r, j]] + C2[i2[r, j]])
+C2: 256 × 8 E4M3 per layer; i2: one byte per vector (GVR8 tensor)
+bits per weight = 13/8 + 8/8 = 2.625
+```
+
+- **Format.** `<matrix>.weight_residual` (type `0x47565238`, header `GVR1`)
+  holds row-major index bytes: 512 per gate/up row, 256 per down row, whole
+  128-byte lines. `glm_vq.layer.L.codebook.1` is the book (ID `4L+1`);
+  `glm_vq.residuals` links each GVQ1 matrix to its residual. The parent's
+  row gain scales the sum; the two E4M3 words add exactly in FP32. A layer
+  is all-or-none, and only its part declares `glm_vq.format_version` 2.
+- **Why 8 bits.** Layer 23, weight relative MSE: R13 0.1438; +8 bits 0.0471
+  (0.0412 with joint beam assignment); +11 bits 0.0297. Per extra GiB the
+  8-bit stage removes the most error, and its 2 KiB book fits beside the
+  64 KiB layer book in every GB10 kernel (101,376 B opt-in): decode
+  gate/up 76 KiB, decode down and 4-row verify 100,352 B, prefill
+  98,560 B. Wider residual books would need a different staging scheme.
+- **Decode and verify.** `RES` kernel variants load each block's 256 index
+  bytes as two words per lane (`r0`, `r1`) beside the 12-bit words and take
+  byte `k*32+lane` with one shuffle per k-step; the 2 KiB book is staged in
+  shared memory after the layer book. Arithmetic: GAIN_DOT adds `C1+C2` per
+  element before the FP32 dot and multiplies the gain once; GAIN_WEIGHT
+  rounds `gain*(C1+C2)` to BF16 as the restore does. Verify rows keep the
+  one-row order (bit-identical per row).
+- **Prefill.** The FP8 tensor-core kernel stages 16 residual bytes per row
+  per 128-K stage and issues a second `m16n8k32.e4m3` MMA per k32 step with
+  the residual codewords as A and the same activation fragment as B, into
+  the same partial sum. R13+8 tiles carry 32 tokens (256 rows, two stages)
+  so the second book and index stream fit. The BF16 register MMA has no
+  residual stage: with `DS4_GLMVQ_MMA8=0` those layers take restore+GEMM.
+- **Restore.** The scalar restore adds the residual; the vector restore
+  declines R13+8 matrices so the scalar path keeps them exact.
+- **Validation.** Rust checks GVR1 headers, offsets, checksums, padding,
+  book links, parent shapes and versions (`residual_stage_is_validated`);
+  `make test-glm-vq-res` checks restore bits, decode and verify against
+  restore+GEMM and the FP8 prefill MMA against it on random E4M3 data.
+- **Layer choice.** A routed-FFN screen on captured original-model inputs
+  (16 cases, 11,687 tokens, original and drift inputs) ranks layers by
+  output-normalized error reduction per extra GiB; layers 4, 5, 9, 25–28,
+  30–32, 36, 37, 39 and 40 lead for both the official and Uncensored
+  weights. The ends are least sensitive (44: 0.066, 7: 0.113 per GiB).
+- **Memory.** Fourteen R13+8 layers add 0.844 GiB each (11.8 GiB). At the
+  native 1M context with two MTP drafts the quote is about 112 GiB (weights
+  83.8, bank 22.5, MTP 1.7, floor 4), leaving ~4.5 GiB on a 128 GB Spark.
+
 ## Execution on GB10
 
 ### Decode (one row)

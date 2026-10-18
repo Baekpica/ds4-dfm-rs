@@ -180,9 +180,10 @@ pub fn identify_file(g: &GgufFile) -> Result<Identified, IdentifyError> {
             ));
         }
     };
-    if shape.family == crate::ModelFamily::Glm53Vq && g.get_u32("glm_vq.format_version") != Some(1)
+    if shape.family == crate::ModelFamily::Glm53Vq
+        && !matches!(g.get_u32("glm_vq.format_version"), Some(1 | 2))
     {
-        return Err(IdentifyError::MissingKey("glm_vq.format_version=1"));
+        return Err(IdentifyError::MissingKey("glm_vq.format_version=1|2"));
     }
     Ok(Identified {
         shape,

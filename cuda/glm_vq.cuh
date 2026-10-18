@@ -23,7 +23,14 @@ struct glmvq_matrix {
     uint32_t rows;
     uint32_t cols;
     glmvq_precision precision;
+    // Optional 8-bit residual stage (GVR8, container v2): one index byte per
+    // vector, row-major, into a K=256 E4M3 layer book. The row gain scales
+    // both codewords: W[r,8j+d] = gain[r] * (C1[i1][d] + C2[i2][d]).
+    const uint8_t *res;
+    const uint8_t *res_book;
 };
+
+enum { GLMVQ_RES_WORDS = 256 };
 
 __device__ __forceinline__ float glmvq_e4m3(uint8_t bits) {
     __nv_fp8_e4m3 value;
@@ -104,11 +111,14 @@ __global__ void glmvq_restore(glmvq_matrix m, T *out) {
         index |= ((m.plane[vector / 8] >> (vector % 8)) & 1u) << 12;
     }
     const float gain = __half2float(m.gain[vector / (m.cols / GLMVQ_VECTOR)]);
+    const uint32_t res = m.res ? m.res[vector] : 0u;
     for (uint32_t d = 0; d < GLMVQ_VECTOR; d++) {
         const uint32_t i = index * GLMVQ_VECTOR + d;
-        const float word = m.precision == GLMVQ_E4M3
+        float word = m.precision == GLMVQ_E4M3
             ? glmvq_e4m3(((const uint8_t *)m.book)[i])
             : __half2float(((const __half *)m.book)[i]);
+        // Two E4M3 codewords add exactly in FP32.
+        if (m.res) { word += glmvq_e4m3(m.res_book[res * GLMVQ_VECTOR + d]); }
         /* The reference first multiplies in FP32, then rounds to BF16 at
          * the GEMM boundary. Moving the gain outside GEMM changes that. */
         out[vector * GLMVQ_VECTOR + d] = glmvq_cast<T>(glmvq_mul(gain, word));
@@ -150,7 +160,8 @@ static cudaError_t glmvq_restore_bf16(glmvq_matrix m, __nv_bfloat16 *out,
         !((uintptr_t)m.book % sizeof(uint2)) && !((uintptr_t)out % sizeof(uint4));
     const uint64_t vectors = (uint64_t)m.rows * m.cols / GLMVQ_VECTOR;
     const unsigned blocks = (unsigned)((vectors + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
-    if (mode == GLMVQ_RESTORE_VECTOR && shape && aligned && m.precision == GLMVQ_E4M3) {
+    // The vector restore has no residual stage; the scalar one keeps it exact.
+    if (mode == GLMVQ_RESTORE_VECTOR && shape && aligned && m.precision == GLMVQ_E4M3 && !m.res) {
         glmvq_restore_vec<<<blocks, GLMVQ_THREADS, 0, stream>>>(m, out);
     } else {
         glmvq_restore<<<blocks, GLMVQ_THREADS, 0, stream>>>(m, out);

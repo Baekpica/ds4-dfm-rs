@@ -29,6 +29,27 @@ static ds4_tensor *glmvq_linear(const ds4_model *m, uint32_t il, const char *nam
     return t;
 }
 
+// R13+8 (container v2): an optional residual stage per layer, all-or-none
+// over its 864 matrices. Rust validated headers, hashes and links.
+static void glmvq_bind_residuals(ds4_glmvq_experts *e, const ds4_model *m, uint32_t il) {
+    enum { VECTOR = 8, RES_WORDS = 256 };
+    e->res_book = tensor_by_namef(m, "glm_vq.layer.%u.codebook.1", il);
+    if (!e->res_book) { return; }
+    tensor_expect_layout(e->res_book, DS4_TENSOR_GLM_BOOK, 2, VECTOR, RES_WORDS, 0);
+    for (uint32_t expert = 0; expert < GLMVQ_EXPERTS; expert++) {
+        ds4_tensor **slots[] = {&e->gate_res[expert], &e->up_res[expert], &e->down_res[expert]};
+        const ds4_tensor *parents[] = {e->gate[expert], e->up[expert], e->down[expert]};
+        static const char *const roles[] = {"gate_proj", "up_proj", "down_proj"};
+        for (uint32_t p = 0; p < 3; p++) {
+            char name[96];
+            snprintf(name, sizeof(name), "mlp.experts.%u.%s.weight_residual", expert, roles[p]);
+            ds4_tensor *t = glmvq_tensor(m, il, name);
+            tensor_expect_layout(t, DS4_TENSOR_GLM_RES, 2, parents[p]->dim[0], parents[p]->dim[1], 0);
+            *slots[p] = t;
+        }
+    }
+}
+
 static void glmvq_bind_experts(ds4_glmvq_experts *e, const ds4_model *m, uint32_t il) {
     const uint32_t type = il == GLMVQ_TRUNK ? DS4_TENSOR_GLM_FP8 : DS4_TENSOR_GLM_VQ;
     if (il < GLMVQ_TRUNK) {
@@ -48,6 +69,7 @@ static void glmvq_bind_experts(ds4_glmvq_experts *e, const ds4_model *m, uint32_
         GLMVQ_EXPERT(down, "down_proj", DS4_N_FF_EXP, DS4_N_EMBD);
 #undef GLMVQ_EXPERT
     }
+    if (il < GLMVQ_TRUNK) { glmvq_bind_residuals(e, m, il); }
 }
 
 static void glmvq_bind_layer(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
@@ -147,7 +169,8 @@ static bool glmvq_gpu_bind(ds4_weights *w, const ds4_model *m) {
             return false;
         }
         records[i] = (ds4_gvq_record){t->abs_offset, t->bytes, t->type,
-            (uint32_t)rows, (uint32_t)cols, glmvq_index(m, t->source_scale), DS4_GVQ_NO_LINK};
+            (uint32_t)rows, (uint32_t)cols, glmvq_index(m, t->source_scale), DS4_GVQ_NO_LINK,
+            DS4_GVQ_NO_LINK};
     }
     for (uint32_t il = DS4_N_LEADING_DENSE; il < GLMVQ_TRUNK; il++) {
         const ds4_glmvq_experts *e = &w->glmvq[il];
@@ -156,6 +179,17 @@ static bool glmvq_gpu_bind(ds4_weights *w, const ds4_model *m) {
             records[glmvq_index(m, e->gate[expert])].book = book;
             records[glmvq_index(m, e->up[expert])].book = book;
             records[glmvq_index(m, e->down[expert])].book = book;
+        }
+        if (!e->res_book) { continue; }
+        // Each GVQ1 matrix links its residual; the residual links its book.
+        const uint32_t res_book = glmvq_index(m, e->res_book);
+        for (uint32_t expert = 0; expert < GLMVQ_EXPERTS; expert++) {
+            const ds4_tensor *const pairs[][2] = {{e->gate[expert], e->gate_res[expert]},
+                {e->up[expert], e->up_res[expert]}, {e->down[expert], e->down_res[expert]}};
+            for (uint32_t p = 0; p < 3; p++) {
+                records[glmvq_index(m, pairs[p][0])].res = glmvq_index(m, pairs[p][1]);
+                records[glmvq_index(m, pairs[p][1])].book = res_book;
+            }
         }
     }
     w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, (uint32_t)m->n_tensors);
