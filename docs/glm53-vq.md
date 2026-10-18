@@ -97,11 +97,14 @@ bits per weight = 13/8 + 8/8 = 2.625
   book links, parent shapes and versions (`residual_stage_is_validated`);
   `make test-glm-vq-res` checks restore bits, decode and verify against
   restore+GEMM and the FP8 prefill MMA against it on random E4M3 data.
-- **Layer choice.** A routed-FFN screen on captured original-model inputs
-  (16 cases, 11,687 tokens, original and drift inputs) ranks layers by
-  output-normalized error reduction per extra GiB; layers 4, 5, 9, 25–28,
-  30–32, 36, 37, 39 and 40 lead for both the official and Uncensored
-  weights. The ends are least sensitive (44: 0.066, 7: 0.113 per GiB).
+- **Layer choice.** Measured end to end: upgrading one layer at a time
+  (others R13) and measuring held-out KL against the original model ranks
+  the bottom layers first (5: 0.066, 8, 6, 14, 3, then 11, 9, 15, 10, 16,
+  7, 4, 12, 13), so the release upgrades layers 3-16. A local routed-FFN
+  screen normalized by each layer's FFN output energy chose 4, 5, 9 and
+  25-40 instead and lost end to end (KL 0.498 vs 0.390-0.437 for
+  bottom-heavy choices): FFN output energy spans three orders of magnitude
+  across layers, so normalized local error does not rank layer impact.
 - **Memory.** Fourteen R13+8 layers add 0.844 GiB each (11.8 GiB). At the
   native 1M context with two MTP drafts the quote is about 112 GiB (weights
   83.8, bank 22.5, MTP 1.7, floor 4), leaving ~4.5 GiB on a 128 GB Spark.
