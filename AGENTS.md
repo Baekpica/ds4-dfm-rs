@@ -50,6 +50,12 @@ the port is fixed.
   `max_position_embeddings`). A quantized or VQ artifact changes weights, not
   the context contract: size scratch so it never scales with rows x keys
   instead of capping context to fit it.
+- Price what grows with context before fixed weights: Ling-3.1's BF16 latent
+  KV (2.53 GiB per 262K bank) forced serial 512-row prefill; FP8 rows admit
+  2,048-row banks.
+- Recurrent-state (KDA, linear-attention) payloads restore only a prompt that
+  extends the saved history: test disk restore with the next turn; re-sending
+  a turn always misses.
 
 ## Inference Performance Optimization Guidelines
 
@@ -143,6 +149,15 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
 - **Numerical tolerance.** Use an existing configuration change as the noise
   reference (GLM 8K frontier, 512 vs 1024 chunks: logit RMS 0.23, KL 2.3e-7).
   Keep bit identity when only scheduling changes; it makes A/B trivial.
+- **Noise grows with context.** Ling-3.1's 1,024- vs 2,048-row chunk KL is
+  0.0002 at 32K and 0.08 at 128K (argmax flip). Gate KV and weight formats
+  against it at the same long frontiers, plus teacher-forced NLL after
+  32K–128K prompts; short receipts cannot see cache precision.
+- **Simulate a cache format first.** A writer switch storing
+  quantize→dequantize values in the old layout measured Ling-3.1's FP8
+  latents before any reader changed. Pick scales that keep values exact in
+  the old type (E4M3 × 2^k is a BF16): real storage then matched the
+  simulation bit for bit and every BF16 kernel stayed.
 - **MTP verify widths are their own regime.** A 2-4 row forward falls off
   every one-row direct kernel onto convert + cuBLAS unless each kernel takes
   rows; that fallback was 15 of 70 ms per GLM one-draft step. Give direct
@@ -161,6 +176,9 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
 - **Store BF16-rounded rows as BF16.** F32 buffers of values already rounded
   at a BF16 boundary doubled GLM residual and expert-output traffic; BF16
   storage is lossless (prefill 1042 → 1121 tok/s).
+- **Name predicates need HF spellings.** The Q8 aligned repack skipped
+  `token_embd` but copied Ling-3.1 v2's `model.word_embeddings` (0.64 GiB of
+  an ~8 GiB margin). Read the repack log when a tensor type changes.
 - **Dependent launch.** A GLM token runs ~1,300 kernels; PDL with weights
   staged before the wait gave +1.8% decode, bit-identical. CUPTI durations
   then include the wait: attribute with PDL off.
@@ -217,6 +235,9 @@ backend small and direct; this is not a generic GGUF runner.
   correctness failures.
 - Make long local agent sessions practical through live KV reuse and disk KV
   checkpoints.
+- Derive an artifact revision with the converter's quantizer only after it
+  reproduces the published bytes: Ling-3.1 v1's Q4_K needed
+  `-ffp-contract=off` (aarch64 FMA contraction moved 3 of 244 blocks).
 
 ## Quality Rules
 
@@ -296,6 +317,7 @@ backend small and direct; this is not a generic GGUF runner.
 - Emit compressor state in the verify forward, roll back rejects; never re-emit in a second pass (a commit-reforward emit was ~100% wrong).
 - Gate on ‖Δcompressed-cache‖ and long context, not short-prompt tokens — short context hides cache corruption behind raw/windowed KV.
 - FP vs structural is element-wise magnitude (rel ≈1e-6 vs ≈1); a late token flip is not FP.
+- A request finishing inside an accepted draft prefix lands only the rows before its last token: ordinary decode leaves that token pending, and the server keys a retired bank by every generated token but the last. Probe reuse across `max_tokens` so finishes hit each draft position (Ling-3.1 MTP: 2 of 10 follow-ups missed).
 - Size GPU-readback buffers to the tensor and fail loud — undersized returns a constant → false "identical".
 - At D>=1 the batched verify (width 1+D) is NOT bit-identical to a width-1 decode (cross-width MoE-order FP, same as N=1 vs N=8). At **N=1** the committed cache IS invariant to rejected-draft VALUES (width-matched, no cross-row terms) — validate the rollback there expecting bit-identical cache; comparing D>=1 vs width-1 mode-0 conflates inherent FP with real bugs.
 - At **N>1** the committed cache is NOT value-invariant to rejected drafts, and that is NOT a bug: the in-forward verify is itself draft-VALUE-dependent via cross-row MoE-reduction FP — holding cur's input identical, varying a causally-masked rejected draft shifts the verify logits by FP while the argmax (committed token) is unchanged, and that FP rides an expert flip into the committed KV (deep-layer ‖Δ‖ ≈ O(10) while the final logit moves ≈0.03 and the token does not flip). So N>1 losslessness is TOKEN-LEVEL: gate the committed-row FRONTIER (counts) + token stream invariance to rejected-draft values; treat committed-cache VALUES as inherent-FP-noisy (informational), and add a byte-exact restore self-check (read back each restored lane vs its checkpoint source) to guard the capture/restore plumbing independently. Don't chase the N>1 cache-value diff as a rollback bug — bisect: the divergence onset is a cur-row (M=1) logit FP in the forward, not the restore (which is byte-exact).
