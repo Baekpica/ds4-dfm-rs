@@ -44,7 +44,6 @@
 #define DS4_THINK_HIGH 2
 #define DS4_THINK_MAX 3
 
-
 typedef enum {
     DSML_DECODE_OUTSIDE = 0,
     DSML_DECODE_STRUCTURAL,
@@ -111,8 +110,6 @@ static void observe_tool_markers(const dsml_decode_tracker *tracker, const char 
     if (tracker->mode == DSML_TRACK_DONE) *saw_end = true;
     else if (!*saw_start && scan && find_any_tool_end(scan) && orphan_end) *orphan_end = true;
 }
-
-
 
 static void die(const char *m) { fprintf(stderr, "dsml_c_oracle: %s\n", m); exit(2); }
 static char *xstrndup(const char *s, size_t n) {
@@ -358,7 +355,6 @@ structural:
         }
     }
 }
-
 
 static const char *state_name(dsml_decode_state s) {
     switch (s) {
