@@ -33,6 +33,8 @@ static ds4_tensor *glmvq_linear(const ds4_model *m, uint32_t il, const char *nam
 // over its 864 matrices. Rust validated headers, hashes and links.
 static void glmvq_bind_residuals(ds4_glmvq_experts *e, const ds4_model *m, uint32_t il) {
     enum { VECTOR = 8, RES_WORDS = 256 };
+    // By name: Rust links each GVR1 header's book ID through glm_vq.codebooks.
+    // They agree because a layer holds one K=256 book, `codebook.1`.
     e->res_book = tensor_by_namef(m, "glm_vq.layer.%u.codebook.1", il);
     if (!e->res_book) { return; }
     tensor_expect_layout(e->res_book, DS4_TENSOR_GLM_BOOK, 2, VECTOR, RES_WORDS, 0);

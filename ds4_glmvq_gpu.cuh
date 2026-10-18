@@ -79,7 +79,7 @@ struct ds4_gvq_ctx {
     int mma_blocks[3] = {};
     bool mma8 = false;
     int mma8_blocks[3] = {};
-    // R13+8 layers: FP8 MMA with the residual stage (32-token items).
+    // R13+8 layers: FP8 MMA with the residual stage (mma8_tokens items).
     bool mma8_res = false;
     int mma8_res_blocks[3] = {};
     // 2,048-token chunks route ~57 tokens per expert: 64-token items decode
