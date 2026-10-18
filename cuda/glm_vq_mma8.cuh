@@ -219,7 +219,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         auto run = [&](auto count) {
             constexpr uint32_t NNT = decltype(count)::value;
             for (uint32_t stage = 0; stage < stages; stage++) {
-                uint32_t rcode[MT][2];
+                [[maybe_unused]] uint32_t rcode[MT][2];
                 if constexpr (RREG) {
                     #pragma unroll
                     for (uint32_t m = 0; m < MT; m++) {
@@ -260,11 +260,12 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                     }
                 }
                 const uint8_t *activation = src + IXB + q * 8;
-                const uint8_t *residual = src + BSB + EXB;
+                [[maybe_unused]] const uint8_t *residual = src + BSB + EXB;
                 float part[MT][NNT][4] = {};
                 auto step = [&](auto kk) {
                     constexpr uint32_t K = decltype(kk)::value;
-                    uint32_t a[MT][4], r[MT][4];
+                    uint32_t a[MT][4];
+                    [[maybe_unused]] uint32_t r[MT][4];
                     #pragma unroll
                     for (uint32_t m = 0; m < MT; m++) {
                         const uint32_t ia = glmvq_mma8_code<K>(w[m][0], q) | ((e[m][0] >> (4 * K + q)) & 1u) << 12;
