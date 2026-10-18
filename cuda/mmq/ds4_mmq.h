@@ -123,6 +123,15 @@ int ds4_mmq_ling3vl_prefill_attn_hmma(
         int n_query, int query_pos0, int n_kv, int kv_pos0,
         int n_head, int qk_dim, int v_dim, float scale,
         int tk, cudaStream_t stream);
+/* The same 192/128 BF16 range attention with a cp.async K/V ring and
+ * 128-query tiles; bit-identical to the TK=64 kernel above.  `merge` folds
+ * the segment into the running heads/lse in place, as the Motif-3 state
+ * merge would. */
+int ds4_mmq_ling31_prefill_attn_pipe(
+        float *heads, float *lse, const float *q,
+        const void *k, const void *v,
+        int n_query, int query_pos0, int n_kv, int kv_pos0,
+        int n_head, int qk_dim, int v_dim, float scale, int merge, cudaStream_t stream);
 
 // dots3-note latent (absorbed-MLA) attention for prefill widths: one token's
 // heads against that token's DSA top-k list (selected != NULL, gathered) or

@@ -1172,7 +1172,7 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
         ),
         ModelFamily::Ling31Vq => env_u32(
             LING31_PREFILL_CHUNK_ENV,
-            LING31_NATIVE_DEFAULT,
+            ling31_native_default(ctx),
             1,
             LING31_NATIVE_MAX,
         ),
@@ -1202,6 +1202,18 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
         ),
     };
     cap.min(ctx)
+}
+
+// One bank's latent rows and a 2,048-row workspace outgrow the ~8 GiB beside
+// the trunk above 128K tokens. A context-keyed default keeps the chunk, part
+// of the disk-KV identity, fixed across boots; live-memory halving would let
+// it move with free memory (512 or 1,024 rows at 262K).
+fn ling31_native_default(ctx: u32) -> u32 {
+    match ctx {
+        0..=131_072 => LING31_NATIVE_DEFAULT,
+        131_073..=196_608 => LING31_NATIVE_DEFAULT / 2,
+        _ => LING31_NATIVE_MIN,
+    }
 }
 
 fn metal_native_chunk(ctx: u32, default: u32) -> u32 {
@@ -3093,7 +3105,8 @@ mod tests {
     #[test]
     fn ling31_halves_rows_before_the_native_context() {
         let _env = lock_test_env();
-        let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
+        // Start from 2,048 rows; the 262K default is already 512.
+        let _rows = EnvGuard::set(LING31_PREFILL_CHUNK_ENV, "2048");
         let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
         let _burst = EnvGuard::unset(FIT_BURST_ENV);
         // One 262,144-token bank beside the trunk: 2,048-row workspace does
@@ -3132,6 +3145,25 @@ mod tests {
         assert_eq!(quote(room(1024)), Some(1024));
         assert_eq!(quote(room(512)), Some(512));
         assert_eq!(quote(room(512) - GIB), Some(512));
+    }
+
+    #[test]
+    fn ling31_default_rows_follow_the_context() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
+        let caps = serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq);
+        for (ctx, rows) in [
+            (4096, 2048),
+            (131_072, 2048),
+            (131_073, 1024),
+            (196_608, 1024),
+            (262_144, 512),
+        ] {
+            assert_eq!(family_native_chunk(caps, ctx), rows, "ctx {ctx}");
+        }
+        assert_eq!(family_native_chunk(caps, 1000), 1000);
+        let _pinned = EnvGuard::set(LING31_PREFILL_CHUNK_ENV, "2048");
+        assert_eq!(family_native_chunk(caps, 262_144), 2048);
     }
 
     #[test]

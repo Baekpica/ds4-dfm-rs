@@ -607,10 +607,10 @@ and [host memory guard](host-memory-guard.md). Preserve unrelated owners and wor
   and benchmark numbers are in the [guide](deepseek41-flash.md); the port is not
   yet in a release ledger.
 - Ling-3.1-flash VQ leaves about 8.1 GiB beside its trunk on a 128 GB Spark
-  (6.4 GiB with MTP): the native 262,144-token context serves on the serial
-  lane at 512-row chunks, MTP at 16K serially (8K in a bank with a 3 GiB
-  floor), and banks fit at shorter contexts (two at 32K). Checkpoint slots
-  take what the bank fit leaves. See the [family page](ling31-flash-vq.md#serving).
+  (6.4 GiB with MTP): the native 262,144-token context serves one bank at
+  512-row chunks, MTP fits 16K serially (8K in a bank with a 3 GiB floor),
+  and more banks fit at shorter contexts (two at 32K). Checkpoint slots take
+  what the bank fit leaves. See the [family page](ling31-flash-vq.md#serving).
 - dots3-note is text-only, with serial default and explicit bank/MTP paths
   described [above](#dots3-serving). The source 524,288-token metadata is
   preserved. Historical 262,144-context allocation and short 4K server checks

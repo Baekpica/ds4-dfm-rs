@@ -57,18 +57,21 @@ as one pass ([cuda/l31_residual.cuh](../cuda/l31_residual.cuh)).
 **Prefill (2,048-row chunks).** Routed experts run the FP8 tensor-core MMA on
 E4M3 codewords; with 512 experts a 2,048-row chunk gives each expert about
 32 rows, so the per-chunk codeword cost dominates (37% of an 8K prefill).
-Q4_K projections use the FP16 tensor-core q4p kernel, the FP8 decay/gate pair
-restores BF16 weights once per matrix and leaves cuBLAS's BF16 rows for the
-tensor-core chunked KDA, which reads q/k/v as BF16 rows (decode's rounding)
-and hands the output projection BF16 heads. MLA expands each key segment of
-the latent cache into per-head BF16 K/V and merges segments through their
-log-sum-exp.
+Q4_K projections use the FP16 tensor-core q4p kernel; the FP8 decay/gate pair
+runs on it too, its producer warps writing FP16 operands from the E4M3 bytes
+(no BF16 weight copy), and leaves BF16 rows for the tensor-core chunked KDA,
+which reads q/k/v as BF16 rows (decode's rounding) and hands the output
+projection BF16 heads. MLA expands each key segment of the latent cache into
+per-head BF16 K/V; a cp.async-pipelined kernel attends 128 queries per K/V
+tile and folds each segment into the running heads through their
+log-sum-exp in place.
 
-**Chunk size.** Once allocated, 4,096-row chunks prefill 10–14% faster
-(8K/16K) but need 1.2 GiB more workspace than 2,048 rows, which a 128 GB
-Spark cannot spare beside the trunk and a bank; `DS4_LING31_PREFILL_CHUNK`
-or `--native-chunk` selects them. Cold first allocations of the larger
-workspace stalled in page compaction, which once made 4,096 look slower.
+**Chunk size.** Up to 128K tokens of context the default chunk is 2,048
+rows, up to 192K 1,024 and above it 512: the largest one bank fits beside
+the trunk. Keying it to the context keeps the chunk, part of the disk-KV
+identity, fixed across boots. Once allocated, 4,096-row chunks prefill a
+whole prompt 10–14% faster (8K/16K) but need 1.2 GiB more workspace than
+2,048 rows; `DS4_LING31_PREFILL_CHUNK` or `--native-chunk` selects them.
 
 **MTP.** HF `BailingMoeV3MTPLayer`: row p pairs the trunk's final-norm hidden
 p with token p + 1; `eh_proj([enorm(embed) | hnorm(hidden)])` feeds layer 72,
@@ -102,7 +105,7 @@ past that budget recycles the oldest mapped slot.
 
 | Command (plus `-m` and the release directory) | What runs |
 |---|---|
-| default (262,144 context) | bank fit refused → serial lane at 262K with 512-row chunks (1,024 when 8.3 GiB is free after load), exact reuse; a 10,581-token prompt prefills at 591 tok/s |
+| default (262,144 context) | one bank at 512-row chunks, exact reuse, disk KV restored after a restart; a 10,580-token prompt prefills at 645 tok/s |
 | `-c 32768 --max-seqs 2 --prefix-reuse partial` | two banks, prompt-end checkpoint slots |
 | `-c 16384 --mtp-mode on --mtp-draft 2` | serial MTP; 32K does not fit beside the MTP part |
 | `-c 8192 --max-seqs 1 --prefix-reuse partial --mtp-mode on --mtp-draft 2 --native-chunk 1024 --mem-floor-gb 3` | MTP in the bank lane, partial reuse |
@@ -129,55 +132,60 @@ and 25.1–26.1 in the bank lane.
 
 ## Performance
 
-The [2K–64K sweep](benchmarks/ling31-vq-spark-64k-2026-10-18/README.md) at
-`4d6f096b`: three fresh `ds4-bench` processes per variant, 2,048-token
-incremental prefill and 128 forced greedy tokens per frontier.
+The [2K–64K sweep](benchmarks/ling31-vq-spark-64k-prefill-2026-10-18/README.md)
+at `a64e323b`: three fresh `ds4-bench` processes per variant, 2,048-token
+incremental prefill and 128 forced greedy tokens per frontier. The
+[first sweep](benchmarks/ling31-vq-spark-64k-2026-10-18/README.md) at
+`4d6f096b` is in the last column.
 
-| Configuration (median of three run means) | Prefill tok/s | Decode tok/s |
-|---|---:|---:|
-| MTP off, 2K–64K | 669.6 | 15.24 |
-| MTP off, 2K–32K | 772.1 | 15.42 |
-| Two embedded MTP drafts, 2K–32K | 751.6 | 20.99 |
+| Configuration (median of three run means) | Prefill tok/s | Decode tok/s | `4d6f096b` |
+|---|---:|---:|---:|
+| MTP off, 2K–64K | 778.8 | 14.86 | 669.6 / 15.24 |
+| MTP off, 2K–32K | 867.1 | 15.02 | 772.1 / 15.42 |
+| Two embedded MTP drafts, 2K–32K | 859.8 | 21.15 | 751.6 / 20.99 |
 
-![Ling-3.1-flash VQ prefill and decode on one DGX Spark](benchmarks/ling31-vq-spark-64k-2026-10-18/throughput.png)
+![Ling-3.1-flash VQ prefill and decode on one DGX Spark](benchmarks/ling31-vq-spark-64k-prefill-2026-10-18/throughput.png)
 
 ## Quality
 
 - Reference receipt (`tests/ling31_quality`, 13 held-out cases against the
   handoff's BF16-source reference A on the same token ids): teacher-forced NLL
-  1.052 vs 1.117 over 642 targets, higher than A in 7 of 13 cases; top-1
+  1.050 vs 1.117 over 642 targets, higher than A in 7 of 13 cases; top-1
   agreement 86.4%. The targets are fixture text, so neither side is favoured;
   13 cases do not measure a quality gain.
 - Long context (teacher-forced 256 tokens after 4K/8K/6K prompts, 768
-  targets): NLL 2.265.
+  targets): NLL 2.263.
 - MTP gate (two drafts, 1,050 tokens): 2.35 tokens per verify, maximum gap
   to the one-row decode 0.25 within the 0.5 BF16 tie.
 - Arithmetic changes were judged against the chunk-size noise of the same
   path: 1,024- vs 2,048-row chunks move the 8K/16K frontier logits by KL
-  0.0020/0.0146.
+  0.0020/0.0146. FP16 decay/gate operands moved the sweep frontiers by KL
+  0.0002–0.020 and lowered both NLLs by 0.0015.
 
 ## Diagnostic switches
 
 | Variable | Effect |
 |---|---|
-| `DS4_LING31_PREFILL_CHUNK` | prefill rows per chunk (default 2,048, at most 4,096) |
+| `DS4_LING31_PREFILL_CHUNK` | prefill rows per chunk (default 2,048 to 128K context, 1,024 to 192K, then 512; at most 4,096) |
 | `DS4_LING31_MTP=1` | maps and runs MTP with one draft |
 | `DS4_LING31_FUSED=0` | separate residual/norm kernels and F32 decay/gate/heads rows (bit-identical) |
 | `DS4_LING31_QKV_BF16=0` | F32 q/k/v prefill rows |
 | `DS4_LING31_FLASH=0` | Motif's FP32 decode/verify latent attention |
+| `DS4_LING31_FA_PIPE=0` | Ling-3.0's prefill range attention and a separate state merge (bit-identical) |
+| `DS4_LING31_FP8_Q4P=0` | BF16 restore + cuBLAS for the FP8 decay/gate projections |
 | `DS4_LING31_GAIN_DOT=0`, `DS4_LING31_DECODE_ROUTE=0` | GVQ decode expert variants |
 | `DS4_LING31_MOE_RESTORE=1`, `DS4_LING31_MOE_STATS=1` | BF16 restore + cuBLAS experts (reference); expert call counts |
 
 ## Limits and next levers
 
-- Memory decides the shape: with the default floor, 262K fits only the serial
-  lane at 512-row chunks, and MTP fits 16K serially or 8K in a bank with a
-  3 GiB floor.
-- Prefill falls with context (892 tok/s at 4K, 497 at 64K): the expanded MLA
-  flash kernel runs at about 36 TFLOPS and merges per key segment.
+- Memory decides the shape: with the default floor, 262K fits one bank at
+  512-row chunks, and MTP fits 16K serially or 8K in a bank with a 3 GiB
+  floor. At 512 rows each of the 512 experts sees about 8 rows: a 10K prompt
+  prefills at 645 tok/s against about 920 with 2,048-row chunks.
+- Prefill falls with context (967 tok/s at 4K, 628 at 64K): the expanded MLA
+  kernel runs at about 58 TFLOPS on a full segment, and every step re-expands
+  the cached latent rows.
 - Routed-expert prefill is bound by per-chunk codeword work at 2,048 rows; a
   4,096-row MoE batch over 2,048-row attention halves would need about
   0.45 GiB more workspace.
-- The FP8 decay/gate projections restore BF16 weights before cuBLAS; a direct
-  FP8 tensor-core GEMM would remove the restore.
 - MTP does not draft for sampled (thinking) requests.

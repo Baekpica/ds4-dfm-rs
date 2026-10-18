@@ -177,24 +177,25 @@ qualify serving limits or long-context quality.
 
 Ling-3.1-flash with GVQ1 routed experts and Q4_K/FP8 nonexperts
 ([model card](https://huggingface.co/Baekpica/Ling-3.1-flash-VQ-GGUF)) recorded
-**669.6 prefill / 15.24 decode** with MTP off across the 32 frontiers of the
-[2K–64K sweep](benchmarks/ling31-vq-spark-64k-2026-10-18/README.md)
-(`4d6f096b`), and **751.6 / 20.99** with two embedded MTP drafts over 2K–32K
-(MTP off on that range: 772.1 / 15.42). These are medians of three run means
+**778.8 prefill / 14.86 decode** with MTP off across the 32 frontiers of the
+[2K–64K sweep after the prefill round](benchmarks/ling31-vq-spark-64k-prefill-2026-10-18/README.md)
+(`a64e323b`), and **859.8 / 21.15** with two embedded MTP drafts over 2K–32K
+(MTP off on that range: 867.1 / 15.02). These are medians of three run means
 in three fresh `ds4-bench` processes per variant on one DGX Spark / GB10: one
 warm session, 2,048-token incremental prefills and 128 forced greedy tokens
 per frontier. MTP stops at 32K: the 1.68 GiB MTP part, a 64K session and the
 bench's host snapshot would leave under 2 GiB. Clock range 300–2200 MHz.
 
-![Ling-3.1-flash VQ prefill and decode on one DGX Spark](benchmarks/ling31-vq-spark-64k-2026-10-18/throughput.png)
+![Ling-3.1-flash VQ prefill and decode on one DGX Spark](benchmarks/ling31-vq-spark-64k-prefill-2026-10-18/throughput.png)
 
-Incremental prefill falls 45% from 4K (908.1) to 64K (501.2): the nine MLA
+Incremental prefill falls 35% from 4K (967.0) to 64K (627.5): the nine MLA
 layers expand every 2,048-key segment of the latent cache in each step. Decode
-stays within 15.6–14.9 tok/s through 64K on tensor-core latent attention
-(12.46 at 64K before it). MTP decode follows draft acceptance (16.6–26.6 per
-frontier). The [Ling-3.1 page](ling31-flash-vq.md) records the execution
-paths, serving shapes and quality screens. Throughput does not qualify serving
-limits or long-context quality.
+stays within 15.2–14.6 tok/s through 64K on tensor-core latent attention. MTP
+decode follows draft acceptance (17.9–24.9 per frontier). The
+[first sweep](benchmarks/ling31-vq-spark-64k-2026-10-18/README.md) (`4d6f096b`,
+#92) recorded 669.6 / 15.24 and 751.6 / 20.99. The [Ling-3.1 page](ling31-flash-vq.md)
+records the execution paths, serving shapes and quality screens. Throughput
+does not qualify serving limits or long-context quality.
 
 ## DeepSeek V4.1
 

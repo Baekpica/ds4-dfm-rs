@@ -586,6 +586,23 @@ extern "C" int ds4_gpu_l31_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds
         rows, pos0, scale, gvq_mode(rows), ctx->stream), "Ling-3.1 flash attention");
 }
 
+extern "C" int ds4_gpu_l31_expanded_attn(ds4_gpu_tensor *out, ds4_gpu_tensor *lse, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *k_full, const ds4_gpu_tensor *value, uint32_t n_query,
+        uint32_t query_pos0, uint32_t n_kv, uint32_t kv_pos0, float scale, ds4_l31_segment segment) {
+    const uint64_t key = DS4_L31_NOPE + DS4_L31_ROPE;
+    const uint64_t bf16 = sizeof(__nv_bfloat16);
+    if (!out || !lse || !q || !k_full || !value || !n_query || !n_kv || kv_pos0 > query_pos0 ||
+        !gvq_floats(out, (uint64_t)n_query * DS4_L31_HEADS * DS4_L31_VALUE) ||
+        !gvq_floats(lse, (uint64_t)n_query * DS4_L31_HEADS) ||
+        !gvq_floats(q, (uint64_t)n_query * DS4_L31_HEADS * key) ||
+        k_full->bytes < (uint64_t)n_kv * DS4_L31_HEADS * key * bf16 ||
+        value->bytes < (uint64_t)n_kv * DS4_L31_HEADS * DS4_L31_VALUE * bf16) { return 0; }
+    return ds4_mmq_ling31_prefill_attn_pipe((float *)out->ptr, (float *)lse->ptr, (const float *)q->ptr,
+        k_full->ptr, value->ptr, (int)n_query, (int)query_pos0, (int)n_kv, (int)kv_pos0,
+        (int)DS4_L31_HEADS, (int)key, (int)DS4_L31_VALUE, scale, segment == DS4_L31_SEGMENT_MERGE,
+        ds4_current_stream()) == 0;
+}
+
 extern "C" int ds4_gpu_l31_value(ds4_gpu_tensor *out, const ds4_gpu_tensor *latent,
         const ds4_gpu_tensor *v_b, uint32_t rows) {
     if (!out || !latent || !v_b || !rows ||

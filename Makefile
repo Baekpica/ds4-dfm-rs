@@ -2093,6 +2093,13 @@ tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/glm_
 test-ling31-flash: tests/test_ling31_flash
 	./tests/test_ling31_flash
 
+tests/test_ling31_prefill_attn: tests/test_ling31_prefill_attn.cu cuda/mmq/ds4_fattn.o cuda/mmq/ds4_ggml_stubs.o cuda/mmq/ds4_mmq.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ling31_prefill_attn.cu cuda/mmq/ds4_fattn.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
+
+.PHONY: test-ling31-prefill-attn
+test-ling31-prefill-attn: tests/test_ling31_prefill_attn
+	./tests/test_ling31_prefill_attn
+
 .PHONY: test-glm-vq-ops
 test-glm-vq-ops: tests/libglm_vq_test.so
 	$(GLMVQ_PYTHON) tests/test_glm_vq_ops.py --lib tests/libglm_vq_test.so
@@ -2704,7 +2711,7 @@ clean:
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
 	rm -f tests/test_glm53_compare tests/test_glm53_mtp_long tests/test_glm53_mtp_long.o
-	rm -f tests/libglm_vq_test.so tests/test_glm_vq_bind tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_ling31_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
+	rm -f tests/libglm_vq_test.so tests/test_glm_vq_bind tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_ling31_stop tests/test_ling31_prefill_attn tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
 	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o
