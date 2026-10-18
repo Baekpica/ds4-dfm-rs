@@ -105,6 +105,8 @@ The instance may differ from the kernel's dominant geometry; do not interpret
 it as all launches. Replay/cache controls affect counters, and NCU throughput
 never enters the speed comparison. Capture failure writes incomplete `ncu.json`
 and returns failure. Without `--ncu`, unavailable NCU does not block scout.
+Source-level NCU views need line tables, which release objects omit: build
+with `CUDA_LINEINFO=-lineinfo MMQ_LINEINFO=-lineinfo` (SASS is unchanged).
 
 ## Workload identity and comparison
 
