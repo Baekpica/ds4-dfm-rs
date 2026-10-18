@@ -17,6 +17,7 @@
 
 enum { GVQ_TYPE_F32 = 0, GVQ_TYPE_Q4 = 12, GVQ_TYPE_BF16 = 30,
        GVQ_TYPE_FP8 = 0x47514638, GVQ_TYPE_BOOK = 0x47564342, GVQ_TYPE_VQ = 0x47565138,
+       GVQ_TYPE_RES = 0x47565238,
        GVQ_EXPERTS = 288, GVQ_USED = 8, GVQ_HIDDEN = 4096, GVQ_FFN = 2048, GVQ_WORDS = 8192 };
 static constexpr uint64_t GVQ_CUBLAS_WORKSPACE = 32ull * 1024 * 1024;
 enum { GVQ_MMA_ROWS = 256, GVQ_MMA_TOKENS = 32, GVQ_MMA8_TOKENS = 64 };
@@ -78,6 +79,9 @@ struct ds4_gvq_ctx {
     int mma_blocks[3] = {};
     bool mma8 = false;
     int mma8_blocks[3] = {};
+    // R13+8 layers: FP8 MMA with the residual stage (mma8_tokens items).
+    bool mma8_res = false;
+    int mma8_res_blocks[3] = {};
     // 2,048-token chunks route ~57 tokens per expert: 64-token items decode
     // each weight tile about once instead of twice (DS4_GLMVQ_MMA8_T64=0: 32).
     uint32_t mma8_tokens = GVQ_MMA_TOKENS;
@@ -87,6 +91,7 @@ struct ds4_gvq_ctx {
     uint64_t mma_calls = 0, mma_items = 0;
     ds4_gpu_tensor *decode = nullptr;
     uint32_t decode_blocks = 0;
+    bool decode_res = false;
     glmvq_decode_item decode_items[GVQ_USED] = {};
     uint64_t decode_calls = 0;
     // Per-layer expert->matrix tables on device, keyed by expert 0's gate
@@ -140,7 +145,29 @@ static uint32_t gvq_u32(const uint8_t *data, size_t offset) {
     return value;
 }
 
-static bool gvq_link(ds4_gvq_model *plan, const uint8_t *h, uint32_t index) {
+// GVR8 residual of a 13-bit GVQ1 matrix: 128-byte GVR1 header `h`, then one
+// index byte per vector into a K=256 E4M3 book. Rust validated hashes and
+// links; this re-checks the geometry the kernels assume.
+static bool gvq_link_res(ds4_gvq_model *plan, glmvq_source &s, const ds4_gvq_record &r, const uint8_t *h) {
+    enum { RES_BITS = 8, RES_WORDS = 256 };
+    if (r.res >= plan->source.size() || !h || !s.vq.plane) { return false; }
+    const ds4_gvq_record &res = plan->records[r.res];
+    if (res.type != GVQ_TYPE_RES || res.book >= plan->source.size()) { return false; }
+    const ds4_gvq_record &book = plan->records[res.book];
+    const uint64_t vectors = (uint64_t)r.rows * r.cols / GLMVQ_VECTOR;
+    const uint64_t index = gvq_u64(h, 32), size = gvq_u64(h, 56);
+    if (memcmp(h, "GVR1", 4) || h[4] != 1 || h[5] || h[6] != RES_BITS || h[7] != GLMVQ_VECTOR ||
+        gvq_u32(h, 8) != r.rows || gvq_u32(h, 12) != r.cols || gvq_u32(h, 16) != RES_WORDS ||
+        gvq_u32(h, 20) != GLMVQ_E4M3 || gvq_u32(h, 28) || index != GVQ_HEADER || size != res.bytes ||
+        !gvq_span(index, vectors, res.bytes) || book.type != GVQ_TYPE_BOOK ||
+        book.bytes != (uint64_t)RES_WORDS * GLMVQ_VECTOR) { return false; }
+    s.vq.res = (const uint8_t *)plan->source[r.res].data + index;
+    s.vq.res_book = (const uint8_t *)plan->source[res.book].data;
+    return true;
+}
+
+// `hres`: the linked residual's header (nullptr without one).
+static bool gvq_link(ds4_gvq_model *plan, const uint8_t *h, uint32_t index, const uint8_t *hres) {
     const ds4_gvq_record &r = plan->records[index];
     glmvq_source &s = plan->source[index];
     if (r.type == GVQ_TYPE_Q4) {
@@ -181,8 +208,8 @@ static bool gvq_link(ds4_gvq_model *plan, const uint8_t *h, uint32_t index) {
     const uint8_t *data = (const uint8_t *)s.data;
     s.storage = GLMVQ_WEIGHT_VQ;
     s.vq = {data + main, wide ? data + plane : nullptr, plan->source[r.book].data,
-        (const __half *)(data + gain), r.rows, r.cols, GLMVQ_E4M3};
-    return true;
+        (const __half *)(data + gain), r.rows, r.cols, GLMVQ_E4M3, nullptr, nullptr};
+    return r.res == DS4_GVQ_NO_LINK || gvq_link_res(plan, s, r, hres);
 }
 
 // One warp per VQ matrix copies its GVQ1 header out of the device copy, so
@@ -200,7 +227,8 @@ static bool gvq_headers(const ds4_gvq_model *plan, std::vector<uint32_t> &slot,
     std::vector<const uint32_t *> src;
     slot.assign(plan->records.size(), UINT32_MAX);
     for (size_t i = 0; i < plan->records.size(); i++) {
-        if (plan->records[i].type != GVQ_TYPE_VQ || plan->records[i].bytes < GVQ_HEADER) { continue; }
+        const uint32_t type = plan->records[i].type;
+        if ((type != GVQ_TYPE_VQ && type != GVQ_TYPE_RES) || plan->records[i].bytes < GVQ_HEADER) { continue; }
         slot[i] = (uint32_t)src.size();
         src.push_back((const uint32_t *)plan->source[i].data);
     }
@@ -250,7 +278,10 @@ extern "C" ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,
     if (!gvq_headers(plan, slot, headers)) { ds4_gpu_gvq_unbind(plan); return nullptr; }
     for (uint32_t i = 0; i < count; i++) {
         const uint8_t *h = slot[i] == UINT32_MAX ? nullptr : headers.data() + (uint64_t)slot[i] * GVQ_HEADER;
-        if (!gvq_link(plan, h, i)) { ds4_gpu_gvq_unbind(plan); return nullptr; }
+        const uint32_t res = records[i].type == GVQ_TYPE_VQ ? records[i].res : DS4_GVQ_NO_LINK;
+        const uint8_t *hres = res < count && slot[res] != UINT32_MAX
+            ? headers.data() + (uint64_t)slot[res] * GVQ_HEADER : nullptr;
+        if (!gvq_link(plan, h, i, hres)) { ds4_gpu_gvq_unbind(plan); return nullptr; }
     }
     const uint64_t bytes = (uint64_t)count * sizeof(glmvq_source);
     plan->device = ds4_gpu_tensor_alloc(bytes);
@@ -578,6 +609,21 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
                 };
                 ctx->mma8 = fp8[0] == cudaSuccess && fp8[1] == cudaSuccess && fp8[2] == cudaSuccess;
                 ctx->mma8_tokens = wide ? GVQ_MMA8_TOKENS : GVQ_MMA_TOKENS;
+                // R13+8 layers take the same item width (64: residual codes in
+                // registers; 32: staged in shared memory).
+                auto res8 = [&](auto tokens) {
+                    constexpr uint32_t BT = decltype(tokens)::value;
+                    return glmvq_mma8_prepare<GVQ_MMA_ROWS, BT, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true>(
+                            &ctx->mma8_res_blocks[0]) == cudaSuccess &&
+                        glmvq_mma8_prepare<GVQ_MMA_ROWS, BT, 1, GLMVQ_MMA_UP, 13, GLMVQ_CLAMP_GATE, true>(
+                            &ctx->mma8_res_blocks[1]) == cudaSuccess &&
+                        glmvq_mma8_prepare<GVQ_MMA_ROWS, BT, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true>(
+                            &ctx->mma8_res_blocks[2]) == cudaSuccess;
+                };
+                const bool res = wide ? res8(std::integral_constant<uint32_t, GVQ_MMA8_TOKENS>{})
+                                      : res8(std::integral_constant<uint32_t, GVQ_MMA_TOKENS>{});
+                ctx->mma8_res = ctx->mma8 && res;
+                if (ctx->mma8 && !ctx->mma8_res) { (void)cudaGetLastError(); }
                 if (!ctx->mma8) {
                     (void)cudaGetLastError();
                     fprintf(stderr, "ds4: GLM VQ FP8 MMA unavailable; using BF16 register MMA\n");
@@ -600,6 +646,14 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         cudaError_t status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&ctx->decode_blocks);
         if (status == cudaSuccess) {
             status = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT>(&ctx->decode_blocks);
+        }
+        if (status == cudaSuccess) {
+            // R13+8 layers; without them those layers keep restore+GEMM.
+            ctx->decode_res = glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_WEIGHT, glmvq_glm_form, true>(
+                &ctx->decode_blocks) == cudaSuccess &&
+                glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT, glmvq_glm_form, true>(
+                &ctx->decode_blocks) == cudaSuccess;
+            if (!ctx->decode_res) { (void)cudaGetLastError(); }
         }
         if (status == cudaSuccess) {
             ctx->decode = ds4_gpu_tensor_alloc(decode_bytes);
@@ -1606,15 +1660,32 @@ __global__ void gvq_scatter(float *output, const float *input, const float *weig
     output[target] = glmvq_round(glmvq_add(output[target], value));
 }
 
+// A layer's residual book, or nullptr for a plain GVQ1 layer.
+static const uint8_t *gvq_res_book(const ds4_gvq_ctx *ctx, const uint32_t *matrices) {
+    const auto &sources = ctx->model->source;
+    return matrices[0] < sources.size() ? sources[matrices[0]].vq.res_book : nullptr;
+}
+
+// Every matrix of a layer carries the same residual book, or none does.
+static bool gvq_res_matches(const glmvq_source &s, const uint8_t *res_book) {
+    if (!res_book) { return !s.vq.res; }
+    return s.vq.res && s.vq.res_book == res_book && ((uintptr_t)s.vq.res & 127u) == 0 &&
+        ((uintptr_t)res_book & 15u) == 0;
+}
+
 static bool gvq_mma_fits(const ds4_gvq_ctx *ctx, const uint32_t *matrices) {
     const auto &sources = ctx->model->source;
     if (matrices[0] >= sources.size()) { return false; }
     const void *book = sources[matrices[0]].vq.book;
+    const uint8_t *res_book = gvq_res_book(ctx, matrices);
+    // The BF16 register MMA has no residual stage.
+    if (res_book && !ctx->mma8_res) { return false; }
     for (uint32_t i = 0; i < 3 * GVQ_EXPERTS; i++) {
         const uint32_t index = matrices[i];
         const uint32_t rows = i < 2 * GVQ_EXPERTS ? GVQ_FFN : GVQ_HIDDEN;
         const uint32_t cols = i < 2 * GVQ_EXPERTS ? GVQ_HIDDEN : GVQ_FFN;
-        if (index >= sources.size() || !glmvq_mma_fits(sources[index], rows, cols, book)) { return false; }
+        if (index >= sources.size() || !glmvq_mma_fits(sources[index], rows, cols, book) ||
+            !gvq_res_matches(sources[index], res_book)) { return false; }
     }
     return true;
 }
@@ -1631,6 +1702,7 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     auto *work = (glmvq_mma_item *)cursor; cursor += pairs * sizeof(*work);
     auto *order = (uint32_t *)cursor;
     ctx->items.clear();
+    const uint8_t *res_book = gvq_res_book(ctx, matrices);
     const uint32_t per_item = ctx->mma8 ? ctx->mma8_tokens : (uint32_t)GVQ_MMA_TOKENS;
     for (uint32_t e = 0; e < GVQ_EXPERTS; e++) {
         for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += per_item) {
@@ -1669,8 +1741,16 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
                 uint8_t *q8 = nullptr, float *q8_scale = nullptr) {
             constexpr uint32_t BT = decltype(tokens)::value;
             constexpr glmvq_mma_stage MODE = decltype(mode)::value;
-            constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, BT>();
             constexpr uint32_t threads8 = glmvq_mma8_threads<GVQ_MMA_ROWS, 1>();
+            if (res_book) {
+                constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, BT, 13, true>();
+                glmvq_mma8_kernel<GVQ_MMA_ROWS, BT, 1, MODE, 13, GLMVQ_CLAMP_GATE, true><<<
+                    min(nitems * (rows_out / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_res_blocks[MODE]), threads8, shared8,
+                    stream>>>(source, work, nitems, book, in, scale, grouped, GVQ_USED, (__nv_bfloat16 *)gate, mid,
+                    (__nv_bfloat16 *)down, rows_out, cols_in, clamp, q8, q8_scale, res_book);
+                return;
+            }
+            constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, BT>();
             glmvq_mma8_kernel<GVQ_MMA_ROWS, BT, 1, MODE><<<
                 min(nitems * (rows_out / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_blocks[MODE]), threads8, shared8, stream>>>(
                 source, work, nitems, book, in, scale, grouped, GVQ_USED, (__nv_bfloat16 *)gate, mid,
@@ -1707,19 +1787,23 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     return cuda_ok(cudaGetLastError(), "GLM VQ grouped MMA");
 }
 
-static bool gvq_decode_matrix(const glmvq_source &s, uint32_t projection, const void *book) {
+static bool gvq_decode_matrix(const glmvq_source &s, uint32_t projection, const void *book,
+        const uint8_t *res_book) {
     const uint32_t rows = projection == 2 ? GVQ_HIDDEN : GVQ_FFN;
     const uint32_t cols = projection == 2 ? GVQ_FFN : GVQ_HIDDEN;
     return s.storage == GLMVQ_WEIGHT_VQ && s.rows == rows && s.cols == cols &&
         s.vq.rows == rows && s.vq.cols == cols && s.vq.precision == GLMVQ_E4M3 &&
         s.vq.main && s.vq.plane && s.vq.gain && book && s.vq.book == book &&
         (uintptr_t)s.vq.main % 128 == 0 && (uintptr_t)s.vq.plane % 128 == 0 &&
-        (uintptr_t)book % 16 == 0 && (uintptr_t)s.vq.gain % sizeof(__half) == 0;
+        (uintptr_t)book % 16 == 0 && (uintptr_t)s.vq.gain % sizeof(__half) == 0 &&
+        gvq_res_matches(s, res_book);
 }
 
 static bool gvq_decode_fits(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
     const auto &sources = ctx->model->source;
     const void *book = nullptr;
+    const uint8_t *res_book = gvq_res_book(ctx, matrices);
+    if (res_book && !ctx->decode_res) { return false; }
     for (uint32_t slot = 0; slot < GVQ_USED; slot++) {
         const uint32_t pair = ctx->grouped[slot], expert = ctx->routes[pair];
         auto &item = ctx->decode_items[slot];
@@ -1729,7 +1813,7 @@ static bool gvq_decode_fits(ds4_gvq_ctx *ctx, const uint32_t *matrices) {
             if (index >= sources.size()) { return false; }
             const auto &s = sources[index];
             if (!book) { book = s.vq.book; }
-            if (!gvq_decode_matrix(s, projection, book)) { return false; }
+            if (!gvq_decode_matrix(s, projection, book, res_book)) { return false; }
             *outputs[projection] = s.vq;
         }
         item.pair = pair;
@@ -1817,9 +1901,10 @@ static const uint32_t *gvq_decode_table(ds4_gvq_ctx *ctx, const uint32_t *matric
     const size_t slot = ctx->decode_keys.size();
     if (slot == GVQ_DECODE_LAYERS || matrices[0] >= sources.size()) { return nullptr; }
     const void *book = sources[matrices[0]].vq.book;
-    bool fit = true;
+    const uint8_t *res_book = gvq_res_book(ctx, matrices);
+    bool fit = !res_book || ctx->decode_res;
     for (uint32_t i = 0; i < GVQ_DECODE_TABLE && fit; i++) {
-        fit = matrices[i] < sources.size() && gvq_decode_matrix(sources[matrices[i]], i / GVQ_EXPERTS, book);
+        fit = matrices[i] < sources.size() && gvq_decode_matrix(sources[matrices[i]], i / GVQ_EXPERTS, book, res_book);
     }
     if (fit && !ds4_gpu_tensor_write(ctx->decode, first + slot * GVQ_DECODE_TABLE * sizeof(uint32_t),
             matrices, GVQ_DECODE_TABLE * sizeof(uint32_t))) { return nullptr; }
@@ -1835,9 +1920,15 @@ static cudaError_t gvq_gain(const ds4_gvq_ctx *ctx, F &&launch) {
         : launch(std::integral_constant<glmvq_decode_gain, GLMVQ_GAIN_WEIGHT>{});
 }
 
+// Expert kernels for the layer's storage: R13 or R13+8 (residual book).
+template <typename F>
+static cudaError_t gvq_res(const uint8_t *res_book, F &&launch) {
+    return res_book ? launch(std::true_type{}) : launch(std::false_type{});
+}
+
 static int gvq_decode_device(ds4_gvq_ctx *ctx, float *out, const float *input,
         const int32_t *selected, const float *weights, const uint32_t *table,
-        const void *book, float clamp, const float *shared) {
+        const void *book, float clamp, const float *shared, const uint8_t *res_book) {
     uint8_t *base = (uint8_t *)ctx->decode->ptr;
     auto *items = (glmvq_decode_item *)base;
     auto *mid = (__nv_bfloat16 *)(base + GVQ_DECODE_WORK);
@@ -1847,15 +1938,18 @@ static int gvq_decode_device(ds4_gvq_ctx *ctx, float *out, const float *input,
         table, (const glmvq_source *)ctx->model->device->ptr);
     ctx->decode_calls++;
     return cuda_ok(gvq_gain(ctx, [&](auto gain) {
-        return glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, decltype(gain)::value>(items, book, input, mid,
-            partial, out, weights, clamp, ctx->decode_blocks, stream, nullptr, nullptr, shared, ctx->launch);
+        return gvq_res(res_book, [&](auto res) {
+            return glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, decltype(gain)::value, glmvq_glm_form,
+                decltype(res)::value>(items, book, input, mid, partial, out, weights, clamp, ctx->decode_blocks,
+                stream, nullptr, nullptr, shared, ctx->launch, res_book);
+        });
     }), "GLM VQ routed decode");
 }
 
 // MTP verify widths: one pass over the rows' expert union.
 static int gvq_verify_device(ds4_gvq_ctx *ctx, float *out, const float *input,
         const int32_t *selected, const float *weights, const uint32_t *table,
-        const void *book, uint32_t rows, float clamp, const float *shared) {
+        const void *book, uint32_t rows, float clamp, const float *shared, const uint8_t *res_book) {
     uint8_t *base = (uint8_t *)ctx->decode->ptr + GVQ_VERIFY_AT;
     auto *items = (glmvq_verify_item *)base;
     auto *plan = (glmvq_verify_plan *)(base + GVQ_VERIFY_ITEMS);
@@ -1866,8 +1960,11 @@ static int gvq_verify_device(ds4_gvq_ctx *ctx, float *out, const float *input,
         table, (const glmvq_source *)ctx->model->device->ptr);
     ctx->decode_calls++;
     return cuda_ok(gvq_gain(ctx, [&](auto gain) {
-        return glmvq_verify_launch<13, 32, decltype(gain)::value>(items, plan, book, input, rows, mid, partial,
-            out, weights, clamp, ctx->decode_blocks, stream, shared, ctx->launch);
+        return gvq_res(res_book, [&](auto res) {
+            return glmvq_verify_launch<13, 32, decltype(gain)::value, glmvq_glm_form, decltype(res)::value>(items,
+                plan, book, input, rows, mid, partial, out, weights, clamp, ctx->decode_blocks, stream, shared,
+                ctx->launch, res_book);
+        });
     }), "GLM VQ verify decode");
 }
 
@@ -1879,11 +1976,14 @@ static int gvq_decode_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     auto *mid = (__nv_bfloat16 *)(base + GVQ_DECODE_WORK);
     auto *partial = (float *)(mid + GVQ_USED * GVQ_FFN);
     ctx->decode_calls++;
+    const uint8_t *res_book = ctx->decode_items[0].gate.res_book;
     return cuda_ok(gvq_gain(ctx, [&](auto gain) {
-        return glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, decltype(gain)::value>(items,
-            ctx->decode_items[0].gate.book, (const float *)input->ptr, mid, partial,
-            (float *)out->ptr, (const float *)weights->ptr, clamp, ctx->decode_blocks,
-            ds4_current_stream(), nullptr, nullptr, shared);
+        return gvq_res(res_book, [&](auto res) {
+            return glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, decltype(gain)::value, glmvq_glm_form,
+                decltype(res)::value>(items, ctx->decode_items[0].gate.book, (const float *)input->ptr, mid, partial,
+                (float *)out->ptr, (const float *)weights->ptr, clamp, ctx->decode_blocks,
+                ds4_current_stream(), nullptr, nullptr, shared, GLMVQ_LAUNCH_PLAIN, res_book);
+        });
     }), "GLM VQ direct decode");
 }
 
@@ -1906,13 +2006,14 @@ extern "C" int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     if (ctx->decode && ctx->decode_route && rows <= GVQ_VERIFY_ROWS) {
         const uint32_t *table = gvq_decode_table(ctx, matrices);
         const void *book = ctx->model->source[matrices[0]].vq.book;
+        const uint8_t *res_book = gvq_res_book(ctx, matrices);
         if (table && rows == 1) {
             return gvq_decode_device(ctx, (float *)out->ptr, (const float *)input->ptr,
-                (const int32_t *)selected->ptr, (const float *)weights->ptr, table, book, clamp, add);
+                (const int32_t *)selected->ptr, (const float *)weights->ptr, table, book, clamp, add, res_book);
         }
         if (table) {
             return gvq_verify_device(ctx, (float *)out->ptr, (const float *)input->ptr,
-                (const int32_t *)selected->ptr, (const float *)weights->ptr, table, book, rows, clamp, add);
+                (const int32_t *)selected->ptr, (const float *)weights->ptr, table, book, rows, clamp, add, res_book);
         }
     }
     if (!ds4_gpu_tensor_read(selected, 0, ctx->routes.data(), pairs * sizeof(int32_t))) { return 0; }

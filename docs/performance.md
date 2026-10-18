@@ -149,16 +149,25 @@ long-context serving; use the [family guide](naive-n05-flash.md) for those limit
 
 ## GLM-5.3 Flash VQ
 
-GLM-5.3 Flash with GVQ1 routed experts and the Q4_K nonexpert v3 selection
-([model card](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF)) recorded
-**1,163.5 prefill / 35.08 decode** with two embedded MTP drafts in the
-[2K–64K sweep after the prefill PR](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/README.md)
-(`3dd964ba`, #88). These are medians of three run means across 32 frontiers in
-three fresh `ds4-bench` processes on one DGX Spark / GB10: one warm session,
-2,048-token incremental prefills and 128 forced greedy tokens per frontier.
-Clock range 300–2200 MHz; busy clocks 2,184–2,190 MHz.
+The R13+8 release of GLM-5.3 Flash VQ
+([model card](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF), HF
+`35d3833d`: routed layers 3–16 add an 8-bit residual stage, Q4_K nonexperts
+unchanged) recorded **1,113.7 prefill / 31.81 decode** with two embedded MTP
+drafts in the [2K–64K sweep](benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/README.md)
+(`90517b6b`). The previous R13 release measured 1,175.4 / 35.00 in the same
+interleaved runs and binary: prefill −5.2% from the residual MMAs, a verify
+cycle +5.5% from 7.85 instead of 7.5 GB per token, and 2.226 instead of 2.321
+tokens per verify on these continuations. These are medians of three run means
+across 32 frontiers in three fresh `ds4-bench` processes per release on one
+DGX Spark / GB10: one warm session, 2,048-token incremental prefills and 128
+forced greedy tokens per frontier. Clock range 300–2200 MHz; busy clocks
+2,177–2,190 MHz.
 
-![GLM-5.3 Flash VQ prefill and decode on one DGX Spark](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/throughput.png)
+![GLM-5.3 Flash VQ R13+8 vs R13 on one DGX Spark](benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/throughput.png)
+
+The R13 release recorded **1,163.5 / 35.08** in the
+[2K–64K sweep after the prefill PR](benchmarks/glm53-vq-spark-64k-prefill-2026-10-17/README.md)
+(`3dd964ba`, #88).
 
 Incremental prefill falls 7.1% from 4K (1,238.0) to 64K (1,149.9); the 2K point
 is each process's first prefill. MTP decode follows draft acceptance on the

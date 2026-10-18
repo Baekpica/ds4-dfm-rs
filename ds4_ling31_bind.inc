@@ -310,7 +310,8 @@ static bool ling31_gpu_bind(ds4_weights *w, const ds4_model *m) {
             return false;
         }
         records[i] = (ds4_gvq_record){t->abs_offset, t->bytes, t->type,
-            (uint32_t)rows, (uint32_t)cols, ling31_index(m, t->source_scale), DS4_GVQ_NO_LINK};
+            (uint32_t)rows, (uint32_t)cols, ling31_index(m, t->source_scale), DS4_GVQ_NO_LINK,
+            DS4_GVQ_NO_LINK};
     }
     for (uint32_t il = LING31_DENSE; il <= LING31_LAYERS; il++) {
         const ds4_ling31_experts *e = &w->ling31[il];

@@ -1,6 +1,6 @@
 //! Original names and types are retained, including the FP8 MTP experts.
 //! Shapes follow the pinned source configuration and GVQ1 release manifest.
-use super::{BF16, CODEBOOK, F32, FP8, VQ};
+use super::{BF16, CODEBOOK, F32, FP8, RESIDUAL, RESIDUAL_WORDS, VQ};
 use crate::{LayoutSpec, TypeClass};
 
 const EMBED: u64 = 4096;
@@ -117,6 +117,36 @@ fn mlp(out: &mut Vec<LayoutSpec>, prefix: &str, typ: u32, hidden: u64) {
     matrix(out, &format!("{prefix}.down_proj"), typ, EMBED, hidden);
 }
 
+// R13+8 layers (container v2) add one GVR8 per routed matrix; the part
+// validator keeps a layer's stage all-or-none.
+fn residuals(out: &mut Vec<LayoutSpec>, prefix: &str) {
+    for (name, rows, cols) in [
+        ("gate_proj", FFN, EMBED),
+        ("up_proj", FFN, EMBED),
+        ("down_proj", EMBED, FFN),
+    ] {
+        optional(
+            out,
+            format!("{prefix}.{name}.weight_residual"),
+            RESIDUAL,
+            &[rows, cols],
+        );
+    }
+}
+
+fn optional(out: &mut Vec<LayoutSpec>, name: String, typ: u32, shape: &[u64]) {
+    let mut dim = [0; 8];
+    for (i, &n) in shape.iter().rev().enumerate() {
+        dim[i] = n;
+    }
+    out.push(LayoutSpec {
+        name,
+        class: TypeClass::OptionalExact(typ),
+        ndim: shape.len() as u32,
+        dim,
+    });
+}
+
 fn layer(out: &mut Vec<LayoutSpec>, il: u32) {
     let p = format!("model.language_model.layers.{il}");
     let mtp = il == TRUNK;
@@ -159,6 +189,9 @@ fn layer(out: &mut Vec<LayoutSpec>, il: u32) {
                 if mtp { FP8 } else { VQ },
                 FFN,
             );
+            if !mtp {
+                residuals(out, &format!("{p}.mlp.experts.{expert}"));
+            }
         }
         if !mtp {
             // The published model contract is uniform8192 E4M3. Primitive
@@ -168,6 +201,12 @@ fn layer(out: &mut Vec<LayoutSpec>, il: u32) {
                 format!("glm_vq.layer.{il}.codebook.0"),
                 CODEBOOK,
                 &[CODEWORDS, super::VECTOR as u64],
+            );
+            optional(
+                out,
+                format!("glm_vq.layer.{il}.codebook.1"),
+                CODEBOOK,
+                &[u64::from(RESIDUAL_WORDS), super::VECTOR as u64],
             );
         }
     }

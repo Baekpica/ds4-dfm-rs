@@ -26,9 +26,11 @@ typedef enum { DS4_GVQ_ROWS_F32, DS4_GVQ_ROWS_BF16 } ds4_gvq_rows;
 
 /* Native-only pointer plan. Rust has validated payloads and links; this
  * table names source intervals and never exposes device handles to hosts. */
+/* `res` links a GVQ1 matrix to its optional GVR8 residual record (container
+ * v2); the residual record's `book` is its K=256 residual book. */
 typedef struct {
     uint64_t offset, bytes;
-    uint32_t type, rows, cols, scale, book;
+    uint32_t type, rows, cols, scale, book, res;
 } ds4_gvq_record;
 
 ds4_gvq_model *ds4_gpu_gvq_bind(const void *map, uint64_t size,

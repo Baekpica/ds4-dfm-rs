@@ -2454,6 +2454,7 @@ enum {
     DS4_TENSOR_GLM_FP8  = 0x47514638,
     DS4_TENSOR_GLM_BOOK = 0x47564342,
     DS4_TENSOR_GLM_VQ   = 0x47565138,
+    DS4_TENSOR_GLM_RES  = 0x47565238, /* GVR8 residual indices (container v2) */
 };
 
 typedef struct ds4_tensor ds4_tensor;
@@ -5455,6 +5456,11 @@ typedef struct {
     ds4_tensor *gate[GLMVQ_EXPERTS];
     ds4_tensor *up[GLMVQ_EXPERTS];
     ds4_tensor *down[GLMVQ_EXPERTS];
+    /* R13+8 layers only: K=256 residual book and one GVR8 per matrix. */
+    ds4_tensor *res_book;
+    ds4_tensor *gate_res[GLMVQ_EXPERTS];
+    ds4_tensor *up_res[GLMVQ_EXPERTS];
+    ds4_tensor *down_res[GLMVQ_EXPERTS];
 } ds4_glmvq_experts;
 
 typedef struct {

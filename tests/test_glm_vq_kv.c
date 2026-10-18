@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
     CHECK(!ds4_gpu_model_units_bind(map, &unit, 1));
     CHECK(ds4_gpu_materialize_model_plan(map, bytes, &populated));
     const ds4_gvq_record record = {0, bytes, BF16_TYPE, HEADS * 2 * DIM, LATENT,
-        DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK};
+        DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK, DS4_GVQ_NO_LINK};
     ds4_gvq_model *model = ds4_gpu_gvq_bind(map, bytes, &record, 1);
     CHECK(model);
     if (argc == 3) { check_latent(model, argv[2]); }

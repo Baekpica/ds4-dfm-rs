@@ -55,6 +55,75 @@ head). At the measured ~235–250 GB/s streaming ceiling that is a 30–32 ms
 wall; decode measures 40 ms. The DeepSeek V4.1 VQ engine reads about 6.3 GB
 per token with the same Q4_K choice for its nonexpert weights.
 
+## R13+8 residual stage (container v2)
+
+The 1.625-bit experts were the main source of quality loss. Container v2
+adds an optional 8-bit residual stage to selected layers:
+
+```
+w[r, 8j : 8j+8]  ≈  g_r · (C1[i1[r, j]] + C2[i2[r, j]])
+C2: 256 × 8 E4M3 per layer; i2: one byte per vector (GVR8 tensor)
+bits per weight = 13/8 + 8/8 = 2.625
+```
+
+- **Format.** `<matrix>.weight_residual` (type `0x47565238`, header `GVR1`)
+  holds row-major index bytes: 512 per gate/up row, 256 per down row, whole
+  128-byte lines. `glm_vq.layer.L.codebook.1` is the book (ID `4L+1`);
+  `glm_vq.residuals` links each GVQ1 matrix to its residual. The parent's
+  row gain scales the sum; the two E4M3 words add exactly in FP32. A layer
+  is all-or-none, and only its part declares `glm_vq.format_version` 2.
+- **Why 8 bits.** Layer 23, weight relative MSE: R13 0.1438; +8 bits 0.0471
+  (0.0412 with joint beam assignment); +11 bits 0.0297. Per extra GiB the
+  8-bit stage removes the most error, and its 2 KiB book fits beside the
+  64 KiB layer book in every GB10 kernel (101,376 B opt-in): decode
+  gate/up 76 KiB, decode down and 4-row verify 100,352 B, prefill
+  98,560 B. Wider residual books would need a different staging scheme.
+- **Decode and verify.** `RES` kernel variants load each block's 256 index
+  bytes as two words per lane (`r0`, `r1`) beside the 12-bit words and take
+  byte `k*32+lane` with one shuffle per k-step; the 2 KiB book is staged in
+  shared memory after the layer book. Arithmetic: GAIN_DOT adds `C1+C2` per
+  element before the FP32 dot and multiplies the gain once; GAIN_WEIGHT
+  rounds `gain*(C1+C2)` to BF16 as the restore does. Verify rows keep the
+  one-row order (bit-identical per row).
+- **Prefill.** The FP8 tensor-core kernel stages 16 residual bytes per row
+  per 128-K stage and issues a second `m16n8k32.e4m3` MMA per k32 step with
+  the residual codewords as A and the same activation fragment as B, into
+  the same partial sum. Tiles carry 64 tokens like R13 layers: staging the
+  residual bytes as well would need 107,008 B, so each lane loads word q of
+  its rows' 16 residual bytes one stage ahead into a register and the quad
+  transposes them (98,816 B). The staged 32-token tiles (98,560 B,
+  `DS4_GLMVQ_MMA8_T64=0`) were MIO-bound: twice the codebook gathers and B
+  loads per token (NCU: 2.34x shared wavefronts). Both widths agree bit for
+  bit; a 4K-token gate launch takes 8.0 ms (R13), 10.8 ms (64-token R13+8)
+  and 15.3 ms (32-token R13+8). The BF16 register MMA has no residual stage:
+  with `DS4_GLMVQ_MMA8=0` those layers take restore+GEMM.
+- **Restore.** The scalar restore adds the residual; the vector restore
+  declines R13+8 matrices so the scalar path keeps them exact.
+- **Validation.** Rust checks GVR1 headers, offsets, checksums, padding,
+  book links, parent shapes and versions (`residual_stage_is_validated`);
+  `make test-glm-vq-res` checks restore bits, decode and verify against
+  restore+GEMM and the FP8 prefill MMA against it on random E4M3 data.
+- **Layer choice.** Measured end to end: upgrading one layer at a time
+  (others R13) and measuring held-out KL against the original model ranks
+  the bottom layers first (5: 0.066, 8, 6, 14, 3, then 11, 9, 15, 10, 16,
+  7, 4, 12, 13), so the release upgrades layers 3-16. A local routed-FFN
+  screen normalized by each layer's FFN output energy chose 4, 5, 9 and
+  25-40 instead and lost end to end (KL 0.498 vs 0.390-0.437 for
+  bottom-heavy choices): FFN output energy spans three orders of magnitude
+  across layers, so normalized local error does not rank layer impact.
+- **Memory.** Fourteen R13+8 layers add 0.844 GiB each (11.8 GiB). At the
+  native 1M context with two MTP drafts `ds4-server --check-config` quotes
+  112.0 GiB (weights 83.8, bank 12.8, scratch 10.7, MTP 0.7, floor 4) of
+  118.7 GiB available on GB10: one 1M bank (the R13 release fits two).
+- **Measured on GB10.** `tests/glm_vq_quality` (6 cases, 106 target
+  tokens): mean target NLL 0.313 → 0.285, and the Korean summary R13 garbles
+  is answered; fast path vs `DS4_GLMVQ_DECODE=0 DS4_GLMVQ_MMA=0` KL 0.0038
+  (R13: 0.0035). Greedy "대한민국의 수도는…" loops under R13 (a repeated
+  clause with `--think`; English reasoning, then "Namwon…" repetition with
+  `--nothink`) and ends normally under R13+8 in both modes. Speed: 1,113.7 /
+  31.81 vs R13 1,175.4 / 35.00 in the
+  [2K–64K MTP 2 sweep](benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/README.md).
+
 ## Execution on GB10
 
 ### Decode (one row)

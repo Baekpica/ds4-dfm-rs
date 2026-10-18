@@ -12,6 +12,7 @@ mod release;
 mod input;
 
 const VQ: u32 = 0x4756_5138;
+const RESIDUAL: u32 = 0x4756_5238;
 const BOOK: u32 = 0x4756_4342;
 const FP8: u32 = 0x4751_4638;
 const ALIGN: usize = 128;
@@ -117,6 +118,10 @@ fn checksum(payload: &mut [u8]) {
 }
 
 fn container(meta: &[(&str, &str)], tensors: &[Tensor<'_>]) -> (Vec<u8>, usize) {
+    container_v(1, meta, tensors)
+}
+
+fn container_v(version: u32, meta: &[(&str, &str)], tensors: &[Tensor<'_>]) -> (Vec<u8>, usize) {
     let mut out = b"GGUF".to_vec();
     out.extend_from_slice(&3u32.to_le_bytes());
     out.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
@@ -124,7 +129,10 @@ fn container(meta: &[(&str, &str)], tensors: &[Tensor<'_>]) -> (Vec<u8>, usize) 
     string(&mut out, "general.architecture");
     out.extend_from_slice(&8u32.to_le_bytes());
     string(&mut out, "glm5_next");
-    for (key, value) in [("general.alignment", 128u32), ("glm_vq.format_version", 1)] {
+    for (key, value) in [
+        ("general.alignment", 128u32),
+        ("glm_vq.format_version", version),
+    ] {
         string(&mut out, key);
         out.extend_from_slice(&4u32.to_le_bytes());
         out.extend_from_slice(&value.to_le_bytes());
@@ -368,5 +376,118 @@ fn reject_container_contracts() {
         vec![("glm_vq.codebooks", "[]")],
     ] {
         assert!(tmp.open(&container(&meta, &tensors).0).is_err());
+    }
+}
+
+// R13+8: a GVQ1 K8192 matrix, its GVR8 residual and both layer books.
+fn residual_fixture(version: u32, links: &str, rows_flip: bool) -> (Vec<u8>, usize) {
+    let (stage1, _) = fixture(8192, 1);
+    let inv_bytes = stage1;
+    // Reuse the stage-1 payload bytes from the independent fixture writer.
+    let rows = 3usize;
+    let cols = 128usize;
+    let book1 = vec![0x38u8; 8192 * 8];
+    let book2 = vec![0x30u8; 256 * 8];
+    let start = inv_bytes.len() - 512;
+    let weight = inv_bytes[start..].to_vec();
+    let mut res = vec![0u8; 256];
+    res[0..4].copy_from_slice(b"GVR1");
+    res[4..6].copy_from_slice(&1u16.to_le_bytes());
+    res[6] = 8;
+    res[7] = 8;
+    for (off, value) in [(8, rows), (12, cols), (16, 256), (20, 1), (24, 13)] {
+        res[off..off + 4].copy_from_slice(&(value as u32).to_le_bytes());
+    }
+    for (off, value) in [(32u64, 128u64), (40, 0), (48, 0), (56, 256)] {
+        res[off as usize..off as usize + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    for j in 0..rows * cols / 8 {
+        res[128 + j] = (j * 37 % 256) as u8;
+    }
+    res[64..96].copy_from_slice(&Sha256::digest(&book2));
+    checksum(&mut res);
+    let dims = if rows_flip {
+        vec![cols as u64, rows as u64 + 1]
+    } else {
+        vec![cols as u64, rows as u64]
+    };
+    let tensors = [
+        Tensor {
+            name: "book",
+            dims: vec![8, 8192],
+            typ: BOOK,
+            bytes: book1,
+        },
+        Tensor {
+            name: "book.1",
+            dims: vec![8, 256],
+            typ: BOOK,
+            bytes: book2,
+        },
+        Tensor {
+            name: "weight",
+            dims: vec![cols as u64, rows as u64],
+            typ: VQ,
+            bytes: weight,
+        },
+        Tensor {
+            name: "weight_residual",
+            dims,
+            typ: RESIDUAL,
+            bytes: res,
+        },
+    ];
+    container_v(
+        version,
+        &[
+            ("glm_vq.codebooks", r#"{"12":"book","13":"book.1"}"#),
+            ("glm_vq.residuals", links),
+        ],
+        &tensors,
+    )
+}
+
+#[test]
+fn residual_stage_is_validated() {
+    let tmp = Temp::new();
+    let link = r#"{"weight":"weight_residual"}"#;
+    let (bytes, base) = residual_fixture(2, link, false);
+    let inv = tmp.open(&bytes).unwrap();
+    assert_eq!(inv.find("weight_residual").unwrap().bytes, 256);
+    // Version 1 containers carry no residual stage.
+    assert!(tmp.open(&residual_fixture(1, link, false).0).is_err());
+    // Every residual needs exactly one same-shape 13-bit parent.
+    assert!(tmp.open(&residual_fixture(2, "{}", false).0).is_err());
+    assert!(tmp
+        .open(&residual_fixture(2, r#"{"book":"weight_residual"}"#, false).0)
+        .is_err());
+    assert!(tmp.open(&residual_fixture(2, link, true).0).is_err());
+    // Header fields, checksum and padding fail closed.
+    let start = base + 8192 * 8 + 256 * 8 + 512;
+    for (off, value) in [
+        (0usize, 0u8),
+        (4, 2),
+        (6, 13),
+        (7, 4),
+        (16, 0),
+        (20, 2),
+        (24, 99),
+        (28, 1),
+        (32, 0),
+        (40, 1),
+        (56, 0),
+        (96, 0),
+        (200, 1),
+    ] {
+        let mut corrupt = bytes.clone();
+        corrupt[start + off] = if bytes[start + off] == value {
+            value ^ 1
+        } else {
+            value
+        };
+        assert!(
+            tmp.open(&corrupt).is_err(),
+            "accepted corrupt residual at {off}"
+        );
     }
 }

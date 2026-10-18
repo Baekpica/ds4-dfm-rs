@@ -258,3 +258,4 @@ tests/naive_banks
 /tests/test_glm_vq_q4p
 /tests/test_glm_vq_kda
 /tests/test_glm_vq_verify
+/tests/test_glm_vq_res
