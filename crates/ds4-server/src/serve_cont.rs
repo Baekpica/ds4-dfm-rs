@@ -24,8 +24,8 @@ use crate::generate::{
     prepare_required_prefixes, render_prompt_ex, responses_ids, stream_req_from_parsed,
     GenerateError, GenerateOutcome,
 };
+use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{EosPolicy, ParsedRequest, ToolCall, ToolChoice};
-use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 #[cfg(feature = "native")]
 use crate::render::render_live_tool_tail;
 use crate::render::syntax_for_model_id;
@@ -259,11 +259,11 @@ impl ContStepper {
             .unwrap_or(-1)
     }
 
-    /// Match serial sampling: IQuest keeps the requested sampler in thinking;
-    /// other families retain their legacy thinking defaults.
+    /// Match serial sampling: IQuest and GLM-5.3 keep the requested sampler
+    /// in thinking; other families retain their legacy thinking defaults.
     pub fn sampling(&self, parsed: &ParsedRequest) -> (f32, i32, f32, f32) {
         if think_mode_enabled(parsed.think_mode)
-            && syntax_for_model_id(self.model_id) != crate::render::ModelSyntax::IQuestQ1
+            && fixed_thinking_sampling(syntax_for_model_id(self.model_id))
         {
             (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)
         } else {
@@ -4001,7 +4001,8 @@ mod bank_tests {
 
     #[test]
     fn iquest_thinking_sampling() {
-        for model_id in [ds4_core::Variant::IQuestQ1 as i32, 2] {
+        let glm = ds4_core::Variant::Glm53FlashVq as i32;
+        for model_id in [ds4_core::Variant::IQuestQ1 as i32, glm, 2] {
             for temperature in [0.0, 0.4] {
                 let parsed = parse_chat_request(
                     &ParseEnv::default(),
@@ -4018,7 +4019,8 @@ mod bank_tests {
                     1,
                     8192,
                 );
-                let expected = if model_id == ds4_core::Variant::IQuestQ1 as i32 {
+                let expected = if model_id == ds4_core::Variant::IQuestQ1 as i32 || model_id == glm
+                {
                     (temperature, 9, 0.9, 0.03)
                 } else {
                     (DEFAULT_TEMPERATURE, 0, DEFAULT_TOP_P, DEFAULT_MIN_P)

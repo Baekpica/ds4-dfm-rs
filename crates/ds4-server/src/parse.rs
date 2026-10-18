@@ -9,7 +9,7 @@ use crate::json::{
     json_string, Json,
 };
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
-use crate::render::DSML_IMAGE;
+use crate::render::{ModelSyntax, DSML_IMAGE};
 use crate::route::{
     compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
 };
@@ -18,6 +18,15 @@ use std::sync::Arc;
 pub const DEFAULT_TEMPERATURE: f32 = 1.0;
 pub const DEFAULT_TOP_P: f32 = 1.0;
 pub const DEFAULT_MIN_P: f32 = 0.05;
+
+/// Thinking requests sample with the fixed tuple above, whatever the client
+/// sent (the C server's rule for its DeepSeek family).  IQuest and GLM-5.3 keep
+/// the request's sampler instead: their client must be able to lower the
+/// temperature, and their MTP drafts only run at temperature 0.  An omitted
+/// value still takes the defaults above, so such a request samples as before.
+pub fn fixed_thinking_sampling(syntax: ModelSyntax) -> bool {
+    !matches!(syntax, ModelSyntax::IQuestQ1 | ModelSyntax::Glm53)
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EosPolicy {

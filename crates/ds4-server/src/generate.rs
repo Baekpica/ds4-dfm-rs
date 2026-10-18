@@ -27,8 +27,8 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
+use crate::parse::{fixed_thinking_sampling, DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::parse::{ChatMsg, ChatPart, EosPolicy, ParsedRequest, ToolCall, ToolChoice};
-use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::render::{
     render_chat_choice_ex, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError,
     DSML_EOS, QWEN_IM_END, SOLAR_IM_END,
@@ -1762,10 +1762,10 @@ fn decode_pass(
         let mut top_k = parsed.top_k;
         let mut top_p = parsed.top_p;
         let mut min_p = parsed.min_p;
-        // IQuest uses the requested sampler in both channels. Greedy thinking
-        // must remain eligible for its embedded target-verified MTP path.
+        // IQuest and GLM-5.3 use the requested sampler in both channels.
+        // Greedy thinking must remain eligible for their embedded MTP paths.
         if think_mode_enabled(parsed.think_mode)
-            && syntax_for_model_id(engine.model_id()) != ModelSyntax::IQuestQ1
+            && fixed_thinking_sampling(syntax_for_model_id(engine.model_id()))
         {
             temperature = DEFAULT_TEMPERATURE;
             top_k = 0;
