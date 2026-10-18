@@ -194,6 +194,27 @@ pub struct GlmValues {
     pub dry_multiplier: f32,
     pub dry_base: f32,
     pub dry_allowed_length: i32,
+    /// Forced-thought budgets, in tokens, one per effort level (the same
+    /// three the template knows).  0 is OFF.  A GLM chat turn reserves
+    /// nothing post-thinking, so without a bound it never emits the close and
+    /// runs to the token cap (the measured runaway); the machinery
+    /// (`dsml.rs` sampling_override) forced the close for tool turns only.
+    pub think_cap_low: i32,
+    pub think_cap_high: i32,
+    pub think_cap_max: i32,
+}
+
+impl GlmValues {
+    /// The forced-thought budget for one level; 0 leaves the turn to its own
+    /// budget and the model's own end token.
+    pub fn think_cap(&self, mode: ThinkMode) -> i32 {
+        match mode {
+            ThinkMode::Low => self.think_cap_low,
+            ThinkMode::High => self.think_cap_high,
+            ThinkMode::Max => self.think_cap_max,
+            ThinkMode::None => 0,
+        }
+    }
 }
 
 /// generation_config.json: top_p 0.95, temperature 1.0, and nothing else --
@@ -218,6 +239,23 @@ const GLM53_DEFAULT_DRY_BASE: f32 = 1.75;
 const GLM53_DEFAULT_DRY_ALLOWED_LENGTH: i32 = 2;
 /// No ceiling: the request's temperature is served as sent (the host rule).
 const GLM53_DEFAULT_TEMP_MAX: Option<f32> = None;
+/// The forced-thought budgets ship OFF: the deployment opts in per level, so
+/// the bound is measured rather than assumed to help.
+const GLM53_DEFAULT_THINK_CAP: i32 = 0;
+/// The knob window.  A budget this large is inert (the turn's own budget is
+/// the binding limit), so the bound only catches a typo.
+const GLM53_THINK_CAP_MAX: i32 = 1_000_000;
+
+/// The forced-thought budget one deployment knob names.  0 is OFF; a bad
+/// value is reported and disables the bound rather than picking a number.
+fn resolve_think_cap(name: &str, raw: Option<&str>) -> i32 {
+    resolve_number(
+        name,
+        raw,
+        GLM53_DEFAULT_THINK_CAP as f32,
+        0.0..=GLM53_THINK_CAP_MAX as f32,
+    ) as i32
+}
 
 /// The deployment's temperature ceiling.  Absent (or empty) is no ceiling;
 /// any value in [0, 2] pins every GLM request's temperature to at most it,
@@ -350,16 +388,28 @@ pub fn glm_values() -> &'static GlmValues {
             GLM53_DEFAULT_DRY_ALLOWED_LENGTH as f32,
             0.0..=64.0,
         ) as i32,
+        think_cap_low: resolve_think_cap(
+            "DS4_SERVER_GLM_THINK_CAP_LOW",
+            std::env::var("DS4_SERVER_GLM_THINK_CAP_LOW").ok().as_deref(),
+        ),
+        think_cap_high: resolve_think_cap(
+            "DS4_SERVER_GLM_THINK_CAP_HIGH",
+            std::env::var("DS4_SERVER_GLM_THINK_CAP_HIGH").ok().as_deref(),
+        ),
+        think_cap_max: resolve_think_cap(
+            "DS4_SERVER_GLM_THINK_CAP_MAX",
+            std::env::var("DS4_SERVER_GLM_THINK_CAP_MAX").ok().as_deref(),
+        ),
     })
 }
 
 /// The startup line for the GLM scope, so the deployment can read back what
-/// it actually serves.
+/// it actually serves.  The three budgets are low/high/max; 0 is off.
 pub fn glm_values_report() -> String {
     let v = glm_values();
     format!(
         "GLM values: temperature={} top_p={} min_p={} effort={:?} temp_max={} \
-         freq_penalty={} presence_penalty={} dry={}x{}^L from L={}",
+         freq_penalty={} presence_penalty={} dry={}x{}^L from L={} think_cap={}/{}/{}",
         default_temperature(),
         v.top_p,
         v.min_p,
@@ -372,7 +422,10 @@ pub fn glm_values_report() -> String {
         v.presence_penalty,
         v.dry_multiplier,
         v.dry_base,
-        v.dry_allowed_length
+        v.dry_allowed_length,
+        v.think_cap_low,
+        v.think_cap_high,
+        v.think_cap_max
     )
 }
 
@@ -433,6 +486,10 @@ pub struct ParsedRequest {
     pub tool_choice: ToolChoice,
     pub required_tool_prefix: Vec<i32>,
     pub required_think_end_prefix: Vec<i32>,
+    /// Forced-thought budget in tokens; 0 is OFF.  Set from the GLM scope by
+    /// the level this request resolved to (parse_request), so a bounded
+    /// thought applies to chat turns the tool-turn gate would never reach.
+    pub think_cap: i32,
     pub stops: Vec<String>,
     pub reasoning_summary_emit: bool,
     pub responses_requires_live_tool_state: bool,
@@ -511,6 +568,7 @@ impl ParsedRequest {
             tool_choice: ToolChoice::Auto,
             required_tool_prefix: Vec::new(),
             required_think_end_prefix: Vec::new(),
+            think_cap: 0,
             stops: Vec::new(),
             reasoning_summary_emit: false,
             responses_requires_live_tool_state: false,
@@ -3972,6 +4030,9 @@ pub fn parse_request(
                     r.temperature = max;
                 }
             }
+            // The bound is per level, and the level is only known once the
+            // body has been parsed.
+            r.think_cap = glm_values().think_cap(r.think_mode);
         }
         r
     })
@@ -4044,6 +4105,42 @@ mod glm_value_tests {
         assert_eq!(resolve_number("T", Some("-0.5"), 0.0, -2.0..=2.0), -0.5);
         for raw in ["", "abc", "3", "nan"] {
             assert_eq!(resolve_number("T", Some(raw), 0.0, -2.0..=2.0), 0.0, "{raw}");
+        }
+    }
+
+    // The forced-thought budget is per level and OFF by default: the unit is
+    // measured, not assumed, so an unset deployment serves today's bytes.
+    #[test]
+    fn think_cap_is_per_level_and_off_by_default() {
+        use super::{resolve_think_cap, GlmValues};
+        let v = GlmValues {
+            top_p: 0.95,
+            min_p: 0.0,
+            effort: ThinkMode::Max,
+            temp_max: None,
+            freq_penalty: 0.0,
+            presence_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: 1.75,
+            dry_allowed_length: 2,
+            think_cap_low: 64,
+            think_cap_high: 256,
+            think_cap_max: 512,
+        };
+        assert_eq!(v.think_cap(ThinkMode::Low), 64);
+        assert_eq!(v.think_cap(ThinkMode::High), 256);
+        assert_eq!(v.think_cap(ThinkMode::Max), 512);
+        // Nothing to bound when the turn does not think.
+        assert_eq!(v.think_cap(ThinkMode::None), 0);
+
+        // The shipped scope has no bound until the deployment sets one.
+        assert_eq!(super::glm_values().think_cap(ThinkMode::Low), 0);
+
+        assert_eq!(resolve_think_cap("T", None), 0);
+        assert_eq!(resolve_think_cap("T", Some("")), 0);
+        assert_eq!(resolve_think_cap("T", Some("64")), 64);
+        for raw in ["-1", "abc", "nan", "2000000"] {
+            assert_eq!(resolve_think_cap("T", Some(raw)), 0, "{raw}");
         }
     }
 

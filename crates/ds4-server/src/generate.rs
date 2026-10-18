@@ -1486,11 +1486,15 @@ pub(crate) fn prepare_required_prefixes(
         && parsed.has_tools
         && parsed.tool_choice == ToolChoice::Auto
         && !think_mode_enabled(parsed.think_mode);
-    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results && !mimo_auto {
+    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results && !mimo_auto
+        && parsed.think_cap <= 0
+    {
         return Ok(());
     }
     let format = chat_format_for_syntax(syntax);
     if !mimo_auto && parsed.required_think_end_prefix.is_empty() {
+        // A bounded thought needs the same close the tool turns force, and it
+        // is the ONLY thing a GLM chat turn needs (no tool head to complete).
         let toks = tokenize(think_end(format).as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
@@ -1582,6 +1586,30 @@ mod required_prefix_tests {
         })
         .unwrap();
         assert_eq!(parsed.required_tool_prefix, [17]);
+    }
+
+    // A GLM chat turn has no tool to reserve post-thinking for, so the bound
+    // is the only reason to tokenize the close.  Without it the prefix stays
+    // empty and the turn is today's turn byte for byte.
+    #[test]
+    fn glm_chat_bound_fills_the_close_prefix() {
+        let body = r#"{"messages":[{"role":"user","content":"weather"}]}"#;
+        let mut bounded = parse_chat_request(&ParseEnv::default(), body).unwrap();
+        bounded.think_cap = 64;
+        prepare_required_prefixes(&mut bounded, ModelSyntax::Glm53, |literal| {
+            Ok(if literal == b"</think>" { vec![303] } else { vec![99] })
+        })
+        .unwrap();
+        assert_eq!(bounded.required_think_end_prefix, [303]);
+        assert!(bounded.required_tool_prefix.is_empty());
+
+        let mut unbounded = parse_chat_request(&ParseEnv::default(), body).unwrap();
+        prepare_required_prefixes(&mut unbounded, ModelSyntax::Glm53, |literal| {
+            Ok(if literal == b"</think>" { vec![303] } else { vec![99] })
+        })
+        .unwrap();
+        assert!(unbounded.required_think_end_prefix.is_empty());
+        assert!(unbounded.required_tool_prefix.is_empty());
     }
 }
 
@@ -1782,6 +1810,7 @@ fn decode_pass(
             max_tokens: parsed.max_tokens,
             required_tool_prefix: &parsed.required_tool_prefix,
             required_think_end_prefix: &parsed.required_think_end_prefix,
+            think_cap: parsed.think_cap,
         };
         let ov = acc.sampling_override(&policy);
         if matches!(ov, SampleOverride::Greedy) {

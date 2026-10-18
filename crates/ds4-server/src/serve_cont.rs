@@ -97,6 +97,7 @@ pub struct ContStepper {
     parsed_max_tokens: i32,
     required_tool_prefix: Vec<i32>,
     required_think_end_prefix: Vec<i32>,
+    think_cap: i32,
     tool_replay: Option<(Vec<ToolCall>, String)>,
     started: bool,
     #[cfg(any(feature = "native", test))]
@@ -201,6 +202,7 @@ impl ContStepper {
                 parsed_max_tokens: parsed.max_tokens,
                 required_tool_prefix: parsed.required_tool_prefix.clone(),
                 required_think_end_prefix: parsed.required_think_end_prefix.clone(),
+                think_cap: parsed.think_cap,
                 tool_replay: None,
                 started: true,
                 #[cfg(any(feature = "native", test))]
@@ -249,6 +251,7 @@ impl ContStepper {
             max_tokens: self.parsed_max_tokens,
             required_tool_prefix: &self.required_tool_prefix,
             required_think_end_prefix: &self.required_think_end_prefix,
+            think_cap: self.think_cap,
         };
         self.acc.sampling_override(&policy)
     }
