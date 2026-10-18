@@ -176,11 +176,11 @@ Past 64K the bench frontiers (32K-token steps, 16 tokens) decode at 17.56,
 
 - Reference receipt (`tests/ling31_quality`, 13 held-out cases against the
   handoff's BF16-source reference A on the same token ids): teacher-forced NLL
-  1.032 (v1 1.037) vs 1.117 over 642 targets; top-1 agreement 86.8%. The
-  targets are fixture text, so neither side is favoured; 13 cases do not
-  measure a quality gain.
+  1.043 (v1 1.046) vs 1.117 over the same 642 targets, higher than A in 7 of
+  13 cases; top-1 agreement 86.8%. The targets are fixture text, so neither
+  side is favoured; 13 cases do not measure a quality gain.
 - Long context (teacher-forced 256 tokens after 4K/8K/6K prompts, 768
-  targets): NLL 2.273 (v1 2.271). After 32K, 64K and 128K prompts: 2.071
+  targets): NLL 2.273 (v1 2.270). After 32K, 64K and 128K prompts: 2.071
   (v1 2.080; v1 with BF16 latents 2.078).
 - MTP gate (two drafts, about 1,050 tokens): 2.33 tokens per verify, no gap
   to the one-row decode over the 0.5 BF16 tie.
