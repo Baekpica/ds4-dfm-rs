@@ -47,7 +47,7 @@ documented whole-model results are omitted.
 | MiMo-V2.6-Flash-MOPD mixed quant | 1,206.29 | 24.18 | [8K + 128, plain](docs/performance.md#mimo-mopd) |
 | GLM-5.3 Flash Uncensored mixed quant | 137.31 | 14.70 | [8K + 64, raw owner, SSD/MTP off](docs/glm53-uncensored.md#measured-performance) |
 | GLM-5.3 Flash VQ R13+8 + Q4_K | 1,113.7 | 31.81 | [2K–64K sweep, MTP 2](docs/performance.md#glm-53-flash-vq) |
-| Ling-3.1-flash VQ + Q4_K/FP8 | 778.8 | 14.86 | [2K–64K sweep, plain; MTP 2 to 32K: 21.15](docs/performance.md#ling-31-flash-vq) |
+| Ling-3.1-flash VQ v2 + Q4_K/FP8 | 774.1 | 17.70 | [2K–64K sweep, plain; MTP 2 to 32K: 23.58](docs/performance.md#ling-31-flash-vq) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
@@ -174,7 +174,7 @@ collection. Feature and context limits remain specific to each artifact.
 | Inkling Small | `inkling` | [Baekpica MQ85GB](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + [MTP-BF16](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [Serial text/image/audio input](docs/inkling-small.md) |
 | Step 3.7 Flash | `step35` | [Baekpica MQ83 + MTP + vision](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [Opt-in text banks/MTP, disk KV; images serial](docs/step37-serving-2026-09-13.md) |
 | Ling-3.0-flash-VL | `bailingmoe3` | [Baekpica MQ-Q5 + BF16 mmproj](https://huggingface.co/Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF) | [Images, persistent banks, disk KV and YaRN](docs/ling3-flash-vl.md) |
-| Ling-3.1-flash VQ | `ling31_vq` (GVQ1 release directory) | [Baekpica VQ experts + Q4_K/FP8 nonexperts](https://huggingface.co/Baekpica/Ling-3.1-flash-VQ-GGUF) | [Embedded MTP (two drafts), native 262K in one bank, two banks at 32K; 2K–64K measured](docs/ling31-flash-vq.md) |
+| Ling-3.1-flash VQ | `ling31_vq` (GVQ1 release directory) | [Baekpica VQ experts + Q4_K/FP8 nonexperts](https://huggingface.co/Baekpica/Ling-3.1-flash-VQ-GGUF) | [Embedded MTP (two drafts), FP8 latent KV, native 262K in two banks or one MTP bank; 2K–64K measured](docs/ling31-flash-vq.md) |
 | MiMo-V2.6-Flash-RL | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF) | [256K two-bank text and serial media; longer-context limits](docs/mimo2-serving-2026-09-25.md) |
 | MiMo-V2.6-Flash-MOPD | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF) | [Own text/performance gates; drafting remains separate](docs/ds4-dfm-model-families.md#mimo-mopd) |
 | Naive-N0.5-Flash | `naive_n05_flash` | [Baekpica MQ87](https://huggingface.co/Baekpica/Naive-N0.5-Flash-Mixed-Quant-GGUF) | [Banks, partial reuse and disk KV; draft acceleration unqualified](docs/naive-n05-flash.md) |

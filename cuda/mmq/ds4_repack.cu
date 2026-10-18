@@ -897,9 +897,9 @@ bool ds4_repack_q2k_candidate(const ds4_repack_tensor &t) {
  * M % 128, M >= 2048).  The K=128 path is shape-gated at M>=8192 so small
  * Q8 tensors do not consume resident artifact memory.  Qwen GDN qkv/z and
  * QSA q are K=2560 and miss the decode %1024 gate; the prefill predicate
- * admits them.  token_embd is excluded: it is consumed by row-gather,
- * never by a dense projection.  Unlike the IQ2 expert repack these
- * artifacts are ADDITIVE (raw stays served). */
+ * admits them.  token_embd (word_embeddings in HF-named parts) is excluded:
+ * it is consumed by row-gather, never by a dense projection.  Unlike the IQ2
+ * expert repack these artifacts are ADDITIVE (raw stays served). */
 bool ds4_repack_q8_candidate(const ds4_repack_tensor &t) {
     if (t.type != 8u || t.ndim != 2u) return false; /* GGML_TYPE_Q8_0 */
     if (t.dims[0] == 0 || t.dims[1] == 0) return false;
@@ -919,7 +919,8 @@ bool ds4_repack_q8_candidate(const ds4_repack_tensor &t) {
     if ((!shallow_d2r_shape && !qwen_shared &&
          t.bytes < 2u * 1024u * 1024u) ||
         t.bytes % 34u != 0) return false;
-    if (t.name.find("token_embd") != std::string::npos) return false;
+    if (t.name.find("token_embd") != std::string::npos ||
+        t.name.find("word_embeddings") != std::string::npos) return false;
     return true;
 }
 

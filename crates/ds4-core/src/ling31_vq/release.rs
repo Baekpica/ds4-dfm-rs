@@ -16,8 +16,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::{
-    fail, fp8_finite, q4_scales_finite, Result, ALIGN, FORMAT_VERSION, FP8, Q4_BYTES, Q4_K, RECIPE,
-    VARIANT,
+    fail, fp8_finite, part_recipe_ok, q4_scales_finite, q8_scale_finite, Result, ALIGN,
+    FORMAT_VERSION, FP8, Q4_BYTES, Q4_K, Q8_0, Q8_BYTES, VARIANT,
 };
 use crate::gguf::{GgufError, GgufFile};
 use crate::mapped::page_size;
@@ -156,6 +156,7 @@ struct Part {
     name: String,
     role: Feature,
     entry: Value,
+    recipe: String,
 }
 
 /// The verified release entrypoint and the parts the feature selects, in
@@ -170,7 +171,10 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
     let release = json(&bytes)?;
     if text(&release, "format")?.as_bytes() != VARIANT
         || number(&release, "format_version")? != u64::from(FORMAT_VERSION)
-        || text(&release, "recipe_id")?.as_bytes() != RECIPE
+        || !part_recipe_ok(
+            text(&release, "recipe_id")?.as_bytes(),
+            text(&release, "recipe_id")?.as_bytes(),
+        )
         || text(&release, "source_revision")? != SOURCE_REVISION
         || text(&release, "entrypoint")? != RELEASE
     {
@@ -205,6 +209,7 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
                 name: name.to_owned(),
                 role,
                 entry: entry.clone(),
+                recipe: text(&release, "recipe_id")?.to_owned(),
             });
         }
     }
@@ -314,8 +319,12 @@ fn verify_part(root: &Path, part: &Part) -> Result<(PathBuf, u64, TensorInventor
     };
     if g.get_string("ling_vq.part_role") != Some(role)
         || g.get_string("ling_vq.source_revision") != Some(SOURCE_REVISION.as_bytes())
+        || !part_recipe_ok(
+            part.recipe.as_bytes(),
+            g.get_string("ling_vq.recipe_id").unwrap_or_default(),
+        )
     {
-        return Err(fail("part role/source revision mismatch"));
+        return Err(fail("part role/source revision/recipe mismatch"));
     }
     let inv = super::streamed(|| TensorInventory::from_file(&path, &g))?;
     if inv.shards.len() != 1 || inv.alignment != ALIGN {
@@ -331,8 +340,8 @@ fn verify_part(root: &Path, part: &Part) -> Result<(PathBuf, u64, TensorInventor
             .map(|t| (t.abs_offset, t.bytes))
             .collect()
     };
-    let (q4, fp8) = (spans(Q4_K), spans(FP8));
-    let digest = part_digest(&path, g.as_bytes(), Scan::new(&q4, &fp8))?;
+    let (q4, q8, fp8) = (spans(Q4_K), spans(Q8_0), spans(FP8));
+    let digest = part_digest(&path, g.as_bytes(), Scan::new(&q4, &q8, &fp8))?;
     check_digest(&digest, text(&part.entry, "sha256")?)?;
     let size = g.as_bytes().len() as u64;
     drop(g);
@@ -354,18 +363,20 @@ fn part_digest(path: &Path, mapped: &[u8], mut scan: Scan) -> Result<Vec<u8>> {
 }
 
 /// Content checks run as a part streams by (spans in part offsets): every
-/// Q4_K block's f16 scales and every FP8 byte. A block's four scale bytes
-/// may straddle two chunks; the previous chunk's last three bytes carry.
+/// Q4_K and Q8_0 block's f16 scales and every FP8 byte. A block's scale
+/// bytes may straddle two chunks; the previous chunk's last three bytes carry.
 struct Scan<'a> {
     q4: &'a [(u64, u64)],
+    q8: &'a [(u64, u64)],
     fp8: &'a [(u64, u64)],
     tail: [u8; 3],
 }
 
 impl<'a> Scan<'a> {
-    fn new(q4: &'a [(u64, u64)], fp8: &'a [(u64, u64)]) -> Self {
+    fn new(q4: &'a [(u64, u64)], q8: &'a [(u64, u64)], fp8: &'a [(u64, u64)]) -> Self {
         Self {
             q4,
+            q8,
             fp8,
             tail: [0; 3],
         }
@@ -400,6 +411,19 @@ impl<'a> Scan<'a> {
                     return Err(fail("nonfinite Q4_K scale"));
                 }
                 at += Q4_BYTES;
+            }
+        }
+        for &(start, bytes) in self.q8 {
+            let stop = start + bytes;
+            if stop <= from || start >= end {
+                continue;
+            }
+            let mut at = start + from.saturating_sub(start).div_ceil(Q8_BYTES) * Q8_BYTES;
+            while at < stop && at + 2 <= end {
+                if !q8_scale_finite(&[byte(at), byte(at + 1)]) {
+                    return Err(fail("nonfinite Q8_0 scale"));
+                }
+                at += Q8_BYTES;
             }
         }
         // The last three bytes of tail ++ chunk.
@@ -548,11 +572,41 @@ mod tests {
     }
 
     fn scan_fp8(data: &[u8], q4: &[(u64, u64)], fp8: &[(u64, u64)], chunk: usize) -> Result<()> {
-        let mut scan = Scan::new(q4, fp8);
+        scan_q8(data, q4, &[], fp8, chunk)
+    }
+
+    fn scan_q8(
+        data: &[u8],
+        q4: &[(u64, u64)],
+        q8: &[(u64, u64)],
+        fp8: &[(u64, u64)],
+        chunk: usize,
+    ) -> Result<()> {
+        let mut scan = Scan::new(q4, q8, fp8);
         for (i, part) in data.chunks(chunk).enumerate() {
             scan.feed((i * chunk) as u64, part)?;
         }
         Ok(())
+    }
+
+    // A Q8_0 block's f16 scale may straddle a chunk boundary too.
+    #[test]
+    fn q8_scan_finds_straddling_scales() {
+        let spans = [(128, 3 * Q8_BYTES)];
+        let clean = vec![0u8; 512];
+        let at = 128 + 2 * Q8_BYTES as usize;
+        let mut bad = clean.clone();
+        bad[at + 1] = 0x7c; // +inf d of the last block
+        for chunk in [1, 2, 3, 34, at + 1, 512] {
+            assert!(
+                scan_q8(&clean, &[], &spans, &[], chunk).is_ok(),
+                "chunk {chunk}"
+            );
+            assert!(
+                scan_q8(&bad, &[], &spans, &[], chunk).is_err(),
+                "chunk {chunk}"
+            );
+        }
     }
 
     #[test]

@@ -855,8 +855,12 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc ds4_iquest_stub.inc $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
+# -lineinfo adds 41 MB of PTX text and line tables to this TU's cubin (61
+# MB, 20 MB without; identical SASS); loading it costs 143 MiB of host
+# memory against 62. CUDA_LINEINFO=-lineinfo restores it for profiling.
+CUDA_LINEINFO ?=
 ds4_cuda.o ds4_cuda_range_test.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_ds41_gpu.cuh ds41_vq_fmt.h cuda/ds41_primitives.cuh cuda/ds41_vq_row.cuh cuda/ds41_vq_probe.cuh cuda/ds41_vq_decode.cuh cuda/ds41_vq_group.cuh cuda/ds41_vq_persist.cuh cuda/ds41_vq_launch.cuh cuda/ds41_vq_prefill.cuh cuda/ds41_vq_prefill_fused.cuh cuda/ds41_vq_prefill_mma.cuh cuda/ds41_fp8blk.cuh cuda/ds41_engram.cuh cuda/ds41_q4k.cuh cuda/ds41_dense.cuh cuda/ds41_hc.cuh cuda/ds41_attn.cuh cuda/ds41_attn_mma.cuh cuda/ds41_indexer.cuh cuda/ds41_router.cuh cuda/ds41_draft.cuh cuda/ds41_graph.cuh cuda/ds41_sample.cuh cuda/ds41_vision.cuh ds41_kvfmt.h
-	$(NVCC) $(NVCCFLAGS) $(if $(filter ds4_cuda_range_test.o,$@),-DDS4_TEST_HOOKS) -c -o $@ ds4_cuda.cu
+	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(CUDA_LINEINFO) $(if $(filter ds4_cuda_range_test.o,$@),-DDS4_TEST_HOOKS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
 # heavy template instantiation - compile in its own TU and link in.
@@ -962,7 +966,7 @@ test-mmq-parity: tests/test_mmq_parity
 tests/test_model_range: tests/test_model_range.cu ds4_cuda_range_test.o $(filter-out ds4_cuda.o,$(DS4_CUDA_CORE_OBJS))
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
-.PHONY: test-model-range test-model-registration test-vq-source-release
+.PHONY: test-model-range test-model-registration test-vq-source-release test-family-cont-spec-finish
 test-model-range: tests/test_model_range
 	./tests/test_model_range
 
@@ -971,6 +975,9 @@ test-model-registration:
 
 test-vq-source-release:
 	python3 tests/vq_source_release_gate.py
+
+test-family-cont-spec-finish:
+	python3 tests/test_family_cont_spec_finish.py
 
 # Prism Bonsai (qwen35) PQ2_0 and fold parity on CUDA.  The oracle is ds4.c's
 # own reference code, reached through the DS4_TEST_HOOKS entry points, so the
@@ -2085,7 +2092,7 @@ tests/test_ling31_residual: tests/test_ling31_residual.cu cuda/l31_residual.cuh 
 test-ling31-residual: tests/test_ling31_residual
 	./tests/test_ling31_residual
 
-tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/l31_latent.cuh ds4_ling31.h cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -Xptxas -v -o $@ $< 2> $@.ptxas || { cat $@.ptxas >&2; exit 1; }
 	@grep -A1 "l31_fa_kernel" $@.ptxas | grep -E "registers|spill" || true
 
@@ -2110,6 +2117,12 @@ test-glm-vq-kda-source: tests/libglm_vq_test.so
 
 gguf-tools/libds4q.so: gguf-tools/quants.c gguf-tools/quants.h
 	$(CC) -O3 -fPIC -shared -o $@ $< -lm -pthread
+
+# Without FMA contraction (GCC's default on aarch64) the encoder makes the
+# x86 converter's choices: tools/ling31_vq_v2.py reproduces Ling v1's
+# Q4_K/Q8_0 fixtures byte for byte (with contraction 3 of 244 Q4_K blocks moved).
+gguf-tools/libds4q-ieee.so: gguf-tools/quants.c gguf-tools/quants.h
+	$(CC) -O3 -ffp-contract=off -fPIC -shared -o $@ $< -lm -pthread
 
 .PHONY: test-glm-vq-select-q4
 test-glm-vq-select-q4:
@@ -2765,7 +2778,7 @@ clean:
 	rm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
 	rm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o tests/test_glm53_bounds tests/test_glm53_bounds.o tests/test_k2_lifecycle tests/test_k2_lifecycle.o
-	rm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/ling31_quality tests/ling31_mtp_gate tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so
+	rm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/ling31_quality tests/ling31_mtp_gate tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so gguf-tools/libds4q-ieee.so
 	rm -f tests/test_k2_rewind tests/test_deepseek_budget
 	rm -f ds4 ds4-server ds4-bench ds4-bench-perf ds4-eval ds4-agent ds4-c ds4-server-c ds4-bench-c ds4-agent-c ds4-rs ds4-bench-rs ds4-server-rs ds4-agent-rs ds4_weight_server tests/parity/shape_c_oracle tests/parity/shape_c_oracle.o tests/parity/catalog_c_oracle tests/parity/catalog_c_oracle.o tests/parity/tensor_c_oracle tests/parity/tensor_c_oracle.o tests/parity/bind_c_oracle tests/parity/bind_c_oracle.o tests/parity/bind_lookup_c_oracle tests/parity/bind_lookup_c_oracle.o tests/parity/load_c_oracle tests/parity/load_c_oracle.o tests/parity/validate_c_oracle tests/parity/validate_c_oracle.o tests/parity/layout_c_oracle tests/parity/layout_c_oracle.o tests/parity/vocab_c_oracle tests/parity/vocab_c_oracle.o tests/parity/tokenizer_c_oracle tests/parity/tokenizer_c_oracle.o tests/parity/session_c_oracle tests/parity/session_c_oracle.o tests/parity/payload_c_oracle tests/parity/payload_c_oracle.o tests/parity/kv_c_oracle tests/parity/kv_c_oracle.o tests/parity/kv_c_stubs.o tests/parity/web_c_oracle tests/parity/web_c_oracle.o tests/parity/dist_c_oracle tests/parity/dist_c_oracle.o tests/parity/route_c_oracle tests/parity/route_c_oracle.o tests/parity/server_c_oracle tests/parity/server_c_oracle.o tests/parity/parse_c_oracle tests/parity/parse_c_oracle.o tests/parity/stream_c_oracle tests/parity/stream_c_oracle.o tests/parity/tool_stream_c_oracle tests/parity/tool_stream_c_oracle.o tests/parity/dsml_c_oracle tests/parity/dsml_c_oracle.o tests/parity/retry_c_oracle tests/parity/retry_c_oracle.o tests/parity/admit_c_oracle tests/parity/admit_c_oracle.o tests/parity/render_c_oracle tests/parity/render_c_oracle.o tests/parity/bridge_null_oracle tests/parity/bridge_null_oracle.o tests/parity/bridge_null_stubs.o tests/parity/cont_c_oracle tests/parity/cont_c_oracle.o tests/parity/memgov_c_oracle tests/parity/memgov_c_oracle.o ds4_cpu ds4_native ds4_server_test ds4_test tests/test_motif3_loader tests/test_motif3_reference tests/test_motif3_tokenizer tests/test_motif3_cuda tests/test_motif3_resident tests/test_motif3_batch tests/test_motif3_long tests/test_motif3_resident.o tests/test_motif3_batch.o tests/test_motif3_long.o tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_batch tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_batch.o *.o cuda/mmq/test/test_mmq_parity.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o tests/cuda_tokentile_ldmatrix tests/cuda_tokentile_ldmatrix.o tests/test_split_gguf tests/test_solar_loader tests/test_solar_tokenizer tests/test_repack_premapped tests/test_mmq_parity tests/test_mmid_fast tests/test_mmid_fast.o tests/test_model_family_kernels tests/test_model_family_kernels.o tests/test_solar_forward tests/test_solar_forward.o tests/test_solar_session tests/test_solar_session.o tests/test_solar_kda tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_solar_gates tests/test_solar_kv tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_kda_chunk.o tests/test_solar_gates.o tests/test_solar_kv.o native/bridge/ds4_bridge.o
 	rm -f tests/test_qwen4exp_loader tests/test_qwen4exp_tokenizer tests/test_qwen4exp_ple tests/test_qwen4exp_ple_cuda tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_primitives tests/test_qwen4exp_primitives.o tests/test_qwen4exp_hc_forward tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_ple_forward tests/test_qwen4exp_ple_forward.o tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_batch tests/test_qwen4exp_batch.o tests/libds4ple_test.so cuda/qwen38_ple.o

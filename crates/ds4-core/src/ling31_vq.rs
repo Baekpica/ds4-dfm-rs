@@ -24,6 +24,9 @@ const ARCH: &[u8] = b"ling31_vq";
 const VARIANT: &[u8] = b"ling31-vq8";
 const SOURCE_MODEL: &[u8] = b"bailing_hybrid";
 const RECIPE: &[u8] = b"ling31-vq8-mix8r13-60r12-mtp13-q4h-v1";
+/// v2 (tools/ling31_vq_v2.py) re-encodes only the trunk part; the other
+/// parts keep v1's bytes and recipe id.
+const RECIPE_V2: &[u8] = b"ling31-vq8-mix8r13-60r12-mtp13-q4h-q8e-q4fg-v2";
 const ALIGN: u64 = 128;
 const HEADER: u64 = 128;
 const VECTOR: u8 = 8;
@@ -36,6 +39,9 @@ const BF16: u32 = 30;
 const Q4_K: u32 = 12;
 const Q4_BLOCK: u64 = 256;
 const Q4_BYTES: u64 = 144;
+const Q8_0: u32 = 8;
+const Q8_BLOCK: u64 = 32;
+const Q8_BYTES: u64 = 34;
 const SCALE_BLOCK: u64 = 128;
 
 type Result<T> = std::result::Result<T, TensorError>;
@@ -57,6 +63,26 @@ pub(super) fn streamed<T>(f: impl FnOnce() -> T) -> T {
 /// E4M3FN NaN encodings are rejected in the source weights.
 pub(super) fn fp8_finite(bytes: &[u8]) -> bool {
     !bytes.iter().any(|x| x & 0x7f == 0x7f)
+}
+
+/// Stored types of the embedding, KDA output gates and decay projections.
+fn recipe_types(recipe: &[u8]) -> Option<(u32, u32, u32)> {
+    match recipe {
+        RECIPE => Some((BF16, FP8, FP8)),
+        RECIPE_V2 => Some((Q8_0, Q4_K, Q4_K)),
+        _ => None,
+    }
+}
+
+/// A release recipe and the recipes its parts may carry: the v2 trunk part
+/// beside unchanged v1 parts.
+pub(super) fn part_recipe_ok(release: &[u8], part: &[u8]) -> bool {
+    recipe_types(release).is_some() && (part == release || part == RECIPE)
+}
+
+/// The f16 scale at the start of a Q8_0 block is finite.
+pub(super) fn q8_scale_finite(scale: &[u8]) -> bool {
+    u16::from_le_bytes([scale[0], scale[1]]) & 0x7c00 != 0x7c00
 }
 
 /// Both f16 scales (d, dmin) at the start of a Q4_K block are finite.
@@ -117,11 +143,17 @@ pub(super) fn validate_inventory(
 ) -> std::result::Result<(), crate::ValidateError> {
     let plan = crate::BindPlan::resolve(crate::shape::SHAPE_LING31_VQ, inventory);
     let found = plan.slots.iter().filter(|s| s.tensor.is_some()).count();
-    // The optional MTP block arrives whole (both mtp parts) or not at all.
+    // The optional MTP block arrives whole (both mtp parts) or not at all;
+    // FP8 scales are optional on their own (layout::native).
+    let block: HashSet<String> = layouts()
+        .into_iter()
+        .filter(|s| matches!(s.class, crate::TypeClass::OptionalExact(_)))
+        .map(|s| s.name)
+        .collect();
     let mtp = plan
         .slots
         .iter()
-        .filter(|s| !s.need.required())
+        .filter(|s| block.contains(&s.name))
         .map(|s| s.tensor.is_some())
         .collect::<HashSet<_>>();
     if found != inventory.tensors.len() || mtp.len() != 1 {
@@ -334,6 +366,14 @@ fn validate_native(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
     if seen != scales.len() {
         return Err(fail("surplus FP8 scale links"));
     }
+    // A scale whose weight a v2 recipe re-encoded must be gone.
+    let linked: HashSet<&str> = scales.values().filter_map(Value::as_str).collect();
+    if tensors
+        .iter()
+        .any(|t| t.name.ends_with(".weight_scale_inv") && !linked.contains(t.name.as_str()))
+    {
+        return Err(fail("orphan FP8 scale"));
+    }
     Ok(())
 }
 
@@ -343,7 +383,9 @@ fn part_metadata(g: &GgufFile) -> Result<()> {
         || g.get_u32("ling_vq.format_version") != Some(FORMAT_VERSION)
         || g.get_string("ling_vq.variant") != Some(VARIANT)
         || g.get_string("ling_vq.source_model_type") != Some(SOURCE_MODEL)
-        || g.get_string("ling_vq.recipe_id") != Some(RECIPE)
+        || g.get_string("ling_vq.recipe_id")
+            .and_then(recipe_types)
+            .is_none()
         || !matches!(
             g.get_string("ling_vq.part_role"),
             Some(b"trunk") | Some(b"mtp")
@@ -401,6 +443,15 @@ pub(super) fn validate_part(
                     .and_then(|n| n.checked_mul(Q4_BYTES))
                     .ok_or(TensorError::Overflow)?
             }
+            Q8_0 => {
+                if t.ndim != 2 || t.dim[0] % Q8_BLOCK != 0 {
+                    return Err(fail("unsupported Q8_0 shape"));
+                }
+                t.elements
+                    .checked_div(Q8_BLOCK)
+                    .and_then(|n| n.checked_mul(Q8_BYTES))
+                    .ok_or(TensorError::Overflow)?
+            }
             VQ => {
                 let header = Header::parse(g.as_bytes(), t)?;
                 let bytes = header.size;
@@ -414,6 +465,13 @@ pub(super) fn validate_part(
             for block in bytes.chunks_exact(Q4_BYTES as usize) {
                 if !q4_scales_finite(block) {
                     return Err(fail("nonfinite Q4_K scale"));
+                }
+            }
+        }
+        if t.typ == Q8_0 && !STREAMED.with(Cell::get) {
+            for block in bytes.chunks_exact(Q8_BYTES as usize) {
+                if !q8_scale_finite(block) {
+                    return Err(fail("nonfinite Q8_0 scale"));
                 }
             }
         }
@@ -436,5 +494,99 @@ pub(super) fn validate_part(
         return Err(fail("trailing/missing bytes"));
     }
     validate_books(g, tensors, &headers)?;
+    validate_recipe(g, tensors)?;
     validate_native(g, tensors)
+}
+
+// The part's recipe fixes the embedding and KDA f/g types the layout leaves
+// open (layout::native).
+fn validate_recipe(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
+    recipe_tensor_types(
+        g.get_string("ling_vq.recipe_id").unwrap_or_default(),
+        tensors,
+    )
+}
+
+fn recipe_tensor_types(recipe: &[u8], tensors: &[TensorInfo]) -> Result<()> {
+    let (embedding, gate, decay) = recipe_types(recipe).ok_or(fail("unknown recipe"))?;
+    for t in tensors {
+        let kda = |role| {
+            t.name
+                .strip_prefix("model.layers.")
+                .and_then(|n| n.split_once('.'))
+                .is_some_and(|(il, rest)| rest == role && kda_layer(il))
+        };
+        let want = if t.name == "model.word_embeddings.weight" {
+            embedding
+        } else if kda("attention.g_proj.weight") {
+            gate
+        } else if kda("attention.f_proj.weight") {
+            decay
+        } else {
+            continue;
+        };
+        if t.typ != want {
+            return Err(fail("tensor type differs from the recipe"));
+        }
+    }
+    Ok(())
+}
+
+// MLA blocks also have attention.g_proj (their BF16 head gate).
+fn kda_layer(il: &str) -> bool {
+    il.parse::<u32>()
+        .is_ok_and(|il| il < layout::TRUNK && !layout::is_mla(il))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tensor(name: &str, typ: u32) -> TensorInfo {
+        TensorInfo {
+            name: name.into(),
+            ndim: 2,
+            dim: [0; crate::tensors::MAX_DIMS as usize],
+            typ,
+            rel_offset: 0,
+            abs_offset: 0,
+            elements: 0,
+            bytes: 0,
+            shard: 0,
+        }
+    }
+
+    // Each recipe pins the embedding and KDA f/g types; MLA head gates
+    // (layer 7's g_proj) and other tensors are not the recipe's.
+    #[test]
+    fn recipes_pin_their_types() {
+        let v1 = [
+            tensor("model.word_embeddings.weight", BF16),
+            tensor("model.layers.0.attention.f_proj.weight", FP8),
+            tensor("model.layers.0.attention.g_proj.weight", FP8),
+            tensor("model.layers.7.attention.g_proj.weight", BF16),
+            tensor("model.layers.72.attention.g_proj.weight", FP8),
+        ];
+        assert!(recipe_tensor_types(RECIPE, &v1).is_ok());
+        assert!(recipe_tensor_types(RECIPE_V2, &v1).is_err());
+        let mut v2 = v1.clone();
+        v2[0].typ = Q8_0;
+        v2[2].typ = Q4_K;
+        // A Q4_K gate beside an FP8 decay is no published recipe.
+        assert!(recipe_tensor_types(RECIPE_V2, &v2).is_err());
+        v2[1].typ = Q4_K;
+        assert!(recipe_tensor_types(RECIPE_V2, &v2).is_ok());
+        assert!(recipe_tensor_types(RECIPE, &v2).is_err());
+        assert!(recipe_tensor_types(b"ling31-unknown", &v1).is_err());
+    }
+
+    // v2 releases keep v1's unchanged parts; recipes do not mix otherwise.
+    #[test]
+    fn parts_carry_the_release_recipe_or_v1() {
+        assert!(part_recipe_ok(RECIPE, RECIPE));
+        assert!(part_recipe_ok(RECIPE_V2, RECIPE_V2));
+        assert!(part_recipe_ok(RECIPE_V2, RECIPE));
+        assert!(!part_recipe_ok(RECIPE, RECIPE_V2));
+        assert!(!part_recipe_ok(b"ling31-unknown", b"ling31-unknown"));
+    }
 }

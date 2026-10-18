@@ -956,13 +956,17 @@ fn inkling_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
 }
 
 /// Required names, except OptionalExact specs (Ling-3.1's MTP block, whose
-/// parts the release maps only when MTP is enabled; GLM VQ residual stages,
-/// present on upgraded layers only).
+/// parts the release maps only when MTP is enabled), Ling-3.1 FP8 scales
+/// (absent beside a v2 recipe's Q4_K weight) and GLM VQ residual stages
+/// (present on upgraded layers only).
 fn layout_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
     layouts
         .into_iter()
         .map(|s| BindName {
-            need: if matches!(s.class, crate::TypeClass::OptionalExact(_)) {
+            need: if matches!(
+                s.class,
+                crate::TypeClass::OptionalExact(_) | crate::TypeClass::Ling31Scale
+            ) {
                 BindNeed::Optional
             } else {
                 BindNeed::Required

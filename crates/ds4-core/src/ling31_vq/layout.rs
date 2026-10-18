@@ -1,8 +1,10 @@
 //! Original HF names and the selected recipe's stored types: 505 Q4_K
 //! projections (504 nonexpert + head), native FP8 KDA f/g and MLA kv_b,
 //! BF16/F32 controls, and per-layer GVQ1 experts. Layer 72 is the optional
-//! MTP block; its tensors are present together or not at all.
-use super::{BF16, CODEBOOK, F32, FP8, Q4_K, SCALE_BLOCK, VECTOR, VQ};
+//! MTP block; its tensors are present together or not at all. The v2
+//! recipe's Q8_0 embedding and Q4_K KDA f/g (super::recipe_types) are the
+//! alternate types; their FP8 scales exist only beside FP8 weights.
+use super::{BF16, CODEBOOK, F32, FP8, Q4_K, Q8_0, SCALE_BLOCK, VECTOR, VQ};
 use crate::{LayoutSpec, TypeClass};
 
 pub(super) const EMBED: u64 = 4096;
@@ -69,6 +71,34 @@ fn matrix(out: &mut Vec<LayoutSpec>, il: u32, prefix: &str, typ: u32, rows: u64,
     }
 }
 
+// A trunk matrix the v2 recipes re-encode: `typ` (v1) or `v2`, its FP8
+// scale optional (super::validate_native pairs scales with FP8 weights).
+fn native(out: &mut Vec<LayoutSpec>, prefix: &str, typ: u32, v2: u32, rows: u64, cols: u64) {
+    out.push(LayoutSpec {
+        name: format!("{prefix}.weight"),
+        class: TypeClass::Ling31Native(typ, v2),
+        ndim: 2,
+        dim: [cols, rows, 0, 0, 0, 0, 0, 0],
+    });
+    if typ == FP8 {
+        out.push(LayoutSpec {
+            name: format!("{prefix}.weight_scale_inv"),
+            class: TypeClass::Ling31Scale,
+            ndim: 2,
+            dim: [
+                cols.div_ceil(SCALE_BLOCK),
+                rows.div_ceil(SCALE_BLOCK),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ],
+        });
+    }
+}
+
 fn mlp(out: &mut Vec<LayoutSpec>, il: u32, prefix: &str, typ: u32, hidden: u64) {
     for name in ["gate_proj", "up_proj"] {
         matrix(out, il, &format!("{prefix}.{name}"), typ, hidden, EMBED);
@@ -89,7 +119,14 @@ fn attention(out: &mut Vec<LayoutSpec>, il: u32, a: &str) {
             );
         }
         for role in ["f", "g"] {
-            matrix(out, il, &format!("{a}.{role}_proj"), FP8, KDA_WIDTH, EMBED);
+            native(
+                out,
+                &format!("{a}.{role}_proj"),
+                FP8,
+                Q4_K,
+                KDA_WIDTH,
+                EMBED,
+            );
         }
         matrix(out, il, &format!("{a}.b_proj"), BF16, HEADS, EMBED);
         matrix(out, il, &format!("{a}.o_proj"), Q4_K, EMBED, KDA_WIDTH);
@@ -184,7 +221,7 @@ fn layer(out: &mut Vec<LayoutSpec>, il: u32) {
 
 pub(super) fn layouts() -> Vec<LayoutSpec> {
     let mut out = Vec::new();
-    matrix(&mut out, 0, "model.word_embeddings", BF16, VOCAB, EMBED);
+    native(&mut out, "model.word_embeddings", BF16, Q8_0, VOCAB, EMBED);
     matrix(&mut out, 0, "lm_head", Q4_K, VOCAB, EMBED);
     tensor(&mut out, 0, "model.norm.weight".into(), BF16, &[EMBED]);
     for il in 0..=MTP {
