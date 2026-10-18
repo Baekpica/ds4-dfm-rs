@@ -88,9 +88,15 @@ bits per weight = 13/8 + 8/8 = 2.625
 - **Prefill.** The FP8 tensor-core kernel stages 16 residual bytes per row
   per 128-K stage and issues a second `m16n8k32.e4m3` MMA per k32 step with
   the residual codewords as A and the same activation fragment as B, into
-  the same partial sum. R13+8 tiles carry 32 tokens (256 rows, two stages)
-  so the second book and index stream fit. The BF16 register MMA has no
-  residual stage: with `DS4_GLMVQ_MMA8=0` those layers take restore+GEMM.
+  the same partial sum. Tiles carry 64 tokens like R13 layers: staging the
+  residual bytes as well would need 107,008 B, so each lane loads word q of
+  its rows' 16 residual bytes one stage ahead into a register and the quad
+  transposes them (98,816 B). The staged 32-token tiles (98,560 B,
+  `DS4_GLMVQ_MMA8_T64=0`) were MIO-bound: twice the codebook gathers and B
+  loads per token (NCU: 2.34x shared wavefronts). Both widths agree bit for
+  bit; a 4K-token gate launch takes 8.0 ms (R13), 10.8 ms (64-token R13+8)
+  and 15.3 ms (32-token R13+8). The BF16 register MMA has no residual stage:
+  with `DS4_GLMVQ_MMA8=0` those layers take restore+GEMM.
 - **Restore.** The scalar restore adds the residual; the vector restore
   declines R13+8 matrices so the scalar path keeps them exact.
 - **Validation.** Rust checks GVR1 headers, offsets, checksums, padding,
@@ -106,8 +112,17 @@ bits per weight = 13/8 + 8/8 = 2.625
   bottom-heavy choices): FFN output energy spans three orders of magnitude
   across layers, so normalized local error does not rank layer impact.
 - **Memory.** Fourteen R13+8 layers add 0.844 GiB each (11.8 GiB). At the
-  native 1M context with two MTP drafts the quote is about 112 GiB (weights
-  83.8, bank 22.5, MTP 1.7, floor 4), leaving ~4.5 GiB on a 128 GB Spark.
+  native 1M context with two MTP drafts `ds4-server --check-config` quotes
+  112.0 GiB (weights 83.8, bank 12.8, scratch 10.7, MTP 0.7, floor 4) of
+  118.7 GiB available on GB10: one 1M bank (the R13 release fits two).
+- **Measured on GB10.** `tests/glm_vq_quality` (6 cases, 106 target
+  tokens): mean target NLL 0.313 → 0.285, and the Korean summary R13 garbles
+  is answered; fast path vs `DS4_GLMVQ_DECODE=0 DS4_GLMVQ_MMA=0` KL 0.0038
+  (R13: 0.0035). Greedy "대한민국의 수도는…" loops under R13 (a repeated
+  clause with `--think`; English reasoning, then "Namwon…" repetition with
+  `--nothink`) and ends normally under R13+8 in both modes. Speed: 1,113.7 /
+  31.81 vs R13 1,175.4 / 35.00 in the
+  [2K–64K MTP 2 sweep](benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/README.md).
 
 ## Execution on GB10
 
