@@ -146,8 +146,12 @@ enum {
     L31_MLA_EXPAND_MIN = 64, L31_MLA_TC_MIN = 8,
     // Recursive MTP drafts per verify; each costs one 276 MiB KDA journal slot.
     L31_MTP_DRAFTS = 3, L31_MTP_ROWS = L31_MTP_DRAFTS + 1,
+    // Tokenizer ids; the head's last 31 of 157,184 rows are padding.
+    L31_TOKENS = 157153,
 };
 static const float L31_ROPE_THETA = 6000000.0f;
+// Finite, so NaN checks and logits dumps hold; exp() underflows to zero.
+static const float L31_PAD_LOGIT = -1e30f;
 
 /* Row buffers, one allocation schema for the graph and its memory quote.
  * Aliases: dense FFN rows reuse k/v/f (KDA projections are dead by then),

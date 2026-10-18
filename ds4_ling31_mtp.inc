@@ -40,7 +40,7 @@ static bool l31_mtp_head(ds4_ling31_graph *g, const ds4_model *m, const ds4_weig
     const bool ok = last && (!filled || rows < 2u ||
             (rows_in && l31_mtp_kv(g, m, w, rows_in, tokens + 1, rows - 1u, pos))) &&
         ds4_gpu_gvq_copy(g->last_hidden, 0u, last, 0u, bytes, 1u) &&
-        (!logits || l31_mm(g, m, g->logits, w->output, last, 1u, DS4_GVQ_BF16));
+        (!logits || l31_logits(g, m, w, g->logits, last, 1u));
     ds4_gpu_tensor_free(last);
     ds4_gpu_tensor_free(rows_in);
     if (ok && filled) { g->mtp_len = pos + rows - 1u; }
@@ -62,7 +62,7 @@ static bool l31_mtp_step(ds4_ling31_graph *g, const ds4_model *m, const ds4_weig
         l31_layer(g, m, w, LING31_MTP, 1u, pos) &&
         l31_norm(g, m, g->norm, g->cur, l->nextn_shared_head_norm, 1u, L31_EMBD) &&
         ds4_gpu_gvq_copy(g->mtp_hidden, 0u, g->norm, 0u, bytes, 1u) &&
-        l31_mm(g, m, g->logits, w->output, g->norm, 1u, DS4_GVQ_BF16) &&
+        l31_logits(g, m, w, g->logits, g->norm, 1u) &&
         ds4_gpu_argmax_tensor(g->token, g->logits, DS4_N_VOCAB) &&
         ds4_gpu_tensor_read(g->token, 0u, next, sizeof(*next));
     ds4_gpu_tensor_free(right);
@@ -87,7 +87,7 @@ static bool l31_mtp_verify(ds4_ling31_graph *g, const ds4_model *m, const ds4_we
     ds4_gpu_tensor *all = ok ? ds4_gpu_tensor_view(g->mtp_rows, 0u, n * bytes) : NULL;
     ok = ok && rows && all &&
         l31_norm(g, m, rows, g->cur, w->output_norm, n, L31_EMBD) &&
-        l31_mm(g, m, g->mtp_logits, w->output, rows, n, DS4_GVQ_BF16) &&
+        l31_logits(g, m, w, g->mtp_logits, rows, n) &&
         ds4_gpu_argmax_rows_tensor(g->token, g->mtp_logits, DS4_N_VOCAB, n) &&
         ds4_gpu_tensor_read(g->token, 0u, target, (uint64_t)n * sizeof(*target)) &&
         l31_mtp_kv(g, m, w, all, g->mtp_trial, n, pos - 1u);

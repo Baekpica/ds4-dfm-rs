@@ -299,6 +299,22 @@ static bool l31_mm(ds4_ling31_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
     return ok;
 }
 
+// Head rows past the tokenizer score near -1.6 from untrained weights: mask
+// them so sampling and argmax never emit a token without text.
+static bool l31_logits(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t rows) {
+    if (!l31_mm(g, m, out, w->output, x, rows, DS4_GVQ_BF16)) { return false; }
+    const uint64_t pad = DS4_N_VOCAB - L31_TOKENS;
+    for (uint32_t r = 0; r < rows; r++) {
+        ds4_gpu_tensor *tail = ds4_gpu_tensor_view(out,
+            ((uint64_t)r * DS4_N_VOCAB + L31_TOKENS) * sizeof(float), pad * sizeof(float));
+        const bool ok = tail && ds4_gpu_tensor_fill_f32(tail, L31_PAD_LOGIT, pad);
+        ds4_gpu_tensor_free(tail);
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
 // Projections of one input: prefill prepares it once (Q8_1 / FP16 / BF16).
 static bool l31_mm_many(ds4_ling31_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
@@ -553,7 +569,7 @@ static bool l31_head(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights 
     ds4_gpu_tensor *norm = ds4_gpu_tensor_view(g->norm, 0u, bytes);
     const bool ok = cur && norm && l31_norm(g, m, norm, cur, w->output_norm, 1u, L31_EMBD) &&
         ds4_gpu_gvq_copy(g->last_hidden, 0u, norm, 0u, bytes, 1u) &&
-        (!logits || l31_mm(g, m, g->logits, w->output, norm, 1u, DS4_GVQ_BF16));
+        (!logits || l31_logits(g, m, w, g->logits, norm, 1u));
     ds4_gpu_tensor_free(norm);
     ds4_gpu_tensor_free(cur);
     return ok;

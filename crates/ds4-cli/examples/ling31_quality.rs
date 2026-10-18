@@ -8,6 +8,9 @@ use std::path::Path;
 
 const DEFAULT_CONTEXT: i32 = 4096;
 const OUTPUT_LIMIT: usize = 256;
+// Tokenizer ids; the backend masks the head's 31 padded rows past them.
+const TOKENS: usize = 157_153;
+const PAD_LOGIT_MAX: f32 = -1e29;
 
 fn ids(value: &Value) -> Result<Vec<i32>, Box<dyn std::error::Error>> {
     let list = value.as_array().ok_or("expected a token list")?;
@@ -67,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         session.sync(&TokenBuffer::from_tokens(prompt.clone()))?;
         for &token in &targets {
             let logits = session.copy_logits(vocab)?;
+            if logits[TOKENS..].iter().any(|&v| v > PAD_LOGIT_MAX) {
+                return Err("padded head rows are not masked".into());
+            }
             let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
             let sum: f64 = logits.iter().map(|&v| (v as f64 - max).exp()).sum();
             nll.push(max + sum.ln() - logits[token as usize] as f64);
