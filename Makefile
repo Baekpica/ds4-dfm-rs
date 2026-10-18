@@ -2287,6 +2287,14 @@ tests/test_glm53_stop: tests/test_glm53_stop.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
 test-glm53-stop: tests/test_glm53_stop
 	./tests/test_glm53_stop
 
+tests/test_ling31_stop: tests/test_ling31_stop.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-ling31-stop
+test-ling31-stop: tests/test_ling31_stop
+	./tests/test_ling31_stop
+
 tests/test_glm53_tokens: tests/test_glm53_tokens.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
@@ -2696,7 +2704,7 @@ clean:
 	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
 	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
 	rm -f tests/test_glm53_compare tests/test_glm53_mtp_long tests/test_glm53_mtp_long.o
-	rm -f tests/libglm_vq_test.so tests/test_glm_vq_bind tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
+	rm -f tests/libglm_vq_test.so tests/test_glm_vq_bind tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_ling31_stop tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
 	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o

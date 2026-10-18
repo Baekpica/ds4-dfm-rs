@@ -240,6 +240,7 @@ tests/naive_banks
 /tests/test_ling31_residual
 /tests/test_ling31_flash
 /tests/test_ling31_flash.ptxas
+/tests/test_ling31_stop
 /gguf-tools/libds4q.so
 /tests/test_glm_vq_cache
 /tests/test_glm_vq_q4
