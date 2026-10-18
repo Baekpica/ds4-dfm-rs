@@ -364,27 +364,33 @@ static bool l31_residual_norm(ds4_ling31_graph *g, const ds4_model *m, const ds4
     return l31_residual(g->cur, branch, rows) && l31_norm(g, m, g->norm, g->cur, w, rows, L31_EMBD);
 }
 
-/* KDA: q/k/v (Q4_K), full-rank decay f and output gate g (FP8), beta (BF16).
- * GVQ's recurrence takes raw projections (it applies conv + SiLU, the l2
- * norms, beta's sigmoid and -5*sigmoid(exp(A_log)*(f+dt_bias)) itself). */
+/* KDA: q/k/v (Q4_K), full-rank decay f and output gate g (FP8; Q4_K in the
+ * v2 recipe), beta (BF16). GVQ's recurrence takes raw projections (it applies
+ * conv + SiLU, the l2 norms, beta's sigmoid and -5*sigmoid(exp(A_log)*(f+
+ * dt_bias)) itself). A Q4_K gate joins q/k/v's batch (one q4p input). */
 static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_weights *l,
         uint32_t il, uint32_t rows) {
-    ds4_gpu_tensor *const qkv[] = {g->q, g->k, g->v};
-    const ds4_tensor *const qkv_w[] = {l->kda_q, l->kda_k, l->kda_v};
+    const bool gate_q4 = l->kda_g_a->type == DS4_TENSOR_Q4_K, decay_q4 = l->kda_f_a->type == DS4_TENSOR_Q4_K;
+    ds4_gpu_tensor *const qkv[] = {g->q, g->k, g->v, g->g};
+    const ds4_tensor *const qkv_w[] = {l->kda_q, l->kda_k, l->kda_v, l->kda_g_a};
     ds4_gpu_tensor *const gates[] = {g->f, g->g};
     const ds4_tensor *const gates_w[] = {l->kda_f_a, l->kda_g_a};
+    const uint32_t nq = gate_q4 ? 4u : 3u, ng = gate_q4 ? 1u : 2u;
     // Prefill chunks read q/k/v (decode's BF16 rounding), the FP8 decay and
     // gate (cuBLAS's BF16 results, unwidened) as BF16 rows, and the output
     // projection reads the gated norm's already rounded BF16 heads.
     const bool fused = !g->mtp_capture && ds4_gpu_gvq_kda_fused(g->gvq, rows);
-    const uint32_t qkv_index[] = {ling31_index(m, l->kda_q), ling31_index(m, l->kda_k), ling31_index(m, l->kda_v)};
+    const uint32_t qkv_index[] = {ling31_index(m, l->kda_q), ling31_index(m, l->kda_k), ling31_index(m, l->kda_v),
+        ling31_index(m, l->kda_g_a)};
     const uint32_t gates_index[] = {ling31_index(m, l->kda_f_a), ling31_index(m, l->kda_g_a)};
     const ds4_gvq_rows qkv_rows = fused && g->qkv_bf16 &&
-        ds4_gpu_gvq_linear_many_bf16(g->gvq, qkv, qkv_index, 3u, g->norm, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+        ds4_gpu_gvq_linear_many_bf16(g->gvq, qkv, qkv_index, nq, g->norm, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     const ds4_gvq_rows gate_rows = fused && g->fused &&
-        ds4_gpu_gvq_fp8_many_bf16(g->gvq, gates, gates_index, 2u, g->norm, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
-    if ((qkv_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, qkv, qkv_w, 3u, g->norm, rows)) ||
-        (gate_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, gates, gates_w, 2u, g->norm, rows)) ||
+        (decay_q4 ? ds4_gpu_gvq_linear_many_bf16(g->gvq, gates, gates_index, ng, g->norm, rows)
+                  : ds4_gpu_gvq_fp8_many_bf16(g->gvq, gates, gates_index, ng, g->norm, rows))
+        ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+    if ((qkv_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, qkv, qkv_w, nq, g->norm, rows)) ||
+        (gate_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, gates, gates_w, ng, g->norm, rows)) ||
         !l31_mm(g, m, g->beta, l->kda_beta, g->norm, rows, DS4_GVQ_BF16)) { return false; }
     if (fused) {
         const uint32_t output = ling31_index(m, l->kda_output);
@@ -393,7 +399,7 @@ static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
         const int done = ds4_gpu_gvq_kda_gated(g->gvq, g->heads, g->recurrent[il],
             g->q_tail[il], g->k_tail[il], g->v_tail[il], g->q, g->k, g->v, qkv_rows,
             g->f, gate_rows, g->beta, g->q_conv[il], g->k_conv[il], g->v_conv[il],
-            g->a_log[il], g->dt_bias[il], g->g, gate_rows, ling31_index(m, l->kda_o_norm),
+            g->a_log[il], g->dt_bias[il], g->g, gate_q4 ? qkv_rows : gate_rows, ling31_index(m, l->kda_o_norm),
             rows, L31_HEADS, DS4_KDA_GATE_CLAMP_MIN, DS4_RMS_EPS, heads);
         if (done <= 0) { return false; }
         if (heads == DS4_GVQ_ROWS_F32) { return l31_mm(g, m, g->attn_out, l->kda_output, g->heads, rows, DS4_GVQ_BF16); }
