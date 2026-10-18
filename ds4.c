@@ -64228,6 +64228,10 @@ typedef struct {
     float dry_multiplier;
     float dry_base;
     int dry_allowed_length;
+    /* Penalty lookback in tokens (ds4_cont_request.penalty_window): 0 keeps
+     * the face over `generated`; N > 0 widens it to the last N tokens of the
+     * bank's committed history.  Only the GLM scope ever sets it. */
+    int penalty_window;
     uint64_t rng;
     int (*sample_override)(void *ud, void *user);
     int (*sample_exclude)(void *ud, void *user);
@@ -65134,7 +65138,21 @@ static void family_banked_capture_checkpoint(
  * V4.1 route runs (ds4_ds41_sample.inc defines both; forward-declared here
  * because the lane sits earlier in the TU).  Applied to the bank's host logits
  * row from the bank's OWN generated segment (cb->generated), never the prompt:
- * a request that carries no penalty leaves the row byte-identical. */
+ * a request that carries no penalty leaves the row byte-identical.
+ *
+ * cb->penalty_window widens the segment.  It is 0 for every request that does
+ * not ask for it -- which is every request of every family but GLM-5.3 -- and
+ * then the call is the one above, byte for byte.  A deployment that sets it
+ * gets the last N tokens of the bank's committed history instead, prompt
+ * included: the action an agent loop repeats sits in the prompt, so a face
+ * over the generated segment alone cannot see the copy (measured 2026-10-17
+ * on session 01a14d9a: DRY 0.8, DRY 2.0 and frequency/presence 1.0 were all
+ * inert against a reproduced web_fetch loop).  The window is the ordering the
+ * artifact's own runtime uses -- llama.cpp feeds every prompt token into its
+ * sampler chain (tools/server/server-context.cpp:433) and bounds the lookback
+ * with repeat_last_n / dry_penalty_last_n (its server README: default 64, 0
+ * disabled) -- and the function that does the work, ds4_decode_penalize, is
+ * unchanged. */
 #ifndef DS4_NO_GPU
 static uint8_t *ds4_decode_breakers(ds4_engine *e, uint32_t n_vocab);
 static void ds4_decode_penalize(float *logits, uint32_t n_vocab,
@@ -65144,15 +65162,38 @@ static void ds4_decode_penalize(float *logits, uint32_t n_vocab,
                                 int dry_allowed);
 #endif
 
-static void family_cont_penalize(ds4_batch_ctx *ctx, ds4_family_cont_bank *cb,
-                                 float *row) {
+#ifndef DS4_NO_GPU
+/* The penalty window's segment: the bank's generated tokens, or -- when the
+ * request asked for a window -- the last N tokens of its committed history,
+ * which ends on the same token (bank_hist_append runs before the penalty on
+ * every decode step).  Returns the length; *gen is the segment start. */
+static uint32_t family_cont_penalty_segment(const ds4_batch_ctx *ctx,
+                                            uint32_t b,
+                                            const ds4_family_cont_bank *cb,
+                                            const int32_t **gen) {
+    *gen = cb->generated;
+    if (cb->penalty_window <= 0) { return cb->generated_len; }
+    if (!ctx->bank_hist_valid[b]) { return cb->generated_len; }
+    const uint32_t have = ctx->bank_hist_len[b];
+    if (have < cb->generated_len) { return cb->generated_len; }
+    uint32_t want = (uint32_t)cb->penalty_window;
+    if (want > have) { want = have; }
+    *gen = ctx->bank_hist + (size_t)b * ctx->seq_cap + (have - want);
+    return want;
+}
+#endif
+
+static void family_cont_penalize(ds4_batch_ctx *ctx, uint32_t b,
+                                 ds4_family_cont_bank *cb, float *row) {
 #ifdef DS4_NO_GPU
-    (void)ctx; (void)cb; (void)row;
+    (void)ctx; (void)b; (void)cb; (void)row;
 #else
     if (!row || cb->generated_len == 0u) { return; }
     if (cb->freq_penalty == 0.0f && cb->presence_penalty == 0.0f &&
         cb->dry_multiplier <= 0.0f) { return; }
-    ds4_decode_penalize(row, DS4_N_VOCAB, cb->generated, cb->generated_len,
+    const int32_t *gen = NULL;
+    const uint32_t n = family_cont_penalty_segment(ctx, b, cb, &gen);
+    ds4_decode_penalize(row, DS4_N_VOCAB, gen, n,
                         ds4_decode_breakers(ctx->e, DS4_N_VOCAB),
                         cb->freq_penalty, cb->presence_penalty,
                         cb->dry_multiplier, cb->dry_base,
@@ -65871,6 +65912,8 @@ static int family_banked_engine_continuous_generate(
             cb->dry_base = req.dry_base > 1.0f ? req.dry_base : 1.75f;
             cb->dry_allowed_length = req.dry_allowed_length > 0
                 ? req.dry_allowed_length : 2;
+            cb->penalty_window = req.penalty_window > 0
+                ? req.penalty_window : 0;
             cb->rng = req.seed;
             cb->sample_override = req.sample_override;
             cb->sample_exclude = req.sample_exclude;
@@ -66135,7 +66178,7 @@ static int family_banked_engine_continuous_generate(
                 : DS4_SAMPLE_OVERRIDE_NONE;
             const int excluded_id = cb->sample_exclude
                 ? cb->sample_exclude(ud, cb->user) : -1;
-            family_cont_penalize(ctx, cb, family_banked_logits(ctx, b));
+            family_cont_penalize(ctx, b, cb, family_banked_logits(ctx, b));
             int token = qwen_mtp ? decode_next[row]
                 : sample_top_p_min_p_override_excluding(
                     family_banked_logits(ctx, b),
@@ -66165,7 +66208,7 @@ static int family_banked_engine_continuous_generate(
                     : DS4_SAMPLE_OVERRIDE_NONE;
                 const int next_excluded_id = cb->sample_exclude
                     ? cb->sample_exclude(ud, cb->user) : -1;
-                family_cont_penalize(ctx, cb, family_banked_logits(ctx, b));
+                family_cont_penalize(ctx, b, cb, family_banked_logits(ctx, b));
                 token = sample_top_p_min_p_override_excluding(
                     family_banked_logits(ctx, b),
                     DS4_N_VOCAB, cb->temperature, cb->top_k,
@@ -77391,29 +77434,41 @@ int ds4_session_sample_penalized(ds4_session *s, int gen_start,
                                  float temperature, int top_k, float top_p,
                                  float min_p, uint64_t *rng, int excluded_id,
                                  float freq, float presence, float dry_mult,
-                                 float dry_base, int dry_allowed) {
+                                 float dry_base, int dry_allowed,
+                                 int penalty_window) {
     if (session_logits_unready(s)) { return -1; }
     const int excluded_eot = excluded_id >= 0
         ? sample_eot_exclusion(&s->engine->vocab, excluded_id) : -1;
     const float *row = s->logits;
     float *penalized = NULL;
 #ifndef DS4_NO_GPU
-    const uint32_t n_gen = (s->checkpoint_valid && gen_start >= 0 &&
-                            (uint32_t)gen_start < s->checkpoint.len)
-        ? s->checkpoint.len - (uint32_t)gen_start : 0u;
+    /* The segment is [gen_start, committed) by default; penalty_window > 0
+     * widens its start back over the prompt, the same last-N-tokens segment
+     * the continuous lane's bank takes (family_cont_penalty_segment).  An
+     * unusable gen_start or an uncommitted checkpoint carries no segment on
+     * either setting, so the plain sampler serves the call. */
+    const bool gen_known = s->checkpoint_valid && gen_start >= 0 &&
+                           (uint32_t)gen_start < s->checkpoint.len;
+    uint32_t first = gen_known ? (uint32_t)gen_start : 0u;
+    if (gen_known && penalty_window > 0) {
+        const uint32_t want = (uint32_t)penalty_window;
+        first = first >= want ? first - want : 0u;
+    }
+    const uint32_t n_gen = gen_known && s->checkpoint.len > first
+        ? s->checkpoint.len - first : 0u;
     if (n_gen > 0u &&
         (freq != 0.0f || presence != 0.0f || dry_mult > 0.0f)) {
         static float *rowbuf = NULL;
         if (!rowbuf) { rowbuf = xmalloc((size_t)DS4_N_VOCAB * sizeof(float)); }
         memcpy(rowbuf, s->logits, (size_t)DS4_N_VOCAB * sizeof(float));
-        ds4_decode_penalize(rowbuf, DS4_N_VOCAB, s->checkpoint.v + gen_start,
+        ds4_decode_penalize(rowbuf, DS4_N_VOCAB, s->checkpoint.v + first,
                             n_gen, ds4_decode_breakers(s->engine, DS4_N_VOCAB),
                             freq, presence, dry_mult, dry_base, dry_allowed);
         penalized = rowbuf;
     }
 #else
     (void)gen_start; (void)freq; (void)presence;
-    (void)dry_mult; (void)dry_base; (void)dry_allowed;
+    (void)dry_mult; (void)dry_base; (void)dry_allowed; (void)penalty_window;
 #endif
     if (penalized) { row = penalized; }
     return excluded_id >= 0

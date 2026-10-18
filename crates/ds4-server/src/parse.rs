@@ -194,6 +194,10 @@ pub struct GlmValues {
     pub dry_multiplier: f32,
     pub dry_base: f32,
     pub dry_allowed_length: i32,
+    /// Penalty lookback in tokens of the committed history, prompt included;
+    /// 0 keeps the face over the generated segment alone.
+    /// `GLM53_DEFAULT_PENALTY_WINDOW` carries the evidence.
+    pub penalty_window: i32,
     /// Forced-thought budgets, in tokens, one per effort level (the same
     /// three the template knows).  0 is OFF.  A GLM chat turn reserves
     /// nothing post-thinking, so without a bound it never emits the close and
@@ -248,6 +252,20 @@ const GLM53_DEFAULT_THINK_CAP: i32 = 0;
 /// The knob window.  A budget this large is inert (the turn's own budget is
 /// the binding limit), so the bound only catches a typo.
 const GLM53_THINK_CAP_MAX: i32 = 1_000_000;
+/// The penalty face's lookback, in tokens of the committed history, prompt
+/// included.  0 -- the default -- keeps the face over the generated segment
+/// alone (ds4.c family_cont_penalize), the shape every earlier measurement
+/// used; the deployment widens it when it wants a loop breaker that can see
+/// the repeated ACTION, which lives in the prompt rather than in the turn's
+/// own few generated tokens.  The ordering is the artifact runtime's own:
+/// llama.cpp feeds every prompt token into the sampler chain
+/// (tools/server/server-context.cpp:433) and bounds the lookback with
+/// repeat_last_n / dry_penalty_last_n (its server README: default 64, 0
+/// disabled).
+const GLM53_DEFAULT_PENALTY_WINDOW: i32 = 0;
+/// A window this large is inert (the sequence's own length binds first), so
+/// the bound only catches a typo.
+const GLM53_PENALTY_WINDOW_MAX: i32 = 1_000_000;
 
 /// The forced-thought budget one deployment knob names.  0 is OFF; a bad
 /// value is reported and disables the bound rather than picking a number.
@@ -404,6 +422,14 @@ pub fn glm_values() -> &'static GlmValues {
             GLM53_DEFAULT_DRY_ALLOWED_LENGTH as f32,
             0.0..=64.0,
         ) as i32,
+        penalty_window: resolve_number(
+            "DS4_SERVER_GLM_PENALTY_WINDOW",
+            std::env::var("DS4_SERVER_GLM_PENALTY_WINDOW")
+                .ok()
+                .as_deref(),
+            GLM53_DEFAULT_PENALTY_WINDOW as f32,
+            0.0..=GLM53_PENALTY_WINDOW_MAX as f32,
+        ) as i32,
         think_cap_low: resolve_think_cap(
             "DS4_SERVER_GLM_THINK_CAP_LOW",
             std::env::var("DS4_SERVER_GLM_THINK_CAP_LOW")
@@ -431,7 +457,8 @@ pub fn glm_values_report() -> String {
     let v = glm_values();
     format!(
         "GLM values: temperature={} top_p={} min_p={} effort={:?} temp_max={} \
-         freq_penalty={} presence_penalty={} dry={}x{}^L from L={} think_cap={}/{}/{}",
+         freq_penalty={} presence_penalty={} dry={}x{}^L from L={} \
+         penalty_window={} think_cap={}/{}/{}",
         default_temperature(),
         v.top_p,
         v.min_p,
@@ -445,6 +472,7 @@ pub fn glm_values_report() -> String {
         v.dry_multiplier,
         v.dry_base,
         v.dry_allowed_length,
+        v.penalty_window,
         v.think_cap_low,
         v.think_cap_high,
         v.think_cap_max
@@ -498,6 +526,11 @@ pub struct ParsedRequest {
     pub dry_base: f32,
     pub dry_allowed_length: i32,
     pub dry_set: bool,
+    /// Penalty lookback in tokens of the committed history, prompt included.
+    /// Deployment-scoped like `think_cap` (the GLM scope supplies it, no wire
+    /// field does), so a request that leaves it alone reads the generated
+    /// segment exactly as before.
+    pub penalty_window: i32,
     pub stream: bool,
     pub stream_include_usage: bool,
     pub return_token_ids: bool,
@@ -580,6 +613,11 @@ impl ParsedRequest {
                 0
             },
             dry_set: env.glm_values,
+            penalty_window: if env.glm_values {
+                glm_values().penalty_window
+            } else {
+                0
+            },
             stream: false,
             stream_include_usage: false,
             return_token_ids: false,
@@ -4110,6 +4148,66 @@ mod glm_value_tests {
         assert_ne!(GLM53_DEFAULT_EFFORT, ThinkMode::Low);
     }
 
+    // The penalty window is the deployment's knob, not a wire field.  The
+    // artifact's runtime feeds every prompt token into its sampler chain
+    // (llama.cpp tools/server/server-context.cpp:433) and bounds the penalty
+    // lookback with repeat_last_n / dry_penalty_last_n (its server README:
+    // default 64, 0 disabled).  The GLM scope copies that ordering; 0 -- the
+    // default -- leaves the face over the generated segment alone, so every
+    // lane stays byte-identical until a deployment asks for the window.
+    #[test]
+    fn penalty_window_is_deployment_scoped_and_off_by_default() {
+        use super::{
+            resolve_number, GLM53_DEFAULT_PENALTY_WINDOW, GLM53_PENALTY_WINDOW_MAX,
+        };
+        assert_eq!(GLM53_DEFAULT_PENALTY_WINDOW, 0);
+        let resolve = |raw: Option<&str>| {
+            resolve_number(
+                "DS4_SERVER_GLM_PENALTY_WINDOW",
+                raw,
+                GLM53_DEFAULT_PENALTY_WINDOW as f32,
+                0.0..=GLM53_PENALTY_WINDOW_MAX as f32,
+            ) as i32
+        };
+        assert_eq!(resolve(None), 0);
+        assert_eq!(resolve(Some("1024")), 1024);
+        for raw in ["", "abc", "-1", "nan", "2000000"] {
+            assert_eq!(resolve(Some(raw)), 0, "{raw}");
+        }
+    }
+
+    // The window is reachable by the GLM scope alone.  A V4.1 / Qwen process
+    // (env.glm_values false) leaves it 0 whatever the deployment exports, so
+    // those families keep the exact face and the exact code path they had.
+    #[test]
+    fn only_the_glm_scope_can_carry_a_penalty_window() {
+        use super::{parse_request, ParseEnv};
+        use crate::route::{ThinkMode, WireSurface};
+        let body = r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4}"#;
+        let env = |glm_values: bool| ParseEnv {
+            default_model: "ds4".into(),
+            default_tokens: 16,
+            default_effort: ThinkMode::None,
+            default_temp: 0.0,
+            live_ids: Vec::new(),
+            engine_defaults: false,
+            glm_values,
+        };
+        let glm = env(true);
+        let glm_req = parse_request(WireSurface::OpenaiChat, &glm, body).unwrap();
+        assert_eq!(
+            glm_req.penalty_window,
+            super::GLM53_DEFAULT_PENALTY_WINDOW,
+            "the GLM scope takes the deployment's window"
+        );
+
+        let other_req = parse_request(WireSurface::OpenaiChat, &env(false), body).unwrap();
+        assert_eq!(
+            other_req.penalty_window, 0,
+            "every other family keeps the generated-segment face"
+        );
+    }
+
     // The GLM scope's sampler guard: DRY ships on (the artifact's own measured
     // failure is answering and then running on), the floors stay at the
     // artifact's values, and a numeric override is range-checked like top_p.
@@ -4149,6 +4247,7 @@ mod glm_value_tests {
             dry_multiplier: 0.0,
             dry_base: 1.75,
             dry_allowed_length: 2,
+            penalty_window: 0,
             think_cap_low: 64,
             think_cap_high: 256,
             think_cap_max: 512,

@@ -146,6 +146,12 @@ pub struct Penalty {
     pub dry_multiplier: f32,
     pub dry_base: f32,
     pub dry_allowed_length: i32,
+    /// Penalty lookback in tokens of the committed history, prompt included;
+    /// 0 keeps the face over the generated segment alone (ds4.c
+    /// family_cont_penalize, ds4_session_sample_penalized).  The deployment
+    /// sets it (`parse.rs` GLM53_DEFAULT_PENALTY_WINDOW carries the evidence
+    /// and the llama.cpp ordering it copies).
+    pub penalty_window: i32,
 }
 
 impl Penalty {
@@ -174,6 +180,7 @@ impl Penalty {
             } else {
                 2
             },
+            penalty_window: parsed.penalty_window,
         }
     }
 
@@ -4857,6 +4864,7 @@ impl DecodeIo for NativeDecode<'_> {
                 penalty.dry_multiplier,
                 penalty.dry_base,
                 penalty.dry_allowed_length,
+                penalty.penalty_window,
             ),
             Err(_) => -1,
         }

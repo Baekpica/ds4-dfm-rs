@@ -3204,7 +3204,9 @@ impl Session<'_> {
     /// request has emitted since `gen_start` (the serial lane's counterpart of
     /// the continuous lane's `family_cont_penalize`, ds4.c:64936). All-zero
     /// fields, `gen_start < 0` or an uncommitted checkpoint take the plain
-    /// sampler unchanged.
+    /// sampler unchanged. `penalty_window > 0` widens the face to that many
+    /// tokens of the session's committed history, prompt included; 0 is the
+    /// generated segment alone.
     #[allow(clippy::too_many_arguments)]
     pub fn sample_penalized(
         &mut self,
@@ -3220,6 +3222,7 @@ impl Session<'_> {
         dry_mult: f32,
         dry_base: f32,
         dry_allowed: i32,
+        penalty_window: i32,
     ) -> i32 {
         unsafe {
             ds4_bridge_session_sample_penalized(
@@ -3236,6 +3239,7 @@ impl Session<'_> {
                 dry_mult,
                 dry_base,
                 dry_allowed,
+                penalty_window,
             )
         }
     }

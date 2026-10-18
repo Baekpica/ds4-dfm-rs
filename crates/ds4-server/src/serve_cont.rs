@@ -3586,6 +3586,7 @@ mod native {
             admit.dry_multiplier = penalty.dry_multiplier;
             admit.dry_base = penalty.dry_base;
             admit.dry_allowed_length = penalty.dry_allowed_length;
+            admit.penalty_window = penalty.penalty_window;
             admit.seed = parsed.seed;
             admit.images = images;
             let frontier = (self.template.is_some()

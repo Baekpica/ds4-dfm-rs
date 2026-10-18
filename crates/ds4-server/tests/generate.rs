@@ -1059,6 +1059,53 @@ fn serial_lane_applies_the_request_penalty_over_the_generated_segment() {
 }
 
 #[test]
+fn the_glm_penalty_window_reaches_the_serial_sampler() {
+    // The repeated ACTION an agent loop copies lives in the PROMPT, so the
+    // face that reads the generated segment alone cannot see it: on the live
+    // 8009 serve a reproduced web_fetch loop answered byte-identically with
+    // DRY 0.8, DRY 2.0 and frequency/presence 1.0, and at every temperature
+    // from 0 to 1.0 (2026-10-17/18, session 01a14d9a).  `penalty_window` is
+    // the window the deployment widens the face to -- the committed history
+    // including the prompt, llama.cpp's ordering.  0 is the default and the
+    // generated segment alone, the shape every earlier measurement used.
+    let mut parsed = parse_request(
+        WireSurface::OpenaiChat,
+        &env(),
+        r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,
+            "thinking":{"type":"disabled"},"dry_multiplier":0.8}"#,
+    )
+    .unwrap();
+    parsed.think_mode = ThinkMode::None;
+    parsed.temperature = 0.0;
+    assert_eq!(
+        Penalty::of(&parsed).penalty_window,
+        0,
+        "an omitted window keeps the generated-segment face"
+    );
+    parsed.penalty_window = 1024;
+
+    let mut script =
+        ScriptedDecode::from_pieces(&TAPE_PLAIN.iter().map(|s| s.as_bytes()).collect::<Vec<_>>());
+    script.model_id = 17;
+    let mut engine = PromptSyncDecode::new(script, 0, 1);
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "glm-window-serial",
+        CREATED_TEST,
+        false,
+        4,
+        &mut Vec::new(),
+    )
+    .unwrap();
+
+    let first = engine.penalty_calls[0];
+    assert_eq!(first.penalty.penalty_window, 1024);
+    assert_eq!(first.penalty.dry_multiplier, 0.8);
+    assert_eq!(first.gen_start, 1);
+}
+
+#[test]
 fn serial_lane_keeps_the_greedy_commit_without_a_penalty() {
     // The face is what stands the greedy commit down. Without one, the same
     // greedy turn still commits its prefix in one call, so the gate above

@@ -1041,6 +1041,7 @@ extern "C" {
         dry_mult: c_float,
         dry_base: c_float,
         dry_allowed: c_int,
+        penalty_window: c_int,
     ) -> c_int;
 
     pub fn ds4_bridge_session_save_payload(
@@ -1327,6 +1328,9 @@ pub struct ds4_bridge_cont_request {
     pub dry_multiplier: c_float,
     pub dry_base: c_float,
     pub dry_allowed_length: c_int,
+    /// Penalty lookback in tokens of the bank's committed history, prompt
+    /// included; 0 keeps the face over the generated segment alone.
+    pub penalty_window: c_int,
     pub seed: u64,
     pub sample_override: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
     pub sample_exclude: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,

@@ -493,6 +493,9 @@ fn sample_next(
         Some((multiplier, base, allowed)) => session.sample_penalized(
             gen_start, args.temp, 0, args.top_p, args.min_p, rng, -1, 0.0, 0.0, multiplier, base,
             allowed,
+            // The CLI has no GLM window knob: the penalized segment stays the
+            // generated tokens from gen_start, as every earlier run was.
+            0,
         ),
         None => session.sample(args.temp, 0, args.top_p, args.min_p, rng),
     }

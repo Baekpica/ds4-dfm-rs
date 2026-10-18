@@ -121,6 +121,9 @@ pub struct ContAdmit {
     pub dry_multiplier: f32,
     pub dry_base: f32,
     pub dry_allowed_length: i32,
+    /// Penalty lookback in tokens of the bank's committed history, prompt
+    /// included; 0 keeps the face over the bank's generated segment alone.
+    pub penalty_window: i32,
     pub seed: u64,
     /// Register the per-token EOS exclusion callback for this request.
     pub exclude_eos: bool,
@@ -151,6 +154,7 @@ impl ContAdmit {
             dry_multiplier: 0.0,
             dry_base: 0.0,
             dry_allowed_length: 0,
+            penalty_window: 0,
             seed: 0,
             exclude_eos: false,
             place_bank: 0,
@@ -247,6 +251,7 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     r.dry_multiplier = a.dry_multiplier;
     r.dry_base = a.dry_base;
     r.dry_allowed_length = a.dry_allowed_length;
+    r.penalty_window = a.penalty_window;
     r.seed = a.seed;
     r.sample_override = Some(tramp_sample_override);
     r.sample_exclude = a.exclude_eos.then_some(tramp_sample_exclude);
