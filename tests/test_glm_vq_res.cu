@@ -292,15 +292,21 @@ int main() {
     }
 
     // (D) FP8 prefill MMA (gate and down stages) against restore + GEMM.
+    // 64 tokens: two 32-token items (residual codes staged in shared memory)
+    // and one 64-token item (codes in registers) must agree bit for bit.
     {
-        int mblocks = 0;
-        if (glmvq_mma8_prepare<256, 32, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true>(&mblocks) != cudaSuccess ||
-            glmvq_mma8_prepare<256, 32, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true>(&mblocks) != cudaSuccess) {
+        constexpr uint32_t T8 = 64;
+        int b32 = 0, b64 = 0;
+        if (glmvq_mma8_prepare<256, 32, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true>(&b32) != cudaSuccess ||
+            glmvq_mma8_prepare<256, 32, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true>(&b32) != cudaSuccess ||
+            glmvq_mma8_prepare<256, 64, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true>(&b64) != cudaSuccess ||
+            glmvq_mma8_prepare<256, 64, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true>(&b64) != cudaSuccess) {
             check(false, "mma8 prepare (R13+8 shared memory)", 0);
             return 1;
         }
-        printf("mma8 R13+8 shared memory %u B\n", glmvq_mma8_bytes<256, 32, 13, true>());
-        std::vector<float> xt((uint64_t)T * H), xd((uint64_t)T * F);
+        printf("mma8 R13+8 shared memory %u B (32 tokens), %u B (64 tokens)\n",
+            glmvq_mma8_bytes<256, 32, 13, true>(), glmvq_mma8_bytes<256, 64, 13, true>());
+        std::vector<float> xt((uint64_t)T8 * H), xd((uint64_t)T8 * F);
         for (auto &v : xt) { v = bf16_round(normal(rng)); }
         for (auto &v : xd) { v = bf16_round(0.3f * normal(rng)); }
         std::vector<glmvq_source> sources(3);
@@ -308,52 +314,62 @@ int main() {
         sources[1] = {nullptr, nullptr, res_m[1], F, H, GLMVQ_WEIGHT_VQ};
         sources[2] = {nullptr, nullptr, res_m[2], H, F, GLMVQ_WEIGHT_VQ};
         auto *dsrc = (glmvq_source *)dev(3 * sizeof(glmvq_source), sources.data());
-        glmvq_mma_item item = {{0, 1, 2}, 0, T};
-        auto *ditem = (glmvq_mma_item *)dev(sizeof(item), &item);
-        std::vector<uint32_t> map(T);
-        for (uint32_t t = 0; t < T; t++) { map[t] = t; }
-        auto *dmap = (uint32_t *)dev(T * 4, map.data());
+        const glmvq_mma_item halves[2] = {{{0, 1, 2}, 0, 32}, {{0, 1, 2}, 32, 32}}, whole = {{0, 1, 2}, 0, T8};
+        auto *d32 = (glmvq_mma_item *)dev(sizeof(halves), halves);
+        auto *d64 = (glmvq_mma_item *)dev(sizeof(whole), &whole);
+        std::vector<uint32_t> map(T8);
+        for (uint32_t t = 0; t < T8; t++) { map[t] = t; }
+        auto *dmap = (uint32_t *)dev(T8 * 4, map.data());
         for (int stage = 0; stage < 2; stage++) {
             const uint32_t cols = stage ? F : H, rows = stage ? H : F;
             const std::vector<float> &in = stage ? xd : xt;
             auto *din = (float *)dev(in.size() * 4, in.data());
-            auto *q8 = (uint8_t *)dev((uint64_t)T * cols);
-            auto *qs = (float *)dev((uint64_t)T * cols / GLMVQ_MMA8_K * 4);
-            const uint64_t qb = (uint64_t)T * cols / GLMVQ_MMA8_K;
+            auto *q8 = (uint8_t *)dev((uint64_t)T8 * cols);
+            auto *qs = (float *)dev((uint64_t)T8 * cols / GLMVQ_MMA8_K * 4);
+            const uint64_t qb = (uint64_t)T8 * cols / GLMVQ_MMA8_K;
             glmvq_mma8_quant<float><<<(uint32_t)((qb * 32 + 255) / 256), 256>>>(q8, qs, din, qb);
-            auto *res_out = (__nv_bfloat16 *)dev((uint64_t)T * rows * 2);
-            if (stage == 0) {
-                glmvq_mma8_kernel<256, 32, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true>
-                    <<<mblocks, glmvq_mma8_threads<256, 1>(), glmvq_mma8_bytes<256, 32, 13, true>()>>>(
-                    dsrc, ditem, 1, (const uint8_t *)dbook1, q8, qs, dmap, 1, res_out, nullptr, nullptr,
-                    rows, cols, CLAMP, nullptr, nullptr, (const uint8_t *)dbook2);
-            } else {
-                item.matrix[2] = 2;
-                glmvq_mma8_kernel<256, 32, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true>
-                    <<<mblocks, glmvq_mma8_threads<256, 1>(), glmvq_mma8_bytes<256, 32, 13, true>()>>>(
-                    dsrc, ditem, 1, (const uint8_t *)dbook1, q8, qs, dmap, 1, nullptr, nullptr, res_out,
-                    rows, cols, CLAMP, nullptr, nullptr, (const uint8_t *)dbook2);
-            }
+            auto *out32 = (__nv_bfloat16 *)dev((uint64_t)T8 * rows * 2);
+            auto *out64 = (__nv_bfloat16 *)dev((uint64_t)T8 * rows * 2);
+            auto launch = [&](auto tokens, const glmvq_mma_item *items, uint32_t nitems, int blocks, __nv_bfloat16 *out) {
+                constexpr uint32_t BT = decltype(tokens)::value;
+                constexpr uint32_t threads = glmvq_mma8_threads<256, 1>(), shared = glmvq_mma8_bytes<256, BT, 13, true>();
+                if (stage == 0) {
+                    glmvq_mma8_kernel<256, BT, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true><<<blocks, threads, shared>>>(
+                        dsrc, items, nitems, (const uint8_t *)dbook1, q8, qs, dmap, 1, out, nullptr, nullptr,
+                        rows, cols, CLAMP, nullptr, nullptr, (const uint8_t *)dbook2);
+                } else {
+                    glmvq_mma8_kernel<256, BT, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true><<<blocks, threads, shared>>>(
+                        dsrc, items, nitems, (const uint8_t *)dbook1, q8, qs, dmap, 1, nullptr, nullptr, out,
+                        rows, cols, CLAMP, nullptr, nullptr, (const uint8_t *)dbook2);
+                }
+            };
+            launch(std::integral_constant<uint32_t, 32>{}, d32, 2, b32, out32);
+            launch(std::integral_constant<uint32_t, 64>{}, d64, 1, b64, out64);
             if (cudaDeviceSynchronize() != cudaSuccess) { check(false, "mma8 launch", 0); return 1; }
-            std::vector<uint16_t> raw((uint64_t)T * rows);
-            cudaMemcpy(raw.data(), res_out, raw.size() * 2, cudaMemcpyDeviceToHost);
+            std::vector<uint16_t> raw((uint64_t)T8 * rows), raw64(raw.size());
+            cudaMemcpy(raw.data(), out32, raw.size() * 2, cudaMemcpyDeviceToHost);
+            cudaMemcpy(raw64.data(), out64, raw64.size() * 2, cudaMemcpyDeviceToHost);
             std::vector<float> got(raw.size());
             for (size_t i = 0; i < raw.size(); i++) { uint32_t u = (uint32_t)raw[i] << 16; memcpy(&got[i], &u, 4); }
             // Reference: restored BF16 weights times the (unquantized) inputs.
-            auto *ref = (float *)dev((uint64_t)T * rows * 4);
+            auto *ref = (float *)dev((uint64_t)T8 * rows * 4);
             const glmvq_source &s = sources[stage ? 2 : 0];
-            glmvq_gemm(handle, s, din, ref, T, GLMVQ_COMPUTE_BF16, scratch, scratch_bytes, nullptr, GLMVQ_RESTORE_SCALAR);
+            glmvq_gemm(handle, s, din, ref, T8, GLMVQ_COMPUTE_BF16, scratch, scratch_bytes, nullptr, GLMVQ_RESTORE_SCALAR);
             glmvq_source plain = s;
             plain.vq.res = nullptr;
             plain.vq.res_book = nullptr;
-            auto *pref = (float *)dev((uint64_t)T * rows * 4);
-            glmvq_gemm(handle, plain, din, pref, T, GLMVQ_COMPUTE_BF16, scratch, scratch_bytes, nullptr, GLMVQ_RESTORE_SCALAR);
-            const std::vector<float> r = fetch(ref, (uint64_t)T * rows), p = fetch(pref, (uint64_t)T * rows);
+            auto *pref = (float *)dev((uint64_t)T8 * rows * 4);
+            glmvq_gemm(handle, plain, din, pref, T8, GLMVQ_COMPUTE_BF16, scratch, scratch_bytes, nullptr, GLMVQ_RESTORE_SCALAR);
+            const std::vector<float> r = fetch(ref, (uint64_t)T8 * rows), p = fetch(pref, (uint64_t)T8 * rows);
             const double err = relrms(got, r), gap = relrms(p, r);
             char what[96];
             snprintf(what, sizeof(what), "mma8 %s vs restore (E4M3 activations; R13-only gap %.3g)",
                 stage ? "down" : "gate", gap);
             check(err < 4e-2 && gap > 5 * err, what, err);
+            uint64_t differ = 0;
+            for (size_t i = 0; i < raw.size(); i++) { differ += raw[i] != raw64[i]; }
+            snprintf(what, sizeof(what), "mma8 %s 64-token item bit-identical to 32-token items", stage ? "down" : "gate");
+            check(differ == 0, what, (double)differ);
         }
     }
 

@@ -37,12 +37,17 @@ __global__ void glmvq_mma8_quant(uint8_t *out, float *scales, const T *input, ui
 
 // 64-token items fit beside the 64 KiB book only with double buffering;
 // a 12-bit (K4096) layer's 32 KiB book leaves room for three stages. R13+8
-// layers stage 16 residual bytes per row and a 2 KiB book: 256 x 32-token
-// tiles double-buffered take 98,560 of GB10's 101,376 B.
+// layers add a 2 KiB book. 32-token tiles stage 16 residual bytes per row
+// (98,560 B); 64-token tiles cannot (107,008 of GB10's 101,376 B), so each
+// thread loads its rows' residual bytes into registers one stage ahead
+// (98,816 B): half the codebook gathers and B loads per token.
 template <uint32_t BT, uint32_t BITS = 13, bool RES = false>
 __host__ __device__ constexpr uint32_t glmvq_mma8_stages() {
     return (BT == 64 && BITS == 13) || RES ? 2 : GLMVQ_MMA8_STAGES;
 }
+
+template <uint32_t BT, bool RES>
+__host__ __device__ constexpr bool glmvq_mma8_res_regs() { return RES && BT == 64; }
 
 template <uint32_t BITS, bool RES = false>
 __host__ __device__ constexpr uint32_t glmvq_mma8_book() {
@@ -52,7 +57,8 @@ __host__ __device__ constexpr uint32_t glmvq_mma8_book() {
 template <uint32_t BM, uint32_t BT, uint32_t BITS = 13, bool RES = false>
 static constexpr uint32_t glmvq_mma8_bytes() {
     return glmvq_mma8_book<BITS, RES>() + glmvq_mma8_stages<BT, BITS, RES>() *
-        (BM * (GLMVQ_MMA8_INDEX + (BITS == 13 ? GLMVQ_MMA8_PLANE : 0u) + (RES ? GLMVQ_MMA8_RES : 0u)) +
+        (BM * (GLMVQ_MMA8_INDEX + (BITS == 13 ? GLMVQ_MMA8_PLANE : 0u) +
+               (RES && !glmvq_mma8_res_regs<BT, RES>() ? GLMVQ_MMA8_RES : 0u)) +
          BT * (GLMVQ_MMA8_ROW + sizeof(float)));
 }
 
@@ -107,8 +113,9 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
     constexpr uint32_t STAGES = glmvq_mma8_stages<BT, BITS, RES>(), BOOK = glmvq_mma8_book<BITS, RES>();
     constexpr uint32_t BOOK1 = glmvq_mma8_book<BITS>();
     constexpr uint32_t BSB = BM * GLMVQ_MMA8_INDEX, EXB = BITS == 13 ? BM * GLMVQ_MMA8_PLANE : 0u;
-    // Residual bytes follow the plane; activations follow both.
-    constexpr uint32_t RSB = RES ? BM * GLMVQ_MMA8_RES : 0u, IXB = BSB + EXB + RSB;
+    // Staged residual bytes follow the plane; activations follow both.
+    constexpr bool RREG = glmvq_mma8_res_regs<BT, RES>();
+    constexpr uint32_t RSB = RES && !RREG ? BM * GLMVQ_MMA8_RES : 0u, IXB = BSB + EXB + RSB;
     constexpr uint32_t ATB = BT * GLMVQ_MMA8_ROW, STB = IXB + ATB + BT * sizeof(float);
     static_assert(BITS == 12 || BITS == 13, "GVQ1 stores 12- or 13-bit indices");
     static_assert(THREADS >= BT * 8 && THREADS >= BM, "one activation chunk and row per thread");
@@ -174,7 +181,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                 glmvq_mma_copy<4>(dst + BSB + tid * 4,
                     mat.plane + (uint64_t)(row + tid) * plane_stride + 4 * (stage / 2));
             }
-            if (RES && tid < BM) {
+            if (RES && !RREG && tid < BM) {
                 glmvq_mma_copy<16>(dst + BSB + EXB + tid * GLMVQ_MMA8_RES,
                     mat.res + (uint64_t)(row + tid) * res_stride + stage * GLMVQ_MMA8_RES);
             }
@@ -194,9 +201,41 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         }
         const uint32_t nnt = padded / 8;
         float acc[MT][NT][4] = {};
+        // RREG: a row's 16 residual bytes of one stage; word K holds codes
+        // 4K..4K+3. Lane q loads word q; the quad transposes so lane q packs
+        // byte q of each word (code 4K+q at bits 8K).
+        uint32_t rnext[MT][2];
+        auto res_load = [&](uint32_t stage) {
+            #pragma unroll
+            for (uint32_t m = 0; m < MT; m++) {
+                #pragma unroll
+                for (uint32_t side = 0; side < 2; side++) {
+                    rnext[m][side] = __ldg((const uint32_t *)(mat.res + (uint64_t)(row + lr[m][side]) * res_stride +
+                        stage * GLMVQ_MMA8_RES) + q);
+                }
+            }
+        };
+        if constexpr (RREG) { res_load(0); }
         auto run = [&](auto count) {
             constexpr uint32_t NNT = decltype(count)::value;
             for (uint32_t stage = 0; stage < stages; stage++) {
+                uint32_t rcode[MT][2];
+                if constexpr (RREG) {
+                    #pragma unroll
+                    for (uint32_t m = 0; m < MT; m++) {
+                        #pragma unroll
+                        for (uint32_t side = 0; side < 2; side++) {
+                            uint32_t v[4];
+                            #pragma unroll
+                            for (uint32_t k = 0; k < 4; k++) {
+                                v[k] = __shfl_sync(0xffffffffu, rnext[m][side], (lane & ~3u) | k);
+                            }
+                            const uint32_t pick = q | (4u + q) << 4;
+                            rcode[m][side] = __byte_perm(__byte_perm(v[0], v[1], pick), __byte_perm(v[2], v[3], pick), 0x5410);
+                        }
+                    }
+                    if (stage + 1 < stages) { res_load(stage + 1); }
+                }
                 // Oldest group lands; the slot being refilled was read last stage.
                 asm volatile("cp.async.wait_group %0;" :: "n"(STAGES - 2) : "memory");
                 __syncthreads();
@@ -235,8 +274,10 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                         if constexpr (RES) {
                             // Lane q's residual codeword 4K+q of both rows, the same
                             // k order as the layer codeword: a second MMA adds it.
-                            const uint32_t ra = residual[lr[m][0] * GLMVQ_MMA8_RES + 4 * K + q];
-                            const uint32_t rb = residual[lr[m][1] * GLMVQ_MMA8_RES + 4 * K + q];
+                            const uint32_t ra = RREG ? (rcode[m][0] >> (8 * K)) & 255u
+                                : residual[lr[m][0] * GLMVQ_MMA8_RES + 4 * K + q];
+                            const uint32_t rb = RREG ? (rcode[m][1] >> (8 * K)) & 255u
+                                : residual[lr[m][1] * GLMVQ_MMA8_RES + 4 * K + q];
                             const uint2 da = *(const uint2 *)(memory + BOOK1 + ra * 8);
                             const uint2 db = *(const uint2 *)(memory + BOOK1 + rb * 8);
                             r[m][0] = da.x; r[m][1] = db.x; r[m][2] = da.y; r[m][3] = db.y;

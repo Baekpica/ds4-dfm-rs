@@ -609,15 +609,20 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
                 };
                 ctx->mma8 = fp8[0] == cudaSuccess && fp8[1] == cudaSuccess && fp8[2] == cudaSuccess;
                 ctx->mma8_tokens = wide ? GVQ_MMA8_TOKENS : GVQ_MMA_TOKENS;
-                const cudaError_t res[] = {
-                    glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true>(
-                        &ctx->mma8_res_blocks[0]),
-                    glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_UP, 13, GLMVQ_CLAMP_GATE, true>(
-                        &ctx->mma8_res_blocks[1]),
-                    glmvq_mma8_prepare<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true>(
-                        &ctx->mma8_res_blocks[2])
+                // R13+8 layers take the same item width (64: residual codes in
+                // registers; 32: staged in shared memory).
+                auto res8 = [&](auto tokens) {
+                    constexpr uint32_t BT = decltype(tokens)::value;
+                    return glmvq_mma8_prepare<GVQ_MMA_ROWS, BT, 1, GLMVQ_MMA_GATE, 13, GLMVQ_CLAMP_GATE, true>(
+                            &ctx->mma8_res_blocks[0]) == cudaSuccess &&
+                        glmvq_mma8_prepare<GVQ_MMA_ROWS, BT, 1, GLMVQ_MMA_UP, 13, GLMVQ_CLAMP_GATE, true>(
+                            &ctx->mma8_res_blocks[1]) == cudaSuccess &&
+                        glmvq_mma8_prepare<GVQ_MMA_ROWS, BT, 1, GLMVQ_MMA_DOWN, 13, GLMVQ_CLAMP_GATE, true>(
+                            &ctx->mma8_res_blocks[2]) == cudaSuccess;
                 };
-                ctx->mma8_res = ctx->mma8 && res[0] == cudaSuccess && res[1] == cudaSuccess && res[2] == cudaSuccess;
+                const bool res = wide ? res8(std::integral_constant<uint32_t, GVQ_MMA8_TOKENS>{})
+                                      : res8(std::integral_constant<uint32_t, GVQ_MMA_TOKENS>{});
+                ctx->mma8_res = ctx->mma8 && res;
                 if (ctx->mma8 && !ctx->mma8_res) { (void)cudaGetLastError(); }
                 if (!ctx->mma8) {
                     (void)cudaGetLastError();
@@ -1698,9 +1703,7 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     auto *order = (uint32_t *)cursor;
     ctx->items.clear();
     const uint8_t *res_book = gvq_res_book(ctx, matrices);
-    // R13+8 tiles stage 32 tokens beside both books (GB10 shared memory).
-    const uint32_t per_item = res_book ? (uint32_t)GVQ_MMA_TOKENS
-        : ctx->mma8 ? ctx->mma8_tokens : (uint32_t)GVQ_MMA_TOKENS;
+    const uint32_t per_item = ctx->mma8 ? ctx->mma8_tokens : (uint32_t)GVQ_MMA_TOKENS;
     for (uint32_t e = 0; e < GVQ_EXPERTS; e++) {
         for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += per_item) {
             ctx->items.push_back({{matrices[e], matrices[GVQ_EXPERTS + e], matrices[2 * GVQ_EXPERTS + e]},
@@ -1740,8 +1743,8 @@ static int gvq_mma_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
             constexpr glmvq_mma_stage MODE = decltype(mode)::value;
             constexpr uint32_t threads8 = glmvq_mma8_threads<GVQ_MMA_ROWS, 1>();
             if (res_book) {
-                constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 13, true>();
-                glmvq_mma8_kernel<GVQ_MMA_ROWS, GVQ_MMA_TOKENS, 1, MODE, 13, GLMVQ_CLAMP_GATE, true><<<
+                constexpr uint32_t shared8 = glmvq_mma8_bytes<GVQ_MMA_ROWS, BT, 13, true>();
+                glmvq_mma8_kernel<GVQ_MMA_ROWS, BT, 1, MODE, 13, GLMVQ_CLAMP_GATE, true><<<
                     min(nitems * (rows_out / GVQ_MMA_ROWS), (uint32_t)ctx->mma8_res_blocks[MODE]), threads8, shared8,
                     stream>>>(source, work, nitems, book, in, scale, grouped, GVQ_USED, (__nv_bfloat16 *)gate, mid,
                     (__nv_bfloat16 *)down, rows_out, cols_in, clamp, q8, q8_scale, res_book);
