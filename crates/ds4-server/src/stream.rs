@@ -135,6 +135,14 @@ pub fn utf8_trim_tail(s: &[u8]) -> &[u8] {
     &s[..n]
 }
 
+/// A buffered body as a string. Model text can hold a byte that starts no valid
+/// UTF-8 sequence mid-text (utf8_trim_tail drops only an incomplete tail); it
+/// becomes U+FFFD so the body stays valid JSON. The C reference writes the raw
+/// byte, which strict clients reject.
+fn utf8_body(b: Vec<u8>) -> String {
+    String::from_utf8(b).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
 pub fn append_json_object_or_empty(out: &mut Vec<u8>, json: &str) {
     let Some(args) = json_args_parse(json) else {
         out.extend_from_slice(b"{}");
@@ -2373,7 +2381,7 @@ pub fn final_response(
     b.extend_from_slice(openai_usage(r, prompt, completion).as_bytes());
     b.extend_from_slice(r.timings.json_suffix().as_bytes());
     b.extend_from_slice(b"}\n");
-    let body = String::from_utf8(b).expect("final_response utf8");
+    let body = utf8_body(b);
     http_response_bytes(200, Some("application/json"), None, cors, &body)
 }
 
@@ -2402,7 +2410,7 @@ pub fn anthropic_final_response(
     b.extend_from_slice(anthropic_usage(r, prompt, completion).as_bytes());
     b.extend_from_slice(r.timings.json_suffix().as_bytes());
     b.extend_from_slice(b"}\n");
-    let body = String::from_utf8(b).expect("anthropic_final utf8");
+    let body = utf8_body(b);
     http_response_bytes(200, Some("application/json"), None, cors, &body)
 }
 
@@ -2501,7 +2509,7 @@ pub fn responses_final_response(
     b.extend_from_slice(responses_usage(r, prompt, completion, reasoning_tokens).as_bytes());
     b.extend_from_slice(r.timings.json_suffix().as_bytes());
     b.push(b'}');
-    let body = String::from_utf8(b).expect("responses_final utf8");
+    let body = utf8_body(b);
     http_response_bytes(200, Some("application/json"), None, cors, &body)
 }
 
