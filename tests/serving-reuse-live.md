@@ -42,7 +42,7 @@ seeing output within a campaign.
 | `motif` | Motif-3 MQ87-88-FIT canonical GGUF | partial | off |
 | `naive` | Naive-N0.5-Flash MQ87 main plus any loaded DSpark sidecar | partial | off, or separately on with draft 1–6 |
 | `iquest` | IQuest-Q1 canonical six-shard mixed artifact with embedded recursive MTP | partial | off, or separately on with draft 2–7 |
-| `glm` | GLM-5.3 Flash Uncensored mixed artifact plus loaded Vision sidecar | partial | off, or separately on with draft 1–3 |
+| `glm` | GLM-5.3 Flash Uncensored mixed artifact plus loaded Vision sidecar, or its VQ release | partial | off, or separately on with draft 1–3 |
 | `deepseek` | exact Flash/PRO artifact; include any loaded MTP/DSpark sidecar | exact | explicitly off, or separately on with the declared draft |
 
 Provide the same verified artifact manifest to every phase. The runner records
@@ -95,7 +95,11 @@ frontier. This is reported as `partial`, including when native code copies
 that checkpoint to another bank.
 
 For GLM, use `--family glm` and `DS4_GLM53_BATCH_TRACE=1`. Keep SSD/cache/Vision
-settings identical across phases. Its canonical history can restore a partial
+settings identical across phases. The profile accepts both plan family names the
+family serves, `glm5-next` for the Flash plan and `GLM-5.3-Flash-VQ` for the VQ
+release (crates/ds4-core/src/serving.rs:1484-1485); both share the native
+`GLM-5.3` bank trace (ds4.c:65543, `ds4_model_is_glm` covers the VQ shell at
+ds4.c:1617). Its canonical history can restore a partial
 checkpoint after omitting the generation-only thinking close. Native trace
 must prove a copy to another bank with the source frontier preserved. These
 flags prepare a gate; completed live receipts establish qualification.

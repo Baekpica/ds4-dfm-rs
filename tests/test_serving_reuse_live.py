@@ -358,7 +358,10 @@ class ReuseRunnerTests(unittest.TestCase):
                 self.assertEqual(gate.native_forks(bad, 300, 2, "iquest"), [])
 
     def test_glm_partial_needs_native_fork(self):
-        self.assertEqual(gate.PROFILES["glm"]["names"], ["glm5-next"])
+        # Both GLM-5.3 shells the gate can meet: the Flash plan and the VQ
+        # release, which the artifact under qualification serves as
+        # "GLM-5.3-Flash-VQ" (crates/ds4-core/src/serving.rs:1485).
+        self.assertEqual(gate.PROFILES["glm"]["names"], ["glm5-next", "GLM-5.3-Flash-VQ"])
         line = ("ds4: GLM-5.3 bank reuse source=0 target=1 cached=300 partial=1 "
                 "source_before=320 source_after=320 target_after=300")
         events = gate.native_forks(line, 300, 2, "glm")
@@ -498,6 +501,28 @@ class ReuseRunnerTests(unittest.TestCase):
         errors = gate.plan_errors(config, "warm", plan)
         self.assertTrue(any("sched_chunk:" in error for error in errors), errors)
         self.assertTrue(any("sched_chunk_live:" in error for error in errors), errors)
+
+    def test_glm_vq_plan_passes_the_family_check(self):
+        # The VQ artifact serves its plan as "GLM-5.3-Flash-VQ", not as the
+        # Flash plan name (crates/ds4-core/src/serving.rs:1485; live
+        # /v1/stats serving.family on the Spark, 2026-10-18).
+        config = self.config("glm")
+        plan = {"family": "GLM-5.3-Flash-VQ", "requested": {
+                    "lane": "auto", "mtp_mode": "off", "prefix_reuse": "partial",
+                    "ctx": 2048, "max_seqs": "2", "backend": "cuda"},
+                "effective": {"ctx": 2048, "max_seqs": 2, "native_chunk": 64,
+                              "sched_chunk": 64, "sched_chunk_live": 64,
+                              "mtp_mode": "off", "mtp_draft": None,
+                              "prefix_reuse": "partial", "disk": True,
+                              "bank_persist_min_tokens": 1, "disk_min_tokens": 1},
+                "issues": []}
+        self.assertEqual(gate.plan_errors(config, "warm", plan), [])
+        flash = dict(plan, family="glm5-next")
+        self.assertEqual(gate.plan_errors(config, "warm", flash), [])
+        for family in ("GLM-5.3", "GLM-5.3-Flash-VQ-v2"):
+            with self.subTest(family=family):
+                errors = gate.plan_errors(config, "warm", dict(plan, family=family))
+                self.assertTrue(any(error.startswith("family:") for error in errors), errors)
 
     def test_all_four_phases_preserve_fixture_and_compare(self):
         self.run_four_phases(fork_on_append=True)
