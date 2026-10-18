@@ -448,6 +448,10 @@ static bool l31_range_attn(ds4_ling31_graph *g, uint32_t rows, uint32_t pos, uin
  * cache becomes per-head BF16 K (192) / V (128), the range kernel attends
  * it and segments merge through their log-sum-exp. Prefix segments end at
  * pos so every segment starts at or before the first query. */
+// FP8 segments dequantize into q_abs: 64 rows x 64 heads x 512 F32 (8 MiB)
+// hold the largest segment's BF16 latent rows (4,096 x 1 KiB).
+_Static_assert((uint64_t)L31_MLA_EXPAND_MIN * L31_LATENT * sizeof(float) >=
+               (uint64_t)L31_PREFILL_MAX * L31_KV_LORA * sizeof(uint16_t), "q_abs holds an FP8 segment");
 static bool l31_mla_expanded(ds4_ling31_graph *g, uint32_t il, uint32_t rows, uint32_t pos, float scale) {
     const uint32_t end = pos + rows;
     ds4_l31_segment segment = DS4_L31_SEGMENT_FIRST;
@@ -474,7 +478,10 @@ static bool l31_mla_absorbed(ds4_ling31_graph *g, uint32_t il, uint32_t rows, ui
         return ds4_gpu_l31_value(g->heads, g->latent_out, g->v_b[il], rows);
     }
     // FP8 rows take the tensor-core kernel at every width below 64.
-    if (g->latent_mode == DS4_L31_LATENT_FP8) { return false; }
+    if (g->latent_mode == DS4_L31_LATENT_FP8) {
+        fprintf(stderr, "ds4: Ling-3.1 FP8 latent attention failed (%u rows at %u): no FP32 fallback\n", rows, pos);
+        return false;
+    }
     // MTP verify widths below the tensor-core kernel's 8 rows would take
     // Motif's general kernel (1.4 ms per call against 80 us for the split
     // decode kernel): attend each row at its own position, as decode does.
