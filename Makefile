@@ -2085,7 +2085,7 @@ tests/test_ling31_residual: tests/test_ling31_residual.cu cuda/l31_residual.cuh 
 test-ling31-residual: tests/test_ling31_residual
 	./tests/test_ling31_residual
 
-tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
+tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/l31_latent.cuh ds4_ling31.h cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -Xptxas -v -o $@ $< 2> $@.ptxas || { cat $@.ptxas >&2; exit 1; }
 	@grep -A1 "l31_fa_kernel" $@.ptxas | grep -E "registers|spill" || true
 

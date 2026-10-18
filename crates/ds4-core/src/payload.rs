@@ -35,6 +35,7 @@ const LAYOUT_GLM_MTP_EXPANDED: u32 = u32::from_le_bytes(*b"GEM5");
 const LAYOUT_GLM_VQ: u32 = u32::from_le_bytes(*b"GVQ1");
 const LAYOUT_GLM_VQ_MTP: u32 = u32::from_le_bytes(*b"GVM1");
 const LAYOUT_LING31: u32 = u32::from_le_bytes(*b"LG31");
+const LAYOUT_LING31_FP8: u32 = u32::from_le_bytes(*b"LG3F");
 const GLMVQ_DENSE_KEYS: u32 = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,7 +76,7 @@ impl PayloadLayout {
             | LAYOUT_GLM_MTP_COMPACT
             | LAYOUT_GLM_MTP_EXPANDED => Self::Glm53,
             LAYOUT_GLM_VQ | LAYOUT_GLM_VQ_MTP => Self::Glm53Vq,
-            LAYOUT_LING31 => Self::Ling31Vq,
+            LAYOUT_LING31 | LAYOUT_LING31_FP8 => Self::Ling31Vq,
             _ => Self::DeepSeek,
         }
     }
@@ -795,6 +796,14 @@ mod tests {
         let mut bad = prefix.clone();
         bad.fields[12] = 2;
         assert!(read(&bad, ModelFamily::Ling31Vq, 262144).is_err());
+        // FP8 latent rows carry their own tag.
+        let mut fp8 = prefix.clone();
+        fp8.fields[5] = u32::from_le_bytes(*b"LG3F");
+        assert_eq!(fp8.layout().family(), ModelFamily::Ling31Vq);
+        assert_eq!(
+            read(&fp8, ModelFamily::Ling31Vq, 3).unwrap().tokens,
+            vec![7, 8, 9]
+        );
     }
 
     #[test]

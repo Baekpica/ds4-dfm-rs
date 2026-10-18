@@ -84,6 +84,10 @@ const GLM_NATIVE_MAX: u32 = 2048;
 const GLMVQ_NATIVE_DEFAULT: u32 = 4096;
 const GLMVQ_NATIVE_MAX: u32 = 4096;
 const LING31_PREFILL_CHUNK_ENV: &str = "DS4_LING31_PREFILL_CHUNK";
+const LING31_LATENT_ENV: &str = "DS4_LING31_LATENT";
+const LING31_FLASH_ENV: &str = "DS4_LING31_FLASH";
+// FP8 latent caches round their per-row exponents up to 32 rows.
+const LING31_EXP_ALIGN: u64 = 32;
 const LING31_NATIVE_DEFAULT: u32 = 2048;
 const LING31_NATIVE_MAX: u32 = 4096;
 // Halving floor when the quote does not fit: 512 rows keep 0.35 GiB of
@@ -342,10 +346,7 @@ pub fn fill_quote_facts(
             let state = ling31_state_bytes(s);
             let mla = u64::from(s.n_full_attn_count) + u64::from(drafts > 0);
             let logits = u64::from(s.n_vocab) * SIZEOF_F32;
-            let bank = state
-                + mla * ctx * u64::from(s.n_head_dim) * SIZEOF_U16
-                + logits
-                + ctx * SIZEOF_I32;
+            let bank = state + mla * ling31_latent_bytes(s, ctx) + logits + ctx * SIZEOF_I32;
             let scratch = ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s);
             let mtp = if drafts > 0 {
                 drafts * state
@@ -2471,6 +2472,26 @@ fn ling31_state_bytes(s: Shape) -> u64 {
     ling31_kda_layers(s) * tile + u64::from(s.n_embd) * SIZEOF_F32
 }
 
+// C ling31_latent_mode: FP8 latent rows unless DS4_LING31_LATENT=bf16|sim or
+// DS4_LING31_FLASH=0 (Motif's kernels) keep BF16 ones.
+fn ling31_latent_fp8() -> bool {
+    let latent = std::env::var(LING31_LATENT_ENV).ok();
+    !matches!(latent.as_deref(), Some("bf16" | "sim"))
+        && std::env::var(LING31_FLASH_ENV).ok().as_deref() != Some("0")
+}
+
+// C ling31_latent_bytes: one MLA layer's rows. FP8: 512 E4M3 bytes and an
+// exponent per row; BF16: 512 values. Rope keys stay BF16 either way.
+fn ling31_latent_bytes(s: Shape, ctx: u64) -> u64 {
+    let lora = u64::from(s.n_kv_lora);
+    let latent = if ling31_latent_fp8() {
+        ctx * lora + ctx.div_ceil(LING31_EXP_ALIGN) * LING31_EXP_ALIGN
+    } else {
+        ctx * lora * SIZEOF_U16
+    };
+    latent + ctx * u64::from(s.n_rot) * SIZEOF_U16
+}
+
 // 72 trunk blocks: 9 MLA at (il + 1) % 8 == 0, the rest KDA.
 fn ling31_kda_layers(s: Shape) -> u64 {
     u64::from(s.n_layer - s.n_nextn_predict - s.n_full_attn_count)
@@ -3052,6 +3073,8 @@ mod tests {
     fn ling31_quote_matches_the_native_graph() {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
+        let _latent = EnvGuard::unset(LING31_LATENT_ENV);
+        let _flash = EnvGuard::unset(LING31_FLASH_ENV);
         // Native graph logs: workspace GiB per prefill chunk, state and
         // control MiB.
         let s = SHAPE_LING31_VQ;
@@ -3087,7 +3110,9 @@ mod tests {
             },
         );
         let state = ling31_state_bytes(s);
-        let latent = 32768 * 576 * SIZEOF_U16;
+        // FP8 rows: 512 E4M3 bytes, one exponent, 64 BF16 rope values.
+        let latent = 32768 * (512 + 1 + 128);
+        assert_eq!(ling31_latent_bytes(s, 32768), latent);
         let host = 157_184 * SIZEOF_F32 + 32768 * SIZEOF_I32;
         assert_eq!(facts.native_chunk, Some(2048));
         assert_eq!(facts.per_bank_bytes, Some(state + 10 * latent + host));
@@ -3103,19 +3128,45 @@ mod tests {
     }
 
     #[test]
+    fn ling31_latent_follows_the_native_switches() {
+        let _env = lock_test_env();
+        let s = SHAPE_LING31_VQ;
+        let _flash = EnvGuard::unset(LING31_FLASH_ENV);
+        for (value, row) in [
+            (None, 641),
+            (Some("fp8"), 641),
+            (Some("bf16"), 1152),
+            (Some("sim"), 1152),
+        ] {
+            let _latent = match value {
+                Some(v) => EnvGuard::set(LING31_LATENT_ENV, v),
+                None => EnvGuard::unset(LING31_LATENT_ENV),
+            };
+            assert_eq!(ling31_latent_bytes(s, 1024), 1024 * row, "{value:?}");
+        }
+        // Exponents round up to 32 rows; Motif's kernels read BF16 only.
+        let _latent = EnvGuard::unset(LING31_LATENT_ENV);
+        assert_eq!(ling31_latent_bytes(s, 1000), 1000 * 640 + 1024);
+        let _motif = EnvGuard::set(LING31_FLASH_ENV, "0");
+        assert_eq!(ling31_latent_bytes(s, 1000), 1000 * 1152);
+    }
+
+    #[test]
     fn ling31_halves_rows_before_the_native_context() {
         let _env = lock_test_env();
         // Start from 2,048 rows; the 262K default is already 512.
         let _rows = EnvGuard::set(LING31_PREFILL_CHUNK_ENV, "2048");
         let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
         let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        let _latent = EnvGuard::unset(LING31_LATENT_ENV);
+        let _flash = EnvGuard::unset(LING31_FLASH_ENV);
         // One 262,144-token bank beside the trunk: 2,048-row workspace does
         // not fit the floor, 1,024 rows do; banks drop before rows.
         let s = SHAPE_LING31_VQ;
         let ctx = 262_144u64;
         let weights = 108 * GIB;
         let bank = ling31_state_bytes(s)
-            + 9 * ctx * u64::from(s.n_head_dim) * SIZEOF_U16
+            + 9 * ling31_latent_bytes(s, ctx)
             + u64::from(s.n_vocab) * SIZEOF_F32
             + ctx * SIZEOF_I32;
         let fixed = ling31_control_bytes(s) + 4 * GIB + (LING31_FIT_BURST_MB + 64) * MIB;

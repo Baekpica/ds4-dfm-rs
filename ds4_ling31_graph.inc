@@ -21,8 +21,9 @@ typedef struct {
      * BF16 q/k/v prefill rows (DS4_LING31_QKV_BF16=0 keeps them F32), the
      * tensor-core decode/verify attention (DS4_LING31_FLASH=0: Motif's) and
      * the pipelined prefill range attention (DS4_LING31_FA_PIPE=0: Ling-3.0's,
-     * bit-identical). */
+     * bit-identical). Latent rows are FP8 (ling31_latent_mode). */
     bool fused, qkv_bf16, flash, pipe;
+    ds4_l31_latent latent_mode;
     uint64_t workspace_bytes, state_bytes, control_bytes, kv_bytes;
 #define L31_FIELD(field, cols, type) ds4_gpu_tensor *field;
     L31_ROW_BUFFERS(L31_FIELD)
@@ -154,6 +155,17 @@ static bool ling31_graph_controls(ds4_ling31_graph *g, const ds4_model *m, const
     return cursor <= g->control_bytes;
 }
 
+// FP8 caches start with finite (zero) row exponents: the flash kernel reads
+// those of masked rows past the live keys.
+static bool ling31_latent_zero_exps(const ds4_ling31_graph *g, ds4_gpu_tensor *latent) {
+    if (g->latent_mode != DS4_L31_LATENT_FP8) { return true; }
+    const uint64_t at = (uint64_t)g->ctx_cap * L31_KV_LORA;
+    ds4_gpu_tensor *exps = ds4_gpu_tensor_view(latent, at, ds4_gpu_tensor_bytes(latent) - at);
+    const bool ok = exps && ds4_gpu_tensor_fill_f32(exps, 0.0f, ds4_gpu_tensor_bytes(exps) / sizeof(float));
+    ds4_gpu_tensor_free(exps);
+    return ok;
+}
+
 static bool ling31_graph_state(ds4_ling31_graph *g, uint32_t layers) {
     g->state_bytes = ling31_state_bytes();
     g->state_pool = ds4_gpu_tensor_alloc(g->state_bytes);
@@ -172,9 +184,9 @@ static bool ling31_graph_state(ds4_ling31_graph *g, uint32_t layers) {
         cursor != g->state_bytes) { return false; }
     for (uint32_t il = 0; il < layers; il++) {
         if (!ds4_ling31_layer_is_mla(il)) { continue; }
-        g->latent[il] = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * L31_KV_LORA * sizeof(uint16_t));
+        g->latent[il] = ds4_gpu_tensor_alloc(ds4_l31_latent_bytes(g->ctx_cap, g->latent_mode));
         g->k_pe[il] = ds4_gpu_tensor_alloc((uint64_t)g->ctx_cap * L31_ROPE * sizeof(uint16_t));
-        if (!g->latent[il] || !g->k_pe[il]) { return false; }
+        if (!g->latent[il] || !g->k_pe[il] || !ling31_latent_zero_exps(g, g->latent[il])) { return false; }
         g->kv_bytes += ling31_latent_bytes(g->ctx_cap);
     }
     return true;
@@ -208,6 +220,7 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
         (drafts && !ling31_has_mtp(m))) { return false; }
     g->ctx_cap = ctx;
     g->row_cap = cap;
+    g->latent_mode = ling31_latent_mode();
     const uint32_t layers = drafts ? LING31_LAYERS + 1u : LING31_LAYERS;
     g->gvq = ds4_gpu_gvq_create_linear(w->glmvq_gpu, ling31_gvq_scratch(cap), cap);
     g->moe = g->gvq ? ds4_gpu_l31_moe_create(g->gvq, cap) : NULL;
@@ -436,7 +449,7 @@ static bool l31_mla_expanded(ds4_ling31_graph *g, uint32_t il, uint32_t rows, ui
         const uint32_t limit = seg0 < pos ? pos : end;
         const uint32_t len = limit - seg0 < g->row_cap ? limit - seg0 : g->row_cap;
         if (!ds4_gpu_l31_expand(g->k_full, g->value, g->latent[il], g->k_pe[il], g->k_b[il], g->v_b[il],
-                seg0, len) ||
+                seg0, len, g->ctx_cap, g->latent_mode, g->q_abs) ||
             !l31_range_attn(g, rows, pos, len, seg0, scale, segment)) { return false; }
         segment = DS4_L31_SEGMENT_MERGE;
         seg0 += len;
@@ -451,9 +464,11 @@ static bool l31_mla_absorbed(ds4_ling31_graph *g, uint32_t il, uint32_t rows, ui
     // Decode and verify rows stream every latent key once on tensor cores:
     // 64K keys 1.7 ms -> 0.33 ms per layer against Motif's FP32 kernel.
     if (g->flash && ds4_gpu_l31_flash(g->gvq, g->latent_out, g->q, g->q_abs, g->latent[il], g->k_pe[il],
-            rows, pos, scale)) {
+            rows, pos, scale, g->ctx_cap, g->latent_mode)) {
         return ds4_gpu_l31_value(g->heads, g->latent_out, g->v_b[il], rows);
     }
+    // FP8 rows take the tensor-core kernel at every width below 64.
+    if (g->latent_mode == DS4_L31_LATENT_FP8) { return false; }
     // MTP verify widths below the tensor-core kernel's 8 rows would take
     // Motif's general kernel (1.4 ms per call against 80 us for the split
     // decode kernel): attend each row at its own position, as decode does.
@@ -489,8 +504,8 @@ static bool l31_mla(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
         !ds4_gpu_ling3vl_mrope(g->kv_raw, g->positions, g->inv_freq, rows, 1u, L31_KV_ROW,
             L31_KV_LORA, L31_ROPE, L31_ROPE / 2u, 0u, 1.0f) ||
         !ds4_gpu_l31_latent_norm(g->kv_norm, g->kv_raw, g->kv_norm_w[il], rows, DS4_RMS_EPS) ||
-        !ds4_gpu_ling3vl_store_latent(g->latent[il], g->k_pe[il], g->kv_norm, g->kv_raw, rows, pos,
-            g->ctx_cap, L31_KV_ROW, L31_KV_LORA, L31_ROPE)) { return false; }
+        !ds4_gpu_l31_store_latent(g->latent[il], g->k_pe[il], g->kv_norm, g->kv_raw, rows, pos,
+            g->ctx_cap, g->latent_mode)) { return false; }
     const bool attended = rows >= L31_MLA_EXPAND_MIN
         ? l31_mla_expanded(g, il, rows, pos, scale) : l31_mla_absorbed(g, il, rows, pos, scale);
     // head_wise gate: one sigmoid per head on its 128 values, then dense.

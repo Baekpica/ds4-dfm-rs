@@ -55,16 +55,25 @@ static int ling31_ckpt_find(ds4_ling31_batch_runtime *rt, uint32_t bank, uint32_
     return best;
 }
 
+// Rows [0, n) of one layer's latent cache (FP8: bytes and row exponents)
+// and rope keys; every graph shares ctx_cap and the latent layout.
+static bool ling31_latent_rows(ds4_ling31_graph *dst, uint32_t dl, const ds4_ling31_graph *src,
+        uint32_t sl, uint32_t n) {
+    const bool fp8 = dst->latent_mode == DS4_L31_LATENT_FP8;
+    const uint64_t row = fp8 ? L31_KV_LORA : L31_KV_LORA * sizeof(uint16_t);
+    const uint64_t exps = (uint64_t)dst->ctx_cap * L31_KV_LORA;
+    return ds4_gpu_tensor_copy(dst->latent[dl], 0, src->latent[sl], 0, (uint64_t)n * row) &&
+        (!fp8 || ds4_gpu_tensor_copy(dst->latent[dl], exps, src->latent[sl], exps, n)) &&
+        ds4_gpu_tensor_copy(dst->k_pe[dl], 0, src->k_pe[sl], 0, (uint64_t)n * L31_ROPE * sizeof(uint16_t));
+}
+
 // Latent rows [0, rows) of every MLA layer (the draft layer's [0, rows-1)).
 static bool ling31_latent_copy(ds4_ling31_graph *dst, const ds4_ling31_graph *src, uint32_t rows) {
     const uint32_t layers = dst->mtp_drafts ? LING31_LAYERS + 1u : LING31_LAYERS;
     for (uint32_t il = 0; il < layers; il++) {
         if (!ds4_ling31_layer_is_mla(il)) { continue; }
         const uint32_t n = il == LING31_MTP ? (rows ? rows - 1u : 0u) : rows;
-        if (n && (!ds4_gpu_tensor_copy(dst->latent[il], 0, src->latent[il], 0,
-                      (uint64_t)n * L31_KV_LORA * sizeof(uint16_t)) ||
-                  !ds4_gpu_tensor_copy(dst->k_pe[il], 0, src->k_pe[il], 0,
-                      (uint64_t)n * L31_ROPE * sizeof(uint16_t)))) { return false; }
+        if (n && !ling31_latent_rows(dst, il, src, il, n)) { return false; }
     }
     return true;
 }
