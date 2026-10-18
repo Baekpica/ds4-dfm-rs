@@ -119,7 +119,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   [workspace allocation assessment](glm53-vq-work-arena-2026-10-16.md),
   [warm-path suite: the served turn's own cost, October 17](benchmarks/glm53-warmpath-2026-10-17/README.md),
   [the artifact's own values, October 17](glm53-values-2026-10-17.md),
-  [the serial lane's penalty face, October 18](glm53-vq-serial-penalty-2026-10-18.md).
+  [the serial lane's penalty face, October 18](glm53-vq-serial-penalty-2026-10-18.md),
+  [why prefix reuse never fires, October 18](glm53-vq-warm-path-2026-10-18.md).
 - **dots3:** [September 6 optimization](dots3-optimization-2026-09-06.md).
 - **K2:** [September 5](k2-optimization-2026-09-05.md),
   [continuation campaign](k2-optimization-2026-09-05-cont.md).
