@@ -106,22 +106,33 @@ bits per weight = 13/8 + 8/8 = 2.625
 - **Layer choice.** Measured end to end: upgrading one layer at a time
   (others R13) and measuring held-out KL against the original model ranks
   the bottom layers first (5: 0.066, 8, 6, 14, 3, then 11, 9, 15, 10, 16,
-  7, 4, 12, 13), so the release upgrades layers 3-16. A local routed-FFN
+  7, 4, 12, 13), then 17, 41, 44, 27 and 22 (0.021–0.011). The release
+  upgrades these 19 layers (77% of the summed single-layer gains); the
+  previous revision (tag `r13p8-l3-16`) upgraded 3–16. A local routed-FFN
   screen normalized by each layer's FFN output energy chose 4, 5, 9 and
   25-40 instead and lost end to end (KL 0.498 vs 0.390-0.437 for
   bottom-heavy choices): FFN output energy spans three orders of magnitude
   across layers, so normalized local error does not rank layer impact.
-- **Memory.** Fourteen R13+8 layers add 0.844 GiB each (11.8 GiB). At the
+- **Memory.** Nineteen R13+8 layers add 0.844 GiB each (16.0 GiB). At the
   native 1M context with two MTP drafts `ds4-server --check-config` quotes
-  112.0 GiB (weights 83.8, bank 12.8, scratch 10.7, MTP 0.7, floor 4) of
-  118.7 GiB available on GB10: one 1M bank (the R13 release fits two).
-- **Measured on GB10.** `tests/glm_vq_quality` (6 cases, 106 target
-  tokens): mean target NLL 0.313 → 0.285, and the Korean summary R13 garbles
-  is answered; fast path vs `DS4_GLMVQ_DECODE=0 DS4_GLMVQ_MMA=0` KL 0.0038
-  (R13: 0.0035). Greedy "대한민국의 수도는…" loops under R13 (a repeated
-  clause with `--think`; English reasoning, then "Namwon…" repetition with
-  `--nothink`) and ends normally under R13+8 in both modes. Speed: 1,113.7 /
-  31.81 vs R13 1,175.4 / 35.00 in the
+  116.2 GiB (weights 88.0, bank 12.8, scratch 10.7, MTP 0.7, floor 4) of
+  118.3 GiB available on GB10: one 1M bank with 4,096-row prefill chunks
+  (the R13 release fits two). The five layers added to 3–16 were sized to
+  keep those chunks.
+- **Measured on GB10, 19 vs 14 layers.** Same binary: teacher-forced
+  held-out PPL 4.042 → 3.895, lower on all six cases of the model card's
+  set (5,089 targets); served answers to a long English context with a
+  short Korean question loop on 0 of 10 seeds instead of 4; fast path vs
+  `DS4_GLMVQ_DECODE=0 DS4_GLMVQ_MMA=0` KL 0.0035. Speed: 1,101.3 / 30.93
+  vs 1,119.6 / 32.02 in the
+  [2K–64K MTP 2 sweep](benchmarks/glm53-vq-spark-64k-19-layers-2026-10-19/README.md).
+- **Measured on GB10, layers 3–16 vs R13.** `tests/glm_vq_quality` (6 cases,
+  106 target tokens): mean target NLL 0.313 → 0.285, and the Korean summary
+  R13 garbles is answered; fast path vs `DS4_GLMVQ_DECODE=0
+  DS4_GLMVQ_MMA=0` KL 0.0038 (R13: 0.0035). Greedy "대한민국의 수도는…"
+  loops under R13 (a repeated clause with `--think`; English reasoning, then
+  "Namwon…" repetition with `--nothink`) and ends normally under R13+8 in
+  both modes. Speed: 1,113.7 / 31.81 vs R13 1,175.4 / 35.00 in the
   [2K–64K MTP 2 sweep](benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/README.md).
 
 ## Execution on GB10

@@ -1,0 +1,67 @@
+{
+ "command": [
+  "python3",
+  "tools/host_memory_guard.py",
+  "--max-gib",
+  "112",
+  "--high-gib",
+  "110",
+  "--reserve-gib",
+  "4",
+  "--timeout",
+  "3600",
+  "--psi-full-limit",
+  "0",
+  "--log",
+  "memory.jsonl",
+  "--",
+  "ds4-bench-perf",
+  "--cuda",
+  "-m",
+  "/home/sunghoon/workspace/ds4-exaone/models/.glm-vq-r13p8-l3-16",
+  "--prompt-file",
+  "speed-bench/promessi_sposi.txt",
+  "--threads",
+  "8",
+  "--csv",
+  "bench.csv",
+  "--ctx-start",
+  "2048",
+  "--ctx-max",
+  "65536",
+  "--step-incr",
+  "2048",
+  "--gen-tokens",
+  "128",
+  "--mtp-draft",
+  "2",
+  "--mtp-margin",
+  "0"
+ ],
+ "head": "94d776ace4a8fc7b09230f83152606adb6a7e150",
+ "binary_sha256": "41c04dab766680db1e8e5bd1ea22df3c6b7bd8d9fc202779732b1764f0b5eb54",
+ "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+ "sampling": "forced non-EOS greedy",
+ "clock_policy_mhz": [
+  300,
+  2200
+ ],
+ "model": "/home/sunghoon/workspace/ds4-exaone/models/.glm-vq-r13p8-l3-16",
+ "manifest_sha256": "fba93aedb84811824fb41120f8302f84485da6d44a8c1cd4f25baa67cec58db3",
+ "environment": {
+  "DS4_GLMVQ_MTP": "1"
+ },
+ "frontiers": [
+  2048,
+  65536,
+  2048
+ ],
+ "gen": 128,
+ "mtp_draft": 2,
+ "exit_code": 0,
+ "wall_seconds": 241.928703731,
+ "busy_sm_mhz": [
+  2177,
+  2184
+ ]
+}

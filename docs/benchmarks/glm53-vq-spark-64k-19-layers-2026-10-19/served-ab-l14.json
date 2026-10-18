@@ -1,0 +1,102 @@
+[
+ {
+  "seed": 11,
+  "finish": "length",
+  "tokens": 1500,
+  "prompt_tokens": 16985,
+  "glitches": [
+   "또eskill",
+   "또kill",
+   "또kill",
+   "또kill",
+   "또kill",
+   "또kill",
+   "또kill",
+   "또kill",
+   "또kill"
+  ],
+  "content": "## 최적화 커밋의 머지 전 필수 조건 (5 bullets)\n\n**1. 정확성 증명(수정 증명)을 커밋에 포함할 것** — CUDA 규칙에 명시: \"Optimization commits land with a correctness proof AND a speed proof. The proof harness records both.\" \"Skipping the correctness proof on the grounds that 'we already had it before' is how the pos0 regression slipped past three previous commits\" — 즉, 기존 증명만으로는 충분하지 않음. 수정 증명은 포지션(pos0), KV, logits 등의 정확성을 검증해야 함.\n\n**2. 속도 증명(속도 증명)을 커밋에 포함할 것** — 같은 규칙: proof harness가 정확성과 속도 모두 기록 (`tests/ds4_proof.py --scenario ...`). 속도 증명은 측정된 벤치마크 (fresh process, comparable workload, prefill/decode 분리)를 포함해야 함.\n\n**3. 측정 전 기준(baseline)과 비교 가능한 조건을 확립할 것** — Inference Performance Optimization Guidelines: \"Measure the complete representative workload... establish wall time and separate prefill/decode costs\", \"Compare optimization off/on under matched conditions using fresh processes and correctness checks\", \"Benchmark with fresh processes and comparable workloads\" — 즉, 최적화 전/후 fresh process를 동일한 workload, backend, context, output length, memory policy, cache state, clock 조건으로 비교해야 함.\n\n**4. 전체 워크로드에 대한 end-to-end 검증을 수행할 것** — Guidelines: \"Measure both the target and end-to-end prefill/decode performance; adopt only a reproducible useful gain without unacceptable correctness or performance regressions\", \"Verify that improving prefill does not regress decode, and vice versa\", \"After either adoption or rejection, restart whole-workload measurement on the retained baseline, identify its current bottleneck, and narrow detailed profiling again before choosing the next change\" — 즉, 커널 단위 개선만으로는 충분하지 않음; 전체 prefill/decode end-to-end를 측정하고, 다른 측면(regime)에 대한 회귀 없음을 확인해야 함.\n\n**5. 수치적 계약(numerical contract)을 명시하고 검증할 것** — Guidelines: \"implement a scoped change with an explicit numerical contract\", \"Preserve or explicitly define the numerical contract\", \"Add focused parity or regression tests\", \"Keep a fallback or kill switch for new execution paths where practical\" — 즉, 최적화는 수치적 계약 (bit identity 또는 fixed relative-RMS threshold 등)을 명시하고, 검증 가능한 parity/regression 테스트를 포함해야 함; 새로운 실행 경로에는 fallback 또는 kill switch를 포함해야 함.\n\n(참고: 커밋 이전의 증명은 커밋에 포함되어야 함 — 즉 커밋을 만들어 머지를 요청할 때 증명이 커밋에 포함되어야 함. GLM VQ의 수치적 계약 표는 각 최적화에 대해 \"Frontier logits / 128 greedy ids\" 결과를 기록한 예시를 제공함.)\n\n---\n\n**Note**: 위 bullets는 규칙에 명시된 문구를 직접 반영함. 특히 rule #1 (pos0 regression precedent)은 커밋 이전에 증명이 \"already had it before\"이라는 논거로 skip 하면 안 됨을 강조. Rule #4는 \"restart whole-workload measurement\"를 요구: 채택/거절 후 기준 baseline을 재측정하고 다음 변경을 선택하기 전에 bottleneck을 재확인해야 함. Rule #5는 수치적 계약을 명시하고 검증 가능한 parity/regression 테스트를 포함해야 함; 새로운 실행 경에는 fallback 또는 kill switch를 포함해야 함.\n\n(추가: rule #2 (proof harness)는 \"record both\"를 요구: 정확성과 속도 모두 기록. Rule #3은 \"fresh processes and comparable workloads\"를 요구: 채택/거절 후 기준 baseline을 재측정하고 다음 변경을 선택하기 전에 bottleneck을 재확인해야 함.)\n\n(추가: rule #6는 \"fallback or kill switch\"를 요구: 새로운 실행 경에는 fallback 또는 kill switch를 포함해야 함.)\n\n(추가: rule #7은 \"fallback or kill switch\"를 \"Keep a fallback or kill switch for new execution paths where practical\"을 요구: 새로운 실행 경에는 fallback 또eskill switch를 포함해야 함.)\n\n(추a: rule #7은 \"fallback or kill switch\"를 \"Keep a fallback or kill switch for a new execution path where practical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를 포함해야 함.)\n\n(추a: rule #7은 \"fallback or kill switch\"를 \"Keep a fallback or kill switch for new execution paths where practical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를 포함해야 함.)\n\n(추a: rule #7은 \"fallback or kill switch\"를 \"Keep a fallback or kill switch for new execution paths where practical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를 포함해야 함.)\n\n(추a: rule \"fallback or kill switch\"를 \"Keep a fallback or kill switch for a new execution path where practical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를 포함해야 함.)\n\n(추a: rule #7은 \"fallback or kill switch\"를 \"Keep a fallback or kill switch for new execution paths where pactical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를 포함해야 함.)\n\n(추a: rule #7은 \"fallback or kill switch\"를 \"Keep a fallback or kill switch for new execution paths where practical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를 포함해야 함.)\n\n(추a: rule #7은 \"fallback or kill switch\"를 \"Keep a fallback or kill switch for new execution paths where practical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를 포함해야 함.)\n\n(추a: rule #7은 \"fallback or execution paths where practical\"을 요구: 새로운 실행 경에는 fallback 또kill switch를",
+  "reasoning": ""
+ },
+ {
+  "seed": 22,
+  "finish": "length",
+  "tokens": 1500,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "**머지 전 최적화 커밋에 반드시 필요한 것**\n\n- 정확성 증명: CUDA 규정상 올바른 증명 **AND** 속도 증명은 하나의 증명 세트(`tests/ds4_proof.py --scenario …`)에 함께 기록되어야 하며, 이미 존재하는 증명을 \"그 증명을 이미 보유\"라고 단일 언급으로 정확성 증명을 건너뛰어서는 안 됩니다.\n- 속도 증명은 새로운 방식의 fresh-process A/B 비교를 포함해야 하며, 전체 워크로드(콜드 및 재사용 프로토콜 모두)에 대한 전체 전체 모델 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코딩 퍼프/디코",
+  "reasoning": ""
+ },
+ {
+  "seed": 33,
+  "finish": "stop",
+  "tokens": 362,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "- 정확성 증명(CUDA)과 속도 증명 둘 다 포함해야 한다: 증명 harness가 두 가지를 기록하며, \"이전에 이미 증명했으니 생략 가능\"이라는 이유로 정확성 증명을 생략하는 것은 pos0 회귀가 3개의 커밋을 통과한 바로 그 방식이다.\n- 새 실행 경로는 fallback 또는 kill switch를 가급적 유지해야 한다.\n- 정확성이 속도보다 우선: 명시적으로 설명 없이 정확성/KV/pos/토큰 불일치를 유지하는 빠른 경로를 두지 않는다.\n- A/B는 fresh process와 동일 조건(모델, prompt, backend, context/output 길이, memory policy, owner, cache state, clock)으로 비교하며, prefill과 decode을 별도로 보고; prefill 개선이 decode을 회귀시키지 않는지(그리고 역방향도) 확인한다.\n- 정확성/속도 증명 + 실측 + 기록: 매 최적화는 병목 지점과 end-to-end 기여를 기록하고, 기존 경로가 비효율인 이유를 기술하고, numerical contract을 명시하고, focused parity/regression test을 추가하고, fresh process bench와 전체 workload를 보고한다.</think>",
+  "reasoning": "Question: what must an optimization commit have before merge, per the rules."
+ },
+ {
+  "seed": 44,
+  "finish": "length",
+  "tokens": 1500,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "- 올바른 증명과 속도 증명이 모두 함께 기록되어야 한다(`tests/ds4_proof.py --scenario ...`에 두 증명이 동시에 기록). \"이전에 이미 증명했으므로 생략\"은 pos0 회귀가 3 커밋을 통과한 방식이므로 허용되지 않는다.\n- 올바른 증명은 전체-vocabulary logits, greedy token 및 관련 상태/올바른성 gate를 포함해야 한다.\n- 속도 증명은 동일한 조건의 fresh-process A/B이며, 대상 커널과 end-to-end prefill/decode 성능 모두를 측정하고, prefill 개선이 decode를 회귀시키지 않는지(반대도 마찬가지) 확인한다.\n- 채택/거부 후에도 전체-workload 기준 baseline을 restart하여 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전체-workload 재측정 후 다음 bottleneck을 정하고, 다음 세부 profiling을 진행한다(선택적으로 전",
+  "reasoning": "Rules: \"Optimization commits land with a correctness proof AND a speed proof\" — that's one rule. Plus 7-step evidence sequence? The question says \"위 규칙만 근거로\" — use only these rules. So bullets: (1) correctness proof + speed proof recorded by proof harness (both proofs must land; skipping correctness proof not allowed); (2) fresh-process A/B, end-to-end prefill/decode measured, no regression (rules 5,8); (3) explicit numerical contract preserved + focused parity/regression tests (rules 3,4); (4) fallback/kill switch kept (rule 5); (5) benchmark fresh processes comparable workloads, report kernel-level + end-to-end, verify prefill doesn't regress decode and vice versa (rules 6,7,8). That's ≤5 bullets."
+ },
+ {
+  "seed": 55,
+  "finish": "stop",
+  "tokens": 752,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "# 위 규칙만 근거로, 최적화 커밋이 머지되기 전에 반드시 갖춰야 하는 것\n\n- **정확성 증명과 속도 증명을 함께**: CUDA 규칙이 명시적으로 \"optimization commits land with a correctness proof AND a speed proof\"를 요구하고, proof harness가 `tests/ds4_proof.py --scenario ...`로 두 가지를 기록함. 정확성 증명을 \"이전에 이미 있었으니 생략\" 하는 방식으로 pos0 회귀가 3 커밋에 걸쳐 미검증 상태로 통과된 사례가 규칙의 배경.\n\n- **전체 워크로드 측정 후 특정 병목 정량화**: 성능 규칙의 1–2 단계 — `ds4-perf` / Nsight Systems 등으로 전체 대표 워크로드 측정, wall time과 prefill/decode 비용 분리, 병목의 end-to-end 기여도를 수치로 명시. 병목을 커널 단위로만 보지 말고 dispatch, 데이터 이동, sync, host work도 대상으로 포함.\n\n- **병목을 분리해 상세 프로파일링**: 규칙의 3 단계 — NCU(커널) 또는 해당 profiler로 대상을 별도 측정. faithful isolated reproducer 선호, isolation이 동작을 바꾸는 경우 bounded in-model capture 사용. 관련 shape/layout/routing/cache state/execution regime을 보존하고 차이를 공개하며, 전체 모델 반복 초기화 대신 작은 reproducer로 충분한 scope 축소(진단 context 유지).\n\n- **수치 계약을 명시한 scoped 변경 + A/B**: 규칙의 4–5 단계 — 가설을 측정에서 도출하고 명시적 numerical contract를 갖는 scoped 변경을 구현. 대안 설명(실행 구조, thread/tile mapping, memory access/reuse, fusion, numerical representation, compiler output)을 탐색하되 기술 선택은 증거가 결정. off/on을 matched 조건과 fresh process로 비교하고 correctness check 수행.\n\n- **채택 기준과 회귀 검증**: 규칙의 5 단계 + 채택 판정 — 재현 가능한 useful gain이며 unacceptable correctness/performance 회귀 없음. 고정 percentage floor을 부과하지 않음. 1% 미만이라도 반복된 comparable A/B가 noise 이상으로 일관되게 개선하고 correctness 보존하며 다른 곳에 meaningful 회귀 없으면 보존. 관련 costs를 실제로 확인하며 costs가 증하면 measured benefit과 비례하여 판단. 채택 또는 기각 후에도 baseline에서 전체 워크로드 재측정으로 다음 병목을 찾고 상세 프로파일링을 다시 축소하는 반복 (채택 기각을 결정하는 자동 tool threshold는 screening heuristic만이 아님).",
+  "reasoning": ""
+ },
+ {
+  "seed": 66,
+  "finish": "stop",
+  "tokens": 1109,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "# 최적화 커밋 머지 전 필수 항목\n\n- 정확성 증명과 속도 증명을 **모두 함께** 제출해야 한다. 증명 하네스가 두 가지를 모두 기록하며 (`tests/ds4_proof.py --scenario ...`), \"이전에 이미 있던 증명이니 생략 가능\"이라는 논리는 pos0 회귀가 세 번의 커밋에서 놓쳐진 원인이 되었다.\n- A/B 비교를 **같은 조건에서 새로운 프로세스**로 진행해야 한다: 동일 모델, 프롬프트, 백엔드, 컨텍스트/출력 길이, 메모리 정책, 소유자, 캐시 상태, 클럭 상태가 일치해야 한다. 이전 프로토콜과 원래 기준을 그대로 재사용해야 한다.\n- 프로파일링된 TPS는 비프로파일링 기준이 아니다; NVTX와 NCU로 **구조를 설명**하며, 측정된 병목에 대해 구체적 기여도를 보여야 한다. 대상 커널과 전체 prefill/decode 성능을 모두 측정해야 한다.\n- 속도 회귀는 **필요한 정확성 수리가 명시적으로 정당화할 때만** 허용된다. 정확성이 속도보다 우선된다; 설명 없는 attention/KV/로그 변화는 수용하지 않는다.\n- 수용 기준: 재현 가능한 실제 이득이며, 정확성과 성능에 수용 불가한 회귀가 없어야 한다. **1% 이하의 이득도** 반복된 comparable A/B가 노이즈 이상으로 일관적으로 개선하고 정확성을 보존하며 다른 곳에 의미 있는 회귀가 없으면 수용할 가치가 있다. 이득이 추가 VRAM/산술/자원 비용을 필요로 하면 그 트레이드오프를 보고하고 측정된 이득에 비교하여 판단해야 한다; 퍼센트와 한 카운터만으로는 수용/거부가 결정되지 않는다.</think># 최적화 커밋 머지 전 필수 항목\n\n- 정확성 증명 **과** 속도 증명이 함께 존재해야 한다. 증명 하네스는 두 가지 모두를 기록하며, \"이전에 이미 있던 증명이니 생략 가능\"이라는 논리는 pos0 회귀가 세 번의 커밋에서 놓쳐진 원인이 되었다.\n- A/B 비교를 **같은 조건에서 새로운 프로세스**로 진행해야 한다: 동일 모델, 프롬프트, 백엔드, 컨텍스트/출력 길이, 메모리 정책, 소유자, 캐시 상태, 클럭 상태가 일치해야 한다. 원래 프로토콜과 기준을 그대로 재사용해야 한다.\n- 프로파일링된 TPS는 비프로파일링 기준이 아니다. NVTX와 NCU로 **구조를 설명**해야 한다. 커널과 전체 prefill/decode 성능을 모두 측정해야 한다.\n- 속도 회귀는 **필요한 정확성 수리가 명시적으로 정당화할 때만** 허용된다. 정확성이 속도보다 우선된다. 설명 없는 attention/KV/로그 변화는 수용하지 않는다.\n- 수용 기준은 재현 가능한 실제 이득이며, 정확성과 성능에 수용 불가한 회귀가 없어야 한다. **1% 이하의 이득도** 반복된 comparable A/B가 노이즈 이상으로 일관적으로 개선하고 정확성을 보존하며 다른 곳에 의미 있는 회귀가 없으면 수용할 가치가 있다. 이득이 추가 VRAM/산술/자원 비용을 필요로 하면 그 트레이드오프를 보고하고 측정된 이득에 비교하여 판단해야 한다. 퍼센트와 한 카운터만으로는 수용/거부가 결정되지 않는다.",
+  "reasoning": ""
+ },
+ {
+  "seed": 77,
+  "finish": "stop",
+  "tokens": 588,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "1. 정확성 증명과 속도 증명이 모두 있어야 머지될 수 있습니다 (proof harness는 둘 다 기록: `tests/ds4_proof.py --scenario ...`).\n2. \"이전에 이미 있었다\"를 근거로 정확성 증명을 건너뛰면 안 됩니다 — 이것이 pos0 회귀가 세 이전 커밋을 지나친 원인입니다.\n3. 최적화를 전체-vocabulary logits, greedy tokens 및 관련 state/correctness gate와 짝지어야 합니다.\n4. A/B 비교는 fresh processes로, 같은 workload, backend, context/output length, memory policy, owner, cache state, clock 조건에서 진행해야 하며 prefill과 decode를 따로 측정합니다.\n5. 정확성 회귀는 필요한 정확성 repair가 명시적으로 그를 정당화할 때만 수용되고, 속도 회귀는 명시적 justification 없이 수용되지 않습니다.\n\n(참고: 위 규칙만 근거로 한 답변이므로, prompt에 나온 규칙 이외의 근거는 없습니다. \"가장 완벽한 대상\"에 대한 추가 규칙은 이 prompt에 없습니다.)",
+  "reasoning": "The user wants: only rules in this prompt as basis, list in Korean max five bullets, short answer: what must be present before an optimization commit merges.\n\nRules from prompt: \"Optimization commits land with a correctness proof AND a speed proof. The proof harness records both: tests/ds4_proof.py --scenario ... Skipping the correctness proof on the grounds that 'we already had it before' is how the pos0 regression slipped past three previous commits.\" Also CUDA captured-decode rules. Also \"Backend changes require correctness and speed evidence\" from Contributing section. Also pair optimization with full-vocab logits, greedy tokens, relevant state/correctness gate. Also fresh processes A/B, measure prefill and decode separately, verify prefill not regressing decode.\n\nFive bullets short Korean:\n\n1. correctness proof + speed proof both (proof harness, tests/ds4_proof.py --scenario)\n2. \"이미 있었다\" 이유로 correctness proof 건너뛰는 것 금지 (pos0 regression lesson)\n3. A/B fresh processes, same workload/conditions; prefill/decode separately; target + end-to-end\n4. full-vocab logits, greedy tokens, relevant state/correctness gate pairing\n5. correctness regressions not accepted without justified repair; fallback/kill switch\n\nKeep short."
+ },
+ {
+  "seed": 88,
+  "finish": "stop",
+  "tokens": 461,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "- **정확성 증명 + 속도 증명, 둘 다 필요**: 증명 하네스는 둘 모두 기록(`tests/ds4_proof.py --scenario ...`)이며, \"이전에 이미 증명이 있었으니 생략한다\"는 근거로 pos0 회귀를 놓치지 못했다.\n- **전체 어휘 logits + greedy tokens + 관련 상태/정확성 게이트**를 최적화와 항상 짝으로 붙인다; bit-identity 또는 고정 relative-RMS만으로는 수용 기준이 아니며 KV/position/media-layout 오류는 정확성 실패다.\n- **fresh 프로세스 + 동일 모델/프롬프트/백엔드/컨텍스트/출력 길이/메모리 정책/소유자/캐시 상태/클럭 조건**으로 비교하며, 원래 fixture와 protocol을 유지한다; profiled TPS는 unprofiled baseline이 아니다.\n- **fallback/kill switch를 보존**하고, focused parity/regression 테스를 추가하며, prefill 개선이 decode을 회귀하지 않고(그 역도) 확인한다.\n- **end-to-end 측정으로 수용**: 목표 kernel과 end-to-end prefill/decode 성능 모두 측정하고, reproducible useful gain만 수용한다; <1% gain도 반복 A/B에서 noise를 넘어 정확성을 보존하고 무손실 자원비용이면 유지할 수 있다.",
+  "reasoning": "User asks: only rules as evidence, answer briefly in Korean, up to five bullets, what an optimization commit must have before merging. Rules: optimization commits land with correctness proof AND speed proof; pair optimization with full logits, greedy tokens, state/correctness gate; fresh processes comparable workloads; fallback/kill switch; tests; end-to-end verify prefill no regress decode."
+ },
+ {
+  "seed": 99,
+  "finish": "stop",
+  "tokens": 339,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "- 정확성 증명(포지션/KV/로짓 등 게이트)과 속도 증명 모두 증명하네스(`tests/ds4_proof.py --scenario ...`)에 기록되어야 한다.\n- A/B는 새 프로세스와 동일 워크로드(모델/백엔드/컨텍스트/출력 길이/메모리 정책/오너/캐시/클럭)로 대상과 엔드투엔드 prefill·decode를 각각 측정하며, 반복 가능한 유용한 이득만 채택하고 회귀 없이 채택된다.\n- 채택 전후에 기준선 전체 워크로드를 다시 측정하고 새 병목을 지정한 뒤 세부 프로파일링을 다시 좁혀야 한다.\n- 정확성/속도 게이트(또는 요구되는 live 게이트)를 실제로 실행해야 하며, 짧은 smoke는 게이트 대체가 아니다.\n- 불수용 시 이유를 명시하고 회귀를 채용하기 위해 명시적 정확성 수리가 필요하다고 판단되는 경우만 허용된다.",
+  "reasoning": "User asks in Korean: based on rules only, what must a optimization commit have before merge — max 5 bullets, short."
+ },
+ {
+  "seed": 110,
+  "finish": "length",
+  "tokens": 1500,
+  "prompt_tokens": 16985,
+  "glitches": [],
+  "content": "# 최적화 커밋의 필수 요건\n\n위 규칙만 근거로, 최적화 커밋이 머지되기 전에 반드시 갖춰야 하는 것을 한국어로 최대 다섯 개의 bullet로 짧게 답하세요.\n\n- 정확성 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`). \"이전 커밋에서 이미 진행했던 것\"이라는 이유로 정확성 증명을 건너뛰는 것은, pos0 회귀가 이전 커밋에서 누락될 때와 동일한 오류입니다.\n- 속도 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`).\n- 정확성 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`). \"이전 커밋에서 이미 진행했던 것\"이라는 이유로 정확성 증명을 건너뛰는 것은, pos0 회귀가 이전 커밋에서 누락될 때와 동일한 오류입니다.\n- 속도 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`).\n- 정확성 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`). \"이전 커밋에서 이미 진행했던 것\"이라는 이유로 정확성 증명을 건너뛰는 것은, pos0 회귀가 이전 커밋에서 누락될 때와 동일한 오류입니다.\n- 속도 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`).\n\n# 최적화 커밋의 필수 요건\n\n위 규칙만 근거로, 최적화 커밋이 머지되기 전에 반드시 갖춰야 하는 것을 한국어로 최대 다섯 개의 bullet로 짧게 답하세요.\n\n- 정확성 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`). \"이전 커밋에서 이미 진행했던 것\"이라는 이유로 정확성 증명을 건너뛰는 것은, pos0 회귀가 이전 커밋에서 누락될 때와 동일한 오류입니다.\n- 속도 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`).\n\n# 최적화 커밋의 필수 요건\n\n위 규칙만 근거로, 최적화 커밋이 머지되기 전에 반드시 갖춰야 하는 것을 한국어로 최대 다섯 개의 bullet로 짧게 답하세요.\n\n- 정확성 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`). \"이전 커밋에서 이미 진행했던 것\"이라는 이유로 정확성 증명을 건너뛰는 것은, pos0 회귀가 이전 커밋에서 누락될 때와 동일한 오류입니다.\n- 속도 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`).\n\n# 최적화 커밋의 필수 요건\n\n위 규칙만 근거로, 최적화 커밋이 머지되기 전에 반드시 갖춰야 하는 것을 한국어로 최대 다섯 개의 bullet로 짧게 답하세요.\n\n- 정확성 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 툴은 두 가지 모두 기록합니다 (`tests/ds4_proof.py --scenario ...`). \"이전 커밋에서 이미 진행했던 것\"이라는 이유로 정확성 증명을 건너뛰는 것은, pos0 회귀가 이전 커밋에서 누락될 때와 동일한 오류입니다.\n- 속도 증명: 병합된 최적화 커밋은 정확성 증명과 속도 증명을 함께 포함해야 합니다. 증명 ",
+  "reasoning": ""
+ }
+]
