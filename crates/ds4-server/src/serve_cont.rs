@@ -2693,6 +2693,19 @@ mod native {
                     if !kept {
                         // A live bank held this conversation; the template
                         // re-rendered it.
+                        if warm_trace_on() {
+                            eprintln!(
+                                "ds4-server-rs: warm trace   full plan_tokens={} request_tokens={} \
+                                 cached={} first_diff={:?}",
+                                plan.tokens.len(),
+                                prompt_tokens.len(),
+                                plan.cached,
+                                plan.tokens
+                                    .iter()
+                                    .zip(prompt_tokens)
+                                    .position(|(left, right)| left != right),
+                            );
+                        }
                         Self::note_miss(miss, ReuseMiss::RenderedPrefix);
                     }
                     kept
