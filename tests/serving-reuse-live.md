@@ -97,9 +97,9 @@ that checkpoint to another bank.
 For GLM, use `--family glm` and `DS4_GLM53_BATCH_TRACE=1`. Keep SSD/cache/Vision
 settings identical across phases. The profile accepts both plan family names the
 family serves, `glm5-next` for the Flash plan and `GLM-5.3-Flash-VQ` for the VQ
-release (crates/ds4-core/src/serving.rs:1484-1485); both share the native
-`GLM-5.3` bank trace (ds4.c:65543, `ds4_model_is_glm` covers the VQ shell at
-ds4.c:1617). Its canonical history can restore a partial
+release (crates/ds4-core/src/serving.rs:1511-1512); both share the native
+`GLM-5.3` bank trace (ds4.c:65773, `ds4_model_is_glm` covers the VQ shell at
+ds4.c:1648). Its canonical history can restore a partial
 checkpoint after omitting the generation-only thinking close. Native trace
 must prove a copy to another bank with the source frontier preserved. These
 flags prepare a gate; completed live receipts establish qualification.
