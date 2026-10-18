@@ -107,3 +107,25 @@ fn official_template_and_tokenizer() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires the release in DS4_LING31_MODEL; hashes every part twice, no GPU"]
+fn check_config_probes_requested_parts() {
+    // A copy of the release without its MTP parts still serves the trunk;
+    // a check for MTP serving must refuse it before listen.
+    let root = root();
+    let copy = std::env::temp_dir().join(format!("ling31-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&copy).unwrap();
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let name = entry.unwrap().file_name();
+        if name != "mtp-native.gguf" && name != "layer-72-experts.gguf" {
+            std::os::unix::fs::symlink(root.join(&name), copy.join(&name)).unwrap();
+        }
+    }
+    let path = copy.to_str().unwrap();
+    let trunk = ds4_core::probe_model_artifact(path, ds4_core::ProbeParts::Trunk);
+    let mtp = ds4_core::probe_model_artifact(path, ds4_core::ProbeParts::WithMtp);
+    std::fs::remove_dir_all(&copy).unwrap();
+    assert!(trunk.is_ok(), "{:?}", trunk.err());
+    assert!(mtp.is_err());
+}

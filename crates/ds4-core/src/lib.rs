@@ -1301,18 +1301,35 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
     ))
 }
 
+/// Parts an artifact probe validates. Ling-3.1's open maps its optional MTP
+/// parts only when it drafts with them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeParts {
+    Trunk,
+    WithMtp,
+}
+
 /// Everything `Model::open` checks before it touches the device: identify,
 /// family validation, vocab, chat template, tensor inventory, required
 /// tensors and layouts. `--check-config` runs it so an artifact that cannot
 /// load is refused before listen. Keep it in step with the open's prelude.
-pub fn probe_model_artifact(path: &str) -> Result<()> {
+pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
     let identified = identify_gguf(std::path::Path::new(path)).map_err(|e| Error {
         code: 1,
         message: format!("identify failed: {}", e.token()),
     })?;
     let (g, _) = open_input_assets(Path::new(path), &identified.shape)?;
     chat_template::Template::load(std::path::Path::new(path), &g)?;
-    let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
+    let inventory = if identified.shape.family == ModelFamily::Ling31Vq {
+        let feature = match parts {
+            ProbeParts::Trunk => Ling31Feature::Trunk,
+            ProbeParts::WithMtp => Ling31Feature::Mtp,
+        };
+        TensorInventory::open_ling31(Path::new(path), feature)
+    } else {
+        TensorInventory::open(std::path::Path::new(path))
+    }
+    .map_err(|e| Error {
         code: 1,
         message: format!("tensor inventory failed: {}", e.token()),
     })?;
