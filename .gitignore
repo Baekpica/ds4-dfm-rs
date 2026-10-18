@@ -12,6 +12,7 @@
 /ds4-server-rs
 /tests/test_ling3vl_media
 /tests/test_eos_sampling
+/tests/test_repack_premapped
 /tests/test_ling3vl_vision
 /tests/test_ling3vl_primitives
 /tests/test_ling3vl_matmul
