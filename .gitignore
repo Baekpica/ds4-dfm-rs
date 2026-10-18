@@ -60,6 +60,7 @@
 /tests/parity/agent_c_oracle
 /scratch/
 /naive-n05-flash-spark-handoff/
+/ling-3.1-flash-vq-handoff/
 /ds4_native
 /ds4_server_test
 /ds4_test
@@ -234,6 +235,13 @@ tests/naive_banks
 /tests/libglm_vq_attention.so
 /tests/libglm_vq_mma.so
 /tests/glm_vq_quality
+/tests/ling31_quality
+/tests/ling31_mtp_gate
+/tests/test_ling31_residual
+/tests/test_ling31_flash
+/tests/test_ling31_flash.ptxas
+/tests/test_ling31_stop
+/tests/test_ling31_prefill_attn
 /gguf-tools/libds4q.so
 /tests/test_glm_vq_cache
 /tests/test_glm_vq_q4

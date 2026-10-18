@@ -33,6 +33,7 @@ pub enum ModelFamily {
     NaiveN05 = 11,
     IQuestQ1 = 13,
     Glm53Vq = 14,
+    Ling31Vq = 15,
 }
 
 impl ModelFamily {
@@ -46,6 +47,7 @@ impl ModelFamily {
             "qwen4exp" => Some(Self::Qwen4Exp),
             "glm5-next" => Some(Self::Glm53),
             "glm5-next-vq" => Some(Self::Glm53Vq),
+            "ling31_vq" => Some(Self::Ling31Vq),
             "inkling" => Some(Self::Inkling),
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
@@ -67,6 +69,7 @@ impl ModelFamily {
             Self::Qwen4Exp => "qwen4exp",
             Self::Glm53 => "glm5-next",
             Self::Glm53Vq => "glm5-next-vq",
+            Self::Ling31Vq => "ling31_vq",
             Self::Inkling => "inkling",
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
@@ -99,6 +102,7 @@ pub enum Variant {
     IQuestQ1 = 15,
     DeepSeek41Flash = 16,
     Glm53FlashVq = 17,
+    Ling31FlashVq = 18,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -355,6 +359,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"qwen35") => ArchRoute::Fixed(Variant::Qwen35_27B),
         Some(b"naive_n05_flash") => ArchRoute::Fixed(Variant::NaiveN05Flash),
         Some(b"iquest_q1") => ArchRoute::Fixed(Variant::IQuestQ1),
+        Some(b"ling31_vq") => ArchRoute::Fixed(Variant::Ling31FlashVq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -379,6 +384,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::NaiveN05Flash => SHAPE_NAIVE_N05_FLASH,
         Variant::IQuestQ1 => SHAPE_IQUEST_Q1,
         Variant::DeepSeek41Flash => SHAPE_V41_FLASH,
+        Variant::Ling31FlashVq => SHAPE_LING31_VQ,
     }
 }
 
@@ -1303,6 +1309,33 @@ pub(crate) const SHAPE_LING30_FLASH_VL: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 131_072,
+};
+
+// Ling-3.0's hybrid at width 4096: 63 KDA and 9 MLA trunk blocks plus the
+// MLA/MoE MTP block (n_layer counts it). `n_head_dim` is the stored latent
+// row (kv_lora 512 + 64 rope); SwiGLU clamps live in the family table.
+pub(crate) const SHAPE_LING31_VQ: Shape = Shape {
+    name: "Ling-3.1-flash-VQ",
+    family: ModelFamily::Ling31Vq,
+    variant: Variant::Ling31FlashVq,
+    n_layer: 73,
+    n_embd: 4096,
+    n_vocab: 157_184,
+    n_head: 64,
+    n_head_kv: 1,
+    n_head_dim: 576,
+    n_value_dim: 128,
+    n_rot: 64,
+    n_lora_q: 1536,
+    n_expert: 512,
+    n_ff_exp: 1280,
+    n_ff_dense: 10240,
+    n_ff_shexp: 1280,
+    n_nextn_predict: 1,
+    n_leading_dense: 4,
+    n_full_attn_count: 9,
+    rope_orig_ctx: 262_144,
+    ..SHAPE_LING30_FLASH_VL
 };
 
 // Naive shares GQA dimensions, but replaces all nine global layers with DSA.

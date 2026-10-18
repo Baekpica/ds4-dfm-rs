@@ -6,7 +6,7 @@ use ds4_core::{
     attach_host_quote, caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact,
     probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend, DistributedConfig,
     DistributedRole, Distribution, EngineFacts, GgufFile, Identified, MaxSeqs, Model,
-    ModelOpenOption, MtpMode, PrefixReuse, ServingCaps, ServingRequest, Support, Vocab,
+    ModelOpenOption, MtpMode, PrefixReuse, ProbeParts, ServingCaps, ServingRequest, Support, Vocab,
     WeightSlice,
 };
 use ds4_server::cache_identity::CacheIdentity;
@@ -448,7 +448,14 @@ fn main() {
         // Nothing else opens the model on this path, so the check has to do
         // the open's own pre-device validation itself.
         if let Some(path) = model_path.as_deref() {
-            facts.artifact_ok = Some(match probe_model_artifact(path) {
+            // MTP parts serve only with --mtp-mode on (auto keeps unqualified
+            // drafts off), so check what that open will map.
+            let parts = if serve_req.mtp_mode == MtpMode::On {
+                ProbeParts::WithMtp
+            } else {
+                ProbeParts::Trunk
+            };
+            facts.artifact_ok = Some(match probe_model_artifact(path, parts) {
                 Ok(()) => true,
                 Err(error) => {
                     eprintln!("ds4-server-rs: -m {path}: {error}");

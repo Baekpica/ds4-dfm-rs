@@ -127,21 +127,50 @@ __global__ void __launch_bounds__(GLMVQ_RMS_ROWS * 32) glmvq_rms_warp(const floa
     }
 }
 
+// Where the SwiGLU limit applies. GLM clamps the gate before SiLU. Ling's
+// serving form (vLLM SwigluStepAndMul) clamps SiLU's F32 output above and
+// up on both sides, then rounds once; an unclamped layer passes +inf.
+enum glmvq_clamp { GLMVQ_CLAMP_GATE, GLMVQ_CLAMP_SILU };
+
+template <glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE>
 __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float limit) {
-    const float g = fminf(gate, limit);
-    const float u = fminf(fmaxf(up, -limit), limit);
-    const float silu = glmvq_round(__fdiv_rn(g, glmvq_add(1.0f, expf(-g))));
-    return glmvq_round(glmvq_mul(silu, u));
+    if constexpr (CLAMP == GLMVQ_CLAMP_SILU) {
+        const float u = fminf(fmaxf(up, -limit), limit);
+        const float silu = fminf(__fdiv_rn(gate, glmvq_add(1.0f, expf(-gate))), limit);
+        return glmvq_round(glmvq_mul(silu, u));
+    } else {
+        const float g = fminf(gate, limit);
+        const float u = fminf(fmaxf(up, -limit), limit);
+        const float silu = glmvq_round(__fdiv_rn(g, glmvq_add(1.0f, expf(-g))));
+        return glmvq_round(glmvq_mul(silu, u));
+    }
 }
 
 // BF16 output rows hold the same BF16-rounded values.
-template <typename O = float>
+template <typename O = float, glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE>
 __global__ void glmvq_swiglu(const float *gate, const float *up, O *output,
         uint64_t count, float limit) {
     glmvq_pdl_open();
     glmvq_pdl_wait();
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < count) { output[i] = glmvq_cast<O>(glmvq_swiglu_value(gate[i], up[i], limit)); }
+    if (i < count) { output[i] = glmvq_cast<O>(glmvq_swiglu_value<CLAMP>(gate[i], up[i], limit)); }
+}
+
+// How routed outputs combine. GLM rounds each weighted add to BF16 (its
+// source MoE); Ling's reference sums the weighted BF16 outputs in F32 and
+// rounds once before the shared expert's BF16 add.
+enum glmvq_reduce { GLMVQ_REDUCE_BF16, GLMVQ_REDUCE_F32 };
+
+template <glmvq_reduce REDUCE = GLMVQ_REDUCE_BF16>
+__device__ __forceinline__ float glmvq_reduce_add(float sum, float partial, float weight) {
+    if constexpr (REDUCE == GLMVQ_REDUCE_F32) { return fmaf(partial, weight, sum); }
+    return glmvq_round(glmvq_add(sum, glmvq_round(glmvq_mul(partial, weight))));
+}
+
+template <glmvq_reduce REDUCE = GLMVQ_REDUCE_BF16>
+__device__ __forceinline__ float glmvq_reduce_end(float sum, const float *shared, uint64_t i) {
+    if constexpr (REDUCE == GLMVQ_REDUCE_F32) { sum = glmvq_round(sum); }
+    return shared ? glmvq_round(glmvq_add(sum, shared[i])) : sum;
 }
 
 __device__ void glmvq_hc_weights(float *split, const float *mix,

@@ -1137,9 +1137,11 @@ fn thinking_bank_retire_key(
         .windows(close.len())
         .position(|window| window == close);
 
-    // Official IQuest history retains supplied reasoning even without tools.
-    // Keep that exact prefix; a visible-only rewrite cannot describe its KV.
-    if prompt_preserves_reasoning || syntax == ModelSyntax::IQuestQ1 {
+    // Official IQuest and Bailing V3 (Ling) history retains supplied
+    // reasoning even without tools. Keep that exact prefix; a visible-only
+    // rewrite cannot describe its KV.
+    if prompt_preserves_reasoning || matches!(syntax, ModelSyntax::IQuestQ1 | ModelSyntax::Ling3Vl)
+    {
         if engine_finished && has_tools && !saw_tool_start {
             if let Some(at) = close_at {
                 if let Some(visible) = thinking_visible_key(
@@ -4167,6 +4169,37 @@ mod bank_tests {
             step(r#"{"messages":[{"role":"user","content":"2 + 2"}],"reasoning_effort":"high"}"#),
             (1.0, 0, 0.95, 0.0)
         );
+    }
+
+    #[test]
+    fn ling_thinking_retire() {
+        // Bailing V3 sets preserved_thinking: history replays reasoning, so a
+        // finished turn without tools retires its exact prompt + generation.
+        let prompt = b"<role>SYSTEM</role>detailed thinking on<|role_end|><role>HUMAN</role>2 + 2<|role_end|><role>ASSISTANT</role>\n<think>".to_vec();
+        let pieces = [b"Compute.".as_slice(), b"</think>", b"4", b"<|role_end|>"];
+        let key = thinking_bank_retire_key(
+            &prompt,
+            &[0, 1, 2, 3],
+            true,
+            false,
+            false,
+            false,
+            false,
+            ModelSyntax::Ling3Vl,
+            ChatFormat::DeepSeek,
+            |token| pieces[token as usize].to_vec(),
+        )
+        .expect("Ling reasoning history must retain a reusable record");
+        let mut expected = prompt.clone();
+        expected.extend_from_slice(b"Compute.</think>4");
+        assert_eq!(key.text, expected);
+        assert!(!key.partial_only);
+        // The official render of the next turn replays that reasoning.
+        let mut follow = expected.clone();
+        follow.extend_from_slice(
+            b"<|role_end|><role>HUMAN</role>4 + 1<|role_end|><role>ASSISTANT</role>\n<think>",
+        );
+        assert!(follow.starts_with(&key.text));
     }
 
     #[test]

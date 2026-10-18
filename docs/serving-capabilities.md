@@ -34,6 +34,7 @@ The request's effective and qualified plan remains authoritative.
 | MiMo-V2.6-Flash-RL | opt_in / unverified | partial / unverified | unverified | unverified | Embedded / serial / qualified |
 | Naive-N0.5-Flash | opt_in / qualified | partial / qualified | qualified | qualified | External / serial + bank / unverified |
 | IQuest-Q1 | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
+| Ling-3.1-flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
 
 ## Bounds and allocator controls
 
@@ -59,6 +60,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | MiMo-V2.6-Flash-RL | 1048576 | 524288 | 1 | — | `DS4_MIMO2_PREFILL_CHUNK` |
 | Naive-N0.5-Flash | 1048576 | 8192 | 2 | 702 | `DS4_NAIVE_PREFILL_CHUNK` |
 | IQuest-Q1 | 524288 | — | — | — | `DS4_IQUEST_PREFILL_CHUNK` |
+| Ling-3.1-flash-VQ | 262144 | — | — | — | `DS4_LING31_PREFILL_CHUNK` |
 
 Scheduler chunk candidates: 256, 512, 1024, 2048, 4096, 8192. The resolved plan only offers
 values at or below its known native capacity. Unknown capacity offers no

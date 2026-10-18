@@ -153,6 +153,27 @@ __device__ __forceinline__ uint32_t glmvq_q4p_weight(uint32_t v, const glmvq_q4p
     return *(const uint32_t *)&w;
 }
 
+/* FP8 weights (Ling-3.1's KDA decay/gate): row-major E4M3 bytes with F32
+ * 128 x 128 block scales. The producer writes fp16(e4m3 * scale * 2^6), one
+ * rounding of the exact F32 product, into the Q4_K fragment slots, so the
+ * consumers and the 2^-6 epilogue are shared. */
+enum glmvq_q4p_kind { GLMVQ_Q4P_Q4K, GLMVQ_Q4P_FP8 };
+static constexpr float GLMVQ_Q4P_FP8_SCALE_MAX = 65504.0f / (448.0f * (1u << GLMVQ_Q4P_SHIFT));
+
+// Sets *bad when a block scale would overflow the folded FP16 weight.
+__global__ void glmvq_q4p_check_fp8(const float *scales, uint64_t blocks, uint32_t *bad) {
+    const uint64_t b = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (b < blocks && !(fabsf(scales[b]) <= GLMVQ_Q4P_FP8_SCALE_MAX)) { atomicOr(bad, 1u); }
+}
+
+// Bytes `sel` of u (two E4M3 values) as an FP16 pair times `scale`.
+__device__ __forceinline__ uint32_t glmvq_q4p_fp8(uint32_t u, uint32_t sel, float scale) {
+    const __half2_raw raw = __nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)__byte_perm(u, 0u, sel), __NV_E4M3);
+    const float2 f = __half22float2(*(const __half2 *)&raw);
+    const __half2 w = __floats2half2_rn(f.x * scale, f.y * scale);
+    return *(const uint32_t *)&w;
+}
+
 __device__ __forceinline__ void glmvq_q4p_mma(float c[4], const uint4 &a, uint32_t b0, uint32_t b1) {
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
         "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
@@ -164,9 +185,10 @@ __device__ __forceinline__ void glmvq_q4p_mma(float c[4], const uint4 &a, uint32
  * BF16 rounding decode and verify store. Fragment lane (g, c) owns elements
  * 8c..8c+7 of every sub-block: bytes 8c..8c+7 of a row's qs chunk and one
  * 16-byte token load, in the q4m element order. */
-template <bool TAIL, typename OUT>
+template <bool TAIL, typename OUT, glmvq_q4p_kind KIND = GLMVQ_Q4P_Q4K>
 __global__ void __launch_bounds__(GLMVQ_Q4P_THREADS, 1) glmvq_q4p(const uint8_t *weight,
-        const __half *xh, const float *xscale, OUT *out, uint32_t rows, uint32_t cols, uint32_t tokens) {
+        const __half *xh, const float *xscale, OUT *out, uint32_t rows, uint32_t cols, uint32_t tokens,
+        const float *scales) {
     constexpr uint32_t BM = GLMVQ_Q4P_BM, BN = GLMVQ_Q4P_BN, STAGES = GLMVQ_Q4P_STAGES;
     constexpr uint32_t NT = GLMVQ_Q4P_NT, CONSUMERS = GLMVQ_Q4P_CONSUMERS, PRODUCERS = GLMVQ_Q4P_PRODUCERS;
     extern __shared__ __align__(16) uint8_t q4p_shared[];
@@ -176,7 +198,7 @@ __global__ void __launch_bounds__(GLMVQ_Q4P_THREADS, 1) glmvq_q4p(const uint8_t 
 
     const uint32_t m_tiles = rows / BM, n_tiles = (tokens + BN - 1) / BN, tiles = m_tiles * n_tiles;
     const uint32_t steps = cols / GLMVQ_Q4P_BK;
-    const uint64_t row_bytes = (uint64_t)cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+    const uint64_t row_bytes = KIND == GLMVQ_Q4P_FP8 ? cols : (uint64_t)cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
     // Tile t: groups of GROUP token tiles walk the rows.
     auto origin = [&](uint32_t t, uint32_t &m0, uint32_t &n0) {
         const uint32_t per = GLMVQ_Q4P_GROUP * m_tiles, group = t / per, local = t % per;
@@ -217,6 +239,63 @@ __global__ void __launch_bounds__(GLMVQ_Q4P_THREADS, 1) glmvq_q4p(const uint8_t 
                 rowp[i][1] = rowp[i][0] + 8 * row_bytes;
             }
             const __half *b_src = xh + (uint64_t)(n0 + t0) * cols + chunk * 8;
+            if constexpr (KIND == GLMVQ_Q4P_FP8) {
+                // Stage kt is bytes 64 kt.. of each row; lane c takes 8 bytes at
+                // 32 n + 8 c, the elements the Q4_K nibbles of sub-block n give it.
+                const float *block = scales + (uint64_t)(m0 / GLMVQ_SCALE_BLOCK) * (cols / GLMVQ_SCALE_BLOCK);
+                const uint32_t c8 = 8 * (pl & 3);
+                auto raw8 = [&](uint32_t kt, uint2 v[2][2][2]) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < 2; i++) {
+                        #pragma unroll
+                        for (uint32_t n = 0; n < 2; n++) {
+                            v[i][0][n] = __ldg((const uint2 *)(rowp[i][0] + kt * GLMVQ_Q4P_BK + 32 * n + c8));
+                            v[i][1][n] = __ldg((const uint2 *)(rowp[i][1] + kt * GLMVQ_Q4P_BK + 32 * n + c8));
+                        }
+                    }
+                };
+                uint2 v[2][2][2], vn[2][2][2];
+                raw8(0, v);
+                for (uint32_t kt = 0; kt < steps; kt++, ring++) {
+                    const uint32_t s = ring % STAGES, use = ring / STAGES;
+                    if (kt + 1 < steps) { raw8(kt + 1, vn); }
+                    if (use) { glmvq_q4p_wait(empty + s, (use - 1) & 1); }
+                    #pragma unroll
+                    for (uint32_t i = 0; i < BN * 8 / PRODUCERS; i++) {
+                        const bool live = !TAIL || n0 + t0 + 16 * i < tokens;
+                        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" ::
+                            "r"(b_dst + s * GLMVQ_Q4P_B + i * 16 * 128),
+                            "l"(live ? b_src + (uint64_t)16 * i * cols + kt * GLMVQ_Q4P_BK : xh), "r"(live ? 16 : 0) : "memory");
+                    }
+                    asm volatile("cp.async.mbarrier.arrive.noinc.shared.b64 [%0];" :: "r"(glmvq_q4p_smem(full + s)) : "memory");
+                    const float scale = block[kt * GLMVQ_Q4P_BK / GLMVQ_SCALE_BLOCK] * (1u << GLMVQ_Q4P_SHIFT);
+                    // Pairs (e0, e2) and (e1, e3) of each four bytes, as the nibbles pair.
+                    #pragma unroll
+                    for (uint32_t i = 0; i < 2; i++) {
+                        #pragma unroll
+                        for (uint32_t n = 0; n < 2; n++) {
+                            #pragma unroll
+                            for (uint32_t kh = 0; kh < 2; kh++) {
+                                const uint32_t u0 = kh ? v[i][0][n].y : v[i][0][n].x;
+                                const uint32_t u1 = kh ? v[i][1][n].y : v[i][1][n].x;
+                                uint4 a;
+                                a.x = glmvq_q4p_fp8(u0, 0x0020u, scale);
+                                a.z = glmvq_q4p_fp8(u0, 0x0031u, scale);
+                                a.y = glmvq_q4p_fp8(u1, 0x0020u, scale);
+                                a.w = glmvq_q4p_fp8(u1, 0x0031u, scale);
+                                *(uint4 *)(sa + s * GLMVQ_Q4P_A + slot[i] + (n * 2 + kh) * 512) = a;
+                            }
+                        }
+                    }
+                    glmvq_q4p_arrive(full + s);
+                    #pragma unroll
+                    for (uint32_t i = 0; i < 2; i++) {
+                        #pragma unroll
+                        for (uint32_t n = 0; n < 2; n++) { v[i][0][n] = vn[i][0][n]; v[i][1][n] = vn[i][1][n]; }
+                    }
+                }
+                continue;
+            }
             auto raw = [&](uint32_t kt, uint2 w[2][2]) {
                 const uint32_t off = (kt >> 2) * GLMVQ_Q4_BYTES + qs + 32 * (kt & 3);
                 #pragma unroll
@@ -376,17 +455,37 @@ static cudaError_t glmvq_q4p_gemm(const uint8_t *weight, const glmvq_q4p_input &
     const uint32_t ctas = min(tiles, (uint32_t)sms);
     if (tokens % GLMVQ_Q4P_BN) {
         glmvq_q4p<true, OUT><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
-            weight, in.xh, in.xscale, out, rows, cols, tokens);
+            weight, in.xh, in.xscale, out, rows, cols, tokens, nullptr);
     } else {
         glmvq_q4p<false, OUT><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
-            weight, in.xh, in.xscale, out, rows, cols, tokens);
+            weight, in.xh, in.xscale, out, rows, cols, tokens, nullptr);
+    }
+    return cudaGetLastError();
+}
+
+// FP8 rows x 128 x 128 block `scales` into BF16 rows (Ling-3.1 decay/gate).
+static cudaError_t glmvq_q4p_gemm_fp8(const uint8_t *weight, const float *scales, const glmvq_q4p_input &in,
+        __nv_bfloat16 *out, uint32_t rows, uint32_t cols, uint32_t tokens, cudaStream_t stream) {
+    int device = 0, sms = 0;
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) { return cudaErrorUnknown; }
+    const uint32_t tiles = rows / GLMVQ_Q4P_BM * ((tokens + GLMVQ_Q4P_BN - 1) / GLMVQ_Q4P_BN);
+    const uint32_t ctas = min(tiles, (uint32_t)sms);
+    if (tokens % GLMVQ_Q4P_BN) {
+        glmvq_q4p<true, __nv_bfloat16, GLMVQ_Q4P_FP8><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
+            weight, in.xh, in.xscale, out, rows, cols, tokens, scales);
+    } else {
+        glmvq_q4p<false, __nv_bfloat16, GLMVQ_Q4P_FP8><<<ctas, GLMVQ_Q4P_THREADS, GLMVQ_Q4P_SMEM, stream>>>(
+            weight, in.xh, in.xscale, out, rows, cols, tokens, scales);
     }
     return cudaGetLastError();
 }
 
 static cudaError_t glmvq_q4p_init(void) {
     const void *kernels[] = {(const void *)glmvq_q4p<true, float>, (const void *)glmvq_q4p<false, float>,
-        (const void *)glmvq_q4p<true, __nv_bfloat16>, (const void *)glmvq_q4p<false, __nv_bfloat16>};
+        (const void *)glmvq_q4p<true, __nv_bfloat16>, (const void *)glmvq_q4p<false, __nv_bfloat16>,
+        (const void *)glmvq_q4p<true, __nv_bfloat16, GLMVQ_Q4P_FP8>,
+        (const void *)glmvq_q4p<false, __nv_bfloat16, GLMVQ_Q4P_FP8>};
     for (const void *kernel : kernels) {
         const cudaError_t e = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)GLMVQ_Q4P_SMEM);
         if (e != cudaSuccess) { return e; }

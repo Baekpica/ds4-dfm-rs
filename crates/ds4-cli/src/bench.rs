@@ -237,7 +237,10 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
-    if matches!(family, ModelFamily::Glm53 | ModelFamily::Glm53Vq) {
+    if matches!(
+        family,
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+    ) {
         return mtp.is_none()
             && draft > 1
             && ds4_core::check_mtp_draft(family, draft).is_ok()

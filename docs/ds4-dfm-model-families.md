@@ -66,6 +66,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |
 | [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
+| [Ling-3.1-flash VQ](ling31-flash-vq.md) | `release.json` directory of GVQ1 parts (`ling31_vq`) | 63 KDA and 9 latent MLA blocks, 512 VQ experts top-8, optional embedded MTP block; banks over shared scratch, prompt-end checkpoints, `LG31` disk payloads |
 | [MiMo-V2.6-Flash RL / MOPD](#mimo-release-scope) | `general.architecture=mimo2` | 9 full-attention and 39 SWA-128 layers, 256 experts top-8, three embedded MTP blocks; artifact-specific gates |
 | [Naive-N0.5-Flash](#naive-release-scope) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers, BF16 GQA, E4M3 indexer history, continuous banks and disk KV |
 
@@ -605,6 +606,11 @@ and [host memory guard](host-memory-guard.md). Preserve unrelated owners and wor
   only from the metadata (1,048,576) and `--ctx` is rejected. Its recorded gates
   and benchmark numbers are in the [guide](deepseek41-flash.md); the port is not
   yet in a release ledger.
+- Ling-3.1-flash VQ leaves about 8.1 GiB beside its trunk on a 128 GB Spark
+  (6.4 GiB with MTP): the native 262,144-token context serves one bank at
+  512-row chunks, MTP fits 16K serially (8K in a bank with a 3 GiB floor),
+  and more banks fit at shorter contexts (two at 32K). Checkpoint slots take
+  what the bank fit leaves. See the [family page](ling31-flash-vq.md#serving).
 - dots3-note is text-only, with serial default and explicit bank/MTP paths
   described [above](#dots3-serving). The source 524,288-token metadata is
   preserved. Historical 262,144-context allocation and short 4K server checks

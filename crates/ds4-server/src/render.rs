@@ -170,7 +170,8 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         8 => ModelSyntax::K2Horizon,
         9 => ModelSyntax::Inkling,
         10 => ModelSyntax::Step37,
-        11 => ModelSyntax::Ling3Vl,
+        // 18: Ling-3.1 keeps Bailing V3's template, tool markers and parser.
+        11 | 18 => ModelSyntax::Ling3Vl,
         12 => ModelSyntax::Mimo2,
         14 => ModelSyntax::Qwen35,
         13 => ModelSyntax::NaiveN05,

@@ -84,6 +84,10 @@ impl Template {
 
     /// Read only artifact metadata; never load weights or a GPU model.
     pub fn from_model(path: &Path) -> Result<Option<Self>> {
+        if path.is_dir() && crate::ling31_vq::is_release(path) {
+            let gguf = crate::ling31_vq::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() {
             let gguf = crate::glm_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -99,8 +103,13 @@ impl Template {
             path.parent().unwrap_or_else(|| Path::new("."))
         };
         if path.is_dir() {
+            let ling = crate::ling31_vq::is_release(path);
             for name in ["tokenizer_config.json", "chat_template.jinja"] {
-                crate::glm_vq::asset(path, name).map_err(asset_error)?;
+                if ling {
+                    crate::ling31_vq::asset(path, name).map_err(asset_error)?;
+                } else {
+                    crate::glm_vq::asset(path, name).map_err(asset_error)?;
+                }
             }
         }
         let config_path = dir.join("tokenizer_config.json");
