@@ -1244,7 +1244,10 @@ fn open_bind_plan(
         Some(w) => BindPlan::resolve_v41(shape, w, inventory),
         None => BindPlan::resolve(shape, inventory),
     };
-    if shape.family == ModelFamily::Glm53Vq && plan.slots.len() != inventory.tensors.len() {
+    // Residual stages are optional layout entries; every present tensor binds.
+    if shape.family == ModelFamily::Glm53Vq
+        && plan.slots.iter().filter(|s| s.index.is_some()).count() != inventory.tensors.len()
+    {
         return Err(Error {
             code: 1,
             message: "GLM VQ tensor set mismatch".into(),
