@@ -149,11 +149,24 @@ long-context serving; use the [family guide](naive-n05-flash.md) for those limit
 
 ## GLM-5.3 Flash VQ
 
-The R13+8 release of GLM-5.3 Flash VQ
+The 19-layer R13+8 release of GLM-5.3 Flash VQ
 ([model card](https://huggingface.co/Baekpica/GLM-5.3-Flash-VQ-GGUF), HF
-`35d3833d`: routed layers 3–16 add an 8-bit residual stage, Q4_K nonexperts
-unchanged) recorded **1,113.7 prefill / 31.81 decode** with two embedded MTP
-drafts in the [2K–64K sweep](benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/README.md)
+`71c73e7e`: routed layers 3–17, 22, 27, 41 and 44 add an 8-bit residual
+stage, Q4_K nonexperts unchanged) recorded **1,101.3 prefill / 30.93 decode**
+with two embedded MTP drafts in the
+[2K–64K sweep](benchmarks/glm53-vq-spark-64k-19-layers-2026-10-19/README.md)
+(`94d776ac`). The 14-layer revision (layers 3–16, tag `r13p8-l3-16`)
+measured 1,119.6 / 32.02 in the same interleaved runs and binary: prefill
+−1.6% from five more layers' residual MMAs, a verify cycle +1.0% from 7.98
+instead of 7.85 GB per token, and 2.171 instead of 2.226 tokens per verify
+on these continuations. The 19-layer revision lowers held-out PPL from 4.042
+to 3.895 and stops looping on long-context served answers (0 of 10 seeds
+instead of 4); its 1M quote keeps one bank with 4,096-row prefill chunks.
+
+![GLM-5.3 Flash VQ R13+8 on 19 vs 14 layers on one DGX Spark](benchmarks/glm53-vq-spark-64k-19-layers-2026-10-19/throughput.png)
+
+The 14-layer revision (HF `35d3833d`) recorded **1,113.7 / 31.81** in the
+[2K–64K sweep](benchmarks/glm53-vq-spark-64k-r13p8-2026-10-18/README.md)
 (`90517b6b`). The previous R13 release measured 1,175.4 / 35.00 in the same
 interleaved runs and binary: prefill −5.2% from the residual MMAs, a verify
 cycle +5.5% from 7.85 instead of 7.5 GB per token, and 2.226 instead of 2.321
