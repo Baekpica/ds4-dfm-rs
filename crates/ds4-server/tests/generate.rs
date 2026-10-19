@@ -3,8 +3,10 @@
 use ds4_server::parse::{parse_request, ChatMsg, ChatPart, ImageMime, RequestImage, ToolCall};
 use ds4_server::route::WireSurface;
 use ds4_server::tools::{
-    DSML_INVOKE_END, DSML_INVOKE_START, DSML_PARAM_END, DSML_PARAM_START, DSML_TOOL_CALLS_END,
-    DSML_TOOL_CALLS_START,
+    DSML_INVOKE_END, DSML_INVOKE_END_SPACED, DSML_INVOKE_START, DSML_INVOKE_START_SPACED,
+    DSML_PARAM_END, DSML_PARAM_END_SPACED, DSML_PARAM_START, DSML_PARAM_START_SPACED,
+    DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START,
+    DSML_TOOL_CALLS_START_SPACED,
 };
 use ds4_server::{
     generate_and_write, generation_blocked, handle_client_inner, render_prompt,
@@ -2412,6 +2414,8 @@ struct ScriptedV41 {
     stop_id: i32,
     ctx: i32,
     runs: std::cell::RefCell<Vec<(Vec<i32>, i32)>>,
+    /// What the route handed `remember_tool_replay`: (wire ids, sampled bytes).
+    remembered: std::cell::RefCell<Vec<(Vec<String>, String)>>,
 }
 
 impl ScriptedV41 {
@@ -2424,6 +2428,7 @@ impl ScriptedV41 {
             stop_id: 99,
             ctx,
             runs: std::cell::RefCell::new(Vec::new()),
+            remembered: std::cell::RefCell::new(Vec::new()),
         }
     }
 }
@@ -2435,6 +2440,17 @@ impl DecodeIo for ScriptedV41 {
 
     fn is_v41(&self) -> bool {
         true
+    }
+
+    /// The real engine writes the sampled block here (`NativeDecode`,
+    /// generate.rs:4525, a port of `tool_memory_remember` at
+    /// ds4_server.c:14524). The fake records what the route handed it, so the
+    /// write is observable without a model.
+    fn remember_tool_replay(&mut self, calls: &[ToolCall], raw_dsml: &str) {
+        self.remembered.borrow_mut().push((
+            calls.iter().map(|call| call.id.clone()).collect(),
+            raw_dsml.to_string(),
+        ));
     }
 
     fn tokenize_text(&self, text: &str) -> Result<Vec<i32>, GenerateError> {
@@ -2523,6 +2539,140 @@ fn v41_completion_req(body: &str) -> ParsedRequest {
     let mut r = parse_request(WireSurface::OpenaiCompletion, &env(), body).unwrap();
     r.temperature = 0.0;
     r
+}
+
+/// The ds41 route builds its own outcome and returns before the shared finish
+/// path, so it has to write the sampled block itself, the way
+/// `tool_memory_remember` does at ds4_server.c:14524. Before this the route
+/// wrote nothing and the next turn's attach read an empty map, which is what
+/// kept replay at zero on this family.
+#[test]
+fn v41_tool_turn_hands_the_sampled_block_to_the_tool_memory() {
+    // The artifact's own spelling: the spaced wrapper with a plain invocation.
+    let block = format!(
+        "{DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"get_weather\">\n\
+         {DSML_PARAM_START} name=\"city\" string=\"true\">Stockholm{DSML_PARAM_END}\n\
+         {DSML_INVOKE_END_SPACED}\n{DSML_TOOL_CALLS_END_SPACED}"
+    );
+    let body = r#"{"model":"t","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":192,"temperature":0}"#;
+    let parsed = parse_request(WireSurface::OpenaiChat, &env(), body).unwrap();
+    let mut engine = ScriptedV41::new(&[(1, block.as_str()), (99, "")], 1 << 20);
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "v41-mem",
+        CREATED_TEST,
+        false,
+        192,
+        &mut out,
+    )
+    .unwrap();
+
+    let remembered = engine.remembered.borrow();
+    assert_eq!(
+        remembered.len(),
+        1,
+        "the ds41 route never wrote the sampled block"
+    );
+    assert_eq!(
+        remembered[0].1, block,
+        "the remembered bytes are not the sampled block"
+    );
+    assert_eq!(remembered[0].0.len(), 1, "{:?}", remembered[0].0);
+    assert!(
+        remembered[0].0[0].starts_with("call_"),
+        "the map key must be the id that reached the wire: {:?}",
+        remembered[0].0
+    );
+}
+
+/// TP-17's signal half (CTR 8.7, NC-07).  A turn cut by the output budget
+/// inside its tool block must report `length`: the block is unterminated, so
+/// there is no executable call to serve, but the truncation itself is what
+/// tells the agent loop its output was cut.  The reference keeps it by name --
+/// `tool_parse_failure_recovery_finish` (ds4_server.c:6776-6784) returns
+/// "length" when the incoming finish is "length" and "stop" otherwise, and
+/// `test_incomplete_tool_call_keeps_stop_reason` (:19613) pins both arms.
+/// This route pre-clobbered the pre-set `length` (generate.rs:3250) with
+/// `error` before the parse-failure mapping could read it, and the wire remap
+/// at :3389 then flattened that to `stop`.
+#[test]
+fn v41_budget_cut_inside_the_block_reports_length() {
+    let body = r#"{"model":"t","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":3,"temperature":0}"#;
+    let parsed = parse_request(WireSurface::OpenaiChat, &env(), body).unwrap();
+    assert!(parsed.has_tools);
+
+    // Four pieces against a budget of three.  The engine's own loop stops at
+    // n_predict, so the fourth never feeds and the turn ends with the block
+    // open and its invocation unfinished -- the cut the budget sweep measures.
+    let prose = String::from("Checking.");
+    let open = format!(
+        " {DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"get_weather\">"
+    );
+    let param = format!("\n{DSML_PARAM_START_SPACED} name=\"city\" string=\"true\">Stockholm");
+    let close =
+        format!("{DSML_PARAM_END_SPACED}\n{DSML_INVOKE_END_SPACED}\n{DSML_TOOL_CALLS_END_SPACED}");
+    let script: Vec<(i32, &str)> = vec![
+        (1, prose.as_str()),
+        (2, open.as_str()),
+        (3, param.as_str()),
+        (4, close.as_str()),
+    ];
+    let mut engine = ScriptedV41::new(&script, 1 << 20);
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "chatcmpl-cut",
+        CREATED_TEST,
+        false,
+        3,
+        &mut out,
+    )
+    .unwrap();
+    let s = String::from_utf8(out).unwrap();
+
+    assert!(s.contains("\"finish_reason\":\"length\""), "{s}");
+    assert!(!s.contains("\"finish_reason\":\"stop\""), "{s}");
+    // No block closed, so no call is executable: the raw text is the content.
+    assert!(!s.contains("\"tool_calls\""), "{s}");
+    assert!(s.contains(DSML_INVOKE_START_SPACED), "{s}");
+}
+
+/// The other arm of the same reference function: an unterminated block that
+/// the model ended itself is a normal assistant stop, and the wire remap that
+/// clause 2.3.3 relies on still turns the route's `error` into `stop`.  This
+/// guards the reclassification above from widening that remap.
+#[test]
+fn v41_unterminated_block_on_eos_still_reports_stop() {
+    let body = r#"{"model":"t","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":64,"temperature":0}"#;
+    let parsed = parse_request(WireSurface::OpenaiChat, &env(), body).unwrap();
+
+    let open = format!(
+        "Checking. {DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"get_weather\">"
+    );
+    // Same content as the budget arm, stopped one piece earlier: the model
+    // ends the turn itself with the parameter still open.
+    let param = format!("\n{DSML_PARAM_START_SPACED} name=\"city\" string=\"true\">Stockholm");
+    let script: Vec<(i32, &str)> = vec![(1, open.as_str()), (2, param.as_str()), (99, "")];
+    let mut engine = ScriptedV41::new(&script, 1 << 20);
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "chatcmpl-cut-eos",
+        CREATED_TEST,
+        false,
+        64,
+        &mut out,
+    )
+    .unwrap();
+    let s = String::from_utf8(out).unwrap();
+
+    assert!(s.contains("\"finish_reason\":\"stop\""), "{s}");
+    assert!(!s.contains("\"finish_reason\":\"length\""), "{s}");
+    assert!(!s.contains("\"tool_calls\""), "{s}");
 }
 
 #[test]
@@ -2666,4 +2816,105 @@ fn v41_empty_prompt_is_refused_before_the_engine() {
     .unwrap_err();
     assert!(error.to_string().contains("empty prompt"), "{error}");
     assert!(engine.runs.borrow().is_empty());
+}
+
+/// The tracker half of P1.6, measured on a served turn: the recorded artifact
+/// turn (open-grok session 01a14f5d, the fixtures beside `tests/dsml.rs`)
+/// roots its calls on the bare tool name with the stray quote, so the start
+/// scan found no marker and the whole block reached the client as content.
+/// Here the turn is scripted in three pieces -- prose, block, prose -- and the
+/// streamed body must carry the calls while carrying no markup at all.
+#[test]
+fn v41_live_tool_root_turn_streams_calls_without_markup() {
+    let text = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ds41-dsml/live-01a14f5d-turn1.txt"),
+    )
+    .unwrap();
+
+    // The request declares the three tools the turn calls; the start scan only
+    // takes a root tag some tool declares.
+    let body = r#"{"model":"t","stream":true,"messages":[{"role":"user","content":"open solidcraft"}],
+      "tools":[
+        {"type":"function","function":{"name":"memory_search","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}},
+        {"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}},
+        {"type":"function","function":{"name":"list_dir","parameters":{"type":"object","properties":{"target_directory":{"type":"string"}},"required":["target_directory"]}}}
+      ],"max_tokens":512,"temperature":0}"#;
+    let mut parsed = parse_request(WireSurface::OpenaiChat, &env(), body).unwrap();
+    parsed.think_mode = ThinkMode::None;
+    parsed.temperature = 0.0;
+
+    // Split at the fixture's own boundaries -- the root tag and the wrapper
+    // close -- without asking the scan under test, so the arm that turns the
+    // scan off still feeds the writer the same three pieces.
+    let root: &[u8] = b"<memory_search\">";
+    let at = text
+        .windows(root.len())
+        .position(|w| w == root)
+        .expect("the recorded turn keeps its quoted tool root");
+    let close = DSML_TOOL_CALLS_END_SPACED.as_bytes();
+    let end = at
+        + text[at..]
+            .windows(close.len())
+            .position(|w| w == close)
+            .expect("the recorded turn keeps its wrapper close")
+        + close.len();
+
+    let pieces: Vec<Vec<u8>> = vec![
+        text[..at].to_vec(),
+        text[at..end].to_vec(),
+        text[end..].to_vec(),
+    ];
+    let script: Vec<(i32, String)> = pieces
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i as i32 + 1, String::from_utf8_lossy(p).into_owned()))
+        .chain(std::iter::once((99, String::new())))
+        .collect();
+
+    let mut engine = ScriptedV41::new(
+        &script
+            .iter()
+            .map(|(i, s)| (*i, s.as_str()))
+            .collect::<Vec<_>>(),
+        1 << 20,
+    );
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "v41-live-root",
+        CREATED_TEST,
+        true,
+        512,
+        &mut out,
+    )
+    .unwrap();
+    let sse = String::from_utf8(out).unwrap();
+
+    assert!(
+        sse.contains("\"tool_calls\""),
+        "the turn's calls must reach the client: {sse}"
+    );
+    assert!(
+        sse.contains("memory_search") && sse.contains("read_file"),
+        "the sampled calls must be named on the wire: {sse}"
+    );
+    for marker in [
+        DSML_TOOL_CALLS_START_SPACED,
+        DSML_TOOL_CALLS_END_SPACED,
+        DSML_INVOKE_START_SPACED,
+        DSML_INVOKE_END_SPACED,
+        "<memory_search",
+        "<read_file",
+    ] {
+        assert!(
+            !sse.contains(marker),
+            "the block's markup reached the client as content: {marker}"
+        );
+    }
+    assert!(
+        sse.contains("finish_reason\":\"tool_calls\""),
+        "a served call must finish as tool_calls: {sse}"
+    );
 }

@@ -14,10 +14,12 @@ use crate::render::{
 use crate::route::{think_mode_enabled, ThinkMode};
 use crate::stream::{think_end, ChatFormat};
 use crate::tools::{
-    parse_generated_message, DSML_INVOKE_END, DSML_INVOKE_END_SHORT, DSML_INVOKE_START,
-    DSML_INVOKE_START_SHORT, DSML_PARAM_END, DSML_PARAM_END_SHORT, DSML_PARAM_START,
-    DSML_PARAM_START_SHORT, DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SHORT, DSML_TOOL_CALLS_START,
-    DSML_TOOL_CALLS_START_SHORT,
+    parse_generated_message, DSML_INVOKE_END, DSML_INVOKE_END_SHORT, DSML_INVOKE_END_SPACED,
+    DSML_INVOKE_START, DSML_INVOKE_START_SHORT, DSML_INVOKE_START_SPACED, DSML_PARAM_END,
+    DSML_PARAM_END_SHORT, DSML_PARAM_END_SPACED, DSML_PARAM_START, DSML_PARAM_START_SHORT,
+    DSML_PARAM_START_SPACED, DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SHORT,
+    DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START, DSML_TOOL_CALLS_START_SHORT,
+    DSML_TOOL_CALLS_START_SPACED,
 };
 
 fn is_c_space(c: u8) -> bool {
@@ -133,48 +135,23 @@ pub fn rendered_chat_system_region(format: ChatFormat, prompt: &[u8]) -> Vec<u8>
     }
 }
 
-/// C `try_repair_dsml`.
+/// C `try_repair_dsml` (ds4_server.c:6707-6776).  Only the enclosing wrapper
+/// may be missing: an unfinished invocation can still be missing arguments and
+/// an unfinished value can be a truncated command, so closing either "would
+/// invent an executable action" (:6697-6700).  The style is the one of the
+/// earliest tool start in the scan (:6730-6745 find_any_tool_start), and the
+/// think scope skips markers inside parameter bodies (:6714).
 pub fn try_repair_dsml(s: &[u8]) -> Option<Vec<u8>> {
     if s.is_empty() {
         return None;
     }
     let think = b"</think>";
-    let scan = if let Some(i) = find_last_substr(s, think) {
-        &s[i + think.len()..]
-    } else {
-        s
+    let scan_start = match find_last_structural(s, think) {
+        Some(i) => i + think.len(),
+        None => 0,
     };
-    let (ts, te, is, ie, ps, pe) = if find_substr(scan, DSML_TOOL_CALLS_START.as_bytes()).is_some()
-    {
-        (
-            DSML_TOOL_CALLS_START.as_bytes(),
-            DSML_TOOL_CALLS_END.as_bytes(),
-            DSML_INVOKE_START.as_bytes(),
-            DSML_INVOKE_END.as_bytes(),
-            DSML_PARAM_START.as_bytes(),
-            DSML_PARAM_END.as_bytes(),
-        )
-    } else if find_substr(scan, DSML_TOOL_CALLS_START_SHORT.as_bytes()).is_some() {
-        (
-            DSML_TOOL_CALLS_START_SHORT.as_bytes(),
-            DSML_TOOL_CALLS_END_SHORT.as_bytes(),
-            DSML_INVOKE_START_SHORT.as_bytes(),
-            DSML_INVOKE_END_SHORT.as_bytes(),
-            DSML_PARAM_START_SHORT.as_bytes(),
-            DSML_PARAM_END_SHORT.as_bytes(),
-        )
-    } else if find_substr(scan, b"<tool_calls>").is_some() {
-        (
-            b"<tool_calls>".as_slice(),
-            b"</tool_calls>".as_slice(),
-            b"<invoke".as_slice(),
-            b"</invoke>".as_slice(),
-            b"<parameter".as_slice(),
-            b"</parameter>".as_slice(),
-        )
-    } else {
-        return None;
-    };
+    let scan = &s[scan_start..];
+    let (ts, te, is, ie, ps, pe) = repair_tags(scan)?;
     let mut tos = 0usize;
     let mut toe = 0usize;
     let mut ios = 0usize;
@@ -205,23 +182,140 @@ pub fn try_repair_dsml(s: &[u8]) -> Option<Vec<u8>> {
             i += 1;
         }
     }
-    if tos == toe && ios == ioe && pos == poe {
+    // Every invocation and every parameter must already be closed; an extra
+    // closing tag is not a truncation pattern.  Only then is the missing
+    // wrapper supplied, and only it (:6768-6776).
+    if ios != ioe || pos != poe {
         return None;
     }
-    if toe > tos || ioe > ios || poe > pos {
+    if tos == toe || toe > tos {
         return None;
     }
     let mut out = s.to_vec();
-    for _ in 0..(pos - poe) {
-        out.extend_from_slice(pe);
-    }
-    for _ in 0..(ios - ioe) {
-        out.extend_from_slice(ie);
-    }
     for _ in 0..(tos - toe) {
         out.extend_from_slice(te);
     }
     Some(out)
+}
+
+/// The tag set of the earliest tool start in the scan (C `find_any_tool_start`
+/// plus the style dispatch, ds4_server.c:6730-6745).  `<tool_call>` starts a
+/// block for the search but has no repair style, so it refuses like the
+/// reference's trailing `else`.
+fn repair_tags(
+    scan: &[u8],
+) -> Option<(
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+)> {
+    let first = find_any_tool_start(scan)?;
+    let s = &scan[first..];
+    if s.starts_with(DSML_TOOL_CALLS_START_SPACED.as_bytes()) {
+        Some((
+            DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+            DSML_TOOL_CALLS_END_SPACED.as_bytes(),
+            DSML_INVOKE_START_SPACED.as_bytes(),
+            DSML_INVOKE_END_SPACED.as_bytes(),
+            DSML_PARAM_START_SPACED.as_bytes(),
+            DSML_PARAM_END_SPACED.as_bytes(),
+        ))
+    } else if s.starts_with(DSML_TOOL_CALLS_START.as_bytes()) {
+        Some((
+            DSML_TOOL_CALLS_START.as_bytes(),
+            DSML_TOOL_CALLS_END.as_bytes(),
+            DSML_INVOKE_START.as_bytes(),
+            DSML_INVOKE_END.as_bytes(),
+            DSML_PARAM_START.as_bytes(),
+            DSML_PARAM_END.as_bytes(),
+        ))
+    } else if s.starts_with(DSML_TOOL_CALLS_START_SHORT.as_bytes()) {
+        Some((
+            DSML_TOOL_CALLS_START_SHORT.as_bytes(),
+            DSML_TOOL_CALLS_END_SHORT.as_bytes(),
+            DSML_INVOKE_START_SHORT.as_bytes(),
+            DSML_INVOKE_END_SHORT.as_bytes(),
+            DSML_PARAM_START_SHORT.as_bytes(),
+            DSML_PARAM_END_SHORT.as_bytes(),
+        ))
+    } else if s.starts_with(b"<tool_calls>") {
+        Some((
+            b"<tool_calls>".as_slice(),
+            b"</tool_calls>".as_slice(),
+            b"<invoke".as_slice(),
+            b"</invoke>".as_slice(),
+            b"<parameter".as_slice(),
+            b"</parameter>".as_slice(),
+        ))
+    } else {
+        None
+    }
+}
+
+/// The earliest of the spellings a tool block can open with (C
+/// `find_any_tool_start`, ds4_server.c:5842-5856), index into `s`.
+fn find_any_tool_start(s: &[u8]) -> Option<usize> {
+    [
+        DSML_TOOL_CALLS_START_SPACED.as_bytes(),
+        DSML_TOOL_CALLS_START.as_bytes(),
+        DSML_TOOL_CALLS_START_SHORT.as_bytes(),
+        b"<tool_calls>".as_slice(),
+        b"<tool_call>".as_slice(),
+    ]
+    .iter()
+    .filter_map(|p| find_substr(s, p))
+    .min()
+}
+
+/// The last `needle` outside a parameter body (C `find_tool_structural_text`,
+/// ds4_server.c:5890-5920): tool arguments are literal data, so a marker inside
+/// them is not structure.  A wrapper whose close is missing ends the scan at
+/// what it had found, exactly as the reference's early return does.
+fn find_last_structural(s: &[u8], needle: &[u8]) -> Option<usize> {
+    let wrappers: [(&[u8], &[u8]); 6] = [
+        (
+            DSML_PARAM_START_SPACED.as_bytes(),
+            DSML_PARAM_END_SPACED.as_bytes(),
+        ),
+        (DSML_PARAM_START.as_bytes(), DSML_PARAM_END.as_bytes()),
+        (
+            DSML_PARAM_START_SHORT.as_bytes(),
+            DSML_PARAM_END_SHORT.as_bytes(),
+        ),
+        (b"<parameter", b"</parameter>"),
+        (b"<arg_key>", b"</arg_key>"),
+        (b"<arg_value>", b"</arg_value>"),
+    ];
+    let mut found = None;
+    let mut i = 0;
+    while i < s.len() {
+        if s[i..].starts_with(needle) {
+            found = Some(i);
+        }
+        let mut skipped = false;
+        for (open, close) in wrappers {
+            if !s[i..].starts_with(open) {
+                continue;
+            }
+            let Some(gt) = find_substr(&s[i..], b">") else {
+                return found;
+            };
+            let body = &s[i + gt + 1..];
+            let Some(rel) = find_substr(body, close) else {
+                return found;
+            };
+            i += gt + 1 + rel + close.len();
+            skipped = true;
+            break;
+        }
+        if !skipped {
+            i += 1;
+        }
+    }
+    found
 }
 
 /// C `try_repair_solar_tool_call`.
@@ -567,7 +661,37 @@ fn solar_think_prompt() -> Vec<u8> {
     p
 }
 
-fn repair_dsml_trunc() -> String {
+/// The wrapper is the only tag missing: the repair's one legal case.
+fn repair_dsml_missing_wrapper() -> String {
+    format!(
+        "{}\n{} name=\"bash\">\n{} name=\"command\" string=\"true\">ls{}\n{}\n",
+        DSML_TOOL_CALLS_START, DSML_INVOKE_START, DSML_PARAM_START, DSML_PARAM_END, DSML_INVOKE_END
+    )
+}
+
+/// The same in the V4.1 spaced spelling.
+fn repair_dsml_spaced() -> String {
+    format!(
+        "{}\n{} name=\"bash\">\n{} name=\"command\" string=\"true\">ls{}\n{}\n",
+        DSML_TOOL_CALLS_START_SPACED,
+        DSML_INVOKE_START_SPACED,
+        DSML_PARAM_START_SPACED,
+        DSML_PARAM_END_SPACED,
+        DSML_INVOKE_END_SPACED
+    )
+}
+
+/// An unfinished invocation: its arguments may still be missing, so the
+/// repair must refuse.
+fn repair_dsml_missing_invoke() -> String {
+    format!(
+        "{}\n{} name=\"edit\">\n{} name=\"path\" string=\"true\">/tmp/x{}\n",
+        DSML_TOOL_CALLS_START, DSML_INVOKE_START, DSML_PARAM_START, DSML_PARAM_END
+    )
+}
+
+/// An unfinished value: a truncated command, so the repair must refuse.
+fn repair_dsml_param_open() -> String {
     format!(
         "{}\n{} name=\"bash\">\n{} name=\"command\" string=\"true\">ls",
         DSML_TOOL_CALLS_START, DSML_INVOKE_START, DSML_PARAM_START
@@ -605,7 +729,20 @@ pub fn dump_script(name: &str) -> String {
         )),
         "system-dsml" => utf(&rendered_dsml_system_region(&dsml_think_prompt())),
         "system-solar" => utf(&rendered_solar_system_region(&solar_think_prompt())),
-        "repair-dsml" => match try_repair_dsml(repair_dsml_trunc().as_bytes()) {
+        "repair-dsml" => match try_repair_dsml(repair_dsml_missing_wrapper().as_bytes()) {
+            Some(v) => utf(&v),
+            None => "NONE".into(),
+        },
+        "repair-dsml-param-open" => match try_repair_dsml(repair_dsml_param_open().as_bytes()) {
+            Some(v) => utf(&v),
+            None => "NONE".into(),
+        },
+        "repair-dsml-invoke-open" => match try_repair_dsml(repair_dsml_missing_invoke().as_bytes())
+        {
+            Some(v) => utf(&v),
+            None => "NONE".into(),
+        },
+        "repair-dsml-spaced" => match try_repair_dsml(repair_dsml_spaced().as_bytes()) {
             Some(v) => utf(&v),
             None => "NONE".into(),
         },

@@ -37,8 +37,11 @@ pub mod serve_static;
 pub mod stream;
 #[cfg(any(feature = "native", test))]
 mod tool_memory;
+#[cfg(any(feature = "native", test))]
+pub use tool_memory::{ExactReplay, ToolMemoryConfig};
 pub mod tool_stream;
 pub mod tools;
+pub mod trace;
 #[cfg(any(feature = "native", test))]
 mod v41_disk;
 pub mod worker;
@@ -110,24 +113,25 @@ pub use render::{
     append_tool_result_text, render_chat, render_chat_choice, render_dots3_chat, render_dsml_chat,
     render_dsml_chat_choice, render_dsml_chat_choice_ex, render_exaone_chat, render_live_tool_tail,
     render_motif3_chat, render_motif3_chat_ex, render_qwen_chat_ex, render_solar_chat,
-    render_solar_chat_ex, role_is_system, role_is_user_like, syntax_for_model_id,
-    think_effort_prefix, tool_start_marker, DsmlHead, ModelSyntax, RenderError, DSML_ASSISTANT,
-    DSML_BOS, DSML_EOS, DSML_SYSTEM_TOKEN, DSML_THINK_END, DSML_THINK_START, DSML_USER,
-    THINK_HIGH_PREFIX, THINK_MAX_PREFIX, V41_THINK_HIGH_PREFIX, V41_THINK_MAX_PREFIX,
+    render_solar_chat_ex, responses_visible_assistant_suffix, role_is_system, role_is_user_like,
+    syntax_for_model_id, think_effort_prefix, tool_start_marker, DsmlHead, ModelSyntax,
+    RenderError, DSML_ASSISTANT, DSML_BOS, DSML_EOS, DSML_SYSTEM_TOKEN, DSML_THINK_END,
+    DSML_THINK_START, DSML_USER, THINK_HIGH_PREFIX, THINK_MAX_PREFIX, V41_THINK_HIGH_PREFIX,
+    V41_THINK_MAX_PREFIX,
 };
 pub use retry::dump_script as retry_dump_script;
 pub use route::{
-    compute_needs, decode_budget, parse_reasoning_effort_name, route_decide, think_mode_enabled,
-    think_mode_from_enabled, wire_surface_for, Api, NeedInput, ReqKind, RouteDecision, RouteEnv,
-    ThinkMode, WireSurface, LANE_CONTINUOUS, LANE_NONE, LANE_SERIAL, LANE_STATIC,
-    NEED_BANK_FRONTIER, NEED_CONTINUATION_PUBLISH, NEED_CORRECTIVE_RECOVERY, NEED_DURABLE_RESPONSE,
-    NEED_IMAGE, NEED_LIVE_FRONTIER, NEED_PER_ROW_SAMPLING, NEED_PREFILL_ONLY, NEED_STOP_SCAN,
-    NEED_STREAMING, NEED_THINKING, NEED_TOKEN_IDS, NEED_TOOL_SCAN, REASON_COALESCE_OFF,
-    REASON_CONT, REASON_CONT_BANK, REASON_CONT_UNAVAILABLE, REASON_NAMES,
-    REASON_NEED_CONTINUATION_PUBLISH, REASON_NEED_CORRECTIVE_RECOVERY, REASON_NEED_DURABLE,
-    REASON_NEED_LIVE_FRONTIER, REASON_NEED_PREFILL_ONLY, REASON_STATIC_NO_CONT,
-    REASON_STATIC_PROMPT_BOUNDS, REASON_SURFACE, REASON_TOKEN_IDS_PROJECTION,
-    REASON_TOOLS_COMPLETION,
+    compute_needs, decode_budget, mode_budget, parse_reasoning_effort_name, route_decide,
+    think_mode_enabled, think_mode_from_enabled, wire_surface_for, Api, NeedInput, ReqKind,
+    RequestedEffort, RouteDecision, RouteEnv, ThinkMode, WireSurface, LANE_CONTINUOUS, LANE_NONE,
+    LANE_SERIAL, LANE_STATIC, NEED_BANK_FRONTIER, NEED_CONTINUATION_PUBLISH,
+    NEED_CORRECTIVE_RECOVERY, NEED_DURABLE_RESPONSE, NEED_IMAGE, NEED_LIVE_FRONTIER,
+    NEED_PER_ROW_SAMPLING, NEED_PREFILL_ONLY, NEED_STOP_SCAN, NEED_STREAMING, NEED_THINKING,
+    NEED_TOKEN_IDS, NEED_TOOL_SCAN, REASON_COALESCE_OFF, REASON_CONT, REASON_CONT_BANK,
+    REASON_CONT_UNAVAILABLE, REASON_NAMES, REASON_NEED_CONTINUATION_PUBLISH,
+    REASON_NEED_CORRECTIVE_RECOVERY, REASON_NEED_DURABLE, REASON_NEED_LIVE_FRONTIER,
+    REASON_NEED_PREFILL_ONLY, REASON_STATIC_NO_CONT, REASON_STATIC_PROMPT_BOUNDS, REASON_SURFACE,
+    REASON_TOKEN_IDS_PROJECTION, REASON_TOOLS_COMPLETION,
 };
 pub use serve::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, handle_client,

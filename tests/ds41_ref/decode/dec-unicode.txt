@@ -1,0 +1,8 @@
+
+
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="say">
+<｜DSML｜ parameter name="city" string="true">Stockholm</｜DSML｜ parameter>
+<｜DSML｜ parameter name="note" string="true">smörgås</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls><｜end▁of▁sentence｜>

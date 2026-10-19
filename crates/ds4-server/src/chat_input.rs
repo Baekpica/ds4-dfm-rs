@@ -28,7 +28,8 @@ pub(crate) fn render_model(
         return crate::generate::render_prompt_ex(
             parsed,
             model_id,
-            crate::render::dsml_head(model_id, system_token),
+            crate::render::dsml_head(model_id, system_token)
+                .with_effort(parsed.effort.head_budget()),
         );
     }
     Err(input_error(

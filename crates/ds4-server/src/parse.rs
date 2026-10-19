@@ -11,7 +11,8 @@ use crate::json::{
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
 use crate::render::{ModelSyntax, DSML_IMAGE};
 use crate::route::{
-    compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
+    compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, RequestedEffort, ThinkMode,
+    WireSurface,
 };
 use std::sync::Arc;
 
@@ -196,6 +197,10 @@ pub struct ParsedRequest {
     pub stream_include_usage: bool,
     pub return_token_ids: bool,
     pub think_mode: ThinkMode,
+    /// The effort the request asked for, kept beside the collapsed
+    /// `think_mode`: the V4.1 head renders this budget (encoding.py:456-473)
+    /// while the engine keeps its own mode.
+    pub effort: RequestedEffort,
     pub eos_policy: EosPolicy,
     pub has_tools: bool,
     pub has_tool_results: bool,
@@ -248,6 +253,7 @@ impl ParsedRequest {
             stream_include_usage: false,
             return_token_ids: false,
             think_mode: ThinkMode::Low,
+            effort: RequestedEffort::named(ThinkMode::Low),
             eos_policy: EosPolicy::Default,
             has_tools: false,
             has_tool_results: false,
@@ -543,9 +549,42 @@ fn validate_audio_refs(
     Ok(())
 }
 
-fn append_text_part(msg: &mut ChatMsg, text: String) {
+/// The oracle refuses a user-supplied image placeholder in a textual field
+/// (encoding.py:355-367; its text-block half is :346-352, nested tool-result
+/// text included): an image is an image content block, never the literal
+/// token in text.  A stray literal tokenizes to the placeholder id
+/// (crates/ds4-core/src/tok.rs:2603) and a request that carries no image never
+/// reaches the V4.1 expansion which counts placeholders
+/// (crates/ds4-server/src/generate.rs:3107), so it would reach the model as a
+/// lone image token at a text position.
+fn reject_stray_image_in_content(text: &str) -> Result<(), String> {
+    if !text.contains(DSML_IMAGE) {
+        return Ok(());
+    }
+    Err(format!(
+        "Message content contains image special token '{DSML_IMAGE}'. Images should be provided as image content blocks."
+    ))
+}
+
+/// The oracle's other half (encoding.py:363-366): the same literal in
+/// `reasoning_content`.
+fn reject_stray_image_in_reasoning(text: &str) -> Result<(), String> {
+    if !text.contains(DSML_IMAGE) {
+        return Ok(());
+    }
+    Err(format!(
+        "reasoning_content contains image special token '{DSML_IMAGE}'"
+    ))
+}
+
+fn append_text_part(msg: &mut ChatMsg, text: String, err: &mut String) -> bool {
+    if let Err(e) = reject_stray_image_in_content(&text) {
+        *err = e;
+        return false;
+    }
     msg.content.push_str(&text);
     msg.parts.push(ChatPart::Text(text));
+    true
 }
 
 fn validate_image_references(msgs: &[ChatMsg], images: &[RequestImage]) -> Result<(), String> {
@@ -1036,7 +1075,15 @@ fn parse_openai_message_content(
 ) -> bool {
     p.ws();
     if p.peek() == Some(b'"') {
-        return json_string(p).map(|s| msg.content = s).is_some();
+        let Some(s) = json_string(p) else {
+            return false;
+        };
+        if let Err(e) = reject_stray_image_in_content(&s) {
+            *err = e;
+            return false;
+        }
+        msg.content = s;
+        return true;
     }
     if p.lit("null") {
         msg.content.clear();
@@ -1051,7 +1098,9 @@ fn parse_openai_message_content(
             let Some(text) = json_string(p) else {
                 return false;
             };
-            append_text_part(msg, text);
+            if !append_text_part(msg, text, err) {
+                return false;
+            }
         } else if p.bump() == Some(b'{') {
             let mut typ = None;
             let mut text = None;
@@ -1105,7 +1154,11 @@ fn parse_openai_message_content(
                 return false;
             }
             match (typ.as_deref(), text, image_url) {
-                (Some("text"), Some(text), _) => append_text_part(msg, text),
+                (Some("text"), Some(text), _) => {
+                    if !append_text_part(msg, text, err) {
+                        return false;
+                    }
+                }
                 (Some("image_url"), _, Some(url)) => {
                     match add_image_data_uri(images, audios, videos, &url) {
                         Ok(index) => msg.parts.push(ChatPart::Image(index)),
@@ -1214,7 +1267,14 @@ fn parse_messages(
                     return None;
                 }
             } else if key == "reasoning_content" {
-                msg.reasoning = json_content(p)?;
+                let Some(r) = json_content(p) else {
+                    return None;
+                };
+                if let Err(e) = reject_stray_image_in_reasoning(&r) {
+                    *err = e;
+                    return None;
+                }
+                msg.reasoning = r;
             } else if key == "tool_call_id" {
                 let id = json_string(p)?;
                 add_tool_call_id(&mut msg, &id);
@@ -1329,6 +1389,10 @@ fn json_tool_result_content(
     p.ws();
     if p.peek() == Some(b'"') {
         let text = json_string(p)?;
+        if let Err(e) = reject_stray_image_in_content(&text) {
+            *err = e;
+            return None;
+        }
         return Some((text.clone(), text));
     }
     if p.lit("null") {
@@ -1408,6 +1472,10 @@ fn json_tool_result_content(
                     }
                 }
             } else if let Some(t) = text {
+                if let Err(e) = reject_stray_image_in_content(&t) {
+                    *err = e;
+                    return None;
+                }
                 rendered.push_str(&t);
                 plain.push_str(&t);
             }
@@ -1564,9 +1632,15 @@ fn parse_anthropic_content_block(
         }
         _ => {
             if let Some(t) = text {
-                append_text_part(msg, t);
+                if !append_text_part(msg, t, err) {
+                    return false;
+                }
             }
             if let Some(t) = thinking {
+                if let Err(e) = reject_stray_image_in_reasoning(&t) {
+                    *err = e;
+                    return false;
+                }
                 msg.reasoning.push_str(&t);
             }
         }
@@ -1582,7 +1656,15 @@ fn parse_anthropic_content(
 ) -> bool {
     p.ws();
     if p.peek() == Some(b'"') {
-        return json_string(p).map(|s| msg.content = s).is_some();
+        let Some(s) = json_string(p) else {
+            return false;
+        };
+        if let Err(e) = reject_stray_image_in_content(&s) {
+            *err = e;
+            return false;
+        }
+        msg.content = s;
+        return true;
     }
     if p.lit("null") {
         msg.content = String::new();
@@ -1597,7 +1679,9 @@ fn parse_anthropic_content(
     while p.peek().is_some() && p.peek() != Some(b']') {
         if p.peek() == Some(b'"') {
             if let Some(s) = json_string(p) {
-                append_text_part(msg, s);
+                if !append_text_part(msg, s, err) {
+                    return false;
+                }
             } else {
                 return false;
             }
@@ -2413,6 +2497,10 @@ fn parse_responses_content_array_mm(
     p.ws();
     if p.peek() == Some(b'"') {
         let text = json_string(p)?;
+        if let Err(e) = reject_stray_image_in_content(&text) {
+            *err = e;
+            return None;
+        }
         return Some((text.clone(), vec![ChatPart::Text(text)]));
     }
     if p.lit("null") {
@@ -2471,6 +2559,10 @@ fn parse_responses_content_array_mm(
             );
             if is_text {
                 let text = text?;
+                if let Err(e) = reject_stray_image_in_content(&text) {
+                    *err = e;
+                    return None;
+                }
                 b.push_str(&text);
                 parts.push(ChatPart::Text(text));
             } else if typ.as_deref() == Some("input_image") {
@@ -2508,13 +2600,13 @@ fn parse_responses_content_array_mm(
     Some((b, parts))
 }
 
-fn parse_responses_content_array(p: &mut Json<'_>) -> Option<String> {
-    parse_responses_content_array_mm(p, None, &mut String::new()).map(|(text, _)| text)
+fn parse_responses_content_array(p: &mut Json<'_>, err: &mut String) -> Option<String> {
+    parse_responses_content_array_mm(p, None, err).map(|(text, _)| text)
 }
 
 fn parse_responses_reasoning(
     p: &mut Json<'_>,
-    effort: &mut ThinkMode,
+    effort: &mut RequestedEffort,
     summary_opted: &mut bool,
 ) -> Option<bool> {
     p.ws();
@@ -2651,7 +2743,7 @@ fn parse_responses_input(
                     Some(json_raw_value(p)?)
                 };
             } else if key == "summary" {
-                summary = Some(parse_responses_content_array(p)?);
+                summary = Some(parse_responses_content_array(p, err)?);
             } else if key == "action" {
                 action = Some(json_raw_value(p)?);
             } else if key == "result" {
@@ -2875,15 +2967,16 @@ fn apply_think(
     r: &mut ParsedRequest,
     got: bool,
     mut enabled: bool,
-    effort: ThinkMode,
+    effort: RequestedEffort,
     engine_defaults: bool,
 ) {
     enabled = apply_think_aliases(r, got, enabled);
     r.think_mode = if engine_defaults {
-        engine_think_mode(enabled, effort)
+        engine_think_mode(enabled, effort.mode)
     } else {
-        think_mode_from_enabled(enabled, effort)
+        think_mode_from_enabled(enabled, effort.mode)
     };
+    r.effort = effort;
 }
 
 /// The engine's `think_mode_from_enabled` (server_msgs.c:186-189): nothing
@@ -2912,11 +3005,11 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
     let mut msgs = Vec::new();
     let mut images = ImageInputs::new(env);
     let mut audios = Vec::new();
@@ -3041,7 +3134,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
                     // effort field alone is the client asking for thinking --
                     // got_thinking set, enabled = effort != none.
                     got_thinking = true;
-                    thinking_enabled = e != ThinkMode::None;
+                    thinking_enabled = e.mode != ThinkMode::None;
                     true
                 }
                 Ok(None) => {
@@ -3049,7 +3142,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
                     // still counts as an explicit ask (the engine's
                     // parse_reasoning_effort_value returns true unchanged).
                     got_thinking = true;
-                    thinking_enabled = reasoning_effort != ThinkMode::None;
+                    thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                     true
                 }
                 Err(_) => false,
@@ -3128,11 +3221,11 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
 
     p.ws();
     if p.bump() != Some(b'{') {
@@ -3287,11 +3380,11 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
     let mut msgs = Vec::new();
     let mut images = ImageInputs::new(env);
     let mut system = None;
@@ -3394,7 +3487,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                         // an effort-only ask turns thinking on (high/max) or
                         // off (none); an explicit thinking field still wins.
                         if !got_thinking {
-                            thinking_enabled = reasoning_effort != ThinkMode::None;
+                            thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                         }
                     }
                     true
@@ -3413,7 +3506,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                 Ok(Some(e)) => {
                     reasoning_effort = e;
                     if !got_thinking {
-                        thinking_enabled = reasoning_effort != ThinkMode::None;
+                        thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                     }
                     true
                 }
@@ -3484,11 +3577,11 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
     let mut msgs = Vec::new();
     let mut images = ImageInputs::new(env);
     let mut loaded = String::new();
@@ -3607,7 +3700,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                         // explicit effort is the client opting into thinking
                         // control -- got_thinking set, enabled = effort != none.
                         got_thinking = true;
-                        thinking_enabled = reasoning_effort != ThinkMode::None;
+                        thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                     }
                     true
                 }

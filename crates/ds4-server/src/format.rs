@@ -1,7 +1,7 @@
 //! v0.6.3 schema-format refusal (ds4-on-spark#10).
 
 use crate::json::{json_skip_value, json_string, Json};
-use crate::route::{parse_reasoning_effort_name, ThinkMode};
+use crate::route::{parse_reasoning_effort_name, RequestedEffort, ThinkMode};
 
 pub fn output_format_type_supported(field: &str, typ: &str) -> Result<(), String> {
     if typ == "text" {
@@ -93,18 +93,50 @@ pub fn parse_responses_text_value(p: &mut Json<'_>) -> Result<(), String> {
     Ok(())
 }
 
-pub fn parse_reasoning_effort_value(p: &mut Json<'_>) -> Result<Option<ThinkMode>, String> {
+/// The `reasoning_effort` value: a name from the shared vocabulary, or the
+/// oracle's numeric form -- an integer in [1,100] renders as itself
+/// (encoding.py:456-473).  A number turns thinking on and takes the engine's
+/// collapsed HIGH mode: only the head line carries the number.
+pub fn parse_reasoning_effort_value(p: &mut Json<'_>) -> Result<Option<RequestedEffort>, String> {
     p.ws();
     if p.lit("null") {
         return Ok(None);
     }
+    if let Some(budget) = json_effort_budget(p) {
+        return Ok(Some(RequestedEffort {
+            mode: ThinkMode::High,
+            budget: Some(budget),
+        }));
+    }
     let name = json_string(p).ok_or_else(|| String::new())?;
     parse_reasoning_effort_name(&name)
+        .map(RequestedEffort::named)
         .map(Some)
         .ok_or_else(|| String::new())
 }
 
-pub fn parse_output_config_effort(p: &mut Json<'_>) -> Result<Option<ThinkMode>, String> {
+/// A bare integer token in [1,100]: the oracle asserts `type(effort) is int`
+/// (encoding.py:464), so a fraction or an exponent is not a budget and falls
+/// through to the refusal.  An integer outside the range is refused there too.
+fn json_effort_budget(p: &mut Json<'_>) -> Option<u8> {
+    p.ws();
+    let start = p.i;
+    let mut v: u32 = 0;
+    while let Some(c) = p.peek() {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        v = (v * 10 + (c - b'0') as u32).min(u32::from(u8::MAX));
+        p.i += 1;
+    }
+    if p.i == start || matches!(p.peek(), Some(b'.' | b'e' | b'E')) {
+        p.i = start;
+        return None;
+    }
+    (1..=100).contains(&v).then_some(v as u8)
+}
+
+pub fn parse_output_config_effort(p: &mut Json<'_>) -> Result<Option<RequestedEffort>, String> {
     p.ws();
     if p.lit("null") {
         return Ok(None);

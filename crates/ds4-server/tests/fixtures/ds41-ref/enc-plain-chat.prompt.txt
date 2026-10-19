@@ -1,0 +1,1 @@
+<｜begin▁of▁sentence｜><｜System｜>You are a helpful assistant.<｜User｜>Say hello.<｜Assistant｜></think>Hello.<｜end▁of▁sentence｜><｜User｜>Say it again.<｜Assistant｜></think>

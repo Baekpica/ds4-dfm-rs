@@ -125,6 +125,38 @@ pub(crate) enum Source {
     Ram,
 }
 
+/// The reference's `--disable-exact-dsml-tool-replay` (`ds4_help.c:378`, parsed
+/// `ds4_server.c:15701`). Every tool-memory entry point checks the switch for
+/// itself (`:10635` has_id, `:10654` remember, `:10666` put, `:10682` attach,
+/// `:10976`/`:10987` trailer write, `:11041` trailer load, `:11095` restore),
+/// so a disabled server neither stores nor replays sampled bytes and falls back
+/// to the canonical JSON rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExactReplay {
+    On,
+    Off,
+}
+
+/// The boot values the server builds its one tool map from. The reference keeps
+/// both on the server struct (`ds4_server.c:15435-15436`) and hands the server
+/// to every entry point.
+#[derive(Clone, Copy, Debug)]
+pub struct ToolMemoryConfig {
+    /// `--tool-memory-max-ids N` (`ds4_help.c:379`), default 100000
+    /// (`DS4_TOOL_MEMORY_DEFAULT_MAX_IDS`, `ds4_server.c:10264`).
+    pub max_ids: usize,
+    pub replay: ExactReplay,
+}
+
+impl Default for ToolMemoryConfig {
+    fn default() -> Self {
+        Self {
+            max_ids: DEFAULT_MAX_IDS,
+            replay: ExactReplay::On,
+        }
+    }
+}
+
 struct Entry {
     block: Arc<str>,
     source: Source,
@@ -138,6 +170,7 @@ pub(crate) struct ToolMemory {
     bytes: usize,
     max_ids: usize,
     max_bytes: usize,
+    replay: ExactReplay,
 }
 
 impl Default for ToolMemory {
@@ -156,6 +189,18 @@ impl Drop for ToolMemory {
 
 impl ToolMemory {
     pub(crate) fn new(max_ids: usize, max_bytes: usize) -> Self {
+        Self::with_replay(max_ids, max_bytes, ExactReplay::On)
+    }
+
+    /// The boot config's map: the one place the two switches enter the server.
+    /// Built by the native engines' `with_tool_memory`, so a model-free test
+    /// build has no caller for it.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    pub(crate) fn from_config(config: ToolMemoryConfig) -> Self {
+        Self::with_replay(config.max_ids, MAX_DSML_BYTES, config.replay)
+    }
+
+    fn with_replay(max_ids: usize, max_bytes: usize, replay: ExactReplay) -> Self {
         Self {
             by_id: HashMap::new(),
             blocks: HashMap::new(),
@@ -171,6 +216,7 @@ impl ToolMemory {
             } else {
                 max_bytes
             },
+            replay,
         }
     }
 
@@ -180,6 +226,10 @@ impl ToolMemory {
     }
 
     pub(crate) fn put(&mut self, id: &str, dsml: &str, source: Source) {
+        // `tool_memory_put_source` (ds4_server.c:10666).
+        if self.replay == ExactReplay::Off {
+            return;
+        }
         if id.is_empty()
             || id.len() > MAX_ID_BYTES
             || dsml.is_empty()
@@ -231,7 +281,8 @@ impl ToolMemory {
     }
 
     pub(crate) fn remember(&mut self, calls: &[ToolCall], raw_dsml: &str) -> usize {
-        if raw_dsml.is_empty() {
+        // `tool_memory_remember` (ds4_server.c:10654).
+        if raw_dsml.is_empty() || self.replay == ExactReplay::Off {
             return 0;
         }
         let mut remembered = 0;
@@ -251,6 +302,13 @@ impl ToolMemory {
 
     pub(crate) fn attach(&mut self, messages: &mut [ChatMsg]) -> usize {
         let mut attached = 0;
+        // `tool_memory_attach_to_messages` (ds4_server.c:10682): a disabled
+        // server declines to attach; the reference still counts what it could
+        // not attach in the replay stats (`:10684-10692`), which the port does
+        // not keep per request.
+        if self.replay == ExactReplay::Off {
+            return attached;
+        }
         for message in messages {
             if message.calls.is_empty()
                 || !message.raw_dsml.is_empty()
@@ -285,6 +343,12 @@ impl ToolMemory {
     }
 
     pub(crate) fn checkpoint(&self, text: &[u8]) -> Option<Vec<u8>> {
+        // `kv_tool_map_measure_locked` (ds4_server.c:10976) and the serializer
+        // (`:10987`) both return early when replay is off, leaving the
+        // checkpoint itself untouched: this line changes no KV behaviour.
+        if self.replay == ExactReplay::Off {
+            return Some(Vec::new());
+        }
         let mut entries = Vec::new();
         let mut seen: HashSet<Arc<str>> = HashSet::new();
         let mut pos = 0;
@@ -331,6 +395,10 @@ impl ToolMemory {
     }
 
     pub(crate) fn load_trailer(&mut self, trailer: &[u8], wanted: &HashSet<String>) -> usize {
+        // `kv_tool_map_load_from_pos` (ds4_server.c:11041).
+        if self.replay == ExactReplay::Off {
+            return 0;
+        }
         let max_ids = self.max_ids;
         decode_ktm(trailer, max_ids, |id, dsml| {
             let Ok(id) = std::str::from_utf8(id) else {
@@ -378,6 +446,10 @@ impl ToolMemory {
         model_id: u8,
         messages: &[ChatMsg],
     ) -> usize {
+        // `kv_cache_restore_tool_memory_for_messages` (ds4_server.c:11095).
+        if self.replay == ExactReplay::Off {
+            return 0;
+        }
         let mut missing = Self::wanted_ids(messages);
         missing.retain(|id| !self.by_id.contains_key(id));
         if missing.is_empty() {
@@ -752,6 +824,54 @@ mod tests {
                 ..Default::default()
             })
             .collect()
+    }
+
+    /// `--disable-exact-dsml-tool-replay` (`ds4_help.c:378`): the reference
+    /// gates each entry point for itself (`ds4_server.c:10635`, `:10654`,
+    /// `:10666`, `:10682`, `:10976`, `:11041`, `:11095`), so a disabled server
+    /// must neither store nor replay and must leave the checkpoint intact.
+    #[test]
+    fn disabled_replay_stores_nothing_replays_nothing_and_keeps_the_checkpoint() {
+        let off = ToolMemoryConfig {
+            max_ids: 10,
+            replay: ExactReplay::Off,
+        };
+        let raw = dsml("bash");
+        let mut memory = ToolMemory::from_config(off);
+
+        assert_eq!(memory.remember(&calls(&["call_a"]), &raw), 0);
+        assert!(!memory.contains_id("call_a"));
+
+        memory.put("call_b", &raw, Source::Ram);
+        assert!(!memory.contains_id("call_b"));
+
+        let mut messages = vec![ChatMsg {
+            calls: calls(&["call_a"]),
+            ..Default::default()
+        }];
+        assert_eq!(memory.attach(&mut messages), 0);
+        assert!(messages[0].raw_dsml.is_empty());
+
+        // Both halves of the C's early return: the measurement (`:10976`) and
+        // the serializer (`:10987`). Some(empty) keeps the checkpoint write
+        // itself untouched, which is the C's behaviour too.
+        assert_eq!(memory.checkpoint(raw.as_bytes()), Some(Vec::new()));
+        assert_eq!(memory.load_trailer(raw.as_bytes(), &HashSet::new()), 0);
+    }
+
+    /// `--tool-memory-max-ids N` (`ds4_help.c:379`) reaches the map through the
+    /// boot config, the same value `ds4_server.c:15436` carries into
+    /// `tool_mem.max_entries`.
+    #[test]
+    fn config_max_ids_bounds_the_map() {
+        let mut memory = ToolMemory::from_config(ToolMemoryConfig {
+            max_ids: 2,
+            replay: ExactReplay::On,
+        });
+        for id in ["call_a", "call_b", "call_c"] {
+            memory.put(id, &dsml(id), Source::Ram);
+        }
+        assert_eq!(memory.by_id.len(), 2);
     }
 
     #[test]

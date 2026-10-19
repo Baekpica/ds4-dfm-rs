@@ -672,6 +672,16 @@ pub fn parse_dsml_tolerant(
     if calls.is_empty() {
         return None;
     }
+    // The reference's raw span ends at the closing wrapper
+    // (`ds4_server.c:6218-6219`: `raw_block_end = p + strlen(tool_calls_end)`),
+    // and exact replay re-emits these bytes verbatim, so a span that stopped at
+    // the last invocation would put an unclosed tool block back in the prompt.
+    // This scan leaves `p` ON the close marker; step over it.
+    if norm[p..].starts_with(b"</tool_calls") || norm[p..].starts_with(b"</calls") {
+        if let Some(gt) = norm[p..].iter().position(|&c| c == b'>') {
+            p += gt + 1;
+        }
+    }
     let orig_start = map[start];
     let content_len = trim_tool_separator_ws(text, 0, orig_start);
     let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::DeepSeek);
@@ -698,7 +708,9 @@ pub fn parse_dsml_tolerant(
 /// when its tag names a tool the request's schema declares, every child
 /// goes through the bare-child binding (declared property, matching close,
 /// schema coercion), and the close must match the root; every other shape
-/// keeps the pre-existing behavior.
+/// keeps the pre-existing behavior.  The root tag body may also carry the
+/// single stray quote the served turn of 2026-10-18 shows (`<read_file">`,
+/// open-grok session 01a14f5d); see the body check below for the measurement.
 fn dsml_tolerant_tool_root_scan(
     text: &[u8],
     norm: &[u8],
@@ -713,26 +725,46 @@ fn dsml_tolerant_tool_root_scan(
     while p < norm.len() {
         // The earliest declared-tool root tag from here wins; a tag naming
         // no declared tool is model text and stays untouched.
-        let mut best: Option<(usize, &ToolSchemaOrder, &str)> = None;
+        let mut best: Option<(usize, &ToolSchemaOrder, &str, usize)> = None;
         for o in orders {
             for n in [o.name.as_str(), o.wire_name.as_str()] {
                 if n.is_empty() {
                     continue;
                 }
-                let mut open = Vec::with_capacity(n.len() + 2);
+                let mut open = Vec::with_capacity(n.len() + 1);
                 open.extend_from_slice(b"<");
                 open.extend_from_slice(n.as_bytes());
-                open.push(b'>');
-                if let Some(rel) = find_substr(&norm[p..], &open) {
-                    let at = p + rel;
-                    if best.as_ref().map_or(true, |(b, _, _)| at < *b) {
-                        best = Some((at, o, n));
-                    }
+                let Some(rel) = find_substr(&norm[p..], &open) else {
+                    continue;
+                };
+                let at = p + rel;
+                let Some(gt) = norm[at + open.len()..].iter().position(|&c| c == b'>') else {
+                    continue;
+                };
+                // The tag body is empty (`<name>`) or one stray quote
+                // (`<name">`): the artifact keeps the closing quote of the
+                // `name="` attribute the reference's own prompt teaches
+                // (ds4_server.c:2580-2589) while dropping the attribute name,
+                // and its closes carry the decorated DS41 forms
+                // (ds4_server.c:679-683).  Measured 2026-10-18 on the served
+                // Spark turn (open-grok session 01a14f5d): with that one byte
+                // present the scan recovered nothing and no tool ran; removed,
+                // both turns recover four calls each.  Any other body is not
+                // this rule's shape.
+                let body = &norm[at + open.len()..at + open.len() + gt];
+                let stray_quote: &[u8] = b"\"";
+                if !body.is_empty() && body != stray_quote {
+                    continue;
+                }
+                if best.as_ref().map_or(true, |(b, _, _, _)| at < *b) {
+                    best = Some((at, o, n, at + open.len() + gt + 1));
                 }
             }
         }
-        let Some((at, o, n)) = best else { break };
-        let mut q = at + n.len() + 2;
+        let Some((at, o, n, tag_end)) = best else {
+            break;
+        };
+        let mut q = tag_end;
         let mut args = Vec::new();
         loop {
             q = skip_ws(norm, q);
@@ -2079,7 +2111,50 @@ fn intern_finish(finish: &str) -> &'static str {
     }
 }
 
-pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
+/// The artifact's quoted tool root: the bare tool name with the residue of the
+/// `name="` attribute the reference's own prompt teaches (`<read_file">`,
+/// ds4_server.c:2580-2589), which the finish-level parse recovers in
+/// dsml_tolerant_tool_root_scan.  The predicate is that function's, on
+/// purpose: the tracker must recognise exactly the blocks the parse serves,
+/// because a tag the parse ignores would leave the client without both the
+/// markup and the calls.  A tag naming no declared tool is model text.
+fn dsml_find_declared_tool_root(s: &[u8], orders: &[ToolSchemaOrder]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for o in orders {
+        for n in [o.name.as_str(), o.wire_name.as_str()] {
+            if n.is_empty() {
+                continue;
+            }
+
+            let mut open = Vec::with_capacity(n.len() + 1);
+            open.push(b'<');
+            open.extend_from_slice(n.as_bytes());
+
+            let mut from = 0;
+            while let Some(rel) = find_substr(&s[from..], &open) {
+                let body_start = from + rel + open.len();
+                let Some(gt) = s[body_start..].iter().position(|&c| c == b'>') else {
+                    break;
+                };
+
+                // Empty body or the one stray quote; any other body is not
+                // this rule's shape (dsml_tolerant_tool_root_scan, tools.rs).
+                let body = &s[body_start..body_start + gt];
+                if body.is_empty() || body == b"\"" {
+                    let at = from + rel;
+                    if best.map_or(true, |b| at < b) {
+                        best = Some(at);
+                    }
+                    break;
+                }
+                from = body_start;
+            }
+        }
+    }
+    best
+}
+
+pub fn find_tool_start(s: &[u8], format: ChatFormat, orders: &[ToolSchemaOrder]) -> Option<usize> {
     match format {
         ChatFormat::IQuestQ1 => find_substr(s, crate::render::IQUEST_TOOL_CALL_START.as_bytes()),
         ChatFormat::SolarOpen2 => find_substr(s, SOLAR_TOOL_CALLS.as_bytes()),
@@ -2112,7 +2187,14 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
                 b"<DSML\xef\xbd\x9ccalls>",
                 b"<calls>",
             ];
-            cands.iter().filter_map(|p| find_substr(s, p)).min()
+            // The earliest occurrence wins across both families: a quoted
+            // root and a decorated wrapper can appear in one turn, and the
+            // block starts where the first of them does.
+            let marker = cands.iter().filter_map(|p| find_substr(s, p)).min();
+            [marker, dsml_find_declared_tool_root(s, orders)]
+                .into_iter()
+                .flatten()
+                .min()
         }
     }
 }
@@ -2151,9 +2233,10 @@ pub fn observe_tool_markers(
     saw_start: &mut bool,
     saw_end: &mut bool,
     format: ChatFormat,
+    orders: &[ToolSchemaOrder],
 ) -> (bool, bool) {
     let had_start = *saw_start;
-    let start = find_tool_start(scan, format);
+    let start = find_tool_start(scan, format, orders);
     if start.is_some() {
         *saw_start = true;
     }
@@ -2369,6 +2452,11 @@ pub struct SemAccum {
     cut_tool_syntax: bool,
     think_gates: bool,
     chat_format: ChatFormat,
+    /// The request's declared tools: the start scan recognises the artifact's
+    /// quoted root (`<read_file">`) only for a name some tool declares, the
+    /// same predicate the finish-level tolerant parse applies
+    /// (dsml_find_declared_tool_root).  Empty for a request with no tools.
+    tool_orders: Vec<ToolSchemaOrder>,
     thinking_inside: bool,
     think_tail: Vec<u8>,
     stop_scan_from: usize,
@@ -2408,6 +2496,7 @@ impl SemAccum {
             cut_tool_syntax: kind_chat && !has_tools && format != ChatFormat::IQuestQ1,
             think_gates: think_enabled || format == ChatFormat::Inkling,
             chat_format: format,
+            tool_orders: Vec::new(),
             thinking_inside: false,
             think_tail: Vec::new(),
             stop_scan_from: 0,
@@ -2430,6 +2519,14 @@ impl SemAccum {
         }
         a.tool_scan_waiting = a.think_gates && a.thinking_inside;
         a
+    }
+
+    /// Declare the request's tools after `init`, so the start scan can take
+    /// the artifact's quoted root into tool mode.  Separate from `init` so the
+    /// callers with no parse at hand (and the tapes) keep their signature.
+    pub fn set_tool_orders(&mut self, orders: &[ToolSchemaOrder]) {
+        self.tool_orders.clear();
+        self.tool_orders.extend_from_slice(orders);
     }
 
     fn feed_thinking(&mut self, piece: &[u8]) {
@@ -2555,7 +2652,7 @@ impl SemAccum {
                 // tracker never closes.
                 let glm = self.dsml.tool_syntax() == ToolSyntax::Glm;
                 let start = if !glm {
-                    find_tool_start(scan, self.chat_format)
+                    find_tool_start(scan, self.chat_format, &self.tool_orders)
                 } else if self.dsml.block_started() {
                     find_substr(scan, GLM_TOOL_CALL_START.as_bytes())
                 } else {

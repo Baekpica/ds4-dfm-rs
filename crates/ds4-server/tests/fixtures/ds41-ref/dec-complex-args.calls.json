@@ -1,0 +1,14 @@
+{
+  "role": "assistant",
+  "content": "",
+  "reasoning_content": "",
+  "tool_calls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "set_opts",
+        "arguments": "{\"label\": \"tea\", \"seconds\": 90, \"force\": true, \"ratio\": 1.5, \"note\": null, \"deps\": [\"a\", \"b\"], \"opts\": {\"k\": 1}}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Read the file and label it."},
+    {
+      "role": "assistant",
+      "content": "Reading it now.",
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"target_file\": \"/tmp/x.txt\", \"limit\": 40, \"force\": true, \"ratio\": 1.5, \"note\": null, \"deps\": [\"a\", \"b\"], \"opts\": {\"k\": 1}}"
+          }
+        }
+      ]
+    },
+    {"role": "tool", "tool_call_id": "call_1", "content": "file body"},
+    {"role": "user", "content": "Now summarise it."}
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "target_file": {"type": "string"},
+            "limit": {"type": "integer"},
+            "force": {"type": "boolean"},
+            "ratio": {"type": "number"},
+            "note": {"type": "string"},
+            "deps": {"type": "array", "items": {"type": "string"}},
+            "opts": {"type": "object"}
+          },
+          "required": ["target_file"]
+        }
+      }
+    }
+  ]
+}

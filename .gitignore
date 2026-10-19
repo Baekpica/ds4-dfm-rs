@@ -259,3 +259,7 @@ tests/naive_banks
 /tests/test_glm_vq_kda
 /tests/test_glm_vq_verify
 /tests/test_glm_vq_res
+
+# Regenerable knowledge-graph output (rule 12: never committed)
+graphify-rs-out/
+.callgraph-index.bin

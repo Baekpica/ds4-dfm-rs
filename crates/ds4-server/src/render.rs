@@ -6,7 +6,7 @@ use crate::json::{
     json_args_parse, json_escape_bytes, json_minify_raw_value, json_raw_value, Json,
 };
 use crate::parse::{ChatMsg, ChatPart, ToolCall, ToolChoice, ToolSchemaOrder};
-use crate::route::{think_mode_enabled, Api, ThinkMode};
+use crate::route::{mode_budget, think_mode_enabled, Api, ThinkMode};
 use crate::tools::{
     DSML_PARAM_END, DSML_PARAM_END_SPACED, DSML_PARAM_START, DSML_PARAM_START_SPACED,
     DSML_TOOL_CALLS_END, DSML_TOOL_CALLS_END_SPACED, DSML_TOOL_CALLS_START,
@@ -37,16 +37,41 @@ pub const V41_THINK_HIGH_PREFIX: &str =
     "Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
 pub const V41_THINK_MAX_PREFIX: &str = "Reasoning Effort: 100 (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
 
+/// The oracle's numeric effort line (`REASONING_EFFORT_TEMPLATE`,
+/// encoding.py:443-446): the requested budget verbatim, at index 0 and in
+/// thinking mode only.  The 75/100 constants above are its two pinned cases;
+/// every other budget in [1,100] renders through this template.
+pub const V41_EFFORT_TEMPLATE: &str = "Reasoning Effort: {budget} (range 1-100, the higher the value, the more thorough the reasoning)\n\n";
+
 /// The DSML prompt head a model writes. `V4` is the port's own C lineage
 /// (`THINK_*_PREFIX`, no system token). `V41` is the engine's official
-/// encoding.py head: the 75/100 effort lines (core_globals.c:14-17) and the
-/// <｜System｜> token written before the effort prefix when the effort or the
-/// system body is non-empty (server_dsml_render.c:375-383), gated on the
-/// loaded tokenizer owning it (core_bpe.c:332-333, core_engine_api.c:94-96).
+/// encoding.py head: the effort line (core_globals.c:14-17, encoding.py:443-473)
+/// and the <｜System｜> token written before it when the effort or the system
+/// body is non-empty (server_dsml_render.c:375-383), gated on the loaded
+/// tokenizer owning it (core_bpe.c:332-333, core_engine_api.c:94-96).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DsmlHead {
     V4,
-    V41 { system_token: bool },
+    /// `effort` is the budget the request asked for; `None` leaves the number to
+    /// the thinking mode (75 high, 100 max, 50 low -- encoding.py:448-453).
+    V41 {
+        system_token: bool,
+        effort: Option<u8>,
+    },
+}
+
+impl DsmlHead {
+    /// The requested effort budget this head writes.  A V4 head has no numeric
+    /// effort line, so it ignores the budget and keeps its own text.
+    pub fn with_effort(self, effort: Option<u8>) -> Self {
+        match self {
+            DsmlHead::V41 { system_token, .. } => DsmlHead::V41 {
+                system_token,
+                effort,
+            },
+            DsmlHead::V4 => DsmlHead::V4,
+        }
+    }
 }
 
 /// C `ds4_chat_system_token()` (core_engine_api.c:94-96).
@@ -58,20 +83,35 @@ pub fn dsml_head(model_id: i32, system_token: &str) -> DsmlHead {
     if model_id == ds4_core::Variant::DeepSeek41Flash as i32 {
         DsmlHead::V41 {
             system_token: !system_token.is_empty(),
+            effort: None,
         }
     } else {
         DsmlHead::V4
     }
 }
 
-fn head_effort_prefix(head: DsmlHead, mode: ThinkMode) -> &'static str {
+/// The effort line for one head.  The V4 head keeps the port's own effort text;
+/// the V4.1 head writes the oracle's number, taken from the request when it gave
+/// one and from the mode otherwise (encoding.py:448-473), and writes nothing at
+/// all without thinking mode.
+fn head_effort_prefix(head: DsmlHead, mode: ThinkMode) -> String {
     match head {
-        DsmlHead::V4 => think_effort_prefix(mode),
-        DsmlHead::V41 { .. } => match mode {
-            ThinkMode::High => V41_THINK_HIGH_PREFIX,
-            ThinkMode::Max => V41_THINK_MAX_PREFIX,
-            ThinkMode::None | ThinkMode::Low => "",
-        },
+        DsmlHead::V4 => think_effort_prefix(mode).to_string(),
+        DsmlHead::V41 { effort, .. } => v41_effort_prefix(mode, effort),
+    }
+}
+
+fn v41_effort_prefix(mode: ThinkMode, effort: Option<u8>) -> String {
+    if mode == ThinkMode::None {
+        return String::new();
+    }
+    let Some(budget) = effort.or(mode_budget(mode)) else {
+        return String::new();
+    };
+    match budget {
+        75 => V41_THINK_HIGH_PREFIX.to_string(),
+        100 => V41_THINK_MAX_PREFIX.to_string(),
+        n => V41_EFFORT_TEMPLATE.replace("{budget}", &n.to_string()),
     }
 }
 
@@ -1357,6 +1397,55 @@ fn append_dsml_user_content(out: &mut Vec<u8>, m: &ChatMsg, head: DsmlHead) {
     }
 }
 
+/// A tool-result message: its body renders as one `<tool_result>` block.
+fn is_tool_msg(m: &ChatMsg) -> bool {
+    m.role == "tool" || m.role == "function"
+}
+
+/// The call ids of the assistant message that precedes a tool-result run, in
+/// declared order.  `None` when there is no such assistant or it declared no
+/// ids, which is the oracle's own guard before it sorts (encoding.py:233-266
+/// sort_tool_results_by_call_order).
+fn preceding_call_order(msgs: &[ChatMsg], before: usize) -> Option<Vec<&str>> {
+    let assistant = msgs[..before]
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant" && !m.calls.is_empty())?;
+    let ids: Vec<&str> = assistant
+        .calls
+        .iter()
+        .map(|c| c.id.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
+/// A run of consecutive tool-result messages in the order the turn must render
+/// them.  The run is one user-side block, and the V4.1 generation orders its
+/// bodies by the preceding assistant's call order, not by arrival, so a client
+/// that sends results in completion order still produces one canonical prompt
+/// (encoding.py:233-266).  A result whose id the assistant never declared keeps
+/// the oracle's default key 0, and the sort is stable, so it stays where it
+/// arrived.
+fn tool_run_in_call_order(msgs: &[ChatMsg], start: usize) -> Vec<usize> {
+    let end = msgs[start..]
+        .iter()
+        .position(|m| !is_tool_msg(m))
+        .map_or(msgs.len(), |n| start + n);
+    let mut run: Vec<usize> = (start..end).collect();
+    if run.len() < 2 {
+        return run;
+    }
+    let Some(order) = preceding_call_order(msgs, start) else {
+        return run;
+    };
+    run.sort_by_key(|&i| {
+        let id = msgs[i].tool_call_id.as_str();
+        order.iter().position(|x| *x == id).unwrap_or(0)
+    });
+    run
+}
+
 pub fn render_dsml_chat(
     msgs: &[ChatMsg],
     tool_schemas: &str,
@@ -1393,7 +1482,13 @@ pub fn render_dsml_chat_choice_ex(
     // instructions follow the system content (separated by "\n\n"), and
     // adjacent user-side blocks share one <｜User｜> -- the old generations keep
     // the schemas first and a fresh user turn per block.
-    let spaced = matches!(head, DsmlHead::V41 { system_token: true });
+    let spaced = matches!(
+        head,
+        DsmlHead::V41 {
+            system_token: true,
+            ..
+        }
+    );
     let mut last_user_idx = -1i32;
     let mut system = Vec::new();
     if !tool_schemas.is_empty() && !spaced {
@@ -1404,8 +1499,15 @@ pub fn render_dsml_chat_choice_ex(
             spaced,
         );
     }
-    for m in msgs {
+    for (i, m) in msgs.iter().enumerate() {
         if !role_is_system(&m.role) {
+            continue;
+        }
+        // The head carries the leading system message.  The V4.1 generation
+        // also supports a mid-conversation system message, and that one
+        // renders in place with its own <｜System｜> instead of joining the head
+        // (encoding.py:621-627).
+        if spaced && i > 0 {
             continue;
         }
         if !system.is_empty() {
@@ -1424,8 +1526,10 @@ pub fn render_dsml_chat_choice_ex(
             spaced,
         );
     }
+    // A mid-conversation system message counts as user-like for the assistant
+    // header that follows it (encoding.py:562-582 find_last_user_index).
     for (i, m) in msgs.iter().enumerate() {
-        if role_is_user_like(&m.role) {
+        if role_is_user_like(&m.role) || (spaced && i > 0 && role_is_system(&m.role)) {
             last_user_idx = i as i32;
         }
     }
@@ -1437,22 +1541,40 @@ pub fn render_dsml_chat_choice_ex(
     // prefix.  The token is "" for the V4 head (the V4 tokenizer has none).
     let effort = head_effort_prefix(head, think_mode);
     if !effort.is_empty() || !system.is_empty() {
-        if let DsmlHead::V41 { system_token: true } = head {
+        if let DsmlHead::V41 {
+            system_token: true, ..
+        } = head
+        {
             put(&mut out, DSML_SYSTEM_TOKEN);
         }
     }
-    put(&mut out, effort);
+    put(&mut out, &effort);
     out.extend_from_slice(&system);
 
     let mut pending_assistant = false;
     let mut pending_tool_result = false;
+    // Spaced only: the previous message is a user-side block that a following
+    // user message merges into -- one shared <｜User｜> with the bodies joined by
+    // a blank line.  A mid-conversation system message is not one of those, so
+    // it clears the flag and the next user message opens its own turn
+    // (encoding.py:184-231 merge_tool_messages).
+    let mut pending_merge = false;
     for (i, m) in msgs.iter().enumerate() {
         if role_is_system(&m.role) {
+            // A mid-conversation system message introduces its own turn: its
+            // own token, at its position, and the assistant header that
+            // follows it (encoding.py:621-627, :733-739).
+            if spaced && i > 0 {
+                put(&mut out, DSML_SYSTEM_TOKEN);
+                put(&mut out, &m.content);
+                pending_assistant = true;
+                pending_merge = false;
+            }
             continue;
         } else if m.role == "user" {
             put(
                 &mut out,
-                if spaced && pending_assistant {
+                if spaced && pending_merge {
                     "\n\n"
                 } else {
                     DSML_USER
@@ -1460,17 +1582,34 @@ pub fn render_dsml_chat_choice_ex(
             );
             append_dsml_user_content(&mut out, m, head);
             pending_assistant = true;
+            pending_merge = true;
             pending_tool_result = false;
-        } else if m.role == "tool" || m.role == "function" {
-            if spaced && pending_assistant {
+        } else if is_tool_msg(m) {
+            // The run renders as one user-side block, so it is emitted here at
+            // its first message and the later ones are skipped.
+            if spaced && i > 0 && is_tool_msg(&msgs[i - 1]) {
+                continue;
+            }
+            if spaced && pending_merge {
                 put(&mut out, "\n\n");
             } else if !pending_tool_result {
                 put(&mut out, DSML_USER);
             }
-            put(&mut out, "<tool_result>");
-            append_tool_result_text(&mut out, m.content.as_bytes());
-            put(&mut out, "</tool_result>");
+            let run: Vec<usize> = if spaced {
+                tool_run_in_call_order(msgs, i)
+            } else {
+                vec![i]
+            };
+            for (n, &k) in run.iter().enumerate() {
+                if n > 0 {
+                    put(&mut out, "\n\n");
+                }
+                put(&mut out, "<tool_result>");
+                append_tool_result_text(&mut out, msgs[k].content.as_bytes());
+                put(&mut out, "</tool_result>");
+            }
             pending_assistant = true;
+            pending_merge = true;
             pending_tool_result = true;
         } else if m.role == "assistant" {
             if pending_assistant {
@@ -1491,6 +1630,7 @@ pub fn render_dsml_chat_choice_ex(
             append_dsml_tool_calls_text(&mut out, m, spaced);
             put(&mut out, DSML_EOS);
             pending_assistant = false;
+            pending_merge = false;
             pending_tool_result = false;
         }
     }
@@ -1500,6 +1640,50 @@ pub fn render_dsml_chat_choice_ex(
         put(&mut out, if think { "<think>" } else { "</think>" });
     }
     Ok(out)
+}
+
+/// The visible assistant tail a Responses client can replay (C
+/// `build_responses_visible_assistant_suffix`, ds4_server.c:12821-12855).
+///
+/// This mirrors what the client can echo, not every token in KV: hidden
+/// reasoning joins the remembered prefix only when the turn ended in tool calls
+/// and the request asked for reasoning summaries, because pi replays summaries
+/// for tool-call turns but not for final answers, and Codex asks for none.  A
+/// client that does replay a final answer's reasoning simply misses this
+/// visible shortcut and still has the exact token-prefix replay.  GLM writes no
+/// EOS (the reference's own twist) and every other syntax writes the EOS.  The
+/// reference writes the literal `</think>` for whatever syntax it serves, and so
+/// does this.
+pub fn responses_visible_assistant_suffix(
+    syntax: ModelSyntax,
+    spaced: bool,
+    think_mode: ThinkMode,
+    summary_emit: bool,
+    content: &[u8],
+    reasoning: &[u8],
+    calls: &[ToolCall],
+    orders: &[ToolSchemaOrder],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    if think_mode_enabled(think_mode) {
+        if summary_emit && !calls.is_empty() {
+            out.extend_from_slice(reasoning);
+        }
+        out.extend_from_slice(DSML_THINK_END.as_bytes());
+    }
+    out.extend_from_slice(content);
+    let m = ChatMsg {
+        calls: calls.to_vec(),
+        ..Default::default()
+    };
+    match syntax {
+        ModelSyntax::Glm53 => append_glm_tool_calls_text(&mut out, &m, orders),
+        _ => append_dsml_tool_calls_text(&mut out, &m, spaced),
+    }
+    if syntax != ModelSyntax::Glm53 {
+        out.extend_from_slice(DSML_EOS.as_bytes());
+    }
+    out
 }
 
 fn is_c_space(c: u8) -> bool {

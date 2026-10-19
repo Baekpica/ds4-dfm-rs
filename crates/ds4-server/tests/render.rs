@@ -108,7 +108,10 @@ fn dsml_v41_head_matches_official_encoding() {
     // (tests/server_tests_render_v41.c): the official encoding.py render of
     // four conversations, plus the V4-tokenizer fallback.  A V4.1 tokenizer
     // owns the system token; the head writes it once before the effort prefix.
-    let v41 = DsmlHead::V41 { system_token: true };
+    let v41 = DsmlHead::V41 {
+        system_token: true,
+        effort: None,
+    };
     let with_sys = [msg("system", "S"), msg("user", "U")];
     let only_user = [msg("user", "U")];
     let render = |msgs: &[ChatMsg], mode| {
@@ -817,7 +820,10 @@ fn dsml_v41_spaced_tools_match_official_encoding() {
     // call, json.dumps-shaped values, "<" and "&" inside a value, two adjacent
     // tool results merged into one <｜User｜>, and a schema carrying a \u escape.  A
     // byte mismatch here is a bug in the spaced template.
-    let v41 = DsmlHead::V41 { system_token: true };
+    let v41 = DsmlHead::V41 {
+        system_token: true,
+        effort: None,
+    };
 
     // case1: the official get_weather flow, THINK_HIGH.
     let c1 = [
@@ -984,7 +990,10 @@ fn dsml_v41_places_tool_result_images_inside_the_envelope() {
     // client's block order (parse.rs json_tool_result_content; the engine's
     // text-level render, server_parse_tools.c:330).  The user body must write
     // that content -- running the parts loop instead would drop the envelope.
-    let v41 = DsmlHead::V41 { system_token: true };
+    let v41 = DsmlHead::V41 {
+        system_token: true,
+        effort: None,
+    };
     let tool_result = ChatMsg {
         role: "user".into(),
         content: format!("<tool_result>shot:{DSML_IMAGE}done</tool_result>"),
@@ -1032,7 +1041,10 @@ fn dsml_v41_writes_a_tool_message_image_inside_its_envelope() {
     // V4.1 head can put the placeholder for a tool result (the engine's
     // render, server_dsml_render.c:409-414), so the image must reach the
     // prompt here or it is silently dropped.
-    let v41 = DsmlHead::V41 { system_token: true };
+    let v41 = DsmlHead::V41 {
+        system_token: true,
+        effort: None,
+    };
     let tool = ChatMsg {
         role: "tool".into(),
         content: format!("shot:{DSML_IMAGE}done"),
@@ -1049,4 +1061,50 @@ fn dsml_v41_writes_a_tool_message_image_inside_its_envelope() {
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(&format!("<tool_result>shot:{DSML_IMAGE}done</tool_result>")));
     assert_eq!(text.matches(DSML_IMAGE).count(), 1);
+}
+
+/// The reference's own test (ds4_server.c:20386
+/// `test_responses_visible_suffix_matches_client_replay`): a final answer's
+/// reasoning stays out of the remembered visible prefix even when summaries
+/// were requested, while a tool-call turn carries its summary before the think
+/// close and the call block after it.
+#[test]
+fn responses_visible_suffix_matches_client_replay() {
+    use ds4_server::responses_visible_assistant_suffix;
+
+    let none: Vec<ToolCall> = Vec::new();
+    let suffix = responses_visible_assistant_suffix(
+        ModelSyntax::DeepSeek,
+        true,
+        ThinkMode::High,
+        true,
+        b"5",
+        b"hidden summary",
+        &none,
+        &[],
+    );
+    let text = String::from_utf8(suffix).unwrap();
+    assert!(!text.contains("hidden summary"), "{text}");
+    assert!(text.contains("</think>5"), "{text}");
+    assert!(text.ends_with(DSML_EOS), "{text}");
+
+    let calls = vec![ToolCall {
+        id: "call_live".into(),
+        name: "bash".into(),
+        arguments: r#"{"command":"pwd"}"#.into(),
+    }];
+    let suffix = responses_visible_assistant_suffix(
+        ModelSyntax::DeepSeek,
+        true,
+        ThinkMode::High,
+        true,
+        b"",
+        b"tool summary",
+        &calls,
+        &[],
+    );
+    let text = String::from_utf8(suffix).unwrap();
+    assert!(text.contains("tool summary</think>"), "{text}");
+    assert!(text.contains(DSML_TOOL_CALLS_START_SPACED), "{text}");
+    assert!(text.ends_with(DSML_EOS), "{text}");
 }

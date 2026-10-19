@@ -1,0 +1,14 @@
+{
+  "role": "assistant",
+  "content": "",
+  "reasoning_content": "",
+  "tool_calls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "say",
+        "arguments": "{\"city\": \"Stockholm\", \"note\": \"smörgås\"}"
+      }
+    }
+  ]
+}

@@ -316,6 +316,7 @@ pub fn text_stream_safe_limit(
     has_tools: bool,
     final_: bool,
     format: ChatFormat,
+    orders: &[ToolSchemaOrder],
 ) -> usize {
     if raw_len <= start {
         return raw_len;
@@ -338,7 +339,7 @@ pub fn text_stream_safe_limit(
     }
     let mut limit = raw_len;
     if has_tools {
-        if let Some(rel) = find_tool_start(&raw[start..], format) {
+        if let Some(rel) = find_tool_start(&raw[start..], format, orders) {
             limit = trim_tool_separator_ws(raw, start, start + rel);
             return utf8_stream_safe_len(raw, start, limit, true);
         }
@@ -372,11 +373,17 @@ pub fn text_stream_safe_limit(
 /// parse moves that narration into reasoning; a stream cannot retract bytes it
 /// already pushed, so it never pushes the marker itself.  A marker after a
 /// tool start belongs to the tool block and does not count.
-fn text_stream_stray(raw: &[u8], pos: usize, has_tools: bool, format: ChatFormat) -> Option<usize> {
+fn text_stream_stray(
+    raw: &[u8],
+    pos: usize,
+    has_tools: bool,
+    format: ChatFormat,
+    orders: &[ToolSchemaOrder],
+) -> Option<usize> {
     let rest = raw.get(pos..)?;
     let rel = find_substr(rest, 0, think_end(format).as_bytes())?;
     if has_tools {
-        if let Some(trel) = find_tool_start(rest, format) {
+        if let Some(trel) = find_tool_start(rest, format, orders) {
             if trel < rel {
                 return None;
             }
@@ -896,14 +903,17 @@ pub fn openai_sse_stream_update(
     if st.mode == OpenaiMode::Text {
         // Never push a stray close marker; push the narration before it
         // (f302be7, server_anthropic_stream.c:200-206).
-        while let Some(cut) = text_stream_stray(raw, st.emit_pos, r.has_tools, r.chat_format) {
+        while let Some(cut) =
+            text_stream_stray(raw, st.emit_pos, r.has_tools, r.chat_format, &r.tool_orders)
+        {
             if cut > st.emit_pos {
                 sse_chat_delta_n(w, r, id, "content", &raw[st.emit_pos..cut]);
             }
             st.emit_pos = cut + think_end(r.chat_format).len();
         }
         let tool = if r.has_tools {
-            find_tool_start(&raw[st.emit_pos..], r.chat_format).map(|rel| st.emit_pos + rel)
+            find_tool_start(&raw[st.emit_pos..], r.chat_format, &r.tool_orders)
+                .map(|rel| st.emit_pos + rel)
         } else {
             None
         };
@@ -914,6 +924,7 @@ pub fn openai_sse_stream_update(
             r.has_tools,
             final_,
             r.chat_format,
+            &r.tool_orders,
         );
         if limit > st.emit_pos {
             sse_chat_delta_n(w, r, id, "content", &raw[st.emit_pos..limit]);
@@ -1285,7 +1296,9 @@ pub fn anthropic_sse_stream_update(
     if st.mode == AnthMode::Text {
         // Never push a stray close marker; push the narration before it
         // (f302be7, server_anthropic_stream.c:200-206).
-        while let Some(cut) = text_stream_stray(raw, st.emit_pos, r.has_tools, r.chat_format) {
+        while let Some(cut) =
+            text_stream_stray(raw, st.emit_pos, r.has_tools, r.chat_format, &r.tool_orders)
+        {
             if cut > st.emit_pos {
                 if !anthropic_sse_open_block(w, st, AnthBlock::Text) {
                     return false;
@@ -1296,7 +1309,8 @@ pub fn anthropic_sse_stream_update(
             st.emit_pos = cut + think_end(r.chat_format).len();
         }
         let tool = if r.has_tools {
-            find_tool_start(&raw[st.emit_pos..], r.chat_format).map(|rel| st.emit_pos + rel)
+            find_tool_start(&raw[st.emit_pos..], r.chat_format, &r.tool_orders)
+                .map(|rel| st.emit_pos + rel)
         } else {
             None
         };
@@ -1307,6 +1321,7 @@ pub fn anthropic_sse_stream_update(
             r.has_tools,
             final_,
             r.chat_format,
+            &r.tool_orders,
         );
         if limit > st.emit_pos {
             if !anthropic_sse_open_block(w, st, AnthBlock::Text) {
@@ -2182,6 +2197,7 @@ pub fn responses_sse_stream_update(
             r.has_tools,
             final_,
             r.chat_format,
+            &r.tool_orders,
         );
         if limit > st.emit_pos {
             if !st.message_item_opened {

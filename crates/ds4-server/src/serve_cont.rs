@@ -137,6 +137,9 @@ impl ContStepper {
             req.chat_format,
             &prompt,
         );
+        // The request's tools, for the start scan that recognises the
+        // artifact's quoted root (find_tool_start).
+        acc.set_tool_orders(&parsed.tool_orders);
         acc.set_model_syntax(req.syntax);
         let mut w = Writer::new(created);
         let mut oa = None;
@@ -1494,7 +1497,8 @@ pub trait ContExec {
         render_prompt_ex(
             parsed,
             self.model_id(),
-            crate::render::dsml_head(self.model_id(), self.chat_system_token()),
+            crate::render::dsml_head(self.model_id(), self.chat_system_token())
+                .with_effort(parsed.effort.head_budget()),
         )
     }
     fn restore_chat(&self, _parsed: &mut ParsedRequest) -> Result<(), GenerateError> {
@@ -2340,6 +2344,14 @@ mod native {
         /// published `DS4_SERVER_FORK` said.
         pub fn with_prefix_reuse(mut self, reuse: ReuseKind) -> Self {
             self.host.warm_reuse = reuse;
+            self
+        }
+
+        /// The boot exact-replay switches, the same map the serial engine gets
+        /// (`NativeDecode::with_tool_memory`). The reference has one server
+        /// struct, so a flag that reached only one lane would be a half port.
+        pub fn with_tool_memory(mut self, config: crate::tool_memory::ToolMemoryConfig) -> Self {
+            self.host.tool_memory = crate::tool_memory::ToolMemory::from_config(config);
             self
         }
 

@@ -1,0 +1,8 @@
+Reading it now.
+
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="read_file">
+<｜DSML｜ parameter name="target_file" string="true">/tmp/x.txt</｜DSML｜ parameter>
+<｜DSML｜ parameter name="limit" string="false">40</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls><｜end▁of▁sentence｜>

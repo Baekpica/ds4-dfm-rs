@@ -226,6 +226,64 @@ fn c_unit_error_cases_match() {
     );
 }
 
+/// The accepted spelling of `response_format` is not a render input.  The
+/// encoder oracle owns that rendering — it appends the schema to the SYSTEM
+/// region as "## Response Format:\n\nYou MUST strictly adhere..." when a
+/// message dict carries the field (encoding.py:64-66, :628-629) — and neither
+/// reference server reads the field at all.  This server refuses the schema
+/// forms by name (format.rs:9-15, the v0.6.3 refusal) and accepts "text"; the
+/// case pins that the accepted form leaves every render input untouched, so a
+/// later change cannot begin trusting a schema unnoticed.
+#[test]
+fn accepted_response_format_is_not_a_render_input() {
+    let plain = rust_parse(
+        "chat",
+        r#"{"messages":[{"role":"user","content":"two words"}]}"#,
+    )
+    .unwrap();
+    let text = rust_parse(
+        "chat",
+        r#"{"messages":[{"role":"user","content":"two words"}],"response_format":{"type":"text"}}"#,
+    )
+    .unwrap();
+
+    assert_eq!(dump(&plain), dump(&text));
+    assert_eq!(plain.tool_schemas, text.tool_schemas);
+    assert!(plain.tool_schemas.is_empty());
+    assert_eq!(plain.messages.len(), text.messages.len());
+    assert_eq!(plain.messages[0].content, text.messages[0].content);
+    assert_eq!(plain.messages[0].parts, text.messages[0].parts);
+}
+
+/// A chat tool's name reaches the prompt verbatim, and a tool-level `namespace`
+/// key is not folded into it.  The encoder oracle does fold — `_tool_name_for_encoding`
+/// (encoding.py:116) joins an explicit namespace or a "::"-qualified name into
+/// "namespace::name", and :88-97 prefixes the namespace description onto the
+/// function's — but that is the encoder's own rule for the message dicts handed
+/// to it.  Neither reference server reads a tool-level namespace on the chat
+/// surface: namespaces exist there for `type:"namespace"` items on the
+/// Responses surface (server_parse_tools.c:9-120), which this port mirrors
+/// (parse.rs:2147).  The case pins both forms this server does see.
+#[test]
+fn chat_tool_names_pass_through_verbatim() {
+    // The qualified name the oracle would produce is taken as given.
+    let qualified = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"ns::foo","parameters":{"type":"object","properties":{}}}}]}"#;
+    let parsed = rust_parse("chat", qualified).unwrap();
+    assert_eq!(
+        parsed.tool_schemas,
+        r#"{"name":"ns::foo","parameters":{"type":"object","properties":{}}}"#
+    );
+
+    // The tool-level key is not part of the schema, and the function object is
+    // carried byte-for-byte.
+    let folded = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","namespace":"ns","function":{"name":"foo","description":"d","parameters":{"type":"object","properties":{}}}}]}"#;
+    let parsed = rust_parse("chat", folded).unwrap();
+    assert_eq!(
+        parsed.tool_schemas,
+        r#"{"name":"foo","description":"d","parameters":{"type":"object","properties":{}}}"#
+    );
+}
+
 #[test]
 fn missing_required_fields_and_invalid_json() {
     assert_err_eq("chat", "{}", "missing messages");
@@ -453,6 +511,42 @@ fn image_input_rejects_remote_urls_wrong_magic_and_non_user_roles() {
     assert_eq!(
         rust_parse("chat", &assistant).unwrap_err(),
         "images are allowed only in user messages or tool results"
+    );
+}
+
+/// The oracle's path and URL forms are refused on every surface.  Its
+/// `parse_tagged_text` / `_extract_image` (encoding.py:273-320) normalize a bare
+/// path or an http URL into an image record and leave the fetch to whatever
+/// takes it; this server is base64-only by contract, and it fails closed rather
+/// than dropping the pixels silently, so each form is a named request error.
+#[test]
+fn image_refusals_cover_the_oracle_path_and_url_forms() {
+    // The oracle's <image>path</image> form, and the same path as a plain
+    // string instead of the object spelling.
+    for body in [
+        r#"{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"/tmp/photo.png"}}]}]}"#,
+        r#"{"messages":[{"role":"user","content":[{"type":"image_url","image_url":"/tmp/photo.png"}]}]}"#,
+    ] {
+        assert_eq!(
+            rust_parse("chat", body).unwrap_err(),
+            "image_url must be a base64 data URI"
+        );
+    }
+
+    // Responses input_image with a URL; the data-URI form is pinned by
+    // qwen_image_inputs_normalize_across_all_three_surfaces.
+    let responses = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://example.com/x.png"}]}]}"#;
+    assert_eq!(
+        rust_parse("responses", responses).unwrap_err(),
+        "image_url must be a base64 data URI"
+    );
+
+    // Anthropic's url source; its tool_result spelling of the same check is
+    // pinned by anthropic_tool_result_content_blocks_carry_images.
+    let anthropic = r#"{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}]}"#;
+    assert_eq!(
+        rust_parse("anthropic", anthropic).unwrap_err(),
+        "Anthropic image source must use base64 data"
     );
 }
 
@@ -773,6 +867,67 @@ fn engine_defaults_think_and_sampling() {
     assert_eq!(r.dry_multiplier, 0.8);
 }
 
+/// O-01: the effort a request asked for survives the engine's collapse, so the
+/// V4.1 head can render the requested budget (encoding.py:443-473) while the
+/// engine keeps the mode it decided.  The name mapping is low 50 / high 75 /
+/// max 100, and the oracle's numeric form renders as the number itself.
+#[test]
+fn requested_effort_budget_survives_the_engine_collapse() {
+    use ds4_server::{RequestedEffort, ThinkMode};
+    let eng = ParseEnv {
+        engine_defaults: true,
+        ..env()
+    };
+    let chat = |body: &str| parse_chat_request(&eng, body).unwrap();
+    let ask = |effort: &str| {
+        chat(&format!(
+            r#"{{"messages":[{{"role":"user","content":"hi"}}],"reasoning_effort":{effort}}}"#
+        ))
+    };
+
+    // The engine collapses low into HIGH (server_msgs.c:194-215); the head still
+    // takes the low mapping's 50.
+    let low = ask(r#""low""#);
+    assert_eq!(low.think_mode, ThinkMode::High);
+    assert_eq!(low.effort, RequestedEffort::named(ThinkMode::Low));
+    assert_eq!(low.effort.head_budget(), Some(50));
+
+    // A bare ask keeps the engine's HIGH default, 75 in the head.
+    let bare = chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#);
+    assert_eq!(bare.effort, RequestedEffort::named(ThinkMode::High));
+    assert_eq!(bare.effort.head_budget(), Some(75));
+
+    assert_eq!(ask(r#""max""#).effort.head_budget(), Some(100));
+    assert_eq!(ask(r#""none""#).effort.head_budget(), None);
+
+    // The oracle's numeric form: taken as the budget, engine mode collapsed.
+    let numeric = ask("40");
+    assert_eq!(numeric.think_mode, ThinkMode::High);
+    assert_eq!(
+        numeric.effort,
+        RequestedEffort {
+            mode: ThinkMode::High,
+            budget: Some(40)
+        }
+    );
+    assert_eq!(numeric.effort.head_budget(), Some(40));
+
+    // Out of the oracle's range and its non-integers are refused, as the oracle
+    // refuses them (encoding.py:464-469).
+    for bad in ["0", "101", "50.5", "5e1"] {
+        assert!(
+            parse_chat_request(
+                &eng,
+                &format!(
+                    r#"{{"messages":[{{"role":"user","content":"hi"}}],"reasoning_effort":{bad}}}"#
+                )
+            )
+            .is_err(),
+            "{bad} must be refused"
+        );
+    }
+}
+
 #[test]
 fn openai_tool_message_carries_the_image_placeholder() {
     // The real MCP loop on the Chat Completions surface: an assistant turn
@@ -978,4 +1133,33 @@ mod v41_media {
             );
         }
     }
+}
+
+/// CTR clause 2.3.7, the server's half: the client echoes `reasoning_content` on
+/// every assistant message, empty included, and the server must not require the
+/// key.  Both shapes parse, and the reasoning the message carried is what the
+/// render sees -- an omitted key is not an error and an empty value stays empty
+/// (`types.rs` 526-538; `conversation.rs` 3691-3740).
+#[test]
+fn assistant_reasoning_is_optional_and_may_be_empty() {
+    let eng = ParseEnv {
+        engine_defaults: true,
+        ..env()
+    };
+    let empty = parse_chat_request(
+        &eng,
+        r#"{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok","reasoning_content":""},{"role":"user","content":"again"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(empty.messages[1].role, "assistant");
+    assert_eq!(empty.messages[1].content, "ok");
+    assert_eq!(empty.messages[1].reasoning, "");
+
+    let omitted = parse_chat_request(
+        &eng,
+        r#"{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"again"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(omitted.messages[1].content, "ok");
+    assert_eq!(omitted.messages[1].reasoning, "");
 }
