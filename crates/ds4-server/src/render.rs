@@ -1612,19 +1612,31 @@ pub fn render_dsml_chat_choice_ex(
             pending_merge = true;
             pending_tool_result = true;
         } else if m.role == "assistant" {
-            if pending_assistant {
+            // The oracle renders an assistant as [transition token] +
+            // `{reasoning}</think>` + content + tool calls + EOS
+            // (encoding.py render_message:678-712).  The <｜Assistant｜> and the
+            // thinking token after it belong to the preceding message, so a
+            // second assistant in a row has no header to open its thinking;
+            // the V4.1 body still carries the reasoning and its closer, exactly
+            // as the oracle writes it (measured by enc-think-two-assistants).
+            let keep_reasoning = think && (tool_context || (i as i32) > last_user_idx);
+            let wrote_header = if pending_assistant {
                 put(&mut out, DSML_ASSISTANT);
-                if think {
-                    if tool_context || (i as i32) > last_user_idx {
-                        put(&mut out, "<think>");
-                        put(&mut out, &m.reasoning);
-                        put(&mut out, "</think>");
+                put(
+                    &mut out,
+                    if keep_reasoning {
+                        DSML_THINK_START
                     } else {
-                        put(&mut out, "</think>");
-                    }
-                } else {
-                    put(&mut out, "</think>");
-                }
+                        DSML_THINK_END
+                    },
+                );
+                true
+            } else {
+                false
+            };
+            if keep_reasoning && (wrote_header || matches!(head, DsmlHead::V41 { .. })) {
+                put(&mut out, &m.reasoning);
+                put(&mut out, DSML_THINK_END);
             }
             put(&mut out, &m.content);
             append_dsml_tool_calls_text(&mut out, m, spaced);

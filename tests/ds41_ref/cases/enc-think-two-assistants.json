@@ -1,0 +1,9 @@
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Say hi."},
+    {"role": "assistant", "content": "One."},
+    {"role": "assistant", "content": "Two.", "reasoning_content": "SECOND-THOUGHT-MARKER"}
+  ],
+  "thinking_mode": "thinking"
+}

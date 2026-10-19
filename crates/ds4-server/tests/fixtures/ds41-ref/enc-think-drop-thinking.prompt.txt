@@ -1,0 +1,3 @@
+<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)
+
+You are a helpful assistant.<｜User｜>Say hi.<｜Assistant｜></think>Hi.<｜end▁of▁sentence｜><｜User｜>Say it again.<｜Assistant｜><think>

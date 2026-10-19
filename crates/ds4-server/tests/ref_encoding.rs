@@ -279,3 +279,98 @@ fn tool_results_in_call_order_match_official_encoding() {
         ThinkMode::None,
     );
 }
+
+/// A historical assistant's `reasoning_content` never reaches the prompt in
+/// chat mode, where neither side renders it.  This case pins that it does not
+/// leak; the thinking-mode case below is the one that decides the drop rule.
+#[test]
+fn historical_reasoning_not_rendered_in_chat_matches_official_encoding() {
+    let mut history = assistant("Hi.", Vec::new());
+    history.reasoning = "HISTORICAL-THOUGHT-MARKER".into();
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Say hi."),
+        history,
+        msg("user", "Say it again."),
+    ];
+    check("enc-drop-thinking", &msgs, "", ThinkMode::None);
+}
+
+/// A user-like message carrying only tool results does not start a turn
+/// (encoding.py `find_last_user_index`:562-582).  The client of record sends
+/// tool results as their own messages, so a tool turn with no following user
+/// message ends on exactly this shape.
+#[test]
+fn tool_result_only_tail_matches_official_encoding() {
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Read the file."),
+        assistant(
+            "",
+            vec![call(
+                "call_1",
+                "read_file",
+                r#"{"target_file": "/tmp/x.txt"}"#,
+            )],
+        ),
+        tool_result("call_1", "body"),
+    ];
+    check(
+        "enc-toolresult-only",
+        &msgs,
+        READ_FILE_SCHEMA_MIN,
+        ThinkMode::None,
+    );
+}
+
+/// The drop rule itself, measured in the mode that renders reasoning: with no
+/// tools anywhere, `_drop_thinking_messages` (encoding.py:749-767) strips the
+/// historical assistant's `reasoning_content`, so the `</think>` its
+/// predecessor's transition token wrote is all the thinking that message has.
+/// Same conversation as the chat-mode case above, so the two verdicts differ
+/// only by the mode.
+#[test]
+fn historical_reasoning_is_dropped_matches_official_encoding() {
+    let mut history = assistant("Hi.", Vec::new());
+    history.reasoning = "HISTORICAL-THOUGHT-MARKER".into();
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Say hi."),
+        history,
+        msg("user", "Say it again."),
+    ];
+    check("enc-think-drop-thinking", &msgs, "", ThinkMode::High);
+}
+
+/// An assistant at or after the last user index keeps its reasoning: the
+/// oracle writes `{reasoning}</think>` there (encoding.py:678-685, the
+/// `index > last_user_idx` arm of the assistant branch).
+#[test]
+fn tail_reasoning_is_kept_matches_official_encoding() {
+    let mut tail = assistant("Hi.", Vec::new());
+    tail.reasoning = "TAIL-THOUGHT-MARKER".into();
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Say hi."),
+        tail,
+    ];
+    check("enc-think-tail-reasoning", &msgs, "", ThinkMode::High);
+}
+
+/// Two assistant messages in a row share one `<Assistant>` header, so the
+/// second has no transition token to open its thinking.  The oracle still
+/// writes that message's reasoning and its closer inline, because
+/// `thinking_part` belongs to the message body and not to the transition token
+/// (encoding.py render_message:678-712).
+#[test]
+fn consecutive_assistant_reasoning_matches_official_encoding() {
+    let mut second = assistant("Two.", Vec::new());
+    second.reasoning = "SECOND-THOUGHT-MARKER".into();
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Say hi."),
+        assistant("One.", Vec::new()),
+        second,
+    ];
+    check("enc-think-two-assistants", &msgs, "", ThinkMode::High);
+}

@@ -40,25 +40,25 @@ parse yields the oracle's call names and argument values
 | --- | --- | --- | --- | --- |
 | `to_json` (76) | the JSON literal shape for non-string values: `ensure_ascii=False`, python separators | `crates/ds4-server/src/render.rs:295` `pyjson_write`, `:288` `pyjson_raw_value`, `crates/ds4-server/src/json.rs:379` `json_minify_raw_value` | `enc-argtypes-chat`, `dec-unicode` | pass |
 | `tools_from_openai_format` (84) | the schema string handed to the model, in the client's declared order | `crates/ds4-server/src/parse.rs:2222` `parse_tools_value`, `:1828` `openai_function_schema_from_tool`, `:2038` `tool_schema_orders_add_json_wire` | `enc-tools-chat` | pass |
-| `_split_tool_name` (101) | the `namespace::name` split, and the two asserts around it | `crates/ds4-server/src/parse.rs:2099`, `:2140` (Responses path); no chat-path rule located | none | OPEN, no case: an OpenAI `namespace` field on a chat tool, and a name containing `::`, are both unmeasured |
-| `_tool_name_for_encoding` (116) | the name printed in the invoke tag, namespace-qualified | `crates/ds4-server/src/render.rs:535` `append_dsml_tool_calls_text` | `enc-argtypes-chat` (bare name) | pass for the bare name; the qualified form has no case |
+| `_split_tool_name` (101) | the `namespace::name` split, and the two asserts around it | `crates/ds4-server/src/parse.rs:2099`, `:2140` (Responses path) | none | out of surface on the chat wire the oracle decides: the client's model-facing tool spec is name/description/parameters only (`conversation.rs:861-869`, `From<ToolDefinition> for ToolSpec` `:1039-1045`), and its `namespace` rides the editor-facing ToolCall meta instead (`acp_session.rs:1741` asserts the meta, not the wire), so no chat request can carry the field |
+| `_tool_name_for_encoding` (116) | the name printed in the invoke tag, namespace-qualified | `crates/ds4-server/src/render.rs:535` `append_dsml_tool_calls_text` | `enc-argtypes-chat` (bare name) | pass for the bare name; the qualified form is out of surface with the row above |
 | `tool_calls_from_openai_format` (124) | a replayed assistant's `tool_calls` array into the internal call shape | `crates/ds4-server/src/parse.rs:941` `parse_tool_calls_value`, `:885` `add_tool_call_id` | `enc-argtypes-chat` | pass |
 | `decode_dsml_to_arguments` (156) | the arguments JSON string: `string="true"` wraps the body as a JSON string, `string="false"` takes the body as the value | `crates/ds4-server/src/tools.rs:376` `parse_dsml_generated`, `:1271`, `crates/ds4-server/src/json.rs:379` | `dec-one-call`, `dec-complex-args` | pass on names and values; our bytes are minified where the oracle keeps the body verbatim (matrix O-04) |
 | `merge_tool_messages` (184) | a `tool` role becomes a `tool_result` block inside a user message, merging into an adjacent merged user | `crates/ds4-server/src/parse.rs:1178` `parse_messages`, `:1252` `append_tool_result_text`; `crates/ds4-server/src/render.rs:1462` | `enc-argtypes-chat` | pass |
 | `sort_tool_results_by_call_order` (233) | tool_result blocks inside one user message are ordered by the preceding assistant's call order | `crates/ds4-server/src/render.rs:1390` `tool_run_in_call_order` with `:1369` `preceding_call_order` | `enc-toolresults-order` | pass (closed 2026-10-18) |
-| `parse_tagged_text` (273) | the `<image>path</image>` text form expands to image blocks, and a malformed tag raises | not located (`<image>` appears nowhere in `crates/ds4-server/src`) | none | OPEN, no case |
-| `_is_image_block` (300) | which content blocks count as images (`image`, `image_url`) | `crates/ds4-server/src/parse.rs:996` `parse_chat_image_url`, `:443` `add_image_data_uri` | none | no case: the reference harness asserts text-only |
-| `_extract_image` (305) | the url/data/source normalization, and the refusal when none is present | `crates/ds4-server/src/parse.rs:402` `add_image_base64`, `:443` | none | no case |
-| `_process_image_blocks` (323) | images are replaced by `<｜deepseek_image｜>` in place, nested tool-result images included, and the records keep prompt order | `crates/ds4-server/src/render.rs:1336` `append_dsml_user_content`, `crates/ds4-server/src/parse.rs:592` `write_tool_image_placeholders` | none | no case on the reference leg; the vision gate exercises the served path |
+| `parse_tagged_text` (273) | the `<image>path</image>` text form expands to image blocks, and a malformed tag raises | not located (`<image>` appears nowhere in `crates/ds4-server/src`) | none | out of surface: that form belongs to the training-side encoder, this carriage is base64-only by design (AGENTS.md, the carriage section), and the client of record sends data URIs |
+| `_is_image_block` (300) | which content blocks count as images (`image`, `image_url`) | `crates/ds4-server/src/parse.rs:996` `parse_chat_image_url`, `:443` `add_image_data_uri` | none by construction | no oracle case (`ref_drive.py` encode asserts text-only, `:62`); the served path is covered by `tests/parse.rs` `image_input_rejects_remote_urls_wrong_magic_and_non_user_roles` and `v41_media::*` |
+| `_extract_image` (305) | the url/data/source normalization, and the refusal when none is present | `crates/ds4-server/src/parse.rs:402` `add_image_base64`, `:443` | none by construction | no oracle case, as above; the refusals are covered by `tests/parse.rs` `image_refusals_cover_the_oracle_path_and_url_forms` (the oracle's path and URL forms are the ones refused) |
+| `_process_image_blocks` (323) | images are replaced by `<｜deepseek_image｜>` in place, nested tool-result images included, and the records keep prompt order | `crates/ds4-server/src/render.rs:1336` `append_dsml_user_content`, `crates/ds4-server/src/parse.rs:592` `write_tool_image_placeholders` | none by construction | no oracle case; the served path is covered by `tests/parse.rs` `openai_tool_message_carries_the_image_placeholder` and `tests/render.rs` `dsml_v41_places_tool_result_images_inside_the_envelope` |
 | `_validate_no_image_sp_tokens` (355) | a user-supplied image placeholder in `content` or `reasoning_content` is refused | `crates/ds4-server/src/parse.rs:560` `reject_stray_image_in_content`, `:571` `reject_stray_image_in_reasoning`, called from every place the client's own text is read (message content, text blocks, a tool result's text, `reasoning_content`, the Responses text blocks) | `stray_image_token.rs` (9) and the served probes `…/probe-placeholder-04a0ab1f-20261019` | CLOSED at R7 (04a0ab1f): the oracle's two sentences on the wire; the engine does not implement the rule (`core_v41_vision.c:189-193`, `server_parse_tools.c:290`), so the port mirrors the oracle, CTR 8.9 |
-| `process_image_messages` (370) | the per-message image pass, and `content` rebuilt from text blocks with `\n\n` | `crates/ds4-server/src/parse.rs:1029` `parse_openai_message_content`, `:546` `append_text_part` | none | no case |
+| `process_image_messages` (370) | the per-message image pass, and `content` rebuilt from text blocks with `\n\n` | `crates/ds4-server/src/parse.rs:1029` `parse_openai_message_content`, `:546` `append_text_part` | none by construction | no oracle case, as above; the block rebuild is covered by the content-block tests in `crates/ds4-server/tests/parse.rs` |
 | `_read_until_stop` (399) | the earliest-of-stops scan the whole parser is built on | `crates/ds4-server/src/tools.rs:169` `split_reasoning_content` | every `dec-*` case | pass |
 | `find_last_user_index` (562) | the last user-like index; a mid-conversation system message counts as one; a tool-result-only user message does not start a turn | `crates/ds4-server/src/render.rs:1397`-`:1429`, `:222` `role_is_user_like` | `enc-plain-chat`, `enc-midsystem-chat` | pass, mid-system half included (closed 2026-10-18); the tool-result-only half has no case |
 | `render_reasoning_effort` (456) | the effort header: thinking mode, index 0 only, `low/high/max` mapped to 50/75/100, an integer in [1,100] taken as itself, `None` to high | `crates/ds4-server/src/render.rs` `head_effort_prefix`/`v41_effort_prefix` with `crates/ds4-server/src/route/mod.rs` `RequestedEffort` | `enc-think-low`, `enc-think-max`, `enc-think-budget` | pass (closed 2026-10-18) |
 | `render_tools` (509) | the tools preamble verbatim, with the schema list appended | `crates/ds4-server/src/render.rs:412` `append_dsml_tools_prompt_text` | `enc-tools-chat` | pass |
 | `encode_arguments_to_dsml` (524) | one parameter element per argument key, in the call's key order, `string="true"` for a string child and its raw form otherwise; a non-dict `arguments` falls back to a single `arguments` key, a JSON string is decoded twice | `crates/ds4-server/src/render.rs:349` `append_dsml_arg`, `:375` `append_dsml_arguments_from_json` | `enc-argtypes-chat` | pass for a dict; the JSON-string and double-encoded fallbacks have no case |
-| `render_message` (585) | one message's bytes, the role branches, the transition tokens, and the assistant header rule | `crates/ds4-server/src/render.rs:1432` `render_dsml_chat_choice_ex` | 8 encode cases | pass on 7 of 8; O-01 is the one rule still open, and O-02/O-03's rules closed 2026-10-18 |
-| `_drop_thinking_messages` (749) | before the last user, an assistant's `reasoning_content` is dropped, the message kept | not located in this revision: no drop-thinking rule exists in `crates/ds4-server/src/render.rs` (neither `drop_thinking` nor `reasoning_content` appears there) | none | no case: no case carries a historical reasoning behind the last user |
+| `render_message` (585) | one message's bytes, the role branches, the transition tokens, and the assistant header rule | `crates/ds4-server/src/render.rs:1472` `render_dsml_chat_choice_ex` | 14 encode cases | pass on every case measured; O-01 and O-02/O-03 closed 2026-10-18, and the consecutive-assistant half of the header rule was found open and closed 2026-10-19 (`enc-think-two-assistants`, below) |
+| `_drop_thinking_messages` (749) | before the last user, an assistant's `reasoning_content` is dropped, the message kept | `crates/ds4-server/src/render.rs:1614`-`:1639` (the assistant branch's `keep_reasoning`, the rule inline rather than as a message pass) | `enc-think-drop-thinking`, `enc-drop-thinking`, `enc-think-tail-reasoning` | pass (closed 2026-10-19): the drop fires only in thinking mode with no tools anywhere, which is what `effective_drop_thinking` (:786-790) means; the chat-mode case pins that the reasoning cannot leak, the thinking-mode pair pins drop and keep |
 | `_encode_messages_text` (770) | BOS, the loop over messages, and `effective_drop_thinking` forced false when any message carries tools | `crates/ds4-server/src/render.rs:1432` (the entry) with its message loop at `:1456` | all encode cases | pass |
 | `encode_messages` (810) | the public entry: merge, sort, image pass, then the text render | `crates/ds4-server/src/render.rs:1432` behind the chat route | all encode cases | pass on the cases measured |
 | `load_cases` (847) | the harness entry: a case-level `tools` key moves into `messages[0]`, a bare message list is wrapped | `tests/ds41_ref/ref_drive.py:61` | every encode case | harness |
@@ -89,11 +89,11 @@ model family outside this line.
 | `ASSISTANT_SP_TOKEN` (36) | `:80` `DSML_ASSISTANT` | pass |
 | `SYSTEM_SP_TOKEN` (426) | `:53` `DSML_SYSTEM_TOKEN` | pass |
 | `LATEST_REMINDER_SP_TOKEN` (37) | not located | out of surface: the role is not on the OpenAI wire |
-| `IMAGE_PLACEHOLDER` (39) | `:92` `DSML_IMAGE` | no case |
-| `IMAGE_TAG_PATTERN` (40) | not located | OPEN, no case |
-| `DS_TASK_SP_TOKENS` / `VALID_TASKS` (43, 51) | not located | out of surface: internal classification tasks |
-| `assistant_msg_template` / `wo_eos` (60, 61) | `render.rs:1432` (EOS always written) | no case for `wo_eos` |
-| `response_format_template` (64) | `crates/ds4-server/src/format.rs:19` `parse_output_format_value`, called from `crates/ds4-server/src/parse.rs:3075`; no render-side counterpart located | OPEN, no case |
+| `IMAGE_PLACEHOLDER` (39) | `:92` `DSML_IMAGE` | no case by construction (the image rows above); the refusal beside it is measured by `stray_image_token.rs` |
+| `IMAGE_TAG_PATTERN` (40) | not located | out of surface with the `parse_tagged_text` row above |
+| `DS_TASK_SP_TOKENS` / `VALID_TASKS` (43, 51) | not located | out of surface: internal classification tasks, not on the OpenAI wire |
+| `assistant_msg_template` / `wo_eos` (60, 61) | `render.rs:1470` (EOS always written) | out of surface for `wo_eos`: no OpenAI request field reaches it (`wo_eos` appears nowhere under `crates/`), while the oracle reads it from the message dict for its own continuation flow (`encoding.py:607`, `:697-703`) |
+| `response_format_template` (64) | `crates/ds4-server/src/format.rs:19` `parse_output_format_value`, called from `crates/ds4-server/src/parse.rs:3168`; no render-side counterpart | measured refusal, kept by decision (see section 5) |
 | `tool_output_template` (68) | `crates/ds4-server/src/render.rs:1650` (`<tool_result>`, escaped by `:1316` `append_tool_result_text`) | pass via `enc-argtypes-chat` |
 | `tool_calls_block_name` (428) `" calls"` | `crates/ds4-server/src/tools.rs:44` `DSML_TOOL_CALLS_START_SPACED` | pass |
 | `tool_call_tag_name` (429) `" invoke"` | `:46` `DSML_INVOKE_START_SPACED`, `:47` end | pass |
@@ -107,42 +107,82 @@ model family outside this line.
 Functions of this repo's DSML line that the oracle does not define.  They are
 kept because a served turn needs them, not because the oracle asks for them.
 
-| Ours | Why it exists |
-| --- | --- |
-| `crates/ds4-server/src/tools.rs:2155` `find_tool_start` (with `crates/ds4-server/src/dsml.rs:389`) | the streaming tracker: the artifact's root spelling (quoted, unquoted, short) is not the oracle's canonical one, so the scan is tolerant where the oracle's grammar refuses |
-| `crates/ds4-server/src/dsml.rs:550` `dsml_decode_state_for_text` | the incremental decode state machine that decides when markup is withheld from the stream |
-| `crates/ds4-server/src/tools.rs` `DSML_*_SHORT`, `DSML_*` (25-36) | the two older root spellings the artifact still emits; the oracle knows only the spaced one |
-| `crates/ds4-server/src/retry.rs:137` `try_repair_dsml` | truncated-call repair; the oracle has no repair path (matrix G8, P3) |
-| `crates/ds4-server/src/render.rs` `responses_visible_assistant_suffix` | the visible assistant tail a Responses client can replay (ds4_server.c:12821); the store that consumes it (`responses_live_remember` :14559) is the reserved checkpoint unit |
-| `crates/ds4-server/src/trace.rs` | C `--trace FILE` (ds4_help.c:323): one section per request with the prompt, its token ids and the parsed message (unit 3.2, TP-12/TP-15) |
-| `crates/ds4-server/src/retry.rs` `find_any_tool_start`, `find_last_structural` | the repair path's style choice and think scope (ds4_server.c:5842, :5890), ported with G8 |
-| `crates/ds4-server/src/render.rs:93`-`:138`, other-family markers | Motif, EXAONE, Solar, Qwen, GLM, K2 tag sets: other families, outside this line |
-| `crates/ds4-server/src/render.rs:161` `syntax_for_model_id` | family dispatch; the oracle covers V4.1 only |
+| Ours | Why it exists | Covered by |
+| --- | --- | --- |
+| `crates/ds4-server/src/tools.rs:2157` `find_tool_start` (with `crates/ds4-server/src/dsml.rs:389`) | the streaming tracker: the artifact's root spelling (quoted, unquoted, short) is not the oracle's canonical one, so the scan is tolerant where the oracle's grammar refuses | `tests/dsml.rs` `syntax_greedy_spaced_dsml`; `dsml.rs` `override_tests::auto_tool_start_forces_function_prefix`, `::required_prefix_finishes_after_tool_start` |
+| `crates/ds4-server/src/dsml.rs:550` `dsml_decode_state_for_text` | the incremental decode state machine that decides when markup is withheld from the stream | `tests/dsml.rs` `syntax_greedy_spaced_dsml`; `generate.rs` `disk_sync_tests::continued_decode_gate_stops_after_tool_syntax_begins` |
+| `crates/ds4-server/src/tools.rs` `DSML_*_SHORT`, `DSML_*` (25-36) | the two older root spellings the artifact still emits; the oracle knows only the spaced one | `tests/dsml.rs` `syntax_greedy_spaced_dsml` plus the `dec-*` cases through `ref_decode` |
+| `crates/ds4-server/src/retry.rs:144` `try_repair_dsml` | truncated-call repair; the oracle has no repair path (matrix G8, P3) | `tests/retry.rs` `dsml_repair_matches_the_reference_balance_contract`, `repair_and_decide_match_c` |
+| `crates/ds4-server/src/render.rs:1669` `responses_visible_assistant_suffix` | the visible assistant tail a Responses client can replay (ds4_server.c:12821); the store that consumes it (`responses_live_remember` :14559) is the reserved checkpoint unit | `tests/render.rs` `responses_visible_suffix_matches_client_replay` |
+| `crates/ds4-server/src/trace.rs` | C `--trace FILE` (ds4_help.c:323): one section per request with the prompt, its token ids and the parsed message (unit 3.2, TP-12/TP-15) | `trace.rs` `tests::a_section_carries_the_prompt_tokens_and_parsed_message` |
+| `crates/ds4-server/src/retry.rs:260` `find_any_tool_start`, `:277` `find_last_structural` | the repair path's style choice and think scope (ds4_server.c:5842, :5890), ported with G8 | `tests/retry.rs` `repair_and_decide_match_c` |
+| `crates/ds4-server/src/render.rs:133`-`:179`, other-family markers | Motif, EXAONE, Solar, Qwen, GLM, K2 tag sets: other families, outside this line | `tests/render.rs` `glm53_chat_and_image_protocol_match_official_template`, `ling31_uses_bailing_syntax`; `tests/parse.rs` `qwen_image_inputs_normalize_across_all_three_surfaces` |
+| `crates/ds4-server/src/render.rs:201` `syntax_for_model_id` | family dispatch; the oracle covers V4.1 only | `tests/render.rs` `syntax_for_model_id_matches_c` |
 
 ## 5. The open rows
 
-Ordered by what unblocks them, with the evidence each needs.
+Measured on 2026-10-19, in order of what decides them.  Every row above now
+carries a verdict; these are the ones that needed a judgement rather than a
+fixture.
 
 1. The image surface (rows `parse_tagged_text`, `_is_image_block`,
    `_extract_image`, `_process_image_blocks`, `_validate_no_image_sp_tokens`,
-   `process_image_messages`): six functions, no case.  The reference harness
-   asserts text-only, so nothing here is measured against the oracle.  The
-   server's base64-only rule is a deliberate deviation from the oracle's
-   path and URL forms (AGENTS.md, the carriage section), so the cases owed here
-   are the refusals.
-3. `response_format` rendering (row `response_format_template`): parsed on our
-   side, not rendered, no case.
-4. The namespace surface (rows `_split_tool_name`, `_tool_name_for_encoding`):
-   the qualified name has no case on either side.
-5. O-04 arguments bytes: ours minify, the oracle keeps the parameter body
-   verbatim.  Values agree; the strings differ.  Recorded, not a defect
-   against the wire, since the client echoes our string.
+   `process_image_messages`): the oracle leg is impossible by construction --
+   `ref_drive.py` encode asserts text-only (`:62`) -- so the cases owed here are
+   the refusals, and they are measured: `stray_image_token.rs` (9 tests across
+   the chat, Anthropic and Responses surfaces, with the server's own
+   placeholders still parsing) and the served probes `E-01`..`E-03`; re-measured
+   today, a chat body carrying the token is refused 400 with the oracle's own
+   sentence.  `_validate_no_image_sp_tokens` is CLOSED at R7; the other five are
+   "no oracle case" with the served path covered by the tests named in
+   section 1.
+2. The namespace surface (rows `_split_tool_name`, `_tool_name_for_encoding`):
+   out of surface.  The client's model-facing tool spec is
+   name/description/parameters only (`conversation.rs:861-869`, the conversion
+   at `:1039-1045`) and its `namespace` rides the editor-facing ToolCall meta
+   (`acp_session.rs:1741`), so no chat request can carry the field and a
+   `::`-qualified name is never sent.
+3. `wo_eos` (`assistant_msg_template` / `wo_eos`): out of surface.  `wo_eos`
+   appears nowhere under `crates/`; the oracle reads it from the message dict
+   for its own continuation flow (`encoding.py:607`, `:697-703`).
+4. `IMAGE_TAG_PATTERN`, the `<image>path</image>` text form, and
+   `LATEST_REMINDER_SP_TOKEN` / `DS_TASK_SP_TOKENS` / `VALID_TASKS`: out of
+   surface.  The carriage is base64-only by design (AGENTS.md) and the rest are
+   internal classification roles, not on the OpenAI wire.
+5. `response_format` rendering (row `response_format_template`): the one row
+   whose verdict is a decision and not a measurement.  Ours refuses
+   `json_object` and `json_schema` with 400 "structured output is unsupported"
+   (`format.rs:6-15`, the v0.6.3 refusal of ds4-on-spark#10), measured on the
+   served binary today; the oracle renders the schema into the prompt instead
+   (`encoding.py:628-629` with the template at `:64`).  The client of record can
+   put `response_format: json_schema` on the chat wire, from
+   `ConversationRequest.json_schema` (`conversation.rs:4107`), at two production
+   sites -- the auto-mode permission classifier (`sampler_turn.rs:862`) and the
+   goal evaluator (`goal_evaluator.rs:172`) -- while its main turns hardcode
+   None (`request_builder.rs:148`, sampler `client.rs:4071`), and no capability
+   gate guards those two sites.  Rendering it would mean accepting the field,
+   i.e. reversing a recorded refusal in shared parse and format code, which is
+   the operator's call; the row stays open until it is made.
+6. O-04 arguments bytes: ours minify, the oracle keeps the parameter body
+   verbatim.  Values agree; the strings differ.  Recorded, not a defect against
+   the wire, since the client echoes our string.
 
 Closed since the map was written: O-01 (the effort budget, both halves: the
 requested effort now reaches the V4.1 head and a numeric `reasoning_effort` is
 accepted), O-02 (a mid-conversation system message renders in place), O-03 (tool
-results ordered by call order) and the repair rows of G8/G9.  Every one of them
-was measured against its fixture before the fix and after it.
+results ordered by call order), the repair rows of G8/G9, the image-placeholder
+refusal (R7), and the drop-thinking rule together with its chat-mode
+counterpart.  Every one of them was measured against its fixture before the fix
+and after it.
+
+One divergence was found by this pass and closed in code.  Two assistant
+messages in a row share one `<Assistant>` header, so the second has no header to
+open its thinking, and the oracle still writes that message's reasoning and its
+closer as part of the body (`encoding.py:678-712`).  Measured before the fix:
+ours rendered 275 bytes against the oracle's 304, dropping `SECOND-THOUGHT-MARKER`
+whole (`enc-think-two-assistants`).  The assistant branch now writes the
+thinking body when it has no header, gated to the V4.1 head so the port's own
+head keeps its bytes.
 
 ## 6. Reproducing
 
