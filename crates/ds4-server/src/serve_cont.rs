@@ -85,6 +85,7 @@ pub struct ContStepper {
     anth: Option<AnthropicStream>,
     resp: Option<ResponsesStream>,
     finish: &'static str,
+    stop_token: bool,
     stops: Vec<String>,
     think_mode: crate::route::ThinkMode,
     tool_choice: ToolChoice,
@@ -189,6 +190,7 @@ impl ContStepper {
                 anth,
                 resp,
                 finish: "length",
+                stop_token: false,
                 stops: parsed.stops.clone(),
                 think_mode: parsed.think_mode,
                 tool_choice: parsed.tool_choice,
@@ -1055,11 +1057,15 @@ fn history_retire_prompt(prompt: &[u8], syntax: ModelSyntax) -> &[u8] {
     // Their separate history checkpoints were captured before that suffix;
     // shortening a retired key would describe different native KV.
     //
-    // Ling, MiMo and Naive replay the pair before assistant content. A
+    // Ling, MiMo, Naive and GLM replay the pair before assistant content. A
     // stripped key cannot prefix the next rendered turn or restore disk KV.
     if matches!(
         syntax,
-        ModelSyntax::Motif3 | ModelSyntax::Ling3Vl | ModelSyntax::Mimo2 | ModelSyntax::NaiveN05
+        ModelSyntax::Motif3
+            | ModelSyntax::Ling3Vl
+            | ModelSyntax::Mimo2
+            | ModelSyntax::NaiveN05
+            | ModelSyntax::Glm53
     ) {
         return prompt;
     }
@@ -2914,7 +2920,7 @@ mod native {
                 thinking_bank_retire_key(
                     &stepper.prompt,
                     done_tokens,
-                    engine_finished,
+                    engine_finished || stepper.stopped_by_token(),
                     transport_failed || stepper.acc.verdict.is_some(),
                     stepper.prompt_preserves_reasoning,
                     stepper.acc.track_tools,
@@ -3973,6 +3979,14 @@ impl ContStepper {
     /// is never fed.
     pub fn mark_stop(&mut self) {
         self.finish = "stop";
+        self.stop_token = true;
+    }
+
+    /// The model closed its turn with a family stop token (GLM `<|user|>`)
+    /// instead of the engine EOS; the reply before it is still complete.
+    #[cfg(any(feature = "native", test))]
+    fn stopped_by_token(&self) -> bool {
+        self.stop_token
     }
 
     #[cfg(any(feature = "native", test))]
@@ -4122,6 +4136,88 @@ mod bank_tests {
         assert_eq!(record.text, key.text);
         assert_eq!(record.payload, b"native-payload");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Renders one turn (`2 + 2`) or the next (`4` replied, `4 + 1` asked)
+    /// with GLM's official template.
+    fn glm_turn(effort: &str, next: bool) -> Vec<u8> {
+        use ds4_core::chat_template::{RenderClock, Template};
+        let template = Template::compile(
+            include_str!("../../../tests/fixtures/chat-template/models/glm/chat_template.jinja"),
+            RenderClock::Fixed(0),
+        )
+        .unwrap();
+        let history = if next {
+            r#",{"role":"assistant","content":"4"},{"role":"user","content":"4 + 1"}"#
+        } else {
+            ""
+        };
+        let body = format!(
+            r#"{{"messages":[{{"role":"user","content":"2 + 2"}}{history}],"reasoning_effort":"{effort}"}}"#
+        );
+        let parsed = parse_chat_request(&ParseEnv::default(), &body).unwrap();
+        let model_id = ds4_core::Variant::Glm53FlashVq as i32;
+        crate::chat_input::render(&template, model_id, &parsed).unwrap()
+    }
+
+    #[test]
+    fn glm_disabled_thinking_key() {
+        // GLM replays the empty pair before history content; the key keeps it.
+        let pieces = [b"4".as_slice(), b"<|user|>"];
+        let (key, _) = bank_retire_key(
+            &glm_turn("none", false),
+            &[],
+            &[0, 1],
+            false,
+            ModelSyntax::Glm53,
+            |token| pieces[token as usize].to_vec(),
+        )
+        .unwrap();
+        assert!(glm_turn("none", true).starts_with(&key));
+    }
+
+    #[test]
+    fn glm_visible_thinking_key() {
+        let prompt = glm_turn("high", false);
+        let parsed = parse_chat_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"2 + 2"}],"reasoning_effort":"high"}"#,
+        )
+        .unwrap();
+        let model_id = ds4_core::Variant::Glm53FlashVq as i32;
+        let (mut stepper, _) = ContStepper::new(
+            &parsed,
+            model_id,
+            "glm",
+            0,
+            false,
+            16,
+            prompt.clone(),
+            1,
+            8192,
+        );
+        // `<|user|>` ends the reply as a host stop token, never as engine EOS.
+        assert!(!stepper.stopped_by_token());
+        stepper.mark_stop();
+        let pieces = [b"Compute.".as_slice(), b"</think>", b"4", b"<|user|>"];
+        let key = thinking_bank_retire_key(
+            &prompt,
+            &[0, 1, 2, 3],
+            stepper.stopped_by_token(),
+            false,
+            false,
+            false,
+            false,
+            ModelSyntax::Glm53,
+            ChatFormat::DeepSeek,
+            |token| pieces[token as usize].to_vec(),
+        )
+        .unwrap();
+        // History without reasoning renders `<think></think>4`.
+        assert!(glm_turn("high", true).starts_with(&key.text));
+        let mut exact = prompt;
+        exact.extend_from_slice(b"Compute.</think>4");
+        assert_eq!(key.exact_text, Some(exact));
     }
 
     #[test]

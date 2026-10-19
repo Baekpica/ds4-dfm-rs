@@ -1415,11 +1415,14 @@ pub(crate) fn thinking_visible_key(
         if !prompt.ends_with(start) {
             return None;
         }
-        let prefix = if format == ChatFormat::SolarOpen2 {
+        // GLM history replays `<think></think>` + stripped content.
+        let glm = syntax == ModelSyntax::Glm53;
+        let prefix = if format == ChatFormat::SolarOpen2 || glm {
             prompt
         } else {
             &prompt[..prompt.len() - start.len()]
         };
+        let content = if glm { content.trim_ascii() } else { content };
         let mut visible =
             Vec::with_capacity(prefix.len() + think_end(format).len() + content.len());
         visible.extend_from_slice(prefix);
