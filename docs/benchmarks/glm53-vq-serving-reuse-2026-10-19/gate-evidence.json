@@ -1,0 +1,869 @@
+{
+ "none-mtp-off": {
+  "phases": {
+   "seed": {
+    "passed": true,
+    "errors": [],
+    "pid": 1411919,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "3c04ecd8959fafcb593c5ffc9cf9773c1a256e28b8a6cdac44b88f7f1de9423d",
+    "result_sha256": "d53a47e92a183e8983304190f9837cf621e680272886b997d4369d08f08d7452"
+   },
+   "warm": {
+    "passed": true,
+    "errors": [],
+    "pid": 1411919,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "37779e728cc5888409359a289de80e46669849725646d4191037e869b781b019",
+    "result_sha256": "47a4825fb2f37a00b123e744ca48f9302897a05e39fb2e24107c7b6877724b96"
+   },
+   "restored": {
+    "passed": true,
+    "errors": [],
+    "pid": 1412498,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "37779e728cc5888409359a289de80e46669849725646d4191037e869b781b019",
+    "result_sha256": "009851b0e10e492b1d726236e282a1f8b8a029777a890be358fb49df6664633f"
+   },
+   "cold": {
+    "passed": true,
+    "errors": [],
+    "pid": 1412928,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "37779e728cc5888409359a289de80e46669849725646d4191037e869b781b019",
+    "result_sha256": "178f67c24a6c19390df550f29838e6ac6834a9f9c81b69dd9fc97134c4486556"
+   }
+  },
+  "requests": [
+   {
+    "phase": "cold",
+    "case": "append",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 558
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [],
+    "seconds": 2.435
+   },
+   {
+    "phase": "cold",
+    "case": "edit",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 558
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [],
+    "seconds": 2.434
+   },
+   {
+    "phase": "cold",
+    "case": "fork",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 577,
+     "completion_tokens": 1,
+     "total_tokens": 578,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 577
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [],
+    "seconds": 2.479
+   },
+   {
+    "phase": "cold",
+    "case": "restart",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 596,
+     "completion_tokens": 1,
+     "total_tokens": 597,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 596
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [],
+    "seconds": 4.145
+   },
+   {
+    "phase": "cold",
+    "case": "seed",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 539,
+     "completion_tokens": 1,
+     "total_tokens": 540,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 539
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [],
+    "seconds": 4.652
+   },
+   {
+    "phase": "restored",
+    "case": "restart",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 596,
+     "completion_tokens": 1,
+     "total_tokens": 597,
+     "prompt_tokens_details": {
+      "cached_tokens": 578,
+      "cache_write_tokens": 18
+     }
+    },
+    "reuse_kind": "fork",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [
+     {
+      "source": 0,
+      "target": 1,
+      "cached": 578,
+      "partial": 0,
+      "source_before": 578,
+      "source_after": 578,
+      "target_after": 578,
+      "family": "glm"
+     }
+    ],
+    "seconds": 2.053
+   },
+   {
+    "phase": "seed",
+    "case": "seed",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 539,
+     "completion_tokens": 1,
+     "total_tokens": 540,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 539
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": "no checkpoint at or below LCP",
+    "speculation_active": false,
+    "native_forks": [],
+    "seconds": 4.646
+   },
+   {
+    "phase": "warm",
+    "case": "append",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 540,
+      "cache_write_tokens": 18
+     }
+    },
+    "reuse_kind": "fork",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [
+     {
+      "source": 0,
+      "target": 1,
+      "cached": 540,
+      "partial": 0,
+      "source_before": 540,
+      "source_after": 540,
+      "target_after": 540,
+      "family": "glm"
+     }
+    ],
+    "seconds": 1.558
+   },
+   {
+    "phase": "warm",
+    "case": "edit",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 539,
+      "cache_write_tokens": 19
+     }
+    },
+    "reuse_kind": "partial",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [
+     {
+      "source": 1,
+      "target": 0,
+      "cached": 539,
+      "partial": 1,
+      "source_before": 559,
+      "source_after": 559,
+      "target_after": 539,
+      "family": "glm"
+     }
+    ],
+    "seconds": 1.778
+   },
+   {
+    "phase": "warm",
+    "case": "fork",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 577,
+     "completion_tokens": 1,
+     "total_tokens": 578,
+     "prompt_tokens_details": {
+      "cached_tokens": 559,
+      "cache_write_tokens": 18
+     }
+    },
+    "reuse_kind": "exact",
+    "reuse_miss": null,
+    "speculation_active": false,
+    "native_forks": [],
+    "seconds": 1.636
+   }
+  ],
+  "config": {
+   "family": "glm",
+   "model": "GLM-5.3-Flash-VQ",
+   "context": 2048,
+   "banks": 2,
+   "native_chunk": 64,
+   "mtp_mode": "off",
+   "expect_speculation": false,
+   "lane": "continuous",
+   "mtp_draft": null,
+   "padding_lines": 64,
+   "reasoning_effort": "none",
+   "max_tokens": 32,
+   "requested_lane": "auto"
+  }
+ },
+ "none-mtp2": {
+  "phases": {
+   "seed": {
+    "passed": true,
+    "errors": [],
+    "pid": 1405627,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "6c3a8f3e23acb4bfccb978f26a03ecb61fae404e030be11a66953c89809786b4",
+    "result_sha256": "0d5c067f3f46e6d43a6dbdf3524ba7be3d8004ad8d1a0eac2b1d64f3a90e86e6"
+   },
+   "warm": {
+    "passed": true,
+    "errors": [],
+    "pid": 1405627,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "a1082ce62f9495934d722daf334810e28a7247c69db6a0c89c2a97f261f5fc44",
+    "result_sha256": "567d44681af780d02b47d1ead32c304b982c4426a2f4619868a58cc2d63d9e83"
+   },
+   "restored": {
+    "passed": true,
+    "errors": [],
+    "pid": 1406080,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "a1082ce62f9495934d722daf334810e28a7247c69db6a0c89c2a97f261f5fc44",
+    "result_sha256": "4474eea1bb067781a18d7fb5cde0656f2f776eeb88e72fe2a473fe22184c2185"
+   },
+   "cold": {
+    "passed": true,
+    "errors": [],
+    "pid": 1406345,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "a1082ce62f9495934d722daf334810e28a7247c69db6a0c89c2a97f261f5fc44",
+    "result_sha256": "bbb75ac9dcdb2639409087a62964919d50d9ab0dbcbc99138539a7f4e44aea27"
+   }
+  },
+  "requests": [
+   {
+    "phase": "cold",
+    "case": "append",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 558
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 2.477
+   },
+   {
+    "phase": "cold",
+    "case": "edit",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 558
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 2.473
+   },
+   {
+    "phase": "cold",
+    "case": "fork",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 577,
+     "completion_tokens": 1,
+     "total_tokens": 578,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 577
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 2.516
+   },
+   {
+    "phase": "cold",
+    "case": "mtp_probe",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 544,
+     "completion_tokens": 6,
+     "total_tokens": 550,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 544
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 2.517
+   },
+   {
+    "phase": "cold",
+    "case": "restart",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 596,
+     "completion_tokens": 1,
+     "total_tokens": 597,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 596
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 4.191
+   },
+   {
+    "phase": "cold",
+    "case": "seed",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 539,
+     "completion_tokens": 1,
+     "total_tokens": 540,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 539
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 4.684
+   },
+   {
+    "phase": "restored",
+    "case": "restart",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 596,
+     "completion_tokens": 1,
+     "total_tokens": 597,
+     "prompt_tokens_details": {
+      "cached_tokens": 578,
+      "cache_write_tokens": 18
+     }
+    },
+    "reuse_kind": "fork",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [
+     {
+      "source": 0,
+      "target": 1,
+      "cached": 578,
+      "partial": 0,
+      "source_before": 578,
+      "source_after": 578,
+      "target_after": 578,
+      "family": "glm"
+     }
+    ],
+    "seconds": 2.106
+   },
+   {
+    "phase": "seed",
+    "case": "seed",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 539,
+     "completion_tokens": 1,
+     "total_tokens": 540,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 539
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": "no checkpoint at or below LCP",
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 4.693
+   },
+   {
+    "phase": "warm",
+    "case": "append",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 540,
+      "cache_write_tokens": 18
+     }
+    },
+    "reuse_kind": "fork",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [
+     {
+      "source": 0,
+      "target": 1,
+      "cached": 540,
+      "partial": 0,
+      "source_before": 540,
+      "source_after": 540,
+      "target_after": 540,
+      "family": "glm"
+     }
+    ],
+    "seconds": 1.587
+   },
+   {
+    "phase": "warm",
+    "case": "edit",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 558,
+     "completion_tokens": 1,
+     "total_tokens": 559,
+     "prompt_tokens_details": {
+      "cached_tokens": 539,
+      "cache_write_tokens": 19
+     }
+    },
+    "reuse_kind": "partial",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [
+     {
+      "source": 1,
+      "target": 0,
+      "cached": 539,
+      "partial": 1,
+      "source_before": 559,
+      "source_after": 559,
+      "target_after": 539,
+      "family": "glm"
+     }
+    ],
+    "seconds": 1.791
+   },
+   {
+    "phase": "warm",
+    "case": "fork",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 577,
+     "completion_tokens": 1,
+     "total_tokens": 578,
+     "prompt_tokens_details": {
+      "cached_tokens": 559,
+      "cache_write_tokens": 18
+     }
+    },
+    "reuse_kind": "exact",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 1.668
+   }
+  ],
+  "config": {
+   "family": "glm",
+   "model": "GLM-5.3-Flash-VQ",
+   "context": 2048,
+   "banks": 2,
+   "native_chunk": 64,
+   "mtp_mode": "on",
+   "expect_speculation": true,
+   "lane": "continuous",
+   "mtp_draft": 2,
+   "padding_lines": 64,
+   "reasoning_effort": "none",
+   "max_tokens": 32,
+   "requested_lane": "auto"
+  }
+ },
+ "high-mtp2": {
+  "phases": {
+   "seed": {
+    "passed": true,
+    "errors": [],
+    "pid": 1407947,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "64a3046f208c07baafc9637a96a99d952df099bb4558271d7a558dfbfbc97cab",
+    "result_sha256": "c4ac4ed589b12597bb91b314cdfb5693b5391471cab892aada5a3464ff1656dd"
+   },
+   "warm": {
+    "passed": true,
+    "errors": [],
+    "pid": 1407947,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "129a9b63b452d82eda9552236e854e24f4b8b6e5b22e967fe4ee9a597221bc6f",
+    "result_sha256": "9528a9d5d275ffc482ad8dc0eab876633d4937b1f6b8917af204676526c66e37"
+   },
+   "restored": {
+    "passed": true,
+    "errors": [],
+    "pid": 1408623,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "129a9b63b452d82eda9552236e854e24f4b8b6e5b22e967fe4ee9a597221bc6f",
+    "result_sha256": "b89b71690c0c41650dd122244978d1047479e85a3b087f78360c722b597d75c6"
+   },
+   "cold": {
+    "passed": true,
+    "errors": [],
+    "pid": 1408913,
+    "executable_sha256": "b68172884bfa3370dd72da9933700d15778eb45358dfc2f66f67a5b5a5325c8e",
+    "artifacts_sha256": "11198c9a1bb302a2c39a6ba020507d174b76539a2461c1cbb1c78c13d5380e2a",
+    "fixture_sha256": "129a9b63b452d82eda9552236e854e24f4b8b6e5b22e967fe4ee9a597221bc6f",
+    "result_sha256": "a17ca1f805fc75b474727462dd1c7370c4c448a10559b7eb9f2ddb83ea5b2897"
+   }
+  },
+  "requests": [
+   {
+    "phase": "cold",
+    "case": "append",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 573,
+     "completion_tokens": 3,
+     "total_tokens": 576,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 573
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 2.518
+   },
+   {
+    "phase": "cold",
+    "case": "edit",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 573,
+     "completion_tokens": 3,
+     "total_tokens": 576,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 573
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 2.514
+   },
+   {
+    "phase": "cold",
+    "case": "fork",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 593,
+     "completion_tokens": 3,
+     "total_tokens": 596,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 593
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 4.029
+   },
+   {
+    "phase": "cold",
+    "case": "mtp_probe",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 543,
+     "completion_tokens": 58,
+     "total_tokens": 601,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 543
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 6.265
+   },
+   {
+    "phase": "cold",
+    "case": "restart",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 613,
+     "completion_tokens": 3,
+     "total_tokens": 616,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 613
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 2.713
+   },
+   {
+    "phase": "cold",
+    "case": "seed",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 538,
+     "completion_tokens": 18,
+     "total_tokens": 556,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 538
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 5.252
+   },
+   {
+    "phase": "restored",
+    "case": "restart",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 613,
+     "completion_tokens": 3,
+     "total_tokens": 616,
+     "prompt_tokens_details": {
+      "cached_tokens": 596,
+      "cache_write_tokens": 17
+     }
+    },
+    "reuse_kind": "partial",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [
+     {
+      "source": 0,
+      "target": 1,
+      "cached": 596,
+      "partial": 0,
+      "source_before": 596,
+      "source_after": 596,
+      "target_after": 596,
+      "family": "glm"
+     }
+    ],
+    "seconds": 2.006
+   },
+   {
+    "phase": "seed",
+    "case": "seed",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 538,
+     "completion_tokens": 18,
+     "total_tokens": 556,
+     "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 538
+     }
+    },
+    "reuse_kind": "cold",
+    "reuse_miss": "no checkpoint at or below LCP",
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 5.255
+   },
+   {
+    "phase": "warm",
+    "case": "append",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 573,
+     "completion_tokens": 3,
+     "total_tokens": 576,
+     "prompt_tokens_details": {
+      "cached_tokens": 556,
+      "cache_write_tokens": 17
+     }
+    },
+    "reuse_kind": "fork",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [
+     {
+      "source": 0,
+      "target": 1,
+      "cached": 556,
+      "partial": 0,
+      "source_before": 556,
+      "source_after": 556,
+      "target_after": 556,
+      "family": "glm"
+     }
+    ],
+    "seconds": 1.508
+   },
+   {
+    "phase": "warm",
+    "case": "edit",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 573,
+     "completion_tokens": 3,
+     "total_tokens": 576,
+     "prompt_tokens_details": {
+      "cached_tokens": 538,
+      "cache_write_tokens": 35
+     }
+    },
+    "reuse_kind": "partial",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 0.32
+   },
+   {
+    "phase": "warm",
+    "case": "fork",
+    "passed": true,
+    "usage": {
+     "prompt_tokens": 593,
+     "completion_tokens": 3,
+     "total_tokens": 596,
+     "prompt_tokens_details": {
+      "cached_tokens": 538,
+      "cache_write_tokens": 55
+     }
+    },
+    "reuse_kind": "partial",
+    "reuse_miss": null,
+    "speculation_active": true,
+    "native_forks": [],
+    "seconds": 0.436
+   }
+  ],
+  "config": {
+   "family": "glm",
+   "model": "GLM-5.3-Flash-VQ",
+   "context": 2048,
+   "banks": 2,
+   "native_chunk": 64,
+   "mtp_mode": "on",
+   "expect_speculation": true,
+   "lane": "continuous",
+   "mtp_draft": 2,
+   "padding_lines": 64,
+   "reasoning_effort": "high",
+   "max_tokens": 512,
+   "requested_lane": "auto"
+  }
+ }
+}

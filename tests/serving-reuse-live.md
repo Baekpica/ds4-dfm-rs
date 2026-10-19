@@ -99,10 +99,13 @@ settings identical across phases. The profile accepts both plan family names the
 family serves, `glm5-next` for the Flash plan and `GLM-5.3-Flash-VQ` for the VQ
 release (crates/ds4-core/src/serving.rs:1511-1512); both share the native
 `GLM-5.3` bank trace (ds4.c:65773, `ds4_model_is_glm` covers the VQ shell at
-ds4.c:1648). Its canonical history can restore a partial
-checkpoint after omitting the generation-only thinking close. Native trace
-must prove a copy to another bank with the source frontier preserved. These
-flags prepare a gate; completed live receipts establish qualification.
+ds4.c:1648). Its history replays the think pair, so append reuses the whole
+turn. With reasoning, the edit can rewind the retained branch's bank in place
+and the branch then restores a checkpoint; an MTP-committed stop row makes a
+restart partial as well. Native trace must prove a copy to another bank with
+the source frontier preserved. The
+[VQ receipts](../docs/benchmarks/glm53-vq-serving-reuse-2026-10-19/README.md)
+qualify the VQ release; the Flash plan still needs its own.
 
 Start with an empty, dedicated disk cache and evidence directory. `$PID` is
 the inference server PID, not its owner, shell or watchdog. Record clocks and

@@ -227,7 +227,9 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
             # The official history removes generation-only empty thinking.
             kinds = {"exact", "fork", "partial"}
         elif config["family"] == "glm":
-            # Canonical history omits the generation-only thinking close.
+            # History replays the think pair, so append reuses the whole turn.
+            # A reasoning edit can rewind the branch's bank in place, and MTP
+            # can commit the stop row: both then restore a checkpoint.
             # A separate native trace must prove the actual bank copy.
             kinds = {"exact", "fork", "partial"}
         elif config["family"] in ("naive", "iquest") and config["mtp_mode"] == "on":
