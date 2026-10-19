@@ -1209,14 +1209,14 @@ impl BindPlan {
             if slot.name.starts_with("mtp.") || slot.name.starts_with("dspark.") {
                 continue;
             }
-            // Ling-3.1 keeps HF expert names; its GVQ1 codes count as 2-bit
-            // (disk KV records accept only 2 or 4).
+            // Ling-3.1 and GLM VQ keep HF expert names; their GVQ1 codes
+            // count as 2-bit (disk KV records accept only 2 or 4).
             let routed = match self.shape.family {
                 ModelFamily::Inkling => {
                     slot.name.starts_with("model.llm.layers.")
                         && slot.name.ends_with(".mlp.experts.w13_weight")
                 }
-                ModelFamily::Ling31Vq => {
+                ModelFamily::Ling31Vq | ModelFamily::Glm53Vq => {
                     slot.name.contains(".mlp.experts.") && slot.name.ends_with(".gate_proj.weight")
                 }
                 _ => slot.name.contains("ffn_gate_exps"),
@@ -1720,6 +1720,24 @@ mod tests {
             0x4756_5138,
         )]);
         p.shape = crate::shape::SHAPE_LING31_VQ;
+        assert_eq!(p.routed_quant_bits(), 2);
+    }
+
+    #[test]
+    fn glm_vq_kv_quant_identity() {
+        // Release layout order: dense and shared FP8 matrices precede the
+        // first routed GVQ1 expert, which sets the 2-bit KV identity class.
+        let slots = crate::glm_vq::layouts()
+            .iter()
+            .map(|spec| match spec.class {
+                crate::TypeClass::Exact(typ) | crate::TypeClass::OptionalExact(typ) => {
+                    gate(&spec.name, typ)
+                }
+                _ => gate(&spec.name, 0),
+            })
+            .collect();
+        let mut p = plan(slots);
+        p.shape = crate::shape::SHAPE_GLM53_VQ;
         assert_eq!(p.routed_quant_bits(), 2);
     }
 
