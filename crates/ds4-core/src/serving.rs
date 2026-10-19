@@ -712,14 +712,16 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        // Short two-bank HTTP gates qualify partial reuse and disk restore
+        // (docs/benchmarks/glm53-vq-serving-reuse-2026-10-19).
         ModelFamily::Glm53Vq => ServingCaps {
             family,
             variant,
             banks: BankLane::Persistent,
             bank_support: Support::Present,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
             snapshot: Support::Present,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Present,
@@ -2604,7 +2606,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
         Variant::Glm53Flash => "compact banks, partial reuse, snapshots and embedded MTP are present; 1M structural capacity and historical 2K qualification are separate",
-        Variant::Glm53FlashVq => "Eager CUDA sparse graph follows the native 1,048,576 context; banks, partial reuse and VQ snapshots are present; serving workload limits remain unqualified",
+        Variant::Glm53FlashVq => "Eager CUDA sparse graph follows the native 1,048,576 context; short two-bank gates qualify partial reuse and disk KV; banks, MTP and serving workload limits remain unqualified",
         Variant::Dots3NotePrev => {
             "text banks, local-window partial reuse and serial MTP are present but unqualified"
         }
@@ -2786,12 +2788,33 @@ mod tests {
         assert_eq!(caps.banks, BankLane::Persistent);
         assert_eq!(caps.bank_support, Support::Present);
         assert_eq!(caps.reuse, ReuseKind::Partial);
-        assert_eq!(caps.reuse_support, Support::Present);
-        assert_eq!(caps.disk, Support::Present);
+        assert_eq!(caps.reuse_support, Support::Qualified);
+        assert_eq!(caps.disk, Support::Qualified);
         assert_eq!(caps.snapshot, Support::Present);
         assert_eq!(caps.mtp_support, Support::Present);
         assert_eq!(caps.qualified_ctx, None);
         assert_eq!(caps.qualified_banks, None);
+    }
+
+    #[test]
+    fn vq_auto_reuse_and_disk() {
+        // A default launch with a disk directory gets the qualified paths.
+        let req = ServingRequest {
+            backend: Backend::Cuda,
+            ctx: 8192,
+            kv_disk_dir: Some("/tmp/kv".into()),
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Glm53Vq, Variant::Glm53FlashVq);
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+        assert_eq!(p.qualified.prefix_reuse, Support::Qualified);
+        assert!(p.effective.disk);
+        assert_eq!(p.qualified.disk, Support::Qualified);
+        assert!(!p
+            .issues
+            .iter()
+            .any(|i| matches!(i.code, "partial_unqualified" | "disk_unverified")));
     }
 
     #[test]

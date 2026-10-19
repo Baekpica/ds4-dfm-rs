@@ -254,6 +254,27 @@ accept: keep k rows; KDA state ◀── journal slot k, index tail ◀── re
   with `--cuda --mtp-draft 2 --temp 0` (two drafts); `DS4_GLMVQ_MTP_DRAFT=N`
   caps drafts per verify for measurement.
 
+## Serving: prefix reuse and disk KV
+
+`--prefix-reuse auto` resolves to partial reuse and `--kv-disk-dir` is
+qualified by short two-bank gates
+([October 19](benchmarks/glm53-vq-serving-reuse-2026-10-19/README.md)). The
+template replays each earlier reply as `<think>` + reasoning + `</think>` +
+stripped content, keeping the reasoning only when the client returns it:
+
+- **Reasoning returned, or thinking off.** The next prompt extends the
+  bank's exact text: the whole previous turn is reused.
+- **Reasoning dropped.** The bank holds reasoning the prompt lacks; the
+  checkpoint captured at the previous prompt's end is restored and only the
+  reply and the new user turn are prefilled.
+- **Restart or another conversation.** A bank of at least 8,192 tokens is
+  written to disk when retired or evicted and restored by its next turn. With
+  one bank, set `DS4_SERVER_PIN_MIN_TOKENS=8192`: a shallower record never
+  evicts a live bank (default 65,536).
+
+At 1M, one bank, a 30K conversation's next turn takes 1.3 s to the first
+token instead of 25 s. Suffixes under 32 tokens still cost 1–2 s of prefill.
+
 ## Numerical contract
 
 Each optimization keeps the source rounding boundaries unless it states a
