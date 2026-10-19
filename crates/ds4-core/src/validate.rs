@@ -25,11 +25,14 @@ use crate::tensors::TensorInventory;
 const MOTIF_SHA: &[u8] = b"30f14b635d3258a18c3ff7e69829f8fbfa775e87477ffabb59a79115bba820a5";
 const DOTS3_SHA: &[u8] = b"99b7de680dd456111c36efb8749f8ae7177328e97b65a3e39a6700cbc1173833";
 const DARWIN_REVISION: &[u8] = b"bc3c7b0410b40c085b78084e13f01c12df31087b";
-const QWEN_REVISIONS: [&[u8]; 3] = [
+const SWIFT_REVISION: &[u8] = b"0bd4fe22431372cdad1979267d3ab45aa7e6150a";
+const QWEN_REVISIONS: [&[u8]; 4] = [
     b"f5d08274bafd880402bd16f5e3e6c514136ec06c",
     b"8336e613ea508b13c2159bd0f68965d97a606b95",
     // Darwin retains the pinned Qwen graph and Community License.
     DARWIN_REVISION,
+    // Swift retains the pinned Qwen graph under its own license.
+    SWIFT_REVISION,
 ];
 
 /// V4.1 gives the compression ratio per layer from the official config and
@@ -38,6 +41,8 @@ const QWEN_REVISIONS: [&[u8]; 3] = [
 const V41_MAX_COMPRESS_RATIO: u32 = 2;
 const QWEN_CONFIG_SHA: &[u8] = b"889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b";
 const QWEN_LICENSE_SHA: &[u8] = b"a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08";
+const SWIFT_LICENSE_SHA: &[u8] =
+    b"7a3af3e6b43fcb7c486ea8167252a36a9532dcbdf02d1704a749881872ec551c";
 
 #[derive(Debug)]
 pub enum ValidateError {
@@ -1270,6 +1275,14 @@ fn qwen_source_revision_supported(revision: Option<&[u8]>) -> bool {
     }
 }
 
+// License digest and name each accepted source must declare.
+fn qwen_source_license(revision: Option<&[u8]>) -> (&'static [u8], &'static [u8]) {
+    if revision == Some(SWIFT_REVISION) {
+        return (SWIFT_LICENSE_SHA, b"swift-open-license-1.0");
+    }
+    (QWEN_LICENSE_SHA, b"qwen-community-1.0")
+}
+
 fn validate_glm53(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
     for (name, key, want) in [
         ("block_count", "glm5-next.block_count", shape.n_layer),
@@ -1693,11 +1706,12 @@ fn validate_qwen4exp(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
             "general.source.revision".into(),
         ));
     }
+    let (license_sha, license_name) = qwen_source_license(g.get_string("general.source.revision"));
     for (key, want) in [
         ("qwen4exp.source.config_sha256", QWEN_CONFIG_SHA),
-        ("qwen4exp.source.license_sha256", QWEN_LICENSE_SHA),
+        ("qwen4exp.source.license_sha256", license_sha),
         ("general.license", b"other".as_slice()),
-        ("general.license.name", b"qwen-community-1.0".as_slice()),
+        ("general.license.name", license_name),
     ] {
         expect_string(g, key, want)?;
     }
@@ -2064,7 +2078,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::qwen_source_revision_supported;
+    use super::{qwen_source_license, qwen_source_revision_supported};
 
     #[test]
     fn dump_validate_routes_release_directories() {
@@ -2101,7 +2115,35 @@ mod tests {
         assert!(!qwen_source_revision_supported(Some(
             b"bc3c7b0410b40c085b78084e13f01c12df31087a"
         )));
+        assert!(qwen_source_revision_supported(Some(
+            b"0bd4fe22431372cdad1979267d3ab45aa7e6150a"
+        )));
         assert!(!qwen_source_revision_supported(Some(b"unknown")));
         assert!(!qwen_source_revision_supported(None));
+    }
+
+    #[test]
+    fn qwen_license_tracks_revision() {
+        assert_eq!(
+            qwen_source_license(Some(b"0bd4fe22431372cdad1979267d3ab45aa7e6150a")),
+            (
+                b"7a3af3e6b43fcb7c486ea8167252a36a9532dcbdf02d1704a749881872ec551c".as_slice(),
+                b"swift-open-license-1.0".as_slice(),
+            )
+        );
+
+        // Every other source keeps the Qwen Community License.
+        for revision in super::QWEN_REVISIONS {
+            if revision == super::SWIFT_REVISION {
+                continue;
+            }
+            assert_eq!(
+                qwen_source_license(Some(revision)),
+                (
+                    b"a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08".as_slice(),
+                    b"qwen-community-1.0".as_slice(),
+                )
+            );
+        }
     }
 }

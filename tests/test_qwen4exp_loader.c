@@ -42,11 +42,16 @@ static int check_source_revisions(void) {
         "bc3c7b0410b40c085b78084e13f01c12df31087b",
         sizeof("bc3c7b0410b40c085b78084e13f01c12df31087b") - 1u
     };
+    const ds4_str swift = {
+        "0bd4fe22431372cdad1979267d3ab45aa7e6150a",
+        sizeof("0bd4fe22431372cdad1979267d3ab45aa7e6150a") - 1u
+    };
     const ds4_str unknown = {"unknown", sizeof("unknown") - 1u};
 
     return !qwen4exp_source_revision_supported(upstream) ||
            !qwen4exp_source_revision_supported(uncensored) ||
            !qwen4exp_source_revision_supported(darwin) ||
+           !qwen4exp_source_revision_supported(swift) ||
            qwen4exp_source_revision_supported(unknown);
 }
 
