@@ -6633,6 +6633,11 @@ static bool qwen4exp_ssd_precision_types(
     return true;
 }
 
+/* Swift retains the pinned Qwen graph under its own license. */
+static const char QWEN4EXP_SWIFT_REVISION[] = "0bd4fe22431372cdad1979267d3ab45aa7e6150a";
+static const char QWEN4EXP_SWIFT_LICENSE_SHA[] =
+    "7a3af3e6b43fcb7c486ea8167252a36a9532dcbdf02d1704a749881872ec551c";
+
 static bool qwen4exp_source_revision_supported(ds4_str revision) {
     return ds4_streq(revision,
                      "f5d08274bafd880402bd16f5e3e6c514136ec06c") ||
@@ -6640,7 +6645,8 @@ static bool qwen4exp_source_revision_supported(ds4_str revision) {
                      "8336e613ea508b13c2159bd0f68965d97a606b95") ||
            /* Darwin retains the pinned Qwen graph and Community License. */
            ds4_streq(revision,
-                     "bc3c7b0410b40c085b78084e13f01c12df31087b");
+                     "bc3c7b0410b40c085b78084e13f01c12df31087b") ||
+           ds4_streq(revision, QWEN4EXP_SWIFT_REVISION);
 }
 
 static bool tensor_type_is_qwen4exp_plain(uint32_t type) {
@@ -8916,17 +8922,24 @@ static void config_validate_qwen4exp_model(const ds4_model *m) {
     if (!model_get_string(m, "general.source.revision", &value) ||
         !qwen4exp_source_revision_supported(value))
         ds4_die("Qwen4Exp GGUF does not match the pinned source revision");
+    /* Each accepted source declares its own license digest and name. */
+    const bool swift = ds4_streq(value, QWEN4EXP_SWIFT_REVISION);
+    const char *license_sha = swift ? QWEN4EXP_SWIFT_LICENSE_SHA :
+        "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08";
+    const char *license_name = swift ? "swift-open-license-1.0" : "qwen-community-1.0";
     if (!model_get_string(m, "qwen4exp.source.config_sha256", &value) ||
         !ds4_streq(value, "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b"))
         ds4_die("Qwen4Exp GGUF does not match the pinned source config");
     if (!model_get_string(m, "qwen4exp.source.license_sha256", &value) ||
-        !ds4_streq(value, "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08"))
-        ds4_die("Qwen4Exp GGUF does not match the pinned Qwen Community License");
+        !ds4_streq(value, license_sha)) {
+        ds4_die("Qwen4Exp GGUF does not match the pinned source license");
+    }
     if (!model_get_string(m, "general.license", &value) || !ds4_streq(value, "other"))
         ds4_die("Qwen4Exp GGUF has an incorrect general.license value");
     if (!model_get_string(m, "general.license.name", &value) ||
-        !ds4_streq(value, "qwen-community-1.0"))
+        !ds4_streq(value, license_name)) {
         ds4_die("Qwen4Exp GGUF has an incorrect license name");
+    }
 
     ds4_array_ref types = {0};
     if (!model_get_array(m, "qwen4exp.attention.layer_types", &types) ||
