@@ -868,6 +868,10 @@ uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash) {
     v41_kvreuse_note_mount(has_mount, hash);
 }
+int32_t *ds4_bridge_v41_kvreuse_stale_prompt(uint32_t *n) {
+    if (!n) return NULL;
+    return v41_kvreuse_stale_prompt(n);
+}
 int ds4_bridge_v41_kvreuse_export(const char *path) { return v41_kvreuse_export(path); }
 int ds4_bridge_v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
                                   const int32_t *tokens, uint32_t n) {

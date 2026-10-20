@@ -212,6 +212,11 @@ void ds4_engine_v41_set_kv_reuse(int on);
 int ds4_engine_v41_last_reused(void);
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np, const uint64_t *sig);
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash);
+/* The prompt of the checkpoint the last drop invalidated, caller-owned and
+ * taken once, or NULL (nothing retained / an image prompt): the server
+ * re-prefills it under the new amplifier, the reference's
+ * ds4_engine_v41_kv_stale_prompt (ds4_v41_api.h:120). */
+int32_t *v41_kvreuse_stale_prompt(uint32_t *n);
 
 /* The disk half (item 4): the payload export/import the bridge exposes to
  * the host store (ds4_ds41_kvreuse.inc defines them).  export writes the

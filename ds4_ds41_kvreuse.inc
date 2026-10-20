@@ -33,6 +33,14 @@
  * notes its identity here and the native drops when it changes
  * (v41_kvreuse_note_mount).
  *
+ * The drop keeps the invalidated checkpoint's prompt and hands it over once
+ * (v41_kvreuse_stale_prompt), so a host that has a switch event can re-prefill
+ * it under the new amplifier instead of letting the next request pay the whole
+ * prefill (core_v41_kvreuse.c:40-56, the reference's g_stale and
+ * ds4_engine_v41_kv_stale_prompt).  Nothing consumes it in this deployment:
+ * a domain switch here stops the server first (the install script), and the
+ * checkpoint is VRAM, so a restarted process has nothing to warm.
+ *
  * Failure mode (:24): a copy failure means this request prefills from token 0
  * (never a half checkpoint), with one log line.
  *
@@ -115,7 +123,35 @@ static void v41_turn_ids_add(v41_turn_ids *t, const int32_t *ids, uint32_t n) {
 
 static void v41_turn_ids_free(v41_turn_ids *t) { free(t->ids); memset(t, 0, sizeof *t); }
 
-static void v41_kvreuse_drop(void) { K.valid = 0; T.valid = 0; }
+/* The invalidated checkpoint keeps its prompt, so the host can re-prefill it
+ * under the new amplifier instead of making the next request pay the whole
+ * prefill (core_v41_kvreuse.c:46, the reference's g_stale: 7,240 token, 7.1 s
+ * first message after a switch).  Taken once -- the read clears it -- so a
+ * prewarm interrupted by a new request is never replayed: that request saves
+ * its own checkpoint (core_v41_kvreuse.c:47-56). */
+static int g_v41_kvreuse_stale;
+
+static void v41_kvreuse_drop(void) {
+    g_v41_kvreuse_stale = K.valid && K.n > 0;
+    K.valid = 0; T.valid = 0;
+}
+
+/* The dropped checkpoint's prompt, caller-owned (free it); NULL when nothing
+ * was retained, or the prompt carried an image: the vision rows are not part
+ * of the checkpoint, so there is nothing to re-prefill with
+ * (core_v41_kvreuse.c:52-53).  The reference's ds4_engine_v41_kv_stale_prompt. */
+int32_t *v41_kvreuse_stale_prompt(uint32_t *n) {
+    *n = 0;
+    if (!g_v41_kvreuse_stale) { return NULL; }
+    g_v41_kvreuse_stale = 0;
+    for (uint32_t i = 0; i < K.n; i++) {
+        if (K.sig[i]) { return NULL; }
+    }
+    int32_t *tok = xmalloc((size_t)K.n * sizeof *tok);
+    memcpy(tok, K.tok, (size_t)K.n * sizeof *tok);
+    *n = K.n;
+    return tok;
+}
 
 /* Grow a checkpoint buffer when it is too small (1.5x; content not kept --
  * the caller rewrites the whole span right after).  core_v41_kvreuse.c:45-52. */

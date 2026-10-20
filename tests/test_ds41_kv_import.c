@@ -373,6 +373,53 @@ static int turn_cases(ds4_v41_state *st) {
     return failures;
 }
 
+/* The invalidation keeps the checkpoint's prompt and hands it over once, so
+ * the host can re-prefill it under the new amplifier instead of letting the
+ * next request pay the whole prefill (core_v41_kvreuse.c:46-56, the
+ * reference's g_stale and ds4_engine_v41_kv_stale_prompt). */
+static int stale_cases(ds4_v41_state *st) {
+    enum { PROMPT = 5 };
+    const int32_t prompt[PROMPT] = {11, 12, 13, 14, 15};
+    uint64_t image[PROMPT] = {0};
+    int32_t *taken = NULL;
+    uint32_t n = 0;
+    int failures = 0;
+
+    /* What an earlier case left retained: clearing it needs an invalidated
+     * checkpoint, so the flag starts this case at zero. */
+    free(v41_kvreuse_stale_prompt(&n));
+    v41_kvreuse_drop();
+    failures += check_result("a drop with no checkpoint hands out no prompt",
+        v41_kvreuse_stale_prompt(&n) == NULL && n == 0u);
+
+    /* The amplifier change is what invalidates the checkpoint; the prompt
+     * outlives it. */
+    v41_kvreuse_note_mount(1, UINT64_C(0x1111111111111111));
+    v41_kvreuse_save(st, prompt, PROMPT, NULL);
+    v41_kvreuse_note_mount(1, UINT64_C(0x2222222222222222));
+    taken = v41_kvreuse_stale_prompt(&n);
+    failures += check_result("an amplifier change hands over the dropped prompt",
+        taken && n == PROMPT && !memcmp(taken, prompt, sizeof prompt[0] * PROMPT));
+    free(taken);
+
+    /* Taken once: a prewarm cut short by a request is not replayed -- that
+     * request saves its own checkpoint. */
+    failures += check_result("the stale prompt is taken once",
+        v41_kvreuse_stale_prompt(&n) == NULL && n == 0u);
+
+    /* An image prompt has no vision rows in the checkpoint, so there is
+     * nothing to re-prefill with. */
+    v41_kvreuse_note_mount(1, UINT64_C(0x3333333333333333));
+    image[1] = UINT64_C(0x0123456789abcdef);
+    v41_kvreuse_save(st, prompt, PROMPT, image);
+    v41_kvreuse_note_mount(1, UINT64_C(0x4444444444444444));
+    failures += check_result("an image prompt is not handed over",
+        v41_kvreuse_stale_prompt(&n) == NULL && n == 0u);
+
+    v41_kvreuse_drop();
+    return failures;
+}
+
 int main(void) {
     const uint32_t n = 9u;
     const int32_t tokens[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
@@ -538,6 +585,7 @@ int main(void) {
     failures += !ratio_one;
     failures += vision_cases(&st, path);
     failures += turn_cases(&st);
+    failures += stale_cases(&st);
     unlink(path);
     v41_kvreuse_cleanup();
     free(mut); free(blob); free(st.himg);
