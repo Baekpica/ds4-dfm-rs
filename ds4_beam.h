@@ -62,6 +62,13 @@ typedef enum { DS4_BEAM_QK_ROPE, DS4_BEAM_QK_SCALE, DS4_BEAM_QK_NORM } ds4_beam_
 int ds4_gpu_beam_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uint32_t heads,
     uint32_t rows, const ds4_gpu_tensor *rope, ds4_beam_qk mode);
 
+/* Decode attention of the query row over the stored positions (window 0)
+ * or the last `window`, rows at slot pos % kv_cap: FP8 (Solar's E4M3 K |
+ * E4M3 V | f16 scales, fp8 != 0) or f16 [K | V]. `partials` holds up to
+ * `max_splits` x 48 x 130 floats. */
+int ds4_gpu_beam_attn_decode(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *kv,
+    ds4_gpu_tensor *partials, uint32_t max_splits, uint32_t kv_cap, uint32_t pos, uint32_t window, int fp8);
+
 /* heads *= sigmoid(gate + bias[head]) per element (bias: BF16 [48] record). */
 int ds4_gpu_beam_gate(ds4_gvq_ctx *ctx, ds4_gpu_tensor *heads, const ds4_gpu_tensor *gate,
     uint32_t bias, uint32_t rows);

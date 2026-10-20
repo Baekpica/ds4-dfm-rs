@@ -703,6 +703,219 @@ extern "C" int ds4_gpu_beam_gate(ds4_gvq_ctx *ctx, ds4_gpu_tensor *heads, const 
     return cuda_ok(cudaGetLastError(), "Beam gate");
 }
 
+/* Decode attention of one query row over keys [first, last]: a block per
+ * (key split, KV head) serves the KV head's six query heads. Each warp walks
+ * 32-key tiles: lane = key for the scores (its K segment read whole, F32
+ * dots against the shared query rows, the row's K scale applied to the
+ * sum), then lane = four dimensions for P.V with the V scale folded into
+ * the weights. Warps keep their own online softmax; the block merges them
+ * into (max, sum, output) per head and split, or the normalized output when
+ * one split covers every key. Rows are Solar's FP8 (E4M3 K | E4M3 V | f16 K
+ * and V scales per KV head) or f16 [K | V], at slot key % kv_cap. The
+ * per-key warp walks this replaces (Solar's grouped split kernel, EXAONE's
+ * pair kernel) read the rows at ~25 GB/s. */
+enum { BEAM_ATTN_THREADS = 128, BEAM_ATTN_WARPS = BEAM_ATTN_THREADS / 32, BEAM_ATTN_TILE = 32,
+       BEAM_ATTN_GROUP = DS4_BEAM_HEADS / DS4_BEAM_KV_HEADS, BEAM_ATTN_KV = DS4_BEAM_KV_HEADS * BEAM_GPU_HEAD,
+       BEAM_ATTN_SPLITS = 48 };
+static_assert(BEAM_GPU_HEAD == BEAM_ATTN_THREADS && BEAM_GPU_HEAD == 4 * 32, "one thread per head dimension");
+
+// Four E4M3 codes (the bytes of `w`, lowest first) as floats; exact.
+static __device__ __forceinline__ void beam_e4m3x4(uint32_t w, float f[4]) {
+    const float2 a = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)(w & 0xffffu), __NV_E4M3)));
+    const float2 b = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)(w >> 16), __NV_E4M3)));
+    f[0] = a.x; f[1] = a.y; f[2] = b.x; f[3] = b.y;
+}
+
+// Four f16 values (two words) as floats.
+static __device__ __forceinline__ void beam_f16x4(uint2 w, float f[4]) {
+    const float2 a = __half22float2(*reinterpret_cast<const __half2 *>(&w.x));
+    const float2 b = __half22float2(*reinterpret_cast<const __half2 *>(&w.y));
+    f[0] = a.x; f[1] = a.y; f[2] = b.x; f[3] = b.y;
+}
+
+template <bool FP8>
+__global__ void __launch_bounds__(BEAM_ATTN_THREADS) beam_attn_decode_kernel(float *heads, float *partials,
+        const float *q, const uint8_t *kv, uint32_t kv_cap, uint32_t first, uint32_t last, uint32_t chunk,
+        uint32_t splits, float scale) {
+    constexpr uint32_t G = BEAM_ATTN_GROUP, D = BEAM_GPU_HEAD, W = BEAM_ATTN_WARPS, T = BEAM_ATTN_TILE;
+    constexpr uint32_t CODE = FP8 ? 1u : 2u;  // bytes per K or V value
+    constexpr uint64_t ROW = 2ull * BEAM_ATTN_KV * CODE + (FP8 ? 4u * DS4_BEAM_KV_HEADS : 0u);
+    __shared__ __align__(16) float qs[G][D];
+    __shared__ __align__(16) float ps[W][T][8];
+    __shared__ float ms[W][G], ls[W][G];
+    __shared__ __align__(16) float os[W][G][D];
+    const uint32_t split = blockIdx.x, kvh = blockIdx.y, lane = threadIdx.x & 31u, warp = threadIdx.x >> 5;
+    const uint32_t c0 = first + split * chunk, c1 = min(last, c0 + chunk - 1u);
+    for (uint32_t i = threadIdx.x; i < G * D; i += BEAM_ATTN_THREADS) {
+        qs[i / D][i % D] = q[(uint64_t)kvh * G * D + i];
+    }
+    __syncthreads();
+    const uint64_t koff = (uint64_t)kvh * D * CODE, voff = (uint64_t)BEAM_ATTN_KV * CODE + koff;
+    float m[G], l[G], acc[G][4];
+#pragma unroll
+    for (uint32_t h = 0; h < G; h++) {
+        m[h] = -INFINITY;
+        l[h] = 0.0f;
+#pragma unroll
+        for (uint32_t i = 0; i < 4; i++) { acc[h][i] = 0.0f; }
+    }
+    for (uint32_t t0 = c0 + warp * T; t0 <= c1; t0 += W * T) {
+        const uint32_t key = t0 + lane;
+        const bool valid = key <= c1;
+        const uint8_t *row = kv + (uint64_t)((valid ? key : t0) % kv_cap) * ROW;
+        float s[G];
+#pragma unroll
+        for (uint32_t h = 0; h < G; h++) { s[h] = 0.0f; }
+#pragma unroll 2
+        for (uint32_t c = 0; c < D; c += 16u / CODE) {
+            const uint4 w = *reinterpret_cast<const uint4 *>(row + koff + c * CODE);
+            float f[16 / CODE];
+            if constexpr (FP8) {
+                beam_e4m3x4(w.x, f); beam_e4m3x4(w.y, f + 4); beam_e4m3x4(w.z, f + 8); beam_e4m3x4(w.w, f + 12);
+            } else {
+                beam_f16x4(make_uint2(w.x, w.y), f); beam_f16x4(make_uint2(w.z, w.w), f + 4);
+            }
+#pragma unroll
+            for (uint32_t d = 0; d < 16u / CODE; d += 4) {
+#pragma unroll
+                for (uint32_t h = 0; h < G; h++) {
+                    const float4 qq = *reinterpret_cast<const float4 *>(&qs[h][c + d]);
+                    s[h] = fmaf(f[d], qq.x, s[h]);
+                    s[h] = fmaf(f[d + 1], qq.y, s[h]);
+                    s[h] = fmaf(f[d + 2], qq.z, s[h]);
+                    s[h] = fmaf(f[d + 3], qq.w, s[h]);
+                }
+            }
+        }
+        float kscale = scale, vscale = 1.0f;
+        if constexpr (FP8) {
+            const __half *sc = reinterpret_cast<const __half *>(row + 2ull * BEAM_ATTN_KV);
+            kscale *= __half2float(sc[kvh]);
+            vscale = __half2float(sc[DS4_BEAM_KV_HEADS + kvh]);
+        }
+#pragma unroll
+        for (uint32_t h = 0; h < G; h++) {
+            const float sc = valid ? s[h] * kscale : -INFINITY;
+            float top = sc;
+#pragma unroll
+            for (uint32_t o = 16; o; o >>= 1) { top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, o)); }
+            const float mn = fmaxf(m[h], top), r = __expf(m[h] - mn), p = valid ? __expf(sc - mn) : 0.0f;
+            l[h] = l[h] * r + p;
+#pragma unroll
+            for (uint32_t i = 0; i < 4; i++) { acc[h][i] *= r; }
+            m[h] = mn;
+            ps[warp][lane][h] = p * vscale;
+        }
+        __syncwarp();
+        const uint32_t n = min(T, c1 - t0 + 1u);
+#pragma unroll 4
+        for (uint32_t j = 0; j < n; j++) {
+            const uint8_t *vrow = kv + (uint64_t)((t0 + j) % kv_cap) * ROW + voff;
+            float f[4];
+            if constexpr (FP8) {
+                beam_e4m3x4(*reinterpret_cast<const uint32_t *>(vrow + 4u * lane), f);
+            } else {
+                beam_f16x4(*reinterpret_cast<const uint2 *>(vrow + 8u * lane), f);
+            }
+            const float4 pa = *reinterpret_cast<const float4 *>(&ps[warp][j][0]);
+            const float2 pb = *reinterpret_cast<const float2 *>(&ps[warp][j][4]);
+            const float p[G] = {pa.x, pa.y, pa.z, pa.w, pb.x, pb.y};
+#pragma unroll
+            for (uint32_t h = 0; h < G; h++) {
+#pragma unroll
+                for (uint32_t i = 0; i < 4; i++) { acc[h][i] = fmaf(p[h], f[i], acc[h][i]); }
+            }
+        }
+        __syncwarp();
+    }
+#pragma unroll
+    for (uint32_t h = 0; h < G; h++) {
+#pragma unroll
+        for (uint32_t o = 16; o; o >>= 1) { l[h] += __shfl_xor_sync(0xffffffffu, l[h], o); }
+        if (lane == 0) { ms[warp][h] = m[h]; ls[warp][h] = l[h]; }
+        *reinterpret_cast<float4 *>(&os[warp][h][4u * lane]) = make_float4(acc[h][0], acc[h][1], acc[h][2], acc[h][3]);
+    }
+    __syncthreads();
+    const uint32_t d = threadIdx.x;
+#pragma unroll
+    for (uint32_t h = 0; h < G; h++) {
+        float top = -INFINITY, sum = 0.0f, o = 0.0f;
+#pragma unroll
+        for (uint32_t w = 0; w < W; w++) { top = fmaxf(top, ms[w][h]); }
+#pragma unroll
+        for (uint32_t w = 0; w < W; w++) {
+            const float e = ms[w][h] == -INFINITY ? 0.0f : __expf(ms[w][h] - top);
+            sum += ls[w][h] * e;
+            o += os[w][h][d] * e;
+        }
+        const uint32_t head = kvh * G + h;
+        if (splits == 1u) {
+            heads[(uint64_t)head * D + d] = o / sum;
+        } else {
+            float *part = partials + ((uint64_t)head * splits + split) * (D + 2u);
+            if (d == 0) { part[0] = top; part[1] = sum; }
+            part[2u + d] = o;
+        }
+    }
+}
+
+// Splits of one head merged: thread = dimension.
+__global__ void __launch_bounds__(BEAM_ATTN_THREADS) beam_attn_combine_kernel(float *heads, const float *partials,
+        uint32_t splits) {
+    constexpr uint32_t D = BEAM_GPU_HEAD;
+    const uint32_t head = blockIdx.x, d = threadIdx.x;
+    const float *part = partials + (uint64_t)head * splits * (D + 2u);
+    float top = -INFINITY, sum = 0.0f, o = 0.0f;
+    for (uint32_t s = 0; s < splits; s++) { top = fmaxf(top, part[(uint64_t)s * (D + 2u)]); }
+    for (uint32_t s = 0; s < splits; s++) {
+        const float *p = part + (uint64_t)s * (D + 2u);
+        const float e = __expf(p[0] - top);
+        sum += p[1] * e;
+        o += p[2u + d] * e;
+    }
+    heads[(uint64_t)head * D + d] = o / sum;
+}
+
+extern "C" int ds4_gpu_beam_attn_decode(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *kv,
+        ds4_gpu_tensor *partials, uint32_t max_splits, uint32_t kv_cap, uint32_t pos, uint32_t window, int fp8) {
+    uint32_t first = window && pos + 1u > window ? pos + 1u - window : 0u;
+    if (pos + 1u > kv_cap && first < pos + 1u - kv_cap) { first = pos + 1u - kv_cap; }
+    const uint32_t keys = pos - first + 1u;
+    // About BEAM_ATTN_SPLITS splits (a wave of eight blocks per KV head and SM
+    // group), whole tiles, at least four tiles each.
+    uint32_t want = (keys + BEAM_ATTN_SPLITS - 1u) / BEAM_ATTN_SPLITS;
+    uint32_t chunk = (want + BEAM_ATTN_TILE - 1u) / BEAM_ATTN_TILE * BEAM_ATTN_TILE;
+    if (chunk < 4u * BEAM_ATTN_TILE) { chunk = 4u * BEAM_ATTN_TILE; }
+    uint32_t splits = (keys + chunk - 1u) / chunk;
+    if (splits > max_splits) {
+        want = (keys + max_splits - 1u) / max_splits;
+        chunk = (want + BEAM_ATTN_TILE - 1u) / BEAM_ATTN_TILE * BEAM_ATTN_TILE;
+        splits = (keys + chunk - 1u) / chunk;
+    }
+    const uint64_t row = fp8 ? 2ull * BEAM_ATTN_KV + 4u * DS4_BEAM_KV_HEADS : 4ull * BEAM_ATTN_KV;
+    if (!kv_cap || !gvq_floats(heads, (uint64_t)BEAM_GPU_HEADS * BEAM_GPU_HEAD) ||
+        !gvq_floats(q, (uint64_t)BEAM_GPU_HEADS * BEAM_GPU_HEAD) || !kv || kv->bytes < (uint64_t)kv_cap * row ||
+        (splits > 1u && !gvq_floats(partials, (uint64_t)BEAM_GPU_HEADS * splits * (BEAM_GPU_HEAD + 2u)))) {
+        return 0;
+    }
+    const dim3 grid(splits, DS4_BEAM_KV_HEADS);
+    const float scale = rsqrtf((float)BEAM_GPU_HEAD);
+    if (fp8) {
+        beam_attn_decode_kernel<true><<<grid, BEAM_ATTN_THREADS, 0, ds4_current_stream()>>>((float *)heads->ptr,
+            partials ? (float *)partials->ptr : nullptr, (const float *)q->ptr, (const uint8_t *)kv->ptr, kv_cap,
+            first, pos, chunk, splits, scale);
+    } else {
+        beam_attn_decode_kernel<false><<<grid, BEAM_ATTN_THREADS, 0, ds4_current_stream()>>>((float *)heads->ptr,
+            partials ? (float *)partials->ptr : nullptr, (const float *)q->ptr, (const uint8_t *)kv->ptr, kv_cap,
+            first, pos, chunk, splits, scale);
+    }
+    if (splits > 1u) {
+        beam_attn_combine_kernel<<<BEAM_GPU_HEADS, BEAM_ATTN_THREADS, 0, ds4_current_stream()>>>(
+            (float *)heads->ptr, (const float *)partials->ptr, splits);
+    }
+    return cuda_ok(cudaGetLastError(), "Beam decode attention");
+}
+
 // The head's BF16 logits (F32 MMQ sums rounded), capped as 30 tanh(x / 30)
 // in F32; padded rows past the tokenizer can never be sampled.
 __global__ void beam_logits_kernel(float *logits, uint32_t vocab, uint32_t tokens, uint64_t count) {

@@ -191,6 +191,16 @@ static bool beam_mm_many(ds4_beam_graph *g, const ds4_model *m, ds4_gpu_tensor *
     return ok;
 }
 
+// DS4_BEAM_ATTN_LEGACY=1: decode attention on the Solar/EXAONE kernels (A/B).
+static bool beam_attn_legacy(void) {
+    static int legacy = -1;
+    if (legacy < 0) {
+        const char *value = getenv("DS4_BEAM_ATTN_LEGACY");
+        legacy = value && value[0] == '1';
+    }
+    return legacy != 0;
+}
+
 /* Gated GQA: q/k RMSNorm per head, RoPE on the sliding layers (the full
  * layers' queries take the position scale instead), K/V into the layer's
  * ring or FP8 rows, attention, the per-element sigmoid gate and o_proj. */
@@ -214,7 +224,10 @@ static bool beam_attention(ds4_beam_graph *g, const ds4_model *m, const ds4_weig
     if (full) {
         ok = ds4_gpu_solar_kv_store_tensor(g->kv[il], g->k, g->v, BEAM_KV_HEADS, BEAM_HEAD, rows, pos,
                 g->ctx_cap, beam_full_kv());
-        if (ok && rows == 1u) {
+        if (ok && rows == 1u && !beam_attn_legacy()) {
+            ok = ds4_gpu_beam_attn_decode(g->heads, g->q, g->kv[il], g->partials, BEAM_DECODE_SPLITS, g->ctx_cap,
+                pos, 0u, beam_full_kv() == DS4_SOLAR_KV_FP8);
+        } else if (ok && rows == 1u) {
             // About BEAM_DECODE_SPLITS / 2 chunks of at least 256 keys.
             const uint32_t keys = pos + 1u, chunk = (keys + BEAM_DECODE_SPLITS / 2u - 1u) / (BEAM_DECODE_SPLITS / 2u);
             ok = ds4_gpu_solar_attention_decode_split_tensor(g->heads, g->q, g->kv[il], g->partials,
@@ -226,7 +239,10 @@ static bool beam_attention(ds4_beam_graph *g, const ds4_model *m, const ds4_weig
         }
     } else {
         ok = ds4_gpu_exaone_kv_store_tensor(g->kv[il], g->k, g->v, BEAM_KV, rows, pos, g->swa_cap) &&
-            (rows == 1u
+            (rows == 1u && !beam_attn_legacy()
+                ? ds4_gpu_beam_attn_decode(g->heads, g->q, g->kv[il], g->partials, BEAM_DECODE_SPLITS, g->swa_cap,
+                      pos, BEAM_WINDOW, 0)
+                : rows == 1u
                 ? ds4_gpu_exaone_attention_decode_tensor(g->heads, g->q, g->kv[il], BEAM_HEADS,
                       BEAM_KV_HEADS, BEAM_HEAD, g->swa_cap, pos, BEAM_WINDOW)
                 : ds4_gpu_exaone_attention_prefill_tensor(g->heads, g->q, g->kv[il], rows, pos,
