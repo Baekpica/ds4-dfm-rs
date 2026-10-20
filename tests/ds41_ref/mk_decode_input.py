@@ -80,7 +80,7 @@ def completions(ref: object) -> dict:
         # False, so the value stays raw.
         "dec-unicode": ""
         + "\n\n"
-        + block(ref, [invoke(ref, "say", {"city": "Stockholm", "note": "smörgås"})])
+        + block(ref, [invoke(ref, "read_file", {"target_file": "/tmp/smörgås.txt"})])
         + ref.eos_token,
         # A marker-looking string inside a value: structure must not be read
         # out of a parameter body (inventory G9's parse-side rule).

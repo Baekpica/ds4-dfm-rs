@@ -2550,11 +2550,11 @@ fn v41_completion_req(body: &str) -> ParsedRequest {
 fn v41_tool_turn_hands_the_sampled_block_to_the_tool_memory() {
     // The artifact's own spelling: the spaced wrapper with a plain invocation.
     let block = format!(
-        "{DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"get_weather\">\n\
-         {DSML_PARAM_START} name=\"city\" string=\"true\">Stockholm{DSML_PARAM_END}\n\
+        "{DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"read_file\">\n\
+         {DSML_PARAM_START} name=\"target_file\" string=\"true\">/tmp/x.txt{DSML_PARAM_END}\n\
          {DSML_INVOKE_END_SPACED}\n{DSML_TOOL_CALLS_END_SPACED}"
     );
-    let body = r#"{"model":"t","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":192,"temperature":0}"#;
+    let body = r#"{"model":"t","messages":[{"role":"user","content":"Read the file /tmp/x.txt"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}}],"max_tokens":192,"temperature":0}"#;
     let parsed = parse_request(WireSurface::OpenaiChat, &env(), body).unwrap();
     let mut engine = ScriptedV41::new(&[(1, block.as_str()), (99, "")], 1 << 20);
     let mut out = Vec::new();
@@ -2599,7 +2599,7 @@ fn v41_tool_turn_hands_the_sampled_block_to_the_tool_memory() {
 /// at :3389 then flattened that to `stop`.
 #[test]
 fn v41_budget_cut_inside_the_block_reports_length() {
-    let body = r#"{"model":"t","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":3,"temperature":0}"#;
+    let body = r#"{"model":"t","messages":[{"role":"user","content":"Read the file /tmp/x.txt"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}}],"max_tokens":3,"temperature":0}"#;
     let parsed = parse_request(WireSurface::OpenaiChat, &env(), body).unwrap();
     assert!(parsed.has_tools);
 
@@ -2607,10 +2607,10 @@ fn v41_budget_cut_inside_the_block_reports_length() {
     // n_predict, so the fourth never feeds and the turn ends with the block
     // open and its invocation unfinished -- the cut the budget sweep measures.
     let prose = String::from("Checking.");
-    let open = format!(
-        " {DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"get_weather\">"
-    );
-    let param = format!("\n{DSML_PARAM_START_SPACED} name=\"city\" string=\"true\">Stockholm");
+    let open =
+        format!(" {DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"read_file\">");
+    let param =
+        format!("\n{DSML_PARAM_START_SPACED} name=\"target_file\" string=\"true\">/tmp/x.txt");
     let close =
         format!("{DSML_PARAM_END_SPACED}\n{DSML_INVOKE_END_SPACED}\n{DSML_TOOL_CALLS_END_SPACED}");
     let script: Vec<(i32, &str)> = vec![
@@ -2646,15 +2646,16 @@ fn v41_budget_cut_inside_the_block_reports_length() {
 /// guards the reclassification above from widening that remap.
 #[test]
 fn v41_unterminated_block_on_eos_still_reports_stop() {
-    let body = r#"{"model":"t","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"max_tokens":64,"temperature":0}"#;
+    let body = r#"{"model":"t","messages":[{"role":"user","content":"Read the file /tmp/x.txt"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}}],"max_tokens":64,"temperature":0}"#;
     let parsed = parse_request(WireSurface::OpenaiChat, &env(), body).unwrap();
 
     let open = format!(
-        "Checking. {DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"get_weather\">"
+        "Checking. {DSML_TOOL_CALLS_START_SPACED}\n{DSML_INVOKE_START_SPACED} name=\"read_file\">"
     );
     // Same content as the budget arm, stopped one piece earlier: the model
     // ends the turn itself with the parameter still open.
-    let param = format!("\n{DSML_PARAM_START_SPACED} name=\"city\" string=\"true\">Stockholm");
+    let param =
+        format!("\n{DSML_PARAM_START_SPACED} name=\"target_file\" string=\"true\">/tmp/x.txt");
     let script: Vec<(i32, &str)> = vec![(1, open.as_str()), (2, param.as_str()), (99, "")];
     let mut engine = ScriptedV41::new(&script, 1 << 20);
     let mut out = Vec::new();

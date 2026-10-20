@@ -1,8 +1,7 @@
 
 
 <｜DSML｜ calls>
-<｜DSML｜ invoke name="say">
-<｜DSML｜ parameter name="city" string="true">Stockholm</｜DSML｜ parameter>
-<｜DSML｜ parameter name="note" string="true">smörgås</｜DSML｜ parameter>
+<｜DSML｜ invoke name="read_file">
+<｜DSML｜ parameter name="target_file" string="true">/tmp/smörgås.txt</｜DSML｜ parameter>
 </｜DSML｜ invoke>
 </｜DSML｜ calls><｜end▁of▁sentence｜>

@@ -95,9 +95,9 @@ fi
 # G3: the malformed-turn shape, re-run beside the client evidence.
 say "=== G3 malformed turn (wire legality) ==="
 BASE="${BASE_URL:-http://192.168.1.91:8008}"
-TOOLS='[{"type":"function","function":{"name":"get_weather","description":"Current weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]'
+TOOLS='[{"type":"function","function":{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"target_file":{"type":"string"},"limit":{"type":"integer"}},"required":["target_file"]}}},{"type":"function","function":{"name":"list_dir","description":"List a directory","parameters":{"type":"object","properties":{"target_directory":{"type":"string"}},"required":["target_directory"]}}}]'
 B=$(jq -n --argjson t "$TOOLS" --arg m "$MODEL" \
-  '{model:$m,messages:[{role:"user",content:"Call get_weather for Stockholm and set a timer for 90 seconds. Call both tools."}],tools:$t,tool_choice:"auto",max_tokens:16,temperature:0,stream:true,stream_options:{include_usage:true}}')
+  '{model:$m,messages:[{role:"user",content:"Read the file /tmp/x.txt and list the directory /tmp. Call both tools."}],tools:$t,tool_choice:"auto",max_tokens:16,temperature:0,stream:true,stream_options:{include_usage:true}}')
 printf '%s' "$B" > "$OUT/g3.req.json"
 curl -sS --max-time 300 -H 'Content-Type: application/json' -d "$B" "$BASE/v1/chat/completions" > "$OUT/g3.sse"
 G3_F=$(grep -o '"finish_reason":"[^"]*"' "$OUT/g3.sse" | sed 's/.*:"//; s/"$//' | sort -u | tr '\n' ',')

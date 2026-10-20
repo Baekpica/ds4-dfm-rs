@@ -6,8 +6,8 @@
     {
       "type": "function",
       "function": {
-        "name": "say",
-        "arguments": "{\"city\": \"Stockholm\", \"note\": \"smörgås\"}"
+        "name": "read_file",
+        "arguments": "{\"target_file\": \"/tmp/smörgås.txt\"}"
       }
     }
   ]

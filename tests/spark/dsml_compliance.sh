@@ -50,22 +50,22 @@ ok()   { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1" | tee -a "$OUT/summary.txt
 bad()  { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1" | tee -a "$OUT/summary.txt" >/dev/null; printf 'FAIL  %s\n' "$1"; }
 check(){ if [ "$2" = "$3" ]; then ok "$1 ($2)"; else bad "$1 (want '$3', got '$2')"; fi; }
 
-# The two tools: one string parameter and one non-string parameter, because the
-# DSML parameter tag carries string="true|false" and the port must keep a number
-# a number.
+# The two tools: read_file carries a string parameter and an integer one, because
+# the DSML parameter tag carries string="true|false" and the port must keep a
+# number a number; list_dir is the second call a real client makes.
 TOOLS_OPENAI='[
- {"type":"function","function":{"name":"get_weather","description":"Current weather for a city",
-  "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}},
- {"type":"function","function":{"name":"set_timer","description":"Set a timer",
-  "parameters":{"type":"object","properties":{"seconds":{"type":"integer"},"label":{"type":"string"}},"required":["seconds"]}}}]'
+ {"type":"function","function":{"name":"read_file","description":"Read a file",
+  "parameters":{"type":"object","properties":{"target_file":{"type":"string"},"limit":{"type":"integer"}},"required":["target_file"]}}},
+ {"type":"function","function":{"name":"list_dir","description":"List a directory",
+  "parameters":{"type":"object","properties":{"target_directory":{"type":"string"}},"required":["target_directory"]}}}]'
 
 TOOLS_ANTHROPIC='[
- {"name":"get_weather","description":"Current weather for a city",
-  "input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}},
- {"name":"set_timer","description":"Set a timer",
-  "input_schema":{"type":"object","properties":{"seconds":{"type":"integer"},"label":{"type":"string"}},"required":["seconds"]}}]'
+ {"name":"read_file","description":"Read a file",
+  "input_schema":{"type":"object","properties":{"target_file":{"type":"string"},"limit":{"type":"integer"}},"required":["target_file"]}},
+ {"name":"list_dir","description":"List a directory",
+  "input_schema":{"type":"object","properties":{"target_directory":{"type":"string"}},"required":["target_directory"]}}]'
 
-ASK='Call get_weather for Stockholm. Call the tool; do not answer in prose.'
+ASK='Read the file /tmp/x.txt. Call the tool; do not answer in prose.'
 
 model_id() { "${CURL[@]}" "$BASE/v1/models" | jq -r '.data[0].id'; }
 MODEL="$(model_id)"
@@ -103,11 +103,11 @@ ARGS1_OK=$(printf '%s' "$ARGS1" | jq -e 'type=="object"' >/dev/null 2>&1 && echo
 say "finish_reason=$FIN1 id=$ID1 name=$NAME1 args=$ARGS1"
 say "timings: $(timings_line "$OUT/leg1-openai-nonstream.res.json")"
 check "openai non-stream finish_reason" "$FIN1" "tool_calls"
-check "openai non-stream tool name" "$NAME1" "get_weather"
+check "openai non-stream tool name" "$NAME1" "read_file"
 check "openai non-stream arguments are JSON" "$ARGS1_OK" "yes"
 check "openai non-stream call id prefix" "$(printf '%s' "$ID1" | cut -c1-5)" "call_"
-CITY1=$(printf '%s' "$ARGS1" | jq -r '.city // ""')
-check "openai non-stream city argument" "$CITY1" "Stockholm"
+TARGET1=$(printf '%s' "$ARGS1" | jq -r '.target_file // ""')
+check "openai non-stream target argument" "$TARGET1" "/tmp/x.txt"
 
 ########################################
 # Leg 2: OpenAI chat/completions, stream
@@ -140,7 +140,7 @@ if [ -n "$ARGS1" ] && [ "$ARGS1_OK" = yes ] && [ -n "$ID1" ]; then
     '{model:$m,
       messages:[{role:"user",content:$ask},
                 {role:"assistant",content:"",tool_calls:[{id:$id,type:"function",function:{name:$name,arguments:($args|tojson)}}]},
-                {role:"tool",tool_call_id:$id,content:"{\"temp_c\":7,\"sky\":\"clear\"}"}],
+                {role:"tool",tool_call_id:$id,content:"file body"}],
       tools:$tools,tool_choice:"auto",max_tokens:192,temperature:0,stream:false}')
   printf '%s' "$BODY3" > "$OUT/leg3-openai-turn2.req.json"
   "${CURL[@]}" -H 'Content-Type: application/json' -d "$BODY3" \
@@ -173,7 +173,7 @@ R4CALLID=$(jq -r '[.output[]? | select(.type=="function_call")][0].call_id // ""
 R4ARGS=$(jq -r '[.output[]? | select(.type=="function_call")][0].arguments // ""' "$OUT/leg4-responses.res.json" 2>/dev/null)
 say "responses function_call items=$R4TYPE name=$R4NAME call_id=$R4CALLID args=$R4ARGS"
 [ "$R4TYPE" -gt 0 ] && ok "responses served a function_call item" || bad "responses served a function_call item"
-check "responses function name" "$R4NAME" "get_weather"
+check "responses function name" "$R4NAME" "read_file"
 if [ -n "$R4ARGS" ]; then
   R4OK=$(printf '%s' "$R4ARGS" | jq -e 'type=="object"' >/dev/null 2>&1 && echo yes || echo no)
   check "responses arguments are JSON" "$R4OK" "yes"
@@ -184,7 +184,7 @@ if [ -n "$R4CALLID" ] && [ -n "$R4ARGS" ] && [ "$R4OK" = yes ]; then
     '{model:$m,
       input:[{role:"user",content:$ask},
              {type:"function_call",call_id:$cid,name:$name,arguments:$args},
-             {type:"function_call_output",call_id:$cid,output:"{\"temp_c\":7}"}],
+             {type:"function_call_output",call_id:$cid,output:"file body"}],
       tools:$tools,max_output_tokens:192,temperature:0,stream:false}')
   printf '%s' "$BODY4B" > "$OUT/leg4b-responses-turn2.req.json"
   "${CURL[@]}" -H 'Content-Type: application/json' -d "$BODY4B" \
@@ -211,7 +211,7 @@ A5INPUT=$(jq -c '[.content[]? | select(.type=="tool_use")][0].input // null' "$O
 A5STOP=$(jq -r '.stop_reason // ""' "$OUT/leg5-anthropic.res.json" 2>/dev/null)
 say "tool_use blocks=$A5N id=$A5ID name=$A5NAME input=$A5INPUT stop_reason=$A5STOP"
 [ "$A5N" -gt 0 ] && ok "anthropic served a tool_use block" || bad "anthropic served a tool_use block"
-check "anthropic tool name" "$A5NAME" "get_weather"
+check "anthropic tool name" "$A5NAME" "read_file"
 check "anthropic stop_reason" "$A5STOP" "tool_use"
 case "$A5ID" in toolu_*) ok "anthropic tool id prefix (toolu_)";; *) bad "anthropic tool id prefix (got '$A5ID')";; esac
 if [ "$A5INPUT" != "null" ] && [ -n "$A5INPUT" ]; then ok "anthropic input is a JSON object ($A5INPUT)"; else bad "anthropic input is a JSON object"; fi
@@ -222,7 +222,7 @@ if [ "$A5N" -gt 0 ] && [ -n "$A5ID" ]; then
     '{model:$m,max_tokens:192,temperature:0,tools:$tools,
       messages:[{role:"user",content:$ask},
                 {role:"assistant",content:[{type:"tool_use",id:$id,name:$name,input:$input}]},
-                {role:"user",content:[{type:"tool_result",tool_use_id:$id,content:"{\"temp_c\":7}"}]}]}')
+                {role:"user",content:[{type:"tool_result",tool_use_id:$id,content:"file body"}]}]}')
   printf '%s' "$BODY5B" > "$OUT/leg5b-anthropic-turn2.req.json"
   "${CURL[@]}" -H 'Content-Type: application/json' -d "$BODY5B" \
     "$BASE/v1/messages" > "$OUT/leg5b-anthropic-turn2.res.json"

@@ -34,20 +34,20 @@ tokens() { jq -r '.timings.prefill_tokens // 0' "$1" 2>/dev/null; }
 cached() { jq -r '.timings.prefill_cached_tokens // 0' "$1" 2>/dev/null; }
 
 TOOLS_OPENAI='[
- {"type":"function","function":{"name":"get_weather","description":"Current weather for a city",
-  "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}},
- {"type":"function","function":{"name":"set_timer","description":"Set a timer",
-  "parameters":{"type":"object","properties":{"seconds":{"type":"integer"},"label":{"type":"string"}},"required":["seconds"]}}}]'
+ {"type":"function","function":{"name":"read_file","description":"Read a file",
+  "parameters":{"type":"object","properties":{"target_file":{"type":"string"},"limit":{"type":"integer"}},"required":["target_file"]}}},
+ {"type":"function","function":{"name":"list_dir","description":"List a directory",
+  "parameters":{"type":"object","properties":{"target_directory":{"type":"string"}},"required":["target_directory"]}}}]'
 
 TOOLS_ANTHROPIC='[
- {"name":"get_weather","description":"Current weather for a city",
-  "input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}},
- {"name":"set_timer","description":"Set a timer",
-  "input_schema":{"type":"object","properties":{"seconds":{"type":"integer"},"label":{"type":"string"}},"required":["seconds"]}}]'
+ {"name":"read_file","description":"Read a file",
+  "input_schema":{"type":"object","properties":{"target_file":{"type":"string"},"limit":{"type":"integer"}},"required":["target_file"]}},
+ {"name":"list_dir","description":"List a directory",
+  "input_schema":{"type":"object","properties":{"target_directory":{"type":"string"}},"required":["target_directory"]}}]'
 
-ASK_W='Call get_weather for Stockholm. Call the tool; do not answer in prose.'
-ASK_T='Call set_timer with seconds 90 and label tea. Call the tool; do not answer in prose.'
-ASK_BOTH='Call get_weather for Stockholm and set_timer with seconds 90. Call both tools.'
+ASK_W='Read the file /tmp/x.txt. Call the tool; do not answer in prose.'
+ASK_T='Read the file /tmp/x.txt with limit 90. Call the tool; do not answer in prose.'
+ASK_BOTH='Read the file /tmp/x.txt and list the directory /tmp. Call both tools.'
 
 MODEL=$("${CURL[@]}" "$BASE/v1/models" | jq -r '.data[0].id')
 RUNID="$(date +%s)-$RANDOM"
@@ -72,8 +72,8 @@ NAME=$(jq -r '.choices[0].message.tool_calls[0].function.name // ""' "$OUT/a01-o
 ID=$(jq -r '.choices[0].message.tool_calls[0].id // ""' "$OUT/a01-openai.res.json")
 ARGS=$(jq -r '.choices[0].message.tool_calls[0].function.arguments // ""' "$OUT/a01-openai.res.json")
 OBS="finish=$FIN name=$NAME id=${ID:0:5}... args=$ARGS"
-if [ "$FIN" = tool_calls ] && [ "$NAME" = get_weather ] && printf '%s' "$ARGS" | jq -e '.city=="Stockholm"' >/dev/null 2>&1; then V=PASS; else V=FAIL; fi
-row A-01 "OpenAI chat served one DSML tool call as tool_calls" "finish=tool_calls, get_weather {city:Stockholm}" "$OBS" "$V" "$OUT/a01-openai.res.json"
+if [ "$FIN" = tool_calls ] && [ "$NAME" = read_file ] && printf '%s' "$ARGS" | jq -e '.target_file=="/tmp/x.txt"' >/dev/null 2>&1; then V=PASS; else V=FAIL; fi
+row A-01 "OpenAI chat served one DSML tool call as tool_calls" "finish=tool_calls, read_file {target_file:/tmp/x.txt}" "$OBS" "$V" "$OUT/a01-openai.res.json"
 
 hdr "A-02 non-string DSML parameter typing"
 A2="$(ask a02 "$ASK_T")"
@@ -81,10 +81,10 @@ B=$(jq -n --argjson t "$TOOLS_OPENAI" --arg a "$A2" --arg m "$MODEL" \
   '{model:$m,messages:[{role:"user",content:$a}],tools:$t,tool_choice:"auto",max_tokens:192,temperature:0,stream:false}')
 chat a02-typing "$B"
 TARGS=$(jq -r '.choices[0].message.tool_calls[0].function.arguments // ""' "$OUT/a02-typing.res.json")
-SEC=$(printf '%s' "$TARGS" | jq -r '.seconds|type' 2>/dev/null || echo unparsed)
-OBS="arguments=$TARGS seconds-type=$SEC"
-[ "$SEC" = number ] && V=PASS || V=FAIL
-row A-02 "A numeric DSML parameter stays a JSON number" "seconds is a number" "$OBS" "$V" "$OUT/a02-typing.res.json"
+LIMIT=$(printf '%s' "$TARGS" | jq -r '.limit|type' 2>/dev/null || echo unparsed)
+OBS="arguments=$TARGS limit-type=$LIMIT"
+[ "$LIMIT" = number ] && V=PASS || V=FAIL
+row A-02 "A numeric DSML parameter stays a JSON number" "limit is a number" "$OBS" "$V" "$OUT/a02-typing.res.json"
 
 hdr "A-03 multiple invokes in one block"
 A3="$(ask a03 "$ASK_BOTH")"
@@ -119,7 +119,7 @@ AINPUT=$(jq -c '[.content[]?|select(.type=="tool_use")][0].input // null' "$OUT/
 ASTOP=$(jq -r '.stop_reason // ""' "$OUT/a05-anthropic.res.json")
 case "$AID" in toolu_*) IDOK=1;; *) IDOK=0;; esac
 OBS="id=${AID:0:6}... name=$ANAME input=$AINPUT stop=$ASTOP"
-if [ "$ANAME" = get_weather ] && [ "$ASTOP" = tool_use ] && [ "$IDOK" = 1 ]; then V=PASS; else V=FAIL; fi
+if [ "$ANAME" = read_file ] && [ "$ASTOP" = tool_use ] && [ "$IDOK" = 1 ]; then V=PASS; else V=FAIL; fi
 row A-05 "Anthropic served a tool_use block" "toolu_ id, name, input object, stop_reason=tool_use" "$OBS" "$V" "$OUT/a05-anthropic.res.json"
 
 hdr "A-06 responses function_call"
@@ -132,7 +132,7 @@ RNAME=$(jq -r '[.output[]?|select(.type=="function_call")][0].name // ""' "$OUT/
 RCID=$(jq -r '[.output[]?|select(.type=="function_call")][0].call_id // ""' "$OUT/a06-responses.res.json")
 RARGS=$(jq -r '[.output[]?|select(.type=="function_call")][0].arguments // ""' "$OUT/a06-responses.res.json")
 OBS="items=$RN name=$RNAME call_id=${RCID:0:5}... args=$RARGS"
-if [ "$RN" -ge 1 ] && [ "$RNAME" = get_weather ]; then V=PASS; else V=FAIL; fi
+if [ "$RN" -ge 1 ] && [ "$RNAME" = read_file ]; then V=PASS; else V=FAIL; fi
 row A-06 "Responses served a function_call item" "one function_call item with name and arguments" "$OBS" "$V" "$OUT/a06-responses.res.json"
 
 ##############################################################################
@@ -154,7 +154,7 @@ if [ -n "$B1ID" ] && [ -n "$B1ARGS" ]; then
     --arg id "$B1ID" --arg name "$B1NAME" --argjson args "$B1ARGS" \
     '{model:$m,messages:[{role:"user",content:$a},
        {role:"assistant",content:"",tool_calls:[{id:$id,type:"function",function:{name:$name,arguments:($args|tojson)}}]},
-       {role:"tool",tool_call_id:$id,content:"{\"temp_c\":7}"}],
+       {role:"tool",tool_call_id:$id,content:"file body"}],
       tools:$t,tool_choice:"auto",max_tokens:192,temperature:0,stream:false}')
   chat b01-chat-t2 "$B"
   C=$(cached "$OUT/b01-chat-t2.res.json"); P=$(tokens "$OUT/b01-chat-t2.res.json"); G=$((C - T1P))
@@ -183,7 +183,7 @@ if [ -n "$B2ID" ] && [ -n "$B2ARGS" ]; then
     --arg id "$B2ID" --arg name "$B2NAME" --arg args "$VARIANT" \
     '{model:$m,messages:[{role:"user",content:$a},
        {role:"assistant",content:"",tool_calls:[{id:$id,type:"function",function:{name:$name,arguments:$args}}]},
-       {role:"tool",tool_call_id:$id,content:"{\"temp_c\":7}"}],
+       {role:"tool",tool_call_id:$id,content:"file body"}],
       tools:$t,tool_choice:"auto",max_tokens:192,temperature:0,stream:false}')
   chat b02-chat-t2 "$B"
   C=$(cached "$OUT/b02-chat-t2.res.json"); P=$(tokens "$OUT/b02-chat-t2.res.json"); G=$((C - B2P))
@@ -209,7 +209,7 @@ if [ -n "$B3ID" ] && [ "$B3IN" != "null" ]; then
     '{model:$m,max_tokens:192,temperature:0,tools:$t,
       messages:[{role:"user",content:$a},
                 {role:"assistant",content:[{type:"tool_use",id:$id,name:$name,input:$input}]},
-                {role:"user",content:[{type:"tool_result",tool_use_id:$id,content:"{\"temp_c\":7}"}]}]}')
+                {role:"user",content:[{type:"tool_result",tool_use_id:$id,content:"file body"}]}]}')
   anth b03-anthropic-t2 "$B"
   C=$(cached "$OUT/b03-anthropic-t2.res.json"); P=$(tokens "$OUT/b03-anthropic-t2.res.json"); G=$((C - B3P))
   OBS="turn-1 prompt=$B3P; turn-2 prompt=$P cached=$C; replay gain=$G tokens"
@@ -233,7 +233,7 @@ if [ -n "$B4CID" ] && [ -n "$B4A" ]; then
     --arg cid "$B4CID" --arg name "$B4N" --arg args "$B4A" \
     '{model:$m,input:[{role:"user",content:$a},
        {type:"function_call",call_id:$cid,name:$name,arguments:$args},
-       {type:"function_call_output",call_id:$cid,output:"{\"temp_c\":7}"}],
+       {type:"function_call_output",call_id:$cid,output:"file body"}],
       tools:$t,max_output_tokens:192,temperature:0,stream:false}')
   resp b04-responses-t2 "$B"
   C=$(cached "$OUT/b04-responses-t2.res.json"); P=$(tokens "$OUT/b04-responses-t2.res.json"); G=$((C - B4P))

@@ -281,8 +281,8 @@ Dashed: the stages the measured nonconformities fall in.
 
 | TP | Requirement | Method | Pass criterion |
 | --- | --- | --- | --- |
-| TP-01 | R-01 OpenAI chat serves one DSML call as `tool_calls` | A-01 | `finish_reason=tool_calls`, name `get_weather`, `arguments.city = Stockholm` |
-| TP-02 | R-02 typed parameters survive as JSON types | A-02 | `arguments.seconds` is a JSON number |
+| TP-01 | R-01 OpenAI chat serves one DSML call as `tool_calls` | A-01 | `finish_reason=tool_calls`, name `read_file`, `arguments.target_file = /tmp/x.txt` |
+| TP-02 | R-02 typed parameters survive as JSON types | A-02 | `arguments.limit` is a JSON number |
 | TP-03 | R-03 two invokes in one block | A-03 | two `tool_calls` |
 | TP-04 | R-04 streaming carries the call | A-04 | a `tool_calls` delta and `finish_reason=tool_calls` |
 | TP-05 | R-05 Anthropic serves `tool_use` | A-05 | `toolu_` id, name, input object, `stop_reason=tool_use` |
@@ -300,6 +300,13 @@ Dashed: the stages the measured nonconformities fall in.
 | TP-17 | R-17 a cut turn keeps its truncation signal and a legal finish (2.3.3, 2.3.4) | C-01, C-02, C-03 | every `finish_reason` inside the client's closed enum (holds on main: `generate.rs:3324`), and a turn cut inside its block reports `length`; the change lands only if the probe shows the signal is lost |
 | TP-18 | R-18 the client of record completes a real tool loop | client leg (6.4) | one-tool and two-tool turns complete end to end under `/data/open-grok`; the malformed turn does not fail the stream |
 | TP-19 | R-19 a user-supplied image placeholder in a textual field is refused (2.1) | E-01..E-03 (`tests/spark/dsml_conformance.sh`) and `p1`..`p5` (clause 7.8) | message content and `reasoning_content` each answer `400` naming the token, the stray-plus-image case is refused for the same reason, and the text and image controls still answer `200` |
+
+The tool pair every probe drives changed on 2026-10-20: the invented
+weather/timer schemas were replaced by `read_file` (`target_file`, `limit`)
+and `list_dir` (`target_directory`), so a probe reads through the tools a real
+caller sends.  The result tables recorded before that date (7.1, 7.4) were
+measured with the earlier pair and are kept verbatim as the record of those
+runs; the next gate re-measures every TP through the new one.
 
 ### 6.4 Client-of-record leg
 

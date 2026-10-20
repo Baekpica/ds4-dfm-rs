@@ -7226,31 +7226,31 @@ mod dsml_replay {
 
     fn sampled() -> String {
         format!(
-            "{DSML_TOOL_CALLS_START}\n{DSML_INVOKE_START} name=\"get_weather\">\n\
-             {DSML_PARAM_START} name=\"city\" string=\"true\">Stockholm{DSML_PARAM_END}\n\
+            "{DSML_TOOL_CALLS_START}\n{DSML_INVOKE_START} name=\"read_file\">\n\
+             {DSML_PARAM_START} name=\"target_file\" string=\"true\">/tmp/x.txt{DSML_PARAM_END}\n\
              {DSML_INVOKE_END}\n{DSML_TOOL_CALLS_END}"
         )
     }
 
     /// The client's own echo of the call, respaced the way a re-serializing
-    /// client sends it (`{"city": "Stockholm"}` against the sampled
-    /// `{"city":"Stockholm"}`).
+    /// client sends it (`{"target_file": "/tmp/x.txt"}` against the sampled
+    /// `{"target_file":"/tmp/x.txt"}`).
     const OPENAI_BODY: &str = r#"{"model":"t","max_tokens":16,"messages":[
-        {"role":"user","content":"weather?"},
-        {"role":"assistant","content":"","tool_calls":[{"id":"__ID__","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Stockholm\"}"}}]},
-        {"role":"tool","tool_call_id":"__ID__","content":"{\"temp_c\":7}"},
-        {"role":"user","content":"and tomorrow?"}],
-        "tools":[{"type":"function","function":{"name":"get_weather","description":"Current weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]}"#;
+        {"role":"user","content":"Read the file /tmp/x.txt"},
+        {"role":"assistant","content":"","tool_calls":[{"id":"__ID__","type":"function","function":{"name":"read_file","arguments":"{\"target_file\": \"/tmp/x.txt\"}"}}]},
+        {"role":"tool","tool_call_id":"__ID__","content":"file body"},
+        {"role":"user","content":"and the next file?"}],
+        "tools":[{"type":"function","function":{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}}]}"#;
 
-    const ANTHROPIC_BODY: &str = r#"{"model":"t","max_tokens":16,"tools":[{"name":"get_weather","description":"Current weather for a city","input_schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}],"messages":[
-        {"role":"user","content":"weather?"},
-        {"role":"assistant","content":[{"type":"tool_use","id":"__ID__","name":"get_weather","input":{"city":"Stockholm"}}]},
-        {"role":"user","content":[{"type":"tool_result","tool_use_id":"__ID__","content":"{\"temp_c\":7}"}]}]}"#;
+    const ANTHROPIC_BODY: &str = r#"{"model":"t","max_tokens":16,"tools":[{"name":"read_file","description":"Read a file","input_schema":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}],"messages":[
+        {"role":"user","content":"Read the file /tmp/x.txt"},
+        {"role":"assistant","content":[{"type":"tool_use","id":"__ID__","name":"read_file","input":{"target_file":"/tmp/x.txt"}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"__ID__","content":"file body"}]}]}"#;
 
-    const RESPONSES_BODY: &str = r#"{"model":"t","max_output_tokens":16,"tools":[{"type":"function","function":{"name":"get_weather","description":"Current weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"input":[
-        {"role":"user","content":"weather?"},
-        {"type":"function_call","call_id":"__ID__","name":"get_weather","arguments":"{\"city\": \"Stockholm\"}"},
-        {"type":"function_call_output","call_id":"__ID__","output":"{\"temp_c\":7}"}]}"#;
+    const RESPONSES_BODY: &str = r#"{"model":"t","max_output_tokens":16,"tools":[{"type":"function","function":{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}}],"input":[
+        {"role":"user","content":"Read the file /tmp/x.txt"},
+        {"type":"function_call","call_id":"__ID__","name":"read_file","arguments":"{\"target_file\": \"/tmp/x.txt\"}"},
+        {"type":"function_call_output","call_id":"__ID__","output":"file body"}]}"#;
 
     fn body(template: &str, id: &str) -> String {
         template.replace(CALL_ID_PLACEHOLDER, id)
