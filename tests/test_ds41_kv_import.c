@@ -107,6 +107,15 @@ static int filled(const ds4_gpu_tensor *t, uint8_t value) {
     return 1;
 }
 
+/* Only `bytes` are the checkpoint's live span: an allocation can be larger. */
+static int filled_prefix(const ds4_gpu_tensor *t, uint64_t bytes, uint8_t value) {
+    if (bytes > t->bytes) { return 0; }
+    for (uint64_t i = 0; i < bytes; i++) {
+        if (t->data[i] != value) { return 0; }
+    }
+    return 1;
+}
+
 static int reject_counter(const char *path, const uint8_t *blob, size_t bytes,
                            size_t new_bytes, size_t offset, uint32_t value,
                            const int32_t *tokens, uint32_t n, const char *name) {
@@ -239,6 +248,128 @@ static int vision_cases(ds4_v41_state *st, const char *path) {
     failures += check_result("truncated signature payload misses",
         !v41_kvreuse_import(path, 0, bytes - 1u, prompt, PREFIX) &&
         v41_kvreuse_peek(prompt, PREFIX, sig) == 0u);
+    return failures;
+}
+
+/* The port addition: the post-generation checkpoint. Its key is the prompt
+ * followed by the ids the run committed, so it serves a prompt that continues
+ * that position, never one of equal length (it carries no logits row), and a
+ * miss on it must leave the prompt-end checkpoint's own decision untouched. */
+static int turn_cases(ds4_v41_state *st) {
+    enum { PROMPT = 6, COMMITTED = 4, KEY = PROMPT + COMMITTED, NEXT = KEY + 2 };
+    const int32_t prompt[NEXT] = {1, 2, 3, 4, 5, 6, 20, 21, 22, 23, 40, 41};
+    const int32_t *committed = prompt + PROMPT;   /* what the state committed after the prompt */
+    int32_t mismatch[NEXT];
+    uint64_t image[NEXT] = {0}, changed[NEXT], claimed[NEXT];
+    v41_turn_ids key = {NULL, 0, 0};
+    bool ok = true;
+    const uint64_t rowb = DS4_N_HEAD_DIM * 4u;
+    struct carry { ds4_gpu_tensor *t; uint64_t bytes; } spans[8];
+    size_t nspans = 0;
+
+    memcpy(mismatch, prompt, sizeof prompt);
+    mismatch[PROMPT + 2] = 99;   /* one committed id differs */
+    image[2] = UINT64_C(0x0123456789abcdef);
+    memcpy(changed, image, sizeof image);
+    changed[2] = UINT64_C(0x8877665544332211);
+    memcpy(claimed, image, sizeof image);
+    claimed[PROMPT + 1] = image[2];   /* a sampled position never carries an image */
+    /* The span set a run holds at the end: main() leaves mainh NULL after the
+     * no-MTP case and a ratio-one source's counters behind, so set the shapes
+     * this run had.  Each span carries its live size -- an allocation can hold
+     * an older checkpoint's tail, and only the live span is copied. */
+    g_ratio[0] = 4u;
+    st->ng_src[0] = 2u; st->cpend[0] = 1u;
+    st->mainh = v41_alloc(DS4_N_SWA * DS4_N_EMBD * 4u, &ok);
+    st->mainh_end = KEY - 1u; st->mainh_n = 1u;
+    spans[nspans++] = (struct carry){st->win[0], DS4_N_SWA * rowb};
+    spans[nspans++] = (struct carry){st->win[1], DS4_N_SWA * rowb};
+    spans[nspans++] = (struct carry){st->comp_kv[0], (uint64_t)st->ng_src[0] * DS4_V41_CKV_BYTES};
+    spans[nspans++] = (struct carry){st->index_k[0], (uint64_t)st->ng_src[0] * DS4_V41_IDXK_BYTES};
+    spans[nspans++] = (struct carry){st->cpre_kv[0], rowb};
+    spans[nspans++] = (struct carry){st->cpre_sc[0], rowb};
+    spans[nspans++] = (struct carry){st->mainh, DS4_N_SWA * DS4_N_EMBD * 4u};
+    for (size_t i = 0; i < nspans; i++) { memset(spans[i].t->data, 0x5a, (size_t)spans[i].t->bytes); }
+
+    int failures = 0;
+    /* The buffer the run fills, in the state's own order: the prompt then what
+     * the run committed. */
+    v41_turn_ids_add(&key, prompt, PROMPT);
+    v41_turn_ids_add(&key, committed, COMMITTED);
+    int assembled = key.n == KEY && key.cap >= KEY &&
+        !memcmp(key.ids, prompt, sizeof prompt[0] * KEY);
+    v41_turn_ids_free(&key);
+    failures += check_result("the committed-id buffer keeps the state's order",
+        assembled && !key.ids && !key.n && !key.cap);
+    v41_kvreuse_drop();
+    v41_kvreuse_save_turn(st, prompt, PROMPT, committed, COMMITTED, NULL);
+    failures += check_result("turn checkpoint serves the continuing prompt",
+        v41_kvreuse_peek(prompt, NEXT, NULL) == KEY);
+    for (size_t i = 0; i < nspans; i++) { memset(spans[i].t->data, 0x3c, (size_t)spans[i].t->bytes); }
+    memset(st->logits->data, 0x3c, (size_t)st->logits->bytes);
+    st->n_past = 0;
+    int restored = v41_kvreuse_restore(st, prompt, NEXT, NULL) == KEY &&
+        st->n_past == KEY && g_v41_kvreuse_last_reused == (int)KEY &&
+        st->ng_src[0] == 2u && st->cpend[0] == 1u && st->win_from[1] == 8u &&
+        st->mainh_n == 1u && st->mainh_end == (int64_t)KEY - 1;
+    for (size_t i = 0; restored && i < nspans; i++) { restored = filled_prefix(spans[i].t, spans[i].bytes, 0x5a); }
+    failures += check_result("turn checkpoint restores the state's spans", restored);
+    /* Its position is never the prompt's end, so it carries no logits row. */
+    failures += check_result("turn checkpoint writes no logits row", filled(st->logits, 0x3c));
+
+    /* No prompt-end checkpoint here: the miss must be a cold start, not a
+     * half-copied state. */
+    v41_kvreuse_drop();
+    v41_kvreuse_save_turn(st, prompt, PROMPT, committed, COMMITTED, NULL);
+    st->n_past = 0;
+    memset(st->himg, 0xa5, st->ctx);
+    failures += check_result("committed id mismatch misses",
+        v41_kvreuse_peek(mismatch, NEXT, NULL) == 0u &&
+        v41_kvreuse_restore(st, mismatch, NEXT, NULL) == 0u && st->n_past == 0u);
+
+    /* The same run's prompt-end checkpoint still serves the prompt the turn
+     * checkpoint refused. */
+    v41_kvreuse_save(st, prompt, PROMPT, NULL);
+    failures += check_result("a miss on the turn checkpoint keeps the prompt end",
+        v41_kvreuse_peek(mismatch, NEXT, NULL) == PROMPT &&
+        v41_kvreuse_restore(st, mismatch, NEXT, NULL) == PROMPT && st->n_past == PROMPT);
+
+    v41_kvreuse_drop();
+    v41_kvreuse_save_turn(st, prompt, PROMPT, committed, COMMITTED, NULL);
+    st->n_past = 0;
+    failures += check_result("turn checkpoint never serves an equal length prompt",
+        v41_kvreuse_peek(prompt, KEY, NULL) == 0u &&
+        v41_kvreuse_restore(st, prompt, KEY, NULL) == 0u && st->n_past == 0u);
+    failures += check_result("turn checkpoint never serves a shorter prompt",
+        v41_kvreuse_peek(prompt, PROMPT, NULL) == 0u &&
+        v41_kvreuse_restore(st, prompt, PROMPT, NULL) == 0u);
+
+    v41_kvreuse_save_turn(st, prompt, PROMPT, committed, COMMITTED, image);
+    failures += check_result("turn checkpoint restores its image history",
+        v41_kvreuse_peek(prompt, NEXT, image) == KEY &&
+        v41_kvreuse_restore(st, prompt, NEXT, image) == KEY && st->himg[2] != 0);
+    st->n_past = 0;
+    memset(st->himg, 0xa5, st->ctx);
+    int intolerant = v41_kvreuse_peek(prompt, NEXT, changed) == 0u &&
+        v41_kvreuse_restore(st, prompt, NEXT, changed) == 0u;
+    for (uint32_t i = 0; intolerant && i < st->ctx; i++) { intolerant = st->himg[i] == 0xa5; }
+    failures += check_result("changed image misses the turn checkpoint", intolerant);
+    failures += check_result("a sampled position carries no image identity",
+        v41_kvreuse_peek(prompt, NEXT, claimed) == 0u &&
+        v41_kvreuse_restore(st, prompt, NEXT, claimed) == 0u);
+
+    st->dev_sample = 1;
+    st->n_past = 0;
+    failures += check_result("sampled turn checkpoint still reuses its prefix",
+        v41_kvreuse_restore(st, prompt, NEXT, image) == KEY);
+    st->dev_sample = 0;
+
+    v41_kvreuse_drop();
+    failures += check_result("drop invalidates the turn checkpoint",
+        v41_kvreuse_peek(prompt, NEXT, image) == 0u &&
+        v41_kvreuse_restore(st, prompt, NEXT, image) == 0u);
+    ds4_gpu_tensor_free(st->mainh);
+    st->mainh = NULL;
     return failures;
 }
 
@@ -406,6 +537,7 @@ int main(void) {
     printf("ratio-one source checkpoint: %s\n", ratio_one ? "PASS" : "FAIL");
     failures += !ratio_one;
     failures += vision_cases(&st, path);
+    failures += turn_cases(&st);
     unlink(path);
     v41_kvreuse_cleanup();
     free(mut); free(blob); free(st.himg);

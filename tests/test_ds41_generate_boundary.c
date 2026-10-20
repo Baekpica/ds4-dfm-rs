@@ -152,6 +152,10 @@ static void v41_sched_draft_cost(v41_sched *cal, double ms) {}
 static void v41_sched_observe(v41_sched *cal, const float *conf, bool accepted) {}
 static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int *ids, uint32_t n, const uint64_t *sig) { return 0; }
 static void v41_kvreuse_save(ds4_v41_state *st, const int *ids, uint32_t n, const uint64_t *sig) {}
+static void v41_kvreuse_save_turn(ds4_v41_state *st, const int32_t *ids, uint32_t np,
+                                  const int32_t *gen, uint32_t ng, const uint64_t *sig) {}
+static void v41_turn_ids_add(v41_turn_ids *t, const int32_t *ids, uint32_t n) {}
+static void v41_turn_ids_free(v41_turn_ids *t) {}
 static bool v41_next_token(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row, float *buf, uint64_t *rng, v41_hist *hist, int32_t *tok) { *tok = 1; return true; }
 static bool v41_device_next(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row, uint32_t n, const int32_t *batch, int32_t *want) {
     for (uint32_t i = 0; i < n; i++) { want[i] = 1; }

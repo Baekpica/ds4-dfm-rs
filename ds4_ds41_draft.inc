@@ -766,6 +766,11 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
     int rc = 1;
     int32_t tok = 0;
     int produced = 0;
+    /* The ids the state commits after the prompt, for the turn checkpoint
+     * (ds4_ds41_kvreuse.inc).  Appended where the state advances, never at the
+     * emit sites: a round commits every accepted row, an earned-token break
+     * emits fewer. */
+    v41_turn_ids turn = {NULL, 0, 0};
     do {
         if (!am) break;
         /* --emit-trace prints the prompt too (`[ptok] <pos> <id>`): the prompt
@@ -859,6 +864,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                 int32_t nt = 0;
                 const double ts0 = now_sec();
                 if (!v41_graph_launch(e, &st, (int32_t)tok, 0)) { rc = 1; break; }
+                v41_turn_ids_add(&turn, &tok, 1u);   /* the state now holds this position */
                 if (emit && emit((int)tok, ud) != 0) { (void)v41_graph_wait(e, &st, &nt); break; }
                 if (!v41_graph_wait(e, &st, &nt)) { rc = 1; break; }
                 if (spec) v41_sched_cost(&cal, 1u, (now_sec() - ts0) * 1e3);   /* one pure step's wall time: the scheduler's price basis */
@@ -925,7 +931,9 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                  * step is a plain single-token step on the n=1 graph
                  * (core_v41_api.c:314-320; not in the steady account). */
                 int32_t nt = 0;
-                if (!v41_graph_launch(e, &st, (int32_t)tok, 1) || !v41_graph_wait(e, &st, &nt)) { rc = 1; break; }
+                if (!v41_graph_launch(e, &st, (int32_t)tok, 1)) { rc = 1; break; }
+                v41_turn_ids_add(&turn, &tok, 1u);
+                if (!v41_graph_wait(e, &st, &nt)) { rc = 1; break; }
                 want[0] = nt;
                 tr3 = now_sec(); walked_graph = true;
             } else {
@@ -980,6 +988,7 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                 spec_rounds++; spec_acc += a; spec_off += k; spec_hist[a]++;
                 const double tb0 = now_sec();
                 if (!v41_spec_rollback(&st, 1u + a)) { rc = 1; break; }
+                v41_turn_ids_add(&turn, batch, 1u + a);   /* the rollback keeps exactly these rows */
                 ms_snap += (now_sec() - tb0) * 1e3;   /* the rollback belongs to the snapshot/rollback term (core_v41_api.c:363-366) */
             }
             const int tok_next = (int)want[a];
@@ -1038,6 +1047,15 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
             }
         }
     } while (0);
+    /* The turn checkpoint (ds4_ds41_kvreuse.inc, the port addition): the state
+     * at its last committed position, so the next turn reuses what the model
+     * just said instead of re-prefilling it.  n_past is the authority, never
+     * `produced`; the ids must cover it exactly, or no checkpoint is written
+     * (one that described other tokens would be WRONG KV, not slow KV). */
+    if (rc == 0 && st.n_past > np && turn.n == st.n_past - np) {
+        v41_kvreuse_save_turn(&st, prompt, np, turn.ids, turn.n, imgs ? imgs->sig_of : NULL);
+    }
+    v41_turn_ids_free(&turn);
     free(rowbuf); free(hist.tok); free((void *)hist.brk);   /* the penalty route's buffers (core_v41_api.c:419) */
     if (gen_fd) fclose(gen_fd);
     if (spec) v41_draft_free(&dr);

@@ -1,16 +1,16 @@
 #!/bin/sh
-# ds41_kv_post_gate.sh -- the post-decode checkpoint's exact gate.
+# ds41_kv_post_gate.sh -- the post-generation checkpoint's exact gate.
 #
-# The port saves a second checkpoint at the end of decode (K_post): the prompt
-# followed by the tokens the model emitted, so a continuation that replays
-# those bytes reuses the assistant block (ds4_ds41_kvreuse.inc, the named
-# deviation from core_v41_api.c:192-195).  This gate decides whether that
-# restored state is the state a cold run would have built: same tokens, same
-# logits rows, bit for bit.
+# The port saves a second checkpoint when the run ends (K_turn): the prompt
+# followed by what the state committed, so a continuation that replays those
+# bytes reuses the assistant block (ds4_ds41_kvreuse.inc, the named deviation
+# from core_v41_api.c:192-195).  This gate decides whether that restored state
+# is the state a cold run would have built: same tokens, same logits rows, bit
+# for bit.
 #
 #   warm boot (--prefix-reuse exact), one process:
 #     A  prompt P, N tokens, temperature 0     -> ids g0..gN-1 and text tA
-#                                                 (leaves K_pre = P, K_post = P+g)
+#                                                 (leaves K_pre = P, K_turn = P+g)
 #     D  prompt P+tA, N tokens                 -> must report a reuse past |P|
 #                                                 tokens: the assistant block
 #   cold boot (--prefix-reuse off), one process:
@@ -19,12 +19,12 @@
 #   PASS when D's emitted ids equal C's and every one of D's logits rows equals
 #   C's, byte for byte.
 #
-#   The state's committed frontier is one behind the emission count -- the last
-#   emitted token launches no forward, so its row is not in the buffers -- and
-#   the checkpoint claims exactly the frontier.  D therefore reuses |P| + N - 1
-#   tokens and prefills the one token the engine never computed, plus nothing
-#   else; the assertion is that the reuse passes the prompt (the block), not
-#   that it covers the whole emission.
+#   The checkpoint's key is the state's own positions: under pure decode the
+#   last emitted token launches no forward, so its row is not in the buffers and
+#   the checkpoint claims exactly the committed frontier.  D therefore reuses
+#   |P| + N - 1 tokens and prefills the one token the engine never computed,
+#   plus nothing else; the assertion is that the reuse passes the prompt (the
+#   block), not that it covers the whole emission.
 #
 # Rows come from DS41_GEN_LOGITS (raw f32 rows, one per single-token decision,
 # ds4_ds41_draft.inc).  frequency_penalty 1e-30 keeps the engine on the host
@@ -118,7 +118,7 @@ request() { # <prompt-file> <max_tokens> <resp-out> ; prints the HTTP code
 # The emitted ids: the native's own trace line, one absolute position + id per
 # token, in emission order (ds4_ds41_draft.inc).
 ids_of() { sed -n 's/^\[emit\] [0-9][0-9]* \(-\{0,1\}[0-9][0-9]*\)$/\1/p' "$1"; }
-reuse_line() { sed -n 's/.*\(\[v41\] KV reuse [0-9]*\/[0-9]* token (checkpoint [0-9.]* MB), prefill suffix [0-9]*\)$/\1/p' "$1" | tail -1; }
+reuse_line() { sed -n 's/.*\(\[v41\] KV reuse [0-9]*\/[0-9]* token (\(turn \)\{0,1\}checkpoint [0-9.]* MB), prefill suffix [0-9]*\)$/\1/p' "$1" | tail -1; }
 reuse_x() { printf '%s' "$1" | sed -n 's/\[v41\] KV reuse \([0-9]*\)\/[0-9]* token.*/\1/p'; }
 prefill_line() { sed -n 's/.*\(\[v41\] prefill [0-9]* token .*\)$/\1/p' "$1" | tail -1; }
 prefill_n() { printf '%s' "$1" | sed -n 's/\[v41\] prefill \([0-9]*\) token.*/\1/p'; }

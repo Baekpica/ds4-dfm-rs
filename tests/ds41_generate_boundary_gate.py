@@ -44,8 +44,10 @@ def main() -> int:
     root = Path(__file__).resolve().parent.parent
     forward_path = root / "ds4_ds41_forward.inc"
     draft_path = root / "ds4_ds41_draft.inc"
+    kvreuse_path = root / "ds4_ds41_kvreuse.inc"
     forward = forward_path.read_text()
     draft = draft_path.read_text()
+    kvreuse = kvreuse_path.read_text()
     with tempfile.TemporaryDirectory(prefix="ds41-generate-boundary-") as directory:
         temp = Path(directory)
         (temp / "ds41_boundary_types.inc").write_text(
@@ -54,6 +56,7 @@ def main() -> int:
             + named_struct(forward, "ds4_v41_images") + "\n"
             + structure(forward, "ds4_v41_state") + "\n"
             + structure(draft, "ds4_v41_draft") + "\n"
+            + structure(kvreuse, "v41_turn_ids") + "\n"
             + forward[forward.index("struct ds4_v41_feed {") : forward.index("static int v41_feed_tramp")]
         )
         groups = {

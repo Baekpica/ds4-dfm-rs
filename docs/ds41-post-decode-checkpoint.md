@@ -1,72 +1,122 @@
-# The post-decode KV checkpoint: measured, and why it is not landed
+# The post-generation KV checkpoint
 
-Attempted and reverted on 2026-10-19 (commits `f211d555`, `52edf0c8`, local only,
-never pushed). This note records what was measured, the mechanism that stopped
-it, and what a follow-up would have to solve. The instrument is kept:
-`tests/ds41_kv_post_gate.sh`.
+Landed on `feat/ds41-kv-reuse-post-decode`; the served measurement is the
+branch's acceptance run, not something this note may assume.  The earlier
+attempt at the same feature, its measurements and its revert are recorded
+below, because its blocker is the thing this landing fixes.
 
-## What was attempted
+## Why
 
-B-01..B-04 ask that a continuation reuse the assistant block the model itself
-emitted, instead of re-prefilling it. The engine stores one KV checkpoint, at
-the prompt end, before the first generated token
-(`/data/YoungAi/src/core/core_v41_api.c:195`; port `ds4_ds41_draft.inc`), so
-everything generated after it is re-prefilled on the next turn.
+The engine keeps one checkpoint, taken after the prefill and before the first
+generated token (reference `/data/YoungAi/src/core/core_v41_api.c:192-195`, port
+`ds4_ds41_kvreuse.inc`).  Everything the model then generates is re-prefilled on
+the next turn, while the reference's own account of the cost is 31 tool calls
+adding 5-9k tokens a step, 40k-190k re-prefilled a step, 40 s to 3 min a step at
+a normal 1000 t/s prefill and 40 t/s decode (`core_v41_kvreuse.c:1-6`).
 
-The attempt added a second slot: `K_pre` stayed the engine's checkpoint,
-unchanged, and `K_post` saved the same state at the end of decode over the
-prompt followed by the committed generated tokens. A restore took the longest
-matching prefix, so a client that replays the model's own bytes (the exact
-DSML replay) would reuse the assistant block while a retry of the previous
-prompt alone still resolved to `K_pre`, exactly as the engine does.
+The exact-DSML replay makes the next turn's prompt begin with the bytes the
+model itself sampled, so that block is reusable in principle: the prompt the
+next turn sends contains the same tokens the state already holds.  Measured on
+the served revision `4a0a157f`, all 14 `[v41] KV reuse` lines report
+`reused == the previous prompt length` -- the replay reaches the prompt but the
+checkpoint stops one turn short of it.
 
-## What it measured (GB10, `DeepSeek-V4.1-Flash-1017-vq8sh14-q4k-mtpnative`)
+This branch adds the second checkpoint that closes the gap: `K_turn` (written as
+`T` in the port), saved when the run ends, so the next turn reuses the block the
+model just produced.  The reference has one checkpoint; this second one is a
+named deviation.
 
-| Surface | Result |
-| --- | --- |
-| Deterministic route (penalty set), continuation | Reuse 3772/3773 tokens, suffix 1. The engine's own reuse on the same prompt: 3725/3773, suffix 48. Gain: 47 tokens per turn. |
-| Drift against a cold run, extension | Row RMS 0.17/0.21/0.24/0.12, max ~1.0, 0 of 48 rows byte-identical. |
-| Drift against a cold run, the engine's own reuse | Row RMS 0.15/0.22/0.23/0.23, max ~1.2, 0 of 48 rows byte-identical. Same class, same size. |
-| Served DSML route (chat, MTP speculation) | The slot is never written: `[v41] post-decode checkpoint skipped: emitted N, state advanced N+1` (39 times in one suite run). |
-| Conformance (quiet server) | 14 pass / 4 fail, row for row the R7 baseline: B-01..B-04 unchanged. |
-| Compliance (quiet server) | 22 pass / 0 fail. |
-| Host gates | `ds41 KV import` PASS with seven new slot cases, `model lifetime` PASS, `ds4.o` clean. |
+## What it is
 
-## The mechanism that stopped it
+| | `K_pre` (the reference's) | `K_turn` (the port addition) |
+| --- | --- | --- |
+| Written | after the prefill, before the first token | when the run ends |
+| Position | the prompt's token count | the prompt, then what the state committed |
+| Logits row | yes (an identical prompt prefills nothing and samples from it) | no (its position is never a prompt end) |
+| Serves | a prompt that starts with the saved prefix, at any length | a prompt strictly longer than the saved prefix |
+| Spans | window ring, compressed KV by `ng_src` groups, index keys, compressor remainder rows, main-hidden ring + counters, per-layer `ng_src`/`cpend`/`win_from` | the same set, from the same copy loop (`v41_kv_save_spans` / `v41_kv_load_spans`) |
 
-`n_past` is documented as "positions already committed"
-(`ds4_ds41_forward.inc:251`), and the checkpoint may only claim what the
-buffers hold. In the deterministic route the frontier sits one **behind** the
-emission count (the last emitted token launches no forward), which is why the
-first version refused to write at all: `emitted 48, state at 3772 (expected
-3773)`. Taking `n_past` as the authority fixed that, and the ceiling became one
-token: a continuation reuses `|P| + N - 1`.
+The restore tries `K_turn` first and falls through to `K_pre` untouched: a miss
+on the turn checkpoint must not disturb the prompt-end decision.  Both die on
+the same events (`v41_kvreuse_drop`, a model close, an amplifier change).
 
-In the served route the offset is the other way: the spec loop's frontier runs
-one position **ahead** of the emitted tokens, so the emitted id list cannot
-describe the buffers and the guard refuses to write. That route is the one the
-line's criterion measures, so the change bought nothing where clients look.
+## The key is the state's positions, not the emitted ids
 
-## Why it is not landed
+`v41_kvreuse_save_turn` keys `K_turn` by the prompt followed by the ids the
+state committed, and the run appends those ids where the state advances
+(`ds4_ds41_draft.inc`): the pure decode step, the k=0 round, and the accepted
+rows after the verify rollback keeps `1 + a` of them.  It never appends at the
+emit sites, because the emitted list and the committed frontier are different
+things:
 
-No client-visible gain on the line's surfaces, a second ~21 MB checkpoint copy
-per request wherever it does fire, and a named deviation from
-`core_v41_api.c:192-195` for a benefit only reachable when a client sets a
-penalty. The measurements are worth more than the code.
+- an earned-token break stops emitting while the accepted rows are already in
+  the buffers;
+- under the served route (MTP speculation) the frontier runs ahead of the
+  emission, and under pure decode it runs one behind (the last emitted token
+  launches no forward).
 
-## What a follow-up needs
+That difference is what the earlier attempt at this feature died on: keyed by
+the emitted ids, the served route's guard refused to write at all.  Keyed by the
+state, the buffer equals `n_past - np` by construction, and the run writes the
+checkpoint whenever that identity holds (`rc == 0 && st.n_past > np && turn.n ==
+st.n_past - np`).  If it does not hold -- a failed launch or a failed rollback
+-- no checkpoint is written at all: a checkpoint whose key described other
+tokens would be wrong KV, not slow KV.
 
-Resolve the served route's frontier offset (the emission-versus-state gap under
-MTP) so the checkpoint can claim generated positions there, or keep the live
-session state resident instead of checkpointing a copy. Either way the work sits
-with the KV/session contract this line reserved, not with the DSML carriage.
+The memcmp in `v41_kvreuse_pick` is then the whole correctness argument: a match
+means the incoming prompt's first `n` tokens are, token for token, the tokens
+the state forwarded, so the copied spans are that prompt's own prefix.  A
+mismatch -- a retry, a re-rendered block, a different client's spelling -- is a
+miss, and the prompt falls back to `K_pre` or to a cold prefill.
 
-## Evidence
+The exactness the reuse buys is FP-level, not bit-level: the suffix chunks from
+the checkpoint position, so block boundaries differ, exactly the class the
+reference itself names for its own reuse (`core_v41_kvreuse.c:16-19`, the same
+class as changing `--v41-chunk`).
 
-- `docs/evidence/ds41-dsml-gate/post-decode-ckpt-52edf0c8-20261019/` — the first
-  run's diagnostics (`state at 3772 (expected 3773)`) and row-dump hashes.
-- `docs/evidence/ds41-dsml-gate/replay-post-52edf0c8-20261019/` — the three
-  suites, contended and quiet, including the run whose zeros were another
-  client's interleaved requests.
-- Spark side: `~/ab-evidence/post-gate{,2,ref}` hold the gate runs' row dumps
-  (72 MB, 144 MB and 120 MB) and the reference arm.
+## Memory
+
+`K_turn` is a second full checkpoint copy: the span set is dominated by the
+window rings, so the served revision's `(checkpoint 18.3 MB)` at a ~350-token
+prompt becomes about twice that.  At long context the compressed KV dominates --
+the reference's own account puts it at ~0.9 GB per 1M tokens -- so the pair
+costs about twice the single checkpoint there.  Neither is persisted by default:
+the disk half (`v41_kvreuse_export` / `_import`) still carries `K_pre` alone, and
+the served configuration runs with `disk=false`.
+
+## The earlier attempt, and what changed
+
+2026-10-19 (`f211d555`, `52edf0c8`, local commits, never pushed) saved the same
+second slot, keyed by the emitted ids, and was reverted.  What it measured on
+the Spark:
+
+- the deterministic route (penalty set, speculation off): reuse 3772/3773 tokens
+  against the engine's own 3725/3773 on the same prompt, so a 47-token gain per
+  turn; drift against a cold run in the same class and size as the engine's own
+  reuse (row RMS 0.15-0.24 either way, no row byte-identical);
+- the served DSML route: the slot was never written -- `emitted N, state
+  advanced N+1`, 39 times in one suite run -- so the rows the line's criterion
+  measures were unchanged (B-01..B-04 still reserved).
+
+It was reverted for having no client-visible gain where clients look.  This
+landing keeps the slot and moves the key to the state, which is the served
+route's blocker; the deterministic-route numbers above set the expected gain and
+the expected drift class for the new run.
+
+## Verification
+
+Local, without a GPU (`make test-ds41-kv-import`, `make test-ds41-boundary`):
+`tests/test_ds41_kv_import.c` carries the turn checkpoint's own cases -- the
+continuing prompt, the committed-id mismatch (which must fall back to the
+prompt-end checkpoint), the equal-length and shorter prompts (neither may be
+served by it), the image identity including the rule that a sampled position
+carries none, the sampled-route suffix, and the drop.  `test_ds41_model_lifetime`
+covers the close path for both slots.
+
+On the Spark, from the analysis host: `tests/ds41_kv_post_gate.sh` (the
+instrument kept from the earlier attempt, its reuse-line pattern taught the
+`turn` tag) for the exactness gate, `tests/spark/dsml_conformance.sh` for the
+reserved B rows, `dsml_compliance.sh` and `open_grok_leg.sh` for the surface,
+and `make proof-cuda-long` for long-context parity.  The engine-side criterion
+is the serve's own line, `[v41] KV reuse N/M token (turn checkpoint ...)`, with
+`N` past the previous prompt.

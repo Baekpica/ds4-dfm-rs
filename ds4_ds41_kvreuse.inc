@@ -36,12 +36,24 @@
  * Failure mode (:24): a copy failure means this request prefills from token 0
  * (never a half checkpoint), with one log line.
  *
+ * Port addition (the post-generation checkpoint).  The reference keeps ONE
+ * checkpoint, taken after the prefill and before decode (:16-19), so the turn
+ * that extends the previous prompt by what the model itself said can only ever
+ * reuse the previous prompt.  This port adds T: the same state, saved when the
+ * run ends (v41_kvreuse_save_turn), so the next turn reuses that block too.
+ * T carries the reference's span set minus the logits row (its position is
+ * never the prompt's end: the restore requires T.n < np), and its token key is
+ * the STATE's positions -- the prompt plus what the state committed, never the
+ * emitted ids (a stopping round leaves accepted rows unemitted).  A prompt
+ * that does not start with T's key misses it and falls back to K.
+ *
  * Port seam (named deviation): the engine memcpy's K.tok into st->hist
  * (:118) because its engram hash reads the token history from the state.  The
  * port's history is host-side (V41Feed/FeedCore.hist in v41_run.rs), so the
  * host seeds it from v41_kvreuse_peek before the run: same content, different
  * seam.  The restore re-runs the memcmp, so the native decision stays the
- * authority.
+ * authority.  v41_kvreuse_peek answers with the same checkpoint the restore
+ * will take, so the seed covers the reuse.
  *
  * The disk half (item 4): export/import below move the same span set through
  * the Rust host's KVC store (crates/ds4-kv, the port of ds4_kvstore.c).  The
@@ -58,22 +70,52 @@ void ds4_engine_v41_set_kv_reuse(int on) { g_v41_kv_reuse = on; }
 static int g_v41_kvreuse_last_reused;
 int ds4_engine_v41_last_reused(void) { return g_v41_kvreuse_last_reused; }
 
-static struct {
+typedef struct {
     int valid;
     uint32_t n;                 /* checkpoint position = that prompt's token count (core_v41_kvreuse.c:32) */
     int32_t *tok; uint32_t tok_cap;
     uint64_t *sig;              /* Image identity per prompt position; zero is text. */
     ds4_gpu_tensor *ckv[DS4_MAX_LAYER], *idk[DS4_MAX_LAYER], *win[DS4_MAX_LAYER],
                    *cpk[DS4_MAX_LAYER], *cps[DS4_MAX_LAYER], *mainh;
-    ds4_gpu_tensor *logits;     /* the prompt-end logits row [V] f32: an identical prompt prefills nothing and samples from it */
+    ds4_gpu_tensor *logits;     /* the prompt-end logits row [V] f32: an identical prompt prefills nothing and samples from it.  K's alone -- a turn checkpoint has no prompt end to serve. */
     uint32_t ng_src[DS4_MAX_LAYER], cpend[DS4_MAX_LAYER], win_from[DS4_MAX_LAYER];
     int64_t mainh_end; uint32_t mainh_n;
     uint64_t mainh_bytes;       /* the saved mainh span; the disk meta carries it */
     uint64_t bytes;             /* checkpoint VRAM, the log line's number */
-    int mount_has; uint64_t mount_hash;   /* the amplifier identity that computed the KV (port addition, see the header) */
-} K;
+} v41_kv_slot;
 
-static void v41_kvreuse_drop(void) { K.valid = 0; }
+/* K: the reference's checkpoint, written with the state exactly at the prompt
+ * end and before decode (core_v41_kvreuse.c:16-19).  T: the port addition,
+ * written when the run ends (v41_kvreuse_save_turn). */
+static v41_kv_slot K, T;
+
+/* The amplifier identity that computed both checkpoints (port addition, see
+ * the header): one per process, not per slot -- the same mounted sidecar
+ * computed both, so a change drops both. */
+static int g_v41_kv_mount_has; static uint64_t g_v41_kv_mount_hash;
+
+/* The ids the state committed after the prompt, for T.  The state keeps no
+ * token history of its own (ds4_v41_state), and the emitted ids are NOT the
+ * state's: an earned-token break leaves accepted rows unemitted.  The run
+ * appends here where the state advances (ds4_ds41_draft.inc). */
+typedef struct { int32_t *ids; uint32_t n, cap; } v41_turn_ids;
+
+static void v41_turn_ids_add(v41_turn_ids *t, const int32_t *ids, uint32_t n) {
+    if (!n) return;
+    if (t->n + n > t->cap) {   /* speculation commits up to a block a round, and n_predict is no bound */
+        const uint32_t cap = t->n + n + 64u;
+        int32_t *grown = xmalloc((size_t)cap * 4);
+        if (t->n) { memcpy(grown, t->ids, (size_t)t->n * 4); }
+        free(t->ids);
+        t->ids = grown; t->cap = cap;
+    }
+    memcpy(t->ids + t->n, ids, (size_t)n * 4);
+    t->n += n;
+}
+
+static void v41_turn_ids_free(v41_turn_ids *t) { free(t->ids); memset(t, 0, sizeof *t); }
+
+static void v41_kvreuse_drop(void) { K.valid = 0; T.valid = 0; }
 
 /* Grow a checkpoint buffer when it is too small (1.5x; content not kept --
  * the caller rewrites the whole span right after).  core_v41_kvreuse.c:45-52. */
@@ -90,40 +132,88 @@ static bool v41_kvreuse_cp(ds4_gpu_tensor *dst, const ds4_gpu_tensor *src, uint6
     return !bytes || (dst && src && ds4_gpu_tensor_copy(dst, 0, src, 0, bytes));
 }
 
+/* The checkpoint's span set in one place: the state -> the slot (a save) and
+ * the slot -> the state (a restore).  It is the reference's own list
+ * (core_v41_kvreuse.c:59-84), so K and T carry the same spans by construction
+ * -- a span added to one is added to both.  The logits row is not part of it
+ * (only a prompt end has one) and each caller does its own counters. */
+static uint64_t v41_kv_save_spans(v41_kv_slot *s, const ds4_v41_state *st, bool *ok) {
+    const uint64_t rowb = (uint64_t)DS4_N_HEAD_DIM * 4;
+    uint64_t total = 0;
+    for (uint32_t il = 0; il < DS4_N_LAYER && *ok; il++) {
+        *ok = v41_kvreuse_ensure(&s->win[il], (uint64_t)DS4_N_SWA * rowb) &&
+              v41_kvreuse_cp(s->win[il], st->win[il], (uint64_t)DS4_N_SWA * rowb);
+        total += (uint64_t)DS4_N_SWA * rowb;
+        s->ng_src[il] = st->ng_src[il]; s->cpend[il] = st->cpend[il]; s->win_from[il] = st->win_from[il];
+        if (!*ok || !st->comp_kv[il]) continue;
+        const uint64_t kb = (uint64_t)st->ng_src[il] * DS4_V41_CKV_BYTES;
+        const uint64_t ib = (uint64_t)st->ng_src[il] * DS4_V41_IDXK_BYTES;
+        *ok = v41_kvreuse_ensure(&s->ckv[il], kb) && v41_kvreuse_cp(s->ckv[il], st->comp_kv[il], kb) &&
+              v41_kvreuse_ensure(&s->idk[il], ib) && v41_kvreuse_cp(s->idk[il], st->index_k[il], ib);
+        total += kb + ib;
+        if (*ok && st->cpre_kv[il] && st->cpend[il]) {
+            const uint64_t pb = (uint64_t)st->cpend[il] * rowb;
+            *ok = v41_kvreuse_ensure(&s->cpk[il], pb) && v41_kvreuse_cp(s->cpk[il], st->cpre_kv[il], pb) &&
+                  v41_kvreuse_ensure(&s->cps[il], pb) && v41_kvreuse_cp(s->cps[il], st->cpre_sc[il], pb);
+            total += 2 * pb;
+        }
+    }
+    s->mainh_bytes = 0;
+    if (*ok && st->mainh) {
+        const uint64_t mb = ds4_gpu_tensor_bytes(st->mainh);
+        *ok = v41_kvreuse_ensure(&s->mainh, mb) && v41_kvreuse_cp(s->mainh, st->mainh, mb);
+        s->mainh_bytes = mb;
+        total += mb;
+    }
+    s->mainh_end = st->mainh_end; s->mainh_n = st->mainh_n;
+    return total;
+}
+
+static bool v41_kv_load_spans(const v41_kv_slot *s, ds4_v41_state *st) {
+    const uint64_t rowb = (uint64_t)DS4_N_HEAD_DIM * 4;
+    bool ok = true;
+    for (uint32_t il = 0; il < DS4_N_LAYER && ok; il++) {
+        ok = v41_kvreuse_cp(st->win[il], s->win[il], (uint64_t)DS4_N_SWA * rowb);
+        if (!ok || !st->comp_kv[il]) continue;
+        ok = v41_kvreuse_cp(st->comp_kv[il], s->ckv[il], (uint64_t)s->ng_src[il] * DS4_V41_CKV_BYTES) &&
+             v41_kvreuse_cp(st->index_k[il], s->idk[il], (uint64_t)s->ng_src[il] * DS4_V41_IDXK_BYTES);
+        if (ok && st->cpre_kv[il] && s->cpend[il])
+            ok = v41_kvreuse_cp(st->cpre_kv[il], s->cpk[il], (uint64_t)s->cpend[il] * rowb) &&
+                 v41_kvreuse_cp(st->cpre_sc[il], s->cps[il], (uint64_t)s->cpend[il] * rowb);
+    }
+    if (ok && st->mainh) {
+        /* Capacity can include an older checkpoint's tail. Only the saved
+         * span belongs to this checkpoint, even when the allocation is larger. */
+        ok = s->mainh && s->mainh_bytes >= ds4_gpu_tensor_bytes(st->mainh) &&
+             ds4_gpu_tensor_bytes(s->mainh) >= ds4_gpu_tensor_bytes(st->mainh) &&
+             v41_kvreuse_cp(st->mainh, s->mainh, ds4_gpu_tensor_bytes(st->mainh));
+    }
+    return ok;
+}
+
+/* The slot -> the state scalars both checkpoints share, in the reference's
+ * order (core_v41_kvreuse.c:118-131).  `tag` is empty for K, so K's line stays
+ * byte-identical for the harness; T prints `turn `. */
+static void v41_kvreuse_adopt(ds4_v41_state *st, const v41_kv_slot *s, uint32_t np, const char *tag) {
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        st->ng_src[il] = s->ng_src[il]; st->cpend[il] = s->cpend[il]; st->win_from[il] = s->win_from[il];
+    }
+    if (st->mainh) { st->mainh_end = s->mainh_end; st->mainh_n = s->mainh_n; }
+    st->n_past = s->n;
+    for (uint32_t i = 0; i < s->n; i++) { st->himg[i] = s->sig[i] != 0; }
+    g_v41_kvreuse_last_reused = (int)s->n;
+    fprintf(stderr, "[v41] KV reuse %u/%u token (%scheckpoint %.1f MB), prefill suffix %u\n",
+            s->n, np, tag, (double)s->bytes / 1048576.0, np - s->n);
+}
+
 /* Called with the state exactly at the prompt end, after the prefill and
  * before decode (core_v41_api.c:192).  core_v41_kvreuse.c:59. */
 static void v41_kvreuse_save(const ds4_v41_state *st, const int32_t *prompt, uint32_t np,
                             const uint64_t *sig) {
     if (!g_v41_kv_reuse) return;
     K.valid = 0;
-    const uint64_t rowb = (uint64_t)DS4_N_HEAD_DIM * 4;
-    bool ok = true; uint64_t total = 0;
-    for (uint32_t il = 0; il < DS4_N_LAYER && ok; il++) {
-        ok = v41_kvreuse_ensure(&K.win[il], (uint64_t)DS4_N_SWA * rowb) &&
-             v41_kvreuse_cp(K.win[il], st->win[il], (uint64_t)DS4_N_SWA * rowb);
-        total += (uint64_t)DS4_N_SWA * rowb;
-        K.ng_src[il] = st->ng_src[il]; K.cpend[il] = st->cpend[il]; K.win_from[il] = st->win_from[il];
-        if (!ok || !st->comp_kv[il]) continue;
-        const uint64_t kb = (uint64_t)st->ng_src[il] * DS4_V41_CKV_BYTES;
-        const uint64_t ib = (uint64_t)st->ng_src[il] * DS4_V41_IDXK_BYTES;
-        ok = v41_kvreuse_ensure(&K.ckv[il], kb) && v41_kvreuse_cp(K.ckv[il], st->comp_kv[il], kb) &&
-             v41_kvreuse_ensure(&K.idk[il], ib) && v41_kvreuse_cp(K.idk[il], st->index_k[il], ib);
-        total += kb + ib;
-        if (ok && st->cpre_kv[il] && st->cpend[il]) {
-            const uint64_t pb = (uint64_t)st->cpend[il] * rowb;
-            ok = v41_kvreuse_ensure(&K.cpk[il], pb) && v41_kvreuse_cp(K.cpk[il], st->cpre_kv[il], pb) &&
-                 v41_kvreuse_ensure(&K.cps[il], pb) && v41_kvreuse_cp(K.cps[il], st->cpre_sc[il], pb);
-            total += 2 * pb;
-        }
-    }
-    K.mainh_bytes = 0;
-    if (ok && st->mainh) {
-        const uint64_t mb = ds4_gpu_tensor_bytes(st->mainh);
-        ok = v41_kvreuse_ensure(&K.mainh, mb) && v41_kvreuse_cp(K.mainh, st->mainh, mb);
-        K.mainh_bytes = mb;
-        total += mb;
-    }
-    K.mainh_end = st->mainh_end; K.mainh_n = st->mainh_n;
+    bool ok = true;
+    uint64_t total = v41_kv_save_spans(&K, st, &ok);
     const uint64_t vb = (uint64_t)DS4_N_VOCAB * 4;
     if (ok) ok = v41_kvreuse_ensure(&K.logits, vb) && st->logits &&
                  ds4_gpu_tensor_copy(K.logits, 0, st->logits, (uint64_t)st->last_logit_row * vb, vb);
@@ -142,17 +232,59 @@ static void v41_kvreuse_save(const ds4_v41_state *st, const int32_t *prompt, uin
     K.n = np; K.bytes = total; K.valid = 1;
 }
 
+/* The port addition: the checkpoint the reference does not have.  Called when
+ * the run ends, with the state (st) at its last committed position, so the
+ * next turn reuses the block the model itself sampled instead of re-prefilling
+ * it.  `gen` are the ids the state committed after the prompt (v41_turn_ids, in
+ * order); the key is the prompt followed by them.  No logits row: the restore
+ * requires T.n < np, so the suffix prefill always writes the head's row. */
+static void v41_kvreuse_save_turn(const ds4_v41_state *st, const int32_t *prompt, uint32_t np,
+                                  const int32_t *gen, uint32_t ng, const uint64_t *sig) {
+    if (!g_v41_kv_reuse || !ng) return;
+    T.valid = 0;
+    bool ok = true;
+    const uint64_t total = v41_kv_save_spans(&T, st, &ok);
+    if (ok && !ds4_gpu_synchronize()) ok = false;
+    const uint32_t n = np + ng;
+    if (!ok) { fprintf(stderr, "ds4: [v41] KV turn checkpoint does not fit (VRAM); the next turn starts at the prompt end\n"); return; }
+    if (T.tok_cap < n) {
+        free(T.tok); free(T.sig);
+        T.tok_cap = n + n / 2;
+        T.tok = xmalloc((size_t)T.tok_cap * 4);
+        T.sig = xmalloc((size_t)T.tok_cap * 8);
+    }
+    memcpy(T.tok, prompt, (size_t)np * 4);
+    memcpy(T.tok + np, gen, (size_t)ng * 4);
+    if (sig) { memcpy(T.sig, sig, (size_t)np * 8); }
+    else { memset(T.sig, 0, (size_t)np * 8); }
+    memset(T.sig + np, 0, (size_t)ng * 8);   /* a sampled position is text: no image identity */
+    T.n = n; T.bytes = total; T.valid = 1;
+    fprintf(stderr, "[v41] KV turn checkpoint %u token (%.1f MB)\n", n, (double)total / 1048576.0);
+}
+
 /* YoungAi 846c929c core_v41_kvreuse.c:97-100. Compare only the saved
  * prefix: images appended after it must not invalidate otherwise exact KV. */
-static bool v41_kvreuse_sig_match(const uint64_t *sig) {
-    if (sig) { return memcmp(K.sig, sig, (size_t)K.n * 8) == 0; }
-    for (uint32_t i = 0; i < K.n; i++) {
-        if (K.sig[i]) { return false; }
+static bool v41_kv_sig_match(const v41_kv_slot *s, const uint64_t *sig) {
+    if (sig) { return memcmp(s->sig, sig, (size_t)s->n * 8) == 0; }
+    for (uint32_t i = 0; i < s->n; i++) {
+        if (s->sig[i]) { return false; }
     }
     return true;
 }
 
-/* Called on a freshly allocated state, before the chunk loop: when the
+/* Which checkpoint describes this prompt: T first (its position is the previous
+ * prompt plus that turn's committed tokens, so its reuse is longer), then K.
+ * Both apply the reference's guard minus the copies (core_v41_kvreuse.c:96):
+ * the saved prefix must match token for token and carry the same image
+ * identity.  T is excluded at equal length -- it has no logits row, and an
+ * identical prompt is K's case. */
+static const v41_kv_slot *v41_kvreuse_pick(const int32_t *prompt, uint32_t np, const uint64_t *sig) {
+    if (T.valid && T.n < np && memcmp(T.tok, prompt, (size_t)T.n * 4) == 0 && v41_kv_sig_match(&T, sig)) return &T;
+    if (K.valid && K.n <= np && memcmp(K.tok, prompt, (size_t)K.n * 4) == 0 && v41_kv_sig_match(&K, sig)) return &K;
+    return NULL;
+}
+
+/* Called on a freshly allocated state, before the chunk loop: when a
  * checkpoint connects, copy it in and return the prefill start (= the
  * checkpoint position; == np means nothing to prefill, the prompt-end logits
  * row is already at row 0).  0 = prefill from token 0.
@@ -160,36 +292,21 @@ static bool v41_kvreuse_sig_match(const uint64_t *sig) {
 static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int32_t *prompt, uint32_t np,
                                    const uint64_t *sig) {
     g_v41_kvreuse_last_reused = 0;
-    if (!g_v41_kv_reuse || !K.valid || K.n > np || K.n > st->ctx ||
-        memcmp(K.tok, prompt, (size_t)K.n * 4) || !v41_kvreuse_sig_match(sig)) return 0;
+    if (!g_v41_kv_reuse) return 0;
+    const v41_kv_slot *s = v41_kvreuse_pick(prompt, np, sig);
+    if (!s || s->n > st->ctx) return 0;
     /* Named deviation from core_v41_kvreuse.c:109 at 7fb26cc: its full hit
      * restores logits but leaves the sampler's position slot uninitialized
      * (cuda_v41_sample.inc.cu:158-160). Refill sampled full hits until the
-     * checkpoint carries that state; a suffix writes it through forward. */
-    if (st->dev_sample && K.n == np) {
+     * checkpoint carries that state; a suffix writes it through forward.
+     * Only K can hit at full length (the pick excludes T there). */
+    if (st->dev_sample && s->n == np) {
         fprintf(stderr, "[v41] sampled full-prefix hit: cold prefill for sampler state\n");
         return 0;
     }
-    const uint64_t rowb = (uint64_t)DS4_N_HEAD_DIM * 4;
-    bool ok = true;
-    for (uint32_t il = 0; il < DS4_N_LAYER && ok; il++) {
-        ok = v41_kvreuse_cp(st->win[il], K.win[il], (uint64_t)DS4_N_SWA * rowb);
-        if (!ok || !st->comp_kv[il]) continue;
-        ok = v41_kvreuse_cp(st->comp_kv[il], K.ckv[il], (uint64_t)K.ng_src[il] * DS4_V41_CKV_BYTES) &&
-             v41_kvreuse_cp(st->index_k[il], K.idk[il], (uint64_t)K.ng_src[il] * DS4_V41_IDXK_BYTES);
-        if (ok && st->cpre_kv[il] && K.cpend[il])
-            ok = v41_kvreuse_cp(st->cpre_kv[il], K.cpk[il], (uint64_t)K.cpend[il] * rowb) &&
-                 v41_kvreuse_cp(st->cpre_sc[il], K.cps[il], (uint64_t)K.cpend[il] * rowb);
-    }
-    if (ok && st->mainh) {
-        /* Capacity can include an older checkpoint's tail. Only the saved
-         * span belongs to this checkpoint, even when the allocation is larger. */
-        ok = K.mainh && K.mainh_bytes >= ds4_gpu_tensor_bytes(st->mainh) &&
-             ds4_gpu_tensor_bytes(K.mainh) >= ds4_gpu_tensor_bytes(st->mainh) &&
-             v41_kvreuse_cp(st->mainh, K.mainh, ds4_gpu_tensor_bytes(st->mainh));
-    }
-    if (ok && K.n == np) {   /* identical prompt: the logits row lands at row 0, nothing is prefilled */
-        ok = v41_kvreuse_cp(st->logits, K.logits, (uint64_t)DS4_N_VOCAB * 4);
+    bool ok = v41_kv_load_spans(s, st);
+    if (ok && s->n == np) {   /* identical prompt: the logits row lands at row 0, nothing is prefilled */
+        ok = v41_kvreuse_cp(st->logits, s->logits, (uint64_t)DS4_N_VOCAB * 4);
         st->last_logit_row = 0;
     }
     if (ok && !ds4_gpu_synchronize()) ok = false;
@@ -197,16 +314,8 @@ static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int32_t *prompt, ui
         fprintf(stderr, "ds4: [v41] KV checkpoint does not copy into the fresh state; this request prefills whole\n");
         return 0;
     }
-    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
-        st->ng_src[il] = K.ng_src[il]; st->cpend[il] = K.cpend[il]; st->win_from[il] = K.win_from[il];
-    }
-    if (st->mainh) { st->mainh_end = K.mainh_end; st->mainh_n = K.mainh_n; }
-    st->n_past = K.n;
-    for (uint32_t i = 0; i < K.n; i++) { st->himg[i] = K.sig[i] != 0; }
-    g_v41_kvreuse_last_reused = (int)K.n;
-    fprintf(stderr, "[v41] KV reuse %u/%u token (checkpoint %.1f MB), prefill suffix %u\n",
-            K.n, np, (double)K.bytes / 1048576.0, np - K.n);
-    return K.n;
+    v41_kvreuse_adopt(st, s, np, s == &T ? "turn " : "");
+    return s->n;
 }
 
 /* The restore's read-only guard minus the copies: the prefill start this
@@ -217,18 +326,18 @@ static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int32_t *prompt, ui
  * state's ctx fence is not repeated here (it can only make the peek
  * optimistic, and an optimistic seed is an exact prefix of the prompt). */
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np, const uint64_t *sig) {
-    if (!g_v41_kv_reuse || !K.valid || K.n > np || memcmp(K.tok, prompt, (size_t)K.n * 4) ||
-        !v41_kvreuse_sig_match(sig)) return 0;
-    return K.n;
+    if (!g_v41_kv_reuse) return 0;
+    const v41_kv_slot *s = v41_kvreuse_pick(prompt, np, sig);
+    return s ? s->n : 0;
 }
 
 /* The port's stand-in for the engine's ds4_engine_v41_switch_plugins drop
  * (core_v41_state.c:111): the host reports the mounted amplifier's identity
- * once per run and the checkpoint dies when it differs. */
+ * once per run and both checkpoints die when it differs. */
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash) {
-    if (K.mount_has == has_mount && K.mount_hash == hash) return;
-    K.mount_has = has_mount; K.mount_hash = hash;
-    if (K.valid) fprintf(stderr, "ds4: [v41] amplifier changed; the KV checkpoint is dropped\n");
+    if (g_v41_kv_mount_has == has_mount && g_v41_kv_mount_hash == hash) return;
+    g_v41_kv_mount_has = has_mount; g_v41_kv_mount_hash = hash;
+    if (K.valid || T.valid) fprintf(stderr, "ds4: [v41] amplifier changed; the KV checkpoint is dropped\n");
     v41_kvreuse_drop();
 }
 
@@ -458,19 +567,25 @@ int v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
 /* Port lifetime addition to YoungAi core_v41_kvreuse.c:31-43: dropping a
  * checkpoint only invalidates it. Model close must also release its buffers
  * before the GPU backend closes, then forget the previous model identity. */
-static void v41_kvreuse_cleanup(void) {
-    K.valid = 0;
+static void v41_kv_release(v41_kv_slot *s) {
+    s->valid = 0;
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
-        ds4_gpu_tensor *slots[] = {K.ckv[il], K.idk[il], K.win[il], K.cpk[il], K.cps[il]};
+        ds4_gpu_tensor *slots[] = {s->ckv[il], s->idk[il], s->win[il], s->cpk[il], s->cps[il]};
         for (size_t i = 0; i < sizeof slots / sizeof slots[0]; i++) {
             if (slots[i]) { ds4_gpu_tensor_free(slots[i]); }
         }
     }
-    if (K.mainh) { ds4_gpu_tensor_free(K.mainh); }
-    if (K.logits) { ds4_gpu_tensor_free(K.logits); }
-    free(K.tok);
-    free(K.sig);
-    memset(&K, 0, sizeof K);
+    if (s->mainh) { ds4_gpu_tensor_free(s->mainh); }
+    if (s->logits) { ds4_gpu_tensor_free(s->logits); }
+    free(s->tok);
+    free(s->sig);
+    memset(s, 0, sizeof *s);
+}
+
+static void v41_kvreuse_cleanup(void) {
+    v41_kv_release(&K);
+    v41_kv_release(&T);
+    g_v41_kv_mount_has = 0; g_v41_kv_mount_hash = 0;   /* forget the previous model identity */
     free(g_v41_kv_span_buf);
     g_v41_kv_span_buf = NULL;
     g_v41_kv_span_cap = 0;
