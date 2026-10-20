@@ -95,8 +95,9 @@ Two named differences from the reference:
    so a switch lasts until the next restart, which comes back to the script's
    choice.
 
-The disk half needs nothing: a store candidate is gated by the mount digest in
-its trailer (`crates/ds4-server/src/v41_disk.rs:87-91`), so another domain's
+The disk half needs nothing: a store candidate is gated by the mount digest and
+the payload class in its trailer
+(`crates/ds4-server/src/v41_disk.rs:109-114`), so another domain's
 checkpoint can never be imported after a switch.
 
 Verified model-free only (`cargo test -p ds4-core`, `cargo test -p ds4-server`):
@@ -149,8 +150,10 @@ window rings, so the served revision's `(checkpoint 18.3 MB)` at a ~350-token
 prompt becomes about twice that.  At long context the compressed KV dominates --
 the reference's own account puts it at ~0.9 GB per 1M tokens -- so the pair
 costs about twice the single checkpoint there.  Neither is persisted by default:
-the disk half (`v41_kvreuse_export` / `_import`) still carries `K_pre` alone, and
-the served configuration runs with `disk=false`.
+the disk half (`v41_kvreuse_export` / `_import`) carries both classes, each
+payload naming its own (the store writes them under "cold" and "continued", its
+own reason vocabulary), while the served configuration still runs with
+`disk=false`.
 
 ## The earlier attempt, and what changed
 
@@ -183,6 +186,12 @@ covers the close path for both slots, and the boundary fixture asserts, for ever
 case it runs, that the buffer the run fills equals the state's own advance and
 that the save was handed exactly that buffer.
 
+The same file carries the disk half's class end to end: the payload's own class
+byte (0 = prompt, 1 = turn) decides the slot the import lands in, an unknown
+class byte or a class the payload's shape contradicts is refused, the turn key
+is the prompt plus the committed ids (a cap too short writes nothing), and a
+turn payload round-trips with both copies of the spans damaged beforehand.
+
 Served, on the Spark (GB10) against the binary built from this branch
 (`ds4-server` sha256 `785bd6b7...`, `--prefix-reuse exact`, domain `code`):
 
@@ -212,6 +221,26 @@ Served, on the Spark (GB10) against the binary built from this branch
 - The serve's own log carries the mechanism: 48 turn checkpoints written in one
   suite run, 9 of its reuse lines served by the turn checkpoint (`375/390`,
   suffix 15; `24049/24069`, suffix 20; 38.2 MB at 24k tokens).
+
+The disk half, on the Spark (GB10, 2026-10-20, `make cuda-spark` from
+`ba30c9ea`, sibling gates' route: its own boots, port 8099, `--kv-disk-dir`, the
+`code` sidecar, 12000 prompt bytes, 48 tokens):
+
+- `tests/ds41_kv_disk_turn_gate.sh` PASS.  A writes both classes at a 3725-token
+  prompt (`[v41] KV turn checkpoint 3773 token (20.7 MB)`, two store entries);
+  B, a fresh process whose prompt replays the model's own bytes, reports
+  `[v41] KV disk turn checkpoint loaded (3773 token, 20.8 MB)` and `[v41] KV
+  reuse 3773/3774 token (turn checkpoint 20.7 MB), prefill suffix 1`, prefilling
+  1 token in 0.1 s where the cold arm of the same request prefills 3774 in
+  4.4 s.  Its first logits row sits 0.9844 max / 0.19850 RMS from the cold run's
+  -- the class the post gate measured above, against the same bound -- with 0 of
+  48 rows byte-identical and 3 leading ids shared, reported rather than
+  asserted.  No row is bit-comparable with A by construction: B's first row is
+  the forward of the client's last token, a position A never computed, which is
+  why the row verdict is the cold run's.  D, the prompt alone in a third fresh
+  process, still lands on the prompt class (`3725/3725 token (checkpoint
+  21.2 MB), prefill suffix 0`), so the turn entry does not shadow it at the
+  prompt's own length.
 
 `make proof-cuda-long` ran for this branch on the Spark (2026-10-20, the serve
 stopped): six cells, all `OK`, `PROOF_V41_EXIT=0`.  The three eager arms report

@@ -2119,7 +2119,9 @@ over the `KvStore` the server already owns (the field became a `RefCell`:
 the V4.1 route runs under the DecodeIo callbacks' shared borrow).  The find
 runs after the mount (that is where the digest is computed), the import only
 when strictly longer than the in-memory checkpoint, the store after the run
-only when the checkpoint is exactly this prompt (`peek == np`); an entry
+only when the checkpoint is exactly this prompt (`peek == np`) for the prompt
+class, and once the run ends for the turn class, under `v41_kvreuse_turn_key`'s
+key (the prompt plus the committed ids); an entry
 under the same text with a stale mount digest is discarded before the write
 (the store's reuse fast path would rewrite only the trailer, keeping the old
 mount's KV).  `--no-kv-reuse` turns the whole handle off, not just the
@@ -2140,6 +2142,16 @@ so the gate boots `--kv-cache-min-tokens 8`.  Acceptance: the gate PASSes on
 the Spark; the fresh-process turn 2 at 2048 drops from 2.4 s to the suffix
 class; the four parity gates stay green; `cargo test` and the parity
 null-stubs build stay green.
+
+The turn class has its own gate (`tests/ds41_kv_disk_turn_gate.sh`), the same
+route with the restart in the middle: A writes both classes at one prompt, B is
+a FRESH process whose prompt replays the model's own bytes and must load the
+turn payload and land the reuse on the turn class (suffix 1, the one token the
+state never computed), C is the cold reference its logits row is compared
+against, and D (the prompt alone, a fourth fresh process) must still land on the
+prompt class.  PASS on the Spark 2026-10-20 from `ba30c9ea`: `3773/3774 token
+(turn checkpoint 20.7 MB), prefill suffix 1` against the cold arm's 3774-token
+prefill, row 0 max |d| 0.9844, 0.19850 RMS.
 
 Rollback: `--no-kv-reuse`; delete the directory; the commits.
 
