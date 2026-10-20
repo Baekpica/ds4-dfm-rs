@@ -46,6 +46,8 @@ impl ChatOptions {
             (id, None | Max) if glm_model(id) => "max",
             // The existing K2 output parser handles its default think channel.
             (8, _) => "high",
+            // Beam always writes analysis: off is its smallest trained budget.
+            (19, None) => "minimal",
             (_, None) => "none",
             (_, Low) => "low",
             (_, High) => "high",
@@ -84,6 +86,10 @@ impl Template {
 
     /// Read only artifact metadata; never load weights or a GPU model.
     pub fn from_model(path: &Path) -> Result<Option<Self>> {
+        if path.is_dir() && crate::beam_vq::is_release(path) {
+            let gguf = crate::beam_vq::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() && crate::ling31_vq::is_release(path) {
             let gguf = crate::ling31_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -103,9 +109,12 @@ impl Template {
             path.parent().unwrap_or_else(|| Path::new("."))
         };
         if path.is_dir() {
+            let beam = crate::beam_vq::is_release(path);
             let ling = crate::ling31_vq::is_release(path);
             for name in ["tokenizer_config.json", "chat_template.jinja"] {
-                if ling {
+                if beam {
+                    crate::beam_vq::asset(path, name).map_err(asset_error)?;
+                } else if ling {
                     crate::ling31_vq::asset(path, name).map_err(asset_error)?;
                 } else {
                     crate::glm_vq::asset(path, name).map_err(asset_error)?;

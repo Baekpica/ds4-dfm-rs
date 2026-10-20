@@ -67,6 +67,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
 | [Ling-3.1-flash VQ](ling31-flash-vq.md) | `release.json` directory of GVQ1 parts (`ling31_vq`) | 63 KDA and 9 latent MLA blocks, 512 VQ experts top-8, optional embedded MTP block; banks over shared scratch, prompt-end checkpoints, `LG31` disk payloads |
+| [Beam-1.0 VQ](beam-vq.md) | `release.json` directory of GVQ1 parts (`beam_vq`) | 43 SWA-512 and 9 NoPE full GQA layers (FP8 rows), 256 VQ experts top-8, host-read BF16 embedding, Harmony output; banks, partial reuse, disk KV, serial DFlash2 drafting |
 | [MiMo-V2.6-Flash RL / MOPD](#mimo-release-scope) | `general.architecture=mimo2` | 9 full-attention and 39 SWA-128 layers, 256 experts top-8, three embedded MTP blocks; artifact-specific gates |
 | [Naive-N0.5-Flash](#naive-release-scope) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers, BF16 GQA, E4M3 indexer history, continuous banks and disk KV |
 
@@ -611,6 +612,10 @@ and [host memory guard](host-memory-guard.md). Preserve unrelated owners and wor
   512-row chunks, MTP fits 16K serially (8K in a bank with a 3 GiB floor),
   and more banks fit at shorter contexts (two at 32K). Checkpoint slots take
   what the bank fit leaves. See the [family page](ling31-flash-vq.md#serving).
+- Beam-1.0 VQ plans its native 1,048,576 tokens in one bank (115.4 of 117.2
+  GiB with the 4 GiB floor). With the DFlash2 drafter the 1M plan leaves
+  0.12 GiB and is unverified; `--mtp` serves one sequence on the serial lane
+  and drafts only greedy requests. See the [family page](beam-vq.md#serving).
 - dots3-note is text-only, with serial default and explicit bank/MTP paths
   described [above](#dots3-serving). The source 524,288-token metadata is
   preserved. Historical 262,144-context allocation and short 4K server checks

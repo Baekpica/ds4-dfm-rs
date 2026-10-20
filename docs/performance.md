@@ -225,6 +225,23 @@ acceptance (20.4–30.1 per frontier). The
 shapes and quality screens. Throughput does not qualify serving limits or
 long-context quality.
 
+## Beam-1.0 VQ
+
+Beam-1.0-501B-A23B with GVQ1 routed experts (13-bit on layers 3–10, 12-bit
+above) and Q4_K nonexperts
+([model card](https://huggingface.co/Baekpica/Beam-1.0-501B-A23B-VQ-GGUF))
+recorded **830.4 prefill / 15.86 decode** across the 32 frontiers of the
+[2K–64K sweep](benchmarks/beam-vq-spark-64k-2026-10-21/README.md) (881.5 /
+18.70 to 32K), medians of three run means in three fresh `ds4-bench` processes
+on one DGX Spark / GB10. Decode falls from 22.57 at 2K to 11.26 at 64K as the
+nine full layers' FP8 rows grow. With the DFlash2 drafter (draft 7, margin 2)
+the same raw-prose sweep runs 821.1 / 15.41; five greedy chat prompts gain 28%
+(24.0 → 30.9 tok/s). The [Beam page](beam-vq.md) records the execution paths,
+the Harmony protocol, DFlash2 and the quality gates. Throughput does not
+qualify serving limits or long-context quality.
+
+![Beam-1.0 VQ prefill and decode on one DGX Spark](benchmarks/beam-vq-spark-64k-2026-10-21/throughput.png)
+
 ## DeepSeek V4.1
 
 DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and

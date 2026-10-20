@@ -9,6 +9,8 @@
 //! `ds4-sys` directly.
 
 mod batch;
+mod beam_mtp;
+mod beam_vq;
 mod bind;
 pub mod chat_template;
 mod dots3_mtp;
@@ -1283,6 +1285,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::BeamVq {
+        let g = beam_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1551,6 +1559,18 @@ impl Model {
                     .into(),
             });
         }
+        // Beam's one sidecar is the DFlash2 drafter, passed as the MTP file.
+        if identified.shape.family == ModelFamily::BeamVq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "Beam VQ requires one CUDA model without DSpark or vision sidecars".into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -1579,7 +1599,12 @@ impl Model {
         if identified.shape.family == ModelFamily::NaiveN05 {
             naive_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
         }
-        let dflash = identified.shape.family == ModelFamily::Mimo2 && mtp_path.is_some();
+        // MiMo's and Beam's MTP files are block drafters the native open binds
+        // itself: no sibling bind map.
+        let dflash = matches!(
+            identified.shape.family,
+            ModelFamily::Mimo2 | ModelFamily::BeamVq
+        ) && mtp_path.is_some();
         if identified.shape.family == ModelFamily::Mimo2
             && (backend != Backend::Cuda || distributed.is_some() || dspark_path.is_some())
         {
@@ -1589,12 +1614,15 @@ impl Model {
             });
         }
         if dflash {
-            crate::mimo2::inspect_dflash(std::path::Path::new(mtp_path.unwrap())).map_err(
-                |error| Error {
+            let path = std::path::Path::new(mtp_path.unwrap());
+            if identified.shape.family == ModelFamily::BeamVq {
+                beam_vq::dflash2::inspect(path).map_err(|message| Error { code: 1, message })?;
+            } else {
+                crate::mimo2::inspect_dflash(path).map_err(|error| Error {
                     code: 1,
                     message: error.to_string(),
-                },
-            )?;
+                })?;
+            }
         }
         let (g, vocab) = open_input_assets(Path::new(path), &identified.shape)?;
         if identified.shape.family == ModelFamily::Inkling {
@@ -3000,6 +3028,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::NaiveN05 {
             return self.eval_naive_argmax(first, max_tokens, eos);
         }
+        if self.host.family == ModelFamily::BeamVq {
+            return self.eval_beam_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -4003,6 +4034,30 @@ mod tests {
         errlen: usize,
     ) -> i32 {
         ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_beam_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_beam_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
     }
 
     #[no_mangle]

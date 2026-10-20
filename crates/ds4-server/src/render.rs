@@ -155,6 +155,7 @@ pub enum ModelSyntax {
     Qwen35 = 14,
     NaiveN05 = 13,
     IQuestQ1 = 15,
+    BeamVq = 19,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -176,6 +177,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         14 => ModelSyntax::Qwen35,
         13 => ModelSyntax::NaiveN05,
         15 => ModelSyntax::IQuestQ1,
+        19 => ModelSyntax::BeamVq,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -194,6 +196,9 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::Inkling => inkling::INVOKE,
         ModelSyntax::IQuestQ1 => IQUEST_TOOL_CALL_START,
+        // Harmony opens a call as the next assistant message, after analysis;
+        // `=` merges into the recipient's first token.
+        ModelSyntax::BeamVq => "<|start|>assistant to",
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
     }
 }
@@ -2254,6 +2259,9 @@ pub fn render_chat_choice_ex(
         ModelSyntax::IQuestQ1 => Err(RenderError(
             "IQuest input requires its official Jinja template",
         )),
+        ModelSyntax::BeamVq => Err(RenderError(
+            "Beam input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -2336,6 +2344,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::IQuestQ1 => {
             return Err(RenderError(
                 "IQuest tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::BeamVq => {
+            return Err(RenderError(
+                "Beam tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),

@@ -49255,7 +49255,8 @@ extern "C" int ds4_gpu_exaone_attention_prefill_tensor(
      * 96x/8 GQA at window 512; the same kernel already masks and rings.
      * DS4_EXAONE_PREFILL_HMMA=0 restores every warp path.
      * DS4_STEP37_NO_SWA_HMMA=1 restores only Step SWA. */
-    enum { DS4_STEP37_SWA_HEADS = 96, DS4_STEP37_SWA_KV_HEADS = 8 };
+    enum { DS4_STEP37_SWA_HEADS = 96, DS4_STEP37_SWA_KV_HEADS = 8,
+           DS4_BEAM_SWA_HEADS = 48, DS4_BEAM_SWA_KV_HEADS = 8 };
     const char *hmma_env = getenv("DS4_EXAONE_PREFILL_HMMA");
     const char *step_swa_off = getenv("DS4_STEP37_NO_SWA_HMMA");
     const int hmma_enabled = !(hmma_env && hmma_env[0] == '0');
@@ -49263,8 +49264,14 @@ extern "C" int ds4_gpu_exaone_attention_prefill_tensor(
         n_head == (uint32_t)DS4_STEP37_SWA_HEADS &&
         n_head_kv == (uint32_t)DS4_STEP37_SWA_KV_HEADS &&
         !(step_swa_off && step_swa_off[0] == '1');
+    /* Beam's 48/8 SWA-512 layers take the same masked ring tiles (group 6
+     * runs the pair kernel). DS4_BEAM_NO_SWA_HMMA=1 restores the warp walk. */
+    const char *beam_swa_off = getenv("DS4_BEAM_NO_SWA_HMMA");
+    const int beam_swa_hmma = window != 0u &&
+        n_head == (uint32_t)DS4_BEAM_SWA_HEADS && n_head_kv == (uint32_t)DS4_BEAM_SWA_KV_HEADS &&
+        !(beam_swa_off && beam_swa_off[0] == '1');
     if (hmma_enabled && head_dim == 128u && n_tokens >= 64u &&
-        (window == 0u || step_swa_hmma)) {
+        (window == 0u || step_swa_hmma || beam_swa_hmma)) {
         const int rc = ds4_mmq_exaone_prefill_attn_hmma(
             (float *)heads->ptr, (const float *)q->ptr, kv->ptr,
             (int)n_tokens, (int)pos0, (int)n_head, (int)n_head_kv,
@@ -49528,6 +49535,7 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_inkling_gpu.cuh"
 #include "ds4_ling3vl_gpu.cuh"
 #include "ds4_ling31_gpu.cuh"
+#include "ds4_beam_gpu.cuh"
 #include "ds4_step37_gpu.cuh"
 #include "ds4_mimo2_gpu.cuh"
 #include "ds4_iquest_gpu.cuh"

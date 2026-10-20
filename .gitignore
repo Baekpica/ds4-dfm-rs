@@ -237,6 +237,8 @@ tests/naive_banks
 /tests/libglm_vq_mma.so
 /tests/glm_vq_quality
 /tests/ling31_quality
+/tests/beam_quality
+/tests/beam_mtp_gate
 /tests/ling31_mtp_gate
 /tests/test_ling31_residual
 /tests/test_ling31_flash

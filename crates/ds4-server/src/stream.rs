@@ -12,8 +12,8 @@ use crate::route::{think_mode_enabled, Api, ReqKind, ThinkMode};
 use crate::tool_stream::{DsmlToolStream, ToolSink};
 use crate::tools::find_tool_start;
 
-mod inkling;
-use inkling::{Channel, Channels, Flush};
+mod channels;
+use channels::{Channel, Channels, Flush};
 mod iquest;
 
 /// Frozen epoch used by the C stream oracle and tape tests.
@@ -37,6 +37,7 @@ pub enum ChatFormat {
     K2Horizon,
     Inkling,
     IQuestQ1,
+    Beam,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,7 @@ pub fn think_start(fmt: ChatFormat) -> &'static str {
         ChatFormat::SolarOpen2 => "<|think:start|>",
         ChatFormat::K2Horizon => crate::render::K2_THINK_START,
         ChatFormat::Inkling => crate::render::inkling::THINK,
+        ChatFormat::Beam => crate::tools::beam::ANALYSIS,
         _ => "<think>",
     }
 }
@@ -74,6 +76,7 @@ pub fn think_end(fmt: ChatFormat) -> &'static str {
         ChatFormat::SolarOpen2 => "<|think:end|>",
         ChatFormat::K2Horizon => crate::render::K2_THINK_END,
         ChatFormat::Inkling => crate::render::inkling::END,
+        ChatFormat::Beam => crate::tools::beam::END,
         _ => "</think>",
     }
 }
@@ -772,7 +775,7 @@ pub enum OpenaiMode {
 
 #[derive(Debug)]
 pub struct OpenaiStream {
-    inkling: Option<Channels>,
+    channels: Option<Channels>,
     iquest: Option<iquest::Channels>,
     pub mode: OpenaiMode,
     pub emit_pos: usize,
@@ -783,7 +786,7 @@ pub struct OpenaiStream {
 
 pub fn openai_stream_start(r: &StreamReq) -> OpenaiStream {
     OpenaiStream {
-        inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
+        channels: Channels::for_format(r.chat_format),
         iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
             .then(iquest::Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
@@ -809,7 +812,7 @@ pub fn openai_sse_stream_update(
     if !st.active {
         return true;
     }
-    if let Some(channels) = &mut st.inkling {
+    if let Some(channels) = &mut st.channels {
         let flush = if final_ { Flush::Final } else { Flush::More };
         while let Some(fragment) = channels.advance(raw, flush) {
             let field = match fragment.channel {
@@ -1027,7 +1030,7 @@ enum AnthBlock {
 
 #[derive(Debug)]
 pub struct AnthropicStream {
-    inkling: Option<Channels>,
+    channels: Option<Channels>,
     iquest: Option<iquest::Channels>,
     mode: AnthMode,
     open_block: AnthBlock,
@@ -1127,7 +1130,7 @@ pub fn anthropic_sse_start_live(
     msg.extend_from_slice(b"}}");
     sse_event(w, "message_start", &msg);
     AnthropicStream {
-        inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
+        channels: Channels::for_format(r.chat_format),
         iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
             .then(iquest::Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
@@ -1157,9 +1160,9 @@ pub fn anthropic_sse_stream_update(
     if !st.active {
         return true;
     }
-    if st.inkling.is_some() {
+    if st.channels.is_some() {
         let flush = if final_ { Flush::Final } else { Flush::More };
-        while let Some(fragment) = st.inkling.as_mut().unwrap().advance(raw, flush) {
+        while let Some(fragment) = st.channels.as_mut().unwrap().advance(raw, flush) {
             let block = match fragment.channel {
                 Channel::Thinking => AnthBlock::Thinking,
                 Channel::Text => AnthBlock::Text,
@@ -1470,7 +1473,7 @@ enum RespMode {
 
 #[derive(Debug)]
 pub struct ResponsesStream {
-    inkling: Option<Channels>,
+    channels: Option<Channels>,
     iquest: Option<iquest::Channels>,
     mode: RespMode,
     emit_pos: usize,
@@ -1508,7 +1511,7 @@ pub fn responses_stream_init(
     message_id: &str,
 ) -> ResponsesStream {
     ResponsesStream {
-        inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
+        channels: Channels::for_format(r.chat_format),
         iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
             .then(iquest::Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
@@ -1721,7 +1724,7 @@ fn responses_sse_reasoning_done(
     } else {
         "incomplete"
     };
-    let channel_text = st.inkling.as_ref().map(|c| c.text(raw, Channel::Thinking));
+    let channel_text = st.channels.as_ref().map(|c| c.text(raw, Channel::Thinking));
     let rtext = if let Some(text) = &channel_text {
         text.as_slice()
     } else if st.reasoning_end > st.reasoning_start {
@@ -1801,7 +1804,7 @@ fn responses_message_text_escape_fixed(st: &ResponsesStream, raw: &[u8]) -> Vec<
     let mut b = vec![b'"'];
     if let Some(channels) = &st.iquest {
         b.extend(json_escape_fragment(&channels.text));
-    } else if let Some(channels) = &st.inkling {
+    } else if let Some(channels) = &st.channels {
         b.extend(json_escape_fragment(&channels.text(raw, Channel::Text)));
     } else if st.message_end > st.message_start {
         b.extend(json_escape_fragment(&raw[st.message_start..st.message_end]));
@@ -1966,7 +1969,7 @@ fn responses_sse_completed(
         } else {
             "incomplete"
         };
-        let channel_text = st.inkling.as_ref().map(|c| c.text(raw, Channel::Thinking));
+        let channel_text = st.channels.as_ref().map(|c| c.text(raw, Channel::Thinking));
         let rtext = if let Some(text) = &channel_text {
             text.as_slice()
         } else if st.reasoning_end > st.reasoning_start {
@@ -2041,9 +2044,9 @@ pub fn responses_sse_stream_update(
     if !st.active {
         return true;
     }
-    if st.inkling.is_some() {
+    if st.channels.is_some() {
         let flush = if final_ { Flush::Final } else { Flush::More };
-        while let Some(fragment) = st.inkling.as_mut().unwrap().advance(raw, flush) {
+        while let Some(fragment) = st.channels.as_mut().unwrap().advance(raw, flush) {
             if fragment.channel == Channel::Thinking {
                 st.reasoning_closed_naturally |= fragment.closed;
             }

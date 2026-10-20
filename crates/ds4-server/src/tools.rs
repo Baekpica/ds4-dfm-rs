@@ -14,6 +14,7 @@ use crate::render::{
     SOLAR_TOOL_ARG_START, SOLAR_TOOL_ARG_VALUE, SOLAR_TOOL_CALLS, SOLAR_TOOL_CALL_END,
 };
 
+pub(crate) mod beam;
 pub(crate) mod iquest;
 use crate::stream::{think_end, think_start, ChatFormat};
 use std::collections::{HashMap, HashSet};
@@ -1936,6 +1937,7 @@ pub fn parse_generated_message(
         }
         // Malformed tool envelopes must not become user-visible raw text.
         ModelSyntax::Inkling => return crate::render::inkling::parse(text).unwrap_or_default(),
+        ModelSyntax::BeamVq => beam::parse(text, orders),
         ModelSyntax::IQuestQ1 => Some(iquest::parse(text, require_thinking_closed, orders)),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
@@ -1963,18 +1965,7 @@ pub fn parse_generated_for_model_id(
     orders: &[ToolSchemaOrder],
 ) -> ParsedGenerated {
     let syntax = syntax_for_model_id(model_id);
-    let format = match syntax {
-        ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
-        ModelSyntax::Exaone => ChatFormat::Exaone,
-        ModelSyntax::Qwen4Exp
-        | ModelSyntax::Step37
-        | ModelSyntax::Qwen35
-        | ModelSyntax::NaiveN05 => ChatFormat::Qwen4Exp,
-        ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
-        ModelSyntax::Inkling => ChatFormat::Inkling,
-        ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
-        _ => ChatFormat::DeepSeek,
-    };
+    let format = crate::generate::chat_format_for_syntax(syntax);
     parse_generated_message(syntax, text, require_thinking_closed, format, orders)
 }
 
@@ -2009,7 +2000,8 @@ pub fn parse_generated_for_response(
     orders: &[ToolSchemaOrder],
     finish: &str,
 ) -> (ParsedGenerated, &'static str) {
-    if syntax == ModelSyntax::Inkling {
+    // Channel-framed output always parses its channels.
+    if matches!(syntax, ModelSyntax::Inkling | ModelSyntax::BeamVq) {
         let mut parsed =
             parse_generated_message(syntax, text, require_thinking_closed, format, orders);
         if !has_tools {
@@ -2087,6 +2079,8 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_START.as_bytes()),
         ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_START.as_bytes()),
         ChatFormat::Inkling => find_substr(s, crate::render::inkling::INVOKE.as_bytes()),
+        // `<|constrain|>` never occurs in prose; ` to=` may.
+        ChatFormat::Beam => find_substr(s, beam::TOOL.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -2125,6 +2119,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_END.as_bytes()),
         ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_END.as_bytes()),
         ChatFormat::Inkling => find_substr(s, crate::render::inkling::END.as_bytes()),
+        ChatFormat::Beam => find_substr(s, beam::CALL.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -2332,6 +2327,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::Qwen4Exp => &[QWEN_TOOL_CALL_START.as_bytes()],
         ChatFormat::K2Horizon => &[crate::render::K2_TOOL_CALLS_START.as_bytes()],
         ChatFormat::Inkling => &[crate::render::inkling::INVOKE.as_bytes()],
+        ChatFormat::Beam => &[beam::TOOL.as_bytes()],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -2406,7 +2402,7 @@ impl SemAccum {
             text: Vec::new(),
             track_tools: kind_chat && has_tools,
             cut_tool_syntax: kind_chat && !has_tools && format != ChatFormat::IQuestQ1,
-            think_gates: think_enabled || format == ChatFormat::Inkling,
+            think_gates: think_enabled || matches!(format, ChatFormat::Inkling | ChatFormat::Beam),
             chat_format: format,
             thinking_inside: false,
             think_tail: Vec::new(),
@@ -2428,11 +2424,36 @@ impl SemAccum {
         } else if think_enabled && format != ChatFormat::Inkling {
             a.thinking_inside = true;
         }
+        // Harmony opens every reply with its analysis message.
+        if format == ChatFormat::Beam {
+            a.thinking_inside = true;
+        }
         a.tool_scan_waiting = a.think_gates && a.thinking_inside;
         a
     }
 
     fn feed_thinking(&mut self, piece: &[u8]) {
+        if self.chat_format == ChatFormat::Beam {
+            // Analysis closes at `<|end|>` or a bare `<|start|>assistant`;
+            // a call header's analysis channel (spaced) opens nothing.
+            let (open, ends) = (
+                beam::ANALYSIS.as_bytes(),
+                [beam::END.as_bytes(), beam::ASSISTANT.as_bytes()],
+            );
+            let keep = beam::ASSISTANT.len().max(open.len());
+            for &byte in piece {
+                if self.think_tail.len() == keep {
+                    self.think_tail.remove(0);
+                }
+                self.think_tail.push(byte);
+                if self.think_tail.ends_with(open) {
+                    self.thinking_inside = true;
+                } else if ends.iter().any(|end| self.think_tail.ends_with(end)) {
+                    self.thinking_inside = false;
+                }
+            }
+            return;
+        }
         if self.chat_format == ChatFormat::Inkling {
             let start = crate::render::inkling::THINK.as_bytes();
             let end = crate::render::inkling::END.as_bytes();
@@ -2484,6 +2505,15 @@ impl SemAccum {
             probe.dsml.update(&probe.text);
         }
         !probe.thinking_inside && dsml_decode_state_is_syntax(probe.dsml.decode)
+    }
+
+    /// A stop token's text (Beam's `<|call|>` closes the last call): parsers
+    /// and streams see it, usage does not count it, as no stop token is.
+    pub fn feed_stop(&mut self, piece: &[u8], stops: &[String]) -> SemFeed {
+        let counts = (self.completion, self.reasoning_tokens);
+        let feed = self.feed(piece, stops);
+        (self.completion, self.reasoning_tokens) = counts;
+        feed
     }
 
     pub fn feed(&mut self, piece: &[u8], stops: &[String]) -> SemFeed {
@@ -2646,7 +2676,7 @@ impl SemAccum {
     }
 
     pub fn sampling_override(&mut self, p: &SamplePolicy<'_>) -> SampleOverride {
-        crate::dsml::sampling_override(
+        let forced = crate::dsml::sampling_override(
             self.track_tools,
             self.saw_tool_start,
             self.thinking_inside,
@@ -2656,7 +2686,14 @@ impl SemAccum {
             &mut self.required_tool_prefix_pos,
             &mut self.required_think_end_prefix_pos,
             p,
-        )
+        );
+        // Beam's Harmony headers follow its grammar, not the drifted weights.
+        if forced == SampleOverride::None && self.chat_format == ChatFormat::Beam {
+            if let Some(token) = beam::forced_header(&self.text, self.track_tools) {
+                return SampleOverride::Token(token);
+            }
+        }
+        forced
     }
 }
 

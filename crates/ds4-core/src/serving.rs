@@ -24,6 +24,8 @@ pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192]
 const GLM_CTX_MAX: u32 = 1_048_576;
 /// Ling-3.1's max_position_embeddings (rope_scaling null).
 const LING31_CTX_MAX: u32 = 262_144;
+/// Beam's max_position_embeddings: NoPE full layers, no RoPE scaling.
+const BEAM_CTX_MAX: u32 = 1_048_576;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -651,7 +653,10 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 /// contract defaults to it (GLM VQ follows max_position_embeddings); None
 /// keeps the host default.
 pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
-    if matches!(caps.family, ModelFamily::Glm53Vq | ModelFamily::Ling31Vq) {
+    if matches!(
+        caps.family,
+        ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::BeamVq
+    ) {
         caps.ctx_max
     } else {
         None
@@ -881,6 +886,30 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(LING31_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
+        // Banks own their KV rows (FP8 full-layer rows, sliding rings) over
+        // graph 0's scratch; partial reuse checkpoints the rings' windows.
+        // The DFlash2 drafter (`--mtp`) drafts on the serial lane only.
+        ModelFamily::BeamVq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Sidecar,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            // A one-token draft is the open's default with MTP off (MiMo's rule).
+            spec_draft_min: 2,
+            host: HostNeed::Cuda,
+            ctx_max: Some(BEAM_CTX_MAX),
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -1117,6 +1146,17 @@ pub fn resolve_plan(
             }],
             quote: None,
         };
+    };
+    // The native open refuses Beam banks beside the DFlash2 drafter, so the
+    // drafter puts Beam on its serial lane.
+    let caps = if caps.family == ModelFamily::BeamVq && req.mtp_path.is_some() {
+        ServingCaps {
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            ..caps
+        }
+    } else {
+        caps
     };
 
     let ssd_supported = caps.family == ModelFamily::Glm53
@@ -1513,6 +1553,7 @@ impl ServingCaps {
             Variant::Glm53Flash => "glm5-next",
             Variant::Glm53FlashVq => "GLM-5.3-Flash-VQ",
             Variant::Ling31FlashVq => "ling31_vq",
+            Variant::BeamVq => "beam_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1713,6 +1754,7 @@ impl ResolvedPlan {
             Some(ModelFamily::Glm53) => Some("DS4_GLM53_PREFILL_ROWS"),
             Some(ModelFamily::Glm53Vq) => Some("DS4_GLMVQ_PREFILL_ROWS"),
             Some(ModelFamily::Ling31Vq) => Some("DS4_LING31_PREFILL_CHUNK"),
+            Some(ModelFamily::BeamVq) => Some("DS4_BEAM_PREFILL_CHUNK"),
             _ => None,
         }
     }

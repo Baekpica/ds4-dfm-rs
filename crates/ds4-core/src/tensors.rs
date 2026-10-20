@@ -23,6 +23,7 @@ pub enum TensorError {
     ExpectedTensors { declared: u32, got: u64 },
     GlmVq(&'static str),
     Ling31Vq(&'static str),
+    BeamVq(&'static str),
 }
 
 impl TensorError {
@@ -39,6 +40,7 @@ impl TensorError {
             }
             TensorError::GlmVq(reason) => format!("glm-vq {reason}"),
             TensorError::Ling31Vq(reason) => format!("ling31-vq {reason}"),
+            TensorError::BeamVq(reason) => format!("beam-vq {reason}"),
         }
     }
 }
@@ -308,7 +310,10 @@ fn parse_one(
             return Err(TensorError::OutsideFile);
         }
     }
-    if crate::ling31_vq::requested(g) {
+    // Beam parts carry GVQ1 tensors GLM's validator would claim.
+    if crate::beam_vq::requested(g) {
+        crate::beam_vq::validate_part(g, &mut tensors, pos, data_pos)?;
+    } else if crate::ling31_vq::requested(g) {
         crate::ling31_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     } else {
         crate::glm_vq::validate_part(g, &mut tensors, pos, data_pos)?;
@@ -364,6 +369,9 @@ fn file_len(path: &Path) -> Result<u64, TensorError> {
 impl TensorInventory {
     pub fn open(path: &Path) -> Result<Self, TensorError> {
         if path.is_dir() {
+            if crate::beam_vq::is_release(path) {
+                return crate::beam_vq::open_dir(path);
+            }
             // Ling releases open their trunk; MTP serving asks for `open_ling31`.
             if crate::ling31_vq::is_release(path) {
                 return crate::ling31_vq::open_dir(path, crate::Ling31Feature::Trunk);

@@ -108,6 +108,16 @@ const LING31_ALIGN: u64 = 256;
 // FP8 MMA activation scales cover 128 inputs; glmvq_mma_item is five words.
 const LING31_SCALE_BLOCK: u64 = 128;
 const LING31_MMA_ITEM_BYTES: u64 = 20;
+// Beam's 1M bank fits beside the 91.6 GiB trunk at 2,048-row chunks
+// (BEAM_PREFILL_DEFAULT, ds4_beam_bind.inc); 4,096 rows need ~1.4 GiB more.
+const BEAM_PREFILL_CHUNK_ENV: &str = "DS4_BEAM_PREFILL_CHUNK";
+const BEAM_NATIVE_DEFAULT: u32 = 2048;
+const BEAM_NATIVE_MAX: u32 = 4096;
+// C beam_decode_plan: decode/verify items, mid and partial rows, the verify
+// plan and 49 layers' 3 x 256 expert tables (256-byte aligned regions).
+const BEAM_DECODE_BYTES: u64 = 1_183_744;
+// sizeof(glmvq_mma_item): three matrix indices, a start and a count.
+const BEAM_MMA_ITEM_BYTES: u64 = 20;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -365,6 +375,22 @@ pub fn fill_quote_facts(
             // 108 GiB trunk.
             (bank, scratch, mtp, 0)
         }
+        // Each bank owns its KV rows, host logits and history; graph 0 owns
+        // the row workspace and the host embedding staging. Checkpoint slots
+        // take what the native fit leaves (Ling-3.1).
+        // The DFlash2 drafter's rings and rows belong to the serial session;
+        // an MTP-off open leaves the file bound but allocates none.
+        (ModelFamily::BeamVq, Some(s)) => (
+            beam_kv_bytes(ctx, native) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
+            beam_workspace_bytes(u64::from(native))
+                + u64::from(native) * u64::from(s.n_embd) * SIZEOF_U16,
+            if sidecar_loaded && req.mtp_mode != MtpMode::Off {
+                beam_draft_bytes(u64::from(native))
+            } else {
+                0
+            },
+            0,
+        ),
         (ModelFamily::Inkling, Some(s)) => {
             let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
             (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
@@ -687,7 +713,9 @@ pub fn fill_quote_facts(
     fitted.max_seqs = match req.max_seqs {
         MaxSeqs::Fixed(n) => MaxSeqs::Fixed(n),
         MaxSeqs::Off => MaxSeqs::Off,
-        MaxSeqs::Auto if caps.family == ModelFamily::Ling31Vq => MaxSeqs::Fixed(1),
+        MaxSeqs::Auto if matches!(caps.family, ModelFamily::Ling31Vq | ModelFamily::BeamVq) => {
+            MaxSeqs::Fixed(1)
+        }
         MaxSeqs::Auto if caps.banks == BankLane::Persistent => {
             MaxSeqs::Fixed(caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS))
         }
@@ -929,6 +957,10 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
     // A GVQ1 release directory maps its named parts; an unreadable listing
     // prices 0 here and fails validation when the model opens.
     if path.is_dir() {
+        // Beam's embedding part stays on SSD: only the trunk is resident.
+        if crate::beam_vq::is_release(path) {
+            return crate::beam_vq::trunk_bytes(path).unwrap_or(0);
+        }
         if crate::ling31_vq::is_release(path) {
             return crate::ling31_vq::part_bytes(path, crate::Ling31Feature::Trunk).unwrap_or(0);
         }
@@ -1110,6 +1142,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Glm53 => GLM_NATIVE_MAX,
         ModelFamily::Glm53Vq => GLMVQ_NATIVE_MAX,
         ModelFamily::Ling31Vq => LING31_NATIVE_MAX,
+        ModelFamily::BeamVq => BEAM_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1180,6 +1213,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             LING31_NATIVE_DEFAULT,
             1,
             LING31_NATIVE_MAX,
+        ),
+        ModelFamily::BeamVq => env_u32(
+            BEAM_PREFILL_CHUNK_ENV,
+            BEAM_NATIVE_DEFAULT,
+            1,
+            BEAM_NATIVE_MAX,
         ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
@@ -2567,6 +2606,63 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
         + mma
 }
 
+// C beam_kv_bytes: the nine full layers keep every position as Solar's FP8
+// row (f16 [K | V] under DS4_BEAM_FULL_KV=f16), the 43 sliding layers a ring
+// of the 512-row window plus one prefill chunk of f16 [K | V] rows.
+fn beam_kv_bytes(ctx: u64, native: u32) -> u64 {
+    const KV: u64 = 8 * 128;
+    let ring_row = 2 * KV * SIZEOF_U16;
+    let full_row = if std::env::var("DS4_BEAM_FULL_KV").as_deref() == Ok("f16") {
+        ring_row
+    } else {
+        2 * KV + 2 * 8 * SIZEOF_U16
+    };
+    let ring = ctx.min(512 + u64::from(native));
+    9 * ctx * full_row + 43 * ring * ring_row
+}
+
+// C beam_workspace_bytes on the CUDA kernels: logits, the BEAM_ROW_BUFFERS
+// rows, split-decode partials, the q4p input, cuBLAS and routes, then the
+// routed-expert decode tables and, above verify widths, the FP8 MMA planes.
+fn beam_workspace_bytes(rows: u64) -> u64 {
+    const HIDDEN: u64 = 5120;
+    const FFN: u64 = 2560;
+    const USED: u64 = 8;
+    let align = |n: u64| n.div_ceil(256) * 256;
+    // token, cur/norm/attn_out/ffn_out, q/gate/heads, k/v, the dense
+    // gate/up, router, routes and weights, BF16 embedding staging.
+    let row = 1 + 4 * HIDDEN + 3 * 6144 + 2 * 1024 + 2 * 20480 + 256 + 2 * USED + HIDDEN / 2;
+    let partials = 48 * 128 * (128 + 2) * SIZEOF_F32;
+    let q4p = rows * 20480 * SIZEOF_U16 * 2;
+    let linear = GLMVQ_CUBLAS_WORKSPACE + rows * USED * SIZEOF_U32;
+    let pairs = rows * USED;
+    let mma = if rows > GLMVQ_VERIFY_ROWS {
+        align(rows * HIDDEN)
+            + align(rows * HIDDEN / 128 * SIZEOF_F32)
+            + align(pairs * FFN * SIZEOF_U16)
+            + align(pairs * FFN)
+            + align(pairs * FFN / 128 * SIZEOF_F32)
+            + align(pairs * HIDDEN * SIZEOF_U16)
+            + align(pairs * BEAM_MMA_ITEM_BYTES)
+            + align(pairs * SIZEOF_U32)
+    } else {
+        0
+    };
+    (151_936 + rows * row) * SIZEOF_F32 + partials + q4p + linear + BEAM_DECODE_BYTES + mma
+}
+
+// C beam_draft_bytes: five f16 [K | V] context rings of 4,096 + 16 slots, the
+// tap rows of one prefill chunk, then the 16-row block (six hidden-wide rows,
+// conv coefficients, K/V, the SwiGLU pair, capped logits, selector rows, ids).
+fn beam_draft_bytes(rows: u64) -> u64 {
+    const HIDDEN: u64 = 5120;
+    const KV: u64 = 1024;
+    let rings = 5 * (4096 + 16) * 2 * KV * SIZEOF_U16;
+    let taps = rows * (2 * HIDDEN + 2 * KV) * SIZEOF_F32;
+    let block = 16 * (6 * HIDDEN + 1280 + 2 * KV + 2 * 17408 + 151_936 + 256 + 1) * SIZEOF_F32;
+    rings + taps + block
+}
+
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
 fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
@@ -2618,6 +2714,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::Glm53
                 | ModelFamily::DeepSeek4
                 | ModelFamily::Ling31Vq
+                | ModelFamily::BeamVq
         )
     {
         return serial;
@@ -2992,9 +3089,10 @@ mod tests {
         resolve_plan, serving_caps, MaxSeqs, MtpMode, PrefixReuse, ReuseKind, PREFILL_CHUNK_FENCE,
     };
     use crate::shape::{
-        Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_GLM53_FLASH, SHAPE_GLM53_VQ, SHAPE_INKLING_SMALL,
-        SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_LING30_FLASH_VL, SHAPE_LING31_VQ,
-        SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
+        Variant, SHAPE_BEAM_VQ, SHAPE_DOTS3_NOTE_PREV, SHAPE_GLM53_FLASH, SHAPE_GLM53_VQ,
+        SHAPE_INKLING_SMALL, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_LING30_FLASH_VL,
+        SHAPE_LING31_VQ, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
+        SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
 
@@ -3117,6 +3215,76 @@ mod tests {
             Some(2 * state + 6 * 4096 * SIZEOF_F32 + 4 * 157_184 * SIZEOF_F32)
         );
         assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+    }
+
+    #[test]
+    fn beam_quote_matches_the_native_graph() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(BEAM_PREFILL_CHUNK_ENV);
+        let _kv = EnvGuard::unset("DS4_BEAM_FULL_KV");
+        // Native graph log at ctx 4096, 2048-row chunks: KV 0.49 GiB,
+        // workspace 1.12 GiB; at 1M the FP8 rows are 18.28 GiB and the
+        // rings 0.42 GiB (handoff memory-budget.json).
+        let gib = |b: u64| b as f64 / GIB as f64;
+        assert!((gib(beam_kv_bytes(4096, 2048)) - 0.49).abs() < 0.005);
+        assert!((gib(beam_workspace_bytes(2048)) - 1.12).abs() < 0.005);
+        assert!((gib(beam_kv_bytes(1 << 20, 2048)) - 18.70).abs() < 0.005);
+
+        let s = SHAPE_BEAM_VQ;
+        let req = ServingRequest {
+            ctx: 32768,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            serving_caps(ModelFamily::BeamVq, Variant::BeamVq),
+            Some(s),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(2048));
+        let host = 151_936 * SIZEOF_F32 + 32768 * SIZEOF_I32;
+        assert_eq!(
+            facts.per_bank_bytes,
+            Some(beam_kv_bytes(32768, 2048) + host)
+        );
+        assert_eq!(
+            facts.scratch_bytes,
+            Some(beam_workspace_bytes(2048) + 2048 * 5120 * SIZEOF_U16)
+        );
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+        assert_eq!(facts.mtp_state_bytes, Some(0));
+
+        // The DFlash2 runtime (native beam_draft_bytes): 80.3 MiB of rings,
+        // 96 MiB of tap rows at 2,048 rows, 13.5 MiB of block rows.
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &ServingRequest {
+                mtp_path: Some("drafter.gguf".into()),
+                ..req
+            },
+            serving_caps(ModelFamily::BeamVq, Variant::BeamVq),
+            Some(s),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.mtp_state_bytes, Some(beam_draft_bytes(2048)));
+        assert!((beam_draft_bytes(2048) as f64 / (1 << 20) as f64 - 189.8).abs() < 0.01);
     }
 
     #[test]

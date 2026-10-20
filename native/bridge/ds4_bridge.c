@@ -728,6 +728,25 @@ int ds4_bridge_naive_commit(ds4_bridge_session *s, int32_t keep, char *err, size
     return ds4_session_naive_commit(s->session, keep, err, errlen);
 }
 
+int ds4_bridge_beam_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                          int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_beam_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_beam_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_beam_commit(s->session, keep, err, errlen);
+}
+
 int ds4_bridge_iquest_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                            int32_t *tokens, int32_t *target, int32_t cap,
                            char *err, size_t errlen)
