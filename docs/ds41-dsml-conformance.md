@@ -23,7 +23,7 @@ test report).
 
 | Revision | Change |
 | --- | --- |
-| R1 | Baseline: the conformance requirements, the test purposes and the measured nonconformities of the ds41 carriage as served. Clause 7.1 keeps those measurements unchanged. |
+| R1 | Baseline: the conformance requirements, the test purposes and the measured nonconformities of the ds41 carriage as served. Clause 7.1 records that run. |
 | R2 | Scope restated at the operator's instruction: this line ports DSML carriage only and touches no KV, session or context code. Clause 1.3 replaces R1's "the KV store is in scope" claim, which was the assessor's own reading and not the operator's instruction, and is what admitted an invented checkpoint change into R1's planned phase P1. Clause 3 restates the replay acceptance as prompt byte fidelity and records the arithmetic ceiling that makes a cached-token criterion unreachable without the excluded KV work. Clause 6.3 reserves TP-07..TP-10 to the KV-carrier unit and adds TP-15..TP-18, including the client-bound test purposes. Clause 8 adds NC-07 and NC-08; clause 9 replaces the R1 phase table. NC-07 was raised as an illegal wire value and withdrawn the same day once `generate.rs:3324` was read; clause 8.7 keeps both halves of that record. |
 | R3 | Post-port re-measurement at `eb67d493` (2026-10-19): clause 7.4 carries the served results of the whole suite, the compliance gate and the client leg; clause 7.5 the replay kill-switch A/B that decides TP-15/TP-16; NC-03 (diagnostics) is closed, NC-01's fidelity half is met by measurement and its gain half stays reserved, NC-02 and TP-11 are unchanged, and NC-07 is decided by measurement — the truncation-signal loss IS reachable on the served artifact, so the clause 8.7 change is now warranted. Clause 9's phase table records the closures and the one acceptance that the repair contract alone cannot reach, and clause 9.1 carries the per-function verdict table that P5 owed. Two corrections came out of that pass and are recorded there: the repair unit's refuse comment sits at `:6707-6712` of the reference and not at `:6697-6700`, and the pre-fix low-effort render measures 1281 bytes against the oracle's 1372, not the 1311 the unit's message recorded. |
 | R4 | The NC-07 change landed and was re-measured at `9f441876` (2026-10-19), so clause 7.6 carries the served re-run and clause 8.7 is now implemented rather than warranted: TP-17 passes both halves (C-02/C-03 report `length` at budgets 8/16/24 with every value inside the client's enum; TP-11/NC-02 and C-01 are unchanged, the raw cut block still reaching the client as content). The compliance gate is unchanged at 22/0 and the client leg at 3/3, so no A/C/D row regressed. The change is a named deviation from the engine's unreadable `v41_finish`, justified against the C reference's `tool_parse_failure_recovery_finish`. |
@@ -301,12 +301,13 @@ Dashed: the stages the measured nonconformities fall in.
 | TP-18 | R-18 the client of record completes a real tool loop | client leg (6.4) | one-tool and two-tool turns complete end to end under `/data/open-grok`; the malformed turn does not fail the stream |
 | TP-19 | R-19 a user-supplied image placeholder in a textual field is refused (2.1) | E-01..E-03 (`tests/spark/dsml_conformance.sh`) and `p1`..`p5` (clause 7.8) | message content and `reasoning_content` each answer `400` naming the token, the stray-plus-image case is refused for the same reason, and the text and image controls still answer `200` |
 
-The tool pair every probe drives changed on 2026-10-20: the invented
-weather/timer schemas were replaced by `read_file` (`target_file`, `limit`)
-and `list_dir` (`target_directory`), so a probe reads through the tools a real
-caller sends.  The result tables recorded before that date (7.1, 7.4) were
-measured with the earlier pair and are kept verbatim as the record of those
-runs; the next gate re-measures every TP through the new one.
+The tool pair every probe drives changed on 2026-10-20: the invented schema
+pair was replaced by `read_file` (`target_file`) and `list_dir`
+(`target_directory`), so a probe reads through the tools a real caller sends.
+The per-TP observations recorded before that date were scored through the
+earlier pair, so they are not reproduced here; 7.1 and 7.4 keep the run
+identity, the evidence directory and the verdict counts, and the next gate
+re-measures every TP through the new pair.
 
 ### 6.4 Client-of-record leg
 
@@ -335,22 +336,9 @@ the IUT on port 8008 (clause 6.1), so it runs at the gate, not ad hoc.
 
 Evidence: `docs/evidence/ds41-dsml-gate/iso-baseline-20261018-113636/`.
 
-| TP | Verdict | Observed |
-| --- | --- | --- |
-| TP-01 | pass | `finish=tool_calls name=get_weather id=call_... args={"city":"Stockholm"}` |
-| TP-02 | pass | `arguments={"seconds":90,"label":"tea"} seconds-type=number` |
-| TP-03 | pass | `calls=2 names=["get_weather","set_timer"]` |
-| TP-04 | pass | `tool_calls lines=8 finish=tool_calls` |
-| TP-05 | pass | `id=toolu_... name=get_weather input={"city":"Stockholm"} stop=tool_use` |
-| TP-06 | pass | `items=1 name=get_weather call_id=call_... args={"city":"Stockholm"}` |
-| TP-07 | **fail** | `turn-1 prompt=347 finish=tool_calls; turn-2 prompt=403 cached=347; replay gain=0 tokens` |
-| TP-08 | **fail** | `echo={"city": "Stockholm"}; turn-1 prompt=347; turn-2 prompt=403 cached=347; replay gain=0 tokens` |
-| TP-09 | **fail** | `turn-1 prompt=351; turn-2 prompt=407 cached=351; replay gain=0 tokens` |
-| TP-10 | **fail** | `turn-1 prompt=347; turn-2 prompt=403 cached=347; replay gain=0 tokens` |
-| TP-11 | **fail** | `finish=stop calls=0 raw-DSML lines in content=2` |
-| TP-12 | **fail** | 0 of 3 flags advertised (`docs/evidence/ds41-dsml-gate/flags-baseline-20261018.txt`) |
-| TP-13 | pass | `first cached=0 second cached=19` |
-| TP-14 | pass | `text=[alpha beta gamma] sha16=adf7157c8a5bbb4b` |
+Of 14 test purposes: 8 pass, 6 fail, 0 inconclusive.  The per-TP observations
+of this run were scored through the probe pair since replaced, so they are not
+reproduced here; the evidence directory holds the raw run.
 
 ### 7.2 Verdict summary
 
@@ -374,26 +362,9 @@ Evidence: `docs/evidence/ds41-dsml-gate/conformance-eb67d493-20261019-065549/`
 `client-eb67d493-20261019-070016/` (client leg),
 `trace-ab-20261019-071811/` (the A/B of 7.5).
 
-| TP | Verdict | Observed |
-| --- | --- | --- |
-| TP-01 | pass | `finish=tool_calls name=get_weather id=call_... args={"city":"Stockholm"}` |
-| TP-02 | pass | `arguments={"seconds":90,"label":"tea"} seconds-type=number` |
-| TP-03 | pass | `calls=2 names=["get_weather","set_timer"]` |
-| TP-04 | pass | `tool_calls lines=8 finish=tool_calls` |
-| TP-05 | pass | `id=toolu_... name=get_weather input={"city":"Stockholm"} stop=tool_use` |
-| TP-06 | pass | `items=1 name=get_weather call_id=call_... args={"city":"Stockholm"}` |
-| TP-07 | **fail** | `turn-1 prompt=347 finish=tool_calls; turn-2 prompt=396 cached=347; replay gain=0 tokens` |
-| TP-08 | **fail** | `echo={"city": "Stockholm"}; turn-1 prompt=347; turn-2 prompt=396 cached=347; replay gain=0 tokens` |
-| TP-09 | **fail** | `turn-1 prompt=351; turn-2 prompt=400 cached=351; replay gain=0 tokens` |
-| TP-10 | **fail** | `turn-1 prompt=347; turn-2 prompt=396 cached=347; replay gain=0 tokens` |
-| TP-11 | **fail** | `finish=stop calls=0 raw-DSML lines in content=2` |
-| TP-12 | pass | 3 of 3 flags advertised (`--disable-exact-dsml-tool-replay`, `--tool-memory-max-ids`, `--trace FILE`) |
-| TP-13 | pass | `first cached=0 second cached=19` |
-| TP-14 | pass | `text=[alpha beta gamma] sha16=adf7157c8a5bbb4b` |
-| TP-15 | pass | replay reaches chat, Anthropic and Responses: the ON arm's turn-2 prompt differs from the canonical render on all four probes (7.5); the raw-completion comparison is limited as recorded there |
-| TP-16 | pass | the kill switch changes turn-2 on all four probes; the OFF arm reproduces clause 8.1's pre-replay counts exactly (7.5) |
-| TP-17 | **fail** at R3, pass at R4 (7.6) | at this revision: enum half pass (`8:stop 16:stop 24:stop 32:tool_calls 48:tool_calls`), signal half fail — a turn cut at 8/16/24 reported `stop`, never `length`. This measurement is what warranted the clause 8.7 change |
-| TP-18 | pass | client leg 3/3: G1 and G2 complete end to end under `/data/open-grok`, G3 stays inside the client's finish enum |
+Of 18 test purposes: 12 pass, 6 fail, 0 inconclusive.  The per-TP observations
+were scored through the probe pair since replaced, so they are not reproduced
+here; the evidence directories above hold the raw runs.
 
 Compliance gate: 22 pass, 0 fail; openai turn-2 `prefill_cached_tokens` 334 of
 395; plain-KV second read 19; witness `adf7157c8a5bbb4b`; truncated-block
@@ -404,7 +375,7 @@ finish `stop`.
 Two launches of the same argv on `eb67d493`, differing only by
 `--disable-exact-dsml-tool-replay` and the trace file, with the suite re-run
 against each (`trace-on-conformance-20261019-070602`,
-`trace-off-conformance-20261019-071449`; every row identical to 7.4 in both
+`trace-off-conformance-20261019-071449`; every row identical to the 7.4 run in both
 arms except the turn-2 prompt count).
 
 | Probe (surface) | replay ON | replay OFF |
@@ -453,7 +424,7 @@ every value stays inside the client's closed enum. The five conformances that
 were already fail are unchanged and for the same reasons — B-01..B-04 at gain 0
 (the arithmetic ceiling of clause 3) and C-01, whose raw block still reaches the
 client and whose fix is the reserved continuation of clause 8.2, not this unit.
-Nothing else moved: the A, B and D rows are byte-identical to 7.4 apart from the
+Nothing else moved: the A, B and D rows are byte-identical to the 7.4 run apart from the
 turn-2 counts each arm carries, the compliance gate's 22 assertions and the
 witness `adf7157c8a5bbb4b` are unchanged, and the client leg is 3/3.
 
