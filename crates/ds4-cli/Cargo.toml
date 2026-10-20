@@ -85,6 +85,10 @@ required-features = ["native"]
 name = "ling31_mtp_gate"
 required-features = ["native"]
 
+[[example]]
+name = "beam_quality"
+required-features = ["native"]
+
 [dependencies]
 ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }
