@@ -203,9 +203,9 @@ static bool beam_attention(ds4_beam_graph *g, const ds4_model *m, const ds4_weig
     // v_proj's BF16 output: prefill projections leave F32 sums.
     if (!beam_mm_many(g, m, outs, ws, 4u, g->norm, rows) ||
         !ds4_gpu_gvq_round(g->v, (uint64_t)rows * BEAM_KV) ||
-        !ds4_gpu_beam_qk(g->gvq, g->q, beam_index(m, l->attn_q_norm), BEAM_HEADS, rows, pos,
+        !ds4_gpu_beam_qk(g->gvq, g->q, beam_index(m, l->attn_q_norm), BEAM_HEADS, rows, g->rope,
             full ? DS4_BEAM_QK_SCALE : DS4_BEAM_QK_ROPE) ||
-        !ds4_gpu_beam_qk(g->gvq, g->k, beam_index(m, l->attn_k_norm), BEAM_KV_HEADS, rows, pos,
+        !ds4_gpu_beam_qk(g->gvq, g->k, beam_index(m, l->attn_k_norm), BEAM_KV_HEADS, rows, g->rope,
             full ? DS4_BEAM_QK_NORM : DS4_BEAM_QK_ROPE) ||
         !beam_trace(il, pos, "q", g->q, (uint64_t)rows * BEAM_Q * sizeof(float)) ||
         !beam_trace(il, pos, "k", g->k, (uint64_t)rows * BEAM_KV * sizeof(float)) ||
@@ -323,7 +323,7 @@ static bool beam_forward(ds4_beam_graph *g, const ds4_model *m, const ds4_weight
     /* A failed enqueue leaves partially written KV rows; the session must
      * reset before another forward. */
     g->failed = true;
-    if (!beam_embed(g, m, w, tokens, rows, g->cur) ||
+    if (!beam_embed(g, m, w, tokens, rows, g->cur) || !ds4_gpu_beam_rope(g->rope, rows, pos) ||
         !beam_trace(0u, pos, "embed", g->cur, (uint64_t)rows * BEAM_EMBD * sizeof(float)) ||
         !ds4_gpu_beam_rms(g->gvq, g->norm, g->cur, beam_index(m, w->layer[0].attn_norm), rows)) { return false; }
     for (uint32_t il = 0; il < BEAM_LAYERS; il++) {

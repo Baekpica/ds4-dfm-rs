@@ -138,7 +138,8 @@ static void beam_bind(ds4_weights *w, const ds4_model *m) {
     X(router, BEAM_EXPERTS, float) \
     X(selected, BEAM_USED, int32_t) \
     X(route_weights, BEAM_USED, float) \
-    X(embed, BEAM_EMBD / 2u, uint32_t)
+    X(embed, BEAM_EMBD / 2u, uint32_t) \
+    X(rope, BEAM_HEAD + 1u, float)
 
 static uint32_t beam_prefill_cap(uint32_t ctx) {
     uint32_t cap = BEAM_PREFILL_DEFAULT;

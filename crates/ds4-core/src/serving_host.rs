@@ -2630,8 +2630,9 @@ fn beam_workspace_bytes(rows: u64) -> u64 {
     const USED: u64 = 8;
     let align = |n: u64| n.div_ceil(256) * 256;
     // token, cur/norm/attn_out/ffn_out, q/gate/heads, k/v, the dense
-    // gate/up, router, routes and weights, BF16 embedding staging.
-    let row = 1 + 4 * HIDDEN + 3 * 6144 + 2 * 1024 + 2 * 20480 + 256 + 2 * USED + HIDDEN / 2;
+    // gate/up, router, routes and weights, BF16 embedding staging, the
+    // RoPE cos/sin and query-scale row.
+    let row = 1 + 4 * HIDDEN + 3 * 6144 + 2 * 1024 + 2 * 20480 + 256 + 2 * USED + HIDDEN / 2 + 129;
     let partials = 48 * 128 * (128 + 2) * SIZEOF_F32;
     let q4p = rows * 20480 * SIZEOF_U16 * 2;
     let linear = GLMVQ_CUBLAS_WORKSPACE + rows * USED * SIZEOF_U32;

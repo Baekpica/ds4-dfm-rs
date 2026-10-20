@@ -613,12 +613,39 @@ extern "C" int ds4_gpu_beam_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, cons
     return cuda_ok(cudaGetLastError(), "Beam residual");
 }
 
+/* The F32 cos/sin of the F32 angle pos * inv_freq (Olmo3RotaryEmbedding;
+ * sin/cos in double, fast-math sinf is unusable at 1M positions) and the
+ * query scale, one block per position. They depend on the position alone:
+ * GB10 runs FP64 at 1/64 rate, so every layer's q/k kernel reads this row
+ * instead of evaluating them per element. */
+__global__ void beam_rope_kernel(float *rope, uint32_t pos0) {
+    const uint32_t j = threadIdx.x, pos = pos0 + blockIdx.x;
+    float *t = rope + (uint64_t)blockIdx.x * (BEAM_GPU_HEAD + 1u);
+    // inv_freq = 1 / theta ** (2j / 128) and the angle as torch's F32 ops
+    // (pow rounded to F32, then the division).
+    const float freq = __fdiv_rn(1.0f, (float)pow(10000.0, (double)(2u * j) / (double)BEAM_GPU_HEAD));
+    const float angle = glmvq_mul((float)pos, freq);
+    t[j] = (float)cos((double)angle);
+    t[BEAM_GPU_HEAD / 2 + j] = (float)sin((double)angle);
+    if (j == 0) {
+        // exp(0.1 * log1p((pos + 1) / 2048)), the scalable-softmax query
+        // scale, as torch's three F32 ops.
+        const float s = glmvq_mul(0.1f, (float)log1p((double)(pos + 1u) / 2048.0));
+        t[BEAM_GPU_HEAD] = (float)exp((double)s);
+    }
+}
+
+extern "C" int ds4_gpu_beam_rope(ds4_gpu_tensor *rope, uint32_t rows, uint32_t pos0) {
+    if (!rows || !gvq_floats(rope, (uint64_t)rows * (BEAM_GPU_HEAD + 1u))) { return 0; }
+    beam_rope_kernel<<<rows, BEAM_GPU_HEAD / 2, 0, ds4_current_stream()>>>((float *)rope->ptr, pos0);
+    return cuda_ok(cudaGetLastError(), "Beam RoPE rows");
+}
+
 /* q/k RMSNorm per 128-wide head, one block per (head, row): rounded once
- * after the weight, then rotate_half RoPE on F32 cos/sin of the F32 angle
- * pos * inv_freq (Olmo3RotaryEmbedding; sin/cos in double, fast-math sinf
- * is unusable at 1M positions), the full layers' query scale, or nothing.
- * Products and sums round as the source's separate F32 ops. */
-__global__ void beam_qk_kernel(float *x, const __nv_bfloat16 *weight, uint32_t heads, uint32_t pos0,
+ * after the weight, then rotate_half RoPE with the row's cos/sin, the full
+ * layers' query scale, or nothing. Products and sums round as the source's
+ * separate F32 ops. */
+__global__ void beam_qk_kernel(float *x, const __nv_bfloat16 *weight, uint32_t heads, const float *rope,
         ds4_beam_qk mode) {
     __shared__ float scratch[BEAM_GPU_HEAD / 32];
     __shared__ float y[BEAM_GPU_HEAD];
@@ -633,34 +660,27 @@ __global__ void beam_qk_kernel(float *x, const __nv_bfloat16 *weight, uint32_t h
     const float inv = __frsqrt_rn(glmvq_add(__fdiv_rn(sum, (float)BEAM_GPU_HEAD), BEAM_RMS_EPS));
     y[i] = glmvq_round(glmvq_mul(__bfloat162float(weight[i]), glmvq_mul(v, inv)));
     __syncthreads();
-    const uint32_t pos = pos0 + r;
+    const float *t = rope + (uint64_t)r * (BEAM_GPU_HEAD + 1u);
     if (mode == DS4_BEAM_QK_ROPE) {
-        // inv_freq = 1 / theta ** (2j / 128) and the angle as torch's F32 ops
-        // (pow rounded to F32, then the division).
         const uint32_t j = i % (BEAM_GPU_HEAD / 2);
-        const float freq = __fdiv_rn(1.0f, (float)pow(10000.0, (double)(2u * j) / (double)BEAM_GPU_HEAD));
-        const float angle = glmvq_mul((float)pos, freq);
-        const float c = (float)cos((double)angle), s = (float)sin((double)angle);
+        const float c = t[j], s = t[BEAM_GPU_HEAD / 2 + j];
         const float a = y[j], b = y[j + BEAM_GPU_HEAD / 2];
         p[i] = i < BEAM_GPU_HEAD / 2 ? glmvq_round(glmvq_add(glmvq_mul(a, c), glmvq_mul(-b, s)))
                                      : glmvq_round(glmvq_add(glmvq_mul(b, c), glmvq_mul(a, s)));
     } else if (mode == DS4_BEAM_QK_SCALE) {
-        // exp(0.1 * log1p((pos + 1) / 2048)), the scalable-softmax query
-        // scale, as torch's three F32 ops.
-        const float t = glmvq_mul(0.1f, (float)log1p((double)(pos + 1u) / 2048.0));
-        const float scale = (float)exp((double)t);
-        p[i] = glmvq_round(glmvq_mul(y[i], scale));
+        p[i] = glmvq_round(glmvq_mul(y[i], t[BEAM_GPU_HEAD]));
     } else {
         p[i] = y[i];
     }
 }
 
 extern "C" int ds4_gpu_beam_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uint32_t heads,
-        uint32_t rows, uint32_t pos0, ds4_beam_qk mode) {
+        uint32_t rows, const ds4_gpu_tensor *rope, ds4_beam_qk mode) {
     const auto *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, BEAM_GPU_HEAD);
-    if (!w || !rows || !heads || !gvq_floats(x, (uint64_t)rows * heads * BEAM_GPU_HEAD)) { return 0; }
+    if (!w || !rows || !heads || !gvq_floats(x, (uint64_t)rows * heads * BEAM_GPU_HEAD) ||
+        !gvq_floats(rope, (uint64_t)rows * (BEAM_GPU_HEAD + 1u))) { return 0; }
     beam_qk_kernel<<<dim3(heads, rows), BEAM_GPU_HEAD, 0, ds4_current_stream()>>>((float *)x->ptr, w, heads,
-        pos0, mode);
+        (const float *)rope->ptr, mode);
     return cuda_ok(cudaGetLastError(), "Beam q/k norm");
 }
 

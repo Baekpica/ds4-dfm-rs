@@ -50,12 +50,17 @@ int ds4_gpu_beam_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor
 int ds4_gpu_beam_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
     uint32_t post, ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, uint32_t index, float scale);
 
+/* Per-position rows of `rope` (rows x 129 F32) for positions pos0...:
+ * cos and sin of the 64 RoPE angles, then the full layers' query scale
+ * (1 + (pos + 1) / 2048) ** 0.1. Written once per forward. */
+int ds4_gpu_beam_rope(ds4_gpu_tensor *rope, uint32_t rows, uint32_t pos0);
+
 /* Per-head RMSNorm of `heads` x 128 rows in place, then rotate_half RoPE
- * (theta 10,000, whole head) or the full layers' query scale
- * (1 + (pos + 1) / 2048) ** 0.1, or nothing (full-layer keys). */
+ * (theta 10,000, whole head) or the query scale from `rope`, or nothing
+ * (full-layer keys). */
 typedef enum { DS4_BEAM_QK_ROPE, DS4_BEAM_QK_SCALE, DS4_BEAM_QK_NORM } ds4_beam_qk;
 int ds4_gpu_beam_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uint32_t heads,
-    uint32_t rows, uint32_t pos0, ds4_beam_qk mode);
+    uint32_t rows, const ds4_gpu_tensor *rope, ds4_beam_qk mode);
 
 /* heads *= sigmoid(gate + bias[head]) per element (bias: BF16 [48] record). */
 int ds4_gpu_beam_gate(ds4_gvq_ctx *ctx, ds4_gpu_tensor *heads, const ds4_gpu_tensor *gate,
