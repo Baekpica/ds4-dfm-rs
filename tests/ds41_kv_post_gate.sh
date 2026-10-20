@@ -16,13 +16,16 @@
 #   cold boot (--prefix-reuse off), one process:
 #     C  prompt P+tA, N tokens                 -> the reference
 #
-#   PASS when D's emitted ids equal C's and the reuse passed the prompt.  The
-#   reference's own gate asks the same thing -- A's tokens minus the first
-#   equal B's (core_v41_kvreuse.c:19) -- because a reuse changes the chunk
-#   boundaries of the suffix, which is FP-level and named as such
-#   (core_v41_kvreuse.c:16-19).  The row comparison is therefore reported, not
-#   asserted: it prints how many rows are byte-identical, which is 0 for every
-#   reuse including the engine's own.
+#   PASS when the turn checkpoint served D (its reuse line carries the tag), the
+#   reuse passed the prompt, and D's first logits row sits within the FP class of
+#   the cold run's.  A row is not bit-comparable and the two arms stop agreeing
+#   at their first argmax flip: the restored KV carries the earlier run's block
+#   boundaries, the difference core_v41_kvreuse.c:16-19 names for its own reuse
+#   (~1 max, ~0.2 RMS, the class a --v41-chunk change gives too).  So the gate
+#   reports the identical-row count and the leading ids the arms share, and
+#   asserts the row-0 delta instead -- a span that was missed or left stale
+#   moves the logits by 10 to 30, which is the distance between two different
+#   continuations, not this class.
 #
 #   The checkpoint's key is the state's own positions: under pure decode the
 #   last emitted token launches no forward, so its row is not in the buffers and
@@ -62,6 +65,10 @@ if [ "$#" -gt 8 ]; then
 fi
 
 OUT="${DS41_POST_GATE_OUT:-/tmp/ds41_kv_post_gate}"
+# The first row's delta bound: the reuse class measures about 1.1 max and 0.2
+# RMS; a missed or stale span leaves the two arms in different continuations,
+# 10 to 30 apart (see the header).
+MAX_DELTA="${DS41_POST_GATE_MAX_DELTA:-2.0}"
 LOG="$OUT/log"
 TMP="$OUT/tmp"
 mkdir -p "$LOG" "$TMP" || { echo "gate: cannot create $OUT" >&2; exit 1; }
@@ -138,6 +145,22 @@ row_cmp() { # <fileA> <idxA> <fileB> <idxB> <rowbytes>
     dd if="$3" bs="$5" skip="$4" count=1 2>/dev/null > "$TMP/rb"
     cmp -s "$TMP/ra" "$TMP/rb"
 }
+# The first row's distance: max |delta| and RMS, in the f32 values themselves.
+row_delta() { # <fileA> <fileB> <rowbytes>
+    dd if="$1" bs="$3" count=1 2>/dev/null | od -An -t f4 -v > "$TMP/row_a"
+    dd if="$2" bs="$3" count=1 2>/dev/null | od -An -t f4 -v > "$TMP/row_b"
+    awk 'BEGIN { mx = 0; s = 0; n = 0 }
+         FNR == NR { for (i = 1; i <= NF; i++) { a[++na] = $i } ; next }
+         { for (i = 1; i <= NF; i++) { d = $i - a[++nb]; if (d < 0) { d = -d }
+                                       if (d > mx) { mx = d } ; s += d * d; n++ } }
+         END { printf "%.4f %.5f", mx, (n ? sqrt(s / n) : 0) }' "$TMP/row_a" "$TMP/row_b"
+}
+# How many leading ids the two arms share before their continuations part.
+lead_ids() { # <fileA> <fileB>
+    awk 'FNR == NR { a[FNR] = $0; n = FNR; next }
+         { if ($0 != a[FNR]) { print FNR - 1; found = 1; exit } }
+         END { if (!found) print n }' "$1" "$2"
+}
 
 ##############################################################################
 # Warm boot: A builds both checkpoints, D must reuse the assistant block.
@@ -206,19 +229,26 @@ while [ "$i" -lt "$N" ]; do
     row_cmp "$LOG/d.rows" "$i" "$LOG/c.rows" "$i" "$rowbytes" && rows=$((rows + 1))
     i=$((i + 1))
 done
+delta="$(row_delta "$LOG/d.rows" "$LOG/c.rows" "$rowbytes")"
+dmax="${delta%% *}"; drms="${delta#* }"
+lead="$(lead_ids "$LOG/d.ids" "$LOG/c.ids")"
 ids=FAIL
 cmp -s "$LOG/d.ids" "$LOG/c.ids" && ids=PASS
 ext=FAIL
 [ -n "$dx" ] && [ "$dx" -gt "$ptok" ] && ext=PASS
+tag=FAIL
+case "$(cat "$LOG/d.reuse")" in *"(turn checkpoint"*) tag=PASS;; esac
+delta_ok=$(awk -v d="$dmax" -v m="$MAX_DELTA" 'BEGIN { print (d <= m) ? "PASS" : "FAIL" }')
 
-printf 'emitted ids (D vs C):                        %s\n' "$ids"
-printf 'the extension fired (reuse %s > prompt %s): %s\n' "${dx:-none}" "$ptok" "$ext"
-printf 'rows byte-identical (D vs C):               %s of %s (%s x %s bytes)\n' "$rows" "$N" "$N" "$rowbytes"
+printf 'the turn checkpoint served D (reuse %s > prompt %s, line tagged): %s\n' "${dx:-none}" "$ptok" "$tag"
+printf 'first logits row vs cold (max |d| %s, rms %s, bound %s): %s\n' "$dmax" "$drms" "$MAX_DELTA" "$delta_ok"
+printf 'reported: identical rows %s of %s; leading ids shared %s of %s (whole stream %s)\n' \
+       "$rows" "$N" "$lead" "$N" "$ids"
 
-if [ "$ids" = PASS ] && [ "$ext" = PASS ]; then
-    note "PASS (the restored state decodes the cold run's tokens out of the replayed block)"
-    [ "$rows" -lt "$N" ] && note "rows are not bit-identical ($rows/$N), the FP class a reuse's own chunk boundaries give (core_v41_kvreuse.c:16-19)"
+if [ "$tag" = PASS ] && [ "$ext" = PASS ] && [ "$delta_ok" = PASS ]; then
+    note "PASS (the restored state continues within the FP class of a cold run, and it is the turn checkpoint that served it)"
     exit 0
 fi
 [ "$ext" = FAIL ] && printf 'note: the tokenizer likely merged across the prompt/emission boundary; change the prompt byte count (%s)\n' "$NCH" >&2
+[ "$delta_ok" = FAIL ] && printf 'note: the first row moved by %s, far outside the reuse class -- suspect a span that was missed or left stale, not FP\n' "$dmax" >&2
 exit 1
