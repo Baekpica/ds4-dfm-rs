@@ -34,6 +34,7 @@ pub enum ModelFamily {
     IQuestQ1 = 13,
     Glm53Vq = 14,
     Ling31Vq = 15,
+    BeamVq = 16,
 }
 
 impl ModelFamily {
@@ -48,6 +49,7 @@ impl ModelFamily {
             "glm5-next" => Some(Self::Glm53),
             "glm5-next-vq" => Some(Self::Glm53Vq),
             "ling31_vq" => Some(Self::Ling31Vq),
+            "beam_vq" => Some(Self::BeamVq),
             "inkling" => Some(Self::Inkling),
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
@@ -70,6 +72,7 @@ impl ModelFamily {
             Self::Glm53 => "glm5-next",
             Self::Glm53Vq => "glm5-next-vq",
             Self::Ling31Vq => "ling31_vq",
+            Self::BeamVq => "beam_vq",
             Self::Inkling => "inkling",
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
@@ -103,6 +106,7 @@ pub enum Variant {
     DeepSeek41Flash = 16,
     Glm53FlashVq = 17,
     Ling31FlashVq = 18,
+    BeamVq = 19,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -360,6 +364,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"naive_n05_flash") => ArchRoute::Fixed(Variant::NaiveN05Flash),
         Some(b"iquest_q1") => ArchRoute::Fixed(Variant::IQuestQ1),
         Some(b"ling31_vq") => ArchRoute::Fixed(Variant::Ling31FlashVq),
+        Some(b"beam_vq") => ArchRoute::Fixed(Variant::BeamVq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -385,6 +390,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::IQuestQ1 => SHAPE_IQUEST_Q1,
         Variant::DeepSeek41Flash => SHAPE_V41_FLASH,
         Variant::Ling31FlashVq => SHAPE_LING31_VQ,
+        Variant::BeamVq => SHAPE_BEAM_VQ,
     }
 }
 
@@ -1336,6 +1342,30 @@ pub(crate) const SHAPE_LING31_VQ: Shape = Shape {
     n_full_attn_count: 9,
     rope_orig_ctx: 262_144,
     ..SHAPE_LING30_FLASH_VL
+};
+
+// Beam-1.0: K2's 48 q / 8 KV heads of 128 over hidden 5120, 43 SWA-512
+// layers with full-head RoPE and nine NoPE full layers (beam_vq/layout.rs),
+// 256 sigmoid-routed experts without a shared expert, native 1M context.
+pub(crate) const SHAPE_BEAM_VQ: Shape = Shape {
+    name: "Beam-1.0-501B-A23B-VQ",
+    family: ModelFamily::BeamVq,
+    variant: Variant::BeamVq,
+    n_layer: 52,
+    n_embd: 5120,
+    n_vocab: 151_936,
+    n_rot: 128,
+    n_expert: 256,
+    n_expert_shared: 0,
+    n_ff_exp: 2560,
+    n_ff_dense: 20480,
+    n_ff_shexp: 0,
+    n_swa: 512,
+    n_full_attn_count: 9,
+    use_qk_norm: true,
+    rope_freq_base: 10_000.0,
+    rope_orig_ctx: 1_048_576,
+    ..SHAPE_K2_HORIZON_375B
 };
 
 // Naive shares GQA dimensions, but replaces all nine global layers with DSA.

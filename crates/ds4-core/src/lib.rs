@@ -9,6 +9,7 @@
 //! `ds4-sys` directly.
 
 mod batch;
+mod beam_vq;
 mod bind;
 pub mod chat_template;
 mod dots3_mtp;
@@ -1283,6 +1284,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::BeamVq {
+        let g = beam_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1549,6 +1556,18 @@ impl Model {
                 code: 1,
                 message: "Ling-3.1 requires one CUDA model with embedded MTP and no sidecars"
                     .into(),
+            });
+        }
+        if identified.shape.family == ModelFamily::BeamVq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "Beam VQ requires one CUDA model without sidecars".into(),
             });
         }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;

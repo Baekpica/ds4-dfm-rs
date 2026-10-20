@@ -12,6 +12,7 @@ use crate::gguf::{GgufError, GgufFile, GGUF_VALUE_INT32, GGUF_VALUE_STRING, GGUF
 use crate::shape::ModelFamily;
 use crate::TokenBuffer;
 
+mod beam;
 mod glm_vq;
 mod inkling;
 mod ling31;
@@ -366,6 +367,7 @@ impl Vocab {
             ModelFamily::Step37 => step37::specials(self, g)?,
             ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
             ModelFamily::Ling31Vq => ling31::specials(self, g)?,
+            ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -667,6 +669,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("Ling-3.1 release metadata"))?;
             return Self::load_tables(&g, family, Some(ling31::tables(path)?));
         }
+        if family == ModelFamily::BeamVq {
+            let g = crate::beam_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("Beam release metadata"))?;
+            return Self::load_tables(&g, family, Some(beam::tables(path)?));
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -679,7 +686,10 @@ impl Vocab {
         let mut out = Vec::new();
         if matches!(
             self.family,
-            ModelFamily::IQuestQ1 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+            ModelFamily::IQuestQ1
+                | ModelFamily::Glm53Vq
+                | ModelFamily::Ling31Vq
+                | ModelFamily::BeamVq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -723,6 +733,9 @@ impl Vocab {
             )),
             ModelFamily::Ling31Vq => Some(TokError::InvalidTokenizer(
                 "Ling-3.1-flash VQ chat requires official Jinja",
+            )),
+            ModelFamily::BeamVq => Some(TokError::InvalidTokenizer(
+                "Beam VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -844,6 +857,7 @@ impl Vocab {
             ModelFamily::Step37
             | ModelFamily::Ling3Vl
             | ModelFamily::Ling31Vq
+            | ModelFamily::BeamVq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -1044,6 +1058,7 @@ impl Vocab {
             ModelFamily::Step37
             | ModelFamily::Ling3Vl
             | ModelFamily::Ling31Vq
+            | ModelFamily::BeamVq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -1212,6 +1227,8 @@ impl Vocab {
                 (self.eot_id >= 0 && token == self.eot_id)
                     || (self.im_start_id >= 0 && token == self.im_start_id)
             }
+            // `<|call|>` ends a tool-call turn as `<|return|>` ends an answer.
+            ModelFamily::BeamVq => self.eot_id >= 0 && token == self.eot_id,
             ModelFamily::Motif3 => {
                 (self.user_id >= 0 && token == self.user_id)
                     || (self.end_of_turn_id >= 0 && token == self.end_of_turn_id)
@@ -2315,7 +2332,10 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
             let normalized: String = text.nfc().collect();
             bpe_tokenize_text_solar(vocab, normalized.as_bytes(), out);
         }
-        ModelFamily::Mimo2 | ModelFamily::NaiveN05 => mimo2::encode(vocab, text, out),
+        // Beam's tokenizer.json is the same NFC + Qwen2 single-digit split.
+        ModelFamily::Mimo2 | ModelFamily::NaiveN05 | ModelFamily::BeamVq => {
+            mimo2::encode(vocab, text, out)
+        }
         ModelFamily::Glm53 | ModelFamily::Glm53Vq => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2337,6 +2357,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::Step37
             | ModelFamily::Ling3Vl
             | ModelFamily::Ling31Vq
+            | ModelFamily::BeamVq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1

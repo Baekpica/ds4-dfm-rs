@@ -136,6 +136,9 @@ fn shared_option_mapping() {
         (6, ChatThinkMode::High, "xhigh|True"),
         (2, ChatThinkMode::Low, "medium|True"),
         (9, ChatThinkMode::None, "none|False"),
+        // Beam has no off switch: its smallest trained budget.
+        (19, ChatThinkMode::None, "minimal|False"),
+        (19, ChatThinkMode::Max, "max|True"),
     ] {
         assert_eq!(
             template
