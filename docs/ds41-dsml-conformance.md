@@ -31,6 +31,7 @@ test report).
 | R6 | The reference-boundary closure of NC-02, plus one citation correction. The operator decided (a) (clause 8.2): the boundary is recorded, so NC-02 closes as reference-absent on the served route, C-01 is re-scoped from the V4 pull route's criterion to the contract this route does owe its client (`finish_reason=length`, no call fabricated from a cut block) and TP-11 is struck as inapplicable to this surface. The gate was re-run against the branch tip rebuilt on the Spark (clause 7.7): conformance 11/4, where the four are the reserved gain rows of clause 3; compliance 22/0; client leg 3/3; and every row but C-01 is byte-identical to R4, which is what makes the rebuilt binary's behaviour identity measured rather than assumed. Citation correction: the `continue_after_invalid_dsml` declaration is `server_internal.h:277`, not the `:290` R5 gave, and R5's mapper range `server_http.c:5-13` tightens to `:5-12`. No code change on this revision. |
 
 | R7 | The residual oracle surface, probed and closed. The function map's last open validation row was the oracle's refusal of a user-supplied image placeholder in a textual field (`_validate_no_image_sp_tokens`, `encoding.py:355-367`), which the map recorded as "not located | none | OPEN, no case" and the matrix's part E prose as the one item still needing the served artifact. Probed on the R6 binary: the two text-only injections were accepted with `200` and the literal reached the prompt as token `129264` (clause 7.8), while a request that also carried an image was refused by the placeholder count instead. The engine at `/data/YoungAi` behaves like this port — `ds4_v41_images_prepare` counts placeholders against images only (`src/core/core_v41_vision.c:189-193`) and the server writes the placeholder itself (`src/server/server_parse_tools.c:290`) — so the divergence measured was oracle-versus-engine, and the operator chose to mirror the oracle (clause 8.9). The fix (`04a0ab1f`) refuses the literal in message content (string and text blocks), in `reasoning_content`, in a tool result's text and in the Responses text blocks, with the oracle's own two sentences; `tests/stray_image_token.rs` was written first and observed failing on all eight cases. The gate was re-run against the tip rebuilt on the Spark (clause 7.8): conformance 14/4 — the eleven R6 rows plus three new input-validation rows, all three passing — compliance 22/0 with the witness `adf7157c8a5bbb4b`, client leg 3/3. The suite gained the E group (`tests/spark/dsml_conformance.sh`) so TP-19 is gated rather than evidence-only. New: TP-19, NC-09 |
+| R8 | The client-facing gaps the open-grok checklist left open are decided, and one is closed in code. (a) The named tool choice joins the served surface: `{"type":"function","function":{"name":"x"}}` narrows the request's tool set to that function and then requires the call (`parse.rs` `prepare_tool_choice` / `narrow_tool_schemas`), which is the wire's own `allowed_tools` mechanism for the same intent. The engine and the parity oracle still refuse the form, so this is a named divergence and `tests/parse.rs::named_tool_choice_narrows_to_the_forced_function` pins both sides rather than hiding the difference; the form reaches the wire today with a one-tool list (`session_summary.rs:99-116`). (b) `response_format` keeps its refusal by the operator's decision: the field carries `strict: true`, a guarantee only a decode-time constraint can give, and the function map's section 5 records why a prompt-side substitute was rejected instead of served. (c) Clause 2.3.8's parenthetical that the client sends `parallel_tool_calls` on the chat path was wrong and is corrected with the measurement that the field exists only on the Responses/Codex path. The live re-measure of (a) awaits a serve rebuilt from this revision. |
 
 ## 1 Scope
 
@@ -129,7 +130,8 @@ its source, are normative for clauses 6.3 and 8:
 | 2.3.5 | The next request echoes `function.arguments` as the raw string received, never re-serialized; invalid JSON is replaced by `{}` | `conversation.rs` 3516-3527, 3412-3451 |
 | 2.3.6 | Unknown fields in a replayed assistant message are tolerated (the client sends a nonstandard `model_id`) | `types.rs` 197-198 |
 | 2.3.7 | Reasoning is read from `reasoning_content` only; when thinking is active every assistant message must carry it, even empty | `types.rs` 526-538; `conversation.rs` 3691-3740 |
-| 2.3.8 | Tool results are appended in completion order, not call order; the client sets `parallel_tool_calls = true` | `tool_calls.rs` 577-596; `client.rs` 2032 |
+| 2.3.8 | Tool results are appended in completion order, not call order. The chat wire carries no `parallel_tool_calls`: `ChatCompletionRequest` has no such field (`types.rs` 63-110) and the conversion sets none (`conversation.rs` 4071-4148); the `Some(true)` at `client.rs` 2032 belongs to the Responses/Codex path | `tool_calls.rs` 577-596 |
+| 2.3.9 | The named tool choice `{"type":"function","function":{"name":"x"}}` forces that tool (OpenAI chat reference, `tool_choice`); a caller may send it with a one-tool list | OpenAI chat reference, `tool_choice`; `conversation.rs` 4101; `session_summary.rs` 99-116 |
 
 Requirement-to-IUT status at R2, each checked against the source:
 
@@ -143,6 +145,7 @@ Requirement-to-IUT status at R2, each checked against the source:
 | 2.3.6 unknown message fields tolerated | satisfied | `parse.rs:1223` skips an unknown key (`json_skip_value`) |
 | 2.3.7 `reasoning_content` on every assistant turn | satisfied server-side 2026-10-18 | the parse neither requires the field nor rejects an empty one, and the render sees exactly what the message carried (`tests/parse.rs::assistant_reasoning_is_optional_and_may_be_empty`); the client-side half is E-09's host leg |
 | 2.3.8 tool results in completion order | open, deferred | reference counterpart `live_tool_call_order` `:10580` applies to Anthropic/Responses only, not the chat path this client uses |
+| 2.3.9 named tool choice served | satisfied 2026-10-20 on both OpenAI surfaces | the request's tool set is narrowed to the named function and the call is then required (`parse.rs` `prepare_tool_choice` / `narrow_tool_schemas`), which is the wire's own allowed_tools mechanism for the same intent; the C engine and the parity oracle still refuse the form and `tests/parse.rs::named_tool_choice_narrows_to_the_forced_function` pins that difference instead of hiding it |
 
 ### 2.4 Project-internal references
 
@@ -310,8 +313,9 @@ actually consumes this server survives the turn. The ATS is
 --output-format json --max-turns 4 -p <prompt forcing the tool>`
 
 in a scratch working directory. Its legs: G1 one tool call whose result must
-reach the model, G2 two tool calls in one turn (the client sends
-`parallel_tool_calls = true` and returns results in completion order), and G3 the
+reach the model, G2 two tool calls in one turn (the client returns the results
+in completion order; its chat request carries no `parallel_tool_calls`, clause
+2.3.8), and G3 the
 malformed-turn request shape re-run beside the client evidence. The truncation
 point of the malformed case is not client-controllable, so TP-17 is scored by the
 conformance suite's C-02/C-03 probes; G3 repeats their request shape so the

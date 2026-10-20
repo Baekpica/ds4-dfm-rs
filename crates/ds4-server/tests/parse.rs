@@ -1,5 +1,6 @@
 //! C↔Rust four-surface JSON parsers (tokenize/render stay C).
 
+use ds4_server::render::render_dsml_chat_choice;
 use ds4_server::render::DSML_IMAGE;
 use ds4_server::{
     generation_blocked, parse_anthropic_request, parse_chat_request, parse_completion_request,
@@ -311,11 +312,6 @@ fn tool_choice_errors_match_c() {
     );
 
     assert_err_eq(
-        "chat",
-        r#"{"messages":[],"tool_choice":{"type":"function"}}"#,
-        "forced tool_choice not supported",
-    );
-    assert_err_eq(
         "anthropic",
         r#"{"messages":[],"tool_choice":{"type":"tool","name":"lookup"}}"#,
         "forced tool_choice not supported",
@@ -325,6 +321,109 @@ fn tool_choice_errors_match_c() {
         r#"{"messages":[],"tool_choice":"required"}"#,
         "tool_choice=required requires at least one tool",
     );
+}
+
+/// The named-function tool choice: the OpenAI chat reference defines
+/// `{"type":"function","function":{"name":"my_function"}}` as "forces the model
+/// to call that tool", and the port serves it by narrowing the request's tool
+/// set to that function and requiring the call (OpenAI's own allowed_tools
+/// mechanism for the same intent).  The production C engine refuses the form, so
+/// the divergence is pinned below rather than left to a later parity pass to
+/// find by accident.
+#[test]
+fn named_tool_choice_narrows_to_the_forced_function() {
+    let body = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"other_function","parameters":{"type":"object"}}},{"type":"function","function":{"name":"my_function","parameters":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}}}],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#;
+    let r = parse_chat_request(&env(), body).unwrap();
+    assert_eq!(r.tool_choice, ToolChoice::Required);
+    assert_eq!(r.forced_tool.as_deref(), Some("my_function"));
+    assert!(r.has_tools);
+    assert_eq!(r.tool_orders.len(), 1, "{:?}", r.tool_orders);
+    assert_eq!(r.tool_orders[0].name, "my_function");
+    assert!(r.tool_schemas.contains("my_function"), "{}", r.tool_schemas);
+    assert!(
+        !r.tool_schemas.contains("other_function"),
+        "{}",
+        r.tool_schemas
+    );
+
+    // Responses carries the same OpenAI value and takes the same route.
+    let resp = parse_responses_request(
+        &env(),
+        r#"{"input":"hi","tools":[{"type":"function","function":{"name":"other_function","parameters":{"type":"object"}}},{"type":"function","function":{"name":"my_function","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.tool_choice, ToolChoice::Required);
+    assert_eq!(resp.tool_orders.len(), 1);
+    assert!(resp.tool_schemas.contains("my_function"));
+    assert!(!resp.tool_schemas.contains("other_function"));
+
+    // The renderer is handed exactly what the parse narrowed (generate.rs:1331),
+    // so the served prompt offers the forced function alone and requires the
+    // call.
+    let prompt = render_dsml_chat_choice(&r.messages, &r.tool_schemas, r.think_mode, r.tool_choice);
+    let prompt = String::from_utf8(prompt.unwrap()).unwrap();
+    assert!(prompt.contains("my_function"), "{prompt}");
+    assert!(!prompt.contains("other_function"), "{prompt}");
+    assert!(prompt.contains("### Required Tool Use"), "{prompt}");
+
+    // The C engine's refusal of the same body, recorded here.
+    let c = c_str(&["chat", body]);
+    assert!(c.starts_with("ERROR\n"), "{c}");
+    assert!(c.contains("forced tool_choice not supported"), "{c}");
+}
+
+#[test]
+fn named_tool_choice_rejects_a_name_outside_the_tools() {
+    assert_eq!(
+        parse_chat_request(
+            &env(),
+            r#"{"messages":[],"tools":[{"type":"function","function":{"name":"other_function","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#,
+        )
+        .unwrap_err(),
+        "tool_choice function \"my_function\" is not among the request tools"
+    );
+    assert_eq!(
+        parse_chat_request(
+            &env(),
+            r#"{"messages":[],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#,
+        )
+        .unwrap_err(),
+        "tool_choice function \"my_function\" is not among the request tools"
+    );
+}
+
+#[test]
+fn unsupported_tool_choice_objects_stay_refused() {
+    let cases = [
+        (
+            r#"{"messages":[],"tool_choice":{"type":"allowed_tools","allowed_tools":{"mode":"auto","tools":[]}}}"#,
+            "tool_choice type=allowed_tools not supported",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"type":"custom","custom":{"name":"my_function"}}}"#,
+            "tool_choice type=custom not supported",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"type":"function"}}"#,
+            "invalid tool_choice",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"type":"function","function":{}}}"#,
+            "invalid tool_choice",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"function":{"name":"lookup"}}}"#,
+            "invalid tool_choice",
+        ),
+        (r#"{"messages":[],"tool_choice":{}}"#, "invalid tool_choice"),
+    ];
+    for (body, expect) in cases {
+        assert_eq!(
+            parse_chat_request(&env(), body).unwrap_err(),
+            expect,
+            "{body}"
+        );
+    }
 }
 
 #[test]

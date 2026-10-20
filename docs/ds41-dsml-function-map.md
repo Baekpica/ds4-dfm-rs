@@ -93,7 +93,7 @@ model family outside this line.
 | `IMAGE_TAG_PATTERN` (40) | not located | out of surface with the `parse_tagged_text` row above |
 | `DS_TASK_SP_TOKENS` / `VALID_TASKS` (43, 51) | not located | out of surface: internal classification tasks, not on the OpenAI wire |
 | `assistant_msg_template` / `wo_eos` (60, 61) | `render.rs:1470` (EOS always written) | out of surface for `wo_eos`: no OpenAI request field reaches it (`wo_eos` appears nowhere under `crates/`), while the oracle reads it from the message dict for its own continuation flow (`encoding.py:607`, `:697-703`) |
-| `response_format_template` (64) | `crates/ds4-server/src/format.rs:19` `parse_output_format_value`, called from `crates/ds4-server/src/parse.rs:3168`; no render-side counterpart | measured refusal, kept by decision (see section 5) |
+| `response_format_template` (64) | `crates/ds4-server/src/format.rs:19` `parse_output_format_value`, called from `crates/ds4-server/src/parse.rs:3168`; no render-side counterpart | measured refusal, kept by decision: nothing is served that is not supported (see section 5) |
 | `tool_output_template` (68) | `crates/ds4-server/src/render.rs:1650` (`<tool_result>`, escaped by `:1316` `append_tool_result_text`) | pass via `enc-argtypes-chat` |
 | `tool_calls_block_name` (428) `" calls"` | `crates/ds4-server/src/tools.rs:44` `DSML_TOOL_CALLS_START_SPACED` | pass |
 | `tool_call_tag_name` (429) `" invoke"` | `:46` `DSML_INVOKE_START_SPACED`, `:47` end | pass |
@@ -160,9 +160,14 @@ fixture.
    sites -- the auto-mode permission classifier (`sampler_turn.rs:862`) and the
    goal evaluator (`goal_evaluator.rs:172`) -- while its main turns hardcode
    None (`request_builder.rs:148`, sampler `client.rs:4071`), and no capability
-   gate guards those two sites.  Rendering it would mean accepting the field,
-   i.e. reversing a recorded refusal in shared parse and format code, which is
-   the operator's call; the row stays open until it is made.
+   gate guards those two sites.  The operator decided 2026-10-20 that the
+   refusal stands: the field carries `strict: true`, i.e. a guarantee that the
+   served text conforms to the schema, and only a decode-time constraint can
+   give that guarantee.  A prompt-side instruction would be an invented
+   approximation of a guarantee, so nothing is served for this field, and the
+   client's own error branch records the side query as failed
+   (`session_summary.rs:131-137` for the neighbouring title query).  Serving it
+   for real means a JSON-schema-constrained decoder, a unit of its own.
 6. O-04 arguments bytes: ours minify, the oracle keeps the parameter body
    verbatim.  Values agree; the strings differ.  Recorded, not a defect against
    the wire, since the client echoes our string.

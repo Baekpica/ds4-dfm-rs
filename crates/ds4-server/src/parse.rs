@@ -205,6 +205,12 @@ pub struct ParsedRequest {
     pub has_tools: bool,
     pub has_tool_results: bool,
     pub tool_choice: ToolChoice,
+    /// The function name of the named tool_choice form.  The OpenAI wire
+    /// defines `{"type":"function","function":{"name":"x"}}` as "forces the
+    /// model to call that tool"; the request's tool set is narrowed to that
+    /// one function (prepare_tool_choice) so the forced call is the only one
+    /// the prompt offers.
+    pub forced_tool: Option<String>,
     pub required_tool_prefix: Vec<i32>,
     pub required_think_end_prefix: Vec<i32>,
     pub stops: Vec<String>,
@@ -258,6 +264,7 @@ impl ParsedRequest {
             has_tools: false,
             has_tool_results: false,
             tool_choice: ToolChoice::Auto,
+            forced_tool: None,
             required_tool_prefix: Vec::new(),
             required_think_end_prefix: Vec::new(),
             stops: Vec::new(),
@@ -840,26 +847,118 @@ pub fn parse_thinking_control_value(p: &mut Json<'_>) -> Option<Option<bool>> {
     Some(enabled)
 }
 
-fn parse_openai_tool_choice(p: &mut Json<'_>, err: &mut String) -> Option<ToolChoice> {
+/// The OpenAI chat tool_choice value: the three modes, or the named-function
+/// object `{"type":"function","function":{"name":"x"}}`, which the wire
+/// defines as "forces the model to call that tool".  The named form returns
+/// its function name beside `ToolChoice::Required`; prepare_tool_choice then
+/// narrows the request's tool set to it.  The other object forms of the
+/// surface -- the newer `allowed_tools` and `custom` -- stay refused by name.
+fn parse_openai_tool_choice(
+    p: &mut Json<'_>,
+    err: &mut String,
+) -> Option<(ToolChoice, Option<String>)> {
     p.ws();
+    if p.peek() == Some(b'{') {
+        return parse_openai_named_tool_choice(p, err);
+    }
     if p.peek() != Some(b'"') {
-        *err = if p.peek() == Some(b'{') {
-            "forced tool_choice not supported".into()
-        } else {
-            "invalid tool_choice".into()
-        };
+        *err = "invalid tool_choice".into();
         return None;
     }
     let choice = json_string(p)?;
     match choice.as_str() {
-        "auto" => Some(ToolChoice::Auto),
-        "none" => Some(ToolChoice::None),
-        "required" => Some(ToolChoice::Required),
+        "auto" => Some((ToolChoice::Auto, None)),
+        "none" => Some((ToolChoice::None, None)),
+        "required" => Some((ToolChoice::Required, None)),
         other => {
             *err = format!("tool_choice={other} not supported");
             None
         }
     }
+}
+
+fn parse_openai_named_tool_choice(
+    p: &mut Json<'_>,
+    err: &mut String,
+) -> Option<(ToolChoice, Option<String>)> {
+    p.i += 1;
+    p.ws();
+    let mut typ: Option<String> = None;
+    let mut name: Option<String> = None;
+    while p.peek().is_some() && p.peek() != Some(b'}') {
+        let key = json_string(p)?;
+        p.ws();
+        if p.bump() != Some(b':') {
+            *err = "invalid tool_choice".into();
+            return None;
+        }
+        if key == "type" {
+            typ = Some(json_string(p)?);
+        } else if key == "function" {
+            name = parse_named_tool_function(p);
+        } else if !json_skip_value(p) {
+            *err = "invalid tool_choice".into();
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    if p.bump() != Some(b'}') {
+        *err = "invalid tool_choice".into();
+        return None;
+    }
+    match typ.as_deref() {
+        Some("function") => match name {
+            Some(n) if !n.is_empty() => Some((ToolChoice::Required, Some(n))),
+            _ => {
+                *err = "invalid tool_choice".into();
+                None
+            }
+        },
+        Some(t) => {
+            *err = format!("tool_choice type={t} not supported");
+            None
+        }
+        None => {
+            *err = "invalid tool_choice".into();
+            None
+        }
+    }
+}
+
+/// The named tool choice's `function` member, `{"name":"x"}`.  A missing or
+/// non-string name leaves None and the caller refuses the choice as invalid.
+fn parse_named_tool_function(p: &mut Json<'_>) -> Option<String> {
+    p.ws();
+    if p.bump() != Some(b'{') {
+        return None;
+    }
+    p.ws();
+    let mut name = None;
+    while p.peek().is_some() && p.peek() != Some(b'}') {
+        let key = json_string(p)?;
+        p.ws();
+        if p.bump() != Some(b':') {
+            return None;
+        }
+        if key == "name" {
+            name = json_string(p);
+        } else if !json_skip_value(p) {
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    if p.bump() != Some(b'}') {
+        return None;
+    }
+    name
 }
 
 fn parse_anthropic_tool_choice(p: &mut Json<'_>, err: &mut String) -> Option<ToolChoice> {
@@ -2407,12 +2506,89 @@ fn prepare_tool_choice(
         schemas.clear();
         orders.clear();
     }
+    // The named form forces one function.  OpenAI's own constraint for that
+    // intent is allowed_tools ("constrains the tools available to the model
+    // to a pre-defined set"), so the forced name is served the same way: the
+    // prompt carries that function alone, and the call is then required.
+    if let Some(name) = r.forced_tool.clone() {
+        if !narrow_tool_schemas(schemas, orders, &name) {
+            *err = format!("tool_choice function \"{name}\" is not among the request tools");
+            return false;
+        }
+    }
     r.has_tools = !schemas.is_empty();
     if r.tool_choice == ToolChoice::Required && !r.has_tools {
         *err = "tool_choice=required requires at least one tool".into();
         return false;
     }
     true
+}
+
+/// Keeps the forced function alone: the schema lines whose own `name` is one
+/// of the matched orders' prompt names, and those orders.  The line and the
+/// order of one tool are built together and read the same `name` key
+/// (tool_schema_orders_add_json_wire), so the two filters agree.  A client
+/// names the wire name, which differs from the prompt name only for a
+/// namespaced Responses tool.  False when the name is in no order.
+fn narrow_tool_schemas(
+    schemas: &mut String,
+    orders: &mut Vec<ToolSchemaOrder>,
+    name: &str,
+) -> bool {
+    let keep: Vec<String> = orders
+        .iter()
+        .filter(|o| o.name == name || o.wire_name == name)
+        .map(|o| o.name.clone())
+        .collect();
+    if keep.is_empty() {
+        return false;
+    }
+    let mut kept = String::new();
+    for line in schemas.lines() {
+        let Some(line_name) = schema_line_name(line) else {
+            continue;
+        };
+        if !keep.iter().any(|k| *k == line_name) {
+            continue;
+        }
+        if !kept.is_empty() {
+            kept.push('\n');
+        }
+        kept.push_str(line);
+    }
+    *schemas = kept;
+    orders.retain(|o| keep.iter().any(|k| *k == o.name));
+    true
+}
+
+/// The schema line's own `name` member: the key tool_schema_orders_add_json_wire
+/// builds the order from, so both filters select the same tool.
+fn schema_line_name(json: &str) -> Option<String> {
+    let mut p = Json::new(json);
+    p.ws();
+    if p.bump() != Some(b'{') {
+        return None;
+    }
+    p.ws();
+    while p.peek().is_some() && p.peek() != Some(b'}') {
+        let key = json_string(&mut p)?;
+        p.ws();
+        if p.bump() != Some(b':') {
+            return None;
+        }
+        if key == "name" {
+            return json_string(&mut p);
+        }
+        if !json_skip_value(&mut p) {
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    None
 }
 
 fn apply_think_aliases(r: &ParsedRequest, got_thinking: bool, enabled: bool) -> bool {
@@ -3050,8 +3226,9 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
             }
         } else if key == "tool_choice" {
             match parse_openai_tool_choice(&mut p, &mut err) {
-                Some(c) => {
+                Some((c, forced)) => {
                     r.tool_choice = c;
+                    r.forced_tool = forced;
                     true
                 }
                 None => false,
@@ -3653,8 +3830,9 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
             }
         } else if key == "tool_choice" {
             match parse_openai_tool_choice(&mut p, &mut err) {
-                Some(c) => {
+                Some((c, forced)) => {
                     r.tool_choice = c;
+                    r.forced_tool = forced;
                     true
                 }
                 None => false,

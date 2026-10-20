@@ -19,8 +19,9 @@
 # Legs:
 #   G1  one tool call in a turn: the tool runs, its result returns, the turn
 #       completes (the client accepts the server's finish_reason).
-#   G2  two tool calls in one turn (the client sets parallel_tool_calls):
-#       both results return.
+#   G2  two tool calls in one turn: both results return, in completion order
+#       (the chat request carries no parallel_tool_calls; see the conformance
+#       checklist clause 2.3.8).
 #   G3  the malformed/truncated turn of TP-17 is scored by the conformance
 #       suite's C-02/C-03 probes, because the client cannot itself choose a
 #       truncation point; this leg re-runs C-02's request shape so the evidence
