@@ -2079,10 +2079,12 @@ and the eviction.  What remains the V4.1 caller's mapping is below.
 
 Payload (little-endian, after the store's header + text block): a meta block
 (per-layer `ng_src`/`cpend`/`win_from` u32 x L, `mainh_end` i64, `mainh_n`
-u32, `mainh_bytes` u64, checkpoint bytes u64), then the per-layer device
+u32, `mainh_bytes` u64, checkpoint bytes u64, class u8 + 3 reserved), then
+the per-layer device
 spans in one fixed order (`v41_kvreuse_walk`: win `SWA` rows; `ckv`
 `ng_src x 288`; `idk` `ng_src x 72`; `cpk`/`cps` `cpend` rows each), then
-`mainh` and the logits row `V x 4`.  The token block stays OUT of the
+`mainh` and, for the prompt class alone, the logits row `V x 4`; the image
+signatures (n x LE u64) close the payload.  The token block stays OUT of the
 payload: the store's text block is the token array (LE i32), so the store's
 byte-prefix match is an exact token-prefix match, and the import takes the
 tokens from the caller -- the restore's memcmp stays the only authority.
@@ -2093,16 +2095,21 @@ classes), ctx, dates and hits; the artifact identity rides the store's own
 packed-KV class and the mount digest (the amplifier identity, which the
 store cannot know; the session route already uses trailers the same way).
 
-Native (`ds4_ds41_kvreuse.inc`): `v41_kvreuse_export(path)` writes the
-payload only when `K.valid` and `K.n` (device spans through the tensor read
+Native (`ds4_ds41_kvreuse.inc`): `v41_kvreuse_export(path, cls)` writes the
+named class's payload only when that slot is valid and non-empty (`K` for the
+prompt class, `T` for the turn class; device spans through the tensor read
 API; the file is removed on a failure); `v41_kvreuse_import(path, offset,
 bytes, tokens, n)` validates the meta against the state allocation formulas
-(corruption fences), requires the computed payload size to equal the store's
-`payload_bytes` BEFORE copying anything, then loads into `K` and takes the
-tokens -- a failed import leaves `K` invalid (never half; the request
-prefills cold, like a failed save).  `--no-kv-reuse` gates both; `K.valid`
-stays the gate.  The restore gained one guard: an imported `mainh` span must
-hold at least the fresh state's own length.
+(corruption fences), takes the class from the payload itself and refuses one
+this build does not know -- the store selects a candidate by its token prefix
+and cannot know which shape it holds -- requires the computed payload size to
+equal the store's `payload_bytes` BEFORE copying anything, then loads into
+that class's own slot and takes the tokens; a failed import leaves that slot
+invalid (never half; the request prefills cold, like a failed save).
+`--no-kv-reuse` gates both; the slot's `valid` flag stays the gate.
+`v41_kvreuse_turn_key` hands the host `T`'s key, which is what the host store
+writes the turn entry under.  The restore gained one guard: an imported
+`mainh` span must hold at least the fresh state's own length.
 
 Host: the `V41KvDisk` trait in `crates/ds4-core/src/v41_run.rs` (`find`
 answers the best candidate strictly longer than the in-memory prefix; `store`

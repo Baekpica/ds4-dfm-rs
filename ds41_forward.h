@@ -217,13 +217,19 @@ void v41_kvreuse_note_mount(int has_mount, uint64_t hash);
  * re-prefills it under the new amplifier, the reference's
  * ds4_engine_v41_kv_stale_prompt (ds4_v41_api.h:120). */
 int32_t *v41_kvreuse_stale_prompt(uint32_t *n);
+/* T's key (the prompt it was saved with, then the ids the state committed),
+ * for the host store's turn entry: answers the count, filling `out` when it
+ * covers `cap`.  0 = no turn checkpoint. */
+uint32_t v41_kvreuse_turn_key(int32_t *out, uint32_t cap);
 
 /* The disk half (item 4): the payload export/import the bridge exposes to
  * the host store (ds4_ds41_kvreuse.inc defines them).  export writes the
- * in-memory checkpoint's payload to a host-named path; import loads it back
- * at a byte offset with the token array the store's text block carried (the
- * native memcmp in the restore stays the authority). */
-int v41_kvreuse_export(const char *path);
+ * named class's in-memory checkpoint payload to a host-named path; import
+ * loads it back at a byte offset with the token array the store's text block
+ * carried (the native memcmp in the restore stays the authority), into the
+ * slot the payload's own meta names.  The class is that meta's own
+ * (v41_kv_class: 0 = prompt end, 1 = the run's turn end). */
+int v41_kvreuse_export(const char *path, int cls);
 int v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
                        const int32_t *tokens, uint32_t n);
 

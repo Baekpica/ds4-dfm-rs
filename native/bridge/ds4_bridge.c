@@ -872,7 +872,10 @@ int32_t *ds4_bridge_v41_kvreuse_stale_prompt(uint32_t *n) {
     if (!n) return NULL;
     return v41_kvreuse_stale_prompt(n);
 }
-int ds4_bridge_v41_kvreuse_export(const char *path) { return v41_kvreuse_export(path); }
+uint32_t ds4_bridge_v41_kvreuse_turn_key(int32_t *out, uint32_t cap) {
+    return v41_kvreuse_turn_key(out, cap);
+}
+int ds4_bridge_v41_kvreuse_export(const char *path, int cls) { return v41_kvreuse_export(path, cls); }
 int ds4_bridge_v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
                                   const int32_t *tokens, uint32_t n) {
     return v41_kvreuse_import(path, offset, bytes, tokens, n);
