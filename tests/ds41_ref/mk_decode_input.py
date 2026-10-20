@@ -63,12 +63,14 @@ def completions(ref: object) -> dict:
             invoke(ref, "read_file", {"target_file": "/tmp/b.txt"}),
         ])
         + ref.eos_token,
-        # Every JSON child kind the type attribute distinguishes.
+        # Every JSON child kind the type attribute distinguishes.  The children
+        # are the argument object enc-argtypes-chat.json declares for the same
+        # tool, so the encode and decode halves describe one call.
         "dec-complex-args": ""
         + "\n\n"
-        + block(ref, [invoke(ref, "set_opts", {
-            "label": "tea",
-            "seconds": 90,
+        + block(ref, [invoke(ref, "read_file", {
+            "target_file": "/tmp/x.txt",
+            "limit": 40,
             "force": True,
             "ratio": 1.5,
             "note": None,
@@ -86,7 +88,7 @@ def completions(ref: object) -> dict:
         # out of a parameter body (inventory G9's parse-side rule).
         "dec-marker-in-value": ""
         + "\n\n"
-        + block(ref, [invoke(ref, "echo", {"body": f"quote the {marker} tag"})])
+        + block(ref, [invoke(ref, "read_file", {"target_file": f"quote the {marker} tag"})])
         + ref.eos_token,
         # Thinking mode: reasoning before the close, prose after it.  No
         # opening <think>: driving the oracle proved it asserts that no

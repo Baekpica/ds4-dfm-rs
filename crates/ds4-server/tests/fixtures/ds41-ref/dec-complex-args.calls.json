@@ -6,8 +6,8 @@
     {
       "type": "function",
       "function": {
-        "name": "set_opts",
-        "arguments": "{\"label\": \"tea\", \"seconds\": 90, \"force\": true, \"ratio\": 1.5, \"note\": null, \"deps\": [\"a\", \"b\"], \"opts\": {\"k\": 1}}"
+        "name": "read_file",
+        "arguments": "{\"target_file\": \"/tmp/x.txt\", \"limit\": 40, \"force\": true, \"ratio\": 1.5, \"note\": null, \"deps\": [\"a\", \"b\"], \"opts\": {\"k\": 1}}"
       }
     }
   ]

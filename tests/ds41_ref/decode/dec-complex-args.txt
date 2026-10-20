@@ -1,9 +1,9 @@
 
 
 <｜DSML｜ calls>
-<｜DSML｜ invoke name="set_opts">
-<｜DSML｜ parameter name="label" string="true">tea</｜DSML｜ parameter>
-<｜DSML｜ parameter name="seconds" string="false">90</｜DSML｜ parameter>
+<｜DSML｜ invoke name="read_file">
+<｜DSML｜ parameter name="target_file" string="true">/tmp/x.txt</｜DSML｜ parameter>
+<｜DSML｜ parameter name="limit" string="false">40</｜DSML｜ parameter>
 <｜DSML｜ parameter name="force" string="false">true</｜DSML｜ parameter>
 <｜DSML｜ parameter name="ratio" string="false">1.5</｜DSML｜ parameter>
 <｜DSML｜ parameter name="note" string="false">null</｜DSML｜ parameter>

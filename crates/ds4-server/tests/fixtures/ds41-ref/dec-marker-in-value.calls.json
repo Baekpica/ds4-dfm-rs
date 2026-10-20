@@ -6,8 +6,8 @@
     {
       "type": "function",
       "function": {
-        "name": "echo",
-        "arguments": "{\"body\": \"quote the <｜DSML｜ calls> tag\"}"
+        "name": "read_file",
+        "arguments": "{\"target_file\": \"quote the <｜DSML｜ calls> tag\"}"
       }
     }
   ]
