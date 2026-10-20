@@ -73,10 +73,10 @@ pub struct ServerConfig {
     /// this only when the model is V4.1 (the v41 route branch); every other
     /// family keeps the port's wire vocabulary and defaults.
     pub engine_defaults: bool,
-    /// The served model is GLM-5.3: a request that names no level gets the
-    /// level its template writes for an absent one, max (chat_template.jinja:2).
-    /// The bin sets it from the opened model.
-    pub glm53: bool,
+    /// The served model's template writes max for an absent level (GLM-5.3
+    /// chat_template.jinja:2, Beam's reasoning_effort 512): a request that
+    /// names no level gets it. The bin sets it from the opened model.
+    pub max_effort_default: bool,
     pub ctx: i32,
     pub default_tokens: i32,
     pub eos_policy: EosPolicy,
@@ -178,7 +178,7 @@ impl Default for ServerConfig {
             model_id: "ds4".into(),
             model_name: "ds4".into(),
             engine_defaults: false,
-            glm53: false,
+            max_effort_default: false,
             ctx: 8192,
             default_tokens: 393216,
             eos_policy: EosPolicy::Default,
@@ -1131,9 +1131,9 @@ pub fn handle_client_inner(
 }
 
 /// The level of a request that names none: the template's own default for
-/// GLM-5.3 (max), the port's low for every other family.
+/// GLM-5.3 and Beam (max), the port's low for every other family.
 fn default_effort(cfg: &ServerConfig) -> ThinkMode {
-    if cfg.glm53 {
+    if cfg.max_effort_default {
         ThinkMode::Max
     } else {
         ThinkMode::Low
@@ -2507,7 +2507,7 @@ mod owner_tests {
     fn glm53_requests_default_to_max_effort() {
         let mut cfg = ServerConfig::default();
         assert_eq!(default_effort(&cfg), ThinkMode::Low);
-        cfg.glm53 = true;
+        cfg.max_effort_default = true;
         assert_eq!(default_effort(&cfg), ThinkMode::Max);
     }
 

@@ -1130,10 +1130,14 @@ fn thinking_bank_retire_key(
         .windows(close.len())
         .position(|window| window == close);
 
-    // Official IQuest and Bailing V3 (Ling) history retains supplied
+    // Official IQuest, Bailing V3 (Ling) and Beam history retains supplied
     // reasoning even without tools. Keep that exact prefix; a visible-only
     // rewrite cannot describe its KV.
-    if prompt_preserves_reasoning || matches!(syntax, ModelSyntax::IQuestQ1 | ModelSyntax::Ling3Vl)
+    if prompt_preserves_reasoning
+        || matches!(
+            syntax,
+            ModelSyntax::IQuestQ1 | ModelSyntax::Ling3Vl | ModelSyntax::BeamVq
+        )
     {
         if engine_finished && has_tools && !saw_tool_start {
             if let Some(at) = close_at {
@@ -1966,6 +1970,11 @@ mod native {
                 self.t_first = Some(Instant::now());
             }
             if vocab.is_stop(token) {
+                let format = self.stepper.req.chat_format;
+                if let Some(text) = crate::tools::beam::stop_text(format, token, vocab.eot_id) {
+                    let step = self.stepper.feed(text);
+                    self.push(&step.bytes);
+                }
                 self.stepper.mark_stop();
                 self.host_abort = true;
                 return false;

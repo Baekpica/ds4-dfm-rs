@@ -1287,6 +1287,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
+        ModelSyntax::BeamVq => ChatFormat::Beam,
         // Ling shares GLM's thinking and tool-call XML.
         ModelSyntax::DeepSeek
         | ModelSyntax::Motif3
@@ -1384,7 +1385,7 @@ pub(crate) fn thinking_visible_key(
 ) -> Option<Vec<u8>> {
     if matches!(
         syntax,
-        ModelSyntax::Step37 | ModelSyntax::Ling3Vl | ModelSyntax::IQuestQ1
+        ModelSyntax::Step37 | ModelSyntax::Ling3Vl | ModelSyntax::IQuestQ1 | ModelSyntax::BeamVq
     ) {
         // Removing reasoning changes these families' history grammar. Re-render
         // the structured history with Jinja instead of inventing a prefix.
@@ -1816,6 +1817,11 @@ fn decode_pass(
             ));
         }
         if token < 0 || engine.token_is_stop(token) {
+            if let Some(text) =
+                crate::tools::beam::stop_text(req.chat_format, token, engine.eot_id())
+            {
+                let _ = acc.feed(text, &parsed.stops);
+            }
             *finish = "stop";
             break;
         }
@@ -1854,6 +1860,11 @@ fn decode_pass(
                 return Err(GenerateError::Engine("invalid greedy prefix token".into()));
             }
             if engine.token_is_stop(token) {
+                if let Some(text) =
+                    crate::tools::beam::stop_text(req.chat_format, token, engine.eot_id())
+                {
+                    let _ = acc.feed(text, &parsed.stops);
+                }
                 *finish = "stop";
                 if index + 1 < count {
                     engine.invalidate();
