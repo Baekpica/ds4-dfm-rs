@@ -305,12 +305,30 @@ static bool beam_layer(ds4_beam_graph *g, const ds4_model *m, const ds4_weights 
     return ok;
 }
 
+/* Ask the kernel to read `rows` tokens' embedding rows ahead. A cold
+ * 2,048-row gather faulted about 21 MB in from the SSD one page at a time
+ * (~66 ms) while the GPU idled: the prefill loop issues the next chunk's
+ * rows before it runs the current one, and a gather first queues all of
+ * its own rows. Advisory only; failures are ignored. */
+static void beam_embed_prefetch(const ds4_model *m, const ds4_weights *w, const int *tokens, uint32_t rows) {
+    const uint64_t row = (uint64_t)BEAM_EMBD * sizeof(uint16_t);
+    const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
+    const uint8_t *table = m->map + w->token_embd->abs_offset;
+    for (uint32_t r = 0; r < rows; r++) {
+        if (tokens[r] < 0 || (uint32_t)tokens[r] >= DS4_N_VOCAB) { continue; }
+        const uintptr_t at = (uintptr_t)(table + (uint64_t)tokens[r] * row);
+        const uintptr_t first = at / page * page, last = (at + row + page - 1) / page * page;
+        (void)madvise((void *)first, last - first, MADV_WILLNEED);
+    }
+}
+
 // The host gathers BF16 rows from the mapped embedding part (SSD-backed
 // page cache); the device widens them into `out` (cur, or draft rows).
 static bool beam_embed(ds4_beam_graph *g, const ds4_model *m, const ds4_weights *w,
         const int *tokens, uint32_t rows, ds4_gpu_tensor *out) {
     const uint64_t row = (uint64_t)BEAM_EMBD * sizeof(uint16_t);
     const uint8_t *table = m->map + w->token_embd->abs_offset;
+    if (rows > 1u) { beam_embed_prefetch(m, w, tokens, rows); }
     for (uint32_t r = 0; r < rows; r++) {
         memcpy((uint8_t *)g->host_embed + r * row, table + (uint64_t)tokens[r] * row, row);
     }
@@ -379,5 +397,9 @@ static bool beam_forward(ds4_beam_graph *g, const ds4_model *m, const ds4_weight
 static bool beam_graph_bank(ds4_beam_graph *g, const ds4_beam_graph *owner) {
     (void)g; (void)owner;
     return false;
+}
+
+static void beam_embed_prefetch(const ds4_model *m, const ds4_weights *w, const int *tokens, uint32_t rows) {
+    (void)m; (void)w; (void)tokens; (void)rows;
 }
 #endif
