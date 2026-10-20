@@ -940,6 +940,10 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                 if (k && !v41_spec_snapshot(&st, nb)) { rc = 1; break; }
                 tr2 = now_sec();
                 if (!v41_forward(e, &st, batch, nb)) { rc = 1; break; }
+                /* The warm-up step of a shape (and a k=0 round with no graph)
+                 * commits one position here; with k the rollback below settles
+                 * the frontier and appends the accepted rows instead. */
+                if (!k) { v41_turn_ids_add(&turn, &tok, 1u); }
                 if (k && !ds4_gpu_synchronize()) { rc = 1; break; }   /* the split account wants real wall time */
                 tr3 = now_sec();
                 if (!v41_device_next(&st, am, 0u, nb, batch, want)) { rc = 1; break; }   /* sample kernel / per-row argmax, assembled into want[] */
