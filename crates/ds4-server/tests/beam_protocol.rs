@@ -124,6 +124,19 @@ fn beam_bytewise_semantic_markers() {
     }
 }
 
+#[test]
+fn beam_call_terminator_is_not_counted() {
+    // `<|call|>` is a stop token: the parser sees it, usage counts it as
+    // little as `<|return|>`.
+    let format = chat_format_for_syntax(syntax_for_model_id(BEAM));
+    let mut acc = SemAccum::init(true, true, true, format, PROMPT);
+    let raw = calls();
+    acc.feed(raw.strip_suffix("<|call|>").unwrap().as_bytes(), &[]);
+    acc.feed_stop(b"<|call|>", &[]);
+    assert_eq!((acc.completion, acc.reasoning_tokens), (1, 1));
+    assert!(acc.saw_tool_end);
+}
+
 fn events(bytes: &[u8]) -> Vec<Value> {
     std::str::from_utf8(bytes)
         .unwrap()

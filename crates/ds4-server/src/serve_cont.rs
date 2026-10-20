@@ -47,7 +47,7 @@ use crate::stream::{
 };
 #[cfg(any(feature = "native", test))]
 use crate::stream::{think_end, ChatFormat};
-use crate::tools::{assign_tool_ids, parse_generated_for_response, SemAccum};
+use crate::tools::{assign_tool_ids, parse_generated_for_response, SemAccum, SemFeed};
 
 #[cfg(any(feature = "native", test))]
 /// One definition with the serving plan, so `/v1/stats` cannot advertise a
@@ -275,6 +275,16 @@ impl ContStepper {
 
     pub fn feed(&mut self, piece: &[u8]) -> ContStep {
         let feed = self.acc.feed(piece, &self.stops);
+        self.step(piece, feed)
+    }
+
+    /// A stop token's text: streamed, not counted (`SemAccum::feed_stop`).
+    pub fn feed_stop(&mut self, piece: &[u8]) -> ContStep {
+        let feed = self.acc.feed_stop(piece, &self.stops);
+        self.step(piece, feed)
+    }
+
+    fn step(&mut self, piece: &[u8], feed: SemFeed) -> ContStep {
         if self.req.stream {
             let view = &self.acc.text[..feed.emit_limit.min(self.acc.text.len())];
             match (self.req.api, self.req.kind) {
@@ -1972,7 +1982,7 @@ mod native {
             if vocab.is_stop(token) {
                 let format = self.stepper.req.chat_format;
                 if let Some(text) = crate::tools::beam::stop_text(format, token, vocab.eot_id) {
-                    let step = self.stepper.feed(text);
+                    let step = self.stepper.feed_stop(text);
                     self.push(&step.bytes);
                 }
                 self.stepper.mark_stop();

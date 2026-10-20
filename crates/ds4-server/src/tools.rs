@@ -2507,6 +2507,15 @@ impl SemAccum {
         !probe.thinking_inside && dsml_decode_state_is_syntax(probe.dsml.decode)
     }
 
+    /// A stop token's text (Beam's `<|call|>` closes the last call): parsers
+    /// and streams see it, usage does not count it, as no stop token is.
+    pub fn feed_stop(&mut self, piece: &[u8], stops: &[String]) -> SemFeed {
+        let counts = (self.completion, self.reasoning_tokens);
+        let feed = self.feed(piece, stops);
+        (self.completion, self.reasoning_tokens) = counts;
+        feed
+    }
+
     pub fn feed(&mut self, piece: &[u8], stops: &[String]) -> SemFeed {
         let mut f = SemFeed::default();
         if self.think_gates && self.thinking_inside {

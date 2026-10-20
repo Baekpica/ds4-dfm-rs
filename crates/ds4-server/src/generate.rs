@@ -1820,7 +1820,7 @@ fn decode_pass(
             if let Some(text) =
                 crate::tools::beam::stop_text(req.chat_format, token, engine.eot_id())
             {
-                let _ = acc.feed(text, &parsed.stops);
+                let _ = acc.feed_stop(text, &parsed.stops);
             }
             *finish = "stop";
             break;
@@ -1863,7 +1863,7 @@ fn decode_pass(
                 if let Some(text) =
                     crate::tools::beam::stop_text(req.chat_format, token, engine.eot_id())
                 {
-                    let _ = acc.feed(text, &parsed.stops);
+                    let _ = acc.feed_stop(text, &parsed.stops);
                 }
                 *finish = "stop";
                 if index + 1 < count {
