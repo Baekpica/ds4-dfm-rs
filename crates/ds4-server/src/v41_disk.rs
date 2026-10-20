@@ -284,7 +284,9 @@ mod tests {
         let mut disk = V41Disk::new(&mut store, 7, 4096);
         let tokens = [100, 900, 900, 101, 900, 900, 102];
         let sig = [0, 11, 12, 0, 21, 22, 0];
-        disk.store(&tokens, &sig, 0xabc, V41KvClass::Prompt, &mut |p| save_zeros(p, 128));
+        disk.store(&tokens, &sig, 0xabc, V41KvClass::Prompt, &mut |p| {
+            save_zeros(p, 128)
+        });
 
         let mut longer = tokens.to_vec();
         longer.extend_from_slice(&[900, 900, 103]);
@@ -304,7 +306,9 @@ mod tests {
         let mut disk = V41Disk::new(&mut store, 7, 4096);
         let tokens = [100, 900, 900, 101, 900, 900, 102];
         let sig = [0, 11, 12, 0, 21, 22, 0];
-        disk.store(&tokens, &sig, 0xabc, V41KvClass::Prompt, &mut |p| save_zeros(p, 128));
+        disk.store(&tokens, &sig, 0xabc, V41KvClass::Prompt, &mut |p| {
+            save_zeros(p, 128)
+        });
 
         let replacement = [0, 31, 32, 0, 21, 22, 0];
         let reordered = [0, 21, 22, 0, 11, 12, 0];
@@ -323,7 +327,9 @@ mod tests {
             let mut store = open_store(&dir, 4);
             store.bind_identity([7; 32]);
             let mut disk = V41Disk::new(&mut store, 7, 4096);
-            disk.store(&tokens, &sig, 0xabc, V41KvClass::Prompt, &mut |p| save_zeros(p, 128));
+            disk.store(&tokens, &sig, 0xabc, V41KvClass::Prompt, &mut |p| {
+                save_zeros(p, 128)
+            });
             disk.find(&tokens, &sig, 0xabc, 0).expect("stored").path
         };
 
@@ -367,7 +373,9 @@ mod tests {
         let mut disk = V41Disk::new(&mut store, 7, 4096);
         assert!(disk.find(&tokens, &[], 0xabc, 0).is_none());
 
-        disk.store(&tokens, &[], 0xabc, V41KvClass::Prompt, &mut |p| save_zeros(p, 256));
+        disk.store(&tokens, &[], 0xabc, V41KvClass::Prompt, &mut |p| {
+            save_zeros(p, 256)
+        });
         assert_eq!(
             disk.find(&tokens, &[], 0xabc, 0).expect("new ABI").bytes,
             256
@@ -381,7 +389,9 @@ mod tests {
         let mut store = open_store(&dir, 4);
         let mut disk = V41Disk::new(&mut store, 7, 4096);
         let tokens = [100, 101, 102, 103];
-        disk.store(&tokens, &[], 0xabc, V41KvClass::Prompt, &mut |p| save_zeros(p, 128));
+        disk.store(&tokens, &[], 0xabc, V41KvClass::Prompt, &mut |p| {
+            save_zeros(p, 128)
+        });
         let invalid: [&[u64]; 2] = [&[0; 3], &[0; 5]];
         let hits: Vec<_> = invalid
             .into_iter()
@@ -402,10 +412,16 @@ mod tests {
         let invalid: [&[u64]; 2] = [&[0; 3], &[0; 5]];
         let mut exports = 0;
         for sig in invalid {
-            disk.store(&tokens, sig, sig.len() as u64, V41KvClass::Prompt, &mut |p| {
-                exports += 1;
-                save_zeros(p, 128)
-            });
+            disk.store(
+                &tokens,
+                sig,
+                sig.len() as u64,
+                V41KvClass::Prompt,
+                &mut |p| {
+                    exports += 1;
+                    save_zeros(p, 128)
+                },
+            );
         }
         assert_eq!(exports, 0, "invalid signatures reached native export");
         assert!(entries(&dir).is_empty());

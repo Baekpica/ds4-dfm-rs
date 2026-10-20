@@ -23,11 +23,11 @@ use ds4_sys::{
     ds4_bridge_v41_generate, ds4_bridge_v41_images_bytes, ds4_bridge_v41_kvreuse_export,
     ds4_bridge_v41_kvreuse_import, ds4_bridge_v41_kvreuse_last_reused,
     ds4_bridge_v41_kvreuse_note_mount, ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set,
-    ds4_bridge_v41_kvreuse_stale_prompt, ds4_bridge_v41_last_spec_stats,
-    ds4_bridge_v41_kvreuse_turn_key,
-    ds4_bridge_v41_prefill_bytes, ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace,
-    ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling,
-    ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
+    ds4_bridge_v41_kvreuse_stale_prompt, ds4_bridge_v41_kvreuse_turn_key,
+    ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes, ds4_bridge_v41_set_dspark,
+    ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof,
+    ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear,
+    ds4_bridge_v41_zchain_rb_set,
 };
 
 use crate::engram::{EngramHash, EngramShard};
