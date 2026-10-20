@@ -13,6 +13,13 @@ what the oracle produced and not what we believe it produces:
     ref_drive.py encode CASE.json MODE        -> the prompt bytes on stdout
     ref_drive.py parse  COMPLETION.txt MODE   -> the parsed message as JSON
 
+A third subcommand drives a case that carries images, which the two above
+refuse by construction (their `assert not images` is what keeps the text-only
+legs honest):
+
+    ref_drive.py encode-media CASE.json MODE  -> the prompt bytes on stdout,
+                                                 the image records on stderr
+
 MODE is chat or thinking.  ORACLE_SHA256 pins the vendored copy, so a later
 edit of the file cannot move the oracle silently: a mismatch fails the run
 loudly, and the answer is to re-read the reference, re-pin the constant and
@@ -65,6 +72,20 @@ def encode(ref: object, case_path: str, mode: str) -> str:
     return prompt
 
 
+def encode_media(ref: object, case_path: str, mode: str) -> str:
+    """Render one case that carries images, reporting its records on stderr.
+
+    The image records are the oracle's own `_extract_image` output in prompt
+    order; they go to stderr so stdout stays the prompt bytes a fixture holds.
+    """
+    cases = ref.load_cases(case_path)
+    assert len(cases) == 1, f"{case_path} holds {len(cases)} cases; pass one at a time"
+    prompt, images = ref.encode_case(cases[0], thinking_mode=mode)
+    kinds = ", ".join(record.get("type", "?") for record in images)
+    print(f"image records: {len(images)} ({kinds})", file=sys.stderr)
+    return prompt
+
+
 def parse(ref: object, completion_path: str, mode: str) -> str:
     """Parse a completion with the oracle's own parser."""
     text = pathlib.Path(completion_path).read_text()
@@ -73,14 +94,19 @@ def parse(ref: object, completion_path: str, mode: str) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 4 or sys.argv[1] not in ("encode", "parse"):
-        raise SystemExit(__doc__.strip().splitlines()[0] + "\nusage: ref_drive.py {encode|parse} FILE MODE")
+    if len(sys.argv) != 4 or sys.argv[1] not in ("encode", "encode-media", "parse"):
+        raise SystemExit(__doc__.strip().splitlines()[0] + "\nusage: ref_drive.py {encode|encode-media|parse} FILE MODE")
     what, path, mode = sys.argv[1], sys.argv[2], sys.argv[3]
     if mode not in MODES:
         raise SystemExit(f"mode must be one of {MODES}, got {mode!r}")
 
     ref = load_ref()
-    out = encode(ref, path, mode) if what == "encode" else parse(ref, path, mode)
+    if what == "encode":
+        out = encode(ref, path, mode)
+    elif what == "encode-media":
+        out = encode_media(ref, path, mode)
+    else:
+        out = parse(ref, path, mode)
     sys.stdout.write(out)
 
 

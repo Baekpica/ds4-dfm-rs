@@ -1,0 +1,17 @@
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+          }
+        }
+      ]
+    }
+  ]
+}

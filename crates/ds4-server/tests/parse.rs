@@ -286,6 +286,41 @@ fn chat_tool_names_pass_through_verbatim() {
 }
 
 #[test]
+fn responses_namespace_tools_keep_both_spellings() {
+    // The Responses surface is the one place a namespace exists
+    // (server_parse_tools.c:9-120, mirrored by
+    // `append_responses_namespace_tool_schemas`, parse.rs:2336).  A
+    // `type:"namespace"` item holds its functions, the prompt advertises the
+    // namespace concatenated with each function name
+    // (`responses_namespace_function_schema`, parse.rs:2282), and the order
+    // keeps both spellings so the answer can be emitted under the name the
+    // client asked for (`responses_tool_wire_name`, stream.rs:234) plus the
+    // namespace field (stream.rs:287).  The chat surface has no namespace at
+    // all: `chat_tool_names_pass_through_verbatim` above pins that half.
+    let body = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"namespace","name":"mcp__files","tools":[{"type":"function","name":"read","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}]}"#;
+    let parsed = rust_parse("responses", body).unwrap();
+
+    assert_eq!(
+        parsed.tool_schemas,
+        r#"{"name":"mcp__filesread","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}"#
+    );
+    assert_eq!(parsed.tool_orders.len(), 1);
+    assert_eq!(parsed.tool_orders[0].name, "mcp__filesread");
+    assert_eq!(parsed.tool_orders[0].wire_name, "read");
+    assert_eq!(parsed.tool_orders[0].namespace, "mcp__files");
+
+    // The prompt the model reads carries the same qualified name.
+    let prompt = render_dsml_chat_choice(
+        &parsed.messages,
+        &parsed.tool_schemas,
+        parsed.think_mode,
+        parsed.tool_choice,
+    );
+    let prompt = String::from_utf8(prompt.unwrap()).unwrap();
+    assert!(prompt.contains("mcp__filesread"), "{prompt}");
+}
+
+#[test]
 fn missing_required_fields_and_invalid_json() {
     assert_err_eq("chat", "{}", "missing messages");
     assert_err_eq("chat", "[]", "invalid JSON request");
@@ -647,6 +682,42 @@ fn image_refusals_cover_the_oracle_path_and_url_forms() {
         rust_parse("anthropic", anthropic).unwrap_err(),
         "Anthropic image source must use base64 data"
     );
+}
+
+#[test]
+fn the_image_path_tag_form_is_text_and_not_markup() {
+    // The oracle's `parse_tagged_text` rewrites an `<image>path</image>` text
+    // form into `image_url` blocks and raises on an unbalanced tag
+    // (encoding.py:273-297, pattern at :40).  This carriage serves no path form
+    // at all -- pixels arrive base64 only (AGENTS.md, "Pixels arrive
+    // base64-only") -- and it never reads the tag as markup, so the client's
+    // text reaches the model byte for byte, as ordinary text.  Measured
+    // 2026-10-20: no image is registered, the content keeps the tag, and the
+    // rendered prompt carries it verbatim.
+    for text in [
+        "look at <image>/tmp/photo.png</image> please",
+        "unbalanced <image> with no closer",
+    ] {
+        let body = format!(r#"{{"messages":[{{"role":"user","content":"{text}"}}]}}"#);
+        let parsed = rust_parse("chat", &body).unwrap();
+
+        assert!(parsed.images.is_empty(), "{text}: an image was registered");
+        assert_eq!(
+            parsed.needs & NEED_IMAGE,
+            0,
+            "{text}: an image span is owed"
+        );
+        assert_eq!(parsed.messages[0].content, text, "{text}: content moved");
+
+        let prompt = render_dsml_chat_choice(
+            &parsed.messages,
+            &parsed.tool_schemas,
+            parsed.think_mode,
+            parsed.tool_choice,
+        );
+        let prompt = String::from_utf8(prompt.unwrap()).unwrap();
+        assert!(prompt.contains(text), "{text}: the prompt rewrote the text");
+    }
 }
 
 #[test]

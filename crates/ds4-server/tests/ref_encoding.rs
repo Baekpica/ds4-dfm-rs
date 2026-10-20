@@ -16,7 +16,9 @@
 //! requirement and every inventory gap names the case that exercises it, and
 //! a case that does not yet hold is marked OPEN there rather than dropped.
 
-use ds4_server::{render_dsml_chat_choice_ex, ChatMsg, DsmlHead, ThinkMode, ToolCall, ToolChoice};
+use ds4_server::{
+    render_dsml_chat_choice_ex, ChatMsg, ChatPart, DsmlHead, ThinkMode, ToolCall, ToolChoice,
+};
 
 /// The head our ds41 route passes: the engine's V4.1 encoding.py head with the
 /// tokenizer's system token (render.rs `dsml_head`).
@@ -168,6 +170,129 @@ fn typed_parameters_match_official_encoding() {
         r#"{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"target_file":{"type":"string"},"limit":{"type":"integer"},"force":{"type":"boolean"},"ratio":{"type":"number"},"note":{"type":"string"},"deps":{"type":"array","items":{"type":"string"}},"opts":{"type":"object"}},"required":["target_file"]}}"#
     );
     check("enc-argtypes-chat", &msgs, schemas, ThinkMode::None);
+}
+
+/// A replayed assistant's `arguments` is a string on the wire, and the oracle
+/// tolerates two shapes beside the object JSON: it decodes a string twice
+/// before giving up, and a value that is still not a dict becomes one
+/// parameter named `arguments` carrying the value as it stood
+/// (encoding.py encode_arguments_to_dsml:524-556).
+///
+/// The three arms measured 2026-10-20.  A string that decodes to an object on
+/// the second pass renders that object's parameters; a JSON array renders one
+/// `arguments` parameter with `string="false"` and the json.dumps spelling of
+/// the value; a string that is not JSON at all renders one `arguments`
+/// parameter with `string="true"` and the text verbatim.
+#[test]
+fn double_encoded_arguments_match_official_encoding() {
+    // The wire string is a JSON object wrapped in one more JSON string, so the
+    // first decode yields a string and the second the object.
+    let args = r#""{\"target_file\": \"/tmp/x.txt\"}""#;
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Read the file /tmp/x.txt"),
+        assistant("Calling it now.", vec![call("call_1", "read_file", args)]),
+    ];
+    check(
+        "enc-args-double",
+        &msgs,
+        READ_FILE_SCHEMA_MIN,
+        ThinkMode::None,
+    );
+}
+
+#[test]
+fn non_dict_arguments_match_official_encoding() {
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Read the file /tmp/x.txt"),
+        assistant(
+            "Calling it now.",
+            vec![call("call_1", "read_file", "[1, 2]")],
+        ),
+    ];
+    check(
+        "enc-args-nondict",
+        &msgs,
+        READ_FILE_SCHEMA_MIN,
+        ThinkMode::None,
+    );
+}
+
+#[test]
+fn unparsable_arguments_match_official_encoding() {
+    let msgs = [
+        msg("system", "You are a helpful assistant."),
+        msg("user", "Read the file /tmp/x.txt"),
+        assistant(
+            "Calling it now.",
+            vec![call("call_1", "read_file", "not json")],
+        ),
+    ];
+    check(
+        "enc-args-plain",
+        &msgs,
+        READ_FILE_SCHEMA_MIN,
+        ThinkMode::None,
+    );
+}
+
+/// A user message whose content is an array of blocks: a text block beside an
+/// image block, and a text-only pair.
+///
+/// The oracle joins the pieces the client sent as separate blocks with a blank
+/// line -- `_process_image_blocks` turns an image into a placeholder text block
+/// and the user branch writes `"\n\n".join(parts)` (encoding.py:323-353,
+/// :633-658) -- while this port concatenates them, at parse time for the text
+/// pieces (`append_text_part`, parse.rs:587) and at render time for the
+/// placeholder (`append_dsml_user_content`, render.rs:1376).
+///
+/// Measured 2026-10-20 on both cases: the two prompts carry the same pieces in
+/// the same order and differ by that one separator, which is what these cases
+/// pin.  Recorded as an open row in docs/ds41-dsml-function-map.md row
+/// `process_image_messages`; the fix is a render/parse join gated to the V4.1
+/// head, and it is the operator's call because it moves every image-bearing
+/// prompt.
+fn check_block_join(name: &str, msgs: &[ChatMsg]) {
+    let got = render_dsml_chat_choice_ex(msgs, "", ThinkMode::None, ToolChoice::Auto, V41)
+        .unwrap_or_else(|e| panic!("{name}: render refused: {}", e.0));
+    let got = String::from_utf8(got).expect("our prompt is UTF-8");
+    let want = String::from_utf8(fixture(&format!("{name}.prompt.txt"))).expect("fixture is UTF-8");
+
+    assert_eq!(
+        want.matches("\n\n").count(),
+        1,
+        "{name}: the fixture must hold exactly the one separator this test removes"
+    );
+    assert_eq!(
+        got,
+        want.replace("\n\n", ""),
+        "{name}: the two prompts differ beyond the block separator"
+    );
+}
+
+/// A text block and an image block in one user message.
+#[test]
+fn image_block_beside_text_is_pinned() {
+    let mut user = msg("user", "What is in this image?");
+    user.parts = vec![
+        ChatPart::Text("What is in this image?".into()),
+        ChatPart::Image(0),
+    ];
+    let msgs = [msg("system", "You are a helpful assistant."), user];
+    check_block_join("enc-image-chat", &msgs);
+}
+
+/// Two text blocks in one user message, with no image anywhere.
+#[test]
+fn text_blocks_are_pinned() {
+    let mut user = msg("user", "First part.Second part.");
+    user.parts = vec![
+        ChatPart::Text("First part.".into()),
+        ChatPart::Text("Second part.".into()),
+    ];
+    let msgs = [msg("system", "You are a helpful assistant."), user];
+    check_block_join("enc-blocks-chat", &msgs);
 }
 
 #[test]

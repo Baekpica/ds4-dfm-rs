@@ -21,11 +21,17 @@ mkdir -p "$out"
 for case in "$here"/cases/*.json; do
     name=$(basename "$case" .json)
     mode=chat
+    driver=encode
     # A case that states its own thinking mode is encoded in it.
     if grep -q '"thinking_mode": "thinking"' "$case"; then
         mode=thinking
     fi
-    python3 "$here/ref_drive.py" encode "$case" "$mode" > "$out/$name.prompt.txt"
+    # A case that carries an image block needs the media driver: the text-only
+    # one refuses a non-empty image record on purpose.
+    if grep -q '"image_url"' "$case"; then
+        driver=encode-media
+    fi
+    python3 "$here/ref_drive.py" "$driver" "$case" "$mode" > "$out/$name.prompt.txt"
     printf 'encode %-24s mode=%-8s %s bytes\n' "$name" "$mode" "$(wc -c < "$out/$name.prompt.txt")"
 done
 
