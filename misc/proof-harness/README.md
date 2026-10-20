@@ -59,6 +59,29 @@ count while preserving the selected budget label in the JSON report. Explicit
 `--prompt`, `--prompt-file`, and plan-file prompts always take precedence over
 the budget's built-in prompt count.
 
+## The V4.1 (ds41) family
+
+The V4.1 family has no prompt entry in the host (its chat rendering is not
+ported), so the harness runs it differently: it tokenizes the fixture once with
+the same binary and vocabulary (`--dump-tokens`) and passes the ids through
+`--gen-ids`. Every deployed run also passes `--engram-dir`, because the artifact
+records the converting host's shard paths and a run without the rewrite dies at
+`engram-open`:
+
+```sh
+DS4_PROOF_BASE="$DS41" \
+DS4_PROOF_ENGRAM="$HOME/models/ds41flash-1017/deepseek-engram" \
+make proof-cuda-long
+```
+
+`DS4_PROOF_ENGRAM` selects the shape (and is checked as a directory before any
+cell runs); `DS4_PROOF_ZCHAIN` is optional and adds `--zchain`. The graph
+switch is passed as a flag on this route, because ds4 sets the v41 graph global
+explicitly and a profile env of `DS4_CUDA_LAYER_GRAPHS` cannot reach the run:
+`cuda-eager` gets `--no-graph`. The harness reads each arm's own capture count
+and fails an arm that claims eager while capturing, or claims capture while
+capturing nothing, so the parity contract cannot pass vacuously.
+
 ## CUDA Weight Server
 
 `ds4_weight_server` is an opt-in CUDA weight owner for proof runs. It uploads raw
