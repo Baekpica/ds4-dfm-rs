@@ -859,6 +859,215 @@ __global__ void __launch_bounds__(BEAM_ATTN_THREADS) beam_attn_decode_kernel(flo
     }
 }
 
+/* FP8 rows on sm_90+: a block per key split serves all eight KV heads (warp
+ * = KV head). Whole 2,080-byte rows arrive by one TMA bulk copy per key into
+ * a ring of three 16-key stages (99,840 B), so each block keeps two stages
+ * in flight; QK and PV run on mma.m16n8k16 (f16 in, F32 accumulate):
+ *
+ *   S[16 x 16]   = Q[16 x 128] K^T       A = Q (6 of 16 rows), B = K by ldmatrix
+ *   O^T[128 x 8] += V^T[128 x 16] P^T    A = V by ldmatrix.trans + byte permute,
+ *                                        B = P straight from S's accumulators
+ *
+ * E4M3 codes and the BF16-valued queries are exact in f16; P (the softmax
+ * weights times the V scale) rounds to f16, finer than the reference's BF16
+ * attention. Each thread's four consecutive codes feed k slots 2c, 2c+1,
+ * 2c+8, 2c+9 of a k-step, the same permutation for Q and K. The per-key
+ * cp.async and lane-per-key loads of the SIMT kernel reached 130-180 GB/s:
+ * their 16-byte requests reread every 32-byte sector and filled the LSU
+ * queue; this path streams the rows at about 230 GB/s. */
+enum { BEAM_ATTN8_THREADS = 256, BEAM_ATTN8_TILE = 16, BEAM_ATTN8_STAGES = 3,
+       BEAM_ATTN8_ROW = 2 * BEAM_ATTN_KV + 4 * DS4_BEAM_KV_HEADS,
+       BEAM_ATTN8_SMEM = BEAM_ATTN8_STAGES * BEAM_ATTN8_TILE * BEAM_ATTN8_ROW };
+static_assert(BEAM_ATTN8_THREADS / 32 == DS4_BEAM_KV_HEADS && BEAM_ATTN8_ROW % 16 == 0, "warp per KV head, bulk rows");
+
+static __device__ __forceinline__ uint32_t beam_smem(const void *p) { return (uint32_t)__cvta_generic_to_shared(p); }
+static __device__ __forceinline__ uint32_t beam_e4m3x2_h2(uint32_t two) {
+    uint32_t h;
+    asm("cvt.rn.f16x2.e4m3x2 %0, %1;" : "=r"(h) : "h"((unsigned short)(two & 0xffffu)));
+    return h;
+}
+static __device__ __forceinline__ uint32_t beam_h2(float lo, float hi) {
+    const __half2 h = __floats2half2_rn(lo, hi);
+    return *reinterpret_cast<const uint32_t *>(&h);
+}
+static __device__ __forceinline__ void beam_mma_f16(float c[4], const uint32_t a[4], uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3]) : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+__global__ void __launch_bounds__(BEAM_ATTN8_THREADS, 1) beam_attn_fp8_kernel(float *heads, float *partials,
+        const float *q, const uint8_t *kv, uint32_t kv_cap, uint32_t first, uint32_t last, uint32_t chunk,
+        uint32_t splits, float scale) {
+#if __CUDA_ARCH__ >= 900
+    constexpr uint32_t G = BEAM_ATTN_GROUP, D = BEAM_GPU_HEAD, T = BEAM_ATTN8_TILE, S = BEAM_ATTN8_STAGES;
+    constexpr uint32_t ROW = BEAM_ATTN8_ROW, STAGE = T * ROW;
+    extern __shared__ __align__(128) uint8_t rows_smem[];      // [S][T][ROW]
+    __shared__ __align__(8) uint64_t bars[S];
+    const uint32_t split = blockIdx.x, lane = threadIdx.x & 31u, kvh = threadIdx.x >> 5;
+    const uint32_t g = lane >> 2, c = lane & 3u;
+    const uint32_t c0 = first + split * chunk, c1 = min(last, c0 + chunk - 1u);
+    if (threadIdx.x == 0) {
+        for (uint32_t i = 0; i < S; i++) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" :: "r"(beam_smem(&bars[i])));
+        }
+        asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
+    }
+    // Q as the A operand: row g = head g (rows 6-15 zero); k-step s holds
+    // dims 16s + 4c .. +3 in slots 2c, 2c+1 (a0) and 2c+8, 2c+9 (a2).
+    uint32_t qa[8][2];
+    {
+        const float *qh = q + ((uint64_t)kvh * G + (g < G ? g : 0u)) * D;
+#pragma unroll
+        for (uint32_t s = 0; s < 8; s++) {
+            const float4 v = *reinterpret_cast<const float4 *>(qh + 16u * s + 4u * c);
+            qa[s][0] = g < G ? beam_h2(v.x, v.y) : 0u;
+            qa[s][1] = g < G ? beam_h2(v.z, v.w) : 0u;
+        }
+    }
+    __syncthreads();
+    // Tile t0 into stage st: thread j < T copies key j's row; keys past the
+    // chunk repeat the first so every stage carries STAGE bytes.
+    auto issue = [&](uint32_t t0, uint32_t st) {
+        if (threadIdx.x < T) {
+            const uint32_t n = min(T, c1 - t0 + 1u), key = threadIdx.x;
+            uint32_t slot = t0 % kv_cap + (key < n ? key : 0u);
+            if (slot >= kv_cap) { slot -= kv_cap; }
+            if (key == 0) {
+                asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;"
+                    :: "r"(beam_smem(&bars[st])), "r"(STAGE) : "memory");
+            }
+            asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
+                :: "r"(beam_smem(rows_smem + (uint64_t)st * STAGE + key * ROW)), "l"(kv + (uint64_t)slot * ROW),
+                   "r"(ROW), "r"(beam_smem(&bars[st])) : "memory");
+        }
+    };
+    float m = -INFINITY, l = 0.0f, o[8][4];
+#pragma unroll
+    for (uint32_t i = 0; i < 8; i++) { o[i][0] = o[i][1] = o[i][2] = o[i][3] = 0.0f; }
+#pragma unroll
+    for (uint32_t i = 0; i + 1 < S; i++) {
+        if (c0 + i * T <= c1) { issue(c0 + i * T, i); }
+    }
+    const uint32_t koff = kvh * D, voff = BEAM_ATTN_KV + kvh * D, soff = 2u * BEAM_ATTN_KV + 2u * kvh;
+    uint32_t it = 0;
+    for (uint32_t t0 = c0; t0 <= c1; t0 += T, it++) {
+        const uint32_t st = it % S;
+        // Every warp has left the stage the next copy refills.
+        __syncthreads();
+        if (t0 + (S - 1u) * T <= c1) { issue(t0 + (S - 1u) * T, (it + S - 1u) % S); }
+        asm volatile("{\n .reg .pred p;\n BEAM_WAIT_%=:\n mbarrier.try_wait.parity.shared::cta.b64 p, [%0], %1;\n"
+            " @!p bra BEAM_WAIT_%=;\n}\n" :: "r"(beam_smem(&bars[st])), "r"((it / S) & 1u) : "memory");
+        const uint8_t *rows = rows_smem + (uint64_t)st * STAGE;
+        const uint32_t n = min(T, c1 - t0 + 1u);
+        // Scores of two 8-key n-tiles: ldmatrix gives key nt*8 + g's codes
+        // 4c .. 4c+3 of four k-steps per x4.
+        float s[2][4];
+#pragma unroll
+        for (uint32_t nt = 0; nt < 2; nt++) {
+            s[nt][0] = s[nt][1] = s[nt][2] = s[nt][3] = 0.0f;
+#pragma unroll
+            for (uint32_t half = 0; half < 2; half++) {
+                uint32_t r[4];
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+                    : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+                    : "r"(beam_smem(rows + (nt * 8u + (lane & 7u)) * ROW + koff + 64u * half + 16u * (lane >> 3))));
+#pragma unroll
+                for (uint32_t j = 0; j < 4; j++) {
+                    const uint32_t a[4] = {qa[4u * half + j][0], 0u, qa[4u * half + j][1], 0u};
+                    beam_mma_f16(s[nt], a, beam_e4m3x2_h2(r[j]), beam_e4m3x2_h2(r[j] >> 16));
+                }
+            }
+        }
+        // Head g's online softmax: this thread holds keys nt*8 + 2c + e.
+        float sc[2][2], top = -INFINITY;
+#pragma unroll
+        for (uint32_t nt = 0; nt < 2; nt++) {
+#pragma unroll
+            for (uint32_t e = 0; e < 2; e++) {
+                const uint32_t key = nt * 8u + 2u * c + e;
+                const float ks = __half2float(*reinterpret_cast<const __half *>(rows + key * ROW + soff));
+                sc[nt][e] = key < n ? s[nt][e] * scale * ks : -INFINITY;
+                top = fmaxf(top, sc[nt][e]);
+            }
+        }
+        top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, 1));
+        top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, 2));
+        const float mn = fmaxf(m, top), r = __expf(m - mn);
+        m = mn;
+        // P^T (B of the PV MMA): keys 2c, 2c+1 of n-tile 0 are b0, of n-tile 1 b1.
+        uint32_t pb[2];
+        float psum = 0.0f;
+#pragma unroll
+        for (uint32_t nt = 0; nt < 2; nt++) {
+            float p[2];
+#pragma unroll
+            for (uint32_t e = 0; e < 2; e++) {
+                const uint32_t key = nt * 8u + 2u * c + e;
+                const float vs = __half2float(*reinterpret_cast<const __half *>(rows + key * ROW + soff + 16u));
+                p[e] = key < n ? __expf(sc[nt][e] - mn) : 0.0f;
+                psum += p[e];
+                p[e] *= vs;
+            }
+            pb[nt] = beam_h2(p[0], p[1]);
+        }
+        l = l * r + psum;
+        // O^T's columns are heads 2c, 2c+1: their rescale comes from rows g = 2c, 2c+1.
+        const float r0 = __shfl_sync(0xffffffffu, r, 8u * c), r1 = __shfl_sync(0xffffffffu, r, 8u * c + 4u);
+#pragma unroll
+        for (uint32_t mt = 0; mt < 8; mt++) {
+            o[mt][0] *= r0; o[mt][1] *= r1; o[mt][2] *= r0; o[mt][3] *= r1;
+        }
+        // m-tile mt: rows g / g + 8 are dims 16mt + 2g / 16mt + 2g + 1. The
+        // transposed 8x8 b16 load gives keys 2c, 2c+1 of codes 16mt + 2g, +1;
+        // byte permutes split them by dimension. One x4 serves two m-tiles.
+#pragma unroll
+        for (uint32_t mp = 0; mp < 8; mp += 2) {
+            uint32_t t[4];
+            asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+                : "=r"(t[0]), "=r"(t[1]), "=r"(t[2]), "=r"(t[3])
+                : "r"(beam_smem(rows + (8u * ((lane >> 3) & 1u) + (lane & 7u)) * ROW + voff + 16u * (mp + (lane >> 4)))));
+#pragma unroll
+            for (uint32_t h = 0; h < 2; h++) {
+                const uint32_t a[4] = {beam_e4m3x2_h2(__byte_perm(t[2u * h], 0, 0x0020)),
+                                       beam_e4m3x2_h2(__byte_perm(t[2u * h], 0, 0x0031)),
+                                       beam_e4m3x2_h2(__byte_perm(t[2u * h + 1u], 0, 0x0020)),
+                                       beam_e4m3x2_h2(__byte_perm(t[2u * h + 1u], 0, 0x0031))};
+                beam_mma_f16(o[mp + h], a, pb[0], pb[1]);
+            }
+        }
+    }
+    l += __shfl_xor_sync(0xffffffffu, l, 1);
+    l += __shfl_xor_sync(0xffffffffu, l, 2);
+    const float m0 = __shfl_sync(0xffffffffu, m, 8u * c), m1 = __shfl_sync(0xffffffffu, m, 8u * c + 4u);
+    const float l0 = __shfl_sync(0xffffffffu, l, 8u * c), l1 = __shfl_sync(0xffffffffu, l, 8u * c + 4u);
+    if (c < 3u) {  // columns 6, 7 are padding heads
+#pragma unroll
+        for (uint32_t e = 0; e < 2; e++) {
+            const uint32_t head = kvh * G + 2u * c + e;
+            const float hm = e ? m1 : m0, hl = e ? l1 : l0;
+            if (splits == 1u) {
+                float *out = heads + (uint64_t)head * D;
+#pragma unroll
+                for (uint32_t mt = 0; mt < 8; mt++) {
+                    out[16u * mt + 2u * g] = o[mt][e] / hl;
+                    out[16u * mt + 2u * g + 1u] = o[mt][2u + e] / hl;
+                }
+            } else {
+                float *part = partials + ((uint64_t)head * splits + split) * (D + 2u);
+                if (g == 0) { part[0] = hm; part[1] = hl; }
+#pragma unroll
+                for (uint32_t mt = 0; mt < 8; mt++) {
+                    part[2u + 16u * mt + 2u * g] = o[mt][e];
+                    part[2u + 16u * mt + 2u * g + 1u] = o[mt][2u + e];
+                }
+            }
+        }
+    }
+#else
+    __trap();
+#endif
+}
+
 // Splits of one head merged: thread = dimension.
 __global__ void __launch_bounds__(BEAM_ATTN_THREADS) beam_attn_combine_kernel(float *heads, const float *partials,
         uint32_t splits) {
@@ -878,40 +1087,50 @@ __global__ void __launch_bounds__(BEAM_ATTN_THREADS) beam_attn_combine_kernel(fl
 
 extern "C" int ds4_gpu_beam_attn_decode(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *kv,
         ds4_gpu_tensor *partials, uint32_t max_splits, uint32_t kv_cap, uint32_t pos, uint32_t window, int fp8) {
+    static int tma = -1;  // compute capability 9+, dynamic shared memory opted in
+    if (tma < 0) {
+        int device = 0, major = 0;
+        tma = cudaGetDevice(&device) == cudaSuccess &&
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) == cudaSuccess && major >= 9 &&
+            cudaFuncSetAttribute(beam_attn_fp8_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                BEAM_ATTN8_SMEM) == cudaSuccess;
+    }
+    const bool bulk = fp8 && tma;
     uint32_t first = window && pos + 1u > window ? pos + 1u - window : 0u;
     if (pos + 1u > kv_cap && first < pos + 1u - kv_cap) { first = pos + 1u - kv_cap; }
     const uint32_t keys = pos - first + 1u;
-    // About BEAM_ATTN_SPLITS splits (a wave of eight blocks per KV head and SM
-    // group), whole tiles, at least four tiles each.
-    uint32_t want = (keys + BEAM_ATTN_SPLITS - 1u) / BEAM_ATTN_SPLITS;
-    uint32_t chunk = (want + BEAM_ATTN_TILE - 1u) / BEAM_ATTN_TILE * BEAM_ATTN_TILE;
-    if (chunk < 4u * BEAM_ATTN_TILE) { chunk = 4u * BEAM_ATTN_TILE; }
-    uint32_t splits = (keys + chunk - 1u) / chunk;
-    if (splits > max_splits) {
-        want = (keys + max_splits - 1u) / max_splits;
-        chunk = (want + BEAM_ATTN_TILE - 1u) / BEAM_ATTN_TILE * BEAM_ATTN_TILE;
-        splits = (keys + chunk - 1u) / chunk;
+    // About BEAM_ATTN_SPLITS splits of whole tiles: one block per SM on the
+    // bulk path, a wave per KV head otherwise (at least four tiles each).
+    const uint32_t tile = bulk ? BEAM_ATTN8_TILE : BEAM_ATTN_TILE, least = bulk ? tile : 4u * tile;
+    uint32_t chunk = (keys + BEAM_ATTN_SPLITS - 1u) / BEAM_ATTN_SPLITS;
+    chunk = chunk < least ? least : (chunk + tile - 1u) / tile * tile;
+    if ((keys + chunk - 1u) / chunk > max_splits) {
+        chunk = ((keys + max_splits - 1u) / max_splits + tile - 1u) / tile * tile;
     }
+    const uint32_t splits = (keys + chunk - 1u) / chunk;
     const uint64_t row = fp8 ? 2ull * BEAM_ATTN_KV + 4u * DS4_BEAM_KV_HEADS : 4ull * BEAM_ATTN_KV;
     if (!kv_cap || !gvq_floats(heads, (uint64_t)BEAM_GPU_HEADS * BEAM_GPU_HEAD) ||
         !gvq_floats(q, (uint64_t)BEAM_GPU_HEADS * BEAM_GPU_HEAD) || !kv || kv->bytes < (uint64_t)kv_cap * row ||
         (splits > 1u && !gvq_floats(partials, (uint64_t)BEAM_GPU_HEADS * splits * (BEAM_GPU_HEAD + 2u)))) {
         return 0;
     }
-    const dim3 grid(splits, DS4_BEAM_KV_HEADS);
+    float *part = partials ? (float *)partials->ptr : nullptr;
+    const auto *k = (const uint8_t *)kv->ptr;
     const float scale = rsqrtf((float)BEAM_GPU_HEAD);
-    if (fp8) {
-        beam_attn_decode_kernel<true><<<grid, BEAM_ATTN_THREADS, 0, ds4_current_stream()>>>((float *)heads->ptr,
-            partials ? (float *)partials->ptr : nullptr, (const float *)q->ptr, (const uint8_t *)kv->ptr, kv_cap,
-            first, pos, chunk, splits, scale);
+    const dim3 grid(splits, DS4_BEAM_KV_HEADS);
+    const cudaStream_t stream = ds4_current_stream();
+    if (bulk) {
+        beam_attn_fp8_kernel<<<splits, BEAM_ATTN8_THREADS, BEAM_ATTN8_SMEM, stream>>>((float *)heads->ptr, part,
+            (const float *)q->ptr, k, kv_cap, first, pos, chunk, splits, scale);
+    } else if (fp8) {
+        beam_attn_decode_kernel<true><<<grid, BEAM_ATTN_THREADS, 0, stream>>>((float *)heads->ptr, part,
+            (const float *)q->ptr, k, kv_cap, first, pos, chunk, splits, scale);
     } else {
-        beam_attn_decode_kernel<false><<<grid, BEAM_ATTN_THREADS, 0, ds4_current_stream()>>>((float *)heads->ptr,
-            partials ? (float *)partials->ptr : nullptr, (const float *)q->ptr, (const uint8_t *)kv->ptr, kv_cap,
-            first, pos, chunk, splits, scale);
+        beam_attn_decode_kernel<false><<<grid, BEAM_ATTN_THREADS, 0, stream>>>((float *)heads->ptr, part,
+            (const float *)q->ptr, k, kv_cap, first, pos, chunk, splits, scale);
     }
     if (splits > 1u) {
-        beam_attn_combine_kernel<<<BEAM_GPU_HEADS, BEAM_ATTN_THREADS, 0, ds4_current_stream()>>>(
-            (float *)heads->ptr, (const float *)partials->ptr, splits);
+        beam_attn_combine_kernel<<<BEAM_GPU_HEADS, BEAM_ATTN_THREADS, 0, stream>>>((float *)heads->ptr, part, splits);
     }
     return cuda_ok(cudaGetLastError(), "Beam decode attention");
 }
