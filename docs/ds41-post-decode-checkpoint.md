@@ -111,12 +111,39 @@ continuing prompt, the committed-id mismatch (which must fall back to the
 prompt-end checkpoint), the equal-length and shorter prompts (neither may be
 served by it), the image identity including the rule that a sampled position
 carries none, the sampled-route suffix, and the drop.  `test_ds41_model_lifetime`
-covers the close path for both slots.
+covers the close path for both slots, and the boundary fixture asserts, for every
+case it runs, that the buffer the run fills equals the state's own advance and
+that the save was handed exactly that buffer.
 
-On the Spark, from the analysis host: `tests/ds41_kv_post_gate.sh` (the
-instrument kept from the earlier attempt, its reuse-line pattern taught the
-`turn` tag) for the exactness gate, `tests/spark/dsml_conformance.sh` for the
-reserved B rows, `dsml_compliance.sh` and `open_grok_leg.sh` for the surface,
-and `make proof-cuda-long` for long-context parity.  The engine-side criterion
-is the serve's own line, `[v41] KV reuse N/M token (turn checkpoint ...)`, with
-`N` past the previous prompt.
+Served, on the Spark (GB10) against the binary built from this branch
+(`ds4-server` sha256 `785bd6b7...`, `--prefix-reuse exact`, domain `code`):
+
+- `tests/ds41_kv_post_gate.sh` PASS.  At a 3725-token prompt the A run writes
+  `[v41] KV turn checkpoint 3772 token (20.7 MB)`, D reuses `3772/3773 token
+  (turn checkpoint 20.7 MB), prefill suffix 1`, and its first logits row differs
+  from the cold run's by max |d| 1.0769 (RMS 0.18651) -- the reuse class, against
+  the gate's bound of 2.0.  0 of 48 rows are byte-identical and the arms share 4
+  of 48 leading ids before the first argmax flip, both reported rather than
+  asserted; after a flip the two arms are simply in different continuations
+  (rows 5 onward differ by 20 to 30).
+- `tests/spark/ds41_dsml_full_gate.sh` PASS: fix rows 19, failures 0,
+  **reserved 0**, unverified 0.  The four reserved rows flipped from a replay
+  gain of 0 to 40 tokens:
+
+  | Row | Surface | Before | After |
+  | --- | --- | --- | --- |
+  | B-01 | OpenAI chat | prompt 403, cached 348, gain 0 | cached 388, gain 40 |
+  | B-02 | OpenAI chat, reordered echo | prompt 403, cached 348, gain 0 | cached 388, gain 40 |
+  | B-03 | Anthropic | prompt 407, cached 352, gain 0 | cached 392, gain 40 |
+  | B-04 | Responses | prompt 403, cached 348, gain 0 | cached 388, gain 40 |
+
+  Everything else held: conformance 18 PASS / 0 FAIL, compliance 22 / 0, the
+  client leg 3 / 0, the host legs and the C-oracle parity PASS, and the wire
+  probe is unchanged (15 PASS, W-12 the known open `reasoning_tokens` row, W-15
+  and W-16 refused as decided).
+- The serve's own log carries the mechanism: 48 turn checkpoints written in one
+  suite run, 9 of its reuse lines served by the turn checkpoint (`375/390`,
+  suffix 15; `24049/24069`, suffix 20; 38.2 MB at 24k tokens).
+
+Not yet run for this branch: `make proof-cuda-long` (long-context captured-vs-
+eager parity), which needs the model exclusively and so needs the serve stopped.
