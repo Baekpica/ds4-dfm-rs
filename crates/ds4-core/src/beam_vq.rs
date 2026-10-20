@@ -6,6 +6,7 @@
 //! rows and never uploads. Validate borrowed mmap spans; never expand
 //! experts or copy a part.
 
+pub(crate) mod dflash2;
 mod layout;
 mod model;
 mod release;

@@ -37495,6 +37495,7 @@ struct ds4_engine {
     ds4_inkling_draft inkling_mtp;
     ds4_dspark_weights dspark_weights;
     ds4_naive_draft naive_draft;
+    ds4_beam_draft beam_draft;
     ds4_ple_store *qwen_ple_store;
     ds4_qwen38_ple_cuda *qwen_ple_cuda;
     ds4_backend backend;
@@ -72646,13 +72647,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         *out = NULL;
         return 1;
     }
+    // The only Beam sidecar is the DFlash2 drafter, passed as the MTP file.
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ &&
         (e->backend != DS4_BACKEND_CUDA || load_slice || opt->ssd_streaming ||
-         opt->distributed.role != DS4_DISTRIBUTED_NONE ||
-         (opt->mtp_path && opt->mtp_path[0]) || (opt->dspark_path && opt->dspark_path[0]) ||
+         opt->distributed.role != DS4_DISTRIBUTED_NONE || (opt->dspark_path && opt->dspark_path[0]) ||
          (e->directional_steering_file && e->directional_steering_file[0]) ||
          e->directional_steering_attn_scale != 0.0f || e->directional_steering_ffn_scale != 0.0f)) {
-        fprintf(stderr, "ds4: Beam requires one full CUDA model without sidecars\n");
+        fprintf(stderr, "ds4: Beam requires one full CUDA model without DSpark sidecars\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -72874,7 +72875,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             dspark_path = getenv("DS4_DSPARK_MODEL");
         if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
-             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2) ||
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_BEAM_VQ) ||
             (dspark_path && dspark_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_NAIVE)) {
             fprintf(stderr,
                     "ds4: this model family does not accept the requested "
@@ -72901,6 +72903,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (e->mtp_draft_tokens > STEP37_DRAFT_LAYERS) {
                 e->mtp_draft_tokens = STEP37_DRAFT_LAYERS;
             }
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ) {
+            // DFlash2 drafts blocks of at most 16 rows: 15 proposals.
+            if (e->backend != DS4_BACKEND_CUDA || !beam_draft_bind(&e->beam_draft, &e->mtp_model)) {
+                fprintf(stderr, "ds4: Beam MTP file is not the DFlash2 drafter\n");
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            if (e->mtp_draft_tokens > BEAM_DF_BLOCK - 1) { e->mtp_draft_tokens = BEAM_DF_BLOCK - 1; }
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
 #ifndef DS4_NO_GPU
             if (!mimo2_dflash_bind(&e->dflash, &e->mtp_model)) {
@@ -73779,9 +73790,12 @@ int ds4_engine_n_hc(ds4_engine *e) {
 }
 
 bool ds4_engine_supports_batching(ds4_engine *e) {
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_IQUEST || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ) {
         return e && e->backend == DS4_BACKEND_CUDA;
+    }
+    // Beam's DFlash2 drafts on the serial lane only.
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ) {
+        return e && e->backend == DS4_BACKEND_CUDA && !e->beam_draft.model;
     }
     if (!e || !ds4_backend_uses_graph(e->backend) || !e->metal_ready) {
         return false;
@@ -74189,9 +74203,14 @@ static bool ling31_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     return fits;
 }
 
+// An MTP-off open (one draft token) keeps the DFlash2 file bound but idle.
+static bool beam_drafting(const ds4_engine *e) {
+    return e->beam_draft.model && e->mtp_draft_tokens > 1;
+}
+
 static bool beam_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                              ds4_session_graph_fit_quote *q) {
-    const uint64_t need = beam_memory(ctx, cap).total_bytes;
+    const uint64_t need = beam_memory(ctx, cap).total_bytes + (beam_drafting(e) ? beam_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
@@ -74367,8 +74386,12 @@ static int ds4_session_alloc_graph(ds4_session *s) {
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
-        const bool ok = beam_session_fit(e, ctx, s->prefill_cap, NULL) &&
+        bool ok = beam_session_fit(e, ctx, s->prefill_cap, NULL) &&
             beam_graph_alloc(&s->beam_graph, &e->model, &e->weights, ctx, s->prefill_cap);
+        if (ok && beam_drafting(e)) {
+            s->beam_graph.draft = beam_draft_alloc(&e->beam_draft, s->prefill_cap);
+            ok = s->beam_graph.draft != NULL;
+        }
         ds4_gpu_mem_scope_end();
         if (!ok) {
             beam_graph_free(&s->beam_graph); s->beam_graph_ready = false;
@@ -76196,6 +76219,7 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 #include "ds4_iquest_session.inc"
 #include "ds4_ling31_session.inc"
 #include "ds4_beam_session.inc"
+#include "ds4_beam_draft.inc"
 #include "ds4_naive_mtp.inc"
 #define MIMO2_DFLASH_TRIAL
 #include "ds4_mimo2_dflash.inc"

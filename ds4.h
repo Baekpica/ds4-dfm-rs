@@ -1425,6 +1425,12 @@ int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen
 int ds4_session_naive_trial(ds4_session *s, int first, int max_tokens,
                              int *tokens, int *target, int cap, char *err, size_t errlen);
 int ds4_session_naive_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Beam DFlash2: draft [first, n - 1 proposals], verify the n rows in one
+ * target forward (target[i] = row i's argmax), then commit keep <= n rows.
+ * 0 means take an ordinary step (no drafter, budget, or context rows yet). */
+int ds4_session_beam_trial(ds4_session *s, int first, int max_tokens,
+                           int *tokens, int *target, int cap, char *err, size_t errlen);
+int ds4_session_beam_commit(ds4_session *s, int keep, char *err, size_t errlen);
 /* IQuest-Q1 recursively reuses its integrated predictor. Target and MTP
  * ring journals restore every rejected row before publishing the frontier. */
 int ds4_session_iquest_trial(ds4_session *s, int first, int max_tokens,

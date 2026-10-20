@@ -91,3 +91,20 @@ fn source_tokenizer_matches_the_eval_ids() {
         assert_eq!(vocab.encode_rendered_chat(text), ids, "{text}");
     }
 }
+
+#[test]
+#[ignore = "requires tools/beam_dflash2.py's output in DS4_BEAM_DFLASH2; no GPU"]
+fn dflash2_drafter_is_the_mtp_sidecar() {
+    let path = std::env::var("DS4_BEAM_DFLASH2").expect("DS4_BEAM_DFLASH2");
+    let shape = ds4_core::shape_for_variant(Variant::BeamVq);
+    ds4_core::probe_mtp_sidecar(shape, None, &path).unwrap();
+    // The release itself is not a drafter.
+    let release = root().join("body-nonexpert.gguf");
+    assert!(ds4_core::probe_mtp_sidecar(shape, None, release.to_str().unwrap()).is_err());
+    let caps = ds4_core::caps_from_shape(shape);
+    assert_eq!(
+        format!("{:?} {:?}", caps.mtp, caps.spec_lane),
+        "Sidecar Serial"
+    );
+    println!("BEAM_DFLASH2_PASS {path}");
+}

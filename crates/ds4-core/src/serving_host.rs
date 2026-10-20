@@ -378,11 +378,17 @@ pub fn fill_quote_facts(
         // Each bank owns its KV rows, host logits and history; graph 0 owns
         // the row workspace and the host embedding staging. Checkpoint slots
         // take what the native fit leaves (Ling-3.1).
+        // The DFlash2 drafter's rings and rows belong to the serial session;
+        // an MTP-off open leaves the file bound but allocates none.
         (ModelFamily::BeamVq, Some(s)) => (
             beam_kv_bytes(ctx, native) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
             beam_workspace_bytes(u64::from(native))
                 + u64::from(native) * u64::from(s.n_embd) * SIZEOF_U16,
-            0,
+            if sidecar_loaded && req.mtp_mode != MtpMode::Off {
+                beam_draft_bytes(u64::from(native))
+            } else {
+                0
+            },
             0,
         ),
         (ModelFamily::Inkling, Some(s)) => {
@@ -2645,6 +2651,18 @@ fn beam_workspace_bytes(rows: u64) -> u64 {
     (151_936 + rows * row) * SIZEOF_F32 + partials + q4p + linear + BEAM_DECODE_BYTES + mma
 }
 
+// C beam_draft_bytes: five f16 [K | V] context rings of 4,096 + 16 slots, the
+// tap rows of one prefill chunk, then the 16-row block (six hidden-wide rows,
+// conv coefficients, K/V, the SwiGLU pair, capped logits, selector rows, ids).
+fn beam_draft_bytes(rows: u64) -> u64 {
+    const HIDDEN: u64 = 5120;
+    const KV: u64 = 1024;
+    let rings = 5 * (4096 + 16) * 2 * KV * SIZEOF_U16;
+    let taps = rows * (2 * HIDDEN + 2 * KV) * SIZEOF_F32;
+    let block = 16 * (6 * HIDDEN + 1280 + 2 * KV + 2 * 17408 + 151_936 + 256 + 1) * SIZEOF_F32;
+    rings + taps + block
+}
+
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
 fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
@@ -3244,6 +3262,29 @@ mod tests {
             Some(beam_workspace_bytes(2048) + 2048 * 5120 * SIZEOF_U16)
         );
         assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+        assert_eq!(facts.mtp_state_bytes, Some(0));
+
+        // The DFlash2 runtime (native beam_draft_bytes): 80.3 MiB of rings,
+        // 96 MiB of tap rows at 2,048 rows, 13.5 MiB of block rows.
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &ServingRequest {
+                mtp_path: Some("drafter.gguf".into()),
+                ..req
+            },
+            serving_caps(ModelFamily::BeamVq, Variant::BeamVq),
+            Some(s),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.mtp_state_bytes, Some(beam_draft_bytes(2048)));
+        assert!((beam_draft_bytes(2048) as f64 / (1 << 20) as f64 - 189.8).abs() < 0.01);
     }
 
     #[test]

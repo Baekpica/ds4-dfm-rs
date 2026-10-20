@@ -893,6 +893,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         },
         // Banks own their KV rows (FP8 full-layer rows, sliding rings) over
         // graph 0's scratch; partial reuse checkpoints the rings' windows.
+        // The DFlash2 drafter (`--mtp`) drafts on the serial lane only.
         ModelFamily::BeamVq => ServingCaps {
             family,
             variant,
@@ -902,10 +903,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             reuse_support: Support::Present,
             disk: Support::Present,
             snapshot: Support::Present,
-            mtp: MtpKind::None,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
-            spec_draft_min: 0,
+            mtp: MtpKind::Sidecar,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            // A one-token draft is the open's default with MTP off (MiMo's rule).
+            spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(BEAM_CTX_MAX),
             qualified_ctx: None,
@@ -1144,6 +1146,17 @@ pub fn resolve_plan(
             }],
             quote: None,
         };
+    };
+    // The native open refuses Beam banks beside the DFlash2 drafter, so the
+    // drafter puts Beam on its serial lane.
+    let caps = if caps.family == ModelFamily::BeamVq && req.mtp_path.is_some() {
+        ServingCaps {
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            ..caps
+        }
+    } else {
+        caps
     };
 
     let ssd_supported = caps.family == ModelFamily::Glm53

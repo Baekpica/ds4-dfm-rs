@@ -237,3 +237,110 @@ static bool beam_gpu_bind(ds4_weights *w, const ds4_model *m) {
     return w->glmvq_gpu != NULL;
 }
 #endif
+
+/* DFlash2 block drafter (reflection/Beam-1.0-501B-A23B-DFlash2 through
+ * tools/beam_dflash2.py; z-lab dflash model.py): five non-causal Qwen3
+ * layers with a two-tap dynamic convolution before and after each sublayer,
+ * reading Beam's embedding and head. The converter keeps the HF names,
+ * splits fc by tapped layer, stores matrices as Q8_0, norms and conv
+ * kernels as F32 and the selector codebooks as BF16 (the host reads them). */
+enum {
+    BEAM_DF_LAYERS = 5, BEAM_DF_TAPS = 5, BEAM_DF_BLOCK = DS4_BEAM_DF_BLOCK, BEAM_DF_HEADS = DS4_BEAM_DF_HEADS,
+    BEAM_DF_KV = BEAM_KV_HEADS * BEAM_HEAD, BEAM_DF_FF = 17408, BEAM_DF_DYN = DS4_BEAM_DF_DYN,
+    BEAM_DF_RANK = 256, BEAM_DF_TOP = 16, BEAM_DF_MASK = 151669,
+    // Context rings keep the window plus one block: a block's noise rows
+    // never overwrite a context row that block reads.
+    BEAM_DF_CAP = DS4_BEAM_DF_CAP,
+};
+// Target layers whose output rows feed fc (hidden_states[id + 1]).
+static const uint32_t beam_df_taps[BEAM_DF_TAPS] = {4u, 16u, 28u, 40u, 46u};
+
+typedef struct {
+    const ds4_tensor *attn_norm, *ffn_norm, *q, *k, *v, *o, *q_norm, *k_norm;
+    const ds4_tensor *gate, *up, *down, *attn_kp, *attn_base, *ffn_kp, *ffn_base;
+} ds4_beam_draft_layer;
+
+typedef struct {
+    const ds4_model *model;
+    const ds4_tensor *fc[BEAM_DF_TAPS], *hidden_norm, *norm, *project, *pred, *succ;
+    ds4_beam_draft_layer layer[BEAM_DF_LAYERS];
+} ds4_beam_draft;
+
+/* The serial session's draft state. Every target forward projects the
+ * tapped rows into each layer's f16 [K | V] context ring (slot = position %
+ * BEAM_DF_CAP); a trial reads it, the block rows and Beam's head. */
+typedef struct beam_draft_rt {
+    const ds4_beam_draft *w;
+    ds4_gpu_tensor *kv[BEAM_DF_LAYERS];
+    ds4_gpu_tensor *acc, *tmp, *ck, *cv;                  // tap rows, prefill width
+    ds4_gpu_tensor *h, *x, *xc, *dyn, *q, *k, *v, *heads, *o, *gate, *up, *logits, *proj, *ids;
+    float *host_logits, *host_proj;
+    uint64_t bytes;
+    uint32_t rows, trial_n, trial_pos, drafted;
+    int trial[BEAM_DF_BLOCK];
+    // Selector margin (best - second score) of each proposal row.
+    float margin[BEAM_DF_BLOCK];
+    double draft_ms, verify_ms;
+} beam_draft_rt;
+
+// GGUF dims are the HF shape reversed.
+static const ds4_tensor *beam_df_tensor(const ds4_model *m, const char *name, uint32_t type,
+        uint32_t ndim, uint64_t d0, uint64_t d1, uint64_t d2) {
+    const ds4_tensor *t = model_find_tensor(m, name);
+    if (!t || t->type != type || t->ndim != ndim || t->dim[0] != d0 || (ndim > 1u && t->dim[1] != d1) ||
+        (ndim > 2u && t->dim[2] != d2)) { return NULL; }
+    return t;
+}
+
+// Rust's inspect_dflash2 checked the whole file; this binds what the graph reads.
+static bool beam_draft_bind(ds4_beam_draft *d, const ds4_model *m) {
+    ds4_str arch = {0};
+    uint32_t layers = 0, mask = 0;
+    memset(d, 0, sizeof(*d));
+    if (!m || !model_get_string(m, "general.architecture", &arch) || !ds4_streq(arch, "beam_dflash2") ||
+        !model_get_u32(m, "beam_dflash2.block_count", &layers) || layers != BEAM_DF_LAYERS ||
+        !model_get_u32(m, "beam_dflash2.mask_token_id", &mask) || mask != BEAM_DF_MASK) { return false; }
+    char name[96];
+    bool ok = true;
+#define BEAM_DF(field, nm, type, ndim, d0, d1, d2) ok = ((field) = beam_df_tensor(m, nm, type, ndim, d0, d1, d2)) && ok
+    for (uint32_t k = 0; k < BEAM_DF_TAPS; k++) {
+        snprintf(name, sizeof(name), "fc.%u.weight", k);
+        BEAM_DF(d->fc[k], name, DS4_TENSOR_Q8_0, 2u, BEAM_EMBD, BEAM_EMBD, 0);
+    }
+    BEAM_DF(d->hidden_norm, "hidden_norm.weight", DS4_TENSOR_F32, 1u, BEAM_EMBD, 0, 0);
+    BEAM_DF(d->norm, "norm.weight", DS4_TENSOR_F32, 1u, BEAM_EMBD, 0, 0);
+    BEAM_DF(d->project, "candidate_selector.hidden_projection.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD,
+        BEAM_DF_RANK, 0);
+    BEAM_DF(d->pred, "candidate_selector.predecessor_codebook", DS4_TENSOR_BF16, 2u, BEAM_DF_RANK,
+        DS4_N_VOCAB, 0);
+    BEAM_DF(d->succ, "candidate_selector.successor_codebook", DS4_TENSOR_BF16, 2u, BEAM_DF_RANK,
+        DS4_N_VOCAB, 0);
+    for (uint32_t il = 0; il < BEAM_DF_LAYERS; il++) {
+        ds4_beam_draft_layer *l = &d->layer[il];
+#define BEAM_DF_LAYER(field, suffix, type, ndim, d0, d1, d2) do { \
+        snprintf(name, sizeof(name), "layers.%u.%s", il, suffix); \
+        BEAM_DF(l->field, name, type, ndim, d0, d1, d2); \
+    } while (0)
+        BEAM_DF_LAYER(attn_norm, "input_layernorm.weight", DS4_TENSOR_F32, 1u, BEAM_EMBD, 0, 0);
+        BEAM_DF_LAYER(ffn_norm, "post_attention_layernorm.weight", DS4_TENSOR_F32, 1u, BEAM_EMBD, 0, 0);
+        BEAM_DF_LAYER(q, "self_attn.q_proj.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD, BEAM_EMBD, 0);
+        BEAM_DF_LAYER(k, "self_attn.k_proj.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD, BEAM_DF_KV, 0);
+        BEAM_DF_LAYER(v, "self_attn.v_proj.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD, BEAM_DF_KV, 0);
+        BEAM_DF_LAYER(o, "self_attn.o_proj.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD, BEAM_EMBD, 0);
+        BEAM_DF_LAYER(q_norm, "self_attn.q_norm.weight", DS4_TENSOR_F32, 1u, BEAM_HEAD, 0, 0);
+        BEAM_DF_LAYER(k_norm, "self_attn.k_norm.weight", DS4_TENSOR_F32, 1u, BEAM_HEAD, 0, 0);
+        BEAM_DF_LAYER(gate, "mlp.gate_proj.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD, BEAM_DF_FF, 0);
+        BEAM_DF_LAYER(up, "mlp.up_proj.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD, BEAM_DF_FF, 0);
+        BEAM_DF_LAYER(down, "mlp.down_proj.weight", DS4_TENSOR_Q8_0, 2u, BEAM_DF_FF, BEAM_EMBD, 0);
+        BEAM_DF_LAYER(attn_kp, "attention_conv.kernel_projection.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD,
+            BEAM_DF_DYN, 0);
+        BEAM_DF_LAYER(attn_base, "attention_conv.base_kernel", DS4_TENSOR_F32, 3u, BEAM_EMBD, 2u, 2u);
+        BEAM_DF_LAYER(ffn_kp, "mlp_conv.kernel_projection.weight", DS4_TENSOR_Q8_0, 2u, BEAM_EMBD,
+            BEAM_DF_DYN, 0);
+        BEAM_DF_LAYER(ffn_base, "mlp_conv.base_kernel", DS4_TENSOR_F32, 3u, BEAM_EMBD, 2u, 2u);
+#undef BEAM_DF_LAYER
+    }
+#undef BEAM_DF
+    d->model = ok ? m : NULL;
+    return ok;
+}

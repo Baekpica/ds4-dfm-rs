@@ -67,6 +67,28 @@ int ds4_gpu_beam_logits(ds4_gpu_tensor *logits, uint32_t rows, uint32_t tokens);
 /* BF16 embedding rows (host-gathered) -> the F32 hidden rows. */
 int ds4_gpu_beam_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *rows_bf16, uint32_t rows);
 
+/* DFlash2 drafter (z-lab dflash model.py), F32 rows throughout: 40 query
+ * heads over 8 KV heads, a 4,096-key window both ways and a block of at
+ * most 16 rows. Context rings hold f16 [K | V] rows (the K-EXAONE layout)
+ * at slot = position % DS4_BEAM_DF_CAP. */
+enum { DS4_BEAM_DF_HEADS = 40, DS4_BEAM_DF_BLOCK = 16, DS4_BEAM_DF_WINDOW = 4096,
+       DS4_BEAM_DF_CAP = DS4_BEAM_DF_WINDOW + DS4_BEAM_DF_BLOCK, DS4_BEAM_DF_GROUP = 16,
+       DS4_BEAM_DF_DYN = 2 * 2 * DS4_BEAM_HIDDEN / DS4_BEAM_DF_GROUP };
+
+/* GroupedDynamicCausalConv over the block rows, one stage:
+ *   out[l][c] = sum_o (base[stage][o][c] + dyn[l][stage][o][c / 16]) * x[l - o][c]
+ * for taps o = 0, 1 with x[-1] = 0; dyn rows are the kernel_projection rows
+ * (stage, tap, group), base the F32 [2][2][5120] kernel. `out` must not
+ * alias `x`. */
+int ds4_gpu_beam_df_conv(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *dyn,
+    const void *map, uint64_t size, uint64_t base, uint32_t stage, uint32_t rows);
+
+/* Block attention: row r (position start + r) attends every ring key in
+ * [max(first, start + r - 4095), start + rows), the context below the block
+ * and all block rows, softmax scale 1/sqrt(128). */
+int ds4_gpu_beam_df_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *kv,
+    uint32_t first, uint32_t start, uint32_t rows);
+
 #ifdef __cplusplus
 }
 #endif

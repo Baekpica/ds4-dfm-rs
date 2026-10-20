@@ -15,6 +15,8 @@
 
 typedef struct {
     uint32_t ctx_cap, row_cap, swa_cap, position;
+    // Lowest position whose DFlash2 context rows are in the draft rings.
+    uint32_t draft_first;
     bool ready, failed, borrowed;
     uint64_t workspace_bytes, kv_bytes;
 #define BEAM_FIELD(field, cols, type) ds4_gpu_tensor *field;
@@ -23,6 +25,7 @@ typedef struct {
     ds4_gpu_tensor *logits, *partials;
     ds4_gpu_tensor *kv[DS4_MAX_LAYER];
     uint16_t *host_embed;
+    beam_draft_rt *draft;       // serial session with a DFlash2 file only
     uint32_t matrices[BEAM_LAYERS][3u * BEAM_EXPERTS];
 #ifndef __APPLE__
     ds4_gvq_ctx *gvq;
@@ -30,11 +33,18 @@ typedef struct {
 #endif
 } ds4_beam_graph;
 
+// DFlash2 runtime (ds4_beam_draft.inc).
+static void beam_draft_free(beam_draft_rt *d);
+static uint64_t beam_draft_bytes(uint32_t rows);
+static beam_draft_rt *beam_draft_alloc(const ds4_beam_draft *w, uint32_t rows);
+static bool beam_draft_tap(ds4_beam_graph *g, uint32_t il, uint32_t rows, uint32_t pos);
+
 /* Every graph owns its KV rows. A bank graph borrows everything else from
  * graph 0: bank forwards are serialized, so scratch is shared. */
 static void beam_graph_free(ds4_beam_graph *g) {
     if (!g) { return; }
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) { ds4_gpu_tensor_free(g->kv[il]); }
+    beam_draft_free(g->draft);
     if (g->borrowed) {
         memset(g, 0, sizeof(*g));
         return;
@@ -59,11 +69,14 @@ static bool beam_graph_reset(ds4_beam_graph *g) {
     if (!g || !g->ready) { return false; }
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
     g->position = 0u;
+    g->draft_first = 0u;
+    if (g->draft) { g->draft->trial_n = 0u; }
     g->failed = false;
     return true;
 }
 
-typedef enum { BEAM_HEAD_LAST, BEAM_HEAD_SKIP } beam_head_mode;
+// BEAM_HEAD_ALL (DFlash2 verify) caps every row's logits into draft->logits.
+typedef enum { BEAM_HEAD_LAST, BEAM_HEAD_SKIP, BEAM_HEAD_ALL } beam_head_mode;
 
 #ifndef __APPLE__
 static bool beam_graph_kv(ds4_beam_graph *g) {
@@ -143,10 +156,12 @@ static bool beam_trace(uint32_t il, uint32_t pos, const char *name, const ds4_gp
 }
 
 // A bank graph: its own KV rows, everything else borrowed from graph 0.
+// Banks never draft.
 static bool beam_graph_bank(ds4_beam_graph *g, const ds4_beam_graph *owner) {
     *g = *owner;
     g->borrowed = true;
     g->ready = false;
+    g->draft = NULL;
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) { g->kv[il] = NULL; }
     if (!beam_graph_kv(g)) {
         beam_graph_free(g);
@@ -273,16 +288,16 @@ static bool beam_layer(ds4_beam_graph *g, const ds4_model *m, const ds4_weights 
 }
 
 // The host gathers BF16 rows from the mapped embedding part (SSD-backed
-// page cache); the device widens them into cur.
+// page cache); the device widens them into `out` (cur, or draft rows).
 static bool beam_embed(ds4_beam_graph *g, const ds4_model *m, const ds4_weights *w,
-        const int *tokens, uint32_t rows) {
+        const int *tokens, uint32_t rows, ds4_gpu_tensor *out) {
     const uint64_t row = (uint64_t)BEAM_EMBD * sizeof(uint16_t);
     const uint8_t *table = m->map + w->token_embd->abs_offset;
     for (uint32_t r = 0; r < rows; r++) {
         memcpy((uint8_t *)g->host_embed + r * row, table + (uint64_t)tokens[r] * row, row);
     }
     return ds4_gpu_tensor_write(g->embed, 0u, g->host_embed, (uint64_t)rows * row) &&
-        ds4_gpu_beam_embed(g->cur, g->embed, rows);
+        ds4_gpu_beam_embed(out, g->embed, rows);
 }
 
 // Final norm, head and the soft cap of `row`.
@@ -308,15 +323,21 @@ static bool beam_forward(ds4_beam_graph *g, const ds4_model *m, const ds4_weight
     /* A failed enqueue leaves partially written KV rows; the session must
      * reset before another forward. */
     g->failed = true;
-    if (!beam_embed(g, m, w, tokens, rows) ||
+    if (!beam_embed(g, m, w, tokens, rows, g->cur) ||
         !beam_trace(0u, pos, "embed", g->cur, (uint64_t)rows * BEAM_EMBD * sizeof(float)) ||
         !ds4_gpu_beam_rms(g->gvq, g->norm, g->cur, beam_index(m, w->layer[0].attn_norm), rows)) { return false; }
     for (uint32_t il = 0; il < BEAM_LAYERS; il++) {
         const ds4_tensor *next = il + 1u < BEAM_LAYERS ? w->layer[il + 1u].attn_norm : NULL;
-        if (!beam_layer(g, m, w, il, rows, pos, next)) { return false; }
+        if (!beam_layer(g, m, w, il, rows, pos, next) || !beam_draft_tap(g, il, rows, pos)) { return false; }
     }
     if (head == BEAM_HEAD_LAST && (!beam_head(g, m, w, rows - 1u) ||
             !beam_trace(BEAM_LAYERS, pos, "logits", g->logits, (uint64_t)DS4_N_VOCAB * sizeof(float)))) {
+        return false;
+    }
+    if (head == BEAM_HEAD_ALL && (!g->draft || rows > BEAM_DF_BLOCK ||
+            !ds4_gpu_beam_rms(g->gvq, g->norm, g->cur, beam_index(m, w->output_norm), rows) ||
+            !beam_mm(g, m, g->draft->logits, w->output, g->norm, rows) ||
+            !ds4_gpu_beam_logits(g->draft->logits, rows, BEAM_TOKENS))) {
         return false;
     }
     g->position = pos + rows;

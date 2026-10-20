@@ -2250,7 +2250,7 @@ LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_l
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh cuda/l31_flash.cuh
-BEAM_NATIVE_DEPS = ds4_beam.h ds4_beam_bind.inc ds4_beam_graph.inc ds4_beam_payload.inc ds4_beam_session.inc \
+BEAM_NATIVE_DEPS = ds4_beam.h ds4_beam_bind.inc ds4_beam_graph.inc ds4_beam_payload.inc ds4_beam_session.inc ds4_beam_draft.inc \
 	ds4_beam_batch.inc ds4_beam_bank_payload.inc
 ds4.o ds4_cpu.o: $(BEAM_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_beam.h ds4_beam_gpu.cuh

@@ -717,3 +717,97 @@ extern "C" int ds4_gpu_beam_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *row
         ds4_current_stream()>>>((float *)cur->ptr, (const __nv_bfloat16 *)rows_bf16->ptr, count);
     return cuda_ok(cudaGetLastError(), "Beam embed");
 }
+
+/* DFlash2 drafter kernels. Draft rows only choose proposals that the target
+ * verifies, so they stay F32 without the source's BF16 rounding. */
+
+// One stage of GroupedDynamicCausalConv: per channel, the base kernel plus
+// the row's dynamic coefficient of the channel's 16-wide group, two taps.
+__global__ void beam_df_conv_kernel(float *out, const float *x, const float *dyn, const float *base,
+        uint32_t stage) {
+    constexpr uint32_t groups = BEAM_GPU_HIDDEN / DS4_BEAM_DF_GROUP;
+    const uint32_t c = blockIdx.x * blockDim.x + threadIdx.x, l = blockIdx.y;
+    if (c >= BEAM_GPU_HIDDEN) { return; }
+    const float *d = dyn + (uint64_t)l * DS4_BEAM_DF_DYN + stage * 2u * groups;
+    const float *b = base + (uint64_t)stage * 2u * BEAM_GPU_HIDDEN;
+    const uint32_t g = c / DS4_BEAM_DF_GROUP;
+    float sum = (b[c] + d[g]) * x[(uint64_t)l * BEAM_GPU_HIDDEN + c];
+    if (l) { sum = fmaf(b[BEAM_GPU_HIDDEN + c] + d[groups + g], x[(uint64_t)(l - 1u) * BEAM_GPU_HIDDEN + c], sum); }
+    out[(uint64_t)l * BEAM_GPU_HIDDEN + c] = sum;
+}
+
+extern "C" int ds4_gpu_beam_df_conv(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *dyn,
+        const void *map, uint64_t size, uint64_t base, uint32_t stage, uint32_t rows) {
+    const uint64_t kernel = 4u * BEAM_GPU_HIDDEN * sizeof(float), count = (uint64_t)rows * BEAM_GPU_HIDDEN;
+    if (!map || base > size || kernel > size - base || !rows || rows > DS4_BEAM_DF_BLOCK || stage > 1u ||
+        !gvq_floats(out, count) || !gvq_floats(x, count) || out->ptr == x->ptr ||
+        !gvq_floats(dyn, (uint64_t)rows * DS4_BEAM_DF_DYN)) { return 0; }
+    const float *b = (const float *)cuda_model_range_ptr(map, base, kernel, "Beam DFlash2 conv kernel");
+    if (!b) { return 0; }
+    beam_df_conv_kernel<<<dim3((BEAM_GPU_HIDDEN + 255u) / 256u, rows), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)x->ptr, (const float *)dyn->ptr, b, stage);
+    return cuda_ok(cudaGetLastError(), "Beam DFlash2 conv");
+}
+
+// One (KV head, block row) per CTA: the group's five query heads over the
+// ring keys [lo, start + rows). Each warp takes every fourth key with an
+// online softmax per head; shared memory merges the four warps.
+__global__ void beam_df_attn_kernel(float *out, const float *q, const __half *kv, uint32_t first,
+        uint32_t start, uint32_t rows) {
+    constexpr uint32_t G = DS4_BEAM_DF_HEADS / DS4_BEAM_KV_HEADS, D = BEAM_GPU_HEAD, WARPS = D / 32u, L = D / 32u;
+    constexpr uint32_t KV = DS4_BEAM_KV_HEADS * D;
+    __shared__ float sm_m[WARPS][G], sm_s[WARPS][G], sm_acc[WARPS][G][D];
+    const uint32_t h = blockIdx.x, r = blockIdx.y, lane = threadIdx.x & 31u, warp = threadIdx.x >> 5;
+    const uint32_t pos = start + r, hi = start + rows;
+    uint32_t lo = pos >= DS4_BEAM_DF_WINDOW - 1u ? pos - (DS4_BEAM_DF_WINDOW - 1u) : 0u;
+    if (lo < first) { lo = first; }
+    const float scale = rsqrtf((float)D);
+    float qv[G][L], acc[G][L], m[G], s[G];
+    for (uint32_t g = 0; g < G; g++) {
+        const float *qp = q + ((uint64_t)r * DS4_BEAM_DF_HEADS + h * G + g) * D + lane * L;
+        for (uint32_t j = 0; j < L; j++) { qv[g][j] = qp[j] * scale; acc[g][j] = 0.0f; }
+        m[g] = -INFINITY;
+        s[g] = 0.0f;
+    }
+    for (uint32_t p = lo + warp; p < hi; p += WARPS) {
+        const __half *row = kv + (uint64_t)(p % DS4_BEAM_DF_CAP) * 2u * KV + h * D + lane * L;
+        float kf[L], vf[L];
+        for (uint32_t j = 0; j < L; j++) { kf[j] = __half2float(row[j]); vf[j] = __half2float(row[KV + j]); }
+        for (uint32_t g = 0; g < G; g++) {
+            float dot = 0.0f;
+            for (uint32_t j = 0; j < L; j++) { dot = fmaf(qv[g][j], kf[j], dot); }
+            for (uint32_t o = 16; o; o >>= 1) { dot += __shfl_xor_sync(0xffffffffu, dot, o); }
+            const float top = fmaxf(m[g], dot), corr = __expf(m[g] - top), e = __expf(dot - top);
+            s[g] = fmaf(s[g], corr, e);
+            for (uint32_t j = 0; j < L; j++) { acc[g][j] = fmaf(acc[g][j], corr, e * vf[j]); }
+            m[g] = top;
+        }
+    }
+    for (uint32_t g = 0; g < G; g++) {
+        if (!lane) { sm_m[warp][g] = m[g]; sm_s[warp][g] = s[g]; }
+        for (uint32_t j = 0; j < L; j++) { sm_acc[warp][g][lane * L + j] = acc[g][j]; }
+    }
+    __syncthreads();
+    const uint32_t d = threadIdx.x;
+    for (uint32_t g = 0; g < G; g++) {
+        float top = -INFINITY, sum = 0.0f, value = 0.0f;
+        for (uint32_t w = 0; w < WARPS; w++) { top = fmaxf(top, sm_m[w][g]); }
+        for (uint32_t w = 0; w < WARPS; w++) {
+            const float e = sm_s[w][g] > 0.0f ? __expf(sm_m[w][g] - top) : 0.0f;
+            sum = fmaf(sm_s[w][g], e, sum);
+            value = fmaf(sm_acc[w][g][d], e, value);
+        }
+        out[((uint64_t)r * DS4_BEAM_DF_HEADS + h * G + g) * D + d] = value / sum;
+    }
+}
+
+extern "C" int ds4_gpu_beam_df_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *kv,
+        uint32_t first, uint32_t start, uint32_t rows) {
+    const uint64_t width = (uint64_t)rows * DS4_BEAM_DF_HEADS * BEAM_GPU_HEAD;
+    const uint64_t ring = (uint64_t)DS4_BEAM_DF_CAP * 2u * DS4_BEAM_KV_HEADS * BEAM_GPU_HEAD * sizeof(__half);
+    if (!rows || rows > DS4_BEAM_DF_BLOCK || first > start || !gvq_floats(out, width) || !gvq_floats(q, width) ||
+        !kv || kv->bytes < ring) { return 0; }
+    beam_df_attn_kernel<<<dim3(DS4_BEAM_KV_HEADS, rows), BEAM_GPU_HEAD, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)q->ptr, (const __half *)kv->ptr, first, start, rows);
+    return cuda_ok(cudaGetLastError(), "Beam DFlash2 attention");
+}
