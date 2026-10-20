@@ -717,7 +717,8 @@ extern "C" int ds4_gpu_beam_gate(ds4_gvq_ctx *ctx, ds4_gpu_tensor *heads, const 
 enum { BEAM_ATTN_THREADS = 128, BEAM_ATTN_WARPS = BEAM_ATTN_THREADS / 32, BEAM_ATTN_TILE = 32,
        BEAM_ATTN_GROUP = DS4_BEAM_HEADS / DS4_BEAM_KV_HEADS, BEAM_ATTN_KV = DS4_BEAM_KV_HEADS * BEAM_GPU_HEAD,
        BEAM_ATTN_SPLITS = 48 };
-static_assert(BEAM_GPU_HEAD == BEAM_ATTN_THREADS && BEAM_GPU_HEAD == 4 * 32, "one thread per head dimension");
+static_assert((uint32_t)BEAM_GPU_HEAD == (uint32_t)BEAM_ATTN_THREADS && BEAM_GPU_HEAD == 4 * 32,
+    "one thread per head dimension");
 
 // Four E4M3 codes (the bytes of `w`, lowest first) as floats; exact.
 static __device__ __forceinline__ void beam_e4m3x4(uint32_t w, float f[4]) {
@@ -1101,7 +1102,7 @@ extern "C" int ds4_gpu_beam_attn_decode(ds4_gpu_tensor *heads, const ds4_gpu_ten
     const uint32_t keys = pos - first + 1u;
     // About BEAM_ATTN_SPLITS splits of whole tiles: one block per SM on the
     // bulk path, a wave per KV head otherwise (at least four tiles each).
-    const uint32_t tile = bulk ? BEAM_ATTN8_TILE : BEAM_ATTN_TILE, least = bulk ? tile : 4u * tile;
+    const uint32_t tile = bulk ? (uint32_t)BEAM_ATTN8_TILE : (uint32_t)BEAM_ATTN_TILE, least = bulk ? tile : 4u * tile;
     uint32_t chunk = (keys + BEAM_ATTN_SPLITS - 1u) / BEAM_ATTN_SPLITS;
     chunk = chunk < least ? least : (chunk + tile - 1u) / tile * tile;
     if ((keys + chunk - 1u) / chunk > max_splits) {
