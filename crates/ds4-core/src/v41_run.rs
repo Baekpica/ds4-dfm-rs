@@ -23,10 +23,10 @@ use ds4_sys::{
     ds4_bridge_v41_generate, ds4_bridge_v41_images_bytes, ds4_bridge_v41_kvreuse_export,
     ds4_bridge_v41_kvreuse_import, ds4_bridge_v41_kvreuse_last_reused,
     ds4_bridge_v41_kvreuse_note_mount, ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set,
-    ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes, ds4_bridge_v41_set_dspark,
-    ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof,
-    ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear,
-    ds4_bridge_v41_zchain_rb_set,
+    ds4_bridge_v41_kvreuse_stale_prompt, ds4_bridge_v41_last_spec_stats,
+    ds4_bridge_v41_prefill_bytes, ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace,
+    ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling,
+    ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
 };
 
 use crate::engram::{EngramHash, EngramShard};
@@ -2016,6 +2016,53 @@ impl Model {
         }
         Ok(())
     }
+
+    /// The live sidecar switch: the reference's
+    /// `ds4_engine_v41_switch_plugins` (core_v41_state.c:96-115). The ②/③
+    /// directories change, their device tables are re-mounted here and now,
+    /// and the KV checkpoint is dropped -- it was computed with the amplifier
+    /// that is going away (core_v41_state.c:111, v41_kvreuse_drop).
+    ///
+    /// The engine installs the new set into a throwaway 16-row state before it
+    /// trusts it (core_v41_state.c:106-108); this host loads first instead:
+    /// `zchain_load_for_run` reads and checks every file, and `apply_zchain`
+    /// writes only after it returned (v41_run.rs:1488-1493), so a refused
+    /// directory never reaches the device. A refused *upload* can leave the
+    /// tables half-mounted, and the empty cache is the repair: the next run
+    /// re-mounts whole, the reference's "the half-mounted set is never kept"
+    /// (core_v41_state.c:109-110). The caller updates its own copy of the
+    /// directories only on Ok.
+    ///
+    /// The process-level mount cache is dropped first, so a switch re-reads
+    /// the disk even for a directory this process mounted before
+    /// (core_v41_amp.c:129-130). Returns the new state identity, which the
+    /// native compares to decide the drop.
+    pub fn v41_switch_sidecar(&self, zchain: Option<&str>, posttrain: Option<&str>) -> Result<u64> {
+        if self.shape().variant != crate::Variant::DeepSeek41Flash {
+            return Err(asset_error("the V4.1 sidecar switch needs a V4.1 model"));
+        }
+        *ZCHAIN_MOUNTED.lock().unwrap() = None;
+        let digest = v41_mount_zchain(self, zchain, posttrain)?;
+        unsafe { ds4_bridge_v41_kvreuse_note_mount(1, digest) };
+        Ok(digest)
+    }
+
+    /// The prompt of the checkpoint the last drop invalidated, taken once --
+    /// the read clears it, so a rewarm that a new request interrupts is never
+    /// replayed (the reference's `ds4_engine_v41_kv_stale_prompt`,
+    /// core_v41_kvreuse.c:52-56). None when nothing was dropped, or when the
+    /// prompt carried an image: the vision rows are not part of a checkpoint,
+    /// so there is nothing to re-prefill.
+    pub fn v41_stale_prompt(&self) -> Option<Vec<i32>> {
+        let mut n = 0u32;
+        let ptr = unsafe { ds4_bridge_v41_kvreuse_stale_prompt(&mut n) };
+        if ptr.is_null() || n == 0 {
+            return None;
+        }
+        let tokens = unsafe { std::slice::from_raw_parts(ptr, n as usize) }.to_vec();
+        unsafe { libc::free(ptr as *mut c_void) };
+        Some(tokens)
+    }
 }
 
 #[cfg(test)]
@@ -2075,6 +2122,37 @@ mod tests {
         _: u32,
     ) -> i32 {
         0 // These fixtures carry gain tables only.
+    }
+
+    /// The switch's native counterpart: the identity note (which is what makes
+    /// the native drop the checkpoint) and the retention it hands back.
+    static MOUNT_NOTES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+    static STALE_PROMPT: Mutex<Option<Vec<i32>>> = Mutex::new(None);
+
+    #[export_name = "ds4_bridge_v41_kvreuse_note_mount"]
+    unsafe extern "C" fn mock_note_mount(_has: i32, hash: u64) {
+        MOUNT_NOTES.lock().unwrap().push(hash);
+    }
+
+    #[export_name = "ds4_bridge_v41_kvreuse_stale_prompt"]
+    unsafe extern "C" fn mock_stale_prompt(n: *mut u32) -> *mut i32 {
+        if !n.is_null() {
+            *n = 0;
+        }
+        // The native's xmalloc'd handover: the host owns it and frees it with
+        // libc free (v41_kvreuse_stale_prompt, ds4_ds41_kvreuse.inc:143-155).
+        let Some(tokens) = STALE_PROMPT.lock().unwrap().take() else {
+            return std::ptr::null_mut();
+        };
+        let buf = libc::malloc(tokens.len() * std::mem::size_of::<i32>()) as *mut i32;
+        if buf.is_null() {
+            return std::ptr::null_mut();
+        }
+        std::ptr::copy_nonoverlapping(tokens.as_ptr(), buf, tokens.len());
+        if !n.is_null() {
+            *n = tokens.len() as u32;
+        }
+        buf
     }
 
     /// Synthetic sidecar files (the layouts the readers check,
@@ -2293,6 +2371,107 @@ mod tests {
         assert_eq!(actual, expected, "retry used a stale mount cache hit");
         assert!(retried, "retry did not upload the original gain table");
         assert!(invalidated, "failed mutation retained a cache identity");
+        drop(model);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A switch re-reads the disk: the mount cache is dropped first
+    /// (core_v41_amp.c:129-130), so a path whose content changed mounts again
+    /// and its identity follows the new tables.
+    #[test]
+    fn switch_rereads_the_directory_from_disk() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tmpdir("switch-reread");
+        let a = dir.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        std::fs::write(a.join("gr_L01.bin"), gr_f32(4, 2)).unwrap();
+        let model = mount_fixture(&dir);
+
+        let first = model.v41_switch_sidecar(a.to_str(), None).unwrap();
+        let gains_first = MOUNT_DEVICE.lock().unwrap().gains.clone();
+
+        // Same path, one file fewer: a cached mount returns the old identity
+        // and keeps the layer's table.
+        std::fs::remove_file(a.join("gr_L01.bin")).unwrap();
+        let second = model.v41_switch_sidecar(a.to_str(), None).unwrap();
+        let gains_second = MOUNT_DEVICE.lock().unwrap().gains.clone();
+
+        assert_ne!(
+            first, second,
+            "the switch took the mount cache, not the disk"
+        );
+        assert!(gains_first[1].is_some(), "the first mount missed gr L01");
+        assert!(
+            gains_second[0].is_some() && gains_second[1].is_none(),
+            "the switched mount kept the dropped layer's table"
+        );
+        assert_eq!(
+            MOUNT_NOTES.lock().unwrap().last().copied(),
+            Some(second),
+            "the native was not told the new amplifier identity"
+        );
+        drop(model);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A refused set changes nothing: the load validates before any write
+    /// (v41_run.rs:1488-1493), no identity is noted, and the cache is left
+    /// empty so the next run re-mounts whole (core_v41_state.c:109-110).
+    #[test]
+    fn refused_switch_keeps_the_mounted_set() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tmpdir("switch-refused");
+        let a = dir.join("a");
+        let bad = dir.join("bad");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(a.join("gr_L00.bin"), gr_f32(4, 2)).unwrap();
+        std::fs::write(bad.join("amp_L00.bin"), amp_f32(2, 2)).unwrap();
+        let model = mount_fixture(&dir);
+
+        let digest = model.v41_switch_sidecar(a.to_str(), None).unwrap();
+        let gains = MOUNT_DEVICE.lock().unwrap().gains.clone();
+        let notes = MOUNT_NOTES.lock().unwrap().len();
+
+        let error = model.v41_switch_sidecar(bad.to_str(), None).unwrap_err();
+        assert!(
+            error.message.contains("amp_Lnn.bin"),
+            "refusal must name the file, got: {}",
+            error.message
+        );
+        assert_eq!(
+            MOUNT_DEVICE.lock().unwrap().gains,
+            gains,
+            "a refused switch wrote the device"
+        );
+        assert_eq!(
+            MOUNT_NOTES.lock().unwrap().len(),
+            notes,
+            "a refused switch noted a new identity"
+        );
+        assert!(
+            ZCHAIN_MOUNTED.lock().unwrap().is_none(),
+            "a refused switch left a mount cache entry"
+        );
+
+        // The old set still mounts, and it is read again rather than cached.
+        assert_eq!(model.v41_switch_sidecar(a.to_str(), None).unwrap(), digest);
+        drop(model);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The retention is handed over once: a rewarm that a new request
+    /// interrupts is never replayed (core_v41_kvreuse.c:52-56).
+    #[test]
+    fn stale_prompt_is_handed_over_once() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap();
+        let dir = tmpdir("switch-stale");
+        let model = mount_fixture(&dir);
+        *STALE_PROMPT.lock().unwrap() = Some(vec![7, 8, 9]);
+
+        assert_eq!(model.v41_stale_prompt(), Some(vec![7, 8, 9]));
+        assert_eq!(model.v41_stale_prompt(), None, "the retention was replayed");
         drop(model);
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -186,6 +186,28 @@ pub trait DecodeIo {
     fn v41_kvreuse_last_reused(&self) -> i32 {
         0
     }
+    /// The live sidecar switch (the reference's `ds4_engine_v41_switch_plugins`,
+    /// core_v41_state.c:96-115).  The owner thread calls it, so no request is
+    /// in flight; a refused set leaves the mounted one serving and answers
+    /// Err.  Only an engine with a loaded v41 route answers.
+    fn v41_switch_plugins(
+        &mut self,
+        _zchain: Option<&str>,
+        _posttrain: Option<&str>,
+    ) -> Result<V41SwitchOutcome, GenerateError> {
+        Err(GenerateError::Unsupported(
+            "V4.1 sidecar switching is not loaded on this engine",
+        ))
+    }
+    /// The post-switch rewarm (server_plugins.c:66-78): re-prefill the prompt
+    /// the switch invalidated, under the new sidecar, so the next message
+    /// reuses the checkpoint instead of paying the whole prefill.  `pending`
+    /// answers "a request is already queued"; the prefill then stops at the
+    /// next block boundary and that request saves its own checkpoint.  None
+    /// on an engine with no v41 route.
+    fn v41_rewarm(&self, _pending: &mut dyn FnMut() -> bool) -> Option<V41Rewarm> {
+        None
+    }
     fn template(&self) -> Option<&ds4_core::chat_template::Template> {
         None
     }
@@ -4096,6 +4118,31 @@ pub struct V41ServeRoute {
     pub vision: Option<ds4_core::v41_media::V41VisionMeta>,
 }
 
+/// What a completed live sidecar switch left mounted: the directories now
+/// serving and the state identity the engine mounted them under (the identity
+/// the KV checkpoint is keyed by, v41_run.rs:1803-1812).
+#[derive(Debug, Clone)]
+pub struct V41SwitchOutcome {
+    pub zchain: Option<String>,
+    pub posttrain: Option<String>,
+    pub digest: u64,
+}
+
+/// How the post-switch rewarm went (server_plugins.c:70-77).
+#[derive(Debug, Clone)]
+pub enum V41Rewarm {
+    /// The drop kept no prompt: there was no checkpoint to warm.
+    Nothing,
+    /// A request was already queued when the switch landed, so the prewarm
+    /// stood aside; that request saves its own checkpoint.
+    Yielded,
+    /// Re-prefilled the retained prompt under the new sidecar.
+    Done { tokens: u32, secs: f64 },
+    /// The prefill failed or was refused (admission, VRAM); the next request
+    /// pays it, exactly as a switch without a rewarm would.
+    Failed(String),
+}
+
 #[cfg(feature = "native")]
 impl<'a> NativeDecode<'a> {
     pub fn new(model: &'a ds4_core::Model, ctx: i32) -> Self {
@@ -4346,6 +4393,81 @@ impl DecodeIo for NativeDecode<'_> {
 
     fn v41_kvreuse_last_reused(&self) -> i32 {
         ds4_core::v41_kvreuse_last_reused()
+    }
+
+    fn v41_switch_plugins(
+        &mut self,
+        zchain: Option<&str>,
+        posttrain: Option<&str>,
+    ) -> Result<V41SwitchOutcome, GenerateError> {
+        if self.v41.is_none() {
+            return Err(GenerateError::Unsupported(
+                "V4.1 sidecar switching is not loaded on this engine",
+            ));
+        }
+        let digest = self
+            .model
+            .v41_switch_sidecar(zchain, posttrain)
+            .map_err(|error| GenerateError::Engine(error.to_string()))?;
+        // The route's own copy changes only now: a refused set leaves the old
+        // directories serving every later request.
+        if let Some(route) = self.v41.as_mut() {
+            route.zchain = zchain.map(str::to_owned);
+            route.posttrain = posttrain.map(str::to_owned);
+        }
+        Ok(V41SwitchOutcome {
+            zchain: zchain.map(str::to_owned),
+            posttrain: posttrain.map(str::to_owned),
+            digest,
+        })
+    }
+
+    fn v41_rewarm(&self, pending: &mut dyn FnMut() -> bool) -> Option<V41Rewarm> {
+        let route = self.v41.as_ref()?;
+        let prompt = self.model.v41_stale_prompt()?;
+        if prompt.is_empty() {
+            return Some(V41Rewarm::Nothing);
+        }
+        if pending() {
+            return Some(V41Rewarm::Yielded);
+        }
+        // Argmax over the prompt and nothing more: n_predict 0 leaves the
+        // native its prefill and the prompt-end checkpoint, with no decode to
+        // run (core_v41_api.c:186-192).  The disk half stays out of it: the
+        // checkpoint this rewarm writes is the in-memory one.
+        let mut opts = ds4_core::V41RunOptions {
+            engram_dir: route.engram_dir.as_deref(),
+            no_engram: route.no_engram,
+            dspark: route.dspark,
+            graph: route.graph,
+            verify_k: route.verify_k,
+            emit_trace: route.emit_trace,
+            prof: route.prof,
+            kv_reuse: None,
+            kv_disk: None,
+            sampling: None,
+            greedy: None,
+            zchain: route.zchain.as_deref(),
+            posttrain: route.posttrain.as_deref(),
+            images: None,
+        };
+        let mut emit = |_token: i32| false;
+        let mut progress = |_event: &str, _current: i32, _total: i32| !pending();
+        let started = Instant::now();
+        match self.model.v41_generate(
+            &route.model_path,
+            &prompt,
+            0,
+            &mut opts,
+            &mut emit,
+            &mut progress,
+        ) {
+            Ok(()) => Some(V41Rewarm::Done {
+                tokens: prompt.len() as u32,
+                secs: started.elapsed().as_secs_f64(),
+            }),
+            Err(error) => Some(V41Rewarm::Failed(error.to_string())),
+        }
     }
 
     fn v41_vision(&self) -> Option<ds4_core::v41_media::V41VisionMeta> {
