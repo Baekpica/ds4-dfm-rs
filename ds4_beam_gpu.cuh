@@ -19,6 +19,7 @@
  * its inputs where the source has a BF16 tensor, since prefill projections
  * leave F32 sums. */
 #include "ds4_beam.h"
+#include "cuda/beam_mma8w.cuh"
 
 enum { BEAM_GPU_EXPERTS = DS4_BEAM_EXPERTS, BEAM_GPU_USED = DS4_BEAM_USED, BEAM_GPU_HIDDEN = DS4_BEAM_HIDDEN,
        BEAM_GPU_FFN = DS4_BEAM_FFN, BEAM_GPU_TABLE = 3 * BEAM_GPU_EXPERTS, BEAM_GPU_LAYERS = DS4_BEAM_MOE_LAYERS,
@@ -55,7 +56,7 @@ static beam_decode_layout beam_decode_plan() {
 
 // Prefill: E4M3 input rows and 1x128 scales, gate rows (BF16), the up
 // epilogue's E4M3 SwiGLU rows and scales, down rows (BF16), worklists.
-struct beam_mma_layout { uint64_t x8, xs, gate, mid8, ms, down, work, order, bytes; };
+struct beam_mma_layout { uint64_t x8, xs, gate, mid8, ms, down, work, order, witems, token, pscale, bytes; };
 
 static beam_mma_layout beam_mma_plan(uint32_t rows) {
     beam_mma_layout l = {};
@@ -70,6 +71,11 @@ static beam_mma_layout beam_mma_plan(uint32_t rows) {
     l.down = take(pairs * BEAM_GPU_HIDDEN * sizeof(__nv_bfloat16));
     l.work = take(pairs * sizeof(glmvq_mma_item));
     l.order = take(pairs * sizeof(uint32_t));
+    // Warp-specialized 12-bit path: gate, up and down items (each expert's
+    // runs of BEAM_W_BT pairs), and each pair's token row and scale.
+    l.witems = take(3 * (BEAM_GPU_EXPERTS + pairs / BEAM_W_BT) * sizeof(beam_w_item));
+    l.token = take(pairs * sizeof(uint32_t));
+    l.pscale = take(pairs * sizeof(float));
     l.bytes = at;
     return l;
 }
@@ -79,9 +85,12 @@ struct ds4_beam_moe {
     ds4_gpu_tensor *decode = nullptr, *mma = nullptr;
     uint32_t rows = 0, decode_blocks = 0;
     int mma8_blocks[2][3] = {};     // [12-bit, 13-bit][gate, up, down]
-    bool gain_dot = true, mma8 = false;
+    uint32_t sms = 0;
+    // DS4_BEAM_MMA_WS=0: 12-bit experts on glmvq_mma8_kernel (A/B diagnostic).
+    bool gain_dot = true, mma8 = false, mma8w = true;
     std::vector<uint32_t> keys;     // table slot per layer, keyed by expert 0's gate
-    std::vector<glmvq_mma_item> items;
+    std::vector<glmvq_mma_item> items;   // 64-token items (glmvq_mma8_kernel)
+    std::vector<beam_w_item> witems;     // gate, up, down 128-token items (beam_w kernels)
     std::vector<uint32_t> order;
     std::vector<uint8_t> token_used;
 };
@@ -129,6 +138,12 @@ extern "C" ds4_beam_moe *ds4_gpu_beam_moe_create(ds4_gvq_ctx *gvq, uint32_t rows
     moe->gvq = gvq;
     moe->rows = rows;
     moe->gain_dot = !beam_env_off("DS4_BEAM_GAIN_DOT");
+    moe->mma8w = !beam_env_off("DS4_BEAM_MMA_WS");
+    int device = 0, sms = 0;
+    if (cudaGetDevice(&device) == cudaSuccess &&
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) == cudaSuccess) {
+        moe->sms = (uint32_t)sms;
+    }
     const cudaError_t err12 = beam_prepare<12>(moe), err13 = beam_prepare<13>(moe);
     if (err12 != cudaSuccess || err13 != cudaSuccess) {
         (void)cudaGetLastError();
@@ -352,32 +367,72 @@ static int beam_mma_run(ds4_beam_moe *moe, float *out, const float *input, const
     auto *gate = (__nv_bfloat16 *)(base + l.gate), *down = (__nv_bfloat16 *)(base + l.down);
     auto *work = (glmvq_mma_item *)(base + l.work);
     auto *order = (uint32_t *)(base + l.order);
+    auto *witems = (beam_w_item *)(base + l.witems);
+    auto *token = (uint32_t *)(base + l.token);
+    auto *pscale = (float *)(base + l.pscale);
+    // 12-bit layers run the warp-specialized kernels on 128-token items;
+    // 13-bit layers (and DS4_BEAM_MMA_WS=0) glmvq_mma8_kernel on 64-token items.
+    const bool wide = BITS == 12 && moe->mma8w && moe->sms;
     moe->items.clear();
-    for (uint32_t e = 0; e < BEAM_GPU_EXPERTS; e++) {
-        for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += BEAM_GPU_MMA_TOKENS) {
-            moe->items.push_back({{matrices[e], matrices[BEAM_GPU_EXPERTS + e], matrices[2 * BEAM_GPU_EXPERTS + e]},
-                start, min((uint32_t)BEAM_GPU_MMA_TOKENS, offsets[e + 1] - start)});
+    moe->witems.clear();
+    if (wide) {
+        for (uint32_t m = 0; m < 3; m++) {
+            for (uint32_t e = 0; e < BEAM_GPU_EXPERTS; e++) {
+                const glmvq_matrix &vq = ctx->model->source[matrices[m * BEAM_GPU_EXPERTS + e]].vq;
+                for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += BEAM_W_BT) {
+                    moe->witems.push_back({start, min((uint32_t)BEAM_W_BT, offsets[e + 1] - start), vq.gain, vq.main, 0});
+                }
+            }
+        }
+    } else {
+        for (uint32_t e = 0; e < BEAM_GPU_EXPERTS; e++) {
+            for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += BEAM_GPU_MMA_TOKENS) {
+                moe->items.push_back({{matrices[e], matrices[BEAM_GPU_EXPERTS + e], matrices[2 * BEAM_GPU_EXPERTS + e]},
+                    start, min((uint32_t)BEAM_GPU_MMA_TOKENS, offsets[e + 1] - start)});
+            }
         }
     }
     std::fill(moe->token_used.begin(), moe->token_used.begin() + rows, 0);
     for (uint32_t i = 0; i < pairs; i++) {
-        const uint32_t token = ctx->grouped[i] / BEAM_GPU_USED;
-        moe->order[token * BEAM_GPU_USED + moe->token_used[token]++] = i;
+        const uint32_t token_row = ctx->grouped[i] / BEAM_GPU_USED;
+        moe->order[token_row * BEAM_GPU_USED + moe->token_used[token_row]++] = i;
     }
     const cudaStream_t stream = ds4_current_stream();
-    if (!cuda_ok(cudaMemcpyAsync(work, moe->items.data(), moe->items.size() * sizeof(*work),
-            cudaMemcpyHostToDevice, stream), "Beam MMA work") ||
-        !cuda_ok(cudaMemcpyAsync(order, moe->order.data(), pairs * sizeof(*order),
+    const bool copied = wide
+        ? cuda_ok(cudaMemcpyAsync(witems, moe->witems.data(), moe->witems.size() * sizeof(beam_w_item),
+            cudaMemcpyHostToDevice, stream), "Beam warp-specialized items")
+        : cuda_ok(cudaMemcpyAsync(work, moe->items.data(), moe->items.size() * sizeof(*work),
+            cudaMemcpyHostToDevice, stream), "Beam MMA work");
+    if (!copied || !cuda_ok(cudaMemcpyAsync(order, moe->order.data(), pairs * sizeof(*order),
             cudaMemcpyHostToDevice, stream), "Beam MMA order")) { return 0; }
     const auto *source = (const glmvq_source *)ctx->model->device->ptr;
     const auto *book = (const uint8_t *)ctx->model->source[matrices[0]].vq.book;
     const auto *grouped = (const uint32_t *)ctx->pairs->ptr;
-    const uint32_t nitems = (uint32_t)moe->items.size();
+    const uint32_t nitems = (uint32_t)moe->items.size(), nwide = (uint32_t)moe->witems.size() / 3;
     const int *blocks = moe->mma8_blocks[BITS - 12];
-    // Tokens quantize once (E4M3, 1x128 scales) for their eight experts.
-    const uint64_t xb = count / GLMVQ_MMA8_K;
-    glmvq_mma8_quant<float><<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
-        x8, xs, input, xb);
+    if (wide) {
+        // Tokens quantize once (E4M3, one scale per row, ldmatrix k order) for
+        // their eight experts; each pair gets its token row and scale.
+        beam_w_quant<<<rows, GLMVQ_THREADS, 0, stream>>>(x8, xs, input, BEAM_GPU_HIDDEN);
+        beam_w_pairs<<<(uint32_t)((pairs + 255) / 256), 256, 0, stream>>>(token, pscale, xs, grouped, BEAM_GPU_USED,
+            (uint32_t)pairs);
+        cudaError_t err = beam_w_launch<GLMVQ_MMA_GATE>(witems, nwide, book, x8, token, pscale, gate,
+            BEAM_GPU_FFN, BEAM_GPU_HIDDEN, nullptr, nullptr, moe->sms, stream);
+        if (err == cudaSuccess) {
+            err = beam_w_launch<GLMVQ_MMA_UP>(witems + nwide, nwide, book, x8, token, pscale, gate,
+                BEAM_GPU_FFN, BEAM_GPU_HIDDEN, mid8, ms, moe->sms, stream);
+        }
+        if (err == cudaSuccess) {
+            err = beam_w_down_launch(witems + 2 * nwide, nwide, book, mid8, ms, down, BEAM_GPU_HIDDEN, BEAM_GPU_FFN,
+                moe->sms, stream);
+        }
+        if (!cuda_ok(err, "Beam warp-specialized experts")) { return 0; }
+    } else {
+        // Tokens quantize once (E4M3, 1x128 scales) for their eight experts.
+        const uint64_t xb = count / GLMVQ_MMA8_K;
+        glmvq_mma8_quant<float><<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0,
+            stream>>>(x8, xs, input, xb);
+    }
     auto launch = [&](auto mode, const uint8_t *in, const float *scale, uint32_t rows_out, uint32_t cols_in,
             uint8_t *q8, float *q8_scale) {
         constexpr glmvq_mma_stage MODE = decltype(mode)::value;
@@ -388,12 +443,15 @@ static int beam_mma_run(ds4_beam_moe *moe, float *out, const float *input, const
             source, work, nitems, book, in, scale, grouped, BEAM_GPU_USED, gate, nullptr, down,
             rows_out, cols_in, INFINITY, q8, q8_scale);
     };
-    launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_GATE>{}, x8, xs, BEAM_GPU_FFN, BEAM_GPU_HIDDEN,
-        nullptr, nullptr);
-    // The up epilogue writes down's E4M3 rows and scales directly.
-    launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, BEAM_GPU_FFN, BEAM_GPU_HIDDEN, mid8, ms);
-    launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_DOWN>{}, mid8, ms, BEAM_GPU_HIDDEN, BEAM_GPU_FFN,
-        nullptr, nullptr);
+    if (!wide) {
+        launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_GATE>{}, x8, xs, BEAM_GPU_FFN, BEAM_GPU_HIDDEN,
+            nullptr, nullptr);
+        // The up epilogue writes down's E4M3 rows and scales directly.
+        launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, BEAM_GPU_FFN, BEAM_GPU_HIDDEN,
+            mid8, ms);
+        launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_DOWN>{}, mid8, ms, BEAM_GPU_HIDDEN, BEAM_GPU_FFN,
+            nullptr, nullptr);
+    }
     glmvq_mma_reduce<__nv_bfloat16, GLMVQ_REDUCE_BF16><<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS,
         GLMVQ_THREADS, 0, stream>>>(out, down, weights, grouped, order, BEAM_GPU_USED, BEAM_GPU_HIDDEN, count);
     return cuda_ok(cudaGetLastError(), "Beam FP8 grouped MMA");
