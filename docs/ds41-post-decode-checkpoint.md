@@ -40,6 +40,24 @@ The restore tries `K_turn` first and falls through to `K_pre` untouched: a miss
 on the turn checkpoint must not disturb the prompt-end decision.  Both die on
 the same events (`v41_kvreuse_drop`, a model close, an amplifier change).
 
+## What the invalidation keeps
+
+The drop keeps the prompt of the checkpoint it invalidates and hands it over
+once (`v41_kvreuse_stale_prompt`; the reference's `g_stale` and
+`ds4_engine_v41_kv_stale_prompt`, `core_v41_kvreuse.c:40-56`), NULL for an image
+prompt, whose vision rows no checkpoint holds.  The reference spends the idle
+moment after a plugin switch re-prefilling that prompt under the new amplifier,
+so the user's next message does not pay the whole prefill (`plugins_rewarm`,
+6057991).
+
+Nothing consumes it here, and the reason is structural: a domain switch in this
+deployment stops the server first (`dgx-recipe/scripts/ds41_install.sh:202`),
+the checkpoint is VRAM, so a restarted process has nothing to warm, and the
+port's own switch stand-in fires at the start of the run that observed the
+change, which is already inside a request.  The code is ported and covered for a
+host that does have a switch event; wiring it is the live-switch port, not a
+line here.
+
 ## The key is the state's positions, not the emitted ids
 
 `v41_kvreuse_save_turn` keys `K_turn` by the prompt followed by the ids the
@@ -145,5 +163,18 @@ Served, on the Spark (GB10) against the binary built from this branch
   suite run, 9 of its reuse lines served by the turn checkpoint (`375/390`,
   suffix 15; `24049/24069`, suffix 20; 38.2 MB at 24k tokens).
 
-Not yet run for this branch: `make proof-cuda-long` (long-context captured-vs-
-eager parity), which needs the model exclusively and so needs the serve stopped.
+`make proof-cuda-long` ran for this branch on the Spark (2026-10-20, the serve
+stopped): six cells, all `OK`, `PROOF_V41_EXIT=0`.  The three eager arms report
+`v41 graph captures=0`, the three capture arms 15 each, and all six produce the
+same output (`sha 2718cb6d...`, `tok_md5 8a65268e...`, `gen=1024`, 249-252 s a
+cell), so parity holds on `selected_token_ids_md5` for eager vs capture, +fp8-kv
+and +fp8-kv-predecode.
+
+The V4.1 shape that run needed (`7cd44c52`): the harness tokenizes each fixture
+through the same binary (`--dump-tokens`) and drives the family's `--gen-ids`
+with `--engram-dir`, without which the run dies ENOENT on the artifact's
+recorded Engram shard paths (the converting host's); the eager arm is driven
+with `--no-graph`, because the v41 route sets the graph switch itself
+(`lib.rs:782`, `v41_run.rs:1739`), so a profile-level `DS4_CUDA_LAYER_GRAPHS=0`
+cannot reach it and the arm would run captured.  A cell whose capture count
+contradicts its arm fails the run, so the parity cannot pass vacuously.
