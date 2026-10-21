@@ -42,16 +42,24 @@ row from the page cache over the SSD.
 cuBLAS (`CUBLAS_COMPUTE_32F_PEDANTIC`, never TF32), then the group-limited
 top-8 in one warp per row. The GVQ decode kernels stream the eight selected
 experts with the layer book in shared memory; 13-bit layers stage four
-experts' mid rows per down pass to fit GB10's 99 KiB block. Sliding layers keep
-f16 `[K | V]` rings of 512 + one prefill chunk; the full layers keep Solar's
-FP8 rows (E4M3 K and V plus one f16 scale per KV head, 2,080 bytes per token
-and layer; 18.28 GiB at 1M) and attend them with the split decode kernel.
+experts' mid rows per down pass to fit GB10's 99 KiB block. The q/k/v/gate
+Q4_K projections of a token run as one launch. Sliding layers keep f16
+`[K | V]` rings of 512 + one prefill chunk; the full layers keep Solar's FP8
+rows (E4M3 K and V plus one f16 scale per KV head, 2,080 bytes per token and
+layer; 18.28 GiB at 1M). Both attend with Beam's split-key decode kernel
+(about 48 key chunks per KV head, its six query heads together); on sm_90+
+the FP8 rows stream in with one bulk copy per key and QK/PV run on f16 MMAs.
 
 **Prefill (2,048-row chunks).** Q4_K projections run the FP16 tensor-core q4p
-kernel; routed experts the FP8 MMA on E4M3 codewords after host grouping
-(rows ≥ 5); 2–4 rows (verify widths) take one pass over the rows' expert
-union with the one-row kernel's arithmetic. `DS4_BEAM_PREFILL_CHUNK` selects
-up to 4,096 rows.
+kernel. Routed experts run on E4M3 codewords after host grouping (rows ≥ 5):
+12-bit layers on the warp-specialized tokens × weights^T kernels of
+`cuda/beam_mma8w.cuh` (128-token items), 13-bit layers on
+`glmvq_mma8_kernel`; 2–4 rows (verify widths) take one pass over the rows'
+expert union with the one-row kernel's arithmetic. The full layers' attention
+takes the warp-specialized FP8 walk (byte-identical to the GQA-pair kernel),
+the sliding layers the HMMA pair kernel. RoPE rows are computed once per
+forward, and the next chunk's embedding rows are read ahead.
+`DS4_BEAM_PREFILL_CHUNK` selects up to 4,096 rows.
 
 **Numerics.** Every kernel rounds where the source has a BF16 tensor
 (transformers `models/beam`, the handoff's `beam_ref.py`): RMSNorm as weight ×
@@ -113,9 +121,14 @@ above 6 at 98% (521 ungated trials, draft 7). Verification stops before the
 first proposal under `--mtp-margin`, and a doubtful first proposal skips the
 verify for an ordinary step. A trial costs about 12–15 ms of drafting and
 70–130 ms of verification (two to eight rows read the union of their experts),
-against about 44 ms for one decode step.
+against about 44 ms for one decode step at `dab8bd75` (37.6 ms after the
+October 21 kernel work).
 
-| Five greedy chat prompts, 384 tokens | tok/s |
+At `391b0bf1` the same five chat prompts run 26.23 tok/s without the drafter
+and **32.03** with draft 7, margin 2 (+22%). The settings were chosen at
+`dab8bd75`:
+
+| Five greedy chat prompts, 384 tokens, at `dab8bd75` | tok/s |
 |---|---:|
 | Plain bank lane, no drafter | 24.0 |
 | Drafter loaded, MTP off (that build still projected the taps) | 23.1 |
@@ -166,26 +179,31 @@ serving neither saves nor loads disk records; banks persist and restore them.
 
 ## Performance
 
-The [2K–64K sweep](benchmarks/beam-vq-spark-64k-2026-10-21/README.md): three
-fresh `ds4-bench` processes per variant, 2,048-token incremental prefill and
-128 forced greedy tokens per frontier on the raw `promessi_sposi.txt` prompt.
+The [2K–64K sweep](benchmarks/beam-vq-spark-64k-2026-10-21-tuned/README.md) at
+`391b0bf1`: three fresh `ds4-bench` processes per variant, 2,048-token
+incremental prefill and 128 forced greedy tokens per frontier on the raw
+`promessi_sposi.txt` prompt. The dashed line is the
+[same sweep at `dab8bd75`](benchmarks/beam-vq-spark-64k-2026-10-21/README.md),
+before the [October 21 optimization round](beam-vq-optimization-2026-10-21.md).
 
 | Configuration (median of three run means) | Prefill tok/s | Decode tok/s |
 |---|---:|---:|
-| MTP off, 2K–64K | 830.4 | 15.86 |
-| MTP off, 2K–32K | 881.5 | 18.70 |
-| DFlash2 (draft 7, margin 2), 2K–64K | 821.1 | 15.41 |
+| MTP off, 2K–64K | 1,241.2 | 25.23 |
+| MTP off, 2K–32K | 1,326.0 | 26.03 |
+| DFlash2 (draft 7, margin 2), 2K–64K | 1,225.7 | 24.73 |
 
-![Beam-1.0 VQ prefill and decode on one DGX Spark](benchmarks/beam-vq-spark-64k-2026-10-21/throughput.png)
+![Beam-1.0 VQ prefill and decode on one DGX Spark](benchmarks/beam-vq-spark-64k-2026-10-21-tuned/throughput.png)
 
 A decoded token reads about 7.24 GB of weights (the eight selected experts of
 49 layers 2.94 GB, Q4_K attention 3.07 GB, dense FFN 0.53 GB, head 0.44 GB,
-F32 routers 0.26 GB): 26.5 ms at 273 GB/s against 44.3 ms measured at 2K.
-Decode halves from 2K (22.57) to 64K (11.26) as the full layers' FP8 rows
-grow; prefill peaks at 923.5 tok/s at 8K and ends at 730.7 at 64K. On this
-raw prose DFlash2 costs 2.8% of decode (most blocks are doubtful; each
-attempt still drafts) and 1.1% of prefill (the tap projections); on chat it
-gains 28% (above).
+F32 routers 0.26 GB): 29.4 ms at 246 GB/s against 37.6 ms measured at 2K.
+Decode falls 11% from 2K (26.61) to 64K (23.67) as the full layers' FP8 rows
+grow (1.23 GB per token at 64K, read at about 229 GB/s); before the round it
+halved. Prefill peaks at 1,413.7 tok/s at 4K and is 23% lower at 64K, where the
+nine full layers' attention over the prefix runs at 60% of the F16 peak. On
+this raw prose DFlash2 costs 2.0% of decode (most blocks are doubtful; each
+attempt still drafts) and 1.3% of prefill (the tap projections); on chat it
+gains 22% (above).
 
 ## Quality
 
@@ -194,24 +212,28 @@ gains 28% (above).
   bytes matches them at 93.94% top-1 over 5,491 positions (NLL 1.4590 vs
   1.4629). The engine is judged against that GB10 rerun with bands fixed
   beforehand (NLL within 1%, top-1 at most 2 points below the reference's own
-  agreement): decode NLL −0.14%, top-1 93.79%; 512-row prefill NLL −0.24%.
+  agreement): at `391b0bf1` decode NLL +0.27%, top-1 93.59%; 512-row prefill
+  NLL −0.28%, top-1 94.51% (at `dab8bd75`: −0.14%, 93.79%; −0.24%).
   Engine traces sit at 1e-3–1e-2 relative to the reference per stage until a
   route flips, and every flip lands at a reference near-tie.
 - **DFlash2 losslessness** (`tests/beam_mtp_gate`, seven fixture cases, 128
-  prompt tokens, 192 greedy tokens, draft 7, margin 2): 1,224 tokens at 2.52
-  per step. Each generated token is scored in a one-row decode teacher-forced
-  on the same tokens. The reference's own H100-vs-GB10 floor puts the other
+  prompt tokens, 192 greedy tokens, draft 7, margin 2). Each generated token
+  is scored in a one-row decode teacher-forced on the same tokens. The reference's own H100-vs-GB10 floor puts the other
   run's pick more than 0.5 logits below its argmax at 1.73–1.97% of positions
   and more than 4 at 0.09–0.22% (worst 8.3–15.5); the gate allows the 95%
-  Poisson count of those rates. 21 tokens exceeded 0.5 (32 allowed), one 4
-  (6 allowed), worst 5.6. Twenty of the 21 were anchors picked from a verify
-  row's logits, one an accepted draft.
+  Poisson count of those rates. At `391b0bf1`: 1,227 tokens at 2.67 per step,
+  14 exceeded 0.5 (33 allowed), two 4 (6 allowed), worst 5.1. At `dab8bd75`
+  (1,224 tokens at 2.52 per step): 21, one, worst 5.6; twenty of those 21
+  were anchors picked from a verify row's logits, one an accepted draft.
 
 ## Diagnostic switches
 
 | Variable | Effect |
 |---|---|
 | `DS4_BEAM_PREFILL_CHUNK` | prefill rows per chunk (default 2,048; at most 4,096) |
+| `DS4_BEAM_MMA_WS=0` | 12-bit prefill experts on `glmvq_mma8_kernel` (1×128 activation scales) |
+| `DS4_SOLAR_FATTN_WS=0` | full-layer prefill attention on the GQA-pair kernel (byte-identical) |
+| `DS4_BEAM_ATTN_LEGACY=1` | decode attention on the Solar/EXAONE kernels |
 | `DS4_BEAM_FULL_KV=f16` | f16 `[K | V]` full-layer rows instead of FP8 (rounding diagnostic) |
 | `DS4_BEAM_TRACE=DIR`, `DS4_BEAM_TRACE_POS` | per-stage rows of one forward |
 | `DS4_MTP_SPEC_LOG=1` | per-trial width, accepted rows, draft/verify time and selector margins |
@@ -229,9 +251,13 @@ gains 28% (above).
   k), so a back-off lost 7% on chat and was dropped. The draft runs at about
   62% of its weight-streaming floor; that and the verify's expert union are
   the levers.
-- Decode falls from 22.7 tok/s at 2K to 11.3 at 64K: the nine full layers'
-  FP8 decode attention adds ~45 ms per token at 64K, about 27 GB/s on 1.2 GB
-  of rows. That kernel is the first long-context target.
+- Prefill and decode still fall with context: the nine full layers read
+  1.23 GB of FP8 rows per decoded token at 64K (at ~229 GB/s now), and their
+  prefill attention, at 60% of the F16 peak, grows with the prefix. The
+  October 21 [optimization round](beam-vq-optimization-2026-10-21.md) lists
+  the remaining levers: 4,096-row chunks (+12% one-shot prefill at 8K–32K,
+  ~1.4 GiB more), coarser softmax steps in the attention walk, the 13-bit
+  expert layers and small expert units.
 - The VQ student agrees with the BF16 teacher on 82.9% of next tokens (the
   model card's held-out set); header forcing covers its Harmony drift, and
   greedy decoding can loop in reasoning on some prompts.

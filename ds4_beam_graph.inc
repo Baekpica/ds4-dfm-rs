@@ -186,9 +186,21 @@ static bool beam_mm_many(ds4_beam_graph *g, const ds4_model *m, ds4_gpu_tensor *
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
     uint32_t index[4];
     for (uint32_t c = 0; c < count; c++) { index[c] = beam_index(m, ws[c]); }
-    const bool ok = count <= 4 && ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
+    // One token: a single launch streams every matrix (the k/v rows too).
+    const bool ok = count <= 4 && ((rows == 1u && ds4_gpu_gvq_q4_decode_many(g->gvq, outs, index, count, x)) ||
+        ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16));
     if (!ok) { fprintf(stderr, "ds4: Beam linear group of %u failed (rows=%u)\n", count, rows); }
     return ok;
+}
+
+// DS4_BEAM_ATTN_LEGACY=1: decode attention on the Solar/EXAONE kernels (A/B).
+static bool beam_attn_legacy(void) {
+    static int legacy = -1;
+    if (legacy < 0) {
+        const char *value = getenv("DS4_BEAM_ATTN_LEGACY");
+        legacy = value && value[0] == '1';
+    }
+    return legacy != 0;
 }
 
 /* Gated GQA: q/k RMSNorm per head, RoPE on the sliding layers (the full
@@ -203,9 +215,9 @@ static bool beam_attention(ds4_beam_graph *g, const ds4_model *m, const ds4_weig
     // v_proj's BF16 output: prefill projections leave F32 sums.
     if (!beam_mm_many(g, m, outs, ws, 4u, g->norm, rows) ||
         !ds4_gpu_gvq_round(g->v, (uint64_t)rows * BEAM_KV) ||
-        !ds4_gpu_beam_qk(g->gvq, g->q, beam_index(m, l->attn_q_norm), BEAM_HEADS, rows, pos,
+        !ds4_gpu_beam_qk(g->gvq, g->q, beam_index(m, l->attn_q_norm), BEAM_HEADS, rows, g->rope,
             full ? DS4_BEAM_QK_SCALE : DS4_BEAM_QK_ROPE) ||
-        !ds4_gpu_beam_qk(g->gvq, g->k, beam_index(m, l->attn_k_norm), BEAM_KV_HEADS, rows, pos,
+        !ds4_gpu_beam_qk(g->gvq, g->k, beam_index(m, l->attn_k_norm), BEAM_KV_HEADS, rows, g->rope,
             full ? DS4_BEAM_QK_NORM : DS4_BEAM_QK_ROPE) ||
         !beam_trace(il, pos, "q", g->q, (uint64_t)rows * BEAM_Q * sizeof(float)) ||
         !beam_trace(il, pos, "k", g->k, (uint64_t)rows * BEAM_KV * sizeof(float)) ||
@@ -214,7 +226,10 @@ static bool beam_attention(ds4_beam_graph *g, const ds4_model *m, const ds4_weig
     if (full) {
         ok = ds4_gpu_solar_kv_store_tensor(g->kv[il], g->k, g->v, BEAM_KV_HEADS, BEAM_HEAD, rows, pos,
                 g->ctx_cap, beam_full_kv());
-        if (ok && rows == 1u) {
+        if (ok && rows == 1u && !beam_attn_legacy()) {
+            ok = ds4_gpu_beam_attn_decode(g->heads, g->q, g->kv[il], g->partials, BEAM_DECODE_SPLITS, g->ctx_cap,
+                pos, 0u, beam_full_kv() == DS4_SOLAR_KV_FP8);
+        } else if (ok && rows == 1u) {
             // About BEAM_DECODE_SPLITS / 2 chunks of at least 256 keys.
             const uint32_t keys = pos + 1u, chunk = (keys + BEAM_DECODE_SPLITS / 2u - 1u) / (BEAM_DECODE_SPLITS / 2u);
             ok = ds4_gpu_solar_attention_decode_split_tensor(g->heads, g->q, g->kv[il], g->partials,
@@ -226,7 +241,10 @@ static bool beam_attention(ds4_beam_graph *g, const ds4_model *m, const ds4_weig
         }
     } else {
         ok = ds4_gpu_exaone_kv_store_tensor(g->kv[il], g->k, g->v, BEAM_KV, rows, pos, g->swa_cap) &&
-            (rows == 1u
+            (rows == 1u && !beam_attn_legacy()
+                ? ds4_gpu_beam_attn_decode(g->heads, g->q, g->kv[il], g->partials, BEAM_DECODE_SPLITS, g->swa_cap,
+                      pos, BEAM_WINDOW, 0)
+                : rows == 1u
                 ? ds4_gpu_exaone_attention_decode_tensor(g->heads, g->q, g->kv[il], BEAM_HEADS,
                       BEAM_KV_HEADS, BEAM_HEAD, g->swa_cap, pos, BEAM_WINDOW)
                 : ds4_gpu_exaone_attention_prefill_tensor(g->heads, g->q, g->kv[il], rows, pos,
@@ -287,12 +305,30 @@ static bool beam_layer(ds4_beam_graph *g, const ds4_model *m, const ds4_weights 
     return ok;
 }
 
+/* Ask the kernel to read `rows` tokens' embedding rows ahead. A cold
+ * 2,048-row gather faulted about 21 MB in from the SSD one page at a time
+ * (~66 ms) while the GPU idled: the prefill loop issues the next chunk's
+ * rows before it runs the current one, and a gather first queues all of
+ * its own rows. Advisory only; failures are ignored. */
+static void beam_embed_prefetch(const ds4_model *m, const ds4_weights *w, const int *tokens, uint32_t rows) {
+    const uint64_t row = (uint64_t)BEAM_EMBD * sizeof(uint16_t);
+    const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
+    const uint8_t *table = m->map + w->token_embd->abs_offset;
+    for (uint32_t r = 0; r < rows; r++) {
+        if (tokens[r] < 0 || (uint32_t)tokens[r] >= DS4_N_VOCAB) { continue; }
+        const uintptr_t at = (uintptr_t)(table + (uint64_t)tokens[r] * row);
+        const uintptr_t first = at / page * page, last = (at + row + page - 1) / page * page;
+        (void)madvise((void *)first, last - first, MADV_WILLNEED);
+    }
+}
+
 // The host gathers BF16 rows from the mapped embedding part (SSD-backed
 // page cache); the device widens them into `out` (cur, or draft rows).
 static bool beam_embed(ds4_beam_graph *g, const ds4_model *m, const ds4_weights *w,
         const int *tokens, uint32_t rows, ds4_gpu_tensor *out) {
     const uint64_t row = (uint64_t)BEAM_EMBD * sizeof(uint16_t);
     const uint8_t *table = m->map + w->token_embd->abs_offset;
+    if (rows > 1u) { beam_embed_prefetch(m, w, tokens, rows); }
     for (uint32_t r = 0; r < rows; r++) {
         memcpy((uint8_t *)g->host_embed + r * row, table + (uint64_t)tokens[r] * row, row);
     }
@@ -323,7 +359,7 @@ static bool beam_forward(ds4_beam_graph *g, const ds4_model *m, const ds4_weight
     /* A failed enqueue leaves partially written KV rows; the session must
      * reset before another forward. */
     g->failed = true;
-    if (!beam_embed(g, m, w, tokens, rows, g->cur) ||
+    if (!beam_embed(g, m, w, tokens, rows, g->cur) || !ds4_gpu_beam_rope(g->rope, rows, pos) ||
         !beam_trace(0u, pos, "embed", g->cur, (uint64_t)rows * BEAM_EMBD * sizeof(float)) ||
         !ds4_gpu_beam_rms(g->gvq, g->norm, g->cur, beam_index(m, w->layer[0].attn_norm), rows)) { return false; }
     for (uint32_t il = 0; il < BEAM_LAYERS; il++) {
@@ -361,5 +397,9 @@ static bool beam_forward(ds4_beam_graph *g, const ds4_model *m, const ds4_weight
 static bool beam_graph_bank(ds4_beam_graph *g, const ds4_beam_graph *owner) {
     (void)g; (void)owner;
     return false;
+}
+
+static void beam_embed_prefetch(const ds4_model *m, const ds4_weights *w, const int *tokens, uint32_t rows) {
+    (void)m; (void)w; (void)tokens; (void)rows;
 }
 #endif

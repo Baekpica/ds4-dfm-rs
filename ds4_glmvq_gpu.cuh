@@ -877,6 +877,27 @@ extern "C" int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *
     return 1;
 }
 
+extern "C" int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input) {
+    if (!ctx || !outs || !weights || !count || count > GLMVQ_Q4_MANY || !ctx->direct_q4 || !gvq_stream(ctx)) {
+        return 0;
+    }
+    const void *w[GLMVQ_Q4_MANY];
+    float *y[GLMVQ_Q4_MANY];
+    uint32_t rows[GLMVQ_Q4_MANY], cols = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->model->source.size()) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        if (ctx->model->records[weights[c]].type != GVQ_TYPE_Q4 || (c && s.cols != cols) ||
+            !gvq_floats(outs[c], s.rows)) { return 0; }
+        cols = s.cols;
+        w[c] = s.data; y[c] = (float *)outs[c]->ptr; rows[c] = s.rows;
+    }
+    if (!gvq_floats(input, cols)) { return 0; }
+    return cuda_ok(glmvq_q4_decode_many(w, y, rows, count, cols, (const float *)input->ptr, ctx->stream, &ctx->q4),
+        "GLM VQ Q4 decode many");
+}
+
 // Q4_K matrices sharing one input, stored as BF16 rows (the rounding decode
 // and verify keep) when q4p takes them; 0 leaves the outputs untouched.
 extern "C" int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,

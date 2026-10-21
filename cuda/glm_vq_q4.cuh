@@ -181,6 +181,66 @@ __global__ void __launch_bounds__(256, 4) glmvq_q4_stream(const uint8_t *weight,
     }
 }
 
+/* Up to four matrices sharing one input (Beam's q/k/v/gate): one STAGE
+ * launch whose blocks take rpb-row groups matrix by matrix, so the 1,024-row
+ * k/v projections stream beside the large ones instead of running the
+ * latency-bound scalar kernel in their own launches. */
+enum { GLMVQ_Q4_MANY = 4 };
+struct glmvq_q4_many {
+    const uint8_t *weight[GLMVQ_Q4_MANY];
+    float *out[GLMVQ_Q4_MANY];
+    uint32_t rows[GLMVQ_Q4_MANY], first[GLMVQ_Q4_MANY + 1];   // first[c]: matrix c's first group
+};
+
+template <uint32_t NT>
+__global__ void __launch_bounds__(256, 4) glmvq_q4_stream_many(glmvq_q4_many many,
+        const float *input, uint32_t cols, uint32_t tokens, uint32_t split) {
+    extern __shared__ uint4 staged[];
+    __shared__ float partial[GLMVQ_Q4_WARPS * NT];
+    glmvq_pdl_open();
+    // Selected by compares, not an index: a dynamic index would copy the
+    // parameter block to local memory in every thread.
+    const uint8_t *weight = many.weight[0];
+    float *out = many.out[0];
+    uint32_t rows = many.rows[0], first = 0;
+    #pragma unroll
+    for (uint32_t c = 1; c < GLMVQ_Q4_MANY; c++) {
+        if (blockIdx.x >= many.first[c]) { weight = many.weight[c]; out = many.out[c]; rows = many.rows[c]; first = many.first[c]; }
+    }
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const uint32_t rpb = GLMVQ_Q4_WARPS / split, local = warp / split, part = warp % split;
+    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK, group = blockIdx.x - first;
+    const uint32_t row16 = blocks * (GLMVQ_Q4_BYTES / sizeof(uint4));
+    glmvq_q4_copy<GLMVQ_Q4_STAGE>(staged, (const uint4 *)weight + (uint64_t)group * rpb * row16,
+        min(rpb, rows - group * rpb) * row16);
+    // The first weights stream while the predecessor drains.
+    glmvq_pdl_wait();
+    __syncthreads();
+    const uint32_t row = group * rpb + local;
+    float sum[NT] = {};
+    if (row < rows) {
+        const uint8_t *w = (const uint8_t *)(staged + local * row16);
+        for (uint32_t b = part; b < blocks; b += split) {
+            glmvq_q4_acc<NT>(w + b * GLMVQ_Q4_BYTES, input, cols, b * GLMVQ_Q4_BLOCK, tokens, sum);
+        }
+    }
+    #pragma unroll
+    for (uint32_t t = 0; t < NT; t++) {
+        for (int stride = 16; stride; stride >>= 1) { sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], stride); }
+        if (!lane) { partial[warp * NT + t] = sum[t]; }
+    }
+    __syncthreads();
+    if (row < rows && !lane && !part) {
+        #pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            if (t >= tokens) { continue; }
+            float value = 0;
+            for (uint32_t p = 0; p < split; p++) { value += partial[(warp + p) * NT + t]; }
+            out[(uint64_t)t * rows + row] = __bfloat162float(__float2bfloat16_rn(value));
+        }
+    }
+}
+
 static cudaError_t glmvq_q4_prepare(glmvq_q4_config *config, glmvq_q4_load mode) {
     int device, sms, shared, major;
     cudaError_t err = cudaGetDevice(&device);
@@ -188,6 +248,16 @@ static cudaError_t glmvq_q4_prepare(glmvq_q4_config *config, glmvq_q4_load mode)
     if (err == cudaSuccess) { err = cudaDeviceGetAttribute(&shared, cudaDevAttrMaxSharedMemoryPerBlock, device); }
     if (err == cudaSuccess) { err = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device); }
     if (err == cudaSuccess) { *config = {mode, (uint32_t)sms * 4u, (uint32_t)shared, (uint32_t)major, GLMVQ_LAUNCH_PLAIN}; }
+    // The grouped GEMV reads its input row through L1. After a kernel that
+    // needs a near-maximal shared carveout (Beam's 99 KiB decode attention)
+    // the driver keeps that split for every launch it still fits, leaving
+    // 28 KiB of L1: Beam's q/gate projections ran 85 -> 100 us. Half the
+    // unified memory as shared still fits four 12 KiB stages per SM. The
+    // single-matrix kernel keeps the default: the 46 KiB stages of wide rows
+    // (dense down, the head) need the large split for two blocks per SM.
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_q4_stream_many<1>, cudaFuncAttributePreferredSharedMemoryCarveout, 50);
+    }
     return err;
 }
 
@@ -235,6 +305,32 @@ static void glmvq_q4_launch(const void *weight, const float *input, float *out,
             glmvq_launch_kernel(launch, glmvq_q4_small<NT>, grid, GLMVQ_Q4_WARPS * 32, 0, stream,
                 w, input, out, cols, rows, tokens, split);
     }
+}
+
+// One token over `count` matrices of `cols` inputs (glmvq_q4_stream_many);
+// split 2 (four rows per block) as the 6,144-row projections pick alone.
+static cudaError_t glmvq_q4_decode_many(const void *const *weight, float *const *out, const uint32_t *rows,
+        uint32_t count, uint32_t cols, const float *input, cudaStream_t stream, const glmvq_q4_config *config) {
+    constexpr uint32_t split = 2, rpb = GLMVQ_Q4_WARPS / split;
+    if (!config || !count || count > GLMVQ_Q4_MANY || !input || !cols || cols % GLMVQ_Q4_BLOCK ||
+        (uintptr_t)input % 16) { return cudaErrorInvalidValue; }
+    glmvq_q4_many many = {};
+    uint32_t groups = 0;
+    for (uint32_t c = 0; c < GLMVQ_Q4_MANY; c++) {
+        many.first[c] = groups;
+        if (c >= count) { continue; }
+        if (!weight[c] || !out[c] || !rows[c] || (uintptr_t)weight[c] % 16) { return cudaErrorInvalidValue; }
+        many.weight[c] = (const uint8_t *)weight[c];
+        many.out[c] = out[c];
+        many.rows[c] = rows[c];
+        groups += 1 + (rows[c] - 1) / rpb;
+    }
+    many.first[GLMVQ_Q4_MANY] = groups;
+    const uint64_t bytes = (uint64_t)rpb * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+    if (bytes + GLMVQ_Q4_WARPS * sizeof(float) > config->shared) { return cudaErrorInvalidValue; }
+    glmvq_launch_kernel(config->launch, glmvq_q4_stream_many<1>, groups, GLMVQ_Q4_WARPS * 32, bytes, stream,
+        many, input, cols, 1u, split);
+    return cudaGetLastError();
 }
 
 static cudaError_t glmvq_q4_decode(const void *weight, const float *input, float *out,

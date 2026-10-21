@@ -88,6 +88,8 @@ int ds4_mmq_solar_prefill_attn_hmma(
 // alignment, device shared-memory opt-in); 0 when the pair kernel would
 // run instead. DS4_SOLAR_FATTN_WS=0 forces the pair kernel.
 int ds4_mmq_solar_prefill_attn_ws_available(const void *kv, size_t row_bytes);
+// 1 when FP8 K/V rows (DS4_SOLAR_KV_FP8) can take the warp-specialized walk.
+int ds4_mmq_fp8_prefill_attn_ws_available(const void *kv, size_t row_bytes);
 
 // Inkling prefill attention on bf16 tensor cores: the current chunk's K/V
 // rows are staged as bf16 into `stage` ([rows][2048] u16, the cache row

@@ -43,6 +43,11 @@ static int beam_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err
     const uint32_t end = (uint32_t)prompt->len;
     while (start < end) {
         const uint32_t n = end - start < g->row_cap ? end - start : g->row_cap;
+        // The next chunk's embedding rows load while this one computes.
+        if (start + n < end) {
+            const uint32_t next = end - start - n < g->row_cap ? end - start - n : g->row_cap;
+            beam_embed_prefetch(&s->engine->model, &s->engine->weights, prompt->v + start + n, next);
+        }
         // Only the final chunk's last row needs the vocabulary head.
         const beam_head_mode head = start + n == end ? BEAM_HEAD_LAST : BEAM_HEAD_SKIP;
         if (!beam_forward(g, &s->engine->model, &s->engine->weights, prompt->v + start, n, start, head)) {

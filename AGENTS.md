@@ -213,6 +213,56 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
   fragments (full/empty mbarriers, persistent CTAs) leave consumers LDS +
   HMMA: 82–84 TFLOPS of the 108 FP16 peak, against MMQ's 61 TOPS of INT8,
   whose per-k32 scale epilogue was 74% of its instructions.
+- **Replay real routes in MoE reproducers.** Beam's 2,048-row prefill
+  chunks send a median 1,011 pairs to the busiest expert (count CV
+  0.6–3.4). A uniform-random harness put a warp-specialized gate at 4.6 ms
+  against 5.4 ms in the model; replaying routes dumped from one prefill
+  (temporary hook) reproduced the model. With all-128-token units the same
+  kernel reached 81% of the FP8 peak, on real routes 55%: skewed routes
+  leave many units latency-bound on their index stream.
+- **Attribute NCU stalls to source lines.** Export
+  `ncu --page source --print-source sass --csv`, map each address minus
+  the kernel's first address through `nvdisasm -g` line tables, and sum
+  stall reasons per line (the CUDA-source CSV view carried no metrics).
+  Split mbarrier waits by the barrier offset in `SYNCS.PHASECHK` (full vs
+  empty) to see which role starves.
+- **Keep dependent loads off unit boundaries.** Per-stage `map[]` loads
+  and divisions in producers and `map → scale` chains in epilogues were
+  the largest stall of a warp-specialized VQ gate. A tiny kernel writing
+  each pair's token row and scale, metadata loaded one unit ahead, and the
+  unit record passed to consumers inside the ring (a 16-byte cp.async in
+  stage 0) took it from 5.0 to 4.0 ms, bit-identical.
+- **ptxas reorders `mma.sync`.** `asm volatile` orders only NVVM; with two
+  A fragments alternating across MMAs ptxas rebuilt one A register quad
+  with four MOVs per QMMA. For VQ codewords (8 bytes = k 4q..4q+3,
+  16+4q..16+4q+3) compute tokens × weights^T: a codeword is exactly an
+  m16n8k32 B fragment (one LDS.64, no MOVs) and tokens are A via
+  ldmatrix.x4 once their rows are stored in the matching k order. Results
+  stayed bit-identical: the k32 reduction is symmetric in A and B.
+- **Runtime indices into struct arrays go to the stack.** `item.main[m]`
+  with a runtime `m` gave an 80-byte stack frame and local loads in a copy
+  loop (13.7 → 10.8 ms after a ternary select). Read ptxas stack sizes,
+  not only spill counts.
+- **L2 holds CTAs × (current + prefetched) blocks.** 48 CTAs prefetching
+  240 KB next-unit blocks beside a 10.5 MB activation overflowed the 24 MB
+  L2 (1.65 GB DRAM for a 1.3 GB minimum); 120 KB blocks fit. Pace the
+  next-unit L2 prefetch one piece per stage: front-loading it lost 5–10%,
+  none lost 45%. A global tile-major unit order lost 20% (activation reuse
+  distance); tile-major over one expert's items saved 14% on a 64-token
+  fused kernel (concurrent CTAs share each block).
+- **mbarrier waits need a suspend hint.** `try_wait` spin loops were 19% of
+  a kernel's issued instructions; the suspend-time operand (CUTLASS uses
+  0x989680) parks the warp in hardware.
+- **Raw tiles may not fit beside a decoded double buffer.** FP8 K/V
+  attention tiles staged raw (2 × 17 KB) plus decoded halves (2 × 35 KB)
+  needed 103 KB; producers loading the next tile into registers (LDG.128)
+  and decoding into the halves fit in 68 KB and made Beam's 64K-frontier
+  prefill attention 1.49× faster, byte-identical. When two 16-byte stores
+  per lane share a bank group, alternate which one each lane issues first.
+- **Every included header belongs on the object's rule.** A new .cuh
+  pulled in by `ds4_beam_gpu.cuh` but missing from the `ds4_cuda.o`
+  dependency line left the object stale, and an unchanged binary was
+  measured as a variant. Check the object's timestamp after each edit.
 
 # Agent Notes
 
