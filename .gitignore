@@ -263,6 +263,6 @@ tests/naive_banks
 /tests/test_glm_vq_res
 
 # tools/vq_calib build outputs
-/tools/vq_calib/cuda/libaxk2_vq_convert_sm*.so
-/tools/vq_calib/cuda/libaxk2_vq_convert_sm*.build.json
+/tools/vq_calib/cuda/*.so
+/tools/vq_calib/cuda/*.build.json
 /tools/vq_calib/native/

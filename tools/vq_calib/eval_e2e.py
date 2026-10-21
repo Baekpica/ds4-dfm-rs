@@ -234,15 +234,31 @@ def main():
     tot = {'n': 0, 'kl': 0., 'top1': 0, 'nt': 0., 'ns': 0., 'nn': 0}
     goldens = {}
     by_domain = {}
+    def score(st, n, chunk=2048):
+        # Full-vocabulary logits per position, in chunks (an 11K-token case is 7 GB per F32 tensor).
+        kl, top1, nll_t, nll_s, kt_i, kt_v, ks_i, ks_v = [], [], [], [], [], [], [], []
+        for c0 in range(0, n, chunk):
+            c1 = min(n, c0 + chunk)
+            lt = F.linear(rms_norm(ht[st + c0:st + c1], src_norm['model.norm.weight']), src_norm['lm_head.weight']).float()
+            ls = F.linear(rms_norm(h[st + c0:st + c1], s_norm), s_head).float()
+            pt, ps = F.log_softmax(lt, -1), F.log_softmax(ls, -1)
+            kl.append((pt.exp() * (pt - ps)).sum(-1))
+            top1.append(lt.argmax(-1) == ls.argmax(-1))
+            last = min(c1, n - 1)                         # next-token targets exist up to position n-2
+            if last > c0:
+                tgt = ids[st + c0 + 1:st + last + 1].to(dev)
+                nll_t.append(-pt[:last - c0].gather(1, tgt[:, None])[:, 0])
+                nll_s.append(-ps[:last - c0].gather(1, tgt[:, None])[:, 0])
+            if a.goldens:
+                kt, ks = torch.topk(lt, 8, -1), torch.topk(ls, 8, -1)
+                kt_i.append(kt.indices.cpu()); kt_v.append(kt.values.cpu())
+                ks_i.append(ks.indices.cpu()); ks_v.append(ks.values.cpu())
+            del lt, ls, pt, ps
+        g = (torch.cat(kt_i), torch.cat(kt_v), torch.cat(ks_i), torch.cat(ks_v)) if a.goldens else None
+        return torch.cat(kl), torch.cat(top1), torch.cat(nll_t), torch.cat(nll_s), g
+
     for i, (st, n) in enumerate(seqs):
-        lt = F.linear(rms_norm(ht[st:st + n], src_norm['model.norm.weight']), src_norm['lm_head.weight']).float()
-        ls = F.linear(rms_norm(h[st:st + n], s_norm), s_head).float()
-        pt, ps = F.log_softmax(lt, -1), F.log_softmax(ls, -1)
-        kl = (pt.exp() * (pt - ps)).sum(-1)
-        top1 = (lt.argmax(-1) == ls.argmax(-1))
-        tgt = ids[st + 1:st + n].to(dev)
-        nll_t = -pt[:-1].gather(1, tgt[:, None])[:, 0]
-        nll_s = -ps[:-1].gather(1, tgt[:, None])[:, 0]
+        kl, top1, nll_t, nll_s, g = score(st, n)
         meta = names[i] if i < len(names) else {}
         key = f"{i:02d}-{meta.get('domain', 'case')}"
         res['cases'][key] = {'tokens': n, 'domain': meta.get('domain'), 'kl_mean': kl.mean().item(),
@@ -260,11 +276,10 @@ def main():
         tot['ns'] += nll_s.sum().item()
         tot['nn'] += n - 1
         if a.goldens:
-            kt, ks = torch.topk(lt, 8, -1), torch.topk(ls, 8, -1)
-            goldens[key] = {'ids': ids[st:st + n].tolist(), 'teacher_top8_ids': kt.indices.cpu().tolist(),
-                            'teacher_top8_logits': [[round(v, 4) for v in r] for r in kt.values.cpu().tolist()],
-                            'student_top8_ids': ks.indices.cpu().tolist(),
-                            'student_top8_logits': [[round(v, 4) for v in r] for r in ks.values.cpu().tolist()]}
+            goldens[key] = {'ids': ids[st:st + n].tolist(), 'teacher_top8_ids': g[0].tolist(),
+                            'teacher_top8_logits': [[round(v, 4) for v in r] for r in g[1].tolist()],
+                            'student_top8_ids': g[2].tolist(),
+                            'student_top8_logits': [[round(v, 4) for v in r] for r in g[3].tolist()]}
         print(json.dumps({'case': key, **res['cases'][key]}), flush=True)
     res['all'] = {'positions': tot['n'], 'kl_mean': tot['kl'] / tot['n'], 'top1_agreement': tot['top1'] / tot['n'],
                   'nll_teacher': tot['nt'] / tot['nn'], 'nll_student': tot['ns'] / tot['nn'],

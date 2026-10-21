@@ -657,22 +657,259 @@ def write_set(stem, samples, extra=None):
     log('wrote', path, json.dumps({k: totals[k] for k in ('sequences', 'tokens', 'length', 'tokens_ge_4096')}))
 
 
+# ---------------------------------------------------------------- held-out 2
+
+# Independent second held-out set (held-out 1 was used to choose between release
+# recipes). (family, source pools, kind, cases, min tokens, max tokens); each case
+# draws its own target length in [min, max] and is cut to it (teacher-forced
+# measurement only). Wikitext-2 windows avoid the two used by held-out 1.
+HELDOUT2 = [
+    ('wikitext2', ['wikitext2'], 'stream', 6, 2048, 2048),
+    ('en_web', ['en_web'], 'doc', 5, 1024, 3072),
+    ('en_web_long', ['en_web'], 'doc', 1, 8192, 10240),
+    ('ko_web', ['ko_web'], 'doc', 5, 1024, 3072),
+    ('ko_web_long', ['ko_web'], 'doc', 1, 8192, 10240),
+    ('ko_chat_nothink', ['ko_stem', 'ko_math', 'ko_code'], 'chat_nothink', 5, 768, 3072),
+    ('ko_think', ['ko_math', 'ko_stem'], 'chat_think', 5, 1024, 3072),
+    ('en_reason_think', ['casc2_general', 'casc1_science'], 'chat_think', 5, 1024, 3072),
+    ('math_think', ['casc1_math'], 'chat_think', 5, 1024, 3072),
+    ('if_chat', ['if_off', 'if_on', 'casc2_if'], 'chat_mixed', 5, 768, 3072),
+    ('tool_call', ['tool'], 'chat_mixed', 5, 1024, 3072),
+    ('swe_agentless', ['swe'], 'chat_nothink', 4, 1024, 3072),
+    ('swe_long', ['swe'], 'chat_nothink', 1, 8192, 10240),
+    ('competitive_prog', ['cp_py', 'cp_cpp'], 'chat_think', 5, 1024, 3072),
+    ('code_python', ['code_web'], 'doc_py', 4, 1024, 3072),
+    ('code_c', ['code_web'], 'doc_c', 4, 1024, 3072),
+    ('ja_web', ['ja_web'], 'doc', 4, 768, 3072),
+    ('zh_web', ['zh_web'], 'doc', 4, 768, 3072),
+    ('es_web', ['es_web'], 'doc', 4, 768, 3072),
+    ('finance', ['finance'], 'chat_nothink', 4, 2048, 3072),
+    ('finance_long', ['finance'], 'chat_nothink', 1, 8192, 10240),
+]
+HELDOUT2_CAP = 16384
+FROZEN_CALIB = ROOT / 'frozen' / 'calib-b244872e.safetensors'
+FROZEN_HELDOUT = ROOT / 'frozen' / 'heldout-81681f74.safetensors'
+
+
+def build_heldout2():
+    from safetensors.numpy import load_file
+    t0 = time.monotonic()
+    R = Renderer()
+    W = 64
+
+    def win(x, k):
+        return hashlib.blake2b(np.asarray(x[k:k + W], np.int32).tobytes(), digest_size=8).digest()
+
+    # windows of the frozen calibration set: rows per window (capped at 3 = boilerplate)
+    calib = load_file(str(FROZEN_CALIB))
+    ci, co = calib['input_ids'], calib['offsets']
+    crow = {}
+    for r in range(len(co) - 1):
+        x = ci[co[r]:co[r + 1]]
+        seen = set()
+        for k in range(0, len(x) - W + 1):
+            d = win(x, k)
+            if d in seen:
+                continue
+            seen.add(d)
+            c = crow.get(d, 0)
+            if c < 3:
+                crow[d] = c + 1
+    boiler = {d for d, c in crow.items() if c >= 3}
+    used = {d for d, c in crow.items() if c < 3}
+    h1 = load_file(str(FROZEN_HELDOUT))
+    hi_, ho_ = h1['input_ids'], h1['offsets']
+    for r in range(len(ho_) - 1):
+        x = hi_[ho_[r]:ho_[r + 1]]
+        for k in range(0, len(x) - W + 1):
+            d = win(x, k)
+            if d not in boiler:
+                used.add(d)
+    log('heldout2: frozen windows', len(crow), 'boilerplate', len(boiler), f'{time.monotonic() - t0:.0f}s')
+
+    formatting = {}
+
+    def is_formatting(ids, k, d):
+        # windows that are pure layout (empty markdown table cells, separators) are not document text
+        if d not in formatting:
+            text = R.tok.decode(list(map(int, ids[k:k + W])))
+            formatting[d] = sum(ch.isalnum() for ch in text) < 16
+        return formatting[d]
+
+    pool_boiler = {}
+
+    def source_boiler(name):
+        # Instruction text repeated across a source's own records (Finance-v1's task prompt and
+        # its variants) is boilerplate even when few rows of that source are in calibration: a
+        # window in >= 8 distinct pool records spans several byte-offset segments, while one
+        # 10-K passage is only shared by the consecutive records of one segment (<= 4).
+        if name not in pool_boiler:
+            cnt = {}
+            for r in load_raw(name):
+                msgs = clean_messages(r.get('messages', []), False)
+                try:
+                    ids = R.encode([R.chat(msgs)])[0][:HELDOUT2_CAP]
+                except Exception:
+                    continue
+                for d in {win(ids, k) for k in range(0, len(ids) - W + 1)}:
+                    cnt[d] = cnt.get(d, 0) + 1
+            pool_boiler[name] = {d for d, c in cnt.items() if c >= 8}
+            log('heldout2: pool boilerplate windows', name, len(pool_boiler[name]))
+        return pool_boiler[name]
+
+    extra_boiler = set()
+
+    def clean(ids):
+        """-> (ok, windows): no document window shared with calib, held-out 1 or chosen cases."""
+        ws = []
+        for k in range(0, len(ids) - W + 1):
+            d = win(ids, k)
+            if d in boiler or d in extra_boiler:
+                continue
+            if d in used:
+                if is_formatting(ids, k, d):
+                    continue
+                return False, None
+            ws.append(d)
+        return True, ws
+
+    rng = random.Random(f'{SEED}:heldout2')
+    pools = {}
+
+    def pool(name):
+        if name not in pools:
+            recs = load_raw(name)
+            random.Random(f'{SEED}:heldout2:pool:{name}').shuffle(recs)
+            pools[name] = [recs, 0]
+        return pools[name]
+
+    cases, rejected = [], {}
+    wt_ids = None
+    for family, sources, kind, n, lo, hi in HELDOUT2:
+        got = 0
+        if kind == 'stream':
+            ordered = load_raw('wikitext2')
+            wt_ids = R.encode(['\n\n'.join(r['text'] for r in ordered)])[0]
+            L = len(wt_ids)
+            used_ranges = [(0, 2048), (L // 2, L // 2 + 2048)]      # held-out 1
+            starts = [int(L * f) for f in (0.07, 0.21, 0.35, 0.62, 0.76, 0.90)]
+            for st in starts:
+                if any(a < st + hi and st < b for a, b in used_ranges):
+                    continue
+                piece = wt_ids[st:st + hi]
+                ok, ws = clean(piece)
+                if not ok:
+                    rejected[family] = rejected.get(family, 0) + 1
+                    continue
+                used.update(ws)
+                cases.append((piece, {'case': f'{family}_{got}', 'domain': 'wikitext2', 'source': ordered[0]['_src'],
+                                      'format': 'raw', 'mode': None,
+                                      'note': f'wikitext-2-raw test contiguous tokens [{st}, {st + len(piece)})'}))
+                got += 1
+            log('heldout2', family, got)
+            continue
+        extra_boiler = source_boiler('finance') if 'finance' in sources else set()
+        si = 0
+        attempts = 0
+        while got < n and attempts < 4000:
+            attempts += 1
+            src = sources[si % len(sources)]
+            si += 1
+            st = pool(src)
+            recs, pos = st
+            if pos >= len(recs):
+                if all(pool(s)[1] >= len(pool(s)[0]) for s in sources):
+                    break
+                continue
+            r = recs[pos]
+            st[1] = pos + 1
+            target = rng.randint(lo, hi)
+            if kind.startswith('doc'):
+                path = str(r.get('path', ''))
+                if kind == 'doc_py' and not path.endswith('.py'):
+                    continue
+                if kind == 'doc_c' and not path.endswith(('.c', '.h')):
+                    continue
+                text = r.get('text') or ''
+                if len(text) < 200:
+                    continue
+                ids = R.encode([text])[0]
+                if len(ids) < lo:
+                    continue
+                ids = ids[:min(target, HELDOUT2_CAP)]
+                fmt, mode = 'raw', None
+                digest = text_hash(text)
+            else:
+                raw_msgs = r.get('messages', [])
+                reasoning = has_reasoning(raw_msgs)
+                if kind == 'chat_think':
+                    think = True
+                elif kind == 'chat_nothink':
+                    think = False
+                else:
+                    think = reasoning and got % 2 == 1
+                if think and not reasoning:
+                    continue
+                msgs = clean_messages(raw_msgs, think)
+                if not msgs or not any(m['role'] == 'assistant' for m in msgs):
+                    continue
+                tools = r.get('tools') or None
+                if tools is None and any(m.get('tool_calls') for m in msgs):
+                    tools = infer_tools(msgs)
+                if family == 'tool_call' and not tools:
+                    continue
+                try:
+                    text = R.chat(msgs, tools=tools)
+                except Exception:
+                    continue
+                ids = R.encode([text])[0]
+                if len(ids) < lo:
+                    continue
+                ids = ids[:min(target, HELDOUT2_CAP)]
+                fmt, mode = 'chat', 'think' if think else 'nothink'
+                digest = text_hash(json.dumps(raw_msgs, ensure_ascii=False))
+            ok, ws = clean(ids)
+            if not ok:
+                rejected[family] = rejected.get(family, 0) + 1
+                continue
+            used.update(ws)
+            meta = {'case': f'{family}_{got}', 'domain': family, 'source': r['_src'], 'format': fmt, 'mode': mode,
+                    'doc_sha256': digest}
+            if fmt == 'chat':
+                meta['tools'] = bool(tools)
+            cases.append((ids, meta))
+            got += 1
+        log('heldout2', family, got, 'cases', 'rejected (overlap)', rejected.get(family, 0))
+    write_set(ROOT / 'heldout2', cases, extra={'overlap_check': {
+        'window_tokens': W, 'against': [FROZEN_CALIB.name, FROZEN_HELDOUT.name],
+        'boilerplate_rule': 'window in >= 3 frozen-calibration rows',
+        'formatting_rule': 'a shared window with < 16 alphanumeric characters (layout only) is ignored',
+        'source_boilerplate_rule': 'finance only: window in >= 8 distinct Finance-v1 pool records (task prompt variants)',
+        'rejected_candidates': rejected,
+        'cap_tokens': HELDOUT2_CAP}})
+    log('heldout2 done', f'{time.monotonic() - t0:.0f}s')
+
+
 def main():
-    global ROOT, RAW, MODEL, DS4_PROMPTS
+    global ROOT, RAW, MODEL, DS4_PROMPTS, FROZEN_CALIB, FROZEN_HELDOUT
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('stage', choices=['fetch', 'build', 'build-v0', 'all'])
+    p.add_argument('stage', choices=['fetch', 'build', 'build-v0', 'build-heldout2', 'all'])
     p.add_argument('--only', nargs='*')
     p.add_argument('--out', type=Path, default=ROOT, help='calibration directory (downloads under OUT/raw)')
     p.add_argument('--model', default=MODEL, help='A.X-K2 directory (tokenizer, chat template)')
     p.add_argument('--ds4-prompts', type=Path, default=DS4_PROMPTS)
     a = p.parse_args()
     ROOT, RAW, MODEL, DS4_PROMPTS = a.out, a.out / 'raw', a.model, a.ds4_prompts
+    FROZEN_CALIB = ROOT / 'frozen' / FROZEN_CALIB.name
+    FROZEN_HELDOUT = ROOT / 'frozen' / FROZEN_HELDOUT.name
     if a.stage in ('fetch', 'all'):
         fetch(a.only)
     if a.stage == 'build-v0':
         build(v0=True)
     if a.stage in ('build', 'all'):
         build()
+    if a.stage == 'build-heldout2':
+        build_heldout2()
 
 
 if __name__ == '__main__':

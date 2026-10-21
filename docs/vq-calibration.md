@@ -12,9 +12,9 @@ codebooks on the weights alone; YoungAi's body VQ is corpus-free by design
 
 The first user is the A.X-K2 VQ release
 ([Baekpica/A.X-K2-VQ-GGUF](https://huggingface.co/Baekpica/A.X-K2-VQ-GGUF)),
-whose routed experts must fit 9 bits per 8 weights (10 on the bottom seven
-MoE layers) to serve 262,144 tokens on one DGX Spark: ~1.14 BPW, below
-IQ1_S.
+whose routed experts must fit 9 bits per 8 weights (10 on seven MoE
+layers, 16, 20, …, 40) to serve 262,144 tokens on one DGX Spark: ~1.14 BPW,
+below IQ1_S.
 
 ## Pipeline
 
@@ -74,7 +74,52 @@ column weight is floored at 2% of its tensor's mean.
 
 ## Measurements (A.X-K2)
 
-RESULTS_PLACEHOLDER
+The release, [Baekpica/A.X-K2-VQ-GGUF](https://huggingface.co/Baekpica/A.X-K2-VQ-GGUF),
+uses `--mode imatrix --gain-refit ls --books split3 --col-power 0.75` with
+10-bit codebooks on MoE layers 16, 20, 24, 28, 32, 36 and 40.
+
+Measured on Runpod (RTX PRO 6000 Blackwell, sm_120, CUDA 13.2, torch 2.13)
+against the FP8 original run by `axk2_ref.py`, teacher-forced, KL(teacher ‖
+converted) in nats per token. Other hardware, CUDA builds and kernels move these
+numbers slightly; compare them statistically, not digit by digit.
+
+**Per layer** (`measure_layer.py`, the held-out tokens' own FFN inputs; routed
+output relative error ‖Δy‖²/‖y‖²; layer 1 at 10 bits, the others at 9):
+
+| Layer | Unweighted | Row energy + LS gains | imatrix, p 0.75, LS gains, split3 | imatrix_freq, same | output, p 1.0, same |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.284 | 0.259 | 0.120 | 0.125 | 0.110 |
+| 8 | 0.357 | 0.356 | 0.276 | 0.286 | 0.313 |
+| 15 | 0.397 | 0.398 | 0.298 | 0.294 | 0.292 |
+| 30 | 0.487 | 0.487 | 0.479 | 0.479 | 0.478 |
+| 41 | 0.516 | 0.516 | 0.477 | 0.477 | 0.476 |
+| 60 | 0.652 | 0.604 | 0.209 | 0.126 | 0.175 |
+| mean change, 7 layers (global / token mean) | — | −2.3% / −1.3% | −26.9% / −23.9% | −28.2% / −21.8% | −27.0% / −21.3% |
+
+The weighted variants raise the plain weight error (0.264 → 0.34) and lower
+the importance-weighted one (0.199 → 0.162): they spend precision where the
+activations are.
+
+**End to end** (22 held-out cases, 53,142 tokens; experts converted, the
+rest FP8; 10-bit on layers 1–7):
+
+| Codebook training | KL | Top-1 | NLL (FP8 1.130) |
+|---|---:|---:|---:|
+| Unweighted (earlier releases) | 0.859 | 69.5% | 1.792 |
+| Row energy + LS gains | 0.858 | 69.4% | 1.790 |
+| imatrix, p 0.75, LS gains, split3 | **0.788** | **71.0%** | **1.720** |
+| imatrix_freq, p 0.75, LS gains, split3 | 0.791 | 70.6% | 1.725 |
+| output, LS gains, split3 | 0.799 | 70.7% | 1.733 |
+
+The −24% per-layer gain becomes −8% KL end to end: the 9-bit middle layers
+improve only 2–10% and the residual stream still drifts (FFN-input cosine
+0.987 at layer 15, 0.68 at 41, 0.64 at 60). Where the 10-bit layers go matters
+once the weighting has made the bottom layers accurate: at the same bytes,
+10-bit on 1–7 gives KL 0.788, on 15–21 0.774, spread over 16, 20, …, 40
+0.756. On a second, independent held-out set (78 cases, 188,578 tokens, used
+for no choice) the release bytes give KL 0.753 (1–7) vs **0.727** (spread),
+better in all 19 domains and 73 of 78 cases. The Q4_K/Q8_0 non-expert body
+alone costs KL 0.046.
 
 ## Pitfalls found on the way
 

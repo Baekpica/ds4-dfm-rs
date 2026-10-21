@@ -31,7 +31,11 @@ container and the release tools are family independent.
 | `convert_nonexpert.py` | Q4_K (importance-weighted, `gguf-tools/quants.c`), Q8_0 indexer, source tensors, BF16 embedding part |
 | `memory_budget.py` | exact bytes of the recipe and the 256K DGX Spark budget |
 | `assemble_release.py`, `publish_release.py` | release directory, manifests and hashes; Hub upload with readback |
-| `eval_e2e.py`, `router_mask_ab.py` | teacher-forced end-to-end comparison and goldens; router-mask A/B on the FP8 teacher |
+| `eval_e2e.py`, `router_mask_ab.py` | teacher-forced end-to-end comparison and goldens (full-vocabulary scoring in 2,048-position chunks); router-mask A/B on the FP8 teacher |
+| `run_variants.sh`, `eval_variants.sh` | several full 60-layer variants one after another on all GPUs, each evaluated end to end as soon as its parts exist |
+| `select_variant.py` | writes the chosen variant (read from its own receipts) into `recipe.json`, the release docs and the card |
+| `generate_compare.py`, `cuda/gen_vq.cu`, `gen_report.py` | greedy/sampled generation from release parts (GPU-resident VQ indices, KV cache, layers pipelined over GPUs) and a side-by-side report |
+| `verify_source.py` | every source file against the Hub (LFS SHA-256 or git blob id) |
 | `tests/` | `test_axk2_vq_format.py` (CPU), `test_axk2_vq_gpu.py` (one GPU), `fake_stats.py` (stand-in statistics for pipeline tests) |
 
 ## Pipeline
@@ -50,12 +54,20 @@ python3 selftest_ref.py 0 1 --source $SRC
 # 4. choose the weighting on held-out activations, one layer per GPU
 ./run_measure.sh "1 4 8 15 24 30 41 60" "0 1 2 3 4 5 6 7" $W/work/measure $W/stats
 python3 summarize_measure.py $W/work/measure
+# 4b. full variants end to end (each ~3 min to convert on 8 GPUs, ~2.5 min to evaluate on one)
+./run_variants.sh A-none:none:none:shared C-imatrix:imatrix:ls:split3:0.75
+./eval_variants.sh A-none C-imatrix
+# 4c. an independent held-out set for the final choice, its teacher pass, and generation
+python3 build_calib.py build-heldout2 --out $W/calib --model $SRC
+python3 collect_stats.py --rank 0 --world 1 --calib <tiny calib> --heldout $W/calib/heldout2.safetensors --out $W/stats-heldout2
+python3 generate_compare.py --help
 # 5. routed experts (resumable; layers round-robin over the GPUs)
 python3 run_recipe.py --source $SRC --recipe $RECIPE --stats $W/stats --work $W/work/convert \
     --output $W/parts --gpus 0,1,2,3,4,5,6,7 --mode imatrix --gain-refit ls --books split3 --col-power 0.75
 # 6. non-experts (CPU)
 python3 convert_nonexpert.py --source $SRC --recipe $RECIPE --output $W/parts --imatrix-dir $W/stats
 # 7. release directory (one expert variant + the non-expert parts) and its strict verification
+python3 select_variant.py --experts-dir $W/parts --measured $W/docs/measured.md
 python3 assemble_release.py --parts $W/parts --experts-dir $W/parts --source $SRC --recipe $RECIPE \
     --card $W/docs/README.public.md --docs $W/docs/release --tools . --out $W/release
 python3 axk2_vq_format.py $W/release --release --workers 16
@@ -69,8 +81,8 @@ python3 publish_release.py --release $W/release --message "..."
 `--shrink-tokens` default to the recipe's `calibration` selection; the step-5
 flags above are one of the measured candidates, and the release records the
 one it used in `recipe.json` and in every part's `axk2_vq.weighting`
-metadata and receipt. `memory_budget.py --ctx 262144 --r10-layers 1-7`
-prints the byte budget the recipe was sized with.
+metadata and receipt. `memory_budget.py --ctx 262144 --r10-layers 16,20,24,28,32,36,40`
+prints the byte budget of the released placement (bytes depend only on how many layers are 10-bit).
 
 ## Hardware and timings (A.X-K2 run)
 

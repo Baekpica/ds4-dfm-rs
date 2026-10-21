@@ -101,10 +101,12 @@ def max_r10(ctx, a):
 
 
 def parse_layers(spec):
-    if not spec:
-        return set()
-    lo, _, hi = spec.partition('-')
-    return set(range(int(lo), int(hi or lo) + 1))
+    """'1-7' or '16,20,24' or '1-3,9' -> set of layers."""
+    out = set()
+    for part in filter(None, (spec or '').split(',')):
+        lo, _, hi = part.partition('-')
+        out.update(range(int(lo), int(hi or lo) + 1))
+    return out
 
 
 def main():
