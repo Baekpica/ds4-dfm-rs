@@ -1350,27 +1350,35 @@ pub(crate) fn ordinary_disk_cache_eligible(parsed: &ParsedRequest) -> bool {
 
 /// Whether this request may carry exact sampled DSML.
 ///
-/// The reference attaches in all three chat-shaped parsers — OpenAI chat
-/// (`ds4_server.c:4272`), Anthropic (`:4498`), Responses (`:5529`) — and the
-/// attach itself refuses nothing but the disable switch
-/// (`tool_memory_attach_to_messages`, `:10682`): a miss is counted in the
-/// replay stats (`:10684-10692`), never refused. Thinking mode, live call ids
-/// and the model syntax therefore do not narrow it. The Rust host used to
-/// narrow to OpenAI chat, non-thinking, no live ids and three syntaxes, which
-/// sent an Anthropic or Responses turn whose history carried a call down the
-/// canonical-render lane.
+/// On DeepSeek V4.1 the lane follows the reference, which attaches in all
+/// three chat-shaped parsers — OpenAI chat (`ds4_server.c:4272`), Anthropic
+/// (`:4498`), Responses (`:5529`) — and refuses nothing but its disable
+/// switch (`tool_memory_attach_to_messages`, `:10682`), so thinking mode,
+/// live call ids and the surface do not narrow it there.  The legacy
+/// `/v1/completions` surface carries no messages and stays out.
 ///
-/// The one condition kept is `kind == Chat`: the legacy `/v1/completions`
-/// surface carries no messages at all, and the reference has no such parser.
-/// Whether a given family's renderer honours the replayed bytes is the
-/// renderer's own decision (`render.rs:539`, `:698`, `:765`, `:835`, `:1053`,
-/// `:1078`, `:2595`), not a gate here.
-fn tool_replay_scope(parsed: &ParsedRequest) -> bool {
-    parsed.kind == ReqKind::Chat
+/// Every other family keeps the narrow lane (OpenAI chat, non-thinking, no
+/// live ids, the three syntaxes whose renderers honour the bytes): widening
+/// it moves their thinking-visible and intermediate prefill checkpoints off
+/// the request, and no reuse or output gate has measured that for them.
+fn tool_replay_scope(parsed: &ParsedRequest, model_id: i32) -> bool {
+    if parsed.kind != ReqKind::Chat {
+        return false;
+    }
+    if model_id == ds4_core::Variant::DeepSeek41Flash as i32 {
+        return true;
+    }
+    parsed.api == Api::Openai
+        && !think_mode_enabled(parsed.think_mode)
+        && parsed.live_call_ids.is_empty()
+        && matches!(
+            syntax_for_model_id(model_id),
+            ModelSyntax::DeepSeek | ModelSyntax::SolarOpen2 | ModelSyntax::Qwen4Exp
+        )
 }
 
-fn tool_replay_disk_cache_eligible(parsed: &ParsedRequest) -> bool {
-    tool_replay_scope(parsed)
+fn tool_replay_disk_cache_eligible(parsed: &ParsedRequest, model_id: i32) -> bool {
+    tool_replay_scope(parsed, model_id)
         && parsed.messages.iter().any(|message| {
             !message.calls.is_empty()
                 || !message.tool_call_id.is_empty()
@@ -1378,8 +1386,8 @@ fn tool_replay_disk_cache_eligible(parsed: &ParsedRequest) -> bool {
         })
 }
 
-fn tool_replay_producer_eligible(parsed: &ParsedRequest) -> bool {
-    tool_replay_scope(parsed) && parsed.has_tools
+fn tool_replay_producer_eligible(parsed: &ParsedRequest, model_id: i32) -> bool {
+    tool_replay_scope(parsed, model_id) && parsed.has_tools
 }
 
 fn thinking_visible_cache_eligible(parsed: &ParsedRequest) -> bool {
@@ -2346,7 +2354,7 @@ pub(crate) fn prepare_serial_prompt(
     let tool_replay = parsed.images.is_empty()
         && parsed.audios.is_empty()
         && parsed.videos.is_empty()
-        && tool_replay_disk_cache_eligible(&parsed);
+        && tool_replay_disk_cache_eligible(&parsed, engine.model_id());
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
     }
@@ -2694,7 +2702,7 @@ pub(crate) fn generate_terminal_prepared(
                 "call_"
             },
         );
-        if tool_replay_producer_eligible(&parsed) {
+        if tool_replay_producer_eligible(&parsed, engine.model_id()) {
             engine.remember_tool_replay(&parsed_gen.calls, &parsed_gen.raw_dsml);
         }
         finish = "tool_calls";
@@ -6933,12 +6941,15 @@ mod disk_sync_tests {
             }],
             ..Default::default()
         }];
-        // The reference attaches in all three chat-shaped parsers and refuses
-        // nothing but its own disable switch (ds4_server.c:4272, :4498, :5529,
-        // :10682), so the cases the old rule narrowed away must all take the
-        // lane: another surface, thinking mode, or live call ids.
-        assert!(tool_replay_disk_cache_eligible(&replay));
-        assert!(tool_replay_producer_eligible(&replay));
+        // V4.1 follows the reference, which attaches in all three chat-shaped
+        // parsers and refuses nothing but its own disable switch
+        // (ds4_server.c:4272, :4498, :5529, :10682): another surface,
+        // thinking mode and live call ids all take the lane.
+        let v41 = ds4_core::Variant::DeepSeek41Flash as i32;
+        let v4 = ds4_core::Variant::Flash as i32;
+        assert!(tool_replay_disk_cache_eligible(&replay, v41));
+        assert!(tool_replay_producer_eligible(&replay, v41));
+        assert!(tool_replay_disk_cache_eligible(&replay, v4));
         for mutate in 0..3 {
             let mut accepted = replay.clone();
             match mutate {
@@ -6947,8 +6958,13 @@ mod disk_sync_tests {
                 _ => accepted.live_call_ids.push("call_live".into()),
             }
             assert!(
-                tool_replay_disk_cache_eligible(&accepted),
-                "widened scope still rejected mutation {mutate}"
+                tool_replay_disk_cache_eligible(&accepted, v41),
+                "V4.1 scope rejected mutation {mutate}"
+            );
+            // Every other family keeps the narrow lane.
+            assert!(
+                !tool_replay_disk_cache_eligible(&accepted, v4),
+                "V4 scope widened by mutation {mutate}"
             );
         }
 
@@ -6956,8 +6972,8 @@ mod disk_sync_tests {
         // surface carries no messages, and the reference has no such parser.
         let mut completion = replay.clone();
         completion.kind = crate::route::ReqKind::Completion;
-        assert!(!tool_replay_disk_cache_eligible(&completion));
-        assert!(!tool_replay_producer_eligible(&completion));
+        assert!(!tool_replay_disk_cache_eligible(&completion, v41));
+        assert!(!tool_replay_producer_eligible(&completion, v41));
     }
 }
 
@@ -7283,7 +7299,7 @@ mod dsml_replay {
             let mut parsed = parse_request(surface, &ParseEnv::default(), &body(template, id))
                 .unwrap_or_else(|error| panic!("{surface:?} did not parse: {error}"));
             assert!(
-                tool_replay_disk_cache_eligible(&parsed),
+                tool_replay_disk_cache_eligible(&parsed, MODEL_ID),
                 "{surface:?} did not take the replay lane"
             );
             let head = dsml_head(MODEL_ID, "sys");
