@@ -202,12 +202,9 @@ pub(crate) fn parse(raw: &[u8], orders: &[ToolSchemaOrder]) -> Option<ParsedGene
                 if end.is_some_and(|(_, m)| m == ASSISTANT) {
                     body = body.strip_suffix(CONSTRAIN.as_bytes()).unwrap_or(body);
                 }
-                out.reasoning
-                    .extend_from_slice(crate::stream::utf8_trim_tail(body));
+                out.reasoning.extend_from_slice(body);
             }
-            FINAL => out
-                .content
-                .extend_from_slice(crate::stream::utf8_trim_tail(body)),
+            FINAL => out.content.extend_from_slice(body),
             _ => {
                 let (close_at, close) = end?;
                 let call = call_body(name?, std::str::from_utf8(body).ok()?, orders)?;

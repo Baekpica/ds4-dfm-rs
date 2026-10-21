@@ -56,6 +56,11 @@ the port is fixed.
 - Recurrent-state (KDA, linear-attention) payloads restore only a prompt that
   extends the saved history: test disk restore with the next turn; re-sending
   a turn always misses.
+- Send only valid UTF-8. Models sample a character's lead bytes and then ASCII
+  (GLM, DeepSeek and Beam all did in Korean), and openai-python clients such as
+  Hermes decode every SSE line strictly, so one such delta ends the turn.
+  `json_escape_bytes` writes U+FFFD; streams hold back a character cut between
+  tokens only while the next token can still complete it.
 
 ## Inference Performance Optimization Guidelines
 
