@@ -885,7 +885,7 @@ extern "C" {
     pub fn ds4_bridge_v41_kvreuse_last_reused() -> c_int;
     pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int, sig: *const u64) -> u32;
     pub fn ds4_bridge_v41_kvreuse_note_mount(has_mount: c_int, hash: u64);
-/* T's key (the prompt it was saved with, then the ids the state
+    /* T's key (the prompt it was saved with, then the ids the state
      * committed after it), which is the host store's turn entry text.  Answers
      * the count, filling `out` when it covers `cap`; 0 = no turn checkpoint. */
     pub fn ds4_bridge_v41_kvreuse_turn_key(out: *mut i32, cap: u32) -> u32;

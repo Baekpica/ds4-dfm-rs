@@ -392,6 +392,26 @@ fn named_tool_choice_narrows_to_the_forced_function() {
     assert!(resp.tool_schemas.contains("my_function"));
     assert!(!resp.tool_schemas.contains("other_function"));
 
+    // The Responses wire form names the function at the top level, and a
+    // pretty-printed tool list spans many lines: both narrow the same way.
+    let resp = parse_responses_request(
+        &env(),
+        "{\"input\":\"hi\",\"tools\":[\n  {\n    \"type\": \"function\",\n    \"name\": \"other_function\",\n    \"parameters\": {\"type\": \"object\"}\n  },\n  {\n    \"type\": \"function\",\n    \"name\": \"my_function\",\n    \"parameters\": {\"type\": \"object\"}\n  }\n],\"tool_choice\":{\"type\":\"function\",\"name\":\"my_function\"}}",
+    )
+    .unwrap();
+    assert_eq!(resp.tool_choice, ToolChoice::Required);
+    assert_eq!(resp.tool_orders.len(), 1, "{:?}", resp.tool_orders);
+    assert!(resp.has_tools);
+    assert!(resp.tool_schemas.contains("my_function"));
+    assert!(!resp.tool_schemas.contains("other_function"));
+    let pretty = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"tools\":[\n {\n  \"type\": \"function\",\n  \"function\": {\n   \"name\": \"my_function\",\n   \"parameters\": {\"type\": \"object\"}\n  }\n }\n],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"my_function\"}}}";
+    let pr = parse_chat_request(&env(), pretty).unwrap();
+    assert!(
+        pr.has_tools && pr.tool_schemas.contains("my_function"),
+        "{}",
+        pr.tool_schemas
+    );
+
     // The renderer is handed exactly what the parse narrowed (generate.rs:1331),
     // so the served prompt offers the forced function alone and requires the
     // call.
@@ -1332,4 +1352,20 @@ fn assistant_reasoning_is_optional_and_may_be_empty() {
     .unwrap();
     assert_eq!(omitted.messages[1].content, "ok");
     assert_eq!(omitted.messages[1].reasoning, "");
+}
+
+/// A numeric reasoning_effort is the V4.1 head's budget; any other family
+/// would read it as HIGH, so it is refused off the V4.1 route.
+#[test]
+fn numeric_effort_is_v41_only() {
+    let body = r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":5}"#;
+    let v41 = ParseEnv {
+        engine_defaults: true,
+        ..env()
+    };
+    assert_eq!(
+        parse_chat_request(&v41, body).unwrap().effort.budget,
+        Some(5)
+    );
+    assert!(parse_chat_request(&env(), body).is_err());
 }

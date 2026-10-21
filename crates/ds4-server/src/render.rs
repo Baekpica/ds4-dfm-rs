@@ -619,13 +619,13 @@ fn append_dsml_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg, spaced: bool) {
         append_dsml_attr_escaped(out, &tc.name);
         put(out, "\">\n");
         let mut n = append_dsml_arguments_from_json(out, &tc.arguments, None, spaced);
-        if n < 0 {
-            // A stringified `arguments` value still renders its parameters:
-            // the oracle decodes the field up to twice before it gives up
-            // (encoding.py:528-537).  The C engine has no such pass
-            // (ds4_server.c:3443-3463) and writes the single `arguments`
-            // parameter below instead; this port follows the oracle, and
-            // enc-args-double pins the difference.
+        if n < 0 && spaced {
+            // A stringified `arguments` value still renders its parameters on
+            // the V4.1 head: the oracle decodes the field up to twice before
+            // it gives up (encoding.py:528-537).  The C engine has no such
+            // pass (ds4_server.c:3443-3463) and writes the single `arguments`
+            // parameter below instead, which the V4 head keeps; enc-args-double
+            // pins the difference.
             if let Some(inner) = json_string_contents(&tc.arguments) {
                 n = append_dsml_arguments_from_json(out, &inner, None, spaced);
             }

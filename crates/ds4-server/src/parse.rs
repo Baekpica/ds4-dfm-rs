@@ -896,6 +896,10 @@ fn parse_openai_named_tool_choice(
             typ = Some(json_string(p)?);
         } else if key == "function" {
             name = parse_named_tool_function(p);
+        } else if key == "name" {
+            // The Responses form names the function at the top level:
+            // {"type":"function","name":"x"}.
+            name = Some(json_string(p)?);
         } else if !json_skip_value(p) {
             *err = "invalid tool_choice".into();
             return None;
@@ -2543,18 +2547,29 @@ fn narrow_tool_schemas(
     if keep.is_empty() {
         return false;
     }
+    // The schemas are the client's raw values joined by newlines, and a
+    // pretty-printed tool spans many lines: walk JSON values, as the
+    // renderer does, not lines.
     let mut kept = String::new();
-    for line in schemas.lines() {
-        let Some(line_name) = schema_line_name(line) else {
+    let mut p = Json::new(schemas);
+    loop {
+        p.ws();
+        if p.peek().is_none() {
+            break;
+        }
+        let Some(one) = json_raw_value(&mut p) else {
+            break;
+        };
+        let Some(one_name) = schema_line_name(&one) else {
             continue;
         };
-        if !keep.iter().any(|k| *k == line_name) {
+        if !keep.iter().any(|k| *k == one_name) {
             continue;
         }
         if !kept.is_empty() {
             kept.push('\n');
         }
-        kept.push_str(line);
+        kept.push_str(&one);
     }
     *schemas = kept;
     orders.retain(|o| keep.iter().any(|k| *k == o.name));
@@ -3145,7 +3160,12 @@ fn apply_think(
     mut enabled: bool,
     effort: RequestedEffort,
     engine_defaults: bool,
-) {
+) -> Result<(), String> {
+    // Only the V4.1 head renders a numeric budget; every other family would
+    // silently read it as HIGH, so the number is refused there.
+    if effort.budget.is_some() && !engine_defaults {
+        return Err("numeric reasoning_effort requires DeepSeek V4.1".into());
+    }
     enabled = apply_think_aliases(r, got, enabled);
     r.think_mode = if engine_defaults {
         engine_think_mode(enabled, effort.mode)
@@ -3153,6 +3173,7 @@ fn apply_think(
         think_mode_from_enabled(enabled, effort.mode)
     };
     r.effort = effort;
+    Ok(())
 }
 
 /// The engine's `think_mode_from_enabled` (server_msgs.c:186-189): nothing
@@ -3376,7 +3397,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     r.messages = msgs;
     r.images = images.items;
     r.audios = audios;
@@ -3539,7 +3560,7 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     r.prompt_text = Some(prompt);
     r.finish_needs();
     Ok(r)
@@ -3728,7 +3749,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     match anthropic_validate_tool_results(&msgs, &env.live_ids, &mut err) {
         Ok(live) => r.anthropic_requires_live_tool_state = live,
         Err(()) => return Err(err),
@@ -3945,7 +3966,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     match responses_validate_tool_outputs(&msgs, r.think_mode, &env.live_ids, &mut err) {
         Ok((t, reason)) => {
             r.responses_requires_live_tool_state = t;
