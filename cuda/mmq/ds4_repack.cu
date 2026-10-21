@@ -405,21 +405,17 @@ static bool tensor_type_info(uint32_t type, uint64_t &block_elems, uint64_t &blo
     case 28: block_elems = 1; block_bytes = 8; return true;
     case 29: block_elems = 256; block_bytes = 56; return true;
     case 30: block_elems = 1; block_bytes = 2; return true;
-    /* Beyond the standard block: the DeepSeek V4.1 family ids 40-44 and the
-     * Prism ternary 142, with the geometry the engine's own table carries
-     * (ds4.c:2414-2422, mirroring /data/YoungAi/src/core/core_gguf.c:91-103).
-     * The walk below sizes EVERY tensor before any repack pass runs, so one id
-     * missing here fails the whole catalog and drops an artifact that is
-     * otherwise repack-eligible to the raw-layout tier (ds4_cuda.cu:6996-7000;
-     * the weight server reads the same false as a failed upload,
-     * tools/ds4_weight_server.cu:448).  vqblob is opaque bytes, its tensor
-     * shaped [nbytes], so one element is one byte. */
-    case 40: block_elems = 256; block_bytes = 34; return true;
-    case 41: block_elems = 256; block_bytes = 68; return true;
-    case 42: block_elems = 1; block_bytes = 1; return true;
-    case 43: block_elems = 32; block_bytes = 17; return true;
-    case 44: block_elems = 1024; block_bytes = 1025; return true;
-    case 142: block_elems = 128; block_bytes = 34; return true;
+    /* Beyond the standard block, with the geometry the engine's gguf_types[]
+     * carries.  The walk below sizes EVERY tensor before any repack pass
+     * runs, so one id missing here fails the whole catalog: the boot drops
+     * to the raw-layout tier and the weight server refuses the upload.
+     * vqblob is opaque bytes shaped [nbytes], so one element is one byte. */
+    case DS4_GGUF_TYPE_GO1B: block_elems = 256; block_bytes = 34; return true;
+    case DS4_GGUF_TYPE_GO2B: block_elems = 256; block_bytes = 68; return true;
+    case DS4_GGUF_TYPE_VQBLOB: block_elems = 1; block_bytes = 1; return true;
+    case DS4_GGUF_TYPE_FP4X32: block_elems = 32; block_bytes = 17; return true;
+    case DS4_GGUF_TYPE_FP8_32X32: block_elems = 1024; block_bytes = 1025; return true;
+    case DS4_GGUF_TYPE_PQ2_0: block_elems = 128; block_bytes = 34; return true;
     default: return false;
     }
 }

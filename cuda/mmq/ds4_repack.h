@@ -59,6 +59,18 @@ enum {
     DS4_REPACK_IQ2_XS_ALIGNED_MOE = 8,
 };
 
+/* GGML type ids past the standard block, as the engine's gguf_types[]
+ * (ds4.c) declares them: the DeepSeek V4.1 family types and the Prism
+ * ternary. */
+enum {
+    DS4_GGUF_TYPE_GO1B = 40,
+    DS4_GGUF_TYPE_GO2B = 41,
+    DS4_GGUF_TYPE_VQBLOB = 42,
+    DS4_GGUF_TYPE_FP4X32 = 43,
+    DS4_GGUF_TYPE_FP8_32X32 = 44,
+    DS4_GGUF_TYPE_PQ2_0 = 142,
+};
+
 struct ds4_repack_artifact {
     const ds4_repack_tensor *t = nullptr; /* borrowed from the caller's catalog */
     uint32_t kind = 0;                    /* DS4_REPACK_* */

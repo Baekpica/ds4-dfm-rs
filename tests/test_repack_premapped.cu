@@ -218,18 +218,17 @@ static int test_q8_candidate_shapes() {
  * The catalog sizes EVERY tensor in the file before any repack pass runs, so
  * one id it cannot size makes ds4_repack_collect_catalog return false and the
  * boot drops to the raw-layout tier even when the artifact holds
- * repack-eligible tensors (ds4_cuda.cu:6996-7000; the weight server treats the
- * same false as a failed upload, tools/ds4_weight_server.cu:448).
+ * repack-eligible tensors (the weight server treats the same false as a
+ * failed upload).
  *
- * These are the ids the engine's own GGUF table declares outside the standard
- * block: the V4.1 family types 40-44 (ds4.c:2414-2418, mirroring
- * /data/YoungAi/src/core/core_gguf.c:91-103) and the Prism ternary 142
- * (ds4.c:2422).  bytes is elems / block_elems * block_bytes with the geometry
- * those tables carry, so a CUDA-side table that drifts from the engine's fails
- * here instead of at a boot.
+ * These are the ids the engine's own gguf_types[] declares outside the
+ * standard block (DS4_GGUF_TYPE_*): the V4.1 family types and the Prism
+ * ternary.  bytes is elems / block_elems * block_bytes with the geometry that
+ * table carries, so a CUDA-side table that drifts from the engine's fails here
+ * instead of at a boot.
  *
- * vqblob is opaque bytes: its tensor is shaped [nbytes] (core_gguf.c:93,
- * "shape=[nbytes]"), which is why 1000 elements is 1000 bytes. */
+ * vqblob is opaque bytes: its tensor is shaped [nbytes], which is why 1000
+ * elements is 1000 bytes. */
 struct gguf_entry {
     const char *name;
     uint32_t type;
@@ -247,19 +246,21 @@ constexpr uint64_t kQ8Bytes = (kQ8In / 32u) * kQ8Out * 34u;
 /* The family entries are [nbytes]-shaped: nothing here depends on their rank,
  * only on the type geometry the table above carries. */
 static const gguf_entry kFamilyFixture[] = {
-    {"blk.0.ffn_exps_vq.blob",     42u, 1u, {      1000u,       0u},       1000u},
-    {"blk.0.ffn_gate_exps.go1b",   40u, 1u, {       256u,       0u},         34u},
-    {"blk.0.ffn_up_exps.go2b",     41u, 1u, {       256u,       0u},         68u},
-    {"blk.0.ffn_down_exps.fp4x32", 43u, 1u, {        32u,       0u},         17u},
-    {"blk.0.attn_kv_b.wkv",        44u, 1u, {      1024u,       0u},       1025u},
-    {"blk.0.ffn_gate_shexp.q2_0", 142u, 1u, {       128u,       0u},         34u},
+    {"blk.0.ffn_exps_vq.blob",     DS4_GGUF_TYPE_VQBLOB, 1u, {      1000u,       0u},       1000u},
+    {"blk.0.ffn_gate_exps.go1b",   DS4_GGUF_TYPE_GO1B, 1u, {       256u,       0u},         34u},
+    {"blk.0.ffn_up_exps.go2b",     DS4_GGUF_TYPE_GO2B, 1u, {       256u,       0u},         68u},
+    {"blk.0.ffn_down_exps.fp4x32", DS4_GGUF_TYPE_FP4X32, 1u, {        32u,       0u},         17u},
+    {"blk.0.attn_kv_b.wkv",        DS4_GGUF_TYPE_FP8_32X32, 1u, {      1024u,       0u},       1025u},
+    {"blk.0.ffn_gate_shexp.q2_0", DS4_GGUF_TYPE_PQ2_0, 1u, {       128u,       0u},         34u},
     {"blk.0.attn_q.weight",         8u, 2u, {     kQ8In,    kQ8Out},     kQ8Bytes},
 };
 constexpr size_t kFamilyCount = sizeof(kFamilyFixture) / sizeof(kFamilyFixture[0]);
 
 static bool write_family_gguf(const char *path) {
     std::FILE *f = std::fopen(path, "wb");
-    if (!f) return false;
+    if (!f) {
+        return false;
+    }
     bool ok = write_u32(f, 0x46554747u) && write_u32(f, 3u) &&
               write_u64(f, (uint64_t)kFamilyCount) && write_u64(f, 0u);
     uint64_t rel = 0;
@@ -289,18 +290,24 @@ static bool write_family_gguf(const char *path) {
         ok = write_all(f, zeros.data(), chunk);
         left -= chunk;
     }
-    if (std::fclose(f) != 0) ok = false;
+    if (std::fclose(f) != 0) {
+        ok = false;
+    }
     return ok;
 }
 
 static int test_family_type_catalog() {
     char dir[] = "/tmp/ds4-repack-family-XXXXXX";
-    if (!mkdtemp(dir)) return fail("mkdtemp failed");
+    if (!mkdtemp(dir)) {
+        return fail("mkdtemp failed");
+    }
     char path[PATH_MAX];
     if (std::snprintf(path, sizeof(path), "%s/family.gguf", dir) <= 0) {
         return fail("family fixture path failed");
     }
-    if (!write_family_gguf(path)) return fail("family fixture write failed");
+    if (!write_family_gguf(path)) {
+        return fail("family fixture write failed");
+    }
 
     ds4_repack_file model;
     if (!ds4_repack_map_file("test_repack_premapped", path, model)) {
@@ -349,7 +356,9 @@ static int test_family_type_catalog() {
 int main() {
     if (test_split_source() != 0) return 1;
     if (test_q8_candidate_shapes() != 0) return 1;
-    if (test_family_type_catalog() != 0) return 1;
+    if (test_family_type_catalog() != 0) {
+        return 1;
+    }
     constexpr uint64_t kOffset = 4096;
     constexpr uint64_t kIn = 1024;
     constexpr uint64_t kOut = 2048;
