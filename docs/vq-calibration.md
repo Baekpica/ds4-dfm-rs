@@ -72,6 +72,31 @@ up and down (IDs 4L, 4L+3, 4L+2) at the same K. Rare experts' column profiles
 are shrunk toward the layer mean with a pseudo-count of 256 tokens, and every
 column weight is floored at 2% of its tensor's mean.
 
+## Container (GVQ v2)
+
+Nine and ten index bits use a byte-major version 2 of the GVQ1 matrix
+(`axk2_vq_format.py` is the reference encoder, decoder and strict reader).
+128-byte header `<4sHBBIIIIIIQQQQ32s32s`: `GVQ1`, version 2, bits 9 or 10,
+dimension 8, rows R, columns C, K = 2^bits, codebook precision 1 (E4M3FN),
+codebook ID, flags 0, gain offset 128, main offset `align128(128 + 2R)`, plane
+offset `align128(main + R·C/8)`, total `align128(plane + (R·C/8)·(bits − 8)/8)`,
+SHA-256 of the codebook bytes, SHA-256 of every byte after the header.
+
+- Gains: R × F16, finite and non-negative (a zero row has gain +0).
+- Main stream: one byte per index, its low 8 bits, row-major vector order
+  (index n = r·(C/8) + j).
+- Plane: the high bits. 9-bit: bit 8 of index n is bit n % 8 of byte n / 8.
+  10-bit: bits 8–9 of index n are the 2-bit field at bit 2·(n % 4) of byte
+  n / 4. Least significant first.
+- C is a multiple of 64, so rows are whole bytes and never padded: a 7,168-wide
+  row is 896 index bytes plus 112 (9-bit) or 224 (10-bit) plane bytes, a
+  2,048-wide row 256 plus 32 or 64.
+- `W[r, 8j + d] = f32(gain[r]) · f32(book[index[r, j]][d])`.
+- Books are `[K, 8]` E4M3FN tensors; a layer part holds one to three of them:
+  ID 4L (gate, or all three projections when shared), 4L+3 (up) and 4L+2
+  (down); 4L+1 is reserved for a residual stage. Each matrix names its book in
+  the header.
+
 ## Measurements (A.X-K2)
 
 The release, [Baekpica/A.X-K2-VQ-GGUF](https://huggingface.co/Baekpica/A.X-K2-VQ-GGUF),

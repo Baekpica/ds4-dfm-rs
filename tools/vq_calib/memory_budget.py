@@ -3,7 +3,7 @@
 
 Every weight byte count is computed from the layouts the converter writes
 (GVQ v2 byte-major 9/10-bit matrices, GGML Q4_K / Q8_0 blocks, source bytes;
-docs/DESIGN.md), not estimated. Runtime terms (scratch, floor, margin) are
+docs/vq-calibration.md, Container), not estimated. Runtime terms (scratch, floor, margin) are
 labelled estimates carried over from the Beam / GLM-5.3 VQ budgets.
 
 Usage: memory_budget.py [--ctx 262144] [--r10-layers 1-7] [--json out.json]

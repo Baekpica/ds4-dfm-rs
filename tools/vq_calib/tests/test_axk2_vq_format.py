@@ -34,7 +34,7 @@ for k, rows, cols in [(512, 64, 7168), (1024, 64, 7168), (512, 96, 2048), (1024,
     ref = f.FP8_TABLE[np.frombuffer(raw, np.uint8)].reshape(k, 8)[ix].reshape(rows, cols) * gains[:, None]
     assert np.array_equal(t.decode_rows(), ref.astype('<f4')), 'decode'
     assert np.array_equal(t.decode_rows(5, 7), ref[5:12].astype('<f4')), 'row range'
-    # explicit layout check (DESIGN.md wording), independent of both coders
+    # explicit layout check (docs/vq-calibration.md, Container), independent of both coders
     flat = ix.reshape(-1)
     main = np.frombuffer(payload, np.uint8, len(flat), g['main'])
     assert np.array_equal(main, flat & 255)

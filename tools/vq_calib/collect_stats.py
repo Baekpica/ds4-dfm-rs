@@ -3,7 +3,7 @@
 
 Each rank pushes its shard of the calibration sequences through the FP8 teacher
 (axk2_ref, BF16 math) layer by layer and accumulates FP64 sums of squared
-inputs for every quantized tensor (DESIGN.md "Statistics format"): per routed
+inputs for every quantized tensor (docs/vq-calibration.md, Statistics): per routed
 expert the gate/up input x and down input a, unweighted (llama.cpp imatrix)
 and weighted by the squared route weight, plus gate/up row output sensitivities.
 Rank 0 also pushes the held-out set and dumps, per layer, the teacher FFN input
@@ -121,7 +121,7 @@ def main():
     start_layer = layers[0]
     ck = rdir / 'h-checkpoint.pt'
     if a.resume and ck.exists():
-        state = torch.load(ck, map_location=dev)
+        state = torch.load(ck, map_location=dev, weights_only=True)
         h, start_layer = state['h'], state['next_layer']
         if ho is not None:
             ho['h'] = state['h_ho']

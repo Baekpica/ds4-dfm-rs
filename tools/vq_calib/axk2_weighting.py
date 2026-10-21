@@ -1,4 +1,4 @@
-"""Importance weights for A.X-K2's shared per-layer codebook (DESIGN.md
+"""Importance weights for A.X-K2's shared per-layer codebook (docs/vq-calibration.md
 "Weighting modes"), from the calibration statistics of one MoE layer.
 
 Vector i = (expert e, projection p, row r, column block j), normalized

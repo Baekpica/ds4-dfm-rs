@@ -4,7 +4,8 @@
   fetch  stream bounded samples of every source into calib/raw/<source>/ (data only)
   build  render chat records with the A.X-K2 chat template, tokenize, budget by
          domain and length, and write calib(.safetensors|_manifest.json) and
-         heldout(.safetensors|_manifest.json) in the format of docs/DESIGN.md
+         heldout(.safetensors|_manifest.json): `input_ids` int32 [N] + `offsets` int64 [n+1]
+         and a per-sample JSON manifest (docs/vq-calibration.md, Pipeline)
 
 Every remote file is pinned to a revision. Large JSONL files are read at
 seeded random byte offsets (a partial line is skipped after each seek), large

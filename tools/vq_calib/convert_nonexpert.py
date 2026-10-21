@@ -73,7 +73,7 @@ void axk2_decode_q8(const uint8_t *x, float *y, size_t blocks) {
 }
 '''
 
-# Which calibration statistic feeds which projection (docs/DESIGN.md).
+# Which calibration statistic feeds which projection (docs/vq-calibration.md, Statistics).
 IMATRIX_KEY = {
     'self_attn.q_a_proj.weight': 'attn_in',
     'self_attn.kv_a_proj_with_mqa.weight': 'attn_in',

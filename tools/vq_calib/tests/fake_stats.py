@@ -3,8 +3,8 @@
 
 Embedding rows of random tokens play the hidden states of one MoE layer: gated
 post-attention RMSNorm, the grouped sigmoid router and the routed experts
-(transformers AXK2 arithmetic), accumulated in the DESIGN.md statistics
-format, plus a held-out dump of disjoint tokens.
+(transformers AXK2 arithmetic), accumulated in the collector's statistics
+format (docs/vq-calibration.md), plus a held-out dump of disjoint tokens.
 """
 import argparse
 from pathlib import Path
