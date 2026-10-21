@@ -103,6 +103,46 @@ stays in the page cache).
 | Nearest assignment, per-column weights | 2.95e9 vectors/s | 1.5e9 vectors/s |
 | Weighted Lloyd iteration, 16.5M-vector pool | 28 ms | — |
 
+## DeepSeek-V4.1-Flash (drop-in iVQ of the YoungAi base)
+
+These produced
+[Baekpica/DeepSeek-V4.1-Flash-1017-iVQ-GGUF](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-iVQ-GGUF):
+the 40 routed-expert DQVL v3 blobs of the weights-only
+[VQ release](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-VQ-GGUF)
+(YoungAi `vq8sh14-q4k-mtpnative`) refitted in place with the weighting above, at the
+same K, offsets and sizes, so ds4-dfm-rs's `ds41` path loads the result unchanged.
+
+| File | Role |
+|---|---|
+| `ds41_ref.py` | DeepSeek's `inference/model.py` prefill path in plain PyTorch (mHC Sinkhorn mixes, Engram, sliding-window + compressed sparse attention with the two-level indexer, sqrtsoftplus router, SwiGLU clamps), kernels emulated; FP4/FP8 dequant, statistics |
+| `build_calib_ds41.py` | seeded calibration and held-out sets rendered with the model's own `encoding/encoding.py` (thinking mode, V4.1 DSML) |
+| `run_ds41.py`, `run_collect_ds41.sh` | `collect`: statistics, one rank per GPU (then `reduce_stats.py`); `eval`: teacher-forced pass of the original or a VQ student, final states and routes |
+| `ds41_vq_format.py`, `tests/test_ds41_vq_format.py`, `tests/replicate_youngai_codebook.py` | DQVL v3 reader / exact writer / dequantizer (round-trips the published blobs byte for byte; reproduces YoungAi's codebooks bit for bit) |
+| `convert_layer_ds41.py`, `run_convert_ds41.sh` | one MoE layer -> one DQVL v3 blob + receipt (weighted Lloyd, column-weighted assignment, LS gains), with the published blob's errors alongside |
+| `assemble_ds41_ivq.py` | patches the 40 blobs into a copy of the published base, checks every other byte against it, cuts the 40 parts, SHA256SUMS |
+| `ds41_vq_student.py` | VQ experts for the forward, decoded on the GPU from a GGUF or blob directory |
+| `score_ds41.py`, `score_regions_ds41.py`, `report_ds41.py` | KL / top-1 / NLL per case; generated (raw text, assistant turns) vs prompt positions; family tables, route overlap, final-state cosine |
+| `measure_ds41.py` | per-layer routed-output error of students on the original's own inputs and routes (energy-weighted and per token) |
+
+```sh
+SRC=/models/deepseek-ai/DeepSeek-V4.1-Flash-1017  W=/work/ivq
+BASE=DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf   # assembled VQ release
+python3 -I build_calib_ds41.py fetch && python3 -I build_calib_ds41.py build
+./run_collect_ds41.sh $W/calib/calib.safetensors $W/stats "0 1 2 3 4 5 6 7"
+./run_convert_ds41.sh $W/stats $W/convert "0 1 2 3 4 5 6 7" --base $BASE
+python3 assemble_ds41_ivq.py --base $BASE --blobs $W/convert --out $W/publish
+python3 run_ds41.py eval --data $W/calib/heldout.safetensors --out $W/eval/ivq --experts $W/convert
+```
+
+On 8× A100 80GB: statistics for 3.65M tokens ~16 min (14–16 s per layer per rank, peak
+64 GiB); conversion ~85 s per 12-bit and ~135 s per 13-bit layer (Lloyd 9 s / 17 s on a
+23.6M-vector pool); a held-out pass over 58.8K tokens ~4 min.
+
+This model is not batch-invariant in BF16 (GEMM rounding depends on the row count and
+near-tied routes amplify it), and its prompt positions are untrained; measure the
+reference's own floor and use `score_regions_ds41.py` before reading small differences
+(docs/vq-calibration.md).
+
 ## Tests
 
 ```sh
