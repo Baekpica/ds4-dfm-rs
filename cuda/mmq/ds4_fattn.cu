@@ -1508,6 +1508,295 @@ static int solar_fattn_ws_try(
     }
 }
 
+/* FP8 K/V rows (SOLAR_KV_FP8: E4M3 K and V per KV head, then 2 x n_head_kv
+ * FP16 scales; Beam's full layers) take the same warp-specialized walk.
+ * Raw FP8 tiles beside the decoded double buffer would need 103 KB of
+ * shared memory, so each producer thread loads its 16-byte K and V
+ * chunks of four rows into registers one tile ahead (LDG.128, issued
+ * before the current tile decodes) and writes the half tiles; the
+ * consumers are the Solar ones. Byte-identical to the pair kernel: the
+ * same exact e4m3x2 conversion, fp32 scale multiply and rn half rounding
+ * as solar_fattn_fill_kv_tile. The pair kernel ran Beam's 64K-frontier
+ * prefill at 41% of the FP16 peak, 16.7 instructions per HMMA (the mask
+ * chain and the per-step output rescale on every tile, scalar decodes). */
+struct fp8_ws_smem {
+    __half s_k[2][WS_TK][FA_ROW];
+    __half s_v[2][WS_TK][FA_ROW];
+};
+
+/* Rows ptid / 8 + 16 j, bytes 16 (ptid % 8) .. +15 of the head's K and V;
+ * s[j] packs the row's K (low) and V (high) scale. */
+struct fp8_ws_regs { uint4 k[4], v[4]; uint32_t s[4]; };
+
+__device__ __forceinline__ void fp8_ws_fetch(
+        fp8_ws_regs   &x,
+        const uint8_t *kv,
+        uint64_t       row_bytes,
+        uint32_t       n_head_kv,
+        uint32_t       kvh,
+        uint32_t       kv_cap,
+        uint32_t       kt0,
+        uint32_t       tile_len,
+        uint32_t       ptid) {
+    const uint64_t kv_elems = (uint64_t)n_head_kv * FA_HD;
+    const uint32_t c = (ptid & 7u) * 16u;
+#pragma unroll
+    for (uint32_t j = 0; j < 4; j++) {
+        const uint32_t r = (ptid >> 3) + 16u * j;
+        /* Rows past tile_len duplicate row kt0, as the direct fill does. */
+        const uint32_t src = r < tile_len ? kt0 + r : kt0;
+        const uint8_t *row = kv + (uint64_t)(src % kv_cap) * row_bytes;
+        const __half *scales = (const __half *)(row + 2u * kv_elems);
+        x.k[j] = __ldg((const uint4 *)(row + (uint64_t)kvh * FA_HD + c));
+        x.v[j] = __ldg((const uint4 *)(row + kv_elems + (uint64_t)kvh * FA_HD + c));
+        x.s[j] = (uint32_t)__half_as_ushort(__ldg(scales + kvh)) |
+            ((uint32_t)__half_as_ushort(__ldg(scales + n_head_kv + kvh)) << 16);
+    }
+}
+
+/* Four E4M3 codes (bytes of w) times one scale, as two half2 words. */
+__device__ __forceinline__ uint2 fp8_ws_scale4(uint32_t w, float scale) {
+    const float2 lo = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(w & 0xffffu), __NV_E4M3)));
+    const float2 hi = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(w >> 16u), __NV_E4M3)));
+    const __half2 a = __floats2half2_rn(lo.x * scale, lo.y * scale);
+    const __half2 b = __floats2half2_rn(hi.x * scale, hi.y * scale);
+    return make_uint2(*reinterpret_cast<const uint32_t *>(&a), *reinterpret_cast<const uint32_t *>(&b));
+}
+
+__device__ __forceinline__ void fp8_ws_decode(
+        const fp8_ws_regs &x,
+        __half             s_k[][FA_ROW],
+        __half             s_v[][FA_ROW],
+        uint32_t           ptid) {
+    const uint32_t c = (ptid & 7u) * 16u;
+#pragma unroll
+    for (uint32_t j = 0; j < 4; j++) {
+        const uint32_t r = (ptid >> 3) + 16u * j;
+        const float sk = __half2float(__ushort_as_half((uint16_t)(x.s[j] & 0xffffu)));
+        const float sv = __half2float(__ushort_as_half((uint16_t)(x.s[j] >> 16u)));
+        const uint2 k0 = fp8_ws_scale4(x.k[j].x, sk), k1 = fp8_ws_scale4(x.k[j].y, sk);
+        const uint2 k2 = fp8_ws_scale4(x.k[j].z, sk), k3 = fp8_ws_scale4(x.k[j].w, sk);
+        const uint2 v0 = fp8_ws_scale4(x.v[j].x, sv), v1 = fp8_ws_scale4(x.v[j].y, sv);
+        const uint2 v2 = fp8_ws_scale4(x.v[j].z, sv), v3 = fp8_ws_scale4(x.v[j].w, sv);
+        /* Lanes 4-7 of each quarter store their high half first: the
+         * eight 16-byte stores of a wavefront then hit distinct banks. */
+        const uint32_t hi = (ptid >> 2) & 1u;
+        const uint4 klo = make_uint4(k0.x, k0.y, k1.x, k1.y), khi = make_uint4(k2.x, k2.y, k3.x, k3.y);
+        const uint4 vlo = make_uint4(v0.x, v0.y, v1.x, v1.y), vhi = make_uint4(v2.x, v2.y, v3.x, v3.y);
+        *reinterpret_cast<uint4 *>(&s_k[r][c + 8u * hi]) = hi ? khi : klo;
+        *reinterpret_cast<uint4 *>(&s_k[r][c + 8u * (1u - hi)]) = hi ? klo : khi;
+        *reinterpret_cast<uint4 *>(&s_v[r][c + 8u * hi]) = hi ? vhi : vlo;
+        *reinterpret_cast<uint4 *>(&s_v[r][c + 8u * (1u - hi)]) = hi ? vlo : vhi;
+    }
+}
+
+__global__ void __launch_bounds__(WS_THREADS, 1)
+ds4_fattn_hmma_fp8_ws_kernel(
+        float * __restrict__ heads,
+        const float * __restrict__ q,
+        const void * __restrict__ kv,
+        const uint64_t row_bytes,
+        const uint32_t n_tokens,
+        const uint32_t pos0,
+        const uint32_t n_head,
+        const uint32_t n_head_kv,
+        const uint32_t kv_cap,
+        const uint32_t window,
+        const float scale) {
+    constexpr uint32_t N_Q = 2u;
+    constexpr uint32_t GROUP_THREADS = (uint32_t)FA_WARPS * 32u;
+    extern __shared__ __align__(16) uint8_t fp8_ws_dyn[];
+    fp8_ws_smem &sm = *reinterpret_cast<fp8_ws_smem *>(fp8_ws_dyn);
+    __shared__ uint32_t shared_first;
+    __shared__ uint32_t shared_last;
+
+    const uint32_t tq0 = blockIdx.x * FA_TQ;
+    const uint32_t h0 = blockIdx.y * N_Q;
+    if (tq0 >= n_tokens || h0 + 1u >= n_head) { return; }
+    const uint32_t group = n_head / n_head_kv;
+    const uint32_t kvh = h0 / group;
+    const bool producer = (threadIdx.x >> 5) >= (uint32_t)WS_CONSUMERS;
+    const uint32_t local = threadIdx.x % GROUP_THREADS;
+    const uint32_t hi = producer ? 0u : threadIdx.x / GROUP_THREADS;
+    const uint32_t h = h0 + hi;
+    const uint32_t warp = local >> 5;
+    const uint32_t lane = local & 31u;
+
+    /* Block key range from the consumer rows; producers hold no rows. */
+    const uint32_t qrow[2] = {
+        warp * FA_WQ + lane / 4,
+        warp * FA_WQ + lane / 4 + 8u,
+    };
+    uint32_t qpos[2], qfirst[2];
+    bool alive[2];
+    float row_m[2], row_l[2];
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        alive[r] = !producer && tq0 + qrow[r] < n_tokens;
+        qpos[r] = alive[r] ? pos0 + tq0 + qrow[r] : pos0;
+        qfirst[r] = window && qpos[r] + 1u > window
+            ? qpos[r] + 1u - window : 0u;
+        row_m[r] = -INFINITY;
+        row_l[r] = 0.0f;
+    }
+    uint32_t block_first = 0xffffffffu;
+    uint32_t block_last = 0u;
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        if (!alive[r]) { continue; }
+        block_first = min(block_first, qfirst[r]);
+        block_last = max(block_last, qpos[r]);
+    }
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        block_first = min(
+            block_first,
+            __shfl_xor_sync(0xffffffffu, block_first, offset));
+        block_last = max(
+            block_last,
+            __shfl_xor_sync(0xffffffffu, block_last, offset));
+    }
+    if (threadIdx.x == 0u) {
+        shared_first = 0xffffffffu;
+        shared_last = 0u;
+    }
+    __syncthreads();
+    if (lane == 0u && !producer) {
+        atomicMin(&shared_first, block_first);
+        atomicMax(&shared_last, block_last);
+    }
+    __syncthreads();
+    block_first = shared_first;
+    block_last = shared_last;
+    if (block_first == 0xffffffffu) { return; }
+    const uint32_t n_tiles = (block_last - block_first) / WS_TK + 1u;
+
+    if (producer) {
+        const uint32_t ptid = threadIdx.x - WS_CTHREADS;
+        const uint8_t *kvb = (const uint8_t *)kv;
+        auto tile_len_of = [&](uint32_t t) {
+            const uint32_t remaining =
+                block_last - (block_first + t * WS_TK) + 1u;
+            return remaining < (uint32_t)WS_TK ? remaining : (uint32_t)WS_TK;
+        };
+        fp8_ws_regs cur, nxt;
+        fp8_ws_fetch(cur, kvb, row_bytes, n_head_kv, kvh, kv_cap, block_first, tile_len_of(0), ptid);
+        for (uint32_t t = 0; t < n_tiles; t++) {
+            const uint32_t b = t & 1u;
+            /* Tile t+1's loads fly while tile t decodes. */
+            if (t + 1u < n_tiles) {
+                fp8_ws_fetch(nxt, kvb, row_bytes, n_head_kv, kvh, kv_cap,
+                             block_first + (t + 1u) * WS_TK, tile_len_of(t + 1u), ptid);
+            }
+            /* Consumers released half[b] (tile t-2). */
+            if (t >= 2u) { solar_ws_bar_sync(WS_BAR_EMPTY0 + b, WS_THREADS); }
+            fp8_ws_decode(cur, sm.s_k[b], sm.s_v[b], ptid);
+            __threadfence_block();
+            solar_ws_bar_arrive(WS_BAR_FULL0 + b, WS_THREADS);
+            cur = nxt;
+        }
+        /* Balance the consumers' last EMPTY arrives. */
+        for (uint32_t t = n_tiles > 2u ? n_tiles - 2u : 0u; t < n_tiles; t++) {
+            solar_ws_bar_sync(WS_BAR_EMPTY0 + (t & 1u), WS_THREADS);
+        }
+        return;
+    }
+
+    tile_a qa[FA_HD / 16];
+    solar_fattn_load_qa(qa, q, tq0, n_tokens, n_head, h, warp, lane);
+    tile_c output[FA_HD / 8];
+    /* Warp-uniform interior bounds: row 0 of the warp has the smallest
+     * qpos (dead rows only trail alive rows); qfirst grows with qpos. */
+    const uint32_t warp_qmin = __shfl_sync(0xffffffffu, qpos[0], 0);
+    uint32_t warp_fmax = max(qfirst[0], qfirst[1]);
+#pragma unroll
+    for (int offset = 4; offset < 32; offset <<= 1) {
+        warp_fmax = max(
+            warp_fmax, __shfl_xor_sync(0xffffffffu, warp_fmax, offset));
+    }
+    for (uint32_t t = 0; t < n_tiles; t++) {
+        const uint32_t b = t & 1u;
+        const uint32_t kt0 = block_first + t * WS_TK;
+        const uint32_t remaining = block_last - kt0 + 1u;
+        const uint32_t tile_len =
+            remaining < (uint32_t)WS_TK ? remaining : (uint32_t)WS_TK;
+        solar_ws_bar_sync(WS_BAR_FULL0 + b, WS_THREADS);
+        const __half (*s_k)[FA_ROW] = sm.s_k[b];
+        const __half (*s_v)[FA_ROW] = sm.s_v[b];
+        const bool interior = tile_len == (uint32_t)WS_TK &&
+            kt0 >= warp_fmax && kt0 + (WS_TK - 1u) <= warp_qmin;
+        if (interior) {
+#pragma unroll
+            for (uint32_t step = 0; step < (uint32_t)WS_TK;
+                 step += (uint32_t)FA_CONSUME) {
+                tile_c scores[2];
+                float rescale[2];
+                solar_ws_qk_step(scores, qa, s_k + step, lane);
+                solar_ws_softmax_step(scores, row_m, row_l, rescale, scale);
+                solar_ws_pv_step(output, scores, rescale, s_v + step, lane);
+            }
+        } else {
+            for (uint32_t step = 0; step < (uint32_t)WS_TK;
+                 step += (uint32_t)FA_CONSUME) {
+                if (step >= tile_len) { break; }
+                const uint32_t step_len =
+                    tile_len - step < (uint32_t)FA_CONSUME
+                        ? tile_len - step : (uint32_t)FA_CONSUME;
+                solar_fattn_consume_16_ldsm(
+                    output, row_m, row_l, qa, s_k + step, s_v + step,
+                    alive, qpos, qfirst, kt0 + step, step_len, lane, scale);
+            }
+        }
+        solar_ws_bar_arrive(WS_BAR_EMPTY0 + b, WS_THREADS);
+    }
+
+#pragma unroll
+    for (int cb = 0; cb < FA_HD / 8; cb++) {
+#pragma unroll
+        for (int l = 0; l < tile_c::ne; l++) {
+            const int r = l / 2;
+            if (!alive[r] || row_l[r] <= 0.0f) { continue; }
+            const uint32_t token = tq0 + qrow[r];
+            const int col = (int)(lane % 4) * 2 + (l % 2);
+            heads[((size_t)token * n_head + h) * FA_HD + cb * 8 + col] =
+                output[cb].x[l] / row_l[r];
+        }
+    }
+}
+
+/* Opt the FP8 kernel into its 68 KB of dynamic shared memory once; 0
+ * when the device cannot provide it. */
+static int fp8_fattn_ws_ready(void) {
+    static int ready = -1;
+    if (ready < 0) {
+        const auto &device = ggml_cuda_info().devices[ggml_cuda_get_device()];
+        ready = device.smpbo >= sizeof(fp8_ws_smem) &&
+            cudaFuncSetAttribute(ds4_fattn_hmma_fp8_ws_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 (int)sizeof(fp8_ws_smem)) == cudaSuccess;
+        if (!ready) { (void)cudaGetLastError(); }
+    }
+    return ready;
+}
+
+/* The FP8 walk when DS4_SOLAR_FATTN_WS allows it and the rows and cache
+ * base are 16-byte aligned (LDG.128); 0 keeps the pair kernel. */
+static int fp8_fattn_ws_try(
+        float *heads, const float *q, const void *kv, uint64_t row_bytes,
+        int n_tokens, int pos0, int n_head, int n_head_kv, int kv_cap,
+        int window, float scale, cudaStream_t stream) {
+    if (!solar_fattn_ws_enabled() || solar_fattn_ws_width(kv, row_bytes) != 16 || !fp8_fattn_ws_ready()) {
+        return 0;
+    }
+    const int tiles = (n_tokens + FA_TQ - 1) / FA_TQ;
+    const dim3 grid(tiles, n_head / 2, 1);
+    ds4_fattn_hmma_fp8_ws_kernel<<<grid, WS_THREADS, (int)sizeof(fp8_ws_smem), stream>>>(
+        heads, q, kv, row_bytes, (uint32_t)n_tokens, (uint32_t)pos0, (uint32_t)n_head, (uint32_t)n_head_kv,
+        (uint32_t)kv_cap, (uint32_t)window, scale);
+    return 1;
+}
+
 enum {
     M3_FA_QK     = 192,
     M3_FA_V      = 128,
@@ -3123,6 +3412,14 @@ static void solar_fattn_launch(
                 return;
             }
         }
+        if constexpr (FORMAT == SOLAR_KV_FP8) {
+            if (solar_fattn_ldsm_enabled() &&
+                fp8_fattn_ws_try(heads, q, kv, row_bytes, n_tokens, pos0,
+                                 n_head, n_head_kv, kv_cap, window, scale,
+                                 stream)) {
+                return;
+            }
+        }
         if (solar_fattn_ldsm_enabled()) {
             ds4_fattn_hmma_gqa2_kernel<FORMAT, true>
                 <<<grid, FA_WARPS * 32 * 2, 0, stream>>>(
@@ -3161,6 +3458,14 @@ extern "C" int ds4_mmq_exaone_prefill_attn_hmma(
         heads, q, kv, 0u, n_tokens, pos0, n_head, n_head_kv, kv_cap,
         window, scale, stream);
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+extern "C" int ds4_mmq_fp8_prefill_attn_ws_available(
+        const void *kv, size_t row_bytes) {
+    if (!kv || row_bytes == 0u) { return 0; }
+    const int device = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[device].cc < GGML_CUDA_CC_AMPERE) { return 0; }
+    return solar_fattn_ws_width(kv, (uint64_t)row_bytes) == 16 && fp8_fattn_ws_ready();
 }
 
 extern "C" int ds4_mmq_solar_prefill_attn_ws_available(
