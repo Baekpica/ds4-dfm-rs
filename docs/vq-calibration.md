@@ -146,6 +146,29 @@ for no choice) the release bytes give KL 0.753 (1–7) vs **0.727** (spread),
 better in all 19 domains and 73 of 78 cases. The Q4_K/Q8_0 non-expert body
 alone costs KL 0.046.
 
+### Second use: Beam-1.0 (12/13-bit, drop-in)
+
+[Baekpica/Beam-1.0-501B-A23B-VQ-GGUF](https://huggingface.co/Baekpica/Beam-1.0-501B-A23B-VQ-GGUF)
+was re-converted with the same weighting (imatrix, column power 0.75,
+importance-weighted LS gains), keeping everything the existing `beam_vq`
+runtime pins: one shared book per layer, the published 13-bit layers 3–10,
+12-bit elsewhere, GVQ1 v1 and the recipe id. The runtime loads the new parts
+unchanged. Statistics took 4.5 minutes on 8 GPUs for 3.91M calibration tokens
+through the 1 TB BF16 source; conversion took 14–60 s per layer. Against the
+first, weights-only build (teacher-forced, RTX PRO 6000):
+
+| Held-out | First build KL / top-1 | Calibrated KL / top-1 |
+|---|---:|---:|
+| The 7 published cases (5,491 tokens) | 0.291 / 83.3% (NLL 1.456) | **0.144 / 87.7%** (NLL 1.340) |
+| 22 cases, 54,017 tokens | 0.492 / 80.4% | **0.278 / 85.8%** |
+
+The calibrated build has lower KL in all 18 domains of the 22-case set, and
+the hidden-state cosine with the BF16 original at layer 40 rises from 0.939
+to 0.973. When the first build was published it measured 0.295 / 82.9% on
+H100 on the 7 cases. Beam's adapter scripts (its reference forward, collector
+and GVQ1 v1 converter) are shipped in that release's `tools/`, not in this
+directory.
+
 ## Pitfalls found on the way
 
 - **transformers' group-limited router is wrong for checkpoints whose biased
