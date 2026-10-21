@@ -349,8 +349,15 @@ pub fn json_content(p: &mut Json<'_>) -> Option<String> {
 /// Surrounding quotes included, matching C `json_escape`. Walks raw bytes
 /// so a held-back UTF-8 fragment can be escaped the same way as C.
 pub fn json_escape_bytes(s: &[u8]) -> Vec<u8> {
+    // Model text can hold bytes that form no character (a sampled lead byte,
+    // then ASCII). JSON text is UTF-8 and openai-python decodes each SSE line
+    // strictly, so one such delta ended the whole stream: they become U+FFFD.
+    // Streams hold back a character cut between tokens (utf8_stream_safe_len),
+    // so a valid one never arrives here in pieces. The C reference passes
+    // the bytes through raw.
+    let s = String::from_utf8_lossy(s);
     let mut out = vec![b'"'];
-    for &c in s {
+    for &c in s.as_bytes() {
         match c {
             b'"' | b'\\' => {
                 out.push(b'\\');

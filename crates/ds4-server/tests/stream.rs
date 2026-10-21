@@ -397,6 +397,39 @@ fn buffered_finals_replace_invalid_utf8() {
     }
 }
 
+/// Beam served through Hermes wrote two of a Hangul syllable's three bytes,
+/// then English; openai-python decodes each SSE line as strict UTF-8 and
+/// dropped the stream. That delta carries U+FFFD now, while a syllable cut
+/// between two tokens still streams whole.
+#[test]
+fn stream_deltas_replace_invalid_utf8() {
+    let r = StreamReq {
+        chat_format: ChatFormat::Beam,
+        syntax: ModelSyntax::BeamVq,
+        ..Default::default()
+    };
+    let raw: &[u8] = b"<|channel|>analysis<|message|>\xec\x84\x9c\xeb\xb2ving<|end|>";
+    let head = raw.len() - b"\x9c\xeb\xb2ving<|end|>".len();
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    for (cut, last) in [(head, false), (head + 3, false), (raw.len(), true)] {
+        assert!(openai_sse_stream_update(
+            &mut w,
+            &r,
+            "chatcmpl_bad",
+            &mut st,
+            &raw[..cut],
+            last,
+        ));
+    }
+    let out = String::from_utf8(w.out).expect("every SSE line is valid UTF-8");
+    assert!(out.contains("\"reasoning_content\":\"서\""), "{out}");
+    assert!(
+        out.contains("\"reasoning_content\":\"\u{fffd}ving\""),
+        "{out}"
+    );
+}
+
 #[test]
 fn buffered_finals_match_c() {
     let mut chat = StreamReq::default();
