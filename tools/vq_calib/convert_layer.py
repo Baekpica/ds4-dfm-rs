@@ -306,6 +306,20 @@ def weighting_config(recipe):
     return cfg
 
 
+def stats_fingerprint(files):
+    """SHA-256 over the statistics files a layer was weighted with ('none' without statistics)."""
+    if not files:
+        return 'none'
+    h = hashlib.sha256()
+    for f in files:
+        with open(f, 'rb') as fh:
+            h.update(hashlib.file_digest(fh, 'sha256').digest())
+    return h.hexdigest()
+
+
+VARIANT_WEIGHTING_KEYS = ('mode', 'shrink_tokens', 'col_power', 'col_floor', 'col_shrink')
+
+
 def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit, stats_dir=None,
                   probe_iters=None, host=None, iterations=None, shrink_tokens=None, books_scope=None,
                   col_power=None, col_floor=None):
@@ -318,17 +332,7 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
     work.mkdir(parents=True, exist_ok=True)
     target = out_dir / f'layer-{layer:02d}-experts.gguf'
     receipt_path = out_dir / f'layer-{layer:02d}-experts.json'
-    if target.exists() and receipt_path.exists():
-        data = json.loads(receipt_path.read_text())
-        with target.open('rb') as f:
-            checksum = hashlib.file_digest(f, 'sha256').hexdigest()
-        if data['sha256'] != checksum or data['k'] != k or data['recipe_id'] != recipe_id:
-            raise ValueError('existing layer receipt mismatch')
-        emit({'phase': 'resume_verified', 'layer': layer, 'sha256': checksum})
-        return data
-    if target.exists():
-        raise ValueError('artifact without receipt; inspect manually')
-    bits = bits_for(k)
+    # The requested variant: weighting, codebook scope and the statistics it reads.
     stats, stats_files = (None, [])
     if stats_dir is not None:
         try:
@@ -336,28 +340,60 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
         except FileNotFoundError:
             if mode not in ('none', 'row'):
                 raise
+    stats_sha = stats_fingerprint(stats_files)
     wcfg = weighting_config(recipe)
-    weighting = Weighting(mode, stats, col_power=float(col_power if col_power is not None else wcfg.get('col_power', 1.0)),
-                          col_floor=float(col_floor if col_floor is not None else wcfg.get('col_floor', 0.02)),
-                          col_shrink=float(wcfg.get('col_shrink', 0.0)),
-                          shrink_tokens=float(shrink_tokens if shrink_tokens is not None else wcfg.get('shrink_tokens', 256)))
+    want = {'mode': mode,
+            'shrink_tokens': float(shrink_tokens if shrink_tokens is not None else wcfg.get('shrink_tokens', 256)),
+            'col_power': float(col_power if col_power is not None else wcfg.get('col_power', 1.0)),
+            'col_floor': float(col_floor if col_floor is not None else wcfg.get('col_floor', 0.02)),
+            'col_shrink': float(wcfg.get('col_shrink', 0.0))}
+    scope = books_scope or wcfg.get('books', 'shared')
+    if target.exists() and receipt_path.exists():
+        data = json.loads(receipt_path.read_text())
+        with target.open('rb') as f:
+            checksum = hashlib.file_digest(f, 'sha256').hexdigest()
+        if data['sha256'] != checksum or data['k'] != k or data['recipe_id'] != recipe_id:
+            raise ValueError('existing layer receipt mismatch')
+        # A finished layer is reused only for the variant it was made for.
+        got = data.get('weighting', {})
+        diff = {key: (got.get(key), want[key]) for key in VARIANT_WEIGHTING_KEYS if got.get(key) != want[key]}
+        if data.get('gain_refit') != refit:
+            diff['gain_refit'] = (data.get('gain_refit'), refit)
+        if data.get('codebook_scope') != scope:
+            diff['codebook_scope'] = (data.get('codebook_scope'), scope)
+        recorded = data.get('training', {}).get('statistics_sha256')
+        if recorded is not None and recorded != stats_sha:
+            diff['statistics_sha256'] = (recorded, stats_sha)
+        if diff:
+            raise ValueError(f'existing layer {layer} was made for another variant: {diff}')
+        emit({'phase': 'resume_verified', 'layer': layer, 'sha256': checksum,
+              **({} if recorded is not None else {'statistics': 'not recorded by this receipt; unverified'})})
+        return data
+    if target.exists():
+        raise ValueError('artifact without receipt; inspect manually')
+    bits = bits_for(k)
+    weighting = Weighting(mode, stats, col_power=want['col_power'], col_floor=want['col_floor'],
+                          col_shrink=want['col_shrink'], shrink_tokens=want['shrink_tokens'])
+    wd = weighting.describe()
     sdev = weighting.s
 
     t0 = time.monotonic()
     lw = LayerWeights(source, layer, host=host)
     emit({'phase': 'read', 'layer': layer, 'GiB': lw.source_bytes / 2**30, 'seconds': time.monotonic() - t0})
 
-    # 1. codebook (checkpointed per layer, K, mode)
-    wd = weighting.describe()
-    scope = books_scope or wcfg.get('books', 'shared')
+    # 1. codebook (checkpointed per layer under every input that shapes it: K, weighting, scope,
+    #    iterations and the statistics' hash)
     layout = book_layout(scope, layer)
-    tag = f"k{k}-{mode}-{scope}-i{iterations}-s{wd['shrink_tokens']:g}-p{wd['col_power']:g}-f{wd['col_floor']:g}"
+    tag = (f"k{k}-{mode}-{scope}-i{iterations}-s{wd['shrink_tokens']:g}-p{wd['col_power']:g}"
+           f"-f{wd['col_floor']:g}-c{wd['col_shrink']:g}-st{stats_sha[:12]}")
     book_path = work / f'{tag}-codebook.safetensors'
     t1 = time.monotonic()
     if book_path.exists():
+        training = json.loads((work / f'{tag}-training.json').read_text())
+        if training.get('statistics_sha256') != stats_sha or training.get('codebook_scope') != scope:
+            raise ValueError(f'cached codebook {book_path.name} does not match the requested statistics/scope')
         saved = load_file(str(book_path))
         cb8s = [saved[f'e4m3_{i}'] for i in range(len(layout))]
-        training = json.loads((work / f'{tag}-training.json').read_text())
     else:
         trained, held, strata, training = train_layer(gpu, lw, layer, k, weighting, iterations, probe_iters, scope)
         cb8s = [b['e4m3'] for b in trained]
@@ -367,6 +403,7 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
                          'statistics_files': stats_files, 'train_rows': TRAIN_ROWS, 'heldout_rows': HELD_ROWS,
                          'seed': SEED, 'cross_gpu_bit_identity': False})
         training['codebook_scope'] = scope
+        training['statistics_sha256'] = stats_sha
         save_file({**{f'e4m3_{i}': b['e4m3'].cpu() for i, b in enumerate(trained)},
                    **{f'f16_{i}': b['f16'].cpu() for i, b in enumerate(trained)}}, str(book_path))
         (work / f'{tag}-training.json').write_text(json.dumps(training, indent=1) + '\n')
