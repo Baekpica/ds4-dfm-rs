@@ -228,9 +228,151 @@ static int test_q8_candidate_shapes() {
     return 0;
 }
 
+/* ---- the family block types ----------------------------------------------
+ * The catalog sizes EVERY tensor in the file before any repack pass runs, so
+ * one id it cannot size makes ds4_repack_collect_catalog return false and the
+ * boot drops to the raw-layout tier even when the artifact holds
+ * repack-eligible tensors (the weight server treats the same false as a
+ * failed upload).
+ *
+ * These are the ids the engine's own gguf_types[] declares outside the
+ * standard block (DS4_GGUF_TYPE_*): the V4.1 family types and the Prism
+ * ternary.  bytes is elems / block_elems * block_bytes with the geometry that
+ * table carries, so a CUDA-side table that drifts from the engine's fails here
+ * instead of at a boot.
+ *
+ * vqblob is opaque bytes: its tensor is shaped [nbytes], which is why 1000
+ * elements is 1000 bytes. */
+struct gguf_entry {
+    const char *name;
+    uint32_t type;
+    uint32_t ndim;
+    uint64_t dims[2];
+    uint64_t bytes;
+};
+
+constexpr uint64_t kQ8In = 2048u;
+constexpr uint64_t kQ8Out = 2048u;
+/* Q8_0: 32 elements per 34-byte block.  K % 1024 == 0, 2-D and > 2 MiB keeps
+ * this tensor inside ds4_repack_q8_candidate as well. */
+constexpr uint64_t kQ8Bytes = (kQ8In / 32u) * kQ8Out * 34u;
+
+/* The family entries are [nbytes]-shaped: nothing here depends on their rank,
+ * only on the type geometry the table above carries. */
+static const gguf_entry kFamilyFixture[] = {
+    {"blk.0.ffn_exps_vq.blob",     DS4_GGUF_TYPE_VQBLOB, 1u, {      1000u,       0u},       1000u},
+    {"blk.0.ffn_gate_exps.go1b",   DS4_GGUF_TYPE_GO1B, 1u, {       256u,       0u},         34u},
+    {"blk.0.ffn_up_exps.go2b",     DS4_GGUF_TYPE_GO2B, 1u, {       256u,       0u},         68u},
+    {"blk.0.ffn_down_exps.fp4x32", DS4_GGUF_TYPE_FP4X32, 1u, {        32u,       0u},         17u},
+    {"blk.0.attn_kv_b.wkv",        DS4_GGUF_TYPE_FP8_32X32, 1u, {      1024u,       0u},       1025u},
+    {"blk.0.ffn_gate_shexp.q2_0", DS4_GGUF_TYPE_PQ2_0, 1u, {       128u,       0u},         34u},
+    {"blk.0.attn_q.weight",         8u, 2u, {     kQ8In,    kQ8Out},     kQ8Bytes},
+};
+constexpr size_t kFamilyCount = sizeof(kFamilyFixture) / sizeof(kFamilyFixture[0]);
+
+static bool write_family_gguf(const char *path) {
+    std::FILE *f = std::fopen(path, "wb");
+    if (!f) {
+        return false;
+    }
+    bool ok = write_u32(f, 0x46554747u) && write_u32(f, 3u) &&
+              write_u64(f, (uint64_t)kFamilyCount) && write_u64(f, 0u);
+    uint64_t rel = 0;
+    for (size_t i = 0; ok && i < kFamilyCount; i++) {
+        ok = write_string(f, kFamilyFixture[i].name) &&
+             write_u32(f, kFamilyFixture[i].ndim);
+        for (uint32_t d = 0; ok && d < kFamilyFixture[i].ndim; d++) {
+            ok = write_u64(f, kFamilyFixture[i].dims[d]);
+        }
+        if (ok) {
+            ok = write_u32(f, kFamilyFixture[i].type) && write_u64(f, rel);
+        }
+        /* One tensor per 32-byte alignment, as a real writer lays them out.
+         * No key-values, so the catalog keeps its default 32 alignment. */
+        rel = (rel + kFamilyFixture[i].bytes + 31u) & ~(uint64_t)31u;
+    }
+    long pos = ok ? std::ftell(f) : -1;
+    while (ok && pos >= 0 && (pos % 32) != 0) {
+        ok = std::fputc(0, f) != EOF;
+        pos++;
+    }
+    /* The catalog checks extents, never contents: zeros of the recorded size
+     * stand in for the weights. */
+    const std::vector<uint8_t> zeros(4096u, 0u);
+    for (uint64_t left = rel; ok && left > 0;) {
+        const size_t chunk = left < zeros.size() ? (size_t)left : zeros.size();
+        ok = write_all(f, zeros.data(), chunk);
+        left -= chunk;
+    }
+    if (std::fclose(f) != 0) {
+        ok = false;
+    }
+    return ok;
+}
+
+static int test_family_type_catalog() {
+    char dir[] = "/tmp/ds4-repack-family-XXXXXX";
+    if (!mkdtemp(dir)) {
+        return fail("mkdtemp failed");
+    }
+    char path[PATH_MAX];
+    if (std::snprintf(path, sizeof(path), "%s/family.gguf", dir) <= 0) {
+        return fail("family fixture path failed");
+    }
+    if (!write_family_gguf(path)) {
+        return fail("family fixture write failed");
+    }
+
+    ds4_repack_file model;
+    if (!ds4_repack_map_file("test_repack_premapped", path, model)) {
+        return fail("family model map failed");
+    }
+    std::vector<ds4_repack_span> spans;
+    std::vector<ds4_repack_tensor> records;
+    if (!ds4_repack_collect_catalog(
+            "test_repack_premapped", model, &spans, &records)) {
+        return fail("family catalog failed on a type the engine's table has");
+    }
+    if (records.size() != kFamilyCount) {
+        return fail("family catalog tensor count mismatch");
+    }
+    for (size_t i = 0; i < kFamilyCount; i++) {
+        if (records[i].name != kFamilyFixture[i].name ||
+            records[i].type != kFamilyFixture[i].type) {
+            return fail("family catalog record order mismatch");
+        }
+        if (records[i].bytes != kFamilyFixture[i].bytes) {
+            std::fprintf(stderr, "test_repack_premapped: %s type %u sizes to "
+                                 "%llu, the engine's table says %llu\n",
+                         records[i].name.c_str(), records[i].type,
+                         (unsigned long long)records[i].bytes,
+                         (unsigned long long)kFamilyFixture[i].bytes);
+            return 1;
+        }
+    }
+    /* The walk must not only survive the family types, it must still admit the
+     * repack candidates sitting beside them. */
+    if (!ds4_repack_q8_candidate(records[kFamilyCount - 1u])) {
+        return fail("the Q8_0 tensor beside the family types lost admission");
+    }
+    if (ds4_repack_q8_candidate(records[0]) ||
+        ds4_repack_q8_candidate(records[1])) {
+        return fail("a family-type tensor was taken for a Q8_0 candidate");
+    }
+    ds4_repack_unmap_file(model);
+    if (unlink(path) != 0 || rmdir(dir) != 0) {
+        return fail("family fixture cleanup failed");
+    }
+    std::puts("family block type catalog: ok");
+    return 0;
+}
+
 int main() {
     if (test_split_source() != 0) return 1;
     if (test_q8_candidate_shapes() != 0) return 1;
+    if (test_family_type_catalog() != 0) {
+        return 1;
+    }
     constexpr uint64_t kOffset = 4096;
     constexpr uint64_t kIn = 1024;
     constexpr uint64_t kOut = 2048;
