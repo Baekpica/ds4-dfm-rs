@@ -12,7 +12,7 @@ test report).
 | Revision | R7 (a stray image placeholder in text is refused, 2026-10-19: the residual oracle surface is probed on the served artifact, the divergence from the engine is measured, and the port now mirrors the oracle on every message surface) |
 | Date | 2026-10-19 |
 | Status | Issued — conformance on every port unit of this line: replay fidelity is met by measurement, diagnostics are closed, the truncation signal is met as of R4, recovery of a cut block (NC-02, TP-11) is CLOSED at R6 as reference-absent on the served route by the operator's decision (clause 8.2) rather than carried as an open nonconformity, and a user-supplied image placeholder in a textual field is refused as of R7 (NC-09, clause 8.9) on every message surface. What remains open is out of this line by the operator's scope instruction: the cached-token gain reserved by clause 3 and the static NC-04 (checkpoint canonicalization, the Responses visible suffix's consuming store) and NC-06 (thinking-scope probes) |
-| Implementation under test | `ds4-dfm-rs` ds41 serving path, binary `/home/leandro/ds4-dfm-rs/ds4-server`, md5 `9e1e73c9df3be9daf6aae39c2aa53066` (R7, rebuilt from this branch's tip); the R6 binary was `2ae013787860e07c7f0e81291d870c2f`, the R4 one `7ab03b73654a67fd27ca25cd81d69afe`, and the R3 one `e672f6f3633cf99a179437bd4354ecf9` |
+| Implementation under test | `ds4-dfm-rs` ds41 serving path, binary `~/ds4-dfm-rs/ds4-server`, md5 `9e1e73c9df3be9daf6aae39c2aa53066` (R7, rebuilt from this branch's tip); the R6 binary was `2ae013787860e07c7f0e81291d870c2f`, the R4 one `7ab03b73654a67fd27ca25cd81d69afe`, and the R3 one `e672f6f3633cf99a179437bd4354ecf9` |
 | Branch under assessment | R1: `feat/ds41-dsml-complete` base `c942523` (the served binary precedes the line). R2: `feat/ds41-dsml-carriage`, base `c942523`. R3: `feat/ds41-dsml-carriage` at `eb67d493`, served on 2026-10-19. R4: the same branch at `9f441876`, served on 2026-10-19. R5: no code change (the served binary of R4 stands; the reference was read again). R6: the same branch at `498bd1a2`, rebuilt and served on 2026-10-19. R7: the same branch at `04a0ab1f`, rebuilt and served on 2026-10-19 |
 | Normative reference | `tests/ds41_ref/oracle/encoding.py` (vendored, sha256 `13231c59…e2`); the C tree it was first read from is no longer consulted |
 | Client of record | `/data/open-grok` at `27b48a6`, the configured consumer of this server (clause 2.3) |
@@ -111,9 +111,9 @@ decided by the oracle. The clauses that state the requirements assessed here:
 
 ### 2.3 Client of record
 
-`/data/open-grok` at `27b48a6`. The server on `192.168.1.91:8008` is the model
+`/data/open-grok` at `27b48a6`. The server on `<spark-host>:8008` is the model
 entry `deepseek-v4.1-1017-flash-ds4` in `~/.opengrok/config.toml`
-(`base_url = "http://192.168.1.91:8008/v1"`,
+(`base_url = "http://<spark-host>:8008/v1"`,
 `api_backend = "chat_completions"`), so this client is the party the carriage
 must satisfy. It is a scoping choice, not a dependency: the server ships no
 client and must serve any compatible caller, so a requirement below binds once
@@ -261,7 +261,7 @@ Dashed: the stages the measured nonconformities fall in.
 | Test suite (ATS) | `tests/spark/dsml_conformance.sh` |
 | Means of testing | `curl` and `jq` against the served HTTP surface; no in-process hooks |
 | Execution host | analysis host, over the LAN to the Spark |
-| IUT host | `gx10-e1d2` (Spark), `192.168.1.91`, port 8008 |
+| IUT host | `<spark-host>` (Spark), `<spark-host>`, port 8008 |
 | Evidence | per-probe request and response bodies, `results.tsv`, `header.txt` |
 
 ### 6.2 Method rules
@@ -960,16 +960,16 @@ probe and gate (2026-10-19 11:18–11:26 CEST).
 
 | Item | Value |
 | --- | --- |
-| Host | `gx10-e1d2`, `192.168.1.91`, NVIDIA GB10, driver 580.178.04 |
+| Host | `<spark-host>`, `<spark-host>`, NVIDIA GB10, driver 580.178.04 |
 | Memory | 121.6 GiB unified; about 9.9 GiB available with the model resident |
-| Server | `/home/leandro/ds4-dfm-rs/ds4-server --cuda -m /mnt/models/ds41-1017/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf --engram-dir /home/leandro/models/ds41-1017-engram --mtp-mode auto --mem-budget-mb 110000 --host 0.0.0.0 --port 8008 --vision-gguf /mnt/models/ds41-1017/DeepSeek-V4.1-Flash.vision.gguf` |
+| Server | `~/ds4-dfm-rs/ds4-server --cuda -m /mnt/models/ds41-1017/DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative.gguf --engram-dir ~/models/ds41-1017-engram --mtp-mode auto --mem-budget-mb 110000 --host 0.0.0.0 --port 8008 --vision-gguf /mnt/models/ds41-1017/DeepSeek-V4.1-Flash.vision.gguf` |
 | Model id | `DeepSeek-V4.1-Flash-vq8sh14-q4k-mtpnative`, context 1048576 |
 | Served binary build | branch `fix/glm53-vq-penalties`, commit `416d4f5a` |
-| Worktree for this line | `/home/leandro/ds41-dsml` at `c942523`, branch `feat/ds41-dsml-complete` |
+| Worktree for this line | `~/ds41-dsml` at `c942523`, branch `feat/ds41-dsml-complete` |
 | Observation window | 2026-10-18 11:30–11:37 CEST |
 | Measured rates | prefill 434–2137 tokens/s, decode 30–46 tokens/s, 2.0–4.0 tokens per step (MTP) |
 | Gate host state | same Spark, no other `ds4-server` process, `MemAvailable` 122281 MB before the first launch |
-| Gate server | `/home/leandro/ds4-dfm-rs/ds4-server --cuda -m /mnt/models/ds41flash-1017/DeepSeek-V4.1-Flash-1017-vq8sh14-q4k-mtpnative.gguf --engram-dir /home/leandro/models/ds41flash-1017/deepseek-engram --mtp-mode auto --mem-budget-mb 110000 --host 0.0.0.0 --port 8008 --zchain …-grrb-vqfin41_vqhalf_a_n8192-engine --vision-gguf …/DeepSeek-V4.1-Flash-1017.vision.gguf`, started by `~/dgx-recipe/scripts/ds41flash_1017_install.sh start`, plus `--trace` and `--disable-exact-dsml-tool-replay` for the A/B arms |
+| Gate server | `~/ds4-dfm-rs/ds4-server --cuda -m /mnt/models/ds41flash-1017/DeepSeek-V4.1-Flash-1017-vq8sh14-q4k-mtpnative.gguf --engram-dir ~/models/ds41flash-1017/deepseek-engram --mtp-mode auto --mem-budget-mb 110000 --host 0.0.0.0 --port 8008 --zchain …-grrb-vqfin41_vqhalf_a_n8192-engine --vision-gguf …/DeepSeek-V4.1-Flash-1017.vision.gguf`, started by `~/dgx-recipe/scripts/ds41flash_1017_install.sh start`, plus `--trace` and `--disable-exact-dsml-tool-replay` for the A/B arms |
 | Gate model id | `DeepSeek-V4.1-Flash-1017-vq8sh14-q4k-mtpnative` (the 1017 artifact; the R1 baseline used the earlier `vq8sh14` one) |
 | Gate binary | branch `feat/ds41-dsml-carriage`, commit `eb67d493`, md5 `e672f6f3633cf99a179437bd4354ecf9`, built on the Spark with `make -B … ds4-server CUDA_ARCH=sm_121` |
 | Gate worktree | Spark `~/ds4-dfm-rs` at `eb67d493` (fast-forwarded from `23eb6b2`; the previous binary kept as `ds4-server.pre-eb67d493`) |

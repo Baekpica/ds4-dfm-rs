@@ -40,74 +40,18 @@ The restore tries `K_turn` first and falls through to `K_pre` untouched: a miss
 on the turn checkpoint must not disturb the prompt-end decision.  Both die on
 the same events (`v41_kvreuse_drop`, a model close, an amplifier change).
 
-## What the invalidation keeps
+## Not in this line: the live sidecar switch
 
-The drop keeps the prompt of the checkpoint it invalidates and hands it over
-once (`v41_kvreuse_stale_prompt`; the reference's `g_stale` and
-`ds4_engine_v41_kv_stale_prompt`, `core_v41_kvreuse.c:40-56`), NULL for an image
-prompt, whose vision rows no checkpoint holds.  The reference spends the idle
-moment after a plugin switch re-prefilling that prompt under the new amplifier,
-so the user's next message does not pay the whole prefill (`plugins_rewarm`,
-6057991).
-
-Nothing consumed it while the only switch this deployment had was a restart
-(`dgx-recipe/scripts/ds41_install.sh:202`): the checkpoint is VRAM, so a
-restarted process has nothing to warm, and the port's own switch stand-in fires
-at the start of the run that observed the change, which is already inside a
-request.  The live switch below is what gives the retention its consumer.
-
-## The live switch, and the retention's consumer
-
-The reference's switch is a queued job: `POST /api/models/plugins` queues a
-switch task on the worker's own queue, the worker applies it between requests
-(`ds4_engine_v41_switch_plugins`, `core_v41_state.c:96-115`: swap the two
-directories, re-mount, drop the checkpoint), and then `plugins_rewarm`
-re-prefills the dropped prompt under the new amplifier while the worker is idle
-(`server_plugins.c`, 6057991).  This branch lands the same chain:
-
-- `POST /v1/plugins` with `{"zchain": dir|null, "posttrain": dir|null}` answers
-  `{"ok":true,"zchain":...,"posttrain":...,"digest":...}`, or 409 carrying the
-  mount's own refusal.  `""` and `null` both mean "not mounted".
-- `Model::v41_switch_sidecar` (`crates/ds4-core/src/v41_run.rs`) drops the mount
-  cache first -- a switch re-reads the disk even for a directory this process
-  mounted before (`core_v41_amp.c:129-130`) -- mounts the new set, and notes its
-  identity, which is what makes the native drop both checkpoints and keep the
-  prompt they described (`v41_kvreuse_stale_prompt`).
-- The owner thread applies it, from its own control channel, when the inference
-  queue is empty: the process-level route tables never change under a run.  The
-  answer reaches the client before the rewarm starts.
-- `DecodeIo::v41_rewarm` runs one 0-predict generate over the retained prompt --
-  prefill and a prompt-end checkpoint, no decode -- and stops at the next
-  prefill block if a request has arrived meanwhile, that request saving its own
-  checkpoint.
-
-Two named differences from the reference:
-
-1. Ordering plumbing.  The reference's worker has one queue and one condvar, so
-   its switch job wakes the worker.  This host's job channel is inference-typed,
-   so the switch rides its own channel and the owner checks it between requests
-   and under a bounded idle wait (250 ms) -- the same shape as the host's own
-   stop polling (`serve.rs`, `owner_loop`).  A queued request is always served
-   first, so the switch cannot jump a request that already arrived.
-2. Durability.  The reference writes `serve_pick.txt` after a switch, so a
-   restart comes back to the user's last choice (`server_plugins.c:86-89`).
-   Here the domain is the deployment's (`ds41flash_1017_install.sh --domain`),
-   so a switch lasts until the next restart, which comes back to the script's
-   choice.
-
-The disk half needs nothing: a store candidate is gated by the mount digest and
-the payload class in its trailer
-(`crates/ds4-server/src/v41_disk.rs:109-114`), so another domain's
-checkpoint can never be imported after a switch.
-
-Verified model-free only (`cargo test -p ds4-core`, `cargo test -p ds4-server`):
-the switch re-reads a changed directory from disk and reports the new identity,
-a refused directory writes no device table and notes no identity, the retained
-prompt is handed over exactly once, the wire body and its refusals, the owner
-applying a switch with the rewarm standing aside for a queued request.  The
-served path is not yet exercised: no sidecar pair has been switched on the Spark
-since this landing, so the rewarm's real cost and the first message's reuse
-after a switch remain unmeasured.
+The reference also keeps the prompt of an invalidated checkpoint and re-prefills
+it after a live plugin switch (`g_stale`, `plugins_rewarm`, `server_plugins.c`).
+A port of that switch (`POST /v1/plugins`, e1ac5e98, with the retained prompt
+of 0dcddeac) was taken back out before merge: it was mounted on every server
+with no opt-in, no peer check and any readable directory as input, and it had
+not been exercised on the Spark.  It can return as its own change behind a boot
+flag with a served gate.  An amplifier change still drops both checkpoints, and
+the disk half is gated by the mount digest in its trailer
+(`crates/ds4-server/src/v41_disk.rs`), so another domain's checkpoint is never
+imported.
 
 ## The key is the state's positions, not the emitted ids
 
@@ -153,7 +97,9 @@ costs about twice the single checkpoint there.  Neither is persisted by default:
 the disk half (`v41_kvreuse_export` / `_import`) carries both classes, each
 payload naming its own (the store writes them under "cold" and "continued", its
 own reason vocabulary), while the served configuration still runs with
-`disk=false`.
+`disk=false`.  Neither slot is charged to the memory governor: on the
+unified-memory GB10 the turn copy's peak (state + K + T) is headroom the
+operator has to leave.
 
 ## The earlier attempt, and what changed
 

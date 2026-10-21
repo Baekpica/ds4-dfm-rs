@@ -8,7 +8,7 @@
 # against the server the operator's config names:
 #
 #   ~/.opengrok/config.toml  [model."deepseek-v4.1-1017-flash-ds4"]
-#                            base_url = "http://192.168.1.91:8008/v1"
+#                            base_url = "http://127.0.0.1:8008/v1"
 #                            api_backend = "chat_completions"
 #
 # PRECONDITION: the model id below must point at the server under test.  The
@@ -33,7 +33,7 @@ set -u
 
 MODEL="${1:-deepseek-v4.1-1017-flash-ds4}"
 OUT="${2:-$PWD/ds41-open-grok-leg-$(date +%Y%m%d-%H%M%S)}"
-GROK="${GROK_BIN:-/data/open-grok/bin/open-grok}"
+GROK="${GROK_BIN:-open-grok}"
 SCRATCH="$(mktemp -d /tmp/ds41-client-leg-XXXXXX)"
 
 mkdir -p "$OUT"
@@ -94,7 +94,7 @@ fi
 
 # G3: the malformed-turn shape, re-run beside the client evidence.
 say "=== G3 malformed turn (wire legality) ==="
-BASE="${BASE_URL:-http://192.168.1.91:8008}"
+BASE="${BASE_URL:-http://127.0.0.1:8008}"
 TOOLS='[{"type":"function","function":{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"target_file":{"type":"string"},"limit":{"type":"integer"}},"required":["target_file"]}}},{"type":"function","function":{"name":"list_dir","description":"List a directory","parameters":{"type":"object","properties":{"target_directory":{"type":"string"}},"required":["target_directory"]}}}]'
 B=$(jq -n --argjson t "$TOOLS" --arg m "$MODEL" \
   '{model:$m,messages:[{role:"user",content:"Read the file /tmp/x.txt and list the directory /tmp. Call both tools."}],tools:$t,tool_choice:"auto",max_tokens:16,temperature:0,stream:true,stream_options:{include_usage:true}}')

@@ -43,7 +43,7 @@ post-training solvers are the C toolchain's job), no re-quantization.
 ## 2. The artifact, as measured
 
 Read over the gvfs mount of the Spark
-(`/run/user/1000/gvfs/sftp:host=192.168.1.91,user=<user>$HOME/youngai/model`) (v).
+(`/run/user/1000/gvfs/sftp:host=<spark-host>,user=<user>$HOME/youngai/model`) (v).
 
 | item | value |
 | --- | --- |
@@ -225,7 +225,7 @@ file-format work, it moves to Rust.
 Owner waiver, recorded 2026-10-08: the rule 19 QA-tester gate does not apply
 to this workstream; the agent tests its own work and reports the evidence.
 
-All builds and tests for this port run on the DGX Spark (gx10-e1d2, sm_121,
+All builds and tests for this port run on the DGX Spark (<spark-host>, sm_121,
 CUDA 13, 128 GB unified), which is the only machine the reference engine was
 tested on and the only one holding the artifact. The Rust host must therefore
 be present on the Spark (clone or rsync of the `ds41` branch) — see O5.

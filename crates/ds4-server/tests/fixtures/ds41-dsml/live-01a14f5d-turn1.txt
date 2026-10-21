@@ -7,10 +7,10 @@ I'll start by gathering the necessary knowledge: the modeling skill, the SolidCr
 <query>solidcraft palm tree modeling organic shapes</query>
 </memory_search>
 <read_file">
-<target_file>/home/leandro/.opengrok/skills/solidcraft-modeling/SKILL.md</target_file>
+<target_file>/home/user/.opengrok/skills/solidcraft-modeling/SKILL.md</target_file>
 </read_file>
 <read_file">
-<target_file>/home/leandro/.opengrok/project-work-rules.md</target_file>
+<target_file>/home/user/.opengrok/project-work-rules.md</target_file>
 </read_file>
 </｜DSML｜ calls>
 Understood — I'll work from the current sources and skills only, no memory lookup.

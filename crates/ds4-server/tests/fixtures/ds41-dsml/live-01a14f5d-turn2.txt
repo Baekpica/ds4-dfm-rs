@@ -1,13 +1,13 @@
 Understood — I'll work from the current sources and skills only, no memory lookup.
 
 <read_file">
-<target_file>/home/leandro/.opengrok/skills/solidcraft-modeling/SKILL.md</target_file>
+<target_file>/home/user/.opengrok/skills/solidcraft-modeling/SKILL.md</target_file>
 </read_file>
 <read_file">
-<target_file>/home/leandro/.opengrok/skills/solidcraft-editing/SKILL.md</target_file>
+<target_file>/home/user/.opengrok/skills/solidcraft-editing/SKILL.md</target_file>
 </read_file>
 <read_file">
-<target_file>/home/leandro/.opengrok/project-work-rules.md</target_file>
+<target_file>/home/user/.opengrok/project-work-rules.md</target_file>
 <limit>200</limit>
 </read_file>
 <list_dir">

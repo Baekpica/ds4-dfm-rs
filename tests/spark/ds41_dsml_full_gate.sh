@@ -34,7 +34,7 @@
 #
 # Usage:
 #   bash tests/spark/ds41_dsml_full_gate.sh
-#   bash tests/spark/ds41_dsml_full_gate.sh --base http://192.168.1.91:8008
+#   bash tests/spark/ds41_dsml_full_gate.sh --base http://127.0.0.1:8008
 #   bash tests/spark/ds41_dsml_full_gate.sh --host-only
 #   bash tests/spark/ds41_dsml_full_gate.sh --skip-client
 #   bash tests/spark/ds41_dsml_full_gate.sh --out /path/to/evidence-dir
@@ -45,7 +45,7 @@
 set -u
 set -o pipefail
 
-BASE="http://192.168.1.91:8008"
+BASE="http://127.0.0.1:8008"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT=""
 HOST_ONLY=0

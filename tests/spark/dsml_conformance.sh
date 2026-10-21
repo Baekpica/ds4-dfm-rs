@@ -21,7 +21,7 @@
 
 set -u
 
-BASE="${1:-http://192.168.1.91:8008}"
+BASE="${1:-http://127.0.0.1:8008}"
 OUT="${2:-$PWD/ds41-dsml-conformance-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
 TSV="$OUT/results.tsv"
