@@ -102,10 +102,12 @@ pub fn utf8_expected_len(c: u8) -> usize {
     }
 }
 
-/// Hold a trailing incomplete UTF-8 character. `final_` is documentation
-/// only, matching C (`(void)final`).
-pub fn utf8_stream_safe_len(s: &[u8], start: usize, limit: usize, _final: bool) -> usize {
-    if limit <= start {
+/// Hold a trailing incomplete UTF-8 character while the next token can still
+/// complete it. Once nothing can (the generation is final, or the byte after
+/// `limit` continues no character) it is released and json_escape_bytes writes
+/// U+FFFD; C ignores `final` and loses those bytes.
+pub fn utf8_stream_safe_len(s: &[u8], start: usize, limit: usize, final_: bool) -> usize {
+    if limit <= start || final_ || s.get(limit).is_some_and(|&c| c & 0xc0 != 0x80) {
         return limit;
     }
     let mut p = limit;
@@ -133,15 +135,9 @@ pub fn utf8_stream_safe_len(s: &[u8], start: usize, limit: usize, _final: bool) 
     }
 }
 
-pub fn utf8_trim_tail(s: &[u8]) -> &[u8] {
-    let n = utf8_stream_safe_len(s, 0, s.len(), true);
-    &s[..n]
-}
-
-/// A buffered body as a string. Model text can hold a byte that starts no valid
-/// UTF-8 sequence mid-text (utf8_trim_tail drops only an incomplete tail); it
-/// becomes U+FFFD so the body stays valid JSON. The C reference writes the raw
-/// byte, which strict clients reject.
+/// A buffered body as a string. json_escape_bytes already writes U+FFFD for
+/// model bytes that form no character; the lossy decode keeps any other stray
+/// byte from panicking the request into a 500.
 fn utf8_body(b: Vec<u8>) -> String {
     String::from_utf8(b).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
@@ -2337,8 +2333,7 @@ pub fn final_response(
     calls: &[ToolCall],
     token_ids: &[i32],
 ) -> Vec<u8> {
-    let text = utf8_trim_tail(text);
-    let reasoning = reasoning.map(utf8_trim_tail).unwrap_or(b"");
+    let reasoning = reasoning.unwrap_or(b"");
     let mut b = Vec::new();
     if r.kind == ReqKind::Chat {
         b.extend(
@@ -2400,8 +2395,7 @@ pub fn anthropic_final_response(
     cors: bool,
     calls: &[ToolCall],
 ) -> Vec<u8> {
-    let text = utf8_trim_tail(text);
-    let reasoning = reasoning.map(utf8_trim_tail).unwrap_or(b"");
+    let reasoning = reasoning.unwrap_or(b"");
     let mut b = format!("{{\"id\":\"{id}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":")
         .into_bytes();
     b.extend(json_escape_bytes(r.model.as_bytes()));
@@ -2439,8 +2433,7 @@ pub fn responses_final_response(
     message_id: &str,
     calls: &[ToolCall],
 ) -> Vec<u8> {
-    let text = utf8_trim_tail(text);
-    let reasoning = reasoning.map(utf8_trim_tail).unwrap_or(b"");
+    let reasoning = reasoning.unwrap_or(b"");
     let status = responses_status_for_finish(finish);
     let item_status = responses_item_status_for_finish(finish);
     // An open block stays incomplete even when the cause is stop.

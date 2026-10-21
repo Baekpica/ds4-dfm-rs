@@ -289,12 +289,8 @@ pub(crate) fn parse(raw: &[u8]) -> Option<crate::tools::ParsedGenerated> {
         let body_end = end.unwrap_or(raw.len());
         let body = &raw[body_start..body_end];
         match marker {
-            TEXT => out
-                .content
-                .extend_from_slice(crate::stream::utf8_trim_tail(body)),
-            THINK => out
-                .reasoning
-                .extend_from_slice(crate::stream::utf8_trim_tail(body)),
+            TEXT => out.content.extend_from_slice(body),
+            THINK => out.reasoning.extend_from_slice(body),
             INVOKE if end.is_some() => {
                 let value: Value = serde_json::from_slice(body).ok()?;
                 let function = value["name"].as_str().filter(|s| !s.is_empty())?;

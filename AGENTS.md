@@ -60,7 +60,7 @@ the port is fixed.
   (GLM, DeepSeek and Beam all did in Korean), and openai-python clients such as
   Hermes decode every SSE line strictly, so one such delta ends the turn.
   `json_escape_bytes` writes U+FFFD; streams hold back a character cut between
-  tokens.
+  tokens only while the next token can still complete it.
 
 ## Inference Performance Optimization Guidelines
 

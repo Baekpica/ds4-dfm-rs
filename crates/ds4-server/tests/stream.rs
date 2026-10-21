@@ -430,6 +430,59 @@ fn stream_deltas_replace_invalid_utf8() {
     );
 }
 
+/// A cut character that nothing can complete becomes U+FFFD as well: one
+/// before a closer, and one left when the generation ends, streamed or
+/// buffered (the C reference drops both).
+#[test]
+fn stranded_utf8_tails_become_replacement() {
+    let r = StreamReq {
+        chat_format: ChatFormat::Beam,
+        syntax: ModelSyntax::BeamVq,
+        ..Default::default()
+    };
+    let raw: &[u8] = b"<|channel|>analysis<|message|>a\xeb<|end|>\
+        <|start|>assistant<|channel|>final<|message|>b\xeb";
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    let n = raw.len();
+    for (cut, last) in [(n - 1, false), (n, false), (n, true)] {
+        assert!(openai_sse_stream_update(
+            &mut w,
+            &r,
+            "chatcmpl_cut",
+            &mut st,
+            &raw[..cut],
+            last,
+        ));
+    }
+    let out = String::from_utf8(w.out).expect("every SSE line is valid UTF-8");
+    assert!(out.contains("\"reasoning_content\":\"a\u{fffd}\""), "{out}");
+    assert!(out.contains("\"content\":\"b\""), "{out}");
+    assert!(out.contains("\"content\":\"\u{fffd}\""), "{out}");
+    let chat = StreamReq {
+        stream: false,
+        ..Default::default()
+    };
+    let body = final_response(
+        &chat,
+        "chatcmpl_cut",
+        b"b\xeb",
+        Some(b"a\xeb"),
+        "length",
+        4,
+        4,
+        CREATED_TEST,
+        false,
+        &[],
+        &[],
+    );
+    let body = String::from_utf8(body).expect("the body is valid UTF-8");
+    assert!(
+        body.contains("b\u{fffd}") && body.contains("a\u{fffd}"),
+        "{body}"
+    );
+}
+
 #[test]
 fn buffered_finals_match_c() {
     let mut chat = StreamReq::default();
