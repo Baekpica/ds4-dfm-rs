@@ -169,6 +169,67 @@ H100 on the 7 cases. Beam's adapter scripts (its reference forward, collector
 and GVQ1 v1 converter) are shipped in that release's `tools/`, not in this
 directory.
 
+### Third use: DeepSeek-V4.1-Flash-1017 (12/13-bit, drop-in)
+
+[Baekpica/DeepSeek-V4.1-Flash-1017-iVQ-GGUF](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-iVQ-GGUF)
+patches the 40 routed-expert DQVL v3 blobs of the weights-only
+[VQ release](https://huggingface.co/Baekpica/DeepSeek-V4.1-Flash-1017-VQ-GGUF)
+(YoungAi `vq8sh14-q4k-mtpnative`: one E4M3 book per layer shared by 384 experts and
+gate/up/down, K=8192 on layers 0–13, K=4096 on 14–39) in place, with the A.X-K2
+weighting (`imatrix`, col_power 0.75, shrink 256, floor 0.02, LS gains, 32 Lloyd
+iterations) and nothing else changed: no search, by design. Every other byte of the
+base (header, q4_K skeleton, MTP towers) is the VQ release's, so ds4-dfm-rs's
+`ds41` path loads it unchanged (`ds41_inspect`: bind 1000/1000).
+
+The family tools are `ds41_ref.py` (the official `inference/model.py` prefill path in
+plain PyTorch: mHC Sinkhorn, Engram, compressed sparse attention with the two-level
+indexer, kernels emulated), `run_ds41.py` (collector and teacher-forced passes),
+`convert_layer_ds41.py` (FP4 e2m1 experts, DQVL v3 through `ds41_vq_format.py`, which
+round-trips the published blobs byte for byte and reproduces YoungAi's codebooks bit
+for bit), `assemble_ds41_ivq.py`, `score_ds41.py`, `score_regions_ds41.py` and
+`measure_ds41.py`. Calibration: 3,653,893 tokens rendered with the model's own
+`encoding.py` (`build_calib_ds41.py`); every expert of every layer was routed.
+
+Measured on Runpod (8× A100 80GB, sm_80, CUDA 13.2, torch 2.13), 26 held-out cases,
+58,803 tokens:
+
+| MoE layers | Per token (median), VQ → iVQ | Change | Layers improved | Energy-weighted, VQ → iVQ |
+|---|---:|---:|---:|---:|
+| 0–13 (13-bit) | 0.239 → **0.215** | **−10%** | 14 of 14 | 0.220 → 0.164 (−26%) |
+| 14–39 (12-bit) | 0.348 → **0.327** | **−6%** | 26 of 26 | 0.345 → 0.075 (−78%) |
+| All 40 | 0.309 → **0.288** | **−7%** | 40 of 40 | 0.302 → 0.106 (−65%) |
+
+| | Floor | VQ | iVQ |
+|---|---:|---:|---:|
+| KL, all positions | 0.026 | 0.369 | **0.350** (−4.9%) |
+| KL, generated positions | 0.010 | 0.295 | 0.291 (−1.4%) |
+| Same top-1, all positions | 96.2% | 82.41% | 82.47% |
+
+Every layer improves for the typical token, but only by 7%, and end to end KL falls
+4.9% with next-token agreement unchanged. Chat, reasoning, tool calls and code improve by 3–21% KL; Chinese
+and Japanese web text gets worse end to end although iVQ's per-layer routed error is
+lower on those cases too.
+
+The reason is visible in the per-token data: DeepSeek-V4.1's routed experts have extreme
+massive activations. From layer 10 on, 1% of the held-out tokens carry 94–100% of the
+routed-output energy (the largest up to 1.1e7 times the median token); on layers 20–25
+the 26 sequence-initial BOS tokens alone carry ~95%. `Σx²`/`Σa²` statistics therefore
+describe those tokens, and the weighted fit protects them: the energy-weighted per-layer
+error falls 65%, the typical token's 7%. A.X-K2 has no BOS and showed no such gap
+(−26.9% energy-weighted vs −23.9% token mean). Per-token-normalized statistics, or
+statistics with such tokens clipped, are the next thing to try for this family.
+
+Two properties of this model matter for any comparison:
+
+- **Not batch-invariant.** BF16 GEMM results depend on the row count (a 64-row and a
+  3,072-row GEMM differ by up to 0.2%), and near-tied routes amplify that. Measure the
+  reference's own floor (the same model, batched differently) before reading a
+  difference; here it is KL 0.010 on generated positions.
+- **Prompt positions are untrained.** The original assigns parts of its system prompt
+  and tool schemas probabilities near 1e-8 (e.g. `$PARAM` → `ETER`), so a quantized
+  model can have lower NLL there. `score_regions_ds41.py` reports generated positions
+  (raw text and assistant turns) separately.
+
 ## Pitfalls found on the way
 
 - **transformers' group-limited router is wrong for checkpoints whose biased
@@ -185,6 +246,11 @@ directory.
   tokens are noise; shrink them.
 - **Zero-weight dimensions:** an unfloored importance profile lets a VQ
   dimension take any codeword value; floor the column weights.
+- **Massive activations:** when a few tokens (BOS, delimiters) carry most of a
+  layer's activation energy, as in DeepSeek-V4.1, summed `x²`/`a²` statistics
+  weight the codebook toward them. Check the per-token spread of the routed-output
+  energy before trusting energy-weighted per-layer gains (`measure_ds41.py` records
+  both).
 
 ## Adding another family
 
