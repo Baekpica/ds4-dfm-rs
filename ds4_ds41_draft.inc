@@ -865,7 +865,12 @@ int ds4_v41_generate_argmax(void *engine, const int *prompt, int n_prompt, int n
                 const double ts0 = now_sec();
                 if (!v41_graph_launch(e, &st, (int32_t)tok, 0)) { rc = 1; break; }
                 v41_turn_ids_add(&turn, &tok, 1u);   /* the state now holds this position */
-                if (emit && emit((int)tok, ud) != 0) { (void)v41_graph_wait(e, &st, &nt); break; }
+                if (emit && emit((int)tok, ud) != 0) {
+                    /* A failed wait fails the run, so the turn save below
+                     * never captures a state the step did not finish. */
+                    if (!v41_graph_wait(e, &st, &nt)) rc = 1;
+                    break;
+                }
                 if (!v41_graph_wait(e, &st, &nt)) { rc = 1; break; }
                 if (spec) v41_sched_cost(&cal, 1u, (now_sec() - ts0) * 1e3);   /* one pure step's wall time: the scheduler's price basis */
                 /* The penalty route (core_v41_api.c:264-266): the token in the

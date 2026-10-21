@@ -2015,12 +2015,17 @@ impl Model {
         // accepted rows unemitted).  Its signatures are the prompt's, zero for
         // a sampled position (v41_kvreuse_save_turn), so the next request's
         // own image identity decides the match.  A run that failed before its
-        // frontier saved nothing and answers 0 here.
-        if let Some(disk) = opts.kv_disk.as_mut() {
+        // frontier saved nothing this run, but T may still hold an earlier
+        // run's checkpoint: store only after a clean run, and only a T that
+        // extends this prompt, so the prompt's signatures copied below are
+        // the ones T was saved with.
+        if let Some(disk) = opts.kv_disk.as_mut().filter(|_| rc == 0) {
             let n = unsafe { ds4_bridge_v41_kvreuse_turn_key(std::ptr::null_mut(), 0) };
             if n as usize > prompt.len() {
                 let mut key = vec![0i32; n as usize];
-                if unsafe { ds4_bridge_v41_kvreuse_turn_key(key.as_mut_ptr(), n) } == n {
+                if unsafe { ds4_bridge_v41_kvreuse_turn_key(key.as_mut_ptr(), n) } == n
+                    && key[..prompt.len()] == *prompt
+                {
                     let mut sigs = vec![0u64; n as usize];
                     sigs[..signatures.len()].copy_from_slice(signatures);
                     let mut save = |p: &Path| -> bool {
