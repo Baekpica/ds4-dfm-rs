@@ -6,8 +6,9 @@ Hard-links the GGUF parts (never writes into them, never copies them):
 `body-nonexpert.gguf` / `embed-tokens-bf16.gguf` from --parts. Re-reads every
 part with the strict reader, hashes every payload independently of the
 converter receipts and cross-checks both, checks that all 60 layer receipts
-come from one variant (mode, gain refit, codebook scope, column knobs) that
-matches the recipe's selection, accounts for every one of the 94,172 source
+come from one variant (mode, gain refit, codebook scope, column knobs) and one
+calibration run (the statistics run id every receipt records) that match the
+recipe's selection, accounts for every one of the 94,172 source
 tensors exactly once (FP8 `weight_scale_inv` companions as `consumed_scale`
 of their quantized weight), then writes release.json, tensor-manifest.json,
 weight-error-by-layer.json, conversion-receipts/, files.json and SHA256SUMS
@@ -16,6 +17,8 @@ and tools are copied in.
 
 --dry-run skips the recipe-selection check and allows @@ placeholders, to
 prove the path on any variant before the selection is final.
+--allow-unverified-calibration accepts receipts written before run ids (no
+calibration run recorded); release.json lists them as unverified layers.
 
 Forked from the Beam-1.0 release assembler.
 """
@@ -96,6 +99,21 @@ def variant_of(receipt):
             'lloyd_iterations': lloyd_iterations(receipt)}
 
 
+def calibration_of(receipts, allow_unverified):
+    """-> the one calibration run (run id, calibration set SHA-256) of all layers, and the layers that record none."""
+    runs = {}
+    for l, r in receipts.items():
+        runs.setdefault((r.get('calibration_run_id'), r.get('calibration_set_sha256')), []).append(l)
+    unverified = runs.pop((None, None), [])
+    if len(runs) > 1:
+        raise SystemExit(f'layers come from different calibration runs ((run id, calibration set): layers): {runs}')
+    if unverified and not allow_unverified:
+        raise SystemExit(f'layers {unverified} record no calibration run (converted before run ids); '
+                         'pass --allow-unverified-calibration to release them anyway')
+    (run_id, calib_sha), = runs or [(None, None)]
+    return {'run_id': run_id, 'calibration_set_sha256': calib_sha, 'unverified_layers': unverified}
+
+
 def load_receipts(experts, layers, layer_bits, recipe):
     receipts, variant = {}, None
     for l in layers:
@@ -120,8 +138,8 @@ def load_receipts(experts, layers, layer_bits, recipe):
     return receipts, variant
 
 
-def check_selection(recipe, variant):
-    """The final recipe must name exactly the variant being released."""
+def check_selection(recipe, variant, calibration):
+    """The final recipe must name exactly the variant and the calibration run being released."""
     cal = recipe.get('calibration') or {}
     want = {'mode': cal.get('weighting_mode'), 'gain_refit': cal.get('gain_refit'),
             'codebook_scope': cal.get('codebook_scope'), 'weighting.col_power': cal.get('col_power'),
@@ -131,6 +149,11 @@ def check_selection(recipe, variant):
                                      and float(v) == float(variant[k])) and v != variant.get(k)}
     if 'lloyd_iterations' in recipe and variant.get('lloyd_iterations') != recipe['lloyd_iterations']:
         bad['lloyd_iterations'] = (recipe['lloyd_iterations'], variant.get('lloyd_iterations'))
+    run, calib = cal.get('calibration_run_id'), (cal.get('calibration_set') or {}).get('safetensors_sha256')
+    if run is not None and (calibration['run_id'] != run or calibration['unverified_layers']):
+        bad['calibration_run_id'] = (run, calibration['run_id'], {'unverified_layers': calibration['unverified_layers']})
+    if calib is not None and calibration['calibration_set_sha256'] not in (None, calib):
+        bad['calibration_set_sha256'] = (calib, calibration['calibration_set_sha256'])
     if bad:
         raise SystemExit(f'recipe selection does not match the variant (recipe, variant): {bad}')
 
@@ -167,6 +190,8 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--workers', type=int, default=16)
     p.add_argument('--dry-run', action='store_true', help='skip the selection check, allow @@ placeholders')
+    p.add_argument('--allow-unverified-calibration', action='store_true',
+                   help='release layers whose receipts record no calibration run (listed in release.json)')
     a = p.parse_args()
     experts = a.experts_dir or a.parts
     recipe = json.loads(a.recipe.read_text())
@@ -181,8 +206,9 @@ def main():
     if missing:
         raise SystemExit(f'missing parts: {missing}')
     receipts, variant = load_receipts(experts, layers, layer_bits, recipe)
+    calibration = calibration_of(receipts, a.allow_unverified_calibration)
     if not a.dry_run:
-        check_selection(recipe, variant)
+        check_selection(recipe, variant, calibration)
         left = placeholders([a.recipe, a.card, a.docs] + list(a.extra))
         if left:
             raise SystemExit(f'unfilled placeholders in: {left}')
@@ -230,6 +256,7 @@ def main():
     release = {'format': VARIANT, 'format_version': 1, 'recipe_id': recipe['recipe_id'],
                'source_repo': recipe['source_repo'], 'source_revision': SOURCE_REV,
                'variant': variant, 'calibration_set_sha256': (cal.get('calibration_set') or {}).get('safetensors_sha256'),
+               'calibration_run': calibration,
                'nonexpert_imatrix_files_sha256': (nonexpert.get('imatrix') or {}).get('files_sha256'),
                'entrypoint': 'release.json', 'parts': release_parts}
     if a.dry_run:

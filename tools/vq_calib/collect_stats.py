@@ -10,10 +10,14 @@ Rank 0 also pushes the held-out set and dumps, per layer, the teacher FFN input
 and routing of every held-out token, and the final hidden states.
 
 Layer L+1 is read into pinned host memory while layer L runs. The residual
-stream is checkpointed every 8 layers; `--resume` continues from it.
+stream is checkpointed every 8 layers with the run's input fingerprint;
+`--resume` continues from it only for the same inputs. A layer range must
+start at 0 (its predecessors' outputs are its input) unless it resumes from a
+checkpoint whose next layer is its start.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +27,8 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from axk2_ref import BF, Layer, Rope, Stats, TeacherWeights, rms_norm
+from axk2_source import SOURCE_REV
+from reduce_stats import run_id, sha256_file
 
 ROOT = '/models/A.X-K2'
 
@@ -79,6 +85,29 @@ def embed(src, token_ids, device):
     return h
 
 
+def resume_point(ck, fingerprint, layers, resume, device):
+    """-> (checkpoint state or None, first layer to run).
+
+    A checkpoint is used only for the inputs it was written for (fingerprint), and either by its own run (same
+    layer list, whose earlier files carry the same run id) or by a new run that starts exactly at its next layer.
+    A range that does not start at 0 without such a checkpoint is refused: its first layer would see embeddings."""
+    if resume and ck.exists():
+        state = torch.load(ck, map_location=device, weights_only=True)
+        got = state.get('fingerprint')
+        if got != fingerprint:
+            diff = ({k: (got.get(k), v) for k, v in fingerprint.items() if got.get(k) != v} if got is not None
+                    else 'none recorded (written before checkpoint fingerprints)')
+            raise SystemExit(f'{ck} was written for other inputs: {diff}; remove it to start over')
+        if state.get('layers') != layers and state['next_layer'] != layers[0]:
+            raise SystemExit(f'{ck} (next layer {state["next_layer"]}) belongs to the run of layers '
+                             f'{state.get("layers")}, not {layers[0]}-{layers[-1]}')
+        return state, state['next_layer']
+    if layers[0] != 0:
+        raise SystemExit(f'--layers {layers[0]}-{layers[-1]} skips layers 0-{layers[0] - 1}, whose outputs are its input: '
+                         f'collect from layer 0, or --resume from a checkpoint at layer {layers[0]}')
+    return None, 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source', default=ROOT, help='A.X-K2 checkpoint directory')
@@ -94,9 +123,6 @@ def main():
     a = p.parse_args()
     torch.backends.cuda.matmul.allow_tf32 = False
     dev = 'cuda'
-    teacher = TeacherWeights(a.source, dev)
-    cfg = teacher.cfg
-    rope = Rope(a.source, dev)
     lo, _, hi = a.layers.partition('-')
     layers = list(range(int(lo), int(hi or lo) + 1))
     rdir = a.out / f'rank-{a.rank}'
@@ -108,26 +134,38 @@ def main():
     ids, off = load_set(a.calib)
     rows = shard(off, a.rank, a.world, a.max_tokens or None)
     tok, seqs = flat(ids, off, rows)
-    (rdir / 'shard.json').write_text(json.dumps({'calib': str(a.calib), 'rows': rows, 'tokens': len(tok),
-                                                 'world': a.world, 'rank': a.rank}) + '\n')
-    # Every rank file names its run, so reduce_stats.py can refuse files left by another one.
-    stamp = {'calib': str(a.calib), 'world': str(a.world), 'rank': str(a.rank)}
     ho = None
     if a.rank == 0 and a.heldout:
         hids, hoff = load_set(a.heldout)
         htok, hseqs = flat(hids, hoff, list(range(len(hoff) - 1)))
         ho = {'tok': htok, 'seqs': hseqs}
-    emit({'rank': a.rank, 'phase': 'shard', 'sequences': len(rows), 'tokens': len(tok),
-          'max_len': max(n for _, n in seqs), 'heldout_tokens': len(ho['tok']) if ho else 0})
-
-    start_layer = layers[0]
+    # The run: what every rank shares. Its id goes into shard.json, DONE and every rank file, so
+    # reduce_stats.py can refuse files left by another run (other inputs or another layer list).
+    inputs = {'collector': 'collect_stats.py', 'calib_sha256': sha256_file(a.calib), 'world': a.world,
+              'max_tokens': a.max_tokens, 'source': os.path.realpath(a.source), 'source_revision': SOURCE_REV}
+    run = {**inputs, 'layers': layers}
+    rid = run_id(run)
+    # What the residual stream in a checkpoint depends on (not the layers recorded after it).
+    fingerprint = {**inputs, 'rank': a.rank, 'rows_sha256': hashlib.sha256(json.dumps(rows).encode()).hexdigest(),
+                   'heldout_sha256': sha256_file(a.heldout) if ho is not None else None}
     ck = rdir / 'h-checkpoint.pt'
-    if a.resume and ck.exists():
-        state = torch.load(ck, map_location=dev, weights_only=True)
-        h, start_layer = state['h'], state['next_layer']
+    state, start_layer = resume_point(ck, fingerprint, layers, a.resume, dev)    # before anything is written
+    resumed_at = start_layer if state is not None else None
+    (rdir / 'DONE').unlink(missing_ok=True)
+    (rdir / 'shard.json').write_text(json.dumps({'calib': str(a.calib), 'rows': rows, 'tokens': len(tok),
+                                                 'world': a.world, 'rank': a.rank, 'run': run, 'run_id': rid}) + '\n')
+    stamp = {'calib': str(a.calib), 'world': str(a.world), 'rank': str(a.rank), 'run_id': rid}
+    emit({'rank': a.rank, 'phase': 'shard', 'sequences': len(rows), 'tokens': len(tok), 'run_id': rid,
+          'max_len': max(n for _, n in seqs), 'heldout_tokens': len(ho['tok']) if ho else 0})
+    teacher = TeacherWeights(a.source, dev)
+    cfg = teacher.cfg
+    rope = Rope(a.source, dev)
+    if state is not None:
+        h = state['h']
         if ho is not None:
             ho['h'] = state['h_ho']
         emit({'rank': a.rank, 'phase': 'resumed', 'next_layer': start_layer})
+        del state
     else:
         h = embed(teacher.src, tok, dev)
         if ho is not None:
@@ -171,12 +209,14 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         if (L + 1) % 8 == 0 and L != todo[-1]:
-            state = {'h': h, 'next_layer': L + 1}
+            state = {'h': h, 'next_layer': L + 1, 'fingerprint': fingerprint, 'layers': layers, 'run_id': rid}
             if ho is not None:
                 state['h_ho'] = ho['h']
             torch.save(state, ck.with_suffix('.tmp'))
             os.replace(ck.with_suffix('.tmp'), ck)
+    files = [f'layer-{L:02d}.safetensors' for L in layers]
     if todo and todo[-1] == cfg['num_hidden_layers'] - 1:
+        files.append('head.safetensors')
         norm = teacher.src.load(['model.norm.weight'], dev)['model.norm.weight']
         x = rms_norm(h, norm)
         save_file({'head_in': x.float().pow(2).sum(0).double().cpu(), 'tokens': torch.tensor([float(len(x))], dtype=torch.float64)},
@@ -185,7 +225,8 @@ def main():
             save_file({'final_h': ho['h'].cpu().contiguous(), 'input_ids': ho['tok'].to(torch.int32),
                        'offsets': torch.tensor([0] + [s + n for s, n in ho['seqs']], dtype=torch.int64)},
                       str(hdir / 'final.safetensors'))
-    (rdir / 'DONE').write_text(json.dumps({'seconds': time.monotonic() - t_all, 'layers': todo}) + '\n')
+    (rdir / 'DONE').write_text(json.dumps({'seconds': time.monotonic() - t_all, 'layers': layers, 'files': files,
+                                           'run_id': rid, 'resumed_at': resumed_at}) + '\n')
     emit({'rank': a.rank, 'phase': 'done', 'seconds': time.monotonic() - t_all})
 
 

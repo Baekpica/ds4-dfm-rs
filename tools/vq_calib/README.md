@@ -36,7 +36,7 @@ container and the release tools are family independent.
 | `select_variant.py` | writes the chosen variant (read from its own receipts) into `recipe.json`, the release docs and the card |
 | `generate_compare.py`, `cuda/gen_vq.cu`, `gen_report.py` | greedy/sampled generation from release parts (GPU-resident VQ indices, KV cache, layers pipelined over GPUs) and a side-by-side report |
 | `verify_source.py` | every source file against the Hub (LFS SHA-256 or git blob id) |
-| `tests/` | `test_axk2_vq_format.py` (CPU), `test_axk2_vq_gpu.py` (one GPU), `fake_stats.py` (stand-in statistics for pipeline tests) |
+| `tests/` | `test_axk2_vq_format.py`, `test_run_guards.py` (CPU), `test_axk2_vq_gpu.py` (one GPU), `fake_stats.py` (stand-in statistics for pipeline tests) |
 
 ## Pipeline
 
@@ -107,6 +107,8 @@ stays in the page cache).
 
 ```sh
 python3 tests/test_axk2_vq_format.py                 # CPU: GVQ v2 encode/decode/reader rejections
+python3 tests/test_run_guards.py                     # CPU: one statistics run per reduction, checkpoint and
+                                                     # layer-range guards, converter reuse, one calibration run
 python3 tests/test_axk2_vq_gpu.py --work /tmp/vq-test  # one GPU: weights == 1 bit-identity, packing parity,
                                                        # weighted Lloyd, gain refit, throughput
 ```

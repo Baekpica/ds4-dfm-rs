@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Sum the per-rank statistics of collect_stats.py into stats/layer-LL.safetensors and head.safetensors.
+"""Sum the per-rank statistics of collect_stats.py / run_ds41.py into stats/layer-LL.safetensors and head.safetensors.
 
 Only one finished run is reduced: every rank-* directory must carry a shard.json
-of the same calibration set and world size, the ranks must be exactly
-0..world-1, each must have finished (DONE), every layer file must exist in all
-of them, and each reduced file's token count must equal the shards' total.
-Files stamped by the collector must name their own rank's run.
+of the same calibration set, world size and run id, the ranks must be exactly
+0..world-1, each must have finished (DONE), every file the run wrote must exist
+in all of them, and each reduced file's token count must equal the shards'
+total. The files reduced are exactly the ones DONE lists (every rank must
+agree); other files in the rank directories are left out and listed in
+summary.json. Files stamped by the collector must name their own rank's run.
+Rank directories written before run ids (no run_id in shard.json) are still
+reduced, and their files are counted as unverified in summary.json.
+
+summary.json records the run (its id and record) and the SHA-256 of every
+reduced file; `calibration_run` checks a converter's statistics against them.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,50 +24,115 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 
+def sha256_file(path):
+    with open(path, 'rb') as f:
+        return hashlib.file_digest(f, 'sha256').hexdigest()
+
+
+def run_id(run):
+    """SHA-256 of a collection run's record (collector, calibration content, world, layer list, token cap,
+    source): the same on every rank; stamped into shard.json, DONE and every rank file."""
+    return hashlib.sha256(json.dumps(run, sort_keys=True).encode()).hexdigest()
+
+
 def run_stamp(shard):
-    return {'calib': str(shard['calib']), 'world': str(shard['world']), 'rank': str(shard['rank'])}
+    stamp = {'calib': str(shard['calib']), 'world': str(shard['world']), 'rank': str(shard['rank'])}
+    if 'run_id' in shard:
+        stamp['run_id'] = shard['run_id']
+    return stamp
 
 
 def file_stamp(path):
     with safe_open(str(path), 'pt') as f:
         meta = f.metadata() or {}
-    stamp = {k: meta[k] for k in ('calib', 'world', 'rank') if k in meta}
+    stamp = {k: meta[k] for k in ('calib', 'world', 'rank', 'run_id') if k in meta}
     return stamp or None
 
 
 def run_ranks(stats):
-    """-> rank directories 0..world-1 of one finished run and their shard records."""
+    """-> rank directories 0..world-1 of one finished run, their shard records and the files the run wrote."""
     found = {}
     for d in sorted(x for x in stats.glob('rank-*') if x.is_dir()):
         f = d / 'shard.json'
         if not f.exists():
-            raise SystemExit(f'{d.name}: no shard.json (not written by collect_stats.py)')
+            raise SystemExit(f'{d.name}: no shard.json (not written by a collector)')
         shard = json.loads(f.read_text())
         if d.name != f"rank-{shard['rank']}":
             raise SystemExit(f'{d.name}: shard.json says rank {shard["rank"]}')
         if not (d / 'DONE').exists():
             raise SystemExit(f'{d.name}: not finished (no DONE)')
-        found[shard['rank']] = (d, shard)
+        done = json.loads((d / 'DONE').read_text())
+        if 'run_id' in shard and (run_id(shard['run']) != shard['run_id'] or done.get('run_id') != shard['run_id']):
+            raise SystemExit(f'{d.name}: shard.json and DONE are not from one run '
+                             f'({shard["run_id"]} vs {done.get("run_id")})')
+        found[shard['rank']] = (d, shard, done)
     if not found:
         raise SystemExit(f'no rank directories under {stats}')
-    runs = {(s['calib'], s['world']) for _, s in found.values()}
+    runs = {(s['calib'], s['world'], s.get('run_id')) for _, s, _ in found.values()}
     if len(runs) != 1:
-        raise SystemExit(f'rank directories from different runs (calib, world): {sorted(runs)}')
+        raise SystemExit(f'rank directories from different runs (calib, world, run id): {sorted(runs, key=str)}')
     world = next(iter(runs))[1]
     if set(found) != set(range(world)):
         raise SystemExit(f'ranks {sorted(found)} are not exactly 0..{world - 1}; remove stale rank directories')
-    return [found[r][0] for r in range(world)], [found[r][1] for r in range(world)]
+    lists = {json.dumps(done.get('files', done.get('layers'))) for _, _, done in found.values()}
+    if len(lists) != 1:
+        raise SystemExit(f'ranks finished different layer lists: {sorted(lists)}')
+    done = found[0][2]
+    if 'files' in done:
+        names = list(done['files'])
+    else:  # older collectors list layers only (a resumed rank only those after its checkpoint)
+        names = [f'layer-{L:02d}.safetensors' for L in done['layers']]
+        if all((d / 'head.safetensors').exists() for d, _, _ in found.values()):
+            names.append('head.safetensors')
+    return [found[r][0] for r in range(world)], [found[r][1] for r in range(world)], names
+
+
+def calibration_run(stats_dir, files):
+    """-> (run id, calibration set SHA-256) of the collection run the statistics `files` (as load_stats returned
+    them) come from. A merged file must be the one summary.json records; rank files must be exactly the ranks
+    of one run, each stamped by it. (None, None) for statistics written before run ids (unverified),
+    ('none', None) without statistics."""
+    if not files:
+        return 'none', None
+    stats_dir = Path(stats_dir)
+    paths = [Path(f) for f in files]
+    if len(paths) == 1 and paths[0].parent == stats_dir:
+        sfile = stats_dir / 'summary.json'
+        summary = json.loads(sfile.read_text()) if sfile.exists() else {}
+        rid = summary.get('run_id')
+        if rid is None:
+            return None, None
+        row = summary['layers'].get(paths[0].name) or {}
+        if row.get('sha256') != sha256_file(paths[0]):
+            raise ValueError(f'{paths[0]} is not the file run {rid} reduced (summary.json): stale statistics')
+        return rid, summary['run']['calib_sha256']
+    shards = []
+    for p in paths:
+        f = p.parent / 'shard.json'
+        shard = json.loads(f.read_text()) if f.exists() else {}
+        if 'run_id' in shard and file_stamp(p) != run_stamp(shard):
+            raise ValueError(f'{p} was not written by run {shard["run_id"]}: stale rank file')
+        shards.append(shard)
+    ids = {s.get('run_id') for s in shards}
+    if ids == {None}:
+        return None, None
+    ranks = sorted(s.get('rank', -1) for s in shards)
+    if len(ids) != 1 or ranks != list(range(shards[0]['world'])):
+        raise ValueError(f'{files} are not exactly the ranks of one run (run ids {sorted(ids, key=str)}, ranks {ranks})')
+    return shards[0]['run_id'], shards[0]['run']['calib_sha256']
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--stats', type=Path, default=Path('/workspace/axk2/stats'))
     a = p.parse_args()
-    ranks, shards = run_ranks(a.stats)
+    ranks, shards, names = run_ranks(a.stats)
     total_tokens = sum(s['tokens'] for s in shards)
-    names = sorted({f.name for d in ranks for f in d.glob('*.safetensors')})
+    rid = shards[0].get('run_id')
+    ignored = sorted(f'{d.name}/{f.name}' for d in ranks for f in d.glob('*.safetensors') if f.name not in names)
     summary = {'ranks': [d.name for d in ranks], 'calib': shards[0]['calib'], 'world': shards[0]['world'],
-               'calib_tokens': total_tokens, 'layers': {}, 'unstamped_files': 0}
+               'calib_tokens': total_tokens, 'run_id': rid, 'run': shards[0].get('run'), 'files': names,
+               'layers': {}, 'unstamped_files': 0, 'unverified_files': 0, 'ignored_files': ignored}
     for name in names:
         missing = [d.name for d in ranks if not (d / name).exists()]
         if missing:
@@ -67,25 +140,34 @@ def main():
         parts = []
         for d, sh in zip(ranks, shards):
             stamp = file_stamp(d / name)
-            if stamp is None:
+            if stamp != run_stamp(sh):
+                if stamp is not None or rid is not None:
+                    raise SystemExit(f'{d.name}/{name} was written by another run: {stamp} vs {run_stamp(sh)}')
                 summary['unstamped_files'] += 1
-            elif stamp != run_stamp(sh):
-                raise SystemExit(f'{d.name}/{name} was written by another run: {stamp} vs {run_stamp(sh)}')
+            if rid is None:
+                summary['unverified_files'] += 1
             parts.append(load_file(str(d / name)))
         out = {k: sum(p[k] for p in parts) for k in parts[0]}
         if int(out['tokens'].item()) != total_tokens:
             raise SystemExit(f'{name}: {int(out["tokens"].item())} tokens, the shards hold {total_tokens}')
-        save_file(out, str(a.stats / name))
-        row = {'tokens': float(out['tokens'].item())}
+        # atomic, so a converter checking for the merged file never reads a partial one
+        tmp = a.stats / (name + '.tmp')
+        save_file(out, str(tmp))
+        digest = sha256_file(tmp)
+        tmp.replace(a.stats / name)
+        row = {'tokens': float(out['tokens'].item()), 'sha256': digest}
         if 'count' in out:
             c = out['count'].double()
             row.update({'count_min': int(c.min()), 'count_p01': float(c.quantile(.01)), 'count_median': float(c.median()),
                         'count_max': int(c.max()), 'unused': int((c == 0).sum()),
                         'w2_share_top8': float(torch.sort(out['w2'], descending=True)[0][:8].sum() / out['w2'].sum())})
         summary['layers'][name] = row
+    # merged files of earlier reductions that this run did not write (calibration_run refuses them)
+    summary['outputs_not_in_run'] = sorted(f.name for f in a.stats.glob('*.safetensors') if f.name not in names)
     (a.stats / 'summary.json').write_text(json.dumps(summary, indent=1) + '\n')
-    print(json.dumps({'files': len(names), 'ranks': len(ranks), 'calib_tokens': total_tokens,
-                      'unstamped_files': summary['unstamped_files']}))
+    print(json.dumps({'files': len(names), 'ranks': len(ranks), 'calib_tokens': total_tokens, 'run_id': rid,
+                      'unstamped_files': summary['unstamped_files'], 'unverified_files': summary['unverified_files'],
+                      'ignored_files': len(ignored), 'outputs_not_in_run': len(summary['outputs_not_in_run'])}))
 
 
 if __name__ == '__main__':

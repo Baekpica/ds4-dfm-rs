@@ -27,6 +27,7 @@ from safetensors.torch import load_file, save_file
 from axk2_source import Source, SOURCE_REV, PROJECTIONS, dequant
 from axk2_vq_gpu import GpuVq, bits_for
 from axk2_weighting import Weighting, load_stats, MODES
+from reduce_stats import calibration_run
 
 TOOLS = Path(__file__).resolve().parent
 TRAIN_ROWS = {'gate_proj': 24, 'up_proj': 24, 'down_proj': 84}
@@ -320,6 +321,16 @@ def stats_fingerprint(files):
 VARIANT_WEIGHTING_KEYS = ('mode', 'shrink_tokens', 'col_power', 'col_floor', 'col_shrink')
 
 
+def trained_iterations(receipt):
+    """Lloyd iterations every book of a layer was trained with (from the per-iteration history), or None."""
+    t = receipt.get('training') or {}
+    histories = [b.get('iterations') for b in t.get('books') or []] or [t.get('iterations')]
+    counts = {len(h) for h in histories if isinstance(h, list)}
+    if len(counts) > 1:
+        raise ValueError(f'layer {receipt.get("layer")} books were trained with different iteration counts {sorted(counts)}')
+    return counts.pop() if counts else None
+
+
 def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit, stats_dir=None,
                   probe_iters=None, host=None, iterations=None, shrink_tokens=None, books_scope=None,
                   col_power=None, col_floor=None):
@@ -341,6 +352,7 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
             if mode not in ('none', 'row'):
                 raise
     stats_sha = stats_fingerprint(stats_files)
+    cal_run, cal_set = calibration_run(stats_dir, stats_files)
     wcfg = weighting_config(recipe)
     want = {'mode': mode,
             'shrink_tokens': float(shrink_tokens if shrink_tokens is not None else wcfg.get('shrink_tokens', 256)),
@@ -361,13 +373,18 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
             diff['gain_refit'] = (data.get('gain_refit'), refit)
         if data.get('codebook_scope') != scope:
             diff['codebook_scope'] = (data.get('codebook_scope'), scope)
+        if trained_iterations(data) != iterations:
+            diff['lloyd_iterations'] = (trained_iterations(data), iterations)
         recorded = data.get('training', {}).get('statistics_sha256')
         if recorded is not None and recorded != stats_sha:
             diff['statistics_sha256'] = (recorded, stats_sha)
+        if data.get('calibration_run_id') is not None and data['calibration_run_id'] != cal_run:
+            diff['calibration_run_id'] = (data['calibration_run_id'], cal_run)
         if diff:
             raise ValueError(f'existing layer {layer} was made for another variant: {diff}')
         emit({'phase': 'resume_verified', 'layer': layer, 'sha256': checksum,
-              **({} if recorded is not None else {'statistics': 'not recorded by this receipt; unverified'})})
+              **({} if recorded is not None else {'statistics': 'not recorded by this receipt; unverified'}),
+              **({} if data.get('calibration_run_id') else {'calibration_run': 'not recorded; unverified'})})
         return data
     if target.exists():
         raise ValueError('artifact without receipt; inspect manually')
@@ -496,6 +513,7 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
     data = {'source_revision': SOURCE_REV, 'layer': layer, 'k': k, 'index_bits': bits,
             'recipe_id': recipe_id, 'mode': mode, 'gain_refit': refit, 'codebook_scope': scope,
             'weighting': {**weighting.describe(), 'gain_refit': refit},
+            'calibration_run_id': cal_run, 'calibration_set_sha256': cal_set,
             'path': target.name, 'bytes': partial.stat().st_size, 'sha256': checksum,
             'codebooks': [{'name': bname, 'id': bid, 'projections': [PROJECTIONS[pi] for pi in group],
                            'sha256': hashlib.sha256(raw_books[i]).hexdigest()}
