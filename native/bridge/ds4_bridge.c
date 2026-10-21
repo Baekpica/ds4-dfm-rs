@@ -868,10 +868,6 @@ uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash) {
     v41_kvreuse_note_mount(has_mount, hash);
 }
-int32_t *ds4_bridge_v41_kvreuse_stale_prompt(uint32_t *n) {
-    if (!n) return NULL;
-    return v41_kvreuse_stale_prompt(n);
-}
 uint32_t ds4_bridge_v41_kvreuse_turn_key(int32_t *out, uint32_t cap) {
     return v41_kvreuse_turn_key(out, cap);
 }

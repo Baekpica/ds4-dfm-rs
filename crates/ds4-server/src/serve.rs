@@ -6,7 +6,7 @@ use std::io::{Error, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ use crate::cont::{monotonic_now, place_bank_continuation, ContOwner, ContPin, Co
 use crate::error::{http_response_bytes, wire_http_error_bytes, wire_stream_error_bytes};
 use crate::generate::{
     generate_terminal_prepared, prepare_serial_prompt, DecodeIo, GenerateError, GenerateOutcome,
-    NativeGraphFit, V41Rewarm, V41SwitchOutcome,
+    NativeGraphFit,
 };
 use crate::http::{
     chunked_enabled, parse_surface_for_path, read_http_request, shed_surface_for_path,
@@ -257,34 +257,7 @@ pub struct ServerInner {
     disconnect_abort: bool,
     out_agg_cap_bytes: u64,
     out_agg_evict_min_bytes: u64,
-    /// The owner thread's control channel for the live sidecar switch
-    /// (`owner_loop`); None while no owner runs, and on the engine-less accept
-    /// loop, whose `/v1/plugins` answers by name.
-    ctl: Option<Sender<PluginsMsg>>,
 }
-
-/// The live sidecar switch as the owner receives it (the reference's
-/// `job.sw`, server_plugins.c:13-44): the owner applies it between requests,
-/// so the process-level route tables never change under a run.
-#[derive(Debug)]
-struct PluginsMsg {
-    zchain: Option<String>,
-    posttrain: Option<String>,
-    reply: Sender<std::result::Result<V41SwitchOutcome, String>>,
-}
-
-/// `POST /v1/plugins` body: the two ②/③ directories, null or "" for "not
-/// mounted" (the reference's "(不挂)", server_plugins.c:41).
-struct PluginsRequest {
-    zchain: Option<String>,
-    posttrain: Option<String>,
-}
-
-/// How often a blocked owner looks at the control channel.  The switch is
-/// applied between requests either way; this only bounds how long an idle
-/// owner takes to notice one, at four wakeups a second (the host's own stop
-/// polling is the same shape, `owner_loop`).
-const CTL_TICK: Duration = Duration::from_millis(250);
 
 impl ServerInner {
     pub fn from_cfg(cfg: &ServerConfig) -> Self {
@@ -1262,10 +1235,6 @@ fn prepare_client(
         );
         return None;
     }
-    if req.method == "POST" && req.path == "/v1/plugins" {
-        serve_plugins_request(cfg, inner, stream, &req.body);
-        return None;
-    }
     if req.method == "POST" {
         let inference = shed_surface_for_path(&req.path).is_some();
         let generation = inference || req.path == "/v1/batch";
@@ -1336,130 +1305,6 @@ fn prepare_client(
         ),
     );
     None
-}
-
-/// The live sidecar switch on the wire: the reference's
-/// `POST /api/models/plugins` (server_plugins.c:4-11).  The request queues on
-/// the owner's control channel and waits for the answer, so the switch lands
-/// between requests; a refused set answers 409 with the mount's own reason and
-/// leaves the serving directories alone.  The rewarm runs after the answer
-/// (`apply_plugins`), never inside it.
-///
-/// Payload validation is the mount's (`zchain_load_for_run`, which reads and
-/// checks every file); the reference additionally checks the directory against
-/// the installed model's catalog (model_catalog.c:412) and this host has no
-/// catalog, so the mount is the whole gate.
-fn serve_plugins_request(
-    cfg: &ServerConfig,
-    inner: &Mutex<ServerInner>,
-    stream: &mut TcpStream,
-    body: &[u8],
-) {
-    let request = match parse_plugins_body(body) {
-        Ok(request) => request,
-        Err(message) => {
-            write_all(
-                stream,
-                &wire_http_error_bytes(WireSurface::OpenaiChat, 400, &message, cfg.cors, None),
-            );
-            return;
-        }
-    };
-    let Some(ctl) = lock_inner(inner).ctl.clone() else {
-        write_all(
-            stream,
-            &wire_http_error_bytes(
-                WireSurface::OpenaiChat,
-                503,
-                "no engine is loaded to switch",
-                cfg.cors,
-                None,
-            ),
-        );
-        return;
-    };
-    let (reply, answer) = mpsc::channel();
-    let queued = ctl.send(PluginsMsg {
-        zchain: request.zchain,
-        posttrain: request.posttrain,
-        reply,
-    });
-    if queued.is_err() {
-        // The owner is gone: no switch, and the caller is told so.
-        write_all(
-            stream,
-            &wire_http_error_bytes(
-                WireSurface::OpenaiChat,
-                503,
-                SERVER_SHUTTING_DOWN,
-                cfg.cors,
-                None,
-            ),
-        );
-        return;
-    }
-    match answer.recv() {
-        Ok(Ok(outcome)) => {
-            let body = serde_json::json!({
-                "ok": true,
-                "zchain": outcome.zchain,
-                "posttrain": outcome.posttrain,
-                "digest": outcome.digest,
-            })
-            .to_string();
-            write_all(
-                stream,
-                &http_response_bytes(200, Some("application/json"), None, cfg.cors, &body),
-            );
-        }
-        Ok(Err(message)) => {
-            write_all(
-                stream,
-                &wire_http_error_bytes(WireSurface::OpenaiChat, 409, &message, cfg.cors, None),
-            );
-        }
-        Err(_) => {
-            write_all(
-                stream,
-                &wire_http_error_bytes(
-                    WireSurface::OpenaiChat,
-                    503,
-                    SERVER_SHUTTING_DOWN,
-                    cfg.cors,
-                    None,
-                ),
-            );
-        }
-    }
-}
-
-/// An unknown key is a 400, not a silently ignored half of a switch: the two
-/// directories are the whole body, and "" means the same as null.
-fn parse_plugins_body(body: &[u8]) -> std::result::Result<PluginsRequest, String> {
-    let text = std::str::from_utf8(body).map_err(|_| "the body must be UTF-8".to_string())?;
-    let value: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("invalid JSON body: {e}"))?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "the body must be a JSON object".to_string())?;
-    let mut request = PluginsRequest {
-        zchain: None,
-        posttrain: None,
-    };
-    for (key, raw) in object {
-        let dir = match raw {
-            serde_json::Value::Null => None,
-            serde_json::Value::String(text) if text.is_empty() => None,
-            serde_json::Value::String(text) => Some(text.clone()),
-            _ => return Err(format!("{key} must be a directory string or null")),
-        };
-        match key.as_str() {
-            "zchain" => request.zchain = dir,
-            "posttrain" => request.posttrain = dir,
-            other => return Err(format!("unknown key {other}")),
-        }
-    }
-    Ok(request)
 }
 
 fn route_for_model(
@@ -2524,10 +2369,6 @@ fn owner_loop(
     mut cont: Option<&mut dyn ContExec>,
 ) {
     let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
-    // The live sidecar switch (server_plugins.c:13-44): a control job the
-    // owner applies between requests, on this thread and no other.
-    let (ctl_tx, ctl_rx) = mpsc::channel::<PluginsMsg>();
-    lock_inner(&inner).ctl = Some(ctl_tx);
     if let Some(exec) = cont.as_deref_mut() {
         exec.set_stop_requested(cfg.stop_requested);
     }
@@ -2582,9 +2423,9 @@ fn owner_loop(
     loop {
         let job = match lookahead.take() {
             Some(job) => job,
-            None => match next_owner_input(&jobs_rx, &ctl_rx, engine, &inner) {
-                Some(job) => job,
-                None => break,
+            None => match jobs_rx.recv() {
+                Ok(job) => job,
+                Err(_) => break,
             },
         };
         lookahead = match cont.as_mut() {
@@ -2611,80 +2452,6 @@ fn shutdown_owner(engine: &mut dyn DecodeIo, mut cont: Option<&mut dyn ContExec>
     }
     if let Some(exec) = cont.as_deref_mut() {
         exec.shutdown(engine.kv_store_mut());
-    }
-}
-
-/// The owner's wait for its next unit of work: `jobs_rx.recv()`, with the
-/// control channel under the same wait.  A queued request wins, and a pending
-/// switch is applied -- the reference lets one queue order both
-/// (server_batch.c:210, the switch job behind every arrived request), while
-/// this host's job channel is inference-typed, so the switch rides its own
-/// channel and the bounded wait wakes a blocked owner (the same shape as the
-/// stop polling a few lines up).  None when the job channel closed.
-fn next_owner_input(
-    jobs_rx: &Receiver<OwnerJob>,
-    ctl_rx: &Receiver<PluginsMsg>,
-    engine: &mut dyn DecodeIo,
-    inner: &Arc<Mutex<ServerInner>>,
-) -> Option<OwnerJob> {
-    loop {
-        match jobs_rx.try_recv() {
-            Ok(job) => return Some(job),
-            Err(TryRecvError::Disconnected) => return None,
-            Err(TryRecvError::Empty) => {}
-        }
-        if let Ok(msg) = ctl_rx.try_recv() {
-            apply_plugins(engine, inner, msg);
-            continue;
-        }
-        match jobs_rx.recv_timeout(CTL_TICK) {
-            Ok(job) => return Some(job),
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return None,
-        }
-    }
-}
-
-/// One queued switch (the reference's `server_plugins_apply`,
-/// server_plugins.c:80-97): the caller hears the outcome before the rewarm
-/// starts, and the rewarm yields at a block boundary to a request that is
-/// already queued -- that request saves its own checkpoint.
-fn apply_plugins(engine: &mut dyn DecodeIo, inner: &Arc<Mutex<ServerInner>>, msg: PluginsMsg) {
-    let PluginsMsg {
-        zchain,
-        posttrain,
-        reply,
-    } = msg;
-    let outcome = engine.v41_switch_plugins(zchain.as_deref(), posttrain.as_deref());
-    let _ = reply.send(match &outcome {
-        Ok(outcome) => Ok(outcome.clone()),
-        Err(error) => Err(error.to_string()),
-    });
-    let Ok(outcome) = outcome else {
-        eprintln!("ds4-server-rs: V4.1 sidecar switch refused; the mounted set still serves");
-        return;
-    };
-    eprintln!(
-        "ds4-server-rs: V4.1 sidecar switched: zchain {} / posttrain {} (identity {})",
-        outcome.zchain.as_deref().unwrap_or("(none)"),
-        outcome.posttrain.as_deref().unwrap_or("(none)"),
-        outcome.digest
-    );
-    let mut pending = || {
-        let g = lock_inner(inner);
-        g.admit.queued > 0 || g.admit.stopping
-    };
-    match engine.v41_rewarm(&mut pending) {
-        Some(V41Rewarm::Done { tokens, secs }) => eprintln!(
-            "ds4-server-rs: post-switch rewarm done ({tokens} token prefill, {secs:.1}s); the checkpoint is in place"
-        ),
-        Some(V41Rewarm::Failed(error)) => eprintln!(
-            "ds4-server-rs: post-switch rewarm did not finish ({error}); the next request prefills whole"
-        ),
-        Some(V41Rewarm::Yielded) => eprintln!(
-            "ds4-server-rs: post-switch rewarm stood aside for a queued request"
-        ),
-        Some(V41Rewarm::Nothing) | None => {}
     }
 }
 
@@ -5112,250 +4879,5 @@ mod owner_tests {
         )
         .is_none());
         assert_eq!(engine.resets, 0);
-    }
-
-    /// The owner-side half of the live switch, without an engine: what the
-    /// reference's `server_plugins.c` calls and what it answers.
-    #[derive(Default)]
-    struct SwitchProbe {
-        switched: Mutex<Vec<(Option<String>, Option<String>)>>,
-        rewarm: Mutex<Vec<bool>>,
-        refuse: bool,
-    }
-
-    impl DecodeIo for SwitchProbe {
-        fn model_id(&self) -> i32 {
-            0
-        }
-        fn tokenize_text(&self, _text: &str) -> Result<Vec<i32>, GenerateError> {
-            Ok(vec![1])
-        }
-        fn tokenize_rendered_chat(&self, _text: &[u8]) -> Result<Vec<i32>, GenerateError> {
-            Ok(vec![1])
-        }
-        fn tokenizes_control_literals(&self) -> bool {
-            false
-        }
-        fn token_text(&self, _token: i32) -> Result<Vec<u8>, GenerateError> {
-            Ok(b"x".to_vec())
-        }
-        fn token_is_stop(&self, _token: i32) -> bool {
-            false
-        }
-        fn sync(&mut self, _tokens: &[i32]) -> Result<(), GenerateError> {
-            Ok(())
-        }
-        fn eval(&mut self, _token: i32) -> Result<(), GenerateError> {
-            Ok(())
-        }
-        fn sample(&mut self, _t: f32, _k: i32, _p: f32, _m: f32, _rng: &mut u64) -> i32 {
-            -1
-        }
-        fn pos(&self) -> i32 {
-            0
-        }
-        fn ctx(&self) -> i32 {
-            8192
-        }
-        fn generation(&self) -> u64 {
-            1
-        }
-        fn invalidate(&mut self) {}
-        fn v41_switch_plugins(
-            &mut self,
-            zchain: Option<&str>,
-            posttrain: Option<&str>,
-        ) -> Result<V41SwitchOutcome, GenerateError> {
-            self.switched
-                .lock()
-                .unwrap()
-                .push((zchain.map(str::to_owned), posttrain.map(str::to_owned)));
-            if self.refuse {
-                return Err(GenerateError::Engine("the new sidecar does not fit".into()));
-            }
-            Ok(V41SwitchOutcome {
-                zchain: zchain.map(str::to_owned),
-                posttrain: posttrain.map(str::to_owned),
-                digest: 0x5eed,
-            })
-        }
-        fn v41_rewarm(&self, pending: &mut dyn FnMut() -> bool) -> Option<V41Rewarm> {
-            self.rewarm.lock().unwrap().push(pending());
-            Some(V41Rewarm::Done {
-                tokens: 4,
-                secs: 0.0,
-            })
-        }
-    }
-
-    #[test]
-    fn plugins_body_names_the_two_directories() {
-        let request = parse_plugins_body(br#"{"zchain":"/mnt/a","posttrain":"/mnt/b"}"#).unwrap();
-        assert_eq!(request.zchain.as_deref(), Some("/mnt/a"));
-        assert_eq!(request.posttrain.as_deref(), Some("/mnt/b"));
-
-        // An empty string and null both mean "not mounted" (server_plugins.c:41).
-        let bare = parse_plugins_body(br#"{"zchain":"","posttrain":null}"#).unwrap();
-        assert_eq!(bare.zchain, None);
-        assert_eq!(bare.posttrain, None);
-        assert_eq!(parse_plugins_body(br#"{}"#).unwrap().zchain, None);
-
-        assert!(parse_plugins_body(br#"{"zchain":7}"#).is_err());
-        assert!(parse_plugins_body(br#"{"domian":"/mnt/a"}"#).is_err());
-        assert!(parse_plugins_body(b"[]").is_err());
-        assert!(parse_plugins_body(b"}{").is_err());
-    }
-
-    #[test]
-    fn the_owner_switches_and_yields_the_rewarm_to_a_queued_request() {
-        let cfg = test_cfg();
-        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
-        let mut engine = SwitchProbe::default();
-        let (reply_tx, reply_rx) = mpsc::channel();
-
-        // A request is already queued when the switch lands: `pending` is the
-        // reference's queue_pending (server_batch.c:35) and the rewarm stands
-        // aside (server_plugins.c:70).
-        assert_eq!(enqueue(&mut lock_inner(&inner).admit, 1), EnqVerdict::Ok);
-        apply_plugins(
-            &mut engine,
-            &inner,
-            PluginsMsg {
-                zchain: Some("/mnt/code".into()),
-                posttrain: None,
-                reply: reply_tx,
-            },
-        );
-        assert_eq!(
-            engine.switched.lock().unwrap().as_slice(),
-            &[(Some("/mnt/code".to_string()), None)]
-        );
-        assert!(matches!(
-            reply_rx.try_recv(),
-            Ok(Ok(V41SwitchOutcome { digest: 0x5eed, .. }))
-        ));
-        assert_eq!(
-            engine.rewarm.lock().unwrap().as_slice(),
-            &[true],
-            "the rewarm did not stand aside for the queued request"
-        );
-
-        // Queue empty: the rewarm runs under the new set.
-        queue_unlink_head(&mut lock_inner(&inner).admit);
-        let (reply_tx, reply_rx) = mpsc::channel();
-        apply_plugins(
-            &mut engine,
-            &inner,
-            PluginsMsg {
-                zchain: None,
-                posttrain: None,
-                reply: reply_tx,
-            },
-        );
-        assert_eq!(engine.rewarm.lock().unwrap().as_slice(), &[true, false]);
-        assert!(matches!(reply_rx.try_recv(), Ok(Ok(_))));
-
-        // A refused set answers the caller and rewarm is not reached.
-        engine.refuse = true;
-        let (reply_tx, reply_rx) = mpsc::channel();
-        apply_plugins(
-            &mut engine,
-            &inner,
-            PluginsMsg {
-                zchain: Some("/mnt/bad".into()),
-                posttrain: None,
-                reply: reply_tx,
-            },
-        );
-        assert!(matches!(reply_rx.try_recv(), Ok(Err(_))));
-        assert_eq!(
-            engine.rewarm.lock().unwrap().len(),
-            2,
-            "a refused switch still rewarmed"
-        );
-    }
-
-    #[test]
-    fn plugins_route_answers_the_switch_outcome() {
-        let mut cfg = test_cfg();
-        cfg.max_clients = 0;
-        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
-        let (ctl_tx, ctl_rx) = mpsc::channel();
-        lock_inner(&inner).ctl = Some(ctl_tx);
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        // The owner's half, hand-rolled: the first switch is applied, the
-        // second is refused.
-        let owner = thread::spawn(move || {
-            let first = ctl_rx.recv().unwrap();
-            let PluginsMsg { reply, .. } = first;
-            reply
-                .send(Ok(V41SwitchOutcome {
-                    zchain: Some("/mnt/code".into()),
-                    posttrain: Some("/mnt/pt".into()),
-                    digest: 7,
-                }))
-                .unwrap();
-            let second = ctl_rx.recv().unwrap();
-            let PluginsMsg { reply, .. } = second;
-            reply
-                .send(Err("the new sidecar does not fit".into()))
-                .unwrap();
-        });
-
-        let mut answers = Vec::new();
-        for body in [
-            &br#"{"zchain":"/mnt/code","posttrain":"/mnt/pt"}"#[..],
-            &br#"{"zchain":"/mnt/huge"}"#[..],
-        ] {
-            let request = format!(
-                "POST /v1/plugins HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
-                body.len()
-            );
-            let mut client = TcpStream::connect(addr).unwrap();
-            client
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let (server, _) = listener.accept().unwrap();
-            client.write_all(request.as_bytes()).unwrap();
-            client.write_all(body).unwrap();
-            let client_inner = Arc::clone(&inner);
-            let lease = ClientLease::try_new(Arc::clone(&inner)).unwrap();
-            let (jobs_tx, jobs_rx) = mpsc::channel();
-            let client_cfg = cfg.clone();
-            let serve = thread::spawn(move || {
-                queue_client(client_cfg, client_inner, jobs_tx, server, lease)
-            });
-            let mut response = Vec::new();
-            client.read_to_end(&mut response).unwrap();
-            serve.join().unwrap();
-            drop(jobs_rx);
-            answers.push(String::from_utf8_lossy(&response).into_owned());
-        }
-        owner.join().unwrap();
-
-        assert!(answers[0].starts_with("HTTP/1.1 200 OK"), "{}", answers[0]);
-        assert!(
-            answers[0].contains(r#""zchain":"/mnt/code""#),
-            "{}",
-            answers[0]
-        );
-        assert!(
-            answers[0].contains(r#""posttrain":"/mnt/pt""#),
-            "{}",
-            answers[0]
-        );
-        assert!(answers[0].contains(r#""digest":7"#), "{}", answers[0]);
-        assert!(
-            answers[1].starts_with("HTTP/1.1 409 Conflict"),
-            "{}",
-            answers[1]
-        );
-        assert!(
-            answers[1].contains("the new sidecar does not fit"),
-            "{}",
-            answers[1]
-        );
     }
 }

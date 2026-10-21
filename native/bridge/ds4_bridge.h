@@ -312,10 +312,6 @@ void ds4_bridge_v41_kvreuse_set(int on);
 int ds4_bridge_v41_kvreuse_last_reused(void);
 uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_t *sig);
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
-/* The prompt of the checkpoint the native just dropped, caller-owned and
- * taken once (libc free), or NULL.  The reference's
- * ds4_engine_v41_kv_stale_prompt (ds4_v41_api.h:120). */
-int32_t *ds4_bridge_v41_kvreuse_stale_prompt(uint32_t *n);
 /* T's key (the prompt it was saved with, then the ids the state committed),
  * which is the host store's turn entry text: answers the count, filling
  * `out` when it covers `cap`.  0 = no turn checkpoint. */

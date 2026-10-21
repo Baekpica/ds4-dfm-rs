@@ -212,11 +212,6 @@ void ds4_engine_v41_set_kv_reuse(int on);
 int ds4_engine_v41_last_reused(void);
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np, const uint64_t *sig);
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash);
-/* The prompt of the checkpoint the last drop invalidated, caller-owned and
- * taken once, or NULL (nothing retained / an image prompt): the server
- * re-prefills it under the new amplifier, the reference's
- * ds4_engine_v41_kv_stale_prompt (ds4_v41_api.h:120). */
-int32_t *v41_kvreuse_stale_prompt(uint32_t *n);
 /* T's key (the prompt it was saved with, then the ids the state committed),
  * for the host store's turn entry: answers the count, filling `out` when it
  * covers `cap`.  0 = no turn checkpoint. */

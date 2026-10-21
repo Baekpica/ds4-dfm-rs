@@ -697,7 +697,6 @@ void ds4_engine_v41_set_kv_reuse(int on) { (void)on; }
 int ds4_engine_v41_last_reused(void) { return 0; }
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np, const uint64_t *sig) { (void)prompt; (void)np; (void)sig; return 0; }
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash) { (void)has_mount; (void)hash; }
-int32_t *v41_kvreuse_stale_prompt(uint32_t *n) { if (n) { *n = 0u; } return NULL; }
 uint32_t v41_kvreuse_turn_key(int32_t *out, uint32_t cap) {
     (void)out; (void)cap; return 0u;
 }
