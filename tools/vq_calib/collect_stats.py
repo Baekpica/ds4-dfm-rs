@@ -110,6 +110,8 @@ def main():
     tok, seqs = flat(ids, off, rows)
     (rdir / 'shard.json').write_text(json.dumps({'calib': str(a.calib), 'rows': rows, 'tokens': len(tok),
                                                  'world': a.world, 'rank': a.rank}) + '\n')
+    # Every rank file names its run, so reduce_stats.py can refuse files left by another one.
+    stamp = {'calib': str(a.calib), 'world': str(a.world), 'rank': str(a.rank)}
     ho = None
     if a.rank == 0 and a.heldout:
         hids, hoff = load_set(a.heldout)
@@ -156,7 +158,7 @@ def main():
                 del ffn_in, dump
         torch.cuda.synchronize()
         t = {k: v.cpu().contiguous() for k, v in stats.t.items()}
-        save_file(t, str(rdir / f'layer-{L:02d}.safetensors'))
+        save_file(t, str(rdir / f'layer-{L:02d}.safetensors'), metadata=stamp)
         extra = {}
         if routes is not None:
             cnt = stats.t['count'].float()
@@ -178,7 +180,7 @@ def main():
         norm = teacher.src.load(['model.norm.weight'], dev)['model.norm.weight']
         x = rms_norm(h, norm)
         save_file({'head_in': x.float().pow(2).sum(0).double().cpu(), 'tokens': torch.tensor([float(len(x))], dtype=torch.float64)},
-                  str(rdir / 'head.safetensors'))
+                  str(rdir / 'head.safetensors'), metadata=stamp)
         if ho is not None:
             save_file({'final_h': ho['h'].cpu().contiguous(), 'input_ids': ho['tok'].to(torch.int32),
                        'offsets': torch.tensor([0] + [s + n for s, n in ho['seqs']], dtype=torch.int64)},
