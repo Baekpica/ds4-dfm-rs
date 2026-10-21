@@ -204,6 +204,15 @@ pub const DS4_BRIDGE_MAX_DIMS: usize = 8;
 pub const DS4_BRIDGE_MEMC_COUNT: usize = 17;
 pub const DS4_BRIDGE_MEMD_COUNT: usize = 2;
 
+/// Which checkpoint a V4.1 disk payload carries; the native v41_kv_class
+/// (ds4_ds41_kvreuse.inc), pinned by the C gate's static assert.
+/// DS4_BRIDGE_V41_KV_CLASS_PROMPT is the reference's boundary checkpoint
+/// (its reasons "cold" and "continued"); DS4_BRIDGE_V41_KV_CLASS_TURN is the
+/// live frontier the run left, the class the reference stores under "evict"
+/// and "shutdown".
+pub const DS4_BRIDGE_V41_KV_CLASS_PROMPT: c_int = 0;
+pub const DS4_BRIDGE_V41_KV_CLASS_TURN: c_int = 1;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ds4_bridge_token_score {
@@ -894,9 +903,15 @@ extern "C" {
     pub fn ds4_bridge_v41_kvreuse_last_reused() -> c_int;
     pub fn ds4_bridge_v41_kvreuse_peek(prompt: *const i32, n: c_int, sig: *const u64) -> u32;
     pub fn ds4_bridge_v41_kvreuse_note_mount(has_mount: c_int, hash: u64);
+    /* T's key (the prompt it was saved with, then the ids the state
+     * committed after it), which is the host store's turn entry text.  Answers
+     * the count, filling `out` when it covers `cap`; 0 = no turn checkpoint. */
+    pub fn ds4_bridge_v41_kvreuse_turn_key(out: *mut i32, cap: u32) -> u32;
     /* The disk half (item 4): the payload export/import the Rust store
-     * (crates/ds4-kv) drives; both are gated by --no-kv-reuse and K.valid. */
-    pub fn ds4_bridge_v41_kvreuse_export(path: *const c_char) -> c_int;
+     * (crates/ds4-kv) drives; both are gated by --no-kv-reuse and the class's
+     * slot being valid.  cls is DS4_BRIDGE_V41_KV_CLASS_* for the export; the
+     * import takes the class from the payload's own meta. */
+    pub fn ds4_bridge_v41_kvreuse_export(path: *const c_char, cls: c_int) -> c_int;
     pub fn ds4_bridge_v41_kvreuse_import(
         path: *const c_char,
         offset: u64,

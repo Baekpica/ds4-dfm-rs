@@ -399,6 +399,25 @@ class PromptCase:
 
 
 @dataclass(frozen=True)
+class V41Run:
+    """The run shape of the V4.1 (ds41) family, which has no prompt entry.
+
+    Its chat rendering is not ported, so the run input is --gen-ids (raw
+    token ids, crates/ds4-cli lib.rs run_v41_one_shot), and every deployed
+    run also passes --engram-dir because the artifact records the converting
+    host's shard paths (deepseek4.engram.N.table_path). The graph switch has
+    to be a flag here too: ds4 sets the v41 graph global explicitly, so a
+    profile env of DS4_CUDA_LAYER_GRAPHS cannot reach the run -- and an arm
+    that silently stays captured would make the parity contract vacuous.
+    """
+
+    ids_path: str
+    engram_dir: str
+    zchain: str = ""
+    no_graph: bool = False
+
+
+@dataclass(frozen=True)
 class Contract:
     name: str
     baseline: str
@@ -427,6 +446,10 @@ class RunResult:
     logprobs_path: str = ""
     selected_token_ids_md5: str | None = None
     gen_token_count: int = 0
+    # V4.1 only: the decode graphs the run captured, from its own log. An arm
+    # that claims eager (or capture) while running the other path makes the
+    # parity contract vacuous, so the shape checks the count.
+    graph_captures: int = 0
 
 
 @dataclass
@@ -715,6 +738,13 @@ def sha256_file(path: Path) -> tuple[str, int]:
 # produce the same MD5 over the same logprobs dump, so a digest from either
 # tool can be cross-checked against the other.
 SELECTED_TOKEN_ID_RE = re.compile(r'"selected":\{"id":(-?\d+)')
+# --dump-tokens prints the whole id list on its first line ("[1, 2, 3]") and
+# the per-token text lines after it; the V4.1 shape needs only the list.
+V41_IDS_LINE_RE = re.compile(r"^\s*\[([^\]]*)\]")
+# The V4.1 run's own graph accounting (ds4's "[v41] host gaps/round" line).
+V41_CAPTURE_RE = re.compile(
+    r"capture \(one-off, amortized above\): verify graphs (\d+) for [\d.]+ ms, draft graphs (\d+) for"
+)
 
 
 def selected_token_ids_md5(path: Path) -> tuple[str | None, int]:
@@ -1540,6 +1570,7 @@ def build_command(
     temperature: float,
     nothink: bool,
     dump_logprobs_path: Path | None = None,
+    v41: V41Run | None = None,
 ) -> list[str]:
     cmd = [
         bin_path,
@@ -1563,6 +1594,18 @@ def build_command(
     # MD5 contract only needs the selected id.
     if dump_logprobs_path is not None:
         cmd.extend(["--dump-logprobs", str(dump_logprobs_path), "--logprobs-top-k", "1"])
+    # The V4.1 family takes ids, not a prompt (V41Run): --gen-ids, the engram
+    # feed it needs on this machine, and the graph switch the profile env
+    # cannot deliver. It is the last positional surface area, like the prompt.
+    if v41 is not None:
+        cmd.extend(["--gen-ids", v41.ids_path])
+        if v41.engram_dir:
+            cmd.extend(["--engram-dir", v41.engram_dir])
+        if v41.zchain:
+            cmd.extend(["--zchain", v41.zchain])
+        if v41.no_graph:
+            cmd.append("--no-graph")
+        return cmd
     # Long-context fixtures exceed ARG_MAX on Linux when passed via -p, so
     # callers should pass --prompt-file for them. Inline -p stays the default
     # for short builtin prompts.
@@ -1573,6 +1616,68 @@ def build_command(
     else:
         raise ValueError("build_command requires prompt or prompt_file")
     return cmd
+
+
+def safe_name(text: str) -> str:
+    """The work-dir name for a prompt or profile id."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+
+
+def tokenize_v41_prompt(
+    *,
+    bin_path: str,
+    base_model: str,
+    prompt_case: PromptCase,
+    work_dir: Path,
+) -> str:
+    """Materialize the raw ids a V4.1 run consumes for one prompt fixture.
+
+    The family has no prompt entry (its chat rendering is not ported), so the
+    harness tokenizes the fixture once, with the same binary and vocabulary the
+    runs will use: --dump-tokens prints the id list on its first line and exits
+    without inference. Every profile of that prompt reuses the file.
+    """
+    out_path = work_dir / f"{safe_name(prompt_case.id)}.v41.ids"
+    if out_path.exists():
+        return str(out_path)
+
+    cmd = [bin_path, "-m", base_model, "--dump-tokens"]
+    if prompt_case.source_path:
+        cmd.extend(["--prompt-file", prompt_case.source_path])
+    else:
+        cmd.extend(["-p", prompt_case.prompt])
+
+    log_path = work_dir / f"{safe_name(prompt_case.id)}.v41.dump-tokens.log"
+    with log_path.open("wb") as log_f:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=log_f)
+    if proc.returncode != 0:
+        raise ValueError(f"v41 tokenize failed rc={proc.returncode} (see {log_path})")
+
+    lines = proc.stdout.decode("utf-8", errors="replace").splitlines()
+    match = V41_IDS_LINE_RE.match(lines[0]) if lines else None
+    if match is None:
+        raise ValueError(f"v41 tokenize: no id list on the first line (see {log_path})")
+    ids = [tok.strip() for tok in match.group(1).split(",") if tok.strip()]
+    if not ids or any(not re.fullmatch(r"-?\d+", tok) for tok in ids):
+        raise ValueError(f"v41 tokenize: malformed id list (see {log_path})")
+
+    out_path.write_text(" ".join(ids) + "\n")
+    print(f"v41 ids={out_path} prompt_tokens={len(ids)}")
+    return str(out_path)
+
+
+def v41_graph_captures(log_text: str) -> int:
+    """How many decode graphs the run captured, from its own accounting line.
+
+    A parity contract is vacuous when both arms quietly run the same path (the
+    family gate's "steps > captures" lesson), so the V4.1 shape reads the
+    count the engine prints in "[v41] host gaps/round: ... capture (one-off,
+    amortized above): verify graphs N for M ms, draft graphs N for M ms".
+    """
+    captures = 0
+    for m in V41_CAPTURE_RE.finditer(log_text):
+        captures += int(m.group(1)) + int(m.group(2))
+    return captures
 
 
 def run_profile(
@@ -1590,9 +1695,10 @@ def run_profile(
     weight_ipc_manifest: str | None,
     weight_ipc_scope: str,
     dump_token_ids: bool = False,
+    v41: V41Run | None = None,
 ) -> RunResult:
-    safe_prompt = re.sub(r"[^A-Za-z0-9_.-]+", "_", prompt_case.id)
-    safe_profile = re.sub(r"[^A-Za-z0-9_.-]+", "_", profile.name)
+    safe_prompt = safe_name(prompt_case.id)
+    safe_profile = safe_name(profile.name)
     out_path = work_dir / f"{safe_prompt}_{safe_profile}.out"
     log_path = work_dir / f"{safe_prompt}_{safe_profile}.log"
     logprobs_path = work_dir / f"{safe_prompt}_{safe_profile}.logprobs.json" if dump_token_ids else None
@@ -1608,6 +1714,7 @@ def run_profile(
         temperature=temperature,
         nothink=nothink,
         dump_logprobs_path=logprobs_path,
+        v41=v41,
     )
     env = os.environ.copy()
     # Drop inherited Inkling rollback switches, then apply this cell's env.
@@ -2002,6 +2109,8 @@ def build_expanded_plan(
     mtp_model: str | None,
     temperature: float,
     nothink: bool,
+    v41_engram: str = "",
+    v41_zchain: str = "",
 ) -> dict[str, Any]:
     """The deterministic input record: every cell with its full env, prompt
     SHA256, budget, contracts. Same fields across scenarios so two runs of the
@@ -2014,7 +2123,7 @@ def build_expanded_plan(
             "body_sha256": prompt_body_sha256(p.prompt),
             "body_bytes": len(p.prompt.encode("utf-8")),
         })
-    return {
+    plan: dict[str, Any] = {
         "schema": "ds4-proof-expanded-plan-v1",
         "scenario": scenario_name,
         "suite": suite,
@@ -2030,6 +2139,11 @@ def build_expanded_plan(
         "prompts": prompt_records,
         "contracts": [dataclass_dict(c) for c in contracts],
     }
+    # Only the V4.1 shape adds this key, so every other scenario's plan (and
+    # its committed expected-snapshot hash) stays byte-identical.
+    if v41_engram:
+        plan["v41"] = {"engram_dir": v41_engram, "zchain": v41_zchain}
+    return plan
 
 
 def expanded_plan_sha256(plan: dict[str, Any]) -> str:
@@ -2436,6 +2550,14 @@ def main(argv: list[str] | None = None) -> int:
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # The V4.1 (ds41) family runs on raw token ids and needs the engram feed
+    # (the artifact records the converting host's shard paths), so this shape
+    # is opted into by naming that directory; no family guessing.
+    v41_engram = os.environ.get("DS4_PROOF_ENGRAM", "")
+    v41_zchain = os.environ.get("DS4_PROOF_ZCHAIN", "")
+    if v41_engram and not Path(v41_engram).is_dir():
+        ap.error(f"DS4_PROOF_ENGRAM is not a directory (V4.1 runs cannot open the feed): {v41_engram}")
+
     # Token-ids dumping is on when (a) any contract is selected_token_ids_md5,
     # (b) the scenario sets a token floor (we need the count), or (c) the user
     # asked for it. The dump cost is small relative to a 1024-token decode and
@@ -2466,6 +2588,8 @@ def main(argv: list[str] | None = None) -> int:
             mtp_model=args.mtp,
             temperature=args.temperature,
             nothink=not args.no_nothink,
+            v41_engram=v41_engram,
+            v41_zchain=v41_zchain,
         )
         expanded_plan_path.parent.mkdir(parents=True, exist_ok=True)
         expanded_plan_path.write_text(
@@ -2551,6 +2675,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for prompt_case in prompts:
             print(f"\n=== {prompt_case.id} {prompt_case.prompt[:80]!r}")
+            v41_ids = ""
+            if v41_engram:
+                try:
+                    v41_ids = tokenize_v41_prompt(
+                        bin_path=args.bin,
+                        base_model=args.base,
+                        prompt_case=prompt_case,
+                        work_dir=work_dir,
+                    )
+                except ValueError as e:
+                    print(f"{prompt_case.id:28s} FAILED {e}")
+                    failures += 1
+                    continue
             for profile in profiles:
                 if weight_server and not weight_server.is_running():
                     print(f"{profile.name:28s} FAILED ds4_weight_server exited before profile run")
@@ -2571,6 +2708,16 @@ def main(argv: list[str] | None = None) -> int:
                         weight_ipc_manifest=weight_ipc_manifest,
                         weight_ipc_scope=weight_server_scope,
                         dump_token_ids=dump_token_ids,
+                        v41=(
+                            V41Run(
+                                ids_path=v41_ids,
+                                engram_dir=v41_engram,
+                                zchain=v41_zchain,
+                                no_graph=profile.env.get("DS4_CUDA_LAYER_GRAPHS") == "0",
+                            )
+                            if v41_ids
+                            else None
+                        ),
                     )
                 except ValueError as e:
                     print(f"{profile.name:42s} FAILED {e}")
@@ -2580,6 +2727,24 @@ def main(argv: list[str] | None = None) -> int:
                 print_run_line(result)
                 if result.rc != 0:
                     failures += 1
+                # V4.1: the arms must differ, or the parity contract is
+                # vacuous. The profile env cannot reach this route's graph
+                # switch, so the run reports its own capture count.
+                if v41_ids:
+                    result.graph_captures = v41_graph_captures(
+                        Path(result.log_path).read_text(errors="replace")
+                    )
+                    print(f"  v41 graph captures={result.graph_captures}")
+                    graphs = profile.env.get("DS4_CUDA_LAYER_GRAPHS", "")
+                    if result.rc == 0 and graphs == "0" and result.graph_captures:
+                        print(
+                            f"  [FAIL] {profile.name}: {result.graph_captures} graphs captured "
+                            "on the eager arm (DS4_CUDA_LAYER_GRAPHS=0 was not honoured)"
+                        )
+                        failures += 1
+                    if result.rc == 0 and graphs == "1" and not result.graph_captures:
+                        print(f"  [FAIL] {profile.name}: the capture arm captured no graph")
+                        failures += 1
                 # EOS-truncation guard. The long-context scenarios depend on
                 # running the full `tokens` decode; an unexpected EOS short of
                 # the floor means the matrix is comparing different decode

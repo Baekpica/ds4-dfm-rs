@@ -470,3 +470,23 @@ pub fn json_args_parse(json: &str) -> Option<Vec<JsonArg>> {
     }
     Some(args)
 }
+
+/// The contents of `src` when it is exactly one JSON string literal, and None
+/// otherwise.
+///
+/// The V4.1 oracle tolerates a stringified `arguments` value: it decodes the
+/// field up to twice before it gives up (encoding.py:528-537), so a replay
+/// whose arguments were encoded one level too deep still renders that object's
+/// parameters.  On the wire `arguments` is already a string
+/// (docs/ds41-dsml-conformance.md requirement 2.3.5), so that extra decode is
+/// this unwrap.
+pub fn json_string_contents(src: &str) -> Option<String> {
+    let mut p = Json::new(src);
+    p.ws();
+    let text = json_string(&mut p)?;
+    p.ws();
+    if p.peek().is_some() {
+        return None;
+    }
+    Some(text)
+}

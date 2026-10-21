@@ -707,10 +707,13 @@ void ds4_engine_v41_set_kv_reuse(int on) { (void)on; }
 int ds4_engine_v41_last_reused(void) { return 0; }
 uint32_t v41_kvreuse_peek(const int32_t *prompt, uint32_t np, const uint64_t *sig) { (void)prompt; (void)np; (void)sig; return 0; }
 void v41_kvreuse_note_mount(int has_mount, uint64_t hash) { (void)has_mount; (void)hash; }
+uint32_t v41_kvreuse_turn_key(int32_t *out, uint32_t cap) {
+    (void)out; (void)cap; return 0u;
+}
 /* The disk half (item 4): the null engine owns no checkpoint, so export has
  * nothing to write and import is a miss -- the real early returns at
  * ds4_ds41_kvreuse.inc:301 and :340. */
-int v41_kvreuse_export(const char *path) { (void)path; return 0; }
+int v41_kvreuse_export(const char *path, int cls) { (void)path; (void)cls; return 0; }
 int v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
                        const int32_t *tokens, uint32_t n) {
     (void)path; (void)offset; (void)bytes; (void)tokens; (void)n;

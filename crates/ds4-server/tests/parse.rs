@@ -1,5 +1,6 @@
 //! C↔Rust four-surface JSON parsers (tokenize/render stay C).
 
+use ds4_server::render::render_dsml_chat_choice;
 use ds4_server::render::DSML_IMAGE;
 use ds4_server::{
     generation_blocked, parse_anthropic_request, parse_chat_request, parse_completion_request,
@@ -226,6 +227,99 @@ fn c_unit_error_cases_match() {
     );
 }
 
+/// The accepted spelling of `response_format` is not a render input.  The
+/// encoder oracle owns that rendering — it appends the schema to the SYSTEM
+/// region as "## Response Format:\n\nYou MUST strictly adhere..." when a
+/// message dict carries the field (encoding.py:64-66, :628-629) — and neither
+/// reference server reads the field at all.  This server refuses the schema
+/// forms by name (format.rs:9-15, the v0.6.3 refusal) and accepts "text"; the
+/// case pins that the accepted form leaves every render input untouched, so a
+/// later change cannot begin trusting a schema unnoticed.
+#[test]
+fn accepted_response_format_is_not_a_render_input() {
+    let plain = rust_parse(
+        "chat",
+        r#"{"messages":[{"role":"user","content":"two words"}]}"#,
+    )
+    .unwrap();
+    let text = rust_parse(
+        "chat",
+        r#"{"messages":[{"role":"user","content":"two words"}],"response_format":{"type":"text"}}"#,
+    )
+    .unwrap();
+
+    assert_eq!(dump(&plain), dump(&text));
+    assert_eq!(plain.tool_schemas, text.tool_schemas);
+    assert!(plain.tool_schemas.is_empty());
+    assert_eq!(plain.messages.len(), text.messages.len());
+    assert_eq!(plain.messages[0].content, text.messages[0].content);
+    assert_eq!(plain.messages[0].parts, text.messages[0].parts);
+}
+
+/// A chat tool's name reaches the prompt verbatim, and a tool-level `namespace`
+/// key is not folded into it.  The encoder oracle does fold — `_tool_name_for_encoding`
+/// (encoding.py:116) joins an explicit namespace or a "::"-qualified name into
+/// "namespace::name", and :88-97 prefixes the namespace description onto the
+/// function's — but that is the encoder's own rule for the message dicts handed
+/// to it.  Neither reference server reads a tool-level namespace on the chat
+/// surface: namespaces exist there for `type:"namespace"` items on the
+/// Responses surface (server_parse_tools.c:9-120), which this port mirrors
+/// (parse.rs:2147).  The case pins both forms this server does see.
+#[test]
+fn chat_tool_names_pass_through_verbatim() {
+    // The qualified name the oracle would produce is taken as given.
+    let qualified = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"ns::foo","parameters":{"type":"object","properties":{}}}}]}"#;
+    let parsed = rust_parse("chat", qualified).unwrap();
+    assert_eq!(
+        parsed.tool_schemas,
+        r#"{"name":"ns::foo","parameters":{"type":"object","properties":{}}}"#
+    );
+
+    // The tool-level key is not part of the schema, and the function object is
+    // carried byte-for-byte.
+    let folded = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","namespace":"ns","function":{"name":"foo","description":"d","parameters":{"type":"object","properties":{}}}}]}"#;
+    let parsed = rust_parse("chat", folded).unwrap();
+    assert_eq!(
+        parsed.tool_schemas,
+        r#"{"name":"foo","description":"d","parameters":{"type":"object","properties":{}}}"#
+    );
+}
+
+#[test]
+fn responses_namespace_tools_keep_both_spellings() {
+    // The Responses surface is the one place a namespace exists
+    // (server_parse_tools.c:9-120, mirrored by
+    // `append_responses_namespace_tool_schemas`, parse.rs:2336).  A
+    // `type:"namespace"` item holds its functions, the prompt advertises the
+    // namespace concatenated with each function name
+    // (`responses_namespace_function_schema`, parse.rs:2282), and the order
+    // keeps both spellings so the answer can be emitted under the name the
+    // client asked for (`responses_tool_wire_name`, stream.rs:234) plus the
+    // namespace field (stream.rs:287).  The chat surface has no namespace at
+    // all: `chat_tool_names_pass_through_verbatim` above pins that half.
+    let body = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"namespace","name":"mcp__files","tools":[{"type":"function","name":"read","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}]}"#;
+    let parsed = rust_parse("responses", body).unwrap();
+
+    assert_eq!(
+        parsed.tool_schemas,
+        r#"{"name":"mcp__filesread","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}"#
+    );
+    assert_eq!(parsed.tool_orders.len(), 1);
+    assert_eq!(parsed.tool_orders[0].name, "mcp__filesread");
+    assert_eq!(parsed.tool_orders[0].wire_name, "read");
+    assert_eq!(parsed.tool_orders[0].namespace, "mcp__files");
+
+    // The prompt the model reads carries the same qualified name.
+    let prompt = render_dsml_chat_choice(
+        &parsed.messages,
+        &parsed.tool_schemas,
+        parsed.think_mode,
+        parsed.tool_choice,
+    );
+    let prompt = String::from_utf8(prompt.unwrap()).unwrap();
+    assert!(prompt.contains("mcp__filesread"), "{prompt}");
+}
+
 #[test]
 fn missing_required_fields_and_invalid_json() {
     assert_err_eq("chat", "{}", "missing messages");
@@ -253,11 +347,6 @@ fn tool_choice_errors_match_c() {
     );
 
     assert_err_eq(
-        "chat",
-        r#"{"messages":[],"tool_choice":{"type":"function"}}"#,
-        "forced tool_choice not supported",
-    );
-    assert_err_eq(
         "anthropic",
         r#"{"messages":[],"tool_choice":{"type":"tool","name":"lookup"}}"#,
         "forced tool_choice not supported",
@@ -267,6 +356,129 @@ fn tool_choice_errors_match_c() {
         r#"{"messages":[],"tool_choice":"required"}"#,
         "tool_choice=required requires at least one tool",
     );
+}
+
+/// The named-function tool choice: the OpenAI chat reference defines
+/// `{"type":"function","function":{"name":"my_function"}}` as "forces the model
+/// to call that tool", and the port serves it by narrowing the request's tool
+/// set to that function and requiring the call (OpenAI's own allowed_tools
+/// mechanism for the same intent).  The production C engine refuses the form, so
+/// the divergence is pinned below rather than left to a later parity pass to
+/// find by accident.
+#[test]
+fn named_tool_choice_narrows_to_the_forced_function() {
+    let body = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"other_function","parameters":{"type":"object"}}},{"type":"function","function":{"name":"my_function","parameters":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}}}],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#;
+    let r = parse_chat_request(&env(), body).unwrap();
+    assert_eq!(r.tool_choice, ToolChoice::Required);
+    assert_eq!(r.forced_tool.as_deref(), Some("my_function"));
+    assert!(r.has_tools);
+    assert_eq!(r.tool_orders.len(), 1, "{:?}", r.tool_orders);
+    assert_eq!(r.tool_orders[0].name, "my_function");
+    assert!(r.tool_schemas.contains("my_function"), "{}", r.tool_schemas);
+    assert!(
+        !r.tool_schemas.contains("other_function"),
+        "{}",
+        r.tool_schemas
+    );
+
+    // Responses carries the same OpenAI value and takes the same route.
+    let resp = parse_responses_request(
+        &env(),
+        r#"{"input":"hi","tools":[{"type":"function","function":{"name":"other_function","parameters":{"type":"object"}}},{"type":"function","function":{"name":"my_function","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.tool_choice, ToolChoice::Required);
+    assert_eq!(resp.tool_orders.len(), 1);
+    assert!(resp.tool_schemas.contains("my_function"));
+    assert!(!resp.tool_schemas.contains("other_function"));
+
+    // The Responses wire form names the function at the top level, and a
+    // pretty-printed tool list spans many lines: both narrow the same way.
+    let resp = parse_responses_request(
+        &env(),
+        "{\"input\":\"hi\",\"tools\":[\n  {\n    \"type\": \"function\",\n    \"name\": \"other_function\",\n    \"parameters\": {\"type\": \"object\"}\n  },\n  {\n    \"type\": \"function\",\n    \"name\": \"my_function\",\n    \"parameters\": {\"type\": \"object\"}\n  }\n],\"tool_choice\":{\"type\":\"function\",\"name\":\"my_function\"}}",
+    )
+    .unwrap();
+    assert_eq!(resp.tool_choice, ToolChoice::Required);
+    assert_eq!(resp.tool_orders.len(), 1, "{:?}", resp.tool_orders);
+    assert!(resp.has_tools);
+    assert!(resp.tool_schemas.contains("my_function"));
+    assert!(!resp.tool_schemas.contains("other_function"));
+    let pretty = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"tools\":[\n {\n  \"type\": \"function\",\n  \"function\": {\n   \"name\": \"my_function\",\n   \"parameters\": {\"type\": \"object\"}\n  }\n }\n],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"my_function\"}}}";
+    let pr = parse_chat_request(&env(), pretty).unwrap();
+    assert!(
+        pr.has_tools && pr.tool_schemas.contains("my_function"),
+        "{}",
+        pr.tool_schemas
+    );
+
+    // The renderer is handed exactly what the parse narrowed (generate.rs:1331),
+    // so the served prompt offers the forced function alone and requires the
+    // call.
+    let prompt = render_dsml_chat_choice(&r.messages, &r.tool_schemas, r.think_mode, r.tool_choice);
+    let prompt = String::from_utf8(prompt.unwrap()).unwrap();
+    assert!(prompt.contains("my_function"), "{prompt}");
+    assert!(!prompt.contains("other_function"), "{prompt}");
+    assert!(prompt.contains("### Required Tool Use"), "{prompt}");
+
+    // The C engine's refusal of the same body, recorded here.
+    let c = c_str(&["chat", body]);
+    assert!(c.starts_with("ERROR\n"), "{c}");
+    assert!(c.contains("forced tool_choice not supported"), "{c}");
+}
+
+#[test]
+fn named_tool_choice_rejects_a_name_outside_the_tools() {
+    assert_eq!(
+        parse_chat_request(
+            &env(),
+            r#"{"messages":[],"tools":[{"type":"function","function":{"name":"other_function","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#,
+        )
+        .unwrap_err(),
+        "tool_choice function \"my_function\" is not among the request tools"
+    );
+    assert_eq!(
+        parse_chat_request(
+            &env(),
+            r#"{"messages":[],"tool_choice":{"type":"function","function":{"name":"my_function"}}}"#,
+        )
+        .unwrap_err(),
+        "tool_choice function \"my_function\" is not among the request tools"
+    );
+}
+
+#[test]
+fn unsupported_tool_choice_objects_stay_refused() {
+    let cases = [
+        (
+            r#"{"messages":[],"tool_choice":{"type":"allowed_tools","allowed_tools":{"mode":"auto","tools":[]}}}"#,
+            "tool_choice type=allowed_tools not supported",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"type":"custom","custom":{"name":"my_function"}}}"#,
+            "tool_choice type=custom not supported",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"type":"function"}}"#,
+            "invalid tool_choice",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"type":"function","function":{}}}"#,
+            "invalid tool_choice",
+        ),
+        (
+            r#"{"messages":[],"tool_choice":{"function":{"name":"lookup"}}}"#,
+            "invalid tool_choice",
+        ),
+        (r#"{"messages":[],"tool_choice":{}}"#, "invalid tool_choice"),
+    ];
+    for (body, expect) in cases {
+        assert_eq!(
+            parse_chat_request(&env(), body).unwrap_err(),
+            expect,
+            "{body}"
+        );
+    }
 }
 
 #[test]
@@ -454,6 +666,78 @@ fn image_input_rejects_remote_urls_wrong_magic_and_non_user_roles() {
         rust_parse("chat", &assistant).unwrap_err(),
         "images are allowed only in user messages or tool results"
     );
+}
+
+/// The oracle's path and URL forms are refused on every surface.  Its
+/// `parse_tagged_text` / `_extract_image` (encoding.py:273-320) normalize a bare
+/// path or an http URL into an image record and leave the fetch to whatever
+/// takes it; this server is base64-only by contract, and it fails closed rather
+/// than dropping the pixels silently, so each form is a named request error.
+#[test]
+fn image_refusals_cover_the_oracle_path_and_url_forms() {
+    // The oracle's <image>path</image> form, and the same path as a plain
+    // string instead of the object spelling.
+    for body in [
+        r#"{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"/tmp/photo.png"}}]}]}"#,
+        r#"{"messages":[{"role":"user","content":[{"type":"image_url","image_url":"/tmp/photo.png"}]}]}"#,
+    ] {
+        assert_eq!(
+            rust_parse("chat", body).unwrap_err(),
+            "image_url must be a base64 data URI"
+        );
+    }
+
+    // Responses input_image with a URL; the data-URI form is pinned by
+    // qwen_image_inputs_normalize_across_all_three_surfaces.
+    let responses = r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"https://example.com/x.png"}]}]}"#;
+    assert_eq!(
+        rust_parse("responses", responses).unwrap_err(),
+        "image_url must be a base64 data URI"
+    );
+
+    // Anthropic's url source; its tool_result spelling of the same check is
+    // pinned by anthropic_tool_result_content_blocks_carry_images.
+    let anthropic = r#"{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}]}"#;
+    assert_eq!(
+        rust_parse("anthropic", anthropic).unwrap_err(),
+        "Anthropic image source must use base64 data"
+    );
+}
+
+#[test]
+fn the_image_path_tag_form_is_text_and_not_markup() {
+    // The oracle's `parse_tagged_text` rewrites an `<image>path</image>` text
+    // form into `image_url` blocks and raises on an unbalanced tag
+    // (encoding.py:273-297, pattern at :40).  This carriage serves no path form
+    // at all -- pixels arrive base64 only (AGENTS.md, "Pixels arrive
+    // base64-only") -- and it never reads the tag as markup, so the client's
+    // text reaches the model byte for byte, as ordinary text.  Measured
+    // 2026-10-20: no image is registered, the content keeps the tag, and the
+    // rendered prompt carries it verbatim.
+    for text in [
+        "look at <image>/tmp/photo.png</image> please",
+        "unbalanced <image> with no closer",
+    ] {
+        let body = format!(r#"{{"messages":[{{"role":"user","content":"{text}"}}]}}"#);
+        let parsed = rust_parse("chat", &body).unwrap();
+
+        assert!(parsed.images.is_empty(), "{text}: an image was registered");
+        assert_eq!(
+            parsed.needs & NEED_IMAGE,
+            0,
+            "{text}: an image span is owed"
+        );
+        assert_eq!(parsed.messages[0].content, text, "{text}: content moved");
+
+        let prompt = render_dsml_chat_choice(
+            &parsed.messages,
+            &parsed.tool_schemas,
+            parsed.think_mode,
+            parsed.tool_choice,
+        );
+        let prompt = String::from_utf8(prompt.unwrap()).unwrap();
+        assert!(prompt.contains(text), "{text}: the prompt rewrote the text");
+    }
 }
 
 #[test]
@@ -773,6 +1057,67 @@ fn engine_defaults_think_and_sampling() {
     assert_eq!(r.dry_multiplier, 0.8);
 }
 
+/// O-01: the effort a request asked for survives the engine's collapse, so the
+/// V4.1 head can render the requested budget (encoding.py:443-473) while the
+/// engine keeps the mode it decided.  The name mapping is low 50 / high 75 /
+/// max 100, and the oracle's numeric form renders as the number itself.
+#[test]
+fn requested_effort_budget_survives_the_engine_collapse() {
+    use ds4_server::{RequestedEffort, ThinkMode};
+    let eng = ParseEnv {
+        engine_defaults: true,
+        ..env()
+    };
+    let chat = |body: &str| parse_chat_request(&eng, body).unwrap();
+    let ask = |effort: &str| {
+        chat(&format!(
+            r#"{{"messages":[{{"role":"user","content":"hi"}}],"reasoning_effort":{effort}}}"#
+        ))
+    };
+
+    // The engine collapses low into HIGH (server_msgs.c:194-215); the head still
+    // takes the low mapping's 50.
+    let low = ask(r#""low""#);
+    assert_eq!(low.think_mode, ThinkMode::High);
+    assert_eq!(low.effort, RequestedEffort::named(ThinkMode::Low));
+    assert_eq!(low.effort.head_budget(), Some(50));
+
+    // A bare ask keeps the engine's HIGH default, 75 in the head.
+    let bare = chat(r#"{"messages":[{"role":"user","content":"hi"}]}"#);
+    assert_eq!(bare.effort, RequestedEffort::named(ThinkMode::High));
+    assert_eq!(bare.effort.head_budget(), Some(75));
+
+    assert_eq!(ask(r#""max""#).effort.head_budget(), Some(100));
+    assert_eq!(ask(r#""none""#).effort.head_budget(), None);
+
+    // The oracle's numeric form: taken as the budget, engine mode collapsed.
+    let numeric = ask("40");
+    assert_eq!(numeric.think_mode, ThinkMode::High);
+    assert_eq!(
+        numeric.effort,
+        RequestedEffort {
+            mode: ThinkMode::High,
+            budget: Some(40)
+        }
+    );
+    assert_eq!(numeric.effort.head_budget(), Some(40));
+
+    // Out of the oracle's range and its non-integers are refused, as the oracle
+    // refuses them (encoding.py:464-469).
+    for bad in ["0", "101", "50.5", "5e1"] {
+        assert!(
+            parse_chat_request(
+                &eng,
+                &format!(
+                    r#"{{"messages":[{{"role":"user","content":"hi"}}],"reasoning_effort":{bad}}}"#
+                )
+            )
+            .is_err(),
+            "{bad} must be refused"
+        );
+    }
+}
+
 #[test]
 fn openai_tool_message_carries_the_image_placeholder() {
     // The real MCP loop on the Chat Completions surface: an assistant turn
@@ -978,4 +1323,49 @@ mod v41_media {
             );
         }
     }
+}
+
+/// CTR clause 2.3.7, the server's half: the client echoes `reasoning_content` on
+/// every assistant message, empty included, and the server must not require the
+/// key.  Both shapes parse, and the reasoning the message carried is what the
+/// render sees -- an omitted key is not an error and an empty value stays empty
+/// (`types.rs` 526-538; `conversation.rs` 3691-3740).
+#[test]
+fn assistant_reasoning_is_optional_and_may_be_empty() {
+    let eng = ParseEnv {
+        engine_defaults: true,
+        ..env()
+    };
+    let empty = parse_chat_request(
+        &eng,
+        r#"{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok","reasoning_content":""},{"role":"user","content":"again"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(empty.messages[1].role, "assistant");
+    assert_eq!(empty.messages[1].content, "ok");
+    assert_eq!(empty.messages[1].reasoning, "");
+
+    let omitted = parse_chat_request(
+        &eng,
+        r#"{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"again"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(omitted.messages[1].content, "ok");
+    assert_eq!(omitted.messages[1].reasoning, "");
+}
+
+/// A numeric reasoning_effort is the V4.1 head's budget; any other family
+/// would read it as HIGH, so it is refused off the V4.1 route.
+#[test]
+fn numeric_effort_is_v41_only() {
+    let body = r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":5}"#;
+    let v41 = ParseEnv {
+        engine_defaults: true,
+        ..env()
+    };
+    assert_eq!(
+        parse_chat_request(&v41, body).unwrap().effort.budget,
+        Some(5)
+    );
+    assert!(parse_chat_request(&env(), body).is_err());
 }

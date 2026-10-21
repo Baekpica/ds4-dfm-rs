@@ -11,7 +11,8 @@ use crate::json::{
 use crate::models::{model_alias_disables_thinking, model_alias_enables_thinking};
 use crate::render::{ModelSyntax, DSML_IMAGE};
 use crate::route::{
-    compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, ThinkMode, WireSurface,
+    compute_needs, think_mode_from_enabled, Api, NeedInput, ReqKind, RequestedEffort, ThinkMode,
+    WireSurface,
 };
 use std::sync::Arc;
 
@@ -200,10 +201,20 @@ pub struct ParsedRequest {
     pub stream_include_usage: bool,
     pub return_token_ids: bool,
     pub think_mode: ThinkMode,
+    /// The effort the request asked for, kept beside the collapsed
+    /// `think_mode`: the V4.1 head renders this budget (encoding.py:456-473)
+    /// while the engine keeps its own mode.
+    pub effort: RequestedEffort,
     pub eos_policy: EosPolicy,
     pub has_tools: bool,
     pub has_tool_results: bool,
     pub tool_choice: ToolChoice,
+    /// The function name of the named tool_choice form.  The OpenAI wire
+    /// defines `{"type":"function","function":{"name":"x"}}` as "forces the
+    /// model to call that tool"; the request's tool set is narrowed to that
+    /// one function (prepare_tool_choice) so the forced call is the only one
+    /// the prompt offers.
+    pub forced_tool: Option<String>,
     pub required_tool_prefix: Vec<i32>,
     pub required_think_end_prefix: Vec<i32>,
     pub stops: Vec<String>,
@@ -252,10 +263,12 @@ impl ParsedRequest {
             stream_include_usage: false,
             return_token_ids: false,
             think_mode: ThinkMode::Low,
+            effort: RequestedEffort::named(ThinkMode::Low),
             eos_policy: EosPolicy::Default,
             has_tools: false,
             has_tool_results: false,
             tool_choice: ToolChoice::Auto,
+            forced_tool: None,
             required_tool_prefix: Vec::new(),
             required_think_end_prefix: Vec::new(),
             stops: Vec::new(),
@@ -547,9 +560,42 @@ fn validate_audio_refs(
     Ok(())
 }
 
-fn append_text_part(msg: &mut ChatMsg, text: String) {
+/// The oracle refuses a user-supplied image placeholder in a textual field
+/// (encoding.py:355-367; its text-block half is :346-352, nested tool-result
+/// text included): an image is an image content block, never the literal
+/// token in text.  A stray literal tokenizes to the placeholder id
+/// (crates/ds4-core/src/tok.rs:2603) and a request that carries no image never
+/// reaches the V4.1 expansion which counts placeholders
+/// (crates/ds4-server/src/generate.rs:3107), so it would reach the model as a
+/// lone image token at a text position.
+fn reject_stray_image_in_content(text: &str) -> Result<(), String> {
+    if !text.contains(DSML_IMAGE) {
+        return Ok(());
+    }
+    Err(format!(
+        "Message content contains image special token '{DSML_IMAGE}'. Images should be provided as image content blocks."
+    ))
+}
+
+/// The oracle's other half (encoding.py:363-366): the same literal in
+/// `reasoning_content`.
+fn reject_stray_image_in_reasoning(text: &str) -> Result<(), String> {
+    if !text.contains(DSML_IMAGE) {
+        return Ok(());
+    }
+    Err(format!(
+        "reasoning_content contains image special token '{DSML_IMAGE}'"
+    ))
+}
+
+fn append_text_part(msg: &mut ChatMsg, text: String, err: &mut String) -> bool {
+    if let Err(e) = reject_stray_image_in_content(&text) {
+        *err = e;
+        return false;
+    }
     msg.content.push_str(&text);
     msg.parts.push(ChatPart::Text(text));
+    true
 }
 
 fn validate_image_references(msgs: &[ChatMsg], images: &[RequestImage]) -> Result<(), String> {
@@ -805,26 +851,122 @@ pub fn parse_thinking_control_value(p: &mut Json<'_>) -> Option<Option<bool>> {
     Some(enabled)
 }
 
-fn parse_openai_tool_choice(p: &mut Json<'_>, err: &mut String) -> Option<ToolChoice> {
+/// The OpenAI chat tool_choice value: the three modes, or the named-function
+/// object `{"type":"function","function":{"name":"x"}}`, which the wire
+/// defines as "forces the model to call that tool".  The named form returns
+/// its function name beside `ToolChoice::Required`; prepare_tool_choice then
+/// narrows the request's tool set to it.  The other object forms of the
+/// surface -- the newer `allowed_tools` and `custom` -- stay refused by name.
+fn parse_openai_tool_choice(
+    p: &mut Json<'_>,
+    err: &mut String,
+) -> Option<(ToolChoice, Option<String>)> {
     p.ws();
+    if p.peek() == Some(b'{') {
+        return parse_openai_named_tool_choice(p, err);
+    }
     if p.peek() != Some(b'"') {
-        *err = if p.peek() == Some(b'{') {
-            "forced tool_choice not supported".into()
-        } else {
-            "invalid tool_choice".into()
-        };
+        *err = "invalid tool_choice".into();
         return None;
     }
     let choice = json_string(p)?;
     match choice.as_str() {
-        "auto" => Some(ToolChoice::Auto),
-        "none" => Some(ToolChoice::None),
-        "required" => Some(ToolChoice::Required),
+        "auto" => Some((ToolChoice::Auto, None)),
+        "none" => Some((ToolChoice::None, None)),
+        "required" => Some((ToolChoice::Required, None)),
         other => {
             *err = format!("tool_choice={other} not supported");
             None
         }
     }
+}
+
+fn parse_openai_named_tool_choice(
+    p: &mut Json<'_>,
+    err: &mut String,
+) -> Option<(ToolChoice, Option<String>)> {
+    p.i += 1;
+    p.ws();
+    let mut typ: Option<String> = None;
+    let mut name: Option<String> = None;
+    while p.peek().is_some() && p.peek() != Some(b'}') {
+        let key = json_string(p)?;
+        p.ws();
+        if p.bump() != Some(b':') {
+            *err = "invalid tool_choice".into();
+            return None;
+        }
+        if key == "type" {
+            typ = Some(json_string(p)?);
+        } else if key == "function" {
+            name = parse_named_tool_function(p);
+        } else if key == "name" {
+            // The Responses form names the function at the top level:
+            // {"type":"function","name":"x"}.
+            name = Some(json_string(p)?);
+        } else if !json_skip_value(p) {
+            *err = "invalid tool_choice".into();
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    if p.bump() != Some(b'}') {
+        *err = "invalid tool_choice".into();
+        return None;
+    }
+    match typ.as_deref() {
+        Some("function") => match name {
+            Some(n) if !n.is_empty() => Some((ToolChoice::Required, Some(n))),
+            _ => {
+                *err = "invalid tool_choice".into();
+                None
+            }
+        },
+        Some(t) => {
+            *err = format!("tool_choice type={t} not supported");
+            None
+        }
+        None => {
+            *err = "invalid tool_choice".into();
+            None
+        }
+    }
+}
+
+/// The named tool choice's `function` member, `{"name":"x"}`.  A missing or
+/// non-string name leaves None and the caller refuses the choice as invalid.
+fn parse_named_tool_function(p: &mut Json<'_>) -> Option<String> {
+    p.ws();
+    if p.bump() != Some(b'{') {
+        return None;
+    }
+    p.ws();
+    let mut name = None;
+    while p.peek().is_some() && p.peek() != Some(b'}') {
+        let key = json_string(p)?;
+        p.ws();
+        if p.bump() != Some(b':') {
+            return None;
+        }
+        if key == "name" {
+            name = json_string(p);
+        } else if !json_skip_value(p) {
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    if p.bump() != Some(b'}') {
+        return None;
+    }
+    name
 }
 
 fn parse_anthropic_tool_choice(p: &mut Json<'_>, err: &mut String) -> Option<ToolChoice> {
@@ -1040,7 +1182,15 @@ fn parse_openai_message_content(
 ) -> bool {
     p.ws();
     if p.peek() == Some(b'"') {
-        return json_string(p).map(|s| msg.content = s).is_some();
+        let Some(s) = json_string(p) else {
+            return false;
+        };
+        if let Err(e) = reject_stray_image_in_content(&s) {
+            *err = e;
+            return false;
+        }
+        msg.content = s;
+        return true;
     }
     if p.lit("null") {
         msg.content.clear();
@@ -1055,7 +1205,9 @@ fn parse_openai_message_content(
             let Some(text) = json_string(p) else {
                 return false;
             };
-            append_text_part(msg, text);
+            if !append_text_part(msg, text, err) {
+                return false;
+            }
         } else if p.bump() == Some(b'{') {
             let mut typ = None;
             let mut text = None;
@@ -1109,7 +1261,11 @@ fn parse_openai_message_content(
                 return false;
             }
             match (typ.as_deref(), text, image_url) {
-                (Some("text"), Some(text), _) => append_text_part(msg, text),
+                (Some("text"), Some(text), _) => {
+                    if !append_text_part(msg, text, err) {
+                        return false;
+                    }
+                }
                 (Some("image_url"), _, Some(url)) => {
                     match add_image_data_uri(images, audios, videos, &url) {
                         Ok(index) => msg.parts.push(ChatPart::Image(index)),
@@ -1218,7 +1374,14 @@ fn parse_messages(
                     return None;
                 }
             } else if key == "reasoning_content" {
-                msg.reasoning = json_content(p)?;
+                let Some(r) = json_content(p) else {
+                    return None;
+                };
+                if let Err(e) = reject_stray_image_in_reasoning(&r) {
+                    *err = e;
+                    return None;
+                }
+                msg.reasoning = r;
             } else if key == "tool_call_id" {
                 let id = json_string(p)?;
                 add_tool_call_id(&mut msg, &id);
@@ -1333,6 +1496,10 @@ fn json_tool_result_content(
     p.ws();
     if p.peek() == Some(b'"') {
         let text = json_string(p)?;
+        if let Err(e) = reject_stray_image_in_content(&text) {
+            *err = e;
+            return None;
+        }
         return Some((text.clone(), text));
     }
     if p.lit("null") {
@@ -1412,6 +1579,10 @@ fn json_tool_result_content(
                     }
                 }
             } else if let Some(t) = text {
+                if let Err(e) = reject_stray_image_in_content(&t) {
+                    *err = e;
+                    return None;
+                }
                 rendered.push_str(&t);
                 plain.push_str(&t);
             }
@@ -1568,9 +1739,15 @@ fn parse_anthropic_content_block(
         }
         _ => {
             if let Some(t) = text {
-                append_text_part(msg, t);
+                if !append_text_part(msg, t, err) {
+                    return false;
+                }
             }
             if let Some(t) = thinking {
+                if let Err(e) = reject_stray_image_in_reasoning(&t) {
+                    *err = e;
+                    return false;
+                }
                 msg.reasoning.push_str(&t);
             }
         }
@@ -1586,7 +1763,15 @@ fn parse_anthropic_content(
 ) -> bool {
     p.ws();
     if p.peek() == Some(b'"') {
-        return json_string(p).map(|s| msg.content = s).is_some();
+        let Some(s) = json_string(p) else {
+            return false;
+        };
+        if let Err(e) = reject_stray_image_in_content(&s) {
+            *err = e;
+            return false;
+        }
+        msg.content = s;
+        return true;
     }
     if p.lit("null") {
         msg.content = String::new();
@@ -1601,7 +1786,9 @@ fn parse_anthropic_content(
     while p.peek().is_some() && p.peek() != Some(b']') {
         if p.peek() == Some(b'"') {
             if let Some(s) = json_string(p) {
-                append_text_part(msg, s);
+                if !append_text_part(msg, s, err) {
+                    return false;
+                }
             } else {
                 return false;
             }
@@ -2327,12 +2514,100 @@ fn prepare_tool_choice(
         schemas.clear();
         orders.clear();
     }
+    // The named form forces one function.  OpenAI's own constraint for that
+    // intent is allowed_tools ("constrains the tools available to the model
+    // to a pre-defined set"), so the forced name is served the same way: the
+    // prompt carries that function alone, and the call is then required.
+    if let Some(name) = r.forced_tool.clone() {
+        if !narrow_tool_schemas(schemas, orders, &name) {
+            *err = format!("tool_choice function \"{name}\" is not among the request tools");
+            return false;
+        }
+    }
     r.has_tools = !schemas.is_empty();
     if r.tool_choice == ToolChoice::Required && !r.has_tools {
         *err = "tool_choice=required requires at least one tool".into();
         return false;
     }
     true
+}
+
+/// Keeps the forced function alone: the schema lines whose own `name` is one
+/// of the matched orders' prompt names, and those orders.  The line and the
+/// order of one tool are built together and read the same `name` key
+/// (tool_schema_orders_add_json_wire), so the two filters agree.  A client
+/// names the wire name, which differs from the prompt name only for a
+/// namespaced Responses tool.  False when the name is in no order.
+fn narrow_tool_schemas(
+    schemas: &mut String,
+    orders: &mut Vec<ToolSchemaOrder>,
+    name: &str,
+) -> bool {
+    let keep: Vec<String> = orders
+        .iter()
+        .filter(|o| o.name == name || o.wire_name == name)
+        .map(|o| o.name.clone())
+        .collect();
+    if keep.is_empty() {
+        return false;
+    }
+    // The schemas are the client's raw values joined by newlines, and a
+    // pretty-printed tool spans many lines: walk JSON values, as the
+    // renderer does, not lines.
+    let mut kept = String::new();
+    let mut p = Json::new(schemas);
+    loop {
+        p.ws();
+        if p.peek().is_none() {
+            break;
+        }
+        let Some(one) = json_raw_value(&mut p) else {
+            break;
+        };
+        let Some(one_name) = schema_line_name(&one) else {
+            continue;
+        };
+        if !keep.iter().any(|k| *k == one_name) {
+            continue;
+        }
+        if !kept.is_empty() {
+            kept.push('\n');
+        }
+        kept.push_str(&one);
+    }
+    *schemas = kept;
+    orders.retain(|o| keep.iter().any(|k| *k == o.name));
+    true
+}
+
+/// The schema line's own `name` member: the key tool_schema_orders_add_json_wire
+/// builds the order from, so both filters select the same tool.
+fn schema_line_name(json: &str) -> Option<String> {
+    let mut p = Json::new(json);
+    p.ws();
+    if p.bump() != Some(b'{') {
+        return None;
+    }
+    p.ws();
+    while p.peek().is_some() && p.peek() != Some(b'}') {
+        let key = json_string(&mut p)?;
+        p.ws();
+        if p.bump() != Some(b':') {
+            return None;
+        }
+        if key == "name" {
+            return json_string(&mut p);
+        }
+        if !json_skip_value(&mut p) {
+            return None;
+        }
+        p.ws();
+        if p.peek() == Some(b',') {
+            p.i += 1;
+        }
+        p.ws();
+    }
+    None
 }
 
 fn apply_think_aliases(r: &ParsedRequest, got_thinking: bool, enabled: bool) -> bool {
@@ -2417,6 +2692,10 @@ fn parse_responses_content_array_mm(
     p.ws();
     if p.peek() == Some(b'"') {
         let text = json_string(p)?;
+        if let Err(e) = reject_stray_image_in_content(&text) {
+            *err = e;
+            return None;
+        }
         return Some((text.clone(), vec![ChatPart::Text(text)]));
     }
     if p.lit("null") {
@@ -2475,6 +2754,10 @@ fn parse_responses_content_array_mm(
             );
             if is_text {
                 let text = text?;
+                if let Err(e) = reject_stray_image_in_content(&text) {
+                    *err = e;
+                    return None;
+                }
                 b.push_str(&text);
                 parts.push(ChatPart::Text(text));
             } else if typ.as_deref() == Some("input_image") {
@@ -2512,13 +2795,13 @@ fn parse_responses_content_array_mm(
     Some((b, parts))
 }
 
-fn parse_responses_content_array(p: &mut Json<'_>) -> Option<String> {
-    parse_responses_content_array_mm(p, None, &mut String::new()).map(|(text, _)| text)
+fn parse_responses_content_array(p: &mut Json<'_>, err: &mut String) -> Option<String> {
+    parse_responses_content_array_mm(p, None, err).map(|(text, _)| text)
 }
 
 fn parse_responses_reasoning(
     p: &mut Json<'_>,
-    effort: &mut ThinkMode,
+    effort: &mut RequestedEffort,
     summary_opted: &mut bool,
 ) -> Option<bool> {
     p.ws();
@@ -2655,7 +2938,7 @@ fn parse_responses_input(
                     Some(json_raw_value(p)?)
                 };
             } else if key == "summary" {
-                summary = Some(parse_responses_content_array(p)?);
+                summary = Some(parse_responses_content_array(p, err)?);
             } else if key == "action" {
                 action = Some(json_raw_value(p)?);
             } else if key == "result" {
@@ -2879,15 +3162,22 @@ fn apply_think(
     r: &mut ParsedRequest,
     got: bool,
     mut enabled: bool,
-    effort: ThinkMode,
+    effort: RequestedEffort,
     engine_defaults: bool,
-) {
+) -> Result<(), String> {
+    // Only the V4.1 head renders a numeric budget; every other family would
+    // silently read it as HIGH, so the number is refused there.
+    if effort.budget.is_some() && !engine_defaults {
+        return Err("numeric reasoning_effort requires DeepSeek V4.1".into());
+    }
     enabled = apply_think_aliases(r, got, enabled);
     r.think_mode = if engine_defaults {
-        engine_think_mode(enabled, effort)
+        engine_think_mode(enabled, effort.mode)
     } else {
-        think_mode_from_enabled(enabled, effort)
+        think_mode_from_enabled(enabled, effort.mode)
     };
+    r.effort = effort;
+    Ok(())
 }
 
 /// The engine's `think_mode_from_enabled` (server_msgs.c:186-189): nothing
@@ -2916,11 +3206,11 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
     let mut msgs = Vec::new();
     let mut images = ImageInputs::new(env);
     let mut audios = Vec::new();
@@ -2961,8 +3251,9 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
             }
         } else if key == "tool_choice" {
             match parse_openai_tool_choice(&mut p, &mut err) {
-                Some(c) => {
+                Some((c, forced)) => {
                     r.tool_choice = c;
+                    r.forced_tool = forced;
                     true
                 }
                 None => false,
@@ -3045,7 +3336,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
                     // effort field alone is the client asking for thinking --
                     // got_thinking set, enabled = effort != none.
                     got_thinking = true;
-                    thinking_enabled = e != ThinkMode::None;
+                    thinking_enabled = e.mode != ThinkMode::None;
                     true
                 }
                 Ok(None) => {
@@ -3053,7 +3344,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
                     // still counts as an explicit ask (the engine's
                     // parse_reasoning_effort_value returns true unchanged).
                     got_thinking = true;
-                    thinking_enabled = reasoning_effort != ThinkMode::None;
+                    thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                     true
                 }
                 Err(_) => false,
@@ -3110,7 +3401,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     r.messages = msgs;
     r.images = images.items;
     r.audios = audios;
@@ -3132,11 +3423,11 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
 
     p.ws();
     if p.bump() != Some(b'{') {
@@ -3273,7 +3564,7 @@ pub fn parse_completion_request(env: &ParseEnv, body: &str) -> Result<ParsedRequ
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     r.prompt_text = Some(prompt);
     r.finish_needs();
     Ok(r)
@@ -3291,11 +3582,11 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
     let mut msgs = Vec::new();
     let mut images = ImageInputs::new(env);
     let mut system = None;
@@ -3398,7 +3689,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                         // an effort-only ask turns thinking on (high/max) or
                         // off (none); an explicit thinking field still wins.
                         if !got_thinking {
-                            thinking_enabled = reasoning_effort != ThinkMode::None;
+                            thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                         }
                     }
                     true
@@ -3417,7 +3708,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                 Ok(Some(e)) => {
                     reasoning_effort = e;
                     if !got_thinking {
-                        thinking_enabled = reasoning_effort != ThinkMode::None;
+                        thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                     }
                     true
                 }
@@ -3462,7 +3753,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     match anthropic_validate_tool_results(&msgs, &env.live_ids, &mut err) {
         Ok(live) => r.anthropic_requires_live_tool_state = live,
         Err(()) => return Err(err),
@@ -3488,11 +3779,11 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     // HIGH.  Only the engine's own model set takes them (unit H,
     // ParseEnv::engine_defaults); other families keep the port's defaults.
     let mut thinking_enabled = !env.engine_defaults;
-    let mut reasoning_effort = if env.engine_defaults {
+    let mut reasoning_effort = RequestedEffort::named(if env.engine_defaults {
         ThinkMode::High
     } else {
         env.default_effort
-    };
+    });
     let mut msgs = Vec::new();
     let mut images = ImageInputs::new(env);
     let mut loaded = String::new();
@@ -3564,8 +3855,9 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
             }
         } else if key == "tool_choice" {
             match parse_openai_tool_choice(&mut p, &mut err) {
-                Some(c) => {
+                Some((c, forced)) => {
                     r.tool_choice = c;
+                    r.forced_tool = forced;
                     true
                 }
                 None => false,
@@ -3611,7 +3903,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                         // explicit effort is the client opting into thinking
                         // control -- got_thinking set, enabled = effort != none.
                         got_thinking = true;
-                        thinking_enabled = reasoning_effort != ThinkMode::None;
+                        thinking_enabled = reasoning_effort.mode != ThinkMode::None;
                     }
                     true
                 }
@@ -3678,7 +3970,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         thinking_enabled,
         reasoning_effort,
         env.engine_defaults,
-    );
+    )?;
     match responses_validate_tool_outputs(&msgs, r.think_mode, &env.live_ids, &mut err) {
         Ok((t, reason)) => {
             r.responses_requires_live_tool_state = t;

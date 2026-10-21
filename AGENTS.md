@@ -29,6 +29,40 @@ port covers. Never modify `/data/YoungAi`; a behavior question is answered
 by its code, and when the port and the engine disagree, the engine wins and
 the port is fixed.
 
+The DSML carriage (prompt bytes and the completion shape) has its own
+reference: the official V4.1 encoding at `tests/ds41_ref/oracle/encoding.py`,
+vendored byte-identical from `deepseek-ai/DeepSeek-V4.1-Flash` (MIT) and
+pinned by sha256 in `tests/ds41_ref/ref_drive.py`. Every carriage deviation
+from it is named and measured; the record is
+`docs/ds41-dsml-reference-matrix.md` and `docs/ds41-dsml-function-map.md`.
+
+## The ds41 DSML carriage executes nothing
+
+The server renders the prompt, samples, parses the DSML out of the sampled
+bytes, and frames it as OpenAI tool calls. It never executes a tool, never
+resolves a client-supplied path, and never fetches a URL. Whoever calls it
+owns the tool loop.
+
+- The client-visible contract is the OpenAI wire alone (chat completions,
+  completions, messages, responses). No request may require a field, a
+  header, or a call sequence that only one client emits, and no
+  caller-specific branch enters the server.
+- No tool implementation enters `crates/ds4-server`: no filesystem read or
+  write, no process spawn, and no network fetch reachable from a request
+  body. Tool handling stops at framing, carrying tool results back into the
+  transcript, and the on-disk replay store of (call id, exact DSML bytes)
+  (`crates/ds4-server/src/tool_memory.rs`).
+- Pixels arrive base64-only (`image_url`, Anthropic image sources and
+  `video_url` must be base64). The oracle's path and URL image forms belong
+  to the training-side encoder and are not served.
+- Server filesystem writes stay limited to operator-configured state: the
+  SSD/disk KV directory (which also carries the replay store), the file named
+  by `--expect-plan`, and the opt-in `--trace` file (full prompts and outputs
+  in plain text).
+- The one piece of conversation text the server authors is the malformed-call
+  retry suffix in `crates/ds4-server/src/retry.rs`; it is prompt-side repair,
+  not a tool.
+
 ## New model-family serving contract
 
 - Keep serving commands, flags, and client-visible behavior common across

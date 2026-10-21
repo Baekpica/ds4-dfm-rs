@@ -1,0 +1,8 @@
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Say hi."},
+    {"role": "assistant", "content": "Hi.", "reasoning_content": "HISTORICAL-THOUGHT-MARKER"},
+    {"role": "user", "content": "Say it again."}
+  ]
+}

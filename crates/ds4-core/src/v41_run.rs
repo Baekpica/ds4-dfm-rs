@@ -13,7 +13,7 @@
 //! buffers stay native, and the native hands the provider the exact block the
 //! forward is about to run (`ds41_forward.h`).
 
-use std::os::raw::{c_char, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -23,10 +23,10 @@ use ds4_sys::{
     ds4_bridge_v41_generate, ds4_bridge_v41_images_bytes, ds4_bridge_v41_kvreuse_export,
     ds4_bridge_v41_kvreuse_import, ds4_bridge_v41_kvreuse_last_reused,
     ds4_bridge_v41_kvreuse_note_mount, ds4_bridge_v41_kvreuse_peek, ds4_bridge_v41_kvreuse_set,
-    ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes, ds4_bridge_v41_set_dspark,
-    ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph, ds4_bridge_v41_set_prof,
-    ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set, ds4_bridge_v41_zchain_rb_clear,
-    ds4_bridge_v41_zchain_rb_set,
+    ds4_bridge_v41_kvreuse_turn_key, ds4_bridge_v41_last_spec_stats, ds4_bridge_v41_prefill_bytes,
+    ds4_bridge_v41_set_dspark, ds4_bridge_v41_set_emit_trace, ds4_bridge_v41_set_graph,
+    ds4_bridge_v41_set_prof, ds4_bridge_v41_set_sampling, ds4_bridge_v41_zchain_gr_set,
+    ds4_bridge_v41_zchain_rb_clear, ds4_bridge_v41_zchain_rb_set,
 };
 
 use crate::engram::{EngramHash, EngramShard};
@@ -96,6 +96,33 @@ pub struct V41Sampling {
 /// reaches it through this trait -- the same shape as `greedy`, which keeps
 /// ds4-core store-agnostic.  The native owns the payload and the token
 /// memcmp; the host owns the file, the budget and the eviction.
+/// Which checkpoint a store entry carries: the native `v41_kv_class`
+/// (ds4_ds41_kvreuse.inc).  This is the reference's own distinction
+/// (server_kv_cache.c:106-141): the checkpoint at a prompt or prefix
+/// boundary, which it stores under the reason "cold", and the live frontier
+/// the run left -- prompt plus what the state committed -- which it keeps as
+/// a "continued" entry.  The class decides the payload's shape, so the
+/// payload meta names it and the import lands the payload in that class's
+/// own slot; only the prompt class carries a logits row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum V41KvClass {
+    /// K: the checkpoint taken at the prompt end, with a logits row.
+    Prompt,
+    /// T: the run's own frontier; no logits row, since it has no prompt end
+    /// to serve.
+    Turn,
+}
+
+impl V41KvClass {
+    /// The native value (`ds4-sys`, the payload meta's class field).
+    pub fn bridge_value(self) -> c_int {
+        match self {
+            Self::Prompt => ds4_sys::DS4_BRIDGE_V41_KV_CLASS_PROMPT,
+            Self::Turn => ds4_sys::DS4_BRIDGE_V41_KV_CLASS_TURN,
+        }
+    }
+}
+
 pub struct V41KvHit {
     /// The store entry's file.
     pub path: std::path::PathBuf,
@@ -109,16 +136,19 @@ pub struct V41KvHit {
 pub trait V41KvDisk {
     /// The longest token-prefix candidate strictly longer than `have` (the
     /// in-memory checkpoint's own prefix), already validated against the
-    /// current mount digest and the payload ABI/class.  None = no candidate.
+    /// current mount digest and the payload ABI.  None = no candidate.
     fn find(&mut self, tokens: &[i32], sig: &[u64], digest: u64, have: u32) -> Option<V41KvHit>;
     /// Stage the native payload export (`save` writes it to a path the store
-    /// owns) into a store entry.  Called only when the in-memory checkpoint
-    /// is exactly this prompt; a failed `save` must leave no entry behind.
+    /// owns) into a store entry of `class`.  Called only for a checkpoint the
+    /// run wants on disk: the prompt class when the in-memory checkpoint is
+    /// exactly this prompt, the turn class when the run left its own
+    /// frontier.  A failed `save` must leave no entry behind.
     fn store(
         &mut self,
         tokens: &[i32],
         sig: &[u64],
         digest: u64,
+        class: V41KvClass,
         save: &mut dyn FnMut(&Path) -> bool,
     );
 }
@@ -1967,11 +1997,50 @@ impl Model {
             if have == prompt.len() as u32 {
                 let mut save = |p: &Path| -> bool {
                     match c_path(p) {
-                        Some(c) => unsafe { ds4_bridge_v41_kvreuse_export(c.as_ptr()) != 0 },
+                        Some(c) => unsafe {
+                            ds4_bridge_v41_kvreuse_export(
+                                c.as_ptr(),
+                                V41KvClass::Prompt.bridge_value(),
+                            ) != 0
+                        },
                         None => false,
                     }
                 };
-                disk.store(prompt, signatures, digest, &mut save);
+                disk.store(prompt, signatures, digest, V41KvClass::Prompt, &mut save);
+            }
+        }
+        // The turn export (item 4): the native saved T at the run's own
+        // frontier -- the prompt plus what the state committed -- so the key
+        // is the native's, never the emitted ids (a stopping round leaves
+        // accepted rows unemitted).  Its signatures are the prompt's, zero for
+        // a sampled position (v41_kvreuse_save_turn), so the next request's
+        // own image identity decides the match.  A run that failed before its
+        // frontier saved nothing this run, but T may still hold an earlier
+        // run's checkpoint: store only after a clean run, and only a T that
+        // extends this prompt, so the prompt's signatures copied below are
+        // the ones T was saved with.
+        if let Some(disk) = opts.kv_disk.as_mut().filter(|_| rc == 0) {
+            let n = unsafe { ds4_bridge_v41_kvreuse_turn_key(std::ptr::null_mut(), 0) };
+            if n as usize > prompt.len() {
+                let mut key = vec![0i32; n as usize];
+                if unsafe { ds4_bridge_v41_kvreuse_turn_key(key.as_mut_ptr(), n) } == n
+                    && key[..prompt.len()] == *prompt
+                {
+                    let mut sigs = vec![0u64; n as usize];
+                    sigs[..signatures.len()].copy_from_slice(signatures);
+                    let mut save = |p: &Path| -> bool {
+                        match c_path(p) {
+                            Some(c) => unsafe {
+                                ds4_bridge_v41_kvreuse_export(
+                                    c.as_ptr(),
+                                    V41KvClass::Turn.bridge_value(),
+                                ) != 0
+                            },
+                            None => false,
+                        }
+                    };
+                    disk.store(&key, &sigs, digest, V41KvClass::Turn, &mut save);
+                }
             }
         }
         if rc != 0 {

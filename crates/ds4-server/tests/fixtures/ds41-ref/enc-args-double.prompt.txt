@@ -1,0 +1,34 @@
+<｜begin▁of▁sentence｜><｜System｜>You are a helpful assistant.
+
+## Tools
+
+You have access to a set of tools to help answer the user's question. You can invoke tools by writing a "<｜DSML｜ calls>" block like the following:
+
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="$TOOL_NAME">
+<｜DSML｜ parameter name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</｜DSML｜ parameter>
+...
+</｜DSML｜ invoke>
+<｜DSML｜ invoke name="$TOOL_NAME2">
+...
+</｜DSML｜ invoke>
+</｜DSML｜ calls>
+
+String parameters should be specified as is and set `string="true"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string="false"`.
+
+If thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.
+
+Otherwise, output directly after </think> with tool calls or final response.
+
+### Available Tool Schemas
+
+{"name": "read_file", "description": "Read a file", "parameters": {"type": "object", "properties": {"target_file": {"type": "string"}}, "required": ["target_file"]}}
+
+You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.
+<｜User｜>Read the file /tmp/x.txt<｜Assistant｜></think>Calling it now.
+
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="read_file">
+<｜DSML｜ parameter name="target_file" string="true">/tmp/x.txt</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls><｜end▁of▁sentence｜>

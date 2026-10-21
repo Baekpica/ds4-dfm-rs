@@ -361,3 +361,38 @@ pub fn parse_reasoning_effort_name(s: &str) -> Option<ThinkMode> {
         _ => None,
     }
 }
+
+/// The numeric budget a mode writes in the V4.1 head: the oracle's
+/// REASONING_EFFORT_MAPPINGS (encoding.py:448-453), low 50, high 75, max 100;
+/// a mode with no thinking writes no line at all (encoding.py:472-473).
+pub fn mode_budget(mode: ThinkMode) -> Option<u8> {
+    match mode {
+        ThinkMode::Low => Some(50),
+        ThinkMode::High => Some(75),
+        ThinkMode::Max => Some(100),
+        ThinkMode::None => None,
+    }
+}
+
+/// The reasoning effort one request asked for: the engine-facing mode, plus the
+/// explicit budget when the client gave the oracle's numeric form, which the
+/// head renders verbatim (encoding.py:456-473).  Kept apart from `think_mode`
+/// on purpose: the budget moves the prompt bytes only, never the engine's own
+/// collapsed mode, so the reasoning cap and the sampling switches stay put.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestedEffort {
+    pub mode: ThinkMode,
+    /// `Some` only for a numeric request; a name leaves the number to the mode.
+    pub budget: Option<u8>,
+}
+
+impl RequestedEffort {
+    pub fn named(mode: ThinkMode) -> Self {
+        Self { mode, budget: None }
+    }
+
+    /// The number the V4.1 head writes for this request.
+    pub fn head_budget(self) -> Option<u8> {
+        self.budget.or(mode_budget(self.mode))
+    }
+}

@@ -50,6 +50,7 @@ static int (*g_v41_progress)(void *, const char *, int, int);
 static void *g_v41_progress_ud;
 static int g_spec, g_pad_state, g_emitted, g_expected, g_body_calls;
 static int g_graph, g_graph_pending, g_launches, g_waits;
+static uint32_t g_run_np;   /* the prompt length of the run in flight (the graph's warm-up edge) */
 static uint32_t g_snap_past, g_alloc_cap, g_peak_block;
 static uint32_t g_vision_first;
 static int g_vision_calls;
@@ -152,6 +153,17 @@ static void v41_sched_draft_cost(v41_sched *cal, double ms) {}
 static void v41_sched_observe(v41_sched *cal, const float *conf, bool accepted) {}
 static uint32_t v41_kvreuse_restore(ds4_v41_state *st, const int *ids, uint32_t n, const uint64_t *sig) { return 0; }
 static void v41_kvreuse_save(ds4_v41_state *st, const int *ids, uint32_t n, const uint64_t *sig) {}
+/* The post-generation checkpoint's ids: what the run appended and what the
+ * save was handed.  The two must be the state's own advance -- a step that
+ * commits a position without appending shows up as a short buffer, and the
+ * run then writes no checkpoint at all. */
+static uint32_t g_turn_ids, g_turn_saved_ng, g_turn_saved_np, g_turn_saved_past;
+static void v41_kvreuse_save_turn(const ds4_v41_state *st, const int32_t *ids, uint32_t np,
+                                  const int32_t *gen, uint32_t ng, const uint64_t *sig) {
+    g_turn_saved_ng = ng; g_turn_saved_np = np; g_turn_saved_past = st->n_past;
+}
+static void v41_turn_ids_add(v41_turn_ids *t, const int32_t *ids, uint32_t n) { t->n += n; g_turn_ids += n; }
+static void v41_turn_ids_free(v41_turn_ids *t) {}
 static bool v41_next_token(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row, float *buf, uint64_t *rng, v41_hist *hist, int32_t *tok) { *tok = 1; return true; }
 static bool v41_device_next(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row, uint32_t n, const int32_t *batch, int32_t *want) {
     for (uint32_t i = 0; i < n; i++) { want[i] = 1; }
@@ -160,7 +172,7 @@ static bool v41_device_next(ds4_v41_state *st, ds4_gpu_tensor *am, uint32_t row,
 static uint8_t *ds4_decode_breakers(ds4_engine *e, uint32_t n) { return NULL; }
 static int ds4_token_eos(ds4_engine *e) { return 3; }
 static void v41_gen_dump_row(ds4_v41_state *st, FILE *fd) {}
-static bool v41_graph_ready(ds4_v41_state *st) { return g_graph != 0; }
+static bool v41_graph_ready(ds4_v41_state *st) { return g_graph != 0 && st->n_past > g_run_np; }   /* a shape's first step stays direct */
 static bool v41_graph_launch(ds4_engine *e, ds4_v41_state *st, int32_t tok, int verify) {
     g_launches++;
     if (g_graph_pending || !v41_forward(e, st, &tok, 1u)) { return false; }
@@ -200,6 +212,8 @@ static int run_case(uint32_t np, int predict, uint32_t ctx, int spec, int pad) {
     g_spec = spec; g_pad_state = pad; g_emitted = 0; g_peak_block = 0;
     g_alloc_cap = 0; g_body_calls = 0;
     g_graph_pending = 0; g_launches = 0; g_waits = 0;
+    g_turn_ids = g_turn_saved_ng = g_turn_saved_np = g_turn_saved_past = 0;
+    g_run_np = np;
     const int room = (int)(ctx - np);
     const int expected = predict < room ? predict : room;
     g_expected = expected;
@@ -208,11 +222,20 @@ static int run_case(uint32_t np, int predict, uint32_t ctx, int spec, int pad) {
     const int rc = ds4_v41_generate_argmax(&engine, prompt, (int)np, predict, 0, 5, NULL, &feed->feed, emit, NULL);
     const uint32_t feed_cap = feed->rows_cap;
     ds4_v41_feed_close(feed);
-    const int graph_ok = !g_graph || (g_launches == expected - 1 && g_waits == g_launches && !g_graph_pending);
-    if (rc != 0 || g_emitted != expected || g_body_calls != expected || !graph_ok) {
-        printf("FAIL prompt=%u output=%d ctx=%u mtp=%d pad-state=%d graph=%d: rc=%d emitted=%d/%d state-cap=%u feed-cap=%u forward=%d/%d launch/wait=%d/%d\n",
+    /* The single-token graph route: of the expected-1 committed positions the
+     * shape's first step is direct and the rest launch, and the last emitted
+     * token commits nothing. */
+    const int graph_ok = !g_graph ||
+        (g_launches == (expected > 1 ? expected - 2 : 0) && g_waits == g_launches && !g_graph_pending);
+    /* Every position the state committed must be one the run appended, and the
+     * checkpoint gets exactly that buffer. */
+    const int turn_ok = g_turn_ids == g_turn_saved_ng &&
+        g_turn_saved_ng == g_turn_saved_past - g_turn_saved_np;
+    if (rc != 0 || g_emitted != expected || g_body_calls != expected || !graph_ok || !turn_ok) {
+        printf("FAIL prompt=%u output=%d ctx=%u mtp=%d pad-state=%d graph=%d: rc=%d emitted=%d/%d state-cap=%u feed-cap=%u forward=%d/%d launch/wait=%d/%d turn=%u/saved=%u state=%u+%u\n",
                np, predict, ctx, spec, pad, g_graph, rc, g_emitted, expected, g_alloc_cap, feed_cap,
-               g_body_calls, expected, g_launches, g_waits);
+               g_body_calls, expected, g_launches, g_waits, g_turn_ids, g_turn_saved_ng,
+               g_turn_saved_np, g_turn_saved_past);
         return 1;
     }
     return 0;

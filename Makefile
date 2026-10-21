@@ -249,6 +249,11 @@ cuda-regression: tests/cuda_long_context_smoke
 # materializes the (canonical x overlay) matrix, writes work_dir/expanded-plan.json,
 # runs every cell, and reports per-cell selected-token-id MD5s with vs-canonical-
 # counterpart parity contracts.
+# The V4.1 (ds41) family has no prompt entry: set DS4_PROOF_ENGRAM to its
+# engram dir (the artifact records the converting host's shard paths) and the
+# harness tokenizes the fixture to ids and runs --gen-ids --engram-dir, with
+# --no-graph on the cuda-eager arm (that route takes its graph switch as a
+# flag, not from DS4_CUDA_LAYER_GRAPHS). DS4_PROOF_ZCHAIN is optional.
 #   - smoke / long: capture-vs-eager PARITY (two paths in one build must match).
 #   - opp-c: FP8 KV DRIFT gate. Single canonical, no parity contract; each cell
 #     is checked against the configured architecture's committed golden so

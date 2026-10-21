@@ -741,6 +741,58 @@ fn run_v41_vision_golden(
     Ok(if ok { 0 } else { 1 })
 }
 
+/// The V4.1 route's `--dump-logprobs` record: the selected ids, no logits.
+///
+/// The generic dump carries a per-step top-k list (run_logprob_dump reads
+/// `session.top_logprobs`); the V4.1 bridge hands this route only the
+/// selected id (v41_run.rs's emit callback), so the record keeps the same
+/// envelope and the same `"selected":{"id":N}` field -- the field the proof
+/// harness hashes into selected_token_ids_md5 -- with `top_k` 0 and an empty
+/// list, and never claims a logit it does not have.
+struct V41Dump {
+    fp: std::io::BufWriter<std::fs::File>,
+    step: i32,
+}
+
+impl V41Dump {
+    fn open(path: &str, prompt_tokens: i32) -> Result<Self, String> {
+        let fp = std::io::BufWriter::new(
+            std::fs::File::create(path).map_err(|e| format!("dump-logprobs {path}: {e}"))?,
+        );
+        let mut d = Self { fp, step: 0 };
+        d.w(&format!(
+            "{{\n  \"source\":\"ds4-v41\",\n  \"prompt_tokens\":{prompt_tokens},\n  \"top_k\":0,\n  \"steps\":[\n"
+        ))?;
+        Ok(d)
+    }
+
+    fn w(&mut self, s: &str) -> Result<(), String> {
+        use std::io::Write;
+        self.fp.write_all(s.as_bytes()).map_err(|e| e.to_string())
+    }
+
+    /// Append one step. Takes the already-rendered token JSON so the writer
+    /// is testable without a model (json_token needs one).
+    fn push(&mut self, token_json: &str) -> Result<(), String> {
+        if self.step > 0 {
+            self.w(",\n")?;
+        }
+        let entry = format!(
+            "    {{\"step\":{},\"selected\":{},\"top_logprobs\":[]}}",
+            self.step, token_json
+        );
+        self.w(&entry)?;
+        self.step += 1;
+        Ok(())
+    }
+
+    fn close(mut self) -> Result<(), String> {
+        use std::io::Write;
+        self.w("\n  ]\n}\n")?;
+        self.fp.flush().map_err(|e| e.to_string())
+    }
+}
+
 /// V4.1 (ds41) one-shot: the engine's `--gen-ids` run through
 /// `ds4_bridge_v41_generate` (the same one-shot entry the engine's server
 /// calls, `server_generate_v41.c:414`), with the host engram feed.
@@ -797,8 +849,20 @@ fn run_v41_one_shot(
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut printer = TokenPrinter::new(model.family(), false);
+    let mut dump = match args.dump_logprobs.as_deref() {
+        Some(path) => Some(V41Dump::open(path, prompt.len() as i32)?),
+        None => None,
+    };
     let mut write_err: Option<String> = None;
     let mut emit = |token: i32| -> bool {
+        /* The stop token is recorded before the run is cut, exactly as the
+         * generic dump does, so the id sequence is the whole sampled one. */
+        if let Some(d) = dump.as_mut() {
+            if let Err(e) = d.push(&json_token(model, token)) {
+                write_err = Some(e);
+                return false;
+            }
+        }
         if model.token_is_stop(token) {
             return false;
         }
@@ -829,6 +893,9 @@ fn run_v41_one_shot(
     );
     if let Some(e) = write_err {
         return Err(e);
+    }
+    if let Some(d) = dump {
+        d.close()?;
     }
     rc.map_err(|e| e.to_string())?;
     Ok(0)
@@ -1336,7 +1403,8 @@ IQuest-Q1 uses embedded MTP: --cuda --mtp-draft 2..7 --temp 0, with no --mtp fil
 GLM-5.3 uses embedded MTP: --cuda --mtp-draft 2..3 --temp 0, with no --mtp file.
 --dump-logprobs mirrors the C CLI proof loop (chat-template encode via
 the engine, argmax decode, host stop set); ctx grows to fit prompt+n
-unless -c is explicit.
+unless -c is explicit. On the V4.1 route (--gen-ids) the dump carries the
+selected ids with top_k 0: that bridge hands the run no logits.
 --dump-logits writes full next-token logits as JSON after prompt prefill.
 --dump-tokens tokenizes -p/--prompt-file exactly as written, then exits
 without inference.
@@ -1509,7 +1577,13 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     if !worker && args.dump_logits.is_some() && generation_text.is_none() {
         return Err("--dump-logits requires -p or --prompt-file".into());
     }
-    if !worker && args.dump_logprobs.is_some() && generation_text.is_none() {
+    /* The V4.1 route has no prompt: its run input is --gen-ids, and the dump
+     * rides that (V41Dump), so the prompt requirement is the generic one's. */
+    if !worker
+        && args.dump_logprobs.is_some()
+        && generation_text.is_none()
+        && args.gen_ids.is_none()
+    {
         return Err("--dump-logprobs requires -p or --prompt-file".into());
     }
 
@@ -2577,6 +2651,23 @@ mod tests {
         assert_eq!(
             err,
             format!("ds4: failed to open --dump-logits file: {path}")
+        );
+    }
+
+    #[test]
+    fn v41_dump_records_selected_ids() {
+        let path = std::env::temp_dir().join("ds4-v41-dump-test.json");
+        let path = path.to_str().unwrap();
+        let mut d = V41Dump::open(path, 3).unwrap();
+        d.push("{\"id\":7,\"text\":\"a\"}").unwrap();
+        d.push("{\"id\":9,\"text\":\"b\"}").unwrap();
+        d.close().unwrap();
+        /* Byte-exact: the "selected" field is what the proof harness's
+         * selected_token_ids_md5 regex hashes, and the envelope matches the
+         * generic dump so the same reader takes both. */
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "{\n  \"source\":\"ds4-v41\",\n  \"prompt_tokens\":3,\n  \"top_k\":0,\n  \"steps\":[\n    {\"step\":0,\"selected\":{\"id\":7,\"text\":\"a\"},\"top_logprobs\":[]},\n    {\"step\":1,\"selected\":{\"id\":9,\"text\":\"b\"},\"top_logprobs\":[]}\n  ]\n}\n"
         );
     }
 

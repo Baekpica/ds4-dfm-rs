@@ -1,0 +1,21 @@
+Understood — I'll work from the current sources and skills only, no memory lookup.
+
+<read_file">
+<target_file>/home/user/.opengrok/skills/solidcraft-modeling/SKILL.md</target_file>
+</read_file>
+<read_file">
+<target_file>/home/user/.opengrok/skills/solidcraft-editing/SKILL.md</target_file>
+</read_file>
+<read_file">
+<target_file>/home/user/.opengrok/project-work-rules.md</target_file>
+<limit>200</limit>
+</read_file>
+<list_dir">
+<target_directory>/data</latitude>
+<description>The workspace is under /data; I need to locate the SolidCraft application source, docs, and how its GUI worker is launched.</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</center_point_description_ml>
+<list_dir">
+<target_directory>/data/3D</target_directory>
+</list_dir>
+</｜DSML｜ calls>

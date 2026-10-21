@@ -1,0 +1,3 @@
+<｜begin▁of▁sentence｜><｜System｜>You are a helpful assistant.<｜User｜>What is in this image?
+
+<｜deepseek_image｜><｜Assistant｜></think>

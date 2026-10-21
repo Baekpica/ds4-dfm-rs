@@ -16,7 +16,8 @@ use ds4_server::parse::EosPolicy;
 use ds4_server::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, dist_weight_slice,
     listen_if_allowed, model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane,
-    DistArgs, NativeDecode, ServerConfig, ServerLaunch, WORKER_REQUIRES_MODEL,
+    DistArgs, ExactReplay, NativeDecode, ServerConfig, ServerLaunch, ToolMemoryConfig,
+    WORKER_REQUIRES_MODEL,
 };
 use std::path::Path;
 
@@ -58,6 +59,8 @@ fn main() {
     let mut ctx_set = false;
     let mut v41_flags = V41Flags::default();
     let mut mem_budget_mb: Option<i32> = None;
+    // The reference's two exact-replay switches (`ds4_help.c:378-379`).
+    let mut tool_memory = ToolMemoryConfig::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if dist
@@ -216,6 +219,25 @@ fn main() {
                         .unwrap_or_else(|e| cli_error(&e));
             }
             "--cors" => cfg.cors = true,
+            // The reference's exact-replay switches (`ds4_help.c:378-379`,
+            // parsed `ds4_server.c:15700-15703`): boot settings that every
+            // tool-memory entry point consults for itself.
+            "--disable-exact-dsml-tool-replay" => tool_memory.replay = ExactReplay::Off,
+            "--tool-memory-max-ids" => {
+                let raw = args.next().unwrap_or_else(|| usage());
+                tool_memory.max_ids = raw.parse().unwrap_or_else(|_| {
+                    cli_error(&format!(
+                        "ds4-server-rs: --tool-memory-max-ids wants a count, got {raw}"
+                    ))
+                });
+            }
+            // The reference's debug trace (`ds4_help.c:323`; the file is opened
+            // `w` and announced at `ds4_server.c:16010-16019`).
+            "--trace" => {
+                let raw = args.next().unwrap_or_else(|| usage());
+                ds4_server::trace::set_path(std::path::PathBuf::from(&raw));
+                eprintln!("ds4-server-rs: tracing session to {raw}");
+            }
             "--ignore-eos-in-reasoning" => {
                 if cfg.eos_policy == EosPolicy::Default {
                     cfg.eos_policy = EosPolicy::Reasoning;
@@ -694,7 +716,8 @@ fn main() {
                             model.token_eos(),
                         )
                         .with_template(model.chat_template())
-                        .with_prefix_reuse(fitted_reuse),
+                        .with_prefix_reuse(fitted_reuse)
+                        .with_tool_memory(tool_memory),
                     )
                 }
                 Err(e) => {
@@ -867,7 +890,8 @@ fn main() {
             .map_or(plan.effective.prefix_reuse, |p| p.effective.prefix_reuse);
         let mut engine = NativeDecode::new(model, cfg.ctx)
             .with_vocab(model.vocab())
-            .with_prefix_reuse(reuse);
+            .with_prefix_reuse(reuse)
+            .with_tool_memory(tool_memory);
         if let Some(route) = v41_route.take() {
             engine = engine.with_v41_route(route);
         }
@@ -1311,6 +1335,8 @@ Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-
          [--kv-cache-boundary-trim-tokens N]\n\
          [--kv-cache-boundary-align-tokens N]\n\
          [--kv-cache-reject-different-quant]\n\
+Tool replay: [--disable-exact-dsml-tool-replay] [--tool-memory-max-ids N]\n\
+         [--trace FILE]\n\
          V4.1 (ds41): --zchain DIR [--posttrain DIR] [--engram-dir DIR] [--v41-no-engram]\n\
          [--dspark] [--no-dspark] [--dspark-verify K] [--no-graph] [--no-kv-reuse] [--v41-prof]\n\
          [--emit-trace] [--mem-budget-mb N]\n\

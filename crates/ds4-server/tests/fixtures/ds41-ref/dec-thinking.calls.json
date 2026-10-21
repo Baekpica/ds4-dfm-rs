@@ -1,0 +1,14 @@
+{
+  "role": "assistant",
+  "content": "Reading it now.",
+  "reasoning_content": "The user wants /tmp/x.txt read.",
+  "tool_calls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "arguments": "{\"target_file\": \"/tmp/x.txt\"}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+Checking both.
+
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="read_file">
+<｜DSML｜ parameter name="target_file" string="true">/tmp/a.txt</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+<｜DSML｜ invoke name="read_file">
+<｜DSML｜ parameter name="target_file" string="true">/tmp/b.txt</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls><｜end▁of▁sentence｜>

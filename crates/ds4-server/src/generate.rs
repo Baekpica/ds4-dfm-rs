@@ -201,7 +201,8 @@ pub trait DecodeIo {
         render_prompt_ex(
             parsed,
             self.model_id(),
-            crate::render::dsml_head(self.model_id(), self.chat_system_token()),
+            crate::render::dsml_head(self.model_id(), self.chat_system_token())
+                .with_effort(parsed.effort.head_budget()),
         )
     }
     fn restore_chat(&self, _parsed: &mut ParsedRequest) -> Result<(), GenerateError> {
@@ -1348,19 +1349,37 @@ pub(crate) fn ordinary_disk_cache_eligible(parsed: &ParsedRequest) -> bool {
         && parsed.live_call_ids.is_empty()
 }
 
-fn tool_replay_scope(parsed: &ParsedRequest, syntax: ModelSyntax) -> bool {
-    parsed.kind == ReqKind::Chat
-        && parsed.api == Api::Openai
+/// Whether this request may carry exact sampled DSML.
+///
+/// On DeepSeek V4.1 the lane follows the reference, which attaches in all
+/// three chat-shaped parsers — OpenAI chat (`ds4_server.c:4272`), Anthropic
+/// (`:4498`), Responses (`:5529`) — and refuses nothing but its disable
+/// switch (`tool_memory_attach_to_messages`, `:10682`), so thinking mode,
+/// live call ids and the surface do not narrow it there.  The legacy
+/// `/v1/completions` surface carries no messages and stays out.
+///
+/// Every other family keeps the narrow lane (OpenAI chat, non-thinking, no
+/// live ids, the three syntaxes whose renderers honour the bytes): widening
+/// it moves their thinking-visible and intermediate prefill checkpoints off
+/// the request, and no reuse or output gate has measured that for them.
+fn tool_replay_scope(parsed: &ParsedRequest, model_id: i32) -> bool {
+    if parsed.kind != ReqKind::Chat {
+        return false;
+    }
+    if model_id == ds4_core::Variant::DeepSeek41Flash as i32 {
+        return true;
+    }
+    parsed.api == Api::Openai
         && !think_mode_enabled(parsed.think_mode)
         && parsed.live_call_ids.is_empty()
         && matches!(
-            syntax,
+            syntax_for_model_id(model_id),
             ModelSyntax::DeepSeek | ModelSyntax::SolarOpen2 | ModelSyntax::Qwen4Exp
         )
 }
 
-fn tool_replay_disk_cache_eligible(parsed: &ParsedRequest, syntax: ModelSyntax) -> bool {
-    tool_replay_scope(parsed, syntax)
+fn tool_replay_disk_cache_eligible(parsed: &ParsedRequest, model_id: i32) -> bool {
+    tool_replay_scope(parsed, model_id)
         && parsed.messages.iter().any(|message| {
             !message.calls.is_empty()
                 || !message.tool_call_id.is_empty()
@@ -1368,8 +1387,8 @@ fn tool_replay_disk_cache_eligible(parsed: &ParsedRequest, syntax: ModelSyntax) 
         })
 }
 
-fn tool_replay_producer_eligible(parsed: &ParsedRequest, syntax: ModelSyntax) -> bool {
-    tool_replay_scope(parsed, syntax) && parsed.has_tools
+fn tool_replay_producer_eligible(parsed: &ParsedRequest, model_id: i32) -> bool {
+    tool_replay_scope(parsed, model_id) && parsed.has_tools
 }
 
 fn thinking_visible_cache_eligible(parsed: &ParsedRequest) -> bool {
@@ -2346,7 +2365,7 @@ pub(crate) fn prepare_serial_prompt(
     let tool_replay = parsed.images.is_empty()
         && parsed.audios.is_empty()
         && parsed.videos.is_empty()
-        && tool_replay_disk_cache_eligible(&parsed, syntax);
+        && tool_replay_disk_cache_eligible(&parsed, engine.model_id());
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
     }
@@ -2542,6 +2561,9 @@ pub(crate) fn generate_terminal_prepared(
             req.chat_format,
             &prompt,
         );
+        // The request's tools, for the start scan that recognises the
+        // artifact's quoted root (find_tool_start).
+        acc.set_tool_orders(&parsed.tool_orders);
         // The tool dialect is a property of the served family, chosen before the
         // first update (ds4_server.c:20591); GLM's block is not a DSML spelling.
         acc.set_model_syntax(syntax);
@@ -2691,7 +2713,7 @@ pub(crate) fn generate_terminal_prepared(
                 "call_"
             },
         );
-        if tool_replay_producer_eligible(&parsed, syntax) {
+        if tool_replay_producer_eligible(&parsed, engine.model_id()) {
             engine.remember_tool_replay(&parsed_gen.calls, &parsed_gen.raw_dsml);
         }
         finish = "tool_calls";
@@ -2831,6 +2853,43 @@ pub(crate) fn generate_terminal_prepared(
     };
     if finish != "error" && finish != "length" {
         engine.remember_chat(&parsed, &parsed_gen);
+    }
+    // The reference's --trace section (`ds4_server.c:12011-12017`), written
+    // after the wire bytes: the turn above holds the engine, and an engine call
+    // here cannot disturb what the client already received.
+    if crate::trace::enabled() {
+        let prompt_ids = engine.tokenize_rendered_chat(&prompt).unwrap_or_default();
+        let mut text_of = |token: i32| engine.token_text(token).unwrap_or_default();
+        crate::trace::write_request(
+            &crate::trace::TraceRequest {
+                api: req.api,
+                kind: parsed.kind,
+                stream: req.stream,
+                model_id: engine.model_id(),
+                model: &req.model,
+                tools: req.tool_orders.len(),
+                think: req.think_mode,
+                prompt: &prompt,
+                tokens: &prompt_ids,
+                cached: req.cache_read_tokens,
+                prompt_tokens: prompt_n,
+                max_tokens: parsed.max_tokens,
+                temperature: parsed.temperature,
+                top_k: parsed.top_k,
+                top_p: parsed.top_p,
+                min_p: parsed.min_p,
+                seed: parsed.seed,
+                finish,
+                completion,
+                saw_tool_start: acc.saw_tool_start,
+                saw_tool_end: acc.saw_tool_end,
+                elapsed_sec: t_arrive.elapsed().as_secs_f64(),
+                content: &parsed_gen.content,
+                reasoning: &parsed_gen.reasoning,
+                calls: &parsed_gen.calls,
+            },
+            &mut text_of,
+        );
     }
     let outcome = GenerateOutcome {
         tool_ids: parsed_gen
@@ -3168,6 +3227,22 @@ fn generate_terminal_v41(
 
     let t0 = Instant::now();
     let chat_format = req.chat_format;
+    let mut acc = SemAccum::init(
+        parsed.kind == ReqKind::Chat,
+        parsed.has_tools,
+        think_mode_enabled(parsed.think_mode),
+        chat_format,
+        prompt,
+    );
+    // The request's tools, for the start scan that recognises the artifact's
+    // quoted root (find_tool_start).
+    acc.set_tool_orders(&parsed.tool_orders);
+    // The tool dialect is a property of the served family, chosen before the
+    // first update (ds4_server.c:20591); GLM's block is not a DSML spelling.
+    acc.set_model_syntax(syntax);
+    // The trace's own copy of the cache account: the state below takes the
+    // request, and the engine borrow it holds outlives this line.
+    let trace_cached = req.cache_read_tokens;
     let state = RefCell::new(V41EmitState {
         engine,
         parsed,
@@ -3175,17 +3250,7 @@ fn generate_terminal_v41(
         job_id,
         stop_requested,
         max_tokens,
-        acc: {
-            let mut acc = SemAccum::init(
-                parsed.kind == ReqKind::Chat,
-                parsed.has_tools,
-                think_mode_enabled(parsed.think_mode),
-                chat_format,
-                prompt,
-            );
-            acc.set_model_syntax(syntax);
-            acc
-        },
+        acc,
         w: &mut w,
         out,
         oa,
@@ -3276,12 +3341,21 @@ fn generate_terminal_v41(
     let completion = st.acc.completion;
     let mut finish = terminal_finish(st.finish);
     // v41_finish (:230-235): an unterminated tool call is an error on this
-    // route -- the V4 repair needs a session.
+    // route -- the V4 repair needs a session.  A budget cut is the exception,
+    // and the deviation is named against the C reference: its
+    // tool_parse_failure_recovery_finish (ds4_server.c:6776-6784) returns the
+    // incoming "length" unchanged because "callers can distinguish truncation
+    // from a completed turn", and maps every other non-error finish to "stop"
+    // (test_incomplete_tool_call_keeps_stop_reason, :19613).  Overwriting the
+    // pre-set "length" here sent a cut turn to the wire as "stop" (CTR 8.7,
+    // NC-07), so the signal never reached the writer.  The error arm below is
+    // what the client's closed enum needs; "length" never takes it.
     if parsed.kind == ReqKind::Chat
         && parsed.has_tools
         && st.acc.saw_tool_start
         && !st.acc.saw_tool_end
         && finish != "error"
+        && finish != "length"
     {
         finish = "error";
     }
@@ -3510,6 +3584,52 @@ fn generate_terminal_v41(
         lane: None,
         fallback_reason: None,
     };
+    // The reference writes the sampled block on the shared finish path
+    // (`tool_memory_remember`, ds4_server.c:14524, after `assign_tool_call_ids`
+    // at :10743, so the keys are the ids that reached the wire).  This route
+    // builds its own outcome and returns before that path, so without the write
+    // here the next turn's attach reads an empty map.  It sits after the wire
+    // bytes because the emit state holds the engine for the whole run
+    // (`V41EmitState`, :3164).
+    // Read the tracker's verdicts before the engine is touched again: the emit
+    // state holds the engine for the whole run, so its last use must come first.
+    let (saw_tool_start, saw_tool_end) = (st.acc.saw_tool_start, st.acc.saw_tool_end);
+    engine.remember_tool_replay(&parsed_gen.calls, &parsed_gen.raw_dsml);
+    // The same rule for the trace: it is written after the wire bytes, and this
+    // route's own prompt ids are the ones the engine preprint used.
+    if crate::trace::enabled() {
+        let mut text_of = |token: i32| engine.token_text(token).unwrap_or_default();
+        crate::trace::write_request(
+            &crate::trace::TraceRequest {
+                api: parsed.api,
+                kind: parsed.kind,
+                stream: parsed.stream,
+                model_id: engine.model_id(),
+                model: &parsed.model,
+                tools: parsed.tool_orders.len(),
+                think: parsed.think_mode,
+                prompt,
+                tokens: prompt_tokens,
+                cached: trace_cached,
+                prompt_tokens: prompt_n,
+                max_tokens: parsed.max_tokens,
+                temperature: parsed.temperature,
+                top_k: parsed.top_k,
+                top_p: parsed.top_p,
+                min_p: parsed.min_p,
+                seed: parsed.seed,
+                finish,
+                completion,
+                saw_tool_start,
+                saw_tool_end,
+                elapsed_sec: t_arrive.elapsed().as_secs_f64(),
+                content: &parsed_gen.content,
+                reasoning: &parsed_gen.reasoning,
+                calls: &parsed_gen.calls,
+            },
+            &mut text_of,
+        );
+    }
     Ok((outcome, terminal))
 }
 
@@ -4029,6 +4149,16 @@ impl<'a> NativeDecode<'a> {
 
     pub fn with_prefix_reuse(mut self, reuse: ds4_core::ReuseKind) -> Self {
         self.prefix_reuse = reuse;
+        self
+    }
+
+    /// The two exact-replay switches (`--disable-exact-dsml-tool-replay`,
+    /// `--tool-memory-max-ids`) and the forced-off state a test uses. The
+    /// reference keeps both on the server struct and checks them inside each
+    /// entry point (ds4_server.c:10635, :10654, :10666, :10682, :10976, :11041,
+    /// :11095), so the map is built once here at boot.
+    pub fn with_tool_memory(mut self, config: crate::tool_memory::ToolMemoryConfig) -> Self {
+        self.tool_memory = ToolMemory::from_config(config);
         self
     }
 
@@ -6824,38 +6954,39 @@ mod disk_sync_tests {
             }],
             ..Default::default()
         }];
-        assert!(tool_replay_disk_cache_eligible(
-            &replay,
-            ModelSyntax::DeepSeek
-        ));
-        assert!(tool_replay_disk_cache_eligible(
-            &replay,
-            ModelSyntax::SolarOpen2
-        ));
-        assert!(tool_replay_producer_eligible(
-            &replay,
-            ModelSyntax::DeepSeek
-        ));
-        for syntax in [ModelSyntax::Motif3, ModelSyntax::Exaone, ModelSyntax::Dots3] {
-            assert!(!tool_replay_disk_cache_eligible(&replay, syntax));
-        }
-        for mutate in 0..4 {
-            let mut rejected = replay.clone();
+        // V4.1 follows the reference, which attaches in all three chat-shaped
+        // parsers and refuses nothing but its own disable switch
+        // (ds4_server.c:4272, :4498, :5529, :10682): another surface,
+        // thinking mode and live call ids all take the lane.
+        let v41 = ds4_core::Variant::DeepSeek41Flash as i32;
+        let v4 = ds4_core::Variant::Flash as i32;
+        assert!(tool_replay_disk_cache_eligible(&replay, v41));
+        assert!(tool_replay_producer_eligible(&replay, v41));
+        assert!(tool_replay_disk_cache_eligible(&replay, v4));
+        for mutate in 0..3 {
+            let mut accepted = replay.clone();
             match mutate {
-                0 => rejected.api = Api::Anthropic,
-                1 => rejected.think_mode = ThinkMode::Low,
-                2 => rejected.live_call_ids.push("call_live".into()),
-                _ => rejected.kind = crate::route::ReqKind::Completion,
+                0 => accepted.api = Api::Anthropic,
+                1 => accepted.think_mode = ThinkMode::Low,
+                _ => accepted.live_call_ids.push("call_live".into()),
             }
-            assert!(!tool_replay_disk_cache_eligible(
-                &rejected,
-                ModelSyntax::DeepSeek
-            ));
-            assert!(!tool_replay_producer_eligible(
-                &rejected,
-                ModelSyntax::DeepSeek
-            ));
+            assert!(
+                tool_replay_disk_cache_eligible(&accepted, v41),
+                "V4.1 scope rejected mutation {mutate}"
+            );
+            // Every other family keeps the narrow lane.
+            assert!(
+                !tool_replay_disk_cache_eligible(&accepted, v4),
+                "V4 scope widened by mutation {mutate}"
+            );
         }
+
+        // The one request the reference cannot serve: the legacy completion
+        // surface carries no messages, and the reference has no such parser.
+        let mut completion = replay.clone();
+        completion.kind = crate::route::ReqKind::Completion;
+        assert!(!tool_replay_disk_cache_eligible(&completion, v41));
+        assert!(!tool_replay_producer_eligible(&completion, v41));
     }
 }
 
@@ -7089,5 +7220,142 @@ mod mimo_prepare {
         assert_eq!(split_media.videos.len(), 1);
         assert_eq!(split_media.audios.len(), 1);
         assert_eq!(pads(&split_media.tokens, ds4_core::AUDIO_PAD), audio_len);
+    }
+}
+
+/// Exact sampled DSML replay (docs/ds41-dsml-conformance.md TP-15, TP-16).
+///
+/// The reference keeps the sampled block per tool-call id and puts those bytes
+/// back into the messages before rendering (`tool_memory_attach_to_messages`,
+/// ds4_server.c:10679), attached at all three chat-shaped parsers (:4272 chat,
+/// :4498 Anthropic, :5529 Responses); its own tests assert the message bytes
+/// (`test_tool_memory_replays_sampled_dsml` :19933,
+/// `test_anthropic_tool_memory_replays_sampled_dsml` :19996). These assert the
+/// rendered prompt instead, which is what the model reads.
+#[cfg(test)]
+mod dsml_replay {
+    use super::{render_prompt_ex, tool_replay_disk_cache_eligible};
+    use crate::parse::{parse_request, ParseEnv};
+    use crate::render::dsml_head;
+    use crate::route::WireSurface;
+    use crate::tool_memory::{ExactReplay, Source, ToolMemory, ToolMemoryConfig};
+    use crate::tools::{
+        DSML_INVOKE_END, DSML_INVOKE_START, DSML_PARAM_END, DSML_PARAM_START, DSML_TOOL_CALLS_END,
+        DSML_TOOL_CALLS_START,
+    };
+
+    /// The ds41 model id. Its canonical render uses the spaced spelling
+    /// (`render.rs:1387`), which is what makes the plain spelling below
+    /// unmistakable: only a replayed block can put it in the prompt.
+    const MODEL_ID: i32 = ds4_core::Variant::DeepSeek41Flash as i32;
+
+    const CHAT_ID: &str = "call_echoed";
+    const TOOLU_ID: &str = "toolu_echoed";
+    const CALL_ID_PLACEHOLDER: &str = "__ID__";
+
+    fn sampled() -> String {
+        format!(
+            "{DSML_TOOL_CALLS_START}\n{DSML_INVOKE_START} name=\"read_file\">\n\
+             {DSML_PARAM_START} name=\"target_file\" string=\"true\">/tmp/x.txt{DSML_PARAM_END}\n\
+             {DSML_INVOKE_END}\n{DSML_TOOL_CALLS_END}"
+        )
+    }
+
+    /// The client's own echo of the call, respaced the way a re-serializing
+    /// client sends it (`{"target_file": "/tmp/x.txt"}` against the sampled
+    /// `{"target_file":"/tmp/x.txt"}`).
+    const OPENAI_BODY: &str = r#"{"model":"t","max_tokens":16,"messages":[
+        {"role":"user","content":"Read the file /tmp/x.txt"},
+        {"role":"assistant","content":"","tool_calls":[{"id":"__ID__","type":"function","function":{"name":"read_file","arguments":"{\"target_file\": \"/tmp/x.txt\"}"}}]},
+        {"role":"tool","tool_call_id":"__ID__","content":"file body"},
+        {"role":"user","content":"and the next file?"}],
+        "tools":[{"type":"function","function":{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}}]}"#;
+
+    const ANTHROPIC_BODY: &str = r#"{"model":"t","max_tokens":16,"tools":[{"name":"read_file","description":"Read a file","input_schema":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}],"messages":[
+        {"role":"user","content":"Read the file /tmp/x.txt"},
+        {"role":"assistant","content":[{"type":"tool_use","id":"__ID__","name":"read_file","input":{"target_file":"/tmp/x.txt"}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"__ID__","content":"file body"}]}]}"#;
+
+    const RESPONSES_BODY: &str = r#"{"model":"t","max_output_tokens":16,"tools":[{"type":"function","function":{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"target_file":{"type":"string"}},"required":["target_file"]}}}],"input":[
+        {"role":"user","content":"Read the file /tmp/x.txt"},
+        {"type":"function_call","call_id":"__ID__","name":"read_file","arguments":"{\"target_file\": \"/tmp/x.txt\"}"},
+        {"type":"function_call_output","call_id":"__ID__","output":"file body"}]}"#;
+
+    fn body(template: &str, id: &str) -> String {
+        template.replace(CALL_ID_PLACEHOLDER, id)
+    }
+
+    fn memory(replay: ExactReplay, id: &str) -> ToolMemory {
+        let mut memory = ToolMemory::from_config(ToolMemoryConfig {
+            max_ids: 1000,
+            replay,
+        });
+        memory.put(id, &sampled(), Source::Ram);
+        memory
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// TP-15. Each surface parses its own echo of the call, and the replayed
+    /// bytes must survive into the rendered prompt.
+    #[test]
+    fn sampled_bytes_reach_the_prompt_on_every_chat_surface() {
+        let cases = [
+            (WireSurface::OpenaiChat, OPENAI_BODY, CHAT_ID),
+            (WireSurface::Anthropic, ANTHROPIC_BODY, TOOLU_ID),
+            (WireSurface::Responses, RESPONSES_BODY, CHAT_ID),
+        ];
+        let sampled = sampled();
+        for (surface, template, id) in cases {
+            let mut parsed = parse_request(surface, &ParseEnv::default(), &body(template, id))
+                .unwrap_or_else(|error| panic!("{surface:?} did not parse: {error}"));
+            assert!(
+                tool_replay_disk_cache_eligible(&parsed, MODEL_ID),
+                "{surface:?} did not take the replay lane"
+            );
+            let head = dsml_head(MODEL_ID, "sys");
+            let before = render_prompt_ex(&parsed, MODEL_ID, head).unwrap();
+            assert!(
+                !contains(&before, sampled.as_bytes()),
+                "{surface:?} rendered the sampled block with no replay"
+            );
+            // The call is rendered canonically in that arm: the spaced invoke
+            // marker is what the ds41 renderer emits.
+            assert!(
+                contains(&before, crate::tools::DSML_INVOKE_START_SPACED.as_bytes()),
+                "{surface:?} did not render the call at all, so the check above is vacuous"
+            );
+
+            let mut memory = memory(ExactReplay::On, id);
+            assert_eq!(memory.attach(&mut parsed.messages), 1, "{surface:?}");
+            let after = render_prompt_ex(&parsed, MODEL_ID, head).unwrap();
+            assert!(
+                contains(&after, sampled.as_bytes()),
+                "{surface:?} did not replay the sampled block into the prompt"
+            );
+        }
+    }
+
+    /// TP-16. `--disable-exact-dsml-tool-replay` (ds4_help.c:378) leaves the
+    /// canonical render in place.
+    #[test]
+    fn the_disable_switch_leaves_the_canonical_render() {
+        let mut parsed = parse_request(
+            WireSurface::OpenaiChat,
+            &ParseEnv::default(),
+            &body(OPENAI_BODY, CHAT_ID),
+        )
+        .unwrap();
+        let head = dsml_head(MODEL_ID, "sys");
+        let mut memory = memory(ExactReplay::Off, CHAT_ID);
+        assert_eq!(memory.attach(&mut parsed.messages), 0);
+        let prompt = render_prompt_ex(&parsed, MODEL_ID, head).unwrap();
+        assert!(!contains(&prompt, sampled().as_bytes()));
+        assert!(
+            contains(&prompt, crate::tools::DSML_INVOKE_START_SPACED.as_bytes()),
+            "the call must still render canonically"
+        );
     }
 }

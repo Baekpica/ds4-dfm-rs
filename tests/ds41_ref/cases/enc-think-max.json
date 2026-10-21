@@ -1,0 +1,22 @@
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Read the file /tmp/x.txt"}
+  ],
+  "thinking_mode": "thinking",
+  "reasoning_effort": 100,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a file",
+        "parameters": {
+          "type": "object",
+          "properties": {"target_file": {"type": "string"}},
+          "required": ["target_file"]
+        }
+      }
+    }
+  ]
+}

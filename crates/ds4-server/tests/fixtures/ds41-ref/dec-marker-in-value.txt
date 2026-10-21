@@ -1,0 +1,7 @@
+
+
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="read_file">
+<｜DSML｜ parameter name="target_file" string="true">quote the <｜DSML｜ calls> tag</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls><｜end▁of▁sentence｜>

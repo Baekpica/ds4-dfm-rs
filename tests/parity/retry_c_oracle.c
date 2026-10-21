@@ -1,4 +1,4 @@
-/* Corrective-retry oracle from ds4_server.c at v0.6.3-dfm.
+/* Corrective-retry oracle from ds4_server.c at v0.6.5-dfm (fc80bd6).
  * Standalone: do not include ds4_server.c. */
 
 #include <ctype.h>
@@ -20,6 +20,14 @@
 #define DS4_INVOKE_END_SHORT "</DSML｜invoke>"
 #define DS4_PARAM_START_SHORT "<DSML｜parameter"
 #define DS4_PARAM_END_SHORT "</DSML｜parameter>"
+
+/* The official V4.1 spaced spelling (ds4_server.c:678-683). */
+#define DS41_TOOL_CALLS_START "<｜DSML｜ calls>"
+#define DS41_TOOL_CALLS_END "<" "/" DS4_DSML " calls>"
+#define DS41_INVOKE_START "<" DS4_DSML " invoke"
+#define DS41_INVOKE_END "<" "/" DS4_DSML " invoke>"
+#define DS41_PARAM_START "<" DS4_DSML " parameter"
+#define DS41_PARAM_END "<" "/" DS4_DSML " parameter>"
 
 #define DS4_SOLAR_IM_START            "<|im:start|>"
 #define DS4_SOLAR_IM_CONTENT          "<|im:content|>"
@@ -195,25 +203,85 @@ static char *build_invalid_tool_error_suffix(int format, int think_mode, int thi
     return buf_take(&suffix);
 }
 
+/* Re-extracted 2026-10-18 from ds4_server.c:6707-6776 (the block was read
+ * verbatim from the live tree; the previous extraction was the older contract
+ * that closed unbalanced invocations). */
+static const char *find_any_tool_start(const char *s) {
+    const char *best = NULL;
+    const char *candidates[] = {
+        strstr(s, DS41_TOOL_CALLS_START),
+        strstr(s, DS4_TOOL_CALLS_START),
+        strstr(s, DS4_TOOL_CALLS_START_SHORT),
+        strstr(s, "<tool_calls>"),
+        strstr(s, "<tool_call>"),
+    };
+    for (size_t i = 0; i < sizeof(candidates)/sizeof(candidates[0]); i++) {
+        if (candidates[i] && (!best || candidates[i] < best)) best = candidates[i];
+    }
+    return best;
+}
+
+/* Tool arguments are literal data, so a control marker inside a parameter body
+ * is not structure (ds4_server.c:5890-5920). */
+static const char *find_tool_structural_text(const char *s, const char *needle,
+                                             bool last) {
+    static const char *wrappers[][2] = {
+        {DS41_PARAM_START, DS41_PARAM_END},
+        {DS4_PARAM_START, DS4_PARAM_END},
+        {DS4_PARAM_START_SHORT, DS4_PARAM_END_SHORT},
+        {"<parameter", "</parameter>"},
+        {"<arg_key>", "</arg_key>"},
+        {"<arg_value>", "</arg_value>"},
+    };
+    const char *found = NULL;
+    if (!s) return NULL;
+    while (*s) {
+        if (!strncmp(s, needle, strlen(needle))) {
+            found = s;
+            if (!last) return found;
+        }
+        bool skipped = false;
+        for (size_t i = 0; i < sizeof(wrappers) / sizeof(wrappers[0]); i++) {
+            if (strncmp(s, wrappers[i][0], strlen(wrappers[i][0]))) continue;
+            const char *tag_end = strchr(s, '>');
+            const char *end = tag_end ? strstr(tag_end + 1, wrappers[i][1]) : NULL;
+            if (!end) return found;
+            s = end + strlen(wrappers[i][1]);
+            skipped = true;
+            break;
+        }
+        if (!skipped) s++;
+    }
+    return found;
+}
+
 static bool try_repair_dsml(const char *s, size_t len, buf *out) {
     if (!s || !len) return false;
-    const char *think_end = find_last_substr(s, "</think>");
+    const char *think_end = find_tool_structural_text(s, "</think>", true);
     const char *scan_start = think_end ? (think_end + 8) : s;
     size_t scan_len = (size_t)((s + len) - scan_start);
     const char *ts, *te, *is, *ie, *ps, *pe;
-    if (strstr(scan_start, DS4_TOOL_CALLS_START)) {
+    const char *first = find_any_tool_start(scan_start);
+    if (!first) return false;
+    if (!strncmp(first, DS41_TOOL_CALLS_START, strlen(DS41_TOOL_CALLS_START))) {
+        ts = DS41_TOOL_CALLS_START; te = DS41_TOOL_CALLS_END;
+        is = DS41_INVOKE_START; ie = DS41_INVOKE_END;
+        ps = DS41_PARAM_START; pe = DS41_PARAM_END;
+    } else if (!strncmp(first, DS4_TOOL_CALLS_START, strlen(DS4_TOOL_CALLS_START))) {
         ts = DS4_TOOL_CALLS_START; te = DS4_TOOL_CALLS_END;
         is = DS4_INVOKE_START; ie = DS4_INVOKE_END;
         ps = DS4_PARAM_START; pe = DS4_PARAM_END;
-    } else if (strstr(scan_start, DS4_TOOL_CALLS_START_SHORT)) {
+    } else if (!strncmp(first, DS4_TOOL_CALLS_START_SHORT, strlen(DS4_TOOL_CALLS_START_SHORT))) {
         ts = DS4_TOOL_CALLS_START_SHORT; te = DS4_TOOL_CALLS_END_SHORT;
         is = DS4_INVOKE_START_SHORT; ie = DS4_INVOKE_END_SHORT;
         ps = DS4_PARAM_START_SHORT; pe = DS4_PARAM_END_SHORT;
-    } else if (strstr(scan_start, "<tool_calls>")) {
+    } else if (!strncmp(first, "<tool_calls>", strlen("<tool_calls>"))) {
         ts = "<tool_calls>"; te = "</tool_calls>";
         is = "<invoke"; ie = "</invoke>";
         ps = "<parameter"; pe = "</parameter>";
-    } else return false;
+    } else {
+        return false;
+    }
     size_t tos = 0, toe = 0, ios = 0, ioe = 0, pos = 0, poe = 0;
     const char *e = scan_start + scan_len;
     for (const char *p = scan_start; p < e; ) {
@@ -226,11 +294,10 @@ static bool try_repair_dsml(const char *s, size_t len, buf *out) {
         else if ((d = strlen(pe)) && !strncmp(p, pe, d)) { poe++; p += d; }
         else p++;
     }
-    if (tos == toe && ios == ioe && pos == poe) return false;
-    if (toe > tos || ioe > ios || poe > pos) return false;
+    if (ios != ioe || pos != poe) return false;
+    if (tos == toe) return false;
+    if (toe > tos) return false;
     buf_append(out, s, len);
-    for (size_t i = 0; i < pos - poe; i++) buf_puts(out, pe);
-    for (size_t i = 0; i < ios - ioe; i++) buf_puts(out, ie);
     for (size_t i = 0; i < tos - toe; i++) buf_puts(out, te);
     return true;
 }
@@ -313,8 +380,36 @@ int main(int argc, char **argv) {
         char *s = rendered_solar_system_region(p);
         emit(s); free(s); free(p);
     } else if (!strcmp(name, "repair-dsml")) {
+        /* Only the wrapper is missing: every invocation and parameter is
+         * closed, so the repair supplies the wrapper alone. */
+        const char *t = DS4_TOOL_CALLS_START "\n" DS4_INVOKE_START " name=\"bash\">\n"
+                        DS4_PARAM_START " name=\"command\" string=\"true\">ls" DS4_PARAM_END "\n"
+                        DS4_INVOKE_END "\n";
+        buf o = {0};
+        if (try_repair_dsml(t, strlen(t), &o)) emit(o.ptr ? o.ptr : "");
+        else emit("NONE");
+        buf_free(&o);
+    } else if (!strcmp(name, "repair-dsml-param-open")) {
+        /* An unfinished value can be a truncated command: refuse. */
         const char *t = DS4_TOOL_CALLS_START "\n" DS4_INVOKE_START " name=\"bash\">\n"
                         DS4_PARAM_START " name=\"command\" string=\"true\">ls";
+        buf o = {0};
+        if (try_repair_dsml(t, strlen(t), &o)) emit(o.ptr ? o.ptr : "");
+        else emit("NONE");
+        buf_free(&o);
+    } else if (!strcmp(name, "repair-dsml-invoke-open")) {
+        /* An unfinished invocation can still be missing arguments: refuse. */
+        const char *t = DS4_TOOL_CALLS_START "\n" DS4_INVOKE_START " name=\"edit\">\n"
+                        DS4_PARAM_START " name=\"path\" string=\"true\">/tmp/x" DS4_PARAM_END "\n";
+        buf o = {0};
+        if (try_repair_dsml(t, strlen(t), &o)) emit(o.ptr ? o.ptr : "");
+        else emit("NONE");
+        buf_free(&o);
+    } else if (!strcmp(name, "repair-dsml-spaced")) {
+        /* The V4.1 spaced style: the same wrapper-only repair. */
+        const char *t = DS41_TOOL_CALLS_START "\n" DS41_INVOKE_START " name=\"bash\">\n"
+                        DS41_PARAM_START " name=\"command\" string=\"true\">ls" DS41_PARAM_END "\n"
+                        DS41_INVOKE_END "\n";
         buf o = {0};
         if (try_repair_dsml(t, strlen(t), &o)) emit(o.ptr ? o.ptr : "");
         else emit("NONE");

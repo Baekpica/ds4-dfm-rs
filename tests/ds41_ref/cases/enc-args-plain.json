@@ -1,0 +1,36 @@
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Read the file /tmp/x.txt"},
+    {
+      "role": "assistant",
+      "content": "Calling it now.",
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "arguments": "not json"
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "target_file": {"type": "string"}
+          },
+          "required": ["target_file"]
+        }
+      }
+    }
+  ]
+}

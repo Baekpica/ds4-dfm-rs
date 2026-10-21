@@ -315,13 +315,20 @@ void ds4_bridge_v41_kvreuse_set(int on);
 int ds4_bridge_v41_kvreuse_last_reused(void);
 uint32_t ds4_bridge_v41_kvreuse_peek(const int32_t *prompt, int n, const uint64_t *sig);
 void ds4_bridge_v41_kvreuse_note_mount(int has_mount, uint64_t hash);
+/* T's key (the prompt it was saved with, then the ids the state committed),
+ * which is the host store's turn entry text: answers the count, filling
+ * `out` when it covers `cap`.  0 = no turn checkpoint. */
+uint32_t ds4_bridge_v41_kvreuse_turn_key(int32_t *out, uint32_t cap);
 /* The disk half (item 4): the payload export/import the Rust store drives
- * (crates/ds4-kv, v41_disk.rs).  export writes the checkpoint payload (meta
- * + spans + logits; the store's text block carries the tokens) to a
+ * (crates/ds4-kv, v41_disk.rs).  export writes the named class's checkpoint
+ * payload (meta + spans; the store's text block carries the tokens) to a
  * host-named path, 1 = written; import loads it back from (path, offset,
- * bytes) plus the token block the caller matched, 1 = loaded.  Both are
- * gated by --no-kv-reuse and K.valid. */
-int ds4_bridge_v41_kvreuse_export(const char *path);
+ * bytes) plus the token block the caller matched, 1 = loaded, into the slot
+ * the payload's meta names.  cls is the class to write: 0 = the prompt-end
+ * checkpoint K, 1 = the run-end turn checkpoint T (the native v41_kv_class,
+ * ds4_ds41_kvreuse.inc; the Rust side names the same two in ds4-sys).  Both
+ * are gated by --no-kv-reuse and the class's slot being valid. */
+int ds4_bridge_v41_kvreuse_export(const char *path, int cls);
 int ds4_bridge_v41_kvreuse_import(const char *path, uint64_t offset, uint64_t bytes,
                                   const int32_t *tokens, uint32_t n);
 /* The last v41 run's speculation account (the engine's

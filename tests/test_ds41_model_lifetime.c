@@ -73,6 +73,7 @@ static void save_checkpoint(const int32_t *tokens, uint32_t n) {
     st.mainh_n = DS4_N_SWA;
     v41_kvreuse_note_mount(1, UINT64_C(0x0123456789abcdef));
     v41_kvreuse_save(&st, tokens, n, NULL);
+    v41_kvreuse_save_turn(&st, tokens, n, tokens, 2u, NULL);   /* the port addition: close must release this slot too */
     if (v41_kvreuse_restore(&st, tokens, n, NULL) != n) { abort(); }
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
         ds4_gpu_tensor_free(st.win[il]);
@@ -88,6 +89,11 @@ static void save_checkpoint(const int32_t *tokens, uint32_t n) {
 
 int main(void) {
     const int32_t tokens[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+    /* K's key for `tokens`, T's key for the same run (the prompt then the two
+     * ids the state committed, save_checkpoint), and the next turn's prompt:
+     * the same block plus one new token, as a tool result extends it. */
+    const int32_t committed[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2};
+    const int32_t next_turn[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 4};
     const float first_bias[] = {1.f, 2.f}, next_bias[] = {3.f, 4.f};
     const ds4_tensor first = {sizeof first_bias, first_bias};
     const ds4_tensor next = {sizeof next_bias, next_bias};
@@ -95,14 +101,22 @@ int main(void) {
     int failures = check_result("initial vision bias upload", v41_vis_bias_vl_upload(e));
     save_checkpoint(tokens, sizeof tokens / sizeof tokens[0]);
     (void)v41_kv_span_buf_get(64u);
+    failures += check_result("turn checkpoint serves the longer prompt",
+        v41_kvreuse_peek(next_turn, sizeof next_turn / sizeof next_turn[0], NULL) ==
+        sizeof committed / sizeof committed[0]);
+    failures += check_result("equal length stays the prompt-end checkpoint",
+        v41_kvreuse_peek(committed, sizeof committed / sizeof committed[0], NULL) ==
+        sizeof tokens / sizeof tokens[0]);
     ds4_engine_close(e);
 
     failures += check_result("close releases tensors before GPU teardown", tensors_at_cleanup == 0u);
     failures += check_result("close invalidates old-model checkpoint",
         v41_kvreuse_peek(tokens, sizeof tokens / sizeof tokens[0], NULL) == 0u &&
+        v41_kvreuse_peek(next_turn, sizeof next_turn / sizeof next_turn[0], NULL) == 0u &&
         ds4_engine_v41_last_reused() == 0);
     failures += check_result("close clears host checkpoint storage",
-        !K.tok && !K.sig && !K.tok_cap && !K.mount_has && !K.mount_hash &&
+        !K.tok && !K.sig && !K.tok_cap && !T.tok && !T.sig && !T.tok_cap &&
+        !g_v41_kv_mount_has && !g_v41_kv_mount_hash &&
         !g_v41_kv_span_buf && !g_v41_kv_span_cap);
 
     e = fixture_model(&next);
