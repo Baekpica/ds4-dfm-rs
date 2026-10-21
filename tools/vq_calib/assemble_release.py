@@ -80,9 +80,20 @@ def source_mapping(src):
     return mapping
 
 
+def lloyd_iterations(receipt):
+    """Lloyd iterations every book of a layer was trained with (from the per-iteration history), or None."""
+    t = receipt.get('training') or {}
+    histories = [b.get('iterations') for b in t.get('books') or []] or [t.get('iterations')]
+    counts = {len(h) for h in histories if isinstance(h, list)}
+    if len(counts) > 1:
+        raise SystemExit(f'layer {receipt.get("layer")} books were trained with different iteration counts {sorted(counts)}')
+    return counts.pop() if counts else None
+
+
 def variant_of(receipt):
     w = receipt.get('weighting') or {}
-    return {**{k: receipt.get(k) for k in VARIANT_KEYS}, **{f'weighting.{k}': w.get(k) for k in WEIGHTING_KEYS}}
+    return {**{k: receipt.get(k) for k in VARIANT_KEYS}, **{f'weighting.{k}': w.get(k) for k in WEIGHTING_KEYS},
+            'lloyd_iterations': lloyd_iterations(receipt)}
 
 
 def load_receipts(experts, layers, layer_bits, recipe):
@@ -118,6 +129,8 @@ def check_selection(recipe, variant):
     bad = {k: (v, variant.get(k)) for k, v in want.items()
            if v is not None and not (isinstance(v, (int, float)) and isinstance(variant.get(k), (int, float))
                                      and float(v) == float(variant[k])) and v != variant.get(k)}
+    if 'lloyd_iterations' in recipe and variant.get('lloyd_iterations') != recipe['lloyd_iterations']:
+        bad['lloyd_iterations'] = (recipe['lloyd_iterations'], variant.get('lloyd_iterations'))
     if bad:
         raise SystemExit(f'recipe selection does not match the variant (recipe, variant): {bad}')
 
