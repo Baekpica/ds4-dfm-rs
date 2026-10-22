@@ -114,6 +114,28 @@ def calibration_of(receipts, allow_unverified):
     return {'run_id': run_id, 'calibration_set_sha256': calib_sha, 'unverified_layers': unverified}
 
 
+def check_nonexpert_calibration(nonexpert, calibration, recipe, allow_unverified):
+    """The Q4_K importance must come from the experts' calibration run (and the recipe's, when it records one).
+    -> what the release records about it."""
+    imx = nonexpert.get('imatrix')
+    if imx is None:
+        return {'imatrix': None}
+    got = (imx.get('calibration_run_id'), imx.get('calibration_set_sha256'))
+    if got == (None, None):
+        if not allow_unverified:
+            raise SystemExit('the non-expert imatrix records no calibration run (converted before run ids); '
+                             'pass --allow-unverified-calibration to release it anyway')
+        return {'run_id': None, 'unverified': True}
+    cal = recipe.get('calibration') or {}
+    want = {'experts': (calibration['run_id'], calibration['calibration_set_sha256']),
+            'recipe': (cal.get('calibration_run_id'), (cal.get('calibration_set') or {}).get('safetensors_sha256'))}
+    bad = {k: (got, v) for k, v in want.items()
+           if any(x is not None and y is not None and x != y for x, y in zip(got, v))}
+    if bad:
+        raise SystemExit(f'the non-expert imatrix comes from another calibration run ((non-expert, other): {bad})')
+    return {'run_id': got[0], 'calibration_set_sha256': got[1]}
+
+
 def load_receipts(experts, layers, layer_bits, recipe):
     receipts, variant = {}, None
     for l in layers:
@@ -217,6 +239,7 @@ def main():
         raise SystemExit('non-expert receipt is from a partial (test) run')
     if nonexpert['recipe_id'] != recipe['recipe_id']:
         raise SystemExit('non-expert receipt is for another recipe')
+    nonexpert_calibration = check_nonexpert_calibration(nonexpert, calibration, recipe, a.allow_unverified_calibration)
 
     a.out.mkdir(parents=True, exist_ok=True)
     for x in parts:
@@ -258,6 +281,7 @@ def main():
                'variant': variant, 'calibration_set_sha256': (cal.get('calibration_set') or {}).get('safetensors_sha256'),
                'calibration_run': calibration,
                'nonexpert_imatrix_files_sha256': (nonexpert.get('imatrix') or {}).get('files_sha256'),
+               'nonexpert_calibration_run': nonexpert_calibration,
                'entrypoint': 'release.json', 'parts': release_parts}
     if a.dry_run:
         release['dry_run'] = True

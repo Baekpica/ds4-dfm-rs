@@ -148,7 +148,9 @@ reference's own floor and use `score_regions_ds41.py` before reading small diffe
 ```sh
 python3 tests/test_axk2_vq_format.py                 # CPU: GVQ v2 encode/decode/reader rejections
 python3 tests/test_run_guards.py                     # CPU: one statistics run per reduction, checkpoint and
-                                                     # layer-range guards, converter reuse, one calibration run
+                                                     # layer-range guards, converter reuse, statistics bound to
+                                                     # the converted checkpoint, one calibration run for the
+                                                     # expert and non-expert parts of a release
 python3 tests/test_axk2_vq_gpu.py --work /tmp/vq-test  # one GPU: weights == 1 bit-identity, packing parity,
                                                        # weighted Lloyd, gain refit, throughput
 ```

@@ -38,10 +38,11 @@ def stats_tensors(tokens, seed):
             'w2': torch.rand(E, generator=g, dtype=torch.float64), 'x2': torch.rand(E, H, generator=g, dtype=torch.float64)}
 
 
-def make_run(stats, world=2, layers=(0, 1, 2), calib='/c/calib.safetensors', legacy=False, head=False, seed=0):
+def make_run(stats, world=2, layers=(0, 1, 2), calib='/c/calib.safetensors', legacy=False, head=False, seed=0,
+             source=None):
     """Rank directories as the collectors write them -> run id (None for a legacy run)."""
     run = {'collector': 'test', 'calib_sha256': hashlib.sha256(calib.encode()).hexdigest(), 'world': world,
-           'layers': list(layers), 'max_tokens': 0}
+           'layers': list(layers), 'max_tokens': 0, **(source or {})}
     rid = None if legacy else rs.run_id(run)
     files = [f'layer-{L:02d}.safetensors' for L in layers] + (['head.safetensors'] if head else [])
     for r in range(world):
@@ -186,7 +187,7 @@ receipt = {'sha256': hashlib.sha256(b'part').hexdigest(), 'k': 512, 'recipe_id':
            'training': {'books': [{'iterations': [{}] * 32}] * 3, 'statistics_sha256': stats_sha}}
 (out / 'layer-01-experts.json').write_text(json.dumps(receipt))
 recipe = {'recipe_id': 'r', 'lloyd_iterations': 32}
-src = SimpleNamespace(config={})
+src = SimpleNamespace(config={}, root=Path('/models/A.X-K2'))
 
 
 def resume(iterations=None, stats=s):
@@ -283,4 +284,50 @@ write_receipts(**{str(L): {'calibration_run_id': None, 'calibration_set_sha256':
 refused(lambda: a41.load_receipts(d41, False), 'ds41 legacy receipts without the flag', '--allow-unverified-calibration')
 assert a41.load_receipts(d41, True)[2] == {'run_id': None, 'calibration_set_sha256': None, 'unverified_layers': list(range(40))}
 print('assemblers: mixed calibration runs refused, legacy receipts only with the flag: ok')
+# ---- statistics bound to the converted checkpoint (source directory and revision) ---------------
+rs.check_source(None, '/any')                                          # legacy run: nothing to compare
+run = {'source': os.path.realpath('/m/A'), 'source_revision': 'r1'}
+rs.check_source(run, '/m/A', 'r1')
+rs.check_source({'source': os.path.realpath('/m/A')}, '/m/A', 'r2')    # the run recorded no revision
+refused(lambda: rs.check_source(run, '/m/B', 'r1'), 'statistics of another directory', 'source')
+refused(lambda: rs.check_source(run, '/m/A', 'r2'), 'statistics of another revision', 'source_revision')
+src41 = tmp / 'ds41-src'
+(src41 / '.cache/huggingface/download').mkdir(parents=True)
+(src41 / '.cache/huggingface/download/config.json.metadata').write_text('rev1\netag\n1.0\n')
+assert rs.hub_revision(src41) == 'rev1' and rs.hub_revision(tmp) is None
+st41 = tmp / 'stats-src41'
+make_run(st41, layers=(20,), source={'source': os.path.realpath(src41), 'source_revision': 'rev1'}, seed=11)
+cl41.ROOT = str(src41)
+assert cl41.statistics(st41, 20, 'imatrix')[4] == {'source': os.path.realpath(src41), 'source_revision': 'rev1'}
+(src41 / '.cache/huggingface/download/config.json.metadata').write_text('rev2\netag\n1.0\n')
+refused(lambda: cl41.statistics(st41, 20, 'imatrix'), 'ds41 statistics of another revision', 'source_revision')
+cl41.ROOT = str(tmp)
+refused(lambda: cl41.statistics(st41, 20, 'imatrix'), 'ds41 statistics of another checkpoint', 'source')
+print('converters: statistics from another checkpoint or revision refused: ok')
+
+# ---- merged statistics: several files, each must be the one summary.json records ----------------
+m = tmp / 'stats-merged'
+mrid = make_run(m, layers=(0, 1), head=True, seed=13)
+reduce(m)
+files = [m / 'layer-00.safetensors', m / 'layer-01.safetensors', m / 'head.safetensors']
+assert rs.run_record(m, files)[0] == mrid and rs.calibration_run(m, files)[0] == mrid
+save_file(stats_tensors(201, 99), str(m / 'layer-01.safetensors'))
+refused(lambda: rs.run_record(m, files), 'replaced merged file', 'stale statistics')
+print('merged statistics: every file checked against summary.json: ok')
+
+# ---- non-expert imatrix: same calibration run as the experts (and the recipe) -------------------
+cal_e = {'run_id': rid, 'calibration_set_sha256': 'c' * 64, 'unverified_layers': []}
+ne = lambda r, c: {'imatrix': {'calibration_run_id': r, 'calibration_set_sha256': c}}
+assert ar.check_nonexpert_calibration(ne(rid, 'c' * 64), cal_e, {}, False)['run_id'] == rid
+assert ar.check_nonexpert_calibration({'imatrix': None}, cal_e, {}, False) == {'imatrix': None}
+refused(lambda: ar.check_nonexpert_calibration(ne('a' * 64, 'c' * 64), cal_e, {}, False),
+        'non-expert imatrix of another run', 'another calibration run')
+refused(lambda: ar.check_nonexpert_calibration(ne(rid, 'd' * 64), cal_e, {}, False),
+        'non-expert imatrix of another calibration set', 'another calibration run')
+refused(lambda: ar.check_nonexpert_calibration(ne(rid, 'c' * 64), cal_e, {'calibration': {'calibration_run_id': 'b' * 64}},
+                                               False), 'non-expert run != recipe run', 'recipe')
+refused(lambda: ar.check_nonexpert_calibration(ne(None, None), cal_e, {}, False),
+        'legacy non-expert receipt without the flag', '--allow-unverified-calibration')
+assert ar.check_nonexpert_calibration(ne(None, None), cal_e, {}, True) == {'run_id': None, 'unverified': True}
+print('assemble_release: non-expert imatrix from the experts\' calibration run only: ok')
 print('all run guards: ok')

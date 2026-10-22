@@ -8,13 +8,20 @@ SOURCE=${SOURCE:-/models/A.X-K2}
 STATS=${STATS:-/workspace/axk2/stats}
 MANIFEST=${MANIFEST:-/workspace/axk2/calib/frozen/heldout-81681f74_manifest.json}
 i=0
+fail=0
 for name in "$@"; do
-  until [ "$(ls $V/$name/parts/layer-*-experts.json 2>/dev/null | wc -l)" -ge 60 ]; do sleep 10; done
+  until [ "$(ls $V/$name/parts/layer-*-experts.json 2>/dev/null | wc -l)" -ge 60 ] || [ -f "$V/$name/FAILED" ]; do sleep 10; done
+  if [ -f "$V/$name/FAILED" ]; then
+    echo "{\"eval\": \"$name\", \"skipped\": \"conversion exited $(cat "$V/$name/FAILED")\"}"
+    fail=1
+    continue
+  fi
   gpu=$(( i % 8 )); i=$((i+1))
   CUDA_VISIBLE_DEVICES=$gpu python3 $TOOLS/eval_e2e.py --source $SOURCE --stats $STATS --parts $V/$name/parts \
     --experts parts --nonexpert teacher --manifest $MANIFEST --out $V/$name/eval-experts \
     > $V/$name/eval-experts.log 2>&1 &
   echo "{\"eval\": \"$name\", \"gpu\": $gpu, \"start\": \"$(date -u +%FT%TZ)\"}"
 done
-wait
-echo '{"evals": "done"}'
+for p in $(jobs -p); do wait "$p" || fail=1; done
+echo "{\"evals\": \"done\", \"failed\": $fail}"
+exit $fail

@@ -37,7 +37,7 @@ from convert_layer import stats_fingerprint
 import ds41_vq_format as fmt
 from ds41_ref import Source, fp4_dequant
 from ds41_vq_student import decode_blob
-from reduce_stats import calibration_run
+from reduce_stats import check_source, hub_revision, run_record
 
 ROOT = '/models/deepseek-ai/DeepSeek-V4.1-Flash-1017'
 PROJ = {'w1': 'gate_proj', 'w3': 'up_proj', 'w2': 'down_proj'}       # ds41 name -> weighting name
@@ -152,9 +152,13 @@ class Meter:
 
 
 def statistics(stats_dir, L, mode):
-    """-> (statistics or None, their files, statistics_sha256, (calibration run id, calibration set SHA-256))."""
+    """-> (statistics or None, their files, statistics_sha256, (calibration run id, calibration set SHA-256),
+    the run's source record). The run must have read this checkpoint (directory and Hub revision)."""
     stats, files = load_stats(stats_dir, L) if mode not in ('none', 'row') else (None, [])
-    return stats, files, stats_fingerprint(files), calibration_run(stats_dir, files)
+    rid, run = run_record(stats_dir, files)
+    check_source(run, ROOT, hub_revision(ROOT))
+    source = {k: (run or {}).get(k) for k in ('source', 'source_revision')}
+    return stats, files, stats_fingerprint(files), (rid, (run or {}).get('calib_sha256')), source
 
 
 def reuse(L, out_dir, want):
@@ -188,7 +192,7 @@ def convert(L, out_dir, st, mode, refit, iterations, col_power, shrink, col_floo
     src = Source(ROOT)
     K = 8192 if L < 14 else 4096
     t0 = time.monotonic()
-    stats, stat_files, stats_sha, (cal_run, cal_set) = st
+    stats, stat_files, stats_sha, (cal_run, cal_set), cal_source = st
     wt = Weighting(mode, stats, shrink_tokens=shrink, col_floor=col_floor, col_power=col_power)
     lx = LayerExperts(src, L)
     emit({'layer': L, 'phase': 'read', 'seconds': round(lx.read_seconds, 1), 'K': K})
@@ -258,6 +262,7 @@ def convert(L, out_dir, st, mode, refit, iterations, col_power, shrink, col_floo
         'mode': mode, 'gain_refit': refit, 'lloyd_iterations': iterations, 'codebook_scope': 'shared',
         'weighting': wt.describe(), 'statistics': stat_files, 'statistics_sha256': stats_sha,
         'calibration_run_id': cal_run, 'calibration_set_sha256': cal_set,
+        'calibration_source': cal_source,
         'pool': {'train_rows': TRAIN_ROWS, 'heldout_rows': HELD_ROWS, 'seed': SEED, **totals},
         'training': {'init': 'equidistant pool[floor(i*N/K)]', 'accumulation': 'FP64 atomics, weighted',
                      'codebook_rounding': 'F32 -> F16 (RNE) -> E4M3FN (YoungAi v41_vq_rate)',

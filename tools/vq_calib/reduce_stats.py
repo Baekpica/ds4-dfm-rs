@@ -17,6 +17,7 @@ reduced file; `calibration_run` checks a converter's statistics against them.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import torch
@@ -87,25 +88,26 @@ def run_ranks(stats):
     return [found[r][0] for r in range(world)], [found[r][1] for r in range(world)], names
 
 
-def calibration_run(stats_dir, files):
-    """-> (run id, calibration set SHA-256) of the collection run the statistics `files` (as load_stats returned
-    them) come from. A merged file must be the one summary.json records; rank files must be exactly the ranks
-    of one run, each stamped by it. (None, None) for statistics written before run ids (unverified),
-    ('none', None) without statistics."""
+def run_record(stats_dir, files):
+    """-> (run id, run record) of the collection run the statistics `files` (as load_stats returned them, or the
+    merged files a non-expert conversion read) come from. Merged files must be the ones summary.json records;
+    rank files must be exactly the ranks of one run, each stamped by it. (None, None) for statistics written
+    before run ids (unverified), ('none', None) without statistics."""
     if not files:
         return 'none', None
     stats_dir = Path(stats_dir)
     paths = [Path(f) for f in files]
-    if len(paths) == 1 and paths[0].parent == stats_dir:
+    if all(p.parent == stats_dir for p in paths):
         sfile = stats_dir / 'summary.json'
         summary = json.loads(sfile.read_text()) if sfile.exists() else {}
         rid = summary.get('run_id')
         if rid is None:
             return None, None
-        row = summary['layers'].get(paths[0].name) or {}
-        if row.get('sha256') != sha256_file(paths[0]):
-            raise ValueError(f'{paths[0]} is not the file run {rid} reduced (summary.json): stale statistics')
-        return rid, summary['run']['calib_sha256']
+        for p in paths:
+            row = summary['layers'].get(p.name) or {}
+            if row.get('sha256') != sha256_file(p):
+                raise ValueError(f'{p} is not the file run {rid} reduced (summary.json): stale statistics')
+        return rid, summary['run']
     shards = []
     for p in paths:
         f = p.parent / 'shard.json'
@@ -119,7 +121,32 @@ def calibration_run(stats_dir, files):
     ranks = sorted(s.get('rank', -1) for s in shards)
     if len(ids) != 1 or ranks != list(range(shards[0]['world'])):
         raise ValueError(f'{files} are not exactly the ranks of one run (run ids {sorted(ids, key=str)}, ranks {ranks})')
-    return shards[0]['run_id'], shards[0]['run']['calib_sha256']
+    return shards[0]['run_id'], shards[0]['run']
+
+
+def calibration_run(stats_dir, files):
+    """-> (run id, calibration set SHA-256) of the run `files` come from (run_record)."""
+    rid, run = run_record(stats_dir, files)
+    return rid, (run or {}).get('calib_sha256')
+
+
+def hub_revision(root):
+    """Commit of a checkpoint fetched with `hf download --local-dir` (its download metadata), or None."""
+    try:
+        return (Path(root) / '.cache/huggingface/download/config.json.metadata').read_text().split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def check_source(run, root, revision=None):
+    """Statistics must come from the checkpoint being converted: the run's recorded source directory and, where
+    both sides know it, its revision. A run recorded before run ids (None) cannot be checked."""
+    if not run:
+        return
+    here = {'source': os.path.realpath(root), 'source_revision': revision}
+    diff = {k: (run.get(k), v) for k, v in here.items() if run.get(k) is not None and v is not None and run[k] != v}
+    if diff:
+        raise ValueError(f'the statistics come from another checkpoint (statistics run, this conversion): {diff}')
 
 
 def main():

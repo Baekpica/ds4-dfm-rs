@@ -36,6 +36,7 @@ import torch
 
 from axk2_source import Source, SOURCE_REV, dequant
 from axk2_vq_format import PartWriter, PartReader, metadata, F32, F16, BF16, Q4_K, Q8_0
+from reduce_stats import check_source, run_record
 
 TOOLS = Path(__file__).resolve().parent
 DS4 = Path(__file__).resolve().parents[2]          # repository root (tools/vq_calib/../..)
@@ -294,6 +295,9 @@ def main():
     lib, build_receipt = build()
     quant = Quantizer(lib, a.threads)
     imatrix = Imatrix(a.imatrix_dir) if a.imatrix_dir else None
+    if imatrix is not None:   # the merged statistics must come from a run over this checkpoint
+        sfile = a.imatrix_dir / 'summary.json'
+        check_source(json.loads(sfile.read_text()).get('run') if sfile.exists() else None, a.source, SOURCE_REV)
     layers = parse_layers(a.layers, cfg['num_hidden_layers'])
     names = sorted(src.index)
     plan = {n: policy(n, cfg) for n in names}
@@ -410,10 +414,14 @@ def main():
     quantized = [s for s in stats.values() if s['type'] in ('Q4_K', 'Q8_0')]
     q4 = [s for s in quantized if s['type'] == 'Q4_K']
     q8 = [s for s in quantized if s['type'] == 'Q8_0']
+    cal_run, cal_record = (run_record(a.imatrix_dir, [a.imatrix_dir / n for n in sorted(imatrix.files)])
+                           if imatrix else ('none', None))
     receipt = {'source_revision': SOURCE_REV, 'recipe_id': recipe['recipe_id'],
                'policy_id': recipe['nonexpert']['policy_id'], 'complete': full, 'layers': sorted(layers),
                'build': build_receipt,
-               'imatrix': {'dir': str(a.imatrix_dir), 'files_sha256': imatrix.files, 'floor': IMATRIX_FLOOR}
+               'imatrix': {'dir': str(a.imatrix_dir), 'files_sha256': imatrix.files, 'floor': IMATRIX_FLOOR,
+                           'calibration_run_id': cal_run,
+                           'calibration_set_sha256': (cal_record or {}).get('calib_sha256')}
                           if imatrix else None,
                'executed_source_sha256': {f.name: sha(f) for f in [Path(__file__), TOOLS / 'axk2_vq_format.py',
                                                                     TOOLS / 'axk2_source.py']},

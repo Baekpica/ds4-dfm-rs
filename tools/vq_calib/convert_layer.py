@@ -27,7 +27,7 @@ from safetensors.torch import load_file, save_file
 from axk2_source import Source, SOURCE_REV, PROJECTIONS, dequant
 from axk2_vq_gpu import GpuVq, bits_for
 from axk2_weighting import Weighting, load_stats, MODES
-from reduce_stats import calibration_run
+from reduce_stats import check_source, run_record
 
 TOOLS = Path(__file__).resolve().parent
 TRAIN_ROWS = {'gate_proj': 24, 'up_proj': 24, 'down_proj': 84}
@@ -352,7 +352,9 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
             if mode not in ('none', 'row'):
                 raise
     stats_sha = stats_fingerprint(stats_files)
-    cal_run, cal_set = calibration_run(stats_dir, stats_files)
+    cal_run, cal_run_record = run_record(stats_dir, stats_files)
+    cal_set = (cal_run_record or {}).get('calib_sha256')
+    check_source(cal_run_record, source.root, SOURCE_REV)      # statistics of this checkpoint only
     wcfg = weighting_config(recipe)
     want = {'mode': mode,
             'shrink_tokens': float(shrink_tokens if shrink_tokens is not None else wcfg.get('shrink_tokens', 256)),
@@ -514,6 +516,7 @@ def convert_layer(source, gpu, layer, k, recipe, out_dir, work_dir, mode, refit,
             'recipe_id': recipe_id, 'mode': mode, 'gain_refit': refit, 'codebook_scope': scope,
             'weighting': {**weighting.describe(), 'gain_refit': refit},
             'calibration_run_id': cal_run, 'calibration_set_sha256': cal_set,
+            'calibration_source': {k: (cal_run_record or {}).get(k) for k in ('source', 'source_revision')},
             'path': target.name, 'bytes': partial.stat().st_size, 'sha256': checksum,
             'codebooks': [{'name': bname, 'id': bid, 'projections': [PROJECTIONS[pi] for pi in group],
                            'sha256': hashlib.sha256(raw_books[i]).hexdigest()}
