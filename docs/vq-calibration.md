@@ -216,8 +216,32 @@ routed-output energy (the largest up to 1.1e7 times the median token); on layers
 the 26 sequence-initial BOS tokens alone carry ~95%. `Σx²`/`Σa²` statistics therefore
 describe those tokens, and the weighted fit protects them: the energy-weighted per-layer
 error falls 65%, the typical token's 7%. A.X-K2 has no BOS and showed no such gap
-(−26.9% energy-weighted vs −23.9% token mean). Per-token-normalized statistics, or
-statistics with such tokens clipped, are the next thing to try for this family.
+(−26.9% energy-weighted vs −23.9% token mean).
+
+That explains the gap between the two measures, not the small per-token gain. Two
+follow-up conversions were measured the same way:
+
+- `--stats-norm token`: the collector also sums `x2n`/`a2n`, each token's `x²`/`a²`
+  divided by its own mean square, so every routed token weighs the same.
+- The same with calibration mix v2 (`build_calib_ds41.py --mix v2`): 3.75M tokens, no
+  domain above 8%, English 34%, Chinese 16%, Korean 13%, Japanese 8%, seven more
+  languages.
+
+| Per token (median), mean of 40 layers | VQ | imatrix (release) | + per-token stats | + mix v2 |
+|---|---:|---:|---:|---:|
+| Routed-expert error | 0.309 | 0.288 (−7.0%) | 0.288 (−7.0%) | 0.288 (−6.8%) |
+| KL, all positions | 0.369 | 0.350 | 0.349 | 0.352 |
+
+Neither lever moves the result. The Chinese and Japanese web regression stays in all
+three variants, even though their per-layer errors on those cases fall alike. Expert
+columns are not flat here: column-importance CV is 0.23–0.39 for gate/up and
+0.73–1.50 for down, against A.X-K2's 0.13 and 0.30.
+
+The remaining suspect is the diagonal approximation. The importance-weighted weight
+error falls by 22% and the per-token output error by 7%, while on A.X-K2 the two
+moved together. That points to correlated input channels, which only a
+covariance-aware fit (GPTQ-style error feedback) or a fit on the true layer-output
+loss would account for.
 
 Two properties of this model matter for any comparison:
 
@@ -247,10 +271,10 @@ Two properties of this model matter for any comparison:
 - **Zero-weight dimensions:** an unfloored importance profile lets a VQ
   dimension take any codeword value; floor the column weights.
 - **Massive activations:** when a few tokens (BOS, delimiters) carry most of a
-  layer's activation energy, as in DeepSeek-V4.1, summed `x²`/`a²` statistics
-  weight the codebook toward them. Check the per-token spread of the routed-output
-  energy before trusting energy-weighted per-layer gains (`measure_ds41.py` records
-  both).
+  layer's activation energy, as in DeepSeek-V4.1, energy-weighted per-layer errors
+  mostly measure those tokens. Report the per-token error too (`measure_ds41.py`
+  records both). Weighting every token equally in the statistics
+  (`--stats-norm token`) did not change the per-token gain there.
 
 ## Adding another family
 

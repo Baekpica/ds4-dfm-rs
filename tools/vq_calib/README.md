@@ -123,6 +123,7 @@ same K, offsets and sizes, so ds4-dfm-rs's `ds41` path loads the result unchange
 | `ds41_vq_student.py` | VQ experts for the forward, decoded on the GPU from a GGUF or blob directory |
 | `score_ds41.py`, `score_regions_ds41.py`, `report_ds41.py` | KL / top-1 / NLL per case; generated (raw text, assistant turns) vs prompt positions; family tables, route overlap, final-state cosine |
 | `measure_ds41.py` | per-layer routed-output error of students on the original's own inputs and routes (energy-weighted and per token) |
+| `--stats-norm token`, `build_calib_ds41.py --mix v2` | the two follow-up levers measured in docs/vq-calibration.md (per-token-normalized statistics `x2n`/`a2n`; a rebalanced multilingual calibration mix); neither changed the result |
 
 ```sh
 SRC=/models/deepseek-ai/DeepSeek-V4.1-Flash-1017  W=/work/ivq
