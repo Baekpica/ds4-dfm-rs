@@ -11,8 +11,11 @@ with its 40 routed-expert DQVL v3 blobs replaced by convert_layer_ds41.py's, not
 3. check every byte outside the 40 blobs (header, skeleton, MTP towers, padding) against
    the published base, and every patched blob against its blob file;
 4. cut the 40 parts at the published byte ranges (24 x 2,838,915,986 B, then
-   16 x 2,838,915,985 B) and write SHA256SUMS for the base, the parts, the vision sidecar
-   and the Engram shards (whose files are the published release's, unchanged).
+   16 x 2,838,915,985 B) and write SHA256SUMS for the base and the parts;
+5. the vision sidecar and the Engram shards are the published release's files, unchanged: each is listed
+   in SHA256SUMS only when a file in --out (hard-linked or copied from --assets) hashes to the published
+   value, or, with --hub-assets, when it will be copied on the Hub instead (verify its remote hash after
+   the upload). Anything else is left out of the manifest.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -106,6 +109,37 @@ def part_ranges(total):
     return out
 
 
+def place_assets(out, assets, hub_assets, threads=4):
+    """-> [(sha256, name)] of the unchanged release files to list in SHA256SUMS, and how each was established."""
+    out, rows, how = Path(out), [], {}
+
+    def one(item):
+        name, want = item
+        dst = out / name
+        if assets is not None and not dst.exists():
+            src = Path(assets) / name
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copyfile(src, dst)
+        if dst.exists():
+            got = sha_range(str(dst), 0, dst.stat().st_size)
+            if got != want:
+                raise SystemExit(f'{name}: SHA-256 {got} is not the published file ({want})')
+            return name, want, 'verified'
+        if hub_assets:
+            return name, want, 'copied on the Hub; verify the remote hash after the upload'
+        return name, None, 'missing; left out of SHA256SUMS'
+    with ThreadPoolExecutor(threads) as ex:
+        for name, h, note in ex.map(one, UNCHANGED.items()):
+            how[name] = note
+            if h is not None:
+                rows.append((h, name))
+    return rows, how
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--base', required=True, help='assembled published base (SHA-256 checked)')
@@ -116,6 +150,10 @@ def main():
     p.add_argument('--skip-base-hash', action='store_true')
     p.add_argument('--allow-unverified-calibration', action='store_true',
                    help='accept receipts that record no calibration run (listed in assemble-receipt.json)')
+    p.add_argument('--assets', type=Path, help='directory holding the published vision sidecar and deepseek-engram/ '
+                   '(e.g. the VQ release download); hard-linked or copied into --out and hash-checked')
+    p.add_argument('--hub-assets', action='store_true',
+                   help='list assets missing from --out by their published hash (they are copied on the Hub)')
     a = p.parse_args()
     receipts_in, variant, calibration = load_receipts(a.blobs, a.allow_unverified_calibration)
     a.out.mkdir(parents=True, exist_ok=True)
@@ -180,9 +218,10 @@ def main():
         parts = list(ex.map(cut, range(NPART)))
         full = ex.submit(sha_range, str(dst), 0, total).result()
     sums = [(full, NAME)] + [(h, n) for n, h in parts]
-    sums += [(h, n) for n, h in UNCHANGED.items()]
+    asset_rows, asset_how = place_assets(a.out, a.assets, a.hub_assets)
+    sums += asset_rows
     (a.out / 'SHA256SUMS').write_text(''.join(f'{h}  {n}\n' for h, n in sums))
-    log.update({'sha256': full, 'parts': dict((n, h) for n, h in parts), 'layers': receipts})
+    log.update({'sha256': full, 'parts': dict((n, h) for n, h in parts), 'layers': receipts, 'assets': asset_how})
     (a.out.parent / 'assemble-receipt.json').write_text(json.dumps(log, indent=1) + '\n')
     print(json.dumps({'phase': 'done', 'sha256': full}), flush=True)
 

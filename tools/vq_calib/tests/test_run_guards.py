@@ -129,7 +129,8 @@ print('calibration_run: merged and rank statistics verified, stale ones refused:
 
 # ---- collect_stats.py: checkpoint fingerprint and layer ranges ----------------------------------
 fp = {'collector': 'collect_stats.py', 'calib_sha256': 'c' * 64, 'world': 2, 'max_tokens': 0, 'source': '/m',
-      'source_revision': 'r', 'rank': 0, 'rows_sha256': 'a' * 64, 'heldout_sha256': None}
+      'source_revision': 'r', 'source_files': 'f' * 64, 'source_hub_revision': None, 'rank': 0, 'rows_sha256': 'a' * 64,
+      'heldout_sha256': None}
 ck = tmp / 'h-checkpoint.pt'
 L60 = list(range(61))
 refused(lambda: cs.resume_point(ck, fp, list(range(8, 61)), False, 'cpu'), 'range not starting at 0', 'skips layers 0-7')
@@ -142,11 +143,26 @@ assert cs.resume_point(ck, fp, list(range(8, 61)), True, 'cpu')[1] == 8       # 
 refused(lambda: cs.resume_point(ck, fp, list(range(16, 61)), True, 'cpu'), 'range start != next layer', 'belongs to the run')
 refused(lambda: cs.resume_point(ck, fp, list(range(31)), True, 'cpu'), 'other layer list', 'belongs to the run')
 for key, value in (('calib_sha256', 'd' * 64), ('rows_sha256', 'b' * 64), ('world', 3), ('heldout_sha256', 'e' * 64),
-                   ('source', '/other')):
+                   ('source', '/other'), ('source_files', '0' * 64)):
     refused(lambda: cs.resume_point(ck, {**fp, key: value}, L60, True, 'cpu'), f'checkpoint of other {key}', key)
 torch.save({'h': torch.ones(3), 'next_layer': 8}, ck)
 refused(lambda: cs.resume_point(ck, fp, L60, True, 'cpu'), 'checkpoint without fingerprint', 'none recorded')
 print('collect_stats: mismatched or legacy checkpoints and skipped layers refused: ok')
+
+# ---- source_fingerprint: the shards themselves (size, mtime, header) and a validated Hub record -------
+fsrc = tmp / 'fp-src'
+(fsrc / '.cache/huggingface/download').mkdir(parents=True)
+for i in (1, 2):
+    save_file({'w': torch.full((4,), float(i))}, str(fsrc / f'model-0000{i}-of-00002.safetensors'))
+    (fsrc / f'.cache/huggingface/download/model-0000{i}-of-00002.safetensors.metadata').write_text(
+        f'rev1\netag{i}\n{os.stat(fsrc / f"model-0000{i}-of-00002.safetensors").st_mtime + 1}\n')
+h1, r1 = rs.source_fingerprint(fsrc)
+assert r1 == 'rev1' and rs.source_fingerprint(fsrc) == (h1, 'rev1')
+save_file({'w': torch.full((4,), 9.0)}, str(fsrc / 'model-00002-of-00002.safetensors'))   # rewritten in place
+os.utime(fsrc / 'model-00002-of-00002.safetensors', (2e9, 2e9))                             # after its record
+h2, r2 = rs.source_fingerprint(fsrc)
+assert h2 != h1 and r2 is None, (h2 == h1, r2)
+print('source_fingerprint: a shard rewritten after its download changes it and voids the Hub revision: ok')
 
 # ---- run_ds41.py: no partial layer ranges (eval only with --debug-partial) ----------------------
 base_args = ['--data', str(tmp / 'none.safetensors'), '--out', str(tmp / 'ds41-out'), '--layers', '8-39']
@@ -330,4 +346,22 @@ refused(lambda: ar.check_nonexpert_calibration(ne(None, None), cal_e, {}, False)
         'legacy non-expert receipt without the flag', '--allow-unverified-calibration')
 assert ar.check_nonexpert_calibration(ne(None, None), cal_e, {}, True) == {'run_id': None, 'unverified': True}
 print('assemble_release: non-expert imatrix from the experts\' calibration run only: ok')
+# ---- assemble_ds41_ivq.py: unchanged release files are listed only when present and verified ---------
+aout, asrc = tmp / 'assets-out', tmp / 'assets-src'
+(asrc / 'deepseek-engram').mkdir(parents=True)
+(asrc / 'vision.gguf').write_bytes(b'vision')
+(asrc / 'deepseek-engram/e.safetensors').write_bytes(b'engram')
+a41.UNCHANGED = {'vision.gguf': hashlib.sha256(b'vision').hexdigest(),
+                 'deepseek-engram/e.safetensors': hashlib.sha256(b'engram').hexdigest()}
+aout.mkdir()
+rows, how = a41.place_assets(aout, None, False)
+assert rows == [] and all('left out' in v for v in how.values())
+rows, how = a41.place_assets(aout, None, True)
+assert sorted(n for _, n in rows) == sorted(a41.UNCHANGED) and all('Hub' in v for v in how.values())
+rows, how = a41.place_assets(aout, asrc, False)
+assert (aout / 'deepseek-engram/e.safetensors').read_bytes() == b'engram' and set(how.values()) == {'verified'}
+(aout / 'vision.gguf').unlink()
+(aout / 'vision.gguf').write_bytes(b'other')
+refused(lambda: a41.place_assets(aout, asrc, True), 'asset with another hash', 'vision.gguf', 'not the published file')
+print('assemble_ds41_ivq: assets copied and hash-checked, or listed only for the Hub on request: ok')
 print('all run guards: ok')

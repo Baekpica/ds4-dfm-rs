@@ -25,7 +25,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from ds41_ref import BF, EngramHash, Engram, Layer, SeqState, Stats, Teacher, hc_pre, rms_norm, rope_tables
-from reduce_stats import hub_revision, run_id, sha256_file
+from reduce_stats import hub_revision, run_id, sha256_file, source_fingerprint
 
 ROOT = '/models/deepseek-ai/DeepSeek-V4.1-Flash-1017'
 
@@ -118,6 +118,7 @@ def main():
     run = {'collector': 'run_ds41.py', 'mode': a.mode, 'calib_sha256': sha256_file(a.data), 'world': a.world,
            'layers': layers, 'max_tokens': a.max_tokens, 'rows': a.rows, 'experts': a.experts,
            'source': os.path.realpath(a.source), 'source_revision': hub_revision(a.source),
+           'source_files': source_fingerprint(a.source)[0],
            'tok': os.path.realpath(a.tok)}
     rid = run_id(run)
     stamp = {'calib': str(a.data), 'world': str(a.world), 'rank': str(a.rank), 'mode': a.mode,

@@ -138,6 +138,32 @@ def hub_revision(root):
         return None
 
 
+def source_fingerprint(root):
+    """-> (SHA-256, validated Hub revision or None) of a checkpoint's weight files, without hashing their bytes:
+    every shard's name, size, modification time and safetensors header, plus the commit and etag `hf download`
+    recorded for it when that record is not older than the file (huggingface_hub's own rule: a file rewritten
+    after its download no longer matches its record). Replacing or rewriting a shard changes the SHA-256; the
+    revision is returned only when every shard carries a valid record of one commit."""
+    root = Path(root)
+    rows, commits = [], set()
+    for f in sorted(root.glob('*.safetensors')):
+        st = f.stat()
+        with f.open('rb') as fh:
+            n = int.from_bytes(fh.read(8), 'little')
+            header = hashlib.sha256(fh.read(n)).hexdigest()
+        rec = None
+        try:
+            commit, etag, ts = (root / '.cache/huggingface/download' / f'{f.name}.metadata').read_text().split()[:3]
+            if float(ts) >= st.st_mtime:
+                rec = [commit, etag]
+                commits.add(commit)
+        except (OSError, ValueError):
+            pass
+        rows.append([f.name, st.st_size, st.st_mtime_ns, header, rec])
+    revision = commits.pop() if len(commits) == 1 and rows and all(r[4] for r in rows) else None
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest(), revision
+
+
 def check_source(run, root, revision=None):
     """Statistics must come from the checkpoint being converted: the run's recorded source directory and, where
     both sides know it, its revision. A run recorded before run ids (None) cannot be checked."""

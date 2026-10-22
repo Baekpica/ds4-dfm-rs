@@ -28,7 +28,7 @@ from safetensors.torch import load_file, save_file
 
 from axk2_ref import BF, Layer, Rope, Stats, TeacherWeights, rms_norm
 from axk2_source import SOURCE_REV
-from reduce_stats import run_id, sha256_file
+from reduce_stats import run_id, sha256_file, source_fingerprint
 
 ROOT = '/models/A.X-K2'
 
@@ -141,8 +141,11 @@ def main():
         ho = {'tok': htok, 'seqs': hseqs}
     # The run: what every rank shares. Its id goes into shard.json, DONE and every rank file, so
     # reduce_stats.py can refuse files left by another run (other inputs or another layer list).
+    # the source's files themselves, not only its path and pinned revision: a shard replaced in place changes this
+    source_files, source_hub_revision = source_fingerprint(a.source)
     inputs = {'collector': 'collect_stats.py', 'calib_sha256': sha256_file(a.calib), 'world': a.world,
-              'max_tokens': a.max_tokens, 'source': os.path.realpath(a.source), 'source_revision': SOURCE_REV}
+              'max_tokens': a.max_tokens, 'source': os.path.realpath(a.source), 'source_revision': SOURCE_REV,
+              'source_files': source_files, 'source_hub_revision': source_hub_revision}
     run = {**inputs, 'layers': layers}
     rid = run_id(run)
     # What the residual stream in a checkpoint depends on (not the layers recorded after it).
