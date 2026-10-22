@@ -26,6 +26,12 @@ artifact and workload. They do not describe live processes or qualify a new buil
 | [SSD expert streaming](ssd-streaming.md) | Bounded GLM expert cache, options and memory policy |
 | [GLM Prefill on Spark, 2026-10-08](glm53-prefill-2026-10-08.md) | Large batches, partial offload, numerical contracts and measured adoption |
 
+## Conversion tools
+
+| Guide | Covers |
+|---|---|
+| [VQ calibration](vq-calibration.md) | `tools/vq_calib/`: activation statistics, importance-weighted Lloyd for shared-codebook GVQ, 9/10-bit GVQ v2, the A.X-K2 VQ pipeline |
+
 ## Models
 
 Choose the exact artifact from the [Model Zoo](../README.md#model-zoo).

@@ -6,6 +6,25 @@ through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
 Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
 for exact provenance. Historical entries retain their original scope.
 
+## Unreleased
+
+- Adds `tools/vq_calib/`, the calibration-weighted GVQ converter that made
+  the A.X-K2 VQ release. A data-parallel collector streams the FP8 source
+  layer by layer and sums per-expert input energies, route weights and
+  row sensitivities; the weighted Lloyd, assignment and least-squares row
+  gains use them (`--mode imatrix|imatrix_freq|output`, split codebooks per
+  projection). Adds the byte-major 9/10-bit GVQ v2 container and Q4_K
+  non-experts with per-column importance. At equal bytes the release's
+  imatrix weighting lowers the held-out KL against the FP8 original from
+  0.859 to 0.788. See [VQ calibration](docs/vq-calibration.md).
+- Adds the DeepSeek-V4.1-Flash family to `tools/vq_calib/`: a plain-PyTorch
+  reference forward of DeepSeek's prefill path, a calibration builder that renders
+  with the model's own encoding, and an in-place converter for YoungAi's DQVL v3
+  blobs (exact reader/writer). It produced the iVQ drop-in of the 1017 VQ release:
+  every layer's routed-expert error falls for the typical token (−7%), held-out KL
+  0.369 → 0.350. The collector, reducer, converters and assemblers now bind every
+  step to one calibration run (checkpoint fingerprints, run ids, reuse checks).
+
 ## v0.1.3 — 2026-09-17
 
 - Common serving controls expose requested, effective and qualified behavior

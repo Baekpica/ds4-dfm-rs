@@ -261,3 +261,8 @@ tests/naive_banks
 /tests/test_glm_vq_kda
 /tests/test_glm_vq_verify
 /tests/test_glm_vq_res
+
+# tools/vq_calib build outputs
+/tools/vq_calib/cuda/*.so
+/tools/vq_calib/cuda/*.build.json
+/tools/vq_calib/native/
