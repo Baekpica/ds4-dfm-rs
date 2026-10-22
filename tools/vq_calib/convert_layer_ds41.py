@@ -151,10 +151,14 @@ class Meter:
                 'importance_rel_err': v['isse'] / v['ienergy'] if v['ienergy'] else None}
 
 
-def statistics(stats_dir, L, mode):
+def statistics(stats_dir, L, mode, norm='sum'):
     """-> (statistics or None, their files, statistics_sha256, (calibration run id, calibration set SHA-256),
     the run's source record). The run must have read this checkpoint (directory and Hub revision)."""
     stats, files = load_stats(stats_dir, L) if mode not in ('none', 'row') else (None, [])
+    if stats is not None and norm == 'token':
+        if 'x2n' not in stats or 'a2n' not in stats:
+            raise ValueError(f'--stats-norm token needs per-token normalized statistics (x2n, a2n) in {stats_dir}')
+        stats = {**stats, 'x2': stats['x2n'], 'a2': stats['a2n']}
     rid, run = run_record(stats_dir, files)
     check_source(run, ROOT, hub_revision(ROOT))
     source = {k: (run or {}).get(k) for k in ('source', 'source_revision')}
@@ -175,7 +179,7 @@ def reuse(L, out_dir, want):
     w = r.get('weighting') or {}
     got = {'sha256': r.get('sha256'), 'tensor': r.get('tensor'), 'mode': r.get('mode'), 'gain_refit': r.get('gain_refit'),
            'lloyd_iterations': len(hist) if isinstance(hist, list) else None, 'codebook_scope': r.get('codebook_scope'),
-           **{k: w.get(k) for k in ('col_power', 'shrink_tokens', 'col_floor')},
+           **{k: w.get(k) for k in ('col_power', 'shrink_tokens', 'col_floor')}, 'stats_norm': r.get('stats_norm', 'sum'),
            **{k: r[k] for k in ('statistics_sha256', 'calibration_run_id') if r.get(k) is not None}}
     need = {'sha256': checksum, 'tensor': f'blk.{L}.ffn_exps_vq.blob', 'codebook_scope': 'shared', **want}
     diff = {k: (got[k], v) for k, v in need.items() if k in got and got[k] != v}
@@ -187,7 +191,7 @@ def reuse(L, out_dir, want):
     return True
 
 
-def convert(L, out_dir, st, mode, refit, iterations, col_power, shrink, col_floor, base, compare):
+def convert(L, out_dir, st, mode, refit, iterations, col_power, shrink, col_floor, base, compare, stats_norm='sum'):
     gpu = GpuVq()
     src = Source(ROOT)
     K = 8192 if L < 14 else 4096
@@ -260,7 +264,7 @@ def convert(L, out_dir, st, mode, refit, iterations, col_power, shrink, col_floo
         'layer': L, 'tensor': name, 'K': K, 'bits': 13 if K == 8192 else 12, 'bytes': int(blob.size),
         'sha256': hashlib.sha256(blob.tobytes()).hexdigest(),
         'mode': mode, 'gain_refit': refit, 'lloyd_iterations': iterations, 'codebook_scope': 'shared',
-        'weighting': wt.describe(), 'statistics': stat_files, 'statistics_sha256': stats_sha,
+        'weighting': wt.describe(), 'stats_norm': stats_norm, 'statistics': stat_files, 'statistics_sha256': stats_sha,
         'calibration_run_id': cal_run, 'calibration_set_sha256': cal_set,
         'calibration_source': cal_source,
         'pool': {'train_rows': TRAIN_ROWS, 'heldout_rows': HELD_ROWS, 'seed': SEED, **totals},
@@ -288,6 +292,8 @@ def main():
     p.add_argument('--col-power', type=float, default=0.75)
     p.add_argument('--shrink-tokens', type=float, default=256.0)
     p.add_argument('--col-floor', type=float, default=0.02)
+    p.add_argument('--stats-norm', default='sum', choices=['sum', 'token'],
+                   help='column statistics: raw sums of x^2 / a^2 (sum), or each token normalized by its mean square (token)')
     p.add_argument('--base', default=None, help='base GGUF (default: the published parts)')
     p.add_argument('--no-compare', action='store_true')
     a = p.parse_args()
@@ -298,13 +304,13 @@ def main():
     else:
         layers = [int(x) for x in a.layers.split(',')]
     want = {'mode': a.mode, 'gain_refit': a.gain_refit, 'lloyd_iterations': a.iterations, 'col_power': a.col_power,
-            'shrink_tokens': a.shrink_tokens, 'col_floor': a.col_floor}
+            'shrink_tokens': a.shrink_tokens, 'col_floor': a.col_floor, 'stats_norm': a.stats_norm}
     for L in layers:
-        st = statistics(a.stats, L, a.mode)
+        st = statistics(a.stats, L, a.mode, a.stats_norm)
         if reuse(L, a.out, {**want, 'statistics_sha256': st[2], 'calibration_run_id': st[3][0]}):
             continue
         convert(L, a.out, st, a.mode, a.gain_refit, a.iterations, a.col_power, a.shrink_tokens, a.col_floor,
-                a.base, not a.no_compare)
+                a.base, not a.no_compare, a.stats_norm)
         torch.cuda.empty_cache()
 
 

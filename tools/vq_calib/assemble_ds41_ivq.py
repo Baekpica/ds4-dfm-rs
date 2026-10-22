@@ -73,7 +73,7 @@ def variant_of(r):
     hist = (r.get('training') or {}).get('history')
     w = r.get('weighting') or {}
     return {**{k: r.get(k) for k in VARIANT_KEYS}, **{f'weighting.{k}': w.get(k) for k in WEIGHTING_KEYS},
-            'lloyd_iterations': len(hist) if isinstance(hist, list) else None}
+            'stats_norm': r.get('stats_norm', 'sum'), 'lloyd_iterations': len(hist) if isinstance(hist, list) else None}
 
 
 def load_receipts(blobs, allow_unverified):

@@ -391,9 +391,12 @@ class Stats:
     def __init__(self, a, device):
         z = lambda *s: torch.zeros(s, dtype=torch.float64, device=device)
         E, H, Fm = a['n_routed_experts'], a['dim'], a['moe_inter_dim']
+        # x2n / a2n: each token's x^2 (a^2) divided by its own mean square, so every routed token weighs the
+        # same in an expert's column profile however large its activations (DeepSeek-V4.1's BOS and a few other
+        # tokens carry most of the raw energy)
         self.t = {'tokens': z(1), 'count': torch.zeros(E, dtype=torch.int64, device=device),
                   'w1': z(E), 'w2': z(E), 'x2': z(E, H), 'x2w': z(E, H), 'a2': z(E, Fm), 'a2w': z(E, Fm),
-                  'ffn_in': z(H), 'shared_a': z(Fm)}
+                  'x2n': z(E, H), 'a2n': z(E, Fm), 'ffn_in': z(H), 'shared_a': z(Fm)}
 
 
 # ----------------------------------------------------------------------------- layer
@@ -558,9 +561,11 @@ class Layer:
                 xf = xe.float().pow(2)
                 t['x2'][e] += xf.sum(0).double()
                 t['x2w'][e] += (w2d.float()[None] @ xf)[0].double()
+                t['x2n'][e] += (xf / xf.mean(-1, keepdim=True).clamp_min(1e-30)).sum(0).double()
                 af = act.pow(2)
                 t['a2'][e] += af.sum(0).double()
                 t['a2w'][e] += (w2d.float()[None] @ af)[0].double()
+                t['a2n'][e] += (af / af.mean(-1, keepdim=True).clamp_min(1e-30)).sum(0).double()
                 del xf, af
             y.index_add_(0, tok, F.linear(act_quant((we[:, None] * act).to(BF)), w2).float())
             del w1, w3, w2, xe, xq, g, u, act
