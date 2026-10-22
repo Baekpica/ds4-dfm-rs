@@ -319,7 +319,19 @@ assert cl41.statistics(st41, 20, 'imatrix')[4] == {'source': os.path.realpath(sr
 refused(lambda: cl41.statistics(st41, 20, 'imatrix'), 'ds41 statistics of another revision', 'source_revision')
 cl41.ROOT = str(tmp)
 refused(lambda: cl41.statistics(st41, 20, 'imatrix'), 'ds41 statistics of another checkpoint', 'source')
-print('converters: statistics from another checkpoint or revision refused: ok')
+# the shard files themselves: recomputed at conversion against the fingerprint the run recorded
+save_file({'w': torch.ones(4)}, str(src41 / 'model-00001-of-00001.safetensors'))
+(src41 / '.cache/huggingface/download/config.json.metadata').write_text('rev1\netag\n1.0\n')
+st41b = tmp / 'stats-src41b'
+make_run(st41b, layers=(20,), seed=12, source={'source': os.path.realpath(src41), 'source_revision': 'rev1',
+                                               'source_files': rs.source_fingerprint(src41)[0]})
+cl41.ROOT = str(src41)
+cl41.statistics(st41b, 20, 'imatrix')
+save_file({'w': torch.full((4,), 2.0)}, str(src41 / 'model-00001-of-00001.safetensors'))   # replaced in place
+os.utime(src41 / 'model-00001-of-00001.safetensors', (2e9, 2e9))
+refused(lambda: cl41.statistics(st41b, 20, 'imatrix'), 'ds41 statistics of replaced shards', 'source_files')
+refused(lambda: rs.check_source({'source_files': 'f' * 64}, src41), 'check_source, other shard files', 'source_files')
+print('converters: statistics from another checkpoint, revision or shard files refused: ok')
 
 # ---- merged statistics: several files, each must be the one summary.json records ----------------
 m = tmp / 'stats-merged'

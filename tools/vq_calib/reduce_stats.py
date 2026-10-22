@@ -165,12 +165,17 @@ def source_fingerprint(root):
 
 
 def check_source(run, root, revision=None):
-    """Statistics must come from the checkpoint being converted: the run's recorded source directory and, where
-    both sides know it, its revision. A run recorded before run ids (None) cannot be checked."""
+    """Statistics must come from the checkpoint being converted: the run's recorded source directory, its
+    revision where both sides know it, and the fingerprint of its shard files (source_fingerprint), recomputed
+    here. A run recorded before run ids (None), or before fingerprints, cannot be checked for what it lacks."""
     if not run:
         return
     here = {'source': os.path.realpath(root), 'source_revision': revision}
     diff = {k: (run.get(k), v) for k, v in here.items() if run.get(k) is not None and v is not None and run[k] != v}
+    if run.get('source_files') is not None:
+        files = source_fingerprint(root)[0]
+        if files != run['source_files']:
+            diff['source_files'] = (run['source_files'], files)
     if diff:
         raise ValueError(f'the statistics come from another checkpoint (statistics run, this conversion): {diff}')
 
