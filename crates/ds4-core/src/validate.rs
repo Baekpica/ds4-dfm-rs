@@ -26,13 +26,16 @@ const MOTIF_SHA: &[u8] = b"30f14b635d3258a18c3ff7e69829f8fbfa775e87477ffabb59a79
 const DOTS3_SHA: &[u8] = b"99b7de680dd456111c36efb8749f8ae7177328e97b65a3e39a6700cbc1173833";
 const DARWIN_REVISION: &[u8] = b"bc3c7b0410b40c085b78084e13f01c12df31087b";
 const SWIFT_REVISION: &[u8] = b"0bd4fe22431372cdad1979267d3ab45aa7e6150a";
-const QWEN_REVISIONS: [&[u8]; 4] = [
+const THINKINGCAP_REVISION: &[u8] = b"d90c9fedadaf7556df4206e6bea5a6b391b1a58e";
+const QWEN_REVISIONS: [&[u8]; 5] = [
     b"f5d08274bafd880402bd16f5e3e6c514136ec06c",
     b"8336e613ea508b13c2159bd0f68965d97a606b95",
     // Darwin retains the pinned Qwen graph and Community License.
     DARWIN_REVISION,
     // Swift retains the pinned Qwen graph under its own license.
     SWIFT_REVISION,
+    // ThinkingCap retains the pinned Qwen graph, tokenizer and license.
+    THINKINGCAP_REVISION,
 ];
 
 /// V4.1 gives the compression ratio per layer from the official config and
@@ -1275,6 +1278,12 @@ fn qwen_source_revision_supported(revision: Option<&[u8]>) -> bool {
     }
 }
 
+// Darwin and ThinkingCap declare the source NFC/Unicode splitter
+// independently of the shared inference graph and official Jinja input grammar.
+fn qwen_source_declares_nfc(revision: Option<&[u8]>) -> bool {
+    revision == Some(DARWIN_REVISION) || revision == Some(THINKINGCAP_REVISION)
+}
+
 // License digest and name each accepted source must declare.
 fn qwen_source_license(revision: Option<&[u8]>) -> (&'static [u8], &'static [u8]) {
     if revision == Some(SWIFT_REVISION) {
@@ -1716,9 +1725,7 @@ fn validate_qwen4exp(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         expect_string(g, key, want)?;
     }
 
-    // Darwin declares its source NFC/Unicode splitter independently of
-    // the shared inference graph and official Jinja input grammar.
-    if g.get_string("general.source.revision") == Some(DARWIN_REVISION) {
+    if qwen_source_declares_nfc(g.get_string("general.source.revision")) {
         expect_string(g, "tokenizer.ggml.pre", b"qwen4exp")?;
         expect_string(g, "tokenizer.ggml.normalizer", b"nfc")?;
     }
@@ -2089,7 +2096,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{qwen_source_license, qwen_source_revision_supported};
+    use super::{qwen_source_declares_nfc, qwen_source_license, qwen_source_revision_supported};
 
     #[test]
     fn dump_validate_routes_release_directories() {
@@ -2129,8 +2136,24 @@ mod tests {
         assert!(qwen_source_revision_supported(Some(
             b"0bd4fe22431372cdad1979267d3ab45aa7e6150a"
         )));
+        assert!(qwen_source_revision_supported(Some(
+            b"d90c9fedadaf7556df4206e6bea5a6b391b1a58e"
+        )));
+        assert!(!qwen_source_revision_supported(Some(
+            b"d90c9fedadaf7556df4206e6bea5a6b391b1a58f"
+        )));
         assert!(!qwen_source_revision_supported(Some(b"unknown")));
         assert!(!qwen_source_revision_supported(None));
+    }
+
+    #[test]
+    fn qwen_nfc_input_tracks_revision() {
+        for revision in super::QWEN_REVISIONS {
+            let nfc = revision == super::DARWIN_REVISION
+                || revision == b"d90c9fedadaf7556df4206e6bea5a6b391b1a58e";
+            assert_eq!(qwen_source_declares_nfc(Some(revision)), nfc);
+        }
+        assert!(!qwen_source_declares_nfc(None));
     }
 
     #[test]
