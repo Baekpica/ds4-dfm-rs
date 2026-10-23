@@ -234,6 +234,7 @@ The same `qwen4exp` runtime also accepts these explicit Q5 layouts:
 | [Qwen3.8 Flash Next Uncensored](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF) | Base/Uncensored PLE comparisons and scoped snapshot, fork and restart gates are recorded separately in the [FP8 PLE guide](qwen38-ple-fp8.md). |
 | [Swift1.5-Qwen3.8 Flash Next](https://huggingface.co/Baekpica/Swift1.5-Qwen3.8-Flash-Next-Mixed-Quant-GGUF) | Q5 backbone with the shared official FP8 PLE. The loaders accept source [`ukisai/Swift1.5-Qwen3.8-Flash-Next@0bd4fe22`](https://huggingface.co/ukisai/Swift1.5-Qwen3.8-Flash-Next/tree/0bd4fe22431372cdad1979267d3ab45aa7e6150a) with its Swift Open License v1.0 digest and name. Its published card records bounded 262,144-context, two-bank text/tool/image checks with MTP draft 2. Full-length 262K input and cross-process disk restore were not tested. Throughput remains unmeasured; the card graph is a Qwen Base reference. |
 | [Darwin-180B-RSI](https://huggingface.co/Baekpica/Darwin-180B-RSI-Mixed-Quant-GGUF) | Swift Q5 recipe, unchanged official FP8 PLE after all 128 BF16 parts matched. Bounded 8K two-bank CUDA, text/tool/image/stream/concurrency, live partial/fork reuse, disk restart and MTP on/off passed. See [scope below](#darwin-180b-rsi). |
+| [ThinkingCap-Qwen3.8 Flash Next](https://huggingface.co/Baekpica/ThinkingCap-Qwen3.8-Flash-Next-Mixed-Quant-GGUF) | Swift/Darwin Q5 recipe, unchanged official FP8 PLE after all 128 BF16 parts matched. Bounded 8K two-bank CUDA, text/tool/image/stream/concurrency, live partial/fork reuse, disk restart, MTP on/off and reasoning efforts passed. See [scope below](#thinkingcap-qwen38-flash-next). |
 
 These are artifact-specific records. Base Qwen qualification does not establish
 all quantizations, contexts or feature combinations for its derivatives.
@@ -268,6 +269,30 @@ The longest lifecycle prompt was 743 tokens. Filled 8K/262K contexts, Darwin
 throughput and quantized benchmark quality remain unmeasured. The model card
 copies the Qwen Base performance graph and table as an explicitly labeled
 reference.
+
+#### ThinkingCap-Qwen3.8-Flash-Next
+
+The supported source is BottleCap AI's shorter-thinking post-training
+[`bottlecapai/ThinkingCap-Qwen3.8-Flash-Next@d90c9fedadaf7556df4206e6bea5a6b391b1a58e`](https://huggingface.co/bottlecapai/ThinkingCap-Qwen3.8-Flash-Next/tree/d90c9fedadaf7556df4206e6bea5a6b391b1a58e).
+Its configuration, Community License, tokenizer and chat template are
+byte-identical to Qwen, as are 80 of its 131 safetensors shards and all 128
+BF16 PLE parts. The three `MQ-Q5-SSD-PLE-BF16` main shards use the Swift/Darwin
+tensor map; the package reuses the four official FP8 PLE files.
+
+The source tokenizer declares NFC, so the GGUF carries Darwin's input contract
+(`tokenizer.ggml.pre=qwen4exp`, `tokenizer.ggml.normalizer=nfc`), the validator
+requires it for this revision, and input requires the Rust hosts. An omitted
+reasoning effort renders the template's `low` instruction; `high`, `xhigh` and
+`max` render its default `xhigh`, the setting BottleCap AI's published results
+use.
+
+The [serving receipt](https://huggingface.co/Baekpica/ThinkingCap-Qwen3.8-Flash-Next-Mixed-Quant-GGUF/blob/main/reproduction/manifests/thinkingcap/serving-receipt.json)
+pins build `8105f4ea` and Darwin's 8,192-token, two-bank shape (native chunk 512,
+2 GiB PLE cache, 32 GiB disk KV, MTP draft 2). All 28 API requests, the v7
+append/edit/fork, disk-restore and cold-parity lifecycle with its 10-token MTP
+probe, MTP off and four reasoning efforts passed; fault and shed counters stayed
+zero. Filled 8K/262K contexts, throughput and quantized benchmark quality remain
+unmeasured.
 
 ## GLM 5.3 Flash release scope
 
