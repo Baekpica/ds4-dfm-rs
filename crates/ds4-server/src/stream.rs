@@ -38,6 +38,7 @@ pub enum ChatFormat {
     Inkling,
     IQuestQ1,
     Beam,
+    Minimax,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,6 +68,7 @@ pub fn think_start(fmt: ChatFormat) -> &'static str {
         ChatFormat::K2Horizon => crate::render::K2_THINK_START,
         ChatFormat::Inkling => crate::render::inkling::THINK,
         ChatFormat::Beam => crate::tools::beam::ANALYSIS,
+        ChatFormat::Minimax => crate::tools::minimax::THINK,
         _ => "<think>",
     }
 }
@@ -77,6 +79,7 @@ pub fn think_end(fmt: ChatFormat) -> &'static str {
         ChatFormat::K2Horizon => crate::render::K2_THINK_END,
         ChatFormat::Inkling => crate::render::inkling::END,
         ChatFormat::Beam => crate::tools::beam::END,
+        ChatFormat::Minimax => crate::tools::minimax::THINK_END,
         _ => "</think>",
     }
 }
@@ -354,8 +357,14 @@ pub fn text_stream_safe_limit(
             };
             for i in (scan + 1..=raw_len).rev() {
                 if raw[i - 1] == b'<' {
-                    if i - 1 < limit {
-                        limit = i - 1;
+                    // MiniMax tags open with the namespace token `]<]minimax[>[`.
+                    let at = if format == ChatFormat::Minimax && i >= 2 && raw[i - 2] == b']' {
+                        i - 2
+                    } else {
+                        i - 1
+                    };
+                    if at < limit {
+                        limit = at;
                     }
                     break;
                 }
