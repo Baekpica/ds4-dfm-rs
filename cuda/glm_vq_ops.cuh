@@ -130,11 +130,18 @@ __global__ void __launch_bounds__(GLMVQ_RMS_ROWS * 32) glmvq_rms_warp(const floa
 // Where the SwiGLU limit applies. GLM clamps the gate before SiLU. Ling's
 // serving form (vLLM SwigluStepAndMul) clamps SiLU's F32 output above and
 // up on both sides, then rounds once; an unclamped layer passes +inf.
-enum glmvq_clamp { GLMVQ_CLAMP_GATE, GLMVQ_CLAMP_SILU };
+// OAI: MiniMax's swigluoai, min(g, l) * sigmoid(1.702 min(g, l)) *
+// (clamp(u, -l, l) + 1) in F32, rounded once.
+enum glmvq_clamp { GLMVQ_CLAMP_GATE, GLMVQ_CLAMP_SILU, GLMVQ_CLAMP_OAI };
 
 template <glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE>
 __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float limit) {
-    if constexpr (CLAMP == GLMVQ_CLAMP_SILU) {
+    if constexpr (CLAMP == GLMVQ_CLAMP_OAI) {
+        const float g = fminf(gate, limit);
+        const float u = fminf(fmaxf(up, -limit), limit);
+        const float s = __fdiv_rn(1.0f, glmvq_add(1.0f, expf(-glmvq_mul(1.702f, g))));
+        return glmvq_round(glmvq_mul(glmvq_mul(g, s), glmvq_add(u, 1.0f)));
+    } else if constexpr (CLAMP == GLMVQ_CLAMP_SILU) {
         const float u = fminf(fmaxf(up, -limit), limit);
         const float silu = fminf(__fdiv_rn(gate, glmvq_add(1.0f, expf(-gate))), limit);
         return glmvq_round(glmvq_mul(silu, u));
