@@ -6684,7 +6684,10 @@ static bool qwen4exp_source_revision_supported(ds4_str revision) {
            /* Darwin retains the pinned Qwen graph and Community License. */
            ds4_streq(revision,
                      "bc3c7b0410b40c085b78084e13f01c12df31087b") ||
-           ds4_streq(revision, QWEN4EXP_SWIFT_REVISION);
+           ds4_streq(revision, QWEN4EXP_SWIFT_REVISION) ||
+           /* ThinkingCap retains the pinned Qwen graph, tokenizer and license. */
+           ds4_streq(revision,
+                     "d90c9fedadaf7556df4206e6bea5a6b391b1a58e");
 }
 
 static bool tensor_type_is_qwen4exp_plain(uint32_t type) {
