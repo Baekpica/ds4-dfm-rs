@@ -36,6 +36,10 @@ fn glm_model(id: i32) -> bool {
     id == crate::Variant::Glm53Flash as i32 || id == crate::Variant::Glm53FlashVq as i32
 }
 
+fn minimax_model(id: i32) -> bool {
+    id == crate::Variant::MinimaxVq as i32
+}
+
 impl ChatOptions {
     pub fn new(model_id: i32, mode: ChatThinkMode) -> Self {
         use ChatThinkMode::{High, Low, Max, None};
@@ -48,6 +52,8 @@ impl ChatOptions {
             (8, _) => "high",
             // Beam always writes analysis: off is its smallest trained budget.
             (19, None) => "minimal",
+            // MiniMax has no "none" effort; off closes the think span instead.
+            (id, None) if minimax_model(id) => "low",
             (_, None) => "none",
             (_, Low) => "low",
             (_, High) => "high",
@@ -57,6 +63,9 @@ impl ChatOptions {
             (id, None) if glm_model(id) => "</think>",
             (8, None) => "</ifm|think>\n",
             (id, None) if id == crate::Variant::Step37Flash as i32 => "</think>\n",
+            // "When thinking is disabled, begin your response directly after
+            // the </mm:think> prefix" (chat_template.jinja).
+            (id, None) if minimax_model(id) => "</mm:think>",
             _ => "",
         };
         Self {
@@ -90,6 +99,10 @@ impl Template {
             let gguf = crate::beam_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
         }
+        if path.is_dir() && crate::minimax_vq::is_release(path) {
+            let gguf = crate::minimax_vq::metadata(path).map_err(asset_error)?;
+            return Self::load(path, &gguf);
+        }
         if path.is_dir() && crate::ling31_vq::is_release(path) {
             let gguf = crate::ling31_vq::metadata(path).map_err(asset_error)?;
             return Self::load(path, &gguf);
@@ -110,10 +123,13 @@ impl Template {
         };
         if path.is_dir() {
             let beam = crate::beam_vq::is_release(path);
+            let minimax = crate::minimax_vq::is_release(path);
             let ling = crate::ling31_vq::is_release(path);
             for name in ["tokenizer_config.json", "chat_template.jinja"] {
                 if beam {
                     crate::beam_vq::asset(path, name).map_err(asset_error)?;
+                } else if minimax {
+                    crate::minimax_vq::asset(path, name).map_err(asset_error)?;
                 } else if ling {
                     crate::ling31_vq::asset(path, name).map_err(asset_error)?;
                 } else {

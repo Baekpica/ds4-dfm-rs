@@ -22,6 +22,7 @@ fn hidden_values(shape: &Shape) -> u64 {
         | ModelFamily::Ling3Vl
         | ModelFamily::Ling31Vq
         | ModelFamily::BeamVq
+        | ModelFamily::MinimaxVq
         | ModelFamily::Mimo2
         | ModelFamily::Qwen35
         | ModelFamily::IQuestQ1

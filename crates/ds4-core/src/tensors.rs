@@ -24,6 +24,7 @@ pub enum TensorError {
     GlmVq(&'static str),
     Ling31Vq(&'static str),
     BeamVq(&'static str),
+    MinimaxVq(&'static str),
 }
 
 impl TensorError {
@@ -41,6 +42,7 @@ impl TensorError {
             TensorError::GlmVq(reason) => format!("glm-vq {reason}"),
             TensorError::Ling31Vq(reason) => format!("ling31-vq {reason}"),
             TensorError::BeamVq(reason) => format!("beam-vq {reason}"),
+            TensorError::MinimaxVq(reason) => format!("minimax-vq {reason}"),
         }
     }
 }
@@ -310,8 +312,10 @@ fn parse_one(
             return Err(TensorError::OutsideFile);
         }
     }
-    // Beam parts carry GVQ1 tensors GLM's validator would claim.
-    if crate::beam_vq::requested(g) {
+    // MiniMax and Beam parts carry GVQ1 tensors GLM's validator would claim.
+    if crate::minimax_vq::requested(g) {
+        crate::minimax_vq::validate_part(g, &mut tensors, pos, data_pos)?;
+    } else if crate::beam_vq::requested(g) {
         crate::beam_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     } else if crate::ling31_vq::requested(g) {
         crate::ling31_vq::validate_part(g, &mut tensors, pos, data_pos)?;
@@ -372,6 +376,10 @@ impl TensorInventory {
             if crate::beam_vq::is_release(path) {
                 return crate::beam_vq::open_dir(path);
             }
+            // MiniMax releases open their trunk; drafting asks for `open_minimax`.
+            if crate::minimax_vq::is_release(path) {
+                return crate::minimax_vq::open_dir(path, crate::MinimaxFeature::Trunk);
+            }
             // Ling releases open their trunk; MTP serving asks for `open_ling31`.
             if crate::ling31_vq::is_release(path) {
                 return crate::ling31_vq::open_dir(path, crate::Ling31Feature::Trunk);
@@ -385,6 +393,11 @@ impl TensorInventory {
     /// A Ling-3.1 VQ release with the parts `feature` selects.
     pub fn open_ling31(path: &Path, feature: crate::Ling31Feature) -> Result<Self, TensorError> {
         crate::ling31_vq::open_dir(path, feature)
+    }
+
+    /// A MiniMax VQ release with the parts `feature` selects.
+    pub fn open_minimax(path: &Path, feature: crate::MinimaxFeature) -> Result<Self, TensorError> {
+        crate::minimax_vq::open_dir(path, feature)
     }
 
     pub fn from_file(path: &Path, g: &GgufFile) -> Result<Self, TensorError> {

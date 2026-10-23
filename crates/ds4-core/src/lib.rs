@@ -31,6 +31,7 @@ mod mapped;
 mod mem;
 mod mem_gov;
 mod mimo2;
+mod minimax_vq;
 mod naive;
 mod naive_mtp;
 mod payload;
@@ -105,6 +106,7 @@ pub use mimo2::{
     MIXED_SHARDS, MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START,
     VISION_END, VISION_START,
 };
+pub use minimax_vq::Feature as MinimaxFeature;
 pub use payload::{
     dump_cmd as payload_dump_cmd, dump_script as payload_dump_script, encode_fields, parse_prefix,
     put_u32, tail as payload_tail, HostPrefix, PayloadError, PayloadLayout, HEADER_BYTES,
@@ -1291,6 +1293,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::MinimaxVq {
+        let g = minimax_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1337,6 +1345,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => Ling31Feature::Mtp,
         };
         TensorInventory::open_ling31(Path::new(path), feature)
+    } else if identified.shape.family == ModelFamily::MinimaxVq {
+        let feature = match parts {
+            ProbeParts::Trunk => MinimaxFeature::Trunk,
+            ProbeParts::WithMtp => MinimaxFeature::Draft,
+        };
+        TensorInventory::open_minimax(Path::new(path), feature)
     } else {
         TensorInventory::open(std::path::Path::new(path))
     }
@@ -1571,6 +1585,20 @@ impl Model {
                 message: "Beam VQ requires one CUDA model without DSpark or vision sidecars".into(),
             });
         }
+        // MiniMax's drafter and vision tower are parts of its release.
+        if identified.shape.family == ModelFamily::MinimaxVq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "MiniMax VQ requires one CUDA release directory without sidecar paths"
+                    .into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -1633,11 +1661,17 @@ impl Model {
         }
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
         let mut ffi_vocab = pack_host_vocab(&vocab);
-        // Ling-3.1 maps its MTP part only when the open drafts with it.
+        // Ling-3.1 maps its MTP part only when the open drafts with it;
+        // MiniMax its DSpark drafter part.
         let inventory = if identified.shape.family == ModelFamily::Ling31Vq {
             TensorInventory::open_ling31(
                 Path::new(path),
                 ling31_vq::feature(tuning.mtp_draft_tokens),
+            )
+        } else if identified.shape.family == ModelFamily::MinimaxVq {
+            TensorInventory::open_minimax(
+                Path::new(path),
+                minimax_vq::feature(tuning.mtp_draft_tokens),
             )
         } else {
             TensorInventory::open(std::path::Path::new(path))
