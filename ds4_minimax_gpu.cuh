@@ -708,22 +708,31 @@ __device__ __forceinline__ void mm_fp4_encode(const float *src, uint8_t *data, u
 }
 
 // K and V rows of `rows` tokens into their pages: warp w of block (row,
-// side) encodes KV head w.
-__global__ void mm_kv_store_kernel(uint8_t *pages, const float *k, const float *v, uint32_t pos) {
+// side) encodes KV head w. A table maps blocks to pool slots (SSD tier).
+__global__ void mm_kv_store_kernel(uint8_t *pages, const int32_t *table, const float *k, const float *v,
+        uint32_t pos) {
     const uint32_t r = blockIdx.x, side = blockIdx.y, head = threadIdx.x / 32;
     const uint32_t t = pos + r, block = t / MM_BLOCK, slot = t % MM_BLOCK;
-    uint8_t *page = pages + ((uint64_t)block * MM_KV_HEADS + head) * MM_PAGE + side * (MM_PAGE / 2);
+    const uint64_t page_id = table ? (uint64_t)table[block] : block;
+    uint8_t *page = pages + (page_id * MM_KV_HEADS + head) * MM_PAGE + side * (MM_PAGE / 2);
     const float *src = (side ? v : k) + ((uint64_t)r * MM_KV_HEADS + head) * MM_HEAD;
     mm_fp4_encode(src, page + slot * MM_FP4_DATA, page + MM_BLOCK * MM_FP4_DATA + slot * (MM_FP4_ROW - MM_FP4_DATA));
 }
 
-extern "C" int ds4_gpu_minimax_kv_store(ds4_gpu_tensor *pages, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
-        uint32_t rows, uint32_t pos) {
+// The pages of blocks [0, ceil(pos / 128)) are addressable: directly, or
+// through a table of that many slots.
+static bool mm_pages_ok(const ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, uint32_t pos) {
+    const uint64_t blocks = (pos + MM_BLOCK - 1) / MM_BLOCK;
+    return pages && (table ? table->bytes >= blocks * sizeof(int32_t)
+                           : pages->bytes >= blocks * MM_KV_HEADS * MM_PAGE);
+}
+
+extern "C" int ds4_gpu_minimax_kv_store(ds4_gpu_tensor *pages, const ds4_gpu_tensor *table,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos) {
     const uint64_t count = (uint64_t)rows * MM_KV_HEADS * MM_HEAD;
-    const uint64_t need = (uint64_t)((pos + rows + MM_BLOCK - 1) / MM_BLOCK) * MM_KV_HEADS * MM_PAGE;
-    if (!rows || !pages || pages->bytes < need || !gvq_floats(k, count) || !gvq_floats(v, count)) { return 0; }
+    if (!rows || !mm_pages_ok(pages, table, pos + rows) || !gvq_floats(k, count) || !gvq_floats(v, count)) { return 0; }
     mm_kv_store_kernel<<<dim3(rows, 2), MM_KV_HEADS * 32, 0, ds4_current_stream()>>>((uint8_t *)pages->ptr,
-        (const float *)k->ptr, (const float *)v->ptr, pos);
+        table ? (const int32_t *)table->ptr : nullptr, (const float *)k->ptr, (const float *)v->ptr, pos);
     return cuda_ok(cudaGetLastError(), "MiniMax K/V store");
 }
 
@@ -897,7 +906,7 @@ enum { MM_ATTN_THREADS = 128, MM_ATTN_TILE = 32 };
  * (max, sum, O) per head goes to `partial`. */
 template <bool FINAL>
 __global__ void __launch_bounds__(MM_ATTN_THREADS) mm_attn_kernel(float *heads, float *partial, const float *q,
-        const uint8_t *pages, const int32_t *blocks, uint32_t pos, uint32_t per) {
+        const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos, uint32_t per) {
     __shared__ float qs[MM_GROUP][MM_HEAD];
     __shared__ float ks[MM_ATTN_TILE][MM_HEAD + 1];
     __shared__ float vs[MM_ATTN_TILE][MM_HEAD];
@@ -916,7 +925,8 @@ __global__ void __launch_bounds__(MM_ATTN_THREADS) mm_attn_kernel(float *heads, 
     for (uint32_t j = j0; j < min(j0 + per, (uint32_t)MM_TOPK); j++) {
         const int32_t b = list[j];
         if (b < 0) { break; }
-        const uint8_t *page = pages + ((uint64_t)b * MM_KV_HEADS + kv) * MM_PAGE;
+        const uint64_t page_id = table ? (uint64_t)table[b] : (uint64_t)b;
+        const uint8_t *page = pages + (page_id * MM_KV_HEADS + kv) * MM_PAGE;
         const uint32_t t0 = (uint32_t)b * MM_BLOCK;
         const uint32_t keys = min((uint32_t)MM_BLOCK, p + 1 - t0);
         for (uint32_t base = 0; base < keys; base += MM_ATTN_TILE) {
@@ -1013,22 +1023,56 @@ __global__ void mm_attn_combine(float *heads, const float *partial) {
 }
 
 extern "C" int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
-        const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows, uint32_t pos) {
+        const ds4_gpu_tensor *table, const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows,
+        uint32_t pos) {
     const uint64_t count = (uint64_t)rows * MM_HEADS * MM_HEAD;
-    const uint64_t need = (uint64_t)((pos + rows + MM_BLOCK - 1) / MM_BLOCK) * MM_KV_HEADS * MM_PAGE;
-    if (!rows || !pages || pages->bytes < need || !gvq_floats(heads, count) || !gvq_floats(q, count) || !blocks ||
-        blocks->bytes < (uint64_t)rows * MM_KV_HEADS * MM_TOPK * sizeof(int32_t)) { return 0; }
+    if (!rows || !mm_pages_ok(pages, table, pos + rows) || !gvq_floats(heads, count) || !gvq_floats(q, count) ||
+        !blocks || blocks->bytes < (uint64_t)rows * MM_KV_HEADS * MM_TOPK * sizeof(int32_t)) { return 0; }
     const cudaStream_t stream = ds4_current_stream();
+    const int32_t *slots = table ? (const int32_t *)table->ptr : nullptr;
     if (rows > 1) {
         mm_attn_kernel<true><<<dim3(rows, MM_KV_HEADS), MM_ATTN_THREADS, 0, stream>>>((float *)heads->ptr, nullptr,
-            (const float *)q->ptr, (const uint8_t *)pages->ptr, (const int32_t *)blocks->ptr, pos, MM_TOPK);
+            (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, MM_TOPK);
         return cuda_ok(cudaGetLastError(), "MiniMax attention");
     }
     if (!gvq_floats(partials, (uint64_t)MM_SPLITS * MM_GROUP * (MM_HEAD + 2))) { return 0; }
     mm_attn_kernel<false><<<MM_SPLITS, MM_ATTN_THREADS, 0, stream>>>(nullptr, (float *)partials->ptr,
-        (const float *)q->ptr, (const uint8_t *)pages->ptr, (const int32_t *)blocks->ptr, pos, 1u);
+        (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, 1u);
     mm_attn_combine<<<MM_HEADS, MM_HEAD, 0, stream>>>((float *)heads->ptr, (const float *)partials->ptr);
     return cuda_ok(cudaGetLastError(), "MiniMax decode attention");
+}
+
+/* ------------------------------------------------------------- pinned pool */
+
+// Pinned host memory the GPU reads and writes in place (mapped
+// cudaHostAlloc): the SSD tier's pool and slot table, which O_DIRECT reads
+// fill and the host rewrites without a copy. The tensor wraps the device
+// alias; ds4_gpu_minimax_host_free releases both.
+extern "C" void *ds4_gpu_minimax_host_alloc(uint64_t bytes, ds4_gpu_tensor **device) {
+    void *host = nullptr, *alias = nullptr;
+    *device = nullptr;
+    if (!bytes || !cuda_ok(cudaHostAlloc(&host, (size_t)bytes, cudaHostAllocMapped | cudaHostAllocPortable),
+            "MiniMax pinned pool")) { return nullptr; }
+    ds4_gpu_tensor *t = (ds4_gpu_tensor *)calloc(1, sizeof(*t));
+    if (!t || !cuda_ok(cudaHostGetDevicePointer(&alias, host, 0), "MiniMax pinned alias")) {
+        free(t);
+        cudaFreeHost(host);
+        return nullptr;
+    }
+    t->ptr = alias;
+    t->bytes = bytes;
+    t->memc = cuda_mem_scope_class();
+    cuda_mem_note_alloc(t->memc, DS4_MEMD_PINNED_HOST, bytes, bytes);
+    *device = t;
+    return host;
+}
+
+extern "C" void ds4_gpu_minimax_host_free(void *host, ds4_gpu_tensor *device) {
+    if (device) {
+        cuda_mem_note_free(device->memc, DS4_MEMD_PINNED_HOST, device->bytes, device->bytes);
+        free(device);
+    }
+    if (host) { cudaFreeHost(host); }
 }
 
 /* ------------------------------------------------------------- head, embed */

@@ -127,6 +127,9 @@ const MINIMAX_NATIVE_MAX: u32 = 4096;
 const MINIMAX_DECODE_BYTES: u64 = 211_456;
 // C MINIMAX_SCORE_BUDGET: indexer block scores per pass.
 const MINIMAX_SCORE_BUDGET: u64 = 64 * MIB;
+// C minimax_resident_ctx: the largest context whose K/V pages stay resident.
+const MINIMAX_RESIDENT_CTX_ENV: &str = "DS4_MINIMAX_KV_RESIDENT_CTX";
+const MINIMAX_RESIDENT_CTX: u32 = 131_072;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -400,12 +403,13 @@ pub fn fill_quote_facts(
             },
             0,
         ),
-        // Each bank owns its index keys, K/V pages, host logits and history;
-        // graph 0 owns the row workspace and the host embedding staging.
+        // Each bank owns its index keys, K/V pages (or SSD-tier pool), host
+        // logits and history; graph 0 owns the row workspace and the host
+        // embedding and block-selection staging.
         (ModelFamily::MinimaxVq, Some(s)) => (
             minimax_kv_bytes(ctx) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
             minimax_workspace_bytes(ctx, u64::from(native))
-                + u64::from(native) * u64::from(s.n_embd) * SIZEOF_U16,
+                + u64::from(native) * (u64::from(s.n_embd) * SIZEOF_U16 + 64 * SIZEOF_I32),
             0,
             0,
         ),
@@ -2657,10 +2661,21 @@ fn beam_kv_bytes(ctx: u64, native: u32) -> u64 {
 }
 
 // C minimax_kv_bytes: every layer keeps every position, 72 bytes of NVFP4
-// index key per token and 73,728-byte K/V pages per 128-token block.
+// index key per token and 73,728-byte K/V pages per 128-token block. Past
+// the resident context the pages live on SSD and a pinned pool holds one
+// layer's every block (at least 128 per layer) plus 33 pins per layer, with
+// an int32 slot table per layer and block.
 fn minimax_kv_bytes(ctx: u64) -> u64 {
     const LAYERS: u64 = 60;
-    LAYERS * (ctx * 72 + ctx.div_ceil(128) * 73_728)
+    const PAGE: u64 = 73_728;
+    let blocks = ctx.div_ceil(128);
+    let index = LAYERS * ctx * 72;
+    let resident = env_u32(MINIMAX_RESIDENT_CTX_ENV, MINIMAX_RESIDENT_CTX, 0, 1 << 20);
+    if ctx <= u64::from(resident) {
+        return index + LAYERS * blocks * PAGE;
+    }
+    let pool = blocks.max(LAYERS * 128) + LAYERS * (u64::from(MINIMAX_NATIVE_MAX) / 128 + 1);
+    index + pool * PAGE + LAYERS * blocks * SIZEOF_I32
 }
 
 // C minimax_workspace_bytes on the CUDA kernels: logits, the
@@ -3391,12 +3406,17 @@ mod tests {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(MINIMAX_PREFILL_CHUNK_ENV);
         // Native graph log at ctx 16384, 2048-row chunks: KV 0.59 GiB,
-        // workspace 0.89 GiB. Every layer keeps 648 bytes per token, so
-        // 1M needs 37.97 GiB beside the index keys' share.
+        // workspace 0.89 GiB. Every layer keeps 648 bytes per token up to
+        // 128K; 1M keeps its 4.22 GiB of index keys and a 0.75 GiB pool.
+        let _tier = EnvGuard::unset(MINIMAX_RESIDENT_CTX_ENV);
         let gib = |b: u64| b as f64 / GIB as f64;
         assert!((gib(minimax_kv_bytes(16384)) - 0.59).abs() < 0.005);
         assert!((gib(minimax_workspace_bytes(16384, 2048)) - 0.89).abs() < 0.005);
-        assert_eq!(minimax_kv_bytes(1 << 20), 60 * (1 << 20) * 648);
+        assert_eq!(minimax_kv_bytes(131_072), 60 * 131_072 * 648);
+        assert_eq!(
+            minimax_kv_bytes(1 << 20),
+            60 * (1 << 20) * 72 + (8192 + 60 * 33) * 73_728 + 60 * 8192 * 4
+        );
 
         let s = crate::shape::SHAPE_MINIMAX_VQ;
         let req = ServingRequest {
@@ -3424,7 +3444,7 @@ mod tests {
         assert_eq!(facts.per_bank_bytes, Some(minimax_kv_bytes(16384) + host));
         assert_eq!(
             facts.scratch_bytes,
-            Some(minimax_workspace_bytes(16384, 2048) + 2048 * 6144 * SIZEOF_U16)
+            Some(minimax_workspace_bytes(16384, 2048) + 2048 * (6144 * SIZEOF_U16 + 64 * SIZEOF_I32))
         );
     }
 

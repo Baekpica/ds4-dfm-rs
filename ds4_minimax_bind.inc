@@ -166,19 +166,13 @@ static uint64_t minimax_blocks(uint32_t ctx) {
     return ((uint64_t)ctx + MINIMAX_BLOCK - 1u) / MINIMAX_BLOCK;
 }
 
-// One layer's index keys and K/V pages; every layer keeps the full history
-// (MSA's selection saves reads, not storage).
+// One layer's index keys; every layer keeps the full history (MSA's
+// selection saves reads, not storage).
 static uint64_t minimax_index_bytes(uint32_t ctx) {
     return (uint64_t)ctx * MINIMAX_FP4_ROW;
 }
 
-static uint64_t minimax_page_bytes(uint32_t ctx) {
-    return minimax_blocks(ctx) * MINIMAX_KV_BLOCK;
-}
-
-static uint64_t minimax_kv_bytes(uint32_t ctx) {
-    return (uint64_t)MINIMAX_LAYERS * (minimax_index_bytes(ctx) + minimax_page_bytes(ctx));
-}
+#include "ds4_minimax_kv.inc"
 
 // Indexer scores: every row of a chunk against every block below it, at
 // most MINIMAX_SCORE_BUDGET bytes per pass (one decode row always fits).

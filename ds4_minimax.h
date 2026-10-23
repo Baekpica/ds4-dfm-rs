@@ -85,9 +85,10 @@ int ds4_gpu_minimax_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uin
 /* NVFP4 stores of rows at positions pos..pos+rows-1 (the vLLM encoder: per
  * 16 values the E4M3 scale of max(amax / 6, 2^-9), E2M1 codes rounded to
  * nearest even, global scale 1). K/V go to the layer's pages (block
- * pos / 128, KV head h); index keys to `pool` rows of 72 bytes. */
-int ds4_gpu_minimax_kv_store(ds4_gpu_tensor *pages, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
-    uint32_t rows, uint32_t pos);
+ * pos / 128, KV head h), or with a `table` (int32 per block) to page slot
+ * table[block]; index keys to `pool` rows of 72 bytes. */
+int ds4_gpu_minimax_kv_store(ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, const ds4_gpu_tensor *k,
+    const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos);
 int ds4_gpu_minimax_index_store(ds4_gpu_tensor *pool, const ds4_gpu_tensor *key, uint32_t rows, uint32_t pos);
 
 /* MSA block selection for rows at pos..: per row and KV head h the block
@@ -100,12 +101,20 @@ int ds4_gpu_minimax_index_store(ds4_gpu_tensor *pool, const ds4_gpu_tensor *key,
 int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *scores, uint32_t score_rows,
     const ds4_gpu_tensor *query, const ds4_gpu_tensor *pool, uint32_t rows, uint32_t pos);
 
-/* Attention of rows at pos.. over their selected blocks: 64 query heads,
- * KV head h = head / 16, causal inside the row's own block, softmax scale
- * 128^-0.5 in F32, output rounded once. One row splits its blocks into
- * DS4_MINIMAX_SPLITS partials (`partials`: SPLITS x 16 x 130 floats). */
+/* Attention of rows at pos.. over their selected blocks (pages addressed
+ * as in kv_store): 64 query heads, KV head h = head / 16, causal inside the
+ * row's own block, softmax scale 128^-0.5 in F32, output rounded once. One
+ * row splits its blocks into DS4_MINIMAX_SPLITS partials (`partials`:
+ * SPLITS x 16 x 130 floats). */
 int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
-    const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows, uint32_t pos);
+    const ds4_gpu_tensor *table, const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows,
+    uint32_t pos);
+
+/* Pinned host memory mapped into the device (the SSD tier's pool and slot
+ * table): returns the host address and sets `device` to a tensor over the
+ * device alias; free both with ds4_gpu_minimax_host_free. */
+void *ds4_gpu_minimax_host_alloc(uint64_t bytes, ds4_gpu_tensor **device);
+void ds4_gpu_minimax_host_free(void *host, ds4_gpu_tensor *device);
 
 /* logits = -inf on the head rows past the tokenizer (`tokens`). */
 int ds4_gpu_minimax_logits(ds4_gpu_tensor *logits, uint32_t rows, uint32_t tokens);

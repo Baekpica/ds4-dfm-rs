@@ -12,9 +12,10 @@
  *         ─▶ attention over those blocks ─▶ o_proj
  *
  * Every layer keeps every position: 72 bytes of index key and 576 bytes of
- * K/V per token. The embedding is read from the mapped SSD part row by
- * row; Q4_K projections run on GLM VQ's kernels and the routed experts on
- * MiniMax's runtime (ds4_minimax_gpu.cuh). */
+ * K/V per token, the K/V pages on SSD past the resident context
+ * (ds4_minimax_kv.inc). The embedding is read from the mapped SSD part row
+ * by row; Q4_K projections run on GLM VQ's kernels and the routed experts
+ * on MiniMax's runtime (ds4_minimax_gpu.cuh). */
 
 typedef enum { MINIMAX_HEAD_LAST, MINIMAX_HEAD_SKIP } minimax_head_mode;
 
@@ -28,22 +29,27 @@ typedef struct {
     ds4_gpu_tensor *logits, *partials, *scores;
     ds4_gpu_tensor *index[DS4_MAX_LAYER], *pages[DS4_MAX_LAYER];
     uint16_t *host_embed;
+    int32_t *host_blocks;   // a layer's selections, read back by the SSD tier
     uint32_t matrices[MINIMAX_LAYERS][3u * MINIMAX_EXPERTS];
 #ifndef __APPLE__
     ds4_gvq_ctx *gvq;
     ds4_minimax_moe *moe;
 #endif
+    minimax_kv kv;
 } ds4_minimax_graph;
 
-/* Every graph owns its index keys and K/V pages. A bank graph borrows
- * everything else from graph 0: bank forwards are serialized, so scratch is
- * shared. */
+/* Every graph owns its index keys and K/V pages (or SSD tier). A bank graph
+ * borrows everything else from graph 0: bank forwards are serialized, so
+ * scratch is shared. */
 static void minimax_graph_free(ds4_minimax_graph *g) {
     if (!g) { return; }
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
         ds4_gpu_tensor_free(g->index[il]);
         ds4_gpu_tensor_free(g->pages[il]);
     }
+#ifndef __APPLE__
+    minimax_kv_close(&g->kv);
+#endif
     if (g->borrowed) {
         memset(g, 0, sizeof(*g));
         return;
@@ -59,14 +65,20 @@ static void minimax_graph_free(ds4_minimax_graph *g) {
     ds4_gpu_tensor_free(g->partials);
     ds4_gpu_tensor_free(g->scores);
     free(g->host_embed);
+    free(g->host_blocks);
     memset(g, 0, sizeof(*g));
 }
 
 /* Attention and the indexer read only positions below the row, and every
- * position is written before it is read: a reset only rewinds the position. */
+ * position is written before it is read: a reset only rewinds the position
+ * (and drops a failed forward's SSD-tier pins). */
 static bool minimax_graph_reset(ds4_minimax_graph *g) {
     if (!g || !g->ready) { return false; }
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
+#ifndef __APPLE__
+    minimax_kv_end(&g->kv);
+    minimax_kv_restart(&g->kv);
+#endif
     g->position = 0u;
     g->failed = false;
     return true;
@@ -74,14 +86,14 @@ static bool minimax_graph_reset(ds4_minimax_graph *g) {
 
 #ifndef __APPLE__
 static bool minimax_graph_kv(ds4_minimax_graph *g) {
-    g->kv_bytes = 0;
+    g->kv_bytes = minimax_kv_bytes(g->ctx_cap);
+    if (!minimax_kv_open(&g->kv, g->ctx_cap)) { return false; }
     for (uint32_t il = 0; il < MINIMAX_LAYERS; il++) {
         g->index[il] = ds4_gpu_tensor_alloc(minimax_index_bytes(g->ctx_cap));
-        g->pages[il] = ds4_gpu_tensor_alloc(minimax_page_bytes(g->ctx_cap));
-        if (!g->index[il] || !g->pages[il]) { return false; }
-        g->kv_bytes += minimax_index_bytes(g->ctx_cap) + minimax_page_bytes(g->ctx_cap);
+        g->pages[il] = g->kv.spill ? NULL : ds4_gpu_tensor_alloc(minimax_page_bytes(g->ctx_cap));
+        if (!g->index[il] || (!g->kv.spill && !g->pages[il])) { return false; }
     }
-    return g->kv_bytes == minimax_kv_bytes(g->ctx_cap);
+    return true;
 }
 
 static bool minimax_graph_alloc(ds4_minimax_graph *g, const ds4_model *m, const ds4_weights *w,
@@ -110,6 +122,7 @@ static bool minimax_graph_alloc(ds4_minimax_graph *g, const ds4_model *m, const 
         (MINIMAX_HEAD + 2u) * sizeof(float));
     g->scores = ds4_gpu_tensor_alloc(g->score_bytes);
     g->host_embed = xmalloc((size_t)cap * MINIMAX_EMBD * sizeof(uint16_t));
+    g->host_blocks = xmalloc((size_t)cap * MINIMAX_KV_HEADS * MINIMAX_TOPK * sizeof(int32_t));
     if (!g->logits || !g->partials || !g->scores || !minimax_graph_kv(g)) {
         fprintf(stderr, "ds4: MiniMax graph allocation failed\n");
         minimax_graph_free(g);
@@ -127,8 +140,9 @@ static bool minimax_graph_alloc(ds4_minimax_graph *g, const ds4_model *m, const 
     g->ready = true;
     if (!minimax_graph_reset(g)) { minimax_graph_free(g); return false; }
     ds4_log(stderr, DS4_LOG_TIMING,
-        "ds4: MiniMax graph ctx=%u chunk=%u KV=%.2f GiB workspace=%.2f GiB\n", ctx, cap,
-        (double)g->kv_bytes / 1073741824.0, (double)g->workspace_bytes / 1073741824.0);
+        "ds4: MiniMax graph ctx=%u chunk=%u KV=%.2f GiB (%s) workspace=%.2f GiB\n", ctx, cap,
+        (double)g->kv_bytes / 1073741824.0, g->kv.spill ? "index keys + SSD-tier pool" : "resident",
+        (double)g->workspace_bytes / 1073741824.0);
     return true;
 }
 
@@ -150,12 +164,13 @@ static bool minimax_trace(uint32_t il, uint32_t pos, const char *name, const ds4
     return ok;
 }
 
-// A bank graph: its own index keys and K/V pages, everything else borrowed
-// from graph 0.
+// A bank graph: its own index keys and K/V pages (or SSD tier), everything
+// else borrowed from graph 0.
 static bool minimax_graph_bank(ds4_minimax_graph *g, const ds4_minimax_graph *owner) {
     *g = *owner;
     g->borrowed = true;
     g->ready = false;
+    memset(&g->kv, 0, sizeof(g->kv));
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
         g->index[il] = NULL;
         g->pages[il] = NULL;
@@ -198,6 +213,14 @@ static bool minimax_q8(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor
     return ok;
 }
 
+// SSD tier: the layer's selected blocks into the pool before attention.
+static bool minimax_resolve(ds4_minimax_graph *g, uint32_t il, uint32_t rows) {
+    if (!minimax_kv_needs_resolve(&g->kv)) { return true; }
+    const uint32_t count = rows * MINIMAX_KV_HEADS * MINIMAX_TOPK;
+    return ds4_gpu_tensor_read(g->blocks, 0, g->host_blocks, (uint64_t)count * sizeof(int32_t)) &&
+        minimax_kv_resolve(&g->kv, il, g->host_blocks, count);
+}
+
 /* MSA: projections, per-head norms with partial RoPE, NVFP4 K/V and index
  * key stores, block selection per KV head, attention over the selected
  * blocks and o_proj. The chunk stores every row's keys before any row reads
@@ -206,6 +229,8 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
         uint32_t il, uint32_t rows, uint32_t pos) {
     const ds4_layer_weights *l = &w->layer[il];
     const ds4_minimax_layer *x = &w->minimax[il];
+    ds4_gpu_tensor *pages = g->kv.spill ? g->kv.pool_gpu : g->pages[il];
+    const ds4_gpu_tensor *table = g->kv.spill ? g->kv.rows[il] : NULL;
     ds4_gpu_tensor *const outs[] = {g->q, g->k, g->v};
     const ds4_tensor *const ws[] = {l->attn_q, l->attn_k, l->attn_v};
     const uint64_t kv_row = (uint64_t)MINIMAX_KV_HEADS * MINIMAX_TOPK * sizeof(float);
@@ -226,12 +251,13 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
         !minimax_trace(il, pos, "v", g->v, (uint64_t)rows * MINIMAX_KV * sizeof(float)) ||
         !minimax_trace(il, pos, "iq", g->iq, (uint64_t)rows * MINIMAX_IQ * sizeof(float)) ||
         !minimax_trace(il, pos, "ik", g->ik, (uint64_t)rows * MINIMAX_INDEX * sizeof(float)) ||
-        !ds4_gpu_minimax_kv_store(g->pages[il], g->k, g->v, rows, pos) ||
+        !ds4_gpu_minimax_kv_store(pages, table, g->k, g->v, rows, pos) ||
         !ds4_gpu_minimax_index_store(g->index[il], g->ik, rows, pos) ||
         !ds4_gpu_minimax_select(g->blocks, g->scores, score_rows ? score_rows : 1u, g->iq, g->index[il], rows,
             pos) ||
         !minimax_trace(il, pos, "blocks", g->blocks, (uint64_t)rows * kv_row) ||
-        !ds4_gpu_minimax_attn(g->heads, g->q, g->pages[il], g->blocks, g->partials, rows, pos) ||
+        !minimax_resolve(g, il, rows) ||
+        !ds4_gpu_minimax_attn(g->heads, g->q, pages, table, g->blocks, g->partials, rows, pos) ||
         !minimax_trace(il, pos, "heads", g->heads, (uint64_t)rows * MINIMAX_Q * sizeof(float))) {
         return false;
     }
@@ -335,7 +361,8 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
     /* A failed enqueue leaves partially written K/V; the session must reset
      * before another forward. */
     g->failed = true;
-    if (!minimax_embed(g, m, w, tokens, rows, g->cur) || !ds4_gpu_minimax_rope(g->rope, rows, pos) ||
+    if (!minimax_kv_begin(&g->kv, rows, pos) || !minimax_embed(g, m, w, tokens, rows, g->cur) ||
+        !ds4_gpu_minimax_rope(g->rope, rows, pos) ||
         !minimax_trace(0u, pos, "embed", g->cur, (uint64_t)rows * MINIMAX_EMBD * sizeof(float)) ||
         !ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->layer[0].attn_norm), rows)) {
         return false;
@@ -348,6 +375,7 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
             !minimax_trace(MINIMAX_LAYERS, pos, "logits", g->logits, (uint64_t)DS4_N_VOCAB * sizeof(float)))) {
         return false;
     }
+    minimax_kv_end(&g->kv);
     g->position = pos + rows;
     g->failed = false;
     return true;

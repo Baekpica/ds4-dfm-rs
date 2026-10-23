@@ -18,14 +18,30 @@ typedef struct {
 // What one more bank adds beyond graph 0: its index keys and K/V pages.
 static uint64_t minimax_bank_bytes(uint32_t ctx) { return minimax_kv_bytes(ctx); }
 
-// Index rows [0, pos) and the pages of blocks [0, ceil(pos / 128)) of
-// every layer of `src` into `dst`.
-static bool minimax_rows_copy(ds4_minimax_graph *dst, const ds4_minimax_graph *src, uint32_t pos) {
+/* Index rows [0, pos) and the pages of blocks [0, ceil(pos / 128)) of
+ * every layer of `src` into `dst`. In the SSD tier the pages move file to
+ * file after the source's dirty pages are written; the destination's pooled
+ * copies are then stale. */
+static bool minimax_rows_copy(ds4_minimax_graph *dst, ds4_minimax_graph *src, uint32_t pos) {
     for (uint32_t il = 0; pos && il < MINIMAX_LAYERS; il++) {
         if (!ds4_gpu_tensor_copy(dst->index[il], 0, src->index[il], 0, minimax_index_bytes(pos)) ||
-            !ds4_gpu_tensor_copy(dst->pages[il], 0, src->pages[il], 0, minimax_page_bytes(pos))) { return false; }
+            (!src->kv.spill &&
+             !ds4_gpu_tensor_copy(dst->pages[il], 0, src->pages[il], 0, minimax_page_bytes(pos)))) { return false; }
     }
-    return true;
+    if (!pos || !src->kv.spill) { return true; }
+    const uint32_t blocks = (uint32_t)minimax_blocks(pos), per = DS4_SESSION_IO_CHUNK / MINIMAX_KV_BLOCK;
+    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
+    bool ok = buf && ds4_gpu_synchronize() && minimax_kv_flush(&src->kv);
+    minimax_kv_drop(&dst->kv);
+    for (uint32_t il = 0; ok && il < MINIMAX_LAYERS; il++) {
+        for (uint32_t b = 0; ok && b < blocks; b += per) {
+            const uint32_t count = blocks - b < per ? blocks - b : per;
+            ok = minimax_kv_pages(&src->kv, false, il, b, count, buf) &&
+                minimax_kv_pages(&dst->kv, true, il, b, count, buf);
+        }
+    }
+    free(buf);
+    return ok;
 }
 
 static void minimax_batch_free(ds4_minimax_batch_runtime *rt) {

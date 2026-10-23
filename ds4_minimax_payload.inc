@@ -24,12 +24,45 @@ static int minimax_payload_span(minimax_payload_dir dir, FILE *fp, ds4_gpu_tenso
         : payload_write_tensor_span(fp, t, 0, bytes, buf, DS4_SESSION_IO_CHUNK, err, errlen);
 }
 
+/* Layer il's pages of blocks [0, ceil(n / 128)): device spans in the
+ * resident tier, the SSD tier's file otherwise (the caller flushed dirty
+ * pages before a save and drops pooled copies after a load). Both tiers
+ * write the same bytes. */
+static int minimax_payload_pages(minimax_payload_dir dir, FILE *fp, ds4_minimax_graph *g, uint32_t il, uint32_t n,
+        uint8_t *buf, uint64_t *left, char *err, size_t errlen) {
+    if (!g->kv.spill) {
+        return minimax_payload_span(dir, fp, g->pages[il], minimax_page_bytes(n), buf, left, err, errlen);
+    }
+    const uint32_t blocks = (uint32_t)minimax_blocks(n), per = DS4_SESSION_IO_CHUNK / MINIMAX_KV_BLOCK;
+    for (uint32_t b = 0; b < blocks; b += per) {
+        const uint32_t count = blocks - b < per ? blocks - b : per;
+        const uint64_t bytes = (uint64_t)count * MINIMAX_KV_BLOCK;
+        if (dir == MINIMAX_PAYLOAD_LOAD) {
+            if (payload_read_bytes(fp, buf, bytes, left, err, errlen)) { return 1; }
+            if (!minimax_kv_pages(&g->kv, true, il, b, count, buf)) {
+                payload_set_err(err, errlen, "MiniMax K/V file write failed");
+                return 1;
+            }
+        } else if (!minimax_kv_pages(&g->kv, false, il, b, count, buf) || fwrite(buf, 1, bytes, fp) != bytes) {
+            payload_set_err(err, errlen, "MiniMax K/V snapshot write failed");
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int minimax_payload_state(minimax_payload_dir dir, FILE *fp, ds4_minimax_graph *g, uint32_t n,
         uint8_t *buf, uint64_t *left, char *err, size_t errlen) {
+    if (dir == MINIMAX_PAYLOAD_LOAD) {
+        minimax_kv_drop(&g->kv);
+    } else if (!minimax_kv_flush(&g->kv)) {
+        payload_set_err(err, errlen, "MiniMax K/V flush failed");
+        return 1;
+    }
     int rc = 0;
     for (uint32_t il = 0; !rc && il < MINIMAX_LAYERS; il++) {
         rc = minimax_payload_span(dir, fp, g->index[il], minimax_index_bytes(n), buf, left, err, errlen) ||
-            minimax_payload_span(dir, fp, g->pages[il], minimax_page_bytes(n), buf, left, err, errlen);
+            minimax_payload_pages(dir, fp, g, il, n, buf, left, err, errlen);
     }
     return rc;
 }
@@ -49,7 +82,7 @@ static int minimax_payload_save(ds4_minimax_graph *g, const int *tokens, uint32_
     for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
         if (!isfinite(logits[i])) { payload_set_err(err, errlen, "invalid MiniMax snapshot logits"); return 1; }
     }
-    uint8_t *buf = malloc(DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     if (!buf || !ds4_gpu_synchronize()) {
         free(buf);
         payload_set_err(err, errlen, "MiniMax snapshot allocation or synchronization failed");
@@ -86,7 +119,7 @@ static int minimax_payload_restore(ds4_minimax_graph *g, FILE *fp, uint64_t *lef
         return 1;
     }
     int *tokens = malloc((size_t)n * sizeof(*tokens));
-    uint8_t *buf = malloc(DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     if (!tokens || !buf || !ds4_gpu_synchronize()) {
         free(tokens);
         free(buf);
