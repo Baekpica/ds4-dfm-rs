@@ -37,6 +37,10 @@
  * times= first=`, with no weights and no device: it separates host feature
  * arithmetic from the device chain.
  *
+ * `--decode` additionally decodes the final audio latent with the released
+ * BigVGAN decoder (`h3_audio_vae.h`) and prints `AUDIO channels= samples=
+ * rate= fnv= first= last=`. It needs `--audio-vae <dir>`.
+ *
  * `--denoise` runs the whole Euler sampler instead of one step: the same
  * seeded latents, `--steps` evaluations and `--reuse K` (default 1), through
  * `h3_dit_denoise_euler` (`h3_dit.c:2986-2991`). On CUDA the reference takes
@@ -50,6 +54,7 @@
  * the [C,T,H,W] / [32,2,T] layouts of h3_dit.h:93-98.
  */
 
+#include "h3_audio_vae.h"
 #include "h3_dit.h"
 #include "h3_dit_schedule.h"
 #include "h3_host.h"
@@ -120,7 +125,8 @@ static void usage(void) {
             "       [--width W] [--height H] [--frames F] [--steps N] "
             "[--step S]\n"
             "       [--seed N] [--layers N] [--rope-scale X]\n"
-            "       [--denoise [--reuse K] [--gpu-sampler]]\n"
+            "       [--denoise [--reuse K] [--gpu-sampler]] "
+            "[--decode --audio-vae DIR]\n"
             "       h3_dit_probe <FL2VA/transformer> --adaln-only [--steps N]\n"
             "       h3_dit_probe --features [--steps N]\n");
 }
@@ -459,7 +465,8 @@ int main(int argc, char **argv) {
 
     int width = 256, height = 256, frames = 5;
     int steps = 2, step = 0, layers = DIT_BLOCKS;
-    int denoise = 0, reuse = 1, gpu_sampler = 0;
+    int denoise = 0, reuse = 1, gpu_sampler = 0, decode = 0;
+    const char *audio_vae = NULL;
     unsigned long long seed = 1;
     float rope_scale = 1.0f;
 
@@ -471,6 +478,10 @@ int main(int argc, char **argv) {
         }
         if (!strcmp(argument, "--gpu-sampler")) {
             gpu_sampler = 1;
+            continue;
+        }
+        if (!strcmp(argument, "--decode")) {
+            decode = 1;
             continue;
         }
         if (index + 1 >= argc) {
@@ -491,6 +502,8 @@ int main(int argc, char **argv) {
             if (!parse_int(value, &step)) return 2;
         } else if (!strcmp(argument, "--layers")) {
             if (!parse_int(value, &layers)) return 2;
+        } else if (!strcmp(argument, "--audio-vae")) {
+            audio_vae = value;
         } else if (!strcmp(argument, "--reuse")) {
             if (!parse_int(value, &reuse)) return 2;
         } else if (!strcmp(argument, "--seed")) {
@@ -676,6 +689,32 @@ int main(int argc, char **argv) {
                video[0], video[video_elements - 1], audio[0],
                audio[audio_elements - 1]);
         printf("TIME seconds=%.3f\n", denoise_seconds);
+
+        if (decode) {
+            if (!audio_vae) {
+                fprintf(stderr, "h3_dit_probe: --decode needs --audio-vae\n");
+                return 2;
+            }
+            h3_audio_waveform waveform = {0};
+            started = seconds();
+            if (!h3_audio_vae_decode(audio_vae, "h3_shaders.metal", audio,
+                                     temporal.audio_t, NULL, NULL, &waveform,
+                                     error, sizeof(error))) {
+                fprintf(stderr, "%s\n", error);
+                return 1;
+            }
+            double decode_seconds = seconds() - started;
+            printf("AUDIO channels=%d samples=%d rate=%d fnv=%016llx "
+                   "first=%.9g last=%.9g\n", waveform.channels,
+                   waveform.samples, waveform.sample_rate,
+                   (unsigned long long)fnv(waveform.pcm,
+                       (size_t)waveform.channels * waveform.samples *
+                       sizeof(*waveform.pcm)),
+                   waveform.pcm[0],
+                   waveform.pcm[(size_t)waveform.channels * waveform.samples - 1]);
+            printf("TIME decode_seconds=%.3f\n", decode_seconds);
+            h3_audio_waveform_free(&waveform);
+        }
 
         free(video);
         free(audio);
