@@ -33,7 +33,8 @@ Consequences a later phase must not paper over: 1920x1080 (2,073,600 px) and
 1080x1920 are above the released area, and 32 kHz audio cannot gain bandwidth
 by resampling. Delivery presets upscale the model's own canvas with the
 reference's bilinear resize; no preset can add detail the model never
-produced.
+produced, and an anamorphic delivery changes the frame's aspect, not its
+information.
 
 Review rule (operator, 2026-10-24): every result shown to the operator is a
 quality render, 20 evaluations at a real canvas. Short-circuited runs (2
@@ -343,29 +344,48 @@ residency (`h3_cache_info`: embedding entries, prepared DiT, video decoder).
 ordered Ref2VA references. Any claim of "continue my video with the KV cache"
 would be a new mechanism, not a port.
 
-1. **First/last frame (FL2VA).** Needs image decode, the vision encoder
-   (`h3_vision_encoder.h:20-31`), the multimodal presentation
-   (`h3_multimodal.c`, `h3_multimodal_encode_fl2va_bf16`), and the VAE encoder
-   for the anchor latents (`h3_video_encoder.h:19-30`). The anchors enter the
-   layout at `h3.c:335-346`.
-2. **Ref2VA.** Ordered image/video/audio references through
-   `h3_multimodal_encode_ref2va_bf16` and the Ref2VA partition of the
-   artifact. Video references need frame sampling and audio resampling;
-   audio references use the released preprocessing.
-3. **The wire.** `input_reference` is parsed today and refused by name
-   (`video_api.rs:386-405`). Once 1 lands, base64 `image_url` maps to the
-   first-frame anchor. The server never fetches a URL (project rule).
-4. **The session surface.** `h3-rs` gains `--first`, `--last`, `--ref-image`,
-   `--ref-video`, `--ref-audio` with the reference's spellings, and the
-   server's memo keys include them, as the reference's conditioning key does
-   (`h3.c:149-180`).
-5. Each unit gates against the reference at the same seed and params (hash on
-   the final latents and frames), then gets an operator quality review.
-6. The operator's pilot input is `tests/fixtures/h3/costello-crocodile-2panel.png`
-   (432x171, sha256 `f364705a...`): a two-panel cartoon to animate as the
-   first-frame test, at a legal canvas near its 2.53 aspect (576x224 or
-   512x192). It is the same file the OpenAI `input_reference` case uses once
-   the field is served.
+1. **Media read.** `h3_ffmpeg.h` is the whole interface: `h3_ffprobe_visual_size`
+   for the stream geometry, `h3_ffmpeg_read_image_f32(path, w, h, fit, &pixels)`
+   for one F32 `[3,H,W]` image with `STRETCH` or `COVER` fitting,
+   `h3_ffmpeg_read_video_f32(path, w, h, max_frames, &pixels, &frames)` for a
+   `[3,T,H,W]` 24 fps clip trimmed to the released `5+17k` cadence, and
+   `h3_ffmpeg_read_audio_f32(path, max_samples, truncate_at_limit)` for stereo
+   32 kHz F32. The port has only the writer (`render.rs`), so this is a new
+   host module around the ffmpeg CLI, not a device path.
+2. **The vision tower.** `h3_vision_encoder.h`: 27 blocks, hidden 1152,
+   FFN 4304, 16 heads of 72, patch 16, temporal patch 2, merge 2, a 48x48
+   position grid, 5120-wide output and three deepstack additions. Input is F32
+   `[T,3,H,W]` with `T` in `{1,2}` and both spatial edges multiples of 32.
+   Weights are `model.visual.*` inside the **text** partition (the reference
+   passes `text_path`, `h3.c:1347`), so the artifact already on disk covers
+   it. Gate: `tests/test_real_qwen_vision.c` reproduced as a Rust test.
+3. **The multimodal presentation.** `h3_multimodal.h`: FL2VA wraps one vision
+   output per image as `<Picture n>: ` and then runs the decoder
+   (`h3_multimodal.c:221`); Ref2VA keeps request order, adds one timestamp per
+   video block and pending audio labels (`:303`), and a video block is a
+   two-frame Qwen input sampled every 12 frames (`h3.c:1360-1379`,
+   `h3_extract_vision_pair`). Gates: `test_real_multimodal_text.c`,
+   `test_real_ref_video_text.c`.
+4. **The video VAE encoder.** `h3_video_encoder.h`: `[3,T,H,W]` to a
+   channel-major `[24,t,h,w]` latent, spatial edges multiples of 16, the
+   released 256 px tiles with 64 px overlap. Anchors use `t = 1`, video
+   references the whole clip. Gate: `test_real_video_encoder.c`.
+5. **The conditioned DiT.** `h3_dit.h:50` `h3_dit_load_conditioned` and `:82`
+   `h3_dit_reset_run`. Anchors occupy the leading spans of the video latent,
+   one span each, seeded by `h3_augment_span(video, span, params->seed)`
+   (`h3.c:333-346`); references occupy the layout's reference rows
+   (`h3.c:344-370`). Gate: `test_real_dit.c`, then a final-latent and frame
+   hash against the reference at the same seed.
+6. **The wire and the session.** CLI spellings from `main.c:47-56` and the
+   server's base64 `input_reference` (refused by name today,
+   `video_api.rs:386-405`). The memo keys on media pixels as the reference's
+   conditioning key does (`h3.c:149-180`), not on the prompt alone.
+7. **Quality.** Every unit ends with a 20-evaluation operator render at a
+   legal canvas near the pilot's 2.53 aspect (576x224 or 512x192 from
+   `tests/fixtures/h3/costello-crocodile-2panel.png`), never a short-circuit.
+
+Dependency order is 1, 2, 3, 4, 5, then 6; unit 1 and unit 2 are independent
+and unit 2 can run in parallel with unit 1 only if two sessions exist.
 
 ## P12.5 — Port the reference test suite
 
@@ -436,6 +456,32 @@ then the P12-dependent ones (vision, multimodal, encoders) as their units
 land. `make tests/h3-suite` runs every one by hand and prints, per artifact
 test, either its result or the missing artifact; it is the operator's single
 command, never an automatic step.
+
+## P12.6 — The remaining reference surface
+
+The surfaces that are neither conditioning nor the test suite, each with its
+verdict so nothing stays "missing" without a reason:
+
+1. **Device probe.** `h3_device_cuda.cu` / `h3_device_probe` fills
+   `h3_device_info`; the port's `--info` prints components and geometry but no
+   device line. Small CUDA call set, and `tests/test_device.c` is the gate.
+2. **`--token-reduction`.** Real DiT behavior: `configure_token_reduction`
+   (`h3_dit.c:378-470`) pairs video tokens in a middle-block window with an
+   early-step window and a scale, controlled by `token_reduction_begin`,
+   `_end`, `_early_steps`, `_early_end`, `_scale`. It changes compute and
+   numerics, so the port needs the hash gate at 2 evaluations plus a measured
+   end-to-end gain, and a kill switch.
+3. **`--use-int8-row-fc2`.** Accepted by the reference and inert on CUDA:
+   `dit->int8_mlp` requires `h3_gpu_has_int8_mlp(gpu)` (`h3_dit.c:1633`), and
+   the CUDA backend returns 0 from it (`h3_gpu_cuda.cu:334`). The port parses
+   the flag and records the zero, exactly as the reference does.
+4. **`--show` / `--zoom` and the resident preview.** A terminal preview built
+   from the denoise callback (`h3_dit_denoise_euler_preview`, `h3_dit.c:2861`)
+   on the continue-event chain (`h3_gpu_continue`). It must never change the
+   rendered file: the gate is a hash identical with the preview on and off.
+5. **The tiled-VAE quality bench** (`h3_vae_bench_quality`): tile seams and
+   temporal blend against the untiled decode, still unbuilt (P0 remainder).
+6. **The reference tests** are P12.5 and cover units 1-5 above file by file.
 
 ## P13 — Close
 

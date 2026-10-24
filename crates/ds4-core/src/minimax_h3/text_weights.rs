@@ -97,6 +97,29 @@ impl TextWeights {
         })
     }
 
+    /// `h3_st_read_data` (`h3_safetensors.c:492-534`): read the tensor's own
+    /// span into `buffer`, sized to the tensor.
+    ///
+    /// The reference's loader reads with `pread` into a host buffer
+    /// (`h3_gpu_cuda.cu:455-478`), and the prefetch lanes need to own their
+    /// bytes, so this is the read the forward uses. [`Self::bytes`] stays for
+    /// callers that only want the mapped view.
+    pub fn read_into(&self, role: Role, buffer: &mut Vec<u8>) -> Result<(), TextLoadError> {
+        let site = *self.sites.get(&role).ok_or(TextLoadError::Unmapped(role))?;
+        let shard = &self.store.shards()[site.shard];
+        let tensor = &shard.tensors[site.tensor];
+        let width = usize::try_from(tensor.bytes()).map_err(|_| TextLoadError::Range {
+            role,
+            offset: tensor.file_offset,
+        })?;
+
+        buffer.clear();
+        buffer.resize(width, 0);
+        shard
+            .read_data(tensor, buffer)
+            .map_err(|error| TextLoadError::Reader(error.token()))
+    }
+
     /// How many shards are mapped right now.
     pub fn mapped(&self) -> usize {
         self.maps.iter().filter(|cell| cell.get().is_some()).count()

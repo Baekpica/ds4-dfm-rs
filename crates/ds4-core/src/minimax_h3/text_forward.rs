@@ -17,11 +17,17 @@
 //!   cuBLASLt BF16 matmul with the descriptors the reference sets.
 //!
 //! Deviation, named: the reference prefetches the next layers' weights on
-//! extra threads (`h3_text_encoder.c:130-145`, `:649-707`) and submits each
-//! layer with a stream sync. This port streams each layer's weights on one
-//! thread right before its ops and never syncs between layers. Layer *i* only
-//! reads weights *i*, and every upload is ordered on the same stream, so the
-//! numbers are unchanged; the prefetch ring is a P9 performance item.
+//! extra threads (`h3_text_encoder.c:124-143`, `:324-390`, `:648-730`) and
+//! submits each layer with a stream sync. This port streams each layer's
+//! weights right before its ops and never syncs between layers. Layer *i*
+//! only reads weights *i*, and every upload is ordered on the same stream, so
+//! the numbers are unchanged.
+//!
+//! The prefetch ring is ported here in `prefetch`: the same
+//! `H3_QWEN_PREFETCH` lanes and `H3_QWEN_PREFETCH_DEPTH` ring, reading each
+//! layer into host buffers while the previous layer runs on the device. It
+//! changes when bytes are read, never which bytes: the gate hash is the
+//! acceptance test.
 //!
 //! The numerical contract is BF16 weights, BF16 activations, F32
 //! accumulators, and the reference's operation order. The E4 gate compares an
@@ -30,6 +36,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::thread::{Scope, ScopedJoinHandle};
 
 use ds4_sys::h3_text::{Dtype, Gpu, Tensor};
 
@@ -178,6 +185,161 @@ fn require_tokens(ids: &[u32]) -> Result<(), ForwardError> {
     Ok(())
 }
 
+/// The eleven tensors of one layer in the reference's read order
+/// (`h3_text_encoder.c:283-306`). The position is also the lane's item
+/// counter, so this order decides which lane reads which tensor.
+const PARTS: [Part; 11] = [
+    Part::InputNorm,
+    Part::Query,
+    Part::Key,
+    Part::Value,
+    Part::QueryNorm,
+    Part::KeyNorm,
+    Part::Output,
+    Part::PostNorm,
+    Part::Gate,
+    Part::Up,
+    Part::Down,
+];
+
+/// `H3_QWEN_PREFETCH` (`h3_text_encoder.c:124-133`): reader threads per
+/// layer, eight by default.
+const PREFETCH_LANES: usize = 8;
+
+/// `H3_QWEN_PREFETCH_DEPTH` (`h3_text_encoder.c:135-143`): layers in flight,
+/// two by default.
+const PREFETCH_DEPTH: usize = 2;
+
+const PREFETCH_DEPTH_MAX: usize = 6;
+
+/// `H3_QWEN_PREFETCH`: zero disables the ring, values above the cap clamp, and
+/// anything unreadable is one lane (`text_prefetch_threads`, `:124-133`).
+fn prefetch_lanes() -> usize {
+    match std::env::var("H3_QWEN_PREFETCH") {
+        Ok(value) if value.trim() == "0" => 0,
+        Ok(value) => value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|lanes| *lanes >= 1)
+            .unwrap_or(1)
+            .min(PREFETCH_LANES),
+        Err(_) => PREFETCH_LANES,
+    }
+}
+
+/// `H3_QWEN_PREFETCH_DEPTH`: one layer when the value is unreadable, capped at
+/// six (`text_prefetch_depth`, `:135-143`).
+fn prefetch_depth() -> usize {
+    match std::env::var("H3_QWEN_PREFETCH_DEPTH") {
+        Ok(value) => value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|depth| *depth >= 1)
+            .unwrap_or(1)
+            .min(PREFETCH_DEPTH_MAX),
+        Err(_) => PREFETCH_DEPTH,
+    }
+}
+
+/// What one lane returns: its tensors, each tagged with its [`PARTS`] index.
+type LaneItems = Result<Vec<(usize, Vec<u8>)>, ForwardError>;
+
+/// One layer's read in flight (`text_prefetch_slot`, `h3_text_encoder.c:75-81`).
+struct Slot<'scope> {
+    layer: u32,
+    lanes: Vec<ScopedJoinHandle<'scope, LaneItems>>,
+}
+
+impl<'scope> Slot<'scope> {
+    fn new(layer: u32) -> Self {
+        Slot {
+            layer,
+            lanes: Vec::new(),
+        }
+    }
+}
+
+/// Start reading `layer` across `lanes` threads, each taking the tensors whose
+/// position in [`PARTS`] it owns (`item++ % lanes == lane`,
+/// `h3_text_encoder.c:267-277`, `:324-359`).
+fn start_read<'scope>(
+    scope: &'scope Scope<'scope, '_>,
+    weights: &'scope TextWeights,
+    layer: u32,
+    lanes: usize,
+) -> Slot<'scope> {
+    let mut per_lane: Vec<Vec<usize>> = (0..lanes).map(|_| Vec::new()).collect();
+    for part in 0..PARTS.len() {
+        per_lane[part % lanes].push(part);
+    }
+
+    let mut slot = Slot::new(layer);
+    for parts in per_lane {
+        slot.lanes
+            .push(scope.spawn(move || read_items(weights, layer, parts)));
+    }
+
+    slot
+}
+
+/// One lane's share: `pread` its tensors into buffers it owns.
+fn read_items(
+    weights: &TextWeights,
+    layer: u32,
+    parts: Vec<usize>,
+) -> Result<Vec<(usize, Vec<u8>)>, ForwardError> {
+    let mut items = Vec::with_capacity(parts.len());
+
+    for part in parts {
+        let mut buffer = Vec::new();
+        weights.read_into(role(layer, PARTS[part]), &mut buffer)?;
+        items.push((part, buffer));
+    }
+
+    Ok(items)
+}
+
+/// Read one layer on this thread, for layer 0 and for the ring turned off
+/// (`layer_weights_load`, `h3_text_encoder.c:145-180`).
+fn read_sync(weights: &TextWeights, layer: u32) -> Result<Vec<Vec<u8>>, ForwardError> {
+    let mut buffers = Vec::with_capacity(PARTS.len());
+
+    for part in PARTS {
+        let mut buffer = Vec::new();
+        weights.read_into(role(layer, part), &mut buffer)?;
+        buffers.push(buffer);
+    }
+
+    Ok(buffers)
+}
+
+/// Join every lane and order the buffers as [`PARTS`]
+/// (`prefetch_slot_take`, `h3_text_encoder.c:361-390`).
+fn take(slot: &mut Slot<'_>) -> Result<Vec<Vec<u8>>, ForwardError> {
+    let mut ordered: Vec<Option<Vec<u8>>> = (0..PARTS.len()).map(|_| None).collect();
+
+    for lane in slot.lanes.drain(..) {
+        let items = lane
+            .join()
+            .map_err(|_| ForwardError::Gpu("a Qwen prefetch lane panicked".to_string()))??;
+
+        for (part, buffer) in items {
+            ordered[part] = Some(buffer);
+        }
+    }
+
+    ordered
+        .into_iter()
+        .map(|buffer| {
+            buffer.ok_or_else(|| {
+                ForwardError::Gpu("a Qwen prefetch lane returned no tensor".to_string())
+            })
+        })
+        .collect()
+}
+
 /// The sixteen-op layer walk (`h3_text_encoder.c:411-463`).
 fn run(
     weights: &TextWeights,
@@ -220,10 +382,63 @@ fn run(
         .map_err(ForwardError::Gpu)?;
     }
 
-    for index in 0..layers {
-        layer.upload(gpu, weights, index)?;
-        encode_layer(gpu, &layer, &activations, &cosines, &sines, tokens, index)?;
-    }
+    // The reference reads layer 0 inline, keeps `depth` layers in flight, and
+    // starts the next read once the current layer is submitted, so the host
+    // reads while the device computes (`h3_text_encoder.c:648-730`).
+    let lanes = prefetch_lanes();
+    let depth = if lanes == 0 || layers < 2 {
+        0
+    } else {
+        prefetch_depth()
+    };
+
+    std::thread::scope(|scope| -> Result<(), ForwardError> {
+        let mut ring: Vec<Option<Slot>> = (0..depth).map(|_| None).collect();
+        let mut next_layer = 1u32;
+
+        // Fill the ring before the loop; each slot owns a distinct layer.
+        let prefill = depth.min(layers.saturating_sub(1) as usize);
+        for slot in ring.iter_mut().take(prefill) {
+            *slot = Some(start_read(scope, weights, next_layer, lanes));
+            next_layer += 1;
+        }
+
+        for index in 0..layers {
+            let position = ring
+                .iter()
+                .position(|slot| slot.as_ref().is_some_and(|slot| slot.layer == index));
+            let (mut slot, position, buffers) = match position {
+                Some(position) => {
+                    let mut slot = ring[position].take().expect("the slot was found");
+                    let buffers = take(&mut slot)?;
+                    (slot, Some(position), buffers)
+                }
+                None if index == 0 || depth == 0 => {
+                    (Slot::new(index), None, read_sync(weights, index)?)
+                }
+                None => {
+                    return Err(ForwardError::Gpu(format!(
+                        "Qwen layer {index} is absent from the prefetch ring"
+                    )))
+                }
+            };
+
+            layer.upload_buffers(gpu, &buffers, index)?;
+            encode_layer(gpu, &layer, &activations, &cosines, &sines, tokens, index)?;
+
+            // The buffers have been staged for upload, so their slot can take
+            // the next layer and the lanes read while the device works.
+            if let Some(position) = position {
+                if next_layer < layers {
+                    slot = start_read(scope, weights, next_layer, lanes);
+                    next_layer += 1;
+                }
+                ring[position] = Some(slot);
+            }
+        }
+
+        Ok(())
+    })?;
 
     let mut values = vec![0u8; hidden * 2];
     gpu.read(&activations.hidden, &mut values)
@@ -473,30 +688,45 @@ impl LayerWeights {
         })
     }
 
-    /// Read and upload the eleven tensors of `layer`.
-    fn upload(&self, gpu: &Gpu, weights: &TextWeights, layer: u32) -> Result<(), ForwardError> {
-        let parts = [
-            (Part::InputNorm, &self.input_norm),
-            (Part::Query, &self.query),
-            (Part::Key, &self.key),
-            (Part::Value, &self.value),
-            (Part::QueryNorm, &self.query_norm),
-            (Part::KeyNorm, &self.key_norm),
-            (Part::Output, &self.output),
-            (Part::PostNorm, &self.post_norm),
-            (Part::Gate, &self.gate),
-            (Part::Up, &self.up),
-            (Part::Down, &self.down),
-        ];
+    /// Upload the eleven host buffers of `layer`, in [`PARTS`] order.
+    fn upload_buffers(
+        &self,
+        gpu: &Gpu,
+        buffers: &[Vec<u8>],
+        layer: u32,
+    ) -> Result<(), ForwardError> {
+        if buffers.len() != PARTS.len() {
+            return Err(ForwardError::Gpu(format!(
+                "layer {layer} has {} buffers, expected {}",
+                buffers.len(),
+                PARTS.len()
+            )));
+        }
 
-        for (part, tensor) in parts {
-            let bytes = weights.bytes(role(layer, part))?;
-            gpu.upload(tensor, bytes).map_err(|detail| {
+        for (part, bytes) in PARTS.iter().zip(buffers) {
+            gpu.upload(self.tensor(*part), bytes).map_err(|detail| {
                 ForwardError::Gpu(format!("layer {layer} {part:?} upload: {detail}"))
             })?;
         }
 
         Ok(())
+    }
+
+    /// The device tensor for one part of the layer.
+    fn tensor(&self, part: Part) -> &Tensor {
+        match part {
+            Part::InputNorm => &self.input_norm,
+            Part::Query => &self.query,
+            Part::Key => &self.key,
+            Part::Value => &self.value,
+            Part::QueryNorm => &self.query_norm,
+            Part::KeyNorm => &self.key_norm,
+            Part::Output => &self.output,
+            Part::PostNorm => &self.post_norm,
+            Part::Gate => &self.gate,
+            Part::Up => &self.up,
+            Part::Down => &self.down,
+        }
     }
 }
 
@@ -572,6 +802,68 @@ fn pack_f32(values: &[f32]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_lane_split_covers_all_eleven_tensors_once() {
+        // The reference assigns tensor `item` to lane `item % lanes`
+        // (`h3_text_encoder.c:267-277`), so any lane count up to the cap must
+        // partition the layer exactly once.
+        for lanes in 1..=PREFETCH_LANES {
+            let mut seen: Vec<usize> = Vec::new();
+
+            for lane in 0..lanes {
+                for part in 0..PARTS.len() {
+                    if part % lanes == lane {
+                        seen.push(part);
+                    }
+                }
+            }
+
+            seen.sort_unstable();
+            assert_eq!(seen, (0..PARTS.len()).collect::<Vec<_>>(), "lanes {lanes}");
+        }
+    }
+
+    #[test]
+    fn the_prefetch_knobs_clamp_like_the_reference() {
+        // `text_prefetch_threads` / `text_prefetch_depth`
+        // (`h3_text_encoder.c:124-143`): zero lanes disables the ring, an
+        // unreadable depth is one layer, and both clamp at their caps.
+        assert_eq!(env_lanes("0"), 0);
+        assert_eq!(env_lanes("3"), 3);
+        assert_eq!(env_lanes("99"), PREFETCH_LANES);
+        assert_eq!(env_lanes("nonsense"), 1);
+        assert_eq!(env_lanes(""), 1);
+        assert_eq!(env_depth("1"), 1);
+        assert_eq!(env_depth("6"), 6);
+        assert_eq!(env_depth("7"), PREFETCH_DEPTH_MAX);
+        assert_eq!(env_depth("nonsense"), 1);
+    }
+
+    /// The knob parsers without touching the process environment.
+    fn env_lanes(value: &str) -> usize {
+        if value.trim() == "0" {
+            return 0;
+        }
+
+        value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|lanes| *lanes >= 1)
+            .unwrap_or(1)
+            .min(PREFETCH_LANES)
+    }
+
+    fn env_depth(value: &str) -> usize {
+        value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|depth| *depth >= 1)
+            .unwrap_or(1)
+            .min(PREFETCH_DEPTH_MAX)
+    }
 
     #[test]
     fn fnv_matches_the_reference_probe_vectors() {
