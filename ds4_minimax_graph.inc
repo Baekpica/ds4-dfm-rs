@@ -256,9 +256,14 @@ static bool minimax_indexer(ds4_minimax_graph *g, const ds4_model *m, const ds4_
     return ok;
 }
 
-// SSD tier: the layer's selected blocks into the pool before attention.
-static bool minimax_resolve(ds4_minimax_graph *g, uint32_t il, uint32_t rows) {
+// SSD tier: the layer's selected blocks (or, streaming, every block) into
+// the pool before attention.
+static bool minimax_resolve(ds4_minimax_graph *g, uint32_t il, uint32_t rows, uint32_t pos) {
     if (!minimax_kv_needs_resolve(&g->kv)) { return true; }
+    const uint32_t blocks = (uint32_t)minimax_blocks(pos + rows);
+    if (minimax_kv_streams(&g->kv, rows, blocks)) {
+        return ds4_gpu_minimax_mark_wait() && minimax_kv_resolve(&g->kv, il, g->kv.all, blocks);
+    }
     const uint32_t count = rows * MINIMAX_KV_HEADS * MINIMAX_TOPK;
     return ds4_gpu_tensor_read(g->blocks, 0, g->host_blocks, (uint64_t)count * sizeof(int32_t)) &&
         minimax_kv_resolve(&g->kv, il, g->host_blocks, count);
@@ -298,8 +303,9 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
         !ds4_gpu_minimax_select(g->blocks, g->scores, score_rows ? score_rows : 1u, g->iq, g->index[il], rows,
             pos) ||
         !minimax_trace(il, pos, "blocks", g->blocks, (uint64_t)rows * kv_row) ||
-        !minimax_resolve(g, il, rows) ||
+        !minimax_resolve(g, il, rows, pos) ||
         !ds4_gpu_minimax_attn(g->heads, g->q, pages, table, g->blocks, g->partials, rows, pos) ||
+        (g->kv.spill && !ds4_gpu_minimax_mark()) ||
         !minimax_trace(il, pos, "heads", g->heads, (uint64_t)rows * MINIMAX_Q * sizeof(float))) {
         return false;
     }

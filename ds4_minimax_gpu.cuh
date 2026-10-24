@@ -2183,6 +2183,20 @@ extern "C" void ds4_gpu_minimax_host_free(void *host, ds4_gpu_tensor *device) {
     if (host) { cudaFreeHost(host); }
 }
 
+// One event after each attention launch: the SSD tier's streamed reads
+// reuse the previous layer's pool slots only once its attention has run.
+static cudaEvent_t g_mm_mark;
+
+extern "C" int ds4_gpu_minimax_mark(void) {
+    if (!g_mm_mark && !cuda_ok(cudaEventCreateWithFlags(&g_mm_mark, cudaEventDisableTiming | cudaEventBlockingSync),
+            "MiniMax mark")) { return 0; }
+    return cuda_ok(cudaEventRecord(g_mm_mark, ds4_current_stream()), "MiniMax mark");
+}
+
+extern "C" int ds4_gpu_minimax_mark_wait(void) {
+    return !g_mm_mark || cuda_ok(cudaEventSynchronize(g_mm_mark), "MiniMax mark wait");
+}
+
 /* ------------------------------------------------------------- head, embed */
 
 __global__ void mm_logits_kernel(float *logits, uint32_t tokens) {

@@ -152,6 +152,11 @@ int ds4_gpu_minimax_draft_markov(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint3
 void *ds4_gpu_minimax_host_alloc(uint64_t bytes, ds4_gpu_tensor **device);
 void ds4_gpu_minimax_host_free(void *host, ds4_gpu_tensor *device);
 
+/* mark records an event on the current stream; mark_wait blocks the host
+ * until the last mark has run. */
+int ds4_gpu_minimax_mark(void);
+int ds4_gpu_minimax_mark_wait(void);
+
 /* logits = -inf on the head rows past the tokenizer (`tokens`). */
 int ds4_gpu_minimax_logits(ds4_gpu_tensor *logits, uint32_t rows, uint32_t tokens);
 

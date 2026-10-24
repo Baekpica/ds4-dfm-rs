@@ -9,7 +9,9 @@
  *     (a block that already holds tokens is read back first);
  *   - per layer, once the indexer has selected, the selected blocks missing
  *     from the pool are read into least-recently-used slots (file-contiguous
- *     runs in one preadv), a dirty victim written back first.
+ *     runs in one preadv), a dirty victim written back first;
+ *   - a prefill chunk long against the history (minimax_kv_streams) reads
+ *     the layer's every block instead, without waiting for its selections.
  *
  * The pool holds one layer's every block plus a forward's pins, so the
  * union of a prefill chunk's selections always fits. A slot table
@@ -104,6 +106,7 @@ typedef struct {
     int32_t head, tail;
     uint64_t *seen;
     uint32_t *miss;
+    int32_t *all;            // 0..blocks-1: a streamed resolve's selection
     int fd;
     uint64_t hits, misses, read_bytes, write_bytes;
     double io_s;
@@ -238,6 +241,7 @@ static void minimax_kv_close(minimax_kv *kv) {
     free(kv->slot);
     free(kv->seen);
     free(kv->miss);
+    free(kv->all);
     memset(kv, 0, sizeof(*kv));
 }
 
@@ -261,7 +265,9 @@ static bool minimax_kv_open(minimax_kv *kv, uint32_t ctx) {
     kv->slot = calloc(kv->slots, sizeof(*kv->slot));
     kv->seen = calloc(kv->blocks, sizeof(*kv->seen));
     kv->miss = malloc((size_t)kv->blocks * sizeof(*kv->miss));
-    if (!kv->pool || !kv->table || !kv->slot || !kv->seen || !kv->miss || minimax_kv_dir(dir, sizeof(dir))) {
+    kv->all = malloc((size_t)kv->blocks * sizeof(*kv->all));
+    if (!kv->pool || !kv->table || !kv->slot || !kv->seen || !kv->miss || !kv->all ||
+        minimax_kv_dir(dir, sizeof(dir))) {
         fprintf(stderr, "ds4: MiniMax K/V tier allocation failed\n");
         minimax_kv_close(kv);
         return false;
@@ -281,6 +287,7 @@ static bool minimax_kv_open(minimax_kv *kv, uint32_t ctx) {
         return false;
     }
     for (uint64_t i = 0; i < table; i++) { kv->table[i] = -1; }
+    for (uint32_t b = 0; b < kv->blocks; b++) { kv->all[b] = (int32_t)b; }
     // Every slot is always on the LRU list; free ones start in slot order.
     for (uint32_t s = 0; s < kv->slots; s++) {
         kv->slot[s] = (minimax_slot){UINT32_MAX, UINT32_MAX, (int32_t)s - 1,
@@ -300,7 +307,12 @@ static bool minimax_kv_open(minimax_kv *kv, uint32_t ctx) {
 static int32_t minimax_kv_take(minimax_kv *kv, uint32_t il, uint32_t block, minimax_io_job *writes,
         uint32_t *nwrites) {
     int32_t s = kv->tail;
-    while (s >= 0 && (kv->slot[s].pinned || kv->slot[s].stamp == kv->stamp)) { s = kv->slot[s].prev; }
+    // Pinned slots met at the tail move to the front: a chunk pins ~2,000
+    // blocks, and every take walked past all of them again.
+    for (int32_t p; s >= 0 && (kv->slot[s].pinned || kv->slot[s].stamp == kv->stamp); s = p) {
+        p = kv->slot[s].prev;
+        if (kv->slot[s].pinned) { minimax_lru_front(kv, s); }
+    }
     if (s < 0) { return -1; }
     minimax_slot *x = &kv->slot[s];
     if (x->layer != UINT32_MAX) {
@@ -392,10 +404,31 @@ static void minimax_kv_end(minimax_kv *kv) {
     }
 }
 
-/* Layer il's selections (`sel`, rows x 4 x 16 block ids, -1 unused) into
- * the pool: hits move to the LRU front, misses are read in file order. */
 static bool minimax_kv_needs_resolve(const minimax_kv *kv) { return kv->spill && !kv->complete; }
 
+/* A chunk of `rows` over `blocks` blocks reads the layer's every block: the
+ * reads need no selections, so they start once the previous layer's
+ * attention has run (ds4_gpu_minimax_mark) and overlap its MoE and this
+ * layer's projections and block scores, where a selective resolve waits for
+ * the indexer with the GPU idle. Compute per layer grows with the rows, the
+ * reads with the blocks.
+ * At 1M a 4,096-row chunk computes ~10 s against ~6 s of whole-layer reads,
+ * while selective reads of ~65% of the blocks ran exposed (~4 s).
+ * ponytail: fixed crossover rows >= blocks / 4 (GB10's NVMe, measured chunk
+ * times); weigh the bytes against measured compute if the drive or the
+ * chunk size moves it. */
+static bool minimax_kv_streams(const minimax_kv *kv, uint32_t rows, uint32_t blocks) {
+    // DS4_MINIMAX_KV_STREAM=0 (diagnostic): selective resolves only.
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("DS4_MINIMAX_KV_STREAM");
+        on = !(v && !strcmp(v, "0"));
+    }
+    return on && kv->spill && 4u * rows >= blocks && kv->slots >= blocks + MINIMAX_PIN_PAGES;
+}
+
+/* Layer il's selections (`sel`, rows x 4 x 16 block ids, -1 unused) into
+ * the pool: hits move to the LRU front, misses are read in file order. */
 static bool minimax_kv_resolve(minimax_kv *kv, uint32_t il, const int32_t *sel, uint32_t count) {
     kv->stamp++;
     uint32_t nmiss = 0;
@@ -502,6 +535,10 @@ static inline bool minimax_kv_resolve(minimax_kv *kv, uint32_t il, const int32_t
     return !kv->spill;
 }
 static inline bool minimax_kv_needs_resolve(const minimax_kv *kv) { return kv->spill; }
+static inline bool minimax_kv_streams(const minimax_kv *kv, uint32_t rows, uint32_t blocks) {
+    (void)kv; (void)rows; (void)blocks;
+    return false;
+}
 static inline void minimax_kv_restart(minimax_kv *kv) { (void)kv; }
 static inline bool minimax_kv_flush(minimax_kv *kv) { return !kv->spill; }
 static inline void minimax_kv_drop(minimax_kv *kv) { (void)kv; }
