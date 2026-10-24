@@ -154,16 +154,19 @@ static int run_case(const std::vector<matrix_set> &sets, const uint8_t *book, co
             grouped_d, USED, gate_o, nullptr, down_o, H, F, LIMIT, nullptr, nullptr, res_book);
     };
     auto ws_gate = [&] {
-        CK((mw_launch<GLMVQ_MMA_GATE, RES>(ws_d, nws, book, res_book, x8w, xsw, token_d, gate_w, nullptr, F, H, LIMIT,
-            nullptr, nullptr, (uint32_t)sms, 0)));
+        CK((mw_launch<GLMVQ_MMA_GATE, RES>(ws_d, nws, book, res_book, x8w, xsw, token_d, gate_w, nullptr, F, H,
+            (uint32_t)sms, 0)));
     };
+    // Up runs as GATE into down's buffer, then mw_swiglu_quant (the engine's order).
     auto ws_up = [&] {
-        CK((mw_launch<GLMVQ_MMA_UP, RES>(ws_d + nws, nws, book, res_book, x8w, xsw, token_d, gate_w, nullptr, F, H, LIMIT,
-            mid_w, ms_w, (uint32_t)sms, 0)));
+        CK((mw_launch<GLMVQ_MMA_GATE, RES>(ws_d + nws, nws, book, res_book, x8w, xsw, token_d, down_w, nullptr, F, H,
+            (uint32_t)sms, 0)));
+        const uint64_t warps = (uint64_t)pairs * (F / GLMVQ_MMA8_K);
+        mw_swiglu_quant<<<(uint32_t)((warps * 32 + 255) / 256), 256>>>(mid_w, ms_w, gate_w, down_w, F, pairs, LIMIT);
     };
     auto ws_down = [&] {
         CK((mw_launch<GLMVQ_MMA_DOWN, RES>(ws_d + 2 * nws, nws, book, res_book, mid_w, ms_w, token_d, nullptr, down_w, H, F,
-            LIMIT, nullptr, nullptr, (uint32_t)sms, 0)));
+            (uint32_t)sms, 0)));
     };
     if (only) {
         // One launch of one kernel (the others run first for valid inputs).

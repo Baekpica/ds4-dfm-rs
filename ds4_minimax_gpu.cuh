@@ -334,15 +334,20 @@ static int mm_mmaw_run(ds4_minimax_moe *moe, float *out, const float *input, con
     const uint64_t xb = count / GLMVQ_MMA8_K;
     mw_quant<<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(x8, xs, input, xb);
     mm_pair_tokens<<<(uint32_t)((pairs + 255) / 256), 256, 0, stream>>>(token, grouped, (uint32_t)pairs);
+    // Up's BF16 rows borrow down's buffer (twice their size) until
+    // mw_swiglu_quant has read them.
     cudaError_t err = mw_launch<GLMVQ_MMA_GATE, RES>(witems, n, book, res_book, x8, xs, token, gate, nullptr,
-        MM_FFN, MM_HIDDEN, MM_LIMIT, nullptr, nullptr, sms, stream);
+        MM_FFN, MM_HIDDEN, sms, stream);
     if (err == cudaSuccess) {
-        err = mw_launch<GLMVQ_MMA_UP, RES>(witems + n, n, book, res_book, x8, xs, token, gate, nullptr,
-            MM_FFN, MM_HIDDEN, MM_LIMIT, mid8, ms, sms, stream);
+        err = mw_launch<GLMVQ_MMA_GATE, RES>(witems + n, n, book, res_book, x8, xs, token, down, nullptr,
+            MM_FFN, MM_HIDDEN, sms, stream);
     }
     if (err == cudaSuccess) {
+        const uint64_t warps = pairs * (MM_FFN / GLMVQ_MMA8_K);
+        mw_swiglu_quant<<<(uint32_t)((warps * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
+            mid8, ms, gate, down, MM_FFN, (uint32_t)pairs, MM_LIMIT);
         err = mw_launch<GLMVQ_MMA_DOWN, RES>(witems + 2 * n, n, book, res_book, mid8, ms, token, nullptr, down,
-            MM_HIDDEN, MM_FFN, MM_LIMIT, nullptr, nullptr, sms, stream);
+            MM_HIDDEN, MM_FFN, sms, stream);
     }
     if (!cuda_ok(err, "MiniMax warp-specialized experts")) { return 0; }
     mm_mma_reduce<<<(uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(out,

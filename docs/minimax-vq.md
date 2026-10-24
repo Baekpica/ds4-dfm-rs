@@ -73,7 +73,10 @@ experts (rows ≥ 9, after host grouping) run `cuda/minimax_mma8w.cuh`:
 tokens × weights^T on E4M3 codewords (a codeword is an m16n8k32 B fragment),
 four producer warps filling a two-stage ring for four consumer warps of 32
 rows, one activation scale per (row, 128 k) as `glmvq_mma8_kernel` (which
-it equals bit for bit; `DS4_MINIMAX_MMA_WS=0` keeps it). The indexer's two
+it equals bit for bit; `DS4_MINIMAX_MMA_WS=0` keeps it). Gate and up write
+BF16 rows; a separate pass applies SwiGLU-OAI and writes down's E4M3 rows
+(inside the up kernel that epilogue held the MMA warps: up 12-25% behind
+gate, and its residual form spilled). The indexer's two
 Q8_0 projections share one Q8_1 quantization. RoPE rows are computed once
 per forward in double, and the next chunk's embedding rows are read
 ahead. Every chunk streams each routed expert's weights once, so the

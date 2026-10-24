@@ -27,24 +27,27 @@
  * (W = gain * (C1 + C2)). Every projection keeps glmvq_mma8_kernel's
  * activation contract: E4M3 rows with one scale per (row, 128 k) and an F32
  * promotion per stage, so a token's large channels do not flatten the rest
- * of its row (beam_w's gate/up use one scale per row). Down reads the up
- * epilogue's E4M3 rows and scales; gate and down write BF16 rows of
- * round(gain * dot) per pair. Results equal glmvq_mma8_kernel's bit for bit
- * (tests/test_minimax_mma8w): the k32 reduction is symmetric in A and B.
+ * of its row (beam_w's gate/up use one scale per row). Gate, up and down
+ * write BF16 rows of round(gain * dot) per pair; mw_swiglu_quant turns gate
+ * and up into down's E4M3 rows and scales. Results equal glmvq_mma8_kernel's
+ * bit for bit (tests/test_minimax_mma8w): the k32 reduction is symmetric in
+ * A and B. In the up kernel's own epilogue, SwiGLU, F32 divisions and E4M3
+ * stores held the MMA warps (up ran 12-25% behind gate, and its R13+8 form
+ * spilled at 255 registers); the separate pass reads 2 x 2 bytes per value.
  *
  * Measured limits (tests/test_minimax_mma8w, 2,048 rows, random routes):
  * gate 4.8 ms with weights streamed, 3.6 ms with every expert in L2, 2.3 ms
  * with the producers' copies removed (134 TFLOPS, 53% of the E4M3 peak); the
  * copies' L1 wavefronts and the consumers' ldmatrix plus book gathers share
  * the shared-memory pipe. TMA bulk copies of the 16-128-byte pieces were 3x
- * slower. At the 4,096-row production chunk (R13 / R13+8): gate 7.3 / 9.8
- * ms, up 10.0 / 12.8, down 7.7 / 10.5 against MMA floors of 2.6 / 5.2 ms per
- * projection; with every expert in L2, gate 6.6 / 9.1. ncu: tensor pipe
+ * slower. At the 4,096-row production chunk (R13 / R13+8): gate 7.7 / 9.9
+ * ms, up with mw_swiglu_quant 8.4 / 10.6, down 7.8 / 11.2 against MMA
+ * floors of 2.6 / 5.2 ms per projection; with every expert in L2, gate
+ * 6.6 / 9.1. ncu: tensor pipe
  * 38-44%, shared-memory pipe 48% (42% of its load wavefronts are book-gather
  * bank conflicts); the consumer warps spend ~57% in the MMA loop, ~25%
- * waiting on `full` slots and ~18% (up) in the epilogue: SwiGLU, F32
- * divisions, E4M3 stores (batching its gate loads saved 0.5 ms). Rejected,
- * slower or even: 128-pair items over 64-k stages (half the gathers per MMA;
+ * waiting on `full` slots. Rejected, slower or even: 128-pair items over
+ * 64-k stages (half the gathers per MMA;
  * the two-stage ring then covers half the time, +16-19%), separate index and
  * input barriers per slot (index filled a stage ahead, +16% on R13), and
  * accumulators rescaled per stage in place of the per-stage sum (even). */
@@ -74,8 +77,7 @@ __host__ __device__ constexpr uint32_t mw_stage_bytes() {
 
 template <bool RES>
 __host__ __device__ constexpr uint32_t mw_bytes() {
-    return MW_BOOK + (RES ? MW_RBOOK : 0u) + MW_STAGES * mw_stage_bytes<RES>() + MW_BT * sizeof(uint32_t) +
-        2 * MW_STAGES * sizeof(uint64_t);
+    return MW_BOOK + (RES ? MW_RBOOK : 0u) + MW_STAGES * mw_stage_bytes<RES>() + 2 * MW_STAGES * sizeof(uint64_t);
 }
 static_assert(mw_bytes<true>() <= 101376, "R13+8 ring fits GB10's 99 KiB of shared memory per block");
 
@@ -98,16 +100,15 @@ __global__ void mw_quant(uint8_t *out, float *scales, const float *input, uint64
     if (!lane) { scales[block] = scale; }
 }
 
-/* MODE: GATE and UP read token rows (token_of[pair]) of `act` with their
- * stage scales `act_scale[token][kt]`; DOWN reads pair rows of the up
- * epilogue's `act` (mid8) with `act_scale[pair][kt]`. GATE writes BF16
- * gate rows, UP SwiGLU-OAI(gate, up) as E4M3 rows of down's k order plus
- * one scale per (pair, 128 rows), DOWN BF16 rows into `out`. */
+/* MODE: GATE (gate and up) reads token rows (token_of[pair]) of `act` with
+ * their stage scales `act_scale[token][kt]` and writes BF16 rows into
+ * `gate`; DOWN reads pair rows of mw_swiglu_quant's `act` (mid8) with
+ * `act_scale[pair][kt]` and writes BF16 rows into `out`. */
 template <glmvq_mma_stage MODE, bool RES>
 __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items, uint32_t nitems,
         const uint8_t *book, const uint8_t *res_book, const uint8_t *act, const float *act_scale,
-        const uint32_t *token_of, __nv_bfloat16 *gate, __nv_bfloat16 *out, uint32_t rows, uint32_t cols,
-        float limit, uint8_t *mid8, float *mid_scale) {
+        const uint32_t *token_of, __nv_bfloat16 *gate, __nv_bfloat16 *out, uint32_t rows, uint32_t cols) {
+    static_assert(MODE == GLMVQ_MMA_GATE || MODE == GLMVQ_MMA_DOWN, "up runs as GATE, then mw_swiglu_quant");
     constexpr uint32_t BM = MW_BM, BT = MW_BT, S = MW_STAGES, C = MW_CONSUMERS, MT = MW_MT;
     constexpr uint32_t PT = MW_PRODUCERS * 32, IXB = mw_index_bytes<RES>(), ATB = BT * GLMVQ_MMA8_ROW;
     constexpr uint32_t STB = mw_stage_bytes<RES>();
@@ -115,8 +116,7 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
     constexpr uint32_t BOOKS = MW_BOOK + (RES ? MW_RBOOK : 0u);
     extern __shared__ __align__(16) uint8_t memory[];
     uint8_t *ring = memory + BOOKS;
-    uint32_t *amax = (uint32_t *)(ring + S * STB);
-    uint64_t *full = (uint64_t *)(amax + BT), *empty = full + S;
+    uint64_t *full = (uint64_t *)(ring + S * STB), *empty = full + S;
     const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
     for (uint32_t i = tid * 16; i < MW_BOOK; i += MW_THREADS * 16) { glmvq_mma_copy<16>(memory + i, book + i); }
     if constexpr (RES) {
@@ -203,10 +203,6 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                 bytes[j] = t < nt ? 16u : 0u;   // zero rows pad the last m16 tile, scales too
                 live[j] = t < padded;
             }
-            if constexpr (MODE == GLMVQ_MMA_UP) {
-                // The up epilogue's gate lines (this tile's 128 BF16 columns of each pair row).
-                if (pt < nt) { glmvq_mma_prefetch(gate + (uint64_t)(cur.offset + pt) * rows + crow, BM * 2); }
-            }
             for (uint32_t kt = 0; kt < stages; kt++, ringc++) {
                 const uint32_t s = ringc % S, use = ringc / S;
                 if (use) { beam_w_wait(empty + s, (use - 1) & 1); }
@@ -259,7 +255,6 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
     const uint32_t g = lane >> 2, q = lane & 3u;
     // ldmatrix.x4 row address of this lane: matrix lane / 8 = (row half, k half).
     const uint32_t lt = (lane & 7u) + ((lane >> 3) & 1u) * 8, lk = lane >> 4;
-    auto consumers_sync = [] { asm volatile("bar.sync 1, %0;" :: "n"(MW_CONSUMERS * 32) : "memory"); };
     uint32_t ringc = 0;
     for (uint32_t work = blockIdx.x; work < units; work += gridDim.x) {
         const uint32_t row = (work % tiles) * BM;
@@ -356,92 +351,22 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
             const float2 f = __half22float2(hg[n]);
             gn[n][0] = f.x; gn[n][1] = f.y;
         }
-        if constexpr (MODE != GLMVQ_MMA_UP) {
-            __nv_bfloat16 *dst = MODE == GLMVQ_MMA_GATE ? gate : out;
+        __nv_bfloat16 *dst = MODE == GLMVQ_MMA_GATE ? gate : out;
+        #pragma unroll
+        for (uint32_t m = 0; m < MT; m++) {
+            if (m >= nmt) { break; }
             #pragma unroll
-            for (uint32_t m = 0; m < MT; m++) {
-                if (m >= nmt) { break; }
+            for (uint32_t h = 0; h < 2; h++) {
+                const uint32_t t = m * 16 + h * 8 + g;
+                if (t >= nt) { continue; }
+                const uint64_t base = (uint64_t)(offset + t) * rows + c0;
                 #pragma unroll
-                for (uint32_t h = 0; h < 2; h++) {
-                    const uint32_t t = m * 16 + h * 8 + g;
-                    if (t >= nt) { continue; }
-                    const uint64_t base = (uint64_t)(offset + t) * rows + c0;
-                    #pragma unroll
-                    for (uint32_t n = 0; n < NT; n++) {
-                        *(__nv_bfloat162 *)(dst + base + 8 * n) = __floats2bfloat162_rn(
-                            glmvq_round(glmvq_mul(acc[m][n][2 * h], gn[n][0])),
-                            glmvq_round(glmvq_mul(acc[m][n][2 * h + 1], gn[n][1])));
-                    }
+                for (uint32_t n = 0; n < NT; n++) {
+                    *(__nv_bfloat162 *)(dst + base + 8 * n) = __floats2bfloat162_rn(
+                        glmvq_round(glmvq_mul(acc[m][n][2 * h], gn[n][0])),
+                        glmvq_round(glmvq_mul(acc[m][n][2 * h + 1], gn[n][1])));
                 }
             }
-        } else {
-            // SwiGLU-OAI on the BF16 gate, then E4M3 rows for down with one
-            // scale per (pair, 128 rows): this tile's rows are one block. The
-            // gate values load in one batch from lines the producers queued
-            // into L2 when the unit began: a load per (m, h) pass paid the
-            // memory latency eight times (~30% of up at 4,096 rows).
-            __nv_bfloat162 gx[MT][2][NT];
-            #pragma unroll
-            for (uint32_t m = 0; m < MT; m++) {
-                #pragma unroll
-                for (uint32_t h = 0; h < 2; h++) {
-                    const uint32_t t = m * 16 + h * 8 + g, tt = t < nt ? t : 0;
-                    const uint64_t base = (uint64_t)(offset + tt) * rows + c0;
-                    #pragma unroll
-                    for (uint32_t n = 0; n < NT; n++) {
-                        if (m < nmt) { gx[m][h][n] = *(const __nv_bfloat162 *)(gate + base + 8 * n); }
-                    }
-                }
-            }
-            for (uint32_t i = tid; i < BT; i += C * 32) { amax[i] = 0; }
-            consumers_sync();
-            #pragma unroll
-            for (uint32_t m = 0; m < MT; m++) {
-                if (m >= nmt) { break; }
-                #pragma unroll
-                for (uint32_t h = 0; h < 2; h++) {
-                    const uint32_t t = m * 16 + h * 8 + g;
-                    float peak = 0.0f;
-                    #pragma unroll
-                    for (uint32_t n = 0; n < NT; n++) {
-                        const float2 x = __bfloat1622float2(gx[m][h][n]);
-                        const float y0 = glmvq_round(glmvq_mul(acc[m][n][2 * h], gn[n][0]));
-                        const float y1 = glmvq_round(glmvq_mul(acc[m][n][2 * h + 1], gn[n][1]));
-                        const float v0 = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(x.x, y0, limit);
-                        const float v1 = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(x.y, y1, limit);
-                        acc[m][n][2 * h] = v0;
-                        acc[m][n][2 * h + 1] = v1;
-                        peak = fmaxf(peak, fmaxf(fabsf(v0), fabsf(v1)));
-                    }
-                    peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, 1));
-                    peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, 2));
-                    if (q == 0 && t < nt) { atomicMax(amax + t, __float_as_uint(peak)); }
-                }
-            }
-            consumers_sync();
-            #pragma unroll
-            for (uint32_t m = 0; m < MT; m++) {
-                if (m >= nmt) { break; }
-                #pragma unroll
-                for (uint32_t h = 0; h < 2; h++) {
-                    const uint32_t t = m * 16 + h * 8 + g;
-                    if (t >= nt) { continue; }
-                    const float peak = __uint_as_float(amax[t]), scale = peak / GLMVQ_E4M3_MAX;
-                    #pragma unroll
-                    for (uint32_t n = 0; n < NT; n++) {
-                        const float a = peak > 0.0f ? __fdiv_rn(acc[m][n][2 * h], scale) : 0.0f;
-                        const float b = peak > 0.0f ? __fdiv_rn(acc[m][n][2 * h + 1], scale) : 0.0f;
-                        // Down reads these rows with ldmatrix: store them in its k order.
-                        *(uint16_t *)(mid8 + (uint64_t)(offset + t) * rows + beam_w_perm(c0 + 8 * n)) =
-                            (uint16_t)__nv_cvt_float2_to_fp8x2(make_float2(a, b), __NV_SATFINITE, __NV_E4M3);
-                    }
-                    if (q == 0 && warp == 0) {
-                        mid_scale[(uint64_t)(offset + t) * (rows / GLMVQ_MMA8_K) + row / GLMVQ_MMA8_K] = scale;
-                    }
-                }
-            }
-            // amax is rewritten by the next unit only after every consumer read it.
-            consumers_sync();
         }
     }
 }
@@ -449,15 +374,47 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
 template <glmvq_mma_stage MODE, bool RES>
 static cudaError_t mw_launch(const mw_item *items, uint32_t nitems, const uint8_t *book, const uint8_t *res_book,
         const uint8_t *act, const float *act_scale, const uint32_t *token_of, __nv_bfloat16 *gate, __nv_bfloat16 *out,
-        uint32_t rows, uint32_t cols, float limit, uint8_t *mid8, float *mid_scale, uint32_t sms, cudaStream_t stream) {
+        uint32_t rows, uint32_t cols, uint32_t sms, cudaStream_t stream) {
     static cudaError_t ready = cudaFuncSetAttribute(mw_kernel<MODE, RES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
         mw_bytes<RES>());
     if (ready != cudaSuccess) { return ready; }
     const uint32_t units = nitems * (rows / MW_BM);
     if (!units) { return cudaSuccess; }
     mw_kernel<MODE, RES><<<min(units, sms), MW_THREADS, mw_bytes<RES>(), stream>>>(items, nitems, book, res_book, act,
-        act_scale, token_of, gate, out, rows, cols, limit, mid8, mid_scale);
+        act_scale, token_of, gate, out, rows, cols);
     return cudaGetLastError();
+}
+
+/* SwiGLU-OAI of the BF16 gate and up rows, then down's input: E4M3 rows in
+ * its k order with one scale per (pair, 128 rows), a warp per block (four
+ * values per lane; the block's peak by shuffles). */
+__global__ void mw_swiglu_quant(uint8_t *mid8, float *mid_scale, const __nv_bfloat16 *gate,
+        const __nv_bfloat16 *up, uint32_t rows, uint32_t pairs, float limit) {
+    const uint64_t w = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) / 32;
+    const uint32_t lane = threadIdx.x & 31, blocks = rows / GLMVQ_MMA8_K;
+    if (w >= (uint64_t)pairs * blocks) { return; }
+    const uint64_t p = w / blocks;
+    const uint32_t blk = (uint32_t)(w % blocks), c = blk * GLMVQ_MMA8_K + lane * 4;
+    const uint2 gr = *(const uint2 *)(gate + p * rows + c), ur = *(const uint2 *)(up + p * rows + c);
+    const float2 g0 = __bfloat1622float2(*(const __nv_bfloat162 *)&gr.x);
+    const float2 g1 = __bfloat1622float2(*(const __nv_bfloat162 *)&gr.y);
+    const float2 u0 = __bfloat1622float2(*(const __nv_bfloat162 *)&ur.x);
+    const float2 u1 = __bfloat1622float2(*(const __nv_bfloat162 *)&ur.y);
+    const float v[4] = {glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g0.x, u0.x, limit),
+        glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g0.y, u0.y, limit), glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g1.x, u1.x, limit),
+        glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g1.y, u1.y, limit)};
+    float peak = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
+    for (uint32_t s = 16; s; s >>= 1) { peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, s)); }
+    const float scale = peak / GLMVQ_E4M3_MAX;
+    #pragma unroll
+    for (uint32_t i = 0; i < 4; i += 2) {
+        const float a = peak > 0.0f ? __fdiv_rn(v[i], scale) : 0.0f;
+        const float b = peak > 0.0f ? __fdiv_rn(v[i + 1], scale) : 0.0f;
+        // Down reads these rows with ldmatrix: store them in its k order.
+        *(uint16_t *)(mid8 + p * rows + beam_w_perm(c + i)) =
+            (uint16_t)__nv_cvt_float2_to_fp8x2(make_float2(a, b), __NV_SATFINITE, __NV_E4M3);
+    }
+    if (lane == 0) { mid_scale[p * blocks + blk] = scale; }
 }
 
 #endif
