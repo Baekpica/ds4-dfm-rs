@@ -606,6 +606,9 @@ __global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *lo
     float acc[MM_ROUTER_ROWS];
     #pragma unroll
     for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) { acc[r] = 0.0f; }
+    // Four steps' loads in flight per lane (the sums keep their order): one
+    // load at a time held the 3 MiB matrix at ~120 GB/s.
+    #pragma unroll 4
     for (uint32_t i = lane; i < MM_HIDDEN / 4; i += 32) {
         const float4 a = __ldg(we + i);
         #pragma unroll
@@ -632,21 +635,32 @@ __global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *lo
  * blocks once, lane l takes element l of every block (d * q is exact in
  * F32) against the F32 input, in block order, then a fixed xor tree. A
  * row's result does not depend on the launch's other rows; the mmvq path
- * picked its column layout by width and quantized the input to Q8_1. */
+ * picked its column layout by width and quantized the input to Q8_1. The
+ * CTA's four output rows (contiguous) first land in shared memory by 16-byte
+ * loads: a warp reading one block per step with byte loads held this at
+ * ~17% of the DRAM rate, 6 ms of a decode token. */
 enum { MM_Q8_WARPS = 4, MM_Q8_BLOCK = 32, MM_Q8_BYTES = 34, MM_TYPE_Q8_0 = 8 };   // ggml's Q8_0 id
 
 __global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(float *out, const uint8_t *weight, const float *x,
-        uint32_t cols, uint32_t outs, uint32_t rows) {
-    const uint32_t lane = threadIdx.x & 31, o = blockIdx.x * MM_Q8_WARPS + threadIdx.x / 32;
+        uint32_t cols, uint32_t outs, uint32_t rows, bool staged) {
+    extern __shared__ __align__(16) uint8_t mm_q8_rows[];
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, o0 = blockIdx.x * MM_Q8_WARPS;
+    const uint32_t blocks = cols / MM_Q8_BLOCK, row_bytes = blocks * MM_Q8_BYTES;
+    if (staged) {
+        const uint32_t pieces = min((uint32_t)MM_Q8_WARPS, outs - o0) * row_bytes / 16;
+        const uint4 *src = (const uint4 *)(weight + (uint64_t)o0 * row_bytes);
+        for (uint32_t i = threadIdx.x; i < pieces; i += MM_Q8_WARPS * 32) { ((uint4 *)mm_q8_rows)[i] = src[i]; }
+        __syncthreads();
+    }
+    const uint32_t o = o0 + warp;
     if (o >= outs) { return; }
-    const uint32_t blocks = cols / MM_Q8_BLOCK;
-    const uint8_t *w = weight + (uint64_t)o * blocks * MM_Q8_BYTES;
+    const uint8_t *w = staged ? mm_q8_rows + warp * row_bytes : weight + (uint64_t)o * row_bytes;
     float acc[MM_ROUTER_ROWS];
     #pragma unroll
     for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) { acc[r] = 0.0f; }
     #pragma unroll 4
     for (uint32_t b = 0; b < blocks; b++) {
-        const uint8_t *block = w + (uint64_t)b * MM_Q8_BYTES;
+        const uint8_t *block = w + b * MM_Q8_BYTES;
         const float value = __half2float(__ushort_as_half((uint16_t)(block[0] | block[1] << 8))) *
             (float)(int8_t)block[2 + lane];
         #pragma unroll
@@ -670,8 +684,11 @@ extern "C" int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         !gvq_floats(input, (uint64_t)rows * cols) || !gvq_floats(out, (uint64_t)rows * outs) || !gvq_stream(ctx)) {
         return 0;
     }
-    mm_q8_gemv<<<(outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS, MM_Q8_WARPS * 32, 0, ds4_current_stream()>>>(
-        (float *)out->ptr, w, (const float *)input->ptr, cols, outs, rows);
+    // The staged copy takes whole 16-byte pieces (every MiniMax indexer row: 6,528 bytes).
+    const uint32_t row_bytes = cols / MM_Q8_BLOCK * MM_Q8_BYTES;
+    const bool staged = row_bytes % 16 == 0 && (uintptr_t)w % 16 == 0 && MM_Q8_WARPS * row_bytes <= 48 * 1024;
+    mm_q8_gemv<<<(outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS, MM_Q8_WARPS * 32, staged ? MM_Q8_WARPS * row_bytes : 0,
+        ds4_current_stream()>>>((float *)out->ptr, w, (const float *)input->ptr, cols, outs, rows, staged);
     return cuda_ok(cudaGetLastError(), "MiniMax Q8_0 rows");
 }
 
