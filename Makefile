@@ -2224,6 +2224,9 @@ tools/gb10_peaks: tools/gb10_peaks.cu
 tests/test_minimax_mma8w: tests/test_minimax_mma8w.cu cuda/minimax_mma8w.cuh cuda/beam_mma8w.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
 
+tests/test_minimax_decode: tests/test_minimax_decode.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
 .PHONY: test-minimax-mma8w
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
@@ -2296,7 +2299,7 @@ MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_
 	ds4_minimax_payload.inc ds4_minimax_session.inc ds4_minimax_batch.inc ds4_minimax_bank_payload.inc \
 	ds4_minimax_draft.inc
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_mma8w.cuh cuda/glm_vq_ops.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/glm_vq_ops.cuh
 
 tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
 	$(CC) $(CFLAGS) -Werror -o $@ $<
