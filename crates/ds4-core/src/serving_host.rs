@@ -120,7 +120,7 @@ const BEAM_DECODE_BYTES: u64 = 1_183_744;
 const BEAM_MMA_ITEM_BYTES: u64 = 20;
 // MiniMax's chunk (MINIMAX_PREFILL_DEFAULT, ds4_minimax_bind.inc).
 const MINIMAX_PREFILL_CHUNK_ENV: &str = "DS4_MINIMAX_PREFILL_CHUNK";
-const MINIMAX_NATIVE_DEFAULT: u32 = 2048;
+const MINIMAX_NATIVE_DEFAULT: u32 = 4096;
 const MINIMAX_NATIVE_MAX: u32 = 4096;
 // C mm_decode_plan: decode items, mid and partial rows, then 57 layers'
 // 3 x 128 expert tables (256-byte aligned regions).
@@ -2693,8 +2693,9 @@ fn minimax_kv_bytes(ctx: u64) -> u64 {
 
 // C minimax_draft_bytes: BF16 taps of one chunk, the widened fc input
 // (256 rows), context and K/V rows, five BF16 rings of 4,104 positions,
-// then the seven block rows (residual, norm, output, q, heads, k, v, FFN
-// gate/up, RoPE, draft and verify logits, ids).
+// then the seven block rows (residual, norm, output, q, heads, attention
+// partials, k, v, FFN gate/up, RoPE, draft logits) and the eight verify
+// rows (logits, draft and target ids).
 fn minimax_draft_bytes(rows: u64) -> u64 {
     const HIDDEN: u64 = 6144;
     const Q: u64 = 8192;
@@ -2704,8 +2705,12 @@ fn minimax_draft_bytes(rows: u64) -> u64 {
     let fcin = 256 * 5 * HIDDEN * SIZEOF_F32;
     let context = rows * (HIDDEN + 2 * KV) * SIZEOF_F32;
     let rings = 5 * 2 * 4104 * KV * SIZEOF_U16;
-    let block = 7 * (3 * HIDDEN + 2 * Q + 2 * KV + 2 * FF + 64 + 2 * 200_064 + 2) * SIZEOF_F32;
-    taps + fcin + context + rings + block
+    // Draft attention partials: 64 heads x 33 chunks of 128 ring keys x 130.
+    let block =
+        7 * (3 * HIDDEN + 2 * Q + 2 * KV + 2 * FF + 64 + 200_064 + 64 * 33 * 130) * SIZEOF_F32;
+    // Verify rows: the anchor and seven proposals (logits, draft and target ids).
+    let verify = 8 * (200_064 + 2) * SIZEOF_F32;
+    taps + fcin + context + rings + block + verify
 }
 
 // C minimax_workspace_bytes on the CUDA kernels: logits, the
@@ -2731,7 +2736,8 @@ fn minimax_workspace_bytes(ctx: u64, rows: u64) -> u64 {
         + 64
         + HIDDEN / 2
         + 64;
-    let partials = 64 * 16 * (128 + 2) * SIZEOF_F32;
+    // Split attention partials of up to eight rows (decode, DSpark verify).
+    let partials = 8 * 64 * 16 * (128 + 2) * SIZEOF_F32;
     let score_row = 4 * ctx.div_ceil(128) * SIZEOF_F32;
     let score_cap = if MINIMAX_SCORE_BUDGET > score_row {
         MINIMAX_SCORE_BUDGET / score_row * score_row
@@ -2742,7 +2748,8 @@ fn minimax_workspace_bytes(ctx: u64, rows: u64) -> u64 {
     let q4p = rows * 12_288 * SIZEOF_U16 * 2;
     let linear = GLMVQ_CUBLAS_WORKSPACE + rows * 8 * SIZEOF_U32;
     let pairs = rows * USED;
-    let mma = if rows > GLMVQ_VERIFY_ROWS {
+    // Up to eight rows run the decode experts row by row (C MM_DECODE_ROWS).
+    let mma = if rows > 8 {
         align(rows * HIDDEN)
             + align(rows * HIDDEN / 128 * SIZEOF_F32)
             + align(pairs * FFN * SIZEOF_U16)
@@ -3435,13 +3442,16 @@ mod tests {
     fn minimax_quote_matches_the_native_graph() {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(MINIMAX_PREFILL_CHUNK_ENV);
-        // Native graph log at ctx 16384, 2048-row chunks: KV 0.59 GiB,
-        // workspace 0.89 GiB. Every layer keeps 648 bytes per token up to
-        // 128K; 1M keeps its 4.22 GiB of index keys and a 0.75 GiB pool.
+        // Native graph logs: ctx 16384, 2048-row chunks: KV 0.59 GiB,
+        // workspace 0.90 GiB; ctx 12288 / 20480, 4096-row chunks: workspace
+        // 1.75 / 1.76 GiB. Every layer keeps 648 bytes per token up to 128K;
+        // 1M keeps its 4.22 GiB of index keys and a 0.75 GiB pool.
         let _tier = EnvGuard::unset(MINIMAX_RESIDENT_CTX_ENV);
         let gib = |b: u64| b as f64 / GIB as f64;
         assert!((gib(minimax_kv_bytes(16384)) - 0.59).abs() < 0.005);
-        assert!((gib(minimax_workspace_bytes(16384, 2048)) - 0.89).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(16384, 2048)) - 0.90).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(12288, 4096)) - 1.75).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(20480, 4096)) - 1.76).abs() < 0.005);
         assert_eq!(minimax_kv_bytes(131_072), 60 * 131_072 * 648);
         assert_eq!(
             minimax_kv_bytes(1 << 20),
@@ -3469,13 +3479,13 @@ mod tests {
                 vision: false,
             },
         );
-        assert_eq!(facts.native_chunk, Some(2048));
+        assert_eq!(facts.native_chunk, Some(4096));
         let host = 200_064 * SIZEOF_F32 + 16384 * SIZEOF_I32;
         assert_eq!(facts.per_bank_bytes, Some(minimax_kv_bytes(16384) + host));
         assert_eq!(
             facts.scratch_bytes,
             Some(
-                minimax_workspace_bytes(16384, 2048) + 2048 * (6144 * SIZEOF_U16 + 64 * SIZEOF_I32)
+                minimax_workspace_bytes(16384, 4096) + 4096 * (6144 * SIZEOF_U16 + 64 * SIZEOF_I32)
             )
         );
     }

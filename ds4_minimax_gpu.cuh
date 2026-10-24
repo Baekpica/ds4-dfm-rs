@@ -1007,11 +1007,19 @@ __global__ void mm_topk_kernel(int32_t *blocks, float *scores, uint32_t pos, uin
 }
 
 // DS4_MINIMAX_SCORE_TILED=1: decode rows take the tiled scorer (A/B).
+// DS4_MINIMAX_SCORE_TILED=1: the tiled SIMT scorer at every width (A/B).
 static bool mm_score_tiled(void) {
     static int tiled = -1;
     if (tiled < 0) { tiled = getenv("DS4_MINIMAX_SCORE_TILED") != nullptr; }
     return tiled != 0;
 }
+
+// Prefill widths score on tensor cores (defined with the attention MMA helpers).
+enum { MM_SC_ROWS = 32, MM_SC_GROUP = 32, MM_SC_LD = DS4_MINIMAX_HEAD + 8,
+       MM_SC_SMEM_BYTES = DS4_MINIMAX_BLOCK * MM_SC_LD * 2 };   // one block's keys as BF16
+__global__ void mm_score_mma_kernel(float *scores, const float *query, const uint8_t *pool, uint32_t pos,
+        uint32_t first, uint32_t count, uint32_t stride);
+static bool mm_score_mma_ready(void);
 
 // Decoded keys of one block plus the query vectors of MM_SCORE_ROWS rows.
 static const uint32_t MM_SCORE_SMEM = (MM_BLOCK * (MM_HEAD + 1) + MM_SCORE_ROWS * MM_KV_HEADS * MM_HEAD) * sizeof(float);
@@ -1040,6 +1048,11 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
             if (!gvq_floats(scores, (uint64_t)count * MM_KV_HEADS * stride) || stride > nblocks) { return 0; }
             if (count <= MM_SCORE_FEW && !mm_score_tiled()) {
                 mm_score_few_kernel<<<stride, MM_BLOCK, 0, stream>>>((float *)scores->ptr, (const float *)query->ptr,
+                    (const uint8_t *)pool->ptr, pos, first, count, stride);
+            } else if (!mm_score_tiled()) {
+                if (!mm_score_mma_ready()) { return 0; }
+                mm_score_mma_kernel<<<dim3((count + MM_SC_ROWS - 1) / MM_SC_ROWS, (stride + MM_SC_GROUP - 1) / MM_SC_GROUP),
+                    256, MM_SC_SMEM_BYTES, stream>>>((float *)scores->ptr, (const float *)query->ptr,
                     (const uint8_t *)pool->ptr, pos, first, count, stride);
             } else {
                 mm_score_kernel<<<dim3(stride, (count + MM_SCORE_ROWS - 1) / MM_SCORE_ROWS), MM_SCORE_THREADS,
@@ -1199,6 +1212,123 @@ __device__ __forceinline__ void mm_mma_bf16(float *c, const uint32_t *a, uint32_
 __device__ __forceinline__ uint32_t mm_bf16x2(float lo, float hi) {
     const __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi);
     return *(const uint32_t *)&v;
+}
+
+/* Block scores of prefill rows on BF16 tensor cores. A CTA takes 32 rows
+ * (128 query vectors: row x index head, warp w the vectors 16w..16w+15 as
+ * the m16n8k16 M dimension) and up to MM_SC_GROUP key blocks; each block's
+ * NVFP4 index keys decode once into shared memory as BF16 (exact: E2M1 x
+ * E4M3), S = Q K^T accumulates in F32 and each vector keeps the max over
+ * its visible keys (key <= its row's position). The SIMT scorer re-decoded
+ * a block for every 16 rows and ran at ~2.8 TFLOPS, 26% of a 32K prefill.
+ * Values agree with it to accumulation order; the top-16 can move at near
+ * ties, so prefill rows are judged by the quality gate (decode and verify
+ * widths keep mm_score_few_kernel). */
+__global__ void __launch_bounds__(256) mm_score_mma_kernel(float *scores, const float *query, const uint8_t *pool,
+        uint32_t pos, uint32_t first, uint32_t count, uint32_t stride) {
+    extern __shared__ __align__(16) uint8_t mm_sc_smem[];
+    __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_sc_smem;
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane >> 2, t = lane & 3;
+    const uint32_t tile = blockIdx.x * MM_SC_ROWS, rows = min((uint32_t)MM_SC_ROWS, count - tile);
+    const uint32_t last = pos + first + tile + rows - 1;
+    const uint32_t b0 = blockIdx.y * MM_SC_GROUP, b1 = min(b0 + MM_SC_GROUP, last / MM_BLOCK + 1);
+    if (b0 >= b1) { return; }
+    // Vectors va = 16w + g and vb = va + 8 of this thread's C fragment rows.
+    const uint32_t va = warp * 16 + g, vb = va + 8;
+    const bool live_a = va / MM_KV_HEADS < rows, live_b = vb / MM_KV_HEADS < rows;
+    const uint32_t pa = pos + first + tile + va / MM_KV_HEADS, pb = pos + first + tile + vb / MM_KV_HEADS;
+    const float *q = query + (uint64_t)(first + tile) * MM_KV_HEADS * MM_HEAD;
+    uint32_t qa[8][4];
+    #pragma unroll
+    for (uint32_t j = 0; j < 8; j++) {
+        const uint32_t c = 16 * j + 2 * t;
+        const float *ra = q + (uint64_t)va * MM_HEAD, *rb = q + (uint64_t)vb * MM_HEAD;
+        qa[j][0] = live_a ? mm_bf16x2(ra[c], ra[c + 1]) : 0u;
+        qa[j][1] = live_b ? mm_bf16x2(rb[c], rb[c + 1]) : 0u;
+        qa[j][2] = live_a ? mm_bf16x2(ra[c + 8], ra[c + 9]) : 0u;
+        qa[j][3] = live_b ? mm_bf16x2(rb[c + 8], rb[c + 9]) : 0u;
+    }
+    for (uint32_t b = b0; b < b1; b++) {
+        const uint32_t t0 = b * MM_BLOCK, visible = min((uint32_t)MM_BLOCK, last + 1 - t0);
+        __syncthreads();   // the previous block's fragments are read
+        {
+            // Thread i: key i / 2, values 64 (i % 2).. of its 128 (32 data bytes, 4 scales).
+            const uint32_t key = threadIdx.x / 2, half = threadIdx.x % 2;
+            uint32_t packed[32];
+            if (key < visible) {
+                const uint8_t *row = pool + (uint64_t)(t0 + key) * MM_FP4_ROW;
+                const uint2 *d = (const uint2 *)(row + half * 32);
+                const uint2 d0 = d[0], d1 = d[1], d2 = d[2], d3 = d[3];
+                const uint32_t sc = *(const uint32_t *)(row + MM_FP4_DATA + half * 4);
+                const uint32_t words[8] = {d0.x, d0.y, d1.x, d1.y, d2.x, d2.y, d3.x, d3.y};
+                #pragma unroll
+                for (uint32_t w = 0; w < 8; w++) {
+                    const float s = glmvq_e4m3((uint8_t)(sc >> (w / 2 * 8)));
+                    #pragma unroll
+                    for (uint32_t k = 0; k < 4; k++) {
+                        const uint8_t byte = (uint8_t)(words[w] >> (k * 8));
+                        packed[w * 4 + k] = mm_bf16x2(ds4_fp4_nibble_to_f32(byte & 15u) * s,
+                            ds4_fp4_nibble_to_f32(byte >> 4) * s);
+                    }
+                }
+            } else {
+                #pragma unroll
+                for (uint32_t k = 0; k < 32; k++) { packed[k] = 0u; }
+            }
+            uint4 *dst = (uint4 *)(ks + key * MM_SC_LD + half * 64);
+            #pragma unroll
+            for (uint32_t k = 0; k < 8; k++) {
+                dst[k] = make_uint4(packed[k * 4], packed[k * 4 + 1], packed[k * 4 + 2], packed[k * 4 + 3]);
+            }
+        }
+        __syncthreads();
+        float best_a = -INFINITY, best_b = -INFINITY;
+        #pragma unroll 1
+        for (uint32_t half = 0; half < 2; half++) {
+            const uint32_t k0 = half * 64;
+            float s[8][4];
+            #pragma unroll
+            for (uint32_t n = 0; n < 8; n++) { s[n][0] = s[n][1] = s[n][2] = s[n][3] = 0.0f; }
+            #pragma unroll
+            for (uint32_t j = 0; j < 8; j++) {
+                #pragma unroll
+                for (uint32_t n = 0; n < 8; n += 2) {
+                    const uint32_t mi = lane / 8;
+                    const uint32_t key = k0 + (n + (mi >> 1)) * 8 + lane % 8, dim = 16 * j + (mi & 1) * 8;
+                    uint32_t b4[4];
+                    mm_ldsm4(b4, ks + key * MM_SC_LD + dim, false);
+                    mm_mma_bf16(s[n], qa[j], b4[0], b4[1]);
+                    mm_mma_bf16(s[n + 1], qa[j], b4[2], b4[3]);
+                }
+            }
+            #pragma unroll
+            for (uint32_t n = 0; n < 8; n++) {
+                const uint32_t key = t0 + k0 + n * 8 + 2 * t;
+                best_a = fmaxf(best_a, key <= pa ? s[n][0] : -INFINITY);
+                best_a = fmaxf(best_a, key + 1 <= pa ? s[n][1] : -INFINITY);
+                best_b = fmaxf(best_b, key <= pb ? s[n][2] : -INFINITY);
+                best_b = fmaxf(best_b, key + 1 <= pb ? s[n][3] : -INFINITY);
+            }
+        }
+        best_a = fmaxf(best_a, __shfl_xor_sync(0xffffffffu, best_a, 1));
+        best_a = fmaxf(best_a, __shfl_xor_sync(0xffffffffu, best_a, 2));
+        best_b = fmaxf(best_b, __shfl_xor_sync(0xffffffffu, best_b, 1));
+        best_b = fmaxf(best_b, __shfl_xor_sync(0xffffffffu, best_b, 2));
+        if (!t) {
+            if (live_a) { scores[((uint64_t)tile * MM_KV_HEADS + va) * stride + b] = best_a; }
+            if (live_b) { scores[((uint64_t)tile * MM_KV_HEADS + vb) * stride + b] = best_b; }
+        }
+    }
+}
+
+static bool mm_score_mma_ready(void) {
+    static bool ready = false;
+    if (!ready) {
+        if (!cuda_ok(cudaFuncSetAttribute(mm_score_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                MM_SC_SMEM_BYTES), "MiniMax MMA score shared memory")) { return false; }
+        ready = true;
+    }
+    return true;
 }
 
 __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *heads, const float *q,

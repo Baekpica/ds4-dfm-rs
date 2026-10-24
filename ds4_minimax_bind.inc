@@ -38,9 +38,12 @@ enum {
     MINIMAX_DRAFT_BLOCK = 7, MINIMAX_DRAFT_TAPS = 5, MINIMAX_MARKOV_RANK = 256, MINIMAX_DRAFT_WINDOW = 4096,
     MINIMAX_DRAFT_MASK = 200058,
     MINIMAX_BLOCK = 128, MINIMAX_TOPK = 16, MINIMAX_CONTEXT = 1048576,
-    // 2,048-row chunks: the reference's MSA selection is per query row, and
-    // the 1M plan leaves no room for 4,096-row expert planes.
-    MINIMAX_PREFILL_DEFAULT = 2048, MINIMAX_PREFILL_MAX = 4096,
+    // Prefill chunks: every chunk streams each routed expert's weights once,
+    // so 4,096 rows read half the expert bytes per token of 2,048 (8K
+    // prefill +11%) and the 1M plan still fits (1.86 GiB of scratch).
+    // 8,192 rows measured +4% at 16K for 1.72 GiB more scratch and a larger
+    // SSD-tier pin pool (sized by the maximum): not offered.
+    MINIMAX_PREFILL_DEFAULT = 4096, MINIMAX_PREFILL_MAX = 4096,
     // Tokenizer ids; the head's last 3 of 200,064 rows are padding.
     MINIMAX_TOKENS = 200061,
     // NVFP4: per token and layer one 72-byte index key and 4 x 2 x 72 bytes

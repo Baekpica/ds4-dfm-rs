@@ -54,11 +54,15 @@ the residual stage adds GVR8 codewords from a 2 KiB book, down's 1,024-column
 tail included. q/k/v Q4_K projections of a token run as one launch; the Q8_0
 indexer projections take the generic aligned Q8_0 path.
 
-**Prefill (2,048-row chunks).** Q4_K projections run the q4p FP16 tensor-core
+**Prefill (4,096-row chunks).** Q4_K projections run the q4p FP16 tensor-core
 kernel; routed experts run GLM's `glmvq_mma8_kernel` on E4M3 codewords after
 host grouping (rows ≥ 5), with the SwiGLU-OAI clamp mode. RoPE rows are
 computed once per forward in double, and the next chunk's embedding rows are
-read ahead. `DS4_MINIMAX_PREFILL_CHUNK` selects up to 4,096 rows.
+read ahead. Every chunk streams each routed expert's weights once, so the
+chunk size sets the expert bytes per token: 4,096 rows read half of 2,048's
+(8K prefill 938 -> 1,044 tok/s) and the 1M plan still fits (1.86 GiB of
+scratch); 8,192 rows measured +4% at 16K for 1.72 GiB more and are not
+offered. `DS4_MINIMAX_PREFILL_CHUNK` selects up to 4,096 rows.
 
 **MSA.** Each layer stores K and V as NVFP4 (vLLM's encoder: per 16 values
 an E4M3 scale of `max(amax / 6, 2⁻⁹)`, E2M1 codes rounded to nearest even,
@@ -66,7 +70,12 @@ global scale 1), 72 bytes per 128-value vector, in pages of one (block, KV
 head): 18,432 bytes, 73,728 per block and layer. The index key is one more
 NVFP4 vector per token and layer. Block scores are the max over a block's
 visible keys of `index_q · index_key`; the own block always wins; the top 16
-per (row, KV head) are sorted ascending. Attention reads only those blocks,
+per (row, KV head) are sorted ascending. Prefill rows score on BF16 tensor
+cores (32 rows by up to 32 blocks per CTA, each block's keys decoded once to
+BF16, exactly); up to eight rows keep a SIMT scorer that reads each block
+once. Scoring grows with the context: the SIMT tiled scorer was 26% of a
+32K prefill (690 tok/s), the tensor-core one 0.4% of an 8K prefill (32K:
+929 tok/s). Attention reads only those blocks,
 on BF16 tensor cores (each block's NVFP4 page decoded once into shared memory
 as BF16, which is exact; S = QKᵀ in F32, an F32 online softmax, O += PV with
 P in BF16; scale 128^-½). A prefill CTA takes eight rows and one KV head and
@@ -116,7 +125,7 @@ byte-identical, below). Snapshots (`MMX1`: tokens, logits, index keys, whole
 pages) have one layout across tiers; the SSD tier moves pages through its
 file, and a cross-bank fork copies file ranges.
 
-GB10's NVMe (`O_DIRECT`, measured): 6.3 GB/s sequential, 6.2 GB/s for
+GB10's NVMe (`O_DIRECT`, measured; see [gb10-hardware.md](gb10-hardware.md)): 6.3 GB/s sequential, 6.2 GB/s for
 72 KB random reads at eight in flight (84K IOPS, ~95 µs per wave), 512-byte
 `STATX_DIOALIGN` offsets.
 
@@ -179,14 +188,14 @@ temperature 1.0, top-p 0.95).
 
 | Variable | Effect |
 |---|---|
-| `DS4_MINIMAX_PREFILL_CHUNK` | prefill rows per chunk (default 2,048, at most 4,096) |
+| `DS4_MINIMAX_PREFILL_CHUNK` | prefill rows per chunk (default and maximum 4,096) |
 | `DS4_MINIMAX_KV_RESIDENT_CTX` | largest context with resident K/V pages (default 131,072; 0 = SSD tier always) |
 | `DS4_KV_OFFLOAD_DIR` | directory of the SSD tier's unlinked files |
 | `DS4_MINIMAX_KV_POOL_SLOTS` | a smaller SSD-tier pool, to make tests evict and read back |
 | `DS4_MINIMAX_KV_TRACE` | print the SSD tier's hits, misses, bytes and I/O time per forward |
 | `DS4_MINIMAX_TRACE=DIR` | per-layer tensor dumps of one forward (`DS4_MINIMAX_TRACE_POS`) |
 | `DS4_MINIMAX_ATTN_SIMT=1` | F32 SIMT attention at every width instead of the tensor-core kernels |
-| `DS4_MINIMAX_SCORE_TILED=1` | the tiled block scorer for up to eight rows too |
+| `DS4_MINIMAX_SCORE_TILED=1` | the tiled SIMT block scorer at every width |
 | `DS4_MINIMAX_VERIFY_CHECK=1` | re-run each DSpark verify row as a decode and print the logit difference |
 | `DS4_MINIMAX_DSPARK_MARKOV=0` | DSpark proposals without the Markov bias |
 | `DS4_MINIMAX_DSPARK_NOCTX=1` | DSpark block attends to itself only (no context window) |
