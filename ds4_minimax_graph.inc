@@ -26,6 +26,8 @@ typedef struct {
     // Lowest position whose DSpark context rows are in the draft rings.
     uint32_t draft_first;
     bool ready, failed, borrowed;
+    // q4h/q4s hold q4p's prepared copy of norm (the next layer's input norm).
+    bool norm_q4p;
     uint64_t workspace_bytes, kv_bytes, score_bytes;
 #define MINIMAX_FIELD(field, cols, type) ds4_gpu_tensor *field;
     MINIMAX_ROW_BUFFERS(MINIMAX_FIELD)
@@ -216,14 +218,25 @@ static bool minimax_mm(ds4_minimax_graph *g, const ds4_model *m, ds4_gpu_tensor 
     return ok;
 }
 
-// Projections of one input: prefill prepares it once (Q8_1 / FP16).
-static bool minimax_mm_many(ds4_minimax_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
-        const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
+// Whether q4p runs these matrices at `rows`: then the kernel that writes
+// their input also writes q4p's prepared copy into q4h/q4s.
+static bool minimax_q4p(ds4_minimax_graph *g, const ds4_model *m, const ds4_tensor *const *ws, uint32_t count,
+        uint32_t rows) {
     uint32_t index[4];
-    for (uint32_t c = 0; c < count; c++) { index[c] = minimax_index(m, ws[c]); }
+    for (uint32_t c = 0; c < count && c < 4u; c++) { index[c] = minimax_index(m, ws[c]); }
+    return count <= 4u && ds4_gpu_gvq_q4p_takes(g->gvq, index, count, rows) != 0;
+}
+
+// Projections of one input: prefill prepares it once (Q8_1 / FP16), or the
+// producer already did (`prepared`: q4h/q4s hold it).
+static bool minimax_mm_many(ds4_minimax_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
+        const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows, bool prepared) {
+    uint32_t index[4];
+    for (uint32_t c = 0; c < count && c < 4u; c++) { index[c] = minimax_index(m, ws[c]); }
     // Decode and verify widths: a single launch streams every matrix (the k/v
     // rows too), each token as a one-token call.
-    const bool ok = count <= 4 && ((rows <= DS4_MINIMAX_SPLIT_ROWS &&
+    const bool ok = count <= 4 && ((prepared && ds4_gpu_gvq_q4p_prepared(g->gvq, outs, index, count, g->q4h, g->q4s,
+            rows)) || (rows <= DS4_MINIMAX_SPLIT_ROWS &&
             ds4_gpu_gvq_q4_decode_many(g->gvq, outs, index, count, x, rows)) ||
         ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16));
     if (!ok) { fprintf(stderr, "ds4: MiniMax linear group of %u failed (rows=%u)\n", count, rows); }
@@ -267,7 +280,7 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
     const uint32_t blocks_now = (uint32_t)minimax_blocks(pos + rows);
     const uint64_t score_row = (uint64_t)MINIMAX_KV_HEADS * blocks_now * sizeof(float);
     const uint32_t score_rows = (uint32_t)(g->score_bytes / score_row < rows ? g->score_bytes / score_row : rows);
-    if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows) ||
+    if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows, g->norm_q4p) ||
         !minimax_indexer(g, m, l, rows) ||
         // v_proj's BF16 output: prefill projections leave F32 sums.
         !ds4_gpu_gvq_round(g->v, (uint64_t)rows * MINIMAX_KV) ||
@@ -294,22 +307,28 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
         minimax_trace(il, pos, "attn_out", g->attn_out, (uint64_t)rows * MINIMAX_EMBD * sizeof(float));
 }
 
-// SwiGLU-OAI MLP of `width` (dense 12,288 or shared 3,072): gate/up, the
-// clamped activation into ff_gate, then down.
+// SwiGLU-OAI MLP of `width` (dense 12,288 or shared 3,072): gate/up (from
+// q4h when `prepared`), the clamped activation into ff_gate or, when q4p
+// takes down, straight into q4h, then down.
 static bool minimax_mlp(ds4_minimax_graph *g, const ds4_model *m, const ds4_tensor *gate, const ds4_tensor *up,
-        const ds4_tensor *down, ds4_gpu_tensor *out, uint32_t width, uint32_t rows) {
+        const ds4_tensor *down, ds4_gpu_tensor *out, uint32_t width, uint32_t rows, bool prepared) {
     ds4_gpu_tensor *const outs[] = {g->ff_gate, g->ff_up};
     const ds4_tensor *const ws[] = {gate, up};
-    return minimax_mm_many(g, m, outs, ws, 2u, g->norm, rows) &&
-        ds4_gpu_minimax_swiglu(g->ff_gate, g->ff_gate, g->ff_up, rows, width) &&
+    if (!minimax_mm_many(g, m, outs, ws, 2u, g->norm, rows, prepared)) { return false; }
+    if (minimax_q4p(g, m, &down, 1u, rows)) {
+        return ds4_gpu_minimax_swiglu_q4p(g->q4h, g->q4s, g->ff_gate, g->ff_up, rows, width) &&
+            minimax_mm_many(g, m, &out, &down, 1u, g->ff_gate, rows, true);
+    }
+    return ds4_gpu_minimax_swiglu(g->ff_gate, g->ff_gate, g->ff_up, rows, width) &&
         minimax_mm(g, m, out, down, g->ff_gate, rows);
 }
 
 // F32 router logits (the source keeps F32 weights), top-4, VQ experts with
 // the shared expert added in the routed sum.
 static bool minimax_moe(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
-        uint32_t rows) {
-    return minimax_mlp(g, m, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, g->shared, MINIMAX_FF, rows) &&
+        uint32_t rows, bool prepared) {
+    return minimax_mlp(g, m, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, g->shared, MINIMAX_FF, rows,
+            prepared) &&
         ds4_gpu_minimax_router(g->gvq, g->selected, g->route_weights, g->router, g->norm,
             minimax_index(m, l->ffn_gate_inp), minimax_index(m, l->ffn_exp_probs_b), rows) &&
         ds4_gpu_minimax_moe(g->moe, g->ffn_out, g->norm, g->selected, g->route_weights, g->shared, g->matrices[il],
@@ -324,16 +343,25 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
     const ds4_layer_weights *l = &w->layer[il];
     const bool dense = il < MINIMAX_DENSE;
     const uint64_t hidden = (uint64_t)rows * MINIMAX_EMBD * sizeof(float), route = (uint64_t)rows * MINIMAX_USED * 4u;
+    // Each norm's q4p consumers (gate/up here, the next layer's q/k/v) read
+    // the copy its residual writes when q4p takes them.
+    const ds4_tensor *const gu[] = {dense ? l->ffn_gate : l->ffn_gate_shexp, dense ? l->ffn_up : l->ffn_up_shexp};
+    const bool gu_q4p = minimax_q4p(g, m, gu, 2u, rows);
+    const ds4_layer_weights *n = il + 1u < MINIMAX_LAYERS ? &w->layer[il + 1u] : NULL;
+    const ds4_tensor *const qkv[] = {n ? n->attn_q : NULL, n ? n->attn_k : NULL, n ? n->attn_v : NULL};
+    const bool qkv_q4p = next && n && minimax_q4p(g, m, qkv, 3u, rows);
     const bool ok = minimax_attention(g, m, w, il, rows, pos) &&
-        ds4_gpu_minimax_residual(g->gvq, g->cur, g->attn_out, g->norm, minimax_index(m, l->ffn_norm), rows) &&
+        ds4_gpu_minimax_residual(g->gvq, g->cur, g->attn_out, g->norm, minimax_index(m, l->ffn_norm), rows,
+            gu_q4p ? g->q4h : NULL, g->q4s) &&
         minimax_trace(il, pos, "attn", g->cur, hidden) &&
-        (dense ? minimax_mlp(g, m, l->ffn_gate, l->ffn_up, l->ffn_down, g->ffn_out, MINIMAX_DENSE_FF, rows)
-               : minimax_moe(g, m, l, il, rows) && minimax_trace(il, pos, "routes", g->selected, route) &&
+        (dense ? minimax_mlp(g, m, l->ffn_gate, l->ffn_up, l->ffn_down, g->ffn_out, MINIMAX_DENSE_FF, rows, gu_q4p)
+               : minimax_moe(g, m, l, il, rows, gu_q4p) && minimax_trace(il, pos, "routes", g->selected, route) &&
                      minimax_trace(il, pos, "weights", g->route_weights, route)) &&
         minimax_trace(il, pos, "ffn_out", g->ffn_out, hidden) &&
         ds4_gpu_minimax_residual(g->gvq, g->cur, g->ffn_out, g->norm, next ? minimax_index(m, next) : DS4_GVQ_NO_LINK,
-            rows) &&
+            rows, qkv_q4p ? g->q4h : NULL, g->q4s) &&
         minimax_trace(il, pos, "ffn", g->cur, hidden);
+    g->norm_q4p = ok && qkv_q4p;
     if (!ok) { fprintf(stderr, "ds4: MiniMax layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }
     return ok;
 }
@@ -396,6 +424,7 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
         !ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->layer[0].attn_norm), rows)) {
         return false;
     }
+    g->norm_q4p = false;   // layer 0's q/k/v prepare their input themselves
     // DS4_MINIMAX_DSPARK_TAP=entry taps the residual entering a target layer
     // (TokenSpeed's reading); the default takes it after the layer (DFlash's
     // hidden_states[layer_id + 1], vLLM's boundary idx + 1, llama.cpp's

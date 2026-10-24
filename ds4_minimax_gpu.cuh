@@ -761,7 +761,36 @@ extern "C" int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const 
 }
 
 // cur = round(cur + branch), then the next norm when `next` is set.
-__global__ void mm_residual_kernel(float *cur, const float *branch, float *norm, const __nv_bfloat16 *next) {
+/* q4p's input for one row held as VALUES per thread at index tid + j * 256
+ * (glmvq_q4p_prep's bytes): FP16 x * 2^-e with each quad stored (0, 2, 1, 3)
+ * and the 2^(e-6) row scale, e = 0 unless the row's max |x| passes 2^15. */
+template <uint32_t VALUES>
+__device__ __forceinline__ void mm_row_q4p(const float *x, uint32_t cols, __half *xh, float *xs, float *scratch) {
+    float peak = 0.0f;
+    #pragma unroll
+    for (uint32_t j = 0; j < VALUES; j++) { peak = fmaxf(peak, fabsf(x[j])); }
+    for (uint32_t stride = 16; stride; stride >>= 1) { peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, stride)); }
+    if ((threadIdx.x & 31) == 0) { scratch[threadIdx.x / 32] = peak; }
+    __syncthreads();
+    peak = 0.0f;
+    for (uint32_t w = 0; w < MM_ROW_THREADS / 32; w++) { peak = fmaxf(peak, scratch[w]); }
+    __syncthreads();
+    int e = 0;
+    if (peak > GLMVQ_Q4P_RANGE) { frexpf(peak / GLMVQ_Q4P_RANGE, &e); }
+    const float scale = ldexpf(1.0f, -e);
+    __half *row = xh + (uint64_t)blockIdx.x * cols;
+    #pragma unroll
+    for (uint32_t j = 0; j < VALUES; j++) {
+        const uint32_t c = threadIdx.x + j * MM_ROW_THREADS, k = c & 3u;
+        row[(c & ~3u) | (k == 1u ? 2u : k == 2u ? 1u : k)] = __float2half_rn(x[j] * scale);
+    }
+    if (!threadIdx.x) { xs[blockIdx.x] = ldexpf(1.0f, e - GLMVQ_Q4P_SHIFT); }
+}
+
+// With q4h, the norm row also lands as q4p's prepared input (the q4p pass
+// over it read 100 MB and wrote 50 MB per 4,096-row call).
+__global__ void mm_residual_kernel(float *cur, const float *branch, float *norm, const __nv_bfloat16 *next,
+        __half *q4h, float *q4s) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
     const uint64_t base = (uint64_t)blockIdx.x * MM_HIDDEN;
     float x[MM_ROW_VALUES], y[MM_ROW_VALUES];
@@ -773,17 +802,20 @@ __global__ void mm_residual_kernel(float *cur, const float *branch, float *norm,
     if (!next) { return; }
     mm_row_rms(x, next, y, scratch);
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { norm[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
+    if (q4h) { mm_row_q4p<MM_ROW_VALUES>(y, MM_HIDDEN, q4h, q4s, scratch); }
 }
 
 extern "C" int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-        ds4_gpu_tensor *norm, uint32_t next, uint32_t rows) {
+        ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s) {
     const auto *n = next == DS4_GVQ_NO_LINK ? nullptr
         : (const __nv_bfloat16 *)gvq_weight(ctx, next, GVQ_TYPE_BF16, MM_HIDDEN);
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
     if ((next != DS4_GVQ_NO_LINK && !n) || !rows || !gvq_floats(cur, count) || !gvq_floats(branch, count) ||
-        (n && !gvq_floats(norm, count))) { return 0; }
+        (n && !gvq_floats(norm, count)) || (q4h && (!n || q4h->bytes < count * sizeof(__half) ||
+            !gvq_floats(q4s, rows)))) { return 0; }
     mm_residual_kernel<<<rows, MM_ROW_THREADS, 0, ds4_current_stream()>>>((float *)cur->ptr,
-        (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n);
+        (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n, q4h ? (__half *)q4h->ptr : nullptr,
+        q4h ? (float *)q4s->ptr : nullptr);
     return cuda_ok(cudaGetLastError(), "MiniMax residual");
 }
 
@@ -791,6 +823,39 @@ __global__ void mm_swiglu_kernel(float *out, const float *gate, const float *up,
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
     out[i] = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(glmvq_round(gate[i]), glmvq_round(up[i]), MM_LIMIT);
+}
+
+// SwiGLU-OAI rows straight into q4p's prepared input for down (nothing else
+// reads the F32 rows at prefill widths).
+template <uint32_t WIDTH>
+__global__ void __launch_bounds__(MM_ROW_THREADS) mm_swiglu_q4p_kernel(__half *q4h, float *q4s, const float *gate,
+        const float *up) {
+    __shared__ float scratch[MM_ROW_THREADS / 32];
+    constexpr uint32_t VALUES = WIDTH / MM_ROW_THREADS;
+    const uint64_t base = (uint64_t)blockIdx.x * WIDTH;
+    float v[VALUES];
+    #pragma unroll
+    for (uint32_t j = 0; j < VALUES; j++) {
+        const uint64_t at = base + threadIdx.x + j * MM_ROW_THREADS;
+        v[j] = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(glmvq_round(gate[at]), glmvq_round(up[at]), MM_LIMIT);
+    }
+    mm_row_q4p<VALUES>(v, WIDTH, q4h, q4s, scratch);
+}
+
+extern "C" int ds4_gpu_minimax_swiglu_q4p(ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, uint32_t rows, uint32_t width) {
+    const uint64_t count = (uint64_t)rows * width;
+    if (!rows || (width != MM_FFN && width != DS4_MINIMAX_DENSE_FF) || !q4h || q4h->bytes < count * sizeof(__half) ||
+        !gvq_floats(q4s, rows) || !gvq_floats(gate, count) || !gvq_floats(up, count)) { return 0; }
+    const cudaStream_t stream = ds4_current_stream();
+    if (width == MM_FFN) {
+        mm_swiglu_q4p_kernel<MM_FFN><<<rows, MM_ROW_THREADS, 0, stream>>>((__half *)q4h->ptr, (float *)q4s->ptr,
+            (const float *)gate->ptr, (const float *)up->ptr);
+    } else {
+        mm_swiglu_q4p_kernel<DS4_MINIMAX_DENSE_FF><<<rows, MM_ROW_THREADS, 0, stream>>>((__half *)q4h->ptr,
+            (float *)q4s->ptr, (const float *)gate->ptr, (const float *)up->ptr);
+    }
+    return cuda_ok(cudaGetLastError(), "MiniMax SwiGLU-OAI q4p rows");
 }
 
 extern "C" int ds4_gpu_minimax_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,

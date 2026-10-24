@@ -174,12 +174,12 @@ static bool minimax_draft_layers(ds4_minimax_graph *g, const ds4_model *m, uint3
             !ds4_gpu_minimax_draft_attn(d->heads, d->part, d->q, d->ring_k[l], d->ring_v[l], n, lo, p + n,
                 MINIMAX_DRAFT_RING) ||
             !plain_graph_matmul_tensor(d->o, m, L->o, MINIMAX_Q, MINIMAX_EMBD, d->heads, n) ||
-            !ds4_gpu_minimax_residual(g->gvq, d->h, d->o, d->x, minimax_index(m, L->ffn_norm), n) ||
+            !ds4_gpu_minimax_residual(g->gvq, d->h, d->o, d->x, minimax_index(m, L->ffn_norm), n, NULL, NULL) ||
             !plain_graph_matmul_tensor(d->gate, m, L->gate, MINIMAX_EMBD, MINIMAX_DENSE_FF, d->x, n) ||
             !plain_graph_matmul_tensor(d->up, m, L->up, MINIMAX_EMBD, MINIMAX_DENSE_FF, d->x, n) ||
             !ds4_gpu_minimax_swiglu(d->gate, d->gate, d->up, n, MINIMAX_DENSE_FF) ||
             !plain_graph_matmul_tensor(d->o, m, L->down, MINIMAX_DENSE_FF, MINIMAX_EMBD, d->gate, n) ||
-            !ds4_gpu_minimax_residual(g->gvq, d->h, d->o, d->x, minimax_index(m, next), n)) {
+            !ds4_gpu_minimax_residual(g->gvq, d->h, d->o, d->x, minimax_index(m, next), n, NULL, NULL)) {
             fprintf(stderr, "ds4: MiniMax DSpark layer %u failed (pos=%u)\n", l, p);
             return false;
         }

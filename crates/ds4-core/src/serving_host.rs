@@ -2723,14 +2723,16 @@ fn minimax_workspace_bytes(ctx: u64, rows: u64) -> u64 {
     const USED: u64 = 4;
     let align = |n: u64| n.div_ceil(256) * 256;
     // token, cur/norm/attn_out/ffn_out/shared, q/heads, k/v/index_q,
-    // index_k, the dense gate/up, router, routes and weights, block ids,
-    // BF16 embedding staging, RoPE rows.
+    // index_k, the dense gate/up, q4p's prepared FP16 rows and their scale,
+    // router, routes and weights, block ids, BF16 embedding staging, RoPE rows.
     let row = 1
         + 5 * HIDDEN
         + 2 * 8192
         + 3 * 512
         + 128
         + 2 * 12_288
+        + 12_288 / 2
+        + 1
         + 128
         + 2 * USED
         + 64
@@ -3446,15 +3448,15 @@ mod tests {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(MINIMAX_PREFILL_CHUNK_ENV);
         // Native graph logs: ctx 16384, 2048-row chunks: KV 0.59 GiB,
-        // workspace 0.90 GiB; ctx 12288 / 20480, 4096-row chunks: workspace
-        // 1.75 / 1.76 GiB. Every layer keeps 648 bytes per token up to 128K;
+        // workspace 0.94 GiB; ctx 12288 / 20480, 4096-row chunks: workspace
+        // 1.85 / 1.85 GiB. Every layer keeps 648 bytes per token up to 128K;
         // 1M keeps its 4.22 GiB of index keys and a 0.75 GiB pool.
         let _tier = EnvGuard::unset(MINIMAX_RESIDENT_CTX_ENV);
         let gib = |b: u64| b as f64 / GIB as f64;
         assert!((gib(minimax_kv_bytes(16384)) - 0.59).abs() < 0.005);
-        assert!((gib(minimax_workspace_bytes(16384, 2048)) - 0.90).abs() < 0.005);
-        assert!((gib(minimax_workspace_bytes(12288, 4096)) - 1.75).abs() < 0.005);
-        assert!((gib(minimax_workspace_bytes(20480, 4096)) - 1.76).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(16384, 2048)) - 0.94).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(12288, 4096)) - 1.85).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(20480, 4096)) - 1.85).abs() < 0.005);
         assert_eq!(minimax_kv_bytes(131_072), 60 * 131_072 * 648);
         assert_eq!(
             minimax_kv_bytes(1 << 20),

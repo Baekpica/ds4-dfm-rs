@@ -24,6 +24,7 @@ extern "C" {
 typedef struct ds4_minimax_moe ds4_minimax_moe;
 
 enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 6144, DS4_MINIMAX_FFN = 3072,
+       DS4_MINIMAX_DENSE_FF = 12288,
        DS4_MINIMAX_HEADS = 64, DS4_MINIMAX_KV_HEADS = 4, DS4_MINIMAX_HEAD = 128, DS4_MINIMAX_ROT = 64,
        DS4_MINIMAX_INDEX = 128, DS4_MINIMAX_BLOCK = 128, DS4_MINIMAX_TOPK = 16,
        DS4_MINIMAX_MOE_LAYERS = 57, DS4_MINIMAX_VOCAB = 200064,
@@ -73,15 +74,21 @@ int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_ten
     uint32_t weight, uint32_t rows);
 
 /* cur = round(cur + branch) (the reference's BF16 residual add), then, when
- * `next` is a record, norm = gemma_rms(cur) with that weight. */
+ * `next` is a record, norm = gemma_rms(cur) with that weight; with q4h, the
+ * norm rows also as q4p's prepared input (ds4_gpu_gvq_q4p_prepared: FP16
+ * [rows][6144] in q4h, the row scales in q4s). */
 int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows);
+    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s);
 
 /* SwiGLU-OAI of [rows][width] gate and up rows into `out`:
  * min(g, 7) * sigmoid(1.702 * min(g, 7)) * (clamp(u, -7, 7) + 1), in F32,
  * rounded once. */
 int ds4_gpu_minimax_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
     uint32_t rows, uint32_t width);
+/* The same rows as q4p's prepared input (FP16 [rows][width] in q4h, the row
+ * scales in q4s); width 3,072 or 12,288. */
+int ds4_gpu_minimax_swiglu_q4p(ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, const ds4_gpu_tensor *gate,
+    const ds4_gpu_tensor *up, uint32_t rows, uint32_t width);
 
 /* Per-position rows of `rope` (rows x 64 F32): cos then sin of the 32 RoPE
  * angles pos * 1e7^(-2j/64), evaluated in double and rounded once. */

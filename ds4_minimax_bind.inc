@@ -203,6 +203,8 @@ static void minimax_bind(ds4_weights *w, const ds4_model *m) {
     X(shared, MINIMAX_EMBD, float) \
     X(ff_gate, MINIMAX_DENSE_FF, float) \
     X(ff_up, MINIMAX_DENSE_FF, float) \
+    X(q4h, MINIMAX_DENSE_FF, uint16_t) \
+    X(q4s, 1, float) \
     X(router, MINIMAX_EXPERTS, float) \
     X(selected, MINIMAX_USED, int32_t) \
     X(route_weights, MINIMAX_USED, float) \
