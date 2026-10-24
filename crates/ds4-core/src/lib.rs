@@ -31,6 +31,7 @@ mod mapped;
 mod mem;
 mod mem_gov;
 mod mimo2;
+mod minimax_mtp;
 mod minimax_vq;
 mod naive;
 mod naive_mtp;
@@ -302,6 +303,9 @@ impl Default for OpenTuning {
 /// Native L31_MTP_DRAFTS: each draft adds one 276 MiB KDA journal slot.
 const LING31_MTP_DRAFTS: i32 = 3;
 
+/// DSpark's seven block rows each propose one token (anchor-first).
+const MINIMAX_MTP_DRAFTS: i32 = 7;
+
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
         "MTP draft tokens must be positive"
@@ -313,6 +317,8 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "GLM-5.3 accepts at most three recursive draft tokens"
     } else if family == ModelFamily::Ling31Vq && draft > LING31_MTP_DRAFTS {
         "Ling-3.1 accepts at most three recursive draft tokens"
+    } else if family == ModelFamily::MinimaxVq && draft > MINIMAX_MTP_DRAFTS {
+        "MiniMax DSpark drafts at most seven tokens per block"
     } else {
         return Ok(());
     };
@@ -3065,6 +3071,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::BeamVq {
             return self.eval_beam_argmax(first, max_tokens, eos);
         }
+        if self.host.family == ModelFamily::MinimaxVq {
+            return self.eval_minimax_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -4086,6 +4095,30 @@ mod tests {
 
     #[no_mangle]
     extern "C" fn ds4_bridge_beam_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_minimax_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_minimax_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
         err: *mut c_char,

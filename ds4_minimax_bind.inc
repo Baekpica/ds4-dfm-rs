@@ -33,6 +33,10 @@ enum {
     MINIMAX_Q = MINIMAX_HEADS * MINIMAX_HEAD, MINIMAX_KV = MINIMAX_KV_HEADS * MINIMAX_HEAD,
     MINIMAX_INDEX = 128, MINIMAX_IQ = MINIMAX_KV_HEADS * MINIMAX_INDEX,
     MINIMAX_DENSE_FF = 12288, MINIMAX_FF = 3072, MINIMAX_USED = 4, MINIMAX_ROT = 64,
+    // DSpark: a block of the anchor and six mask tokens, five taps, a
+    // rank-256 Markov head, SWA over the last 4,096 context positions.
+    MINIMAX_DRAFT_BLOCK = 7, MINIMAX_DRAFT_TAPS = 5, MINIMAX_MARKOV_RANK = 256, MINIMAX_DRAFT_WINDOW = 4096,
+    MINIMAX_DRAFT_MASK = 200058,
     MINIMAX_BLOCK = 128, MINIMAX_TOPK = 16, MINIMAX_CONTEXT = 1048576,
     // 2,048-row chunks: the reference's MSA selection is per query row, and
     // the 1M plan leaves no room for 4,096-row expert planes.
@@ -112,6 +116,57 @@ static void minimax_bind_layer(ds4_layer_weights *l, ds4_minimax_layer *x, const
     minimax_bind_experts(x, m, il);
 }
 
+// A DSpark tensor (HF [rows, cols] binds as GGUF [cols, rows]).
+static ds4_tensor *minimax_draft_tensor(const ds4_model *m, const char *name, uint32_t type, uint32_t ndim,
+        uint64_t d0, uint64_t d1) {
+    char full[160];
+    const int n = snprintf(full, sizeof(full), "language_model.model.dspark.%s", name);
+    if (n < 0 || (size_t)n >= sizeof(full)) { ds4_die("MiniMax DSpark tensor name too long"); }
+    ds4_tensor *t = required_tensor(m, full);
+    tensor_expect_layout(t, type, ndim, d0, d1, 0);
+    return t;
+}
+
+/* DSpark: fc over the five taps' concatenation (30,720 columns), five
+ * decoder layers (Q8_0 projections, dense 12,288 FFN), the rank-256 Markov
+ * head (w1 rows per previous token, w2 back to the vocabulary) and the
+ * confidence head over [hidden; Markov row]. */
+static ds4_minimax_draft *minimax_bind_draft(const ds4_model *m) {
+    if (!model_find_tensor(m, "language_model.model.dspark.fc.weight")) { return NULL; }
+    ds4_minimax_draft *d = xcalloc(1, sizeof(*d));
+    d->fc = minimax_draft_tensor(m, "fc.weight", DS4_TENSOR_Q8_0, 2, 5u * MINIMAX_EMBD, MINIMAX_EMBD);
+    d->hidden_norm = minimax_draft_tensor(m, "hidden_norm.weight", DS4_TENSOR_BF16, 1, MINIMAX_EMBD, 0);
+    d->final_norm = minimax_draft_tensor(m, "final_norm.weight", DS4_TENSOR_BF16, 1, MINIMAX_EMBD, 0);
+    d->markov_w1 = minimax_draft_tensor(m, "markov_head.markov_w1.weight", DS4_TENSOR_BF16, 2,
+        MINIMAX_MARKOV_RANK, DS4_N_VOCAB);
+    d->markov_w2 = minimax_draft_tensor(m, "markov_head.markov_w2.weight", DS4_TENSOR_BF16, 2,
+        MINIMAX_MARKOV_RANK, DS4_N_VOCAB);
+    d->conf_w = minimax_draft_tensor(m, "confidence_head.proj.weight", DS4_TENSOR_BF16, 2,
+        MINIMAX_EMBD + MINIMAX_MARKOV_RANK, 1);
+    d->conf_b = minimax_draft_tensor(m, "confidence_head.proj.bias", DS4_TENSOR_BF16, 1, 1, 0);
+    for (uint32_t il = 0; il < MINIMAX_DRAFT_LAYERS; il++) {
+        ds4_minimax_draft_layer *l = &d->layer[il];
+        char name[128];
+#define MINIMAX_DRAFT(field, suffix, type, ndim, d0, d1) do { \
+        snprintf(name, sizeof(name), "layers.%u.decoder_layer.%s", il, suffix); \
+        l->field = minimax_draft_tensor(m, name, type, ndim, d0, d1); \
+    } while (0)
+        MINIMAX_DRAFT(attn_norm, "input_layernorm.weight", DS4_TENSOR_BF16, 1, MINIMAX_EMBD, 0);
+        MINIMAX_DRAFT(ffn_norm, "post_attention_layernorm.weight", DS4_TENSOR_BF16, 1, MINIMAX_EMBD, 0);
+        MINIMAX_DRAFT(q, "self_attn.q_proj.weight", DS4_TENSOR_Q8_0, 2, MINIMAX_EMBD, MINIMAX_Q);
+        MINIMAX_DRAFT(k, "self_attn.k_proj.weight", DS4_TENSOR_Q8_0, 2, MINIMAX_EMBD, MINIMAX_KV);
+        MINIMAX_DRAFT(v, "self_attn.v_proj.weight", DS4_TENSOR_Q8_0, 2, MINIMAX_EMBD, MINIMAX_KV);
+        MINIMAX_DRAFT(o, "self_attn.o_proj.weight", DS4_TENSOR_Q8_0, 2, MINIMAX_Q, MINIMAX_EMBD);
+        MINIMAX_DRAFT(q_norm, "self_attn.q_norm.weight", DS4_TENSOR_BF16, 1, MINIMAX_HEAD, 0);
+        MINIMAX_DRAFT(k_norm, "self_attn.k_norm.weight", DS4_TENSOR_BF16, 1, MINIMAX_HEAD, 0);
+        MINIMAX_DRAFT(gate, "mlp.gate_proj.weight", DS4_TENSOR_Q8_0, 2, MINIMAX_EMBD, MINIMAX_DENSE_FF);
+        MINIMAX_DRAFT(up, "mlp.up_proj.weight", DS4_TENSOR_Q8_0, 2, MINIMAX_EMBD, MINIMAX_DENSE_FF);
+        MINIMAX_DRAFT(down, "mlp.down_proj.weight", DS4_TENSOR_Q8_0, 2, MINIMAX_DENSE_FF, MINIMAX_EMBD);
+#undef MINIMAX_DRAFT
+    }
+    return d;
+}
+
 static void minimax_bind(ds4_weights *w, const ds4_model *m) {
     memset(w, 0, sizeof(*w));
     w->minimax = xcalloc(MINIMAX_LAYERS, sizeof(*w->minimax));
@@ -122,6 +177,7 @@ static void minimax_bind(ds4_weights *w, const ds4_model *m) {
     for (uint32_t il = 0; il < MINIMAX_LAYERS; il++) {
         minimax_bind_layer(&w->layer[il], &w->minimax[il], m, il);
     }
+    w->minimax_draft = minimax_bind_draft(m);
     // The embedding part is mapped last (Rust release order).
     w->token_embd = required_tensor(m, "language_model.model.embed_tokens.weight");
     tensor_expect_layout(w->token_embd, DS4_TENSOR_BF16, 2, MINIMAX_EMBD, DS4_N_VOCAB, 0);
@@ -196,7 +252,8 @@ static uint64_t minimax_workspace_bytes(uint32_t ctx, uint32_t rows) {
 #define MINIMAX_QUOTE(field, cols, type) bytes += (uint64_t)rows * (cols) * sizeof(type);
     MINIMAX_ROW_BUFFERS(MINIMAX_QUOTE)
 #undef MINIMAX_QUOTE
-    bytes += (uint64_t)MINIMAX_SPLITS * (MINIMAX_HEADS / MINIMAX_KV_HEADS) * (MINIMAX_HEAD + 2u) * sizeof(float);
+    bytes += (uint64_t)DS4_MINIMAX_SPLIT_ROWS * MINIMAX_SPLITS * (MINIMAX_HEADS / MINIMAX_KV_HEADS) *
+        (MINIMAX_HEAD + 2u) * sizeof(float);
     bytes += minimax_score_bytes(ctx, rows);
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     bytes += minimax_gvq_scratch(rows) + ds4_gpu_gvq_workspace_linear(rows) + ds4_gpu_minimax_moe_bytes(rows);

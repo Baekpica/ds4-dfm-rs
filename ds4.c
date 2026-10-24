@@ -706,7 +706,7 @@ static const ds4_shape DS4_SHAPE_BEAM_VQ = {
     .rope_orig_ctx = UINT64_C(1048576),
 };
 
-enum { MINIMAX_LAYERS = 60, MINIMAX_DENSE = 3, MINIMAX_EXPERTS = 128 };
+enum { MINIMAX_LAYERS = 60, MINIMAX_DENSE = 3, MINIMAX_EXPERTS = 128, MINIMAX_DRAFT_LAYERS = 5 };
 
 /* MiniMax-M3.1-Flash: 64 q / 4 KV heads of 128 over hidden 6144, MSA on all
  * 60 layers (one 128-wide index key, four index query heads, top-16 blocks
@@ -5554,6 +5554,17 @@ typedef struct {
     ds4_tensor *r1[MINIMAX_EXPERTS], *r3[MINIMAX_EXPERTS], *r2[MINIMAX_EXPERTS]; /* R13+8 layers only */
 } ds4_minimax_layer;
 
+/* MiniMax DSpark drafter (the release's `drafter` part, mapped only when the
+ * open drafts): Q8_0 projections, BF16 norms and heads. */
+typedef struct {
+    ds4_tensor *attn_norm, *ffn_norm, *q, *k, *v, *o, *q_norm, *k_norm, *gate, *up, *down;
+} ds4_minimax_draft_layer;
+
+typedef struct {
+    ds4_tensor *fc, *hidden_norm, *final_norm, *markov_w1, *markov_w2, *conf_w, *conf_b;
+    ds4_minimax_draft_layer layer[MINIMAX_DRAFT_LAYERS];
+} ds4_minimax_draft;
+
 typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
@@ -5566,6 +5577,7 @@ typedef struct {
     ds4_ling31_experts *ling31; /* Ling-3.1 VQ layers 4-72; glmvq_gpu is its plan. */
     ds4_beam_layer *beam;       /* Beam VQ: gate biases and layers 3-51's experts. */
     ds4_minimax_layer *minimax; /* MiniMax VQ: index norms and layers 3-59's experts. */
+    ds4_minimax_draft *minimax_draft; /* MiniMax DSpark, when its part is mapped. */
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gvq_model *glmvq_gpu;
 #endif
@@ -10954,6 +10966,7 @@ static void weights_free(ds4_weights *w) {
     free(w->ling31);
     free(w->beam);
     free(w->minimax);
+    free(w->minimax_draft);
     memset(w, 0, sizeof(*w));
 }
 
@@ -74479,7 +74492,7 @@ static bool beam_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
 
 static bool minimax_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                 ds4_session_graph_fit_quote *q) {
-    const uint64_t need = minimax_memory(ctx, cap).total_bytes;
+    const uint64_t need = minimax_memory(ctx, cap).total_bytes + (minimax_drafting(e) ? minimax_draft_bytes(cap) : 0u);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
@@ -74655,8 +74668,12 @@ static int ds4_session_alloc_graph(ds4_session *s) {
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
-        const bool ok = minimax_session_fit(e, ctx, s->prefill_cap, NULL) &&
+        bool ok = minimax_session_fit(e, ctx, s->prefill_cap, NULL) &&
             minimax_graph_alloc(&s->minimax_graph, &e->model, &e->weights, ctx, s->prefill_cap);
+        if (ok && minimax_drafting(e)) {
+            s->minimax_graph.draft = minimax_draft_alloc(e->weights.minimax_draft, s->prefill_cap);
+            ok = s->minimax_graph.draft != NULL;
+        }
         ds4_gpu_mem_scope_end();
         if (!ok) {
             minimax_graph_free(&s->minimax_graph); s->minimax_graph_ready = false;
@@ -76531,6 +76548,7 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 #include "ds4_beam_session.inc"
 #include "ds4_minimax_session.inc"
 #include "ds4_beam_draft.inc"
+#include "ds4_minimax_draft.inc"
 #include "ds4_naive_mtp.inc"
 #define MIMO2_DFLASH_TRIAL
 #include "ds4_mimo2_dflash.inc"

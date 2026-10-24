@@ -243,6 +243,9 @@ int ds4_bridge_naive_commit(ds4_bridge_session *s, int32_t keep, char *err, size
 int ds4_bridge_beam_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                           int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen);
 int ds4_bridge_beam_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_minimax_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                             int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen);
+int ds4_bridge_minimax_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
 int ds4_bridge_iquest_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                            int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen);
 int ds4_bridge_iquest_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);

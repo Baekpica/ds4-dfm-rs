@@ -9,9 +9,10 @@
  * routed outputs sum in F32 in ascending expert order with the shared
  * expert's row before one rounding (the reference's F32 index_add):
  *
- *   rows <= 4    decode: device routing, persistent CTAs keep the book; one
- *                row at a time, so every width runs the one-row arithmetic
- *   rows >= 5    prefill: host grouping, FP8 MMA on the E4M3 codewords
+ *   rows <= 8    decode and DSpark verify: device routing, persistent CTAs
+ *                keep the book; one row at a time, so every width runs the
+ *                one-row arithmetic
+ *   rows >= 9    prefill: host grouping, FP8 MMA on the E4M3 codewords
  *
  * The rest is MiniMax's arithmetic (tools/minimax_ref.py): Gemma RMSNorm
  * (x * rsqrt(mean x^2 + eps) * (1 + w), rounded once), BF16 residual adds,
@@ -24,7 +25,7 @@
 
 enum { MM_EXPERTS = DS4_MINIMAX_EXPERTS, MM_USED = DS4_MINIMAX_USED, MM_HIDDEN = DS4_MINIMAX_HIDDEN,
        MM_FFN = DS4_MINIMAX_FFN, MM_TABLE = 3 * MM_EXPERTS, MM_LAYERS = DS4_MINIMAX_MOE_LAYERS,
-       MM_WORDS = 8192, MM_WARPS = 32, MM_DECODE_ROWS = 4, MM_MMA_ROWS = 256, MM_MMA_TOKENS = 64,
+       MM_WORDS = 8192, MM_WARPS = 32, MM_DECODE_ROWS = DS4_MINIMAX_SPLIT_ROWS, MM_MMA_ROWS = 256, MM_MMA_TOKENS = 64,
        MM_ALIGN = 256, MM_HEAD = DS4_MINIMAX_HEAD, MM_HEADS = DS4_MINIMAX_HEADS,
        MM_KV_HEADS = DS4_MINIMAX_KV_HEADS, MM_GROUP = MM_HEADS / MM_KV_HEADS, MM_ROT = DS4_MINIMAX_ROT,
        MM_BLOCK = DS4_MINIMAX_BLOCK, MM_TOPK = DS4_MINIMAX_TOPK, MM_FP4_DATA = DS4_MINIMAX_FP4_DATA,
@@ -516,6 +517,90 @@ __global__ void mm_router_kernel(int32_t *ids, float *weights, const float *logi
     }
 }
 
+/* Router logits of up to MM_ROUTER_ROWS rows in F32 (decode and verify):
+ * warp e streams expert e's 6,144 weights once and keeps one dot per row,
+ * lane l summing float4 steps l, l + 32, ... in order, then a fixed xor
+ * tree. A row's logits do not depend on how many rows share the launch,
+ * so verify rows route exactly as decode rows. cuBLAS took 62-116 us per
+ * layer at two or three rows (gemmSN) for a 3 MiB matrix. */
+enum { MM_ROUTER_ROWS = DS4_MINIMAX_SPLIT_ROWS, MM_ROUTER_WARPS = 4 };
+
+__global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *logits, const float *w,
+        const float *x, uint32_t rows) {
+    const uint32_t lane = threadIdx.x & 31, e = blockIdx.x * MM_ROUTER_WARPS + threadIdx.x / 32;
+    const float4 *we = (const float4 *)(w + (uint64_t)e * MM_HIDDEN);
+    float acc[MM_ROUTER_ROWS];
+    #pragma unroll
+    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) { acc[r] = 0.0f; }
+    for (uint32_t i = lane; i < MM_HIDDEN / 4; i += 32) {
+        const float4 a = __ldg(we + i);
+        #pragma unroll
+        for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
+            if (r < rows) {
+                const float4 v = ((const float4 *)(x + (uint64_t)r * MM_HIDDEN))[i];
+                acc[r] = fmaf(a.x, v.x, acc[r]);
+                acc[r] = fmaf(a.y, v.y, acc[r]);
+                acc[r] = fmaf(a.z, v.z, acc[r]);
+                acc[r] = fmaf(a.w, v.w, acc[r]);
+            }
+        }
+    }
+    #pragma unroll
+    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
+        float v = acc[r];
+        for (uint32_t stride = 16; stride; stride >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, stride); }
+        if (!lane && r < rows) { logits[(uint64_t)r * MM_EXPERTS + e] = v; }
+    }
+}
+
+/* Q8_0 projections of up to MM_ROUTER_ROWS rows (the indexer's index_q and
+ * index_k at decode and verify widths): warp o streams output o's 34-byte
+ * blocks once, lane l takes element l of every block (d * q is exact in
+ * F32) against the F32 input, in block order, then a fixed xor tree. A
+ * row's result does not depend on the launch's other rows; the mmvq path
+ * picked its column layout by width and quantized the input to Q8_1. */
+enum { MM_Q8_WARPS = 4, MM_Q8_BLOCK = 32, MM_Q8_BYTES = 34, MM_TYPE_Q8_0 = 8 };   // ggml's Q8_0 id
+
+__global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(float *out, const uint8_t *weight, const float *x,
+        uint32_t cols, uint32_t outs, uint32_t rows) {
+    const uint32_t lane = threadIdx.x & 31, o = blockIdx.x * MM_Q8_WARPS + threadIdx.x / 32;
+    if (o >= outs) { return; }
+    const uint32_t blocks = cols / MM_Q8_BLOCK;
+    const uint8_t *w = weight + (uint64_t)o * blocks * MM_Q8_BYTES;
+    float acc[MM_ROUTER_ROWS];
+    #pragma unroll
+    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) { acc[r] = 0.0f; }
+    #pragma unroll 4
+    for (uint32_t b = 0; b < blocks; b++) {
+        const uint8_t *block = w + (uint64_t)b * MM_Q8_BYTES;
+        const float value = __half2float(__ushort_as_half((uint16_t)(block[0] | block[1] << 8))) *
+            (float)(int8_t)block[2 + lane];
+        #pragma unroll
+        for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
+            if (r < rows) { acc[r] = fmaf(value, x[(uint64_t)r * cols + b * MM_Q8_BLOCK + lane], acc[r]); }
+        }
+    }
+    #pragma unroll
+    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
+        float v = acc[r];
+        for (uint32_t stride = 16; stride; stride >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, stride); }
+        if (!lane && r < rows) { out[(uint64_t)r * outs + o] = v; }
+    }
+}
+
+extern "C" int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
+        uint32_t cols, uint32_t outs, uint32_t rows) {
+    const uint64_t bytes = (uint64_t)outs * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES;
+    const auto *w = (const uint8_t *)gvq_weight(ctx, weight, MM_TYPE_Q8_0, bytes / 2);
+    if (!w || !rows || rows > MM_ROUTER_ROWS || !cols || cols % MM_Q8_BLOCK || !outs ||
+        !gvq_floats(input, (uint64_t)rows * cols) || !gvq_floats(out, (uint64_t)rows * outs) || !gvq_stream(ctx)) {
+        return 0;
+    }
+    mm_q8_gemv<<<(outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS, MM_Q8_WARPS * 32, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, w, (const float *)input->ptr, cols, outs, rows);
+    return cuda_ok(cudaGetLastError(), "MiniMax Q8_0 rows");
+}
+
 extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
         ds4_gpu_tensor *logits, const ds4_gpu_tensor *input, uint32_t router, uint32_t bias, uint32_t rows) {
     const auto *w = (const float *)gvq_weight(ctx, router, GVQ_TYPE_F32, (uint64_t)MM_EXPERTS * MM_HIDDEN);
@@ -525,9 +610,12 @@ extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected
         selected->bytes < (uint64_t)rows * MM_USED * sizeof(int32_t) || !gvq_stream(ctx)) { return 0; }
     // F.linear(x.float(), router): the handle's TF32 mode would move near-tied routes.
     const float alpha = 1.0f, beta = 0.0f;
-    if (!cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, MM_EXPERTS, (int)rows, MM_HIDDEN, &alpha, w,
-            CUDA_R_32F, MM_HIDDEN, input->ptr, CUDA_R_32F, MM_HIDDEN, &beta, logits->ptr, CUDA_R_32F, MM_EXPERTS,
-            CUBLAS_COMPUTE_32F_PEDANTIC, CUBLAS_GEMM_DEFAULT), "MiniMax router logits")) {
+    if (rows <= MM_ROUTER_ROWS) {
+        mm_router_gemv<<<MM_EXPERTS / MM_ROUTER_WARPS, MM_ROUTER_WARPS * 32, 0, ds4_current_stream()>>>(
+            (float *)logits->ptr, w, (const float *)input->ptr, rows);
+    } else if (!cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, MM_EXPERTS, (int)rows, MM_HIDDEN,
+            &alpha, w, CUDA_R_32F, MM_HIDDEN, input->ptr, CUDA_R_32F, MM_HIDDEN, &beta, logits->ptr, CUDA_R_32F,
+            MM_EXPERTS, CUBLAS_COMPUTE_32F_PEDANTIC, CUBLAS_GEMM_DEFAULT), "MiniMax router logits")) {
         return 0;
     }
     enum { WARPS = 8 };
@@ -812,6 +900,68 @@ __global__ void mm_score_kernel(float *scores, const float *query, const uint8_t
     }
 }
 
+/* Block scores of up to MM_SCORE_FEW rows (decode, verify) against one key
+ * block per CTA: the block's raw keys land in shared memory with 8-byte
+ * loads, thread t decodes key t and dots it with every row and head in the
+ * tiled kernel's d order, then a block max. Same scores bit for bit; a
+ * decode row reads the pool once at stream rate instead of decoding every
+ * block into F32 tiles. */
+enum { MM_SCORE_FEW = 8 };
+
+__global__ void __launch_bounds__(MM_BLOCK) mm_score_few_kernel(float *scores, const float *query, const uint8_t *pool,
+        uint32_t pos, uint32_t first, uint32_t count, uint32_t stride) {
+    __shared__ __align__(16) uint8_t raw[MM_BLOCK * MM_FP4_ROW];
+    __shared__ __align__(16) float q[MM_SCORE_FEW * MM_KV_HEADS][MM_HEAD];
+    __shared__ float part[MM_BLOCK / 32][MM_SCORE_FEW * MM_KV_HEADS];
+    const uint32_t block = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid / 32;
+    const uint32_t last = pos + first + count - 1, t0 = block * MM_BLOCK;
+    if (t0 > last) { return; }
+    const uint32_t visible = min((uint32_t)MM_BLOCK, last + 1 - t0);
+    const uint2 *src = (const uint2 *)(pool + (uint64_t)t0 * MM_FP4_ROW);
+    for (uint32_t i = tid; i < visible * (MM_FP4_ROW / 8); i += MM_BLOCK) { ((uint2 *)raw)[i] = src[i]; }
+    for (uint32_t i = tid; i < count * MM_KV_HEADS * MM_HEAD; i += MM_BLOCK) {
+        q[i / MM_HEAD][i % MM_HEAD] = glmvq_round(query[(uint64_t)first * MM_KV_HEADS * MM_HEAD + i]);
+    }
+    __syncthreads();
+    float dot[MM_SCORE_FEW * MM_KV_HEADS];
+    #pragma unroll
+    for (uint32_t v = 0; v < MM_SCORE_FEW * MM_KV_HEADS; v++) { dot[v] = 0.0f; }
+    if (tid < visible) {
+        const uint8_t *key = raw + tid * MM_FP4_ROW;
+        #pragma unroll 1
+        for (uint32_t g = 0; g < MM_HEAD / 16; g++) {
+            const float scale = glmvq_e4m3(key[MM_FP4_DATA + g]);
+            #pragma unroll
+            for (uint32_t b = 0; b < 8; b++) {
+                const float2 kv = mm_fp4_pair(key[g * 8 + b], scale);
+                const uint32_t d = g * 16 + b * 2;
+                #pragma unroll
+                for (uint32_t v = 0; v < MM_SCORE_FEW * MM_KV_HEADS; v++) {
+                    if (v < count * MM_KV_HEADS) {
+                        dot[v] = fmaf(q[v][d], kv.x, dot[v]);
+                        dot[v] = fmaf(q[v][d + 1], kv.y, dot[v]);
+                    }
+                }
+            }
+        }
+    }
+    // Row r sees keys up to its position; past it (or past `visible`) -inf.
+    #pragma unroll
+    for (uint32_t v = 0; v < MM_SCORE_FEW * MM_KV_HEADS; v++) {
+        if (v >= count * MM_KV_HEADS) { continue; }
+        const uint32_t p = pos + first + v / MM_KV_HEADS;
+        float best = tid < visible && t0 + tid <= p ? dot[v] : -INFINITY;
+        for (uint32_t s = 16; s; s >>= 1) { best = fmaxf(best, __shfl_xor_sync(0xffffffffu, best, s)); }
+        if (!lane) { part[warp][v] = best; }
+    }
+    __syncthreads();
+    if (tid < count * MM_KV_HEADS) {
+        float best = part[0][tid];
+        for (uint32_t w = 1; w < MM_BLOCK / 32; w++) { best = fmaxf(best, part[w][tid]); }
+        scores[(uint64_t)tid * stride + block] = best;
+    }
+}
+
 /* Top-16 blocks of one (row, KV head) per warp: the own block first, then
  * fifteen rounds of warp argmax over the earlier blocks' scores (ties to the
  * lower block), then the list sorted ascending; -1 fills the tail. Rows
@@ -856,6 +1006,13 @@ __global__ void mm_topk_kernel(int32_t *blocks, float *scores, uint32_t pos, uin
     if (lane < MM_TOPK) { out[rank] = pick; }
 }
 
+// DS4_MINIMAX_SCORE_TILED=1: decode rows take the tiled scorer (A/B).
+static bool mm_score_tiled(void) {
+    static int tiled = -1;
+    if (tiled < 0) { tiled = getenv("DS4_MINIMAX_SCORE_TILED") != nullptr; }
+    return tiled != 0;
+}
+
 // Decoded keys of one block plus the query vectors of MM_SCORE_ROWS rows.
 static const uint32_t MM_SCORE_SMEM = (MM_BLOCK * (MM_HEAD + 1) + MM_SCORE_ROWS * MM_KV_HEADS * MM_HEAD) * sizeof(float);
 
@@ -881,9 +1038,14 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
         if (own_last >= MM_TOPK) {
             const uint32_t stride = (pos + first + count - 1) / MM_BLOCK + 1;
             if (!gvq_floats(scores, (uint64_t)count * MM_KV_HEADS * stride) || stride > nblocks) { return 0; }
-            mm_score_kernel<<<dim3(stride, (count + MM_SCORE_ROWS - 1) / MM_SCORE_ROWS), MM_SCORE_THREADS,
-                MM_SCORE_SMEM, stream>>>((float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)pool->ptr, pos, first,
-                count, stride);
+            if (count <= MM_SCORE_FEW && !mm_score_tiled()) {
+                mm_score_few_kernel<<<stride, MM_BLOCK, 0, stream>>>((float *)scores->ptr, (const float *)query->ptr,
+                    (const uint8_t *)pool->ptr, pos, first, count, stride);
+            } else {
+                mm_score_kernel<<<dim3(stride, (count + MM_SCORE_ROWS - 1) / MM_SCORE_ROWS), MM_SCORE_THREADS,
+                    MM_SCORE_SMEM, stream>>>((float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)pool->ptr,
+                    pos, first, count, stride);
+            }
             mm_topk_kernel<<<(count * MM_KV_HEADS + WARPS - 1) / WARPS, WARPS * 32, 0, stream>>>(
                 (int32_t *)blocks->ptr, (float *)scores->ptr, pos, first, count, stride);
         } else {
@@ -1003,10 +1165,375 @@ __global__ void __launch_bounds__(MM_ATTN_THREADS) mm_attn_kernel(float *heads, 
     }
 }
 
-// One row's partials: per head the max of the splits' maxima, then the
-// rescaled sums and outputs, rounded once.
+/* Prefill attention on BF16 tensor cores (more than DS4_MINIMAX_SPLIT_ROWS
+ * rows; fewer split by block, mm_attn_split_mma_kernel). A CTA takes
+ * MM_AT_ROWS consecutive rows and one KV head; warp w is row w's 16 query
+ * heads, the m16n8k16 M dimension. The CTA walks the union of its rows'
+ * selected blocks in ascending order: each block's NVFP4 K/V page is decoded
+ * once into shared memory as BF16 (exact: E2M1 x E4M3), and every warp whose
+ * row selected it runs S = Q K^T in F32, the causal mask in its own block,
+ * an F32 online softmax and O += P V with P in BF16 (FlashAttention-2).
+ * Not bit-equal to the SIMT kernel (MMA accumulation order, BF16 P); the
+ * quality gate judges it. DS4_MINIMAX_ATTN_SIMT=1 keeps the SIMT kernel. */
+enum { MM_AT_ROWS = 8, MM_AT_LD = MM_HEAD + 8 };   // padded row stride: conflict-free ldmatrix
+static const uint32_t MM_AT_SMEM = 2u * MM_BLOCK * MM_AT_LD * sizeof(__nv_bfloat16);
+
+__device__ __forceinline__ void mm_ldsm4(uint32_t *r, const void *p, bool trans) {
+    const uint32_t a = (uint32_t)__cvta_generic_to_shared(p);
+    if (trans) {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(a));
+    } else {
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(a));
+    }
+}
+
+__device__ __forceinline__ void mm_mma_bf16(float *c, const uint32_t *a, uint32_t b0, uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
+                 "{%0,%1,%2,%3};"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+__device__ __forceinline__ uint32_t mm_bf16x2(float lo, float hi) {
+    const __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi);
+    return *(const uint32_t *)&v;
+}
+
+__global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *heads, const float *q,
+        const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos, uint32_t rows) {
+    extern __shared__ __align__(16) uint8_t mm_at_smem[];
+    __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_BLOCK * MM_AT_LD;
+    __shared__ uint32_t next[MM_AT_ROWS];
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane >> 2, t = lane & 3;
+    const uint32_t kv = blockIdx.y, row = blockIdx.x * MM_AT_ROWS + warp;
+    const bool live = row < rows;
+    const uint32_t r = live ? row : rows - 1, p = pos + r;
+    const int32_t *list = blocks + ((uint64_t)r * MM_KV_HEADS + kv) * MM_TOPK;
+    // Q as A fragments (16 heads x 128 dims, eight k-steps), rounded once.
+    uint32_t qa[8][4];
+    const float *qr = q + ((uint64_t)r * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    #pragma unroll
+    for (uint32_t j = 0; j < 8; j++) {
+        const uint32_t c = 16 * j + 2 * t;
+        qa[j][0] = mm_bf16x2(qr[g * MM_HEAD + c], qr[g * MM_HEAD + c + 1]);
+        qa[j][1] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c], qr[(g + 8) * MM_HEAD + c + 1]);
+        qa[j][2] = mm_bf16x2(qr[g * MM_HEAD + c + 8], qr[g * MM_HEAD + c + 9]);
+        qa[j][3] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c + 8], qr[(g + 8) * MM_HEAD + c + 9]);
+    }
+    float o[16][4];
+    #pragma unroll
+    for (uint32_t n = 0; n < 16; n++) { o[n][0] = o[n][1] = o[n][2] = o[n][3] = 0.0f; }
+    float m0 = -INFINITY, m1 = -INFINITY, l0 = 0.0f, l1 = 0.0f;
+    const float scale = 0.08838834764831845f;   // 128^-0.5
+    uint32_t cursor = 0;
+    for (;;) {
+        const int32_t mine = live && cursor < MM_TOPK ? list[cursor] : -1;
+        if (!lane) { next[warp] = mine < 0 ? UINT32_MAX : (uint32_t)mine; }
+        __syncthreads();
+        uint32_t b = UINT32_MAX;
+        #pragma unroll
+        for (uint32_t w = 0; w < MM_AT_ROWS; w++) { b = min(b, next[w]); }
+        if (b == UINT32_MAX) { break; }
+        // Block b's K and V pages of this head into shared memory as BF16:
+        // 512 units of (side, key, 64 values), 32 data bytes and 4 scales each.
+        const uint64_t page_id = table ? (uint64_t)table[b] : (uint64_t)b;
+        const uint8_t *page = pages + (page_id * MM_KV_HEADS + kv) * MM_PAGE;
+        for (uint32_t i = threadIdx.x; i < 4u * MM_BLOCK; i += blockDim.x) {
+            const uint32_t side = i / (2u * MM_BLOCK), key = i / 2 % MM_BLOCK, half = i % 2;
+            const uint8_t *base = page + side * (MM_PAGE / 2);
+            const uint4 d0 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32);
+            const uint4 d1 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32 + 16);
+            const uint32_t sc = *(const uint32_t *)(base + MM_BLOCK * MM_FP4_DATA + key * 8 + half * 4);
+            const uint32_t words[8] = {d0.x, d0.y, d0.z, d0.w, d1.x, d1.y, d1.z, d1.w};
+            uint32_t packed[32];
+            #pragma unroll
+            for (uint32_t w = 0; w < 8; w++) {
+                const float s = glmvq_e4m3((uint8_t)(sc >> (w / 2 * 8)));
+                #pragma unroll
+                for (uint32_t k = 0; k < 4; k++) {
+                    const uint8_t byte = (uint8_t)(words[w] >> (k * 8));
+                    packed[w * 4 + k] = mm_bf16x2(ds4_fp4_nibble_to_f32(byte & 15u) * s,
+                        ds4_fp4_nibble_to_f32(byte >> 4) * s);
+                }
+            }
+            uint4 *dst = (uint4 *)((side ? vs : ks) + key * MM_AT_LD + half * 64);
+            #pragma unroll
+            for (uint32_t k = 0; k < 8; k++) {
+                dst[k] = make_uint4(packed[k * 4], packed[k * 4 + 1], packed[k * 4 + 2], packed[k * 4 + 3]);
+            }
+        }
+        __syncthreads();
+        if (mine == (int32_t)b) {
+            cursor++;
+            const uint32_t t0 = b * MM_BLOCK;
+            #pragma unroll 1
+            for (uint32_t half = 0; half < 2; half++) {
+                const uint32_t k0 = half * 64;
+                float s[8][4];
+                #pragma unroll
+                for (uint32_t n = 0; n < 8; n++) { s[n][0] = s[n][1] = s[n][2] = s[n][3] = 0.0f; }
+                #pragma unroll
+                for (uint32_t j = 0; j < 8; j++) {
+                    #pragma unroll
+                    for (uint32_t n = 0; n < 8; n += 2) {
+                        // Keys k0 + n*8.. (n-tiles n, n+1), dims 16j..16j+15.
+                        const uint32_t mi = lane / 8;
+                        const uint32_t key = k0 + (n + (mi >> 1)) * 8 + lane % 8, dim = 16 * j + (mi & 1) * 8;
+                        uint32_t b4[4];
+                        mm_ldsm4(b4, ks + key * MM_AT_LD + dim, false);
+                        mm_mma_bf16(s[n], qa[j], b4[0], b4[1]);
+                        mm_mma_bf16(s[n + 1], qa[j], b4[2], b4[3]);
+                    }
+                }
+                float mx0 = -INFINITY, mx1 = -INFINITY;
+                #pragma unroll
+                for (uint32_t n = 0; n < 8; n++) {
+                    const uint32_t key = t0 + k0 + n * 8 + 2 * t;
+                    s[n][0] = key <= p ? s[n][0] * scale : -INFINITY;
+                    s[n][1] = key + 1 <= p ? s[n][1] * scale : -INFINITY;
+                    s[n][2] = key <= p ? s[n][2] * scale : -INFINITY;
+                    s[n][3] = key + 1 <= p ? s[n][3] * scale : -INFINITY;
+                    mx0 = fmaxf(mx0, fmaxf(s[n][0], s[n][1]));
+                    mx1 = fmaxf(mx1, fmaxf(s[n][2], s[n][3]));
+                }
+                mx0 = fmaxf(mx0, __shfl_xor_sync(0xffffffffu, mx0, 1));
+                mx0 = fmaxf(mx0, __shfl_xor_sync(0xffffffffu, mx0, 2));
+                mx1 = fmaxf(mx1, __shfl_xor_sync(0xffffffffu, mx1, 1));
+                mx1 = fmaxf(mx1, __shfl_xor_sync(0xffffffffu, mx1, 2));
+                const float n0 = fmaxf(m0, mx0), n1 = fmaxf(m1, mx1);
+                const float c0 = n0 == -INFINITY || m0 == -INFINITY ? (n0 == -INFINITY ? 1.0f : 0.0f) : expf(m0 - n0);
+                const float c1 = n1 == -INFINITY || m1 == -INFINITY ? (n1 == -INFINITY ? 1.0f : 0.0f) : expf(m1 - n1);
+                float sum0 = 0.0f, sum1 = 0.0f;
+                #pragma unroll
+                for (uint32_t n = 0; n < 8; n++) {
+                    s[n][0] = s[n][0] == -INFINITY ? 0.0f : expf(s[n][0] - n0);
+                    s[n][1] = s[n][1] == -INFINITY ? 0.0f : expf(s[n][1] - n0);
+                    s[n][2] = s[n][2] == -INFINITY ? 0.0f : expf(s[n][2] - n1);
+                    s[n][3] = s[n][3] == -INFINITY ? 0.0f : expf(s[n][3] - n1);
+                    sum0 += s[n][0] + s[n][1];
+                    sum1 += s[n][2] + s[n][3];
+                }
+                l0 = fmaf(l0, c0, sum0);
+                l1 = fmaf(l1, c1, sum1);
+                m0 = n0;
+                m1 = n1;
+                #pragma unroll
+                for (uint32_t n = 0; n < 16; n++) {
+                    o[n][0] *= c0; o[n][1] *= c0; o[n][2] *= c1; o[n][3] *= c1;
+                }
+                #pragma unroll
+                for (uint32_t kk = 0; kk < 4; kk++) {
+                    const uint32_t pa[4] = {mm_bf16x2(s[2 * kk][0], s[2 * kk][1]),
+                        mm_bf16x2(s[2 * kk][2], s[2 * kk][3]), mm_bf16x2(s[2 * kk + 1][0], s[2 * kk + 1][1]),
+                        mm_bf16x2(s[2 * kk + 1][2], s[2 * kk + 1][3])};
+                    #pragma unroll
+                    for (uint32_t n = 0; n < 16; n += 2) {
+                        // Keys k0 + 16kk.. (two 8-key halves), dims n*8.. (n-tiles n, n+1).
+                        const uint32_t mi = lane / 8;
+                        const uint32_t key = k0 + 16 * kk + (mi & 1) * 8 + lane % 8, dim = (n + (mi >> 1)) * 8;
+                        uint32_t b4[4];
+                        mm_ldsm4(b4, vs + key * MM_AT_LD + dim, true);
+                        mm_mma_bf16(o[n], pa, b4[0], b4[1]);
+                        mm_mma_bf16(o[n + 1], pa, b4[2], b4[3]);
+                    }
+                }
+            }
+        }
+        __syncthreads();
+    }
+    l0 += __shfl_xor_sync(0xffffffffu, l0, 1);
+    l0 += __shfl_xor_sync(0xffffffffu, l0, 2);
+    l1 += __shfl_xor_sync(0xffffffffu, l1, 1);
+    l1 += __shfl_xor_sync(0xffffffffu, l1, 2);
+    if (!live) { return; }
+    const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
+    float *out = heads + ((uint64_t)row * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    #pragma unroll
+    for (uint32_t n = 0; n < 16; n++) {
+        const uint32_t d = n * 8 + 2 * t;
+        out[g * MM_HEAD + d] = glmvq_round(o[n][0] * i0);
+        out[g * MM_HEAD + d + 1] = glmvq_round(o[n][1] * i0);
+        out[(g + 8) * MM_HEAD + d] = glmvq_round(o[n][2] * i1);
+        out[(g + 8) * MM_HEAD + d + 1] = glmvq_round(o[n][3] * i1);
+    }
+}
+
+/* Decode and verify attention on BF16 tensor cores, split by selected
+ * block: CTA (KV head, list entry j, row) decodes the row's block j K/V once
+ * into shared memory (as mm_attn_mma_kernel), warp w scores its 32 keys for
+ * the 16 heads (S = Q K^T, the causal mask in the own block, F32 softmax,
+ * O = P V with P in BF16), and the four warps merge into the (O, max, sum)
+ * partial that mm_attn_combine reads. A row's arithmetic does not depend on
+ * the other rows: verify rows equal decode rows bit for bit. */
+__global__ void __launch_bounds__(128) mm_attn_split_mma_kernel(float *partial, const float *q,
+        const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos) {
+    extern __shared__ __align__(16) uint8_t mm_at_smem[];
+    __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_BLOCK * MM_AT_LD;
+    __shared__ float wm[4][MM_GROUP], wl[4][MM_GROUP];
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane >> 2, t = lane & 3;
+    const uint32_t kv = blockIdx.x / MM_TOPK, j = blockIdx.x % MM_TOPK, row = blockIdx.y, p = pos + row;
+    float *out = partial + ((uint64_t)row * MM_SPLITS + blockIdx.x) * MM_GROUP * (MM_HEAD + 2);
+    const int32_t b = blocks[((uint64_t)row * MM_KV_HEADS + kv) * MM_TOPK + j];
+    if (b < 0) {
+        if (threadIdx.x < MM_GROUP) {
+            out[threadIdx.x * (MM_HEAD + 2) + MM_HEAD] = -INFINITY;
+            out[threadIdx.x * (MM_HEAD + 2) + MM_HEAD + 1] = 0.0f;
+        }
+        return;
+    }
+    const uint64_t page_id = table ? (uint64_t)table[b] : (uint64_t)b;
+    const uint8_t *page = pages + (page_id * MM_KV_HEADS + kv) * MM_PAGE;
+    for (uint32_t i = threadIdx.x; i < 4u * MM_BLOCK; i += blockDim.x) {
+        const uint32_t side = i / (2u * MM_BLOCK), key = i / 2 % MM_BLOCK, half = i % 2;
+        const uint8_t *base = page + side * (MM_PAGE / 2);
+        const uint4 d0 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32);
+        const uint4 d1 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32 + 16);
+        const uint32_t sc = *(const uint32_t *)(base + MM_BLOCK * MM_FP4_DATA + key * 8 + half * 4);
+        const uint32_t words[8] = {d0.x, d0.y, d0.z, d0.w, d1.x, d1.y, d1.z, d1.w};
+        uint32_t packed[32];
+        #pragma unroll
+        for (uint32_t w = 0; w < 8; w++) {
+            const float s = glmvq_e4m3((uint8_t)(sc >> (w / 2 * 8)));
+            #pragma unroll
+            for (uint32_t k = 0; k < 4; k++) {
+                const uint8_t byte = (uint8_t)(words[w] >> (k * 8));
+                packed[w * 4 + k] = mm_bf16x2(ds4_fp4_nibble_to_f32(byte & 15u) * s,
+                    ds4_fp4_nibble_to_f32(byte >> 4) * s);
+            }
+        }
+        uint4 *dst = (uint4 *)((side ? vs : ks) + key * MM_AT_LD + half * 64);
+        #pragma unroll
+        for (uint32_t k = 0; k < 8; k++) {
+            dst[k] = make_uint4(packed[k * 4], packed[k * 4 + 1], packed[k * 4 + 2], packed[k * 4 + 3]);
+        }
+    }
+    uint32_t qa[8][4];
+    const float *qr = q + ((uint64_t)row * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    #pragma unroll
+    for (uint32_t s = 0; s < 8; s++) {
+        const uint32_t c = 16 * s + 2 * t;
+        qa[s][0] = mm_bf16x2(qr[g * MM_HEAD + c], qr[g * MM_HEAD + c + 1]);
+        qa[s][1] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c], qr[(g + 8) * MM_HEAD + c + 1]);
+        qa[s][2] = mm_bf16x2(qr[g * MM_HEAD + c + 8], qr[g * MM_HEAD + c + 9]);
+        qa[s][3] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c + 8], qr[(g + 8) * MM_HEAD + c + 9]);
+    }
+    __syncthreads();
+    // Warp w: keys 32w..32w+31 (four 8-key n-tiles).
+    const uint32_t k0 = warp * 32, t0 = (uint32_t)b * MM_BLOCK;
+    float s[4][4];
+    #pragma unroll
+    for (uint32_t n = 0; n < 4; n++) { s[n][0] = s[n][1] = s[n][2] = s[n][3] = 0.0f; }
+    #pragma unroll
+    for (uint32_t st = 0; st < 8; st++) {
+        #pragma unroll
+        for (uint32_t n = 0; n < 4; n += 2) {
+            const uint32_t mi = lane / 8;
+            const uint32_t key = k0 + (n + (mi >> 1)) * 8 + lane % 8, dim = 16 * st + (mi & 1) * 8;
+            uint32_t b4[4];
+            mm_ldsm4(b4, ks + key * MM_AT_LD + dim, false);
+            mm_mma_bf16(s[n], qa[st], b4[0], b4[1]);
+            mm_mma_bf16(s[n + 1], qa[st], b4[2], b4[3]);
+        }
+    }
+    const float scale = 0.08838834764831845f;
+    float m0 = -INFINITY, m1 = -INFINITY;
+    #pragma unroll
+    for (uint32_t n = 0; n < 4; n++) {
+        const uint32_t key = t0 + k0 + n * 8 + 2 * t;
+        s[n][0] = key <= p ? s[n][0] * scale : -INFINITY;
+        s[n][1] = key + 1 <= p ? s[n][1] * scale : -INFINITY;
+        s[n][2] = key <= p ? s[n][2] * scale : -INFINITY;
+        s[n][3] = key + 1 <= p ? s[n][3] * scale : -INFINITY;
+        m0 = fmaxf(m0, fmaxf(s[n][0], s[n][1]));
+        m1 = fmaxf(m1, fmaxf(s[n][2], s[n][3]));
+    }
+    m0 = fmaxf(m0, __shfl_xor_sync(0xffffffffu, m0, 1));
+    m0 = fmaxf(m0, __shfl_xor_sync(0xffffffffu, m0, 2));
+    m1 = fmaxf(m1, __shfl_xor_sync(0xffffffffu, m1, 1));
+    m1 = fmaxf(m1, __shfl_xor_sync(0xffffffffu, m1, 2));
+    float l0 = 0.0f, l1 = 0.0f;
+    #pragma unroll
+    for (uint32_t n = 0; n < 4; n++) {
+        s[n][0] = s[n][0] == -INFINITY ? 0.0f : expf(s[n][0] - m0);
+        s[n][1] = s[n][1] == -INFINITY ? 0.0f : expf(s[n][1] - m0);
+        s[n][2] = s[n][2] == -INFINITY ? 0.0f : expf(s[n][2] - m1);
+        s[n][3] = s[n][3] == -INFINITY ? 0.0f : expf(s[n][3] - m1);
+        l0 += s[n][0] + s[n][1];
+        l1 += s[n][2] + s[n][3];
+    }
+    l0 += __shfl_xor_sync(0xffffffffu, l0, 1);
+    l0 += __shfl_xor_sync(0xffffffffu, l0, 2);
+    l1 += __shfl_xor_sync(0xffffffffu, l1, 1);
+    l1 += __shfl_xor_sync(0xffffffffu, l1, 2);
+    float o[16][4];
+    #pragma unroll
+    for (uint32_t n = 0; n < 16; n++) { o[n][0] = o[n][1] = o[n][2] = o[n][3] = 0.0f; }
+    #pragma unroll
+    for (uint32_t kk = 0; kk < 2; kk++) {
+        const uint32_t pa[4] = {mm_bf16x2(s[2 * kk][0], s[2 * kk][1]), mm_bf16x2(s[2 * kk][2], s[2 * kk][3]),
+            mm_bf16x2(s[2 * kk + 1][0], s[2 * kk + 1][1]), mm_bf16x2(s[2 * kk + 1][2], s[2 * kk + 1][3])};
+        #pragma unroll
+        for (uint32_t n = 0; n < 16; n += 2) {
+            const uint32_t mi = lane / 8;
+            const uint32_t key = k0 + 16 * kk + (mi & 1) * 8 + lane % 8, dim = (n + (mi >> 1)) * 8;
+            uint32_t b4[4];
+            mm_ldsm4(b4, vs + key * MM_AT_LD + dim, true);
+            mm_mma_bf16(o[n], pa, b4[0], b4[1]);
+            mm_mma_bf16(o[n + 1], pa, b4[2], b4[3]);
+        }
+    }
+    // Merge the four warps: per-warp (max, sum) and O rows into shared
+    // memory (the K tile is no longer read), then thread d sums dim d.
+    __syncthreads();
+    float *wo = (float *)mm_at_smem;   // [4 warps][16 heads][128]
+    if (t == 0) {
+        wm[warp][g] = m0; wm[warp][g + 8] = m1;
+        wl[warp][g] = l0; wl[warp][g + 8] = l1;
+    }
+    #pragma unroll
+    for (uint32_t n = 0; n < 16; n++) {
+        const uint32_t d = n * 8 + 2 * t;
+        wo[(warp * MM_GROUP + g) * MM_HEAD + d] = o[n][0];
+        wo[(warp * MM_GROUP + g) * MM_HEAD + d + 1] = o[n][1];
+        wo[(warp * MM_GROUP + g + 8) * MM_HEAD + d] = o[n][2];
+        wo[(warp * MM_GROUP + g + 8) * MM_HEAD + d + 1] = o[n][3];
+    }
+    __syncthreads();
+    const uint32_t d = threadIdx.x;
+    #pragma unroll 1
+    for (uint32_t h = 0; h < MM_GROUP; h++) {
+        float best = -INFINITY;
+        for (uint32_t w = 0; w < 4; w++) { best = fmaxf(best, wm[w][h]); }
+        float sum = 0.0f, acc = 0.0f;
+        for (uint32_t w = 0; w < 4; w++) {
+            if (wm[w][h] == -INFINITY) { continue; }
+            const float c = expf(wm[w][h] - best);
+            sum = fmaf(wl[w][h], c, sum);
+            acc = fmaf(wo[(w * MM_GROUP + h) * MM_HEAD + d], c, acc);
+        }
+        out[h * (MM_HEAD + 2) + d] = acc;
+        if (!d) {
+            out[h * (MM_HEAD + 2) + MM_HEAD] = best;
+            out[h * (MM_HEAD + 2) + MM_HEAD + 1] = sum;
+        }
+    }
+}
+
+// DS4_MINIMAX_ATTN_SIMT=1: every width takes the SIMT kernel (A/B).
+static bool mm_attn_simt(void) {
+    static int simt = -1;
+    if (simt < 0) { simt = getenv("DS4_MINIMAX_ATTN_SIMT") != nullptr; }
+    return simt != 0;
+}
+
+// Row blockIdx.y's partials: per head the max of the splits' maxima, then
+// the rescaled sums and outputs, rounded once.
 __global__ void mm_attn_combine(float *heads, const float *partial) {
     const uint32_t head = blockIdx.x, d = threadIdx.x, kv = head / MM_GROUP, h = head % MM_GROUP;
+    partial += (uint64_t)blockIdx.y * MM_SPLITS * MM_GROUP * (MM_HEAD + 2);
+    heads += (uint64_t)blockIdx.y * MM_HEADS * MM_HEAD;
     float m = -INFINITY;
     for (uint32_t j = 0; j < MM_TOPK; j++) {
         m = fmaxf(m, partial[((uint64_t)(kv * MM_TOPK + j) * MM_GROUP + h) * (MM_HEAD + 2) + MM_HEAD]);
@@ -1030,16 +1557,312 @@ extern "C" int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor 
         !blocks || blocks->bytes < (uint64_t)rows * MM_KV_HEADS * MM_TOPK * sizeof(int32_t)) { return 0; }
     const cudaStream_t stream = ds4_current_stream();
     const int32_t *slots = table ? (const int32_t *)table->ptr : nullptr;
-    if (rows > 1) {
+    if (rows > DS4_MINIMAX_SPLIT_ROWS && !mm_attn_simt()) {
+        static bool ready = false;
+        if (!ready) {
+            if (!cuda_ok(cudaFuncSetAttribute(mm_attn_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    MM_AT_SMEM), "MiniMax MMA attention shared memory")) { return 0; }
+            ready = true;
+        }
+        mm_attn_mma_kernel<<<dim3((rows + MM_AT_ROWS - 1) / MM_AT_ROWS, MM_KV_HEADS), MM_AT_ROWS * 32, MM_AT_SMEM,
+            stream>>>((float *)heads->ptr, (const float *)q->ptr, (const uint8_t *)pages->ptr, slots,
+            (const int32_t *)blocks->ptr, pos, rows);
+        return cuda_ok(cudaGetLastError(), "MiniMax MMA attention");
+    }
+    if (rows > DS4_MINIMAX_SPLIT_ROWS || (rows > 1 && mm_attn_simt())) {
         mm_attn_kernel<true><<<dim3(rows, MM_KV_HEADS), MM_ATTN_THREADS, 0, stream>>>((float *)heads->ptr, nullptr,
             (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, MM_TOPK);
         return cuda_ok(cudaGetLastError(), "MiniMax attention");
     }
-    if (!gvq_floats(partials, (uint64_t)MM_SPLITS * MM_GROUP * (MM_HEAD + 2))) { return 0; }
-    mm_attn_kernel<false><<<MM_SPLITS, MM_ATTN_THREADS, 0, stream>>>(nullptr, (float *)partials->ptr,
-        (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, 1u);
-    mm_attn_combine<<<MM_HEADS, MM_HEAD, 0, stream>>>((float *)heads->ptr, (const float *)partials->ptr);
+    if (!gvq_floats(partials, (uint64_t)rows * MM_SPLITS * MM_GROUP * (MM_HEAD + 2))) { return 0; }
+    if (!mm_attn_simt()) {
+        static bool ready = false;
+        if (!ready) {
+            if (!cuda_ok(cudaFuncSetAttribute(mm_attn_split_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    MM_AT_SMEM), "MiniMax split MMA attention shared memory")) { return 0; }
+            ready = true;
+        }
+        mm_attn_split_mma_kernel<<<dim3(MM_SPLITS, rows), 128, MM_AT_SMEM, stream>>>((float *)partials->ptr,
+            (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos);
+    } else {
+        mm_attn_kernel<false><<<MM_SPLITS, MM_ATTN_THREADS, 0, stream>>>(nullptr, (float *)partials->ptr,
+            (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, 1u);
+    }
+    mm_attn_combine<<<dim3(MM_HEADS, rows), MM_HEAD, 0, stream>>>((float *)heads->ptr,
+        (const float *)partials->ptr);
     return cuda_ok(cudaGetLastError(), "MiniMax decode attention");
+}
+
+/* ------------------------------------------------------------------ DSpark */
+
+enum { MM_DRAFT_TAPS = 5, MM_DRAFT_KV = MM_KV_HEADS * MM_HEAD, MM_DRAFT_WARPS = 8, MM_MARKOV_RANK = 256 };
+
+// taps[r][k] = the residual entering tap layer k, stored as BF16 (exact: the
+// residual stream holds BF16-rounded values).
+__global__ void mm_draft_tap_kernel(__nv_bfloat16 *taps, const float *cur, uint32_t k, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    taps[(i / MM_HIDDEN * MM_DRAFT_TAPS + k) * MM_HIDDEN + i % MM_HIDDEN] = __float2bfloat16_rn(cur[i]);
+}
+
+extern "C" int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows) {
+    const uint64_t count = (uint64_t)rows * MM_HIDDEN;
+    if (!taps || k >= MM_DRAFT_TAPS || taps->bytes < count * MM_DRAFT_TAPS * sizeof(__nv_bfloat16) ||
+        !gvq_floats(cur, count)) { return 0; }
+    mm_draft_tap_kernel<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>((__nv_bfloat16 *)taps->ptr,
+        (const float *)cur->ptr, k, count);
+    return cuda_ok(cudaGetLastError(), "MiniMax DSpark tap");
+}
+
+// out = F32 rows r0.. of the taps (the fc input, 30,720 per row).
+__global__ void mm_draft_widen_kernel(float *out, const __nv_bfloat16 *taps, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < count) { out[i] = __bfloat162float(taps[i]); }
+}
+
+extern "C" int ds4_gpu_minimax_draft_widen(ds4_gpu_tensor *out, const ds4_gpu_tensor *taps, uint32_t r0, uint32_t rows) {
+    const uint64_t row = (uint64_t)MM_DRAFT_TAPS * MM_HIDDEN, count = (uint64_t)rows * row;
+    if (!taps || taps->bytes < ((uint64_t)r0 + rows) * row * sizeof(__nv_bfloat16) || !gvq_floats(out, count)) { return 0; }
+    mm_draft_widen_kernel<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>((float *)out->ptr,
+        (const __nv_bfloat16 *)taps->ptr + (uint64_t)r0 * row, count);
+    return cuda_ok(cudaGetLastError(), "MiniMax DSpark widen");
+}
+
+// K and V rows (F32, BF16-rounded) into the ring at (pos + r) % cap.
+__global__ void mm_draft_ring_kernel(__nv_bfloat16 *ring_k, __nv_bfloat16 *ring_v, const float *k, const float *v,
+        uint32_t pos, uint32_t cap) {
+    const uint32_t r = blockIdx.x;
+    const uint64_t slot = (uint64_t)((pos + r) % cap) * MM_DRAFT_KV;
+    for (uint32_t c = threadIdx.x; c < MM_DRAFT_KV; c += blockDim.x) {
+        ring_k[slot + c] = __float2bfloat16_rn(k[(uint64_t)r * MM_DRAFT_KV + c]);
+        ring_v[slot + c] = __float2bfloat16_rn(v[(uint64_t)r * MM_DRAFT_KV + c]);
+    }
+}
+
+extern "C" int ds4_gpu_minimax_draft_ring(ds4_gpu_tensor *ring_k, ds4_gpu_tensor *ring_v, const ds4_gpu_tensor *k,
+        const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos, uint32_t cap) {
+    const uint64_t count = (uint64_t)rows * MM_DRAFT_KV, ring = (uint64_t)cap * MM_DRAFT_KV * sizeof(__nv_bfloat16);
+    if (!rows || !cap || !ring_k || !ring_v || ring_k->bytes < ring || ring_v->bytes < ring || !gvq_floats(k, count) ||
+        !gvq_floats(v, count)) { return 0; }
+    mm_draft_ring_kernel<<<rows, 256, 0, ds4_current_stream()>>>((__nv_bfloat16 *)ring_k->ptr,
+        (__nv_bfloat16 *)ring_v->ptr, (const float *)k->ptr, (const float *)v->ptr, pos, cap);
+    return cuda_ok(cudaGetLastError(), "MiniMax DSpark ring");
+}
+
+/* Draft attention of block row i and head h over ring positions [lo, hi):
+ * the context window and every block row (block rows see each other).
+ * Eight warps stride the keys, lane l owns dims 4l..4l+3; F32 online
+ * softmax with scale 128^-1/2, the warps merged in shared memory, output
+ * rounded once. */
+/* DSpark attention on BF16 tensor cores: CTA (KV head, 128-key chunk c of
+ * [lo, hi)) copies the chunk's K and V rows from the ring into shared
+ * memory once; warp r scores block row r's 16 query heads against them
+ * (S = Q K^T in F32, keys at or past hi masked, F32 online softmax,
+ * O += P V with P in BF16) and leaves an (O, max, sum) partial per (row,
+ * head, chunk) for mm_draft_attn_combine. The block attends to itself and
+ * to its context window, so nothing else is masked. A CTA per (row, head)
+ * re-read the window's K/V for every one of 448 query vectors (480 us). */
+enum { MM_DRAFT_CHUNK = MM_BLOCK, MM_DRAFT_ROWS = 8 };
+
+__global__ void __launch_bounds__(MM_DRAFT_ROWS * 32, 1) mm_draft_attn_kernel(float *partial, const float *q,
+        const __nv_bfloat16 *ring_k, const __nv_bfloat16 *ring_v, uint32_t rows, uint32_t lo, uint32_t hi,
+        uint32_t cap, uint32_t chunks) {
+    extern __shared__ __align__(16) uint8_t mm_at_smem[];
+    __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_DRAFT_CHUNK * MM_AT_LD;
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane >> 2, t = lane & 3;
+    const uint32_t kv = blockIdx.x / chunks, c = blockIdx.x % chunks, first = lo + c * MM_DRAFT_CHUNK;
+    enum { UNITS = MM_HEAD / 8 };   // 16-byte units per key row
+    for (uint32_t i = threadIdx.x; i < 2u * MM_DRAFT_CHUNK * UNITS; i += blockDim.x) {
+        const uint32_t side = i / (MM_DRAFT_CHUNK * UNITS), key = i / UNITS % MM_DRAFT_CHUNK, u = i % UNITS;
+        uint4 v = make_uint4(0u, 0u, 0u, 0u);
+        if (first + key < hi) {
+            v = *(const uint4 *)((side ? ring_v : ring_k) +
+                ((uint64_t)((first + key) % cap) * MM_KV_HEADS + kv) * MM_HEAD + u * 8);
+        }
+        *(uint4 *)((side ? vs : ks) + key * MM_AT_LD + u * 8) = v;
+    }
+    __syncthreads();
+    if (warp >= rows) { return; }
+    uint32_t qa[8][4];
+    const float *qr = q + ((uint64_t)warp * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    #pragma unroll
+    for (uint32_t j = 0; j < 8; j++) {
+        const uint32_t col = 16 * j + 2 * t;
+        qa[j][0] = mm_bf16x2(qr[g * MM_HEAD + col], qr[g * MM_HEAD + col + 1]);
+        qa[j][1] = mm_bf16x2(qr[(g + 8) * MM_HEAD + col], qr[(g + 8) * MM_HEAD + col + 1]);
+        qa[j][2] = mm_bf16x2(qr[g * MM_HEAD + col + 8], qr[g * MM_HEAD + col + 9]);
+        qa[j][3] = mm_bf16x2(qr[(g + 8) * MM_HEAD + col + 8], qr[(g + 8) * MM_HEAD + col + 9]);
+    }
+    float o[16][4];
+    #pragma unroll
+    for (uint32_t n = 0; n < 16; n++) { o[n][0] = o[n][1] = o[n][2] = o[n][3] = 0.0f; }
+    float m0 = -INFINITY, m1 = -INFINITY, l0 = 0.0f, l1 = 0.0f;
+    const float scale = 0.08838834764831845f;   // 128^-0.5
+    #pragma unroll 1
+    for (uint32_t half = 0; half < 2; half++) {
+        const uint32_t k0 = half * 64;
+        float s[8][4];
+        #pragma unroll
+        for (uint32_t n = 0; n < 8; n++) { s[n][0] = s[n][1] = s[n][2] = s[n][3] = 0.0f; }
+        #pragma unroll
+        for (uint32_t j = 0; j < 8; j++) {
+            #pragma unroll
+            for (uint32_t n = 0; n < 8; n += 2) {
+                const uint32_t mi = lane / 8;
+                const uint32_t key = k0 + (n + (mi >> 1)) * 8 + lane % 8, dim = 16 * j + (mi & 1) * 8;
+                uint32_t b4[4];
+                mm_ldsm4(b4, ks + key * MM_AT_LD + dim, false);
+                mm_mma_bf16(s[n], qa[j], b4[0], b4[1]);
+                mm_mma_bf16(s[n + 1], qa[j], b4[2], b4[3]);
+            }
+        }
+        float mx0 = -INFINITY, mx1 = -INFINITY;
+        #pragma unroll
+        for (uint32_t n = 0; n < 8; n++) {
+            const uint32_t key = first + k0 + n * 8 + 2 * t;
+            s[n][0] = key < hi ? s[n][0] * scale : -INFINITY;
+            s[n][1] = key + 1 < hi ? s[n][1] * scale : -INFINITY;
+            s[n][2] = key < hi ? s[n][2] * scale : -INFINITY;
+            s[n][3] = key + 1 < hi ? s[n][3] * scale : -INFINITY;
+            mx0 = fmaxf(mx0, fmaxf(s[n][0], s[n][1]));
+            mx1 = fmaxf(mx1, fmaxf(s[n][2], s[n][3]));
+        }
+        mx0 = fmaxf(mx0, __shfl_xor_sync(0xffffffffu, mx0, 1));
+        mx0 = fmaxf(mx0, __shfl_xor_sync(0xffffffffu, mx0, 2));
+        mx1 = fmaxf(mx1, __shfl_xor_sync(0xffffffffu, mx1, 1));
+        mx1 = fmaxf(mx1, __shfl_xor_sync(0xffffffffu, mx1, 2));
+        const float n0 = fmaxf(m0, mx0), n1 = fmaxf(m1, mx1);
+        const float c0 = n0 == -INFINITY || m0 == -INFINITY ? (n0 == -INFINITY ? 1.0f : 0.0f) : expf(m0 - n0);
+        const float c1 = n1 == -INFINITY || m1 == -INFINITY ? (n1 == -INFINITY ? 1.0f : 0.0f) : expf(m1 - n1);
+        float sum0 = 0.0f, sum1 = 0.0f;
+        #pragma unroll
+        for (uint32_t n = 0; n < 8; n++) {
+            s[n][0] = s[n][0] == -INFINITY ? 0.0f : expf(s[n][0] - n0);
+            s[n][1] = s[n][1] == -INFINITY ? 0.0f : expf(s[n][1] - n0);
+            s[n][2] = s[n][2] == -INFINITY ? 0.0f : expf(s[n][2] - n1);
+            s[n][3] = s[n][3] == -INFINITY ? 0.0f : expf(s[n][3] - n1);
+            sum0 += s[n][0] + s[n][1];
+            sum1 += s[n][2] + s[n][3];
+        }
+        l0 = fmaf(l0, c0, sum0);
+        l1 = fmaf(l1, c1, sum1);
+        m0 = n0;
+        m1 = n1;
+        #pragma unroll
+        for (uint32_t n = 0; n < 16; n++) {
+            o[n][0] *= c0; o[n][1] *= c0; o[n][2] *= c1; o[n][3] *= c1;
+        }
+        #pragma unroll
+        for (uint32_t kk = 0; kk < 4; kk++) {
+            const uint32_t pa[4] = {mm_bf16x2(s[2 * kk][0], s[2 * kk][1]),
+                mm_bf16x2(s[2 * kk][2], s[2 * kk][3]), mm_bf16x2(s[2 * kk + 1][0], s[2 * kk + 1][1]),
+                mm_bf16x2(s[2 * kk + 1][2], s[2 * kk + 1][3])};
+            #pragma unroll
+            for (uint32_t n = 0; n < 16; n += 2) {
+                const uint32_t mi = lane / 8;
+                const uint32_t key = k0 + 16 * kk + (mi & 1) * 8 + lane % 8, dim = (n + (mi >> 1)) * 8;
+                uint32_t b4[4];
+                mm_ldsm4(b4, vs + key * MM_AT_LD + dim, true);
+                mm_mma_bf16(o[n], pa, b4[0], b4[1]);
+                mm_mma_bf16(o[n + 1], pa, b4[2], b4[3]);
+            }
+        }
+    }
+    l0 += __shfl_xor_sync(0xffffffffu, l0, 1);
+    l0 += __shfl_xor_sync(0xffffffffu, l0, 2);
+    l1 += __shfl_xor_sync(0xffffffffu, l1, 1);
+    l1 += __shfl_xor_sync(0xffffffffu, l1, 2);
+    const uint64_t head0 = (uint64_t)warp * MM_HEADS + kv * MM_GROUP + g;
+    float *out0 = partial + (head0 * chunks + c) * (MM_HEAD + 2);
+    float *out1 = partial + ((head0 + 8) * chunks + c) * (MM_HEAD + 2);
+    #pragma unroll
+    for (uint32_t n = 0; n < 16; n++) {
+        const uint32_t d = n * 8 + 2 * t;
+        out0[d] = o[n][0]; out0[d + 1] = o[n][1];
+        out1[d] = o[n][2]; out1[d + 1] = o[n][3];
+    }
+    if (!t) {
+        out0[MM_HEAD] = m0; out0[MM_HEAD + 1] = l0;
+        out1[MM_HEAD] = m1; out1[MM_HEAD + 1] = l1;
+    }
+}
+
+// Block (row, head): the max of its chunks' maxima, then the rescaled sums
+// and outputs, rounded once.
+__global__ void mm_draft_attn_combine(float *heads, const float *partial, uint32_t chunks) {
+    const float *pp = partial + (uint64_t)blockIdx.x * chunks * (MM_HEAD + 2);
+    float m = -INFINITY;
+    for (uint32_t c = 0; c < chunks; c++) { m = fmaxf(m, pp[c * (MM_HEAD + 2) + MM_HEAD]); }
+    float l = 0.0f, o = 0.0f;
+    for (uint32_t c = 0; c < chunks; c++) {
+        const float *pc = pp + c * (MM_HEAD + 2);
+        if (pc[MM_HEAD] == -INFINITY) { continue; }
+        const float e = expf(pc[MM_HEAD] - m);
+        l = fmaf(pc[MM_HEAD + 1], e, l);
+        o = fmaf(pc[threadIdx.x], e, o);
+    }
+    heads[(uint64_t)blockIdx.x * MM_HEAD + threadIdx.x] = glmvq_round(l > 0.0f ? o / l : 0.0f);
+}
+
+extern "C" int ds4_gpu_minimax_draft_attn(ds4_gpu_tensor *heads, ds4_gpu_tensor *partials, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *ring_k, const ds4_gpu_tensor *ring_v, uint32_t rows, uint32_t lo, uint32_t hi,
+        uint32_t cap) {
+    const uint64_t count = (uint64_t)rows * MM_HEADS * MM_HEAD, ring = (uint64_t)cap * MM_DRAFT_KV * sizeof(__nv_bfloat16);
+    const uint32_t chunks = (hi - lo + MM_DRAFT_CHUNK - 1) / MM_DRAFT_CHUNK;
+    if (!rows || rows > MM_DRAFT_ROWS || lo >= hi || hi - lo > cap || !ring_k || !ring_v || ring_k->bytes < ring ||
+        ring_v->bytes < ring || !gvq_floats(heads, count) || !gvq_floats(q, count) ||
+        !gvq_floats(partials, (uint64_t)rows * MM_HEADS * chunks * (MM_HEAD + 2))) { return 0; }
+    static bool ready = false;
+    if (!ready) {
+        if (!cuda_ok(cudaFuncSetAttribute(mm_draft_attn_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                MM_AT_SMEM), "MiniMax DSpark attention shared memory")) { return 0; }
+        ready = true;
+    }
+    const cudaStream_t stream = ds4_current_stream();
+    mm_draft_attn_kernel<<<MM_KV_HEADS * chunks, MM_DRAFT_ROWS * 32, MM_AT_SMEM, stream>>>(
+        (float *)partials->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)ring_k->ptr,
+        (const __nv_bfloat16 *)ring_v->ptr, rows, lo, hi, cap, chunks);
+    mm_draft_attn_combine<<<rows * MM_HEADS, MM_HEAD, 0, stream>>>((float *)heads->ptr,
+        (const float *)partials->ptr, chunks);
+    return cuda_ok(cudaGetLastError(), "MiniMax DSpark attention");
+}
+
+/* Markov head of one draft row: logits[v] += BF16(markov_w2[v] . markov_w1[prev])
+ * over the vocabulary (rank 256; the source runs these auxiliary GEMMs in
+ * BF16). `prev` is read on the device: the previous row's argmax, or the
+ * anchor. One warp per output row, the w1 row in shared memory. */
+__global__ void mm_draft_markov_kernel(float *logits, const __nv_bfloat16 *w1, const __nv_bfloat16 *w2,
+        const int32_t *prev, uint32_t vocab) {
+    __shared__ float row[MM_MARKOV_RANK];
+    const int32_t token = *prev;
+    for (uint32_t r = threadIdx.x; r < MM_MARKOV_RANK; r += blockDim.x) {
+        row[r] = __bfloat162float(w1[(uint64_t)token * MM_MARKOV_RANK + r]);
+    }
+    __syncthreads();
+    const uint32_t lane = threadIdx.x & 31, warps = blockDim.x / 32;
+    for (uint32_t v = blockIdx.x * warps + threadIdx.x / 32; v < vocab; v += gridDim.x * warps) {
+        const uint4 packed = *(const uint4 *)(w2 + (uint64_t)v * MM_MARKOV_RANK + lane * 8);
+        const __nv_bfloat162 *pair = (const __nv_bfloat162 *)&packed;
+        float dot = 0.0f;
+        #pragma unroll
+        for (uint32_t i = 0; i < 4; i++) {
+            const float2 w = __bfloat1622float2(pair[i]);
+            dot = fmaf(w.x, row[lane * 8 + i * 2], dot);
+            dot = fmaf(w.y, row[lane * 8 + i * 2 + 1], dot);
+        }
+        for (uint32_t s = 16; s; s >>= 1) { dot += __shfl_xor_sync(0xffffffffu, dot, s); }
+        if (!lane) { logits[v] += glmvq_round(dot); }
+    }
+}
+
+extern "C" int ds4_gpu_minimax_draft_markov(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t w1, uint32_t w2,
+        const ds4_gpu_tensor *prev, uint32_t vocab) {
+    const auto *a = (const __nv_bfloat16 *)gvq_weight(ctx, w1, GVQ_TYPE_BF16, (uint64_t)vocab * MM_MARKOV_RANK);
+    const auto *b = (const __nv_bfloat16 *)gvq_weight(ctx, w2, GVQ_TYPE_BF16, (uint64_t)vocab * MM_MARKOV_RANK);
+    if (!a || !b || !prev || prev->bytes < sizeof(int32_t) || !gvq_floats(logits, vocab)) { return 0; }
+    mm_draft_markov_kernel<<<512, 256, 0, ds4_current_stream()>>>((float *)logits->ptr, a, b,
+        (const int32_t *)prev->ptr, vocab);
+    return cuda_ok(cudaGetLastError(), "MiniMax DSpark Markov head");
 }
 
 /* ------------------------------------------------------------- pinned pool */

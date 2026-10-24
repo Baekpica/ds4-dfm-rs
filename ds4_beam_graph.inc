@@ -187,7 +187,7 @@ static bool beam_mm_many(ds4_beam_graph *g, const ds4_model *m, ds4_gpu_tensor *
     uint32_t index[4];
     for (uint32_t c = 0; c < count; c++) { index[c] = beam_index(m, ws[c]); }
     // One token: a single launch streams every matrix (the k/v rows too).
-    const bool ok = count <= 4 && ((rows == 1u && ds4_gpu_gvq_q4_decode_many(g->gvq, outs, index, count, x)) ||
+    const bool ok = count <= 4 && ((rows == 1u && ds4_gpu_gvq_q4_decode_many(g->gvq, outs, index, count, x, 1u)) ||
         ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16));
     if (!ok) { fprintf(stderr, "ds4: Beam linear group of %u failed (rows=%u)\n", count, rows); }
     return ok;

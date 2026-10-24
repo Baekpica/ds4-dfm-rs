@@ -1431,6 +1431,11 @@ int ds4_session_naive_commit(ds4_session *s, int keep, char *err, size_t errlen)
 int ds4_session_beam_trial(ds4_session *s, int first, int max_tokens,
                            int *tokens, int *target, int cap, char *err, size_t errlen);
 int ds4_session_beam_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* MiniMax DSpark: the same trial/commit contract over the release's drafter
+ * part (block of 7: up to six proposals). */
+int ds4_session_minimax_trial(ds4_session *s, int first, int max_tokens,
+                              int *tokens, int *target, int cap, char *err, size_t errlen);
+int ds4_session_minimax_commit(ds4_session *s, int keep, char *err, size_t errlen);
 /* IQuest-Q1 recursively reuses its integrated predictor. Target and MTP
  * ring journals restore every rejected row before publishing the frontier. */
 int ds4_session_iquest_trial(ds4_session *s, int first, int max_tokens,

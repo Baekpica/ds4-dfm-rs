@@ -34,8 +34,9 @@ enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 614
         * scales for its 128 tokens (18,432 bytes; 73,728 per block). */
        DS4_MINIMAX_KV_PAGE = 2 * DS4_MINIMAX_BLOCK * DS4_MINIMAX_FP4_ROW,
        DS4_MINIMAX_KV_BLOCK = DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_KV_PAGE,
-       /* Decode attention partials: one per (KV head, selected block). */
-       DS4_MINIMAX_SPLITS = DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_TOPK };
+       /* Decode attention partials: one per (KV head, selected block), for
+        * up to DS4_MINIMAX_SPLIT_ROWS rows (decode and DSpark verify). */
+       DS4_MINIMAX_SPLITS = DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_TOPK, DS4_MINIMAX_SPLIT_ROWS = 8 };
 
 /* Routed-expert scratch for `rows` (prefill FP8 planes, decode items and the
  * per-layer device routing tables). */
@@ -50,12 +51,18 @@ int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const ds4_gpu_tensor *shared,
     const uint32_t *matrices, uint32_t rows);
 
-/* F32 router logits of the 6144-wide rows (never TF32), then the top-4 ids
- * by sigmoid + correction bias and weights = the unbiased sigmoids over
+/* F32 router logits of the 6144-wide rows (never TF32; up to
+ * DS4_MINIMAX_SPLIT_ROWS rows each computed as a lone row), then the top-4
+ * ids by sigmoid + correction bias and weights = the unbiased sigmoids over
  * their sum, times 2.0. `router` and `bias` are the layer's
  * block_sparse_moe.gate weight and e_score_correction_bias records. */
 int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
     ds4_gpu_tensor *logits, const ds4_gpu_tensor *input, uint32_t router, uint32_t bias, uint32_t rows);
+
+/* out[r][o] = sum over `cols` of Q8_0 weight row o times the F32 input row r,
+ * for up to DS4_MINIMAX_SPLIT_ROWS rows, each computed as a lone row. */
+int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
+    uint32_t cols, uint32_t outs, uint32_t rows);
 
 /* out = gemma_rms(x) over 6144-wide rows with a BF16 weight record. */
 int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
@@ -103,12 +110,30 @@ int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *scores, uint3
 
 /* Attention of rows at pos.. over their selected blocks (pages addressed
  * as in kv_store): 64 query heads, KV head h = head / 16, causal inside the
- * row's own block, softmax scale 128^-0.5 in F32, output rounded once. One
- * row splits its blocks into DS4_MINIMAX_SPLITS partials (`partials`:
- * SPLITS x 16 x 130 floats). */
+ * row's own block, softmax scale 128^-0.5 in F32, output rounded once. Up
+ * to DS4_MINIMAX_SPLIT_ROWS rows split their blocks into DS4_MINIMAX_SPLITS
+ * partials each (`partials`: SPLIT_ROWS x SPLITS x 16 x 130 floats), every
+ * row computed as a lone decode row is. */
 int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
     const ds4_gpu_tensor *table, const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows,
     uint32_t pos);
+
+/* DSpark drafter. tap: taps[r][k] = BF16 rows of the residual entering tap
+ * layer k (taps: rows x 5 x 6144 BF16). widen: F32 rows r0.. of the taps,
+ * the fc input. ring: BF16 K and V rows (4 KV heads x 128) at ring slots
+ * (pos + r) % cap. attn: up to 8 block rows (64 heads) over ring positions
+ * [lo, hi), F32 online softmax, scale 128^-1/2 (`partials`: rows x 64 x
+ * ceil((hi - lo) / 128) x 130 floats). markov: logits[v] +=
+ * BF16(w2[v] . w1[*prev]) over `vocab` rows (rank 256, `prev` on the
+ * device). */
+int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows);
+int ds4_gpu_minimax_draft_widen(ds4_gpu_tensor *out, const ds4_gpu_tensor *taps, uint32_t r0, uint32_t rows);
+int ds4_gpu_minimax_draft_ring(ds4_gpu_tensor *ring_k, ds4_gpu_tensor *ring_v, const ds4_gpu_tensor *k,
+    const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos, uint32_t cap);
+int ds4_gpu_minimax_draft_attn(ds4_gpu_tensor *heads, ds4_gpu_tensor *partials, const ds4_gpu_tensor *q,
+    const ds4_gpu_tensor *ring_k, const ds4_gpu_tensor *ring_v, uint32_t rows, uint32_t lo, uint32_t hi, uint32_t cap);
+int ds4_gpu_minimax_draft_markov(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint32_t w1, uint32_t w2,
+    const ds4_gpu_tensor *prev, uint32_t vocab);
 
 /* Pinned host memory mapped into the device (the SSD tier's pool and slot
  * table): returns the host address and sets `device` to a tensor over the

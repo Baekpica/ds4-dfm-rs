@@ -918,7 +918,9 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             media_serial: false,
         },
         // Banks own their MSA index keys and NVFP4 K/V over graph 0's
-        // scratch; the native 1M context leaves room for one.
+        // scratch; the native 1M context leaves room for one. The release's
+        // DSpark part (mapped only when drafting, as Ling-3.1's MTP part)
+        // drafts in the serial session (Beam's rule).
         ModelFamily::MinimaxVq => ServingCaps {
             family,
             variant,
@@ -928,10 +930,11 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             reuse_support: Support::Present,
             disk: Support::Present,
             snapshot: Support::Present,
-            mtp: MtpKind::None,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
-            spec_draft_min: 1,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            // A one-token draft is the open's default with MTP off.
+            spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(MINIMAX_CTX_MAX),
             qualified_ctx: None,

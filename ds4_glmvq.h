@@ -48,10 +48,15 @@ void ds4_gpu_gvq_free(ds4_gvq_ctx *ctx);
 /* Up to four matrices over one input; prefill shares its Q8_1/BF16 copy. */
 int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_math math);
-/* One token through up to four Q4_K matrices of one input in one launch
- * (BF16-rounded F32 outputs); 0 (outputs untouched) for other weights. */
+/* Up to eight tokens through up to four Q4_K matrices of one input in one
+ * launch (BF16-rounded F32 outputs), each token as a one-token call; 0
+ * (outputs untouched) for other weights. */
 int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
-    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input);
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens);
+/* Up to eight tokens of one Q4_K matrix on the one-token SIMT kernels (no
+ * MMA verify path); 0 for other types and widths. */
+int ds4_gpu_gvq_q4_decode_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t index,
+    const ds4_gpu_tensor *input, uint32_t rows);
 /* Prefill Q4_K matrices over one input as BF16 rows; 0 (outputs untouched)
  * when the rows or weights keep F32 outputs. */
 int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,

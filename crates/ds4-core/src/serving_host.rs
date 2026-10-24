@@ -405,12 +405,17 @@ pub fn fill_quote_facts(
         ),
         // Each bank owns its index keys, K/V pages (or SSD-tier pool), host
         // logits and history; graph 0 owns the row workspace and the host
-        // embedding and block-selection staging.
+        // embedding and block-selection staging. DSpark's taps, context
+        // rows and rings belong to the serial session when drafting.
         (ModelFamily::MinimaxVq, Some(s)) => (
             minimax_kv_bytes(ctx) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
             minimax_workspace_bytes(ctx, u64::from(native))
                 + u64::from(native) * (u64::from(s.n_embd) * SIZEOF_U16 + 64 * SIZEOF_I32),
-            0,
+            if req.mtp_mode == MtpMode::On {
+                minimax_draft_bytes(u64::from(native))
+            } else {
+                0
+            },
             0,
         ),
         (ModelFamily::Inkling, Some(s)) => {
@@ -809,6 +814,14 @@ pub fn attach_host_quote(
         let part = |feature| crate::ling31_vq::part_bytes(path, feature).unwrap_or(0);
         mtp_bytes =
             part(crate::Ling31Feature::Mtp).saturating_sub(part(crate::Ling31Feature::Trunk));
+    }
+    // MiniMax maps its DSpark part beside the trunk only when drafting.
+    if let (ModelFamily::MinimaxVq, MtpMode::On, Some(path)) =
+        (caps.family, req.mtp_mode, model_path)
+    {
+        let part = |feature| crate::minimax_vq::resident_bytes(path, feature).unwrap_or(0);
+        mtp_bytes =
+            part(crate::MinimaxFeature::Draft).saturating_sub(part(crate::MinimaxFeature::Trunk));
     }
     let vision_bytes = artifact_span_bytes(vision_path);
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
@@ -2678,6 +2691,23 @@ fn minimax_kv_bytes(ctx: u64) -> u64 {
     index + pool * PAGE + LAYERS * blocks * SIZEOF_I32
 }
 
+// C minimax_draft_bytes: BF16 taps of one chunk, the widened fc input
+// (256 rows), context and K/V rows, five BF16 rings of 4,104 positions,
+// then the seven block rows (residual, norm, output, q, heads, k, v, FFN
+// gate/up, RoPE, draft and verify logits, ids).
+fn minimax_draft_bytes(rows: u64) -> u64 {
+    const HIDDEN: u64 = 6144;
+    const Q: u64 = 8192;
+    const KV: u64 = 512;
+    const FF: u64 = 12_288;
+    let taps = rows * 5 * HIDDEN * SIZEOF_U16;
+    let fcin = 256 * 5 * HIDDEN * SIZEOF_F32;
+    let context = rows * (HIDDEN + 2 * KV) * SIZEOF_F32;
+    let rings = 5 * 2 * 4104 * KV * SIZEOF_U16;
+    let block = 7 * (3 * HIDDEN + 2 * Q + 2 * KV + 2 * FF + 64 + 2 * 200_064 + 2) * SIZEOF_F32;
+    taps + fcin + context + rings + block
+}
+
 // C minimax_workspace_bytes on the CUDA kernels: logits, the
 // MINIMAX_ROW_BUFFERS rows, decode attention partials, the indexer's block
 // scores, the q4p input, cuBLAS and routes, then the routed-expert decode
@@ -3444,7 +3474,9 @@ mod tests {
         assert_eq!(facts.per_bank_bytes, Some(minimax_kv_bytes(16384) + host));
         assert_eq!(
             facts.scratch_bytes,
-            Some(minimax_workspace_bytes(16384, 2048) + 2048 * (6144 * SIZEOF_U16 + 64 * SIZEOF_I32))
+            Some(
+                minimax_workspace_bytes(16384, 2048) + 2048 * (6144 * SIZEOF_U16 + 64 * SIZEOF_I32)
+            )
         );
     }
 

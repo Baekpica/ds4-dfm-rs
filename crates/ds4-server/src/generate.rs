@@ -4022,7 +4022,9 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
         | ds4_core::ModelFamily::NaiveN05 => sidecar,
         // Beam's DFlash2 file binds natively (no sibling attach): an MTP-off
         // open leaves the default one-token draft.
-        ds4_core::ModelFamily::Mimo2 | ds4_core::ModelFamily::BeamVq => draft > 1,
+        ds4_core::ModelFamily::Mimo2
+        | ds4_core::ModelFamily::BeamVq
+        | ds4_core::ModelFamily::MinimaxVq => draft > 1,
         _ => false,
     }
 }
