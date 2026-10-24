@@ -302,6 +302,27 @@ curl http://127.0.0.1:8090/v1/videos \
 Poll `GET /v1/videos/{id}` until `status` is `completed` or `failed`, then
 download `GET /v1/videos/{id}/content`.
 
+## Verified end to end on the Spark
+
+2026-10-24, server built at 4acb3348, reference renderer
+`/home/leandro/h3-oracle/h3` at eae5d54, model `/mnt/h3-artifacts/MiniMax-H3`:
+
+```sh
+h3-server-rs --bind 127.0.0.1:8090 --out-dir /tmp/h3-api \
+  --renderer /home/leandro/h3-oracle/h3 \
+  --renderer-arg -d --renderer-arg /mnt/h3-artifacts/MiniMax-H3 \
+  --renderer-arg --steps --renderer-arg 2
+```
+
+`POST /v1/videos` as multipart (`prompt=A red fox walking through snow`,
+`size=256x256`, `seconds=0.92`) returned `video_1` in `queued`; it reached
+`completed` after 45 s (`created_at` 1792846990, `completed_at` 1792847035).
+`GET /v1/videos/video_1/content` answered HTTP 200, `video/mp4`, 76,269
+bytes; ffprobe reports h264 256x256, 22 frames, aac 30 frames, duration
+0.925 s. The 22 frames are the reference's 5+17n alignment of 0.92 s at
+24 fps. A `seconds=0.21` request was refused with `invalid_value`: that is the
+same alignment floor (22 frames), not a parser failure.
+
 ## P8
 
 The port's own renderer replaces this bridge at phase P8. The HTTP surface,
