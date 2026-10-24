@@ -93,35 +93,57 @@ W[r, 8j + d] = float32(gain[r]) * float32(codebook[index[r, j]][d])
 
 | Parameter | Value | Why this value here |
 |---|---|---|
-| Vector dimension | 8 | codes 8 consecutive weights of a row jointly, needs no per-32 scale, and one codeword is exactly an `m16n8k32` B fragment |
-| Codebook size K | 8192 | 13 bits: 12-bit stream + 1-bit plane, the widest index that still fits the 99 KiB shared-memory budget with the staging a dense GEMM needs |
-| Codebook precision | E4M3FN | halves the lookup bytes against F16 for +0.12% error in the reference's measurement |
-| Index bits | 13 | the quality end of the ladder; H3 does not need 9 or 10 bits because it fits in memory at BF16 already |
+| Vector dimension | 4 or 8, set by the rung below | rate–distortion says wider is better per bit; the memory budget says H3 can afford narrower and more bits, which is the quality end |
+| Codebook size K | 4096, 8192 or 16384, set by the rung | the hard limit is shared memory: K × dim × codeword bytes must fit ~66 KiB beside the staging a dense GEMM needs |
+| Codebook precision | F16 at dim 4 / K 4096; E4M3 above | 2 bytes per codeword doubles the book; at K 4096 dim 4 an F16 book is 32 KiB and fits, at K 8192 dim 8 it is 128 KiB and does not |
+| Index bits | 12, 13 or 14, set by the rung | H3 is not size-constrained, so the rungs run from 1.625 to 3.5 bits per weight and the quality gate picks among them |
 | Codebook scope | one per matrix (260 books) | H3 is dense: every matrix is large, so nothing is gained by sharing, and a per-matrix book removes cross-tensor interference |
-| Row gains | one F16 per row, 8,115,968 rows | the format's only scale; 16.2 MB total |
+| Row gains | one F16 per row, 8,115,968 rows | the format's only scale; 16.2 MB total, shared by a residual stage if present |
 | Lloyd | 32 iterations, `init: equidistant` | deterministic by construction: no random source, same input yields the same bytes |
 | Weighting | `imatrix` from H3's own activations | the assignment and gains are fitted against the statistics of the tokens this DiT will actually see |
 | `col_power` / `col_floor` | 0.75 / 0.02 | damps the importance profile without letting a single column dominate |
 | Gain refit | `ls` (least squares) against the stored indices | the gains are refit *after* the assignment, which is where most of the error is recovered |
 | Pool | stratified, ≥ 1000 vectors per codeword | a 4× thinner pool cost 0.96% in the reference's measurement |
-| Residual stage | GVR8, K = 256, 8 bits, on chosen blocks only | +1 bit per weight on ~40% of the parameters instead of +1 bit everywhere |
+| Bits per class | **uniform** across all 260 matrices | the method's own negative result: dynamic bits per layer, expert or matrix was measured and uniform won |
+| Residual stage | GVR8, K = 256, 8 bits, on chosen blocks only | +1 bit per weight where a per-block sweep says it pays; the only departure from uniform, and it is measured per block |
 
-**Byte accounts** (arithmetic from section 1.5; 33.100B quantizable params):
+**Byte accounts** (arithmetic from section 1.5; 33.100B quantizable params,
+8,115,968 rows, 260 matrices). `bpw = index bits + 16/dim`, because a dim-4
+vector carries 16 bits per index more than a dim-8 one at the same table size;
+the artifact is therefore reachable in steps of 0.125 bits per weight, and the
+only constraint on how far up the ladder goes is the codebook's size in shared
+memory.
 
-| Rung | Bits/weight | Codes | Gains | Books | Total | GiB |
-|---|---:|---:|---:|---:|---:|---:|
-| 12-bit (1.5) | 1.50 | 6.206 GB | 16.2 MB | 17.2 MB | 6.239 GB | 5.81 |
-| **13-bit (1.625), chosen** | **1.625** | **6.723 GB** | **16.2 MB** | **17.2 MB** | **6.756 GB** | **6.29** |
-| 14-bit (1.75) | 1.75 | 7.241 GB | 16.2 MB | 17.2 MB | 7.274 GB | 6.77 |
-| 13-bit + GVR8 on 20 blocks | — | +0.5–0.8 GB | — | +0.5 MB | ~7.3–7.6 GB | 6.8–7.1 |
-| 13-bit + GVR8 on all 52 blocks | — | +4.138 GB | — | +1.3 MB | 10.894 GB | 10.15 |
-| BF16 (as shipped) | 16.0 | 66.20 GB | — | — | 66.28 GB | 61.73 |
+| Rung | dim | K | Bits | bpw | Codes | Books | Artifact | GiB | Book in smem |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| A — reference shape | 8 | 8192 | 13 | 1.625 | 6.723 GB | 17.2 MB | 6.757 GB | 6.29 | 64 KiB |
+| B | 4 | 4096 | 12 | 1.500 | 6.206 GB | 8.6 MB | 6.231 GB | 5.80 | 32 KiB |
+| **C — quality end** | **4** | **4096** | **13** | **1.625** | **6.723 GB** | **8.6 MB** | **6.748 GB** | **6.28** | **32 KiB** |
+| D | 4 | 8192 | 13 | 1.625 | 6.723 GB | 17.2 MB | 6.757 GB | 6.29 | 64 KiB |
+| E | 4 | 4096 | 14 | 1.750 | 7.241 GB | 8.6 MB | 7.266 GB | 6.77 | 32 KiB |
+| F | 4 | 8192 | 14 | 1.750 | 7.241 GB | 17.2 MB | 7.275 GB | 6.78 | 64 KiB |
+| G | 4 | 16384 | 14 | 1.750 | 7.241 GB | 34.3 MB | 7.292 GB | 6.79 | 128 KiB — does not fit |
+| H (priced, not offered) | 4 | 65536 | 16 | 2.000 | 8.275 GB | 69 MB | 8.360 GB | 7.79 | 512 KiB — no |
+| + GVR8 residual | — | — | +1 bit per 8 weights on chosen blocks | +0.125 avg | +0.52 GB / 20 blocks, +4.14 GB / 52 | +0.5 MB | — | — | 2 KiB |
+| BF16, as shipped | — | — | 16 | 16.0 | 66.20 GB | — | 66.28 GB | 61.73 | — |
 
-Against BF16 the chosen rung is **9.81× fewer bytes**; the DiT's load goes from
-the measured 96.563 s to roughly 10 s at the same I/O rate. Measured evidence
-for the 13-bit configuration itself, and for what its error looks like at the
-output, is in the [plan](minimax-h3-port-plan.md) section 5 and the
-[cheat sheet](minimax-h3-cheatsheet.md) section 6.
+**Rung C is the one to build first**, and the reason is the measured ladder
+rather than the size: at equal bits dim 4 beats dim 8 (cosine 0.9869 against
+0.9218 on a dense bake, 0.9858 against 0.9144 on its vision FFN), and an F16
+codebook at K 4096 is what that measurement was taken with. Rung A is the same
+index bits with E4M3 codewords and dim 8 — the shape the operator's MiniMax
+release ships — and belongs in the same measurement, because the two answer
+opposite questions: A is cheaper in bits per parameter, C is better per bit.
+H3's budget can afford C, so C goes first and A stays as the comparison.
+
+Rungs B, D, E and F, plus the residual, are the search space the quality gate
+walks if C does not clear the floor. Rung G and H are priced for completeness
+and rejected by the shared-memory limit: a K 16384 F16 codebook at dim 4 is
+128 KiB and a K 65536 one is 512 KiB, against the 99,344 B a block may opt into.
+
+The rungs are not a menu of formats: every one is the same payload with a
+different header and a different book, so adding a rung is a header change and
+an encoder argument, not new software.
 
 **Where the bits are.** The four classes are not equivalent, and the plan's
 gate reports them separately so a failing class can be split out:
@@ -135,11 +157,14 @@ gate reports them separately so a failing class can be split out:
 | `attn.out_proj` (50) | 1.927B | 5.8% | |
 | refiner + head + `condition_proj` | 0.826B | 2.5% | |
 
-At 13 bits the adaln class alone is 2.64 GB of the 6.76 GB artifact, and the
-attention class is 1.56 GB. Removing `adaln_proj` from quantization would take
-the artifact to 4.12 GB but keep 61% of the DiT's parameters exact — a
-legitimate rung, and the first thing to try if the adaln class is what fails
-the render gate.
+At 13 bits the adaln class alone is 2.64 GB of the 6.75 GB artifact, and the
+attention class is 1.56 GB. Bits per class stay uniform — the method measured
+dynamic bits per layer, expert and matrix and uniform won — so the levers when
+a class misbehaves are the residual stage on that class's blocks and, if that
+fails, leaving the class exact. Removing `adaln_proj` from quantization
+entirely would take the artifact to 4.11 GB while keeping 39% of the DiT's
+parameters bit-exact; that is the fallback if the render gate puts the failure
+there, not a rung to start from.
 
 ## 3. The artifact this produces
 
@@ -335,3 +360,79 @@ above**, not measurements. They are labelled [A] wherever they appear. The only
 measured numbers in these documents are the ones quoted with a source, plus
 whatever P2 replaces the estimates with once the reference is built on the
 Spark.
+
+## 9. The converter is mostly already written
+
+The dense bake at `/data/embeddinggemma2` ships a working converter, and the
+H3 job is a smaller change to it than writing anything new. Its include set is
+the whole dependency list:
+
+```c
+#include "vq_qc.h"          /* vq_encode_full, vq_pack, vq_unpack_dequant */
+#include "quants.h"         /* ds4q_quantize_chunk (q4_K) */
+#include "ds4_st41.h"       /* v41_st_*: multi-shard safetensors index */
+#include "ds4_float.h"      /* ds4_bf16_to_f32 */
+#include "ds4_quantfmt.h"   /* ds4_deq_q4_K, the gold decoder */
+```
+`tools/eg2_pack.c:213-217`
+
+The load-bearing find is the third line. `ds4_st41.h`
+(`/data/YoungAi/src/common/`) is a multi-shard safetensors index:
+`v41_st_open(S, dir)` scans every `*.safetensors` in a directory and builds
+name → (shard, offset, dtype, shape) with a binary search
+(`ds4_st41.h:132-163`), and `v41_st_data()` **mmaps one shard at a time, on
+demand** (`ds4_st41.h:169`). That is H3's `FL2VA/transformer/` layout exactly —
+13 shards plus `model.safetensors.index.json` — so the converter can read the
+checkpoint in place, matrix by matrix, without staging 66 GB anywhere and
+without a new reader.
+
+### 9.1 Reuse map
+
+| Artifact | What it is | For H3 |
+|---|---|---|
+| `tools/eg2_pack.c` (64 KB) | the whole driver: `plan`, `encode`, `verify`, `merge`, `check`; the DQVD container writer (magic, version, 64-byte header, 48-byte slots, 16-byte alignment); the slot table; `build_plan`, `plan_report`, `plan_tsv`, `layout`, `write_header`, `write_slot_table`, `emit_payload`, `payload_metrics`, `merge_run`, `check_container`; and the flags `--cold cls,…`, `--limit N`, `--only SUBSTR`, `--shard i/N`, `--profile` | copy to `tools/h3_pack.c` and change four things: `classify()`, `name_is_kept_matrix()`, the `dim_of`/`nc_of` rung table, and `recipe_string()` |
+| `tools/eg2_vq.c` | standalone encoder with its own metrics and a dequant oracle; CLI `tensor <hf-dir> <name> [dim nc]` | reuse as-is to measure a single H3 matrix across rungs before committing to one |
+| `tools/ds4_gguf_write.h` (7.8 KB) | a complete GGUF v3 writer in one header: `ds4gw_begin/put/kv_u32/kv_str/kv_arr_*/tensor/header/write/end` | reuse verbatim for the artifact wrap |
+| `tools/eg2_artifact_check.sh` | the four-sided artifact check: writer manifest against the reader's own inventory, container payloads against GGUF bytes, verbatim tensors against the checkpoint's bytes, and the payload magic | adapt the five paths and the name list |
+| `tools/eg2_gguf.c` (69 KB) | the GGUF re-wrap of the DQVD container, with a manifest mode | adapt: H3's metadata keys and native-tensor list |
+| `/data/YoungAi/src/common/ds4_st41.h` | multi-shard safetensors index, mmap per shard | verbatim |
+| `/data/YoungAi/src/common/ds4_float.h`, `ds4_quantfmt.h`, `ds4_sha256.h` | BF16 conversion, the gold decoders, hashing | verbatim |
+| `/data/YoungAi/gguf-tools/quants.c` + `quants.h` | the reference block quantizers (`ds4q_quantize_chunk`) | only if a native tensor ever needs re-encoding; H3's natives are copied verbatim |
+| `/data/YoungAi/vq_qc.h` | the VQ encoder itself: `vq_encode_full`, `vq_pack`, `vq_unpack_dequant` | verbatim; note `g_vq_dim`/`g_vq_nc` are extern and zero by default, which is the documented setting for a base with no sidecar path |
+| `bin/eg2_pack_cpu` | the CPU build the bake actually ran | build H3's the same way: `cc -O3` of the driver against those objects, no CUDA in the encode path |
+
+### 9.2 What H3 has to add
+
+Four edits in the driver, one table, one command-line change:
+
+1. `classify()` (`eg2_pack.c:329`) returns H3's classes — `adaln`, `fc1`,
+   `qkv`, `fc2`, `out`, `refiner`, `head`, `native` — from the tensor name.
+2. `name_is_kept_matrix()` (`eg2_pack.c:312`) lists the 275 native tensors of
+   section 5; everything else that is a rank-2 matrix with
+   `cols % 8 == 0` and not `audio_patch_proj` is VQ.
+3. The rung table replaces `dim_of`/`nc_of` (`eg2_pack.c:362-363`), which today
+   choose per class from a cold mask. For H3 the rung is uniform across all 260
+   matrices and selected on the command line — rung C is `dim 4, nc 4096,
+   bits 13, F16 codewords` — with the residual stage as a per-block flag.
+4. `recipe_string()` (`eg2_pack.c:378`) records the H3 recipe id, and the
+   native policy string lists what was left exact.
+
+The sharding that the 4 GiB container ceiling needs is not new work: `--shard
+i/N` and the `merge` subcommand exist, and H3 has exactly 13 natural shards.
+`--only SUBSTR` and `--limit N` are the tool's own experiment path and are what
+the rung ladder is explored with, one matrix at a time, before a full encode.
+
+### 9.3 What is genuinely new work
+
+1. The statistics-to-imatrix step for H3 (section 6 step 3), which the dense
+   bake ran corpus-free and which needs the reference's activation dump here.
+2. The `pq`/render gate harness: the reference binary, the frozen prompt set,
+   the SSIM/PSNR/LPIPS measurement and the per-class breakdown. The bake's
+   analogue (`eg2_retrieval_score.sh`, `eg2_phase5_gate.sh`) is a scoring
+   harness over a frozen input set, so the shape is there to copy, but the
+   metrics are H3's.
+3. The runtime decode kernel in the port, as listed in the plan's P5 and P7.
+
+That is the whole difference between "a new converter" and "a converted
+converter": a classify table, a name list, a rung table, a recipe string, and
+the measurement harness.
