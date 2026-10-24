@@ -412,11 +412,15 @@ H3_NVCCFLAGS := -O3 -std=c++17 $(NVCC_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) 
 # stale binary). Recursive on purpose: evaluated after the object exists.
 H3_LINK_FINGERPRINT = $(shell cksum native/h3/h3_text_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
 
+# Every h3 gate example carries `required-features = ["h3-gates"]` in
+# ds4-core's manifest, so a plain `cargo test` on a model-free runner skips
+# them instead of failing to link the h3 objects it does not have. The five
+# targets below turn the feature on.
 native/h3/h3_text_gpu.o: native/h3/h3_text_gpu.cu native/h3/h3_text_gpu.h
 	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
 
 tests/h3_text_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o
-	cargo rustc -p ds4-core --example h3_text_gate --release -- \
+	cargo rustc -p ds4-core --example h3_text_gate --release --features h3-gates -- \
 	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT) \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
@@ -431,7 +435,7 @@ native/h3/h3_dit_gpu.o: native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h
 	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
 
 tests/h3_dit_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
-	cargo rustc -p ds4-core --example h3_dit_gate --release -- \
+	cargo rustc -p ds4-core --example h3_dit_gate --release --features h3-gates -- \
 	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
@@ -447,7 +451,7 @@ native/h3/h3_vision_gpu.o: native/h3/h3_vision_gpu.cu native/h3/h3_vision_gpu.h
 	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
 
 tests/h3_vision_gate: $(DS4_RS_SOURCES) native/h3/h3_vision_gpu.o
-	cargo rustc -p ds4-core --example h3_vision_gate --release -- \
+	cargo rustc -p ds4-core --example h3_vision_gate --release --features h3-gates -- \
 	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT) \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
@@ -456,7 +460,7 @@ tests/h3_vision_gate: $(DS4_RS_SOURCES) native/h3/h3_vision_gpu.o
 # The multimodal gate runs the vision tower and then the prompt encoder, so it
 # links both objects and both fingerprints.
 tests/h3_multimodal_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
-	cargo rustc -p ds4-core --example h3_multimodal_gate --release -- \
+	cargo rustc -p ds4-core --example h3_multimodal_gate --release --features h3-gates -- \
 	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT) \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
