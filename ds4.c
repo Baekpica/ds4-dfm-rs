@@ -40625,17 +40625,26 @@ int ds4_token_assistant(ds4_engine *e) {
     return e->vocab.assistant_id;
 }
 
-static int sample_argmax(const float *logits, uint32_t n_vocab) {
-    int best = 0;
-    float best_v = DS4_NEG_INF;
-    for (uint32_t i = 0; i < n_vocab; i++) {
-        const float v = logits[i];
-        if (v > best_v) {
-            best_v = v;
-            best = (int)i;
-        }
+/* The first index of the largest value in v[0..n) other than v[skip]
+ * (skip < 0: none), -1 when none is above -inf; NaN never ranks. A max
+ * pass, then a scan for its first match: -ffast-math compiled the
+ * one-pass compare-and-select into a dependency chain of ~7 cycles per
+ * entry, 0.53 ms over a 200K vocabulary on every greedy decode token. */
+static int argmax_first(const float *v, uint32_t n, int skip) {
+    const uint32_t cut = skip >= 0 && (uint32_t)skip < n ? (uint32_t)skip : n;
+    float m = DS4_NEG_INF;
+    for (uint32_t i = 0; i < cut; i++) { m = fmaxf(m, v[i]); }
+    for (uint32_t i = cut + 1; i < n; i++) { m = fmaxf(m, v[i]); }
+    if (!(m > DS4_NEG_INF)) { return -1; }
+    for (uint32_t i = 0; i < n; i++) {
+        if (v[i] == m && i != cut) { return (int)i; }
     }
-    return best;
+    return -1;
+}
+
+static int sample_argmax(const float *logits, uint32_t n_vocab) {
+    const int best = argmax_first(logits, n_vocab, -1);
+    return best < 0 ? 0 : best;
 }
 
 static int sample_argmax_excluding(const float *logits, uint32_t n_vocab,
@@ -77991,17 +78000,13 @@ int ds4_session_argmax(ds4_session *s) {
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id) {
     if (session_logits_unready(s)) { return -1; }
     if (!s || !s->logits) return -1;
-    int best = -1;
-    float best_logit = DS4_NEG_INF;
-    for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
-        if ((int)i == excluded_id) continue;
-        const float v = s->logits[i];
-        if (best < 0 || v > best_logit) {
-            best = (int)i;
-            best_logit = v;
-        }
-    }
-    return best;
+    // The first allowed entry ranks first unless a later one is greater
+    // (a NaN there keeps it).
+    const uint32_t n = DS4_N_VOCAB, first = excluded_id == 0 ? 1u : 0u;
+    if (first >= n) { return -1; }
+    if (isnan(s->logits[first])) { return (int)first; }
+    const int best = argmax_first(s->logits, n, excluded_id);
+    return best < 0 ? (int)first : best;
 }
 
 int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
