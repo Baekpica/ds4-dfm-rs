@@ -119,7 +119,7 @@ The repository carries two complete mode partitions and a shared set:
 |---|---:|---:|---|
 | `FL2VA/` | 81 | 144.05 GB | one full prompt/first-last-frame bundle: transformer (13 shards), text_encoder (14 shards), video_vae/source, audio_vae, processor, tokenizer, and the model's own Python sources |
 | `Ref2VA/` | 81 | 144.05 GB | the ordered-reference bundle, same structure |
-| root | 118 | 210.3 GB | `transformer/`, `transformer_ref/`, `text_encoder/`, `vae/`, `audio_vae/` in the diffusers layout |
+| root | 118 | 210.3 GB | `transformer/`, `transformer_ref/`, `text_encoder/`, `vae/`, `audio_vae/` in the diffusers layout — the same weights under diffusers tensor names, verified from its own index: 638 tensors against FL2VA's 535, the same total size to within 64 bytes (`context_embedder` against `condition_proj`, `audio_proj_in`/`audio_proj_out` against `audio_patch_proj`, and separate rather than fused q/k/v and gate/up) |
 
 ### 3.3 Why the port downloads `FL2VA/` only
 
@@ -130,9 +130,10 @@ The reference loader requires exactly the files inside the mode partition
 `FL2VA/audio_vae`. Ref2VA is optional and guarded by the presence of
 `Ref2VA/transformer/model.safetensors.index.json` (`h3.c:438-451`), with the
 comment that prompt-only FL2VA stays usable while that checkpoint is not
-installed. The root-level copies are the same components under different file
-names in the diffusers layout; nothing in the reference's required list reaches
-for them.
+installed. The root-level copies are the same weights under diffusers tensor
+names, which is what makes the repository 464.2 GiB describe about 134 GiB of
+actual model: three packings of the same tensors, plus a fourth for Ref2VA's
+DiT. Nothing in the reference's required list reaches for them.
 
 So the download is **144.05 GB, not 464.2 GiB** — which is what makes this
 project fit the model disk at all: 393 GB free on `/mnt/models`, leaving 249 GB
@@ -146,7 +147,65 @@ tasks `t2va`/`fl2va`, `sigma_shift_scales` 12.0 video / 3.0 audio). That is the
 port's specification for the VAEs: the source-of-truth rule puts the model's own
 code above any summary of it.
 
-### 3.4 DiT geometry and where the bits are
+### 3.4 What the model card adds, and what it changes
+
+Read at revision `42ed227e` (`README.md` in the repository). Four statements
+there carry more weight than the numbers above.
+
+**The 39% AdaLN class does not have to be resident during inference.** The card:
+"H3-Omni-Transformer is a 33B-parameter dense, single-stream Transformer, with
+approximately 13B parameters residing in AdaLN-related branches. Because the
+AdaLN modulation outputs can be precomputed and cached, these parameters do not
+need to be loaded for inference-only deployment." The card's ~13B matches the
+measured class table exactly — `adaln_proj.linear` is 13.006B across the 50
+blocks, 39.3% of the DiT — and it splits the model into a **hot set** (the
+attention and FFN matrices, ~20.1B, read at every denoise step) and a **cold
+set** (the AdaLN branches, ~13.0B, read once per prompt to produce the
+modulation cache). That changes both budgets: the per-step resident weights are
+~40 GiB in BF16 rather than 61.73 GiB, and the quantization decision that
+matters for speed applies to 20.1B of 33.14B, not to all of it. Section 4.5's
+tiers and the recipe's rung sizes are quoted for the whole DiT and are
+therefore conservative; a hot-only artifact would be ~4.1 GB at rung A rather
+than 6.76 GB.
+
+**The released checkpoints are CFG-distilled**, so the sampler does not carry a
+classifier-free-guidance pair: one forward per step, not two. The plan's
+per-forward cost table is already single-pass, and this is why.
+
+**The biggest documented quality lever is not in the weights.** The card calls
+H3-Context-IR "critical to the quality of the final output" and recommends
+incorporating it or building an equivalent prompt pipeline; it is *not*
+open-sourced. The port implements H3-Base, as the reference does, so the
+quality gate in section 5 measures what quantizing the weights costs against
+the same prompt on the same binary — it does not measure the port against the
+official hosted output. Anyone comparing our renders to hailuoai.video is
+comparing two different systems.
+
+**Sparse attention is training-only in this release.** The card: "H3 natively
+supports sparse-attention training and inference. The initial open-source
+release provides inference with full attention only. Our sparse-attention
+implementation will be released in a future update." So the O(n²) attention
+cost in section 4.2 stands for now, and a future release could change the
+reach calculus rather than the weight story.
+
+Three more card facts worth recording: the checkpoints are BF16 (which is what
+the shard headers show), the repository intentionally hosts "the original
+checkpoint (`FL2VA/`, `Ref2VA/`) and the diffusers format side by side, so
+scope the download to what your framework needs" — which is the same scoping
+this plan chose, by the loader's own required-file list — and the license is
+`minimax-h3-community-license-agreement`, not a permissive one. A published VQ
+artifact is a derivative of those weights, so the artifact's notice and
+naming obligations are a compliance item to settle before any release, the way
+the MiniMax-M3.1 VQ release carries its own license file.
+
+Two alternatives the card names that this plan does not use: SGLang and vLLM
+both publish H3 serving recipes. They serve the BF16 checkpoint, so they give a
+working baseline but not the quantized tier this project exists for; they are
+worth one afternoon as a sanity reference for render parity, and worth knowing
+about before anyone assumes the port is the only way to run H3 at all.
+
+
+### 3.5 DiT geometry and where the bits are
 
 Shapes and dtypes below are read from the shard-1 safetensors header over range
 requests, not inferred. Detail and the full class table are in the

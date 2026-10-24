@@ -12,7 +12,9 @@ arithmetic from measured inputs, or **[E]** estimate. Date 2026-10-24; branch
 
 | | |
 |---|---|
-| Model | MiniMax-H3 FL2VA, a 768p video+audio diffusion transformer, 24 fps |
+| Model | MiniMax-H3 / H3-Base, as the card describes it: a **33B-parameter dense, single-stream omni Transformer** that jointly predicts video and audio latents, 768p at 24 fps, released **CFG-distilled** **[M card]** |
+| Demanded of it | text → video+audio, optionally conditioned on a first and/or last frame; 4–15 s, 32 kHz stereo audio **[M card]** |
+| Hot / cold weight split | **20.1B read at every denoise step** (attention and FFN); **13.0B of AdaLN read once per prompt** to build the modulation cache — the card states those parameters "do not need to be loaded for inference-only deployment" **[M card + A]** |
 | Checkpoint (full repo) | 464.2 GiB **[M]**; the FL2VA partition the reference needs is **144.05 GB [M]** |
 | DiT | 33.14B params BF16, 66.28 GB on disk, 50 blocks + 2 refiner **[M]** |
 | Text encoder | Qwen3-VL, 66.71 GB BF16 **[M]** — kept exact |
@@ -192,6 +194,7 @@ different allocations live inside the same 121 GiB:
 | Tier | DiT | TE | VAEs | Resident now | Streamed per render | Lossy element |
 |---|---:|---:|---:|---:|---|---|
 | **Q0** | 61.73 BF16 | 62.13 BF16 | 10.26 | **61.73 GiB** | TE + VAEs (72.4 GiB) | **none** |
+| **Q0-hot** | 37.4 BF16 hot set only | 62.13 BF16 | 10.26 | **109.8 GiB** | AdaLN 24.3 GiB, once per prompt | **none** |
 | Q1 | 61.73 BF16 | 6.8 at 13-bit | 10.26 | **78.8 GiB** | — | prompt encoder, 1× per render |
 | Q2 | 6.29 at 13-bit | 62.13 BF16 | 10.26 | **78.7 GiB** | — | denoiser, 50× per render |
 | Q3 | 6.29 | 6.8 | 10.26 | **23.4 GiB** | — | both |
