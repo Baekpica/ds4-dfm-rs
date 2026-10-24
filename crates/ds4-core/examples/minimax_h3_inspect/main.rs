@@ -7,6 +7,7 @@
 //!        minimax_h3_inspect --text <FL2VA/text_encoder>
 //!        minimax_h3_inspect --tokenizer <tokenizer.json>
 //!        minimax_h3_inspect --tokenize <tokenizer.json> < lines
+//!        minimax_h3_inspect --rope <tokens>
 //!
 //! Output is one TSV row per tensor (shard, name, dtype, dims, bytes, offset),
 //! then a TOTAL line, then the manifest when an index is given. The reference
@@ -26,6 +27,10 @@
 //! (`tests/test_tokenizer.c:38-57`) plus the empty-prompt cases, and prints a
 //! TOKENIZER line. `--tokenize` prints one line of ids per stdin line, which
 //! `tools/minimax_h3/tok_probe.c` matches on the reference side.
+//!
+//! `--rope` dumps the prompt encoder's RoPE tables as raw float32 words, the
+//! same shape `tools/minimax_h3/text_probe.c --rope` prints from the
+//! reference's own construction (`h3_text_encoder.c:543-567`).
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -37,6 +42,7 @@ use std::process::ExitCode;
 use ds4_core::minimax_h3::layout::{Layout, Role};
 use ds4_core::minimax_h3::safetensors::{open_dir, reconcile};
 use ds4_core::minimax_h3::text::Layout as TextLayout;
+use ds4_core::minimax_h3::text_rope::Rope;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer, PAD_TOKEN_ID};
 use ds4_core::minimax_h3::weights::Weights;
 
@@ -55,6 +61,7 @@ enum Mode {
     Text,
     Tokenizer,
     Tokenize,
+    Rope,
 }
 
 /// The reference's own vectors, byte for byte (`tests/test_tokenizer.c:38-57`).
@@ -93,13 +100,14 @@ fn main() -> ExitCode {
         Some((flag, rest)) if flag == "--text" => (Mode::Text, rest),
         Some((flag, rest)) if flag == "--tokenizer" => (Mode::Tokenizer, rest),
         Some((flag, rest)) if flag == "--tokenize" => (Mode::Tokenize, rest),
+        Some((flag, rest)) if flag == "--rope" => (Mode::Rope, rest),
         _ => (Mode::Inventory, args.as_slice()),
     };
 
     if args.is_empty() {
         eprintln!(
             "usage: minimax_h3_inspect \
-             [--layout|--weights|--text|--tokenizer|--tokenize] <path> [index.json]"
+             [--layout|--weights|--text|--tokenizer|--tokenize|--rope] <path> [index.json]"
         );
         return ExitCode::from(2);
     }
@@ -112,6 +120,7 @@ fn main() -> ExitCode {
         Mode::Text => return report_text(dir),
         Mode::Tokenizer => return report_tokenizer(dir),
         Mode::Tokenize => return report_tokenize(dir),
+        Mode::Rope => return report_rope(&args[0]),
         Mode::Inventory => {}
     }
 
@@ -411,6 +420,37 @@ fn report_tokenize(path: &Path) -> ExitCode {
 
         let row: Vec<String> = ids.iter().map(u32::to_string).collect();
         println!("{}", row.join(" "));
+    }
+
+    ExitCode::SUCCESS
+}
+
+/// Print the host-side RoPE tables for `tokens` positions, one
+/// `T <position> <64 cos words> <64 sin words>` line each, as raw float32 bit
+/// patterns. `tools/minimax_h3/text_probe.c --rope` prints the same shape from
+/// the reference's own construction, so the two diff byte for byte.
+fn report_rope(count: &str) -> ExitCode {
+    let tokens = match count.parse::<usize>() {
+        Ok(tokens) if tokens > 0 => tokens,
+        _ => {
+            eprintln!("--rope expects a positive token count");
+            return ExitCode::from(2);
+        }
+    };
+
+    let rope = Rope::build(tokens);
+    println!("ROPE tokens={} half={}", rope.tokens(), rope.half());
+
+    for position in 0..rope.tokens() {
+        let row = position * rope.half();
+        let cosines = &rope.cosines()[row..row + rope.half()];
+        let sines = &rope.sines()[row..row + rope.half()];
+
+        print!("T {position}");
+        for value in cosines.iter().chain(sines) {
+            print!(" {:08x}", value.to_bits());
+        }
+        println!();
     }
 
     ExitCode::SUCCESS

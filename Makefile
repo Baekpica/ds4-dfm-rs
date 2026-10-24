@@ -400,6 +400,28 @@ tests/naive_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_gate" $@
 
+# MiniMax-H3 prompt encoder. Deliberately not $(NVCCFLAGS): --use_fast_math
+# lowers expf to __expf and changes the BF16 attention values, while the
+# reference (/data/h3.c, NVCCFLAGS at Makefile:26) compiles without it. The
+# E4 gate compares an FNV hash of the encoder output, so the flag set is part
+# of the numerical contract.
+H3_NVCCFLAGS := -O3 -std=c++17 $(NVCC_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
+
+# Cargo does not fingerprint an external link object; this one must be in the
+# metadata or a rebuilt h3_text_gpu.o is never linked (0.02 s "Finished" and a
+# stale binary). Recursive on purpose: evaluated after the object exists.
+H3_LINK_FINGERPRINT = $(shell cksum native/h3/h3_text_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
+
+native/h3/h3_text_gpu.o: native/h3/h3_text_gpu.cu native/h3/h3_text_gpu.h
+	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
+
+tests/h3_text_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o
+	cargo rustc -p ds4-core --example h3_text_gate --release -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
+	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_text_gate" $@
+
 # Common residency probes use at most one MiB of actual model-file mapping.
 tests/weight_mapping_probe: tests/test_weight_mapping.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $< -lcudart

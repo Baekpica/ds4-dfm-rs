@@ -6,6 +6,8 @@
 
 #![allow(non_camel_case_types)]
 
+pub mod h3_text;
+
 use std::ffi::CString;
 use std::os::raw::{c_char, c_float, c_int, c_void};
 #[cfg(unix)]

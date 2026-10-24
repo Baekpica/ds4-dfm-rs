@@ -20,6 +20,11 @@ Related, outside this directory:
 | DiT tensor layout | `crates/ds4-core/src/minimax_h3/layout.rs` |
 | Mapped weight table | `crates/ds4-core/src/minimax_h3/weights.rs` |
 | Text-encoder path | `crates/ds4-core/src/minimax_h3/text.rs` |
+| Encoder weight table | `crates/ds4-core/src/minimax_h3/text_weights.rs` |
+| Encoder RoPE tables | `crates/ds4-core/src/minimax_h3/text_rope.rs` |
+| Encoder forward | `crates/ds4-core/src/minimax_h3/text_forward.rs` |
+| Encoder gate | `crates/ds4-core/examples/h3_text_gate.rs` (`make tests/h3_text_gate`) |
+| Native encoder primitives | `native/h3/h3_text_gpu.cu` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |
 | Inventory example | `crates/ds4-core/examples/minimax_h3_inspect/main.rs` |
 | Reference-parser probe | `tools/minimax_h3/st_probe.c` |

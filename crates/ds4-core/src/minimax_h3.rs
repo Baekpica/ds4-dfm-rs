@@ -29,5 +29,8 @@
 pub mod layout;
 pub mod safetensors;
 pub mod text;
+pub mod text_forward;
+pub mod text_rope;
+pub mod text_weights;
 pub mod tokenizer;
 pub mod weights;

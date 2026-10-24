@@ -665,6 +665,30 @@ fnv=1d9d71e8dd8544d6`, first `3f99 bf71 bfc7 c054 4090 c06f 3f1b c083`, last
 page cache. The token ids equal the port's own encode of the same prompt, so
 the tokenizer gate and the forward gate share the same input.
 
+**E4 — The encoder forward.** Shipped 2026-10-24. `minimax_h3::text_rope`
+builds the tables of `:543-567`; Phase A compared 6 rows and 1024 rows byte for
+byte against `text_probe --rope` on the Spark (this host's x86_64 glibc 2.41 and
+the Spark's aarch64 glibc 2.39 agree on `sinf`/`cosf`/`powf`, so the table has
+no tolerance). `minimax_h3::text_weights` resolves the 551 roles in
+`h3_weight_find` order (`h3_weights.c:129-142`) and maps each shard once;
+`minimax_h3::text_forward` walks the sixteen ops of `encode_layer` (`:411-463`)
+through the seven `h3t_` primitives in `native/h3/h3_text_gpu.cu`. The native
+object is compiled without `--use_fast_math`, as the reference is
+(`/data/h3.c/Makefile:26`); fast math would lower `expf` to `__expf` in the
+attention kernel and change the BF16 output.
+
+Gate on the Spark, `make tests/h3_text_gate`: the recorded prompt reproduces
+the golden bit for bit — `fnv=1d9d71e8dd8544d6`, first
+`3f99.bf71.bfc7.c054.4090.c06f.3f1b.c083`, last
+`bef4.c066.c040.3db8.3d9e.3fbe.bd80.4000`, 23.495 s warm, 26.06 s under
+`/usr/bin/time -v` with a 49,647,560 kB (47.35 GiB) peak RSS. The RSS is the
+mapped weight set: this path uploads from the mapping, while the reference's
+`pread` staging never counts its 48.8 GiB in RSS. The second prompt
+`Hello, WORLD!  2026\n中文 café's` (14 tokens, ids `9707 11 50891 0 220 220 17
+15 17 21 198 104811 51950 594`) encodes to `fnv=cb367706656212c4` in 28.405 s.
+Deviation, named: no prefetch ring, so 23.8 s against the reference's 6.554 s;
+P9 owns that gap.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
