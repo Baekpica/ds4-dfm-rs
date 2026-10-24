@@ -312,7 +312,10 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
         (staged && !ds4_gpu_minimax_kv_stage(g->kv.stage, pages, table, blocks_now)) ||
         !ds4_gpu_minimax_attn(g->heads, g->q, staged ? g->kv.stage : pages, staged ? NULL : table, g->blocks,
             g->partials, rows, pos) ||
-        (g->kv.spill && !ds4_gpu_minimax_mark()) ||
+        // Only a streamed resolve waits for the mark; an event between two
+        // kernels would stop o_proj's early (PDL) launch.
+        (minimax_kv_needs_resolve(&g->kv) && minimax_kv_streams(&g->kv, rows, blocks_now) &&
+            !ds4_gpu_minimax_mark()) ||
         !minimax_trace(il, pos, "heads", g->heads, (uint64_t)rows * MINIMAX_Q * sizeof(float))) {
         return false;
     }
