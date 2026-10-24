@@ -29,6 +29,7 @@
 pub mod dit;
 pub mod host;
 pub mod layout;
+pub mod render;
 pub mod safetensors;
 pub mod sequence;
 pub mod text;

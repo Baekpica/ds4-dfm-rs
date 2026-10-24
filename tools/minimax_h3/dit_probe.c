@@ -46,6 +46,14 @@
  * `<dir>/../config.json` (`h3_video_vae.c:273-279`), so `--video-vae` takes
  * `FL2VA/video_vae/source` and finds `FL2VA/video_vae/config.json`.
  *
+ * `--out <file.mp4>` with `--out-width`/`--out-height` prints the RGB24
+ * conversion (`RGB8 bytes= fnv= first= last=`, `h3.c:731-742`), the
+ * high-quality resize when the requested canvas differs
+ * (`h3_host.c:532-635`) and then muxes frames and PCM through the reference's
+ * own two-pipe writer at the released 24 fps (`h3.c:1676-1683`,
+ * `h3_host.h:9`). It needs both VAEs: the soundtrack comes from the audio
+ * decoder, as in the reference.
+ *
  * `--denoise` runs the whole Euler sampler instead of one step: the same
  * seeded latents, `--steps` evaluations and `--reuse K` (default 1), through
  * `h3_dit_denoise_euler` (`h3_dit.c:2986-2991`). On CUDA the reference takes
@@ -62,6 +70,7 @@
 #include "h3_audio_vae.h"
 #include "h3_dit.h"
 #include "h3_dit_schedule.h"
+#include "h3_ffmpeg.h"
 #include "h3_host.h"
 #include "h3_text_encoder.h"
 #include "h3_tokenizer.h"
@@ -124,6 +133,21 @@ static int parse_int(const char *text, int *value) {
     return 1;
 }
 
+/* `h3.c:731-742`: scale by 255, clamp, round half to even, truncate to u8. */
+static uint8_t *rgb8_from_f32(const float *rgb, size_t count) {
+    uint8_t *output = malloc(count);
+    if (!output) return NULL;
+
+    for (size_t index = 0; index < count; index++) {
+        float scaled = rgb[index] * 255.0f;
+        if (scaled < 0.0f) scaled = 0.0f;
+        if (scaled > 255.0f) scaled = 255.0f;
+        output[index] = (uint8_t)lrintf(scaled);
+    }
+
+    return output;
+}
+
 static void usage(void) {
     fprintf(stderr,
             "usage: h3_dit_probe <text_encoder_dir> <tokenizer.json> "
@@ -133,6 +157,7 @@ static void usage(void) {
             "       [--seed N] [--layers N] [--rope-scale X]\n"
             "       [--denoise [--reuse K] [--gpu-sampler]] "
             "[--decode --audio-vae DIR] [--video-vae DIR]\n"
+            "       [--out FILE --out-width W --out-height H]\n"
             "       h3_dit_probe <FL2VA/transformer> --adaln-only [--steps N]\n"
             "       h3_dit_probe --features [--steps N]\n");
 }
@@ -473,6 +498,8 @@ int main(int argc, char **argv) {
     int steps = 2, step = 0, layers = DIT_BLOCKS;
     int denoise = 0, reuse = 1, gpu_sampler = 0, decode = 0;
     const char *audio_vae = NULL, *video_vae = NULL;
+    const char *out_path = NULL;
+    int out_width = 0, out_height = 0;
     unsigned long long seed = 1;
     float rope_scale = 1.0f;
 
@@ -512,6 +539,12 @@ int main(int argc, char **argv) {
             audio_vae = value;
         } else if (!strcmp(argument, "--video-vae")) {
             video_vae = value;
+        } else if (!strcmp(argument, "--out")) {
+            out_path = value;
+        } else if (!strcmp(argument, "--out-width")) {
+            if (!parse_int(value, &out_width)) return 2;
+        } else if (!strcmp(argument, "--out-height")) {
+            if (!parse_int(value, &out_height)) return 2;
         } else if (!strcmp(argument, "--reuse")) {
             if (!parse_int(value, &reuse)) return 2;
         } else if (!strcmp(argument, "--seed")) {
@@ -703,7 +736,15 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "h3_dit_probe: --decode needs --audio-vae\n");
                 return 2;
             }
+            if (out_path && (!video_vae || !out_width || !out_height)) {
+                fprintf(stderr,
+                        "h3_dit_probe: --out needs --video-vae, --out-width and "
+                        "--out-height\n");
+                return 2;
+            }
+
             h3_audio_waveform waveform = {0};
+            h3_video_frames frames = {0};
             started = seconds();
             if (!h3_audio_vae_decode(audio_vae, "h3_shaders.metal", audio,
                                      temporal.audio_t, NULL, NULL, &waveform,
@@ -721,30 +762,87 @@ int main(int argc, char **argv) {
                    waveform.pcm[0],
                    waveform.pcm[(size_t)waveform.channels * waveform.samples - 1]);
             printf("TIME decode_seconds=%.3f\n", decode_seconds);
-            h3_audio_waveform_free(&waveform);
-        }
 
-        if (decode && video_vae) {
-            h3_video_frames frames = {0};
-            started = seconds();
-            if (!h3_video_vae_decode(video_vae, "h3_shaders.metal", video,
-                                     temporal.video_t, latent_h,
-                                     latent_w, NULL, NULL, &frames,
-                                     error, sizeof(error))) {
-                fprintf(stderr, "%s\n", error);
-                return 1;
+            if (video_vae) {
+                started = seconds();
+                if (!h3_video_vae_decode(video_vae, "h3_shaders.metal", video,
+                                         temporal.video_t, latent_h,
+                                         latent_w, NULL, NULL, &frames,
+                                         error, sizeof(error))) {
+                    fprintf(stderr, "%s\n", error);
+                    return 1;
+                }
+                double frames_seconds = seconds() - started;
+                size_t frame_values = (size_t)frames.frames * frames.height *
+                                      frames.width * 3;
+                printf("FRAMES frames=%d height=%d width=%d fnv=%016llx "
+                       "first=%.9g last=%.9g\n", frames.frames, frames.height,
+                       frames.width,
+                       (unsigned long long)fnv(frames.rgb,
+                           frame_values * sizeof(*frames.rgb)),
+                       frames.rgb[0], frames.rgb[frame_values - 1]);
+                printf("TIME frames_seconds=%.3f\n", frames_seconds);
             }
-            double frames_seconds = seconds() - started;
-            size_t frame_values = (size_t)frames.frames * frames.height *
-                                  frames.width * 3;
-            printf("FRAMES frames=%d height=%d width=%d fnv=%016llx "
-                   "first=%.9g last=%.9g\n", frames.frames, frames.height,
-                   frames.width,
-                   (unsigned long long)fnv(frames.rgb,
-                       frame_values * sizeof(*frames.rgb)),
-                   frames.rgb[0], frames.rgb[frame_values - 1]);
-            printf("TIME frames_seconds=%.3f\n", frames_seconds);
+
+            if (video_vae && out_path) {
+                /* `h3.c:1641-1660`: F32 to RGB24, then the high-quality
+                 * resize only when the output canvas differs. */
+                size_t rgb_count = (size_t)frames.frames * frames.height *
+                                   frames.width * 3;
+                uint8_t *rgb8 = rgb8_from_f32(frames.rgb, rgb_count);
+                if (!rgb8) {
+                    fprintf(stderr, "h3_dit_probe: out of memory\n");
+                    return 1;
+                }
+                int output_width = frames.width;
+                int output_height = frames.height;
+                size_t output_values = rgb_count;
+                printf("RGB8 bytes=%zu fnv=%016llx first=%u last=%u\n",
+                       rgb_count,
+                       (unsigned long long)fnv(rgb8, rgb_count),
+                       rgb8[0], rgb8[rgb_count - 1]);
+                if (out_width != frames.width || out_height != frames.height) {
+                    uint8_t *resized = NULL;
+                    if (!h3_resize_rgb24_high_quality(
+                            rgb8, frames.frames, frames.width, frames.height,
+                            out_width, out_height, &resized)) {
+                        fprintf(stderr,
+                                "h3_dit_probe: cannot resize %dx%d to %dx%d\n",
+                                frames.width, frames.height, out_width,
+                                out_height);
+                        return 1;
+                    }
+                    free(rgb8);
+                    rgb8 = resized;
+                    output_width = out_width;
+                    output_height = out_height;
+                    output_values = (size_t)frames.frames * output_height *
+                                    output_width * 3;
+                    printf("RESIZED frames=%d height=%d width=%d fnv=%016llx "
+                           "first=%u last=%u\n", frames.frames, output_height,
+                           output_width,
+                           (unsigned long long)fnv(rgb8, output_values),
+                           rgb8[0], rgb8[output_values - 1]);
+                }
+                char detail[256] = {0};
+                started = seconds();
+                if (!h3_ffmpeg_write_av_rgb24_f32(
+                        out_path, rgb8, frames.frames, output_width,
+                        output_height, H3_FPS, waveform.pcm, waveform.samples,
+                        waveform.channels, waveform.sample_rate, detail,
+                        sizeof(detail))) {
+                    fprintf(stderr, "%s\n", detail);
+                    return 1;
+                }
+                printf("VIDEO path=%s frames=%d height=%d width=%d fps=%d "
+                       "seconds=%.3f\n", out_path, frames.frames,
+                       output_height, output_width, H3_FPS,
+                       seconds() - started);
+                free(rgb8);
+            }
+
             h3_video_frames_free(&frames);
+            h3_audio_waveform_free(&waveform);
         }
 
         free(video);

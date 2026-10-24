@@ -34,6 +34,9 @@ Related, outside this directory:
 | Audio VAE decode | `crates/ds4-core/src/minimax_h3/vae_audio.rs` |
 | Video VAE decode | `crates/ds4-core/src/minimax_h3/vae_video.rs` |
 | F32 weight store (both VAEs) | `crates/ds4-core/src/minimax_h3/vae_store.rs` |
+| Output stage (canvas rules, RGB24, resize, mux) | `crates/ds4-core/src/minimax_h3/render.rs` |
+| Renderer CLI | `crates/ds4-cli/src/bin/h3-rs.rs` (`make h3-rs`) |
+| Spark install and run script | `tools/minimax_h3/install-minimax-h3-spark.sh` |
 | OpenAI Videos wire | `crates/ds4-core/src/minimax_h3/video_api.rs` |
 | OpenAI Videos server | `crates/ds4-server/src/h3_video.rs`, `h3-server-rs` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |

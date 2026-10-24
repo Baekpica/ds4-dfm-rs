@@ -966,6 +966,72 @@ chunked path needs anyway; `H3_VAE_TILE_PIXELS` is not read, the default tile
 search is. Neither changes the bytes. The VAE encoder, the resident preview
 decoder and the decode-on-CPU path are not ported.
 
+**E9 — The output stage and the CLI.** Shipped 2026-10-24. This closes P8's last
+row: the geometry contract, RGB24, the high-quality resize, the mux and the
+operator-facing renderer.
+
+The geometry is `h3_valid_params` read literally (`h3.c:488-520`,
+`h3.c:869-874`, `h3_host.h:7-11`): canvas edges are multiples of 32 of at least
+32 with an area of at most 768*1344; the optional render canvas is set as a
+pair, the same aspect to the pixel (`rw * h == rh * w`) and no larger than the
+output canvas; frames align to the 5 + 17k cadence and a render needs one
+22-frame chunk. The latent canvas comes from the *render* canvas divided by 16,
+and the spatial rope scale is 0.5 only when the render canvas is 256x256
+(`h3.c:1489-1490`) — a rule the port's earlier gates never exercised, because
+they ran 1.0, which is the reference's `--use-reference-rope` mode. The frame
+minimum is 22, not 5: five frames is a decoder-level diagnostic that
+`h3_generate` itself refuses.
+
+The stages are transcriptions, not inventions: RGB24 is `h3.c:731-742` (scale by
+255 in F32, clamp, round half to even, truncate), the resize is
+`h3_host.c:532-635` (double-precision bilinear at half-pixel centers, edge
+clamp, round half to even; identity is the reference's `memcpy`), and the mux is
+`h3_ffmpeg.c:615-760` (rgb24 on stdin, f32le on a second inherited descriptor,
+libx264 preset fast crf 18 yuv420p, aac 192k, `alimiter=limit=0.5:level=disabled`,
+`+faststart`), with the PCM clamped to +-0.5 before the limiter, as the
+reference does.
+
+*Gate* (Spark, 256x256, 22 frames, 2 evaluations, seed 1, no resize): the
+reference probe and `h3-rs` return the same four hashes.
+
+| stage | reference | port |
+| --- | --- | --- |
+| latents | `70973d0a2c32e378` / `f776839e1170733b` | identical |
+| frames 22x256x256 | `541455fe622e267f` | identical |
+| RGB8 | `62b36816b6e1248e` | identical |
+| resized 512x512 | `4771cab28a1fae97` | identical |
+
+Wall times on the same command: text encoder 28.566 s, DiT load 31.910 s,
+denoise 1.310 s against the reference's 1.339 s, audio decode 0.879 s against
+0.788 s, video decode 11.115 s against 7.159 s, mux 0.350 s against 0.436 s.
+The resize path is gated separately: `--width 512 --height 512 --render-width
+256 --render-height 256` repeats the same latents and writes
+`4771cab28a1fae97`.
+
+A multi-tile canvas (864x480, 22 frames, 2 evaluations) completes end to end:
+latent 7x30x54, denoise 24.503 s, video decode 35.181 s, frames
+`2bb474960e4bbe14`, mux 0.443 s. That denoise is 12.3 s per evaluation against
+0.67 at 256x256 for 6.3x the rows — the first measured sign that the wide
+canvas is where P9 has to work, and it is recorded there rather than explained
+away here.
+
+Trap recorded because it cost a deadlock: both pipe write ends must be *moved*
+into their writer threads. Borrowing them keeps the descriptors open past the
+writers, ffmpeg never sees EOF on either input, and the mux hangs with the file
+half-written and no error. `render.rs` says so at the call site.
+
+Deviations, all named in the CLI's usage text: `--layers` is refused unless it
+is the released 50 blocks (the port has no truncated stack to offer), and
+`--token-reduction`, `--use-int8-row-fc2` (a measured CUDA no-op in the
+reference), `--show`, `--zoom`, the interactive session, keyframe conditioning
+and Ref2VA are not implemented. Flags are refused, never accepted and ignored.
+
+The install script for the operator's Spark recipe shape is
+`tools/minimax_h3/install-minimax-h3-spark.sh`
+(`preflight|fetch|verify|build|gate|render|start|stop|status|logs|test|plan`).
+Its `gate` subcommand is the table above: an install that cannot reproduce the
+four hashes refuses to start.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
