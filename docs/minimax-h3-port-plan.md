@@ -53,7 +53,7 @@ allowed routes. It is the ground truth the plan stands on.
 | HF tooling | `hf` 1.28.0 at `~/.local/bin/hf`, `huggingface-cli` present, python 3.12.3, page cache for HF only 16 M | `hf version`, `du` |
 | Disk | `/` 916 G with **547 G** available; `/mnt/models` 953 G (USB, ext4, label STORAGE) with **393 G** available and writable | `df -h`, a write test |
 | Model area | `/mnt/models` holds 106 G ds41ﬂash-1017, 106 G ds41-1017, 106 G ds41-1017-unc, 126 G Qwen3.8 GGUF, 6.8 G Bonsai | `du -sh` |
-| Repository on the Spark | `/home/leandro/ds4-dfm-rs`, branch `main` at `32a41683` — the serving deployment, a different lineage from this task's `dev` | `git branch --show-current`, `git log -1` |
+| Repository on the Spark | `~/ds4-dfm-rs`, branch `main` at `32a41683` — the serving deployment, a different lineage from this task's `dev` | `git branch --show-current`, `git log -1` |
 | Present | h3.c: **absent**. MiniMax-H3 checkpoint: **absent** | `ls` |
 
 Two gaps that are prerequisites, not risks to discover later:
@@ -599,13 +599,13 @@ the shape of the operator's other Spark deployments (`dgx-recipe/scripts/`,
 
 | Thing | Where |
 |---|---|
-| Reference engine | `/home/leandro/h3.c` on the Spark, built at `eae5d54`, never modified |
+| Reference engine | `~/h3.c` on the Spark, built at `eae5d54`, never modified |
 | Source checkpoint | `/mnt/h3/MiniMax-H3/` — the operator's model root for this work. Verified to exist on the Spark as the root of a filesystem created 2026-10-24 09:44 (it holds a `lost+found` and a 16 GB `.spd` speed-test file); its size and free space are still to be confirmed, since `df` is not readable over the file route and the two block devices visible in `/sys/block` are the 931 GiB internal NVMe and the 953 GiB USB disk, neither of which this path demonstrably is |
 | Converted artifacts | `/mnt/models/h3-vq/<rung>/` with `release.json`, per-shard containers and the GGUF |
-| Golden renders | `/home/leandro/h3-golden/<prompt-id>/` with the render, its sha256 and its `--profile` output |
+| Golden renders | `~/h3-golden/<prompt-id>/` with the render, its sha256 and its `--profile` output |
 | Commands | the operator's ssh tmux pane, `tmux send-keys` / `capture-pane` |
 | Files | the gvfs sftp mount, `cp` in and out |
-| This repository on the Spark | a *separate* working directory from the serving deployment at `/home/leandro/ds4-dfm-rs` (which is on `main` at `32a41683` and serves live models); the port never edits it in place |
+| This repository on the Spark | a *separate* working directory from the serving deployment at `~/ds4-dfm-rs` (which is on `main` at `32a41683` and serves live models); the port never edits it in place |
 
 No third route: no direct `ssh` from this shell, no `sshpass`, no mount of our
 own. If a route is missing, ask.

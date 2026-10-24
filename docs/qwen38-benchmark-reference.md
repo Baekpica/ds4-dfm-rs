@@ -276,7 +276,7 @@ Read first-hand before a new candidate:
 - [Performance guide Qwen sections](performance.md#qwen) and
   [Uncensored section](performance.md#qwen-uncensored)
 - Project-memory context: the repo's own memory records the unit P + qwen38
-  study at `/home/leandro/.opengrok/memory/ds4-dfm-rs-df08e5bf/MEMORY.md:2239-2253`;
-  `/home/leandro/.opengrok/memory/ds4-602f7992/MEMORY.md:55-63` holds a
+  study at `~/.opengrok/memory/ds4-dfm-rs-df08e5bf/MEMORY.md:2239-2253`;
+  `~/.opengrok/memory/ds4-602f7992/MEMORY.md:55-63` holds a
   llama.cpp-vs-ds4 comparison on a Qwen-family card whose artifact identity
   was not verified here: do not reuse that as Qwen3.8-Flash-Next evidence.
