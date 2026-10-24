@@ -111,6 +111,8 @@ pub struct VisionPromptInput {
     /// Packed MiMo frames from the prepare pass. Empty for still images
     /// and for a video the sync path still has to decode itself.
     pub frames: Vec<ds4_core::PackedVisual>,
+    /// A MiniMax image or video, preprocessed by the prepare pass.
+    pub minimax: Option<Arc<ds4_core::minimax_media::Visual>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1221,8 +1223,8 @@ pub struct GenerateOutcome {
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
     let syntax = syntax_for_model_id(model_id);
-    if !parsed.videos.is_empty() && syntax != ModelSyntax::Mimo2 {
-        return Some("video input requires MiMo");
+    if !parsed.videos.is_empty() && !matches!(syntax, ModelSyntax::Mimo2 | ModelSyntax::MinimaxVq) {
+        return Some("video input requires MiMo or MiniMax");
     }
     if !parsed.audios.is_empty() && !matches!(syntax, ModelSyntax::Inkling | ModelSyntax::Mimo2) {
         return Some("audio input requires Inkling or MiMo");
@@ -1237,14 +1239,15 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         | ModelSyntax::Inkling
         | ModelSyntax::Step37
         | ModelSyntax::Ling3Vl
-        | ModelSyntax::Mimo2 => None,
+        | ModelSyntax::Mimo2
+        | ModelSyntax::MinimaxVq => None,
         ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
         // V4.1 carries its own vision tower as a sidecar; whether that
         // sidecar is open is checked in prepare_serial_prompt, which knows
         // the engine (the 400 lives there, 80296d3).
         ModelSyntax::DeepSeek if v41 => None,
         _ => {
-            Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo")
+            Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling, MiMo or MiniMax")
         }
     };
     if image_gate.is_some() {
@@ -1289,6 +1292,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
         ModelSyntax::BeamVq => ChatFormat::Beam,
+        ModelSyntax::MinimaxVq => ChatFormat::Minimax,
         // Ling shares GLM's thinking and tool-call XML.
         ModelSyntax::DeepSeek
         | ModelSyntax::Motif3
@@ -2050,6 +2054,9 @@ fn prepare_media(
     if syntax_for_model_id(engine.model_id()) == ModelSyntax::Mimo2 {
         return prepare_mimo(engine, parsed, tokens);
     }
+    if syntax_for_model_id(engine.model_id()) == ModelSyntax::MinimaxVq {
+        return prepare_minimax(engine, parsed, tokens);
+    }
     if !parsed.videos.is_empty() {
         return Err(GenerateError::Unsupported("video input requires MiMo"));
     }
@@ -2168,6 +2175,7 @@ fn prepare_media(
             data: image.data.clone(),
             token_offset,
             frames: Vec::new(),
+            minimax: None,
         });
         image_index += 1;
     }
@@ -2189,6 +2197,82 @@ fn prepare_media(
 
 /// 2 fps frames and a temporal patch of 2, so each pair is one second.
 const MIMO_SECONDS_PER_PAIR: f32 = 1.0;
+
+/// MiniMax images and videos, in message order: preprocessed here, their
+/// template placeholders expanded to the processor's spans (a video's frame
+/// pairs each behind its timestamp). Both kinds sync through `vision`.
+fn prepare_minimax(
+    engine: &dyn DecodeIo,
+    parsed: &ParsedRequest,
+    tokens: Vec<i32>,
+) -> Result<MediaPrompt, GenerateError> {
+    use ds4_core::minimax_media;
+    if !parsed.audios.is_empty() {
+        return Err(GenerateError::Unsupported(
+            "audio input is not supported by MiniMax",
+        ));
+    }
+    if parsed.images.len() + parsed.videos.len() > 4 {
+        return Err(GenerateError::Unsupported(
+            "serial media supports 1 to 4 inputs",
+        ));
+    }
+    let mut vision = Vec::new();
+    let mut kinds = Vec::new();
+    for message in &parsed.messages {
+        for part in &message.parts {
+            let (is_video, data) = match part {
+                ChatPart::Image(slot) => (
+                    false,
+                    &parsed
+                        .images
+                        .get(*slot)
+                        .ok_or_else(|| GenerateError::Engine("image reference is missing".into()))?
+                        .data,
+                ),
+                ChatPart::Video(slot) => (
+                    true,
+                    &parsed
+                        .videos
+                        .get(*slot)
+                        .ok_or_else(|| GenerateError::Engine("video reference is missing".into()))?
+                        .data,
+                ),
+                _ => continue,
+            };
+            let visual = if is_video {
+                minimax_media::video(data)
+            } else {
+                minimax_media::image(data)
+            }
+            .map_err(GenerateError::Engine)?;
+            kinds.push(is_video);
+            vision.push(VisionPromptInput {
+                data: data.clone(),
+                token_offset: 0,
+                frames: Vec::new(),
+                minimax: Some(Arc::new(visual)),
+            });
+        }
+    }
+    let visuals = kinds
+        .iter()
+        .zip(&vision)
+        .map(|(&is_video, input)| (is_video, input.minimax.as_deref().unwrap()))
+        .collect::<Vec<_>>();
+    let (tokens, _spans) = minimax_media::expand(&tokens, &visuals, |pair| {
+        engine
+            .tokenize_text(&minimax_media::timestamp(pair))
+            .map_err(|e| e.to_string())
+    })
+    .map_err(GenerateError::Engine)?;
+    Ok(MediaPrompt {
+        tokens,
+        vision,
+        audios: Vec::new(),
+        videos: Vec::new(),
+    })
+}
 
 fn prepare_mimo(
     engine: &dyn DecodeIo,
@@ -2231,6 +2315,7 @@ fn prepare_mimo(
                         data: image.data.clone(),
                         token_offset: 0,
                         frames: Vec::new(),
+                        minimax: None,
                     });
                     index += 1;
                 }
@@ -2322,6 +2407,7 @@ fn prepare_mimo(
                         data: video.data.clone(),
                         token_offset: 0,
                         frames: packed,
+                        minimax: None,
                     });
                 }
             }
@@ -4021,7 +4107,9 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
         | ds4_core::ModelFamily::NaiveN05 => sidecar,
         // Beam's DFlash2 file binds natively (no sibling attach): an MTP-off
         // open leaves the default one-token draft.
-        ds4_core::ModelFamily::Mimo2 | ds4_core::ModelFamily::BeamVq => draft > 1,
+        ds4_core::ModelFamily::Mimo2
+        | ds4_core::ModelFamily::BeamVq
+        | ds4_core::ModelFamily::MinimaxVq => draft > 1,
         _ => false,
     }
 }
@@ -4515,6 +4603,11 @@ impl DecodeIo for NativeDecode<'_> {
         self.thinking_visible = None;
         self.reuse = ReuseTaken::Cold;
         let tokens = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
+        // MiniMax images and videos arrive preprocessed, in prompt order.
+        let minimax = images
+            .iter()
+            .filter_map(|image| image.minimax.as_deref())
+            .collect::<Vec<_>>();
         let images = images
             .iter()
             .map(|image| ds4_core::VisionInput {
@@ -4542,7 +4635,9 @@ impl DecodeIo for NativeDecode<'_> {
             .collect::<Vec<_>>();
         let started = Instant::now();
         let session = self.session()?;
-        let result = if videos_in.is_empty() {
+        let result = if !minimax.is_empty() {
+            session.sync_minimax_media(&tokens, &minimax)
+        } else if videos_in.is_empty() {
             session.sync_media(&tokens, &images, &audios)
         } else {
             session.sync_mimo(&tokens, &images, &audios, &videos_in, &packed)

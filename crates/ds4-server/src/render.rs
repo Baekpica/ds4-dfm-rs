@@ -197,6 +197,7 @@ pub enum ModelSyntax {
     NaiveN05 = 13,
     IQuestQ1 = 15,
     BeamVq = 19,
+    MinimaxVq = 20,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -219,6 +220,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         13 => ModelSyntax::NaiveN05,
         15 => ModelSyntax::IQuestQ1,
         19 => ModelSyntax::BeamVq,
+        20 => ModelSyntax::MinimaxVq,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -240,6 +242,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         // Harmony opens a call as the next assistant message, after analysis;
         // `=` merges into the recipient's first token.
         ModelSyntax::BeamVq => "<|start|>assistant to",
+        ModelSyntax::MinimaxVq => crate::tools::minimax::TOOL_CALL_START,
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
     }
 }
@@ -2470,6 +2473,9 @@ pub fn render_chat_choice_ex(
         ModelSyntax::BeamVq => Err(RenderError(
             "Beam input requires its official Jinja template",
         )),
+        ModelSyntax::MinimaxVq => Err(RenderError(
+            "MiniMax input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -2557,6 +2563,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::BeamVq => {
             return Err(RenderError(
                 "Beam tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::MinimaxVq => {
+            return Err(RenderError(
+                "MiniMax tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),

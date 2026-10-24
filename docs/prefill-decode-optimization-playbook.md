@@ -4,7 +4,8 @@ What the 2026-09 optimization campaigns on this engine taught, written down
 so the next campaign (another family, another host) starts from the method
 and the failure modes instead of rediscovering them.  Everything below was
 measured on one DGX Spark (GB10, `sm_121`, 128 GB unified memory, ~240 GB/s
-LPDDR5X, ~90K random 4 KiB IOPS from the NVMe) with mixed-quant MoE models
+LPDDR5X, ~90K random 4 KiB IOPS from the NVMe; all limits in
+[gb10-hardware.md](gb10-hardware.md)) with mixed-quant MoE models
 served from a resident VMM weight owner.  The numbers are quoted so the
 weight of each lesson is visible; they do not transfer to other hardware,
 only the reasoning does.
@@ -27,6 +28,26 @@ is the order the engine's `AGENTS.md` prescribes and the campaigns confirmed
 it round after round.
 
 ---
+
+## Phase order
+
+Optimize in the order that makes the next phase cheaper to measure:
+
+1. every input path works first (text, and image/video when the family has a
+   vision sidecar): optimization never starts before the functional path;
+2. prefill, because every realistic decode or sweep measurement starts with one;
+3. TTFT, whose compute share is optimized here (disk KV, partial reuse and
+   cache hits own the rest);
+4. plain decode, the baseline every MTP comparison divides by;
+5. MTP: drafter, verify widths, acceptance;
+6. vision encoder and media prefill, after the text path (text rounds do not
+   carry media).
+
+Each phase aims at ~85-90 % of the theoretical bound of its dominant work;
+the usable floors decide priority: a context segment whose prefill floor is
+above ~1,000 tok/s drops in priority (1,200-1,300 tok/s is comfortable), and
+decode must reach at least 20 tok/s (with MTP where the segment's plain-decode
+bandwidth bound is lower).
 
 ## Local scout with ds4-perf
 

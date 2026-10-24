@@ -258,6 +258,12 @@ static cudaError_t glmvq_q4_prepare(glmvq_q4_config *config, glmvq_q4_load mode)
     if (err == cudaSuccess) {
         err = cudaFuncSetAttribute(glmvq_q4_stream_many<1>, cudaFuncAttributePreferredSharedMemoryCarveout, 50);
     }
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_q4_stream_many<4>, cudaFuncAttributePreferredSharedMemoryCarveout, 50);
+    }
+    if (err == cudaSuccess) {
+        err = cudaFuncSetAttribute(glmvq_q4_stream_many<8>, cudaFuncAttributePreferredSharedMemoryCarveout, 50);
+    }
     return err;
 }
 
@@ -307,13 +313,16 @@ static void glmvq_q4_launch(const void *weight, const float *input, float *out,
     }
 }
 
-// One token over `count` matrices of `cols` inputs (glmvq_q4_stream_many);
-// split 2 (four rows per block) as the 6,144-row projections pick alone.
+// Up to eight tokens over `count` matrices of `cols` inputs
+// (glmvq_q4_stream_many); split 2 (four rows per block) as the 6,144-row
+// projections pick alone. A token's FMA order does not depend on the width:
+// verify tokens equal one-token calls bit for bit.
 static cudaError_t glmvq_q4_decode_many(const void *const *weight, float *const *out, const uint32_t *rows,
-        uint32_t count, uint32_t cols, const float *input, cudaStream_t stream, const glmvq_q4_config *config) {
+        uint32_t count, uint32_t cols, const float *input, uint32_t tokens, cudaStream_t stream,
+        const glmvq_q4_config *config) {
     constexpr uint32_t split = 2, rpb = GLMVQ_Q4_WARPS / split;
     if (!config || !count || count > GLMVQ_Q4_MANY || !input || !cols || cols % GLMVQ_Q4_BLOCK ||
-        (uintptr_t)input % 16) { return cudaErrorInvalidValue; }
+        !tokens || tokens > GLMVQ_Q4_WARPS || (uintptr_t)input % 16) { return cudaErrorInvalidValue; }
     glmvq_q4_many many = {};
     uint32_t groups = 0;
     for (uint32_t c = 0; c < GLMVQ_Q4_MANY; c++) {
@@ -328,8 +337,16 @@ static cudaError_t glmvq_q4_decode_many(const void *const *weight, float *const 
     many.first[GLMVQ_Q4_MANY] = groups;
     const uint64_t bytes = (uint64_t)rpb * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
     if (bytes + GLMVQ_Q4_WARPS * sizeof(float) > config->shared) { return cudaErrorInvalidValue; }
-    glmvq_launch_kernel(config->launch, glmvq_q4_stream_many<1>, groups, GLMVQ_Q4_WARPS * 32, bytes, stream,
-        many, input, cols, 1u, split);
+    if (tokens == 1) {
+        glmvq_launch_kernel(config->launch, glmvq_q4_stream_many<1>, groups, GLMVQ_Q4_WARPS * 32, bytes, stream,
+            many, input, cols, tokens, split);
+    } else if (tokens <= 4) {
+        glmvq_launch_kernel(config->launch, glmvq_q4_stream_many<4>, groups, GLMVQ_Q4_WARPS * 32, bytes, stream,
+            many, input, cols, tokens, split);
+    } else {
+        glmvq_launch_kernel(config->launch, glmvq_q4_stream_many<8>, groups, GLMVQ_Q4_WARPS * 32, bytes, stream,
+            many, input, cols, tokens, split);
+    }
     return cudaGetLastError();
 }
 

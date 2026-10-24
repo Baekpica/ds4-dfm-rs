@@ -18,6 +18,7 @@ mod inkling;
 mod ling31;
 mod ling3vl;
 mod mimo2;
+mod minimax;
 mod naive;
 mod qwen4exp;
 mod step37;
@@ -368,6 +369,7 @@ impl Vocab {
             ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
             ModelFamily::Ling31Vq => ling31::specials(self, g)?,
             ModelFamily::BeamVq => beam::specials(self)?,
+            ModelFamily::MinimaxVq => minimax::specials(self)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -674,6 +676,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("Beam release metadata"))?;
             return Self::load_tables(&g, family, Some(beam::tables(path)?));
         }
+        if family == ModelFamily::MinimaxVq {
+            let g = crate::minimax_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("MiniMax release metadata"))?;
+            return Self::load_tables(&g, family, Some(minimax::tables(path)?));
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }
@@ -690,6 +697,7 @@ impl Vocab {
                 | ModelFamily::Glm53Vq
                 | ModelFamily::Ling31Vq
                 | ModelFamily::BeamVq
+                | ModelFamily::MinimaxVq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -736,6 +744,9 @@ impl Vocab {
             )),
             ModelFamily::BeamVq => Some(TokError::InvalidTokenizer(
                 "Beam VQ chat requires official Jinja",
+            )),
+            ModelFamily::MinimaxVq => Some(TokError::InvalidTokenizer(
+                "MiniMax VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -858,6 +869,7 @@ impl Vocab {
             | ModelFamily::Ling3Vl
             | ModelFamily::Ling31Vq
             | ModelFamily::BeamVq
+            | ModelFamily::MinimaxVq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -1059,6 +1071,7 @@ impl Vocab {
             | ModelFamily::Ling3Vl
             | ModelFamily::Ling31Vq
             | ModelFamily::BeamVq
+            | ModelFamily::MinimaxVq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -2336,6 +2349,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::Mimo2 | ModelFamily::NaiveN05 | ModelFamily::BeamVq => {
             mimo2::encode(vocab, text, out)
         }
+        ModelFamily::MinimaxVq => minimax::encode(vocab, text, out),
         ModelFamily::Glm53 | ModelFamily::Glm53Vq => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2358,6 +2372,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::Ling3Vl
             | ModelFamily::Ling31Vq
             | ModelFamily::BeamVq
+            | ModelFamily::MinimaxVq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1

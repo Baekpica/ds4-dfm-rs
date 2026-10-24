@@ -287,6 +287,31 @@ int ds4_session_mimo2_sync_media(ds4_session *s, const int *tokens, int n_tokens
     (void)rows; (void)nspans; (void)tag; (void)err; (void)errlen;
     STUB("ds4_session_mimo2_sync_media");
 }
+int ds4_session_minimax_trial(ds4_session *s, int first, int max_tokens,
+                              int *tokens, int *target, int cap, char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    (void)err; (void)errlen;
+    STUB("ds4_session_minimax_trial");
+}
+int ds4_session_minimax_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep; (void)err; (void)errlen;
+    STUB("ds4_session_minimax_commit");
+}
+int ds4_session_minimax_encode_vision(ds4_session *s, const float *patches, unsigned grid_t,
+                                      unsigned grid_h, unsigned grid_w, float *out,
+                                      char *err, size_t errlen) {
+    (void)s; (void)patches; (void)grid_t; (void)grid_h; (void)grid_w; (void)out;
+    (void)err; (void)errlen;
+    STUB("ds4_session_minimax_encode_vision");
+}
+int ds4_session_minimax_sync_media(ds4_session *s, const int *tokens, int n_tokens,
+                                   const unsigned *starts, const unsigned *counts,
+                                   const float *const *rows, unsigned nspans,
+                                   uint64_t tag, char *err, size_t errlen) {
+    (void)s; (void)tokens; (void)n_tokens; (void)starts; (void)counts;
+    (void)rows; (void)nspans; (void)tag; (void)err; (void)errlen;
+    STUB("ds4_session_minimax_sync_media");
+}
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
                            int *tokens, int *target, int cap,
                            char *err, size_t errlen) {
@@ -344,6 +369,7 @@ uint64_t ds4_session_generation(const ds4_session *s) {
     (void)s; STUB("ds4_session_generation");
 }
 int ds4_session_prefill_cap(ds4_session *s) { (void)s; STUB("ds4_session_prefill_cap"); }
+uint64_t ds4_session_payload_bytes(ds4_session *s) { (void)s; STUB("ds4_session_payload_bytes"); }
 int ds4_session_exaone_rewind_span(ds4_session *s) {
     (void)s; STUB("ds4_session_exaone_rewind_span");
 }

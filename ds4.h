@@ -1431,6 +1431,11 @@ int ds4_session_naive_commit(ds4_session *s, int keep, char *err, size_t errlen)
 int ds4_session_beam_trial(ds4_session *s, int first, int max_tokens,
                            int *tokens, int *target, int cap, char *err, size_t errlen);
 int ds4_session_beam_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* MiniMax DSpark: the same trial/commit contract over the release's drafter
+ * part (block of 7: up to six proposals). */
+int ds4_session_minimax_trial(ds4_session *s, int first, int max_tokens,
+                              int *tokens, int *target, int cap, char *err, size_t errlen);
+int ds4_session_minimax_commit(ds4_session *s, int keep, char *err, size_t errlen);
 /* IQuest-Q1 recursively reuses its integrated predictor. Target and MTP
  * ring journals restore every rejected row before publishing the frontier. */
 int ds4_session_iquest_trial(ds4_session *s, int first, int max_tokens,
@@ -1463,6 +1468,15 @@ int ds4_session_mimo2_encode_vision(ds4_session *s, const float *patches,
 int ds4_session_mimo2_encode_audio(ds4_session *s, const float *mel, unsigned frames,
                                    float *out, unsigned cap, unsigned *rows,
                                    char *err, size_t errlen);
+/* MiniMax image/video input: the vision part's rows of one visual (patches
+ * [grid_t * grid_h * grid_w][1176] in the processor's order -> out
+ * [grid_t * grid_h * grid_w / 4][6144]), and a prompt sync whose pad runs
+ * take those rows (tag: identity of the media, nonzero). */
+int ds4_session_minimax_encode_vision(ds4_session *s, const float *patches, unsigned grid_t, unsigned grid_h,
+                                      unsigned grid_w, float *out, char *err, size_t errlen);
+int ds4_session_minimax_sync_media(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
+                                   const unsigned *counts, const float *const *rows, unsigned nspans,
+                                   uint64_t tag, char *err, size_t errlen);
 /* Allocation intent captured at session creation, including a deferred graph. */
 bool ds4_session_dots3_mtp(ds4_session *s);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,

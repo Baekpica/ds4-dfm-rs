@@ -118,6 +118,18 @@ const BEAM_NATIVE_MAX: u32 = 4096;
 const BEAM_DECODE_BYTES: u64 = 1_183_744;
 // sizeof(glmvq_mma_item): three matrix indices, a start and a count.
 const BEAM_MMA_ITEM_BYTES: u64 = 20;
+// MiniMax's chunk (MINIMAX_PREFILL_DEFAULT, ds4_minimax_bind.inc).
+const MINIMAX_PREFILL_CHUNK_ENV: &str = "DS4_MINIMAX_PREFILL_CHUNK";
+const MINIMAX_NATIVE_DEFAULT: u32 = 4096;
+const MINIMAX_NATIVE_MAX: u32 = 4096;
+// C mm_decode_plan: decode items, mid and partial rows, then 57 layers'
+// 3 x 128 expert tables (256-byte aligned regions).
+const MINIMAX_DECODE_BYTES: u64 = 211_456;
+// C MINIMAX_SCORE_BUDGET: indexer block scores per pass.
+const MINIMAX_SCORE_BUDGET: u64 = 64 * MIB;
+// C minimax_resident_ctx: the largest context whose K/V pages stay resident.
+const MINIMAX_RESIDENT_CTX_ENV: &str = "DS4_MINIMAX_KV_RESIDENT_CTX";
+const MINIMAX_RESIDENT_CTX: u32 = 131_072;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -386,6 +398,21 @@ pub fn fill_quote_facts(
                 + u64::from(native) * u64::from(s.n_embd) * SIZEOF_U16,
             if sidecar_loaded && req.mtp_mode != MtpMode::Off {
                 beam_draft_bytes(u64::from(native))
+            } else {
+                0
+            },
+            0,
+        ),
+        // Each bank owns its index keys, K/V pages (or SSD-tier pool), host
+        // logits and history; graph 0 owns the row workspace and the host
+        // embedding and block-selection staging. DSpark's taps, context
+        // rows and rings belong to the serial session when drafting.
+        (ModelFamily::MinimaxVq, Some(s)) => (
+            minimax_kv_bytes(ctx) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
+            minimax_workspace_bytes(ctx, u64::from(native))
+                + u64::from(native) * (u64::from(s.n_embd) * SIZEOF_U16 + 64 * SIZEOF_I32),
+            if req.mtp_mode == MtpMode::On {
+                minimax_draft_bytes(u64::from(native))
             } else {
                 0
             },
@@ -713,7 +740,12 @@ pub fn fill_quote_facts(
     fitted.max_seqs = match req.max_seqs {
         MaxSeqs::Fixed(n) => MaxSeqs::Fixed(n),
         MaxSeqs::Off => MaxSeqs::Off,
-        MaxSeqs::Auto if matches!(caps.family, ModelFamily::Ling31Vq | ModelFamily::BeamVq) => {
+        MaxSeqs::Auto
+            if matches!(
+                caps.family,
+                ModelFamily::Ling31Vq | ModelFamily::BeamVq | ModelFamily::MinimaxVq
+            ) =>
+        {
             MaxSeqs::Fixed(1)
         }
         MaxSeqs::Auto if caps.banks == BankLane::Persistent => {
@@ -782,6 +814,14 @@ pub fn attach_host_quote(
         let part = |feature| crate::ling31_vq::part_bytes(path, feature).unwrap_or(0);
         mtp_bytes =
             part(crate::Ling31Feature::Mtp).saturating_sub(part(crate::Ling31Feature::Trunk));
+    }
+    // MiniMax maps its DSpark part beside the trunk only when drafting.
+    if let (ModelFamily::MinimaxVq, MtpMode::On, Some(path)) =
+        (caps.family, req.mtp_mode, model_path)
+    {
+        let part = |feature| crate::minimax_vq::resident_bytes(path, feature).unwrap_or(0);
+        mtp_bytes =
+            part(crate::MinimaxFeature::Draft).saturating_sub(part(crate::MinimaxFeature::Trunk));
     }
     let vision_bytes = artifact_span_bytes(vision_path);
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
@@ -960,6 +1000,11 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
         // Beam's embedding part stays on SSD: only the trunk is resident.
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::trunk_bytes(path).unwrap_or(0);
+        }
+        // MiniMax's embedding and vision parts stay on SSD.
+        if crate::minimax_vq::is_release(path) {
+            return crate::minimax_vq::resident_bytes(path, crate::MinimaxFeature::Trunk)
+                .unwrap_or(0);
         }
         if crate::ling31_vq::is_release(path) {
             return crate::ling31_vq::part_bytes(path, crate::Ling31Feature::Trunk).unwrap_or(0);
@@ -1143,6 +1188,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Glm53Vq => GLMVQ_NATIVE_MAX,
         ModelFamily::Ling31Vq => LING31_NATIVE_MAX,
         ModelFamily::BeamVq => BEAM_NATIVE_MAX,
+        ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1219,6 +1265,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             BEAM_NATIVE_DEFAULT,
             1,
             BEAM_NATIVE_MAX,
+        ),
+        ModelFamily::MinimaxVq => env_u32(
+            MINIMAX_PREFILL_CHUNK_ENV,
+            MINIMAX_NATIVE_DEFAULT,
+            1,
+            MINIMAX_NATIVE_MAX,
         ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
@@ -2621,6 +2673,108 @@ fn beam_kv_bytes(ctx: u64, native: u32) -> u64 {
     9 * ctx * full_row + 43 * ring * ring_row
 }
 
+// C minimax_kv_bytes: every layer keeps every position, 72 bytes of NVFP4
+// index key per token and 73,728-byte K/V pages per 128-token block. Past
+// the resident context the pages live on SSD and a pinned pool holds one
+// layer's every block (at least 128 per layer) plus 33 pins per layer, with
+// an int32 slot table per layer and block.
+fn minimax_kv_bytes(ctx: u64) -> u64 {
+    const LAYERS: u64 = 60;
+    const PAGE: u64 = 73_728;
+    let blocks = ctx.div_ceil(128);
+    let index = LAYERS * ctx * 72;
+    let resident = env_u32(MINIMAX_RESIDENT_CTX_ENV, MINIMAX_RESIDENT_CTX, 0, 1 << 20);
+    if ctx <= u64::from(resident) {
+        return index + LAYERS * blocks * PAGE;
+    }
+    let pool = blocks.max(LAYERS * 128) + LAYERS * (u64::from(MINIMAX_NATIVE_MAX) / 128 + 1);
+    index + pool * PAGE + LAYERS * blocks * SIZEOF_I32
+}
+
+// C minimax_draft_bytes: BF16 taps of one chunk, the widened fc input
+// (256 rows), context and K/V rows, five BF16 rings of 4,104 positions,
+// then the seven block rows (residual, norm, output, q, heads, attention
+// partials, k, v, FFN gate/up, RoPE, draft logits) and the eight verify
+// rows (logits, draft and target ids).
+fn minimax_draft_bytes(rows: u64) -> u64 {
+    const HIDDEN: u64 = 6144;
+    const Q: u64 = 8192;
+    const KV: u64 = 512;
+    const FF: u64 = 12_288;
+    let taps = rows * 5 * HIDDEN * SIZEOF_U16;
+    let fcin = 256 * 5 * HIDDEN * SIZEOF_F32;
+    let context = rows * (HIDDEN + 2 * KV) * SIZEOF_F32;
+    let rings = 5 * 2 * 4104 * KV * SIZEOF_U16;
+    // Draft attention partials: 64 heads x 33 chunks of 128 ring keys x 130.
+    let block =
+        7 * (3 * HIDDEN + 2 * Q + 2 * KV + 2 * FF + 64 + 200_064 + 64 * 33 * 130) * SIZEOF_F32;
+    // Verify rows: the anchor and seven proposals (logits, draft and target ids).
+    let verify = 8 * (200_064 + 2) * SIZEOF_F32;
+    taps + fcin + context + rings + block + verify
+}
+
+// C minimax_workspace_bytes on the CUDA kernels: logits, the
+// MINIMAX_ROW_BUFFERS rows, decode attention partials, the indexer's block
+// scores, the q4p input, cuBLAS and routes, then the routed-expert decode
+// tables and, above decode widths, the FP8 MMA planes.
+fn minimax_workspace_bytes(ctx: u64, rows: u64) -> u64 {
+    const HIDDEN: u64 = 6144;
+    const FFN: u64 = 3072;
+    const USED: u64 = 4;
+    let align = |n: u64| n.div_ceil(256) * 256;
+    // token, cur/norm/attn_out/ffn_out/shared, q/heads, k/v/index_q,
+    // index_k, the dense gate/up, q4p's prepared FP16 rows and their scale,
+    // router, routes and weights, block ids, BF16 embedding staging, RoPE rows.
+    let row = 1
+        + 5 * HIDDEN
+        + 2 * 8192
+        + 3 * 512
+        + 128
+        + 2 * 12_288
+        + 12_288 / 2
+        + 1
+        + 128
+        + 2 * USED
+        + 64
+        + HIDDEN / 2
+        + 64;
+    // Split attention partials of up to eight rows (decode, DSpark verify).
+    let partials = 8 * 64 * 16 * (128 + 2) * SIZEOF_F32;
+    let score_row = 4 * ctx.div_ceil(128) * SIZEOF_F32;
+    let score_cap = if MINIMAX_SCORE_BUDGET > score_row {
+        MINIMAX_SCORE_BUDGET / score_row * score_row
+    } else {
+        score_row
+    };
+    let scores = (rows * score_row).min(score_cap);
+    let q4p = rows * 12_288 * SIZEOF_U16 * 2;
+    let linear = GLMVQ_CUBLAS_WORKSPACE + rows * 8 * SIZEOF_U32;
+    let pairs = rows * USED;
+    // Up to eight rows run the decode experts row by row (C MM_DECODE_ROWS).
+    let mma = if rows > 8 {
+        align(rows * HIDDEN)
+            + align(rows * HIDDEN / 128 * SIZEOF_F32)
+            + align(pairs * FFN * SIZEOF_U16)
+            + align(pairs * FFN)
+            + align(pairs * FFN / 128 * SIZEOF_F32)
+            + align(pairs * HIDDEN * SIZEOF_U16)
+            + align(pairs * BEAM_MMA_ITEM_BYTES)
+            + align(pairs * SIZEOF_U32)
+            // Warp-specialized items (gate, up, down; 48 B each) and pair tokens.
+            + align(3 * (128 + pairs / 64) * 48)
+            + align(pairs * SIZEOF_U32)
+    } else {
+        0
+    };
+    (200_064 + rows * row) * SIZEOF_F32
+        + partials
+        + scores
+        + q4p
+        + linear
+        + MINIMAX_DECODE_BYTES
+        + mma
+}
+
 // C beam_workspace_bytes on the CUDA kernels: logits, the BEAM_ROW_BUFFERS
 // rows, split-decode partials, the q4p input, cuBLAS and routes, then the
 // routed-expert decode tables and, above verify widths, the FP8 MMA planes.
@@ -2716,6 +2870,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::DeepSeek4
                 | ModelFamily::Ling31Vq
                 | ModelFamily::BeamVq
+                | ModelFamily::MinimaxVq
         )
     {
         return serial;
@@ -3286,6 +3441,58 @@ mod tests {
         );
         assert_eq!(facts.mtp_state_bytes, Some(beam_draft_bytes(2048)));
         assert!((beam_draft_bytes(2048) as f64 / (1 << 20) as f64 - 189.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn minimax_quote_matches_the_native_graph() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(MINIMAX_PREFILL_CHUNK_ENV);
+        // Native graph logs: ctx 16384, 2048-row chunks: KV 0.59 GiB,
+        // workspace 0.94 GiB; ctx 12288 / 20480, 4096-row chunks: workspace
+        // 1.85 / 1.85 GiB. Every layer keeps 648 bytes per token up to 128K;
+        // 1M keeps its 4.22 GiB of index keys and a 0.75 GiB pool.
+        let _tier = EnvGuard::unset(MINIMAX_RESIDENT_CTX_ENV);
+        let gib = |b: u64| b as f64 / GIB as f64;
+        assert!((gib(minimax_kv_bytes(16384)) - 0.59).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(16384, 2048)) - 0.94).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(12288, 4096)) - 1.85).abs() < 0.005);
+        assert!((gib(minimax_workspace_bytes(20480, 4096)) - 1.85).abs() < 0.005);
+        assert_eq!(minimax_kv_bytes(131_072), 60 * 131_072 * 648);
+        assert_eq!(
+            minimax_kv_bytes(1 << 20),
+            60 * (1 << 20) * 72 + (8192 + 60 * 33) * 73_728 + 60 * 8192 * 4
+        );
+
+        let s = crate::shape::SHAPE_MINIMAX_VQ;
+        let req = ServingRequest {
+            ctx: 16384,
+            max_seqs: MaxSeqs::Fixed(1),
+            prefix_reuse: PrefixReuse::Partial,
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            serving_caps(ModelFamily::MinimaxVq, Variant::MinimaxVq),
+            Some(s),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(4096));
+        let host = 200_064 * SIZEOF_F32 + 16384 * SIZEOF_I32;
+        assert_eq!(facts.per_bank_bytes, Some(minimax_kv_bytes(16384) + host));
+        assert_eq!(
+            facts.scratch_bytes,
+            Some(
+                minimax_workspace_bytes(16384, 4096) + 4096 * (6144 * SIZEOF_U16 + 64 * SIZEOF_I32)
+            )
+        );
     }
 
     #[test]

@@ -878,8 +878,9 @@ extern "C" int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *
 }
 
 extern "C" int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
-        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input) {
-    if (!ctx || !outs || !weights || !count || count > GLMVQ_Q4_MANY || !ctx->direct_q4 || !gvq_stream(ctx)) {
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens) {
+    if (!ctx || !outs || !weights || !count || count > GLMVQ_Q4_MANY || !tokens || tokens > GLMVQ_Q4_WARPS ||
+        !ctx->direct_q4 || !gvq_stream(ctx)) {
         return 0;
     }
     const void *w[GLMVQ_Q4_MANY];
@@ -889,13 +890,59 @@ extern "C" int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cons
         if (weights[c] >= ctx->model->source.size()) { return 0; }
         const glmvq_source &s = ctx->model->source[weights[c]];
         if (ctx->model->records[weights[c]].type != GVQ_TYPE_Q4 || (c && s.cols != cols) ||
-            !gvq_floats(outs[c], s.rows)) { return 0; }
+            !gvq_floats(outs[c], (uint64_t)tokens * s.rows)) { return 0; }
         cols = s.cols;
         w[c] = s.data; y[c] = (float *)outs[c]->ptr; rows[c] = s.rows;
     }
-    if (!gvq_floats(input, cols)) { return 0; }
-    return cuda_ok(glmvq_q4_decode_many(w, y, rows, count, cols, (const float *)input->ptr, ctx->stream, &ctx->q4),
-        "GLM VQ Q4 decode many");
+    if (!gvq_floats(input, (uint64_t)tokens * cols)) { return 0; }
+    return cuda_ok(glmvq_q4_decode_many(w, y, rows, count, cols, (const float *)input->ptr, tokens, ctx->stream,
+        &ctx->q4), "GLM VQ Q4 decode many");
+}
+
+// Up to eight tokens of one Q4_K matrix on the SIMT decode kernels, whatever
+// the MMA setting: each token equals a one-token ds4_gpu_gvq_linear call bit
+// for bit (staged shapes). 0 for other types and widths.
+extern "C" int ds4_gpu_gvq_q4_decode_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t index,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || !rows || rows > GLMVQ_Q4_WARPS || !ctx->direct_q4 || index >= ctx->model->source.size() ||
+        ctx->model->records[index].type != GVQ_TYPE_Q4 || !gvq_stream(ctx)) { return 0; }
+    const glmvq_source &s = ctx->model->source[index];
+    if (!gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows)) { return 0; }
+    return cuda_ok(glmvq_q4_decode(s.data, (const float *)input->ptr, (float *)out->ptr, s.rows, s.cols, rows,
+        ctx->stream, &ctx->q4), "GLM VQ Q4 decode rows");
+}
+
+// Whether q4p runs these Q4_K matrices at `rows` (a caller that prepares the
+// input itself then calls ds4_gpu_gvq_q4p_prepared).
+extern "C" int ds4_gpu_gvq_q4p_takes(ds4_gvq_ctx *ctx, const uint32_t *weights, uint32_t count, uint32_t rows) {
+    if (!ctx || !weights || !count || count > GVQ_LINEAR_MANY || !ctx->direct_q4 || !ctx->q4_prefill ||
+        ctx->q4_round || rows < GVQ_Q4P_MIN_TOKENS) { return 0; }
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->q4p_fit.size() || !ctx->q4p_fit[weights[c]] ||
+            ctx->model->source[weights[c]].cols != ctx->model->source[weights[0]].cols) { return 0; }
+    }
+    return 1;
+}
+
+// q4p over an input prepared as glmvq_q4p_prep writes it: FP16 rows in its
+// (0, 2, 1, 3) quad order and one 2^(e-6) scale per row. Outputs are F32 as
+// ds4_gpu_gvq_linear_many's q4p path leaves them; 0 when q4p does not take
+// the weights (outputs untouched).
+extern "C" int ds4_gpu_gvq_q4p_prepared(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
+        uint32_t count, const ds4_gpu_tensor *xh, const ds4_gpu_tensor *xscale, uint32_t rows) {
+    if (!outs || !xh || !xscale || !ds4_gpu_gvq_q4p_takes(ctx, weights, count, rows) || !gvq_stream(ctx)) { return 0; }
+    const uint32_t cols = ctx->model->source[weights[0]].cols;
+    if (xh->bytes < (uint64_t)rows * cols * sizeof(__half) || !gvq_floats(xscale, rows)) { return 0; }
+    for (uint32_t c = 0; c < count; c++) {
+        if (!gvq_floats(outs[c], (uint64_t)rows * ctx->model->source[weights[c]].rows)) { return 0; }
+    }
+    const glmvq_q4p_input in = {(__half *)xh->ptr, (float *)xscale->ptr};
+    for (uint32_t c = 0; c < count; c++) {
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        if (!cuda_ok(glmvq_q4p_gemm((const uint8_t *)s.data, in, (float *)outs[c]->ptr, s.rows, s.cols, rows,
+                ctx->stream), "GLM VQ Q4 prefill (prepared input)")) { return 0; }
+    }
+    return 1;
 }
 
 // Q4_K matrices sharing one input, stored as BF16 rows (the rounding decode

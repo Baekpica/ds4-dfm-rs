@@ -73,6 +73,7 @@ pub struct SessionLedger {
     pub n_swa_period: u32,
     pub n_layer: u32,
     pub n_nextn_predict: u32,
+    pub(crate) dspark_gate: crate::minimax_mtp::DsparkGate,
 }
 
 impl SessionLedger {
@@ -92,6 +93,7 @@ impl SessionLedger {
             n_swa_period: 0,
             n_layer: 0,
             n_nextn_predict: 0,
+            dspark_gate: Default::default(),
         }
     }
 

@@ -787,6 +787,24 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_minimax_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_minimax_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_iquest_trial(
         s: *mut ds4_bridge_session,
         first: i32,
@@ -846,6 +864,30 @@ extern "C" {
     ) -> c_int;
 
     pub fn ds4_bridge_mimo2_sync_media(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: i32,
+        starts: *const u32,
+        counts: *const u32,
+        rows: *const *const f32,
+        nspans: u32,
+        tag: u64,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_minimax_encode_vision(
+        s: *mut ds4_bridge_session,
+        patches: *const f32,
+        grid_t: u32,
+        grid_h: u32,
+        grid_w: u32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_minimax_sync_media(
         s: *mut ds4_bridge_session,
         tokens: *const i32,
         n_tokens: i32,
@@ -1112,6 +1154,7 @@ extern "C" {
     pub fn ds4_bridge_snapshot_free(snap: *mut ds4_bridge_snapshot);
 
     pub fn ds4_bridge_snapshot_len(snap: *const ds4_bridge_snapshot) -> u64;
+    pub fn ds4_bridge_session_payload_bytes(s: *mut ds4_bridge_session) -> u64;
 
     pub fn ds4_bridge_session_save_snapshot(
         s: *mut ds4_bridge_session,
