@@ -705,6 +705,77 @@ mapped weight set: this path uploads from the mapping, while the reference's
 Deviation, named: no prefetch ring, so 23.8 s against the reference's 6.554 s;
 P9 owns that gap.
 
+**E5 — The DiT forward.** Shipped 2026-10-24. One denoise step of the FL2VA
+DiT through the port's own graph, from the E4 embedding to the two velocity
+latents.
+
+Phase A recorded the oracle first (`tools/minimax_h3/dit_probe.c`), with three
+modes so a later divergence can be localized without guessing: the full forward,
+`--adaln-only` (the timestep embedder plus every `adaln_proj`, 26 GiB of weights
+and no core), and `--adaln-stages`, which rebuilds the same chain through the
+public GPU API and hashes the embedding between the two (`EMBED`
+`c687fe498eb5ad94`). Two clips are recorded, both seed 1 and step 0:
+
+| Clip | Layout | AdaLN | Noise | Velocity |
+|---|---|---|---|---|
+| 256x256, 5 frames, 2 steps | 150 rows, positions `728dafc2ad799386` | 3 rows, block0 `86f97b32732707a2`, final `e61bd4d3ae8b5aa9` | video `5691802bdd5b0074`, audio `094d71985b0c77d7` | video `ee802a99530734e2`, audio `6737524c48b8f549` |
+| 512x256, 22 frames, 4 steps | 976 rows, positions `1f72c77e7cfd2a0b` | 7 rows | video `a7ad6c7fffd4883c`, audio `a6f0828e5dd3268f` | video `19ded4b06fdf2212`, audio `e485560aea6da48d` |
+
+The wide clip also pins the parts the small one cannot: `latent_t = 7`,
+`audio_t = 37`, a non-square canvas, and seven timestep rows instead of three.
+Reference wall time 0.249 s and 1.735 s for the forward, 30.1 s and 20.4 s for
+the load, page cache warm.
+
+Phase B is four modules and one native file. `minimax_h3::host` carries
+`h3_host.c`'s temporal alignment, latent canvas, PCG32/Box-Muller noise (gated
+by the `NOISE` hashes, two generators on one seed as `h3.c:1574-1581` does it)
+and `h3_serving_schedule_build`, gated on sigma bit patterns.
+`minimax_h3::sequence` builds the packed row layout (`h3_host.c:315-475`),
+gated on the reference's own FNV over the position doubles. `minimax_h3::dit`
+loads in `h3_dit.c:1559-1700`'s order — text refinement, AdaLN, RoPE, row maps,
+core, activations — then walks `run_block` (`:1876-2047`) and the final heads
+(`:2316-2337`). `native/h3/h3_dit_gpu.cu` holds the twelve `h3d_` primitives,
+each a transcription of `h3_gpu_cuda.cu` with the branch set the CUDA BF16 path
+takes: `adaln`, `gate`, `linear`, `patch_linear`, `patch_linear_map`,
+`rms_norm`, `swiglu`, `qkv_rope`, `sdpa` (the tiled 128-wide kernel
+`:1418-1487`), `add`, `cast`, `copy`, plus the two SiLU variants the timestep
+embedder needs.
+
+Gate on the Spark, `make tests/h3_dit_gate`: both clips reproduce their
+reference hashes bit for bit, edges included. Wall times 56.6 s (7.1 s of it
+AdaLN, 29.0 s load) and 64.7 s (26.3 s load), forward 0.270 s and 1.705 s
+against the reference's 0.249 s and 1.735 s. The wide run's 976-row sequence
+holds ~1.4 GB of BF16 activations; the recorded RSS was not taken for this unit
+and is a P9 number.
+
+Deviations, named and measured:
+
+- The reference's fused wrappers (`h3_gpu_gate_adaln_bf16`,
+  `h3_gpu_adaln_linear_bf16`, `h3_gpu_mlp_bf16`) are sequences of the same
+  kernels; the port calls the parts. `h3_dit.c:3385-3391` is `gate` + `adaln`
+  and `h3_gpu_cuda.cu:2203-2218` is `linear` + `swiglu` + `linear`, and both
+  gates match bit for bit, so the fusion was a launch count, not arithmetic.
+  `h3_gpu_adaln_linear_bf16` also writes an `inverse` buffer nothing reads.
+- int8, NAX, SSD streaming, token reduction and core reuse are not ported.
+  `h3_gpu_has_int8_mlp` and `h3_gpu_has_nax_mlp` return 0 on CUDA
+  (`h3_gpu_cuda.cu:332-334`) and the serving path passes streaming and reuse
+  off, so the reference's own CUDA run takes exactly the implemented path.
+- Ref2VA reference segments are refused by name (`LayoutError::References` is
+  not reachable from `dit`; `sequence::build` takes keyframes only). Keyframe
+  conditioning is built and its scatter path implemented, but no gate covers
+  it yet.
+- The core is loaded whole and stays resident; the reference can stream matrix
+  slots from SSD and split hot/cold AdaLN. That is P9.
+- Only `head_dim = 128` is accepted: the alternative dispatch is the generic
+  attention kernel, which the H3 checkpoint never selects.
+
+Two notes for the next unit. First: the probe hashes a BF16 tensor as its F32
+readback (`word << 16`); hashing the raw BF16 bytes produces a different number
+and cost one false AdaLN mismatch before the convention was matched. Second: the
+native shape checks paid for themselves — the refiner's attention output is
+`rows x INNER`, not `rows x HIDDEN`, and the device side refused the undersized
+buffer instead of writing past it.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode

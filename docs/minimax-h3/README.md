@@ -26,11 +26,17 @@ Related, outside this directory:
 | Encoder forward | `crates/ds4-core/src/minimax_h3/text_forward.rs` |
 | Encoder gate | `crates/ds4-core/examples/h3_text_gate.rs` (`make tests/h3_text_gate`) |
 | Native encoder primitives | `native/h3/h3_text_gpu.cu` |
+| Host arithmetic (canvas, noise, sigmas) | `crates/ds4-core/src/minimax_h3/host.rs` |
+| Packed sequence layout | `crates/ds4-core/src/minimax_h3/sequence.rs` |
+| DiT forward | `crates/ds4-core/src/minimax_h3/dit.rs` |
+| DiT gate | `crates/ds4-core/examples/h3_dit_gate.rs` (`make tests/h3_dit_gate`) |
+| Native DiT primitives | `native/h3/h3_dit_gpu.cu` |
 | OpenAI Videos wire | `crates/ds4-core/src/minimax_h3/video_api.rs` |
 | OpenAI Videos server | `crates/ds4-server/src/h3_video.rs`, `h3-server-rs` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |
 | Inventory example | `crates/ds4-core/examples/minimax_h3_inspect/main.rs` |
 | Reference-parser probe | `tools/minimax_h3/st_probe.c` |
 | Reference-tokenizer probe | `tools/minimax_h3/tok_probe.c` |
+| Reference DiT probe | `tools/minimax_h3/dit_probe.c` |
 | VQ converter | `tools/minimax_h3/vq/` |
 | Additive-family rule | `AGENTS.md`, "MiniMax-H3 (h3) is additive" |

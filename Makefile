@@ -422,6 +422,22 @@ tests/h3_text_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_text_gate" $@
 
+# The DiT shares the encoder's flags and the same fingerprint trap: cargo does
+# not fingerprint an external link object, so the object's checksum is part of
+# the metadata.
+H3_DIT_LINK_FINGERPRINT = $(shell cksum native/h3/h3_dit_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
+
+native/h3/h3_dit_gpu.o: native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h
+	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
+
+tests/h3_dit_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
+	cargo rustc -p ds4-core --example h3_dit_gate --release -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
+	$(DS4_RS_LIBS) -C link-arg=-lcublasLt -C link-arg=-lstdc++
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_dit_gate" $@
+
 # Common residency probes use at most one MiB of actual model-file mapping.
 tests/weight_mapping_probe: tests/test_weight_mapping.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $< -lcudart

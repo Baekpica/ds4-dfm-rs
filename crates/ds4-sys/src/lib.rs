@@ -6,6 +6,7 @@
 
 #![allow(non_camel_case_types)]
 
+pub mod h3_dit;
 pub mod h3_text;
 
 use std::ffi::CString;
