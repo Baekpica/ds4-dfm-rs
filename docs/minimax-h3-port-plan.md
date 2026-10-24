@@ -271,9 +271,41 @@ knobs left free is what makes those *decodes* possible without re-tiling the
 VAE; `vae_tile_size` 256 with `vae_tile_overlap_min` 64 is the artifact's own
 setting, and a tile that does not fit forces more, smaller tiles.
 
-The practical consequence for the port: size the process for the fully resident
-tier (79.1 GiB), keep the phases as separate *jobs* rather than separate
-*process lifetimes*, and spend the surplus on the VAE's tiling and on a
+### 4.5 The allocation, once SSD streaming is on the table
+
+A requirement of the form "the highest quality that still fits, with SSD
+streaming like the other releases" makes the choice sharper, because it makes
+the text encoder and the VAEs free: they run once per render and can be read
+from SSD, leaving the resident budget to whatever runs every step.
+
+| Tier | Resident | Streamed from SSD | Lossy element | Spare |
+|---|---|---|---:|---|
+| **Q0 — all exact** | DiT BF16 61.73 GiB | text encoder 62.13, VAEs 10.26 | **none** | ~41 GiB |
+| Q1 | DiT BF16 61.73 + TE 13-bit 6.8 + VAEs 10.26 = 78.8 GiB | — | the prompt encoder, once per render | ~28 GiB |
+| Q2 | DiT 13-bit 6.29 + TE BF16 62.13 + VAEs 10.26 = 78.7 GiB | — | the denoiser, fifty times per render | ~28 GiB |
+| Q3 | DiT 13-bit 6.29 + TE 13-bit 6.8 + VAEs 10.26 = 23.4 GiB | — | both | ~84 GiB |
+
+Q0 is the answer to "the highest quality possible": **no quantization at all**,
+which is only reachable because the DiT alone (61.73 GiB) fits inside the
+envelope once the other 72.4 GiB is treated as streamed instead of resident.
+Its cost is a text-encoder read per render — ~90 s on the internal NVMe or
+~150 s on the USB disk at the rates this plan measures — on top of a DiT that
+stays warm. It needs no converter, no VQ artifact and no quality gate; it is
+the reference's own phase behaviour, implemented in the port.
+
+Q1 is the tier to buy speed with, if that read hurts: the *denoiser* stays
+bit-exact and only the prompt encoder is quantized, once per render, at the
+13-bit rung whose error is bounded and measured. Q2 spends the same bytes on
+the other side — it makes every render read nothing from SSD, and puts the
+quantization inside the 50-step iteration instead. Both fit; the render gate
+(section 5) and the P2 attribution decide between them, and the mechanism
+argument favours Q1: a changed conditioning vector perturbs the sampler once,
+while changed denoiser weights perturb it at every step.
+
+The practical consequence for the port: implement Q0 first, because it is the
+reference's own phase structure plus residency and it carries no quality risk
+at all; keep the phases as separate *jobs* rather than separate *process
+lifetimes*; spend Q1/Q2's surplus on the VAE's tiling and on a
 persistent Daemon so that repeated prompts never pay the load again. That, not
 a bigger latent budget, is what "as much as possible" buys here.
 
@@ -509,7 +541,7 @@ the shape of the operator's other Spark deployments (`dgx-recipe/scripts/`,
 | Thing | Where |
 |---|---|
 | Reference engine | `/home/leandro/h3.c` on the Spark, built at `eae5d54`, never modified |
-| Source checkpoint | `/mnt/models/MiniMax-H3/` (144.05 GB, from `/`'s 547 G or the USB disk's 393 G) |
+| Source checkpoint | `/mnt/h3/MiniMax-H3/` — the operator's model root for this work. Verified to exist on the Spark as the root of a filesystem created 2026-10-24 09:44 (it holds a `lost+found` and a 16 GB `.spd` speed-test file); its size and free space are still to be confirmed, since `df` is not readable over the file route and the two block devices visible in `/sys/block` are the 931 GiB internal NVMe and the 953 GiB USB disk, neither of which this path demonstrably is |
 | Converted artifacts | `/mnt/models/h3-vq/<rung>/` with `release.json`, per-shard containers and the GGUF |
 | Golden renders | `/home/leandro/h3-golden/<prompt-id>/` with the render, its sha256 and its `--profile` output |
 | Commands | the operator's ssh tmux pane, `tmux send-keys` / `capture-pane` |
@@ -574,8 +606,15 @@ be re-scoped before P4. That single measurement is the plan's own kill switch.
    follow-up.
 3. **`sudo` for `libicu-dev`** on the Spark, and permission to clone and build
    the reference there.
-4. **Where the checkpoint lives**: `/` (547 G free, internal NVMe) or
-   `/mnt/models` (393 G free, USB). This changes every load-rate measurement.
+4. **Confirm `/mnt/h3`**: its size, free space and whether it is the internal
+   NVMe, the USB disk or a third device. It changes every load-rate
+   measurement, and the Q0 tier's per-render text-encoder read depends on it
+   (~90 s on NVMe against ~150 s on USB). A `df -h /mnt/h3` and a
+   `findmnt /mnt/h3` in the ssh pane settle it.
+5. **Which quality tier**: Q0 (all exact, text encoder streamed per render),
+   Q1 (prompt encoder at 13-bit, denoiser exact), Q2 (denoiser at 13-bit,
+   prompt encoder exact). All four fit; Q0 carries no quality risk and no
+   converter work.
 5. **Ownership.** This session wrote the plan; a second live session is already
    on `feature/minimax-h3` in the same working tree. One of them should own
    execution, and the other should hand off rather than work in parallel.
