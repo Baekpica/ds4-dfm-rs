@@ -224,6 +224,7 @@ model `74e5a9fd`, `ds4-bench`, cold frontiers, greedy decode, MTP off.
 | 124K resident | code corpus | 999 tok/s | 19.0 tok/s | `152fa899`, 64 tokens (14.6 at `d1eff63e`) |
 | 256K SSD tier | code corpus | 884 tok/s | 14.7 tok/s | `a0153343`, 64 tokens (8.8 at `14d39b71`; 753 prefill before streamed reads) |
 | 1,048,319 SSD tier | code corpus | 580 tok/s (1,807 s) | 5.5 tok/s | `6fd141ff`, 256 tokens decoded (before the decode round below); 422 (2,485 s) before streamed reads; peak RSS 110.7 GiB |
+| 1,048,319 SSD tier, DSpark 3 gated | code corpus | 564 tok/s | 10.6 tok/s | `ff430197`, 256 tokens in 118 steps (46 kept all four, verify ~200-240 ms); peak RSS 114.75 GiB, which let systemd-oomd kill other user scopes: not a safe configuration on a 128 GB host |
 
 Prefill went 874 -> 1,126 tok/s at 8K in the 2026-10-24 round:
 tensor-core block scoring (the SIMT scorer was 26% of a 32K prefill and
