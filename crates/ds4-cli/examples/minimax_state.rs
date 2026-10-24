@@ -3,6 +3,9 @@
 //! minimax_state MODEL PROMPT_FILE OUTPUT_DIR MODE [PREFIX] [OUTPUT_TOKENS]
 //! MODE is --legacy-expect-fallback (MMX1 has no draft context) or --preserve
 //! (restores must reproduce the uninterrupted draft cycles and target logits).
+//! Add --legacy-fixture PATH for actual MMX1 compatibility in the same model
+//! process. In preserve mode its plain-decode control follows the MMX2 cases;
+//! the fixture's full frontier and tokens must first match the original A.
 use ds4_core::{
     snapshot_spec, Backend, Model, ModelFamily, ModelOpenOption, Session, SessionSnapshot,
     TokenBuffer,
@@ -18,7 +21,9 @@ const DRAFTS: i32 = 3;
 const CONTEXT_MARGIN: usize = 512;
 const HEADER_WORDS: usize = 13;
 const LAYOUT_WORD: usize = 5;
+const TOKENS_WORD: usize = 7;
 const MMX1: u32 = u32::from_le_bytes(*b"MMX1");
+const MMX2: u32 = u32::from_le_bytes(*b"MMX2");
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -31,6 +36,16 @@ struct Cycle {
     logits: Vec<u32>,
     drafts: u64,
     hits: u64,
+}
+
+fn payload_header(path: &Path) -> Result<[u32; HEADER_WORDS]> {
+    let mut raw = [0u8; HEADER_WORDS * 4];
+    std::fs::File::open(path)?.read_exact(&mut raw)?;
+    let mut words = [0u32; HEADER_WORDS];
+    for (word, bytes) in words.iter_mut().zip(raw.chunks_exact(4)) {
+        *word = u32::from_le_bytes(bytes.try_into()?);
+    }
+    Ok(words)
 }
 
 fn logits(session: &Session<'_>, vocab: usize) -> Result<Vec<u32>> {
@@ -147,10 +162,20 @@ fn preserve_probe(
 }
 
 fn main() -> Result<()> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let legacy_fixture = if let Some(i) = args.iter().position(|s| s == "--legacy-fixture") {
+        if i < 4 || i + 1 >= args.len() {
+            return Err("--legacy-fixture requires a path after MODE".into());
+        }
+        let path = std::path::PathBuf::from(args.remove(i + 1));
+        args.remove(i);
+        Some(path)
+    } else {
+        None
+    };
     if !(4..=6).contains(&args.len()) {
         return Err(
-            "usage: minimax_state MODEL PROMPT_FILE OUTPUT_DIR MODE [PREFIX] [OUTPUT_TOKENS]"
+            "usage: minimax_state MODEL PROMPT_FILE OUTPUT_DIR MODE [PREFIX] [OUTPUT_TOKENS] [--legacy-fixture PATH]"
                 .into(),
         );
     }
@@ -163,8 +188,12 @@ fn main() -> Result<()> {
         return Err("set DS4_MINIMAX_DSPARK_GATE=0 for deterministic draft cycles".into());
     }
     // Native getenv treats even an empty value or "0" as disabled.
-    if std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some() {
-        return Err("unset DS4_MTP_SPEC_DISABLE; disabled drafting makes this gate vacuous".into());
+    for name in ["DS4_MTP_SPEC_DISABLE", "DS4_MINIMAX_DSPARK_NOCTX"] {
+        if std::env::var_os(name).is_some() {
+            return Err(
+                format!("unset {name}; disabled drafting or context makes this gate vacuous").into(),
+            );
+        }
     }
     let prefix: usize = args
         .get(4)
@@ -178,6 +207,12 @@ fn main() -> Result<()> {
         .unwrap_or(OUTPUT_TOKENS);
     if prefix < 2 || count < (DRAFTS + 1) as usize {
         return Err("prefix needs at least 2 tokens and output needs at least 4".into());
+    }
+    if let Some(path) = &legacy_fixture {
+        let h = payload_header(path)?;
+        if h[LAYOUT_WORD] != MMX1 || h[TOKENS_WORD] as usize != prefix {
+            return Err("legacy fixture must be MMX1 with the requested PREFIX".into());
+        }
     }
     let context = i32::try_from(
         prefix
@@ -209,20 +244,32 @@ fn main() -> Result<()> {
         return Err("corpus does not provide distinct contamination history".into());
     }
     let b = TokenBuffer::from_tokens(b);
-    let payload = out.join("a.payload.bin");
+    let from_legacy = matches!(mode, Mode::Legacy) && legacy_fixture.is_some();
+    let payload = if from_legacy {
+        legacy_fixture.clone().unwrap()
+    } else {
+        out.join("a.payload.bin")
+    };
     let mut snapshot = SessionSnapshot::new()?;
     let mut session = model.session(context)?;
     session.sync(&TokenBuffer::from_tokens(a.clone()))?;
     let frontier = logits(&session, model.vocab().n_vocab() as usize)?;
+    if from_legacy {
+        // Preserve the original fixture bytes. The snapshot derived from it
+        // tests the current writer's empty-context representation as well.
+        session.load_payload(&payload)?;
+        same_prefix(&session, &a, &frontier)?;
+    }
     session.save_snapshot(&mut snapshot)?;
-    session.save_payload(&payload)?;
-    let mut header = [0u8; HEADER_WORDS * 4];
-    std::fs::File::open(&payload)?.read_exact(&mut header)?;
-    let layout = u32::from_le_bytes(header[LAYOUT_WORD * 4..LAYOUT_WORD * 4 + 4].try_into()?);
+    if !from_legacy {
+        session.save_payload(&payload)?;
+    }
+    let layout = payload_header(&payload)?[LAYOUT_WORD];
     if matches!(mode, Mode::Legacy) && layout != MMX1 {
-        return Err(
-            "legacy mode requires a writer producing MMX1; no guessed format conversion".into(),
-        );
+        return Err("legacy mode requires MMX1; use --legacy-fixture from the old writer".into());
+    }
+    if matches!(mode, Mode::Preserve) && layout != MMX2 {
+        return Err("preserve mode requires the MMX2 draft-context layout".into());
     }
     let baseline = match mode {
         Mode::Legacy => {
@@ -270,8 +317,38 @@ fn main() -> Result<()> {
         fresh.load_snapshot(&snapshot)?;
         rows.push(probe(&mut fresh, "fresh_snapshot")?);
     }
+    let mut legacy_control = None;
+    if let (Mode::Preserve, Some(path)) = (mode, &legacy_fixture) {
+        let mut legacy = model.session(context)?;
+        legacy.load_payload(path)?;
+        same_prefix(&legacy, &a, &frontier)?;
+        // The codec gate proves target bytes; this control additionally checks
+        // the real old fixture against A before ordinary decode. It avoids a
+        // second independent prefill while retaining an uninterrupted MTP base.
+        let first = legacy.argmax();
+        legacy.eval(first)?;
+        let expected = Cycle {
+            tokens: vec![first],
+            logits: logits(&legacy, frontier.len())?,
+            drafts: 0,
+            hits: 0,
+        };
+        legacy_control = Some(summary(std::slice::from_ref(&expected)));
+        contaminate(&mut legacy, &b)?;
+        legacy.load_payload(path)?;
+        same_prefix(&legacy, &a, &frontier)?;
+        rows.push(legacy_probe(&mut legacy, &model, "legacy_contaminated_payload", &expected)?);
+        drop(legacy);
+        let mut fresh = model.session(context)?;
+        fresh.load_payload(path)?;
+        same_prefix(&fresh, &a, &frontier)?;
+        rows.push(legacy_probe(&mut fresh, &model, "legacy_fresh_payload", &expected)?);
+    }
     let pass = rows.iter().all(|r| r["pass"] == true);
     let report = json!({"pass":pass, "mode":args[3], "prefix":prefix, "context":context,
+        "legacy_fixture":legacy_fixture, "payload_layout":format!("{layout:08x}"),
+        "legacy_control":legacy_control,
+        "legacy_control_source":"ordinary decode after MMX1 restore, full frontier and tokens checked against A",
         "baseline":summary(&baseline), "cases":rows});
     std::fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
     if !pass {

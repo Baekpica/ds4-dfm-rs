@@ -157,9 +157,19 @@ keys to decide what attention reads, so:
 A slot table steers the K/V store and attention kernels; the resident tier
 passes none. Both tiers run the same kernels on the same bytes, so logits do
 not depend on the tier (64K frontier logits, greedy tokens and cycles
-byte-identical, below). Snapshots (`MMX1`: tokens, logits, index keys, whole
-pages) have one layout across tiers; the SSD tier moves pages through its
-file, and a cross-bank fork copies file ranges.
+byte-identical, below). Snapshots share the target layout across tiers:
+tokens, logits, index keys and whole pages. `MMX1` carries only that target
+state; `MMX2` additionally stores up to 4,096 committed rows per DSpark
+layer (40 MiB). Legacy restores invalidate draft history until ordinary
+steps refill it. Target-only sessions also accept MMX2. The SSD tier moves
+pages through its file, and a cross-bank fork copies file ranges.
+
+SSD-tier session snapshots use private unlinked files in the configured KV
+directory, with space reserved before saving. Completed layer spans and
+64 MiB final KV-envelope copy windows are flushed and discarded from page
+cache. This removes a whole-payload heap copy; cache advice is not a hard
+memory bound. Current validation and the open live MMX2 gate are recorded
+in the [2026-10-25 report](benchmarks/minimax-vq-2026-10-25/README.md).
 
 GB10's NVMe (`O_DIRECT`, measured; see [gb10-hardware.md](gb10-hardware.md)): 6.3 GB/s sequential, 6.2 GB/s for
 72 KB random reads at eight in flight (84K IOPS, ~95 µs per wave), 512-byte

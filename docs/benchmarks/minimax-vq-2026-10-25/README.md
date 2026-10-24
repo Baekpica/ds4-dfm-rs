@@ -1,8 +1,9 @@
 # MiniMax VQ: 64K optimization and serving qualification
 
-Work in progress. The target is at least 1,000 tok/s incremental prefill and
-22 tok/s decode throughout the 2K–64K sweep, with reliable serving toward
-the native 1M context. The baseline below does not meet that target.
+Work in progress. The final goal is reliable serving at the native
+1,048,576-token context. At least 1,000 tok/s incremental prefill and
+22 tok/s decode throughout the 2K–64K sweep are intermediate targets.
+The baseline below does not meet those targets.
 
 ## Fresh baseline
 
@@ -86,3 +87,59 @@ The user reset the graphics clock range to 300–2200 MHz after this baseline
 (on 2026-10-25 at about 00:26 KST). Subsequent comparisons must use fresh
 matched processes under that setting and retain observed clocks. The older
 2.4–2.6 GHz results do not establish a code-only speed difference.
+
+## Bounded snapshots and draft context
+
+The new MMX2 payload appends at most 4,096 committed BF16 K/V rows for
+each of the five draft layers: 40 MiB total. It excludes pending trial rows,
+preserves the ring's chronological order across wrap, and accepts MMX1
+with an empty draft history. Target-only sessions consume the MMX2 tail
+without allocating a drafter.
+
+An SSD-tier `SessionSnapshot` now uses a private, unlinked file in the
+configured KV directory. It reserves space before saving and flushes and
+discards completed layer spans; it no longer allocates a whole payload
+on the heap (about 37.97 GiB at 1M). Final Rust KV-envelope staging also
+flushes and discards completed 64 MiB destination windows. Cache discard
+is advisory, so bounded host pressure still needs live measurement.
+
+Model-free codec tests passed for ring wrap, legacy/target-only restore,
+invalid headers and lengths, interrupted I/O and nonseekable streams.
+File ownership/error tests and exact large-envelope copy/cleanup tests
+passed. The combined 8K live MMX2 gate did **not** reach inference; the
+loading incident below leaves live state preservation unqualified.
+
+## Loading pressure on 2026-10-25
+
+After the native build, the next load stalled around 78–84 GiB of copied
+weights, before graph/KV allocation. Host available memory remained
+30–36 GiB while PSI full reached 81%. The scope's high/max/OOM counters
+stayed zero. `systemd-oomd` killed a separate tmux scope and repeatedly
+killed Hermes; the task's model was then stopped, exit 75. Hermes restarted
+automatically. This is a failed load, not a state or performance result.
+
+The run used `--psi-full-limit 0`; recording pressure without acting on it
+did not protect other user scopes. Subsequent MiniMax qualification uses
+`--psi-full-limit 20` with the existing 4 GiB reserve/trip floor. The saved
+trace crosses 20% about 26 seconds before the first collateral kill.
+The historical baseline command above is retained as provenance, not the
+current launch policy.
+
+Current boot has `kho=off`, `CmaTotal=0` and `CmaFree=0`. The driver caches
+freed GPU pages as kernel-reclaimable memory; allocation/compaction remains
+under investigation. CUDA reports both minimum and recommended VMM
+granularity as 2 MiB, so changing that query alone cannot fix this load.
+No model precision, context limit, clock, kernel or service policy was changed.
+
+An allocation-only VMM reproducer subsequently isolated the stall from
+model validation, file reads and inference. With 1 GiB allocations, creation
+took 20.6 ms at 100 GiB, 862 ms at 102 GiB and 1,330 ms at 103 GiB.
+At the last point, 15.21 GiB remained available but the Normal zone had only
+one free 2 MiB block and none larger. The final allocation added 592
+compaction stalls and 325 failed compactions. The probe stopped at its
+one-second allocation limit and released every allocation; maximum PSI
+was 7.97%, with no new collateral service kills.
+
+This reproduces contiguous-block exhaustion and compaction before total
+RAM exhaustion. The probe began with 87.08 GiB of cached driver pages;
+it does not establish a reliable cold load or justify changing the recipe.

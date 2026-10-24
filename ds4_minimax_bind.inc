@@ -61,6 +61,33 @@ static bool minimax_banks_enabled(void) { return true; }
 // context scores 512 rows at a time); a decode row needs 128 KiB at 1M.
 static const uint64_t MINIMAX_SCORE_BUDGET = 64ull << 20;
 
+/* minimax_indexer uses raw Q8 in both mm_q8_gemv (decode/verify) and
+ * ds4_mmq_q8_0_dense_pair (prefill). Its aligned replicas are never read.
+ * Keep DSpark and every unrecognized shape on the common artifact path. */
+static bool minimax_raw_index_q(const ds4_tensor *t) {
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MINIMAX_VQ ||
+        t->type != DS4_TENSOR_Q8_0 || t->ndim != 2 ||
+        t->dim[0] != MINIMAX_EMBD || t->dim[1] != MINIMAX_IQ) { return false; }
+    uint64_t bytes = 0;
+    if (!tensor_nbytes(DS4_TENSOR_Q8_0, (uint64_t)MINIMAX_EMBD * MINIMAX_IQ, &bytes) ||
+        t->bytes != bytes) { return false; }
+    for (uint32_t il = 0; il < MINIMAX_LAYERS; il++) {
+        char name[96];
+        snprintf(name, sizeof(name), "language_model.model.layers.%u.self_attn.index_q_proj.weight", il);
+        if (ds4_streq(t->name, name)) { return true; }
+    }
+    return false;
+}
+
+static void minimax_catalog(const ds4_model *m) {
+    if (!m->tensor_traits) { return; }
+    for (uint64_t i = 0; i < m->n_tensors; i++) {
+        if (minimax_raw_index_q(&m->tensors[i])) {
+            m->tensor_traits[i] &= (uint8_t)~DS4_TCAT_ARTIFACT_ADDITIVE;
+        }
+    }
+}
+
 static void minimax_bind_experts(ds4_minimax_layer *e, const ds4_model *m, uint32_t il) {
     e->book = minimax_tensor(m, il, "block_sparse_moe.vq_codebook");
     tensor_expect_layout(e->book, DS4_TENSOR_GLM_BOOK, 2, 8, 8192, 0);
@@ -180,6 +207,7 @@ static void minimax_bind(ds4_weights *w, const ds4_model *m) {
     for (uint32_t il = 0; il < MINIMAX_LAYERS; il++) {
         minimax_bind_layer(&w->layer[il], &w->minimax[il], m, il);
     }
+    minimax_catalog(m);
     w->minimax_draft = minimax_bind_draft(m);
     // The embedding part is mapped last (Rust release order).
     w->token_embd = required_tensor(m, "language_model.model.embed_tokens.weight");

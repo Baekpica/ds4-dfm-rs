@@ -51645,6 +51645,8 @@ static void payload_set_err(char *err, size_t errlen, const char *msg) {
     if (errlen != 0) snprintf(err, errlen, "%s", msg);
 }
 
+#include "ds4_snapshot.inc"
+
 static bool payload_u64_add(uint64_t *value, uint64_t add) {
     if (!value || add > UINT64_MAX - *value) return false;
     *value += add;
@@ -57133,6 +57135,8 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
         payload_set_err(err, errlen, "invalid session snapshot save");
         return 1;
     }
+    // A failed overwrite must not expose the previous lineage as current.
+    snap->len = 0;
     if (s->distributed) {
         payload_set_err(err, errlen, "distributed session snapshots are not supported yet");
         return 1;
@@ -57146,6 +57150,23 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
         payload_set_err(err, errlen, "session snapshot is too large for this platform");
         return 1;
     }
+#if defined(__linux__) && !defined(DS4_NO_GPU)
+    if (ds4_session_is_minimax(s) && s->minimax_graph.kv.spill) {
+        char dir[PATH_MAX];
+        if (minimax_kv_dir(dir, sizeof(dir))) {
+            payload_set_err(err, errlen, "invalid SSD session snapshot directory");
+            snapshot_release(snap);
+            return 1;
+        }
+        if (snapshot_file_open(snap, dir, bytes, err, errlen)) { return 1; }
+        if (ds4_session_save_payload(s, snap->file, err, errlen)) {
+            snapshot_release(snap);
+            return 1;
+        }
+        return snapshot_file_finish(snap, bytes, err, errlen);
+    }
+#endif
+    if (snap->file) { snapshot_release(snap); }
     /* fmemopen appends a NUL on flush. Keep it outside the binary payload,
      * otherwise a full buffer loses the last byte of convolution/MTP state. */
     const uint64_t capacity = bytes + 1u;
@@ -57175,7 +57196,7 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
 }
 
 int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, char *err, size_t errlen) {
-    if (!s || !snap || !snap->ptr || snap->len == 0) {
+    if (!s || !snap || (!snap->ptr && !snap->file) || snap->len == 0) {
         payload_set_err(err, errlen, "invalid session snapshot load");
         return 1;
     }
@@ -57188,13 +57209,24 @@ int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, 
         return 1;
     }
 
-    FILE *fp = fmemopen((void *)snap->ptr, (size_t)snap->len, "rb");
+    FILE *fp = snap->file;
+    if (fp) {
+        struct stat st;
+        clearerr(fp);
+        if (fstat(fileno(fp), &st) != 0 || st.st_size < 0 || (uint64_t)st.st_size != snap->len ||
+                fseeko(fp, 0, SEEK_SET) != 0) {
+            payload_set_err(err, errlen, "invalid SSD session snapshot backing");
+            return 1;
+        }
+    } else {
+        fp = fmemopen((void *)snap->ptr, (size_t)snap->len, "rb");
+    }
     if (!fp) {
         payload_set_err(err, errlen, "failed to open memory stream for session snapshot restore");
         return 1;
     }
     const int rc = ds4_session_load_payload(s, fp, snap->len, err, errlen);
-    if (fclose(fp) != 0 && rc == 0) {
+    if (!snap->file && fclose(fp) != 0 && rc == 0) {
         payload_set_err(err, errlen, "failed to close memory session snapshot");
         return 1;
     }
@@ -57203,8 +57235,7 @@ int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, 
 
 void ds4_session_snapshot_free(ds4_session_snapshot *snap) {
     if (!snap) return;
-    free(snap->ptr);
-    memset(snap, 0, sizeof(*snap));
+    snapshot_release(snap);
 }
 
 void ds4_engine_dump_tokens(ds4_engine *e, const ds4_tokens *tokens) {
@@ -73405,25 +73436,28 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         {
             if (!load_slice && !opt->ssd_streaming) {
                 int built = 0;
-                if (e->model.split_count > 1u &&
+                if ((e->model.split_count > 1u || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) &&
                     e->model.n_tensors <= UINT32_MAX) {
                     ds4_gpu_tensor_record *records =
                         xcalloc((size_t)e->model.n_tensors, sizeof(*records));
+                    uint32_t count = 0;
                     for (uint64_t i = 0; i < e->model.n_tensors; i++) {
                         const ds4_tensor *t = &e->model.tensors[i];
-                        records[i].name = t->name.ptr;
-                        records[i].name_len = (uint32_t)t->name.len;
-                        records[i].type = t->type;
-                        records[i].ndim = t->ndim;
+                        // Omit only the unused derived copy; raw map/binding stay intact.
+                        if (minimax_raw_index_q(t)) { continue; }
+                        ds4_gpu_tensor_record *r = &records[count++];
+                        r->name = t->name.ptr;
+                        r->name_len = (uint32_t)t->name.len;
+                        r->type = t->type;
+                        r->ndim = t->ndim;
                         for (uint32_t d = 0; d < t->ndim && d < 8u; d++) {
-                            records[i].dims[d] = t->dim[d];
+                            r->dims[d] = t->dim[d];
                         }
-                        records[i].offset = t->abs_offset;
-                        records[i].bytes = t->bytes;
+                        r->offset = t->abs_offset;
+                        r->bytes = t->bytes;
                     }
                     built = ds4_gpu_build_derived_artifacts_from_records(
-                            e->model.map, e->model.size, records,
-                            (uint32_t)e->model.n_tensors);
+                            e->model.map, e->model.size, records, count);
                     free(records);
                 } else {
                     built = ds4_gpu_build_derived_artifacts(e->model.map,

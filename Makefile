@@ -841,6 +841,14 @@ ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_m
 ds4.o ds4_cuda_test_hooks.o: ds4_ds41_kvreuse.inc
 
 ds4.o ds4_cpu.o ds4_cuda_test_hooks.o: native/bridge/ds4_host_load.h native/bridge/ds4_named_map.inc
+ds4.o ds4_cpu.o ds4_cuda_test_hooks.o: ds4_snapshot.inc
+
+tests/test_snapshot_backing: tests/test_snapshot_backing.c ds4_snapshot.inc ds4.h
+	$(CC) $(CFLAGS) -Werror -o $@ $<
+
+.PHONY: test-snapshot-backing
+test-snapshot-backing: tests/test_snapshot_backing
+	./tests/test_snapshot_backing
 
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_cli.c
@@ -2234,6 +2242,14 @@ tests/test_minimax_mma8w: tests/test_minimax_mma8w.cu cuda/minimax_mma8w.cuh cud
 tests/test_minimax_decode: tests/test_minimax_decode.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
+tests/test_minimax_artifacts: tests/test_minimax_artifacts.c ds4.c ds4.h ds4_minimax.h ds4_minimax_bind.inc ds4_model_catalog.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-minimax-artifacts
+test-minimax-artifacts: tests/test_minimax_artifacts
+	./tests/test_minimax_artifacts
+
 .PHONY: test-minimax-mma8w
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
@@ -2304,9 +2320,17 @@ ds4.o ds4_cpu.o: $(BEAM_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_beam.h ds4_beam_gpu.cuh cuda/beam_mma8w.cuh
 MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_minimax_graph.inc \
 	ds4_minimax_payload.inc ds4_minimax_session.inc ds4_minimax_batch.inc ds4_minimax_bank_payload.inc \
-	ds4_minimax_draft.inc
+	ds4_minimax_draft.inc ds4_minimax_vision.inc
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/glm_vq_ops.cuh
+
+tests/test_minimax_payload: tests/test_minimax_payload.c ds4.c ds4.h ds4_gpu.h ds4_snapshot.inc $(MINIMAX_NATIVE_DEPS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-minimax-payload
+test-minimax-payload: tests/test_minimax_payload
+	./tests/test_minimax_payload
 
 tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
 	$(CC) $(CFLAGS) -Werror -o $@ $<
@@ -2789,7 +2813,8 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
-	rm -f tests/test_glm_vq_mtp_mode
+	rm -f tests/test_snapshot_backing
+	rm -f tests/test_glm_vq_mtp_mode tests/test_minimax_artifacts tests/test_minimax_payload
 	rm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate
 	rm -f tests/test_glm_vq_kv tests/test_glm_vq_kv.o
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared

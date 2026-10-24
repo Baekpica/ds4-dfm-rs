@@ -274,6 +274,7 @@ typedef struct {
     uint8_t *ptr;
     uint64_t len;
     uint64_t cap;
+    FILE *file; /* SSD-tier backing; ptr/cap stay empty when set. */
 } ds4_session_snapshot;
 
 typedef struct {

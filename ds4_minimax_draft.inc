@@ -20,7 +20,7 @@
  * rewritten before any read, ring rows of rejected positions are rewritten
  * by the next trial's block before attention reads them, and the context
  * window starts at `draft_first`, the lowest position this lineage has
- * written (a restore or a cross-bank copy brings no context rows). */
+ * written (a legacy restore or a cross-bank copy brings no context rows). */
 
 enum { MINIMAX_DRAFT_RING = MINIMAX_DRAFT_WINDOW + MINIMAX_DRAFT_BLOCK + 1, MINIMAX_DRAFT_FC_ROWS = 256,
        MINIMAX_DRAFT_CHUNKS = (MINIMAX_DRAFT_RING + MINIMAX_BLOCK - 1) / MINIMAX_BLOCK };
@@ -37,6 +37,75 @@ struct minimax_draft_rt {
     int trial[MINIMAX_DRAFT_BLOCK + 1];
     double draft_ms, verify_ms;
 };
+
+static bool minimax_draft_payload_ready(const minimax_draft_rt *d) {
+    if (!d) { return false; }
+    const uint64_t bytes = (uint64_t)MINIMAX_DRAFT_RING * MINIMAX_KV * sizeof(uint16_t);
+    for (uint32_t l = 0; l < MINIMAX_DRAFT_LAYERS; l++) {
+        if (!d->ring_k[l] || !d->ring_v[l] || ds4_gpu_tensor_bytes(d->ring_k[l]) != bytes ||
+            ds4_gpu_tensor_bytes(d->ring_v[l]) != bytes) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool minimax_draft_committed(const minimax_draft_rt *d) {
+    return d && !d->trial_n && minimax_draft_payload_ready(d);
+}
+
+static void minimax_draft_clear_trial(minimax_draft_rt *d) {
+    if (!d) { return; }
+    d->trial_n = d->trial_pos = 0;
+    d->draft_ms = d->verify_ms = 0.0;
+    memset(d->trial, 0, sizeof(d->trial));
+}
+
+/* One chronological span has at most two physical segments. Serialized
+ * rows are BF16 bytes: this changes neither values nor arithmetic. */
+static int minimax_draft_payload_ring(minimax_payload_dir dir, FILE *fp, ds4_gpu_tensor *ring,
+        uint32_t first, uint32_t rows, uint8_t *buf, uint64_t *left, char *err, size_t errlen) {
+    const uint64_t row = (uint64_t)MINIMAX_KV * sizeof(uint16_t);
+    uint32_t slot = first % MINIMAX_DRAFT_RING;
+    while (rows) {
+        const uint32_t count = rows < MINIMAX_DRAFT_RING - slot ? rows : MINIMAX_DRAFT_RING - slot;
+        const int rc = dir == MINIMAX_PAYLOAD_LOAD
+            ? payload_read_tensor_span(fp, ring, slot * row, count * row, buf, DS4_SESSION_IO_CHUNK, left, err, errlen)
+            : payload_write_tensor_span(fp, ring, slot * row, count * row, buf, DS4_SESSION_IO_CHUNK, err, errlen);
+        if (rc) { return rc; }
+        rows -= count;
+        slot = 0;
+    }
+    return 0;
+}
+
+static int minimax_draft_payload(minimax_payload_dir dir, FILE *fp, minimax_draft_rt *d,
+        uint32_t n, uint32_t rows, uint8_t *buf, uint64_t *left, char *err, size_t errlen) {
+    if (rows > n || rows > MINIMAX_DRAFT_WINDOW || (rows && d && !minimax_draft_payload_ready(d)) ||
+        (rows && !d && dir == MINIMAX_PAYLOAD_SAVE)) {
+        payload_set_err(err, errlen, "invalid MiniMax draft snapshot rows or rings");
+        return 1;
+    }
+    if (!rows) { return 0; }
+    const off_t start = ftello(fp);
+    if (!d) {
+        // A target-only session can restore MMX2 without allocating a drafter.
+        uint64_t bytes = minimax_payload_draft_bytes(rows);
+        while (bytes) {
+            const uint64_t chunk = bytes < DS4_SESSION_IO_CHUNK ? bytes : DS4_SESSION_IO_CHUNK;
+            if (payload_read_bytes(fp, buf, chunk, left, err, errlen)) { return 1; }
+            bytes -= chunk;
+        }
+    } else {
+        for (uint32_t l = 0; l < MINIMAX_DRAFT_LAYERS; l++) {
+            if (minimax_draft_payload_ring(dir, fp, d->ring_k[l], n - rows, rows, buf, left, err, errlen) ||
+                minimax_draft_payload_ring(dir, fp, d->ring_v[l], n - rows, rows, buf, left, err, errlen)) { return 1; }
+        }
+    }
+    if (start < 0) { return 0; } // Advisory trim requires a seekable stream.
+    return snapshot_io_trim(fp, (uint64_t)start,
+        dir == MINIMAX_PAYLOAD_LOAD ? SNAPSHOT_IO_READ : SNAPSHOT_IO_WRITE, err, errlen);
+}
 
 static ds4_gpu_tensor *minimax_draft_vlogits(minimax_draft_rt *d) { return d->vlogits; }
 
@@ -303,8 +372,8 @@ int ds4_session_minimax_trial(ds4_session *s, int first, int max_tokens, int *to
     if (n > (uint32_t)cap) { n = (uint32_t)cap; }
     if (n > (uint32_t)s->engine->mtp_draft_tokens + 1u) { n = (uint32_t)s->engine->mtp_draft_tokens + 1u; }
     if (n > MINIMAX_DRAFT_BLOCK + 1u) { n = MINIMAX_DRAFT_BLOCK + 1u; }
-    // The block's seven rows and the verify rows must fit; a restore brings no
-    // context rows, so ordinary steps refill the rings until the block has one.
+    // The block's seven rows and the verify rows must fit. A legacy restore
+    // needs an ordinary step to refill context before the block can draft.
     if (n < 2u || g->ctx_cap - g->position < MINIMAX_DRAFT_BLOCK + 1u || g->position <= g->draft_first) { return 0; }
     const uint32_t start = g->position;
     tokens[0] = first;
