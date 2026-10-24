@@ -191,6 +191,23 @@ layers, the 0.69 GB head and one Markov GEMV per proposal) plus the verify
 forward, whose routed experts grow with every row. Two or three proposals
 are the useful range on GB10.
 
+A verify of four rows costs ~2.4 decodes (8K: ~117 ms against 49.6): the
+routed experts run row by row (73 ms) and the Q4_K GEMVs at four tokens
+take 1.5x one token's time. So DSpark only pays while a trial keeps more
+than ~2.6 tokens, which raw prose often does not: the 2K-64K sweep decoded
+10.7-26.5 tok/s per frontier against ~19 plain. The session therefore
+gates drafting on measured rates (`crates/ds4-core/src/minimax_mtp.rs`):
+EWMAs of each trial's kept tokens per second and of plain decodes; after
+two trials it probes plain decoding once, and while drafting runs slower
+it decodes plainly for 16 tokens before measuring again. The rates survive
+snapshot restores. Greedy output is the same either way
+(`DS4_MINIMAX_DSPARK_GATE=0` always drafts). In the 2K–64K sweep the gate
+moved the mean decode from 18.65 to 19.56 tok/s (three runs each); a
+frontier-perfect choice would reach ~21. A batched verify over the rows' expert union (each row's one-row
+arithmetic) read fewer bytes but ran no faster: beside the 66 KiB books
+shared memory holds two 6,144-wide input rows, and the rest from L1 left
+it latency-bound (21.1 against 24.5 tok/s row by row).
+
 ## Performance
 
 One GB10 (`sm_121a`, CUDA 13.4, driver 615.71.10, SM clock 2.41-2.59 GHz
@@ -248,7 +265,10 @@ through AIO; and the host argmax lost a 0.53 ms dependency chain that
 `-ffast-math` had made of it (most of the idle time between tokens). An 8K
 token now takes ~49.6 ms against ~42 ms for its ~10.2 GB at ~240 GB/s:
 Q4_K GEMVs ~27.9 ms (~230 GB/s), routed experts ~15 ms (~210 GB/s), the
-short kernels ~6 ms. Past 128K plain decode is bounded by the index keys
+short kernels ~6 ms. The expert kernels stream at 86-94% of GB10's
+measured streaming read in `tests/test_minimax_decode` (R13 gate/up 142
+us, down 77 us per layer); an L2 prefetch of each warp's next task ran
+slower. Past 128K plain decode is bounded by the index keys
 (72 bytes per token and layer, 4.5 GB per token at 1M) and the SSD tier's
 misses (~350 per token at 256K, ~13 ms through AIO), so 20 tok/s there
 takes DSpark.
@@ -338,5 +358,6 @@ temperature 1.0, top-p 0.95).
 | `DS4_MINIMAX_SCORE_TILED=1` | the tiled SIMT block scorer at every width |
 | `DS4_MINIMAX_VERIFY_CHECK=1` | re-run each DSpark verify row as a decode and print the logit difference |
 | `DS4_MINIMAX_DSPARK_MARKOV=0` | DSpark proposals without the Markov bias |
+| `DS4_MINIMAX_DSPARK_GATE=0` | draft on every step (no rate gate) |
 | `DS4_MINIMAX_DSPARK_NOCTX=1` | DSpark block attends to itself only (no context window) |
 | `DS4_MINIMAX_DSPARK_TAP=entry\|norm` | tap the residual entering the tap layers, or the normed output |

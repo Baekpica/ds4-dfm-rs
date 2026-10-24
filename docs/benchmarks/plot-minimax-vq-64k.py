@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Render the MiniMax-M3.1-Flash VQ 2K-64K sweep in the model-card style.
 
-Three fresh ds4-bench processes with the DSpark drafter (draft 3). Requires
-matplotlib 3.11.
-usage: plot-minimax-vq-64k.py [DATA_DIR]   (default: the latest sweep)
+Three fresh ds4-bench processes with the DSpark drafter (draft 3); an
+optional earlier sweep is drawn dashed. Requires matplotlib 3.11.
+usage: plot-minimax-vq-64k.py [DATA_DIR [BEFORE_DIR BEFORE_LABEL]]
 """
 import csv
 import json
@@ -17,8 +17,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("minimax-vq-spark-64k-2026-10-24")
-DATE = DATA.name[-10:]
+DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("minimax-vq-spark-64k-2026-10-24-gate")
+BEFORE = (Path(sys.argv[2]), sys.argv[3]) if len(sys.argv) > 3 else None
+DATE = "2026-10-24"
 FRONTIERS = list(range(2048, 65537, 2048))
 GENERATED = 128
 NAME, COLOR, LABEL = "dspark3", "#087f8c", "DSpark draft 3"
@@ -26,8 +27,8 @@ RUNS = len(list(DATA.glob(f"{NAME}-*.csv")))
 METRICS = (("prefill_tps", "Incremental prefill"), ("gen_tps", "Decode"))
 
 
-def load(repeat):
-    with (DATA / f"{NAME}-{repeat}.csv").open() as source:
+def load(repeat, data=DATA):
+    with (data / f"{NAME}-{repeat}.csv").open() as source:
         rows = list(csv.DictReader(source))
     assert [int(row["ctx_tokens"]) for row in rows] == FRONTIERS
     assert all(int(row["prefill_tokens"]) == 2048 and int(row["gen_tokens"]) == GENERATED for row in rows)
@@ -50,7 +51,7 @@ def summarize(runs):
     return {"frontiers": FRONTIERS, "generated_tokens": GENERATED, "variants": {NAME: variant}}
 
 
-def plot(report):
+def plot(report, before=None):
     plt.rcParams.update({"font.size": 11, "axes.spines.top": False,
                          "axes.spines.right": False, "savefig.facecolor": "white"})
     fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
@@ -64,6 +65,10 @@ def plot(report):
             ax.fill_between(x, data["min"], data["max"], color=COLOR, alpha=0.17, linewidth=0)
         ax.plot(x, data["median"], color=COLOR, linewidth=2,
                 label=f"{LABEL} · {data['median_run_mean']:,.1f} tok/s")
+        if before:
+            old = before[0]["variants"][NAME][metric]
+            ax.plot(x, old["median"], color="#687789", linewidth=1.3, linestyle="--",
+                    label=f"{before[1]} · {old['median_run_mean']:,.1f} tok/s")
         ax.set_title(heading, loc="left", fontsize=13, pad=10)
         ax.set_ylabel("Tokens / second")
         ax.grid(alpha=0.2)
@@ -97,7 +102,11 @@ def tables(report):
 if __name__ == "__main__":
     report = summarize([load(r) for r in range(1, RUNS + 1)])
     (DATA / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
-    plot(report)
+    before = None
+    if BEFORE:
+        count = len(list(BEFORE[0].glob(f"{NAME}-*.csv")))
+        before = (summarize([load(r, BEFORE[0]) for r in range(1, count + 1)]), BEFORE[1])
+    plot(report, before)
     tables(report)
     v = report["variants"][NAME]
     print(NAME, {m: round(v[m]["median_run_mean"], 2) for m, _ in METRICS})
