@@ -28,4 +28,5 @@
 
 pub mod layout;
 pub mod safetensors;
+pub mod tokenizer;
 pub mod weights;

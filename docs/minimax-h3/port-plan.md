@@ -611,6 +611,28 @@ tensor's first and last 8 bytes from the mapping equal the same offsets read
 with `pread`; a mismatch names the role and exits non-zero. The device route is
 `Weights::span` (path, absolute offset, bytes), the host route `Weights::bytes`.
 
+**P3.2 — The prompt tokenizer.** The byte-level BPE the prompt path needs:
+`minimax_h3::tokenizer` loads `tokenizer.json` under the reference's own spec
+checks (`h3_tokenizer.c:367-477`), reproduces the byte codec (`:560-573`), the
+Qwen2/GPT-2 split (`:705-765`), the merge loop (`:766-818`), added tokens and
+the empty-prompt pad (`:829-877`), and decode with its single-`U+FFFD` fallback
+(`:892-938`). *Gate:* the five vectors of `tests/test_tokenizer.c:38-57` and the
+portable fixture's cases, then a line-by-line diff against `tok_probe.c` over
+the released vocabulary. *Rollback:* additive module, nothing imports it yet.
+
+P3.2 shipped. On the Spark the reference's own test reports `ok: 60 tokenizer
+checks against released Qwen vocabulary`; the port replays the same five vectors
+plus both empty-prompt cases (`TOKENIZER cases=7`) in 0.39 s over the gvfs
+route. A 31-line corpus (CJK, Greek, Cyrillic, Arabic, Hebrew, Korean, emoji,
+astral letters, combining marks, contractions, NBSP, NEL, a roman numeral, a
+superscript, ideographic zero, tabs, added tokens, empty and blank lines)
+encodes identically on both sides: 31/31 lines, `diff` clean. Those code points
+are where the `regex` classes could diverge from ICU; the corpus samples them,
+it does not exhaust the Unicode database.
+
+With VQ deferred, the exact track continues at the text encoder, then the DiT
+graph, then P8's VAEs and CLI; P4-P7 stay parked.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
