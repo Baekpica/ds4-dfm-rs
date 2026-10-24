@@ -2677,7 +2677,8 @@ fn beam_kv_bytes(ctx: u64, native: u32) -> u64 {
 // index key per token and 73,728-byte K/V pages per 128-token block. Past
 // the resident context the pages live on SSD and a pinned pool holds one
 // layer's every block (at least 128 per layer) plus 33 pins per layer, with
-// an int32 slot table per layer and block.
+// an int32 slot table per layer and block and a device stage of up to 1,024
+// blocks for prefill attention.
 fn minimax_kv_bytes(ctx: u64) -> u64 {
     const LAYERS: u64 = 60;
     const PAGE: u64 = 73_728;
@@ -2688,7 +2689,7 @@ fn minimax_kv_bytes(ctx: u64) -> u64 {
         return index + LAYERS * blocks * PAGE;
     }
     let pool = blocks.max(LAYERS * 128) + LAYERS * (u64::from(MINIMAX_NATIVE_MAX) / 128 + 1);
-    index + pool * PAGE + LAYERS * blocks * SIZEOF_I32
+    index + (pool + blocks.min(1024)) * PAGE + LAYERS * blocks * SIZEOF_I32
 }
 
 // C minimax_draft_bytes: BF16 taps of one chunk, the widened fc input
@@ -3450,7 +3451,8 @@ mod tests {
         // Native graph logs: ctx 16384, 2048-row chunks: KV 0.59 GiB,
         // workspace 0.94 GiB; ctx 12288 / 20480, 4096-row chunks: workspace
         // 1.85 / 1.85 GiB. Every layer keeps 648 bytes per token up to 128K;
-        // 1M keeps its 4.22 GiB of index keys and a 0.75 GiB pool.
+        // 1M keeps its 4.22 GiB of index keys, a 0.75 GiB pool and a 0.07 GiB
+        // prefill stage.
         let _tier = EnvGuard::unset(MINIMAX_RESIDENT_CTX_ENV);
         let gib = |b: u64| b as f64 / GIB as f64;
         assert!((gib(minimax_kv_bytes(16384)) - 0.59).abs() < 0.005);
@@ -3460,7 +3462,7 @@ mod tests {
         assert_eq!(minimax_kv_bytes(131_072), 60 * 131_072 * 648);
         assert_eq!(
             minimax_kv_bytes(1 << 20),
-            60 * (1 << 20) * 72 + (8192 + 60 * 33) * 73_728 + 60 * 8192 * 4
+            60 * (1 << 20) * 72 + (8192 + 60 * 33 + 1024) * 73_728 + 60 * 8192 * 4
         );
 
         let s = crate::shape::SHAPE_MINIMAX_VQ;

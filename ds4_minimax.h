@@ -156,6 +156,11 @@ int ds4_gpu_minimax_draft_markov(ds4_gvq_ctx *ctx, ds4_gpu_tensor *logits, uint3
  * table): returns the host address and sets `device` to a tensor over the
  * device alias; free both with ds4_gpu_minimax_host_free. */
 void *ds4_gpu_minimax_host_alloc(uint64_t bytes, ds4_gpu_tensor **device);
+/* Blocks [0, blocks) of a layer's slot `table` from the pinned `pool` into
+ * `stage` (block b at b x 73,728 bytes, the resident tier's layout); blocks
+ * without a slot are skipped. */
+int ds4_gpu_minimax_kv_stage(ds4_gpu_tensor *stage, const ds4_gpu_tensor *pool, const ds4_gpu_tensor *table,
+    uint32_t blocks);
 void ds4_gpu_minimax_host_free(void *host, ds4_gpu_tensor *device);
 
 /* mark records an event on the current stream; mark_wait blocks the host

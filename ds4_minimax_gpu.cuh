@@ -2293,6 +2293,25 @@ extern "C" void *ds4_gpu_minimax_host_alloc(uint64_t bytes, ds4_gpu_tensor **dev
     return host;
 }
 
+// CTA (b, part): part of block b's 73,728 bytes.
+__global__ void mm_kv_stage_kernel(uint4 *stage, const uint4 *pool, const int32_t *table) {
+    constexpr uint32_t WORDS = DS4_MINIMAX_KV_BLOCK / sizeof(uint4);
+    const int32_t slot = table[blockIdx.x];
+    if (slot < 0) { return; }
+    const uint4 *src = pool + (uint64_t)slot * WORDS;
+    uint4 *dst = stage + (uint64_t)blockIdx.x * WORDS;
+    for (uint32_t i = blockIdx.y * blockDim.x + threadIdx.x; i < WORDS; i += gridDim.y * blockDim.x) { dst[i] = src[i]; }
+}
+
+extern "C" int ds4_gpu_minimax_kv_stage(ds4_gpu_tensor *stage, const ds4_gpu_tensor *pool, const ds4_gpu_tensor *table,
+        uint32_t blocks) {
+    if (!stage || !pool || !table || !blocks || stage->bytes < (uint64_t)blocks * DS4_MINIMAX_KV_BLOCK ||
+        table->bytes < (uint64_t)blocks * sizeof(int32_t)) { return 0; }
+    mm_kv_stage_kernel<<<dim3(blocks, 4), 256, 0, ds4_current_stream()>>>((uint4 *)stage->ptr, (const uint4 *)pool->ptr,
+        (const int32_t *)table->ptr);
+    return cuda_ok(cudaGetLastError(), "MiniMax K/V stage");
+}
+
 extern "C" void ds4_gpu_minimax_host_free(void *host, ds4_gpu_tensor *device) {
     if (device) {
         cuda_mem_note_free(device->memc, DS4_MEMD_PINNED_HOST, device->bytes, device->bytes);

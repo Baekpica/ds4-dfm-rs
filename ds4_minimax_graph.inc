@@ -290,6 +290,9 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
     const uint32_t blocks_now = (uint32_t)minimax_blocks(pos + rows);
     const uint64_t score_row = (uint64_t)MINIMAX_KV_HEADS * blocks_now * sizeof(float);
     const uint32_t score_rows = (uint32_t)(g->score_bytes / score_row < rows ? g->score_bytes / score_row : rows);
+    // SSD tier, prefill rows: attention reads the layer's blocks from the
+    // device stage (ds4_minimax_kv.inc), filled after the resolve.
+    const bool staged = g->kv.spill && rows > DS4_MINIMAX_SPLIT_ROWS && blocks_now <= g->kv.stage_blocks;
     if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows, g->norm_q4p) ||
         !minimax_indexer(g, m, l, rows) ||
         // Norms, RoPE, v_proj's BF16 output (prefill projections leave F32
@@ -306,7 +309,9 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
             pos) ||
         !minimax_trace(il, pos, "blocks", g->blocks, (uint64_t)rows * kv_row) ||
         !minimax_resolve(g, il, rows, pos) ||
-        !ds4_gpu_minimax_attn(g->heads, g->q, pages, table, g->blocks, g->partials, rows, pos) ||
+        (staged && !ds4_gpu_minimax_kv_stage(g->kv.stage, pages, table, blocks_now)) ||
+        !ds4_gpu_minimax_attn(g->heads, g->q, staged ? g->kv.stage : pages, staged ? NULL : table, g->blocks,
+            g->partials, rows, pos) ||
         (g->kv.spill && !ds4_gpu_minimax_mark()) ||
         !minimax_trace(il, pos, "heads", g->heads, (uint64_t)rows * MINIMAX_Q * sizeof(float))) {
         return false;

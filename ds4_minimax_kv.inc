@@ -13,7 +13,11 @@
  *   - a prefill chunk long against the history (minimax_kv_streams) reads
  *     the layer's every block instead, without waiting for its selections;
  *   - selective reads (decode, verify, short chunks) go out as one Linux AIO
- *     submission with polled completions (minimax_aio_read).
+ *     submission with polled completions (minimax_aio_read);
+ *   - a prefill forward's attention reads the layer's blocks from a device
+ *     copy (`stage`, up to MINIMAX_STAGE_BLOCKS): its CTAs re-read blocks,
+ *     and reading them in place from pinned host memory made 8K prefill
+ *     attention 26% slower than the resident tier.
  *
  * The pool holds one layer's every block plus a forward's pins, so the
  * union of a prefill chunk's selections always fits. A slot table
@@ -38,6 +42,9 @@ enum {
     MINIMAX_IO_THREADS = 8,
     // File-contiguous blocks per preadv/pwritev.
     MINIMAX_IO_RUN = 32,
+    // Device copy of a prefill layer's blocks: 128K tokens (75.5 MB); longer
+    // histories attend from the pool in place.
+    MINIMAX_STAGE_BLOCKS = 1024,
 };
 
 /* DS4_MINIMAX_KV_RESIDENT_CTX: the largest context whose K/V pages stay
@@ -63,16 +70,22 @@ static uint64_t minimax_pool_slots(uint32_t ctx) {
     return (blocks > MINIMAX_HOT_PAGES ? blocks : MINIMAX_HOT_PAGES) + MINIMAX_PIN_PAGES;
 }
 
+static uint64_t minimax_stage_blocks(uint32_t ctx) {
+    const uint64_t blocks = minimax_blocks(ctx);
+    return blocks < MINIMAX_STAGE_BLOCKS ? blocks : MINIMAX_STAGE_BLOCKS;
+}
+
 // One layer's K/V pages in the resident tier.
 static uint64_t minimax_page_bytes(uint32_t ctx) {
     return minimax_blocks(ctx) * MINIMAX_KV_BLOCK;
 }
 
-// Index keys, then resident pages or the SSD tier's pool and slot table.
+// Index keys, then resident pages or the SSD tier's pool, slot table and
+// prefill stage.
 static uint64_t minimax_kv_bytes(uint32_t ctx) {
     const uint64_t index = (uint64_t)MINIMAX_LAYERS * minimax_index_bytes(ctx);
     if (!minimax_spill(ctx)) { return index + (uint64_t)MINIMAX_LAYERS * minimax_page_bytes(ctx); }
-    return index + minimax_pool_slots(ctx) * MINIMAX_KV_BLOCK +
+    return index + (minimax_pool_slots(ctx) + minimax_stage_blocks(ctx)) * MINIMAX_KV_BLOCK +
         (uint64_t)MINIMAX_LAYERS * minimax_blocks(ctx) * sizeof(int32_t);
 }
 
@@ -103,11 +116,12 @@ typedef struct {
     // Every block below the frontier is pooled (nothing evicted since the
     // sequence started): resolves have nothing to read and are skipped.
     bool complete;
-    uint32_t blocks, slots;
+    uint32_t blocks, slots, stage_blocks;
     uint64_t stamp;
     uint8_t *pool;           // pinned pool, host address
     int32_t *table;          // pinned [layer][block] slot ids, host address
     ds4_gpu_tensor *pool_gpu, *table_gpu, *rows[MINIMAX_LAYERS];
+    ds4_gpu_tensor *stage;   // device copy of a prefill layer's blocks [0, stage_blocks)
     minimax_slot *slot;
     int32_t head, tail;
     uint64_t *seen;
@@ -319,6 +333,7 @@ static void minimax_kv_close(minimax_kv *kv) {
     for (uint32_t il = 0; il < MINIMAX_LAYERS; il++) { free(kv->rows[il]); }
     ds4_gpu_minimax_host_free(kv->pool, kv->pool_gpu);
     ds4_gpu_minimax_host_free(kv->table, kv->table_gpu);
+    ds4_gpu_tensor_free(kv->stage);
     if (kv->fd >= 0) { close(kv->fd); }
     free(kv->slot);
     free(kv->seen);
@@ -346,11 +361,13 @@ static bool minimax_kv_open(minimax_kv *kv, uint32_t ctx) {
     char dir[PATH_MAX];
     kv->pool = ds4_gpu_minimax_host_alloc((uint64_t)kv->slots * MINIMAX_KV_BLOCK, &kv->pool_gpu);
     kv->table = ds4_gpu_minimax_host_alloc(table * sizeof(int32_t), &kv->table_gpu);
+    kv->stage_blocks = (uint32_t)minimax_stage_blocks(ctx);
+    kv->stage = ds4_gpu_tensor_alloc((uint64_t)kv->stage_blocks * MINIMAX_KV_BLOCK);
     kv->slot = calloc(kv->slots, sizeof(*kv->slot));
     kv->seen = calloc(kv->blocks, sizeof(*kv->seen));
     kv->miss = malloc((size_t)kv->blocks * sizeof(*kv->miss));
     kv->all = malloc((size_t)kv->blocks * sizeof(*kv->all));
-    if (!kv->pool || !kv->table || !kv->slot || !kv->seen || !kv->miss || !kv->all ||
+    if (!kv->pool || !kv->table || !kv->stage || !kv->slot || !kv->seen || !kv->miss || !kv->all ||
         minimax_kv_dir(dir, sizeof(dir))) {
         fprintf(stderr, "ds4: MiniMax K/V tier allocation failed\n");
         minimax_kv_close(kv);
@@ -380,8 +397,9 @@ static bool minimax_kv_open(minimax_kv *kv, uint32_t ctx) {
     kv->head = 0;
     kv->tail = (int32_t)kv->slots - 1;
     kv->complete = true;
-    fprintf(stderr, "ds4: MiniMax K/V on SSD: %s, %.2f GiB file, %.2f GiB pinned pool (%u slots)\n", dir,
-        (double)bytes / 1073741824.0, (double)kv->slots * MINIMAX_KV_BLOCK / 1073741824.0, kv->slots);
+    fprintf(stderr, "ds4: MiniMax K/V on SSD: %s, %.2f GiB file, %.2f GiB pinned pool (%u slots), %.2f GiB "
+        "prefill stage\n", dir, (double)bytes / 1073741824.0, (double)kv->slots * MINIMAX_KV_BLOCK / 1073741824.0,
+        kv->slots, (double)kv->stage_blocks * MINIMAX_KV_BLOCK / 1073741824.0);
     return true;
 }
 

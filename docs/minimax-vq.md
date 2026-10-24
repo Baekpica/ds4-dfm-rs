@@ -140,7 +140,14 @@ keys to decide what attention reads, so:
     worker's wake-up and its completion's. Eight random 72 KiB reads of a
     freshly written file took 0.94 ms on the pool, 0.24 ms through AIO (one
     read: ~0.1 ms). A 256K decode settles at ~350 misses per token (~6 per
-    layer, ~13 ms of reads) and went 10.5 -> 14.7 tok/s.
+    layer, ~13 ms of reads) and went 10.5 -> 14.7 tok/s;
+  - a prefill forward's attention reads the layer's blocks from a device
+    copy, filled from the pool after the resolve (up to 1,024 blocks,
+    75.5 MB: 128K tokens; longer histories read the pool in place). Its
+    CTAs re-read each block, and pinned host memory made 8K prefill
+    attention 26% slower than the resident tier. 32K in 2,048-row chunks at
+    a 512K allocation: 912.5 -> 933.8 tok/s (resident: 942.3), logits
+    identical.
 
   The pool holds one layer's every block plus a forward's pins (8,192 +
   1,980 slots, 0.70 GiB at 1M), so a prefill chunk's union of selections
