@@ -110,7 +110,7 @@ typedef struct {
 
 typedef struct {
     double pool, init, lloyd, book, gain, final, residual, write, metrics, total;
-    double assign_s, assign_vec;
+    double assign_s, assign_vec, assign_cmp;
 } enc_times;
 
 typedef struct {
@@ -465,10 +465,20 @@ static int encode_matrix(const float *W, int rows, int cols, const char *name,
         par_run(pool_assign, &pj, nt);
         tm->assign_s += now_s() - ta;
         tm->assign_vec += (double)np;
+        tm->assign_cmp += (double)np * (double)pj.k;
         uj.V = PV; uj.nv = np; uj.idx = pidx; uj.uw = NULL; uj.k = k; uj.nt = nt;
         uj.bookf = out->bookf;
         par_run(update_run, &uj, nt);
         update_reduce(&uj);
+        /* One line per round, so a run that is interrupted still reports the
+         * rate it reached instead of nothing. */
+        if (log && o->iters > 4) {
+            const double el = now_s() - t0;
+            const double cmp = tm->assign_cmp;
+            fprintf(log, "lloyd %2d/%d  %.1fs elapsed  %.0f Mcmp/s  (%.1fs projected)\n",
+                    it + 1, o->iters, el, cmp / el / 1e6, el / (it + 1) * o->iters);
+            fflush(log);
+        }
     }
     tm->lloyd = now_s() - t0;
 
@@ -491,6 +501,7 @@ static int encode_matrix(const float *W, int rows, int cols, const char *name,
         par_run(final_assign, &fj, nt);
         tm->assign_s += now_s() - ta;
         tm->assign_vec += (double)nv;
+        tm->assign_cmp += (double)nv * (double)fj.k;
         gain_job gj = { W, out->bookf, out->idx, rows, cols, colw, out->gainf, out->gain };
         par_run(gain_rows, &gj, nt);
     }
@@ -504,6 +515,7 @@ static int encode_matrix(const float *W, int rows, int cols, const char *name,
         par_run(final_assign, &fj, nt);
         tm->assign_s += now_s() - ta;
         tm->assign_vec += (double)nv;
+        tm->assign_cmp += (double)nv * (double)fj.k;
     }
     tm->final = now_s() - t0;
 
@@ -537,6 +549,7 @@ static int encode_matrix(const float *W, int rows, int cols, const char *name,
             par_run(pool_assign, &pj, nt);
             tm->assign_s += now_s() - ta;
             tm->assign_vec += (double)np;
+            tm->assign_cmp += (double)np * (double)pj.k;
             ruj.V = T; ruj.nv = np; ruj.idx = ridx_pool; ruj.uw = uw; ruj.k = (int)GVR_K;
             ruj.nt = nt; ruj.bookf = rbookf;
             par_run(update_run, &ruj, nt);
@@ -556,7 +569,8 @@ static int encode_matrix(const float *W, int rows, int cols, const char *name,
           const double ta = now_s();
           par_run(res_final_assign, &rj, nt);
           tm->assign_s += now_s() - ta;
-          tm->assign_vec += (double)nv; }
+          tm->assign_vec += (double)nv;
+          tm->assign_cmp += (double)nv * (double)rj.k; }
         acc_free(&ruj, nt);
         free(rbookf); free(T); free(uw); free(ridx_pool);
         tm->residual = now_s() - t0;
@@ -1106,8 +1120,12 @@ static int encode_cmd(int argc, char **argv) {
         fprintf(f, "PROFILE pool=%.3f init=%.3f lloyd=%.3f book=%.3f gain=%.3f final=%.3f residual=%.3f write=%.3f metrics=%.3f total=%.3f\n",
                 tm.pool, tm.init, tm.lloyd, tm.book, tm.gain, tm.final, tm.residual, tm.write,
                 tm.metrics, tm.total);
-        fprintf(f, "RATE assign_vectors=%.0f assign_seconds=%.3f Mvec_per_s=%.3f\n",
-                tm.assign_vec, tm.assign_s, tm.assign_s > 0 ? tm.assign_vec / tm.assign_s / 1e6 : 0.0);
+        /* The work unit is a codeword comparison, not a vector: the stage-1
+         * passes compare against k codewords and the residual's against 256, so
+         * a vector count would mix two costs 32x apart. */
+        fprintf(f, "RATE assign_vectors=%.0f codeword_comparisons=%.0f assign_seconds=%.3f Mcmp_per_s=%.3f\n",
+                tm.assign_vec, tm.assign_cmp, tm.assign_s,
+                tm.assign_s > 0 ? tm.assign_cmp / tm.assign_s / 1e6 : 0.0);
         fprintf(f, "BYTES gvq=%zu gvr=%zu book=%zu rbook=%zu total=%zu bits_per_weight=%.4f\n",
                 wrote, wrote_gvr, gvq_book_bytes(o.k),
                 o.residual ? gvq_book_bytes((int)GVR_K) : (size_t)0,
