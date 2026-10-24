@@ -41,6 +41,11 @@ pub const DELETE_OBJECT: &str = "video.deleted";
 /// `CreateVideoJsonBody.prompt.maxLength` in the reference OpenAPI document.
 pub const MAX_PROMPT_CHARS: usize = 32_000;
 
+/// Decoded `input_reference` limit. The HTTP body cap is 64 MiB; an anchor is
+/// one still image, and the reference's reader has no limit of its own
+/// (`h3_ffmpeg.c:143-160`), so the server states one.
+pub const MAX_ANCHOR_BYTES: usize = 16 * 1024 * 1024;
+
 /// `ListVideos.limit` is `minimum: 0`, `maximum: 100`; the reference states
 /// no default. The bridge uses the common OpenAI page size and names it here.
 pub const MIN_LIST_LIMIT: usize = 0;
@@ -260,6 +265,9 @@ impl VideoSize {
 pub struct ImageRef {
     pub file_id: Option<String>,
     pub image_url: Option<String>,
+    /// A multipart `input_reference` part's own bytes, with the media type its
+    /// filename names. The JSON form carries a data URI instead.
+    pub upload: Option<AnchorImage>,
 }
 
 /// Parsed `CreateVideoJsonBody`, before h3 validation.
@@ -287,6 +295,43 @@ pub struct RenderSpec {
     pub presentation: Presentation,
     pub seconds: String,
     pub frames: u32,
+    /// The anchored first frame, decoded from `input_reference`. The renderers
+    /// place it as the reference's `first_frame` path does (`h3.c:1231-1243`).
+    pub first_frame: Option<AnchorImage>,
+}
+
+/// One anchored image as the wire delivered it: the decoded bytes of a
+/// `data:image/...;base64,` URI and the media type that names their format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorImage {
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+impl AnchorImage {
+    /// The file extension the media type names. FFmpeg's image demuxer picks a
+    /// decoder from the input name, so an anchor without one is refused rather
+    /// than guessed (`h3_ffmpeg.c:143-160`).
+    pub fn extension(&self) -> Option<&'static str> {
+        match self.media_type.as_str() {
+            "image/png" => Some("png"),
+            "image/jpeg" | "image/jpg" => Some("jpg"),
+            "image/webp" => Some("webp"),
+            _ => None,
+        }
+    }
+}
+
+/// The inverse, for a multipart part named `ref.png`: the extension is all the
+/// part carries besides its bytes.
+pub fn media_type_for_extension(path: &str) -> Option<&'static str> {
+    let extension = path.rsplit_once('.')?.1;
+    match extension.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
 }
 
 /// Parse a create body. Field names are the reference's; unknown fields are
@@ -341,6 +386,7 @@ pub fn parse_request(body: &[u8]) -> Result<VideoRequest, ApiError> {
         Some(Value::Object(reference)) => Some(ImageRef {
             file_id: optional_string(reference.get("file_id"), "input_reference.file_id")?,
             image_url: optional_string(reference.get("image_url"), "input_reference.image_url")?,
+            upload: None,
         }),
         Some(_) => return Err(wrong_type("input_reference", "an object")),
     };
@@ -395,26 +441,13 @@ impl VideoRequest {
             ));
         }
 
-        if let Some(reference) = &self.input_reference {
-            // The wire field exists, but the P8 renderer is the first h3
-            // backend that takes reference images. Refuse loudly instead of
-            // dropping a reference the caller believes is applied.
-            let which = if reference.image_url.is_some() {
-                "image_url"
-            } else if reference.file_id.is_some() {
-                "file_id"
-            } else {
-                "empty"
-            };
-            return Err(ApiError::bad_request(
-                "unsupported_parameter",
-                Some("input_reference"),
-                format!(
-                    "'input_reference' ({which}) is not supported by the h3 bridge; \
-                     the port's own renderer lands at phase P8."
-                ),
-            ));
-        }
+        // The reference takes anchors as paths (`h3.h:71-73`); on the wire they
+        // arrive as one base64 data URI, the first frame of the clip. Decode
+        // here so a malformed request fails before any device work.
+        let first_frame = match &self.input_reference {
+            Some(reference) => Some(decode_reference(reference)?),
+            None => None,
+        };
 
         let model_id = self.model.as_deref().unwrap_or(model);
         if model_id != model {
@@ -480,8 +513,144 @@ impl VideoRequest {
             presentation,
             seconds: seconds.to_string(),
             frames,
+            first_frame,
         })
     }
+}
+
+/// Decode `input_reference` into the anchored first frame.
+///
+/// Only a `data:` URI is served: the reference reads local paths
+/// (`h3.h:71-73`) and never fetches a URL, so the server must not either.
+/// `file_id` names the wire's uploads store, which this host does not have.
+fn decode_reference(reference: &ImageRef) -> Result<AnchorImage, ApiError> {
+    if let Some(upload) = &reference.upload {
+        return check_anchor(upload.clone());
+    }
+    if reference.file_id.is_some() {
+        return Err(ApiError::bad_request(
+            "unsupported_parameter",
+            Some("input_reference"),
+            "'input_reference.file_id' is not supported: this host has no uploads \
+             store. Send a base64 data URI in 'input_reference.image_url'."
+                .to_string(),
+        ));
+    }
+    let Some(uri) = reference.image_url.as_deref() else {
+        return Err(ApiError::bad_request(
+            "invalid_value",
+            Some("input_reference"),
+            "'input_reference' carries neither 'image_url' nor 'file_id'.".to_string(),
+        ));
+    };
+    let (media_type, payload) = data_uri(uri).ok_or_else(|| {
+        ApiError::bad_request(
+            "invalid_value",
+            Some("input_reference"),
+            "Invalid 'input_reference.image_url': expected a base64 data URI, \
+             for example 'data:image/png;base64,...'."
+                .to_string(),
+        )
+    })?;
+    let bytes = decode_base64(payload).map_err(|detail| {
+        ApiError::bad_request(
+            "invalid_value",
+            Some("input_reference"),
+            format!("Invalid 'input_reference.image_url': {detail}."),
+        )
+    })?;
+    check_anchor(AnchorImage {
+        media_type: media_type.to_string(),
+        bytes,
+    })
+}
+
+/// The bounds an anchor must meet before a renderer ever sees it.
+fn check_anchor(anchor: AnchorImage) -> Result<AnchorImage, ApiError> {
+    if anchor.bytes.is_empty() || anchor.bytes.len() > MAX_ANCHOR_BYTES {
+        return Err(ApiError::bad_request(
+            "invalid_value",
+            Some("input_reference"),
+            format!(
+                "Invalid 'input_reference': decoded size must be 1..={MAX_ANCHOR_BYTES} bytes."
+            ),
+        ));
+    }
+    if anchor.extension().is_none() {
+        return Err(ApiError::bad_request(
+            "invalid_value",
+            Some("input_reference"),
+            format!(
+                "Invalid 'input_reference': media type '{}' is not one of \
+                 image/png, image/jpeg, image/webp.",
+                anchor.media_type
+            ),
+        ));
+    }
+    Ok(anchor)
+}
+
+/// `data:<media-type>;base64,<payload>` (`h3_video.rs` accepts the same shape
+/// on the chat surface).
+fn data_uri(uri: &str) -> Option<(&str, &str)> {
+    let rest = uri.strip_prefix("data:")?;
+    let (media_type, payload) = rest.split_once(";base64,")?;
+    if media_type.is_empty() || payload.is_empty() {
+        return None;
+    }
+    Some((media_type, payload))
+}
+
+fn base64_value(character: u8) -> Option<u32> {
+    match character {
+        b'A'..=b'Z' => Some((character - b'A') as u32),
+        b'a'..=b'z' => Some((26 + character - b'a') as u32),
+        b'0'..=b'9' => Some((52 + character - b'0') as u32),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// Standard-alphabet base64 with the trailing bits required to be zero, so two
+/// encodings never name different bytes.
+fn decode_base64(source: &str) -> Result<Vec<u8>, String> {
+    let source = source.as_bytes();
+    if !source.len().is_multiple_of(4) {
+        return Err("base64 length is not a multiple of four".to_string());
+    }
+    let padding = usize::from(source.last() == Some(&b'='))
+        + usize::from(source.len() > 1 && source[source.len() - 2] == b'=');
+    let decoded = source.len() / 4 * 3 - padding;
+    let mut out = Vec::with_capacity(decoded);
+    for (index, chunk) in source.as_chunks::<4>().0.iter().enumerate() {
+        let last = index + 1 == source.len() / 4;
+        let a = base64_value(chunk[0]);
+        let b = base64_value(chunk[1]);
+        let c = (chunk[2] != b'=').then(|| base64_value(chunk[2])).flatten();
+        let d = (chunk[3] != b'=').then(|| base64_value(chunk[3])).flatten();
+        let malformed = a.is_none()
+            || b.is_none()
+            || (chunk[2] != b'=' && c.is_none())
+            || (chunk[3] != b'=' && d.is_none())
+            || (!last && (c.is_none() || d.is_none()))
+            || (chunk[2] == b'=' && chunk[3] != b'=')
+            || (chunk[2] == b'=' && b.unwrap() & 15 != 0)
+            || (chunk[3] == b'=' && c.is_some_and(|value| value & 3 != 0));
+        if malformed {
+            return Err("base64 payload is malformed".to_string());
+        }
+        let value = a.unwrap() << 18 | b.unwrap() << 12 | c.unwrap_or(0) << 6 | d.unwrap_or(0);
+        for shift in [16u32, 8, 0] {
+            if out.len() < decoded {
+                out.push((value >> shift) as u8);
+            }
+        }
+    }
+    if out.len() != decoded {
+        return Err("base64 payload is malformed".to_string());
+    }
+    Ok(out)
 }
 
 /// Mirror `main.c:78-91` plus `h3.c:518-519`: a duration is converted at
@@ -1288,14 +1457,70 @@ mod tests {
         let error = parse_request(br#"{"prompt":"p","seconds":4}"#).unwrap_err();
         assert_eq!(error.param, Some("seconds"));
 
+        // A truncated payload is a value error, not a silent drop.
         let error = parse_request(
             br#"{"prompt":"p","input_reference":{"image_url":"data:image/png;base64,AA"}}"#,
         )
         .unwrap()
         .validate(DEFAULT_MODEL)
         .unwrap_err();
-        assert_eq!(error.code, "unsupported_parameter");
+        assert_eq!(error.code, "invalid_value");
         assert_eq!(error.param, Some("input_reference"));
+    }
+
+    #[test]
+    fn a_data_uri_anchor_becomes_the_first_frame() {
+        // "hi" with one padding byte: the canonical base64 of two bytes.
+        let spec = parse_request(
+            br#"{"prompt":"p","input_reference":{"image_url":"data:image/png;base64,aGk="}}"#,
+        )
+        .unwrap()
+        .validate(DEFAULT_MODEL)
+        .unwrap();
+        let anchor = spec.first_frame.expect("anchor");
+        assert_eq!(anchor.media_type, "image/png");
+        assert_eq!(anchor.bytes, b"hi");
+        assert_eq!(anchor.extension(), Some("png"));
+    }
+
+    #[test]
+    fn an_anchor_is_refused_by_name() {
+        let reference = |json: &str| {
+            parse_request(json.as_bytes())
+                .unwrap()
+                .validate(DEFAULT_MODEL)
+                .unwrap_err()
+        };
+
+        let error =
+            reference(r#"{"prompt":"p","input_reference":{"file_id":"file_1","image_url":null}}"#);
+        assert_eq!(error.code, "unsupported_parameter");
+        assert!(
+            error.message.contains("no uploads store"),
+            "{}",
+            error.message
+        );
+
+        let error = reference(r#"{"prompt":"p","input_reference":{"file_id":null}}"#);
+        assert_eq!(error.code, "invalid_value");
+
+        let error = reference(
+            r#"{"prompt":"p","input_reference":{"image_url":"https://example.com/a.png"}}"#,
+        );
+        assert_eq!(error.code, "invalid_value");
+        assert!(error.message.contains("data URI"), "{}", error.message);
+
+        let error = reference(
+            r#"{"prompt":"p","input_reference":{"image_url":"data:image/tiff;base64,aGk="}}"#,
+        );
+        assert!(error.message.contains("image/tiff"), "{}", error.message);
+
+        // Length a multiple of four, but the low bits of the final sextet are
+        // not zero: two encodings would name different bytes.
+        let error = reference(
+            r#"{"prompt":"p","input_reference":{"image_url":"data:image/png;base64,aGl="}}"#,
+        );
+        assert!(error.message.contains("malformed"), "{}", error.message);
     }
 
     #[test]

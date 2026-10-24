@@ -62,7 +62,7 @@ curl -s http://127.0.0.1:8090/v1/videos -H 'Content-Type: application/json' \
 | `model` | string | optional, must equal `--model` (`video_api.rs:419-427`) |
 | `size` | string | optional, preset or `WxH`, default `512x512` (`video_api.rs:70`, `:429-470`) |
 | `seconds` | string | optional, positive decimal, default `"4"` (`video_api.rs:74`, `:472-482`) |
-| `input_reference` | object | recognised and refused (`video_api.rs:397-415`) |
+| `input_reference` | object or file part | the clip's first frame: `data:image/{png,jpeg,webp};base64,...` in `image_url`, or a multipart file part (`video_api.rs:526-592`, `h3_video.rs:794-820`) |
 
 JSON (absent Content-Type means JSON, unknown keys ignored), urlencoded and
 multipart reach one validation path (`video_api.rs:294-356`,
@@ -214,7 +214,7 @@ applies (`video_api.rs:145-156`):
 | `missing_required_parameter`, `string_below_min_length`, `string_above_max_length` | 400 | `prompt` | absent, empty, or over 32000 characters (`video_api.rs:376-396`) |
 | `model_not_found` | 400 | `model` | id differs from `--model` (`video_api.rs:419-427`) |
 | `invalid_value` | 400 | `size`, `seconds`, `limit`, `order` | failed a field rule (`video_api.rs:451`, `:507`, `:858`, `:875`) |
-| `unsupported_parameter` | 400 | `input_reference`, `variant` | refused by name (`video_api.rs:410`, `h3_video.rs:469`) |
+| `unsupported_parameter` | 400 | `input_reference`, `variant` | `file_id` (no uploads store) or a refused variant (`video_api.rs:528-535`, `h3_video.rs:469`) |
 | `invalid_after` | 400 | `after` | cursor id not in the store (`video_api.rs:786`) |
 | `unsupported_content_type`, `invalid_content_type`, `invalid_multipart`, `invalid_urlencoded`, `unknown_parameter`, `invalid_encoding`, `request_too_large`, `unsupported_encoding` | 400 | null | malformed or oversized body, form or multipart (`h3_video.rs:635-651`, `:659-710`, `:775-847`, `:889-894`, `:1142-1151`) |
 | `video_not_found`, `content_not_found` | 404 | `video_id` | unknown id, or a completed job whose file is gone (`h3_video.rs:523-528`, `:531-536`) |
@@ -228,8 +228,12 @@ applies (`video_api.rs:145-156`):
 
 ## Refused today
 
-- `input_reference` by name: 400 `unsupported_parameter`, whether JSON object,
-  form string or multipart file part (`video_api.rs:397-415`, `h3_video.rs:762`).
+- An `input_reference` that is not a served image: `file_id` is 400
+  `unsupported_parameter` (no uploads store), a URL that is not a data URI and
+  a media type other than PNG, JPEG or WebP are 400 `invalid_value`
+  (`video_api.rs:526-592`, `h3_video.rs:794-820`). Nothing is fetched.
+- A last-frame anchor over the wire: the OpenAI surface carries one reference,
+  so `--last-frame` is CLI-only (`h3-rs --last-frame`).
 - Every create without `--model-dir` or `--renderer`: 503 `renderer_disabled`
   (`h3_video.rs:360-365`).
 - `variant=thumbnail` and `variant=spritesheet` (`h3_video.rs:466-477`).

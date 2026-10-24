@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use ds4_core::minimax_h3::engine::{EngineHandle, RenderRequest};
 use ds4_core::minimax_h3::video_api::RenderSpec;
 
-use crate::h3_video::{RenderError, Renderer, RendererState};
+use crate::h3_video::{AnchorFile, RenderError, Renderer, RendererState};
 
 pub struct EngineRenderer {
     engine: EngineHandle,
@@ -47,6 +47,10 @@ impl Renderer for EngineRenderer {
     }
 
     fn render(&self, spec: &RenderSpec, output: &Path) -> Result<(), RenderError> {
+        // The engine reads pixels from a path, as the reference does
+        // (`h3.c:1231-1243`); the decoded wire bytes live beside the output for
+        // the duration of the render.
+        let anchor = AnchorFile::write(spec, output)?;
         let request = RenderRequest {
             prompt: spec.prompt.clone(),
             width: spec.render.width as i32,
@@ -58,9 +62,9 @@ impl Renderer for EngineRenderer {
             steps: self.steps,
             reuse: self.reuse,
             seed: self.seed,
-            // Anchors are a render-surface field (P12 unit 6); the serving
-            // renderer carries the prompt path only.
-            first_frame: None,
+            // `input_reference` is the clip's first frame; last-frame anchoring
+            // stays CLI-only, as the OpenAI surface has one reference.
+            first_frame: anchor.as_ref().map(|file| file.path().to_path_buf()),
             last_frame: None,
             output: output.to_path_buf(),
         };

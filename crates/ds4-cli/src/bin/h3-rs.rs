@@ -27,7 +27,7 @@ use ds4_core::minimax_h3::render::{check_frames, Canvas, RgbFrames};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
-use ds4_core::minimax_h3::{vae_audio, vae_video};
+use ds4_core::minimax_h3::{condition, media, vae_audio, vae_encoder, vae_video};
 
 /// `h3.h:13-17`.
 const DEFAULT_WIDTH: i32 = 864;
@@ -55,6 +55,9 @@ struct Options {
     reuse: usize,
     layers: usize,
     seed: u64,
+    /// `--first-frame` / `--last-frame` (`main.c:47-48`): the FL2VA anchors.
+    first_frame: Option<PathBuf>,
+    last_frame: Option<PathBuf>,
     reference_rope: bool,
     stream: bool,
     info: bool,
@@ -109,6 +112,14 @@ fn run() -> Result<ExitCode, String> {
 
     let shape = temporal(frame_count);
     let (latent_w, latent_h) = canvas.latent();
+    let (keyframes, condition_rows) = anchor_rows(&options, frame_count, latent_h, latent_w)?;
+    if !keyframes.is_empty() {
+        println!(
+            "ANCHORS keyframes={} rows={}",
+            keyframes.len(),
+            condition_rows.len() / condition::VIDEO_ROW_WIDTH
+        );
+    }
     let spec = Spec {
         text_len: text.tokens(),
         latent_t: shape.video_t,
@@ -116,7 +127,7 @@ fn run() -> Result<ExitCode, String> {
         latent_w,
         audio_t: shape.audio_t,
         frame_count: shape.frame_count,
-        keyframes: &[],
+        keyframes: &keyframes,
     };
     let sequence = sequence::build(&spec).map_err(|error| format!("layout: {error:?}"))?;
 
@@ -148,6 +159,12 @@ fn run() -> Result<ExitCode, String> {
         frame_count,
         shape.audio_t
     );
+
+    if !condition_rows.is_empty() {
+        model
+            .set_conditions(&condition_rows, &[])
+            .map_err(|error| error.to_string())?;
+    }
 
     let mut video = vec![0.0f32; model.video_elements()];
     let mut audio = vec![0.0f32; model.audio_elements()];
@@ -303,6 +320,64 @@ fn info(options: &Options, canvas: &Canvas, frame_count: i32) -> Result<ExitCode
 }
 
 /// Returns `None` for `--help`, which prints and exits successfully.
+/// The anchor rows that lead the video latent (`h3.c:1231-1345`): each frame is
+/// read with its released fit, encoded to one latent frame, patchified and
+/// jittered. Both anchors of one request see the same jitter sequence because
+/// `h3_augment_span` reseeds per span (`h3.c:315-322`).
+fn anchor_rows(
+    options: &Options,
+    frame_count: i32,
+    latent_h: i32,
+    latent_w: i32,
+) -> Result<(Vec<i32>, Vec<f32>), String> {
+    let anchors = [
+        (0, media::Fit::Stretch, options.first_frame.as_deref()),
+        (
+            frame_count - 1,
+            media::Fit::Cover,
+            options.last_frame.as_deref(),
+        ),
+    ];
+    let mut keyframes = Vec::new();
+    let mut rows = Vec::new();
+
+    for (frame, fit, path) in anchors {
+        let Some(path) = path else { continue };
+        let pixels = media::read_image_f32(path, options.width as u32, options.height as u32, fit)
+            .map_err(|error| format!("anchor {}: {}", path.display(), error.detail()))?;
+        let latent = vae_encoder::encode(
+            &options.model_dir.join(FL2VA).join("video_vae/source"),
+            &pixels,
+            1,
+            options.height as usize,
+            options.width as usize,
+            |_, _| {},
+        )
+        .map_err(|error| format!("anchor {}: {error}", path.display()))?;
+        if latent.time != 1
+            || latent.height != latent_h as usize
+            || latent.width != latent_w as usize
+        {
+            return Err(format!(
+                "anchor {}: VAE produced a {}x{}x{} latent, expected 1x{}x{}",
+                path.display(),
+                latent.time,
+                latent.height,
+                latent.width,
+                latent_h,
+                latent_w
+            ));
+        }
+        keyframes.push(frame);
+        rows.extend(
+            condition::anchor_rows(&latent, options.seed)
+                .map_err(|error| format!("anchor {}: {error}", path.display()))?,
+        );
+    }
+
+    Ok((keyframes, rows))
+}
+
 fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
     let mut options = Options {
         model_dir: PathBuf::new(),
@@ -317,6 +392,8 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         reuse: DEFAULT_REUSE,
         layers: DEFAULT_LAYERS,
         seed: DEFAULT_SEED,
+        first_frame: None,
+        last_frame: None,
         reference_rope: false,
         stream: false,
         info: false,
@@ -350,6 +427,8 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
                     .parse()
                     .map_err(|_| "--seed is not an unsigned integer".to_string())?
             }
+            "--first-frame" => options.first_frame = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            "--last-frame" => options.last_frame = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--use-reference-rope" => options.reference_rope = true,
             "--ssd-streaming" => options.stream = true,
             "--info" => options.info = true,
@@ -452,6 +531,8 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --reuse N                 reuse window (default 1)
   --layers N                DiT blocks to run (default 50)
   --seed N                  seed, each modality (default 42)
+  --first-frame PATH        anchor: the clip's first frame
+  --last-frame PATH         anchor: the clip's last frame
   --use-reference-rope      rope scale 1.0 even at 256x256
   --ssd-streaming           stream the DiT blocks from the checkpoint
   --info                    resolve components and geometry, run nothing

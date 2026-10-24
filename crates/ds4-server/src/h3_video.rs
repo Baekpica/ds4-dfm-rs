@@ -28,8 +28,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ds4_core::minimax_h3::video_api::{
-    parse_request, ApiError, ImageRef, ListQuery, RenderSpec, VideoError, VideoRequest,
-    VideoStatus, VideoStore,
+    media_type_for_extension, parse_request, AnchorImage, ApiError, ImageRef, ListQuery,
+    RenderSpec, VideoError, VideoRequest, VideoStatus, VideoStore,
 };
 use serde_json::json;
 
@@ -104,6 +104,54 @@ impl Renderer for DisabledRenderer {
     }
 }
 
+/// The anchored first frame on disk, for the duration of one render.
+///
+/// Both renderers take a path, as the reference does (`h3.h:71-73`), so the
+/// decoded wire bytes are written beside the output — the server's only
+/// writable state — and removed when the render returns. The name is derived
+/// from the output, which the store already keeps unique per request.
+pub(crate) struct AnchorFile {
+    path: PathBuf,
+}
+
+impl AnchorFile {
+    pub(crate) fn write(
+        spec: &RenderSpec,
+        output: &Path,
+    ) -> Result<Option<AnchorFile>, RenderError> {
+        let Some(anchor) = &spec.first_frame else {
+            return Ok(None);
+        };
+        let extension = anchor.extension().ok_or_else(|| {
+            RenderError::new(
+                "unsupported_parameter",
+                format!(
+                    "anchor media type '{}' has no file extension",
+                    anchor.media_type
+                ),
+            )
+        })?;
+        let path = output.with_extension(format!("anchor.{extension}"));
+        std::fs::write(&path, &anchor.bytes).map_err(|error| {
+            RenderError::new(
+                "render_failed",
+                format!("could not write the anchor at {}: {error}", path.display()),
+            )
+        })?;
+        Ok(Some(AnchorFile { path }))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for AnchorFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Runs an operator-supplied program. The fixed program path and args are
 /// chosen at startup; request values are appended as separate argv entries.
 ///
@@ -134,8 +182,9 @@ impl CommandRenderer {
 
     /// The complete argv, program first. Request values never alter its
     /// length or positions, so a prompt cannot become an option or a command.
-    pub fn argv(&self, spec: &RenderSpec, output: &Path) -> Vec<OsString> {
-        let mut argv: Vec<OsString> = Vec::with_capacity(self.fixed_args.len() + 10);
+    /// The anchor path is server-generated (`AnchorFile`), never caller text.
+    pub fn argv(&self, spec: &RenderSpec, output: &Path, anchor: Option<&Path>) -> Vec<OsString> {
+        let mut argv: Vec<OsString> = Vec::with_capacity(self.fixed_args.len() + 12);
         argv.push(self.program.clone().into_os_string());
         argv.extend(self.fixed_args.iter().map(OsString::from));
         argv.push(OsString::from("-p"));
@@ -146,6 +195,10 @@ impl CommandRenderer {
         argv.push(OsString::from(spec.size.height.to_string()));
         argv.push(OsString::from("--seconds"));
         argv.push(OsString::from(&spec.seconds));
+        if let Some(anchor) = anchor {
+            argv.push(OsString::from("--first-frame"));
+            argv.push(anchor.as_os_str().to_os_string());
+        }
         argv.push(OsString::from("-o"));
         argv.push(output.as_os_str().to_os_string());
         argv
@@ -158,7 +211,8 @@ impl Renderer for CommandRenderer {
     }
 
     fn render(&self, spec: &RenderSpec, output: &Path) -> Result<(), RenderError> {
-        let argv = self.argv(spec, output);
+        let anchor = AnchorFile::write(spec, output)?;
+        let argv = self.argv(spec, output, anchor.as_ref().map(AnchorFile::path));
         let mut command = Command::new(&argv[0]);
         command
             .args(&argv[1..])
@@ -735,17 +789,33 @@ impl FormField {
         })
     }
 
-    fn into_image_ref(mut self) -> ImageRef {
-        match self.filename.take() {
-            Some(filename) => ImageRef {
-                file_id: Some(filename),
-                image_url: None,
-            },
-            None => ImageRef {
+    /// A file part carries the image itself (`input_reference` is a file in the
+    /// OpenAI multipart shape); a text part carries the JSON object's data URI.
+    fn into_image_ref(mut self) -> Result<ImageRef, ApiError> {
+        let Some(filename) = self.filename.take() else {
+            return Ok(ImageRef {
                 file_id: None,
                 image_url: Some(String::from_utf8_lossy(&self.value).into_owned()),
-            },
-        }
+                upload: None,
+            });
+        };
+        let media_type = media_type_for_extension(&filename).ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_value",
+                Some("input_reference"),
+                format!(
+                    "Invalid 'input_reference': '{filename}' is not a .png, .jpg or .webp file."
+                ),
+            )
+        })?;
+        Ok(ImageRef {
+            file_id: None,
+            image_url: None,
+            upload: Some(AnchorImage {
+                media_type: media_type.to_string(),
+                bytes: self.value,
+            }),
+        })
     }
 }
 
@@ -759,7 +829,7 @@ fn request_from_form(fields: Vec<FormField>) -> Result<VideoRequest, ApiError> {
             "size" => request.size = Some(field.into_text("size")?),
             // Decoded into the reference's object shape so `validate` refuses
             // it with the same unsupported_parameter error as a JSON body.
-            "input_reference" => request.input_reference = Some(field.into_image_ref()),
+            "input_reference" => request.input_reference = Some(field.into_image_ref()?),
             other => {
                 return Err(ApiError::bad_request(
                     "unknown_parameter",
@@ -1357,6 +1427,11 @@ mod tests {
             (
                 r#"{"prompt":"p","input_reference":{"image_url":"data:image/png;base64,AA"}}"#,
                 "input_reference",
+                "invalid_value",
+            ),
+            (
+                r#"{"prompt":"p","input_reference":{"file_id":"file_1"}}"#,
+                "input_reference",
                 "unsupported_parameter",
             ),
         ] {
@@ -1460,7 +1535,7 @@ mod tests {
     }
 
     #[test]
-    fn multipart_rejects_file_input_reference_and_unknown_fields() {
+    fn multipart_carries_a_file_anchor_and_rejects_unknown_fields() {
         let (server, _dir) = test_server(renderer(|_, output| write_output(output)), 8);
         let file_body = concat!(
             "--ref\r\n",
@@ -1477,9 +1552,32 @@ mod tests {
             "multipart/form-data; boundary=ref",
             file_body.as_bytes(),
         );
+        assert_eq!(
+            response.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+
+        // An extension that names no served image format is refused by name
+        // rather than handed to FFmpeg for a guess.
+        let unknown_file = concat!(
+            "--ref\r\n",
+            "Content-Disposition: form-data; name=\"prompt\"\r\n\r\n",
+            "a cube\r\n",
+            "--ref\r\n",
+            "Content-Disposition: form-data; name=\"input_reference\"; filename=\"ref.tiff\"\r\n",
+            "Content-Type: image/tiff\r\n\r\n",
+            "TIFDATA\r\n",
+            "--ref--\r\n"
+        );
+        let response = post_encoded(
+            &server,
+            "multipart/form-data; boundary=ref",
+            unknown_file.as_bytes(),
+        );
         assert_eq!(response.status, 400);
         let json = json_of(&response);
-        assert_eq!(json["error"]["code"], "unsupported_parameter");
         assert_eq!(json["error"]["param"], "input_reference");
 
         let unknown = post_encoded(
@@ -1793,9 +1891,10 @@ mod tests {
             presentation: Presentation::Native,
             seconds: "4".to_string(),
             frames: 96,
+            first_frame: None,
         };
         let argv: Vec<String> = renderer
-            .argv(&spec, Path::new("/out/video_1.mp4"))
+            .argv(&spec, Path::new("/out/video_1.mp4"), None)
             .iter()
             .map(|arg| arg.to_string_lossy().to_string())
             .collect();
@@ -1829,6 +1928,48 @@ mod tests {
     }
 
     #[test]
+    fn command_renderer_carries_the_anchor_and_removes_it() {
+        let dir = std::env::temp_dir().join(format!("h3-anchor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("video_1.mp4");
+        let spec = RenderSpec {
+            prompt: "p".to_string(),
+            model: DEFAULT_MODEL.to_string(),
+            size: VideoSize::new(512, 512),
+            render: VideoSize::new(512, 512),
+            presentation: Presentation::Native,
+            seconds: "4".to_string(),
+            frames: 96,
+            first_frame: Some(AnchorImage {
+                media_type: "image/png".to_string(),
+                bytes: b"hi".to_vec(),
+            }),
+        };
+
+        let anchor = AnchorFile::write(&spec, &output).unwrap().expect("anchor");
+        let path = anchor.path().to_path_buf();
+        assert_eq!(std::fs::read(&path).unwrap(), b"hi");
+        assert_eq!(path.extension().unwrap(), "png");
+        assert_eq!(path.file_stem().unwrap(), "video_1.anchor");
+
+        let renderer = CommandRenderer::new("/bin/true", Vec::new(), Duration::from_secs(5));
+        let argv: Vec<String> = renderer
+            .argv(&spec, &output, Some(anchor.path()))
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        let flag = argv
+            .iter()
+            .position(|arg| arg == "--first-frame")
+            .expect("--first-frame");
+        assert_eq!(argv[flag + 1], path.to_string_lossy());
+
+        drop(anchor);
+        assert!(!path.exists(), "the anchor outlives its render");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn command_renderer_maps_nonzero_exit_and_timeout() {
         if !Path::new("/bin/false").exists() {
             return;
@@ -1842,6 +1983,7 @@ mod tests {
             presentation: Presentation::Native,
             seconds: "4".to_string(),
             frames: 96,
+            first_frame: None,
         };
         let error = renderer
             .render(&spec, Path::new("/tmp/h3-video-never.mp4"))
