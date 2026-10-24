@@ -237,6 +237,19 @@ fn expert_part(name: &str, entry: &Value) -> Result<Option<u64>> {
 /// trunk (expert layers, then the body, as published), the drafter on
 /// request, then the embedding part.
 fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
+    Ok(release_parts(root, feature)?.0)
+}
+
+/// The vision part, verified, when the release ships one (mapped at open,
+/// read only when media arrives).
+pub(super) fn vision_path(root: &Path) -> Result<Option<PathBuf>> {
+    match release_parts(root, Feature::Trunk)?.1 {
+        Some(part) => Ok(Some(verify_part(root, &part)?.0)),
+        None => Ok(None),
+    }
+}
+
+fn release_parts(root: &Path, feature: Feature) -> Result<(Vec<Part>, Option<Part>)> {
     let index = file_index(root)?;
     let bytes = json_bytes(&root.join(RELEASE))?;
     check_file(
@@ -263,6 +276,7 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
     let mut counts = HashMap::new();
     let mut selected = Vec::new();
     let mut embedding = None;
+    let mut vision = None;
     for entry in array(&release, "parts")? {
         let name = text(entry, "path")?;
         filename(name)?;
@@ -294,7 +308,8 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
             Role::Trunk => selected.push(part),
             Role::Drafter if feature == Feature::Draft => selected.push(part),
             Role::Embedding => embedding = Some(part),
-            Role::Drafter | Role::Vision => {}
+            Role::Vision => vision = Some(part),
+            Role::Drafter => {}
         }
     }
     // 57 expert parts and the body; one table; at most one of each sidecar.
@@ -318,7 +333,7 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
             return Err(fail("unexpected GGUF part"));
         }
     }
-    Ok(selected)
+    Ok((selected, vision))
 }
 
 pub(super) fn first_part(root: &Path) -> Result<PathBuf> {

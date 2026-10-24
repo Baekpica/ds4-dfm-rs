@@ -1468,6 +1468,15 @@ int ds4_session_mimo2_encode_vision(ds4_session *s, const float *patches,
 int ds4_session_mimo2_encode_audio(ds4_session *s, const float *mel, unsigned frames,
                                    float *out, unsigned cap, unsigned *rows,
                                    char *err, size_t errlen);
+/* MiniMax image/video input: the vision part's rows of one visual (patches
+ * [grid_t * grid_h * grid_w][1176] in the processor's order -> out
+ * [grid_t * grid_h * grid_w / 4][6144]), and a prompt sync whose pad runs
+ * take those rows (tag: identity of the media, nonzero). */
+int ds4_session_minimax_encode_vision(ds4_session *s, const float *patches, unsigned grid_t, unsigned grid_h,
+                                      unsigned grid_w, float *out, char *err, size_t errlen);
+int ds4_session_minimax_sync_media(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
+                                   const unsigned *counts, const float *const *rows, unsigned nspans,
+                                   uint64_t tag, char *err, size_t errlen);
 /* Allocation intent captured at session creation, including a deferred graph. */
 bool ds4_session_dots3_mtp(ds4_session *s);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,

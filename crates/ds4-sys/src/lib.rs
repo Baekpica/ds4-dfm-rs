@@ -876,6 +876,30 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_minimax_encode_vision(
+        s: *mut ds4_bridge_session,
+        patches: *const f32,
+        grid_t: u32,
+        grid_h: u32,
+        grid_w: u32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_minimax_sync_media(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: i32,
+        starts: *const u32,
+        counts: *const u32,
+        rows: *const *const f32,
+        nspans: u32,
+        tag: u64,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_dots3_enabled(s: *mut ds4_bridge_session) -> c_int;
 
     pub fn ds4_bridge_dots3_trial(

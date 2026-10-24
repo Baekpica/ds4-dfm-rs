@@ -940,7 +940,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
-            media_serial: false,
+            // Images and videos sync on the serial lane (the release's vision part).
+            media_serial: true,
         },
         // Ling matches the Qwen text-bank surface: two persistent banks,
         // partial reuse and disk KV. Images stay serial beside those banks

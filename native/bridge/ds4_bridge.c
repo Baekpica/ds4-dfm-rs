@@ -836,6 +836,29 @@ int ds4_bridge_mimo2_sync_media(ds4_bridge_session *s, const int32_t *tokens, in
                                         nspans, tag, err, errlen);
 }
 
+int ds4_bridge_minimax_encode_vision(ds4_bridge_session *s, const float *patches, uint32_t grid_t,
+                                     uint32_t grid_h, uint32_t grid_w, float *out, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_minimax_encode_vision(s->session, patches, grid_t, grid_h, grid_w, out, err, errlen);
+}
+
+int ds4_bridge_minimax_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                  const uint32_t *starts, const uint32_t *counts,
+                                  const float *const *rows, uint32_t nspans, uint64_t tag,
+                                  char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_minimax_sync_media(s->session, tokens, n_tokens, starts, counts, rows, nspans, tag,
+                                          err, errlen);
+}
+
 int ds4_bridge_dots3_enabled(ds4_bridge_session *s)
 {
     return s && s->session && ds4_session_dots3_mtp(s->session);

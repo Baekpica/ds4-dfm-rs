@@ -2214,6 +2214,114 @@ extern "C" int ds4_gpu_minimax_mark_wait(void) {
     return !g_mm_mark || cuda_ok(cudaEventSynchronize(g_mm_mark), "MiniMax mark wait");
 }
 
+/* ----------------------------------------------------------- vision tower */
+
+/* The CLIP-style tower of the vision part (ds4_minimax_vision.inc): F32
+ * compute, values on the BF16 grid at the module boundaries the reference
+ * rounds at (torch BF16 modules). Linears, GELU, attention and row
+ * placement reuse DeepSeek V4.1's vision primitives; these three are
+ * MiniMax's own. */
+enum { MM_VIT_DIM = DS4_MINIMAX_VIT_DIM, MM_VIT_HEADS = DS4_MINIMAX_VIT_HEADS, MM_VIT_HEAD = DS4_MINIMAX_VIT_HEAD,
+       MM_VIT_ROT = 78, MM_VIT_AXIS = 13, MM_VIT_PATCH = DS4_MINIMAX_VIT_PATCH };
+
+// LayerNorm over rows of `dim` (eps 1e-5, F32 weight and bias): two-pass
+// mean and variance in F32, one BF16 rounding of the output.
+__global__ void mm_vit_ln_kernel(float *out, const float *x, const float *w, const float *b, uint32_t dim, float eps) {
+    __shared__ float red[32];
+    const float *row = x + (uint64_t)blockIdx.x * dim;
+    auto block_sum = [&](float v) {
+        for (uint32_t s = 16; s; s >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, s); }
+        if ((threadIdx.x & 31) == 0) { red[threadIdx.x / 32] = v; }
+        __syncthreads();
+        v = threadIdx.x < blockDim.x / 32 ? red[threadIdx.x] : 0.0f;
+        if (threadIdx.x < 32) {
+            for (uint32_t s = 16; s; s >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, s); }
+            if (threadIdx.x == 0) { red[0] = v; }
+        }
+        __syncthreads();
+        const float total = red[0];
+        __syncthreads();
+        return total;
+    };
+    float sum = 0.0f;
+    for (uint32_t i = threadIdx.x; i < dim; i += blockDim.x) { sum += row[i]; }
+    const float mean = block_sum(sum) / (float)dim;
+    float sq = 0.0f;
+    for (uint32_t i = threadIdx.x; i < dim; i += blockDim.x) { const float d = row[i] - mean; sq = fmaf(d, d, sq); }
+    const float inv = rsqrtf(block_sum(sq) / (float)dim + eps);
+    for (uint32_t i = threadIdx.x; i < dim; i += blockDim.x) {
+        out[(uint64_t)blockIdx.x * dim + i] = glmvq_round(fmaf((row[i] - mean) * inv, w[i], b[i]));
+    }
+}
+
+extern "C" int ds4_gpu_minimax_vit_ln(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *w,
+        const ds4_gpu_tensor *b, uint32_t rows, uint32_t dim, float eps) {
+    if (!rows || !dim || !gvq_floats(out, (uint64_t)rows * dim) || !gvq_floats(x, (uint64_t)rows * dim) ||
+        !gvq_floats(w, dim) || !gvq_floats(b, dim)) { return 0; }
+    mm_vit_ln_kernel<<<rows, 256, 0, ds4_current_stream()>>>((float *)out->ptr, (const float *)x->ptr,
+        (const float *)w->ptr, (const float *)b->ptr, dim, eps);
+    return cuda_ok(cudaGetLastError(), "MiniMax vision layer norm");
+}
+
+/* 3-D RoPE of q and k in place, rows of packed [q | k | v] (3 x 16 heads x
+ * 80): a patch's (t, h, w) give 13 frequencies each, inv_freq_j =
+ * 10000^(-2j/26), duplicated to 78 dims with NeoX rotate_half (pairs i, i +
+ * 39); dims 78-79 pass. Patches run in the processor's order: frame-major,
+ * then 2x2 blocks row-major, each block's four patches row-major. `t0` is
+ * the frame index where the row's segment starts (t restarts per segment).
+ * cos/sin in F32 as vLLM computes them; the result is rounded to BF16. */
+__global__ void mm_vit_rope_kernel(float *qkv, uint32_t rows, uint32_t gh, uint32_t gw, uint32_t seg_frames) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t half = MM_VIT_ROT / 2;   // 39
+    if (i >= (uint64_t)rows * 2 * MM_VIT_HEADS * half) { return; }
+    const uint32_t j = (uint32_t)(i % half), head = (uint32_t)(i / half % (2 * MM_VIT_HEADS));
+    const uint32_t r = (uint32_t)(i / ((uint64_t)half * 2 * MM_VIT_HEADS));
+    const uint32_t frame = r / (gh * gw), cell = r % (gh * gw), block = cell / 4, in = cell % 4;
+    const uint32_t bw = gw / 2, hh = block / bw * 2 + in / 2, ww = block % bw * 2 + in % 2;
+    const uint32_t axis = j / MM_VIT_AXIS, f = j % MM_VIT_AXIS;
+    const float coord = axis == 0 ? (float)(frame % seg_frames) : axis == 1 ? (float)hh : (float)ww;
+    // F32 inv_freq and angle as torch forms them; sin/cos in double (fast-math
+    // sincosf loses accuracy past pi, and angles reach ~50 rad).
+    const float inv = __frcp_rn(powf(10000.0f, (float)(2 * f) / (float)(2 * MM_VIT_AXIS)));
+    double sd, cd;
+    sincos((double)(coord * inv), &sd, &cd);
+    const float s = (float)sd, c = (float)cd;
+    // head < 16: q heads; 16..31: k heads (k starts 1280 floats into the row).
+    float *x = qkv + (uint64_t)r * 3 * MM_VIT_DIM + (uint64_t)head * MM_VIT_HEAD;
+    const float a = x[j], bv = x[j + half];
+    x[j] = glmvq_round(a * c - bv * s);
+    x[j + half] = glmvq_round(bv * c + a * s);
+}
+
+extern "C" int ds4_gpu_minimax_vit_rope(ds4_gpu_tensor *qkv, uint32_t rows, uint32_t gh, uint32_t gw,
+        uint32_t seg_frames) {
+    if (!rows || !gh || !gw || gh % 2 || gw % 2 || !seg_frames || !gvq_floats(qkv, (uint64_t)rows * 3 * MM_VIT_DIM)) {
+        return 0;
+    }
+    const uint64_t n = (uint64_t)rows * 2 * MM_VIT_HEADS * (MM_VIT_ROT / 2);
+    mm_vit_rope_kernel<<<(uint32_t)((n + 255) / 256), 256, 0, ds4_current_stream()>>>((float *)qkv->ptr, rows, gh,
+        gw, seg_frames);
+    return cuda_ok(cudaGetLastError(), "MiniMax vision rope");
+}
+
+/* Patch embedding: Conv3d with kernel = stride (2, 14, 14) and no bias is a
+ * F32 matmul of the flattened (C, T, P, P) patches with the F32 weight
+ * [1280][1176], then one BF16 rounding (the reference casts after). */
+extern "C" int ds4_gpu_minimax_vit_patch(ds4_gpu_tensor *out, const ds4_gpu_tensor *w, const ds4_gpu_tensor *pixels,
+        uint32_t rows) {
+    if (!rows || !g_cublas_ready || !gvq_floats(out, (uint64_t)rows * MM_VIT_DIM) ||
+        !gvq_floats(w, (uint64_t)MM_VIT_DIM * MM_VIT_PATCH) || !gvq_floats(pixels, (uint64_t)rows * MM_VIT_PATCH)) {
+        return 0;
+    }
+    (void)cublasSetStream(g_cublas, ds4_current_stream());
+    cuda_cublas_ws_prep(ds4_current_stream());
+    const float alpha = 1.0f, beta = 0.0f;
+    if (!cublas_ok(cublasSgemm(g_cublas, CUBLAS_OP_T, CUBLAS_OP_N, MM_VIT_DIM, (int)rows, MM_VIT_PATCH, &alpha,
+            (const float *)w->ptr, MM_VIT_PATCH, (const float *)pixels->ptr, MM_VIT_PATCH, &beta, (float *)out->ptr,
+            MM_VIT_DIM), "MiniMax vision patch embedding")) { return 0; }
+    return ds4_gpu_v41_round_bf16_tensor(out, (uint64_t)rows * MM_VIT_DIM);
+}
+
 /* ------------------------------------------------------------- head, embed */
 
 __global__ void mm_logits_kernel(float *logits, uint32_t tokens) {

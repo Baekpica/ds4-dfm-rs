@@ -268,6 +268,12 @@ int ds4_bridge_mimo2_encode_vision(ds4_bridge_session *s, const float *patches,
 int ds4_bridge_mimo2_encode_audio(ds4_bridge_session *s, const float *mel, uint32_t frames,
                                   float *out, uint32_t cap, uint32_t *rows,
                                   char *err, size_t errlen);
+int ds4_bridge_minimax_encode_vision(ds4_bridge_session *s, const float *patches, uint32_t grid_t,
+                                     uint32_t grid_h, uint32_t grid_w, float *out, char *err, size_t errlen);
+int ds4_bridge_minimax_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                  const uint32_t *starts, const uint32_t *counts,
+                                  const float *const *rows, uint32_t nspans, uint64_t tag,
+                                  char *err, size_t errlen);
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t first_token,
                                        int32_t max_tokens,

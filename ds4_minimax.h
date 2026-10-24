@@ -37,7 +37,12 @@ enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 614
        DS4_MINIMAX_KV_BLOCK = DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_KV_PAGE,
        /* Decode attention partials: one per (KV head, selected block), for
         * up to DS4_MINIMAX_SPLIT_ROWS rows (decode and DSpark verify). */
-       DS4_MINIMAX_SPLITS = DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_TOPK, DS4_MINIMAX_SPLIT_ROWS = 8 };
+       DS4_MINIMAX_SPLITS = DS4_MINIMAX_KV_HEADS * DS4_MINIMAX_TOPK, DS4_MINIMAX_SPLIT_ROWS = 8,
+       /* Vision tower: CLIP layers of 1,280 (16 heads x 80, 3-D RoPE on 78
+        * dims), patches of 3 x 2 x 14 x 14 values, 2 x 2 patches per
+        * language row of 6,144. */
+       DS4_MINIMAX_VIT_DIM = 1280, DS4_MINIMAX_VIT_HEADS = 16, DS4_MINIMAX_VIT_HEAD = 80,
+       DS4_MINIMAX_VIT_PATCH = 1176 };
 
 /* Routed-expert scratch for `rows` (prefill FP8 planes, decode items and the
  * per-layer device routing tables). */
@@ -156,6 +161,16 @@ void ds4_gpu_minimax_host_free(void *host, ds4_gpu_tensor *device);
  * until the last mark has run. */
 int ds4_gpu_minimax_mark(void);
 int ds4_gpu_minimax_mark_wait(void);
+
+/* Vision tower pieces (ds4_minimax_vision.inc): LayerNorm of `rows` x `dim`
+ * F32 rows (F32 weight/bias); 3-D RoPE of q and k in packed [q | k | v]
+ * rows of a (gh x gw)-patch grid, t restarting every `seg_frames` frames;
+ * the patch embedding (F32 weight [1280][1176]) of `rows` patches. */
+int ds4_gpu_minimax_vit_ln(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *w,
+    const ds4_gpu_tensor *b, uint32_t rows, uint32_t dim, float eps);
+int ds4_gpu_minimax_vit_rope(ds4_gpu_tensor *qkv, uint32_t rows, uint32_t gh, uint32_t gw, uint32_t seg_frames);
+int ds4_gpu_minimax_vit_patch(ds4_gpu_tensor *out, const ds4_gpu_tensor *w, const ds4_gpu_tensor *pixels,
+    uint32_t rows);
 
 /* logits = -inf on the head rows past the tokenizer (`tokens`). */
 int ds4_gpu_minimax_logits(ds4_gpu_tensor *logits, uint32_t rows, uint32_t tokens);

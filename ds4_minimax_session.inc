@@ -21,7 +21,16 @@ static bool minimax_read_logits(ds4_session *s) {
     return true;
 }
 
-static int minimax_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
+enum { MINIMAX_IMAGE_PAD = 200025, MINIMAX_VIDEO_PAD = 200026 };
+
+static bool minimax_media_pad(int token) { return token == MINIMAX_IMAGE_PAD || token == MINIMAX_VIDEO_PAD; }
+
+/* `tag` != 0: a media sync whose spans the graph holds (g->span_*). A prompt
+ * extends the checkpoint only under the same media tag; identical pads over
+ * other pixels prefill again. A pad no span covers is refused: its
+ * embedding row is only a placeholder. */
+static int minimax_session_prefill(ds4_session *s, const ds4_tokens *prompt, uint64_t tag, char *err,
+        size_t errlen) {
     for (int i = 0; i < prompt->len; i++) {
         if (prompt->v[i] < 0 || (uint32_t)prompt->v[i] >= DS4_N_VOCAB) {
             payload_set_err(err, errlen, "MiniMax prompt has an invalid token");
@@ -33,12 +42,25 @@ static int minimax_session_sync(ds4_session *s, const ds4_tokens *prompt, char *
     ds4_minimax_graph *g = &s->minimax_graph;
     uint32_t start = 0;
     if (s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
-        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint) &&
+        (!tag || tag == g->checkpoint_tag)) {
         start = (uint32_t)s->checkpoint.len;
         if (start == (uint32_t)prompt->len) { return 0; }
     } else {
         ds4_session_invalidate(s);
         if (g->failed) { payload_set_err(err, errlen, "MiniMax graph reset failed"); return 1; }
+        g->checkpoint_tag = 0;
+    }
+    for (uint32_t i = start; i < (uint32_t)prompt->len; i++) {
+        if (!minimax_media_pad(prompt->v[i])) { continue; }
+        bool covered = false;
+        for (uint32_t k = 0; !covered && k < g->span_n; k++) {
+            covered = i >= g->span_start[k] && i - g->span_start[k] < g->span_count[k];
+        }
+        if (!covered) {
+            payload_set_err(err, errlen, "MiniMax media pad has no vision rows");
+            return 1;
+        }
     }
     const uint32_t end = (uint32_t)prompt->len;
     while (start < end) {
@@ -60,7 +82,41 @@ static int minimax_session_sync(ds4_session *s, const ds4_tokens *prompt, char *
     ds4_tokens_copy(&s->checkpoint, prompt);
     s->checkpoint_valid = true;
     s->mtp_draft_valid = false;
+    if (tag) { g->checkpoint_tag = tag; }
     return 0;
+}
+
+static int minimax_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
+    return minimax_session_prefill(s, prompt, 0, err, errlen);
+}
+
+/* Image and video rows (host F32 [count][6144] per span) over the prompt's
+ * pad runs, then the usual prefill. */
+int ds4_session_minimax_sync_media(ds4_session *s, const int *tokens, int n_tokens, const unsigned *starts,
+        const unsigned *counts, const float *const *rows, unsigned nspans, uint64_t tag, char *err, size_t errlen) {
+    if (!ds4_session_is_minimax(s) || !tokens || n_tokens <= 0 || !tag ||
+        (nspans && (!starts || !counts || !rows))) {
+        payload_set_err(err, errlen, "MiniMax media sync needs tokens, spans and a tag");
+        return 1;
+    }
+    for (unsigned i = 0; i < nspans; i++) {
+        if (!counts[i] || !rows[i] || starts[i] > (unsigned)n_tokens || counts[i] > (unsigned)n_tokens - starts[i]) {
+            payload_set_err(err, errlen, "MiniMax media span is empty or past the prompt");
+            return 1;
+        }
+    }
+    if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
+    ds4_minimax_graph *g = &s->minimax_graph;
+    g->span_start = starts;
+    g->span_count = counts;
+    g->span_rows = rows;
+    g->span_n = nspans;
+    const ds4_tokens prompt = {.v = (int *)tokens, .len = n_tokens, .cap = n_tokens};
+    const int rc = minimax_session_prefill(s, &prompt, tag, err, errlen);
+    g->span_n = 0;
+    g->span_start = g->span_count = NULL;
+    g->span_rows = NULL;
+    return rc;
 }
 
 static int minimax_session_eval(ds4_session *s, int token, char *err, size_t errlen) {

@@ -37561,6 +37561,7 @@ struct ds4_engine {
     ds4_ling3vl_vision_weights ling3vl_vision_weights;
     ds4_mimo2_media mimo2_media;
     ds4_mimo2_dflash dflash;
+    ds4_minimax_vision minimax_vision;
 #endif
     ds4_vocab vocab;
     ds4_weights weights;
@@ -73033,11 +73034,12 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_LING3VL &&
-             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2) ||
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MINIMAX_VQ) ||
             e->backend != DS4_BACKEND_CUDA ||
             opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice) {
             fprintf(stderr,
-                    "ds4: --vision/--vision-gguf requires one full V4.1, GLM-5.3, Step, Ling or MiMo CUDA model\n");
+                    "ds4: --vision/--vision-gguf requires one full V4.1, GLM-5.3, Step, Ling, MiMo or MiniMax CUDA model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -73060,6 +73062,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             v41_vision_bind(&e->weights, &e->vision_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) {
+            /* The release's vision part: staged per request like V4.1's
+             * tower, so no aux CUDA map (vision_ready stays false). */
+            minimax_vision_bind(&e->minimax_vision, &e->vision_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
             ling3vl_vision_bind(&e->ling3vl_vision_weights, &e->vision_model);
             e->vision_image_token = (int)LING3VL_IMAGE_TOKEN;
@@ -73087,7 +73093,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * V4.1 push route has no session, so its presence is g_ds4_v41.vis_layers
          * instead (setting vision_ready here would let a session path reach for
          * a family encoder that does not exist). */
-        if (!v41_sidecar) {
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) {
+            e->vision_image_token = 200025;
+            e->vision_start_token = 200029;
+            e->vision_end_token = 200030;
+        } else if (!v41_sidecar) {
             e->vision_ready = true;
         } else {
             e->vision_image_token = (int)g_ds4_v41.image_token_id;
@@ -80361,6 +80371,7 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
 #ifndef DS4_NO_GPU
 #include "ds4_ds41_forward.inc"
 #include "ds4_ds41_vision.inc"   /* vision unit: the DeepSeek-ViT + aligner host forward, after v41_alloc */
+#include "ds4_minimax_vision.inc" /* MiniMax's tower, on V4.1's staging and primitives */
 /* Decode sampling (unit H): the pick fork, the device readback arms and the
  * host penalty route (the engine's core_v41_sample.c + core_decode_penalty.c).
  * Between the forward and the graph: the graph's wait calls v41_sample_pick. */

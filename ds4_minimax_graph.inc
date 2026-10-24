@@ -43,6 +43,13 @@ typedef struct {
 #endif
     minimax_kv kv;
     minimax_draft_rt *draft;   // serial session with the drafter part only
+    // A media sync's pad runs (prompt start, count, host rows [count][6144])
+    // for the forwards it runs; checkpoint_tag names the media its
+    // checkpoint's rows came from (0: none).
+    const unsigned *span_start, *span_count;
+    const float *const *span_rows;
+    uint32_t span_n;
+    uint64_t checkpoint_tag;
 } ds4_minimax_graph;
 
 // DSpark runtime (ds4_minimax_draft.inc).
@@ -372,6 +379,23 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
     return ok;
 }
 
+/* Media rows over the embedded rows pos..pos+rows-1: each pad of a span
+ * takes its row from the vision tower's output. */
+static bool minimax_apply_spans(ds4_minimax_graph *g, uint32_t rows, uint32_t pos) {
+    const uint64_t row = (uint64_t)MINIMAX_EMBD * sizeof(float);
+    for (uint32_t i = 0; i < g->span_n; i++) {
+        const uint32_t start = g->span_start[i], stop = start + g->span_count[i];
+        const uint32_t from = start > pos ? start : pos, to = stop < pos + rows ? stop : pos + rows;
+        if (from >= to) { continue; }
+        ds4_gpu_tensor *view = ds4_gpu_tensor_view(g->cur, (uint64_t)(from - pos) * row, (uint64_t)(to - from) * row);
+        const bool ok = view && ds4_gpu_tensor_write(view, 0, g->span_rows[i] + (uint64_t)(from - start) * MINIMAX_EMBD,
+            (uint64_t)(to - from) * row);
+        ds4_gpu_tensor_free(view);
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
 /* Ask the kernel to read `rows` tokens' embedding rows ahead (Beam's R5):
  * the prefill loop issues the next chunk's rows before it runs the current
  * one, and a gather first queues all of its own rows. Advisory only. */
@@ -425,7 +449,7 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
      * before another forward. */
     g->failed = true;
     if (!minimax_kv_begin(&g->kv, rows, pos) || !minimax_embed(g, m, w, tokens, rows, g->cur) ||
-        !ds4_gpu_minimax_rope(g->rope, rows, pos) ||
+        !minimax_apply_spans(g, rows, pos) || !ds4_gpu_minimax_rope(g->rope, rows, pos) ||
         !minimax_trace(0u, pos, "embed", g->cur, (uint64_t)rows * MINIMAX_EMBD * sizeof(float)) ||
         !ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->layer[0].attn_norm), rows)) {
         return false;

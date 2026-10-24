@@ -322,3 +322,79 @@ static bool minimax_gpu_bind(ds4_weights *w, const ds4_model *m) {
     return w->glmvq_gpu != NULL;
 }
 #endif
+
+/* Vision part (vision-bf16.gguf): tensor bindings checked at open; the
+ * forward lives in ds4_minimax_vision.inc. */
+enum { MM_VIS_LAYERS = 32, MM_VIS_FF = 5120, MM_VIS_OUT = 6144, MM_VIS_SEG_PAIRS = 4,
+       // Patches one pass holds (an image has at most 2,304): ~1.4 GiB of
+       // activations at the cap. Longer videos run in groups of whole segments,
+       // each group restaging the tower.
+       MM_VIS_MAX_ROWS = 12288 };
+
+typedef struct {
+    const ds4_tensor *ln1_w, *ln1_b, *q_w, *q_b, *k_w, *k_b, *v_w, *v_b, *o_w, *o_b;
+    const ds4_tensor *ln2_w, *ln2_b, *fc1_w, *fc1_b, *fc2_w, *fc2_b;
+} minimax_vision_layer;
+
+typedef struct {
+    bool bound;
+    const ds4_tensor *patch, *pre_w, *pre_b;
+    minimax_vision_layer layer[MM_VIS_LAYERS];
+    const ds4_tensor *p1_w, *p1_b, *p2_w, *p2_b, *m1_w, *m1_b, *m2_w, *m2_b;
+} ds4_minimax_vision;
+
+static const ds4_tensor *mm_vis_req(const ds4_model *m, const char *name, uint32_t type, uint64_t d0, uint64_t d1) {
+    const ds4_tensor *t = required_tensor(m, name);
+    if (t->type != type || t->ndim != (d1 ? 2u : 1u) || t->dim[0] != d0 || (d1 && t->dim[1] != d1)) {
+        ds4_die(name);
+    }
+    return t;
+}
+
+// Shapes as GGUF stores them: dim[0] is a Linear's input width.
+static void minimax_vision_bind(ds4_minimax_vision *v, const ds4_model *m) {
+    memset(v, 0, sizeof(*v));
+    ds4_str role = {0};
+    if (!model_get_string(m, "minimax_m3_vq.part_role", &role) || !ds4_streq(role, "vision")) {
+        ds4_die("MiniMax vision part has no minimax_m3_vq.part_role vision");
+    }
+    const uint32_t BF = DS4_TENSOR_BF16;
+    v->patch = mm_vis_req(m, "vision_tower.vision_model.embeddings.patch_embedding.weight", DS4_TENSOR_F32,
+        DS4_MINIMAX_VIT_PATCH, DS4_MINIMAX_VIT_DIM);
+    v->pre_w = mm_vis_req(m, "vision_tower.vision_model.pre_layrnorm.weight", BF, DS4_MINIMAX_VIT_DIM, 0);
+    v->pre_b = mm_vis_req(m, "vision_tower.vision_model.pre_layrnorm.bias", BF, DS4_MINIMAX_VIT_DIM, 0);
+    for (uint32_t il = 0; il < MM_VIS_LAYERS; il++) {
+        minimax_vision_layer *l = &v->layer[il];
+        char name[128];
+#define MM_VIS_BIND(field, suffix, d0, d1) do { \
+            snprintf(name, sizeof(name), "vision_tower.vision_model.encoder.layers.%u.%s", il, suffix); \
+            l->field = mm_vis_req(m, name, BF, d0, d1); \
+        } while (0)
+        MM_VIS_BIND(ln1_w, "layer_norm1.weight", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(ln1_b, "layer_norm1.bias", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(q_w, "self_attn.q_proj.weight", DS4_MINIMAX_VIT_DIM, DS4_MINIMAX_VIT_DIM);
+        MM_VIS_BIND(q_b, "self_attn.q_proj.bias", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(k_w, "self_attn.k_proj.weight", DS4_MINIMAX_VIT_DIM, DS4_MINIMAX_VIT_DIM);
+        MM_VIS_BIND(k_b, "self_attn.k_proj.bias", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(v_w, "self_attn.v_proj.weight", DS4_MINIMAX_VIT_DIM, DS4_MINIMAX_VIT_DIM);
+        MM_VIS_BIND(v_b, "self_attn.v_proj.bias", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(o_w, "self_attn.out_proj.weight", DS4_MINIMAX_VIT_DIM, DS4_MINIMAX_VIT_DIM);
+        MM_VIS_BIND(o_b, "self_attn.out_proj.bias", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(ln2_w, "layer_norm2.weight", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(ln2_b, "layer_norm2.bias", DS4_MINIMAX_VIT_DIM, 0);
+        MM_VIS_BIND(fc1_w, "mlp.fc1.weight", DS4_MINIMAX_VIT_DIM, MM_VIS_FF);
+        MM_VIS_BIND(fc1_b, "mlp.fc1.bias", MM_VIS_FF, 0);
+        MM_VIS_BIND(fc2_w, "mlp.fc2.weight", MM_VIS_FF, DS4_MINIMAX_VIT_DIM);
+        MM_VIS_BIND(fc2_b, "mlp.fc2.bias", DS4_MINIMAX_VIT_DIM, 0);
+#undef MM_VIS_BIND
+    }
+    v->p1_w = mm_vis_req(m, "multi_modal_projector.linear_1.weight", BF, DS4_MINIMAX_VIT_DIM, MM_VIS_OUT);
+    v->p1_b = mm_vis_req(m, "multi_modal_projector.linear_1.bias", BF, MM_VIS_OUT, 0);
+    v->p2_w = mm_vis_req(m, "multi_modal_projector.linear_2.weight", BF, MM_VIS_OUT, MM_VIS_OUT);
+    v->p2_b = mm_vis_req(m, "multi_modal_projector.linear_2.bias", BF, MM_VIS_OUT, 0);
+    v->m1_w = mm_vis_req(m, "patch_merge_mlp.linear_1.weight", BF, 4 * MM_VIS_OUT, MM_VIS_OUT);
+    v->m1_b = mm_vis_req(m, "patch_merge_mlp.linear_1.bias", BF, MM_VIS_OUT, 0);
+    v->m2_w = mm_vis_req(m, "patch_merge_mlp.linear_2.weight", BF, MM_VIS_OUT, MM_VIS_OUT);
+    v->m2_b = mm_vis_req(m, "patch_merge_mlp.linear_2.bias", BF, MM_VIS_OUT, 0);
+    v->bound = true;
+}

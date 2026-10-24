@@ -107,6 +107,7 @@ pub use mimo2::{
     MIXED_SHARDS, MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START,
     VISION_END, VISION_START,
 };
+pub use minimax_vq::media as minimax_media;
 pub use minimax_vq::Feature as MinimaxFeature;
 pub use payload::{
     dump_cmd as payload_dump_cmd, dump_script as payload_dump_script, encode_fields, parse_prefix,
@@ -191,13 +192,14 @@ use ds4_sys::{
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
     ds4_bridge_session_load_layer_payload, ds4_bridge_session_load_payload,
     ds4_bridge_session_load_payload_range, ds4_bridge_session_load_snapshot,
-    ds4_bridge_session_output_head_bench, ds4_bridge_session_power, ds4_bridge_session_prefill_cap,
-    ds4_bridge_session_rewind, ds4_bridge_session_sample, ds4_bridge_session_sample_excluding,
+    ds4_bridge_session_output_head_bench, ds4_bridge_session_payload_bytes,
+    ds4_bridge_session_power, ds4_bridge_session_prefill_cap, ds4_bridge_session_rewind,
+    ds4_bridge_session_sample, ds4_bridge_session_sample_excluding,
     ds4_bridge_session_save_layer_payload, ds4_bridge_session_save_payload,
     ds4_bridge_session_save_snapshot, ds4_bridge_session_set_power, ds4_bridge_session_sync,
     ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
     ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
-    ds4_bridge_session_payload_bytes, ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
+    ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
     ds4_bridge_sync_step37, ds4_bridge_token_score, ds4_bridge_vision_info,
     ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
     ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
@@ -1921,6 +1923,11 @@ impl Model {
             return Err(fail(check, &err));
         }
         let c_path = cstring_path(path)?;
+        // MiniMax maps its release's vision part (read only for media).
+        if identified.shape.family == ModelFamily::MinimaxVq {
+            tuning.vision_path =
+                minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
+        }
         let vision_path = tuning
             .vision_path
             .as_deref()
@@ -2736,6 +2743,121 @@ impl Session<'_> {
                 counts.as_ptr(),
                 ptrs.as_ptr(),
                 spans.len() as u32,
+                tag,
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(ids);
+        Ok(())
+    }
+
+    /// Language rows [tokens][6144] of one MiniMax image or video.
+    pub fn minimax_vision_rows(&self, visual: &minimax_media::Visual) -> Result<Vec<f32>> {
+        if visual.patches.len()
+            != (visual.grid_t * visual.grid_h * visual.grid_w) as usize
+                * minimax_media::PATCH_VALUES
+        {
+            return Err(Error {
+                code: 1,
+                message: "MiniMax patches do not match their grid".into(),
+            });
+        }
+        let mut out = vec![0.0f32; visual.tokens() as usize * 6144];
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_minimax_encode_vision(
+                self.raw.as_ptr(),
+                visual.patches.as_ptr(),
+                visual.grid_t,
+                visual.grid_h,
+                visual.grid_w,
+                out.as_mut_ptr(),
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        Ok(out)
+    }
+
+    /// A MiniMax prompt whose image (200025) and video (200026) pad runs,
+    /// in order, take the rows of `visuals` (each image one run, each video
+    /// one run per frame pair), encoded by the release's vision part.
+    pub fn sync_minimax_media(
+        &mut self,
+        tokens: &TokenBuffer,
+        visuals: &[&minimax_media::Visual],
+    ) -> Result<()> {
+        use minimax_media::{IMAGE_PAD, VIDEO_PAD};
+        self.check_sync(tokens)?;
+        let ids = tokens.as_slice();
+        const WIDTH: usize = 6144;
+        let rows = visuals
+            .iter()
+            .map(|visual| self.minimax_vision_rows(visual))
+            .collect::<Result<Vec<_>>>()?;
+        let (mut starts, mut counts, mut ptrs) = (Vec::new(), Vec::new(), Vec::<*const f32>::new());
+        let (mut visual, mut row) = (0usize, 0u32);
+        let mut index = 0usize;
+        while index < ids.len() {
+            let pad = ids[index];
+            if pad != IMAGE_PAD && pad != VIDEO_PAD {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < ids.len() && ids[index] == pad {
+                index += 1;
+            }
+            let count = (index - start) as u32;
+            let Some(v) = visuals.get(visual) else {
+                return Err(Error {
+                    code: 1,
+                    message: "MiniMax prompt has more media pads than inputs".into(),
+                });
+            };
+            if count != v.pair_tokens() && count != v.tokens() || row + count > v.tokens() {
+                return Err(Error {
+                    code: 1,
+                    message: "MiniMax media pads do not match their input".into(),
+                });
+            }
+            starts.push(start as u32);
+            counts.push(count);
+            ptrs.push(rows[visual][row as usize * WIDTH..].as_ptr());
+            row += count;
+            if row == v.tokens() {
+                visual += 1;
+                row = 0;
+            }
+        }
+        if visual != visuals.len() {
+            return Err(Error {
+                code: 1,
+                message: "MiniMax media inputs without pads".into(),
+            });
+        }
+        let tag = visuals
+            .iter()
+            .fold(0x9e37_79b9_7f4a_7c15u64, |h, v| h.rotate_left(17) ^ v.tag())
+            | 1;
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_minimax_sync_media(
+                self.raw.as_ptr(),
+                ids.as_ptr(),
+                ids.len() as i32,
+                starts.as_ptr(),
+                counts.as_ptr(),
+                ptrs.as_ptr(),
+                starts.len() as u32,
                 tag,
                 err.as_mut_ptr().cast(),
                 err.len(),

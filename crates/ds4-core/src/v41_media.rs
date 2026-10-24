@@ -264,7 +264,7 @@ fn pil_clip8(ss: i64) -> u8 {
 
 /// Horizontal then vertical pass (`ImagingResampleInner` order); a dimension
 /// that does not change is skipped, as PIL does (`core_v41_image.c:99-127`).
-fn pil_resize_rgb(input: &[u8], w: u32, h: u32, tw: u32, th: u32) -> Vec<u8> {
+pub(crate) fn pil_resize_rgb(input: &[u8], w: u32, h: u32, tw: u32, th: u32) -> Vec<u8> {
     let mut cur = input.to_vec();
     let mut cw = w;
     let half: i64 = 1 << (PIL_PRECISION_BITS - 1);

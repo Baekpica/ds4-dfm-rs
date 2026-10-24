@@ -78,6 +78,11 @@ static int minimax_payload_save(ds4_minimax_graph *g, const int *tokens, uint32_
             payload_set_err(err, errlen, "invalid MiniMax snapshot token");
             return 1;
         }
+        // Tokens alone do not name the pixels behind image and video pads.
+        if (tokens[i] == 200025 || tokens[i] == 200026) {
+            payload_set_err(err, errlen, "MiniMax snapshots refuse media prompts");
+            return 1;
+        }
     }
     for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
         if (!isfinite(logits[i])) { payload_set_err(err, errlen, "invalid MiniMax snapshot logits"); return 1; }
@@ -108,6 +113,7 @@ static int minimax_payload_restore(ds4_minimax_graph *g, FILE *fp, uint64_t *lef
     /* A failed or partial restore can never be reused as a committed prefix. */
     g->failed = true;
     g->position = 0;
+    g->checkpoint_tag = 0;
     *tokens_out = NULL;
     const uint32_t n = h[7];
     if (!g->ready || !n || n > g->ctx_cap || h[0] != DS4_SESSION_PAYLOAD_MAGIC ||

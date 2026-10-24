@@ -8,6 +8,7 @@
 //! never expand experts or copy a part.
 
 mod layout;
+pub mod media;
 mod model;
 mod release;
 
@@ -80,6 +81,11 @@ fn q4_scales_finite(scales: &[u8]) -> bool {
 /// The f16 scale at the start of a Q8_0 block is finite.
 fn q8_scale_finite(scale: &[u8]) -> bool {
     u16::from_le_bytes([scale[0], scale[1]]) & 0x7c00 != 0x7c00
+}
+
+/// The release's vision part (image and video input), when it ships one.
+pub(crate) fn vision_path(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    release::vision_path(root).ok().flatten()
 }
 
 /// The DSpark drafter rides along when speculative decoding is requested
