@@ -1710,3 +1710,235 @@ int h3d_video_qkv_rope_f32(h3d_context *context, h3d_tensor *query,
         epsilon);
     return h3d_launch_ok("F32 video QKV RoPE", error, error_size);
 }
+
+/* ---------------------------------------------------------------------------
+ * F32 primitives for the VideoVAE encoder (`h3_video_encoder.c`). Same source
+ * of truth, same expression order: the encoder's gate compares the latent hash
+ * bit for bit against the reference, so the reduction tree and the padding
+ * rule are not free choices.
+ * ------------------------------------------------------------------------- */
+
+static __device__ int h3d_reflect(int coordinate, int length) {
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= length) return 2 * length - coordinate - 2;
+    return coordinate;
+}
+
+/* `h3_vae_pad_kernel` (`h3_gpu_cuda.cu:1974-2000`). */
+__global__ static void h3d_vae_pad_kernel(
+    float *output, const float *input, uint32_t batch, uint32_t depth,
+    uint32_t height, uint32_t width, uint32_t channels, uint32_t depth_front,
+    uint32_t height_before, uint32_t height_after, uint32_t width_before,
+    uint32_t width_after) {
+    uint32_t channel = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t output_x = blockIdx.y;
+    uint32_t plane = blockIdx.z;
+    uint32_t output_depth = depth + depth_front;
+    uint32_t output_height = height + height_before + height_after;
+    uint32_t output_width = width + width_before + width_after;
+    if (channel >= channels || output_x >= output_width ||
+        plane >= batch * output_depth * output_height) return;
+    uint32_t output_y = plane % output_height;
+    uint32_t temporal = plane / output_height;
+    uint32_t output_t = temporal % output_depth;
+    uint32_t batch_index = temporal / output_depth;
+    size_t destination = ((((size_t)batch_index * output_depth + output_t) *
+        output_height + output_y) * output_width + output_x) * channels +
+        channel;
+    if (output_t < depth_front) { output[destination] = 0.0f; return; }
+    int source_y = h3d_reflect((int)output_y - (int)height_before, (int)height);
+    int source_x = h3d_reflect((int)output_x - (int)width_before, (int)width);
+    uint32_t source_t = output_t - depth_front;
+    size_t source = ((((size_t)batch_index * depth + source_t) * height +
+        (uint32_t)source_y) * width + (uint32_t)source_x) * channels + channel;
+    output[destination] = input[source];
+}
+
+int h3d_vae_encoder_pad(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, uint32_t batch,
+                        uint32_t depth, uint32_t height, uint32_t width,
+                        uint32_t channels, uint32_t depth_front,
+                        uint32_t height_before, uint32_t height_after,
+                        uint32_t width_before, uint32_t width_after,
+                        char *error, size_t error_size) {
+    if (!context || !batch || !depth || height < 2 || width < 2 || !channels ||
+        height_before >= height || height_after >= height ||
+        width_before >= width || width_after >= width) {
+        return h3d_set_error(error, error_size, "invalid VAE padding shape");
+    }
+    uint64_t output_depth = (uint64_t)depth + depth_front;
+    uint64_t output_height = (uint64_t)height + height_before + height_after;
+    uint64_t output_width = (uint64_t)width + width_before + width_after;
+    size_t input_elements, output_elements;
+    if (output_depth > UINT32_MAX || output_height > UINT32_MAX ||
+        output_width > UINT32_MAX ||
+        !h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)batch * (size_t)output_depth *
+                      (size_t)output_height * (size_t)output_width, channels,
+                      &output_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(output, H3D_F32, output_elements)) {
+        return h3d_set_error(error, error_size, "invalid VAE padding tensors");
+    }
+    dim3 grid((channels + 127) / 128, (uint32_t)output_width,
+              (uint32_t)((uint64_t)batch * output_depth * output_height));
+    h3d_vae_pad_kernel<<<grid, 128, 0, context->stream>>>(
+        (float *)output->data, (const float *)input->data, batch, depth,
+        height, width, channels, depth_front, height_before, height_after,
+        width_before, width_after);
+    return h3d_launch_ok("VAE encoder padding", error, error_size);
+}
+
+/* `h3_conv3d_kernel` (`:2034-2073`). */
+__global__ static void h3d_conv3d_kernel(
+    float *output, const float *input, const float *weight, const float *bias,
+    uint32_t depth, uint32_t height, uint32_t width, uint32_t input_channels,
+    uint32_t output_channels, uint32_t kernel_depth, uint32_t kernel_height,
+    uint32_t kernel_width, uint32_t stride_depth, uint32_t stride_height,
+    uint32_t stride_width, uint32_t output_depth, uint32_t output_height,
+    uint32_t output_width, size_t output_elements, int has_bias) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= output_elements) return;
+    uint32_t output_channel = (uint32_t)(index % output_channels);
+    size_t row = index / output_channels;
+    uint32_t spatial_count = output_depth * output_height * output_width;
+    uint32_t spatial = (uint32_t)(row % spatial_count);
+    uint32_t batch_index = (uint32_t)(row / spatial_count);
+    uint32_t output_x = spatial % output_width;
+    uint32_t output_y = (spatial / output_width) % output_height;
+    uint32_t output_t = spatial / (output_width * output_height);
+    if (output_t >= output_depth) return;
+    float sum = has_bias ? bias[output_channel] : 0.0f;
+    for (uint32_t input_channel = 0; input_channel < input_channels;
+         input_channel++)
+        for (uint32_t kt = 0; kt < kernel_depth; kt++)
+            for (uint32_t ky = 0; ky < kernel_height; ky++)
+                for (uint32_t kx = 0; kx < kernel_width; kx++) {
+                    uint32_t it = output_t * stride_depth + kt;
+                    uint32_t iy = output_y * stride_height + ky;
+                    uint32_t ix = output_x * stride_width + kx;
+                    size_t input_index = ((((size_t)batch_index * depth + it) *
+                        height + iy) * width + ix) * input_channels +
+                        input_channel;
+                    size_t weight_index = (((((size_t)output_channel *
+                        input_channels + input_channel) * kernel_depth + kt) *
+                        kernel_height + ky) * kernel_width + kx);
+                    sum = fmaf(input[input_index], weight[weight_index], sum);
+                }
+    size_t destination = ((((size_t)batch_index * output_depth + output_t) *
+        output_height + output_y) * output_width + output_x) * output_channels +
+        output_channel;
+    output[destination] = sum;
+}
+
+int h3d_conv3d(h3d_context *context, h3d_tensor *output,
+               const h3d_tensor *input, const h3d_tensor *weight,
+               const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+               uint32_t height, uint32_t width, uint32_t input_channels,
+               uint32_t output_channels, uint32_t kernel_depth,
+               uint32_t kernel_height, uint32_t kernel_width,
+               uint32_t stride_depth, uint32_t stride_height,
+               uint32_t stride_width, char *error, size_t error_size) {
+    if (!context || !batch || !depth || !height || !width || !input_channels ||
+        !output_channels || !kernel_depth || !kernel_height || !kernel_width ||
+        !stride_depth || !stride_height || !stride_width ||
+        depth < kernel_depth || height < kernel_height ||
+        width < kernel_width) {
+        return h3d_set_error(error, error_size, "invalid Conv3d shape");
+    }
+    uint32_t od = (depth - kernel_depth) / stride_depth + 1;
+    uint32_t oh = (height - kernel_height) / stride_height + 1;
+    uint32_t ow = (width - kernel_width) / stride_width + 1;
+    size_t input_elements, weight_elements, output_elements;
+    if (!h3d_mul_size((size_t)batch * depth * height * width, input_channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)output_channels * input_channels *
+                      kernel_depth * kernel_height, kernel_width,
+                      &weight_elements) ||
+        !h3d_mul_size((size_t)batch * od * oh * ow, output_channels,
+                      &output_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(weight, H3D_F32, weight_elements) ||
+        !h3d_is(output, H3D_F32, output_elements) ||
+        (bias && !h3d_is(bias, H3D_F32, output_channels))) {
+        return h3d_set_error(error, error_size, "invalid Conv3d tensors");
+    }
+    h3d_conv3d_kernel<<<(output_elements + 255) / 256, 256, 0,
+                        context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data,
+        bias ? (const float *)bias->data : (const float *)input->data,
+        depth, height, width, input_channels, output_channels, kernel_depth,
+        kernel_height, kernel_width, stride_depth, stride_height, stride_width,
+        od, oh, ow, output_elements, bias != NULL);
+    return h3d_launch_ok("Conv3d", error, error_size);
+}
+
+/* `h3_group_norm_silu_kernel` (`:2114-2151`). */
+__global__ static void h3d_group_norm_silu_kernel(
+    float *output, const float *input, const float *weight, const float *bias,
+    uint32_t height, uint32_t width, uint32_t channels, uint32_t groups,
+    uint32_t rows, float epsilon) {
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= rows) return;
+    uint32_t channels_per_group = channels / groups;
+    uint32_t group = row % groups;
+    uint32_t temporal = row / groups;
+    uint32_t elements = height * width * channels_per_group;
+    float mean = 0.0f;
+    for (uint32_t index = 0; index < elements; index++) {
+        uint32_t spatial = index / channels_per_group;
+        uint32_t channel = group * channels_per_group + index % channels_per_group;
+        mean += input[((size_t)temporal * height * width + spatial) * channels +
+                      channel];
+    }
+    mean /= (float)elements;
+    float variance = 0.0f;
+    for (uint32_t index = 0; index < elements; index++) {
+        uint32_t spatial = index / channels_per_group;
+        uint32_t channel = group * channels_per_group + index % channels_per_group;
+        float centered = input[((size_t)temporal * height * width + spatial) *
+                               channels + channel] - mean;
+        variance = fmaf(centered, centered, variance);
+    }
+    float inverse = rsqrtf(variance / (float)elements + epsilon);
+    for (uint32_t index = 0; index < elements; index++) {
+        uint32_t spatial = index / channels_per_group;
+        uint32_t channel = group * channels_per_group + index % channels_per_group;
+        size_t destination = ((size_t)temporal * height * width + spatial) *
+                             channels + channel;
+        float value = (input[destination] - mean) * inverse * weight[channel] +
+                      bias[channel];
+        output[destination] = value / (1.0f + expf(-value));
+    }
+}
+
+int h3d_group_norm_silu(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, const h3d_tensor *weight,
+                        const h3d_tensor *bias, uint32_t batch,
+                        uint32_t depth, uint32_t height, uint32_t width,
+                        uint32_t channels, uint32_t groups, float epsilon,
+                        char *error, size_t error_size) {
+    size_t elements;
+    uint64_t rows64 = (uint64_t)batch * depth * groups;
+    if (!context || !batch || !depth || !height || !width || !channels ||
+        !groups || channels % groups || !(epsilon > 0.0f) ||
+        rows64 > UINT32_MAX ||
+        !h3d_mul_size((size_t)batch * depth * height * width, channels,
+                      &elements) ||
+        !h3d_is(input, H3D_F32, elements) ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(weight, H3D_F32, channels) ||
+        !h3d_is(bias, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size,
+                             "invalid VAE group norm tensors or shape");
+    }
+    uint32_t rows = (uint32_t)rows64;
+    h3d_group_norm_silu_kernel<<<(rows + 127) / 128, 128, 0,
+                                 context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data, (const float *)bias->data, height, width,
+        channels, groups, rows, epsilon);
+    return h3d_launch_ok("VAE group norm SiLU", error, error_size);
+}

@@ -436,6 +436,31 @@ and 7.028 s against 8.570 s at 512x512. The goldens are in
 Ref2VA (`h3_multimodal.c:243-360`) remains unported: it needs the ordered
 audio/video reference surface from units 4-5, not just the presentation.
 
+**Unit 4 landed** (`vae_encoder.rs`, `h3d_vae_encoder_pad` / `h3d_conv3d` /
+`h3d_group_norm_silu` in `native/h3/h3_dit_gpu.cu`, `h3_video_encoder_gate`,
+`video_encoder_probe.c`): the encoder graph, the tile plan, the stitched
+border and the released normalization. Three facts read from the reference
+rather than assumed:
+
+- The encoder's tile axis has no size search, unlike the decoder's: the count
+  is `ceil(extent/256)`, raised while `256*count - 64*(count-1) < extent`, and
+  the leftover is handed out 16 px at a time, first gap first
+  (`h3_video_encoder.c:611-651`). 512 px is three tiles with both gaps at 128.
+- The blend is positional, not a fixed ramp: an incoming tile's first rows are
+  mixed with the previous tile's tail at weight `position/overlap`, written at
+  destination `start/16` (`:676-743`).
+- The latent time is `div_ceil(frames, 4)` (`h3_host.c:30-32`), so five frames
+  give `t = 2` and one frame `t = 1`, which is what the anchor path uses.
+
+Gated on the Spark on 2026-10-24 against `video_encoder_probe.c` with the
+pilot image at 512x192, the fox clip's five frames at 512x192 and the pilot
+image at 512x320 (two tile rows, so a vertical 64 px blend): the pixel hash and
+the latent hash are equal at all three (LATENT `ca995ec30255b666` /
+`d039bbcf2a108277` / `e67374beb0e376bc`, 3, 3 and 6 tiles). Encoder wall time,
+port against reference: 13.460/12.824 s, 45.258/45.195 s, 34.540/34.240 s. The
+goldens are in `h3_video_encoder_gate.rs`; seven device-free tests cover the
+tile plan, the stitch and the temporal rule.
+
 ## P12.6 — The remaining reference surface
 
 The surfaces that are neither conditioning nor the test suite, each with its

@@ -467,6 +467,15 @@ tests/h3_multimodal_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_multimodal_gate" $@
 
+# The VideoVAE encoder's pad/conv/group-norm primitives live in the DiT object
+# (one translation unit per family), so this gate links it alone.
+tests/h3_video_encoder_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
+	cargo rustc -p ds4-core --example h3_video_encoder_gate --release --features h3-gates -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
+	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_video_encoder_gate" $@
+
 # The h3 renderer: the CLI binary plus both h3 device objects. It deliberately
 # does not link the bridge or the core objects: the h3 path reaches only the
 # `h3d_` ABI, so the binary also builds in a tree that carries the h3 sources

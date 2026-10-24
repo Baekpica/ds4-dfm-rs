@@ -417,6 +417,66 @@ unsafe extern "C" {
         error: *mut c_char,
         error_size: usize,
     ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_vae_encoder_pad(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        depth_front: u32,
+        height_before: u32,
+        height_after: u32,
+        width_before: u32,
+        width_after: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_conv3d(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel_depth: u32,
+        kernel_height: u32,
+        kernel_width: u32,
+        stride_depth: u32,
+        stride_height: u32,
+        stride_width: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    #[allow(clippy::too_many_arguments)]
+    fn h3d_group_norm_silu(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
 }
 
 /// `h3d_dtype`.
@@ -1380,6 +1440,138 @@ impl Gpu {
                 )
             },
             "video_qkv_rope_f32",
+        )
+    }
+
+    /// `h3_gpu_vae_encoder_pad_f32` (`h3_gpu_cuda.cu:2002-2043`): zeros in
+    /// front of the temporal axis, single-reflection spatial padding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn vae_encoder_pad(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        depth_front: u32,
+        height_before: u32,
+        height_after: u32,
+        width_before: u32,
+        width_after: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_vae_encoder_pad(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    depth_front,
+                    height_before,
+                    height_after,
+                    width_before,
+                    width_after,
+                    error,
+                    size,
+                )
+            },
+            "vae_encoder_pad",
+        )
+    }
+
+    /// `h3_gpu_conv3d_f32` (`h3_gpu_cuda.cu:2075-2127`): valid convolution
+    /// over an already padded tensor, the reference's fmaf order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv3d(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: [u32; 3],
+        stride: [u32; 3],
+    ) -> Result<(), String> {
+        let bias_raw: *const CTensor = match bias {
+            Some(tensor) => tensor.raw(),
+            None => std::ptr::null(),
+        };
+        self.call(
+            |error, size| unsafe {
+                h3d_conv3d(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias_raw,
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    input_channels,
+                    output_channels,
+                    kernel[0],
+                    kernel[1],
+                    kernel[2],
+                    stride[0],
+                    stride[1],
+                    stride[2],
+                    error,
+                    size,
+                )
+            },
+            "conv3d",
+        )
+    }
+
+    /// `h3_gpu_vae_encoder_group_norm_silu_f32` (`:2153-2178`): one thread per
+    /// (temporal, group) row, then the SiLU epilogue.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_silu(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        batch: u32,
+        depth: u32,
+        height: u32,
+        width: u32,
+        channels: u32,
+        groups: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_group_norm_silu(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    batch,
+                    depth,
+                    height,
+                    width,
+                    channels,
+                    groups,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "group_norm_silu",
         )
     }
 

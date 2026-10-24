@@ -271,6 +271,45 @@ int h3d_video_qkv_rope_f32(h3d_context *context, h3d_tensor *query,
                            uint32_t rope_half, float epsilon, char *error,
                            size_t error_size);
 
+/* ---- F32 primitives the VideoVAE encoder needs (`h3_video_encoder.c`) ---- */
+
+/* `h3_gpu_vae_encoder_pad_f32` (`h3_gpu_cuda.cu:2002-2043`) with
+ * `h3_vae_pad_kernel` (`:1974-2000`): `depth_front` zeros in front, then a
+ * single-reflection spatial pad (`h3_reflect`, `:1969-1973`). The temporal
+ * axis is never reflected: the encoder pads time with zeros only. */
+int h3d_vae_encoder_pad(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, uint32_t batch,
+                        uint32_t depth, uint32_t height, uint32_t width,
+                        uint32_t channels, uint32_t depth_front,
+                        uint32_t height_before, uint32_t height_after,
+                        uint32_t width_before, uint32_t width_after,
+                        char *error, size_t error_size);
+
+/* `h3_gpu_conv3d_f32` (`:2075-2127`) with `h3_conv3d_kernel` (`:2034-2073`):
+ * one thread per output element, bias seeded before the first tap, then the
+ * reference's fmaf order (input channel, kt, ky, kx). Weights are
+ * `[output_channel, input_channel, kt, ky, kx]`. */
+int h3d_conv3d(h3d_context *context, h3d_tensor *output,
+               const h3d_tensor *input, const h3d_tensor *weight,
+               const h3d_tensor *bias, uint32_t batch, uint32_t depth,
+               uint32_t height, uint32_t width, uint32_t input_channels,
+               uint32_t output_channels, uint32_t kernel_depth,
+               uint32_t kernel_height, uint32_t kernel_width,
+               uint32_t stride_depth, uint32_t stride_height,
+               uint32_t stride_width, char *error, size_t error_size);
+
+/* `h3_gpu_vae_encoder_group_norm_silu_f32` (`:2153-2178`) with
+ * `h3_group_norm_silu_kernel` (`:2114-2151`): one thread per
+ * (temporal, group) row, spatial-major accumulation inside the group, a plain
+ * running sum for the mean, an fmaf variance, then `value / (1 + expf(-value))`
+ * with the per-channel weight and bias applied first. */
+int h3d_group_norm_silu(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *input, const h3d_tensor *weight,
+                        const h3d_tensor *bias, uint32_t batch,
+                        uint32_t depth, uint32_t height, uint32_t width,
+                        uint32_t channels, uint32_t groups, float epsilon,
+                        char *error, size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif

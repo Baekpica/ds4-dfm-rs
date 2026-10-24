@@ -42,6 +42,7 @@ pub mod text_rope;
 pub mod text_weights;
 pub mod tokenizer;
 pub mod vae_audio;
+pub mod vae_encoder;
 pub mod vae_store;
 pub mod vae_video;
 pub mod video_api;
