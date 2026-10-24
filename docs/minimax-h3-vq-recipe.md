@@ -93,10 +93,11 @@ W[r, 8j + d] = float32(gain[r]) * float32(codebook[index[r, j]][d])
 
 | Parameter | Value | Why this value here |
 |---|---|---|
-| Vector dimension | 4 or 8, set by the rung below | rate–distortion says wider is better per bit; the memory budget says H3 can afford narrower and more bits, which is the quality end |
-| Codebook size K | 4096, 8192 or 16384, set by the rung | the hard limit is shared memory: K × dim × codeword bytes must fit ~66 KiB beside the staging a dense GEMM needs |
-| Codebook precision | F16 at dim 4 / K 4096; E4M3 above | 2 bytes per codeword doubles the book; at K 4096 dim 4 an F16 book is 32 KiB and fits, at K 8192 dim 8 it is 128 KiB and does not |
-| Index bits | 12, 13 or 14, set by the rung | H3 is not size-constrained, so the rungs run from 1.625 to 3.5 bits per weight and the quality gate picks among them |
+| Vector dimension | 8 | one index codes 8 consecutive weights, so the same index width costs half what dim 4 costs; and an E4M3 codeword is then exactly one `m16n8k32` B fragment the MMA consumes without conversion |
+| Codebook size K | 8192 (13 bits) | the widest book whose E4M3 form is 64 KiB, which leaves ~35 KiB of staging inside GB10's 99 KiB of shared memory |
+| Codebook precision | E4M3FN | 1 byte per codeword: 64 KiB at dim 8 / K 8192, where F16 would be 128 KiB and not fit — and it is the form the GB10 MMA path wants |
+| Index bits | 13, as a 12-bit stream plus a 1-bit plane | GVQ1 v1's layout, byte-identical with and without the residual stage; 14 bits would need a 128 KiB book |
+| Residual stage | GVR8, K = 256, a second E4M3 book, one index byte per 8 weights | +1 bit per 8 weights on the blocks a per-block sweep ranks worst; the way to buy accuracy once the book stops fitting |
 | Codebook scope | one per matrix (260 books) | H3 is dense: every matrix is large, so nothing is gained by sharing, and a per-matrix book removes cross-tensor interference |
 | Row gains | one F16 per row, 8,115,968 rows | the format's only scale; 16.2 MB total, shared by a residual stage if present |
 | Lloyd | 32 iterations, `init: equidistant` | deterministic by construction: no random source, same input yields the same bytes |
@@ -108,42 +109,54 @@ W[r, 8j + d] = float32(gain[r]) * float32(codebook[index[r, j]][d])
 | Residual stage | GVR8, K = 256, 8 bits, on chosen blocks only | +1 bit per weight where a per-block sweep says it pays; the only departure from uniform, and it is measured per block |
 
 **Byte accounts** (arithmetic from section 1.5; 33.100B quantizable params,
-8,115,968 rows, 260 matrices). `bpw = index bits + 16/dim`, because a dim-4
-vector carries 16 bits per index more than a dim-8 one at the same table size;
-the artifact is therefore reachable in steps of 0.125 bits per weight, and the
-only constraint on how far up the ladder goes is the codebook's size in shared
-memory.
+8,115,968 rows, 260 matrices). The rate is `index bits / dim`, because one index
+codes one vector of `dim` weights — so at equal index bits a dim-8 matrix costs
+*half* what the same matrix costs at dim 4, and dim 4 only reaches a high bits
+per weight by carrying more index bits.
 
-| Rung | dim | K | Bits | bpw | Codes | Books | Artifact | GiB | Book in smem |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| A — reference shape | 8 | 8192 | 13 | 1.625 | 6.723 GB | 17.2 MB | 6.757 GB | 6.29 | 64 KiB |
-| B | 4 | 4096 | 12 | 1.500 | 6.206 GB | 8.6 MB | 6.231 GB | 5.80 | 32 KiB |
-| **C — quality end** | **4** | **4096** | **13** | **1.625** | **6.723 GB** | **8.6 MB** | **6.748 GB** | **6.28** | **32 KiB** |
-| D | 4 | 8192 | 13 | 1.625 | 6.723 GB | 17.2 MB | 6.757 GB | 6.29 | 64 KiB |
-| E | 4 | 4096 | 14 | 1.750 | 7.241 GB | 8.6 MB | 7.266 GB | 6.77 | 32 KiB |
-| F | 4 | 8192 | 14 | 1.750 | 7.241 GB | 17.2 MB | 7.275 GB | 6.78 | 64 KiB |
-| G | 4 | 16384 | 14 | 1.750 | 7.241 GB | 34.3 MB | 7.292 GB | 6.79 | 128 KiB — does not fit |
-| H (priced, not offered) | 4 | 65536 | 16 | 2.000 | 8.275 GB | 69 MB | 8.360 GB | 7.79 | 512 KiB — no |
-| + GVR8 residual | — | — | +1 bit per 8 weights on chosen blocks | +0.125 avg | +0.52 GB / 20 blocks, +4.14 GB / 52 | +0.5 MB | — | — | 2 KiB |
+| Rung | dim | K | Bits | bpw | Codes | Books (per matrix) | Artifact | GiB | Book in smem |
+|---|---:|---:|---:|---:|---:|---|---:|---:|---:|
+| **A — the MiniMax-M3.1 shape** | **8** | **8192** | **13** | **1.625** | 6.723 GB | E4M3 64 KiB × 260 = 17.2 MB | **6.76 GB** | **6.29** | 64 KiB, fits |
+| B | 8 | 4096 | 12 | 1.500 | 6.206 GB | E4M3 32 KiB × 260 = 8.6 MB | 6.23 GB | 5.80 | 32 KiB, fits |
+| **A+8 — the recommended rung** | 8 | 8192 | 13 | 1.625 | 6.723 GB | + GVR8 K=256 2 KiB per chosen block | **7.0–7.3 GB** | 6.5–6.8 | 64 KiB + 2 KiB, fits |
+| C — the dense bake's measured shape | 4 | 4096 | 12 | 3.000 | 12.413 GB | F16 32 KiB × 260 = 8.6 MB | 12.44 GB | 11.6 | 32 KiB, fits |
+| D | 4 | 8192 | 13 | 3.250 | 13.447 GB | F16 64 KiB × 260 = 17.2 MB | 13.49 GB | 12.6 | 64 KiB, fits |
+| E | 4 | 16384 | 14 | 3.500 | 14.481 GB | F16 128 KiB × 260 | — | — | **does not fit** |
+| F | 8 | 16384 | 14 | 1.750 | 7.241 GB | E4M3 128 KiB × 260 | — | — | **does not fit** |
+| + GVR8 residual | — | — | +1 bit per 8 weights, chosen blocks | +0.125 avg | +0.2 GB on 20 blocks, +0.54 GB on all 52 | +2 KiB per book | — | — | 2 KiB |
 | BF16, as shipped | — | — | 16 | 16.0 | 66.20 GB | — | 66.28 GB | 61.73 | — |
 
-**Rung C is the one to build first**, and the reason is the measured ladder
-rather than the size: at equal bits dim 4 beats dim 8 (cosine 0.9869 against
-0.9218 on a dense bake, 0.9858 against 0.9144 on its vision FFN), and an F16
-codebook at K 4096 is what that measurement was taken with. Rung A is the same
-index bits with E4M3 codewords and dim 8 — the shape the operator's MiniMax
-release ships — and belongs in the same measurement, because the two answer
-opposite questions: A is cheaper in bits per parameter, C is better per bit.
-H3's budget can afford C, so C goes first and A stays as the comparison.
+**Rung A+8 is the one to build first**: the 13-bit GVQ1 v1 shape the operator's
+MiniMax-M3.1 release ships, with its R13+8 residual stage on the blocks a
+per-block sweep ranks worst. Three reasons, in order of weight:
 
-Rungs B, D, E and F, plus the residual, are the search space the quality gate
-walks if C does not clear the floor. Rung G and H are priced for completeness
-and rejected by the shared-memory limit: a K 16384 F16 codebook at dim 4 is
-128 KiB and a K 65536 one is 512 KiB, against the 99,344 B a block may opt into.
+1. **It is the only shape with published end-to-end evidence at exactly this
+   width.** 428B parameters at 13 bits with an 8-bit residual on 20 measured
+   MoE layers landed at KL 0.150 on assistant turns against a noise floor of
+   0.003, with 88.2% identical next tokens, and the residual cut the per-layer
+   weight error about threefold (relative MSE 0.150–0.175 to 0.051–0.068). That
+   is a measurement on a MiniMax model, not an extrapolation.
+2. **The book has to fit 99 KiB of shared memory, and the residual is how you
+   buy bits once the book stops fitting.** A 14-bit book is 128 KiB at dim 8 and
+   128 KiB at dim 4 — neither fits, and 128 KiB of F16 at dim 4 is what rung E
+   costs. A second 256-entry stage costs 2 KiB per block and adds its bit only
+   where a measurement says it pays.
+3. **The E4M3 codeword is the form the GB10 MMA path consumes without
+   conversion** — one codeword is exactly an `m16n8k32` B fragment, one
+   `LDS.64`, no MOVs — whereas the F16 codewords rung C needs must be
+   converted before the MMA. That is a decode-path cost on every token, in the
+   opposite direction to the size.
 
-The rungs are not a menu of formats: every one is the same payload with a
-different header and a different book, so adding a rung is a header change and
-an encoder argument, not new software.
+Rung C stays in the ladder because it is the shape with the *dense* bake's
+measured quality curve, and because a matrix at 3.0 bits per weight is a
+genuinely different point on the rate–distortion curve: nearly twice the bits
+per weight of rung A. If rung A+8 clears the render floor, C is unnecessary; if
+it fails, C is the fallback that spends 5.7 GB more for more bits, before any
+of the 14-bit shapes that cannot fit.
+
+The rungs are not different formats: every one is the same payload with a
+different header, a different book and optionally a second stage, so adding a
+rung is a header change and an encoder argument, not new software.
 
 **Where the bits are.** The four classes are not equivalent, and the plan's
 gate reports them separately so a failing class can be split out:
@@ -426,13 +439,26 @@ the rung ladder is explored with, one matrix at a time, before a full encode.
 
 1. The statistics-to-imatrix step for H3 (section 6 step 3), which the dense
    bake ran corpus-free and which needs the reference's activation dump here.
-2. The `pq`/render gate harness: the reference binary, the frozen prompt set,
+2. **The E4M3 codebook path and the residual stage in the writer.** The
+   transferred converter writes F16 codebooks in the DQVQ payload layout
+   (`vq_qc_bytes.h:20`) — that is rung C, and it is what has been built and
+   exercised so far. Rung A needs the GVQ1 v1 13-bit layout with an E4M3 book;
+   rung A+8 needs the 256-entry second stage and the two-stage value rule. Both
+   are format work in the writer and the matching reader, and both are
+   prerequisites for the recommended rung rather than optional extras.
+3. The per-block residual sweep (the M3.1 method): convert one block at a time
+   to the residual stage, re-run the held-out measurement, take the blocks with
+   the largest drop. Its counterintuitive result is worth carrying — the middle
+   of the stack won, and the rule of thumb that protects the bottom layers
+   measured *worse* on the same byte budget (KL 0.171 against 0.150). For H3
+   the analogue is per DiT block, measured rather than assumed.
+4. The `pq`/render gate harness: the reference binary, the frozen prompt set,
    the SSIM/PSNR/LPIPS measurement and the per-class breakdown. The bake's
    analogue (`eg2_retrieval_score.sh`, `eg2_phase5_gate.sh`) is a scoring
    harness over a frozen input set, so the shape is there to copy, but the
    metrics are H3's.
-3. The runtime decode kernel in the port, as listed in the plan's P5 and P7.
+5. The runtime decode kernel in the port, as listed in the plan's P5 and P7.
 
 That is the whole difference between "a new converter" and "a converted
-converter": a classify table, a name list, a rung table, a recipe string, and
-the measurement harness.
+converter": a classify table, a name list, a rung table, a recipe string, two
+format additions (the E4M3 book and the residual), and the measurement harness.
