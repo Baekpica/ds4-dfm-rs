@@ -63,6 +63,10 @@ int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_t
  * for up to DS4_MINIMAX_SPLIT_ROWS rows, each computed as a lone row. */
 int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
     uint32_t cols, uint32_t outs, uint32_t rows);
+/* Two Q8_0 projections of one input at prefill widths (MMQ, the input
+ * quantized once): out0 = W0 x, out1 = W1 x. */
+int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, ds4_gpu_tensor *out1, uint32_t w0, uint32_t w1,
+    const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows);
 
 /* out = gemma_rms(x) over 6144-wide rows with a BF16 weight record. */
 int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *x,

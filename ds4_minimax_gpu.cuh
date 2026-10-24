@@ -675,6 +675,22 @@ extern "C" int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     return cuda_ok(cudaGetLastError(), "MiniMax Q8_0 rows");
 }
 
+// Prefill rows of the indexer's two Q8_0 projections over one input: MMQ
+// quantizes the input to Q8_1 once (it did once per projection), each
+// output as ds4_mmq_q8_0_dense computes it.
+extern "C" int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, ds4_gpu_tensor *out1, uint32_t w0,
+        uint32_t w1, const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows) {
+    const auto *a = (const uint8_t *)gvq_weight(ctx, w0, MM_TYPE_Q8_0, (uint64_t)outs0 * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES / 2);
+    const auto *b = (const uint8_t *)gvq_weight(ctx, w1, MM_TYPE_Q8_0, (uint64_t)outs1 * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES / 2);
+    if (!a || !b || !rows || !cols || cols % MM_Q8_BLOCK || !gvq_floats(input, (uint64_t)rows * cols) ||
+        !gvq_floats(out0, (uint64_t)rows * outs0) || !gvq_floats(out1, (uint64_t)rows * outs1) || !gvq_stream(ctx)) {
+        return 0;
+    }
+    return ds4_mmq_q8_0_dense_pair(a, b, (const float *)input->ptr, (float *)out0->ptr, (float *)out1->ptr, (int)outs0,
+        (int)outs1, (int)rows, (int)cols, ds4_mmq_stream_for_call()) == 0 &&
+        cuda_ok(cudaGetLastError(), "MiniMax indexer projections");
+}
+
 extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
         ds4_gpu_tensor *logits, const ds4_gpu_tensor *input, uint32_t router, uint32_t bias, uint32_t rows) {
     const auto *w = (const float *)gvq_weight(ctx, router, GVQ_TYPE_F32, (uint64_t)MM_EXPERTS * MM_HIDDEN);

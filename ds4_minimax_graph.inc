@@ -230,12 +230,15 @@ static bool minimax_mm_many(ds4_minimax_graph *g, const ds4_model *m, ds4_gpu_te
     return ok;
 }
 
-// The Q8_0 indexer projections (index_q [512], index_k [128]).
-static bool minimax_q8(ds4_minimax_graph *g, ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w,
-        uint64_t out_dim, const ds4_gpu_tensor *x, uint32_t rows) {
-    const bool ok = rows <= DS4_MINIMAX_SPLIT_ROWS
-        ? ds4_gpu_minimax_q8(g->gvq, out, minimax_index(m, w), x, MINIMAX_EMBD, (uint32_t)out_dim, rows) != 0
-        : plain_graph_matmul_tensor(out, m, w, MINIMAX_EMBD, out_dim, x, rows);
+// The Q8_0 indexer projections (index_q [512], index_k [128]) of one input:
+// row-stable GEMVs at decode and verify widths, one MMQ pair (the input
+// quantized to Q8_1 once) for prefill rows.
+static bool minimax_indexer(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t rows) {
+    const uint32_t q = minimax_index(m, l->attn_idx_q_b), k = minimax_index(m, l->attn_idx_k);
+    const bool ok = rows > DS4_MINIMAX_SPLIT_ROWS
+        ? ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ, MINIMAX_INDEX, rows) != 0
+        : ds4_gpu_minimax_q8(g->gvq, g->iq, q, g->norm, MINIMAX_EMBD, MINIMAX_IQ, rows) &&
+              ds4_gpu_minimax_q8(g->gvq, g->ik, k, g->norm, MINIMAX_EMBD, MINIMAX_INDEX, rows);
     if (!ok) { fprintf(stderr, "ds4: MiniMax indexer projection failed (rows=%u)\n", rows); }
     return ok;
 }
@@ -265,8 +268,7 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
     const uint64_t score_row = (uint64_t)MINIMAX_KV_HEADS * blocks_now * sizeof(float);
     const uint32_t score_rows = (uint32_t)(g->score_bytes / score_row < rows ? g->score_bytes / score_row : rows);
     if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows) ||
-        !minimax_q8(g, g->iq, m, l->attn_idx_q_b, MINIMAX_IQ, g->norm, rows) ||
-        !minimax_q8(g, g->ik, m, l->attn_idx_k, MINIMAX_INDEX, g->norm, rows) ||
+        !minimax_indexer(g, m, l, rows) ||
         // v_proj's BF16 output: prefill projections leave F32 sums.
         !ds4_gpu_gvq_round(g->v, (uint64_t)rows * MINIMAX_KV) ||
         !ds4_gpu_minimax_qk(g->gvq, g->q, minimax_index(m, l->attn_q_norm), MINIMAX_HEADS, rows, g->rope) ||
