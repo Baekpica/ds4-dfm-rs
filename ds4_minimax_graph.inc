@@ -292,19 +292,16 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
     const uint32_t score_rows = (uint32_t)(g->score_bytes / score_row < rows ? g->score_bytes / score_row : rows);
     if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows, g->norm_q4p) ||
         !minimax_indexer(g, m, l, rows) ||
-        // v_proj's BF16 output: prefill projections leave F32 sums.
-        !ds4_gpu_gvq_round(g->v, (uint64_t)rows * MINIMAX_KV) ||
-        !ds4_gpu_minimax_qk(g->gvq, g->q, minimax_index(m, l->attn_q_norm), MINIMAX_HEADS, rows, g->rope) ||
-        !ds4_gpu_minimax_qk(g->gvq, g->k, minimax_index(m, l->attn_k_norm), MINIMAX_KV_HEADS, rows, g->rope) ||
-        !ds4_gpu_minimax_qk(g->gvq, g->iq, minimax_index(m, x->index_q_norm), MINIMAX_KV_HEADS, rows, g->rope) ||
-        !ds4_gpu_minimax_qk(g->gvq, g->ik, minimax_index(m, x->index_k_norm), 1u, rows, g->rope) ||
+        // Norms, RoPE, v_proj's BF16 output (prefill projections leave F32
+        // sums) and the K/V and index key stores.
+        !ds4_gpu_minimax_tail(g->gvq, g->q, g->k, g->v, g->iq, g->ik, minimax_index(m, l->attn_q_norm),
+            minimax_index(m, l->attn_k_norm), minimax_index(m, x->index_q_norm), minimax_index(m, x->index_k_norm),
+            pages, table, g->index[il], g->rope, rows, pos) ||
         !minimax_trace(il, pos, "q", g->q, (uint64_t)rows * MINIMAX_Q * sizeof(float)) ||
         !minimax_trace(il, pos, "k", g->k, (uint64_t)rows * MINIMAX_KV * sizeof(float)) ||
         !minimax_trace(il, pos, "v", g->v, (uint64_t)rows * MINIMAX_KV * sizeof(float)) ||
         !minimax_trace(il, pos, "iq", g->iq, (uint64_t)rows * MINIMAX_IQ * sizeof(float)) ||
         !minimax_trace(il, pos, "ik", g->ik, (uint64_t)rows * MINIMAX_INDEX * sizeof(float)) ||
-        !ds4_gpu_minimax_kv_store(pages, table, g->k, g->v, rows, pos) ||
-        !ds4_gpu_minimax_index_store(g->index[il], g->ik, rows, pos) ||
         !ds4_gpu_minimax_select(g->blocks, g->scores, score_rows ? score_rows : 1u, g->iq, g->index[il], rows,
             pos) ||
         !minimax_trace(il, pos, "blocks", g->blocks, (uint64_t)rows * kv_row) ||

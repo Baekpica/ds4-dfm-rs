@@ -102,14 +102,18 @@ int ds4_gpu_minimax_rope(ds4_gpu_tensor *rope, uint32_t rows, uint32_t pos0);
 int ds4_gpu_minimax_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uint32_t heads,
     uint32_t rows, const ds4_gpu_tensor *rope);
 
-/* NVFP4 stores of rows at positions pos..pos+rows-1 (the vLLM encoder: per
- * 16 values the E4M3 scale of max(amax / 6, 2^-9), E2M1 codes rounded to
- * nearest even, global scale 1). K/V go to the layer's pages (block
- * pos / 128, KV head h), or with a `table` (int32 per block) to page slot
- * table[block]; index keys to `pool` rows of 72 bytes. */
-int ds4_gpu_minimax_kv_store(ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, const ds4_gpu_tensor *k,
-    const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos);
-int ds4_gpu_minimax_index_store(ds4_gpu_tensor *pool, const ds4_gpu_tensor *key, uint32_t rows, uint32_t pos);
+/* The tails of an attention input's projections for rows at positions
+ * pos..pos+rows-1, in place: q (64 heads), k (4), index_q (4) and the index
+ * key (1) as ds4_gpu_minimax_qk with their norms, v rounded to BF16; then
+ * the NVFP4 stores (the vLLM encoder: per 16 values the E4M3 scale of
+ * max(amax / 6, 2^-9), E2M1 codes rounded to nearest even, global scale 1)
+ * of k and v into the layer's pages (block pos / 128, KV head h), or with a
+ * `table` (int32 per block) into page slot table[block], and of the index
+ * key into `index` rows of 72 bytes. */
+int ds4_gpu_minimax_tail(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
+    ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t q_norm, uint32_t k_norm, uint32_t iq_norm, uint32_t ik_norm,
+    ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, ds4_gpu_tensor *index, const ds4_gpu_tensor *rope,
+    uint32_t rows, uint32_t pos);
 
 /* MSA block selection for rows at pos..: per row and KV head h the block
  * score is the max over the block's visible tokens of

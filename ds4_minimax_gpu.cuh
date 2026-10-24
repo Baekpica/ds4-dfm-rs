@@ -682,27 +682,34 @@ __device__ __forceinline__ float mm_block_sum(float value, float *scratch) {
     return sum;
 }
 
+// A norm's 24 weights per thread (index tid + j * 256), as F32. They are
+// constant: kernels load them before glmvq_pdl_wait.
+__device__ __forceinline__ void mm_row_weights(const __nv_bfloat16 *weight, float *w) {
+    #pragma unroll
+    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { w[j] = __bfloat162float(weight[threadIdx.x + j * MM_ROW_THREADS]); }
+}
+
 // Gemma RMSNorm of one 6144-wide row held as 24 values per thread:
 // x * rsqrt(mean(x^2) + eps), times (1 + w) in F32, rounded once.
-__device__ __forceinline__ void mm_row_rms(const float *x, const __nv_bfloat16 *weight, float *out,
-        float *scratch) {
+__device__ __forceinline__ void mm_row_rms(const float *x, const float *w, float *out, float *scratch) {
     float sum = 0.0f;
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { sum = fmaf(x[j], x[j], sum); }
     const float inv = __frsqrt_rn(glmvq_add(__fdiv_rn(mm_block_sum(sum, scratch), (float)MM_HIDDEN), MM_EPS));
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
-        const uint32_t col = threadIdx.x + j * MM_ROW_THREADS;
-        out[j] = glmvq_round(glmvq_mul(glmvq_add(1.0f, __bfloat162float(weight[col])), glmvq_mul(x[j], inv)));
+        out[j] = glmvq_round(glmvq_mul(glmvq_add(1.0f, w[j]), glmvq_mul(x[j], inv)));
     }
 }
 
 __global__ void mm_rms_kernel(float *out, const float *input, const __nv_bfloat16 *weight) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
     glmvq_pdl_open();
+    float w[MM_ROW_VALUES];
+    mm_row_weights(weight, w);
     glmvq_pdl_wait();
     const uint64_t base = (uint64_t)blockIdx.x * MM_HIDDEN;
     float x[MM_ROW_VALUES], y[MM_ROW_VALUES];
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { x[j] = glmvq_round(input[base + threadIdx.x + j * MM_ROW_THREADS]); }
-    mm_row_rms(x, weight, y, scratch);
+    mm_row_rms(x, w, y, scratch);
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { out[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
 }
 
@@ -749,16 +756,27 @@ __global__ void mm_residual_kernel(float *cur, const float *branch, float *norm,
         __half *q4h, float *q4s) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
     glmvq_pdl_open();
+    float w[MM_ROW_VALUES];
+    if (next) { mm_row_weights(next, w); }
     glmvq_pdl_wait();
     const uint64_t base = (uint64_t)blockIdx.x * MM_HIDDEN;
     float x[MM_ROW_VALUES], y[MM_ROW_VALUES];
+    // Every load before the first store: cur may alias branch for the
+    // compiler, and storing each sum before the next loads serialized 48 L2
+    // round trips (9.4 us of a decode row's 24).
+    #pragma unroll
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
         const uint64_t at = base + threadIdx.x + j * MM_ROW_THREADS;
-        x[j] = glmvq_round(glmvq_add(cur[at], glmvq_round(branch[at])));
-        cur[at] = x[j];
+        x[j] = cur[at];
+        y[j] = branch[at];
+    }
+    #pragma unroll
+    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
+        x[j] = glmvq_round(glmvq_add(x[j], glmvq_round(y[j])));
+        cur[base + threadIdx.x + j * MM_ROW_THREADS] = x[j];
     }
     if (!next) { return; }
-    mm_row_rms(x, next, y, scratch);
+    mm_row_rms(x, w, y, scratch);
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { norm[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
     if (q4h) { mm_row_q4p<MM_ROW_VALUES>(y, MM_HIDDEN, q4h, q4s, scratch); }
 }
@@ -846,16 +864,12 @@ extern "C" int ds4_gpu_minimax_rope(ds4_gpu_tensor *rope, uint32_t rows, uint32_
     return cuda_ok(cudaGetLastError(), "MiniMax RoPE rows");
 }
 
-/* Per-head Gemma RMSNorm, one block per (head, row), rounded once; then the
- * NeoX rotation of dims [0, 64) as torch's separate F32 ops
- * (x1 c - x2 s, x2 c + x1 s), rounded once; dims [64, 128) pass. */
-__global__ void mm_qk_kernel(float *x, const __nv_bfloat16 *weight, uint32_t heads, const float *rope) {
-    __shared__ float scratch[MM_HEAD / 32];
-    __shared__ float y[MM_HEAD];
-    glmvq_pdl_open();
-    glmvq_pdl_wait();
-    const uint32_t h = blockIdx.x, r = blockIdx.y, i = threadIdx.x;
-    float *p = x + ((uint64_t)r * heads + h) * MM_HEAD;
+/* Per-head Gemma RMSNorm of head row p (thread i: dim i, w its norm
+ * weight), rounded once; then the NeoX rotation of dims [0, 64) as torch's
+ * separate F32 ops (x1 c - x2 s, x2 c + x1 s) on rope row t, rounded once;
+ * dims [64, 128) pass. */
+__device__ __forceinline__ void mm_qk_head(float *p, float w, const float *t, float *scratch, float *y) {
+    const uint32_t i = threadIdx.x;
     const float v = glmvq_round(p[i]);
     float sum = v * v;
     for (uint32_t stride = 16; stride; stride >>= 1) { sum += __shfl_xor_sync(0xffffffffu, sum, stride); }
@@ -863,18 +877,28 @@ __global__ void mm_qk_kernel(float *x, const __nv_bfloat16 *weight, uint32_t hea
     __syncthreads();
     sum = scratch[0] + scratch[1] + scratch[2] + scratch[3];
     const float inv = __frsqrt_rn(glmvq_add(__fdiv_rn(sum, (float)MM_HEAD), MM_EPS));
-    y[i] = glmvq_round(glmvq_mul(glmvq_add(1.0f, __bfloat162float(weight[i])), glmvq_mul(v, inv)));
+    y[i] = glmvq_round(glmvq_mul(glmvq_add(1.0f, w), glmvq_mul(v, inv)));
     __syncthreads();
     if (i >= MM_ROT) {
         p[i] = y[i];
         return;
     }
-    const float *t = rope + (uint64_t)r * MM_ROT;
     const uint32_t j = i % (MM_ROT / 2);
     const float c = t[j], s = t[MM_ROT / 2 + j];
     const float a = y[j], b = y[j + MM_ROT / 2];
     p[i] = i < MM_ROT / 2 ? glmvq_round(glmvq_add(glmvq_mul(a, c), -glmvq_mul(b, s)))
                           : glmvq_round(glmvq_add(glmvq_mul(b, c), glmvq_mul(a, s)));
+}
+
+// One block per (head, row).
+__global__ void mm_qk_kernel(float *x, const __nv_bfloat16 *weight, uint32_t heads, const float *rope) {
+    __shared__ float scratch[MM_HEAD / 32];
+    __shared__ float y[MM_HEAD];
+    glmvq_pdl_open();
+    const float w = __bfloat162float(weight[threadIdx.x]);
+    glmvq_pdl_wait();
+    const uint32_t h = blockIdx.x, r = blockIdx.y;
+    mm_qk_head(x + ((uint64_t)r * heads + h) * MM_HEAD, w, rope + (uint64_t)r * MM_ROT, scratch, y);
 }
 
 extern "C" int ds4_gpu_minimax_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uint32_t heads,
@@ -913,20 +937,6 @@ __device__ __forceinline__ void mm_fp4_encode(const float *src, uint8_t *data, u
     if ((lane & 3) == 0) { scales[lane / 4] = (uint8_t)code; }
 }
 
-// K and V rows of `rows` tokens into their pages: warp w of block (row,
-// side) encodes KV head w. A table maps blocks to pool slots (SSD tier).
-__global__ void mm_kv_store_kernel(uint8_t *pages, const int32_t *table, const float *k, const float *v,
-        uint32_t pos) {
-    glmvq_pdl_open();
-    glmvq_pdl_wait();
-    const uint32_t r = blockIdx.x, side = blockIdx.y, head = threadIdx.x / 32;
-    const uint32_t t = pos + r, block = t / MM_BLOCK, slot = t % MM_BLOCK;
-    const uint64_t page_id = table ? (uint64_t)table[block] : block;
-    uint8_t *page = pages + (page_id * MM_KV_HEADS + head) * MM_PAGE + side * (MM_PAGE / 2);
-    const float *src = (side ? v : k) + ((uint64_t)r * MM_KV_HEADS + head) * MM_HEAD;
-    mm_fp4_encode(src, page + slot * MM_FP4_DATA, page + MM_BLOCK * MM_FP4_DATA + slot * (MM_FP4_ROW - MM_FP4_DATA));
-}
-
 // The pages of blocks [0, ceil(pos / 128)) are addressable: directly, or
 // through a table of that many slots.
 static bool mm_pages_ok(const ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, uint32_t pos) {
@@ -935,39 +945,99 @@ static bool mm_pages_ok(const ds4_gpu_tensor *pages, const ds4_gpu_tensor *table
                            : pages->bytes >= blocks * MM_KV_HEADS * MM_PAGE);
 }
 
-extern "C" int ds4_gpu_minimax_kv_store(ds4_gpu_tensor *pages, const ds4_gpu_tensor *table,
-        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos) {
-    const uint64_t count = (uint64_t)rows * MM_KV_HEADS * MM_HEAD;
-    if (!rows || !mm_pages_ok(pages, table, pos + rows) || !gvq_floats(k, count) || !gvq_floats(v, count)) { return 0; }
-    glmvq_launch_kernel(mm_mode(rows), mm_kv_store_kernel, dim3(rows, 2), MM_KV_HEADS * 32, 0, ds4_current_stream(),
-        (uint8_t *)pages->ptr, table ? (const int32_t *)table->ptr : nullptr, (const float *)k->ptr,
-        (const float *)v->ptr, pos);
-    return cuda_ok(cudaGetLastError(), "MiniMax K/V store");
-}
+/* The projections' tails, one block per (b, row): b < 64 normalizes and
+ * rotates q head b; 64..67 k head b - 64, then stores it in the row's K
+ * page; 68..71 rounds v head b - 68 (prefill projections leave F32 sums)
+ * and stores it in the V page; 72..75 index_q head b - 72; 76 the index key,
+ * stored as the token's 72-byte row (data, then scales). A table maps
+ * blocks to pool slots (SSD tier). One launch for what took seven. */
+enum { MM_TAIL_K = MM_HEADS, MM_TAIL_V = MM_TAIL_K + MM_KV_HEADS, MM_TAIL_IQ = MM_TAIL_V + MM_KV_HEADS,
+       MM_TAIL_IK = MM_TAIL_IQ + MM_KV_HEADS, MM_TAIL_BLOCKS = MM_TAIL_IK + 1 };
+struct mm_tail_args {
+    float *q, *k, *v, *iq, *ik;
+    const __nv_bfloat16 *qn, *kn, *iqn, *ikn;
+    uint8_t *pages, *index;
+    const int32_t *table;
+    const float *rope;
+    uint32_t pos;
+};
 
-// Index keys: one 72-byte row per token, data then scales.
-__global__ void mm_index_store_kernel(uint8_t *pool, const float *key, uint32_t pos, uint32_t rows) {
+__global__ void __launch_bounds__(MM_HEAD) mm_tail_kernel(mm_tail_args a) {
+    __shared__ float scratch[MM_HEAD / 32];
+    __shared__ float y[MM_HEAD];
     glmvq_pdl_open();
+    const uint32_t b = blockIdx.x, r = blockIdx.y;
+    // Selected by compares: a dynamic index would copy the parameters to local memory.
+    float *x = a.q;
+    const __nv_bfloat16 *norm = a.qn;
+    uint32_t heads = MM_HEADS, h = b;
+    if (b >= MM_TAIL_IK) { x = a.ik; norm = a.ikn; heads = 1; h = 0; }
+    else if (b >= MM_TAIL_IQ) { x = a.iq; norm = a.iqn; heads = MM_KV_HEADS; h = b - MM_TAIL_IQ; }
+    else if (b >= MM_TAIL_V) { x = a.v; norm = nullptr; heads = MM_KV_HEADS; h = b - MM_TAIL_V; }
+    else if (b >= MM_TAIL_K) { x = a.k; norm = a.kn; heads = MM_KV_HEADS; h = b - MM_TAIL_K; }
+    const float w = norm ? __bfloat162float(norm[threadIdx.x]) : 0.0f;
     glmvq_pdl_wait();
-    const uint32_t r = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
-    if (r >= rows) { return; }
-    uint8_t *row = pool + (uint64_t)(pos + r) * MM_FP4_ROW;
-    mm_fp4_encode(key + (uint64_t)r * MM_HEAD, row, row + MM_FP4_DATA);
+    float *p = x + ((uint64_t)r * heads + h) * MM_HEAD;
+    if (norm) { mm_qk_head(p, w, a.rope + (uint64_t)r * MM_ROT, scratch, y); }
+    else { p[threadIdx.x] = glmvq_round(p[threadIdx.x]); }
+    if (b < MM_TAIL_K || (b >= MM_TAIL_IQ && b < MM_TAIL_IK)) { return; }
+    __syncthreads();
+    if (threadIdx.x >= 32) { return; }
+    const uint32_t t = a.pos + r;
+    if (b == MM_TAIL_IK) {
+        uint8_t *row = a.index + (uint64_t)t * MM_FP4_ROW;
+        mm_fp4_encode(p, row, row + MM_FP4_DATA);
+        return;
+    }
+    const uint32_t block = t / MM_BLOCK, slot = t % MM_BLOCK, side = b >= MM_TAIL_V;
+    const uint64_t page_id = a.table ? (uint64_t)a.table[block] : block;
+    uint8_t *page = a.pages + (page_id * MM_KV_HEADS + h) * MM_PAGE + side * (MM_PAGE / 2);
+    mm_fp4_encode(p, page + slot * MM_FP4_DATA, page + MM_BLOCK * MM_FP4_DATA + slot * (MM_FP4_ROW - MM_FP4_DATA));
 }
 
-extern "C" int ds4_gpu_minimax_index_store(ds4_gpu_tensor *pool, const ds4_gpu_tensor *key, uint32_t rows,
-        uint32_t pos) {
-    if (!rows || !pool || pool->bytes < (uint64_t)(pos + rows) * MM_FP4_ROW ||
-        !gvq_floats(key, (uint64_t)rows * MM_HEAD)) { return 0; }
-    enum { WARPS = 4 };
-    glmvq_launch_kernel(mm_mode(rows), mm_index_store_kernel, (rows + WARPS - 1) / WARPS, WARPS * 32, 0,
-        ds4_current_stream(), (uint8_t *)pool->ptr, (const float *)key->ptr, pos, rows);
-    return cuda_ok(cudaGetLastError(), "MiniMax index store");
+extern "C" int ds4_gpu_minimax_tail(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
+        ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t q_norm, uint32_t k_norm, uint32_t iq_norm, uint32_t ik_norm,
+        ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, ds4_gpu_tensor *index, const ds4_gpu_tensor *rope,
+        uint32_t rows, uint32_t pos) {
+    const auto norm = [&](uint32_t weight) {
+        return (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, MM_HEAD);
+    };
+    const mm_tail_args a = {q ? (float *)q->ptr : nullptr, k ? (float *)k->ptr : nullptr,
+        v ? (float *)v->ptr : nullptr, iq ? (float *)iq->ptr : nullptr, ik ? (float *)ik->ptr : nullptr,
+        norm(q_norm), norm(k_norm), norm(iq_norm), norm(ik_norm), pages ? (uint8_t *)pages->ptr : nullptr,
+        index ? (uint8_t *)index->ptr : nullptr, table ? (const int32_t *)table->ptr : nullptr,
+        rope ? (const float *)rope->ptr : nullptr, pos};
+    const uint64_t kv = (uint64_t)rows * MM_KV_HEADS * MM_HEAD;
+    if (!rows || !a.qn || !a.kn || !a.iqn || !a.ikn || !mm_pages_ok(pages, table, pos + rows) ||
+        !gvq_floats(q, (uint64_t)rows * MM_HEADS * MM_HEAD) || !gvq_floats(k, kv) || !gvq_floats(v, kv) ||
+        !gvq_floats(iq, kv) || !gvq_floats(ik, (uint64_t)rows * MM_HEAD) || !gvq_floats(rope, (uint64_t)rows * MM_ROT) ||
+        !index || index->bytes < (uint64_t)(pos + rows) * MM_FP4_ROW) { return 0; }
+    glmvq_launch_kernel(mm_mode(rows), mm_tail_kernel, dim3(MM_TAIL_BLOCKS, rows), MM_HEAD, 0, ds4_current_stream(), a);
+    return cuda_ok(cudaGetLastError(), "MiniMax q/k/v tails");
+}
+
+/* E2M1 to F16 in hardware (cvt.rn.f16x2.e2m1x2, exact): the constant table
+ * cost a dependent load per value, 256 per thread of a decode attention CTA
+ * (8.8 -> 6.6 us in isolation, the same bits). */
+__device__ __forceinline__ float2 mm_e2m1x2(uint32_t byte) {
+    uint32_t h;
+    asm("{ .reg .b8 lo, hi;\n mov.b16 {lo, hi}, %1;\n cvt.rn.f16x2.e2m1x2 %0, lo; }"
+        : "=r"(h) : "h"((unsigned short)byte));
+    return __half22float2(*(const __half2 *)&h);
+}
+
+// The eight E2M1 values of a word (byte b: values 2b, 2b + 1, low nibble first) as four F16 pairs.
+__device__ __forceinline__ void mm_e2m1x8(uint32_t word, uint32_t *h) {
+    asm("{ .reg .b8 b0, b1, b2, b3;\n mov.b32 {b0, b1, b2, b3}, %4;\n"
+        " cvt.rn.f16x2.e2m1x2 %0, b0;\n cvt.rn.f16x2.e2m1x2 %1, b1;\n"
+        " cvt.rn.f16x2.e2m1x2 %2, b2;\n cvt.rn.f16x2.e2m1x2 %3, b3; }"
+        : "=r"(h[0]), "=r"(h[1]), "=r"(h[2]), "=r"(h[3]) : "r"(word));
 }
 
 // The E2M1 values of a byte's two nibbles times their group scale: exact in F32.
 __device__ __forceinline__ float2 mm_fp4_pair(uint8_t byte, float scale) {
-    return make_float2(ds4_fp4_nibble_to_f32(byte & 15u) * scale, ds4_fp4_nibble_to_f32(byte >> 4) * scale);
+    const float2 v = mm_e2m1x2(byte);
+    return make_float2(v.x * scale, v.y * scale);
 }
 
 /* ------------------------------------------------------------- MSA indexer */
@@ -1377,6 +1447,23 @@ __device__ __forceinline__ uint32_t mm_bf16x2(float lo, float hi) {
     return *(const uint32_t *)&v;
 }
 
+// 64 NVFP4 values (eight data words; word w scaled by byte w / 2 of sc) as
+// 32 BF16 pairs, exact: an E2M1 value times its E4M3 scale has at most six
+// significant bits.
+__device__ __forceinline__ void mm_fp4_bf16(const uint32_t *words, uint32_t sc, uint32_t *packed) {
+    #pragma unroll
+    for (uint32_t w = 0; w < 8; w++) {
+        const float s = glmvq_e4m3((uint8_t)(sc >> (w / 2 * 8)));
+        uint32_t h[4];
+        mm_e2m1x8(words[w], h);
+        #pragma unroll
+        for (uint32_t k = 0; k < 4; k++) {
+            const float2 v = __half22float2(*(const __half2 *)&h[k]);
+            packed[w * 4 + k] = mm_bf16x2(v.x * s, v.y * s);
+        }
+    }
+}
+
 /* Block scores of prefill rows on BF16 tensor cores. A CTA takes 32 rows
  * (128 query vectors: row x index head, warp w the vectors 16w..16w+15 as
  * the m16n8k16 M dimension) and up to MM_SC_GROUP key blocks; each block's
@@ -1424,16 +1511,7 @@ __global__ void __launch_bounds__(256) mm_score_mma_kernel(float *scores, const 
                 const uint2 d0 = d[0], d1 = d[1], d2 = d[2], d3 = d[3];
                 const uint32_t sc = *(const uint32_t *)(row + MM_FP4_DATA + half * 4);
                 const uint32_t words[8] = {d0.x, d0.y, d1.x, d1.y, d2.x, d2.y, d3.x, d3.y};
-                #pragma unroll
-                for (uint32_t w = 0; w < 8; w++) {
-                    const float s = glmvq_e4m3((uint8_t)(sc >> (w / 2 * 8)));
-                    #pragma unroll
-                    for (uint32_t k = 0; k < 4; k++) {
-                        const uint8_t byte = (uint8_t)(words[w] >> (k * 8));
-                        packed[w * 4 + k] = mm_bf16x2(ds4_fp4_nibble_to_f32(byte & 15u) * s,
-                            ds4_fp4_nibble_to_f32(byte >> 4) * s);
-                    }
-                }
+                mm_fp4_bf16(words, sc, packed);
             } else {
                 #pragma unroll
                 for (uint32_t k = 0; k < 32; k++) { packed[k] = 0u; }
@@ -1541,16 +1619,7 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *
             const uint32_t sc = *(const uint32_t *)(base + MM_BLOCK * MM_FP4_DATA + key * 8 + half * 4);
             const uint32_t words[8] = {d0.x, d0.y, d0.z, d0.w, d1.x, d1.y, d1.z, d1.w};
             uint32_t packed[32];
-            #pragma unroll
-            for (uint32_t w = 0; w < 8; w++) {
-                const float s = glmvq_e4m3((uint8_t)(sc >> (w / 2 * 8)));
-                #pragma unroll
-                for (uint32_t k = 0; k < 4; k++) {
-                    const uint8_t byte = (uint8_t)(words[w] >> (k * 8));
-                    packed[w * 4 + k] = mm_bf16x2(ds4_fp4_nibble_to_f32(byte & 15u) * s,
-                        ds4_fp4_nibble_to_f32(byte >> 4) * s);
-                }
-            }
+            mm_fp4_bf16(words, sc, packed);
             uint4 *dst = (uint4 *)((side ? vs : ks) + key * MM_AT_LD + half * 64);
             #pragma unroll
             for (uint32_t k = 0; k < 8; k++) {
@@ -1653,24 +1722,59 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *
     }
 }
 
+// Half a K or V row (64 values) from NVFP4 into tile row `key` as BF16.
+__device__ __forceinline__ void mm_at_unpack(__nv_bfloat16 *tile, uint32_t key, uint32_t half, uint4 d0, uint4 d1,
+        uint32_t sc) {
+    const uint32_t words[8] = {d0.x, d0.y, d0.z, d0.w, d1.x, d1.y, d1.z, d1.w};
+    uint32_t packed[32];
+    mm_fp4_bf16(words, sc, packed);
+    uint4 *dst = (uint4 *)(tile + key * MM_AT_LD + half * 64);
+    #pragma unroll
+    for (uint32_t k = 0; k < 8; k++) {
+        dst[k] = make_uint4(packed[k * 4], packed[k * 4 + 1], packed[k * 4 + 2], packed[k * 4 + 3]);
+    }
+}
+
 /* Decode and verify attention on BF16 tensor cores, split by selected
- * block: CTA (KV head, list entry j, row) decodes the row's block j K/V once
- * into shared memory (as mm_attn_mma_kernel), warp w scores its 32 keys for
- * the 16 heads (S = Q K^T, the causal mask in the own block, F32 softmax,
- * O = P V with P in BF16), and the four warps merge into the (O, max, sum)
- * partial that mm_attn_combine reads. A row's arithmetic does not depend on
- * the other rows: verify rows equal decode rows bit for bit. */
-__global__ void __launch_bounds__(128) mm_attn_split_mma_kernel(float *partial, const float *q,
+ * block: CTA (KV head, list entry j, row) decodes the row's block j keys
+ * into a shared tile, warps 0-3 score their 32 keys each for the 16 heads
+ * (S = Q K^T, the causal mask in the own block, F32 softmax), the values
+ * replace the keys in the tile (O = P V with P in BF16), and the four
+ * warps' (O, max, sum) merge into the partial that mm_attn_combine reads.
+ * All eight warps unpack and merge. One 34 KiB tile keeps two CTAs per SM:
+ * the 64 CTAs of a decode row run in one wave (K and V side by side took
+ * two). Every global read is issued up front. A row's arithmetic does not
+ * depend on the other rows: verify rows equal decode rows bit for bit. */
+static const uint32_t MM_AT_SPLIT_SMEM = MM_BLOCK * MM_AT_LD * sizeof(__nv_bfloat16);
+static_assert(4u * MM_GROUP * MM_HEAD * sizeof(float) <= MM_AT_SPLIT_SMEM, "the warps' O rows reuse the tile");
+enum { MM_AT_SPLIT_THREADS = 256 };
+
+__global__ void __launch_bounds__(MM_AT_SPLIT_THREADS) mm_attn_split_mma_kernel(float *partial, const float *q,
         const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos) {
     extern __shared__ __align__(16) uint8_t mm_at_smem[];
-    __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_BLOCK * MM_AT_LD;
+    __nv_bfloat16 *tile = (__nv_bfloat16 *)mm_at_smem;
     __shared__ float wm[4][MM_GROUP], wl[4][MM_GROUP];
     glmvq_pdl_open();
     glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane >> 2, t = lane & 3;
+    const bool mma = warp < 4;   // warps 0-3 score and attend; all eight unpack and merge
     const uint32_t kv = blockIdx.x / MM_TOPK, j = blockIdx.x % MM_TOPK, row = blockIdx.y, p = pos + row;
     float *out = partial + ((uint64_t)row * MM_SPLITS + blockIdx.x) * MM_GROUP * (MM_HEAD + 2);
     const int32_t b = blocks[((uint64_t)row * MM_KV_HEADS + kv) * MM_TOPK + j];
+    // The query heads load while the block id (and its pool slot) resolves.
+    float qf[8][8];
+    const float *qr = q + ((uint64_t)row * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    if (mma) {
+        #pragma unroll
+        for (uint32_t s = 0; s < 8; s++) {
+            const uint32_t c = 16 * s + 2 * t;
+            const float2 a0 = *(const float2 *)(qr + g * MM_HEAD + c), a1 = *(const float2 *)(qr + (g + 8) * MM_HEAD + c);
+            const float2 a2 = *(const float2 *)(qr + g * MM_HEAD + c + 8);
+            const float2 a3 = *(const float2 *)(qr + (g + 8) * MM_HEAD + c + 8);
+            qf[s][0] = a0.x; qf[s][1] = a0.y; qf[s][2] = a1.x; qf[s][3] = a1.y;
+            qf[s][4] = a2.x; qf[s][5] = a2.y; qf[s][6] = a3.x; qf[s][7] = a3.y;
+        }
+    }
     if (b < 0) {
         if (threadIdx.x < MM_GROUP) {
             out[threadIdx.x * (MM_HEAD + 2) + MM_HEAD] = -INFINITY;
@@ -1680,67 +1784,60 @@ __global__ void __launch_bounds__(128) mm_attn_split_mma_kernel(float *partial, 
     }
     const uint64_t page_id = table ? (uint64_t)table[b] : (uint64_t)b;
     const uint8_t *page = pages + (page_id * MM_KV_HEADS + kv) * MM_PAGE;
-    for (uint32_t i = threadIdx.x; i < 4u * MM_BLOCK; i += blockDim.x) {
-        const uint32_t side = i / (2u * MM_BLOCK), key = i / 2 % MM_BLOCK, half = i % 2;
-        const uint8_t *base = page + side * (MM_PAGE / 2);
-        const uint4 d0 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32);
-        const uint4 d1 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32 + 16);
-        const uint32_t sc = *(const uint32_t *)(base + MM_BLOCK * MM_FP4_DATA + key * 8 + half * 4);
-        const uint32_t words[8] = {d0.x, d0.y, d0.z, d0.w, d1.x, d1.y, d1.z, d1.w};
-        uint32_t packed[32];
-        #pragma unroll
-        for (uint32_t w = 0; w < 8; w++) {
-            const float s = glmvq_e4m3((uint8_t)(sc >> (w / 2 * 8)));
-            #pragma unroll
-            for (uint32_t k = 0; k < 4; k++) {
-                const uint8_t byte = (uint8_t)(words[w] >> (k * 8));
-                packed[w * 4 + k] = mm_bf16x2(ds4_fp4_nibble_to_f32(byte & 15u) * s,
-                    ds4_fp4_nibble_to_f32(byte >> 4) * s);
-            }
-        }
-        uint4 *dst = (uint4 *)((side ? vs : ks) + key * MM_AT_LD + half * 64);
-        #pragma unroll
-        for (uint32_t k = 0; k < 8; k++) {
-            dst[k] = make_uint4(packed[k * 4], packed[k * 4 + 1], packed[k * 4 + 2], packed[k * 4 + 3]);
-        }
-    }
-    uint32_t qa[8][4];
-    const float *qr = q + ((uint64_t)row * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    // Thread i: half i % 2 of key i / 2, its K (n = 0) and V (n = 1).
+    const uint32_t key = threadIdx.x / 2, half = threadIdx.x % 2;
+    uint4 d0[2], d1[2];
+    uint32_t sc[2];
     #pragma unroll
-    for (uint32_t s = 0; s < 8; s++) {
-        const uint32_t c = 16 * s + 2 * t;
-        qa[s][0] = mm_bf16x2(qr[g * MM_HEAD + c], qr[g * MM_HEAD + c + 1]);
-        qa[s][1] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c], qr[(g + 8) * MM_HEAD + c + 1]);
-        qa[s][2] = mm_bf16x2(qr[g * MM_HEAD + c + 8], qr[g * MM_HEAD + c + 9]);
-        qa[s][3] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c + 8], qr[(g + 8) * MM_HEAD + c + 9]);
+    for (uint32_t n = 0; n < 2; n++) {
+        const uint8_t *base = page + n * (MM_PAGE / 2);
+        d0[n] = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32);
+        d1[n] = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32 + 16);
+        sc[n] = *(const uint32_t *)(base + MM_BLOCK * MM_FP4_DATA + key * 8 + half * 4);
+    }
+    mm_at_unpack(tile, key, half, d0[0], d1[0], sc[0]);
+    uint32_t qa[8][4];
+    if (mma) {
+        #pragma unroll
+        for (uint32_t s = 0; s < 8; s++) {
+            qa[s][0] = mm_bf16x2(qf[s][0], qf[s][1]);
+            qa[s][1] = mm_bf16x2(qf[s][2], qf[s][3]);
+            qa[s][2] = mm_bf16x2(qf[s][4], qf[s][5]);
+            qa[s][3] = mm_bf16x2(qf[s][6], qf[s][7]);
+        }
     }
     __syncthreads();
-    // Warp w: keys 32w..32w+31 (four 8-key n-tiles).
+    // Warp w < 4: keys 32w..32w+31 (four 8-key n-tiles).
     const uint32_t k0 = warp * 32, t0 = (uint32_t)b * MM_BLOCK;
     float s[4][4];
     #pragma unroll
     for (uint32_t n = 0; n < 4; n++) { s[n][0] = s[n][1] = s[n][2] = s[n][3] = 0.0f; }
-    #pragma unroll
-    for (uint32_t st = 0; st < 8; st++) {
+    if (mma) {
         #pragma unroll
-        for (uint32_t n = 0; n < 4; n += 2) {
-            const uint32_t mi = lane / 8;
-            const uint32_t key = k0 + (n + (mi >> 1)) * 8 + lane % 8, dim = 16 * st + (mi & 1) * 8;
-            uint32_t b4[4];
-            mm_ldsm4(b4, ks + key * MM_AT_LD + dim, false);
-            mm_mma_bf16(s[n], qa[st], b4[0], b4[1]);
-            mm_mma_bf16(s[n + 1], qa[st], b4[2], b4[3]);
+        for (uint32_t st = 0; st < 8; st++) {
+            #pragma unroll
+            for (uint32_t n = 0; n < 4; n += 2) {
+                const uint32_t mi = lane / 8;
+                const uint32_t kk = k0 + (n + (mi >> 1)) * 8 + lane % 8, dim = 16 * st + (mi & 1) * 8;
+                uint32_t b4[4];
+                mm_ldsm4(b4, tile + kk * MM_AT_LD + dim, false);
+                mm_mma_bf16(s[n], qa[st], b4[0], b4[1]);
+                mm_mma_bf16(s[n + 1], qa[st], b4[2], b4[3]);
+            }
         }
     }
+    // Every warp has read its keys: the values take the tile.
+    __syncthreads();
+    mm_at_unpack(tile, key, half, d0[1], d1[1], sc[1]);
     const float scale = 0.08838834764831845f;
     float m0 = -INFINITY, m1 = -INFINITY;
     #pragma unroll
     for (uint32_t n = 0; n < 4; n++) {
-        const uint32_t key = t0 + k0 + n * 8 + 2 * t;
-        s[n][0] = key <= p ? s[n][0] * scale : -INFINITY;
-        s[n][1] = key + 1 <= p ? s[n][1] * scale : -INFINITY;
-        s[n][2] = key <= p ? s[n][2] * scale : -INFINITY;
-        s[n][3] = key + 1 <= p ? s[n][3] * scale : -INFINITY;
+        const uint32_t kk = t0 + k0 + n * 8 + 2 * t;
+        s[n][0] = kk <= p ? s[n][0] * scale : -INFINITY;
+        s[n][1] = kk + 1 <= p ? s[n][1] * scale : -INFINITY;
+        s[n][2] = kk <= p ? s[n][2] * scale : -INFINITY;
+        s[n][3] = kk + 1 <= p ? s[n][3] * scale : -INFINITY;
         m0 = fmaxf(m0, fmaxf(s[n][0], s[n][1]));
         m1 = fmaxf(m1, fmaxf(s[n][2], s[n][3]));
     }
@@ -1762,43 +1859,49 @@ __global__ void __launch_bounds__(128) mm_attn_split_mma_kernel(float *partial, 
     l0 += __shfl_xor_sync(0xffffffffu, l0, 2);
     l1 += __shfl_xor_sync(0xffffffffu, l1, 1);
     l1 += __shfl_xor_sync(0xffffffffu, l1, 2);
+    __syncthreads();
     float o[16][4];
     #pragma unroll
     for (uint32_t n = 0; n < 16; n++) { o[n][0] = o[n][1] = o[n][2] = o[n][3] = 0.0f; }
-    #pragma unroll
-    for (uint32_t kk = 0; kk < 2; kk++) {
-        const uint32_t pa[4] = {mm_bf16x2(s[2 * kk][0], s[2 * kk][1]), mm_bf16x2(s[2 * kk][2], s[2 * kk][3]),
-            mm_bf16x2(s[2 * kk + 1][0], s[2 * kk + 1][1]), mm_bf16x2(s[2 * kk + 1][2], s[2 * kk + 1][3])};
+    if (mma) {
         #pragma unroll
-        for (uint32_t n = 0; n < 16; n += 2) {
-            const uint32_t mi = lane / 8;
-            const uint32_t key = k0 + 16 * kk + (mi & 1) * 8 + lane % 8, dim = (n + (mi >> 1)) * 8;
-            uint32_t b4[4];
-            mm_ldsm4(b4, vs + key * MM_AT_LD + dim, true);
-            mm_mma_bf16(o[n], pa, b4[0], b4[1]);
-            mm_mma_bf16(o[n + 1], pa, b4[2], b4[3]);
+        for (uint32_t kk = 0; kk < 2; kk++) {
+            const uint32_t pa[4] = {mm_bf16x2(s[2 * kk][0], s[2 * kk][1]), mm_bf16x2(s[2 * kk][2], s[2 * kk][3]),
+                mm_bf16x2(s[2 * kk + 1][0], s[2 * kk + 1][1]), mm_bf16x2(s[2 * kk + 1][2], s[2 * kk + 1][3])};
+            #pragma unroll
+            for (uint32_t n = 0; n < 16; n += 2) {
+                const uint32_t mi = lane / 8;
+                const uint32_t vk = k0 + 16 * kk + (mi & 1) * 8 + lane % 8, dim = (n + (mi >> 1)) * 8;
+                uint32_t b4[4];
+                mm_ldsm4(b4, tile + vk * MM_AT_LD + dim, true);
+                mm_mma_bf16(o[n], pa, b4[0], b4[1]);
+                mm_mma_bf16(o[n + 1], pa, b4[2], b4[3]);
+            }
         }
     }
-    // Merge the four warps: per-warp (max, sum) and O rows into shared
-    // memory (the K tile is no longer read), then thread d sums dim d.
+    // Merge the four warps: per-warp (max, sum) and O rows into the tile
+    // (the values are no longer read), then thread i sums dim i % 128 of
+    // heads i / 128, i / 128 + 2, ...
     __syncthreads();
     float *wo = (float *)mm_at_smem;   // [4 warps][16 heads][128]
-    if (t == 0) {
-        wm[warp][g] = m0; wm[warp][g + 8] = m1;
-        wl[warp][g] = l0; wl[warp][g + 8] = l1;
-    }
-    #pragma unroll
-    for (uint32_t n = 0; n < 16; n++) {
-        const uint32_t d = n * 8 + 2 * t;
-        wo[(warp * MM_GROUP + g) * MM_HEAD + d] = o[n][0];
-        wo[(warp * MM_GROUP + g) * MM_HEAD + d + 1] = o[n][1];
-        wo[(warp * MM_GROUP + g + 8) * MM_HEAD + d] = o[n][2];
-        wo[(warp * MM_GROUP + g + 8) * MM_HEAD + d + 1] = o[n][3];
+    if (mma) {
+        if (t == 0) {
+            wm[warp][g] = m0; wm[warp][g + 8] = m1;
+            wl[warp][g] = l0; wl[warp][g + 8] = l1;
+        }
+        #pragma unroll
+        for (uint32_t n = 0; n < 16; n++) {
+            const uint32_t d = n * 8 + 2 * t;
+            wo[(warp * MM_GROUP + g) * MM_HEAD + d] = o[n][0];
+            wo[(warp * MM_GROUP + g) * MM_HEAD + d + 1] = o[n][1];
+            wo[(warp * MM_GROUP + g + 8) * MM_HEAD + d] = o[n][2];
+            wo[(warp * MM_GROUP + g + 8) * MM_HEAD + d + 1] = o[n][3];
+        }
     }
     __syncthreads();
-    const uint32_t d = threadIdx.x;
+    const uint32_t d = threadIdx.x % MM_HEAD;
     #pragma unroll 1
-    for (uint32_t h = 0; h < MM_GROUP; h++) {
+    for (uint32_t h = threadIdx.x / MM_HEAD; h < MM_GROUP; h += MM_AT_SPLIT_THREADS / MM_HEAD) {
         float best = -INFINITY;
         for (uint32_t w = 0; w < 4; w++) { best = fmaxf(best, wm[w][h]); }
         float sum = 0.0f, acc = 0.0f;
@@ -1875,11 +1978,13 @@ extern "C" int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor 
     if (!mm_attn_simt()) {
         static bool ready = false;
         if (!ready) {
-            if (!cuda_ok(cudaFuncSetAttribute(mm_attn_split_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                    MM_AT_SMEM), "MiniMax split MMA attention shared memory")) { return 0; }
+            // Two 34 KiB tiles per SM need the large shared split.
+            if (!cuda_ok(cudaFuncSetAttribute(mm_attn_split_mma_kernel, cudaFuncAttributePreferredSharedMemoryCarveout,
+                    100), "MiniMax split MMA attention shared memory")) { return 0; }
             ready = true;
         }
-        glmvq_launch_kernel(mm_mode(rows), mm_attn_split_mma_kernel, dim3(MM_SPLITS, rows), 128, MM_AT_SMEM, stream,
+        glmvq_launch_kernel(mm_mode(rows), mm_attn_split_mma_kernel, dim3(MM_SPLITS, rows), MM_AT_SPLIT_THREADS,
+            MM_AT_SPLIT_SMEM, stream,
             (float *)partials->ptr, (const float *)q->ptr, (const uint8_t *)pages->ptr, slots,
             (const int32_t *)blocks->ptr, pos);
     } else {
