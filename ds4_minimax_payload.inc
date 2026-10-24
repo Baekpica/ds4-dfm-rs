@@ -151,6 +151,9 @@ static int minimax_payload_restore(ds4_minimax_graph *g, FILE *fp, uint64_t *lef
     }
     free(buf);
     if (rc) { free(tokens); return 1; }
+    // MMX1 carries target K/V only. The old draft rings belong to another
+    // lineage (or are uninitialized); ordinary forwards refill them from n.
+    g->draft_first = n;
     g->position = n;
     g->failed = false;
     *tokens_out = tokens;
