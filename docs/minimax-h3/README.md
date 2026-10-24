@@ -13,6 +13,7 @@ Branch `feature/minimax-h3`. Model root on the Spark: `/mnt/h3-artifacts`.
 | [cheatsheet.md](cheatsheet.md) | Sizes, quality, reach, memory and layout in one page |
 | [vq-recipe.md](vq-recipe.md) | The 13-bit GVQ1 v1 conversion of the DiT and its fallback |
 | [openai-videos.md](openai-videos.md) | The OpenAI Videos API surface, the resident engine and the bridge, its deviations |
+| [api-usage.md](api-usage.md) | Using the served Videos API: start the host, the five routes, size names, lifecycle, errors, limits |
 | [upstream-m31-survey.md](upstream-m31-survey.md) | The M3.1 text-family branch: what transfers to h3, what is rejected, why h3 has no KV cache |
 | [ref-media-tests.md](ref-media-tests.md) | The conditioning matrix: FL2VA anchors and Ref2VA image/video/audio cases, fixtures and acceptance |
 
