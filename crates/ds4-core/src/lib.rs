@@ -31,6 +31,7 @@ mod mapped;
 mod mem;
 mod mem_gov;
 mod mimo2;
+pub mod minimax_h3;
 mod naive;
 mod naive_mtp;
 mod payload;
