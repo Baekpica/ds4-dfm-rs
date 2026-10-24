@@ -35,6 +35,8 @@ Related, outside this directory:
 | Vision forward | `crates/ds4-core/src/minimax_h3/vision_forward.rs` |
 | Vision gate | `crates/ds4-core/examples/h3_vision_gate.rs` (`make tests/h3_vision_gate`) |
 | Native vision primitives | `native/h3/h3_vision_gpu.cu` |
+| Multimodal presentation (`<Picture n>:`, mRoPE, tags) | `crates/ds4-core/src/minimax_h3/multimodal.rs` |
+| Multimodal gate | `crates/ds4-core/examples/h3_multimodal_gate.rs` (`make tests/h3_multimodal_gate`) |
 | Host arithmetic (canvas, noise, sigmas, reuse window, Euler step) | `crates/ds4-core/src/minimax_h3/host.rs` |
 | Packed sequence layout | `crates/ds4-core/src/minimax_h3/sequence.rs` |
 | DiT forward, Euler denoise, block stream | `crates/ds4-core/src/minimax_h3/dit.rs` |

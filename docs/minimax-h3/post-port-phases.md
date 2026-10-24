@@ -409,6 +409,31 @@ output (the final merger and all three deepstacks) hashed equal at 512x192 and
 512x512, the merged hash also at 512x224/256/320/384/448, and 20 repeats at
 two shapes were stable. The goldens are in `h3_vision_gate.rs`.
 
+**Unit 3 landed** (`multimodal.rs`, `encode_multimodal` in `text_forward.rs`,
+`Rope::build_multimodal` in `text_rope.rs`, `h3t_write` in the text-object ABI,
+`h3_multimodal_gate`): the `<Picture n>: ` presentation, the axis-major
+`[3, tokens]` mRoPE block with both tables rounded to BF16, the splice of the
+tower's rows over the embedding lookup, and the deepstack add after layers 0,
+1 and 2. Two facts read from the reference rather than assumed:
+
+- The mRoPE axis cycles `0, 1, 2` only for half-indices below **60**; the last
+  four keep axis 0 (`h3_text_encoder.c:551-553`).
+- The tag mask covers the boundary ids too: tags are zeroed over
+  `[start - 1, start + tokens + 1)` (`h3_multimodal.c:236-252`), which the
+  gate's `zeros` field confirms (96 merged rows give 98 zeros).
+
+Gated on the Spark on 2026-10-24 against `multimodal_probe.c` with the pilot
+image at 512x192 and 512x512: the BF16 row hash, the eight-word edges and the
+tag hash are equal at both shapes (PARITY `6ced02fc6feb0fe6` / `9f8deeb453edfecc`,
+TAGS `7d8b4561c21600fb` / `0f10ec04569ce77b`). The `<Picture 1>: ` prefix is
+six released BPE ids, not a hardcoded constant. Wall time with a warm page
+cache: 5.245 s against 19.756 s at 512x192 (the reference read the shard cold)
+and 7.028 s against 8.570 s at 512x512. The goldens are in
+`h3_multimodal_gate.rs`.
+
+Ref2VA (`h3_multimodal.c:243-360`) remains unported: it needs the ordered
+audio/video reference surface from units 4-5, not just the presentation.
+
 ## P12.5 — Port the reference test suite
 
 `/data/h3.c/tests` holds 33 files and 9,177 lines. They are the reference's own
