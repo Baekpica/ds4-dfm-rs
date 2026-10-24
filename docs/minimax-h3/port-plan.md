@@ -1092,6 +1092,16 @@ the shape of the operator's other Spark deployments (`dgx-recipe/scripts/`,
 `install-*-vq.sh`), and the push offer. The QA gate runs once, here, when the
 port is complete and runnable — not per unit (operator, 2026-10-24).
 
+The P9/P10 rows above are the plan's original wording and stay as history.
+From E9 on, [post-port-phases.md](post-port-phases.md) is the authority: P8.5
+the survey of `origin/feat/add-minimax-vq` (the M3.1 text family: what
+transfers as a mechanism, what is rejected by name, and why H3 has no KV
+cache to reuse), P9 speed (the measured gaps and their attribution), P10 the
+OpenAI Videos API on a resident in-process engine, P11 YouTube and Instagram
+delivery presets at the model's largest canvas, P12 the conditioning and
+editing surface, P13 close. Each of those phases carries its own gate and its
+own record here.
+
 ## 8. Deployment and the two routes
 
 | Thing | Where |
