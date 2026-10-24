@@ -252,9 +252,10 @@ static bool minimax_mm_many(ds4_minimax_graph *g, const ds4_model *m, ds4_gpu_te
 
 // q/k/v (`outs`) and the Q8_0 indexer projections (index_q [512], index_k
 // [128]) of norm: one launch at decode and verify widths; prefill runs the
-// q/k/v group and one MMQ pair (the input quantized to Q8_1 once).
+// q/k/v group (q as BF16 rows when `q_bf16`) and one MMQ pair (the input
+// quantized to Q8_1 once).
 static bool minimax_projections(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l,
-        ds4_gpu_tensor *const *outs, uint32_t rows) {
+        ds4_gpu_tensor *const *outs, uint32_t rows, bool q_bf16) {
     const ds4_tensor *const ws[] = {l->attn_q, l->attn_k, l->attn_v};
     const uint32_t q = minimax_index(m, l->attn_idx_q_b), k = minimax_index(m, l->attn_idx_k);
     if (rows <= DS4_MINIMAX_SPLIT_ROWS && !g->norm_q4p) {
@@ -263,7 +264,16 @@ static bool minimax_projections(ds4_minimax_graph *g, const ds4_model *m, const 
             return true;
         }
     }
-    if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows, g->norm_q4p)) { return false; }
+    if (q_bf16) {
+        const uint32_t index[] = {minimax_index(m, ws[0]), minimax_index(m, ws[1]), minimax_index(m, ws[2])};
+        if (!ds4_gpu_gvq_q4p_prepared_bf16(g->gvq, outs[0], index[0], g->q4h, g->q4s, rows) ||
+            !ds4_gpu_gvq_q4p_prepared(g->gvq, outs + 1, index + 1, 2u, g->q4h, g->q4s, rows)) {
+            fprintf(stderr, "ds4: MiniMax q/k/v projections failed (rows=%u)\n", rows);
+            return false;
+        }
+    } else if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows, g->norm_q4p)) {
+        return false;
+    }
     const bool ok =
         ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ, MINIMAX_INDEX, rows) != 0;
     if (!ok) { fprintf(stderr, "ds4: MiniMax indexer projection failed (rows=%u)\n", rows); }
@@ -301,19 +311,21 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
     // SSD tier, prefill rows: attention reads the layer's blocks from the
     // device stage (ds4_minimax_kv.inc), filled after the resolve.
     const bool staged = g->kv.spill && rows > DS4_MINIMAX_SPLIT_ROWS && blocks_now <= g->kv.stage_blocks;
-    // Prefill heads go to o_proj as BF16 rows when q4p prepares its input
-    // from them (the values are BF16-rounded either way): half the bytes
-    // written and read. Traces keep F32 rows.
+    // Prefill q (q4p's output when it takes q/k/v) and heads (when q4p
+    // prepares o_proj's input from them) travel as BF16 rows: the values are
+    // BF16-rounded either way, and each is written once and read twice or
+    // once. Traces keep F32 rows.
     const uint32_t o_proj = minimax_index(m, l->attn_output);
     const char *trace = getenv("DS4_MINIMAX_TRACE");
-    const bool heads_bf16 = !(trace && trace[0]) && ds4_gpu_minimax_attn_bf16(rows) &&
-        ds4_gpu_gvq_bf16_input(g->gvq, o_proj, rows);
-    if (!minimax_projections(g, m, l, outs, rows) ||
+    const bool rows_bf16 = !(trace && trace[0]) && ds4_gpu_minimax_attn_bf16(rows);
+    const bool q_bf16 = rows_bf16 && g->norm_q4p;
+    const bool heads_bf16 = rows_bf16 && ds4_gpu_gvq_bf16_input(g->gvq, o_proj, rows);
+    if (!minimax_projections(g, m, l, outs, rows, q_bf16) ||
         // Norms, RoPE, v_proj's BF16 output (prefill projections leave F32
         // sums) and the K/V and index key stores.
         !ds4_gpu_minimax_tail(g->gvq, g->q, g->k, g->v, g->iq, g->ik, minimax_index(m, l->attn_q_norm),
             minimax_index(m, l->attn_k_norm), minimax_index(m, x->index_q_norm), minimax_index(m, x->index_k_norm),
-            pages, table, g->index[il], g->rope, rows, pos) ||
+            pages, table, g->index[il], g->rope, rows, pos, q_bf16) ||
         !minimax_trace(il, pos, "q", g->q, (uint64_t)rows * MINIMAX_Q * sizeof(float)) ||
         !minimax_trace(il, pos, "k", g->k, (uint64_t)rows * MINIMAX_KV * sizeof(float)) ||
         !minimax_trace(il, pos, "v", g->v, (uint64_t)rows * MINIMAX_KV * sizeof(float)) ||
@@ -325,7 +337,7 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
         !minimax_resolve(g, il, rows, pos) ||
         (staged && !ds4_gpu_minimax_kv_stage(g->kv.stage, pages, table, blocks_now)) ||
         !ds4_gpu_minimax_attn(g->heads, g->q, staged ? g->kv.stage : pages, staged ? NULL : table, g->blocks,
-            g->partials, rows, pos, heads_bf16) ||
+            g->partials, rows, pos, (heads_bf16 ? DS4_MINIMAX_BF16_HEADS : 0u) | (q_bf16 ? DS4_MINIMAX_BF16_Q : 0u)) ||
         // Only a streamed resolve waits for the mark; an event between two
         // kernels would stop o_proj's early (PDL) launch.
         (minimax_kv_needs_resolve(&g->kv) && minimax_kv_streams(&g->kv, rows, blocks_now) &&

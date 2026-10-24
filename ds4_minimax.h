@@ -130,7 +130,7 @@ int ds4_gpu_minimax_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t weight, uin
 int ds4_gpu_minimax_tail(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
     ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t q_norm, uint32_t k_norm, uint32_t iq_norm, uint32_t ik_norm,
     ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, ds4_gpu_tensor *index, const ds4_gpu_tensor *rope,
-    uint32_t rows, uint32_t pos);
+    uint32_t rows, uint32_t pos, int q_bf16);
 
 /* MSA block selection for rows at pos..: per row and KV head h the block
  * score is the max over the block's visible tokens of
@@ -147,12 +147,14 @@ int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *scores, uint3
  * row's own block, softmax scale 128^-0.5 in F32, output rounded once. Up
  * to DS4_MINIMAX_SPLIT_ROWS rows split their blocks into DS4_MINIMAX_SPLITS
  * partials each (`partials`: SPLIT_ROWS x SPLITS x 16 x 130 floats), every
- * row computed as a lone decode row is. `heads_bf16` stores BF16 heads
- * (prefill rows on the MMA kernel only: ds4_gpu_minimax_attn_bf16). */
+ * row computed as a lone decode row is. `bf16`: DS4_MINIMAX_BF16_HEADS
+ * stores BF16 heads, DS4_MINIMAX_BF16_Q reads BF16 q rows (prefill rows on
+ * the MMA kernel only: ds4_gpu_minimax_attn_bf16). */
+enum { DS4_MINIMAX_BF16_HEADS = 1, DS4_MINIMAX_BF16_Q = 2 };
 int ds4_gpu_minimax_attn_bf16(uint32_t rows);
 int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
     const ds4_gpu_tensor *table, const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows,
-    uint32_t pos, int heads_bf16);
+    uint32_t pos, uint32_t bf16);
 
 /* DSpark drafter. tap: taps[r][k] = BF16 rows of the residual entering tap
  * layer k (taps: rows x 5 x 6144 BF16). widen: F32 rows r0.. of the taps,

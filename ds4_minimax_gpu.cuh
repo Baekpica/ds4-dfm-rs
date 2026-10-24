@@ -1117,9 +1117,10 @@ extern "C" int ds4_gpu_minimax_rope(ds4_gpu_tensor *rope, uint32_t rows, uint32_
  * weight), rounded once; then the NeoX rotation of dims [0, 64) as torch's
  * separate F32 ops (x1 c - x2 s, x2 c + x1 s) on rope row t, rounded once;
  * dims [64, 128) pass. */
-__device__ __forceinline__ void mm_qk_head(float *p, float w, const float *t, float *scratch, float *y) {
+template <typename T>
+__device__ __forceinline__ void mm_qk_head(T *p, float w, const float *t, float *scratch, float *y) {
     const uint32_t i = threadIdx.x;
-    const float v = glmvq_round(p[i]);
+    const float v = glmvq_round(glmvq_value(p[i]));
     float sum = v * v;
     for (uint32_t stride = 16; stride; stride >>= 1) { sum += __shfl_xor_sync(0xffffffffu, sum, stride); }
     if ((i & 31) == 0) { scratch[i / 32] = sum; }
@@ -1129,14 +1130,14 @@ __device__ __forceinline__ void mm_qk_head(float *p, float w, const float *t, fl
     y[i] = glmvq_round(glmvq_mul(glmvq_add(1.0f, w), glmvq_mul(v, inv)));
     __syncthreads();
     if (i >= MM_ROT) {
-        p[i] = y[i];
+        p[i] = glmvq_cast<T>(y[i]);
         return;
     }
     const uint32_t j = i % (MM_ROT / 2);
     const float c = t[j], s = t[MM_ROT / 2 + j];
     const float a = y[j], b = y[j + MM_ROT / 2];
-    p[i] = i < MM_ROT / 2 ? glmvq_round(glmvq_add(glmvq_mul(a, c), -glmvq_mul(b, s)))
-                          : glmvq_round(glmvq_add(glmvq_mul(b, c), glmvq_mul(a, s)));
+    p[i] = glmvq_cast<T>(i < MM_ROT / 2 ? glmvq_round(glmvq_add(glmvq_mul(a, c), -glmvq_mul(b, s)))
+                                        : glmvq_round(glmvq_add(glmvq_mul(b, c), glmvq_mul(a, s))));
 }
 
 // One block per (head, row).
@@ -1203,7 +1204,8 @@ static bool mm_pages_ok(const ds4_gpu_tensor *pages, const ds4_gpu_tensor *table
 enum { MM_TAIL_K = MM_HEADS, MM_TAIL_V = MM_TAIL_K + MM_KV_HEADS, MM_TAIL_IQ = MM_TAIL_V + MM_KV_HEADS,
        MM_TAIL_IK = MM_TAIL_IQ + MM_KV_HEADS, MM_TAIL_BLOCKS = MM_TAIL_IK + 1 };
 struct mm_tail_args {
-    float *q, *k, *v, *iq, *ik;
+    void *q;   // QT rows (mm_tail_kernel<QT>)
+    float *k, *v, *iq, *ik;
     const __nv_bfloat16 *qn, *kn, *iqn, *ikn;
     uint8_t *pages, *index;
     const int32_t *table;
@@ -1211,25 +1213,32 @@ struct mm_tail_args {
     uint32_t pos;
 };
 
+template <typename QT>
 __global__ void __launch_bounds__(MM_HEAD) mm_tail_kernel(mm_tail_args a) {
     __shared__ float scratch[MM_HEAD / 32];
     __shared__ float y[MM_HEAD];
     glmvq_pdl_open();
     const uint32_t b = blockIdx.x, r = blockIdx.y;
+    if (b < MM_TAIL_K) {
+        // q heads: QT rows (BF16 at prefill when q4p wrote them so).
+        const float w = __bfloat162float(a.qn[threadIdx.x]);
+        glmvq_pdl_wait();
+        mm_qk_head((QT *)a.q + ((uint64_t)r * MM_HEADS + b) * MM_HEAD, w, a.rope + (uint64_t)r * MM_ROT, scratch, y);
+        return;
+    }
     // Selected by compares: a dynamic index would copy the parameters to local memory.
-    float *x = a.q;
-    const __nv_bfloat16 *norm = a.qn;
-    uint32_t heads = MM_HEADS, h = b;
+    float *x = a.k;
+    const __nv_bfloat16 *norm = a.kn;
+    uint32_t heads = MM_KV_HEADS, h = b - MM_TAIL_K;
     if (b >= MM_TAIL_IK) { x = a.ik; norm = a.ikn; heads = 1; h = 0; }
     else if (b >= MM_TAIL_IQ) { x = a.iq; norm = a.iqn; heads = MM_KV_HEADS; h = b - MM_TAIL_IQ; }
     else if (b >= MM_TAIL_V) { x = a.v; norm = nullptr; heads = MM_KV_HEADS; h = b - MM_TAIL_V; }
-    else if (b >= MM_TAIL_K) { x = a.k; norm = a.kn; heads = MM_KV_HEADS; h = b - MM_TAIL_K; }
     const float w = norm ? __bfloat162float(norm[threadIdx.x]) : 0.0f;
     glmvq_pdl_wait();
     float *p = x + ((uint64_t)r * heads + h) * MM_HEAD;
     if (norm) { mm_qk_head(p, w, a.rope + (uint64_t)r * MM_ROT, scratch, y); }
     else { p[threadIdx.x] = glmvq_round(p[threadIdx.x]); }
-    if (b < MM_TAIL_K || (b >= MM_TAIL_IQ && b < MM_TAIL_IK)) { return; }
+    if (b >= MM_TAIL_IQ && b < MM_TAIL_IK) { return; }
     __syncthreads();
     if (threadIdx.x >= 32) { return; }
     const uint32_t t = a.pos + r;
@@ -1247,11 +1256,11 @@ __global__ void __launch_bounds__(MM_HEAD) mm_tail_kernel(mm_tail_args a) {
 extern "C" int ds4_gpu_minimax_tail(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
         ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t q_norm, uint32_t k_norm, uint32_t iq_norm, uint32_t ik_norm,
         ds4_gpu_tensor *pages, const ds4_gpu_tensor *table, ds4_gpu_tensor *index, const ds4_gpu_tensor *rope,
-        uint32_t rows, uint32_t pos) {
+        uint32_t rows, uint32_t pos, int q_bf16) {
     const auto norm = [&](uint32_t weight) {
         return (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, MM_HEAD);
     };
-    const mm_tail_args a = {q ? (float *)q->ptr : nullptr, k ? (float *)k->ptr : nullptr,
+    const mm_tail_args a = {q ? q->ptr : nullptr, k ? (float *)k->ptr : nullptr,
         v ? (float *)v->ptr : nullptr, iq ? (float *)iq->ptr : nullptr, ik ? (float *)ik->ptr : nullptr,
         norm(q_norm), norm(k_norm), norm(iq_norm), norm(ik_norm), pages ? (uint8_t *)pages->ptr : nullptr,
         index ? (uint8_t *)index->ptr : nullptr, table ? (const int32_t *)table->ptr : nullptr,
@@ -1261,7 +1270,13 @@ extern "C" int ds4_gpu_minimax_tail(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q, ds4_gpu
         !gvq_floats(q, (uint64_t)rows * MM_HEADS * MM_HEAD) || !gvq_floats(k, kv) || !gvq_floats(v, kv) ||
         !gvq_floats(iq, kv) || !gvq_floats(ik, (uint64_t)rows * MM_HEAD) || !gvq_floats(rope, (uint64_t)rows * MM_ROT) ||
         !index || index->bytes < (uint64_t)(pos + rows) * MM_FP4_ROW) { return 0; }
-    glmvq_launch_kernel(mm_mode(rows), mm_tail_kernel, dim3(MM_TAIL_BLOCKS, rows), MM_HEAD, 0, ds4_current_stream(), a);
+    if (q_bf16) {
+        glmvq_launch_kernel(mm_mode(rows), mm_tail_kernel<__nv_bfloat16>, dim3(MM_TAIL_BLOCKS, rows), MM_HEAD, 0,
+            ds4_current_stream(), a);
+    } else {
+        glmvq_launch_kernel(mm_mode(rows), mm_tail_kernel<float>, dim3(MM_TAIL_BLOCKS, rows), MM_HEAD, 0,
+            ds4_current_stream(), a);
+    }
     return cuda_ok(cudaGetLastError(), "MiniMax q/k/v tails");
 }
 
@@ -1844,8 +1859,8 @@ static_assert(4u * MM_BLOCK == 2u * MM_AT_ROWS * 32, "two decode units per threa
 __device__ __forceinline__ void mm_at_store(float *p, float v) { *p = v; }
 __device__ __forceinline__ void mm_at_store(__nv_bfloat16 *p, float v) { *p = __float2bfloat16_rn(v); }
 
-template <typename OUT>
-__global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(OUT *heads, const float *q,
+template <typename OUT, typename QT>
+__global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(OUT *heads, const QT *q,
         const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos, uint32_t rows) {
     extern __shared__ __align__(16) uint8_t mm_at_smem[];
     __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_BLOCK * MM_AT_LD;
@@ -1857,14 +1872,14 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(OUT *he
     const int32_t *list = blocks + ((uint64_t)r * MM_KV_HEADS + kv) * MM_TOPK;
     // Q as A fragments (16 heads x 128 dims, eight k-steps), rounded once.
     uint32_t qa[8][4];
-    const float *qr = q + ((uint64_t)r * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    const QT *qr = q + ((uint64_t)r * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
     #pragma unroll
     for (uint32_t j = 0; j < 8; j++) {
         const uint32_t c = 16 * j + 2 * t;
-        qa[j][0] = mm_bf16x2(qr[g * MM_HEAD + c], qr[g * MM_HEAD + c + 1]);
-        qa[j][1] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c], qr[(g + 8) * MM_HEAD + c + 1]);
-        qa[j][2] = mm_bf16x2(qr[g * MM_HEAD + c + 8], qr[g * MM_HEAD + c + 9]);
-        qa[j][3] = mm_bf16x2(qr[(g + 8) * MM_HEAD + c + 8], qr[(g + 8) * MM_HEAD + c + 9]);
+        qa[j][0] = mm_bf16x2(glmvq_value(qr[g * MM_HEAD + c]), glmvq_value(qr[g * MM_HEAD + c + 1]));
+        qa[j][1] = mm_bf16x2(glmvq_value(qr[(g + 8) * MM_HEAD + c]), glmvq_value(qr[(g + 8) * MM_HEAD + c + 1]));
+        qa[j][2] = mm_bf16x2(glmvq_value(qr[g * MM_HEAD + c + 8]), glmvq_value(qr[g * MM_HEAD + c + 9]));
+        qa[j][3] = mm_bf16x2(glmvq_value(qr[(g + 8) * MM_HEAD + c + 8]), glmvq_value(qr[(g + 8) * MM_HEAD + c + 9]));
     }
     float o[16][4];
     #pragma unroll
@@ -2241,32 +2256,29 @@ extern "C" int ds4_gpu_minimax_attn_bf16(uint32_t rows) { return rows > DS4_MINI
 
 extern "C" int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
         const ds4_gpu_tensor *table, const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows,
-        uint32_t pos, int heads_bf16) {
+        uint32_t pos, uint32_t bf16) {
     const uint64_t count = (uint64_t)rows * MM_HEADS * MM_HEAD;
     if (!rows || !mm_pages_ok(pages, table, pos + rows) || !gvq_floats(heads, count) || !gvq_floats(q, count) ||
         !blocks || blocks->bytes < (uint64_t)rows * MM_KV_HEADS * MM_TOPK * sizeof(int32_t)) { return 0; }
     const cudaStream_t stream = ds4_current_stream();
     const int32_t *slots = table ? (const int32_t *)table->ptr : nullptr;
-    if (heads_bf16 && !ds4_gpu_minimax_attn_bf16(rows)) { return 0; }
+    if (bf16 && !ds4_gpu_minimax_attn_bf16(rows)) { return 0; }
     if (rows > DS4_MINIMAX_SPLIT_ROWS && !mm_attn_simt()) {
-        static bool ready = false;
-        if (!ready) {
-            if (!cuda_ok(cudaFuncSetAttribute(mm_attn_mma_kernel<float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                    MM_AT_SMEM), "MiniMax MMA attention shared memory") ||
-                !cuda_ok(cudaFuncSetAttribute(mm_attn_mma_kernel<__nv_bfloat16>,
-                    cudaFuncAttributeMaxDynamicSharedMemorySize, MM_AT_SMEM), "MiniMax MMA attention shared memory")) {
-                return 0;
-            }
-            ready = true;
-        }
         const dim3 grid((rows + MM_AT_ROWS - 1) / MM_AT_ROWS, MM_KV_HEADS);
-        if (heads_bf16) {
-            mm_attn_mma_kernel<<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>((__nv_bfloat16 *)heads->ptr,
-                (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, rows);
-        } else {
-            mm_attn_mma_kernel<<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>((float *)heads->ptr,
-                (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, rows);
-        }
+        const auto launch = [&](auto *out, const auto *qrows) {
+            using OUT = std::remove_pointer_t<decltype(out)>;
+            using QT = std::remove_const_t<std::remove_pointer_t<decltype(qrows)>>;
+            static const cudaError_t ready = cudaFuncSetAttribute(mm_attn_mma_kernel<OUT, QT>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, MM_AT_SMEM);
+            if (!cuda_ok(ready, "MiniMax MMA attention shared memory")) { return; }
+            mm_attn_mma_kernel<<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>(out, qrows, (const uint8_t *)pages->ptr,
+                slots, (const int32_t *)blocks->ptr, pos, rows);
+        };
+        const bool hb = bf16 & DS4_MINIMAX_BF16_HEADS, qb = bf16 & DS4_MINIMAX_BF16_Q;
+        if (hb && qb) { launch((__nv_bfloat16 *)heads->ptr, (const __nv_bfloat16 *)q->ptr); }
+        else if (hb) { launch((__nv_bfloat16 *)heads->ptr, (const float *)q->ptr); }
+        else if (qb) { launch((float *)heads->ptr, (const __nv_bfloat16 *)q->ptr); }
+        else { launch((float *)heads->ptr, (const float *)q->ptr); }
         return cuda_ok(cudaGetLastError(), "MiniMax MMA attention");
     }
     if (rows > DS4_MINIMAX_SPLIT_ROWS || (rows > 1 && mm_attn_simt())) {

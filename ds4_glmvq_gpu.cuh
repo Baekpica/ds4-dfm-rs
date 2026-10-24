@@ -945,6 +945,20 @@ extern "C" int ds4_gpu_gvq_q4p_prepared(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const 
     return 1;
 }
 
+// ds4_gpu_gvq_q4p_prepared of one matrix into BF16 rows: q4p's epilogue
+// rounds the same F32 product to nearest, as a later BF16 rounding of the
+// F32 rows would.
+extern "C" int ds4_gpu_gvq_q4p_prepared_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+        const ds4_gpu_tensor *xh, const ds4_gpu_tensor *xscale, uint32_t rows) {
+    if (!out || !xh || !xscale || !ds4_gpu_gvq_q4p_takes(ctx, &weight, 1, rows) || !gvq_stream(ctx)) { return 0; }
+    const glmvq_source &s = ctx->model->source[weight];
+    if (xh->bytes < (uint64_t)rows * s.cols * sizeof(__half) || !gvq_floats(xscale, rows) ||
+        !gvq_floats(out, (uint64_t)rows * s.rows / 2)) { return 0; }
+    const glmvq_q4p_input in = {(__half *)xh->ptr, (float *)xscale->ptr};
+    return cuda_ok(glmvq_q4p_gemm((const uint8_t *)s.data, in, (__nv_bfloat16 *)out->ptr, s.rows, s.cols, rows,
+        ctx->stream), "GLM VQ Q4 prefill (prepared input, BF16 rows)");
+}
+
 // Q4_K matrices sharing one input, stored as BF16 rows (the rounding decode
 // and verify keep) when q4p takes them; 0 leaves the outputs untouched.
 extern "C" int ds4_gpu_gvq_linear_many_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,

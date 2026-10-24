@@ -60,6 +60,10 @@ int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
 int ds4_gpu_gvq_q4p_takes(ds4_gvq_ctx *ctx, const uint32_t *weights, uint32_t count, uint32_t rows);
 int ds4_gpu_gvq_q4p_prepared(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
     uint32_t count, const ds4_gpu_tensor *xh, const ds4_gpu_tensor *xscale, uint32_t rows);
+/* ds4_gpu_gvq_q4p_prepared of one matrix into BF16 rows (each the F32 row
+ * value rounded to nearest). */
+int ds4_gpu_gvq_q4p_prepared_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+    const ds4_gpu_tensor *xh, const ds4_gpu_tensor *xscale, uint32_t rows);
 /* Up to eight tokens of one Q4_K matrix on the one-token SIMT kernels (no
  * MMA verify path); 0 for other types and widths. */
 int ds4_gpu_gvq_q4_decode_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t index,
