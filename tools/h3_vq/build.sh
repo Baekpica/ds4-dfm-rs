@@ -44,5 +44,12 @@ echo "== single-tensor ladder tool =="
 $CC $CFLAGS $INC -o "$OUT/h3_vq" "$HERE/bake/eg2_vq.c" \
     "$YA/src/common/ds4_quantfmt.c" -lm -lpthread
 
+echo "== rung A encoder: GVQ1 v1 (13-bit, E4M3 book) + GVR8, with its own gates =="
+# h3_gvq.c carries the format in bake/h3_gvq.h; the only object it needs is the
+# repository's SHA-256, because the payload checksums must be the reader's own.
+# shellcheck disable=SC2086
+$CC $CFLAGS $INC -o "$OUT/h3_gvq" "$HERE/bake/h3_gvq.c" \
+    "$YA/src/common/ds4_sha256.c" -lm -lpthread
+
 echo "built into $OUT"
 ls -la "$OUT"

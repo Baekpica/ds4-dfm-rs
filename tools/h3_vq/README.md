@@ -6,21 +6,74 @@ The sources are the ones the `embeddinggemma2` dense bake used; the plan's
 [VQ recipe](../../docs/minimax-h3-vq-recipe.md) section 9 is the adaptation
 checklist.
 
-Status: **transferred, adapted for H3, and exercised end to end on a fixture.**
-`bake/h3_pack.c` is the H3 driver — the bake's container, slot layout,
-plan/layout/merge/check machinery and encoder calls, with the class table, the
-kept-name list, `classify()` and the recipe string replaced. The unmodified bake
-driver is still built as `bin/eg2_pack_cpu` for comparison.
+Status: **transferred, adapted for H3, and exercised end to end on a fixture;
+the rung A encoder (GVQ1 v1 + GVR8) is implemented and gated.** `bake/h3_pack.c`
+is the H3 driver — the bake's container, slot layout, plan/layout/merge/check
+machinery and encoder calls, with the class table, the kept-name list,
+`classify()` and the recipe string replaced. The unmodified bake driver is
+still built as `bin/eg2_pack_cpu` for comparison. `bake/h3_gvq.c` +
+`bake/h3_gvq.h` are the rung A / A+8 encoder and codec (section "Rung A").
 
 ### What has been tested
 
 | Check | Command | Result |
 |---|---|---|
-| Builds from this directory, CPU only | `tools/h3_vq/build.sh` | 4 binaries, no errors |
+| Builds from this directory, CPU only | `tools/h3_vq/build.sh` | 5 binaries, no errors |
 | H3 classification | `bin/h3_pack_cpu plan /tmp/h3fix` | 9 VQ matrices into adaln / mlp-fc1 / attn-qkv / mlp-fc2 / attn-out / head; 11 kept tensors verbatim, including `audio_patch_proj` (cols 32) and the five other F32-by-design matrices, which the name list — not the shape — keeps |
 | Encode, structure, read-back | `encode` then `check` | `structure OK: 20 slots, names, hashes, alignment, payload ranges` |
 | Determinism | two encodes, `cmp` | byte-identical when the matrix has at least as many vectors as codewords (`sha256 7af650e2…`) |
 | Fixture generator | `tests/make_fixture.c` | writes H3's names and dtypes at reduced shapes, so no checkpoint is needed for the tool's own gates |
+| Rung A codec and encoder | `bin/h3_gvq selftest` | passes: byte account, 13-bit round trip, value rule, thread-count determinism, residual invariance, 20 GVQ1 + 5 GVR8 rejections, all three padding gaps |
+
+## Rung A — the GVQ1 v1 payload (`h3_gvq`)
+
+`bake/h3_gvq.h` is the format and `bake/h3_gvq.c` is the encoder plus the tool's
+own gates. The contract is the M3.1 release's `FORMAT.md` field by field, and
+where it says "canonical" the operational definition is the strict reader
+already in this repository, `crates/ds4-core/src/glm_vq.rs:117-225` (offsets,
+checksum placement, gain rules, zero padding). Codewords are E4M3FN through
+`youngai/src/common/ds4_fp8.h`; checksums are `ds4_sha256`.
+
+| Item | Rung A | Rung B |
+|---|---|---|
+| Vector dimension | 8 | 8 |
+| Codebook | K 8192, 64 KiB E4M3 | K 4096, 32 KiB E4M3 |
+| Index bits | 13 = 12-bit stream + 1-bit plane | 12 |
+| Payload per matrix | `align128(128 + 2R + R·C·3/16 + R·C/64)` | `align128(128 + 2R + R·C·3/16)` |
+| Rate | 1.625 bits/weight + one F16 gain per row | 1.5 |
+| Residual (A+8) | GVR8, K 256, one index byte per 8 weights, shared row gain | — |
+
+The encoder is the published recipe, not a variant of it: equidistant init (no
+random source), a stratified pool of at least 1000 vectors per codeword, 32
+Lloyd iterations, codewords rounded to E4M3 *before* the final assignment,
+least-squares gain refit rounded to F16, and for the residual the target
+`w/g - C1[i1]` against the stored gain and index with stage 1 untouched. With
+no activation statistics yet it uses the reference's own zero-corpus mode
+(uniform column weights); the column profile is the input the statistics step
+will supply.
+
+Run:
+
+```sh
+bin/h3_gvq selftest
+bin/h3_gvq encode <safetensors-dir> <tensor> <prefix> \
+    [--k 8192|4096] [--iters N] [--res-iters N] [--pool-per-code N] \
+    [--threads N] [--residual] [--book-id N]
+bin/h3_gvq check <prefix> [--src <safetensors-dir> --name <tensor>]
+```
+
+`encode` writes `<prefix>.gvq`, `<prefix>.book`, optionally `<prefix>.gvr` and
+`<prefix>.rbook`, and `<prefix>.report` with the stage timings, the assignment
+throughput, the byte account and the reconstruction quality. `check` re-reads
+all of it through the strict reader, verifies every value against the value
+rule, and compares against the source when given one.
+
+Not implemented yet, and named so it cannot be mistaken for done: the
+`imatrix` statistics producer (the column profile is an argument, not a
+measurement), the per-block residual sweep, and the GGUF wrap. The residual
+stage is fitted per matrix and on by request; which blocks get it is a
+measurement the sweep will make.
+
 
 Two findings from that run, both worth carrying into the real conversion:
 
@@ -74,11 +127,12 @@ tools/h3_vq/build.sh          # CC=… OUT=… to override
 ```
 
 CPU only: no CUDA, no checkpoint, no GPU. It produces `bin/h3_pack_cpu`,
-`bin/h3_gguf` and `bin/h3_vq`, and the build lines are the bake's own
-(`/data/embeddinggemma2/RECIPE.md` section 4) with the include roots pointed
-here. One correction to that documented line: `eg2_vq.c` links **without**
-`onebit_quant.c`, because it already carries the block-quantizer sources it
-uses; including that object twice is a duplicate-symbol error.
+`bin/h3_gvq`, `bin/h3_gguf` and `bin/h3_vq`, and the build lines are the bake's
+own (`/data/embeddinggemma2/RECIPE.md` section 4) with the include roots pointed
+here. `h3_gvq` is new H3 code and links only `ds4_sha256.c`. One correction to
+that documented line: `eg2_vq.c` links **without** `onebit_quant.c`, because it
+already carries the block-quantizer sources it uses; including that object
+twice is a duplicate-symbol error.
 
 ## Run
 
@@ -124,6 +178,10 @@ Per the recipe's section 9.2: `classify()`, `name_is_kept_matrix()`, the
 step and the render gate, which are the genuinely new work. The sharding the
 4 GiB `DQVD` ceiling requires already exists (`--shard i/N` and `merge`), and
 H3 has exactly 13 natural shards.
+
+The rung A format work is done in `h3_gvq` (the E4M3 codebook and the 13-bit
+layout, plus the GVR8 residual stage); what remains on that path is the imatrix
+producer, the per-block residual sweep and the GGUF wrap.
 
 ## License
 

@@ -520,6 +520,15 @@ the rung ladder is explored with, one matrix at a time, before a full encode.
    rung A+8 needs the 256-entry second stage and the two-stage value rule. Both
    are format work in the writer and the matching reader, and both are
    prerequisites for the recommended rung rather than optional extras.
+   **Done, in `tools/h3_vq/bake/h3_gvq.{c,h}`** (branch `feature/minimax-h3`):
+   the GVQ1 v1 writer and strict reader, the GVR1 residual payload, and the
+   encoder with the parameter set of section 2. Gate: `bin/h3_gvq selftest`
+   passes — the byte account, the 13-bit round trip, the value rule against an
+   independent oracle, byte-equal payloads across thread counts, a stage-1
+   payload unchanged by the residual stage, 20 GVQ1 and 5 GVR8 rejections, and
+   all three padding gaps exercised. The `imatrix` column profile is an
+   argument the statistics step (section 6 step 3) will fill; with no
+   statistics the encoder runs the reference's own zero-corpus mode.
 3. The per-block residual sweep (the M3.1 method): convert one block at a time
    to the residual stage, re-run the held-out measurement, take the blocks with
    the largest drop. Its counterintuitive result is worth carrying — the middle
