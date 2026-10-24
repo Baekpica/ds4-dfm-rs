@@ -3451,7 +3451,11 @@ impl Session<'_> {
             self.host.generation = self.native_generation();
             return Err(fail(rc, &err));
         }
+        // The DSpark gate's measured rates belong to the runtime, not to the
+        // restored tokens.
+        let gate = std::mem::take(&mut self.host.dspark_gate);
         self.host = saved.clone();
+        self.host.dspark_gate = gate;
         self.host.generation = self.native_generation();
         Ok(())
     }
