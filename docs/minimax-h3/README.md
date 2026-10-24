@@ -19,6 +19,7 @@ Related, outside this directory:
 | Rust reader | `crates/ds4-core/src/minimax_h3/` |
 | DiT tensor layout | `crates/ds4-core/src/minimax_h3/layout.rs` |
 | Mapped weight table | `crates/ds4-core/src/minimax_h3/weights.rs` |
+| Text-encoder path | `crates/ds4-core/src/minimax_h3/text.rs` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |
 | Inventory example | `crates/ds4-core/examples/minimax_h3_inspect/main.rs` |
 | Reference-parser probe | `tools/minimax_h3/st_probe.c` |

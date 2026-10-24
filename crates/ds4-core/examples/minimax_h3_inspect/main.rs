@@ -4,6 +4,7 @@
 //! Usage: minimax_h3_inspect <dir> [index.json]
 //!        minimax_h3_inspect --layout <dir>
 //!        minimax_h3_inspect --weights <dir>
+//!        minimax_h3_inspect --text <FL2VA/text_encoder>
 //!        minimax_h3_inspect --tokenizer <tokenizer.json>
 //!        minimax_h3_inspect --tokenize <tokenizer.json> < lines
 //!
@@ -35,6 +36,7 @@ use std::process::ExitCode;
 
 use ds4_core::minimax_h3::layout::{Layout, Role};
 use ds4_core::minimax_h3::safetensors::{open_dir, reconcile};
+use ds4_core::minimax_h3::text::Layout as TextLayout;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer, PAD_TOKEN_ID};
 use ds4_core::minimax_h3::weights::Weights;
 
@@ -50,6 +52,7 @@ enum Mode {
     Inventory,
     Layout,
     Weights,
+    Text,
     Tokenizer,
     Tokenize,
 }
@@ -87,6 +90,7 @@ fn main() -> ExitCode {
     let (mode, args) = match args.split_first() {
         Some((flag, rest)) if flag == "--layout" => (Mode::Layout, rest),
         Some((flag, rest)) if flag == "--weights" => (Mode::Weights, rest),
+        Some((flag, rest)) if flag == "--text" => (Mode::Text, rest),
         Some((flag, rest)) if flag == "--tokenizer" => (Mode::Tokenizer, rest),
         Some((flag, rest)) if flag == "--tokenize" => (Mode::Tokenize, rest),
         _ => (Mode::Inventory, args.as_slice()),
@@ -95,7 +99,7 @@ fn main() -> ExitCode {
     if args.is_empty() {
         eprintln!(
             "usage: minimax_h3_inspect \
-             [--layout|--weights|--tokenizer|--tokenize] <path> [index.json]"
+             [--layout|--weights|--text|--tokenizer|--tokenize] <path> [index.json]"
         );
         return ExitCode::from(2);
     }
@@ -105,6 +109,7 @@ fn main() -> ExitCode {
     match mode {
         Mode::Layout => return report_layout(dir),
         Mode::Weights => return report_weights(dir),
+        Mode::Text => return report_text(dir),
         Mode::Tokenizer => return report_tokenizer(dir),
         Mode::Tokenize => return report_tokenize(dir),
         Mode::Inventory => {}
@@ -407,6 +412,37 @@ fn report_tokenize(path: &Path) -> ExitCode {
         let row: Vec<String> = ids.iter().map(u32::to_string).collect();
         println!("{}", row.join(" "));
     }
+
+    ExitCode::SUCCESS
+}
+
+/// Check the text-encoder path and report what the shard set holds.
+fn report_text(dir: &Path) -> ExitCode {
+    let layout = match TextLayout::open(dir) {
+        Ok(layout) => layout,
+        Err(error) => {
+            eprintln!("{}", error.token());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let config = layout.config();
+    let outside = layout.outside();
+
+    println!(
+        "TEXT\tused={}\toutside={}\tdeferred_layers={}\tfinal_norm={}\tlm_head={}\tvision={}\tother={}\tdeclared_layers={}\thidden={}\tintermediate={}\tvocab={}",
+        layout.entries().len(),
+        outside.total(),
+        outside.deferred_layers,
+        outside.final_norm,
+        outside.lm_head,
+        outside.vision,
+        outside.other,
+        config.declared_layers,
+        config.hidden,
+        config.intermediate,
+        config.vocab
+    );
 
     ExitCode::SUCCESS
 }

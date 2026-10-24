@@ -633,6 +633,24 @@ it does not exhaust the Unicode database.
 With VQ deferred, the exact track continues at the text encoder, then the DiT
 graph, then P8's VAEs and CLI; P4-P7 stay parked.
 
+**P3.3 — The text-encoder path.** The 551 tensors the prompt encoder reads,
+named and shaped before its forward is written: `minimax_h3::text` takes the
+geometry from `text_config` and refuses a config that disagrees with the
+reference's constants (`h3_text_encoder.c:12-27`), then checks the embedding
+(`:622-625`) and fifty layers of eleven tensors (`:147-180`) for BF16 dtype and
+exact shape (`:219-247`). Tensors the path never touches are counted, not
+rejected: the 14 declared-but-unexecuted layers (`:14`), the final norm, the
+LM head, and the vision tower. *Gate:* the live check names every missing or
+mismatched tensor; the outside counts reconcile with the shard inventory.
+*Rollback:* additive module, nothing imports it yet.
+
+P3.3 shipped. Live over the gvfs route, header-only in 0.09 s: `used=551
+outside=507` with `deferred_layers=154 final_norm=1 lm_head=1 vision=351
+other=0`. Together with the inventory's 1,058 tensors the tally is exact
+(551 + 154 + 1 + 1 + 351). The eleven per-layer shapes and the embedding's
+`[151936, 5120]` all match, so every tensor the reference's loader would read
+is present, BF16, and correctly shaped.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
