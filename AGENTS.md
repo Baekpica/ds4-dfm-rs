@@ -113,6 +113,11 @@ the behavior, types, defaults, or code paths of any existing family:
   additive members or dependencies that no existing crate resolves differently.
 - The h3 surface is a CLI. No web UI, no HTTP route, no Python runtime. Serving
   it over HTTP, if ever wanted, is a separate unit with its own contract.
+- Layout: one namespace per surface, and nothing h3-named loose at the top of a
+  shared directory. Documents in `docs/minimax-h3/`, code in
+  `crates/ds4-core/src/minimax_h3/`, tooling in `tools/minimax_h3/`, the
+  inventory example in `crates/ds4-core/examples/minimax_h3_inspect/`. New h3
+  material goes inside one of those trees, never beside it.
 - Checkable: an h3 unit's diff names only h3 files plus additive registration
   lines. A diff touching another family's code fails the unit.
 

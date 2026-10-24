@@ -1,9 +1,9 @@
-# tools/h3_vq — the MiniMax-H3 VQ converter
+# tools/minimax_h3/vq — the MiniMax-H3 VQ converter
 
 The converter toolchain for the **MiniMax-H3 FL2VA DiT**, transferred here so the
 H3 conversion starts from a tool that already works rather than from scratch.
 The sources are the ones the `embeddinggemma2` dense bake used; the plan's
-[VQ recipe](../../docs/minimax-h3-vq-recipe.md) section 9 is the adaptation
+[VQ recipe](../../docs/minimax-h3/vq-recipe.md) section 9 is the adaptation
 checklist.
 
 Status: **transferred, adapted for H3, and exercised end to end on a fixture;
@@ -18,7 +18,7 @@ still built as `bin/eg2_pack_cpu` for comparison. `bake/h3_gvq.c` +
 
 | Check | Command | Result |
 |---|---|---|
-| Builds from this directory, CPU only | `tools/h3_vq/build.sh` | 5 binaries, no errors |
+| Builds from this directory, CPU only | `tools/minimax_h3/vq/build.sh` | 5 binaries, no errors |
 | H3 classification | `bin/h3_pack_cpu plan /tmp/h3fix` | 9 VQ matrices into adaln / mlp-fc1 / attn-qkv / mlp-fc2 / attn-out / head; 11 kept tensors verbatim, including `audio_patch_proj` (cols 32) and the five other F32-by-design matrices, which the name list — not the shape — keeps |
 | Encode, structure, read-back | `encode` then `check` | `structure OK: 20 slots, names, hashes, alignment, payload ranges` |
 | Determinism | two encodes, `cmp` | byte-identical when the matrix has at least as many vectors as codewords (`sha256 7af650e2…`) |
@@ -123,7 +123,7 @@ originals confirms it.
 ## Build
 
 ```sh
-tools/h3_vq/build.sh          # CC=… OUT=… to override
+tools/minimax_h3/vq/build.sh          # CC=… OUT=… to override
 ```
 
 CPU only: no CUDA, no checkpoint, no GPU. It produces `bin/h3_pack_cpu`,

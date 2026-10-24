@@ -1,8 +1,8 @@
 # MiniMax-H3 on ds4-dfm-rs — port plan
 
-[Documentation index](README.md) | [Repository README](../README.md) |
-[VQ recipe](minimax-h3-vq-recipe.md) | [Performance references](performance.md) |
-[GB10 know-how](../AGENTS.md) | [VQ calibration](vq-calibration.md)
+[Documentation index](../README.md) | [Repository README](../README.md) |
+[VQ recipe](vq-recipe.md) | [Performance references](../performance.md) |
+[GB10 know-how](../../AGENTS.md) | [VQ calibration](../vq-calibration.md)
 
 Status: **plan, nothing built.** Branch `feature/minimax-h3` off `dev` at
 `600e465e`. Date 2026-10-24. Owner: the operator; execution on the DGX Spark
@@ -55,14 +55,18 @@ allowed routes. It is the ground truth the plan stands on.
 | Artifact disk | `/mnt/h3-artifacts` ext4 label `H3ART` (fstab by UUID, `nofail`), 938 G with **795 G** available, 1.3 GB/s cold direct read | `df -h`, `rsync -an -c`, a 512 MiB write test |
 | Model area | `/mnt/models` holds 106 G ds41ﬂash-1017, 106 G ds41-1017, 106 G ds41-1017-unc, 126 G Qwen3.8 GGUF, 6.8 G Bonsai | `du -sh` |
 | Repository on the Spark | `~/ds4-dfm-rs`, branch `main` at `32a41683` — the serving deployment, a different lineage from this task's `dev` | `git branch --show-current`, `git log -1` |
-| Present | h3.c: **absent**. MiniMax-H3 checkpoint: **present** at `/mnt/h3-artifacts/MiniMax-H3`, copied and verified byte for byte | `ls`, `rsync -an -c` |
+| Present | h3.c: **source at `~/h3-oracle`**, built at `eae5d54`. MiniMax-H3 checkpoint: **present** at `/mnt/h3-artifacts/MiniMax-H3`, copied and verified byte for byte | `ls`, `rsync -an -c` |
+| ICU | `libicu-dev:arm64 74.2-1ubuntu3.1`, `/usr/include/unicode/unorm2.h` present, `pkg-config icu-i18n`/`icu-uc` 74.2 (the reference asks for 72 or newer, `README.md:73`) | `dpkg -l`, `pkg-config --modversion` |
 
-Two gaps that are prerequisites, not risks to discover later:
+One gap that is a prerequisite, not a risk to discover later:
 
-- **`libicu-dev` is missing.** The reference links `-licui18n -licuuc` and
-  requires ICU >= 72; the host has `libicu74` runtime only and
-  `/usr/include/unicode/utypes.h` does not exist, so `make` cannot link today.
-  Installing the dev package needs the operator's `sudo`.
+- **`libicu-dev` was missing and is now installed** by the operator on
+  2026-10-24; the reference links and runs. ICU is used by exactly one source
+  file, `h3_tokenizer.c` (NFC, UTF-8/16 conversion, general-category split);
+  nothing in the CUDA, DiT, VAE, weights or text-encoder path includes it. The
+  Rust port needs none of it: NFC is the `unicode-normalization` crate already
+  in `ds4-core`, and the split predicates are covered by the `regex` crate's
+  `\p{L}`/`\p{N}`/`\s` classes.
 - **No `docker`.** The compose-based path in the reference README is not
   available on this host, which is one more reason the port is native.
 
@@ -212,7 +216,7 @@ about before anyone assumes the port is the only way to run H3 at all.
 
 Shapes and dtypes below are read from the shard-1 safetensors header over range
 requests, not inferred. Detail and the full class table are in the
-[VQ recipe](minimax-h3-vq-recipe.md) sections 1 and 4; the load-bearing facts:
+[VQ recipe](vq-recipe.md) sections 1 and 4; the load-bearing facts:
 
 - the DiT is **33.14B params in BF16**, 535 tensors, 66.28 GB on disk;
 - `blocks.N.adaln_proj.linear.weight` is `[96768, 2688]`, 260.1M params per
@@ -243,7 +247,7 @@ have different failure modes.
 The rung is the one the operator's own MiniMax release ships at: GVQ1 v1, 8-dim
 vectors, K = 8192, 13-bit (12-bit main stream + 1-bit plane), one E4M3 codebook
 per matrix, one F16 gain per row, `imatrix`-weighted Lloyd with least-squares
-gain refit — see the [recipe](minimax-h3-vq-recipe.md) sections 2 and 3.
+gain refit — see the [recipe](vq-recipe.md) sections 2 and 3.
 
 Projections assume the read stays I/O-bound at the same rate, which is the
 optimistic case and is marked as an estimate: the measurement is P2, and the
@@ -470,7 +474,7 @@ If the 13-bit rung fails the render gate, this is the first thing to try, not a
 lower bit rate. It is ordered before any further precision loss for the reason
 the method's own tables give: it recovers more quality per byte than bits do.
 
-So the plan proposes the gate in the [VQ recipe](minimax-h3-vq-recipe.md)
+So the plan proposes the gate in the [VQ recipe](vq-recipe.md)
 section 8: a frozen 8-prompt × 2-shape set rendered by the reference binary,
 full-video SSIM/PSNR/LPIPS per prompt, and a floor the operator sets. Proposed
 default: SSIM ≥ 0.99 full-video, stricter than the two kernel-change precedents
@@ -539,6 +543,23 @@ tiled-VAE quality bench. *Gate:* the binary links and runs, `--info` resolves
 every required component, and the P2 profile is reproducible. *Evidence:* the
 commands, versions, wall times, `nvidia-smi` under load, PSI samples.
 
+P0 is closed except the tiled-VAE quality bench. The source was transferred as
+`git archive eae5d54` into `~/h3-oracle` (the clone route was not used) and
+built with `make -j20 NVCC_ARCH=native`: zero errors, `h3` and `libh3.a`
+linked against `-licui18n -licuuc` 74.2. `./h3 --info -d
+/mnt/h3-artifacts/MiniMax-H3` resolves all four components: Qwen3-VL encoder 14
+files / 1,058 tensors / 62.133 GiB, FL2VA DiT 13 / 535 / 61.728 GiB, video VAE
+1 / 560 / 9.700 GiB, audio VAE 1 / 1,087 / 0.564 GiB, Ref2VA absent. The
+reference's own 2-step profile command (`docs/GB10_PROFILE.md:7-10`) ran twice
+with a warm page cache: DiT load 17.282 s, Euler denoise 0.730 s, DiT peak
+27.063 GB, audio VAE 0.565 s, video VAE 2.587 s, and both outputs hash
+`7ba6d49bd58ed67f194901c05ce59c55d0c3ebeda8094efb4b6575d59c37a39f`. That hash
+is stable locally but differs from the reference document's
+`dbae1b441cface55bfe86aaabe78d44c0c05746909f7874908dd2cb298d8c5c8`, which was
+recorded on driver 595.84 against this host's 580.178.04; the delta is
+unexplained and is P2's first question. Load time is 5.6x the documented
+96.563 s because 116 GiB of the checkpoint were already in page cache.
+
 **P1 — The artifact on the Spark.** Download the `FL2VA/` subset plus
 `scheduler/`, `audio_scheduler/`, `model_index.json` at the pinned revision into
 `/mnt/models/MiniMax-H3`, with a manifest generated from the HF API's own file
@@ -562,7 +583,7 @@ unexplained differences; runs on this host, no GPU.
 
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
-[VQ recipe](minimax-h3-vq-recipe.md) section 6. *Gate:* determinism by re-encode
+[VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
 and `cmp`, class totals reconciled, round-trip against the CPU dequant oracle
 within a stated bound per class.
 
@@ -601,13 +622,14 @@ identity kept whenever only scheduling changes.
 
 **P10 — Close.** Evidence file, the rule 19 QA gate, docs, an install script in
 the shape of the operator's other Spark deployments (`dgx-recipe/scripts/`,
-`install-*-vq.sh`), and the push offer.
+`install-*-vq.sh`), and the push offer. The QA gate runs once, here, when the
+port is complete and runnable — not per unit (operator, 2026-10-24).
 
 ## 8. Deployment and the two routes
 
 | Thing | Where |
 |---|---|
-| Reference engine | `~/h3.c` on the Spark, built at `eae5d54`, never modified |
+| Reference engine | `~/h3-oracle` on the Spark, unpacked from `git archive eae5d54`, never modified; the source itself stays `/data/h3.c` on the dev box |
 | Source checkpoint | `/mnt/h3-artifacts/MiniMax-H3/` — the model root for this work: ext4 label `H3ART`, 938 GB with 795 GB free, copied from `/mnt/h3` and verified byte for byte (`rsync -an -c`); the older copy stays untouched |
 | Converted artifacts | `/mnt/models/h3-vq/<rung>/` with `release.json`, per-shard containers and the GGUF |
 | Golden renders | `~/h3-golden/<prompt-id>/` with the render, its sha256 and its `--profile` output |

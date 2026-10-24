@@ -1,6 +1,6 @@
 /* h3_gvq.h — the GVQ1 v1 matrix payload and the GVR8 residual stage, for H3.
  *
- * Rung A of docs/minimax-h3-vq-recipe.md section 2: dim 8, K 8192, 13 index
+ * Rung A of docs/minimax-h3/vq-recipe.md section 2: dim 8, K 8192, 13 index
  * bits as a 12-bit stream plus a 1-bit plane, one E4M3 codebook per matrix,
  * one F16 gain per row. Rung B (K 4096, 12 bits, 32 KiB book) is the same
  * codec with GVQ_K12. Rung A+8 adds the GVR8 second stage.

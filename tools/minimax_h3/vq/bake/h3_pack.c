@@ -6,7 +6,7 @@
  * changed for H3: the class table, the kept-name list, classify(), and the
  * recipe string. Everything else is the bake's code unchanged — the DQVD
  * container, the slot layout, the plan/layout/merge/check machinery and the
- * encoder calls — which is what docs/minimax-h3-vq-recipe.md section 9 sets
+ * encoder calls — which is what docs/minimax-h3/vq-recipe.md section 9 sets
  * out, and why this file exists rather than a new one.
  *
  * H3's classes, and what they are in the checkpoints's own module layout
@@ -265,7 +265,7 @@ int g_vq_dim = 0, g_vq_nc = 0;
  * for dim 8 at the same 12-bit index width (8x4096) and 0.8216 for the reference's
  * cold tier (8x256). For H3 the default is the quality end of the ladder,
  * vq4x4096, which is 12 index bits on 4-dim vectors = 1.5 bits/weight with a
- * 32 KiB F16 codebook (docs/minimax-h3-vq-recipe.md section 2, rung C). The
+ * 32 KiB F16 codebook (docs/minimax-h3/vq-recipe.md section 2, rung C). The
  * alternate tier is vq8x8192: 13 index bits on 8-dim vectors = 1.625
  * bits/weight, the rate the operator's MiniMax-M3.1 VQ release ships, but with
  * this writer it carries an F16 codebook of 128 KiB, which no GB10 kernel block

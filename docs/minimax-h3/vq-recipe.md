@@ -1,7 +1,7 @@
 # MiniMax-H3 FL2VA — the DiT conversion recipe
 
-[Documentation index](README.md) | [Repository README](../README.md) |
-[Cheat sheet](minimax-h3-cheatsheet.md) | [Port plan](minimax-h3-port-plan.md)
+[Documentation index](../README.md) | [Repository README](../README.md) |
+[Cheat sheet](cheatsheet.md) | [Port plan](port-plan.md)
 
 Status: **recipe, nothing executed.** Branch `feature/minimax-h3`, base
 `600e465e`. Every shape, dtype and byte count below was read from the
@@ -441,7 +441,7 @@ arithmetic** over both, marked [A] where they appear elsewhere in the plan.
 ### 8.7 What is not from any source
 
 The byte accounts of section 2, the class shares of section 2, the token and
-FLOP tables and the tier totals in the [cheat sheet](minimax-h3-cheatsheet.md),
+FLOP tables and the tier totals in the [cheat sheet](cheatsheet.md),
 and the projected load times at each rung are **arithmetic over the sources
 above**, not measurements. They are labelled [A] wherever they appear. The only
 measured numbers in these documents are the ones quoted with a source, plus
@@ -520,7 +520,7 @@ the rung ladder is explored with, one matrix at a time, before a full encode.
    rung A+8 needs the 256-entry second stage and the two-stage value rule. Both
    are format work in the writer and the matching reader, and both are
    prerequisites for the recommended rung rather than optional extras.
-   **Done, in `tools/h3_vq/bake/h3_gvq.{c,h}`** (branch `feature/minimax-h3`):
+   **Done, in `tools/minimax_h3/vq/bake/h3_gvq.{c,h}`** (branch `feature/minimax-h3`):
    the GVQ1 v1 writer and strict reader, the GVR1 residual payload, and the
    encoder with the parameter set of section 2. Gate: `bin/h3_gvq selftest`
    passes — the byte account, the 13-bit round trip, the value rule against an
@@ -553,11 +553,11 @@ implementation has to match. Nothing else is needed: no CUDA, no Rust, no GPU,
 no prior build of anything.
 
 ```
-tools/h3_vq/build.sh                                    # cc -O2 -lm -lpthread
-tools/h3_vq/bin/h3_gvq selftest                         # the format gate, ~2 s
-tools/h3_vq/bin/h3_gvq encode <FL2VA/transformer> <tensor> <prefix> \
+tools/minimax_h3/vq/build.sh                                    # cc -O2 -lm -lpthread
+tools/minimax_h3/vq/bin/h3_gvq selftest                         # the format gate, ~2 s
+tools/minimax_h3/vq/bin/h3_gvq encode <FL2VA/transformer> <tensor> <prefix> \
     --iters 32 --residual
-tools/h3_vq/bin/h3_gvq check <prefix> --src <FL2VA/transformer> --name <tensor>
+tools/minimax_h3/vq/bin/h3_gvq check <prefix> --src <FL2VA/transformer> --name <tensor>
 ```
 
 Input: the five paths `h3.c:428-436` requires (section 8.1). The encoder takes
@@ -679,11 +679,11 @@ new format work.
 
 ```
 ST=/path/to/MiniMax-H3/FL2VA/transformer
-tools/h3_vq/bin/h3_pack_cpu plan "$ST" > h3-plan.tsv     # 260 vq rows
+tools/minimax_h3/vq/bin/h3_pack_cpu plan "$ST" > h3-plan.tsv     # 260 vq rows
 mkdir -p out
 awk -F'\t' 'NR>1 && $3=="vq" {print $1}' h3-plan.tsv |
 while read -r n; do
-  tools/h3_vq/bin/h3_gvq encode "$ST" "$n" "out/$(printf '%s' "$n" | tr / _)" \
+  tools/minimax_h3/vq/bin/h3_gvq encode "$ST" "$n" "out/$(printf '%s' "$n" | tr / _)" \
       --iters 32 --residual || break
 done
 ```

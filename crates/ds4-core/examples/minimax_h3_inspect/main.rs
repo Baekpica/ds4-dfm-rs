@@ -1,12 +1,12 @@
 //! Inventory a MiniMax-H3 safetensors directory, optionally reconciled
 //! against its HF index.
 //!
-//! Usage: h3_inspect <dir> [index.json]
+//! Usage: minimax_h3_inspect <dir> [index.json]
 //!
 //! Output is one TSV row per tensor (shard, name, dtype, dims, bytes, offset),
 //! then a TOTAL line, then the manifest when an index is given. The reference
-//! engine's reader prints the same shape (`tools/h3_st_probe.c` in the port
-//! evidence), which is how P3's two-sided diff is produced.
+//! engine's reader prints the same shape (`tools/minimax_h3/st_probe.c` in the
+//! port evidence), which is how P3's two-sided diff is produced.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -17,7 +17,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.is_empty() {
-        eprintln!("usage: h3_inspect <dir> [index.json]");
+        eprintln!("usage: minimax_h3_inspect <dir> [index.json]");
         return ExitCode::from(2);
     }
 

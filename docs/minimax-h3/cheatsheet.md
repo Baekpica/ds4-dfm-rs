@@ -1,7 +1,7 @@
 # MiniMax-H3 on the Spark — cheat sheet
 
-[Documentation index](README.md) | [Port plan](minimax-h3-port-plan.md) |
-[VQ recipe](minimax-h3-vq-recipe.md)
+[Documentation index](../README.md) | [Port plan](port-plan.md) |
+[VQ recipe](vq-recipe.md)
 
 Sizes, quality, reach, memory and layout for the FL2VA video+audio model on one
 DGX Spark (GB10, 121 GiB). Every number is marked **[M]** measured, **[A]**
@@ -234,7 +234,7 @@ which cannot be argued with, and P2's trace replaces the activation estimates.
    (`/dev/sdc1`, SSD GM7 over USB); the internal NVMe rate is still unmeasured.
 
 Provenance of every number here, source by source, is in the
-[recipe](minimax-h3-vq-recipe.md) section 8. In short: the geometry and the
+[recipe](vq-recipe.md) section 8. In short: the geometry and the
 tensor inventory are H3's own artifact read first-hand; the quantization
 parameters are the published recipe of this toolchain, not derived for H3; the
 byte accounts, token tables and tier totals are arithmetic over both, labelled

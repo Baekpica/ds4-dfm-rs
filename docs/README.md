@@ -64,8 +64,9 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [DeepSeek V4.1 Flash (ds41)](deepseek41-flash.md) | Artifact, 40-layer shape, serving contract, gates and recorded benchmarks |
 | [DeepSeek V4.1 Flash (plan)](deepseek41-port-plan.md) | Proposal: the vq8sh14 artifact, the C engine as source of truth, the gap inventory and the golden-set gate |
 | [DeepSeek V4.1 post-train (plan)](ds41-posttrain-plan.md) | The ③ producer, judge, apply and supervising HTTP API: units, ports and gates |
-| [MiniMax-H3 (plan)](minimax-h3-port-plan.md) | Proposal: the FL2VA video/audio CLI without the web UI, the Spark budget, the 13-bit DiT rung and its render gate |
-| [MiniMax-H3 (VQ recipe)](minimax-h3-vq-recipe.md) | The 13-bit GVQ1 v1 conversion of the DiT, the MiniMax-M3.1 precedent, the recovery lever and the exact block-streaming fallback |
+| [MiniMax-H3](minimax-h3/README.md) | The family index: layout rule, port plan, cheat sheet and VQ recipe |
+| [MiniMax-H3 (plan)](minimax-h3/port-plan.md) | Proposal: the FL2VA video/audio CLI without the web UI, the Spark budget, the 13-bit DiT rung and its render gate |
+| [MiniMax-H3 (VQ recipe)](minimax-h3/vq-recipe.md) | The 13-bit GVQ1 v1 conversion of the DiT, the MiniMax-M3.1 precedent, the recovery lever and the exact block-streaming fallback |
 
 ## Development
 
