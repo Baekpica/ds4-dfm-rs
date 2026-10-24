@@ -96,6 +96,26 @@ owns the tool loop.
   `json_escape_bytes` writes U+FFFD; streams hold back a character cut between
   tokens only while the next token can still complete it.
 
+## MiniMax-H3 (h3) is additive — the other families are untouched
+
+The h3 work is a diffusion video+audio family, not an LLM serving family. It
+lives in its own module tree and its own binary target, and it must not change
+the behavior, types, defaults, or code paths of any existing family:
+
+- No edit to `ModelFamily` (`crates/ds4-core/src/shape.rs`), the family gates
+  in `ds4.c`, admission in `serving.rs` / `serving_host.rs`, the GGUF open
+  path, KV/session/bank state, or any shared kernel another family calls.
+- New shared-looking primitives are new code with new names. An existing
+  function is not bent to serve h3. A genuinely required shared change is its
+  own unit with its own gate over the other families' tests, reviewed before
+  h3 depends on it.
+- `lib.rs` gains only additive module declarations; manifests gain only
+  additive members or dependencies that no existing crate resolves differently.
+- The h3 surface is a CLI. No web UI, no HTTP route, no Python runtime. Serving
+  it over HTTP, if ever wanted, is a separate unit with its own contract.
+- Checkable: an h3 unit's diff names only h3 files plus additive registration
+  lines. A diff touching another family's code fails the unit.
+
 ## Inference Performance Optimization Guidelines
 
 When optimizing inference performance, prioritize end-to-end execution-path efficiency over isolated kernel micro-optimizations.

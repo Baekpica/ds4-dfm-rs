@@ -52,9 +52,10 @@ allowed routes. It is the ground truth the plan stands on.
 | Media | ffmpeg and ffprobe 6.1.1 | `-version` |
 | HF tooling | `hf` 1.28.0 at `~/.local/bin/hf`, `huggingface-cli` present, python 3.12.3, page cache for HF only 16 M | `hf version`, `du` |
 | Disk | `/` 916 G with **547 G** available; `/mnt/models` 953 G (USB, ext4, label STORAGE) with **393 G** available and writable | `df -h`, a write test |
+| Artifact disk | `/mnt/h3-artifacts` ext4 label `H3ART` (fstab by UUID, `nofail`), 938 G with **795 G** available, 1.3 GB/s cold direct read | `df -h`, `rsync -an -c`, a 512 MiB write test |
 | Model area | `/mnt/models` holds 106 G ds41ﬂash-1017, 106 G ds41-1017, 106 G ds41-1017-unc, 126 G Qwen3.8 GGUF, 6.8 G Bonsai | `du -sh` |
 | Repository on the Spark | `~/ds4-dfm-rs`, branch `main` at `32a41683` — the serving deployment, a different lineage from this task's `dev` | `git branch --show-current`, `git log -1` |
-| Present | h3.c: **absent**. MiniMax-H3 checkpoint: **absent** | `ls` |
+| Present | h3.c: **absent**. MiniMax-H3 checkpoint: **present** at `/mnt/h3-artifacts/MiniMax-H3`, copied and verified byte for byte | `ls`, `rsync -an -c` |
 
 Two gaps that are prerequisites, not risks to discover later:
 
@@ -135,9 +136,11 @@ names, which is what makes the repository 464.2 GiB describe about 134 GiB of
 actual model: three packings of the same tensors, plus a fourth for Ref2VA's
 DiT. Nothing in the reference's required list reaches for them.
 
-So the download is **144.05 GB, not 464.2 GiB** — which is what makes this
-project fit the model disk at all: 393 GB free on `/mnt/models`, leaving 249 GB
-for the BF16 golden, every VQ rung (4.7–16.6 GB each), the renders and scratch.
+So the download is **144.05 GB, not 464.2 GiB**. It now lives on the artifact
+disk as `/mnt/h3-artifacts/MiniMax-H3` (134 GiB, verified byte for byte with
+`rsync -an -c`); the older `/mnt/h3` copy is retained untouched. With 795 GB
+free there, the BF16 golden, every VQ rung (4.7–16.6 GB each), the renders and
+scratch all fit.
 
 `FL2VA/` also ships the model's own reference implementation — `video_vae/`
 (`klvae.py`, `vae_cnn.py`, `vae_vit.py`, `minimax_h3_video_vae.py`),
@@ -497,6 +500,11 @@ that. Whether a sibling enum or a separate registry is the right shape is a P0
 decision made against `AGENTS.md`'s "New model-family serving contract", not by
 analogy.
 
+The family is additive by project rule (`AGENTS.md`, "MiniMax-H3 (h3) is
+additive — the other families are untouched"): an h3 unit's diff names only h3
+files plus additive registration lines, and no other family's behavior, types,
+defaults or code path changes on this branch.
+
 ### 6.2 The host boundary
 
 The port keeps the reference's phase structure — prompt → text/vision encoding →
@@ -600,7 +608,7 @@ the shape of the operator's other Spark deployments (`dgx-recipe/scripts/`,
 | Thing | Where |
 |---|---|
 | Reference engine | `~/h3.c` on the Spark, built at `eae5d54`, never modified |
-| Source checkpoint | `/mnt/h3/MiniMax-H3/` — the operator's model root for this work. Verified to exist on the Spark as the root of a filesystem created 2026-10-24 09:44 (it holds a `lost+found` and a 16 GB `.spd` speed-test file); its size and free space are still to be confirmed, since `df` is not readable over the file route and the two block devices visible in `/sys/block` are the 931 GiB internal NVMe and the 953 GiB USB disk, neither of which this path demonstrably is |
+| Source checkpoint | `/mnt/h3-artifacts/MiniMax-H3/` — the model root for this work: ext4 label `H3ART`, 938 GB with 795 GB free, copied from `/mnt/h3` and verified byte for byte (`rsync -an -c`); the older copy stays untouched |
 | Converted artifacts | `/mnt/models/h3-vq/<rung>/` with `release.json`, per-shard containers and the GGUF |
 | Golden renders | `~/h3-golden/<prompt-id>/` with the render, its sha256 and its `--profile` output |
 | Commands | the operator's ssh tmux pane, `tmux send-keys` / `capture-pane` |
@@ -665,12 +673,7 @@ be re-scoped before P4. That single measurement is the plan's own kill switch.
    follow-up.
 3. **`sudo` for `libicu-dev`** on the Spark, and permission to clone and build
    the reference there.
-4. **Confirm `/mnt/h3`**: its size, free space and whether it is the internal
-   NVMe, the USB disk or a third device. It changes every load-rate
-   measurement, and the Q0 tier's per-render text-encoder read depends on it
-   (~90 s on NVMe against ~150 s on USB). A `df -h /mnt/h3` and a
-   `findmnt /mnt/h3` in the ssh pane settle it.
-5. **Which quality tier**: Q0 (all exact, text encoder streamed per render),
+4. **Which quality tier**: Q0 (all exact, text encoder streamed per render),
    Q1 (prompt encoder at 13-bit, denoiser exact), Q2 (denoiser at 13-bit,
    prompt encoder exact). All four fit; Q0 carries no quality risk and no
    converter work.

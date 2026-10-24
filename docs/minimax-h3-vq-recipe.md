@@ -258,7 +258,7 @@ framework needs".
 hf download MiniMaxAI/MiniMax-H3 \
   --revision 42ed227ee7df40d41602854ae760620d6eb651fe \
   --include "FL2VA/*" --include "model_index.json" --include "README.md" \
-  --local-dir /mnt/h3/MiniMax-H3
+  --local-dir /mnt/h3-artifacts/MiniMax-H3
 ```
 
 Run 2026-10-24: 85 files, about twenty-five minutes, 135 GiB on disk. Three
@@ -272,7 +272,7 @@ The layout it produces, which is what the converter and the reference both
 expect:
 
 ```
-/mnt/h3/MiniMax-H3/
+/mnt/h3-artifacts/MiniMax-H3/
 ├── model_index.json
 └── FL2VA/                    144.05 GB, 81 files
     ├── model_index.json        partition, tasks t2va/fl2va, sigma_shift_scales
@@ -286,21 +286,21 @@ expect:
 Verify, without a script and without Python:
 
 ```bash
-ls /mnt/h3/MiniMax-H3/FL2VA/transformer/*.safetensors  | wc -l   # 13
-ls /mnt/h3/MiniMax-H3/FL2VA/text_encoder/*.safetensors | wc -l   # 14
-find /mnt/h3/MiniMax-H3 -name '*.incomplete' | wc -l             # 0
-du -sh /mnt/h3/MiniMax-H3                                        # 135G
+ls /mnt/h3-artifacts/MiniMax-H3/FL2VA/transformer/*.safetensors  | wc -l   # 13
+ls /mnt/h3-artifacts/MiniMax-H3/FL2VA/text_encoder/*.safetensors | wc -l   # 14
+find /mnt/h3-artifacts/MiniMax-H3 -name '*.incomplete' | wc -l             # 0
+du -sh /mnt/h3-artifacts/MiniMax-H3                                        # 135G
 grep -o '"total_size":[0-9]*' \
-  /mnt/h3/MiniMax-H3/FL2VA/transformer/model.safetensors.index.json  # 66280430144
+  /mnt/h3-artifacts/MiniMax-H3/FL2VA/transformer/model.safetensors.index.json  # 66280430144
 ```
 
 That last number is the DiT's own account of itself: 66,280,430,144 bytes over
 535 tensors, which is the figure every byte calculation in this recipe is
 checked against.
 
-Space: `/mnt/h3` is 469 GB, and the checkpoint leaves ~310 GB free, which covers
-every rung in section 2 several times over. The full repository would need
-498 GB and does not fit — the `Ref2VA` partition and the diffusers-layout root
+Space: `/mnt/h3-artifacts` is 938 GB, and the checkpoint leaves 795 GB free,
+which covers every rung in section 2 several times over. The full repository
+would need 498 GB and does not fit — the `Ref2VA` partition and the diffusers-layout root
 are the same weights under different names (section 8.2 of the plan), and
 neither is read by anything in this recipe.
 
@@ -436,7 +436,7 @@ arithmetic** over both, marked [A] where they appear elsewhere in the plan.
 |---|---|
 | GB10 at compute capability 12.1, driver 580.178.04, CUDA 13.0 `V13.0.88`, `compute_121` buildable, gcc 13.3.0, rustc 1.98.1, ffmpeg 6.1.1, `hf` 1.28.0, 121 GiB total / 111 free, `/` 547 G free, `/mnt/models` 393 G free, `libicu-dev` missing, no `docker`, no PyTorch, HF reachable | read-only probe scripts run in the operator's ssh tmux pane, output `~/h3probe.out` and `~/h3probe2.out` on the Spark |
 | The two block devices (931 GiB NVMe, 953 GiB USB) | `sysfs` over the gvfs sftp mount |
-| `/mnt/h3` exists, is a filesystem root created 2026-10-24 09:44, size unconfirmed | the same mount |
+| `/mnt/h3-artifacts` is ext4 label `H3ART`, 938 GB with 795 G free, and holds the verified checkpoint | `df -h`, `rsync -an -c` |
 
 ### 8.7 What is not from any source
 

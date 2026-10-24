@@ -30,7 +30,7 @@ arithmetic from measured inputs, or **[E]** estimate. Date 2026-10-24; branch
 | Load | 96.6 s for BF16 → ≈10 s at 13-bit **[M/A]** |
 | Quality | Q0 is bit-exact; Q1/Q2 trade one component, gated on renders |
 | Exact fallback | the reference's block streaming: 1.63 GB peak, identical SHA-256, +37.6% time **[M]** |
-| Model root | `/mnt/h3` on the Spark (exists, created 2026-10-24; size to confirm) **[M]** |
+| Model root | `/mnt/h3-artifacts/MiniMax-H3` on the Spark: ext4 label `H3ART`, 938 GB, 795 GB free, checkpoint verified byte for byte **[M]** |
 
 ## 1. Architecture layout
 
@@ -217,7 +217,7 @@ which cannot be argued with, and P2's trace replaces the activation estimates.
 ## 6. The six numbers to remember
 
 1. **144.05 GB** to download, not 464 GiB — the reference only needs the FL2VA
-   partition, into `/mnt/h3`.
+   partition, now verified on `/mnt/h3-artifacts`.
 2. **61.73 GiB** — the BF16 DiT on its own fits the Spark. So the
    highest-quality tier (Q0: nothing quantized, the text encoder and VAEs read
    from SSD per phase) is available, and it is the reference's own behaviour
@@ -228,10 +228,10 @@ which cannot be argued with, and P2's trace replaces the activation estimates.
    and keeps the denoiser bit-exact: everything resident, nothing streamed.
 5. **96.6 s → ≈10 s** of DiT load, and **13.7 min** of denoise for the
    1024×576, 107-frame, 50-step render.
-6. **One open check**: `/mnt/h3` exists but its device and free space are
-   unconfirmed — `df -h /mnt/h3` and `findmnt /mnt/h3` on the Spark settle it,
-   and they decide how expensive Q0's per-render text-encoder read is
-   (~90 s on the internal NVMe against ~150 s on the USB disk).
+6. **One open check**: the artifact disk's cold read rate decides how expensive
+   Q0's per-render text-encoder read is. `/mnt/h3-artifacts` (`/dev/sda`, OSC
+   PSSD over USB) measured 1.3 GB/s, against 642 MB/s on the old `/mnt/h3`
+   (`/dev/sdc1`, SSD GM7 over USB); the internal NVMe rate is still unmeasured.
 
 Provenance of every number here, source by source, is in the
 [recipe](minimax-h3-vq-recipe.md) section 8. In short: the geometry and the
