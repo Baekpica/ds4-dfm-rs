@@ -250,3 +250,88 @@ are the other two costs; the plan's section 7 gives their measured scale.
 
 Nothing in this recipe touches the source checkpoint, and every step is
 re-runnable from the pinned revision.
+
+## 8. Sources and provenance
+
+Which part of this document comes from where. The distinction matters: the
+**inventory and geometry are H3's own artifact**, read first-hand; the
+**parameters are the published recipe of this toolchain**, not something
+derived for H3; and the **byte accounts, token tables and tier totals are
+arithmetic** over both, marked [A] where they appear elsewhere in the plan.
+
+### 8.1 H3's own artifact (read first-hand)
+
+| What it gave | Source | Revision |
+|---|---|---|
+| 280 files, sizes, LFS digests, the `fl2va` partition being self-contained | HF model API `https://huggingface.co/api/models/MiniMaxAI/MiniMax-H3?blobs=true` | `42ed227ee7df40d41602854ae760620d6eb651fe`, last modified 2026-08-13 |
+| 535 DiT tensors, class counts, all 18 non-block names, `metadata.total_size` 66,280,430,144 | `FL2VA/transformer/model.safetensors.index.json` | same revision |
+| Per-block shapes and dtypes (45 BF16 + 9 F32 in shard 1), patch/condition/time tensors | `FL2VA/transformer/model-00001-of-00013.safetensors` header, read over HTTP range requests | same |
+| `final_layer` shapes (adaln [10752, 2688], video_out [96, 5376] F32, audio_out [32, 5376] F32) | `model-00013-of-00013.safetensors` header | same |
+| Geometry: hidden 5376, 50 layers, refiner 2, 56 heads × 128, FFN 14336, latents 24, audio latents 32, patch [1,2,2], `adaln_out_features` 96768 | `FL2VA/transformer/config.json` | same |
+| Partition, tasks, `sigma_shift_scales`, `schema_version` | `FL2VA/model_index.json` | same |
+| Text encoder: Qwen3-VL, 64 layers, hidden 5120, 64 q / 8 kv heads, vision 27 blocks at hidden 1152 | `FL2VA/text_encoder/config.json` | same |
+| VAE contract: 24 latent channels with means and stds, clip 17, token drop 3, tile 256 / overlap 64 | `FL2VA/video_vae/config.json` | same |
+| Audio VAE: 32 latent channels, 32 kHz, stereo | `FL2VA/audio_vae/config.json` | same |
+| Text encoder inventory: 1058 tensors, 66,714,780,128 bytes | `FL2VA/text_encoder/model.safetensors.index.json` | same |
+| The VAEs' reference implementation, used as the port's specification | `FL2VA/video_vae/klvae.py`, `vae_cnn.py`, `vae_vit.py`, `minimax_h3_video_vae.py`; `FL2VA/audio_vae/dac_*.py` | same |
+
+### 8.2 The reference engine
+
+| What it gave | Source | Revision |
+|---|---|---|
+| Validated platform (ARM64, GB10, driver 595.84, CUDA 13.0), CLI surface, the `5 + 17n` frame rule, the canvas list and the `768 × 1344` pixel ceiling, the `8 × 8` token grid at 256², `--token-reduction` behaviour | `/data/h3.c` `README.md` | `eae5d54e3a0419064b64171dcaebcfd92e9f3f63` (`JLFN/h3.c`, origin `https://github.com/JLFN/h3.c.git`, branch `main`, 2026-08-31) |
+| Load 96.563 s, denoise 2.715 s, SSD streaming 51.829 / 84.798 s at 1.630 GB peak with identical SHA-256, VAE 1112.960 → 247.737 s, denoise 815 s, wall 33:36.8 → 18:56, latent `32×36×64×24` | `/data/h3.c` `docs/GB10_PROFILE.md` | same |
+| Required files inside the mode partition; Ref2VA optional | `/data/h3.c` `h3.c:428-433` and `h3.c:438-451`; `Makefile` test targets | same |
+| `H3_CANVAS_MULTIPLE` 32, `H3_MAX_PIXELS` 768×1344, `H3_FPS` 24, `H3_AUDIO_LATENT_FPS` 40, `H3_VAE_SPATIAL_RATIO` 16 | `/data/h3.c` `h3_host.h:7-11` | same |
+| `latent_t = ((frames-5)/17)*5 + 2`, `h3_temporal`, `h3_latent_canvas`, `h3_adapt_canvas` | `/data/h3.c` `h3_host.c:25-70` | same |
+| The 22-frame decoder chunk requirement | `/data/h3.c` `h3.c:867-869` | same |
+
+### 8.3 The method and the formats
+
+| What it gave | Source | Revision |
+|---|---|---|
+| The 8-dim vector-quantization method with one codebook per layer, F16 row gains, GPU Lloyd with equidistant init and double atomics, the final assignment against stored precision, the 12 + 1 bit-plane layout and its reason (128-byte line fills), E4M3 codewords at +0.12% error, codebook sharing at +0.15% average error, the ≥ 1000-vectors-per-codeword pool, the convex error curve and spreading bits thin, "zero corpus" | `/data/YoungAi` `docs/TECHNICAL.md` §4.1 | `28944791d64c55b14e83ce0f5326ca5ebaac226e` (branch `feat/quality-inspection`, 2026-10-21). The dense bake cites the encoder at `a4e6d3177f310cabf3e8d5d214d437a7068ddf23` |
+| The multiplicative-gain repair (反修): per-expert output-channel gains + router bias, Gauss–Seidel with a ridge on mean channel energy, the FP4 lattice-direct solve, the ≥ 0.5% held-out mount gate, ~40 MB and ~1 h per domain | `/data/YoungAi` `docs/TECHNICAL.md` §4.2 | same |
+| Its measured quality tables (top-1 71.80 → 74.38 etc., KL −17 to −30%) | `/data/YoungAi` `docs/TECHNICAL.md` §5.1 | same |
+| The rejected families: additive low-rank, bias/mean correction, codebook re-solve, dynamic bits per row, entropy coding | `/data/YoungAi` `docs/TECHNICAL.md` §6 | same |
+| The DQZ2 runtime sidecar and its collapse to one per-token scalar (`F = shared_out + λ(x)·Σ ge·y_e`), five op types, `--zchain <dir>`, absent file = today's path | `/data/YoungAi` `ds4_zchain.h` | same |
+| Version-3 payload layout (`DQVQ` / `DQV3`, one book per layer in the blob header, E4M3 only, 13-bit as 12-bit stream + 1-bit plane, version whitelist as a hard stop) | `/data/YoungAi` `vq_fmt.h` | same |
+| The GVQ1 v2 container (dim 8, 9/10-bit, E4M3 books, byte accounts, weighting modes, gain refit) and the A.X-K2 release settings (9 bits per 8 weights, 10 on seven layers; `imatrix`, `ls`, `split3`, `col-power 0.75`) | `/data/ds4-dfm-rs` `docs/vq-calibration.md` | `600e465e` (= `origin/main` = `dev`) |
+| The GB10 kernel facts used to size the rung: 101,376 B per block with 99,344 B opt-in, an E4M3 codeword being exactly an `m16n8k32` B fragment (one `LDS.64`), gain applied after the dot, promote every 128 K to F32, cuBLAS BF16 65–90 TFLOPS against ~108 TFLOPS F16/BF16 and ~215 TOPS FP8/INT8, "attribute first" | `/data/ds4-dfm-rs` `AGENTS.md`, GB10 section; kernel inventory in `cuda/` (`glm_vq_*.cuh`, `ds41_vq_*.cuh`) | `600e465e` |
+| The VQ/GB10 budget analysis the plan's byte accounting follows | `/data/ds4-dfm-rs` `docs/axk2-vq-gb10-fit.md` | branch `research/vq-calibration-lit`, unmerged at the time it was read |
+| The plan's document structure and gate discipline | `/data/ds4-dfm-rs` `docs/deepseek41-port-plan.md` | `600e465e` |
+
+### 8.4 The MiniMax-family VQ release (the operator's own precedent)
+
+| What it gave | Source | Revision |
+|---|---|---|
+| The recipe under which a MiniMax model was actually published: GVQ1 v1, dim 8, K 8192, 13-bit, per-layer E4M3 book, F16 gains, R13+8 residual on 20 measured layers, `imatrix` / `stratified` / `col_power 0.75` / `col_floor 0.02` / `gain_refit ls` / equidistant init / 32 Lloyd iterations | `Baekpica/MiniMax-M3.1-Flash-VQ-GGUF`, `RECIPE.md` and `recipe.json`; local copy `/data/minimax-m3.1-vq-recipe/` | `74e5a9fd12fb57a5c1babb559536cf10733939ea`, last modified 2026-10-23 |
+| The GVQ1 header field by field, the low-12 stream packing, the high-1 plane bit order, the two-stage residual value rule, the GGUF type ids, the part roles and `residency` values, the metadata keys, the rejection list | the same release, `FORMAT.md` | same |
+| Measured fidelity (KL 0.150 assistant turns, same top-1 88.2%, the floor of 0.003), the self-declared lossiness warning, the residency table, the SSD read behaviour, the kernel budget table against 101,376 B | the same release, `README.md` | same |
+| The 117.2 GiB available basis and the row-by-row memory budget with its `basis` column (exact byte layout vs estimate) | the same release, `memory-budget.json` | same |
+| The alternative arms and the noise floor | the same release, `quality/release-r13only/result.json`, `quality/release-bottom/result.json`, `quality/noise-floor.json`, `quality/r8-sweep/summary.json`, `quality/kv/kl.json` | same |
+
+### 8.5 The dense VQ bake
+
+| What it gave | Source |
+|---|---|
+| The per-matrix codebook precedent on a dense model: dim 4 × K 4096 f16, 3.0 bits/weight, corpus-free Lloyd, byte-verified container, 14-way sharded encode, and the measured weight/quality ladder (cosine 0.984–0.999 at 3.0 bpw against 0.914–0.950 at 1.5) that the plan uses to justify starting at the quality end | `/data/embeddinggemma2/RECIPE.md` sections 2, 5 and 5b |
+| The requirement that the deliverable carry no Python | project rule 14 in `~/.opengrok/project-work-rules.md` |
+
+### 8.6 Environment measurements (this session, on the Spark)
+
+| What it gave | Source |
+|---|---|
+| GB10 at compute capability 12.1, driver 580.178.04, CUDA 13.0 `V13.0.88`, `compute_121` buildable, gcc 13.3.0, rustc 1.98.1, ffmpeg 6.1.1, `hf` 1.28.0, 121 GiB total / 111 free, `/` 547 G free, `/mnt/models` 393 G free, `libicu-dev` missing, no `docker`, no PyTorch, HF reachable | read-only probe scripts run in the operator's ssh tmux pane, output `~/h3probe.out` and `~/h3probe2.out` on the Spark |
+| The two block devices (931 GiB NVMe, 953 GiB USB) | `sysfs` over the gvfs sftp mount |
+| `/mnt/h3` exists, is a filesystem root created 2026-10-24 09:44, size unconfirmed | the same mount |
+
+### 8.7 What is not from any source
+
+The byte accounts of section 2, the class shares of section 2, the token and
+FLOP tables and the tier totals in the [cheat sheet](minimax-h3-cheatsheet.md),
+and the projected load times at each rung are **arithmetic over the sources
+above**, not measurements. They are labelled [A] wherever they appear. The only
+measured numbers in these documents are the ones quoted with a source, plus
+whatever P2 replaces the estimates with once the reference is built on the
+Spark.

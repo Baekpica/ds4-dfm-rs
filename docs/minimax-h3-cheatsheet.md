@@ -229,3 +229,10 @@ which cannot be argued with, and P2's trace replaces the activation estimates.
    unconfirmed — `df -h /mnt/h3` and `findmnt /mnt/h3` on the Spark settle it,
    and they decide how expensive Q0's per-render text-encoder read is
    (~90 s on the internal NVMe against ~150 s on the USB disk).
+
+Provenance of every number here, source by source, is in the
+[recipe](minimax-h3-vq-recipe.md) section 8. In short: the geometry and the
+tensor inventory are H3's own artifact read first-hand; the quantization
+parameters are the published recipe of this toolchain, not derived for H3; the
+byte accounts, token tables and tier totals are arithmetic over both, labelled
+[A] wherever they appear.
