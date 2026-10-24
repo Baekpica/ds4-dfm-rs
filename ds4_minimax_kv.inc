@@ -11,7 +11,9 @@
  *     from the pool are read into least-recently-used slots (file-contiguous
  *     runs in one preadv), a dirty victim written back first;
  *   - a prefill chunk long against the history (minimax_kv_streams) reads
- *     the layer's every block instead, without waiting for its selections.
+ *     the layer's every block instead, without waiting for its selections;
+ *   - selective reads (decode, verify, short chunks) go out as one Linux AIO
+ *     submission with polled completions (minimax_aio_read).
  *
  * The pool holds one layer's every block plus a forward's pins, so the
  * union of a prefill chunk's selections always fits. A slot table
@@ -19,6 +21,10 @@
  * kernels; the resident tier passes none. Both tiers run the same kernels
  * on the same bytes, so logits do not depend on the tier. */
 #include <sys/uio.h>
+#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+#include <linux/aio_abi.h>
+#include <sys/syscall.h>
+#endif
 
 enum {
     // Default largest context with resident K/V pages: 60 x 1,024 blocks
@@ -210,6 +216,82 @@ static bool minimax_io_run(minimax_kv *kv, const minimax_io_job *jobs, uint32_t 
     const bool ok = !g_minimax_io.failed;
     g_minimax_io.count = 0;
     pthread_mutex_unlock(&g_minimax_io.mu);
+    kv->io_s += now_sec() - t0;
+    return ok;
+}
+
+/* Selective reads: one io_submit of every run, completions polled. A decode
+ * resolve reads a few 72 KiB blocks per layer, and through the pool each
+ * read also paid a worker's wake-up, its completion the core's: GB10's cores
+ * idle in LPI-3 (433 us exit latency) between layers. Eight random reads
+ * of a freshly written file took 0.94 ms on the pool, 0.24 ms submitted at
+ * once and polled (one read alone: ~0.1 ms). Without AIO (io_setup fails)
+ * or for a run AIO cut short, the pool's synchronous path reads. */
+enum { MINIMAX_AIO_DEPTH = 128 };
+static aio_context_t g_minimax_aio;
+static int g_minimax_aio_state;   // 0 unset, 1 ready, -1 unavailable
+
+static bool minimax_aio_read(minimax_kv *kv, const minimax_io_job *jobs, uint32_t count) {
+    static struct iovec iov[MINIMAX_AIO_DEPTH][MINIMAX_IO_RUN];
+    static struct iocb cb[MINIMAX_AIO_DEPTH];
+    static struct iocb *cbp[MINIMAX_AIO_DEPTH];
+    static struct io_event ev[MINIMAX_AIO_DEPTH];
+    static bool redo[MINIMAX_AIO_DEPTH];
+    if (!count) { return true; }
+    if (!g_minimax_aio_state) {
+        g_minimax_aio_state = syscall(__NR_io_setup, MINIMAX_AIO_DEPTH, &g_minimax_aio) == 0 ? 1 : -1;
+    }
+    if (g_minimax_aio_state < 0) { return minimax_io_run(kv, jobs, count); }
+    const double t0 = now_sec();
+    bool ok = true;
+    for (uint32_t base = 0; ok && base < count; base += MINIMAX_AIO_DEPTH) {
+        const uint32_t n = count - base < MINIMAX_AIO_DEPTH ? count - base : MINIMAX_AIO_DEPTH;
+        for (uint32_t i = 0; i < n; i++) {
+            const minimax_io_job *job = &jobs[base + i];
+            for (uint32_t j = 0; j < job->count; j++) {
+                iov[i][j].iov_base = kv->pool + (uint64_t)job->slots[j] * MINIMAX_KV_BLOCK;
+                iov[i][j].iov_len = MINIMAX_KV_BLOCK;
+            }
+            memset(&cb[i], 0, sizeof(cb[i]));
+            cb[i].aio_data = i;
+            cb[i].aio_lio_opcode = IOCB_CMD_PREADV;
+            cb[i].aio_fildes = (uint32_t)kv->fd;
+            cb[i].aio_buf = (uint64_t)(uintptr_t)iov[i];
+            cb[i].aio_nbytes = job->count;
+            cb[i].aio_offset = (int64_t)minimax_kv_offset(kv, job->layer, job->block);
+            cbp[i] = &cb[i];
+            redo[i] = true;
+        }
+        uint32_t sent = 0, got = 0;
+        while (sent < n) {
+            const long r = syscall(__NR_io_submit, g_minimax_aio, (long)(n - sent), cbp + sent);
+            if (r > 0) { sent += (uint32_t)r; continue; }
+            if (r < 0 && errno == EINTR) { continue; }
+            break;   // the rest take the synchronous path
+        }
+        const struct timespec zero = {0, 0};
+        const double p0 = now_sec();
+        while (got < sent) {
+            // Poll ~2 ms, then block: a slow drive must not spin the host.
+            const bool poll = now_sec() - p0 < 0.002;
+            const long r = syscall(__NR_io_getevents, g_minimax_aio, poll ? 0L : 1L, (long)(sent - got), ev,
+                poll ? &zero : NULL);
+            if (r < 0 && errno == EINTR) { continue; }
+            if (r < 0) {
+                fprintf(stderr, "ds4: MiniMax K/V AIO wait failed: %s\n", strerror(errno));
+                ok = false;
+                break;
+            }
+            for (long e = 0; e < r; e++) {
+                const uint32_t i = (uint32_t)ev[e].data;
+                redo[i] = ev[e].res != (int64_t)jobs[base + i].count * MINIMAX_KV_BLOCK;
+            }
+            got += (uint32_t)r;
+        }
+        for (uint32_t i = 0; ok && i < n; i++) {
+            if (redo[i]) { ok = minimax_io_job_run(kv, &jobs[base + i]); }
+        }
+    }
     kv->io_s += now_sec() - t0;
     return ok;
 }
@@ -456,8 +538,10 @@ static bool minimax_kv_resolve(minimax_kv *kv, uint32_t il, const int32_t *sel, 
         layers[i] = il;
         ok = minimax_kv_take(kv, il, kv->miss[i], writes, &nwrites) >= 0;
     }
+    // A streamed resolve (sel == kv->all) reads whole layers on the pool.
+    const uint32_t runs = ok ? minimax_kv_runs(kv, layers, kv->miss, nmiss, reads) : 0u;
     ok = ok && minimax_io_run(kv, writes, nwrites) &&
-        minimax_io_run(kv, reads, minimax_kv_runs(kv, layers, kv->miss, nmiss, reads));
+        (sel == kv->all ? minimax_io_run(kv, reads, runs) : minimax_aio_read(kv, reads, runs));
     if (!ok) { fprintf(stderr, "ds4: MiniMax K/V read of layer %u failed (%u blocks)\n", il, nmiss); }
     free(writes);
     free(reads);
