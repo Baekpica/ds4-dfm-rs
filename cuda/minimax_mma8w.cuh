@@ -40,23 +40,38 @@
  * with the producers' copies removed (134 TFLOPS, 53% of the E4M3 peak); the
  * copies' L1 wavefronts and the consumers' ldmatrix plus book gathers share
  * the shared-memory pipe. TMA bulk copies of the 16-128-byte pieces were 3x
- * slower. At the 4,096-row production chunk (R13 / R13+8): gate 7.7 / 9.9
- * ms, up with mw_swiglu_quant 8.4 / 10.6, down 7.8 / 11.2 against MMA
+ * slower. At the 4,096-row production chunk (R13 / R13+8): gate 7.1 / 9.9
+ * ms, up with mw_swiglu_quant 8.1 / 10.6, down 7.3 / 11.2 against MMA
  * floors of 2.6 / 5.2 ms per projection; with every expert in L2, gate
- * 6.6 / 9.1. ncu: tensor pipe
- * 38-44%, shared-memory pipe 48% (42% of its load wavefronts are book-gather
- * bank conflicts); the consumer warps spend ~57% in the MMA loop, ~25%
- * waiting on `full` slots. Rejected, slower or even: 128-pair items over
- * 64-k stages (half the gathers per MMA;
- * the two-stage ring then covers half the time, +16-19%), separate index and
- * input barriers per slot (index filled a stage ahead, +16% on R13), and
- * accumulators rescaled per stage in place of the per-stage sum (even). */
-enum { MW_BM = 128, MW_BT = 64, MW_MT = MW_BT / 16, MW_STAGES = 2, MW_CONSUMERS = 4, MW_PRODUCERS = 4,
+ * 6.6 / 9.1 (two slots). ncu (two slots): tensor pipe 38-44%, shared-memory
+ * pipe 48% (42% of its load wavefronts are book-gather bank conflicts); the
+ * consumers waited on `full` (mw_stages). Rejected, slower or even: 128-pair
+ * items over 64-k stages (half the gathers per MMA; the two-stage ring then
+ * covers half the time, +16-19%), separate index and input barriers per
+ * slot (index filled a stage ahead, +16% on R13), and accumulators rescaled
+ * per stage in place of the per-stage sum (even). */
+enum { MW_BM = 128, MW_BT = 64, MW_MT = MW_BT / 16, MW_CONSUMERS = 4, MW_PRODUCERS = 4,
        MW_NT = MW_BM / (8 * MW_CONSUMERS),
        MW_THREADS = (MW_CONSUMERS + MW_PRODUCERS) * 32, MW_PF_FIRST = 4,
        MW_BOOK = 8192 * GLMVQ_VECTOR, MW_RBOOK = GLMVQ_RES_WORDS * GLMVQ_VECTOR,
-       // A stage's 24 index bytes of a row land in a 16-byte aligned 32-byte window.
-       MW_IXW = 32, MW_IX = MW_BM * MW_IXW, MW_PL = MW_BM * GLMVQ_MMA8_PLANE, MW_RS = MW_BM * GLMVQ_MMA8_RES };
+       MW_PL = MW_BM * GLMVQ_MMA8_PLANE, MW_RS = MW_BM * GLMVQ_MMA8_RES };
+
+/* Ring slots. A copy (L2 to shared) takes longer than the consumers' stage
+ * (~0.9 us at 2,048 rows): with two slots they waited on `full` ~40% of
+ * their time and the producers on `empty`. R13 fits three slots beside the
+ * 64 KiB book with a stage's 24 index bytes of a row packed (three 8-byte
+ * copies) and the plane words (two stages' 13th bits each) in a two-entry
+ * ring of their own. R13+8 (2 KiB residual book, 2 KiB residual indices
+ * per slot) keeps two slots, 16-byte aligned 32-byte index windows (two
+ * 16-byte copies; packing cost it 1-5%) and the plane words in the slot. */
+template <bool RES>
+__host__ __device__ constexpr uint32_t mw_stages() { return RES ? 2u : 3u; }
+
+template <bool RES>
+__host__ __device__ constexpr uint32_t mw_ixw() { return RES ? 32u : GLMVQ_MMA8_INDEX; }
+
+template <bool RES>
+__host__ __device__ constexpr uint32_t mw_ix() { return MW_BM * mw_ixw<RES>(); }
 
 // One expert matrix for a run of at most MW_BT grouped pairs; the first 16
 // bytes travel to the consumers in the ring.
@@ -68,7 +83,7 @@ struct __align__(16) mw_item {
 };
 
 template <bool RES>
-__host__ __device__ constexpr uint32_t mw_index_bytes() { return MW_IX + MW_PL + (RES ? MW_RS : 0u); }
+__host__ __device__ constexpr uint32_t mw_index_bytes() { return mw_ix<RES>() + (RES ? MW_PL + MW_RS : 0u); }
 
 template <bool RES>
 __host__ __device__ constexpr uint32_t mw_stage_bytes() {
@@ -77,9 +92,11 @@ __host__ __device__ constexpr uint32_t mw_stage_bytes() {
 
 template <bool RES>
 __host__ __device__ constexpr uint32_t mw_bytes() {
-    return MW_BOOK + (RES ? MW_RBOOK : 0u) + MW_STAGES * mw_stage_bytes<RES>() + 2 * MW_STAGES * sizeof(uint64_t);
+    return MW_BOOK + (RES ? MW_RBOOK : 0u) + mw_stages<RES>() * mw_stage_bytes<RES>() + (RES ? 0u : 2 * MW_PL) +
+        2 * mw_stages<RES>() * sizeof(uint64_t);
 }
-static_assert(mw_bytes<true>() <= 101376, "R13+8 ring fits GB10's 99 KiB of shared memory per block");
+static_assert(mw_bytes<true>() <= 101376 && mw_bytes<false>() <= 101376,
+    "the rings fit GB10's 99 KiB of shared memory per block");
 
 // Activations: [row][K] E4M3 in beam_w_quant's ldmatrix k order with one
 // scale per (row, 128 k) (glmvq_mma8_quant's values, permuted). One warp per
@@ -109,14 +126,15 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
         const uint8_t *book, const uint8_t *res_book, const uint8_t *act, const float *act_scale,
         const uint32_t *token_of, __nv_bfloat16 *gate, __nv_bfloat16 *out, uint32_t rows, uint32_t cols) {
     static_assert(MODE == GLMVQ_MMA_GATE || MODE == GLMVQ_MMA_DOWN, "up runs as GATE, then mw_swiglu_quant");
-    constexpr uint32_t BM = MW_BM, BT = MW_BT, S = MW_STAGES, C = MW_CONSUMERS, MT = MW_MT;
+    constexpr uint32_t BM = MW_BM, BT = MW_BT, S = mw_stages<RES>(), C = MW_CONSUMERS, MT = MW_MT;
     constexpr uint32_t PT = MW_PRODUCERS * 32, IXB = mw_index_bytes<RES>(), ATB = BT * GLMVQ_MMA8_ROW;
     constexpr uint32_t STB = mw_stage_bytes<RES>();
     static_assert(PT == BM && PT == 2 * BT, "producer lanes: one per weight row, eight per input row");
     constexpr uint32_t BOOKS = MW_BOOK + (RES ? MW_RBOOK : 0u);
     extern __shared__ __align__(16) uint8_t memory[];
-    uint8_t *ring = memory + BOOKS;
-    uint64_t *full = (uint64_t *)(ring + S * STB), *empty = full + S;
+    uint8_t *ring = memory + BOOKS, *planes = ring + S * STB;
+    uint64_t *full = (uint64_t *)(planes + (RES ? 0u : 2 * MW_PL)), *empty = full + S;
+    constexpr uint32_t IXW = mw_ixw<RES>(), IX = mw_ix<RES>();
     const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
     for (uint32_t i = tid * 16; i < MW_BOOK; i += MW_THREADS * 16) { glmvq_mma_copy<16>(memory + i, book + i); }
     if constexpr (RES) {
@@ -169,18 +187,20 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                     MW_PF_FIRST);
             }
         }
-        // Index window halves: rows pt / 2 and 64 + pt / 2, half pt % 2.
-        const uint32_t ir0 = pt / 2, ir1 = BM / 2 + pt / 2, ih = (pt % 2) * 16;
-        const uint32_t o_main0 = ir0 * MW_IXW + ih, o_main1 = ir1 * MW_IXW + ih;
-        const uint32_t o_plane = MW_IX + pt * GLMVQ_MMA8_PLANE;
-        [[maybe_unused]] const uint32_t o_res = MW_IX + MW_PL + pt * GLMVQ_MMA8_RES;
+        // R13: lane pt copies row pt's index run and plane word. R13+8: index
+        // window halves of rows pt / 2 and 64 + pt / 2 (half pt % 2), the plane
+        // word of row pt in the slot.
+        const uint32_t ir0 = RES ? pt / 2 : pt, ir1 = BM / 2 + pt / 2, ih = RES ? (pt % 2) * 16 : 0u;
+        const uint32_t o_main0 = ir0 * IXW + ih, o_main1 = ir1 * IXW + ih;
+        const uint32_t o_plane = (RES ? IX : 0u) + pt * GLMVQ_MMA8_PLANE;
+        [[maybe_unused]] const uint32_t o_res = IX + MW_PL + pt * GLMVQ_MMA8_RES;
         uint32_t o_tok[TJ], o_scale[TJ];
         #pragma unroll
         for (uint32_t j = 0; j < TJ; j++) {
             o_tok[j] = IXB + beam_w_swz(tq + TQ * j, chunk);
             o_scale[j] = IXB + ATB + (tq + TQ * j) * 4;
         }
-        const uint32_t ring_s = beam_w_smem(ring);
+        const uint32_t ring_s = beam_w_smem(ring), planes_s = beam_w_smem(planes);
         uint32_t ringc = 0;
         for (uint32_t work = blockIdx.x; work < units; work += gridDim.x) {
             const uint32_t next = work + gridDim.x, nt = cur.tokens, padded = (nt + 15) / 16 * 16;
@@ -215,14 +235,27 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                     prefetch(nxt.main + (uint64_t)nrow * main_stride, BM * main_stride, kt - 1, stages - 1);
                     if (RES) { prefetch(nxt.res + (uint64_t)nrow * res_stride, BM * res_stride, kt - 1, stages - 1); }
                 }
-                const uint32_t slot = ring_s + s * STB, win = (kt * GLMVQ_MMA8_INDEX) & ~15u;
-                asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(slot + o_main0), "l"(g_main0 + win)
-                    : "memory");
-                asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(slot + o_main1), "l"(g_main1 + win)
-                    : "memory");
+                const uint32_t slot = ring_s + s * STB;
+                if constexpr (RES) {
+                    const uint32_t win = (kt * GLMVQ_MMA8_INDEX) & ~15u;
+                    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(slot + o_main0),
+                        "l"(g_main0 + win) : "memory");
+                    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(slot + o_main1),
+                        "l"(g_main1 + win) : "memory");
+                } else {
+                    const uint8_t *g_ix = g_main0 + kt * GLMVQ_MMA8_INDEX;   // 8-byte aligned
+                    #pragma unroll
+                    for (uint32_t k = 0; k < 3; k++) {
+                        asm volatile("cp.async.ca.shared.global [%0], [%1], 8;" :: "r"(slot + o_main0 + 8 * k),
+                            "l"(g_ix + 8 * k) : "memory");
+                    }
+                }
                 if (!(kt & 1u)) {
-                    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;" :: "r"(slot + o_plane),
-                        "l"(g_plane + 4 * (kt / 2)) : "memory");
+                    // R13: entry (kt / 2) % 2 is next rewritten four stages on,
+                    // after the consumers released a later slot.
+                    const uint32_t dst = RES ? slot + o_plane : planes_s + ((kt / 2) & 1u) * MW_PL + o_plane;
+                    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;" :: "r"(dst), "l"(g_plane + 4 * (kt / 2))
+                        : "memory");
                 }
                 if constexpr (RES) {
                     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(slot + o_res),
@@ -279,8 +312,8 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                 beam_w_wait(full + s, (ringc / S) & 1);
                 const uint8_t *stage = ring + s * STB;
                 // This lane's codewords 4K + q of rows WR w + 8n + g (and their residuals);
-                // the stage's index bytes start 0 or 8 bytes into the row's window.
-                const uint32_t ix = (kt * GLMVQ_MMA8_INDEX) & 15u;
+                // R13+8's index bytes start 0 or 8 bytes into the row's window.
+                const uint32_t ix = RES ? (kt * GLMVQ_MMA8_INDEX) & 15u : 0u;
                 uint2 b[4][NT];
                 [[maybe_unused]] uint2 rb[4][NT];
                 #pragma unroll
@@ -289,12 +322,13 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                     uint32_t w[6];
                     #pragma unroll
                     for (uint32_t k = 0; k < 3; k++) {
-                        const uint2 v = *(const uint2 *)(stage + r * MW_IXW + ix + k * 8);
+                        const uint2 v = *(const uint2 *)(stage + r * IXW + ix + k * 8);
                         w[2 * k] = v.x; w[2 * k + 1] = v.y;
                     }
                     uint32_t e = e_odd[n];
                     if (!(kt & 1u)) {
-                        e = *(const uint32_t *)(stage + MW_IX + r * GLMVQ_MMA8_PLANE);
+                        e = *(const uint32_t *)((RES ? stage + IX : planes + ((kt / 2) & 1u) * MW_PL) +
+                            r * GLMVQ_MMA8_PLANE);
                         e_odd[n] = e >> 16;
                     }
                     b[0][n] = *(const uint2 *)(memory + (glmvq_mma8_code<0>(w, q) | ((e >> q) & 1u) << 12) * 8);
@@ -303,7 +337,7 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                     b[3][n] = *(const uint2 *)(memory + (glmvq_mma8_code<3>(w, q) | ((e >> (12 + q)) & 1u) << 12) * 8);
                     if constexpr (RES) {
                         // Word K of the row's 16 residual bytes holds codes 4K..4K+3.
-                        const uint4 v = *(const uint4 *)(stage + MW_IX + MW_PL + r * GLMVQ_MMA8_RES);
+                        const uint4 v = *(const uint4 *)(stage + IX + MW_PL + r * GLMVQ_MMA8_RES);
                         const uint32_t words[4] = {v.x, v.y, v.z, v.w};
                         #pragma unroll
                         for (uint32_t k = 0; k < 4; k++) {

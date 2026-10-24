@@ -71,8 +71,8 @@ kernel; the residual kernel beside each norm and a row-wise SwiGLU-OAI write
 q4p's prepared FP16 input themselves when q4p takes the consumer. Routed
 experts (rows ≥ 9, after host grouping) run `cuda/minimax_mma8w.cuh`:
 tokens × weights^T on E4M3 codewords (a codeword is an m16n8k32 B fragment),
-four producer warps filling a two-stage ring for four consumer warps of 32
-rows, one activation scale per (row, 128 k) as `glmvq_mma8_kernel` (which
+four producer warps filling a ring (three slots on R13 layers, two beside
+R13+8's residual book) for four consumer warps of 32 rows, one activation scale per (row, 128 k) as `glmvq_mma8_kernel` (which
 it equals bit for bit; `DS4_MINIMAX_MMA_WS=0` keeps it). Gate and up write
 BF16 rows; a separate pass applies SwiGLU-OAI and writes down's E4M3 rows
 (inside the up kernel that epilogue held the MMA warps: up 12-25% behind
