@@ -15,6 +15,28 @@ The [v0.1.2 ledger](docs/releases/v0.1.2.md) records shared Jinja qualification.
 New families use [official input templates](docs/chat-templates.md); keep
 tokenizer/media processing and output protocol work outside input grammar.
 
+## Required reading by task
+
+Read these before starting the task; a brief handed to another agent must
+name them too.
+
+| Task | Read first |
+|---|---|
+| Any change that alters rounding, precision or accumulation order | [Goals](#goals) (mixed-quant acceptance), [Numerical tolerance](#gb10-dgx-spark-bottleneck-know-how), playbook §5 change classes. Bit identity is not a requirement (VQ weights are approximate already): gate on final output against a noise floor measured on this host from an existing configuration change |
+| Performance optimization | [Optimization guidelines](#inference-performance-optimization-guidelines) and phase order, [GB10 know-how](#gb10-dgx-spark-bottleneck-know-how), [playbook](docs/prefill-decode-optimization-playbook.md), [gb10-hardware.md](docs/gb10-hardware.md), [ds4-perf.md](docs/ds4-perf.md), the family doc and its latest `docs/<family>-optimization-*.md` |
+| Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
+| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md) |
+| Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
+
+Parallel analysis agents: one kernel or scope per agent; read-only (no GPU
+runs, builds or repository edits while a model or measurement runs; notes
+under their own scratch directory); the brief carries the documents above,
+the commit and artifact measured, current numbers, profile paths, and what
+was already done or rejected. Each report gives the kernel's floor against
+GB10 peaks, measured fraction, causes ranked by recoverable time with
+evidence, each change's numerical class, and the cheapest measurement that
+confirms it.
+
 ## DeepSeek V4.1 (ds41) — the port's reference is /data/YoungAi
 
 The `ds41` family is a port of the DeepSeek V4.1 Flash engine kept at
