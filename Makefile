@@ -2213,6 +2213,14 @@ test-glm-vq-verify: tests/test_glm_vq_verify
 tools/gb10_peaks: tools/gb10_peaks.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
+# MiniMax warp-specialized prefill experts vs glmvq_mma8_kernel (bit parity + timing, no model).
+tests/test_minimax_mma8w: tests/test_minimax_mma8w.cu cuda/minimax_mma8w.cuh cuda/beam_mma8w.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
+
+.PHONY: test-minimax-mma8w
+test-minimax-mma8w: tests/test_minimax_mma8w
+	./tests/test_minimax_mma8w
+
 # R13+8 residual stage: restore bits, decode/verify experts and FP8 prefill MMA.
 tests/test_glm_vq_res: tests/test_glm_vq_res.cu cuda/glm_vq.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_mma8.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
@@ -2281,7 +2289,7 @@ MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_
 	ds4_minimax_payload.inc ds4_minimax_session.inc ds4_minimax_batch.inc ds4_minimax_bank_payload.inc \
 	ds4_minimax_draft.inc
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/glm_vq_ops.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_mma8w.cuh cuda/glm_vq_ops.cuh
 
 tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
 	$(CC) $(CFLAGS) -Werror -o $@ $<

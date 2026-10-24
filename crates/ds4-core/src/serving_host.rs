@@ -2758,6 +2758,9 @@ fn minimax_workspace_bytes(ctx: u64, rows: u64) -> u64 {
             + align(pairs * HIDDEN * SIZEOF_U16)
             + align(pairs * BEAM_MMA_ITEM_BYTES)
             + align(pairs * SIZEOF_U32)
+            // Warp-specialized items (gate, up, down; 48 B each) and pair tokens.
+            + align(3 * (128 + pairs / 64) * 48)
+            + align(pairs * SIZEOF_U32)
     } else {
         0
     };

@@ -22,6 +22,7 @@
  * hold BF16-rounded values; every kernel rounds its inputs where the source
  * has a BF16 tensor, since prefill projections leave F32 sums. */
 #include "ds4_minimax.h"
+#include "cuda/minimax_mma8w.cuh"
 
 enum { MM_EXPERTS = DS4_MINIMAX_EXPERTS, MM_USED = DS4_MINIMAX_USED, MM_HIDDEN = DS4_MINIMAX_HIDDEN,
        MM_FFN = DS4_MINIMAX_FFN, MM_TABLE = 3 * MM_EXPERTS, MM_LAYERS = DS4_MINIMAX_MOE_LAYERS,
@@ -199,8 +200,9 @@ static mm_decode_layout mm_decode_plan() {
 }
 
 // Prefill: E4M3 input rows and 1x128 scales, gate rows (BF16), the up
-// epilogue's E4M3 SwiGLU rows and scales, down rows (BF16), worklists.
-struct mm_mma_layout { uint64_t x8, xs, gate, mid8, ms, down, work, order, bytes; };
+// epilogue's E4M3 SwiGLU rows and scales, down rows (BF16), worklists (the
+// warp-specialized kernels' gate, up and down items and each pair's token).
+struct mm_mma_layout { uint64_t x8, xs, gate, mid8, ms, down, work, order, witems, token, bytes; };
 
 static mm_mma_layout mm_mma_plan(uint32_t rows) {
     mm_mma_layout l = {};
@@ -215,8 +217,16 @@ static mm_mma_layout mm_mma_plan(uint32_t rows) {
     l.down = take(pairs * MM_HIDDEN * sizeof(__nv_bfloat16));
     l.work = take(pairs * sizeof(glmvq_mma_item));
     l.order = take(pairs * sizeof(uint32_t));
+    l.witems = take(3 * (MM_EXPERTS + pairs / MW_BT) * sizeof(mw_item));
+    l.token = take(pairs * sizeof(uint32_t));
     l.bytes = at;
     return l;
+}
+
+// Each grouped pair's token row (pair index / top-k).
+__global__ void mm_pair_tokens(uint32_t *token_of, const uint32_t *map, uint32_t pairs) {
+    const uint32_t p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p < pairs) { token_of[p] = map[p] / MM_USED; }
 }
 
 struct ds4_minimax_moe {
@@ -224,8 +234,11 @@ struct ds4_minimax_moe {
     ds4_gpu_tensor *decode = nullptr, *mma = nullptr;
     uint32_t rows = 0, decode_blocks = 0;
     int mma8_blocks[2][3] = {};     // [R13, R13+8][gate, up, down]
+    // DS4_MINIMAX_MMA_WS=0: prefill experts on glmvq_mma8_kernel (A/B).
+    bool mmaw = true;
     std::vector<uint32_t> keys;     // table slot per layer, keyed by expert 0's w1
     std::vector<glmvq_mma_item> items;
+    std::vector<mw_item> witems;    // gate, up, down 64-pair items (mw_kernel)
     std::vector<uint32_t> order;
     std::vector<uint8_t> token_used;
 };
@@ -288,6 +301,8 @@ extern "C" ds4_minimax_moe *ds4_gpu_minimax_moe_create(ds4_gvq_ctx *gvq, uint32_
         ds4_gpu_minimax_moe_free(moe);
         return nullptr;
     }
+    const char *ws = getenv("DS4_MINIMAX_MMA_WS");
+    moe->mmaw = !(ws && !strcmp(ws, "0"));
     moe->items.reserve((uint64_t)rows * MM_USED);
     moe->order.resize((uint64_t)rows * MM_USED);
     moe->token_used.resize(rows);
@@ -380,9 +395,68 @@ static bool mm_group(ds4_minimax_moe *moe, const ds4_gpu_tensor *selected, uint3
     return ds4_gpu_tensor_write(ctx->pairs, 0, ctx->grouped.data(), pairs * sizeof(uint32_t)) != 0;
 }
 
+// Prefill experts on the warp-specialized kernels: 64-pair items per
+// projection, tokens quantized once (E4M3, 1x128 scales, ldmatrix k order).
+template <bool RES>
+static int mm_mmaw_run(ds4_minimax_moe *moe, float *out, const float *input, const float *weights,
+        const float *shared, const uint32_t *matrices, const uint32_t *offsets, uint32_t rows) {
+    ds4_gvq_ctx *ctx = moe->gvq;
+    const uint64_t pairs = (uint64_t)rows * MM_USED, count = (uint64_t)rows * MM_HIDDEN;
+    const mm_mma_layout l = mm_mma_plan(rows);
+    uint8_t *base = (uint8_t *)moe->mma->ptr;
+    auto *x8 = base + l.x8, *mid8 = base + l.mid8;
+    auto *xs = (float *)(base + l.xs), *ms = (float *)(base + l.ms);
+    auto *gate = (__nv_bfloat16 *)(base + l.gate), *down = (__nv_bfloat16 *)(base + l.down);
+    auto *order = (uint32_t *)(base + l.order);
+    auto *witems = (mw_item *)(base + l.witems);
+    auto *token = (uint32_t *)(base + l.token);
+    moe->witems.clear();
+    for (uint32_t m = 0; m < 3; m++) {
+        for (uint32_t e = 0; e < MM_EXPERTS; e++) {
+            const glmvq_matrix &vq = ctx->model->source[matrices[m * MM_EXPERTS + e]].vq;
+            for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += MW_BT) {
+                moe->witems.push_back({start, min((uint32_t)MW_BT, offsets[e + 1] - start), vq.gain, vq.main, vq.plane,
+                    vq.res, 0});
+            }
+        }
+    }
+    std::fill(moe->token_used.begin(), moe->token_used.begin() + rows, 0);
+    for (uint32_t i = 0; i < pairs; i++) {
+        const uint32_t t = ctx->grouped[i] / MM_USED;
+        moe->order[t * MM_USED + moe->token_used[t]++] = i;
+    }
+    const cudaStream_t stream = ds4_current_stream();
+    if (!cuda_ok(cudaMemcpyAsync(witems, moe->witems.data(), moe->witems.size() * sizeof(mw_item),
+            cudaMemcpyHostToDevice, stream), "MiniMax warp-specialized items") ||
+        !cuda_ok(cudaMemcpyAsync(order, moe->order.data(), pairs * sizeof(*order), cudaMemcpyHostToDevice, stream),
+            "MiniMax MMA order")) { return 0; }
+    const auto *book = (const uint8_t *)ctx->model->source[matrices[0]].vq.book;
+    const auto *res_book = (const uint8_t *)ctx->model->source[matrices[0]].vq.res_book;
+    const auto *grouped = (const uint32_t *)ctx->pairs->ptr;
+    const uint32_t n = (uint32_t)moe->witems.size() / 3, sms = moe->decode_blocks;
+    const uint64_t xb = count / GLMVQ_MMA8_K;
+    mw_quant<<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(x8, xs, input, xb);
+    mm_pair_tokens<<<(uint32_t)((pairs + 255) / 256), 256, 0, stream>>>(token, grouped, (uint32_t)pairs);
+    cudaError_t err = mw_launch<GLMVQ_MMA_GATE, RES>(witems, n, book, res_book, x8, xs, token, gate, nullptr,
+        MM_FFN, MM_HIDDEN, MM_LIMIT, nullptr, nullptr, sms, stream);
+    if (err == cudaSuccess) {
+        err = mw_launch<GLMVQ_MMA_UP, RES>(witems + n, n, book, res_book, x8, xs, token, gate, nullptr,
+            MM_FFN, MM_HIDDEN, MM_LIMIT, mid8, ms, sms, stream);
+    }
+    if (err == cudaSuccess) {
+        err = mw_launch<GLMVQ_MMA_DOWN, RES>(witems + 2 * n, n, book, res_book, mid8, ms, token, nullptr, down,
+            MM_HIDDEN, MM_FFN, MM_LIMIT, nullptr, nullptr, sms, stream);
+    }
+    if (!cuda_ok(err, "MiniMax warp-specialized experts")) { return 0; }
+    mm_mma_reduce<<<(uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(out,
+        down, weights, grouped, order, shared, count);
+    return cuda_ok(cudaGetLastError(), "MiniMax FP8 warp-specialized MMA");
+}
+
 template <bool RES>
 static int mm_mma_run(ds4_minimax_moe *moe, float *out, const float *input, const float *weights,
         const float *shared, const uint32_t *matrices, const uint32_t *offsets, uint32_t rows) {
+    if (moe->mmaw) { return mm_mmaw_run<RES>(moe, out, input, weights, shared, matrices, offsets, rows); }
     ds4_gvq_ctx *ctx = moe->gvq;
     const uint64_t pairs = (uint64_t)rows * MM_USED, count = (uint64_t)rows * MM_HIDDEN;
     const mm_mma_layout l = mm_mma_plan(rows);
