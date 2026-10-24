@@ -14,12 +14,15 @@
 //!
 //! The text path passes `position_ids = NULL` (`:622-625` calls
 //! `h3_text_encode_bf16` with no positions), so two branches of the reference
-//! loop do not run and are deliberately absent here:
+//! loop do not run there, and `Rope::build` carries that branch set:
 //!
 //! - `:551-553` the mRoPE axis interleave (index % 3 picks the position axis)
 //!   is guarded by `position_ids`.
 //! - `:561-566` the BF16 round of both tables is likewise guarded by
 //!   `position_ids`; without them the tables stay float32.
+//!
+//! `Rope::build_multimodal` is the other branch: the axis-selected coordinate
+//! and both BF16 rounds, as the multimodal presentation runs it.
 //!
 //! Deviation, named: none. The arithmetic order is the reference's, including
 //! `1.0f / powf(...)` rather than a negative exponent, because the two differ
@@ -94,6 +97,68 @@ impl Rope {
     pub fn sines(&self) -> &[f32] {
         &self.sines
     }
+
+    /// Build the tables of a multimodal presentation.
+    ///
+    /// `h3_text_encoder.c:549-567`: with `position_ids` present the coordinate
+    /// is the row's own mRoPE value on the axis its half-index selects, and
+    /// both tables are rounded to BF16 before upload. `positions` is the
+    /// axis-major `[3, tokens]` block; a short one is refused rather than
+    /// read past.
+    pub fn build_multimodal(tokens: usize, positions: &[u32]) -> Option<Rope> {
+        if positions.len() != 3 * tokens {
+            return None;
+        }
+
+        let inverse = inverse_frequency();
+        let mut cosines = vec![0.0f32; tokens * ROPE_HALF];
+        let mut sines = vec![0.0f32; tokens * ROPE_HALF];
+
+        for position in 0..tokens {
+            for (index, frequency) in inverse.iter().enumerate() {
+                let axis = mrope_axis(index);
+                let coordinate = positions[axis * tokens + position] as f32;
+                let angle = coordinate * frequency;
+
+                cosines[position * ROPE_HALF + index] = round_bf16(angle.cos());
+                sines[position * ROPE_HALF + index] = round_bf16(angle.sin());
+            }
+        }
+
+        Some(Rope {
+            tokens,
+            cosines,
+            sines,
+        })
+    }
+}
+
+/// `h3_text_encoder.c:551-553`: half-indices below 60 cycle through the three
+/// position axes; the last four keep axis 0 because the released checkpoint has
+/// only three interleaved axes.
+const MROPE_AXIS_PAIRS: usize = 60;
+
+/// The position axis of one half-index (`h3_text_encoder.c:551-553`).
+pub fn mrope_axis(index: usize) -> usize {
+    if index < MROPE_AXIS_PAIRS && index % 3 == 1 {
+        1
+    } else if index < MROPE_AXIS_PAIRS && index % 3 == 2 {
+        2
+    } else {
+        0
+    }
+}
+
+/// `round_bf16` (`h3_text_encoder.c:29-36`): round to nearest even at the BF16
+/// boundary and keep the value in an `f32`. The reference adds the rounding
+/// term with wrapping integer arithmetic, so a carry into the exponent rounds
+/// up to the next power of two exactly as it does there.
+pub fn round_bf16(value: f32) -> f32 {
+    let mut bits = value.to_bits();
+    bits = bits.wrapping_add(0x7fff + ((bits >> 16) & 1));
+    bits &= 0xffff_0000;
+
+    f32::from_bits(bits)
 }
 
 /// `h3_text_encoder.c:543-548`: `1 / theta^(2i/head_dim)` in float32.
@@ -170,5 +235,69 @@ mod tests {
         assert_eq!(rope.half(), ROPE_HALF);
         assert_eq!(rope.cosines().len(), 6 * ROPE_HALF);
         assert_eq!(rope.sines().len(), 6 * ROPE_HALF);
+    }
+
+    #[test]
+    fn the_axis_cycles_over_sixty_half_indices_and_then_stays_on_zero() {
+        let axes: Vec<usize> = (0..ROPE_HALF).map(mrope_axis).collect();
+
+        assert_eq!(&axes[..6], &[0, 1, 2, 0, 1, 2]);
+        assert_eq!(axes[MROPE_AXIS_PAIRS - 1], 2);
+        assert!(axes[MROPE_AXIS_PAIRS..].iter().all(|axis| *axis == 0));
+    }
+
+    #[test]
+    fn bf16_rounding_snaps_to_the_nearest_even_boundary() {
+        // The BF16 step at 1.0 is 1/128, so 1/512 is a quarter step and 3/512
+        // is three quarters.
+        assert_eq!(round_bf16(1.0 + 1.0 / 512.0), 1.0);
+        assert_eq!(round_bf16(1.0 + 3.0 / 512.0), 1.0 + 1.0 / 128.0);
+        assert_eq!(round_bf16(1.0), 1.0);
+        assert_eq!(round_bf16(0.0), 0.0);
+        // A midpoint rounds to the even neighbour, in both directions.
+        assert_eq!(
+            round_bf16(f32::from_bits(0x3f80_8000)),
+            f32::from_bits(0x3f80_0000)
+        );
+        assert_eq!(
+            round_bf16(f32::from_bits(0x3f81_8000)),
+            f32::from_bits(0x3f82_0000)
+        );
+    }
+
+    #[test]
+    fn the_multimodal_tables_use_the_selected_axis_and_round_to_bf16() {
+        // Three rows, every axis holding a different coordinate, so a wrong
+        // axis pick changes the value.
+        let tokens = 3;
+        let mut positions = vec![0u32; 3 * tokens];
+        for axis in 0..3 {
+            for cell in 0..tokens {
+                positions[axis * tokens + cell] = (axis * 10 + cell) as u32;
+            }
+        }
+        let rope = Rope::build_multimodal(tokens, &positions).expect("three axes");
+        let inverse = inverse_frequency();
+
+        for cell in 0..tokens {
+            for index in 0..ROPE_HALF {
+                let axis = mrope_axis(index);
+                let angle = positions[axis * tokens + cell] as f32 * inverse[index];
+
+                assert_eq!(
+                    rope.cosines()[cell * ROPE_HALF + index],
+                    round_bf16(angle.cos())
+                );
+                assert_eq!(
+                    rope.sines()[cell * ROPE_HALF + index],
+                    round_bf16(angle.sin())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_short_position_block_is_refused() {
+        assert!(Rope::build_multimodal(2, &[0, 1, 2]).is_none());
     }
 }

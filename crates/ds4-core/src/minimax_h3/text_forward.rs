@@ -40,6 +40,7 @@ use std::thread::{Scope, ScopedJoinHandle};
 
 use ds4_sys::h3_text::{Dtype, Gpu, Tensor};
 
+use crate::minimax_h3::multimodal::VisionSpan;
 use crate::minimax_h3::text::{
     Part, Role, HEAD_DIM, HIDDEN, INTERMEDIATE, KV_HEADS, LAYERS, QUERY_HEADS, RMS_EPSILON, VOCAB,
 };
@@ -74,6 +75,7 @@ pub struct Embedding {
     tokens: usize,
     width: usize,
     values: Vec<u8>,
+    tags: Option<Vec<u8>>,
 }
 
 impl Embedding {
@@ -93,6 +95,18 @@ impl Embedding {
     /// The reference gate's hash of the same payload.
     pub fn fnv(&self) -> u64 {
         fnv1a(&self.values)
+    }
+
+    /// The DiT modality tag of every row: 0 over a vision span and its two
+    /// boundary ids, 1 elsewhere. Only the multimodal entry point returns them
+    /// (`h3_text_encoder.c:737-745`).
+    pub fn tags(&self) -> Option<&[u8]> {
+        self.tags.as_deref()
+    }
+
+    /// FNV-1a over the tags, the probe's convention.
+    pub fn tags_fnv(&self) -> Option<u64> {
+        self.tags.as_deref().map(fnv1a)
     }
 
     /// The first `count` BF16 bit patterns, for an edge comparison.
@@ -127,6 +141,8 @@ pub enum ForwardError {
     Gpu(String),
     /// No token to encode.
     Empty,
+    /// A presentation the reference refuses (`h3_text_encoder.c:493-515`).
+    Invalid(&'static str),
 }
 
 impl ForwardError {
@@ -136,6 +152,9 @@ impl ForwardError {
             ForwardError::Weights(error) => format!("weights: {}", error.token()),
             ForwardError::Gpu(detail) => format!("gpu: {detail}"),
             ForwardError::Empty => "the prompt has no tokens".to_string(),
+            ForwardError::Invalid(detail) => {
+                format!("invalid multimodal presentation: {detail}")
+            }
         }
     }
 }
@@ -173,7 +192,34 @@ pub fn encode_layers(dir: &Path, ids: &[u32], layers: u32) -> Result<Embedding, 
     let weights = TextWeights::open(dir)?;
     let gpu = Gpu::create().map_err(ForwardError::Gpu)?;
 
-    run(&weights, &gpu, ids, layers.min(LAYERS))
+    run(&weights, &gpu, ids, layers.min(LAYERS), None)
+}
+
+/// Encode a prompt that carries Qwen vision spans
+/// (`h3_text_encode_multimodal_bf16`, `h3_text_encoder.c:478-760`).
+///
+/// The three differences from [`encode_layers`] are the splice of the tower's
+/// rows over the embedding lookup, the deepstack add after layers 0, 1 and 2,
+/// and the per-token mRoPE tables. Everything else is the same layer walk, so
+/// the E4 golden still covers the shared path.
+pub fn encode_multimodal(
+    dir: &Path,
+    ids: &[u32],
+    spans: &[VisionSpan<'_>],
+    positions: &[u32],
+    tags: &[u8],
+) -> Result<Embedding, ForwardError> {
+    require_tokens(ids)?;
+
+    let weights = TextWeights::open(dir)?;
+    let gpu = Gpu::create().map_err(ForwardError::Gpu)?;
+    let presentation = Multimodal {
+        spans,
+        positions,
+        tags,
+    };
+
+    run(&weights, &gpu, ids, LAYERS, Some(&presentation))
 }
 
 /// Refuse an empty prompt before the device is touched.
@@ -346,11 +392,20 @@ fn run(
     gpu: &Gpu,
     ids: &[u32],
     layers: u32,
+    presentation: Option<&Multimodal<'_>>,
 ) -> Result<Embedding, ForwardError> {
     let tokens = ids.len();
     let hidden = count(tokens, HIDDEN);
 
-    let rope = Rope::build(tokens);
+    if let Some(presentation) = presentation {
+        check_presentation(ids, presentation)?;
+    }
+
+    let rope = match presentation {
+        Some(presentation) => Rope::build_multimodal(tokens, presentation.positions)
+            .ok_or(ForwardError::Invalid("the mRoPE block is not [3, tokens]"))?,
+        None => Rope::build(tokens),
+    };
     let cosines = allocate(gpu, Dtype::F32, count(tokens, ROPE_HALF as u64))?;
     let sines = allocate(gpu, Dtype::F32, count(tokens, ROPE_HALF as u64))?;
     gpu.upload(&cosines, &pack_f32(rope.cosines()))
@@ -360,6 +415,13 @@ fn run(
 
     let activations = Activations::allocate(gpu, tokens)?;
     let layer = LayerWeights::allocate(gpu)?;
+
+    // `h3_text_encoder.c:585-605`: one zero-filled `[tokens, 5120]` buffer per
+    // deepstack, each span's rows copied at that span's own start.
+    let deepstack = match presentation {
+        Some(presentation) => Some(pack_deepstacks(gpu, tokens, presentation.spans)?),
+        None => None,
+    };
 
     // The embedding is read once, gathered, and released before the layers
     // stream their own weights (`h3_text_encoder.c:622-625`, `:659`).
@@ -380,6 +442,22 @@ fn run(
             HIDDEN as u32,
         )
         .map_err(ForwardError::Gpu)?;
+    }
+
+    // `h3_text_encoder.c:638-646`: each span's merged rows replace the gathered
+    // embedding rows at its start.
+    if let Some(presentation) = presentation {
+        for span in presentation.spans {
+            let width = HIDDEN as usize;
+            let bytes = span.tokens * width * 2;
+
+            gpu.write(
+                &activations.hidden,
+                span.start * width,
+                &span.merged[..bytes],
+            )
+            .map_err(ForwardError::Gpu)?;
+        }
     }
 
     // The reference reads layer 0 inline, keeps `depth` layers in flight, and
@@ -426,6 +504,18 @@ fn run(
             layer.upload_buffers(gpu, &buffers, index)?;
             encode_layer(gpu, &layer, &activations, &cosines, &sines, tokens, index)?;
 
+            // `h3_text_encoder.c:675-679`: the deepstack row is added to the
+            // layer output, before the next layer reads it.
+            if let Some(rows) = deepstack.as_ref().filter(|_| index < 3) {
+                gpu.add(
+                    &activations.hidden,
+                    &activations.hidden,
+                    &rows[index as usize],
+                    hidden,
+                )
+                .map_err(ForwardError::Gpu)?;
+            }
+
             // The buffers have been staged for upload, so their slot can take
             // the next layer and the lanes read while the device works.
             if let Some(position) = position {
@@ -448,7 +538,87 @@ fn run(
         tokens,
         width: HIDDEN as usize,
         values,
+        tags: presentation.map(|presentation| presentation.tags.to_vec()),
     })
+}
+
+/// The presentation the multimodal entry adds to the plain encoder
+/// (`h3_text_encoder.h:40-52`).
+#[derive(Clone, Copy)]
+struct Multimodal<'a> {
+    spans: &'a [VisionSpan<'a>],
+    positions: &'a [u32],
+    tags: &'a [u8],
+}
+
+/// `h3_text_encoder.c:493-515`: every id inside the vocabulary, every tag at
+/// most 2, and the spans strictly increasing, non-overlapping, inside the
+/// sequence and backed by the rows the splice copies.
+fn check_presentation(ids: &[u32], presentation: &Multimodal<'_>) -> Result<(), ForwardError> {
+    let tokens = ids.len();
+    let width = HIDDEN as usize;
+
+    if presentation.positions.len() != 3 * tokens {
+        return Err(ForwardError::Invalid("the mRoPE block is not [3, tokens]"));
+    }
+    if presentation.tags.len() != tokens {
+        return Err(ForwardError::Invalid("the tag row does not cover the ids"));
+    }
+    if ids.iter().any(|id| u64::from(*id) >= VOCAB) {
+        return Err(ForwardError::Invalid("an id is outside the vocabulary"));
+    }
+    if presentation.tags.iter().any(|tag| *tag > 2) {
+        return Err(ForwardError::Invalid("a presentation tag is above 2"));
+    }
+
+    let mut cursor = 0;
+    for span in presentation.spans {
+        if span.tokens == 0 {
+            return Err(ForwardError::Invalid("a span has no rows"));
+        }
+        if span.start < cursor || span.start > tokens || span.tokens > tokens - span.start {
+            return Err(ForwardError::Invalid(
+                "a span is out of order or outside the ids",
+            ));
+        }
+        let bytes = span.tokens * width * 2;
+        if span.merged.len() < bytes || span.deepstack.iter().any(|payload| payload.len() < bytes) {
+            return Err(ForwardError::Invalid(
+                "a span payload is shorter than its rows",
+            ));
+        }
+        cursor = span.start + span.tokens;
+    }
+
+    Ok(())
+}
+
+/// `h3_text_encoder.c:585-605`: pack one `[tokens, 5120]` buffer per deepstack
+/// and upload it. The zero fill matters: every row outside a span contributes
+/// nothing to the add.
+fn pack_deepstacks(
+    gpu: &Gpu,
+    tokens: usize,
+    spans: &[VisionSpan<'_>],
+) -> Result<[Tensor; 3], ForwardError> {
+    let width = HIDDEN as usize;
+    let mut values = vec![0u8; tokens * width * 2];
+
+    let mut pack = |layer: usize| -> Result<Tensor, ForwardError> {
+        values.fill(0);
+        for span in spans {
+            let start = span.start * width * 2;
+            let bytes = span.tokens * width * 2;
+
+            values[start..start + bytes].copy_from_slice(&span.deepstack[layer][..bytes]);
+        }
+        let tensor = allocate(gpu, Dtype::Bf16, tokens * width)?;
+        gpu.upload(&tensor, &values).map_err(ForwardError::Gpu)?;
+
+        Ok(tensor)
+    };
+
+    Ok([pack(0)?, pack(1)?, pack(2)?])
 }
 
 /// One layer, op for op, with the reference's names in the error text.
@@ -902,6 +1072,7 @@ mod tests {
             tokens: 2,
             width: 2,
             values: vec![0x99, 0x3f, 0x71, 0xbf, 0xf4, 0xbe, 0x00, 0x40],
+            tags: None,
         };
 
         assert_eq!(embedding.first_words(2), vec![0x3f99, 0xbf71]);

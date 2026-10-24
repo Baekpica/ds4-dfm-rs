@@ -37,6 +37,13 @@ h3t_tensor *h3t_alloc(h3t_context *context, int dtype, size_t elements,
 void h3t_free(h3t_tensor *tensor);
 int h3t_upload(h3t_context *context, h3t_tensor *tensor, const void *host,
                char *error, size_t error_size);
+/* `h3_gpu_tensor_write_bf16_range` (`h3_gpu_cuda.cu:594-604`): copy `elements`
+ * values from `host` into the tensor at `offset`. The reference copies with the
+ * legacy blocking `cudaMemcpy`; here the same copy is stream-ordered, as
+ * `h3t_upload` is, so it lands after the ops already queued. */
+int h3t_write(h3t_context *context, h3t_tensor *tensor, size_t offset,
+              const void *host, size_t elements, char *error,
+              size_t error_size);
 int h3t_read(h3t_context *context, void *host, const h3t_tensor *tensor,
              char *error, size_t error_size);
 

@@ -46,6 +46,15 @@ unsafe extern "C" {
         error: *mut c_char,
         error_size: usize,
     ) -> c_int;
+    fn h3t_write(
+        context: *mut Context,
+        tensor: *mut CTensor,
+        offset: usize,
+        host: *const std::ffi::c_void,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
     fn h3t_read(
         context: *mut Context,
         host: *mut std::ffi::c_void,
@@ -261,6 +270,40 @@ impl Gpu {
                 )
             },
             "upload",
+        )
+    }
+
+    /// Copy `bytes` into `tensor` at `offset` elements, stream-ordered.
+    pub fn write(&self, tensor: &Tensor, offset: usize, bytes: &[u8]) -> Result<(), String> {
+        let element = tensor.dtype().size();
+        if offset > tensor.elements() || !bytes.len().is_multiple_of(element) {
+            return Err(format!(
+                "range write of {} bytes at element {offset} of {} elements",
+                bytes.len(),
+                tensor.elements()
+            ));
+        }
+        let elements = bytes.len() / element;
+        if elements > tensor.elements() - offset {
+            return Err(format!(
+                "range write of {elements} elements at {offset} of {} elements",
+                tensor.elements()
+            ));
+        }
+
+        self.call(
+            |error, size| unsafe {
+                h3t_write(
+                    self.raw.as_ptr(),
+                    tensor.raw(),
+                    offset,
+                    bytes.as_ptr().cast(),
+                    elements,
+                    error,
+                    size,
+                )
+            },
+            "range write",
         )
     }
 

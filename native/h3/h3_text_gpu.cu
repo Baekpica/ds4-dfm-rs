@@ -139,6 +139,23 @@ int h3t_upload(h3t_context *context, h3t_tensor *tensor, const void *host,
                        "tensor upload", error, error_size);
 }
 
+int h3t_write(h3t_context *context, h3t_tensor *tensor, size_t offset,
+              const void *host, size_t elements, char *error,
+              size_t error_size) {
+    /* The reference's own bounds (`h3_gpu_cuda.cu:597-600`). */
+    if (!tensor || !host || offset > tensor->elements ||
+        elements > tensor->elements - offset) {
+        return h3t_set_error(error, error_size,
+                             "invalid tensor write range");
+    }
+    size_t size = h3t_dtype_size(tensor->dtype);
+    return h3t_cuda_ok(
+        cudaMemcpyAsync((char *)tensor->data + offset * size, host,
+                        elements * size, cudaMemcpyHostToDevice,
+                        context->stream),
+        "tensor range write", error, error_size);
+}
+
 int h3t_read(h3t_context *context, void *host, const h3t_tensor *tensor,
              char *error, size_t error_size) {
     if (!tensor || !host) {
