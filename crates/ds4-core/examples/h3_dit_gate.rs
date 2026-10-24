@@ -1,15 +1,17 @@
-//! The E5 gate: the port's DiT forward against the reference's golden.
+//! The E5/E6 gate: the port's DiT forward and Euler denoise against the
+//! reference's goldens.
 //!
 //! Usage: h3_dit_gate <FL2VA/text_encoder> <tokenizer.json> <FL2VA/transformer>
 //!                    <prompt> [--width W] [--height H] [--frames F]
-//!                    [--steps N] [--step S] [--seed N]
-//!                    [--expect-video HEX] [--expect-audio HEX]
+//!                    [--steps N] [--step S] [--seed N] [--denoise]
+//!                    [--reuse K] [--expect-video HEX] [--expect-audio HEX]
 //!                    [--expect-adaln BLOCK:FINAL] [--adaln-only]
 //!
 //! Prints the prompt ids, the text hash (the E4 gate's), the packed layout,
-//! the seeded noise and the two velocities. With an `--expect-*` flag the
-//! process exits 3 on a mismatch; `--adaln-only` stops after the AdaLN
-//! projections, which is the cheapest gate in the unit.
+//! the seeded noise and the two velocities, or with `--denoise` the final
+//! latents after the whole sampler. With an `--expect-*` flag the process
+//! exits 3 on a mismatch; `--adaln-only` stops after the AdaLN projections,
+//! which is the cheapest gate in the unit.
 //!
 //! The goldens this gate was written against, recorded on the Spark with the
 //! reference engine (`tools/minimax_h3/dit_probe.c`), seed 1, step 0:
@@ -34,12 +36,20 @@
 //!   NOISE seed=1 video=86016=a7ad6c7fffd4883c audio=2368=a6f0828e5dd3268f
 //!   FORWARD video=19ded4b06fdf2212 audio=e485560aea6da48d
 //!   TIME seconds=1.735 after LOAD seconds=20.436
+//!
+//! The E6 sampler goldens, same clip and prompt at the CLI's default 20
+//! evaluations, are two runs of `dit_probe --denoise`:
+//!
+//!   DENOISE steps=20 reuse=1 selected=20 video=e94bbd9de0b56b16
+//!        audio=cbe8fd45590fbf65, 4.872 s in the reference
+//!   DENOISE steps=20 reuse=3 selected=8 video=46cd8839c5e06ca9
+//!        audio=3e038686c6df2623, 2.000 s in the reference
 
 use std::process::ExitCode;
 use std::time::Instant;
 
 use ds4_core::minimax_h3::dit::{self, Dit};
-use ds4_core::minimax_h3::host::{latent_canvas, temporal, Rng, Schedule};
+use ds4_core::minimax_h3::host::{latent_canvas, reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
@@ -154,6 +164,42 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     );
 
     let start = Instant::now();
+    if options.denoise {
+        let selected = reuse_schedule(options.steps, options.reuse)
+            .ok_or_else(|| usage("--reuse is outside 1..=32"))?;
+        let count = selected.iter().filter(|flag| **flag).count();
+        model
+            .denoise(&mut video_noise, &mut audio_noise, options.reuse)
+            .map_err(|error| error.to_string())?;
+        let seconds = start.elapsed().as_secs_f64();
+
+        println!(
+            "DENOISE steps={} reuse={} selected={} video={:016x} audio={:016x} video_edge={:.9}/{:.9} audio_edge={:.9}/{:.9}",
+            options.steps,
+            options.reuse,
+            count,
+            fnv_f32(&video_noise),
+            fnv_f32(&audio_noise),
+            video_noise[0],
+            video_noise[video_noise.len() - 1],
+            audio_noise[0],
+            audio_noise[audio_noise.len() - 1]
+        );
+        println!("TIME seconds={seconds:.3}");
+
+        if let Some(expect) = options.expect_video {
+            if fnv_f32(&video_noise) != expect {
+                return Ok(ExitCode::from(3));
+            }
+        }
+        if let Some(expect) = options.expect_audio {
+            if fnv_f32(&audio_noise) != expect {
+                return Ok(ExitCode::from(3));
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let (video, audio) = model
         .forward(options.step, &video_noise, &audio_noise)
         .map_err(|error| error.to_string())?;
@@ -267,6 +313,8 @@ struct Options {
     step: usize,
     seed: u64,
     rope_scale: f32,
+    reuse: usize,
+    denoise: bool,
     expect_video: Option<u64>,
     expect_audio: Option<u64>,
     expect_adaln: Option<(u64, u64)>,
@@ -283,6 +331,8 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         step: 0,
         seed: 1,
         rope_scale: 1.0,
+        reuse: 1,
+        denoise: false,
         expect_video: None,
         expect_audio: None,
         expect_adaln: None,
@@ -305,6 +355,12 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
             "--step" => options.step = number(value()?)?,
             "--seed" => options.seed = number(value()?)?,
             "--rope-scale" => options.rope_scale = number(value()?)?,
+            "--reuse" => options.reuse = number(value()?)?,
+            "--denoise" => {
+                options.denoise = true;
+                index += 1;
+                continue;
+            }
             "--expect-video" => {
                 options.expect_video = Some(
                     parse_hash(value()?)
@@ -357,7 +413,8 @@ fn usage(detail: &str) -> String {
     format!(
         "{detail}\nusage: h3_dit_gate <FL2VA/text_encoder> <tokenizer.json> \
          <FL2VA/transformer> <prompt> [--width W] [--height H] [--frames F] \
-         [--steps N] [--step S] [--seed N] [--rope-scale X] [--expect-video HEX] \
+         [--steps N] [--step S] [--seed N] [--rope-scale X] [--denoise] \
+         [--reuse K] [--expect-video HEX] \
          [--expect-audio HEX] [--expect-adaln BLOCK:FINAL]\n       \
          h3_dit_gate <FL2VA/transformer> --adaln-only [--steps N] \
          [--expect-adaln BLOCK:FINAL]"

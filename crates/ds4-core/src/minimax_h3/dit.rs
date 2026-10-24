@@ -18,6 +18,10 @@
 //!   uses by default.
 //! - `h3_dit.c:2442-2505` `h3_dit_forward`: patchify/pack on the host, one
 //!   `encode_forward`, then unpatchify/unpack.
+//! - `h3_dit.c:2882-2985` `h3_dit_denoise_euler_preview`, host sampler: one
+//!   forward per selected step, the reuse window (`:2537-2554`) and the
+//!   velocity extrapolation (`:2512-2535`), with `h3_host.c:675-683` doing
+//!   `sample += (sigma - sigma_next) * velocity`.
 //!
 //! ```text
 //! load:  text -> refiner -> refined_text
@@ -47,13 +51,18 @@
 //!   CUDA run takes exactly the path implemented here.
 //! - The weight stream is load-everything-then-run. The reference can stream
 //!   matrix slots from SSD; that and the hot/cold AdaLN split are P9 items.
+//! - The device Euler sampler (`h3_dit.c:2613-2787` `denoise_euler_gpu`) is
+//!   not ported. It is the reference's default only on M5
+//!   (`h3_dit.c:2572-2578` returns `h3_gpu_is_m5`, 0 on CUDA per
+//!   `h3_gpu_cuda.cu:332`); on this backend the reference runs the host
+//!   sampler implemented here unless `H3_GPU_SAMPLER=1` overrides it.
 
 use std::fmt;
 use std::path::Path;
 
 use ds4_sys::h3_dit::{Dtype, Gpu, Tensor};
 
-use crate::minimax_h3::host::Schedule;
+use crate::minimax_h3::host::{self, Schedule};
 use crate::minimax_h3::layout::{Config, Role};
 use crate::minimax_h3::sequence::{SegmentKind, Sequence};
 use crate::minimax_h3::text_forward::{fnv1a, Embedding};
@@ -869,6 +878,123 @@ impl Dit {
         unpack_audio(&audio_f32, 32, self.audio_t as usize, &mut audio_velocity)?;
 
         Ok((video_velocity, audio_velocity))
+    }
+
+    /// The whole Euler denoise on the host sampler
+    /// (`h3_dit.c:2882-2985`).
+    ///
+    /// The latents are updated in place, one selected step at a time. A
+    /// step that does not evaluate reuses the last velocity, extrapolated
+    /// from the two most recent evaluations; with `reuse == 1` every step
+    /// evaluates and no extrapolation runs (`h3_dit.c:2537-2554`).
+    ///
+    /// `gpu_sampler_requested` picks the device sampler only on M5 or when
+    /// `H3_GPU_SAMPLER` says so (`h3_dit.c:2572-2578`); CUDA takes this
+    /// path, so the port reproduces it.
+    pub fn denoise(
+        &self,
+        video: &mut [f32],
+        audio: &mut [f32],
+        reuse: usize,
+    ) -> Result<(), DitError> {
+        let steps = self.schedule.steps;
+        let selected = host::reuse_schedule(steps, reuse).ok_or_else(|| DitError::Geometry {
+            detail: format!("reuse {reuse} outside 1..=32 or {steps} steps"),
+        })?;
+        if video.len() != self.video_elements() || audio.len() != self.audio_elements() {
+            return Err(DitError::Geometry {
+                detail: format!(
+                    "denoise of {}x{} values, expected {}x{}",
+                    video.len(),
+                    audio.len(),
+                    self.video_elements(),
+                    self.audio_elements()
+                ),
+            });
+        }
+
+        // `last` is the newest evaluation's velocity, `previous` the one
+        // before it; the ratio between their sigmas extrapolates a reused
+        // step. Both are BF16-exact because `forward` expands BF16 readbacks.
+        let mut last: Option<(Vec<f32>, Vec<f32>)> = None;
+        let mut previous: Option<(Vec<f32>, Vec<f32>)> = None;
+        let mut last_evaluated: Option<usize> = None;
+        let mut previous_evaluated: Option<usize> = None;
+
+        for (step, evaluate) in selected.iter().enumerate().take(steps) {
+            let (video_velocity, audio_velocity) = if *evaluate {
+                let (video_velocity, audio_velocity) = self.forward(step, video, audio)?;
+                if reuse > 1 {
+                    if let Some((video_last, audio_last)) = last.take() {
+                        previous = Some((video_last, audio_last));
+                        previous_evaluated = last_evaluated;
+                    }
+                    last = Some((video_velocity.clone(), audio_velocity.clone()));
+                    last_evaluated = Some(step);
+                }
+                (video_velocity, audio_velocity)
+            } else {
+                let (video_last, audio_last) = last.as_ref().ok_or_else(|| DitError::Geometry {
+                    detail: format!("step {step} reuses a velocity never evaluated"),
+                })?;
+                let mut video_velocity = vec![0.0f32; video_last.len()];
+                let mut audio_velocity = vec![0.0f32; audio_last.len()];
+                let last_step = last_evaluated.ok_or_else(|| DitError::Geometry {
+                    detail: format!("step {step} reuses a velocity never evaluated"),
+                })?;
+
+                // `h3_dit.c:2525-2535`: without a second evaluation the last
+                // velocity is copied unchanged.
+                match previous.as_ref().zip(previous_evaluated) {
+                    Some(((video_previous, audio_previous), previous_step)) => {
+                        host::extrapolate_velocity(
+                            &mut video_velocity,
+                            video_last,
+                            video_previous,
+                            self.schedule.video[step],
+                            self.schedule.video[last_step],
+                            self.schedule.video[previous_step],
+                            true,
+                        );
+                        host::extrapolate_velocity(
+                            &mut audio_velocity,
+                            audio_last,
+                            audio_previous,
+                            self.schedule.audio[step],
+                            self.schedule.audio[last_step],
+                            self.schedule.audio[previous_step],
+                            true,
+                        );
+                    }
+                    None => {
+                        video_velocity.copy_from_slice(video_last);
+                        audio_velocity.copy_from_slice(audio_last);
+                    }
+                }
+                (video_velocity, audio_velocity)
+            };
+
+            let video_ok = host::euler_step(
+                video,
+                &video_velocity,
+                self.schedule.video[step],
+                self.schedule.video[step + 1],
+            );
+            let audio_ok = video_ok
+                && host::euler_step(
+                    audio,
+                    &audio_velocity,
+                    self.schedule.audio[step],
+                    self.schedule.audio[step + 1],
+                );
+            if !audio_ok {
+                return Err(DitError::Geometry {
+                    detail: format!("Euler solver rejected step {step}"),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     /// `h3_dit.c:2050-2396` `encode_forward` with `core_reuse_interval = 1`,

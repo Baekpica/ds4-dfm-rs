@@ -8,7 +8,7 @@ All h3 tooling lives under this directory; nothing h3-named sits loose in
 | `st_probe.c` | The reference safetensors parser driven over a checkpoint directory, for the two-sided diff against `minimax_h3::safetensors` |
 | `tok_probe.c` | The reference tokenizer driven over stdin, for the two-sided diff against `minimax_h3::tokenizer` |
 | `text_probe.c` | The reference prompt encoder run on the Spark, printing the BF16 output hash the port's forward must reproduce |
-| `dit_probe.c` | The reference DiT run on the Spark: one forward, plus `--adaln-only` and `--adaln-stages` for localization and `--features` for the timestep table |
+| `dit_probe.c` | The reference DiT run on the Spark: one forward, `--denoise [--reuse K] [--gpu-sampler]` for the whole sampler, `--adaln-only`/`--adaln-stages` for localization and `--features` for the timestep table |
 | [vq/](vq/README.md) | The GVQ1 v1 converter (rung A): build, selftest, encode, check, pack |
 
 All four are development oracles and converters. None is linked into the

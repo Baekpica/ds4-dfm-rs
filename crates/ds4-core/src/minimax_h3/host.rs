@@ -183,6 +183,93 @@ impl Schedule {
     }
 }
 
+/// `h3_dit.c:2537-2554` `h3_dit_reuse_schedule`: with interval 1 every step
+/// evaluates; otherwise step 0, the last step and every multiple evaluate.
+///
+/// A step that does not evaluate reuses the last velocity, extrapolated from
+/// the two most recent evaluations.
+pub fn reuse_schedule(steps: usize, interval: usize) -> Option<Vec<bool>> {
+    if steps < 1 || !(1..=32).contains(&interval) {
+        return None;
+    }
+
+    let mut selected = vec![false; steps];
+    for (step, flag) in selected.iter_mut().enumerate() {
+        *flag = interval == 1 || step == 0 || step == steps - 1 || step.is_multiple_of(interval);
+    }
+    Some(selected)
+}
+
+/// `h3_dit.c:2512-2523` `extrapolation_ratio`, including the +-2 clamp that
+/// keeps a malformed reuse window from turning one evaluation into a blow-up.
+pub fn extrapolation_ratio(
+    current_sigma: f32,
+    last_sigma: f32,
+    previous_sigma: f32,
+    have_previous: bool,
+) -> f32 {
+    if !have_previous {
+        return 0.0;
+    }
+
+    let denominator = last_sigma - previous_sigma;
+    let ratio = if denominator != 0.0 {
+        (current_sigma - last_sigma) / denominator
+    } else {
+        0.0
+    };
+
+    // The reference writes this as two comparisons; `clamp` is the same
+    // function on finite values and passes NaN through as they do.
+    ratio.clamp(-2.0, 2.0)
+}
+
+/// `h3_dit.c:2525-2535` `extrapolate_velocity`.
+///
+/// The reference's host build is `-std=c11` (`/data/h3.c` Makefile:4), so GCC
+/// contracts no floating-point expression; `last + ratio * delta` is written
+/// as two roundings here as well, which `-ffp-contract=off` guarantees there.
+pub fn extrapolate_velocity(
+    output: &mut [f32],
+    last: &[f32],
+    previous: &[f32],
+    current_sigma: f32,
+    last_sigma: f32,
+    previous_sigma: f32,
+    have_previous: bool,
+) {
+    if !have_previous {
+        output.copy_from_slice(last);
+        return;
+    }
+
+    let ratio = extrapolation_ratio(current_sigma, last_sigma, previous_sigma, true);
+    for (index, value) in output.iter_mut().enumerate() {
+        let last_value = last[index];
+        *value = last_value + ratio * (last_value - previous[index]);
+    }
+}
+
+/// `h3_host.c:675-683` `h3_euler_velocity_step`: `sample += delta * velocity`
+/// with `delta = sigma - sigma_next`. Rejects a non-decreasing or negative
+/// pair exactly where the reference does.
+pub fn euler_step(sample: &mut [f32], velocity: &[f32], sigma: f32, sigma_next: f32) -> bool {
+    if sample.len() != velocity.len()
+        || !sigma.is_finite()
+        || !sigma_next.is_finite()
+        || sigma <= sigma_next
+        || sigma_next < 0.0
+    {
+        return false;
+    }
+
+    let delta = sigma - sigma_next;
+    for (value, velocity) in sample.iter_mut().zip(velocity) {
+        *value += delta * velocity;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +351,85 @@ mod tests {
         assert!(Schedule::serving(0).is_none());
         assert!(Schedule::serving(1).is_none());
         assert!(Schedule::serving(MAX_STEPS + 1).is_none());
+    }
+
+    /// `h3_dit.c:2537-2554`: 20 steps at interval 3 evaluate 0, 3, 6, 9, 12,
+    /// 15, 18 and the last step 19.
+    #[test]
+    fn reuse_keeps_first_last_and_multiples() {
+        let selected = reuse_schedule(20, 3).expect("interval 3 is legal");
+        let evaluated: Vec<usize> = selected
+            .iter()
+            .enumerate()
+            .filter(|(_, flag)| **flag)
+            .map(|(step, _)| step)
+            .collect();
+        assert_eq!(evaluated, vec![0, 3, 6, 9, 12, 15, 18, 19]);
+
+        assert!(reuse_schedule(4, 1)
+            .expect("1 evaluates")
+            .iter()
+            .all(|f| *f));
+        let coarse = reuse_schedule(5, 32).expect("32 is legal");
+        assert_eq!(coarse, vec![true, false, false, false, true]);
+    }
+
+    /// `h3_dit.c:2537-2539`: out-of-contract arguments are refused.
+    #[test]
+    fn reuse_rejects_out_of_contract_arguments() {
+        assert!(reuse_schedule(0, 1).is_none());
+        assert!(reuse_schedule(2, 0).is_none());
+        assert!(reuse_schedule(2, 33).is_none());
+    }
+
+    /// `h3_dit.c:2512-2523`: no second evaluation, a flat window and the clamp.
+    #[test]
+    fn extrapolation_ratio_covers_its_guards() {
+        assert_eq!(extrapolation_ratio(0.5, 0.4, 0.2, false), 0.0);
+        assert_eq!(extrapolation_ratio(0.5, 0.4, 0.4, true), 0.0);
+        assert_eq!(extrapolation_ratio(0.375, 0.25, 0.0, true), 0.5);
+        assert_eq!(extrapolation_ratio(-1.0, 0.4, 0.2, true), -2.0);
+        assert_eq!(extrapolation_ratio(1.0, 0.4, 0.2, true), 2.0);
+    }
+
+    /// `h3_dit.c:2525-2535`: the first reuse copies; later ones extrapolate.
+    #[test]
+    fn extrapolate_velocity_copies_then_extends() {
+        let mut output = [0.0f32; 2];
+        extrapolate_velocity(
+            &mut output,
+            &[2.0, 4.0],
+            &[1.0, 1.0],
+            0.375,
+            0.25,
+            0.0,
+            false,
+        );
+        assert_eq!(output, [2.0, 4.0]);
+
+        extrapolate_velocity(
+            &mut output,
+            &[2.0, 4.0],
+            &[1.0, 1.0],
+            0.375,
+            0.25,
+            0.0,
+            true,
+        );
+        assert_eq!(output, [2.5, 5.5]);
+    }
+
+    /// `h3_host.c:675-683`: multiply, then add, on an exactly representable
+    /// step; and the sigma guards that reject a non-decreasing pair.
+    #[test]
+    fn euler_step_multiplies_then_adds() {
+        let mut sample = [1.0f32, -2.0];
+        assert!(euler_step(&mut sample, &[0.25, 3.0], 1.0, 0.75));
+        assert_eq!(sample, [1.0625, -1.25]);
+
+        assert!(!euler_step(&mut sample, &[0.25, 3.0], 0.5, 0.5));
+        assert!(!euler_step(&mut sample, &[0.25, 3.0], 0.5, -0.25));
+        assert!(!euler_step(&mut sample, &[0.25], 1.0, 0.5));
     }
 
     fn fnv(values: &[f32]) -> u64 {

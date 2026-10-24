@@ -37,6 +37,14 @@
  * times= first=`, with no weights and no device: it separates host feature
  * arithmetic from the device chain.
  *
+ * `--denoise` runs the whole Euler sampler instead of one step: the same
+ * seeded latents, `--steps` evaluations and `--reuse K` (default 1), through
+ * `h3_dit_denoise_euler` (`h3_dit.c:2986-2991`). On CUDA the reference takes
+ * its host loop (`h3_gpu_is_m5` is 0, `h3_gpu_cuda.cu:332`); `--gpu-sampler`
+ * sets `H3_GPU_SAMPLER=1` to run the device kernel instead, so the two paths
+ * can be compared. Output: `DENOISE steps= reuse= selected= video=<fnv>
+ * audio=<fnv>` with the same edges, then TIME.
+ *
  * The hashes cover the exact F32 bytes the reference hands to the caller:
  * the noise latents before the forward and the velocities after it, both in
  * the [C,T,H,W] / [32,2,T] layouts of h3_dit.h:93-98.
@@ -112,6 +120,7 @@ static void usage(void) {
             "       [--width W] [--height H] [--frames F] [--steps N] "
             "[--step S]\n"
             "       [--seed N] [--layers N] [--rope-scale X]\n"
+            "       [--denoise [--reuse K] [--gpu-sampler]]\n"
             "       h3_dit_probe <FL2VA/transformer> --adaln-only [--steps N]\n"
             "       h3_dit_probe --features [--steps N]\n");
 }
@@ -450,29 +459,47 @@ int main(int argc, char **argv) {
 
     int width = 256, height = 256, frames = 5;
     int steps = 2, step = 0, layers = DIT_BLOCKS;
+    int denoise = 0, reuse = 1, gpu_sampler = 0;
     unsigned long long seed = 1;
     float rope_scale = 1.0f;
 
-    for (int index = 5; index + 1 < argc; index += 2) {
-        if (!strcmp(argv[index], "--width")) {
-            if (!parse_int(argv[index + 1], &width)) return 2;
-        } else if (!strcmp(argv[index], "--height")) {
-            if (!parse_int(argv[index + 1], &height)) return 2;
-        } else if (!strcmp(argv[index], "--frames")) {
-            if (!parse_int(argv[index + 1], &frames)) return 2;
-        } else if (!strcmp(argv[index], "--steps")) {
-            if (!parse_int(argv[index + 1], &steps)) return 2;
-        } else if (!strcmp(argv[index], "--step")) {
-            if (!parse_int(argv[index + 1], &step)) return 2;
-        } else if (!strcmp(argv[index], "--layers")) {
-            if (!parse_int(argv[index + 1], &layers)) return 2;
-        } else if (!strcmp(argv[index], "--seed")) {
+    for (int index = 5; index < argc; index++) {
+        const char *argument = argv[index];
+        if (!strcmp(argument, "--denoise")) {
+            denoise = 1;
+            continue;
+        }
+        if (!strcmp(argument, "--gpu-sampler")) {
+            gpu_sampler = 1;
+            continue;
+        }
+        if (index + 1 >= argc) {
+            usage();
+            return 2;
+        }
+        const char *value = argv[index + 1];
+        index++;
+        if (!strcmp(argument, "--width")) {
+            if (!parse_int(value, &width)) return 2;
+        } else if (!strcmp(argument, "--height")) {
+            if (!parse_int(value, &height)) return 2;
+        } else if (!strcmp(argument, "--frames")) {
+            if (!parse_int(value, &frames)) return 2;
+        } else if (!strcmp(argument, "--steps")) {
+            if (!parse_int(value, &steps)) return 2;
+        } else if (!strcmp(argument, "--step")) {
+            if (!parse_int(value, &step)) return 2;
+        } else if (!strcmp(argument, "--layers")) {
+            if (!parse_int(value, &layers)) return 2;
+        } else if (!strcmp(argument, "--reuse")) {
+            if (!parse_int(value, &reuse)) return 2;
+        } else if (!strcmp(argument, "--seed")) {
             char *end = NULL;
-            seed = strtoull(argv[index + 1], &end, 10);
+            seed = strtoull(value, &end, 10);
             if (!end || *end) return 2;
-        } else if (!strcmp(argv[index], "--rope-scale")) {
+        } else if (!strcmp(argument, "--rope-scale")) {
             char *end = NULL;
-            rope_scale = strtof(argv[index + 1], &end);
+            rope_scale = strtof(value, &end);
             if (!end || *end || !(rope_scale > 0.0f)) return 2;
         } else {
             usage();
@@ -618,6 +645,46 @@ int main(int argc, char **argv) {
            (unsigned long long)fnv(audio, audio_elements * sizeof(*audio)),
            video[0], video[video_elements - 1], audio[0],
            audio[audio_elements - 1]);
+
+    if (denoise) {
+        /* `h3_dit.c:2572-2578`: the host sampler is the default on CUDA, the
+         * device kernel the default on M5 and by explicit override here. */
+        if (gpu_sampler) setenv("H3_GPU_SAMPLER", "1", 1);
+
+        uint8_t selected[H3_MAX_STEPS] = {0};
+        int selected_count = h3_dit_reuse_schedule(
+            steps, reuse, selected, sizeof(selected));
+        if (selected_count < 0) {
+            fprintf(stderr, "h3_dit_probe: reuse %d with %d steps is not a "
+                    "legal window\n", reuse, steps);
+            return 2;
+        }
+
+        started = seconds();
+        if (!h3_dit_denoise_euler(dit, video, audio, reuse, NULL, NULL, error,
+                                  sizeof(error))) {
+            fprintf(stderr, "%s\n", error);
+            return 1;
+        }
+        double denoise_seconds = seconds() - started;
+
+        printf("DENOISE steps=%d reuse=%d selected=%d video=%016llx "
+               "audio=%016llx video_edge=%.9g/%.9g audio_edge=%.9g/%.9g\n",
+               steps, reuse, selected_count,
+               (unsigned long long)fnv(video, video_elements * sizeof(*video)),
+               (unsigned long long)fnv(audio, audio_elements * sizeof(*audio)),
+               video[0], video[video_elements - 1], audio[0],
+               audio[audio_elements - 1]);
+        printf("TIME seconds=%.3f\n", denoise_seconds);
+
+        free(video);
+        free(audio);
+        free(video_velocity);
+        free(audio_velocity);
+        h3_dit_free(dit);
+        h3_layout_free(&layout);
+        return 0;
+    }
 
     started = seconds();
     if (!h3_dit_forward(dit, step, video, audio, video_velocity,

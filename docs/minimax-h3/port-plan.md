@@ -776,6 +776,53 @@ native shape checks paid for themselves — the refiner's attention output is
 `rows x INNER`, not `rows x HIDDEN`, and the device side refused the undersized
 buffer instead of writing past it.
 
+**E6 — The serving sampler.** Shipped 2026-10-24. The whole Euler denoise,
+not one step. Source of truth, and the trap it avoids: on CUDA the reference
+runs its host loop. `gpu_sampler_requested` returns `h3_gpu_is_m5` when no
+environment override is set (`h3_dit.c:2572-2578`), and that is 0 on CUDA
+(`h3_gpu_cuda.cu:332`), so `h3_dit_denoise_euler` takes `h3_dit.c:2882-2985`:
+one `h3_dit_forward` per selected step, host Euler (`h3_host.c:675-683`) and
+the reuse window of `h3_dit.c:2537-2554`. The device sampler (`:2613-2787`) is
+reached only with `H3_GPU_SAMPLER=1`.
+
+Code: `minimax_h3::host` gained `reuse_schedule`, `extrapolation_ratio`,
+`extrapolate_velocity` and `euler_step`; `Dit::denoise` keeps the last two
+evaluations' velocities, which are BF16-exact F32 readbacks, and updates both
+latents in place. `tools/minimax_h3/dit_probe.c` gained `--denoise [--reuse K]
+[--gpu-sampler]`; `h3_dit_gate --denoise` compares the final latents and edges.
+
+Phase A goldens (256x256, 5 frames, seed 1, prompt `A red fox walking through
+snow`, 20 evaluations):
+
+| Run | Selected | Video | Audio | Reference wall |
+|---|---:|---|---|---:|
+| reuse 1 | 20 | `e94bbd9de0b56b16` | `cbe8fd45590fbf65` | 4.872 s |
+| reuse 3 | 8 | `46cd8839c5e06ca9` | `3e038686c6df2623` | 2.000 s |
+
+Phase C gate, `make tests/h3_dit_gate CUDA_ARCH=sm_121`: both runs exit 0 with
+hashes and edges identical (reuse 1 video edge `1.75109529/-1.69500446`, audio
+`-0.810305417/1.61610544`; reuse 3 video `-0.97408098/-1.58117044`, audio
+`-0.804273903/1.46109521`). Port wall: 4.812 s and 1.934/1.984 s.
+
+Deviations, named and measured:
+
+- The device sampler is not ported. It is not the CUDA default, and it is not
+  arithmetic-equivalent: the same seed and 20 evaluations through
+  `H3_GPU_SAMPLER=1` end at video `0157c11119e3496c`, audio `2bc516f21db38b98`,
+  against the host path's `e94bbd9de0b56b16`/`cbe8fd45590fbf65`. The kernel's
+  `fmaf(delta, velocity, sample)` (`h3_gpu_cuda.cu:2415-2421`) rounds once;
+  the host's `sample += delta * velocity` rounds twice, because the reference's
+  `-std=c11` build contracts no expression (`/data/h3.c` Makefile:4). The port
+  reproduces the path the reference's CUDA run executes.
+- `H3_REUSE_STEPS` (`h3_dit.c:2556-2570`), a custom selected-step list, is not
+  ported: an environment diagnostic, not a CLI or serving option.
+- The window accepts 1..=32 as the reference validates (`h3_dit.c:2537-2539`);
+  the CLI warning for few steps with reuse (`main.c:514-518`) needs no code,
+  because step 0 and the last step are always selected.
+
+The 20-step 256x256 run is the CLI default (`main.c:30`), so the gate is the
+reference's own short-render shape, not a reduced one.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
