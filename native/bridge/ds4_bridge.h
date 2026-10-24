@@ -475,6 +475,8 @@ int ds4_bridge_snapshot_create(ds4_bridge_snapshot **out,
                                char *err, size_t errlen);
 void ds4_bridge_snapshot_free(ds4_bridge_snapshot *snap);
 uint64_t ds4_bridge_snapshot_len(const ds4_bridge_snapshot *snap);
+/* Bytes a snapshot of the session's checkpoint would take (0: none). */
+uint64_t ds4_bridge_session_payload_bytes(ds4_bridge_session *s);
 int ds4_bridge_session_save_snapshot(ds4_bridge_session *s,
                                      ds4_bridge_snapshot *snap,
                                      char *err, size_t errlen);

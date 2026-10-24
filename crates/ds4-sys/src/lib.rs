@@ -1130,6 +1130,7 @@ extern "C" {
     pub fn ds4_bridge_snapshot_free(snap: *mut ds4_bridge_snapshot);
 
     pub fn ds4_bridge_snapshot_len(snap: *const ds4_bridge_snapshot) -> u64;
+    pub fn ds4_bridge_session_payload_bytes(s: *mut ds4_bridge_session) -> u64;
 
     pub fn ds4_bridge_session_save_snapshot(
         s: *mut ds4_bridge_session,

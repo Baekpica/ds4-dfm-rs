@@ -197,7 +197,7 @@ use ds4_sys::{
     ds4_bridge_session_save_snapshot, ds4_bridge_session_set_power, ds4_bridge_session_sync,
     ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
     ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
-    ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
+    ds4_bridge_session_payload_bytes, ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
     ds4_bridge_sync_step37, ds4_bridge_token_score, ds4_bridge_vision_info,
     ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
     ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
@@ -3274,6 +3274,11 @@ impl Session<'_> {
                 excluded_id,
             )
         }
+    }
+
+    /// Bytes a snapshot of the current checkpoint would take, without taking it.
+    pub fn payload_bytes(&self) -> u64 {
+        unsafe { ds4_bridge_session_payload_bytes(self.raw.as_ptr()) }
     }
 
     pub fn save_snapshot(&self, snapshot: &mut SessionSnapshot) -> Result<()> {

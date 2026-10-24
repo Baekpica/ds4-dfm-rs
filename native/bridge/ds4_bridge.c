@@ -1408,6 +1408,11 @@ uint64_t ds4_bridge_snapshot_len(const ds4_bridge_snapshot *snap)
     return snap ? snap->snapshot.len : 0;
 }
 
+uint64_t ds4_bridge_session_payload_bytes(ds4_bridge_session *s)
+{
+    return s && s->session ? ds4_session_payload_bytes(s->session) : 0;
+}
+
 int ds4_bridge_session_save_snapshot(ds4_bridge_session *s,
                                      ds4_bridge_snapshot *snap,
                                      char *err, size_t errlen)
