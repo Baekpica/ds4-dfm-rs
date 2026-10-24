@@ -1015,6 +1015,22 @@ latent 7x30x54, denoise 24.503 s, video decode 35.181 s, frames
 canvas is where P9 has to work, and it is recorded there rather than explained
 away here.
 
+The same holds at the recipe an operator would judge, 512x512, 22 frames, 20
+evaluations, seed 42, prompt "A red fox walking through snow, cinematic,
+natural light":
+
+| stage | reference | port |
+| --- | --- | --- |
+| text encoder, 11 tokens | `e97ea608e2a0655e` | identical |
+| denoise, video / audio | `48209a67f68ff193` / `4cddd01acc85f4de` | identical |
+| frames 22x512x512 | `d4b8ca5d8ab8bdeb` | identical |
+
+Times on that command: text encoder 20.823 / 30.772 s, DiT load 24.391 /
+43.069 s, denoise 109.698 / 109.435 s, audio decode 0.802 / 1.056 s, video
+decode 21.162 / 22.484 s. So the arithmetic is identical at 20 evaluations, not
+only at the 2-step arithmetic gate, and P9's gap is the audio and video decode
+plus the load path, not the sampler.
+
 Trap recorded because it cost a deadlock: both pipe write ends must be *moved*
 into their writer threads. Borrowing them keeps the descriptors open past the
 writers, ffmpeg never sees EOF on either input, and the mux hangs with the file
