@@ -545,3 +545,150 @@ the rung ladder is explored with, one matrix at a time, before a full encode.
 That is the whole difference between "a new converter" and "a converted
 converter": a classify table, a name list, a rung table, a recipe string, two
 format additions (the E4M3 book and the residual), and the measurement harness.
+
+## 10. Running it anywhere: the encode contract
+
+The branch carries a complete CPU encoder, and it is the reference a GPU
+implementation has to match. Nothing else is needed: no CUDA, no Rust, no GPU,
+no prior build of anything.
+
+```
+tools/h3_vq/build.sh                                    # cc -O2 -lm -lpthread
+tools/h3_vq/bin/h3_gvq selftest                         # the format gate, ~2 s
+tools/h3_vq/bin/h3_gvq encode <FL2VA/transformer> <tensor> <prefix> \
+    --iters 32 --residual
+tools/h3_vq/bin/h3_gvq check <prefix> --src <FL2VA/transformer> --name <tensor>
+```
+
+Input: the five paths `h3.c:428-436` requires (section 8.1). The encoder takes
+any 2-D matrix with `cols % 64 == 0` in BF16, F16 or F32 through the
+safetensors index, so the 13 DiT shards are used exactly as published. Nothing
+is pre-converted and no plan file is needed for a single matrix.
+
+The parameters are section 2's: dim 8, K 8192, E4M3 book, 32 Lloyd rounds, a
+pool of 1000 vectors per codeword (capped at K x 1000 = 8,192,000 vectors per
+matrix), equidistant init, least-squares gain refit rounded to F16, and the
+GVR8 residual with 32 rounds of its own. `selftest` proves the format
+independently of any checkpoint; the encode commands prove the data path.
+
+### 10.0 What a conversion-only host needs
+
+Converting is standalone: no serving code, no CUDA, no port, no GPU when the CPU
+path is used. An H100 host needs only:
+
+- `FL2VA/transformer` from the checkpoint: 13 shards, 66.28 GB, plus
+  `config.json` and `model.safetensors.index.json`. All 260 VQ matrices live
+  there. The text-encoder shards and the VAEs are only needed for the render
+  gate, not for the conversion, so a conversion host does not need the full
+  144 GB partition (section 8.1, `h3.c:428-436`).
+- ~25 GB of output: 22.3 GB of payloads plus the books, and the reports.
+- Disk headroom for the checkpoint's page cache is not required; the tool mmaps
+  one matrix at a time and widens it to F32 (1.04 GB for the largest class).
+
+Two routes, and the choice is about iteration rather than feasibility:
+
+| Route | Work | Full-model time |
+|---|---|---|
+| CPU as-is | none, today's binary | ~50 h on 20 cores; it scales with cores, so a 64-core x86 host lands near 15 h [A over M] |
+| Device kernel | the kernel in 10.2 | minutes to low tens of minutes [E] |
+
+### 10.1 The measured baseline
+
+Spark GB10, 20 cores, 2026-10-24, one real matrix, the recipe's own parameters:
+
+```
+blocks.0.adaln_proj.linear.weight   96768 x 2688
+260,112,384 weights   32,514,048 vectors   pool 8,192,000 (1000.0/codeword)
+PROFILE pool=0.2 lloyd=431.8 book=0.003 gain=98.6 final=103.2 residual=45.9 \
+        write=0.3 metrics=3.2  total=679.7 s
+BYTES   gvq=53,028,992 (1.6310 bpw)  gvr=32,514,176 (1.0000 bpw)
+        book=65,536  rbook=2,048  total=85,610,752 (2.6330 bpw)
+QUALITY stage1 cos=0.935474 relL2=35.34%   two-stage cos=0.979842 relL2=19.99%
+```
+
+`gain` covers the provisional full pass plus the least-squares refit; `final`
+is the second full pass against the stored gain. [M]
+
+The rate: 32 rounds x 8,192,000 vectors x 8192 codewords = 2.147e12 codeword
+comparisons in 431.8 s, i.e. **4.97 G comparisons/s** and 13.5 s per round.
+11.3 minutes for a 260M-weight matrix end to end. [M]
+
+Over the plan's own 260 matrices (4.13754e9 vectors; 5.777e14 + 1.699e13 =
+5.95e14 comparisons, from `h3-plan.tsv` by the same arithmetic the tool
+performs) that is 33.2 h of Lloyd, and at this matrix's ratio of other stages
+to Lloyd (251 s against 432 s, 0.58x) about **50 h** for the full rung A+8
+encode on 20 cores. [A over M]
+
+For scale: the M3.1 release's routed experts measured rel MSE 0.150-0.175 at
+13 bits and 0.051-0.068 with R13+8 (section 8.4); this matrix lands at rel MSE
+0.125 (stage 1) and 0.040 (two-stage), better on both, with no imatrix
+weighting yet. `relL2 = sqrt(rel MSE)`, which is why the printed relL2 looks
+larger than the precedent's MSE figures.
+
+### 10.2 What a GPU kernel has to do
+
+One comparison is an 8-wide weighted squared distance: about 9 FLOPs with the
+column weights folded into the operands. The assignment is therefore a
+tall-skinny weighted GEMM `[vectors x 8] x [8 x K]` followed by an argmin over
+K. Three properties of this rung decide the design:
+
+- **The book fits on chip.** 64 KiB in E4M3 per matrix, against 228 KiB of
+  shared memory per H100 SM (99 KiB opt-in on the Spark). Stage it once per
+  block and every comparison reads shared memory. This is the reason section 2
+  chose E4M3 at K 8192 and why a 14-bit book does not fit.
+- **Vector traffic is small.** 4.14e9 vectors x 32 B = 132 GB for the whole
+  model, 40 s at H100 bandwidth. The kernel is not HBM bound.
+- **The argmin does not tensor-core.** 5.95e14 compares plus index selects is
+  ~70 s of H100 lane throughput on its own. Expect it, not the GEMM, to set the
+  floor. [E]
+
+The GEMM half is 9.5e15 FLOPs: 142 s at the H100's 67 TFLOP/s FP32 peak, ~19 s
+at its 495 TFLOP/s TF32 peak, and 2-5 minutes at a realistic 30% of either with
+the epilogue overlapped. That puts an H100 with a purpose-written kernel in the
+single-digit to mid-teens minutes, a 200-600x gain over the measured CPU path;
+the same kernel on the Spark's own GB10 should land at 10-40 minutes, which is
+the cheaper experiment and needs no new host. [E]
+
+### 10.3 What the payload must satisfy, whatever produced it
+
+A GPU encoder does not have to reproduce these bytes. E4M3 codewords and F16
+gains are exact, but the Lloyd trajectory and tie-breaks belong to the
+implementation. It must produce a payload that the strict reader accepts and
+the value rule reproduces:
+
+1. `check <prefix> --src ... --name ...` passes: magic, version, index bits,
+   dim, K, precision, flags, all four canonical offsets, both checksums, the
+   gain rules, zero padding in every gap, and the codebook's own SHA-256.
+2. Its own output is byte-identical across repeated runs at one configuration.
+   The CPU asserts this across thread counts, which is the strongest form
+   available to it.
+3. With the residual armed, the stage-1 `.gvq` is byte-identical to the same
+   encode without it: the second stage must not disturb stage 1.
+4. Quality is reported the same way, from `check`, as stage-1 and two-stage
+   cosine and relL2 against the source.
+
+Report the PROFILE and QUALITY lines back. Sizes plus a rate in codeword
+comparisons per second are what make two implementations comparable; a
+vectors-per-second figure mixes the 8192-codeword and 256-codeword passes and
+means nothing.
+
+### 10.4 The whole model, in one loop
+
+The encoder takes one matrix per process; the loop is the missing driver, not
+new format work.
+
+```
+ST=/path/to/MiniMax-H3/FL2VA/transformer
+tools/h3_vq/bin/h3_pack_cpu plan "$ST" > h3-plan.tsv     # 260 vq rows
+mkdir -p out
+awk -F'\t' 'NR>1 && $3=="vq" {print $1}' h3-plan.tsv |
+while read -r n; do
+  tools/h3_vq/bin/h3_gvq encode "$ST" "$n" "out/$(printf '%s' "$n" | tr / _)" \
+      --iters 32 --residual || break
+done
+```
+
+Each matrix writes `<prefix>.gvq`, `.book`, `.gvr`, `.rbook` and a `.report`.
+260 matrices at ~85.6 MB is 22.3 GB including the books and the residual,
+against 6.76 GB for the payloads alone: the books are per matrix by design
+(section 2), which is the price of a 13-bit index at this dim.
