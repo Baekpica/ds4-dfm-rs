@@ -24,6 +24,7 @@ name them too.
 |---|---|
 | Any change that alters rounding, precision or accumulation order | [Goals](#goals) (mixed-quant acceptance), [Numerical tolerance](#gb10-dgx-spark-bottleneck-know-how), playbook §5 change classes. Bit identity is not a requirement (VQ weights are approximate already): gate on final output against a noise floor measured on this host from an existing configuration change |
 | Performance optimization | [Optimization guidelines](#inference-performance-optimization-guidelines) and phase order, [GB10 know-how](#gb10-dgx-spark-bottleneck-know-how), [playbook](docs/prefill-decode-optimization-playbook.md), [gb10-hardware.md](docs/gb10-hardware.md), [ds4-perf.md](docs/ds4-perf.md), the family doc and its latest `docs/<family>-optimization-*.md` |
+| Builds, probes, profiling, or a brief that names tools | Check the live toolchain first (`nvcc --version`, `readlink -f /usr/local/cuda`, `nvidia-smi`); call tools as `/usr/local/cuda/bin/{nvcc,nsys,ncu}` (the Makefile's `CUDA_HOME`), never a versioned path copied from notes |
 | Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
 | Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md) |
 | Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
