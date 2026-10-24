@@ -245,34 +245,108 @@ section 4.4 for why H3 can afford that and this model's M3.1 sibling could not.
 
 ## 6. Steps
 
-1. **Inventory.** Read all 13 shard headers, emit the manifest of 535 tensors
+### 6.0 Step 0 — get the checkpoint onto the Spark
+
+The converter reads a directory of safetensors shards, so what has to be on the
+host is the mode partition and nothing else. The card says the same thing in its
+own words: the repository "hosts the original checkpoint (`FL2VA/`, `Ref2VA/`)
+and the diffusers format side by side, so scope the download to what your
+framework needs".
+
+```bash
+# on the Spark, as the model owner
+hf download MiniMaxAI/MiniMax-H3 \
+  --revision 42ed227ee7df40d41602854ae760620d6eb651fe \
+  --include "FL2VA/*" --include "model_index.json" --include "README.md" \
+  --local-dir /mnt/h3/MiniMax-H3
+```
+
+Run 2026-10-24: 85 files, about twenty-five minutes, 135 GiB on disk. Three
+things worth knowing before repeating it: the `hf` CLI needs **no login** for
+this repository (it is public and not gated; the token warning it prints only
+concerns rate limits), `--revision` is pinned so a re-run reproduces the same
+bytes, and `hf download` resumes, so an interrupted run is restarted with the
+same command rather than re-fetched.
+
+The layout it produces, which is what the converter and the reference both
+expect:
+
+```
+/mnt/h3/MiniMax-H3/
+├── model_index.json
+└── FL2VA/                    144.05 GB, 81 files
+    ├── model_index.json        partition, tasks t2va/fl2va, sigma_shift_scales
+    ├── transformer/            13 shards + config + index   <- the converter's input
+    ├── text_encoder/           14 shards + config           <- the render gate's input
+    ├── video_vae/source/       + the model's own .py sources
+    ├── audio_vae/              + the model's own dac_*.py sources
+    ├── processor/  tokenizer/  required by the reference, not by the converter
+```
+
+Verify, without a script and without Python:
+
+```bash
+ls /mnt/h3/MiniMax-H3/FL2VA/transformer/*.safetensors  | wc -l   # 13
+ls /mnt/h3/MiniMax-H3/FL2VA/text_encoder/*.safetensors | wc -l   # 14
+find /mnt/h3/MiniMax-H3 -name '*.incomplete' | wc -l             # 0
+du -sh /mnt/h3/MiniMax-H3                                        # 135G
+grep -o '"total_size":[0-9]*' \
+  /mnt/h3/MiniMax-H3/FL2VA/transformer/model.safetensors.index.json  # 66280430144
+```
+
+That last number is the DiT's own account of itself: 66,280,430,144 bytes over
+535 tensors, which is the figure every byte calculation in this recipe is
+checked against.
+
+Space: `/mnt/h3` is 469 GB, and the checkpoint leaves ~310 GB free, which covers
+every rung in section 2 several times over. The full repository would need
+498 GB and does not fit — the `Ref2VA` partition and the diffusers-layout root
+are the same weights under different names (section 8.2 of the plan), and
+neither is read by anything in this recipe.
+
+One prerequisite that belongs to the render gate rather than to the conversion:
+the C reference needs `libicu-dev`, which is not installed on the Spark.
+
+### 6.1 Inventory
    with dtype, shape, data offsets and shard, and reconcile its total against
    `metadata.total_size` = 66,280,430,144 B. Gate: exact match, zero unknown
    tensors, and the class table of section 1.5 reproduced.
-2. **Plan.** Emit the per-matrix table: name, shape, rows, columns, indices per
+### 6.2 Plan
+
+Emit the per-matrix table: name, shape, rows, columns, indices per
    row, codebook bytes, main-stream bytes, plane bytes, gain bytes, total
    bytes; print the per-class subtotals and the artifact total. Gate: the
    arithmetic reproduces 6.756 GB at 13 bits before any encoding happens.
-3. **Statistics (imatrix).** Instrument the reference to dump the input
+### 6.3 Statistics (imatrix)
+
+The reference is instrumented to dump the input
    activation of each VQ matrix over the frozen prompt set (see the plan
    section 5.1 for the fixture method and its ≥ 99.996% bit-match check),
    then reduce to per-matrix column statistics. Gate: every one of the 260
    matrices has statistics, and the fixture reproduces the reference's own
    block output bit for bit on the check rows.
-4. **Encode.** Per shard, per matrix: row-RMS normalize, 32 Lloyd iterations
+### 6.4 Encode
+
+Per shard, per matrix: row-RMS normalize, 32 Lloyd iterations
    with importance-weighted assignment, least-squares gain refit, final
    assignment against codebook and gains rounded to their stored precision
    (F16 gains, E4M3 codewords). Gate: determinism — re-encode a shard and
    compare bytes.
-5. **Assemble.** Write the parts, the codebook tensors, the gains, the
+### 6.5 Assemble
+
+Write the parts, the codebook tensors, the gains, the
    streams, the manifest and the `release.json`. Gate: every payload hash,
    every byte account, and every source tensor accounted for exactly once.
-6. **Verify.** Read each part back with a strict reader implementing the
+### 6.6 Verify
+
+Read each part back with a strict reader implementing the
    header rules, decode every payload, and compare against the source tensor.
    Gate: max abs, relative RMS and cosine per matrix and per class; the reader
    must reject a mutated payload, a bad hash, a non-canonical offset and a
    truncated part (test each).
-7. **Render.** The gate in the plan section 5: eight prompts, two shapes,
+### 6.7 Render
+
+The gate in the plan section 5: eight prompts, two shapes,
    the reference binary, SSIM/PSNR/LPIPS per prompt against the BF16 golden,
    per class, with the floor measured first.
 
