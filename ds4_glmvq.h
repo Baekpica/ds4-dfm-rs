@@ -84,6 +84,10 @@ int ds4_gpu_gvq_bf16_input(ds4_gvq_ctx *ctx, uint32_t weight, uint32_t rows);
 /* ds4_gpu_gvq_linear (BF16 math) of F32 or BF16 input rows. */
 int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows);
+/* ds4_gpu_gvq_linear_rows into BF16 output rows (each the F32 value rounded
+ * to nearest); 0 when q4p does not take the weight at `rows`. */
+int ds4_gpu_gvq_linear_rows_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+    const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows);
 /* Q4_K gate and up of one input with the clamped SwiGLU in one pass, at
  * decode and verify widths; 0 when the width or weights need the
  * separate projections. */

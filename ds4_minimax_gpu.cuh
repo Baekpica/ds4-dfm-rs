@@ -68,8 +68,9 @@ __global__ void mm_decode_reduce(float *out, const float *partial, const float *
 
 // Prefill: pair rows of `down` (grouped order) per token in ascending expert
 // order (`order`), as mm_decode_reduce.
-__global__ void mm_mma_reduce(float *out, const __nv_bfloat16 *down, const float *weights, const uint32_t *pairs,
-        const uint32_t *order, const float *shared, uint64_t count) {
+template <typename ST, typename OT>
+__global__ void mm_mma_reduce(OT *out, const __nv_bfloat16 *down, const float *weights, const uint32_t *pairs,
+        const uint32_t *order, const ST *shared, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
     const uint64_t token = i / MM_HIDDEN, col = i % MM_HIDDEN;
@@ -78,7 +79,28 @@ __global__ void mm_mma_reduce(float *out, const __nv_bfloat16 *down, const float
         const uint32_t row = order[token * MM_USED + k];
         sum = glmvq_add(sum, glmvq_mul(__bfloat162float(down[(uint64_t)row * MM_HIDDEN + col]), weights[pairs[row]]));
     }
-    out[i] = glmvq_round(glmvq_add(sum, glmvq_round(shared[i])));
+    out[i] = glmvq_cast<OT>(glmvq_round(glmvq_add(sum, glmvq_round(glmvq_value(shared[i])))));
+}
+
+// mm_mma_reduce over F32 or BF16 shared rows into F32 or BF16 rows (both
+// BF16-rounded where they are read).
+static void mm_reduce_launch(void *out, const __nv_bfloat16 *down, const float *weights, const uint32_t *pairs,
+        const uint32_t *order, const void *shared, uint64_t count, uint32_t bf16, cudaStream_t stream) {
+    const uint32_t grid = (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS);
+    const bool sb = bf16 & DS4_MINIMAX_BF16_SHARED, ob = bf16 & DS4_MINIMAX_BF16_OUT;
+    if (sb && ob) {
+        mm_mma_reduce<<<grid, GLMVQ_THREADS, 0, stream>>>((__nv_bfloat16 *)out, down, weights, pairs, order,
+            (const __nv_bfloat16 *)shared, count);
+    } else if (sb) {
+        mm_mma_reduce<<<grid, GLMVQ_THREADS, 0, stream>>>((float *)out, down, weights, pairs, order,
+            (const __nv_bfloat16 *)shared, count);
+    } else if (ob) {
+        mm_mma_reduce<<<grid, GLMVQ_THREADS, 0, stream>>>((__nv_bfloat16 *)out, down, weights, pairs, order,
+            (const float *)shared, count);
+    } else {
+        mm_mma_reduce<<<grid, GLMVQ_THREADS, 0, stream>>>((float *)out, down, weights, pairs, order,
+            (const float *)shared, count);
+    }
 }
 
 // Decode scratch, then the device tables (one 3 x 128 row per layer).
@@ -295,8 +317,8 @@ static bool mm_group(ds4_minimax_moe *moe, const ds4_gpu_tensor *selected, uint3
 // Prefill experts on the warp-specialized kernels: 64-pair items per
 // projection, tokens quantized once (E4M3, 1x128 scales, ldmatrix k order).
 template <bool RES>
-static int mm_mmaw_run(ds4_minimax_moe *moe, float *out, const float *input, const float *weights,
-        const float *shared, const uint32_t *matrices, const uint32_t *offsets, uint32_t rows) {
+static int mm_mmaw_run(ds4_minimax_moe *moe, void *out, const float *input, const float *weights,
+        const void *shared, const uint32_t *matrices, const uint32_t *offsets, uint32_t rows, uint32_t bf16) {
     ds4_gvq_ctx *ctx = moe->gvq;
     const uint64_t pairs = (uint64_t)rows * MM_USED, count = (uint64_t)rows * MM_HIDDEN;
     const mm_mma_layout l = mm_mma_plan(rows);
@@ -350,15 +372,14 @@ static int mm_mmaw_run(ds4_minimax_moe *moe, float *out, const float *input, con
             MM_HIDDEN, MM_FFN, sms, stream);
     }
     if (!cuda_ok(err, "MiniMax warp-specialized experts")) { return 0; }
-    mm_mma_reduce<<<(uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(out,
-        down, weights, grouped, order, shared, count);
+    mm_reduce_launch(out, down, weights, grouped, order, shared, count, bf16, stream);
     return cuda_ok(cudaGetLastError(), "MiniMax FP8 warp-specialized MMA");
 }
 
 template <bool RES>
-static int mm_mma_run(ds4_minimax_moe *moe, float *out, const float *input, const float *weights,
-        const float *shared, const uint32_t *matrices, const uint32_t *offsets, uint32_t rows) {
-    if (moe->mmaw) { return mm_mmaw_run<RES>(moe, out, input, weights, shared, matrices, offsets, rows); }
+static int mm_mma_run(ds4_minimax_moe *moe, void *out, const float *input, const float *weights,
+        const void *shared, const uint32_t *matrices, const uint32_t *offsets, uint32_t rows, uint32_t bf16) {
+    if (moe->mmaw) { return mm_mmaw_run<RES>(moe, out, input, weights, shared, matrices, offsets, rows, bf16); }
     ds4_gvq_ctx *ctx = moe->gvq;
     const uint64_t pairs = (uint64_t)rows * MM_USED, count = (uint64_t)rows * MM_HIDDEN;
     const mm_mma_layout l = mm_mma_plan(rows);
@@ -409,15 +430,15 @@ static int mm_mma_run(ds4_minimax_moe *moe, float *out, const float *input, cons
     // The up epilogue writes down's E4M3 rows and scales directly.
     launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, MM_FFN, MM_HIDDEN, mid8, ms);
     launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_DOWN>{}, mid8, ms, MM_HIDDEN, MM_FFN, nullptr, nullptr);
-    mm_mma_reduce<<<(uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(out,
-        down, weights, grouped, order, shared, count);
+    mm_reduce_launch(out, down, weights, grouped, order, shared, count, bf16, stream);
     return cuda_ok(cudaGetLastError(), "MiniMax FP8 grouped MMA");
 }
 
 extern "C" int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
         const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const ds4_gpu_tensor *shared,
-        const uint32_t *matrices, uint32_t rows) {
-    if (!moe || !rows || rows > moe->rows || !matrices || !selected || !gvq_stream(moe->gvq)) { return 0; }
+        const uint32_t *matrices, uint32_t rows, uint32_t bf16) {
+    if (!moe || !rows || rows > moe->rows || !matrices || !selected || !gvq_stream(moe->gvq) ||
+        (bf16 && rows <= MM_DECODE_ROWS)) { return 0; }
     const uint64_t pairs = (uint64_t)rows * MM_USED, count = (uint64_t)rows * MM_HIDDEN;
     if (pairs > selected->bytes / sizeof(int32_t) || !gvq_floats(weights, pairs) || !gvq_floats(out, count) ||
         !gvq_floats(input, count) || !gvq_floats(shared, count) || ds4_capture_active()) { return 0; }
@@ -443,9 +464,9 @@ extern "C" int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, co
     }
     std::vector<uint32_t> offsets(MM_EXPERTS + 1);
     if (!moe->mma || !mm_group(moe, selected, rows, offsets.data())) { return 0; }
-    const auto *x = (const float *)input->ptr, *w = (const float *)weights->ptr, *sh = (const float *)shared->ptr;
-    return res ? mm_mma_run<true>(moe, (float *)out->ptr, x, w, sh, matrices, offsets.data(), rows)
-               : mm_mma_run<false>(moe, (float *)out->ptr, x, w, sh, matrices, offsets.data(), rows);
+    const auto *x = (const float *)input->ptr, *w = (const float *)weights->ptr;
+    return res ? mm_mma_run<true>(moe, out->ptr, x, w, shared->ptr, matrices, offsets.data(), rows, bf16)
+               : mm_mma_run<false>(moe, out->ptr, x, w, shared->ptr, matrices, offsets.data(), rows, bf16);
 }
 
 /* ------------------------------------------------------------------- router */
@@ -1001,7 +1022,8 @@ __device__ __forceinline__ void mm_row_q4p(const float *x, uint32_t cols, __half
 
 // With q4h, the norm row also lands as q4p's prepared input (the q4p pass
 // over it read 100 MB and wrote 50 MB per 4,096-row call).
-__global__ void mm_residual_kernel(float *cur, const float *branch, float *norm, const __nv_bfloat16 *next,
+template <typename BT>
+__global__ void mm_residual_kernel(float *cur, const BT *branch, float *norm, const __nv_bfloat16 *next,
         __half *q4h, float *q4s) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
     glmvq_pdl_open();
@@ -1017,7 +1039,7 @@ __global__ void mm_residual_kernel(float *cur, const float *branch, float *norm,
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
         const uint64_t at = base + threadIdx.x + j * MM_ROW_THREADS;
         x[j] = cur[at];
-        y[j] = branch[at];
+        y[j] = glmvq_value(branch[at]);
     }
     #pragma unroll
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
@@ -1031,16 +1053,22 @@ __global__ void mm_residual_kernel(float *cur, const float *branch, float *norm,
 }
 
 extern "C" int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-        ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s) {
+        ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16) {
     const auto *n = next == DS4_GVQ_NO_LINK ? nullptr
         : (const __nv_bfloat16 *)gvq_weight(ctx, next, GVQ_TYPE_BF16, MM_HIDDEN);
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
     if ((next != DS4_GVQ_NO_LINK && !n) || !rows || !gvq_floats(cur, count) || !gvq_floats(branch, count) ||
         (n && !gvq_floats(norm, count)) || (q4h && (!n || q4h->bytes < count * sizeof(__half) ||
             !gvq_floats(q4s, rows)))) { return 0; }
-    glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel, rows, MM_ROW_THREADS, 0, ds4_current_stream(),
-        (float *)cur->ptr, (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n,
-        q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
+    if (branch_bf16) {
+        glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<__nv_bfloat16>, rows, MM_ROW_THREADS, 0,
+            ds4_current_stream(), (float *)cur->ptr, (const __nv_bfloat16 *)branch->ptr, n ? (float *)norm->ptr : nullptr,
+            n, q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
+    } else {
+        glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<float>, rows, MM_ROW_THREADS, 0, ds4_current_stream(),
+            (float *)cur->ptr, (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n,
+            q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
+    }
     return cuda_ok(cudaGetLastError(), "MiniMax residual");
 }
 
@@ -1054,9 +1082,9 @@ __global__ void mm_swiglu_kernel(float *out, const float *gate, const float *up,
 
 // SwiGLU-OAI rows straight into q4p's prepared input for down (nothing else
 // reads the F32 rows at prefill widths).
-template <uint32_t WIDTH>
-__global__ void __launch_bounds__(MM_ROW_THREADS) mm_swiglu_q4p_kernel(__half *q4h, float *q4s, const float *gate,
-        const float *up) {
+template <uint32_t WIDTH, typename GT>
+__global__ void __launch_bounds__(MM_ROW_THREADS) mm_swiglu_q4p_kernel(__half *q4h, float *q4s, const GT *gate,
+        const GT *up) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
     constexpr uint32_t VALUES = WIDTH / MM_ROW_THREADS;
     const uint64_t base = (uint64_t)blockIdx.x * WIDTH;
@@ -1064,23 +1092,30 @@ __global__ void __launch_bounds__(MM_ROW_THREADS) mm_swiglu_q4p_kernel(__half *q
     #pragma unroll
     for (uint32_t j = 0; j < VALUES; j++) {
         const uint64_t at = base + threadIdx.x + j * MM_ROW_THREADS;
-        v[j] = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(glmvq_round(gate[at]), glmvq_round(up[at]), MM_LIMIT);
+        v[j] = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(glmvq_round(glmvq_value(gate[at])), glmvq_round(glmvq_value(up[at])),
+            MM_LIMIT);
     }
     mm_row_q4p<VALUES>(v, WIDTH, q4h, q4s, scratch);
 }
 
 extern "C" int ds4_gpu_minimax_swiglu_q4p(ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, const ds4_gpu_tensor *gate,
-        const ds4_gpu_tensor *up, uint32_t rows, uint32_t width) {
+        const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, int bf16) {
     const uint64_t count = (uint64_t)rows * width;
     if (!rows || (width != MM_FFN && width != DS4_MINIMAX_DENSE_FF) || !q4h || q4h->bytes < count * sizeof(__half) ||
         !gvq_floats(q4s, rows) || !gvq_floats(gate, count) || !gvq_floats(up, count)) { return 0; }
     const cudaStream_t stream = ds4_current_stream();
+    const auto launch = [&](auto width_c, const auto *g, const auto *u) {
+        mm_swiglu_q4p_kernel<decltype(width_c)::value><<<rows, MM_ROW_THREADS, 0, stream>>>((__half *)q4h->ptr,
+            (float *)q4s->ptr, g, u);
+    };
+    using ffn = std::integral_constant<uint32_t, MM_FFN>;
+    using dense = std::integral_constant<uint32_t, DS4_MINIMAX_DENSE_FF>;
+    const auto *gb = (const __nv_bfloat16 *)gate->ptr, *ub = (const __nv_bfloat16 *)up->ptr;
+    const auto *gf = (const float *)gate->ptr, *uf = (const float *)up->ptr;
     if (width == MM_FFN) {
-        mm_swiglu_q4p_kernel<MM_FFN><<<rows, MM_ROW_THREADS, 0, stream>>>((__half *)q4h->ptr, (float *)q4s->ptr,
-            (const float *)gate->ptr, (const float *)up->ptr);
+        if (bf16) { launch(ffn{}, gb, ub); } else { launch(ffn{}, gf, uf); }
     } else {
-        mm_swiglu_q4p_kernel<DS4_MINIMAX_DENSE_FF><<<rows, MM_ROW_THREADS, 0, stream>>>((__half *)q4h->ptr,
-            (float *)q4s->ptr, (const float *)gate->ptr, (const float *)up->ptr);
+        if (bf16) { launch(dense{}, gb, ub); } else { launch(dense{}, gf, uf); }
     }
     return cuda_ok(cudaGetLastError(), "MiniMax SwiGLU-OAI q4p rows");
 }

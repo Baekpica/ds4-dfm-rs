@@ -52,10 +52,12 @@ void ds4_gpu_minimax_moe_free(ds4_minimax_moe *moe);
 /* out = round(sum over the selected experts e of weights[e] * expert_e(input)
  * + shared), the sum in F32 in ascending expert order (the reference's F32
  * index_add, then one rounding). `matrices` holds the layer's w1[128],
- * w3[128], w2[128] GVQ indices; `weights` already carry the routed scale. */
+ * w3[128], w2[128] GVQ indices; `weights` already carry the routed scale.
+ * Prefill rows only: `bf16` DS4_MINIMAX_BF16_SHARED reads BF16 shared rows,
+ * DS4_MINIMAX_BF16_OUT writes BF16 rows (both BF16-rounded where read). */
 int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const ds4_gpu_tensor *shared,
-    const uint32_t *matrices, uint32_t rows);
+    const uint32_t *matrices, uint32_t rows, uint32_t bf16);
 
 /* F32 router logits of the 6144-wide rows (never TF32; up to
  * DS4_MINIMAX_SPLIT_ROWS rows each computed as a lone row), then the top-4
@@ -95,9 +97,10 @@ int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_ten
 /* cur = round(cur + branch) (the reference's BF16 residual add), then, when
  * `next` is a record, norm = gemma_rms(cur) with that weight; with q4h, the
  * norm rows also as q4p's prepared input (ds4_gpu_gvq_q4p_prepared: FP16
- * [rows][6144] in q4h, the row scales in q4s). */
+ * [rows][6144] in q4h, the row scales in q4s). `branch_bf16`: BF16 branch
+ * rows. */
 int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s);
+    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16);
 
 /* SwiGLU-OAI of [rows][width] gate and up rows into `out`:
  * min(g, 7) * sigmoid(1.702 * min(g, 7)) * (clamp(u, -7, 7) + 1), in F32,
@@ -105,9 +108,9 @@ int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gp
 int ds4_gpu_minimax_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
     uint32_t rows, uint32_t width);
 /* The same rows as q4p's prepared input (FP16 [rows][width] in q4h, the row
- * scales in q4s); width 3,072 or 12,288. */
+ * scales in q4s); width 3,072 or 12,288; `bf16`: BF16 gate and up rows. */
 int ds4_gpu_minimax_swiglu_q4p(ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, const ds4_gpu_tensor *gate,
-    const ds4_gpu_tensor *up, uint32_t rows, uint32_t width);
+    const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, int bf16);
 
 /* Per-position rows of `rope` (rows x 64 F32): cos then sin of the 32 RoPE
  * angles pos * 1e7^(-2j/64), evaluated in double and rounded once. */
@@ -150,7 +153,7 @@ int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *scores, uint3
  * row computed as a lone decode row is. `bf16`: DS4_MINIMAX_BF16_HEADS
  * stores BF16 heads, DS4_MINIMAX_BF16_Q reads BF16 q rows (prefill rows on
  * the MMA kernel only: ds4_gpu_minimax_attn_bf16). */
-enum { DS4_MINIMAX_BF16_HEADS = 1, DS4_MINIMAX_BF16_Q = 2 };
+enum { DS4_MINIMAX_BF16_HEADS = 1, DS4_MINIMAX_BF16_Q = 2, DS4_MINIMAX_BF16_SHARED = 4, DS4_MINIMAX_BF16_OUT = 8 };
 int ds4_gpu_minimax_attn_bf16(uint32_t rows);
 int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
     const ds4_gpu_tensor *table, const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows,

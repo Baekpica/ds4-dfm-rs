@@ -1053,6 +1053,19 @@ extern "C" int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ui
     return gvq_q4p_run<float, __nv_bfloat16>(ctx, &out, &weight, 1, input, rows);
 }
 
+// ds4_gpu_gvq_linear_rows into BF16 output rows: q4p's epilogue rounds the
+// same F32 product to nearest. 0 when q4p does not take the weight.
+extern "C" int ds4_gpu_gvq_linear_rows_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+        const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows) {
+    if (!ds4_gpu_gvq_bf16_input(ctx, weight, rows) || !gvq_stream(ctx)) { return 0; }
+    const glmvq_source &s = ctx->model->source[weight];
+    const uint64_t in = (uint64_t)rows * s.cols;
+    if (!gvq_floats(input, in_rows == DS4_GVQ_ROWS_BF16 ? in / 2 : in) || !gvq_floats(out, (uint64_t)rows * s.rows / 2) ||
+        !gvq_q4p_ready(ctx, &weight, 1, input, &out, rows)) { return 0; }
+    return in_rows == DS4_GVQ_ROWS_BF16 ? gvq_q4p_run<__nv_bfloat16, __nv_bfloat16>(ctx, &out, &weight, 1, input, rows)
+                                        : gvq_q4p_run<__nv_bfloat16, float>(ctx, &out, &weight, 1, input, rows);
+}
+
 extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *gate, uint32_t weight,
         uint32_t rows, uint32_t width, float eps, ds4_gvq_norm kind) {

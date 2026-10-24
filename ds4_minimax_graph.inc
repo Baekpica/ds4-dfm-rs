@@ -28,6 +28,10 @@ typedef struct {
     bool ready, failed, borrowed;
     // q4h/q4s hold q4p's prepared copy of norm (the next layer's input norm).
     bool norm_q4p;
+    // This layer's branch rows as BF16 (prefill, from q4p or the MoE reduce;
+    // every reader rounds them to BF16 first): o_proj's output, the MLP's
+    // (shared or dense) output and the FFN output.
+    bool attn_bf16, mlp_bf16, ffn_bf16;
     uint64_t workspace_bytes, kv_bytes, score_bytes;
 #define MINIMAX_FIELD(field, cols, type) ds4_gpu_tensor *field;
     MINIMAX_ROW_BUFFERS(MINIMAX_FIELD)
@@ -293,6 +297,12 @@ static bool minimax_resolve(ds4_minimax_graph *g, uint32_t il, uint32_t rows, ui
         minimax_kv_resolve(&g->kv, il, g->host_blocks, count);
 }
 
+// DS4_MINIMAX_TRACE dumps F32 rows: tracing keeps every row F32.
+static bool minimax_traced(void) {
+    const char *trace = getenv("DS4_MINIMAX_TRACE");
+    return trace && trace[0];
+}
+
 /* MSA: projections, per-head norms with partial RoPE, NVFP4 K/V and index
  * key stores, block selection per KV head, attention over the selected
  * blocks and o_proj. The chunk stores every row's keys before any row reads
@@ -316,8 +326,7 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
     // BF16-rounded either way, and each is written once and read twice or
     // once. Traces keep F32 rows.
     const uint32_t o_proj = minimax_index(m, l->attn_output);
-    const char *trace = getenv("DS4_MINIMAX_TRACE");
-    const bool rows_bf16 = !(trace && trace[0]) && ds4_gpu_minimax_attn_bf16(rows);
+    const bool rows_bf16 = !minimax_traced() && ds4_gpu_minimax_attn_bf16(rows);
     const bool q_bf16 = rows_bf16 && g->norm_q4p;
     const bool heads_bf16 = rows_bf16 && ds4_gpu_gvq_bf16_input(g->gvq, o_proj, rows);
     if (!minimax_projections(g, m, l, outs, rows, q_bf16) ||
@@ -345,7 +354,8 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
         !minimax_trace(il, pos, "heads", g->heads, (uint64_t)rows * MINIMAX_Q * sizeof(float))) {
         return false;
     }
-    return (heads_bf16 ? ds4_gpu_gvq_linear_rows(g->gvq, g->attn_out, o_proj, g->heads, DS4_GVQ_ROWS_BF16, rows) != 0
+    g->attn_bf16 = heads_bf16;
+    return (heads_bf16 ? ds4_gpu_gvq_linear_rows_bf16(g->gvq, g->attn_out, o_proj, g->heads, DS4_GVQ_ROWS_BF16, rows) != 0
                        : minimax_mm(g, m, g->attn_out, l->attn_output, g->heads, rows)) &&
         minimax_trace(il, pos, "attn_out", g->attn_out, (uint64_t)rows * MINIMAX_EMBD * sizeof(float));
 }
@@ -355,7 +365,7 @@ static bool minimax_attention(ds4_minimax_graph *g, const ds4_model *m, const ds
 static bool minimax_mlp_down(ds4_minimax_graph *g, const ds4_model *m, const ds4_tensor *down, ds4_gpu_tensor *out,
         uint32_t width, uint32_t rows) {
     if (minimax_q4p(g, m, &down, 1u, rows)) {
-        return ds4_gpu_minimax_swiglu_q4p(g->q4h, g->q4s, g->ff_gate, g->ff_up, rows, width) &&
+        return ds4_gpu_minimax_swiglu_q4p(g->q4h, g->q4s, g->ff_gate, g->ff_up, rows, width, 0) &&
             minimax_mm_many(g, m, &out, &down, 1u, g->ff_gate, rows, true);
     }
     return ds4_gpu_minimax_swiglu(g->ff_gate, g->ff_gate, g->ff_up, rows, width) &&
@@ -363,11 +373,20 @@ static bool minimax_mlp_down(ds4_minimax_graph *g, const ds4_model *m, const ds4
 }
 
 // SwiGLU-OAI MLP of `width` (dense 12,288 or shared 3,072): gate/up (from
-// q4h when `prepared`), then minimax_mlp_down.
+// q4h when `prepared`), then minimax_mlp_down. From q4p's prepared input
+// with q4p taking down too, gate/up and the output are BF16 rows
+// (g->mlp_bf16).
 static bool minimax_mlp(ds4_minimax_graph *g, const ds4_model *m, const ds4_tensor *gate, const ds4_tensor *up,
         const ds4_tensor *down, ds4_gpu_tensor *out, uint32_t width, uint32_t rows, bool prepared) {
     ds4_gpu_tensor *const outs[] = {g->ff_gate, g->ff_up};
     const ds4_tensor *const ws[] = {gate, up};
+    g->mlp_bf16 = prepared && !minimax_traced() && minimax_q4p(g, m, &down, 1u, rows);
+    if (g->mlp_bf16) {
+        return ds4_gpu_gvq_q4p_prepared_bf16(g->gvq, g->ff_gate, minimax_index(m, gate), g->q4h, g->q4s, rows) &&
+            ds4_gpu_gvq_q4p_prepared_bf16(g->gvq, g->ff_up, minimax_index(m, up), g->q4h, g->q4s, rows) &&
+            ds4_gpu_minimax_swiglu_q4p(g->q4h, g->q4s, g->ff_gate, g->ff_up, rows, width, 1) &&
+            ds4_gpu_gvq_q4p_prepared_bf16(g->gvq, out, minimax_index(m, down), g->q4h, g->q4s, rows);
+    }
     return minimax_mm_many(g, m, outs, ws, 2u, g->norm, rows, prepared) &&
         minimax_mlp_down(g, m, down, out, width, rows);
 }
@@ -382,14 +401,29 @@ static bool minimax_moe(ds4_minimax_graph *g, const ds4_model *m, const ds4_laye
     const uint32_t gu[] = {minimax_index(m, l->ffn_gate_shexp), minimax_index(m, l->ffn_up_shexp)};
     const bool joint = rows <= DS4_MINIMAX_SPLIT_ROWS && !prepared &&
         ds4_gpu_minimax_shared_router(g->gvq, outs, gu, g->router, router, g->norm, rows);
+    if (joint) { g->mlp_bf16 = false; }
     const bool ok = joint ?
         minimax_mlp_down(g, m, l->ffn_down_shexp, g->shared, MINIMAX_FF, rows) &&
             ds4_gpu_minimax_route(g->gvq, g->selected, g->route_weights, g->router, bias, rows) :
         minimax_mlp(g, m, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, g->shared, MINIMAX_FF, rows,
             prepared) &&
             ds4_gpu_minimax_router(g->gvq, g->selected, g->route_weights, g->router, g->norm, router, bias, rows);
+    // Prefill: the reduce writes BF16 rows for the residual (and reads the
+    // shared expert's BF16 rows).
+    const uint32_t bf16 = rows > DS4_MINIMAX_SPLIT_ROWS && !minimax_traced()
+        ? DS4_MINIMAX_BF16_OUT | (g->mlp_bf16 ? DS4_MINIMAX_BF16_SHARED : 0u) : 0u;
+    g->ffn_bf16 = bf16 != 0;
     return ok && ds4_gpu_minimax_moe(g->moe, g->ffn_out, g->norm, g->selected, g->route_weights, g->shared,
-        g->matrices[il], rows);
+        g->matrices[il], rows, bf16);
+}
+
+// The layer's FFN into ffn_out: the dense MLP (layers 0-2) or the MoE.
+static bool minimax_ffn(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
+        uint32_t rows, bool prepared) {
+    if (il >= MINIMAX_DENSE) { return minimax_moe(g, m, l, il, rows, prepared); }
+    const bool ok = minimax_mlp(g, m, l->ffn_gate, l->ffn_up, l->ffn_down, g->ffn_out, MINIMAX_DENSE_FF, rows, prepared);
+    g->ffn_bf16 = g->mlp_bf16;
+    return ok;
 }
 
 /* Layer il over norm = input_layernorm(cur). Each residual also writes the
@@ -409,14 +443,14 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
     const bool qkv_q4p = next && n && minimax_q4p(g, m, qkv, 3u, rows);
     const bool ok = minimax_attention(g, m, w, il, rows, pos) &&
         ds4_gpu_minimax_residual(g->gvq, g->cur, g->attn_out, g->norm, minimax_index(m, l->ffn_norm), rows,
-            gu_q4p ? g->q4h : NULL, g->q4s) &&
+            gu_q4p ? g->q4h : NULL, g->q4s, g->attn_bf16) &&
         minimax_trace(il, pos, "attn", g->cur, hidden) &&
-        (dense ? minimax_mlp(g, m, l->ffn_gate, l->ffn_up, l->ffn_down, g->ffn_out, MINIMAX_DENSE_FF, rows, gu_q4p)
-               : minimax_moe(g, m, l, il, rows, gu_q4p) && minimax_trace(il, pos, "routes", g->selected, route) &&
-                     minimax_trace(il, pos, "weights", g->route_weights, route)) &&
+        minimax_ffn(g, m, l, il, rows, gu_q4p) &&
+        (dense || (minimax_trace(il, pos, "routes", g->selected, route) &&
+            minimax_trace(il, pos, "weights", g->route_weights, route))) &&
         minimax_trace(il, pos, "ffn_out", g->ffn_out, hidden) &&
         ds4_gpu_minimax_residual(g->gvq, g->cur, g->ffn_out, g->norm, next ? minimax_index(m, next) : DS4_GVQ_NO_LINK,
-            rows, qkv_q4p ? g->q4h : NULL, g->q4s) &&
+            rows, qkv_q4p ? g->q4h : NULL, g->q4s, g->ffn_bf16) &&
         minimax_trace(il, pos, "ffn", g->cur, hidden);
     g->norm_q4p = ok && qkv_q4p;
     if (!ok) { fprintf(stderr, "ds4: MiniMax layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }
