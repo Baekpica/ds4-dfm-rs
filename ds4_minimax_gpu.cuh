@@ -599,34 +599,45 @@ __global__ void mm_router_kernel(int32_t *ids, float *weights, const float *logi
  * layer at two or three rows (gemmSN) for a 3 MiB matrix. */
 enum { MM_ROUTER_ROWS = DS4_MINIMAX_SPLIT_ROWS, MM_ROUTER_WARPS = 4 };
 
+/* Decode and verify kernels take their row count (1..MAX) as a template
+ * argument: with a runtime count their unrolled per-row loops issued every
+ * predicated row, eight rows' instructions for a decode row. `launch` gets
+ * std::integral_constant<uint32_t, R> for the R == rows instance. */
+template <uint32_t MAX, typename F>
+static void mm_rows(uint32_t rows, F launch) {
+    if constexpr (MAX > 1) {
+        if (rows < MAX) { mm_rows<MAX - 1>(rows, launch); return; }
+    }
+    launch(std::integral_constant<uint32_t, MAX>{});
+}
+
+template <uint32_t ROWS>
 __global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *logits, const float *w,
-        const float *x, uint32_t rows) {
+        const float *x) {
     const uint32_t lane = threadIdx.x & 31, e = blockIdx.x * MM_ROUTER_WARPS + threadIdx.x / 32;
     const float4 *we = (const float4 *)(w + (uint64_t)e * MM_HIDDEN);
-    float acc[MM_ROUTER_ROWS];
+    float acc[ROWS];
     #pragma unroll
-    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) { acc[r] = 0.0f; }
+    for (uint32_t r = 0; r < ROWS; r++) { acc[r] = 0.0f; }
     // Four steps' loads in flight per lane (the sums keep their order): one
     // load at a time held the 3 MiB matrix at ~120 GB/s.
     #pragma unroll 4
     for (uint32_t i = lane; i < MM_HIDDEN / 4; i += 32) {
         const float4 a = __ldg(we + i);
         #pragma unroll
-        for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
-            if (r < rows) {
-                const float4 v = ((const float4 *)(x + (uint64_t)r * MM_HIDDEN))[i];
-                acc[r] = fmaf(a.x, v.x, acc[r]);
-                acc[r] = fmaf(a.y, v.y, acc[r]);
-                acc[r] = fmaf(a.z, v.z, acc[r]);
-                acc[r] = fmaf(a.w, v.w, acc[r]);
-            }
+        for (uint32_t r = 0; r < ROWS; r++) {
+            const float4 v = ((const float4 *)(x + (uint64_t)r * MM_HIDDEN))[i];
+            acc[r] = fmaf(a.x, v.x, acc[r]);
+            acc[r] = fmaf(a.y, v.y, acc[r]);
+            acc[r] = fmaf(a.z, v.z, acc[r]);
+            acc[r] = fmaf(a.w, v.w, acc[r]);
         }
     }
     #pragma unroll
-    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
+    for (uint32_t r = 0; r < ROWS; r++) {
         float v = acc[r];
         for (uint32_t stride = 16; stride; stride >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, stride); }
-        if (!lane && r < rows) { logits[(uint64_t)r * MM_EXPERTS + e] = v; }
+        if (!lane) { logits[(uint64_t)r * MM_EXPERTS + e] = v; }
     }
 }
 
@@ -641,8 +652,9 @@ __global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *lo
  * ~17% of the DRAM rate, 6 ms of a decode token. */
 enum { MM_Q8_WARPS = 4, MM_Q8_BLOCK = 32, MM_Q8_BYTES = 34, MM_TYPE_Q8_0 = 8 };   // ggml's Q8_0 id
 
+template <uint32_t ROWS>
 __global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(float *out, const uint8_t *weight, const float *x,
-        uint32_t cols, uint32_t outs, uint32_t rows, bool staged) {
+        uint32_t cols, uint32_t outs, bool staged) {
     extern __shared__ __align__(16) uint8_t mm_q8_rows[];
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, o0 = blockIdx.x * MM_Q8_WARPS;
     const uint32_t blocks = cols / MM_Q8_BLOCK, row_bytes = blocks * MM_Q8_BYTES;
@@ -655,24 +667,22 @@ __global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(float *out, const
     const uint32_t o = o0 + warp;
     if (o >= outs) { return; }
     const uint8_t *w = staged ? mm_q8_rows + warp * row_bytes : weight + (uint64_t)o * row_bytes;
-    float acc[MM_ROUTER_ROWS];
+    float acc[ROWS];
     #pragma unroll
-    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) { acc[r] = 0.0f; }
+    for (uint32_t r = 0; r < ROWS; r++) { acc[r] = 0.0f; }
     #pragma unroll 4
     for (uint32_t b = 0; b < blocks; b++) {
         const uint8_t *block = w + b * MM_Q8_BYTES;
         const float value = __half2float(__ushort_as_half((uint16_t)(block[0] | block[1] << 8))) *
             (float)(int8_t)block[2 + lane];
         #pragma unroll
-        for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
-            if (r < rows) { acc[r] = fmaf(value, x[(uint64_t)r * cols + b * MM_Q8_BLOCK + lane], acc[r]); }
-        }
+        for (uint32_t r = 0; r < ROWS; r++) { acc[r] = fmaf(value, x[(uint64_t)r * cols + b * MM_Q8_BLOCK + lane], acc[r]); }
     }
     #pragma unroll
-    for (uint32_t r = 0; r < MM_ROUTER_ROWS; r++) {
+    for (uint32_t r = 0; r < ROWS; r++) {
         float v = acc[r];
         for (uint32_t stride = 16; stride; stride >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, stride); }
-        if (!lane && r < rows) { out[(uint64_t)r * outs + o] = v; }
+        if (!lane) { out[(uint64_t)r * outs + o] = v; }
     }
 }
 
@@ -687,8 +697,11 @@ extern "C" int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     // The staged copy takes whole 16-byte pieces (every MiniMax indexer row: 6,528 bytes).
     const uint32_t row_bytes = cols / MM_Q8_BLOCK * MM_Q8_BYTES;
     const bool staged = row_bytes % 16 == 0 && (uintptr_t)w % 16 == 0 && MM_Q8_WARPS * row_bytes <= 48 * 1024;
-    mm_q8_gemv<<<(outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS, MM_Q8_WARPS * 32, staged ? MM_Q8_WARPS * row_bytes : 0,
-        ds4_current_stream()>>>((float *)out->ptr, w, (const float *)input->ptr, cols, outs, rows, staged);
+    mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
+        mm_q8_gemv<decltype(r)::value><<<(outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS, MM_Q8_WARPS * 32,
+            staged ? MM_Q8_WARPS * row_bytes : 0, ds4_current_stream()>>>((float *)out->ptr, w,
+            (const float *)input->ptr, cols, outs, staged);
+    });
     return cuda_ok(cudaGetLastError(), "MiniMax Q8_0 rows");
 }
 
@@ -718,8 +731,10 @@ extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected
     // F.linear(x.float(), router): the handle's TF32 mode would move near-tied routes.
     const float alpha = 1.0f, beta = 0.0f;
     if (rows <= MM_ROUTER_ROWS) {
-        mm_router_gemv<<<MM_EXPERTS / MM_ROUTER_WARPS, MM_ROUTER_WARPS * 32, 0, ds4_current_stream()>>>(
-            (float *)logits->ptr, w, (const float *)input->ptr, rows);
+        mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
+            mm_router_gemv<decltype(r)::value><<<MM_EXPERTS / MM_ROUTER_WARPS, MM_ROUTER_WARPS * 32, 0,
+                ds4_current_stream()>>>((float *)logits->ptr, w, (const float *)input->ptr);
+        });
     } else if (!cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, MM_EXPERTS, (int)rows, MM_HIDDEN,
             &alpha, w, CUDA_R_32F, MM_HIDDEN, input->ptr, CUDA_R_32F, MM_HIDDEN, &beta, logits->ptr, CUDA_R_32F,
             MM_EXPERTS, CUBLAS_COMPUTE_32F_PEDANTIC, CUBLAS_GEMM_DEFAULT), "MiniMax router logits")) {
@@ -1072,32 +1087,36 @@ __global__ void mm_score_kernel(float *scores, const float *query, const uint8_t
     }
 }
 
-/* Block scores of up to MM_SCORE_FEW rows (decode, verify) against one key
- * block per CTA: the block's raw keys land in shared memory with 8-byte
+/* Block scores of COUNT <= MM_SCORE_FEW rows (decode, verify) against one
+ * key block per CTA: the block's raw keys land in shared memory with 8-byte
  * loads, thread t decodes key t and dots it with every row and head in the
  * tiled kernel's d order, then a block max. Same scores bit for bit; a
  * decode row reads the pool once at stream rate instead of decoding every
- * block into F32 tiles. */
+ * block into F32 tiles. COUNT is a template argument (mm_rows): with a
+ * runtime count the unrolled 32-vector loop issued every predicated vector,
+ * 8x a decode row's work (124K decode: 167 us per layer, 53 GB/s of keys). */
 enum { MM_SCORE_FEW = 8 };
 
+template <uint32_t COUNT>
 __global__ void __launch_bounds__(MM_BLOCK) mm_score_few_kernel(float *scores, const float *query, const uint8_t *pool,
-        uint32_t pos, uint32_t first, uint32_t count, uint32_t stride) {
+        uint32_t pos, uint32_t first, uint32_t stride) {
+    constexpr uint32_t V = COUNT * MM_KV_HEADS;
     __shared__ __align__(16) uint8_t raw[MM_BLOCK * MM_FP4_ROW];
-    __shared__ __align__(16) float q[MM_SCORE_FEW * MM_KV_HEADS][MM_HEAD];
-    __shared__ float part[MM_BLOCK / 32][MM_SCORE_FEW * MM_KV_HEADS];
+    __shared__ __align__(16) float q[V][MM_HEAD];
+    __shared__ float part[MM_BLOCK / 32][V];
     const uint32_t block = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid / 32;
-    const uint32_t last = pos + first + count - 1, t0 = block * MM_BLOCK;
+    const uint32_t last = pos + first + COUNT - 1, t0 = block * MM_BLOCK;
     if (t0 > last) { return; }
     const uint32_t visible = min((uint32_t)MM_BLOCK, last + 1 - t0);
     const uint2 *src = (const uint2 *)(pool + (uint64_t)t0 * MM_FP4_ROW);
     for (uint32_t i = tid; i < visible * (MM_FP4_ROW / 8); i += MM_BLOCK) { ((uint2 *)raw)[i] = src[i]; }
-    for (uint32_t i = tid; i < count * MM_KV_HEADS * MM_HEAD; i += MM_BLOCK) {
+    for (uint32_t i = tid; i < V * MM_HEAD; i += MM_BLOCK) {
         q[i / MM_HEAD][i % MM_HEAD] = glmvq_round(query[(uint64_t)first * MM_KV_HEADS * MM_HEAD + i]);
     }
     __syncthreads();
-    float dot[MM_SCORE_FEW * MM_KV_HEADS];
+    float dot[V];
     #pragma unroll
-    for (uint32_t v = 0; v < MM_SCORE_FEW * MM_KV_HEADS; v++) { dot[v] = 0.0f; }
+    for (uint32_t v = 0; v < V; v++) { dot[v] = 0.0f; }
     if (tid < visible) {
         const uint8_t *key = raw + tid * MM_FP4_ROW;
         #pragma unroll 1
@@ -1108,38 +1127,47 @@ __global__ void __launch_bounds__(MM_BLOCK) mm_score_few_kernel(float *scores, c
                 const float2 kv = mm_fp4_pair(key[g * 8 + b], scale);
                 const uint32_t d = g * 16 + b * 2;
                 #pragma unroll
-                for (uint32_t v = 0; v < MM_SCORE_FEW * MM_KV_HEADS; v++) {
-                    if (v < count * MM_KV_HEADS) {
-                        dot[v] = fmaf(q[v][d], kv.x, dot[v]);
-                        dot[v] = fmaf(q[v][d + 1], kv.y, dot[v]);
-                    }
+                for (uint32_t v = 0; v < V; v++) {
+                    dot[v] = fmaf(q[v][d], kv.x, dot[v]);
+                    dot[v] = fmaf(q[v][d + 1], kv.y, dot[v]);
                 }
             }
         }
     }
     // Row r sees keys up to its position; past it (or past `visible`) -inf.
     #pragma unroll
-    for (uint32_t v = 0; v < MM_SCORE_FEW * MM_KV_HEADS; v++) {
-        if (v >= count * MM_KV_HEADS) { continue; }
+    for (uint32_t v = 0; v < V; v++) {
         const uint32_t p = pos + first + v / MM_KV_HEADS;
         float best = tid < visible && t0 + tid <= p ? dot[v] : -INFINITY;
         for (uint32_t s = 16; s; s >>= 1) { best = fmaxf(best, __shfl_xor_sync(0xffffffffu, best, s)); }
         if (!lane) { part[warp][v] = best; }
     }
     __syncthreads();
-    if (tid < count * MM_KV_HEADS) {
+    if (tid < V) {
         float best = part[0][tid];
         for (uint32_t w = 1; w < MM_BLOCK / 32; w++) { best = fmaxf(best, part[w][tid]); }
         scores[(uint64_t)tid * stride + block] = best;
     }
 }
 
+
+// Whether score v of block i ranks before score w of block j: higher
+// first, ties to the lower block; NaN never ranks (an empty entry is
+// (-inf, UINT32_MAX), so a -inf block still ranks before it).
+__device__ __forceinline__ bool mm_topk_before(float v, uint32_t i, float w, uint32_t j) {
+    return v > w || (v == w && i < j);
+}
+
 /* Top-16 blocks of one (row, KV head) per warp: the own block first, then
- * fifteen rounds of warp argmax over the earlier blocks' scores (ties to the
- * lower block), then the list sorted ascending; -1 fills the tail. Rows
- * with at most 16 visible blocks take them all and read no scores. */
-__global__ void mm_topk_kernel(int32_t *blocks, float *scores, uint32_t pos, uint32_t first, uint32_t count,
+ * the fifteen earlier blocks that rank first, the list sorted ascending; -1
+ * fills the tail. One pass over the scores: lane l keeps the best fifteen
+ * of blocks l, l + 32, ... in registers, then fifteen warp argmax rounds
+ * over the lanes' heads merge them. (Fifteen argmax passes over every
+ * score took 12 us per layer at 124K and grow with the context.) Rows with
+ * at most 16 visible blocks take them all and read no scores. */
+__global__ void mm_topk_kernel(int32_t *blocks, const float *scores, uint32_t pos, uint32_t first, uint32_t count,
         uint32_t stride) {
+    constexpr uint32_t KEEP = MM_TOPK - 1;
     const uint32_t lane = threadIdx.x & 31;
     const uint32_t v = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     if (v >= count * MM_KV_HEADS) { return; }
@@ -1150,23 +1178,43 @@ __global__ void mm_topk_kernel(int32_t *blocks, float *scores, uint32_t pos, uin
         if (lane < MM_TOPK) { out[lane] = lane <= own ? (int32_t)lane : -1; }
         return;
     }
-    float *s = scores + ((uint64_t)row * MM_KV_HEADS + head) * stride;
+    const float *s = scores + ((uint64_t)row * MM_KV_HEADS + head) * stride;
+    float kv[KEEP];
+    uint32_t ki[KEEP];
+    #pragma unroll
+    for (uint32_t j = 0; j < KEEP; j++) { kv[j] = -INFINITY; ki[j] = UINT32_MAX; }
+    #pragma unroll 4
+    for (uint32_t b = lane; b < own; b += 32) {
+        float cv = s[b];
+        uint32_t ci = b;
+        if (!mm_topk_before(cv, ci, kv[KEEP - 1], ki[KEEP - 1])) { continue; }
+        // Insert: the carried entry swaps down past every entry it ranks before.
+        #pragma unroll
+        for (uint32_t j = 0; j < KEEP; j++) {
+            if (mm_topk_before(cv, ci, kv[j], ki[j])) {
+                const float tv = kv[j];
+                const uint32_t ti = ki[j];
+                kv[j] = cv; ki[j] = ci; cv = tv; ci = ti;
+            }
+        }
+    }
     int32_t pick = lane == 0 ? (int32_t)own : -1;
     for (uint32_t k = 1; k < MM_TOPK; k++) {
-        float best = -INFINITY;
-        uint32_t index = UINT32_MAX;
-        for (uint32_t b = lane; b < own; b += 32) {
-            const float value = s[b];
-            if (value > best || (index == UINT32_MAX && value == best)) { best = value; index = b; }
-        }
+        float best = kv[0];
+        uint32_t index = ki[0];
         for (uint32_t stride2 = 16; stride2; stride2 >>= 1) {
             const float ob = __shfl_xor_sync(0xffffffffu, best, stride2);
             const uint32_t oi = __shfl_xor_sync(0xffffffffu, index, stride2);
-            if (ob > best || (ob == best && oi < index)) { best = ob; index = oi; }
+            if (mm_topk_before(ob, oi, best, index)) { best = ob; index = oi; }
         }
         if (lane == k) { pick = index == UINT32_MAX ? -1 : (int32_t)index; }
-        if (lane == 0 && index != UINT32_MAX) { s[index] = -INFINITY; }
-        __syncwarp();
+        // Blocks are lane-disjoint: the lane holding the winner pops it.
+        if (index != UINT32_MAX && ki[0] == index) {
+            #pragma unroll
+            for (uint32_t j = 0; j + 1 < KEEP; j++) { kv[j] = kv[j + 1]; ki[j] = ki[j + 1]; }
+            kv[KEEP - 1] = -INFINITY;
+            ki[KEEP - 1] = UINT32_MAX;
+        }
     }
     // Sort the 16 picks ascending (lanes 0..15), -1 last: rank by the picks
     // below (unsigned) and equal ones on lower lanes.
@@ -1219,8 +1267,10 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
             const uint32_t stride = (pos + first + count - 1) / MM_BLOCK + 1;
             if (!gvq_floats(scores, (uint64_t)count * MM_KV_HEADS * stride) || stride > nblocks) { return 0; }
             if (count <= MM_SCORE_FEW && !mm_score_tiled()) {
-                mm_score_few_kernel<<<stride, MM_BLOCK, 0, stream>>>((float *)scores->ptr, (const float *)query->ptr,
-                    (const uint8_t *)pool->ptr, pos, first, count, stride);
+                mm_rows<MM_SCORE_FEW>(count, [&](auto r) {
+                    mm_score_few_kernel<decltype(r)::value><<<stride, MM_BLOCK, 0, stream>>>((float *)scores->ptr,
+                        (const float *)query->ptr, (const uint8_t *)pool->ptr, pos, first, stride);
+                });
             } else if (!mm_score_tiled()) {
                 if (!mm_score_mma_ready()) { return 0; }
                 mm_score_mma_kernel<<<dim3((count + MM_SC_ROWS - 1) / MM_SC_ROWS, (stride + MM_SC_GROUP - 1) / MM_SC_GROUP),
