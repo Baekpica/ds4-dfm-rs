@@ -98,7 +98,7 @@ pub fn tier_canvas(ratio: Ratio) -> (i32, i32) {
 
     let edge = f64::from(TIER_SHORT_EDGE) * f64::from(long) / f64::from(short);
     let snapped = (edge / f64::from(CANVAS_MULTIPLE)).round() as i32 * CANVAS_MULTIPLE;
-    let cap = i64::from(MAX_PIXELS) / i64::from(TIER_SHORT_EDGE);
+    let cap = MAX_PIXELS / i64::from(TIER_SHORT_EDGE);
     let clamped = snapped.min((cap as i32) / CANVAS_MULTIPLE * CANVAS_MULTIPLE);
 
     if width > height {
@@ -261,6 +261,10 @@ pub static ALIASES: [(&str, &str); 4] = [
 
 pub fn resolve(name: &str) -> Option<&'static Preset> {
     if let Some(preset) = PRESETS.iter().find(|preset| preset.name == name) {
+        // The table is static, so its rules are proved where they are
+        // written; a debug build rechecks them on use.
+        debug_assert!(preset.check().is_ok(), "{}", preset.name);
+
         return Some(preset);
     }
 
