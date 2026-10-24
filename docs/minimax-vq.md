@@ -51,10 +51,14 @@ top-4 by `sigmoid + bias` in one warp per row (ties to the lower id). The
 routed experts run MiniMax's own top-4 decode kernels: the 64 KiB layer book
 staged in shared memory, a persistent grid, one gain multiply after the dot;
 the residual stage adds GVR8 codewords from a 2 KiB book, down's 1,024-column
-tail included. q/k/v Q4_K projections of a token run as one launch; the
-router and the Q8_0 indexer projections run row-stable F32 GEMVs (one warp
-per output, every row in the same lane and step order), so up to eight rows
-compute exactly what one row does. These GEMVs and the block scorer take the
+tail included. The router and the Q8_0 indexer projections run row-stable
+F32 GEMVs (one warp per output, every row in the same lane and step order),
+so up to eight rows compute exactly what one row does. Each shares a launch
+with the Q4_K projections of its input: q/k/v with the indexer pair, the
+shared expert's gate/up with the router logits (CTAs past the Q4_K groups
+take the other matrix, each output as its own kernel computes it). Apart,
+the second kernel's first CTAs held their slots waiting for the first one's
+last, ~13 us per boundary. These GEMVs and the block scorer take the
 row count as a template argument (`mm_rows`): with a runtime count their
 unrolled per-row loops issued all eight predicated rows for a decode row.
 At decode and verify widths every MiniMax kernel launches with programmatic

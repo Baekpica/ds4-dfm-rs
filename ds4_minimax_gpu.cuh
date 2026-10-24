@@ -642,6 +642,241 @@ extern "C" int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, d
     return cuda_ok(cudaGetLastError(), "MiniMax indexer projections");
 }
 
+/* One CTA of glmvq_q4_stream_many<NT> (split 2, four rows per CTA) over
+ * `many`'s groups, bit for bit: the joint decode launches below put other
+ * work in the CTAs after its groups. */
+template <uint32_t NT>
+__device__ __forceinline__ void mm_q4_group(const glmvq_q4_many &many, const float *input, uint32_t cols,
+        uint32_t tokens, uint4 *staged, float *partial) {
+    // Selected by compares, not an index: a dynamic index would copy the
+    // parameter block to local memory in every thread.
+    const uint8_t *weight = many.weight[0];
+    float *out = many.out[0];
+    uint32_t rows = many.rows[0], first = 0;
+    #pragma unroll
+    for (uint32_t c = 1; c < GLMVQ_Q4_MANY; c++) {
+        if (blockIdx.x >= many.first[c]) { weight = many.weight[c]; out = many.out[c]; rows = many.rows[c]; first = many.first[c]; }
+    }
+    constexpr uint32_t split = 2, rpb = GLMVQ_Q4_WARPS / split;
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5, local = warp / split, part = warp % split;
+    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK, group = blockIdx.x - first;
+    const uint32_t row16 = blocks * (GLMVQ_Q4_BYTES / sizeof(uint4));
+    glmvq_q4_copy<GLMVQ_Q4_STAGE>(staged, (const uint4 *)weight + (uint64_t)group * rpb * row16,
+        min(rpb, rows - group * rpb) * row16);
+    glmvq_pdl_wait();
+    __syncthreads();
+    const uint32_t row = group * rpb + local;
+    float sum[NT] = {};
+    if (row < rows) {
+        const uint8_t *w = (const uint8_t *)(staged + local * row16);
+        for (uint32_t b = part; b < blocks; b += split) {
+            glmvq_q4_acc<NT>(w + b * GLMVQ_Q4_BYTES, input, cols, b * GLMVQ_Q4_BLOCK, tokens, sum);
+        }
+    }
+    #pragma unroll
+    for (uint32_t t = 0; t < NT; t++) {
+        for (int stride = 16; stride; stride >>= 1) { sum[t] += __shfl_xor_sync(0xffffffffu, sum[t], stride); }
+        if (!lane) { partial[warp * NT + t] = sum[t]; }
+    }
+    __syncthreads();
+    if (row < rows && !lane && !part) {
+        #pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            if (t >= tokens) { continue; }
+            float value = 0;
+            for (uint32_t p = 0; p < split; p++) { value += partial[(warp + p) * NT + t]; }
+            out[(uint64_t)t * rows + row] = __bfloat162float(__float2bfloat16_rn(value));
+        }
+    }
+}
+
+// The groups of the Q4_K matrices `weights` (one column count) in `many`;
+// 0 when a record is not Q4_K or an output is short.
+static uint32_t mm_q4_many(ds4_gvq_ctx *ctx, glmvq_q4_many *many, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, uint32_t rows, uint32_t *cols) {
+    uint32_t groups = 0;
+    *many = {};
+    for (uint32_t c = 0; c < GLMVQ_Q4_MANY; c++) {
+        many->first[c] = groups;
+        if (c >= count) { continue; }
+        if (weights[c] >= ctx->model->source.size()) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        if (ctx->model->records[weights[c]].type != GVQ_TYPE_Q4 || (c && s.cols != *cols) ||
+            (uintptr_t)s.data % 16 || s.cols % GLMVQ_Q4_BLOCK || !gvq_floats(outs[c], (uint64_t)rows * s.rows)) {
+            return 0;
+        }
+        *cols = s.cols;
+        many->weight[c] = (const uint8_t *)s.data;
+        many->out[c] = (float *)outs[c]->ptr;
+        many->rows[c] = s.rows;
+        groups += (s.rows + 3) / 4;
+    }
+    many->first[GLMVQ_Q4_MANY] = groups;
+    return groups;
+}
+
+/* Decode and verify widths: q/k/v (Q4_K) and the indexer's index_q/index_k
+ * (Q8_0) of one input in one launch, CTAs [0, q4_groups) on q/k/v as
+ * glmvq_q4_stream_many<NT> (split 2) runs them, the rest as mm_q8_gemv<ROWS>
+ * (two outputs per CTA, its other warps only stage). Every output equals
+ * the two launches' bit for bit. Apart, the indexer's CTAs waited for every
+ * q/k/v CTA before computing while holding their slots, which kept the next
+ * weights from streaming across the boundary (~14 us per layer). */
+template <uint32_t NT, uint32_t ROWS>
+__global__ void __launch_bounds__(GLMVQ_Q4_WARPS * 32, 4) mm_proj_kernel(glmvq_q4_many many, mm_q8_two m,
+        uint32_t q4_groups, const float *input, uint32_t cols, uint32_t tokens, bool staged) {
+    extern __shared__ uint4 mm_proj_smem[];
+    __shared__ float partial[GLMVQ_Q4_WARPS * NT];
+    glmvq_pdl_open();
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    if (blockIdx.x < q4_groups) {
+        mm_q4_group<NT>(many, input, cols, tokens, mm_proj_smem, partial);
+        return;
+    }
+    const uint32_t bx = blockIdx.x - q4_groups;
+    const bool second = bx >= m.first1;
+    const uint8_t *weight = second ? m.w1 : m.w0;
+    float *out = second ? m.out1 : m.out0;
+    const uint32_t outs = second ? m.outs1 : m.outs0;
+    const uint32_t o0 = (second ? bx - m.first1 : bx) * MM_Q8_WARPS;
+    const uint32_t blocks = cols / MM_Q8_BLOCK, row_bytes = blocks * MM_Q8_BYTES;
+    if (staged) {
+        const uint32_t pieces = min((uint32_t)MM_Q8_WARPS, outs - o0) * row_bytes / 16;
+        const uint4 *src = (const uint4 *)(weight + (uint64_t)o0 * row_bytes);
+        for (uint32_t i = threadIdx.x; i < pieces; i += blockDim.x) { mm_proj_smem[i] = src[i]; }
+        __syncthreads();
+    }
+    glmvq_pdl_wait();
+    const uint32_t o = o0 + warp;
+    if (warp >= MM_Q8_WARPS || o >= outs) { return; }
+    const uint8_t *w = staged ? (const uint8_t *)mm_proj_smem + warp * row_bytes : weight + (uint64_t)o * row_bytes;
+    float acc[ROWS];
+    #pragma unroll
+    for (uint32_t r = 0; r < ROWS; r++) { acc[r] = 0.0f; }
+    #pragma unroll 4
+    for (uint32_t b = 0; b < blocks; b++) {
+        const uint8_t *block = w + b * MM_Q8_BYTES;
+        const float value = __half2float(__ushort_as_half((uint16_t)(block[0] | block[1] << 8))) *
+            (float)(int8_t)block[2 + lane];
+        #pragma unroll
+        for (uint32_t r = 0; r < ROWS; r++) { acc[r] = fmaf(value, input[(uint64_t)r * cols + b * MM_Q8_BLOCK + lane], acc[r]); }
+    }
+    #pragma unroll
+    for (uint32_t r = 0; r < ROWS; r++) {
+        float v = acc[r];
+        for (uint32_t stride = 16; stride; stride >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, stride); }
+        if (!lane) { out[(uint64_t)r * outs + o] = v; }
+    }
+}
+
+/* q/k/v (`weights`, Q4_K) and index_q/index_k (Q8_0) of `input` at decode
+ * and verify widths in one launch (mm_proj_kernel); 0 when a matrix is not
+ * of those types, for the caller's separate launches. */
+extern "C" int ds4_gpu_minimax_proj(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
+        ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t wiq, uint32_t wik, uint32_t outs_q, uint32_t outs_k,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || !rows || rows > MM_ROUTER_ROWS || !ctx->direct_q4 || !input || (uintptr_t)input->ptr % 16 ||
+        !gvq_stream(ctx)) { return 0; }
+    glmvq_q4_many many;
+    uint32_t cols = 0;
+    const uint32_t groups = mm_q4_many(ctx, &many, outs, weights, 3u, rows, &cols);
+    if (!groups) { return 0; }
+    const uint32_t row_bytes = cols / MM_Q8_BLOCK * MM_Q8_BYTES;
+    const auto *a = (const uint8_t *)gvq_weight(ctx, wiq, MM_TYPE_Q8_0, (uint64_t)outs_q * row_bytes / 2);
+    const auto *b = (const uint8_t *)gvq_weight(ctx, wik, MM_TYPE_Q8_0, (uint64_t)outs_k * row_bytes / 2);
+    if (!a || !b || cols % MM_Q8_BLOCK || !outs_q || !outs_k ||
+        !gvq_floats(input, (uint64_t)rows * cols) || !gvq_floats(iq, (uint64_t)rows * outs_q) ||
+        !gvq_floats(ik, (uint64_t)rows * outs_k)) { return 0; }
+    const bool staged = row_bytes % 16 == 0 && (uintptr_t)a % 16 == 0 && (uintptr_t)b % 16 == 0;
+    const uint32_t first1 = (outs_q + MM_Q8_WARPS - 1) / MM_Q8_WARPS;
+    const uint32_t grid = groups + first1 + (outs_k + MM_Q8_WARPS - 1) / MM_Q8_WARPS;
+    const uint64_t q4_bytes = 4ull * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+    const uint64_t bytes = staged && MM_Q8_WARPS * row_bytes > q4_bytes ? MM_Q8_WARPS * row_bytes : q4_bytes;
+    if (bytes + GLMVQ_Q4_WARPS * 8 * sizeof(float) > ctx->q4.shared) { return 0; }
+    const mm_q8_two m = {a, b, (float *)iq->ptr, (float *)ik->ptr, outs_q, outs_k, first1};
+    mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
+        constexpr uint32_t R = decltype(r)::value, NT = R == 1 ? 1 : R <= 4 ? 4 : 8;
+        // Half the unified memory as shared, as glmvq_q4_stream_many: the
+        // input row is read through L1.
+        static const cudaError_t carve =
+            cudaFuncSetAttribute(mm_proj_kernel<NT, R>, cudaFuncAttributePreferredSharedMemoryCarveout, 50);
+        (void)carve;
+        glmvq_launch_kernel(mm_mode(rows), mm_proj_kernel<NT, R>, grid, GLMVQ_Q4_WARPS * 32, bytes,
+            ds4_current_stream(), many, m, groups, (const float *)input->ptr, cols, rows, staged);
+    });
+    return cuda_ok(cudaGetLastError(), "MiniMax q/k/v and indexer projections");
+}
+
+/* Decode and verify widths: the shared expert's gate/up (Q4_K) and the F32
+ * router logits of one input in one launch, CTAs [0, q4_groups) on gate/up
+ * (mm_q4_group), the rest one expert per warp as mm_router_gemv<ROWS>
+ * computes it. Apart, the router's CTAs waited for the whole down
+ * projection before streaming their 3 MiB. */
+template <uint32_t NT, uint32_t ROWS>
+__global__ void __launch_bounds__(GLMVQ_Q4_WARPS * 32, 4) mm_shared_router_kernel(glmvq_q4_many many,
+        uint32_t q4_groups, float *logits, const float *router, const float *input, uint32_t tokens) {
+    extern __shared__ uint4 mm_sr_smem[];
+    __shared__ float partial[GLMVQ_Q4_WARPS * NT];
+    glmvq_pdl_open();
+    if (blockIdx.x < q4_groups) {
+        mm_q4_group<NT>(many, input, MM_HIDDEN, tokens, mm_sr_smem, partial);
+        return;
+    }
+    glmvq_pdl_wait();
+    const uint32_t lane = threadIdx.x & 31, e = (blockIdx.x - q4_groups) * GLMVQ_Q4_WARPS + threadIdx.x / 32;
+    const float4 *we = (const float4 *)(router + (uint64_t)e * MM_HIDDEN);
+    float acc[ROWS];
+    #pragma unroll
+    for (uint32_t r = 0; r < ROWS; r++) { acc[r] = 0.0f; }
+    #pragma unroll 8
+    for (uint32_t i = lane; i < MM_HIDDEN / 4; i += 32) {
+        const float4 a = __ldg(we + i);
+        #pragma unroll
+        for (uint32_t r = 0; r < ROWS; r++) {
+            const float4 v = ((const float4 *)(input + (uint64_t)r * MM_HIDDEN))[i];
+            acc[r] = fmaf(a.x, v.x, acc[r]);
+            acc[r] = fmaf(a.y, v.y, acc[r]);
+            acc[r] = fmaf(a.z, v.z, acc[r]);
+            acc[r] = fmaf(a.w, v.w, acc[r]);
+        }
+    }
+    #pragma unroll
+    for (uint32_t r = 0; r < ROWS; r++) {
+        float v = acc[r];
+        for (uint32_t stride = 16; stride; stride >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, stride); }
+        if (!lane) { logits[(uint64_t)r * MM_EXPERTS + e] = v; }
+    }
+}
+
+/* The shared expert's gate/up (`weights`, Q4_K, into outs) and the router
+ * logits (record `router`) of `input` at decode and verify widths in one
+ * launch; ds4_gpu_minimax_route then picks the experts. 0 when a record is
+ * not of those types. */
+extern "C" int ds4_gpu_minimax_shared_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
+        ds4_gpu_tensor *logits, uint32_t router, const ds4_gpu_tensor *input, uint32_t rows) {
+    static_assert(MM_EXPERTS % GLMVQ_Q4_WARPS == 0, "whole router CTAs");
+    if (!ctx || !rows || rows > MM_ROUTER_ROWS || !ctx->direct_q4 || !input || (uintptr_t)input->ptr % 16 ||
+        !gvq_stream(ctx)) { return 0; }
+    const auto *w = (const float *)gvq_weight(ctx, router, GVQ_TYPE_F32, (uint64_t)MM_EXPERTS * MM_HIDDEN);
+    glmvq_q4_many many;
+    uint32_t cols = 0;
+    const uint32_t groups = mm_q4_many(ctx, &many, outs, weights, 2u, rows, &cols);
+    if (!groups || !w || cols != MM_HIDDEN || !gvq_floats(input, (uint64_t)rows * MM_HIDDEN) ||
+        !gvq_floats(logits, (uint64_t)rows * MM_EXPERTS)) { return 0; }
+    const uint64_t bytes = 4ull * cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+    if (bytes + GLMVQ_Q4_WARPS * 8 * sizeof(float) > ctx->q4.shared) { return 0; }
+    mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
+        constexpr uint32_t R = decltype(r)::value, NT = R == 1 ? 1 : R <= 4 ? 4 : 8;
+        static const cudaError_t carve =
+            cudaFuncSetAttribute(mm_shared_router_kernel<NT, R>, cudaFuncAttributePreferredSharedMemoryCarveout, 50);
+        (void)carve;
+        glmvq_launch_kernel(mm_mode(rows), mm_shared_router_kernel<NT, R>, groups + MM_EXPERTS / GLMVQ_Q4_WARPS,
+            GLMVQ_Q4_WARPS * 32, bytes, ds4_current_stream(), many, groups, (float *)logits->ptr, w,
+            (const float *)input->ptr, rows);
+    });
+    return cuda_ok(cudaGetLastError(), "MiniMax shared expert and router logits");
+}
+
 extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
         ds4_gpu_tensor *logits, const ds4_gpu_tensor *input, uint32_t router, uint32_t bias, uint32_t rows) {
     const auto *w = (const float *)gvq_weight(ctx, router, GVQ_TYPE_F32, (uint64_t)MM_EXPERTS * MM_HIDDEN);
@@ -661,6 +896,15 @@ extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected
             MM_EXPERTS, CUBLAS_COMPUTE_32F_PEDANTIC, CUBLAS_GEMM_DEFAULT), "MiniMax router logits")) {
         return 0;
     }
+    return ds4_gpu_minimax_route(ctx, selected, weights, logits, bias, rows);
+}
+
+extern "C" int ds4_gpu_minimax_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *logits, uint32_t bias, uint32_t rows) {
+    const auto *b = (const float *)gvq_weight(ctx, bias, GVQ_TYPE_F32, MM_EXPERTS);
+    if (!b || !rows || !gvq_floats(logits, (uint64_t)rows * MM_EXPERTS) ||
+        !gvq_floats(weights, (uint64_t)rows * MM_USED) || selected->bytes < (uint64_t)rows * MM_USED * sizeof(int32_t) ||
+        !gvq_stream(ctx)) { return 0; }
     enum { WARPS = 8 };
     glmvq_launch_kernel(mm_mode(rows), mm_router_kernel, (rows + WARPS - 1) / WARPS, WARPS * 32, 0,
         ds4_current_stream(), (int32_t *)selected->ptr, (float *)weights->ptr, (const float *)logits->ptr, b, rows);

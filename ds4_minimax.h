@@ -65,11 +65,28 @@ int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu
 int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
     ds4_gpu_tensor *logits, const ds4_gpu_tensor *input, uint32_t router, uint32_t bias, uint32_t rows);
 
+/* ds4_gpu_minimax_router's two steps apart, for decode and verify widths:
+ * the shared expert's Q4_K gate/up (`weights` into outs) and the router
+ * logits of one input in one launch (0 when a record is not of those
+ * types), then the top-4 of the logits. */
+int ds4_gpu_minimax_shared_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
+    ds4_gpu_tensor *logits, uint32_t router, const ds4_gpu_tensor *input, uint32_t rows);
+int ds4_gpu_minimax_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
+    const ds4_gpu_tensor *logits, uint32_t bias, uint32_t rows);
+
 /* Two Q8_0 projections of one input: out0 = W0 x, out1 = W1 x. Up to
  * DS4_MINIMAX_SPLIT_ROWS rows compute each row as a lone row; prefill rows
  * take MMQ (the input quantized once). */
 int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, ds4_gpu_tensor *out1, uint32_t w0, uint32_t w1,
     const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows);
+
+/* Up to DS4_MINIMAX_SPLIT_ROWS rows: the three Q4_K projections `weights`
+ * (q, k, v) into outs and the indexer's Q8_0 pair into iq/ik, one launch,
+ * each output as the separate calls compute it. 0 when a record is not of
+ * those types (the caller then makes the separate calls). */
+int ds4_gpu_minimax_proj(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
+    ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t wiq, uint32_t wik, uint32_t outs_q, uint32_t outs_k,
+    const ds4_gpu_tensor *input, uint32_t rows);
 
 /* out = gemma_rms(x) over 6144-wide rows with a BF16 weight record. */
 int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
