@@ -59,6 +59,7 @@ use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
 use ds4_core::minimax_h3::vae_audio;
+use ds4_core::minimax_h3::vae_video;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -202,11 +203,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         );
         println!("TIME seconds={seconds:.3}");
 
-        if options.decode {
-            let directory = options
-                .audio_vae
-                .as_ref()
-                .ok_or_else(|| usage("--decode needs --audio-vae"))?;
+        if options.decode && options.audio_vae.is_none() && options.video_vae.is_none() {
+            return Err(usage("--decode needs --audio-vae or --video-vae"));
+        }
+
+        if let Some(directory) = options.audio_vae.as_ref().filter(|_| options.decode) {
             let length = audio_noise.len() / (32 * 2);
             let started = Instant::now();
             let waveform = vae_audio::decode(directory, &audio_noise, length)
@@ -227,6 +228,37 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 
             if let Some(expect) = options.expect_pcm {
                 if fnv_f32(&waveform.pcm) != expect {
+                    return Ok(ExitCode::from(3));
+                }
+            }
+        }
+
+        if let Some(directory) = options.video_vae.as_ref() {
+            let started = Instant::now();
+            let frames = vae_video::decode(
+                directory,
+                &video_noise,
+                temporal.video_t as usize,
+                latent_h as usize,
+                latent_w as usize,
+            )
+            .map_err(|error| error.to_string())?;
+            let frame_seconds = started.elapsed().as_secs_f64();
+            let first = frames.rgb.first().copied().unwrap_or(0.0);
+            let last = frames.rgb.last().copied().unwrap_or(0.0);
+            println!(
+                "FRAMES frames={} height={} width={} fnv={:016x} first={:.9} last={:.9}",
+                frames.frames,
+                frames.height,
+                frames.width,
+                fnv_f32(&frames.rgb),
+                first,
+                last
+            );
+            println!("TIME frames_seconds={frame_seconds:.3}");
+
+            if let Some(expect) = options.expect_frames {
+                if fnv_f32(&frames.rgb) != expect {
                     return Ok(ExitCode::from(3));
                 }
             }
@@ -363,7 +395,9 @@ struct Options {
     stream: bool,
     decode: bool,
     audio_vae: Option<std::path::PathBuf>,
+    video_vae: Option<std::path::PathBuf>,
     expect_pcm: Option<u64>,
+    expect_frames: Option<u64>,
     expect_video: Option<u64>,
     expect_audio: Option<u64>,
     expect_adaln: Option<(u64, u64)>,
@@ -385,7 +419,9 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         stream: false,
         decode: false,
         audio_vae: None,
+        video_vae: None,
         expect_pcm: None,
+        expect_frames: None,
         expect_video: None,
         expect_audio: None,
         expect_adaln: None,
@@ -425,10 +461,17 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
                 continue;
             }
             "--audio-vae" => options.audio_vae = Some(value()?.into()),
+            "--video-vae" => options.video_vae = Some(value()?.into()),
             "--expect-pcm" => {
                 options.expect_pcm = Some(
                     parse_hash(value()?)
                         .ok_or_else(|| usage("--expect-pcm needs 16 hex digits"))?,
+                );
+            }
+            "--expect-frames" => {
+                options.expect_frames = Some(
+                    parse_hash(value()?)
+                        .ok_or_else(|| usage("--expect-frames needs 16 hex digits"))?,
                 );
             }
             "--expect-video" => {
@@ -485,6 +528,8 @@ fn usage(detail: &str) -> String {
          <FL2VA/transformer> <prompt> [--width W] [--height H] [--frames F] \
          [--steps N] [--step S] [--seed N] [--rope-scale X] [--denoise] \
          [--reuse K] [--stream] [--expect-video HEX] \
+         [--decode --audio-vae DIR] [--decode --video-vae DIR] \
+         [--expect-pcm HEX] [--expect-frames HEX] \
          [--expect-audio HEX] [--expect-adaln BLOCK:FINAL]\n       \
          h3_dit_gate <FL2VA/transformer> --adaln-only [--steps N] \
          [--expect-adaln BLOCK:FINAL]"

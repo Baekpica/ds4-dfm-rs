@@ -339,6 +339,84 @@ unsafe extern "C" {
         error: *mut c_char,
         error_size: usize,
     ) -> c_int;
+
+    fn h3d_sdpa_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        query: *const CTensor,
+        key: *const CTensor,
+        value: *const CTensor,
+        sequence: u32,
+        heads: u32,
+        head_dim: u32,
+        scale: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_rms_norm_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        rows: u32,
+        width: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_layer_norm_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        rows: u32,
+        width: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_swiglu_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        fused: *const CTensor,
+        rows: u32,
+        width: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_scale_add_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        residual: *const CTensor,
+        branch: *const CTensor,
+        scale: *const CTensor,
+        rows: u32,
+        width: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_video_qkv_rope_f32(
+        context: *mut Context,
+        query: *mut CTensor,
+        key: *mut CTensor,
+        value: *mut CTensor,
+        qkv: *const CTensor,
+        rope_cos: *const CTensor,
+        rope_sin: *const CTensor,
+        sequence: u32,
+        heads: u32,
+        head_dim: u32,
+        rope_half: u32,
+        epsilon: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
 }
 
 /// `h3d_dtype`.
@@ -1122,6 +1200,186 @@ impl Gpu {
                 )
             },
             "clip",
+        )
+    }
+
+    /// `h3_gpu_sdpa_f32`, non-causal and row-major out; `head_dim == 64`
+    /// selects the reference's tiled kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sdpa_f32(
+        &self,
+        output: &Tensor,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        sequence: u32,
+        heads: u32,
+        head_dim: u32,
+        scale: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_sdpa_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    query.raw(),
+                    key.raw(),
+                    value.raw(),
+                    sequence,
+                    heads,
+                    head_dim,
+                    scale,
+                    error,
+                    size,
+                )
+            },
+            "sdpa_f32",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_f32(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        rows: u32,
+        width: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_rms_norm_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    rows,
+                    width,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "rms_norm_f32",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn layer_norm_f32(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: &Tensor,
+        rows: u32,
+        width: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_layer_norm_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.raw(),
+                    rows,
+                    width,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "layer_norm_f32",
+        )
+    }
+
+    pub fn swiglu_f32(
+        &self,
+        output: &Tensor,
+        fused: &Tensor,
+        rows: u32,
+        width: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_swiglu_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    fused.raw(),
+                    rows,
+                    width,
+                    error,
+                    size,
+                )
+            },
+            "swiglu_f32",
+        )
+    }
+
+    pub fn scale_add_f32(
+        &self,
+        output: &Tensor,
+        residual: &Tensor,
+        branch: &Tensor,
+        scale: &Tensor,
+        rows: u32,
+        width: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_scale_add_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    residual.raw(),
+                    branch.raw(),
+                    scale.raw(),
+                    rows,
+                    width,
+                    error,
+                    size,
+                )
+            },
+            "scale_add_f32",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn video_qkv_rope_f32(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        qkv: &Tensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        sequence: u32,
+        heads: u32,
+        head_dim: u32,
+        rope_half: u32,
+        epsilon: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_video_qkv_rope_f32(
+                    self.raw.as_ptr(),
+                    query.raw(),
+                    key.raw(),
+                    value.raw(),
+                    qkv.raw(),
+                    rope_cos.raw(),
+                    rope_sin.raw(),
+                    sequence,
+                    heads,
+                    head_dim,
+                    rope_half,
+                    epsilon,
+                    error,
+                    size,
+                )
+            },
+            "video_qkv_rope_f32",
         )
     }
 

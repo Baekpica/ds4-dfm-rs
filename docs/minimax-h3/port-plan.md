@@ -906,7 +906,7 @@ Deviation: the reference loads the weight store once per decode call, and so
 does the port; a resident decoder is P9. The VAE encoders (keyframe
 conditioning) are not ported.
 
-**E8 — The video VAE decode.** Started 2026-10-24.
+**E8 — The video VAE decode.** Shipped 2026-10-24.
 
 Phase A, the oracle. `tools/minimax_h3/dit_probe.c` gained
 `--decode --video-vae DIR`, which calls `h3_video_vae_decode` and prints
@@ -934,6 +934,37 @@ blended across tiles before stitching (`:761-830`); the output patch order is
 zero suffix token (`:12-13`, `:458-532`); the video RoPE walks
 `(t, h, w)` axes with 8 frequencies each and `powf(100, k/8)`, leaving the
 suffix rows at cos 1 / sin 0 (`:348-396`).
+
+Phase B, the port. `minimax_h3::vae_video` carries the 36-block graph, the
+latent normalization, the chunk schedule, the tile plan and the blends;
+`minimax_h3::vae_store` lifts the F32 store `vae_audio` had grown so both
+decoders share one indexer (the audio gate below stayed bit-exact across that
+move). Six F32 primitives joined the `h3d_` ABI: `sdpa_f32` (the tiled
+`h3_attention_tiled_f32_kernel<64>`, `:1489-1547`, and the generic
+`h3_attention_kernel<float>`, `:1337-1416`, for any other head width),
+`rms_norm_f32` (`:2438-2460`), `layer_norm_f32` (`:2529-2561`), `swiglu_f32`
+(`:2841-2852`), `scale_add_f32` (`:2885-2893`) and `video_qkv_rope_f32`
+(`:3078-3136`).
+
+The one trap this unit hit: the video QKV rope call passes `grouped = 1`
+(`:3199-3203`), the checkpoint's `[head][q,k,v][dim]` rows, while the text
+variant is the ungrouped one. The first port read it as ungrouped, produced
+plausible frames and a wrong hash `fd8590b436ba92c0`; with the layout fixed the
+hash matches. Same class of error as the E5 refiner width and the E7 conv_post
+bias: the wrong shape still runs.
+
+Phase C gate, `make tests/h3_dit_gate` then `h3_dit_gate … --denoise --reuse 1
+--decode --video-vae video_vae/source --expect-frames c644de410531e21d`: the
+port returns `FRAMES frames=5 height=256 width=256 fnv=c644de410531e21d
+first=0.822910547 last=0.736599445` in 12.104 s, exit 0. The same run's audio
+gate still returns `d52825c7dbc73718` after the store lift.
+
+Deviations, both named in the module: the single-chunk path keeps all 36
+blocks resident instead of streaming one block at a time (`run_decoder`,
+`:458-531`), which costs ~9.7 GiB after the DiT is retired and is what the
+chunked path needs anyway; `H3_VAE_TILE_PIXELS` is not read, the default tile
+search is. Neither changes the bytes. The VAE encoder, the resident preview
+decoder and the decode-on-CPU path are not ported.
 
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the

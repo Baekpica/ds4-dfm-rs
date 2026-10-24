@@ -1263,3 +1263,450 @@ int h3d_clip(h3d_context *context, h3d_tensor *output,
         maximum);
     return h3d_launch_ok("F32 clip", error, error_size);
 }
+
+/* ---- F32 primitives the VideoVAE decoder needs (`h3_video_vae.c`) ---- */
+
+/* `h3_attention_kernel<float>` (`:1337-1416`): one block per (head, row,
+ * batch), one dimension per thread, the softmax reduced over shared memory.
+ * The reference keeps the shared scalars in `__shared__` so every thread sees
+ * thread 0's rescale and weight. Used for any head width other than 64. */
+__global__ static void h3d_attention_f32_kernel(
+        float *output, const float *query, const float *key,
+        const float *value, uint32_t batch, uint32_t sequence,
+        uint32_t query_heads, uint32_t kv_heads, uint32_t head_dim,
+        float scale, int causal, int head_major_output,
+        int head_major_input) {
+    __shared__ float partial[1024];
+    __shared__ float rescale;
+    __shared__ float weight;
+    __shared__ float denominator;
+    uint32_t query_head = blockIdx.x;
+    uint32_t row = blockIdx.y;
+    uint32_t batch_index = blockIdx.z;
+    uint32_t kv_head = query_head / (query_heads / kv_heads);
+    uint32_t keys = causal ? row + 1 : sequence;
+    size_t query_base = head_major_input ?
+        (((size_t)batch_index * query_heads + query_head) * sequence + row) *
+            head_dim :
+        (((size_t)batch_index * sequence + row) * query_heads + query_head) *
+            head_dim;
+    uint32_t dimension = threadIdx.x;
+    float result = 0.0f;
+    float maximum = -INFINITY;
+    if (threadIdx.x == 0) denominator = 0.0f;
+    __syncthreads();
+    for (uint32_t key_row = 0; key_row < keys; key_row++) {
+        size_t key_base = head_major_input ?
+            (((size_t)batch_index * kv_heads + kv_head) * sequence + key_row) *
+                head_dim :
+            (((size_t)batch_index * sequence + key_row) * kv_heads + kv_head) *
+                head_dim;
+        float product = 0.0f;
+        if (dimension < head_dim) {
+            product = query[query_base + dimension] * key[key_base + dimension];
+        }
+        partial[threadIdx.x] = product;
+        __syncthreads();
+        for (uint32_t offset = blockDim.x / 2; offset; offset >>= 1) {
+            if (threadIdx.x < offset) {
+                partial[threadIdx.x] += partial[threadIdx.x + offset];
+            }
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            float score = partial[0] * scale;
+            float next_maximum = fmaxf(maximum, score);
+            rescale = expf(maximum - next_maximum);
+            weight = expf(score - next_maximum);
+            denominator = denominator * rescale + weight;
+            maximum = next_maximum;
+        }
+        __syncthreads();
+        if (dimension < head_dim) {
+            size_t value_index = key_base + dimension;
+            result = result * rescale + weight * value[value_index];
+        }
+        __syncthreads();
+    }
+    if (dimension < head_dim) {
+        result /= denominator;
+        size_t output_index = head_major_output ?
+            (((size_t)batch_index * query_heads + query_head) * sequence + row) *
+                head_dim + dimension :
+            (((size_t)batch_index * sequence + row) * query_heads + query_head) *
+                head_dim + dimension;
+        output[output_index] = result;
+    }
+}
+
+/* `h3_attention_tiled_f32_kernel` (`:1489-1547`): one block per head and eight
+ * rows, one warp per row, `HEAD_DIM / 32` dimensions per lane. With a 64-wide
+ * head only two lanes per item carry data and only the first 64 threads fill
+ * the shared key/value row, exactly as the reference does. */
+template <int HEAD_DIM>
+__global__ static void h3d_attention_tiled_f32_kernel(
+        float *output, const float *query, const float *key,
+        const float *value, uint32_t sequence, uint32_t heads, float scale,
+        int head_major_output) {
+    enum { QUERIES = 8, ITEMS = HEAD_DIM / 32 };
+    __shared__ float shared_key[HEAD_DIM];
+    __shared__ float shared_value[HEAD_DIM];
+    uint32_t warp = threadIdx.x / 32;
+    uint32_t lane = threadIdx.x % 32;
+    uint32_t head = blockIdx.x;
+    uint32_t row = blockIdx.y * QUERIES + warp;
+    int active = row < sequence;
+    size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
+    float result[ITEMS];
+#pragma unroll
+    for (uint32_t item = 0; item < ITEMS; item++) result[item] = 0.0f;
+    float maximum = -INFINITY;
+    float denominator = 0.0f;
+    for (uint32_t key_row = 0; key_row < sequence; key_row++) {
+        if (threadIdx.x < HEAD_DIM) {
+            size_t index = ((size_t)head * sequence + key_row) * HEAD_DIM +
+                           threadIdx.x;
+            shared_key[threadIdx.x] = key[index];
+            shared_value[threadIdx.x] = value[index];
+        }
+        __syncthreads();
+        float product = 0.0f;
+        if (active) {
+#pragma unroll
+            for (uint32_t item = 0; item < ITEMS; item++) {
+                uint32_t dimension = lane + item * 32;
+                product += query[query_base + dimension] *
+                           shared_key[dimension];
+            }
+#pragma unroll
+            for (uint32_t offset = 16; offset; offset >>= 1) {
+                product += __shfl_down_sync(0xffffffffu, product, offset);
+            }
+        }
+        float rescale = 1.0f;
+        float weight = 0.0f;
+        if (active && lane == 0) {
+            float score = product * scale;
+            float next_maximum = fmaxf(maximum, score);
+            rescale = expf(maximum - next_maximum);
+            weight = expf(score - next_maximum);
+            denominator = denominator * rescale + weight;
+            maximum = next_maximum;
+        }
+        rescale = __shfl_sync(0xffffffffu, rescale, 0);
+        weight = __shfl_sync(0xffffffffu, weight, 0);
+        if (active) {
+#pragma unroll
+            for (uint32_t item = 0; item < ITEMS; item++) {
+                uint32_t dimension = lane + item * 32;
+                result[item] = result[item] * rescale +
+                               weight * shared_value[dimension];
+            }
+        }
+        __syncthreads();
+    }
+    denominator = __shfl_sync(0xffffffffu, denominator, 0);
+    if (!active) return;
+#pragma unroll
+    for (uint32_t item = 0; item < ITEMS; item++) {
+        uint32_t dimension = lane + item * 32;
+        size_t index = head_major_output ?
+            ((size_t)head * sequence + row) * HEAD_DIM + dimension :
+            ((size_t)row * heads + head) * HEAD_DIM + dimension;
+        output[index] = result[item] / denominator;
+    }
+}
+
+int h3d_sdpa_f32(h3d_context *context, h3d_tensor *output,
+                 const h3d_tensor *query, const h3d_tensor *key,
+                 const h3d_tensor *value, uint32_t sequence, uint32_t heads,
+                 uint32_t head_dim, float scale, char *error,
+                 size_t error_size) {
+    size_t elements = 0;
+    if (!context || !sequence || !heads || !head_dim || head_dim > 1024 ||
+        !h3d_mul_size((size_t)sequence * heads, head_dim, &elements) ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(query, H3D_F32, elements) ||
+        !h3d_is(key, H3D_F32, elements) ||
+        !h3d_is(value, H3D_F32, elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid attention tensors or shape");
+    }
+    if (head_dim == 64) {
+        dim3 grid(heads, (sequence + 7) / 8);
+        h3d_attention_tiled_f32_kernel<64><<<grid, 256, 0,
+                                             context->stream>>>(
+            (float *)output->data, (const float *)query->data,
+            (const float *)key->data, (const float *)value->data, sequence,
+            heads, scale, 0);
+        return h3d_launch_ok("F32 attention", error, error_size);
+    }
+    uint32_t threads = 128;
+    while (threads < head_dim) threads <<= 1;
+    dim3 grid(heads, sequence);
+    h3d_attention_f32_kernel<<<grid, threads, 0, context->stream>>>(
+        (float *)output->data, (const float *)query->data,
+        (const float *)key->data, (const float *)value->data, 1, sequence,
+        heads, heads, head_dim, scale, 0, 0, 1);
+    return h3d_launch_ok("F32 attention", error, error_size);
+}
+
+/* `h3_rms_norm_f32_kernel` (`:2438-2460`): one block per row, 256 threads,
+ * fmaf square sum, tree reduction over shared memory, rsqrtf. */
+__global__ static void h3d_rms_norm_f32_kernel(float *output,
+                                               const float *input,
+                                               const float *weight,
+                                               uint32_t rows, uint32_t width,
+                                               float epsilon) {
+    uint32_t row = blockIdx.x;
+    if (row >= rows) return;
+    __shared__ float sums[256];
+    float sum = 0.0f;
+    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
+        float value = input[(size_t)row * width + column];
+        sum = fmaf(value, value, sum);
+    }
+    sums[threadIdx.x] = sum;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride /= 2) {
+        if (threadIdx.x < stride) {
+            sums[threadIdx.x] += sums[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+    float inverse = rsqrtf(sums[0] / (float)width + epsilon);
+    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
+        size_t index = (size_t)row * width + column;
+        output[index] = input[index] * inverse * weight[column];
+    }
+}
+
+int h3d_rms_norm_f32(h3d_context *context, h3d_tensor *output,
+                     const h3d_tensor *input, const h3d_tensor *weight,
+                     uint32_t rows, uint32_t width, float epsilon, char *error,
+                     size_t error_size) {
+    size_t elements = 0;
+    if (!context || !rows || !width ||
+        !h3d_mul_size(rows, width, &elements) || epsilon < 0.0f ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(input, H3D_F32, elements) ||
+        !h3d_is(weight, H3D_F32, width)) {
+        return h3d_set_error(error, error_size,
+                             "invalid F32 RMS norm arguments");
+    }
+    h3d_rms_norm_f32_kernel<<<rows, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data, rows, width, epsilon);
+    return h3d_launch_ok("F32 RMS norm", error, error_size);
+}
+
+/* `h3_layer_norm_f32_kernel` (`:2529-2561`): the mean accumulates with plain
+ * adds, the variance with fmaf; the epilogue is
+ * `(input - mean) * inverse * weight + bias` in that order. */
+__global__ static void h3d_layer_norm_f32_kernel(
+        float *output, const float *input, const float *weight,
+        const float *bias, uint32_t rows, uint32_t width, float epsilon) {
+    uint32_t row = blockIdx.x;
+    if (row >= rows) return;
+    __shared__ float sums[256];
+    float sum = 0.0f;
+    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
+        sum += input[(size_t)row * width + column];
+    }
+    sums[threadIdx.x] = sum;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride /= 2) {
+        if (threadIdx.x < stride) {
+            sums[threadIdx.x] += sums[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+    float mean = sums[0] / (float)width;
+    sum = 0.0f;
+    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
+        float centered = input[(size_t)row * width + column] - mean;
+        sum = fmaf(centered, centered, sum);
+    }
+    sums[threadIdx.x] = sum;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride /= 2) {
+        if (threadIdx.x < stride) {
+            sums[threadIdx.x] += sums[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+    float inverse = rsqrtf(sums[0] / (float)width + epsilon);
+    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
+        size_t index = (size_t)row * width + column;
+        output[index] = (input[index] - mean) * inverse * weight[column] +
+                        bias[column];
+    }
+}
+
+int h3d_layer_norm_f32(h3d_context *context, h3d_tensor *output,
+                       const h3d_tensor *input, const h3d_tensor *weight,
+                       const h3d_tensor *bias, uint32_t rows, uint32_t width,
+                       float epsilon, char *error, size_t error_size) {
+    size_t elements = 0;
+    if (!context || !rows || !width ||
+        !h3d_mul_size(rows, width, &elements) || epsilon < 0.0f ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(input, H3D_F32, elements) ||
+        !h3d_is(weight, H3D_F32, width) ||
+        !h3d_is(bias, H3D_F32, width)) {
+        return h3d_set_error(error, error_size,
+                             "invalid F32 layer norm arguments");
+    }
+    h3d_layer_norm_f32_kernel<<<rows, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data, (const float *)bias->data, rows, width,
+        epsilon);
+    return h3d_launch_ok("F32 layer norm", error, error_size);
+}
+
+/* `h3_swiglu_kernel<float>` (`:2841-2852`): the fused row holds gate then up,
+ * and the gate passes through `gate / (1 + expf(-gate))`, not `1 / (1 + ...)`. */
+__global__ static void h3d_swiglu_f32_kernel(float *output,
+                                             const float *fused,
+                                             uint32_t rows, uint32_t width) {
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y;
+    if (row >= rows || column >= width) return;
+    size_t base = (size_t)row * width * 2;
+    float gate = fused[base + column];
+    float up = fused[base + width + column];
+    output[(size_t)row * width + column] =
+        gate / (1.0f + expf(-gate)) * up;
+}
+
+int h3d_swiglu_f32(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *fused, uint32_t rows, uint32_t width,
+                   char *error, size_t error_size) {
+    size_t elements = 0;
+    if (!context || !h3d_mul_size(rows, width, &elements) ||
+        elements > SIZE_MAX / 2 ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(fused, H3D_F32, elements * 2)) {
+        return h3d_set_error(error, error_size, "invalid SwiGLU arguments");
+    }
+    dim3 grid((width + 255) / 256, rows);
+    h3d_swiglu_f32_kernel<<<grid, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)fused->data, rows, width);
+    return h3d_launch_ok("F32 SwiGLU", error, error_size);
+}
+
+/* `h3_scale_add_kernel` (`:2885-2893`): `residual + branch * scale`, one
+ * multiply, and no fma. */
+__global__ static void h3d_scale_add_f32_kernel(float *output,
+                                                const float *residual,
+                                                const float *branch,
+                                                const float *scale,
+                                                uint32_t rows,
+                                                uint32_t width) {
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y;
+    if (row >= rows || column >= width) return;
+    size_t index = (size_t)row * width + column;
+    output[index] = residual[index] + branch[index] * scale[column];
+}
+
+int h3d_scale_add_f32(h3d_context *context, h3d_tensor *output,
+                      const h3d_tensor *residual, const h3d_tensor *branch,
+                      const h3d_tensor *scale, uint32_t rows, uint32_t width,
+                      char *error, size_t error_size) {
+    size_t elements = 0;
+    if (!context || !h3d_mul_size(rows, width, &elements) ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(residual, H3D_F32, elements) ||
+        !h3d_is(branch, H3D_F32, elements) ||
+        !h3d_is(scale, H3D_F32, width)) {
+        return h3d_set_error(error, error_size,
+                             "invalid F32 scale-add arguments");
+    }
+    dim3 grid((width + 255) / 256, rows);
+    h3d_scale_add_f32_kernel<<<grid, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)residual->data,
+        (const float *)branch->data, (const float *)scale->data, rows, width);
+    return h3d_launch_ok("F32 scale add", error, error_size);
+}
+
+/* `h3_qkv_rope_kernel<float>` (`:3078-3136`) at `grouped = 1`,
+ * `normalize = 1`, `weighted = 0` (`:3199-3203`): the checkpoint's
+ * [head][q,k,v][dim] rows, the Q/K RMS over the head with no learned scale,
+ * then the pair rotation over the first `2 * rope_half` dimensions. */
+__global__ static void h3d_video_qkv_rope_f32_kernel(
+        float *query, float *key, float *value, const float *qkv,
+        const float *rope_cos, const float *rope_sin, uint32_t sequence,
+        uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon) {
+    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t row = blockIdx.z;
+    if (row >= sequence || head >= heads || dimension >= head_dim) return;
+    size_t inner = (size_t)heads * head_dim;
+    size_t row_base = (size_t)row * inner * 3;
+    size_t q_base = row_base + (size_t)head * head_dim * 3;
+    size_t k_base = q_base + head_dim;
+    size_t v_base = k_base + head_dim;
+
+    float q_sum = 0.0f, k_sum = 0.0f;
+    for (uint32_t d = 0; d < head_dim; d++) {
+        float q = qkv[q_base + d];
+        float k = qkv[k_base + d];
+        q_sum = fmaf(q, q, q_sum);
+        k_sum = fmaf(k, k, k_sum);
+    }
+    float q_inverse = rsqrtf(q_sum / (float)head_dim + epsilon);
+    float k_inverse = rsqrtf(k_sum / (float)head_dim + epsilon);
+
+    float q0 = qkv[q_base + dimension] * q_inverse;
+    float k0 = qkv[k_base + dimension] * k_inverse;
+    if (dimension < rope_half * 2) {
+        uint32_t rope_index = dimension % rope_half;
+        uint32_t pair = dimension < rope_half ? dimension + rope_half :
+                                                 dimension - rope_half;
+        float q1 = qkv[q_base + pair] * q_inverse;
+        float k1 = qkv[k_base + pair] * k_inverse;
+        float c = rope_cos[(size_t)row * rope_half + rope_index];
+        float s = rope_sin[(size_t)row * rope_half + rope_index];
+        if (dimension < rope_half) {
+            q0 = q0 * c - q1 * s;
+            k0 = k0 * c - k1 * s;
+        } else {
+            q0 = q0 * c + q1 * s;
+            k0 = k0 * c + k1 * s;
+        }
+    }
+    size_t output_index = ((size_t)head * sequence + row) * head_dim + dimension;
+    query[output_index] = q0;
+    key[output_index] = k0;
+    value[output_index] = qkv[v_base + dimension];
+}
+
+int h3d_video_qkv_rope_f32(h3d_context *context, h3d_tensor *query,
+                           h3d_tensor *key, h3d_tensor *value,
+                           const h3d_tensor *qkv,
+                           const h3d_tensor *rope_cos,
+                           const h3d_tensor *rope_sin, uint32_t sequence,
+                           uint32_t heads, uint32_t head_dim,
+                           uint32_t rope_half, float epsilon, char *error,
+                           size_t error_size) {
+    size_t elements = 0;
+    if (!context || !sequence || !heads || !head_dim ||
+        !h3d_mul_size((size_t)sequence * heads, head_dim, &elements) ||
+        rope_half > head_dim / 2 || epsilon < 0.0f ||
+        !h3d_is(query, H3D_F32, elements) ||
+        !h3d_is(key, H3D_F32, elements) ||
+        !h3d_is(value, H3D_F32, elements) ||
+        !h3d_is(qkv, H3D_F32, elements * 3) ||
+        !h3d_is(rope_cos, H3D_F32, (size_t)sequence * rope_half) ||
+        !h3d_is(rope_sin, H3D_F32, (size_t)sequence * rope_half)) {
+        return h3d_set_error(error, error_size, "invalid QKV/RoPE tensors");
+    }
+    dim3 grid((head_dim + 127) / 128, heads, sequence);
+    h3d_video_qkv_rope_f32_kernel<<<grid, 128, 0, context->stream>>>(
+        (float *)query->data, (float *)key->data, (float *)value->data,
+        (const float *)qkv->data, (const float *)rope_cos->data,
+        (const float *)rope_sin->data, sequence, heads, head_dim, rope_half,
+        epsilon);
+    return h3d_launch_ok("F32 video QKV RoPE", error, error_size);
+}

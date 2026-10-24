@@ -32,6 +32,8 @@ Related, outside this directory:
 | DiT gate | `crates/ds4-core/examples/h3_dit_gate.rs` (`make tests/h3_dit_gate`) |
 | Native DiT primitives | `native/h3/h3_dit_gpu.cu` |
 | Audio VAE decode | `crates/ds4-core/src/minimax_h3/vae_audio.rs` |
+| Video VAE decode | `crates/ds4-core/src/minimax_h3/vae_video.rs` |
+| F32 weight store (both VAEs) | `crates/ds4-core/src/minimax_h3/vae_store.rs` |
 | OpenAI Videos wire | `crates/ds4-core/src/minimax_h3/video_api.rs` |
 | OpenAI Videos server | `crates/ds4-server/src/h3_video.rs`, `h3-server-rs` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |
