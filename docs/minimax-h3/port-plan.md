@@ -651,6 +651,20 @@ other=0`. Together with the inventory's 1,058 tensors the tally is exact
 `[151936, 5120]` all match, so every tensor the reference's loader would read
 is present, BF16, and correctly shaped.
 
+**P3.4 — The forward oracle.** Before any encoder kernel is written, the
+reference's own prompt encoder runs on the Spark and its output is recorded:
+`tools/minimax_h3/text_probe.c` tokenizes a fixed prompt, calls
+`h3_text_encode_bf16` and prints the shape plus an FNV-1a hash over the BF16
+values. *Gate:* the recorded hash is the target the port's forward must hit.
+*What it does not prove:* one prompt, one driver, one warm-cache run.
+
+Recorded 2026-10-24 on the Spark. Prompt `A red fox walking through snow`,
+tokens `32 2518 38835 11435 1526 11794`: `tokens=6 width=5120 values=30720
+fnv=1d9d71e8dd8544d6`, first `3f99 bf71 bfc7 c054 4090 c06f 3f1b c083`, last
+`bef4 c066 c040 3db8 3d9e 3fbe bd80 4000`, 6.554 s with the weights already in
+page cache. The token ids equal the port's own encode of the same prompt, so
+the tokenizer gate and the forward gate share the same input.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
