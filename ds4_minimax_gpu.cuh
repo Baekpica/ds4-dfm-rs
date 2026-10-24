@@ -1839,7 +1839,13 @@ __device__ __forceinline__ void mm_at_raw(const uint8_t *pages, const int32_t *t
 }
 static_assert(4u * MM_BLOCK == 2u * MM_AT_ROWS * 32, "two decode units per thread");
 
-__global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *heads, const float *q,
+// Heads as F32 rows or, when q4p prepares o_proj's input from them, BF16
+// rows (the values are BF16-rounded either way).
+__device__ __forceinline__ void mm_at_store(float *p, float v) { *p = v; }
+__device__ __forceinline__ void mm_at_store(__nv_bfloat16 *p, float v) { *p = __float2bfloat16_rn(v); }
+
+template <typename OUT>
+__global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(OUT *heads, const float *q,
         const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos, uint32_t rows) {
     extern __shared__ __align__(16) uint8_t mm_at_smem[];
     __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_BLOCK * MM_AT_LD;
@@ -1993,14 +1999,14 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *
     l1 += __shfl_xor_sync(0xffffffffu, l1, 2);
     if (!live) { return; }
     const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
-    float *out = heads + ((uint64_t)row * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
+    OUT *out = heads + ((uint64_t)row * MM_HEADS + kv * MM_GROUP) * MM_HEAD;
     #pragma unroll
     for (uint32_t n = 0; n < 16; n++) {
         const uint32_t d = n * 8 + 2 * t;
-        out[g * MM_HEAD + d] = glmvq_round(o[n][0] * i0);
-        out[g * MM_HEAD + d + 1] = glmvq_round(o[n][1] * i0);
-        out[(g + 8) * MM_HEAD + d] = glmvq_round(o[n][2] * i1);
-        out[(g + 8) * MM_HEAD + d + 1] = glmvq_round(o[n][3] * i1);
+        mm_at_store(out + g * MM_HEAD + d, glmvq_round(o[n][0] * i0));
+        mm_at_store(out + g * MM_HEAD + d + 1, glmvq_round(o[n][1] * i0));
+        mm_at_store(out + (g + 8) * MM_HEAD + d, glmvq_round(o[n][2] * i1));
+        mm_at_store(out + (g + 8) * MM_HEAD + d + 1, glmvq_round(o[n][3] * i1));
     }
 }
 
@@ -2231,24 +2237,36 @@ __global__ void mm_attn_combine(float *heads, const float *partial) {
     heads[(uint64_t)head * MM_HEAD + d] = glmvq_round(l > 0.0f ? o / l : 0.0f);
 }
 
+extern "C" int ds4_gpu_minimax_attn_bf16(uint32_t rows) { return rows > DS4_MINIMAX_SPLIT_ROWS && !mm_attn_simt(); }
+
 extern "C" int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const ds4_gpu_tensor *pages,
         const ds4_gpu_tensor *table, const ds4_gpu_tensor *blocks, ds4_gpu_tensor *partials, uint32_t rows,
-        uint32_t pos) {
+        uint32_t pos, int heads_bf16) {
     const uint64_t count = (uint64_t)rows * MM_HEADS * MM_HEAD;
     if (!rows || !mm_pages_ok(pages, table, pos + rows) || !gvq_floats(heads, count) || !gvq_floats(q, count) ||
         !blocks || blocks->bytes < (uint64_t)rows * MM_KV_HEADS * MM_TOPK * sizeof(int32_t)) { return 0; }
     const cudaStream_t stream = ds4_current_stream();
     const int32_t *slots = table ? (const int32_t *)table->ptr : nullptr;
+    if (heads_bf16 && !ds4_gpu_minimax_attn_bf16(rows)) { return 0; }
     if (rows > DS4_MINIMAX_SPLIT_ROWS && !mm_attn_simt()) {
         static bool ready = false;
         if (!ready) {
-            if (!cuda_ok(cudaFuncSetAttribute(mm_attn_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                    MM_AT_SMEM), "MiniMax MMA attention shared memory")) { return 0; }
+            if (!cuda_ok(cudaFuncSetAttribute(mm_attn_mma_kernel<float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                    MM_AT_SMEM), "MiniMax MMA attention shared memory") ||
+                !cuda_ok(cudaFuncSetAttribute(mm_attn_mma_kernel<__nv_bfloat16>,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, MM_AT_SMEM), "MiniMax MMA attention shared memory")) {
+                return 0;
+            }
             ready = true;
         }
-        mm_attn_mma_kernel<<<dim3((rows + MM_AT_ROWS - 1) / MM_AT_ROWS, MM_KV_HEADS), MM_AT_ROWS * 32, MM_AT_SMEM,
-            stream>>>((float *)heads->ptr, (const float *)q->ptr, (const uint8_t *)pages->ptr, slots,
-            (const int32_t *)blocks->ptr, pos, rows);
+        const dim3 grid((rows + MM_AT_ROWS - 1) / MM_AT_ROWS, MM_KV_HEADS);
+        if (heads_bf16) {
+            mm_attn_mma_kernel<<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>((__nv_bfloat16 *)heads->ptr,
+                (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, rows);
+        } else {
+            mm_attn_mma_kernel<<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>((float *)heads->ptr,
+                (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, rows);
+        }
         return cuda_ok(cudaGetLastError(), "MiniMax MMA attention");
     }
     if (rows > DS4_MINIMAX_SPLIT_ROWS || (rows > 1 && mm_attn_simt())) {
