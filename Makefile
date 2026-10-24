@@ -451,6 +451,17 @@ h3-rs: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/h3-rs" $@
 
+# The OpenAI Videos host with the in-process engine. Same h3 device objects as
+# h3-rs; the wire path needs nothing else (h3_video.rs and the engine reach
+# only concerns in ds4-core, and the h3d_ ABI).
+h3-server-rs: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
+	cargo rustc -p ds4-server --bin h3-server-rs --release --features native -- \
+	-C metadata=$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
+	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
+	cp -f "$(DS4_RS_TARGET_DIR)/release/h3-server-rs" $@
+
 # Common residency probes use at most one MiB of actual model-file mapping.
 tests/weight_mapping_probe: tests/test_weight_mapping.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $< -lcudart

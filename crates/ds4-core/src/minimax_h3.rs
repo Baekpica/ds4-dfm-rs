@@ -27,6 +27,7 @@
 //! `reconcile` compares the two and reports any disagreement.
 
 pub mod dit;
+pub mod engine;
 pub mod host;
 pub mod layout;
 pub mod render;

@@ -10,6 +10,8 @@ pub mod error;
 pub mod expected_plan;
 pub mod format;
 pub mod generate;
+#[cfg(feature = "native")]
+pub mod h3_engine;
 pub mod h3_video;
 pub mod http;
 pub mod json;
