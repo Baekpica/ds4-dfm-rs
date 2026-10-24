@@ -28,7 +28,7 @@ Related, outside this directory:
 | Native encoder primitives | `native/h3/h3_text_gpu.cu` |
 | Host arithmetic (canvas, noise, sigmas, reuse window, Euler step) | `crates/ds4-core/src/minimax_h3/host.rs` |
 | Packed sequence layout | `crates/ds4-core/src/minimax_h3/sequence.rs` |
-| DiT forward and Euler denoise | `crates/ds4-core/src/minimax_h3/dit.rs` |
+| DiT forward, Euler denoise, block stream | `crates/ds4-core/src/minimax_h3/dit.rs` |
 | DiT gate | `crates/ds4-core/examples/h3_dit_gate.rs` (`make tests/h3_dit_gate`) |
 | Native DiT primitives | `native/h3/h3_dit_gpu.cu` |
 | OpenAI Videos wire | `crates/ds4-core/src/minimax_h3/video_api.rs` |

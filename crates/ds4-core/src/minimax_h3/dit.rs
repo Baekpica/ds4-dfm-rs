@@ -119,8 +119,8 @@ fn device<T>(result: Result<T, String>) -> Result<T, DitError> {
     result.map_err(DitError::Gpu)
 }
 
-/// One block's eight BF16 matrices plus its norm weights
-/// (`h3_dit.c:502-525`).
+/// A refiner block's eight BF16 matrices plus its norm weights
+/// (`h3_dit.c:502-525`). The refiner is two blocks and never streams.
 struct Block {
     norm1: Tensor,
     norm2: Tensor,
@@ -130,6 +130,257 @@ struct Block {
     out: Tensor,
     fc1: Tensor,
     fc2: Tensor,
+}
+
+/// The four matrices that stream from the checkpoint, one slot per block
+/// (`h3_dit.c:600-621`, `:2223-2240`).
+struct BlockMatrices {
+    qkv: Tensor,
+    out: Tensor,
+    fc1: Tensor,
+    fc2: Tensor,
+}
+
+/// A core block's norms. Both residency modes keep them device-resident: they
+/// are a few kilobytes each and every block needs them (`h3_dit.c:1251-1262`).
+struct BlockNorms {
+    norm1: Tensor,
+    norm2: Tensor,
+    q_norm: Tensor,
+    k_norm: Tensor,
+}
+
+/// One of the 50 core blocks. `matrices` is `None` when the block streams;
+/// the two slots then hold whichever blocks are current and next.
+struct CoreBlock {
+    norms: BlockNorms,
+    matrices: Option<BlockMatrices>,
+}
+
+/// How the core's 50 blocks live on the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadMode {
+    /// Every block resident, as the reference's default does.
+    Resident,
+    /// Two matrix slots, read from the checkpoint per block.
+    Stream,
+}
+
+/// One checkpoint range, owned so the reader thread does not borrow `Weights`.
+#[derive(Clone)]
+struct StreamSource {
+    path: std::path::PathBuf,
+    offset: u64,
+    bytes: usize,
+}
+
+/// A block being read by the prefetch thread.
+struct PendingRead {
+    layer: usize,
+    slot: usize,
+    join: std::thread::JoinHandle<Result<[Vec<u8>; 4], String>>,
+}
+
+/// The reference's two-slot stream ring (`h3_dit.c:625-690`, `:2223-2330`).
+///
+/// The current block sits in `active`; the other slot is free, so the next
+/// block's four matrices can be read into it while the current block runs.
+/// After the last block the ring wraps to block 0, which is how the next
+/// denoise step starts without a read stall.
+struct Streamer {
+    slots: [BlockMatrices; 2],
+    sources: Vec<[StreamSource; 4]>,
+    active: usize,
+    active_layer: usize,
+    pending: Option<PendingRead>,
+    slot_bytes: u64,
+}
+
+impl Streamer {
+    fn new(gpu: &Gpu, weights: &Weights, config: &Config) -> Result<Streamer, DitError> {
+        let hidden = config.hidden as usize;
+        let inner = config.inner() as usize;
+        let ffn = config.ffn as usize;
+        let slot = || -> Result<BlockMatrices, DitError> {
+            Ok(BlockMatrices {
+                qkv: gpu_alloc(gpu, Dtype::Bf16, 3 * inner * hidden)?,
+                out: gpu_alloc(gpu, Dtype::Bf16, hidden * inner)?,
+                fc1: gpu_alloc(gpu, Dtype::Bf16, 2 * ffn * hidden)?,
+                fc2: gpu_alloc(gpu, Dtype::Bf16, hidden * ffn)?,
+            })
+        };
+        let slots = [slot()?, slot()?];
+
+        let mut sources = Vec::with_capacity(config.layers as usize);
+        let mut slot_bytes = 0u64;
+        for layer in 0..config.layers {
+            let four = [
+                stream_source(weights, Role::BlockQkv(layer))?,
+                stream_source(weights, Role::BlockOut(layer))?,
+                stream_source(weights, Role::BlockFc1(layer))?,
+                stream_source(weights, Role::BlockFc2(layer))?,
+            ];
+            // Every block carries the same four matrices.
+            slot_bytes = four.iter().map(|source| source.bytes as u64).sum();
+            sources.push(four);
+        }
+
+        Ok(Streamer {
+            slots,
+            sources,
+            active: 0,
+            // No block is loaded until `ensure(0)` reads one: 0 here would
+            // make the priming call a no-op and run block 0 on a blank slot.
+            active_layer: usize::MAX,
+            pending: None,
+            slot_bytes,
+        })
+    }
+
+    /// Bytes one slot holds, four matrices.
+    pub fn slot_bytes(&self) -> u64 {
+        self.slot_bytes
+    }
+
+    fn current(&self) -> &BlockMatrices {
+        &self.slots[self.active]
+    }
+
+    /// Start reading `layer` into the free slot.
+    fn start(&mut self, layer: usize) -> Result<(), DitError> {
+        self.finish_pending()?;
+        let slot = 1 - self.active;
+        let sources = self.sources[layer].clone();
+        self.pending = Some(PendingRead {
+            layer,
+            slot,
+            join: std::thread::spawn(move || read_block(&sources)),
+        });
+        Ok(())
+    }
+
+    /// Join the reader, upload into its slot and make it current.
+    fn finish(&mut self, gpu: &Gpu) -> Result<(), DitError> {
+        let pending = self
+            .pending
+            .take()
+            .ok_or_else(|| DitError::Gpu("stream finish without a read".into()))?;
+        let data = pending
+            .join
+            .join()
+            .map_err(|_| DitError::Gpu("stream reader panicked".into()))?
+            .map_err(|detail| DitError::Gpu(format!("stream block {}: {detail}", pending.layer)))?;
+
+        let slot = &self.slots[pending.slot];
+        device(gpu.upload(&slot.qkv, &data[0]))?;
+        device(gpu.upload(&slot.out, &data[1]))?;
+        device(gpu.upload(&slot.fc1, &data[2]))?;
+        device(gpu.upload(&slot.fc2, &data[3]))?;
+
+        self.active = pending.slot;
+        self.active_layer = pending.layer;
+        Ok(())
+    }
+
+    fn finish_pending(&mut self) -> Result<(), DitError> {
+        if self.pending.is_some() {
+            return Err(DitError::Gpu(
+                "stream reader still running when the ring advanced".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Make `layer` the current block, reading it now if the ring does not
+    /// already hold it.
+    fn ensure(&mut self, gpu: &Gpu, layer: usize) -> Result<(), DitError> {
+        if self.active_layer == layer && self.pending.is_none() {
+            return Ok(());
+        }
+        self.start(layer)?;
+        self.finish(gpu)
+    }
+}
+
+/// One role as a checkpoint range, refusing a non-BF16 matrix.
+fn stream_source(weights: &Weights, role: Role) -> Result<StreamSource, DitError> {
+    let span = weights
+        .span(role)
+        .map_err(|error| DitError::Weights(error.to_string()))?;
+    if span.dtype != crate::minimax_h3::safetensors::Dtype::Bf16 {
+        return Err(DitError::Weights(format!(
+            "{role:?} is not BF16 and cannot stream"
+        )));
+    }
+    Ok(StreamSource {
+        path: span.path.to_path_buf(),
+        offset: span.file_offset,
+        bytes: usize::try_from(span.bytes)
+            .map_err(|_| DitError::Weights("span too wide".into()))?,
+    })
+}
+
+/// Read one block's four matrices in ascending (path, offset) order — the
+/// reference's `compare_stream_sources` (`h3_dit.c:570-577`) — and drop each
+/// range from the page cache afterwards, as its streamed reader does
+/// (`h3_gpu_cuda.cu:410-412`).
+fn read_block(sources: &[StreamSource; 4]) -> Result<[Vec<u8>; 4], String> {
+    let mut order = [0usize, 1, 2, 3];
+    order.sort_by(|left, right| {
+        sources[*left]
+            .path
+            .cmp(&sources[*right].path)
+            .then(sources[*left].offset.cmp(&sources[*right].offset))
+    });
+
+    let mut data: [Vec<u8>; 4] = std::array::from_fn(|_| Vec::new());
+    for index in order {
+        let source = &sources[index];
+        let file = std::fs::File::open(&source.path)
+            .map_err(|error| format!("open {}: {error}", source.path.display()))?;
+        let mut buffer = vec![0u8; source.bytes];
+        read_at(&file, &mut buffer, source.offset)
+            .map_err(|error| format!("read {}: {error}", source.path.display()))?;
+        drop_cache(&file, source.offset, source.bytes);
+        data[index] = buffer;
+    }
+    Ok(data)
+}
+
+fn read_at(file: &std::fs::File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::read_exact_at(file, buffer, offset)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, buffer, offset);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "streaming needs pread",
+        ))
+    }
+}
+
+fn drop_cache(file: &std::fs::File, offset: u64, bytes: usize) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        // Advisory: the read data is on the device, the file's pages are not
+        // needed, and on unified memory they would compete with the weights.
+        unsafe {
+            libc::posix_fadvise(
+                file.as_raw_fd(),
+                offset as i64,
+                bytes as i64,
+                libc::POSIX_FADV_DONTNEED,
+            );
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (file, offset, bytes);
+    }
 }
 
 /// `final_layer` (`h3_dit.c:1295-1311`). The released heads are F32 and the
@@ -641,7 +892,8 @@ pub struct Dit {
     latent_w: u32,
     audio_t: u32,
 
-    blocks: Vec<Block>,
+    blocks: Vec<CoreBlock>,
+    streamer: Option<Streamer>,
     final_layer: Final,
     patches: Patches,
 
@@ -687,6 +939,28 @@ impl Dit {
         text: &Embedding,
         spatial_rope_scale: f32,
     ) -> Result<Dit, DitError> {
+        Dit::load_with(
+            dir,
+            sequence,
+            schedule,
+            text,
+            spatial_rope_scale,
+            LoadMode::Resident,
+        )
+    }
+
+    /// `LoadMode::Stream` keeps two matrix slots on the device and reads each
+    /// block from the checkpoint, as the reference's `--ssd-streaming` does
+    /// (`h3_dit.c:1240-1300`, `:2178-2240`). The arithmetic is the same bytes
+    /// through the same kernels; only residency changes.
+    pub fn load_with(
+        dir: &Path,
+        sequence: Sequence,
+        schedule: Schedule,
+        text: &Embedding,
+        spatial_rope_scale: f32,
+        mode: LoadMode,
+    ) -> Result<Dit, DitError> {
         let weights = Weights::open(dir).map_err(|error| DitError::Weights(error.to_string()))?;
         let config = weights.config().clone();
         let gpu = device(Gpu::create())?;
@@ -713,7 +987,11 @@ impl Dit {
             modulation_maps(&gpu, &tree, &sequence)?;
 
         // `h3_dit.c:1685-1688`: the core, then the activation arena.
-        let blocks = load_blocks(&gpu, &weights, &config)?;
+        let blocks = load_blocks(&gpu, &weights, &config, mode)?;
+        let mut streamer = match mode {
+            LoadMode::Resident => None,
+            LoadMode::Stream => Some(Streamer::new(&gpu, &weights, &config)?),
+        };
         let final_layer = load_final(&gpu, &weights)?;
         let patches = load_patches(&gpu, &weights)?;
         let (video_projection_map, audio_projection_map) = projection_maps(&gpu, &sequence)?;
@@ -743,6 +1021,12 @@ impl Dit {
 
         device(gpu.sync())?;
 
+        // `h3_dit.c:1272-1293`: the reference primes the first active block so
+        // the first forward does not wait for it.
+        if let Some(streamer) = streamer.as_mut() {
+            streamer.ensure(&gpu, 0)?;
+        }
+
         Ok(Dit {
             gpu,
             config,
@@ -766,6 +1050,7 @@ impl Dit {
             sequence,
             schedule,
             blocks,
+            streamer,
             final_layer,
             patches,
             modulation,
@@ -805,6 +1090,11 @@ impl Dit {
         32 * AUDIO_STREAMS as usize * self.audio_t as usize
     }
 
+    /// One streaming slot's bytes, or `None` when every block is resident.
+    pub fn stream_slot_bytes(&self) -> Option<u64> {
+        self.streamer.as_ref().map(Streamer::slot_bytes)
+    }
+
     /// The modulation tensors, exposed so a caller can gate them on their own:
     /// a defect here moves every block and the final head at once.
     pub fn modulation_hashes(&self) -> Result<(u64, u64), DitError> {
@@ -821,7 +1111,7 @@ impl Dit {
     /// graph once at `step`, and return both velocities in the reference's
     /// `[24,T,H,W]` / `[32,2,T]` layouts.
     pub fn forward(
-        &self,
+        &mut self,
         step: usize,
         video_latent: &[f32],
         audio_latent: &[f32],
@@ -892,7 +1182,7 @@ impl Dit {
     /// `H3_GPU_SAMPLER` says so (`h3_dit.c:2572-2578`); CUDA takes this
     /// path, so the port reproduces it.
     pub fn denoise(
-        &self,
+        &mut self,
         video: &mut [f32],
         audio: &mut [f32],
         reuse: usize,
@@ -1000,7 +1290,7 @@ impl Dit {
     /// `h3_dit.c:2050-2396` `encode_forward` with `core_reuse_interval = 1`,
     /// `token_reduction = 0`, `ssd_streaming = 0` and the CUDA flag set of
     /// `h3_dit.c:1601-1665`.
-    fn encode_forward(&self, step: usize) -> Result<(), DitError> {
+    fn encode_forward(&mut self, step: usize) -> Result<(), DitError> {
         let hidden = self.hidden_width;
 
         // `h3_dit.c:2058-2158`: the fused patch projection writes each segment
@@ -1096,9 +1386,29 @@ impl Dit {
         // `h3_dit.c:2181-2306`: every block, with the next block's attention
         // AdaLN fused into this block's MLP gate.
         let mut carried = false;
+        let streamed = self.streamer.is_some();
         for block in 0..self.blocks.len() {
             let fuse_next = block + 1 < self.blocks.len();
-            self.run_block(block, step, fuse_next, &mut carried)?;
+            if streamed {
+                let streamer = self.streamer.as_mut().expect("streamed forward");
+                streamer.ensure(&self.gpu, block)?;
+                // `h3_dit.c:2223-2240`: the next block is read while this one
+                // runs; after the last block the ring wraps to block 0, so the
+                // next denoise step starts ready.
+                let next = if block + 1 < self.blocks.len() {
+                    block + 1
+                } else {
+                    0
+                };
+                streamer.start(next)?;
+            }
+            self.run_block(block, step, fuse_next, &mut carried, streamed)?;
+            if streamed {
+                self.streamer
+                    .as_mut()
+                    .expect("streamed forward")
+                    .finish(&self.gpu)?;
+            }
         }
 
         // `h3_dit.c:2316-2337`: the fused final head, AdaLN then projection,
@@ -1167,13 +1477,25 @@ impl Dit {
         step: usize,
         fuse_next_attention: bool,
         carried: &mut bool,
+        streamed: bool,
     ) -> Result<(), DitError> {
         let rows = self.rows;
         let hidden = self.hidden_width;
         let inner = self.inner;
         let modulation = &self.modulation[block];
         let row_map = &self.row_maps[step];
-        let weight = &self.blocks[block];
+        let norms = &self.blocks[block].norms;
+        let matrices = match streamed {
+            true => self
+                .streamer
+                .as_ref()
+                .ok_or_else(|| DitError::Gpu("streamed block without a ring".into()))?
+                .current(),
+            false => self.blocks[block]
+                .matrices
+                .as_ref()
+                .ok_or_else(|| DitError::Gpu("resident block without matrices".into()))?,
+        };
         let attention_adaln_ready = *carried;
         *carried = false;
 
@@ -1182,7 +1504,7 @@ impl Dit {
                 &self.mod_attention,
                 &self.hidden,
                 0,
-                &weight.norm1,
+                &norms.norm1,
                 modulation,
                 row_map,
                 rows,
@@ -1199,7 +1521,7 @@ impl Dit {
         device(self.gpu.linear(
             &self.qkv,
             &self.mod_attention,
-            &weight.qkv,
+            &matrices.qkv,
             None,
             rows,
             hidden,
@@ -1211,8 +1533,8 @@ impl Dit {
             &self.key,
             &self.value,
             &self.qkv,
-            &weight.q_norm,
-            &weight.k_norm,
+            &norms.q_norm,
+            &norms.k_norm,
             &self.rope_cos,
             &self.rope_sin,
             rows,
@@ -1237,7 +1559,7 @@ impl Dit {
         device(self.gpu.linear(
             &self.attention_output,
             &self.qkv,
-            &weight.out,
+            &matrices.out,
             None,
             rows,
             inner,
@@ -1262,7 +1584,7 @@ impl Dit {
             &self.qkv,
             &self.hidden,
             0,
-            &weight.norm2,
+            &norms.norm2,
             modulation,
             row_map,
             rows,
@@ -1277,7 +1599,7 @@ impl Dit {
         device(self.gpu.linear(
             &self.fc1,
             &self.qkv,
-            &weight.fc1,
+            &matrices.fc1,
             None,
             rows,
             hidden,
@@ -1291,7 +1613,7 @@ impl Dit {
         device(self.gpu.linear(
             &self.attention_output,
             &self.activated,
-            &weight.fc2,
+            &matrices.fc2,
             None,
             rows,
             self.config.ffn as u32,
@@ -1322,7 +1644,7 @@ impl Dit {
             &self.mod_attention,
             &self.hidden,
             0,
-            &next.norm1,
+            &next.norms.norm1,
             &self.modulation[block + 1],
             row_map,
             rows,
@@ -1728,30 +2050,51 @@ fn projection_maps(
     Ok((video_map, audio_map))
 }
 
-fn load_blocks(gpu: &Gpu, weights: &Weights, config: &Config) -> Result<Vec<Block>, DitError> {
+fn load_blocks(
+    gpu: &Gpu,
+    weights: &Weights,
+    config: &Config,
+    mode: LoadMode,
+) -> Result<Vec<CoreBlock>, DitError> {
     let mut blocks = Vec::with_capacity(config.layers as usize);
     for layer in 0..config.layers {
-        blocks.push(load_block(gpu, weights, layer)?);
+        blocks.push(load_block(gpu, weights, layer, mode)?);
     }
     Ok(blocks)
 }
 
-/// `h3_dit.c:502-525` `load_block`.
-fn load_block(gpu: &Gpu, weights: &Weights, layer: u32) -> Result<Block, DitError> {
-    load_role_block(
-        gpu,
-        weights,
-        [
-            Role::BlockNorm1(layer),
-            Role::BlockNorm2(layer),
-            Role::BlockQkv(layer),
-            Role::BlockQNorm(layer),
-            Role::BlockKNorm(layer),
-            Role::BlockOut(layer),
-            Role::BlockFc1(layer),
-            Role::BlockFc2(layer),
-        ],
-    )
+/// `h3_dit.c:502-525` `load_block`, and `:1251-1262` `load_block_norms` when
+/// the matrices stream.
+fn load_block(
+    gpu: &Gpu,
+    weights: &Weights,
+    layer: u32,
+    mode: LoadMode,
+) -> Result<CoreBlock, DitError> {
+    let norms = BlockNorms {
+        norm1: tensor_from_role(gpu, weights, Role::BlockNorm1(layer), Dtype::Bf16)?,
+        norm2: tensor_from_role(gpu, weights, Role::BlockNorm2(layer), Dtype::Bf16)?,
+        q_norm: tensor_from_role(gpu, weights, Role::BlockQNorm(layer), Dtype::Bf16)?,
+        k_norm: tensor_from_role(gpu, weights, Role::BlockKNorm(layer), Dtype::Bf16)?,
+    };
+    let matrices = match mode {
+        LoadMode::Resident => Some(load_block_matrices(gpu, weights, layer)?),
+        LoadMode::Stream => None,
+    };
+    Ok(CoreBlock { norms, matrices })
+}
+
+fn load_block_matrices(
+    gpu: &Gpu,
+    weights: &Weights,
+    layer: u32,
+) -> Result<BlockMatrices, DitError> {
+    Ok(BlockMatrices {
+        qkv: tensor_from_role(gpu, weights, Role::BlockQkv(layer), Dtype::Bf16)?,
+        out: tensor_from_role(gpu, weights, Role::BlockOut(layer), Dtype::Bf16)?,
+        fc1: tensor_from_role(gpu, weights, Role::BlockFc1(layer), Dtype::Bf16)?,
+        fc2: tensor_from_role(gpu, weights, Role::BlockFc2(layer), Dtype::Bf16)?,
+    })
 }
 
 fn load_refiner_block(gpu: &Gpu, weights: &Weights, layer: u32) -> Result<Block, DitError> {

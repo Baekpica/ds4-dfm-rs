@@ -861,6 +861,26 @@ Deviations, named and measured:
 The 20-step 256x256 run is the CLI default (`main.c:30`), so the gate is the
 reference's own short-render shape, not a reduced one.
 
+**P9.1 — The block stream, implemented early (2026-10-24).** The reference's
+`--ssd-streaming` residency ring (`h3_dit.c:625-690`, `:2223-2330`) as
+`LoadMode::Stream`: two 735.0 MiB matrix slots, the norms resident, one reader
+thread per block reading ascending path then offset, each range dropped from
+the page cache after its read (`h3_gpu_cuda.cu:410-412`), and the ring wrapping
+to block 0 after block 49 so the next denoise step starts ready.
+
+Gate, 256x256/5 frames, seed 1, 2 steps: reference resident
+`4307e38ab75bf72d`/`775b6fbbcf79889b`, port resident the same, port streamed
+the same, edges included. `STREAM slots=2 slot_bytes=770703360`; load 3.654 s
+against 46.697 s resident (norms only), denoise 43.902 s against 0.508 s for
+71.8 GiB of reads. The mode is a memory tier, exactly as section 4.5 prices it.
+
+Deviations: the reference reads with pread and, on Metal, `F_NOCACHE`; this
+path is pread plus `POSIX_FADV_DONTNEED` on Linux. Its `active_blocks` /
+`first_active_block` subset is not ported: the port streams all 50 blocks or
+none. A first gate run diverged because the ring's initial `active_layer` was
+0, which made the priming `ensure(0)` a no-op and ran block 0 on a blank slot;
+the sentinel is now `usize::MAX`.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode

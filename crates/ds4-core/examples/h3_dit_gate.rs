@@ -4,7 +4,8 @@
 //! Usage: h3_dit_gate <FL2VA/text_encoder> <tokenizer.json> <FL2VA/transformer>
 //!                    <prompt> [--width W] [--height H] [--frames F]
 //!                    [--steps N] [--step S] [--seed N] [--denoise]
-//!                    [--reuse K] [--expect-video HEX] [--expect-audio HEX]
+//!                    [--reuse K] [--stream] [--expect-video HEX]
+//!                    [--expect-audio HEX]
 //!                    [--expect-adaln BLOCK:FINAL] [--adaln-only]
 //!
 //! Prints the prompt ids, the text hash (the E4 gate's), the packed layout,
@@ -44,11 +45,15 @@
 //!        audio=cbe8fd45590fbf65, 4.872 s in the reference
 //!   DENOISE steps=20 reuse=3 selected=8 video=46cd8839c5e06ca9
 //!        audio=3e038686c6df2623, 2.000 s in the reference
+//!
+//! `--stream` loads the two-slot ring instead of the 50 resident blocks; the
+//! latents must be identical to the resident run. The recorded 2-step pair
+//! is video=4307e38ab75bf72d audio=775b6fbbcf79889b in all three.
 
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::dit::{self, Dit};
+use ds4_core::minimax_h3::dit::{self, Dit, LoadMode};
 use ds4_core::minimax_h3::host::{latent_canvas, reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
@@ -136,15 +141,24 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     println!("{}", sigmas_line(&schedule));
 
     let start = Instant::now();
-    let model = Dit::load(
+    let mode = if options.stream {
+        LoadMode::Stream
+    } else {
+        LoadMode::Resident
+    };
+    let mut model = Dit::load_with(
         transformer,
         sequence,
         schedule.clone(),
         &text,
         options.rope_scale,
+        mode,
     )
     .map_err(|error| error.to_string())?;
     println!("LOAD seconds={:.3}", start.elapsed().as_secs_f64());
+    if let Some(bytes) = model.stream_slot_bytes() {
+        println!("STREAM slots=2 slot_bytes={bytes}");
+    }
 
     let mut video_noise = vec![0.0f32; model.video_elements()];
     let mut audio_noise = vec![0.0f32; model.audio_elements()];
@@ -315,6 +329,7 @@ struct Options {
     rope_scale: f32,
     reuse: usize,
     denoise: bool,
+    stream: bool,
     expect_video: Option<u64>,
     expect_audio: Option<u64>,
     expect_adaln: Option<(u64, u64)>,
@@ -333,6 +348,7 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         rope_scale: 1.0,
         reuse: 1,
         denoise: false,
+        stream: false,
         expect_video: None,
         expect_audio: None,
         expect_adaln: None,
@@ -358,6 +374,11 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
             "--reuse" => options.reuse = number(value()?)?,
             "--denoise" => {
                 options.denoise = true;
+                index += 1;
+                continue;
+            }
+            "--stream" => {
+                options.stream = true;
                 index += 1;
                 continue;
             }
@@ -414,7 +435,7 @@ fn usage(detail: &str) -> String {
         "{detail}\nusage: h3_dit_gate <FL2VA/text_encoder> <tokenizer.json> \
          <FL2VA/transformer> <prompt> [--width W] [--height H] [--frames F] \
          [--steps N] [--step S] [--seed N] [--rope-scale X] [--denoise] \
-         [--reuse K] [--expect-video HEX] \
+         [--reuse K] [--stream] [--expect-video HEX] \
          [--expect-audio HEX] [--expect-adaln BLOCK:FINAL]\n       \
          h3_dit_gate <FL2VA/transformer> --adaln-only [--steps N] \
          [--expect-adaln BLOCK:FINAL]"
