@@ -1572,11 +1572,29 @@ static bool mm_score_mma_ready(void) {
     return true;
 }
 
+// Raw page words of block b for this thread's two (side, key, half) units of
+// mm_attn_mma_kernel's decode.
+__device__ __forceinline__ void mm_at_raw(const uint8_t *pages, const int32_t *table, uint32_t kv, uint32_t b,
+        uint4 *d0, uint4 *d1, uint32_t *sc) {
+    const uint64_t page_id = table ? (uint64_t)table[b] : (uint64_t)b;
+    const uint8_t *page = pages + (page_id * MM_KV_HEADS + kv) * MM_PAGE;
+    #pragma unroll
+    for (uint32_t u = 0; u < 2; u++) {
+        const uint32_t i = threadIdx.x + u * MM_AT_ROWS * 32;
+        const uint32_t side = i / (2u * MM_BLOCK), key = i / 2 % MM_BLOCK, half = i % 2;
+        const uint8_t *base = page + side * (MM_PAGE / 2);
+        d0[u] = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32);
+        d1[u] = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32 + 16);
+        sc[u] = *(const uint32_t *)(base + MM_BLOCK * MM_FP4_DATA + key * 8 + half * 4);
+    }
+}
+static_assert(4u * MM_BLOCK == 2u * MM_AT_ROWS * 32, "two decode units per thread");
+
 __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *heads, const float *q,
         const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos, uint32_t rows) {
     extern __shared__ __align__(16) uint8_t mm_at_smem[];
     __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_BLOCK * MM_AT_LD;
-    __shared__ uint32_t next[MM_AT_ROWS];
+    __shared__ uint32_t next[2][MM_AT_ROWS];
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane >> 2, t = lane & 3;
     const uint32_t kv = blockIdx.y, row = blockIdx.x * MM_AT_ROWS + warp;
     const bool live = row < rows;
@@ -1598,37 +1616,48 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *
     for (uint32_t n = 0; n < 16; n++) { o[n][0] = o[n][1] = o[n][2] = o[n][3] = 0.0f; }
     float m0 = -INFINITY, m1 = -INFINITY, l0 = 0.0f, l1 = 0.0f;
     const float scale = 0.08838834764831845f;   // 128^-0.5
-    uint32_t cursor = 0;
-    for (;;) {
-        const int32_t mine = live && cursor < MM_TOPK ? list[cursor] : -1;
-        if (!lane) { next[warp] = mine < 0 ? UINT32_MAX : (uint32_t)mine; }
-        __syncthreads();
-        uint32_t b = UINT32_MAX;
-        #pragma unroll
-        for (uint32_t w = 0; w < MM_AT_ROWS; w++) { b = min(b, next[w]); }
-        if (b == UINT32_MAX) { break; }
+    // Lane l < 16 holds entry l of the row's ascending list.
+    const int32_t entries = live && lane < MM_TOPK ? list[lane] : -1;
+    uint32_t cursor = 0, it = 0;
+    int32_t mine = __shfl_sync(0xffffffffu, entries, 0);
+    if (!lane) { next[0][warp] = mine < 0 ? UINT32_MAX : (uint32_t)mine; }
+    __syncthreads();
+    uint32_t b = UINT32_MAX;
+    #pragma unroll
+    for (uint32_t w = 0; w < MM_AT_ROWS; w++) { b = min(b, next[0][w]); }
+    // A block's raw page words load one block ahead: the smallest pending
+    // entry is known before the current block's MMAs, which hide the loads.
+    uint4 d0[2], d1[2];
+    uint32_t sc[2];
+    if (b != UINT32_MAX) { mm_at_raw(pages, table, kv, b, d0, d1, sc); }
+    while (b != UINT32_MAX) {
         // Block b's K and V pages of this head into shared memory as BF16:
         // 512 units of (side, key, 64 values), 32 data bytes and 4 scales each.
-        const uint64_t page_id = table ? (uint64_t)table[b] : (uint64_t)b;
-        const uint8_t *page = pages + (page_id * MM_KV_HEADS + kv) * MM_PAGE;
-        for (uint32_t i = threadIdx.x; i < 4u * MM_BLOCK; i += blockDim.x) {
+        #pragma unroll
+        for (uint32_t u = 0; u < 2; u++) {
+            const uint32_t i = threadIdx.x + u * MM_AT_ROWS * 32;
             const uint32_t side = i / (2u * MM_BLOCK), key = i / 2 % MM_BLOCK, half = i % 2;
-            const uint8_t *base = page + side * (MM_PAGE / 2);
-            const uint4 d0 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32);
-            const uint4 d1 = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32 + 16);
-            const uint32_t sc = *(const uint32_t *)(base + MM_BLOCK * MM_FP4_DATA + key * 8 + half * 4);
-            const uint32_t words[8] = {d0.x, d0.y, d0.z, d0.w, d1.x, d1.y, d1.z, d1.w};
+            const uint32_t words[8] = {d0[u].x, d0[u].y, d0[u].z, d0[u].w, d1[u].x, d1[u].y, d1[u].z, d1[u].w};
             uint32_t packed[32];
-            mm_fp4_bf16(words, sc, packed);
+            mm_fp4_bf16(words, sc[u], packed);
             uint4 *dst = (uint4 *)((side ? vs : ks) + key * MM_AT_LD + half * 64);
             #pragma unroll
             for (uint32_t k = 0; k < 8; k++) {
                 dst[k] = make_uint4(packed[k * 4], packed[k * 4 + 1], packed[k * 4 + 2], packed[k * 4 + 3]);
             }
         }
+        const bool take = mine == (int32_t)b;
+        const int32_t after = __shfl_sync(0xffffffffu, entries, (cursor + 1) & 31u);
+        const int32_t later = !take ? mine : cursor + 1 < MM_TOPK ? after : -1;
+        // Double-buffered: a warp may write the next entry while another still
+        // reads this one's.
+        if (!lane) { next[(it + 1) & 1][warp] = later < 0 ? UINT32_MAX : (uint32_t)later; }
         __syncthreads();
-        if (mine == (int32_t)b) {
-            cursor++;
+        uint32_t nb = UINT32_MAX;
+        #pragma unroll
+        for (uint32_t w = 0; w < MM_AT_ROWS; w++) { nb = min(nb, next[(it + 1) & 1][w]); }
+        if (nb != UINT32_MAX) { mm_at_raw(pages, table, kv, nb, d0, d1, sc); }
+        if (take) {
             const uint32_t t0 = b * MM_BLOCK;
             #pragma unroll 1
             for (uint32_t half = 0; half < 2; half++) {
@@ -1702,7 +1731,11 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(float *
                     }
                 }
             }
+            cursor++;
         }
+        mine = later;
+        b = nb;
+        it++;
         __syncthreads();
     }
     l0 += __shfl_xor_sync(0xffffffffu, l0, 1);
