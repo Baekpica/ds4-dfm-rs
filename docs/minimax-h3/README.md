@@ -29,6 +29,11 @@ Related, outside this directory:
 | Encoder forward | `crates/ds4-core/src/minimax_h3/text_forward.rs` |
 | Encoder gate | `crates/ds4-core/examples/h3_text_gate.rs` (`make tests/h3_text_gate`) |
 | Native encoder primitives | `native/h3/h3_text_gpu.cu` |
+| Vision tower layout and host prep | `crates/ds4-core/src/minimax_h3/vision.rs` |
+| Vision weight table | `crates/ds4-core/src/minimax_h3/vision_weights.rs` |
+| Vision forward | `crates/ds4-core/src/minimax_h3/vision_forward.rs` |
+| Vision gate | `crates/ds4-core/examples/h3_vision_gate.rs` (`make tests/h3_vision_gate`) |
+| Native vision primitives | `native/h3/h3_vision_gpu.cu` |
 | Host arithmetic (canvas, noise, sigmas, reuse window, Euler step) | `crates/ds4-core/src/minimax_h3/host.rs` |
 | Packed sequence layout | `crates/ds4-core/src/minimax_h3/sequence.rs` |
 | DiT forward, Euler denoise, block stream | `crates/ds4-core/src/minimax_h3/dit.rs` |

@@ -44,4 +44,7 @@ pub mod vae_audio;
 pub mod vae_store;
 pub mod vae_video;
 pub mod video_api;
+pub mod vision;
+pub mod vision_forward;
+pub mod vision_weights;
 pub mod weights;

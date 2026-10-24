@@ -8,6 +8,7 @@
 
 pub mod h3_dit;
 pub mod h3_text;
+pub mod h3_vision;
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_float, c_int, c_void};

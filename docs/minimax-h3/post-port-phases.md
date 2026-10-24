@@ -387,6 +387,27 @@ would be a new mechanism, not a port.
 Dependency order is 1, 2, 3, 4, 5, then 6; unit 1 and unit 2 are independent
 and unit 2 can run in parallel with unit 1 only if two sessions exist.
 
+**Unit 1 landed** (`minimax_h3::media`): probe, image read with STRETCH/COVER
+Lanczos, 24 fps clip trimmed to `5+17k`, stereo 32 kHz audio with the truncate
+rule, eight tests on generated media plus the pilot PNG.
+
+**Unit 2 landed** (`vision.rs`, `vision_weights.rs`, `vision_forward.rs`,
+`native/h3/h3_vision_gpu.{h,cu}`, `h3_vision_gate`): the whole tower, from the
+patch rows to the final merger and the three deepstacks. Two corrections to
+the survey above, both read from the reference this unit:
+
+- The path is **351** tensors, not 350 as an earlier draft said: twelve per
+  block (`h3_vision_encoder.c:250-287`, not eleven), plus the position table,
+  the patch weight and bias, and four mergers of six.
+- A deepstack merger normalizes `[merged_rows, 4608]`; the final merger
+  normalizes `[patch_rows, 1152]`. Both then run the same 4608-wide projection
+  pair (`:353-368`).
+
+The unit's own test is the layout walk plus the host preparations; the device
+side is gated by `make tests/h3_vision_gate` on the Spark, whose golden hashes
+are still to be recorded (the gate prints them; the reference side needs a
+probe in `~/h3-oracle`).
+
 ## P12.5 — Port the reference test suite
 
 `/data/h3.c/tests` holds 33 files and 9,177 lines. They are the reference's own
