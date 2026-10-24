@@ -17,7 +17,7 @@ as `file:line`. Nothing is taken from OpenAI's documentation.
 | Flag | Default | Effect |
 |---|---|---|
 | `--bind ADDR:PORT` | `127.0.0.1:8090` | listen address (`h3-server-rs.rs:17`, `:46-47`) |
-| `--model ID` | `minimax-h3` | the only accepted model id (`h3-server-rs.rs:18`, `video_api.rs:75-76`) |
+| `--model ID` | `minimax-h3` | the only accepted model id (`h3-server-rs.rs:18`, `video_api.rs:77`) |
 | `--out-dir DIR` | `h3-videos` | MP4 directory, created at startup (`h3-server-rs.rs:19`, `:183-189`) |
 | `--model-dir DIR` | none | in-process engine checkpoint root (`h3-server-rs.rs:50-52`) |
 | `--steps N` | `20` | denoise evaluations, engine only (`h3-server-rs.rs:21`, `:53`) |
@@ -29,10 +29,10 @@ as `file:line`. Nothing is taken from OpenAI's documentation.
 | `--timeout-secs N` | `3600` | per-render timeout, external renderer only (`h3-server-rs.rs:24`, `:60`, `:127-131`) |
 
 `--model-dir` and `--renderer` are mutually exclusive; both exits 2
-(`h3-server-rs.rs:191-197`). `--model-dir` in a build without `native` exits 2
+(`h3-server-rs.rs:192-196`). `--model-dir` in a build without `native` exits 2
 (`h3-server-rs.rs:172-179`); a checkpoint that fails to open exits 1
-(`h3-server-rs.rs:153-170`). A bind or out-dir failure exits 1
-(`h3-server-rs.rs:183-189`, `:205-213`).
+(`h3-server-rs.rs:154-170`). A bind or out-dir failure exits 1
+(`h3-server-rs.rs:183-189`, `:205-212`).
 
 ```bash
 # In-process engine: one render at a time, the rest wait in arrival order.
@@ -55,7 +55,7 @@ as `file:line`. Nothing is taken from OpenAI's documentation.
 ```
 
 Startup prints the bind, the model, the output directory and the backend
-(`h3-server-rs.rs:215-235`); the last line is
+(`h3-server-rs.rs:217-234`); the last line is
 `renderer disabled (POST /v1/videos answers 503)` when neither backend is set.
 
 The engine keeps the prompt embedding and the prepared DiT across requests and
@@ -64,14 +64,14 @@ channel is the queue (`h3_engine.rs:5-8`, `engine.rs:11-16`, `:375-380`,
 `:413-422`). The external renderer is spawned once per job with
 `PROGRAM [fixed args...] -p P --width W --height H --seconds S -o PATH`, its
 stdin null, stdout discarded, stderr tail kept (`h3_video.rs:107-152`,
-`:161-240`). The request never chooses the program, an argument, the working
+`:160-240`). The request never chooses the program, an argument, the working
 directory or a path (`h3_video.rs:8-18`).
 
 ## Create a video
 
 `POST /v1/videos` answers 200 with the `Video` object
-(`h3_video.rs:358-379`). Without a backend it answers 503 `renderer_disabled`
-before touching the store (`h3_video.rs:359-365`).
+(`h3_video.rs:359-379`). Without a backend it answers 503 `renderer_disabled`
+before touching the store (`h3_video.rs:360-365`).
 
 ```bash
 curl -s http://127.0.0.1:8090/v1/videos \
@@ -88,18 +88,18 @@ curl -s http://127.0.0.1:8090/v1/videos \
 
 | Field | Type | Rule |
 |---|---|---|
-| `prompt` | string | required, 1 to 32000 characters counted by `char` (`video_api.rs:42-43`, `:374-394`) |
+| `prompt` | string | required, 1 to 32000 characters counted by `char` (`video_api.rs:42`, `:376-396`) |
 | `model` | string | optional, must equal `--model` exactly (`video_api.rs:419-427`) |
-| `size` | string | optional, preset name or literal `WxH`, default `512x512` (`video_api.rs:68-70`, `:429-470`) |
-| `seconds` | string | optional, positive decimal, default `"4"` (`video_api.rs:72-74`, `:472-486`) |
+| `size` | string | optional, preset name or literal `WxH`, default `512x512` (`video_api.rs:70`, `:429-470`) |
+| `seconds` | string | optional, positive decimal, default `"4"` (`video_api.rs:74`, `:472-482`) |
 | `input_reference` | object | recognised and refused (`video_api.rs:397-415`) |
 
-Three encodings reach the same validation (`h3_video.rs:622-651`): JSON (absent
-Content-Type means JSON; unknown keys ignored, `video_api.rs:290-291`),
+Three encodings reach the same validation (`h3_video.rs:635-651`): JSON (absent
+Content-Type means JSON; unknown keys ignored, `video_api.rs:294-356`),
 `application/x-www-form-urlencoded`, and `multipart/form-data` (what
 `openai-python` and the official curl example send). Form bodies accept only
 those five names; any other field is 400 `unknown_parameter`, and a repeated
-field keeps its last value (`h3_video.rs:751-772`).
+field keeps its last value (`h3_video.rs:752-772`).
 
 The response is the job as submitted, before the render thread starts:
 
@@ -109,12 +109,12 @@ The response is the job as submitted, before the render thread starts:
 
 The server moves the job to `in_progress` before that response is written, so
 the next GET already reports `in_progress` even while it waits behind another
-render (`h3_video.rs:375-378`, `video_api.rs:694-706`).
+render (`h3_video.rs:375-377`, `video_api.rs:693-704`).
 
 ## Size names and literal WxH
 
 A preset name carries two geometries: the canvas the model renders and the
-frame the MP4 carries (`presets.rs:115-145`, `:197-252`).
+frame the MP4 carries (`presets.rs:114-145`, `:197-252`).
 
 | `size` | Model canvas | Delivered frame | Scale |
 |---|---|---|---|
@@ -135,34 +135,34 @@ is `16:9`, `instagram_1x1` is `1:1`, `cinema_21x9` is `21:9`
 A literal `WxH` is the model canvas and the delivered frame at once: no resize
 (`video_api.rs:429-469`). Only the model rules apply: both edges multiples of
 32 and at least 32, and width times height at most 768*1344 = 1,032,192
-(`video_api.rs:58-66`, `:235-254`). The spelling must be canonical: lowercase
-`x`, digits only, no leading zeros (`video_api.rs:211-228`). So `720x1280` and
+(`video_api.rs:58-65`, `:235-254`). The spelling must be canonical: lowercase
+`x`, digits only, no leading zeros (`video_api.rs:213-228`). So `720x1280` and
 `1280x720` fail the multiple-of-32 rule and `1024x1792` fails the area cap;
 `768x768`, `1024x768` and `512x512` pass.
 
-Two things to know:
+Three things to know:
 
 - The response `size` is the delivered frame, so a preset comes back as pixels
   (`video_api.rs:680`). The render canvas is never echoed.
 - A preset's delivered frame may exceed the area cap (1920x1080 is 2,073,600
-  pixels); the cap applies to the render canvas only (`presets.rs:146-192`).
+  pixels); the cap applies to the render canvas only (`presets.rs:148-192`).
 - The external renderer receives `--width`/`--height` from the delivered frame
   (`h3_video.rs:143-146`), while the engine receives the render canvas and the
-  delivered frame separately (`h3_engine.rs:49-59`). With `--renderer`, a
+  delivered frame separately (`h3_engine.rs:50-61`). With `--renderer`, a
   preset name such as `16:9` hands the child 1920x1080, which the h3 canvas
   rules refuse. Use a literal `WxH` with `--renderer`.
 
 ## Duration
 
 `seconds` is parsed as a positive decimal, converted at 24 fps and rounded
-(`video_api.rs:89-93`). The rounded frame count must land in 5 to 362 and its
+(`video_api.rs:91-93`). The rounded frame count must land in 5 to 362 and its
 upward alignment to `5 + 17*n` frames must be at least 22
-(`video_api.rs:52-66`, `:487-503`). In practice the window is about 0.23 s to
+(`video_api.rs:58-65`, `:490-503`). In practice the window is about 0.23 s to
 15.1 s; `"0.21"` is refused with 400 `invalid_value` on `seconds`
 (`video_api.rs:505-513`).
 
 The string is echoed unchanged in the job, while the clip is the aligned frame
-count: `"4"` becomes 107 frames, 4.458 s (`video_api.rs:79-87`).
+count: `"4"` becomes 107 frames, 4.458 s (`video_api.rs:80-87`).
 
 ## Job lifecycle
 
@@ -174,12 +174,12 @@ count: `"4"` becomes 107 frames, 4.458 s (`video_api.rs:79-87`).
 | `failed` | 0 | `completed_at` set, `error` carries `code` and `message` |
 
 Statuses, `progress` and `error` come from `video_api.rs:159-177` and
-`:694-736`. Progress never moves between 0 and 100; there is no partial
+`:693-736`. Progress never moves between 0 and 100; there is no partial
 percentage, so a long render looks static.
 
-Nothing expires: `expires_at` is always null (`video_api.rs:674-678`). A job
-lives until it is deleted or the server restarts; the store is in memory only
-(`video_api.rs:615-634`), and MP4s left in `--out-dir` by an earlier run are
+Nothing expires: `expires_at` is always null (`video_api.rs:678`). A job lives
+until it is deleted or the server restarts; the store is in memory only
+(`video_api.rs:618-634`), and MP4s left in `--out-dir` by an earlier run are
 not re-adopted.
 
 ## Poll a job
@@ -200,9 +200,8 @@ A failed job carries the reason in the same object:
 
 Renderer failure codes: `render_failed` (nonzero exit), `render_timeout`
 (child killed at `--timeout-secs`), `render_output_missing` (exit 0 without a
-non-empty file), `renderer_spawn_failed` (`h3_video.rs:193-236`, `:391-432`).
-The last 4096 bytes of the child's stderr ride the message
-(`h3_video.rs:37-40`).
+non-empty file), `renderer_spawn_failed` (`h3_video.rs:186-239`, `:391-432`).
+The last 4096 bytes of the child's stderr ride the message (`h3_video.rs:41`).
 
 ## Download the MP4
 
@@ -214,17 +213,18 @@ curl -sS -o video_1.mp4 http://127.0.0.1:8090/v1/videos/video_1/content
 curl -sSI http://127.0.0.1:8090/v1/videos/video_1/content
 ```
 
-Content is served with `Content-Type: video/mp4` and `Content-Length`
-(`h3_video.rs:497-501`). `HEAD` returns the same headers without a body, with
-`Content-Length` equal to the file size (`h3_video.rs:296-310`). Only a
+The file on disk is `<out-dir>/<id>.mp4` (`h3_video.rs:373-374`). Content is
+served with `Content-Type: video/mp4` and `Content-Length`
+(`h3_video.rs:498-502`). `HEAD` returns the same headers without a body, with
+`Content-Length` equal to the file size (`h3_video.rs:298-310`). Only a
 completed job has content; any other status is 404 `video_not_ready`
-(`h3_video.rs:479-489`), and a completed job whose file is gone is 404
+(`h3_video.rs:480-488`), and a completed job whose file is gone is 404
 `content_not_found` (`h3_video.rs:490-496`). The optional `variant` query
 accepts only `video`; anything else is 400 `unsupported_parameter` with
-`param: "variant"` (`h3_video.rs:463-477`).
+`param: "variant"` (`h3_video.rs:466-477`).
 
 `HEAD` is wired for `/content` only; on any other route it answers 404
-`unknown_url` (`h3_video.rs:343-357`).
+`unknown_url` (`h3_video.rs:341-356`).
 
 ## List jobs
 
@@ -238,13 +238,13 @@ curl -s 'http://127.0.0.1:8090/v1/videos?limit=5&order=desc'
 | `order` | `asc`, `desc` | `desc` |
 | `after` | a video id | none |
 
-Limits are `video_api.rs:45-48` and `:842-863`; ordering is `:866-880`. The
+Limits are `video_api.rs:46-48` and `:842-863`; ordering is `:866-880`. The
 response is `{"object":"list","data":[...],"first_id":...,"last_id":...,"has_more":...}`,
 with `first_id`/`last_id` null on an empty page (`video_api.rs:556-577`).
 `after` names the last id of the previous page; an id that is not in the store
-is 400 `invalid_after` (`video_api.rs:778-793`). `limit=0` is legal and returns
+is 400 `invalid_after` (`video_api.rs:778-791`). `limit=0` is legal and returns
 an empty page. The `desc` default is an assumption, not reference behaviour
-(`video_api.rs:867-870`).
+(`video_api.rs:867-869`).
 
 ## Delete a job
 
@@ -257,9 +257,9 @@ curl -s -X DELETE http://127.0.0.1:8090/v1/videos/video_1
 ```
 
 Only completed or failed jobs may be deleted; a queued or in-progress job is
-400 `video_not_ready` (`video_api.rs:808-830`). Deletion removes the MP4 from
-`--out-dir` (`h3_video.rs:450-461`). Ids are `video_N` from a monotonic counter
-and are never reused (`video_api.rs:671-672`).
+400 `video_not_ready` (`video_api.rs:809-831`). Deletion removes the MP4 from
+`--out-dir` (`h3_video.rs:451-461`). Ids are `video_N` from a monotonic counter
+and are never reused (`video_api.rs:669-673`).
 
 ## Models
 
@@ -271,7 +271,7 @@ curl -s http://127.0.0.1:8090/v1/models
 {"object":"list","data":[{"id":"minimax-h3","object":"model","created":1792846900,"owned_by":"ds4","shutdown_date":null}]}
 ```
 
-`created` is the server's start time, not a model date (`h3_video.rs:504-521`).
+`created` is the server's start time, not a model date (`h3_video.rs:505-519`).
 
 ## Errors
 
@@ -284,29 +284,29 @@ Every failure uses one body shape, with all four keys always present and
 
 | Code | Status | `param` | When |
 |---|---|---|---|
-| `invalid_json` | 400 | null | body is not a JSON object (`video_api.rs:292-308`) |
-| `invalid_type` | 400 | field | wrong JSON type, or a file part where text is required (`video_api.rs:364-370`, `h3_video.rs:721-733`) |
-| `missing_required_parameter` | 400 | `prompt` | no prompt (`video_api.rs:374-384`) |
-| `string_below_min_length` | 400 | `prompt` | empty prompt (`video_api.rs:385-389`) |
-| `string_above_max_length` | 400 | `prompt` | over 32000 characters (`video_api.rs:390-395`) |
+| `invalid_json` | 400 | null | body is not a JSON object (`video_api.rs:294-310`) |
+| `invalid_type` | 400 | field | wrong JSON type, or a file part where text is required (`video_api.rs:365-370`, `h3_video.rs:722-728`) |
+| `missing_required_parameter` | 400 | `prompt` | no prompt (`video_api.rs:376-382`) |
+| `string_below_min_length` | 400 | `prompt` | empty prompt (`video_api.rs:383-389`) |
+| `string_above_max_length` | 400 | `prompt` | over 32000 characters (`video_api.rs:390-396`) |
 | `model_not_found` | 400 | `model` | id differs from `--model` (`video_api.rs:419-427`) |
 | `invalid_value` | 400 | `size`, `seconds`, `limit`, `order` | failed a field rule |
 | `unsupported_parameter` | 400 | `input_reference`, `variant` | refused by name |
 | `invalid_after` | 400 | `after` | cursor id not in the store |
-| `unsupported_content_type` | 400 | null | not JSON, urlencoded or multipart (`h3_video.rs:654-686`) |
+| `unsupported_content_type` | 400 | null | not JSON, urlencoded or multipart (`h3_video.rs:659-686`) |
 | `invalid_content_type` | 400 | null | multipart without a boundary, or a boundary over 70 bytes (`h3_video.rs:688-710`) |
 | `invalid_multipart` | 400 | null | malformed or truncated multipart (`h3_video.rs:889-894`) |
-| `invalid_urlencoded` | 400 | null | bad percent escape or non-UTF-8 value (`h3_video.rs:774-848`) |
-| `unknown_parameter` | 400 | null | unknown form field (`h3_video.rs:764-770`) |
+| `invalid_urlencoded` | 400 | null | bad percent escape or non-UTF-8 value (`h3_video.rs:775-847`) |
+| `unknown_parameter` | 400 | null | unknown form field (`h3_video.rs:765-770`) |
 | `invalid_encoding` | 400 | null | form text value is not UTF-8 (`h3_video.rs:729-735`) |
-| `request_too_large` | 400 | null | body over 64 MiB (`h3_video.rs:639-645`, `:1148-1151`) |
-| `unsupported_encoding` | 400 | null | chunked request body (`h3_video.rs:1145-1148`) |
-| `video_not_found` | 404 | `video_id` | unknown id (`h3_video.rs:522-528`) |
-| `video_not_ready` | 404 | `video_id` | content requested before completion, or delete before completion (`h3_video.rs:481-489`, `video_api.rs:819-827`) |
-| `content_not_found` | 404 | `video_id` | completed job, file gone (`h3_video.rs:530-535`) |
-| `unknown_url` | 404 | null | no such route, including a trailing slash (`h3_video.rs:343-357`, `:546-567`) |
+| `request_too_large` | 400 | null | body over 64 MiB (`h3_video.rs:639-645`, `:1147-1151`) |
+| `unsupported_encoding` | 400 | null | chunked request body (`h3_video.rs:1142-1146`) |
+| `video_not_found` | 404 | `video_id` | unknown id (`h3_video.rs:523-528`) |
+| `video_not_ready` | 404 | `video_id` | content before completion, or delete before completion (`h3_video.rs:480-488`, `video_api.rs:809-831`) |
+| `content_not_found` | 404 | `video_id` | completed job, file gone (`h3_video.rs:531-536`) |
+| `unknown_url` | 404 | null | no such route, including a trailing slash (`h3_video.rs:341-356`, `:547-567`) |
 | `queue_full` | 429 | null | store at `--max-jobs` (`video_api.rs:660-668`) |
-| `renderer_disabled` | 503 | null | no `--model-dir` and no `--renderer` (`h3_video.rs:359-365`) |
+| `renderer_disabled` | 503 | null | no `--model-dir` and no `--renderer` (`h3_video.rs:360-365`) |
 
 `type` is `invalid_request_error` for 400 and 404, `rate_limit_error` for 429
 and `service_unavailable_error` for 503 (`video_api.rs:123-143`).
@@ -315,13 +315,14 @@ and `service_unavailable_error` for 503 (`video_api.rs:123-143`).
 
 - `input_reference`, by name: 400 `unsupported_parameter` on
   `input_reference`, whether it arrives as a JSON object, a form string or a
-  multipart file part (`video_api.rs:397-415`, `h3_video.rs:760-763`).
+  multipart file part (`video_api.rs:397-415`, `h3_video.rs:762`).
 - Every `POST /v1/videos` when the server started without `--model-dir` or
-  `--renderer`: 503 `renderer_disabled` (`h3_video.rs:359-365`).
+  `--renderer`: 503 `renderer_disabled` (`h3_video.rs:360-365`).
 - `variant=thumbnail` and `variant=spritesheet`: only the MP4 exists
-  (`h3_video.rs:463-477`).
+  (`h3_video.rs:466-477`).
 - Characters, edits, extensions and remixes: no route, so 404 `unknown_url`.
-- Chunked request bodies: `Content-Length` only (`h3_video.rs:1037-1042`).
+- Chunked request bodies: `Content-Length` only (`h3_video.rs:1037-1040`,
+  `:1075-1077`).
 
 ## Operational limits
 
@@ -331,7 +332,7 @@ and `service_unavailable_error` for 503 (`video_api.rs:123-143`).
 - With `--model-dir` renders are serial, in arrival order
   (`engine.rs:11-16`, `:375-380`). With `--renderer`, each job gets its own
   thread and child process, so up to `--max-jobs` run at once
-  (`h3_video.rs:380-435`).
+  (`h3_video.rs:381-434`).
 - `--timeout-secs` (default 3600, clamped to at least 1) bounds the external
   renderer only; the engine path has no per-job timeout
   (`h3_video.rs:186-228`, `h3-server-rs.rs:127-131`).
@@ -341,6 +342,7 @@ and `service_unavailable_error` for 503 (`video_api.rs:123-143`).
   (`http.rs:7-8`). Form bodies are capped at 64 fields and 64 parts
   (`h3_video.rs:48-49`).
 - One request per connection: every response carries `Connection: close`
-  (`error.rs:76-104`, `h3_video.rs:296-310`).
-- No authentication: nothing reads an `Authorization` header. Bind to loopback
-  or a trusted network (`h3-server-rs.rs:17`).
+  (`error.rs:76-104`, `h3_video.rs:298-310`).
+- No authentication: the dispatch matches method and route only, so no header
+  is checked (`h3_video.rs:341-356`). Bind to loopback or a trusted network
+  (`h3-server-rs.rs:17`).

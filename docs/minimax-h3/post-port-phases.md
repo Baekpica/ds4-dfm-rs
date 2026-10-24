@@ -403,10 +403,11 @@ the survey above, both read from the reference this unit:
   normalizes `[patch_rows, 1152]`. Both then run the same 4608-wide projection
   pair (`:353-368`).
 
-The unit's own test is the layout walk plus the host preparations; the device
-side is gated by `make tests/h3_vision_gate` on the Spark, whose golden hashes
-are still to be recorded (the gate prints them; the reference side needs a
-probe in `~/h3-oracle`).
+The unit's own test is the layout walk plus the host preparations. The device
+side was gated on the Spark on 2026-10-24 against `vision_probe.c`: every
+output (the final merger and all three deepstacks) hashed equal at 512x192 and
+512x512, the merged hash also at 512x224/256/320/384/448, and 20 repeats at
+two shapes were stable. The goldens are in `h3_vision_gate.rs`.
 
 ## P12.5 — Port the reference test suite
 
