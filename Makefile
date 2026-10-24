@@ -453,6 +453,16 @@ tests/h3_vision_gate: $(DS4_RS_SOURCES) native/h3/h3_vision_gpu.o
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_vision_gate" $@
 
+# The multimodal gate runs the vision tower and then the prompt encoder, so it
+# links both objects and both fingerprints.
+tests/h3_multimodal_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
+	cargo rustc -p ds4-core --example h3_multimodal_gate --release -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
+	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_multimodal_gate" $@
+
 # The h3 renderer: the CLI binary plus both h3 device objects. It deliberately
 # does not link the bridge or the core objects: the h3 path reaches only the
 # `h3d_` ABI, so the binary also builds in a tree that carries the h3 sources
