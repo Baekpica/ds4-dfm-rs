@@ -244,6 +244,101 @@ unsafe extern "C" {
     ) -> c_int;
 
     fn h3d_sync(context: *mut Context, error: *mut c_char, error_size: usize) -> c_int;
+
+    fn h3d_copy_f32(
+        context: *mut Context,
+        destination: *mut CTensor,
+        destination_element: usize,
+        source: *const CTensor,
+        source_element: usize,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_conv1d(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        length: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        stride: u32,
+        padding: u32,
+        dilation: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_conv_transpose1d(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        weight: *const CTensor,
+        bias: *const CTensor,
+        batch: u32,
+        length: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        stride: u32,
+        padding: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_weight_norm(
+        context: *mut Context,
+        output: *mut CTensor,
+        vector: *const CTensor,
+        magnitude: *const CTensor,
+        outer: u32,
+        inner: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_alias_free_snake(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        alpha_log: *const CTensor,
+        beta_log: *const CTensor,
+        upsample_filter: *const CTensor,
+        downsample_filter: *const CTensor,
+        batch: u32,
+        length: u32,
+        channels: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_add_scaled(
+        context: *mut Context,
+        output: *mut CTensor,
+        left: *const CTensor,
+        right: *const CTensor,
+        left_scale: f32,
+        right_scale: f32,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_clip(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        elements: usize,
+        minimum: f32,
+        maximum: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
 }
 
 /// `h3d_dtype`.
@@ -816,6 +911,217 @@ impl Gpu {
         self.call(
             |error, size| unsafe { h3d_sync(self.raw.as_ptr(), error, size) },
             "sync",
+        )
+    }
+
+    pub fn copy_f32(
+        &self,
+        destination: &Tensor,
+        destination_element: usize,
+        source: &Tensor,
+        source_element: usize,
+        elements: usize,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_copy_f32(
+                    self.raw.as_ptr(),
+                    destination.raw(),
+                    destination_element,
+                    source.raw(),
+                    source_element,
+                    elements,
+                    error,
+                    size,
+                )
+            },
+            "copy_f32",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv1d(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        batch: u32,
+        length: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        stride: u32,
+        padding: u32,
+        dilation: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_conv1d(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.map_or(std::ptr::null(), |bias| bias.raw().cast_const()),
+                    batch,
+                    length,
+                    input_channels,
+                    output_channels,
+                    kernel,
+                    stride,
+                    padding,
+                    dilation,
+                    error,
+                    size,
+                )
+            },
+            "conv1d",
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose1d(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        batch: u32,
+        length: u32,
+        input_channels: u32,
+        output_channels: u32,
+        kernel: u32,
+        stride: u32,
+        padding: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_conv_transpose1d(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    weight.raw(),
+                    bias.map_or(std::ptr::null(), |bias| bias.raw().cast_const()),
+                    batch,
+                    length,
+                    input_channels,
+                    output_channels,
+                    kernel,
+                    stride,
+                    padding,
+                    error,
+                    size,
+                )
+            },
+            "conv_transpose1d",
+        )
+    }
+
+    pub fn weight_norm(
+        &self,
+        output: &Tensor,
+        vector: &Tensor,
+        magnitude: &Tensor,
+        outer: u32,
+        inner: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_weight_norm(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    vector.raw(),
+                    magnitude.raw(),
+                    outer,
+                    inner,
+                    error,
+                    size,
+                )
+            },
+            "weight_norm",
+        )
+    }
+
+    pub fn alias_free_snake(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        alpha_log: &Tensor,
+        beta_log: &Tensor,
+        upsample_filter: &Tensor,
+        downsample_filter: &Tensor,
+        batch: u32,
+        length: u32,
+        channels: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_alias_free_snake(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    alpha_log.raw(),
+                    beta_log.raw(),
+                    upsample_filter.raw(),
+                    downsample_filter.raw(),
+                    batch,
+                    length,
+                    channels,
+                    error,
+                    size,
+                )
+            },
+            "alias_free_snake",
+        )
+    }
+
+    pub fn add_scaled(
+        &self,
+        output: &Tensor,
+        left: &Tensor,
+        right: &Tensor,
+        left_scale: f32,
+        right_scale: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_add_scaled(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    left.raw(),
+                    right.raw(),
+                    left_scale,
+                    right_scale,
+                    output.elements(),
+                    error,
+                    size,
+                )
+            },
+            "add_scaled",
+        )
+    }
+
+    pub fn clip(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        minimum: f32,
+        maximum: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_clip(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    output.elements(),
+                    minimum,
+                    maximum,
+                    error,
+                    size,
+                )
+            },
+            "clip",
         )
     }
 

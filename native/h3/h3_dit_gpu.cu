@@ -939,3 +939,327 @@ int h3d_sync(h3d_context *context, char *error, size_t error_size) {
     return h3d_cuda_ok(cudaStreamSynchronize(context->stream),
                        "synchronize DiT stream", error, error_size);
 }
+
+/* ---------------------------------------------------------------------------
+ * F32 primitives for the AudioVAE decoder. Same source of truth, same
+ * expression order; the reference's decode path calls only these
+ * (`h3_audio_vae.c:1-715`).
+ * ------------------------------------------------------------------------- */
+
+int h3d_copy_f32(h3d_context *context, h3d_tensor *destination,
+                 size_t destination_element, const h3d_tensor *source,
+                 size_t source_element, size_t elements, char *error,
+                 size_t error_size) {
+    if (!destination || !source || destination->dtype != H3D_F32 ||
+        source->dtype != H3D_F32) {
+        return h3d_set_error(error, error_size, "invalid F32 tensor copy");
+    }
+    return h3d_copy(context, destination, destination_element, source,
+                    source_element, elements, error, error_size);
+}
+
+/* `h3_conv1d_kernel` (`:1681-1706`). */
+__global__ static void h3d_conv1d_kernel(
+    float *output, const float *input, const float *weight, const float *bias,
+    uint32_t batch, uint32_t length, uint32_t input_channels,
+    uint32_t output_channels, uint32_t kernel, uint32_t stride,
+    uint32_t padding, uint32_t dilation, uint32_t output_length,
+    size_t output_elements, int has_bias) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= output_elements) return;
+    uint32_t output_channel = (uint32_t)(index % output_channels);
+    size_t row = index / output_channels;
+    uint32_t output_time = (uint32_t)(row % output_length);
+    uint32_t batch_index = (uint32_t)(row / output_length);
+    float sum = has_bias ? bias[output_channel] : 0.0f;
+    for (uint32_t input_channel = 0; input_channel < input_channels;
+         input_channel++) {
+        for (uint32_t tap = 0; tap < kernel; tap++) {
+            int64_t input_time = (int64_t)output_time * stride - padding +
+                                 (int64_t)tap * dilation;
+            if (input_time < 0 || input_time >= length) continue;
+            size_t input_index = ((size_t)batch_index * length +
+                                  (size_t)input_time) * input_channels +
+                                 input_channel;
+            size_t weight_index = ((size_t)output_channel * input_channels +
+                                   input_channel) * kernel + tap;
+            sum = fmaf(input[input_index], weight[weight_index], sum);
+        }
+    }
+    output[((size_t)batch_index * output_length + output_time) *
+           output_channels + output_channel] = sum;
+}
+
+int h3d_conv1d(h3d_context *context, h3d_tensor *output,
+               const h3d_tensor *input, const h3d_tensor *weight,
+               const h3d_tensor *bias, uint32_t batch, uint32_t length,
+               uint32_t input_channels, uint32_t output_channels,
+               uint32_t kernel, uint32_t stride, uint32_t padding,
+               uint32_t dilation, char *error, size_t error_size) {
+    uint64_t effective = (uint64_t)dilation * (kernel ? kernel - 1 : 0) + 1;
+    if (!context || !batch || !length || !input_channels || !output_channels ||
+        !kernel || !stride || !dilation ||
+        (uint64_t)length + 2ull * padding < effective) {
+        return h3d_set_error(error, error_size, "invalid Conv1d shape");
+    }
+    uint64_t output_length64 =
+        ((uint64_t)length + 2ull * padding - effective) / stride + 1;
+    if (output_length64 > UINT32_MAX) {
+        return h3d_set_error(error, error_size, "Conv1d output overflows");
+    }
+    size_t input_elements, weight_elements, output_elements, bias_elements;
+    if (!h3d_mul_size((size_t)batch * length, input_channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)output_channels * input_channels, kernel,
+                      &weight_elements) ||
+        !h3d_mul_size((size_t)batch * (size_t)output_length64,
+                      output_channels, &output_elements) ||
+        !h3d_mul_size(output_channels, 1, &bias_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(weight, H3D_F32, weight_elements) ||
+        !h3d_is(output, H3D_F32, output_elements) ||
+        (bias && !h3d_is(bias, H3D_F32, bias_elements))) {
+        return h3d_set_error(error, error_size, "invalid Conv1d tensors");
+    }
+    if (!output_elements) return 1;
+    h3d_conv1d_kernel<<<(output_elements + 255) / 256, 256, 0,
+                        context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data,
+        bias ? (const float *)bias->data : (const float *)input->data, batch,
+        length, input_channels, output_channels, kernel, stride, padding,
+        dilation, (uint32_t)output_length64, output_elements, bias != NULL);
+    return h3d_launch_ok("Conv1d", error, error_size);
+}
+
+/* `h3_conv_transpose1d_kernel` (`:1714-1743`). */
+__global__ static void h3d_conv_transpose1d_kernel(
+    float *output, const float *input, const float *weight, const float *bias,
+    uint32_t batch, uint32_t length, uint32_t input_channels,
+    uint32_t output_channels, uint32_t kernel, uint32_t stride,
+    uint32_t padding, uint32_t output_length, size_t output_elements,
+    int has_bias) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= output_elements) return;
+    uint32_t output_channel = (uint32_t)(index % output_channels);
+    size_t row = index / output_channels;
+    uint32_t output_time = (uint32_t)(row % output_length);
+    uint32_t batch_index = (uint32_t)(row / output_length);
+    float sum = has_bias ? bias[output_channel] : 0.0f;
+    for (uint32_t input_channel = 0; input_channel < input_channels;
+         input_channel++) {
+        for (uint32_t tap = 0; tap < kernel; tap++) {
+            int64_t numerator = (int64_t)output_time + padding - tap;
+            if (numerator < 0 || numerator % stride) continue;
+            uint64_t input_time = (uint64_t)numerator / stride;
+            if (input_time >= length) continue;
+            size_t input_index = ((size_t)batch_index * length + input_time) *
+                                 input_channels + input_channel;
+            size_t weight_index = ((size_t)input_channel * output_channels +
+                                   output_channel) * kernel + tap;
+            sum = fmaf(input[input_index], weight[weight_index], sum);
+        }
+    }
+    output[((size_t)batch_index * output_length + output_time) *
+           output_channels + output_channel] = sum;
+}
+
+int h3d_conv_transpose1d(h3d_context *context, h3d_tensor *output,
+                         const h3d_tensor *input, const h3d_tensor *weight,
+                         const h3d_tensor *bias, uint32_t batch,
+                         uint32_t length, uint32_t input_channels,
+                         uint32_t output_channels, uint32_t kernel,
+                         uint32_t stride, uint32_t padding, char *error,
+                         size_t error_size) {
+    uint64_t full = length ? (uint64_t)(length - 1) * stride + kernel : 0;
+    if (!context || !batch || !length || !input_channels || !output_channels ||
+        !kernel || !stride || full < 2ull * padding ||
+        full - 2ull * padding > UINT32_MAX) {
+        return h3d_set_error(error, error_size,
+                             "invalid ConvTranspose1d shape");
+    }
+    uint32_t output_length = (uint32_t)(full - 2ull * padding);
+    size_t input_elements, weight_elements, output_elements;
+    if (!h3d_mul_size((size_t)batch * length, input_channels,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)input_channels * output_channels, kernel,
+                      &weight_elements) ||
+        !h3d_mul_size((size_t)batch * output_length, output_channels,
+                      &output_elements) ||
+        !h3d_is(input, H3D_F32, input_elements) ||
+        !h3d_is(weight, H3D_F32, weight_elements) ||
+        !h3d_is(output, H3D_F32, output_elements) ||
+        (bias && !h3d_is(bias, H3D_F32, output_channels))) {
+        return h3d_set_error(error, error_size,
+                             "invalid ConvTranspose1d tensors");
+    }
+    if (!output_elements) return 1;
+    h3d_conv_transpose1d_kernel<<<(output_elements + 255) / 256, 256, 0,
+                                  context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)weight->data,
+        bias ? (const float *)bias->data : (const float *)input->data, batch,
+        length, input_channels, output_channels, kernel, stride, padding,
+        output_length, output_elements, bias != NULL);
+    return h3d_launch_ok("ConvTranspose1d", error, error_size);
+}
+
+/* `h3_weight_norm_kernel` (`:2958-2974`). */
+__global__ static void h3d_weight_norm_kernel(float *output,
+                                              const float *vector,
+                                              const float *magnitude,
+                                              uint32_t outer,
+                                              uint32_t inner) {
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= outer) return;
+    size_t base = (size_t)row * inner;
+    float square_sum = 0.0f;
+    for (uint32_t column = 0; column < inner; column++) {
+        square_sum =
+            fmaf(vector[base + column], vector[base + column], square_sum);
+    }
+    float scale = magnitude[row] * rsqrtf(square_sum);
+    for (uint32_t column = 0; column < inner; column++) {
+        output[base + column] = vector[base + column] * scale;
+    }
+}
+
+int h3d_weight_norm(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *vector, const h3d_tensor *magnitude,
+                    uint32_t outer, uint32_t inner, char *error,
+                    size_t error_size) {
+    size_t elements;
+    if (!context || !h3d_mul_size(outer, inner, &elements) ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(vector, H3D_F32, elements) ||
+        !h3d_is(magnitude, H3D_F32, outer)) {
+        return h3d_set_error(error, error_size,
+                             "invalid weight norm arguments");
+    }
+    if (!outer) return 1;
+    h3d_weight_norm_kernel<<<(outer + 255) / 256, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)vector->data,
+        (const float *)magnitude->data, outer, inner);
+    return h3d_launch_ok("weight norm", error, error_size);
+}
+
+/* `h3_alias_free_snake_kernel` (`:1907-1933`). */
+__global__ static void h3d_alias_free_snake_kernel(
+    float *output, const float *input, const float *alpha_log,
+    const float *beta_log, const float *upsample_filter,
+    const float *downsample_filter, uint32_t batch, uint32_t length,
+    uint32_t channels, size_t elements) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    uint32_t channel = (uint32_t)(index % channels);
+    size_t row = index / channels;
+    uint32_t time = (uint32_t)(row % length);
+    uint32_t batch_index = (uint32_t)(row / length);
+    float alpha = expf(alpha_log[channel]);
+    float beta = expf(beta_log[channel]);
+    float result = 0.0f;
+    for (int down_tap = 0; down_tap < 12; down_tap++) {
+        int up_time = max(0, min((int)length * 2 - 1,
+                                 (int)time * 2 + down_tap - 5));
+        int raw_time = up_time + 15;
+        float upsampled = 0.0f;
+        for (int up_tap = 0; up_tap < 12; up_tap++) {
+            int numerator = raw_time - up_tap;
+            if (numerator < 0 || (numerator & 1)) continue;
+            int source_time = max(0, min((int)length - 1,
+                                         numerator / 2 - 5));
+            size_t source = ((size_t)batch_index * length + source_time) *
+                            channels + channel;
+            upsampled = fmaf(input[source], 2.0f * upsample_filter[up_tap],
+                              upsampled);
+        }
+        float sine = sinf(alpha * upsampled);
+        float activated = upsampled + sine * sine / (beta + 1e-9f);
+        result = fmaf(activated, downsample_filter[down_tap], result);
+    }
+    output[((size_t)batch_index * length + time) * channels + channel] = result;
+}
+
+int h3d_alias_free_snake(h3d_context *context, h3d_tensor *output,
+                         const h3d_tensor *input,
+                         const h3d_tensor *alpha_log,
+                         const h3d_tensor *beta_log,
+                         const h3d_tensor *upsample_filter,
+                         const h3d_tensor *downsample_filter, uint32_t batch,
+                         uint32_t length, uint32_t channels, char *error,
+                         size_t error_size) {
+    size_t elements;
+    if (!context || !batch || !length || !channels ||
+        !h3d_mul_size((size_t)batch * length, channels, &elements) ||
+        !h3d_is(input, H3D_F32, elements) ||
+        !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(alpha_log, H3D_F32, channels) ||
+        !h3d_is(beta_log, H3D_F32, channels) ||
+        !h3d_is(upsample_filter, H3D_F32, 12) ||
+        !h3d_is(downsample_filter, H3D_F32, 12)) {
+        return h3d_set_error(error, error_size,
+                             "invalid alias-free Snake tensors");
+    }
+    if (!elements) return 1;
+    h3d_alias_free_snake_kernel<<<(elements + 255) / 256, 256, 0,
+                                  context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)alpha_log->data, (const float *)beta_log->data,
+        (const float *)upsample_filter->data,
+        (const float *)downsample_filter->data, batch, length, channels,
+        elements);
+    return h3d_launch_ok("alias-free Snake", error, error_size);
+}
+
+/* `h3_add_scaled_kernel` (`:2385-2391`). */
+__global__ static void h3d_add_scaled_kernel(float *output,
+                                             const float *left,
+                                             const float *right, size_t count,
+                                             float left_scale,
+                                             float right_scale) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < count) {
+        output[index] = left[index] * left_scale + right[index] * right_scale;
+    }
+}
+
+int h3d_add_scaled(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *left, const h3d_tensor *right,
+                   float left_scale, float right_scale, size_t elements,
+                   char *error, size_t error_size) {
+    if (!context || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(left, H3D_F32, elements) || !h3d_is(right, H3D_F32, elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid F32 scaled-add tensors");
+    }
+    if (!elements) return 1;
+    h3d_add_scaled_kernel<<<(elements + 255) / 256, 256, 0,
+                            context->stream>>>(
+        (float *)output->data, (const float *)left->data,
+        (const float *)right->data, elements, left_scale, right_scale);
+    return h3d_launch_ok("F32 scaled add", error, error_size);
+}
+
+/* `H3_CLIP` in `h3_unary_f32_kernel` (`:2253-2261`). */
+__global__ static void h3d_clip_kernel(float *output, const float *input,
+                                       size_t count, float minimum,
+                                       float maximum) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) return;
+    float value = input[index];
+    output[index] = fminf(maximum, fmaxf(minimum, value));
+}
+
+int h3d_clip(h3d_context *context, h3d_tensor *output,
+             const h3d_tensor *input, size_t elements, float minimum,
+             float maximum, char *error, size_t error_size) {
+    if (!context || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(input, H3D_F32, elements) || minimum > maximum) {
+        return h3d_set_error(error, error_size, "invalid F32 clip arguments");
+    }
+    if (!elements) return 1;
+    h3d_clip_kernel<<<(elements + 255) / 256, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)input->data, elements, minimum,
+        maximum);
+    return h3d_launch_ok("F32 clip", error, error_size);
+}

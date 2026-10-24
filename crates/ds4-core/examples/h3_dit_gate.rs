@@ -58,6 +58,7 @@ use ds4_core::minimax_h3::host::{latent_canvas, reuse_schedule, temporal, Rng, S
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
+use ds4_core::minimax_h3::vae_audio;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -201,6 +202,36 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         );
         println!("TIME seconds={seconds:.3}");
 
+        if options.decode {
+            let directory = options
+                .audio_vae
+                .as_ref()
+                .ok_or_else(|| usage("--decode needs --audio-vae"))?;
+            let length = audio_noise.len() / (32 * 2);
+            let started = Instant::now();
+            let waveform = vae_audio::decode(directory, &audio_noise, length)
+                .map_err(|error| error.to_string())?;
+            let decode_seconds = started.elapsed().as_secs_f64();
+            let first = waveform.pcm.first().copied().unwrap_or(0.0);
+            let last = waveform.pcm.last().copied().unwrap_or(0.0);
+            println!(
+                "AUDIO channels={} samples={} rate={} fnv={:016x} first={:.9} last={:.9}",
+                waveform.channels,
+                waveform.samples,
+                waveform.sample_rate,
+                fnv_f32(&waveform.pcm),
+                first,
+                last
+            );
+            println!("TIME decode_seconds={decode_seconds:.3}");
+
+            if let Some(expect) = options.expect_pcm {
+                if fnv_f32(&waveform.pcm) != expect {
+                    return Ok(ExitCode::from(3));
+                }
+            }
+        }
+
         if let Some(expect) = options.expect_video {
             if fnv_f32(&video_noise) != expect {
                 return Ok(ExitCode::from(3));
@@ -330,6 +361,9 @@ struct Options {
     reuse: usize,
     denoise: bool,
     stream: bool,
+    decode: bool,
+    audio_vae: Option<std::path::PathBuf>,
+    expect_pcm: Option<u64>,
     expect_video: Option<u64>,
     expect_audio: Option<u64>,
     expect_adaln: Option<(u64, u64)>,
@@ -349,6 +383,9 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         reuse: 1,
         denoise: false,
         stream: false,
+        decode: false,
+        audio_vae: None,
+        expect_pcm: None,
         expect_video: None,
         expect_audio: None,
         expect_adaln: None,
@@ -381,6 +418,18 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
                 options.stream = true;
                 index += 1;
                 continue;
+            }
+            "--decode" => {
+                options.decode = true;
+                index += 1;
+                continue;
+            }
+            "--audio-vae" => options.audio_vae = Some(value()?.into()),
+            "--expect-pcm" => {
+                options.expect_pcm = Some(
+                    parse_hash(value()?)
+                        .ok_or_else(|| usage("--expect-pcm needs 16 hex digits"))?,
+                );
             }
             "--expect-video" => {
                 options.expect_video = Some(

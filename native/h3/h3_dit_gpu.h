@@ -159,6 +159,62 @@ int h3d_copy(h3d_context *context, h3d_tensor *destination,
 /* Wait for every queued op; returns 0 and fills `error` on failure. */
 int h3d_sync(h3d_context *context, char *error, size_t error_size);
 
+/* ---- F32 primitives the AudioVAE decoder needs (`h3_audio_vae.c`) ---- */
+
+/* `h3_gpu_copy_f32` (`:697-703`). */
+int h3d_copy_f32(h3d_context *context, h3d_tensor *destination,
+                 size_t destination_element, const h3d_tensor *source,
+                 size_t source_element, size_t elements, char *error,
+                 size_t error_size);
+
+/* `h3_gpu_conv1d_f32`/`h3_gpu_conv1d_stride_f32` (`:1757-1794`) with
+ * `h3_conv1d_kernel` (`:1681-1706`). Layout: [batch, time, channels]. */
+int h3d_conv1d(h3d_context *context, h3d_tensor *output,
+               const h3d_tensor *input, const h3d_tensor *weight,
+               const h3d_tensor *bias, uint32_t batch, uint32_t length,
+               uint32_t input_channels, uint32_t output_channels,
+               uint32_t kernel, uint32_t stride, uint32_t padding,
+               uint32_t dilation, char *error, size_t error_size);
+
+/* `h3_gpu_conv_transpose1d_f32` (`:1796-1840`) with
+ * `h3_conv_transpose1d_kernel` (`:1714-1743`). */
+int h3d_conv_transpose1d(h3d_context *context, h3d_tensor *output,
+                         const h3d_tensor *input, const h3d_tensor *weight,
+                         const h3d_tensor *bias, uint32_t batch,
+                         uint32_t length, uint32_t input_channels,
+                         uint32_t output_channels, uint32_t kernel,
+                         uint32_t stride, uint32_t padding, char *error,
+                         size_t error_size);
+
+/* `h3_gpu_weight_norm_f32` (`:2976-2992`) with `h3_weight_norm_kernel`
+ * (`:2958-2974`): one row per thread, the same fmaf square sum and rsqrtf. */
+int h3d_weight_norm(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *vector, const h3d_tensor *magnitude,
+                    uint32_t outer, uint32_t inner, char *error,
+                    size_t error_size);
+
+/* `h3_gpu_alias_free_snake_f32` (`:1943-1961`) with
+ * `h3_alias_free_snake_kernel` (`:1907-1933`). */
+int h3d_alias_free_snake(h3d_context *context, h3d_tensor *output,
+                         const h3d_tensor *input,
+                         const h3d_tensor *alpha_log,
+                         const h3d_tensor *beta_log,
+                         const h3d_tensor *upsample_filter,
+                         const h3d_tensor *downsample_filter, uint32_t batch,
+                         uint32_t length, uint32_t channels, char *error,
+                         size_t error_size);
+
+/* `h3_gpu_add_scaled_f32` (`:2397-2411`) with `h3_add_scaled_kernel`
+ * (`:2385-2391`) and `h3_gpu_clip_f32` (`:2309-2317`), whose clip is the
+ * `H3_CLIP` branch of `h3_unary_f32_kernel` (`:2246-2274`). */
+int h3d_add_scaled(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *left, const h3d_tensor *right,
+                   float left_scale, float right_scale, size_t elements,
+                   char *error, size_t error_size);
+int h3d_clip(h3d_context *context, h3d_tensor *output,
+             const h3d_tensor *input, size_t elements, float minimum,
+             float maximum, char *error, size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif

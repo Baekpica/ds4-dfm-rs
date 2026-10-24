@@ -881,6 +881,31 @@ none. A first gate run diverged because the ring's initial `active_layer` was
 0, which made the priming `ensure(0)` a no-op and ran block 0 on a blank slot;
 the sentinel is now `usize::MAX`.
 
+**E7 — The audio VAE decode.** Shipped 2026-10-24. The released BigVGAN
+decoder (`h3_audio_vae.c:1-715`) in `minimax_h3::vae_audio`, over seven F32
+primitives added to the `h3d_` ABI (`h3d_conv1d`, `h3d_conv_transpose1d`,
+`h3d_weight_norm`, `h3d_alias_free_snake`, `h3d_add_scaled`, `h3d_copy_f32`,
+`h3d_clip`; `h3_audio_vae.c:155-237`, `:251-260`, `:351-421`, `:493-603`,
+`:605-658`).
+
+The unit's four traps, all resolved against the source: the checkpoint stores
+`weight_v`/`weight_g` and the weight is rebuilt on device with the reference's
+fmaf/rsqrtf kernel (`:218-232`, `:2976-2992`); `decoder.conv_post` has **no**
+bias (`:614-615` passes `has_bias = 0`), which the first run caught by name;
+the latent is de-normalized with `latents_mean`/`latents_std` parsed at f32
+precision, not through f64 (`:300-349`); the decoder is mono BigVGAN run over
+a stereo batch (`:610-611`).
+
+Phase A golden (reference, 256x256/5 frames, 2 steps, seed 1, latents
+`4307e38ab75bf72d`/`775b6fbbcf79889b`): `AUDIO channels=2 samples=6400
+rate=32000 fnv=d52825c7dbc73718 first=0.0604064278 last=0.0495199338`,
+decode 0.402 s. Phase C gate: the port returns the same hash and edges,
+0.702 s, exit 0 (`--denoise --decode --audio-vae DIR --expect-pcm`).
+
+Deviation: the reference loads the weight store once per decode call, and so
+does the port; a resident decoder is P9. The VAE encoders (keyframe
+conditioning) are not ported.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
