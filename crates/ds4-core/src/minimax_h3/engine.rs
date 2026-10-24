@@ -150,8 +150,9 @@ pub struct Engine {
     model_dir: PathBuf,
     tokenizer: Tokenizer,
     /// `h3.c:223-309`: one conditioning entry is enough for a server; the
-    /// reference keeps a small table and counts hits and misses.
-    embedding: Option<(String, Embedding)>,
+    /// reference keeps a small table and counts hits and misses. The anchor
+    /// rows are part of the key because they are vision spans in the prompt.
+    embedding: Option<(String, u64, Embedding)>,
     prepared: Option<Prepared>,
 }
 
@@ -214,37 +215,54 @@ impl Engine {
             .ok_or_else(|| EngineError::new("--reuse is outside 1..=32"))?;
         let evaluated = selected.iter().filter(|flag| **flag).count();
 
-        // Conditioning: the reference memoizes the prompt embedding
-        // (`h3.c:223-309`) because the encoder is the largest read of the run.
-        let text_started = Instant::now();
-        let cached = self
-            .embedding
-            .as_ref()
-            .and_then(|(prompt, text)| (prompt == &request.prompt).then(|| text.clone()));
-        let text_hit = cached.is_some();
-        let text = match cached {
-            Some(text) => text,
-            None => {
-                let ids = self
-                    .tokenizer
-                    .encode(&request.prompt, EmptyPrompt::Pad)
-                    .map_err(|error| EngineError::new(format!("tokenizer: {}", error.token())))?;
-                let text = text_forward::encode(&self.component("text_encoder"), &ids).map_err(
-                    |error| EngineError::new(format!("text encoder: {}", error.token())),
-                )?;
-                self.embedding = Some((request.prompt.clone(), text.clone()));
-                text
-            }
-        };
-        let text_seconds = text_started.elapsed().as_secs_f64();
-
         let shape = temporal(frame_count);
         let (latent_w, latent_h) = canvas.latent();
 
         // Anchors (`h3.c:1231-1345`): each frame is read at the canvas, encoded
         // by the video VAE, patchified and jittered before the layout is built,
-        // because the cond row count is part of the packed signature.
-        let (keyframes, video_rows) = self.anchor_rows(request, frame_count, latent_h, latent_w)?;
+        // because the cond row count is part of the packed signature. The same
+        // pixels are the prompt's vision spans, so they are read once.
+        let anchors = self.read_anchors(request, frame_count, latent_h, latent_w)?;
+        let anchor_hash = fnv_f32(&anchors.rows);
+        let (keyframes, video_rows) = (anchors.keyframes, anchors.rows);
+
+        // Conditioning: the reference memoizes the prompt embedding
+        // (`h3.c:223-309`) because the encoder is the largest read of the run.
+        // An anchor changes the embedding (it is a vision span), so the anchor
+        // rows are part of the memo key, as `h3.c:143-166` folds the media in.
+        let text_started = Instant::now();
+        let cached = self.embedding.as_ref().and_then(|(prompt, anchors, text)| {
+            (prompt == &request.prompt && *anchors == anchor_hash).then(|| text.clone())
+        });
+        let text_hit = cached.is_some();
+        let text = match cached {
+            Some(text) => text,
+            None => {
+                let text = match anchors.pixels.is_empty() {
+                    true => {
+                        let ids = self
+                            .tokenizer
+                            .encode(&request.prompt, EmptyPrompt::Pad)
+                            .map_err(|error| {
+                                EngineError::new(format!("tokenizer: {}", error.token()))
+                            })?;
+                        text_forward::encode(&self.component("text_encoder"), &ids).map_err(
+                            |error| EngineError::new(format!("text encoder: {}", error.token())),
+                        )
+                    }
+                    false => condition::anchor_embedding(
+                        &self.component("text_encoder"),
+                        &self.tokenizer,
+                        &request.prompt,
+                        &anchors.pixels,
+                    )
+                    .map_err(EngineError::new),
+                }?;
+                self.embedding = Some((request.prompt.clone(), anchor_hash, text.clone()));
+                text
+            }
+        };
+        let text_seconds = text_started.elapsed().as_secs_f64();
 
         let key = PreparedKey {
             prompt: request.prompt.clone(),
@@ -254,7 +272,7 @@ impl Engine {
             steps: request.steps,
             reuse: request.reuse,
             rope: canvas.rope_scale(false).to_bits(),
-            anchors: fnv_f32(&video_rows),
+            anchors: anchor_hash,
         };
 
         // Prepared DiT (`h3.c:168-190`, `h3.c:1505-1516`): a hit skips the
@@ -401,30 +419,33 @@ impl Engine {
     /// the media's. Each anchor contributes the target canvas' own row span, so
     /// a latent of any other geometry is an error rather than a short span
     /// (`h3.c:1338-1341`).
-    fn anchor_rows(
+    fn read_anchors(
         &self,
         request: &RenderRequest,
         frame_count: i32,
         latent_h: i32,
         latent_w: i32,
-    ) -> Result<(Vec<i32>, Vec<f32>), EngineError> {
+    ) -> Result<Anchors, EngineError> {
         let anchors = [
             (0, Fit::Stretch, request.first_frame.as_deref()),
             (frame_count - 1, Fit::Cover, request.last_frame.as_deref()),
         ];
-        let mut keyframes = Vec::new();
-        let mut rows = Vec::new();
+        let mut out = Anchors {
+            keyframes: Vec::new(),
+            rows: Vec::new(),
+            pixels: Vec::new(),
+        };
 
         for (frame, fit, path) in anchors {
             let Some(path) = path else { continue };
-            let pixels =
+            let values =
                 media::read_image_f32(path, request.width as u32, request.height as u32, fit)
                     .map_err(|error| {
                         EngineError::new(format!("anchor {}: {}", path.display(), error.detail()))
                     })?;
             let latent = vae_encoder::encode(
                 &self.component("video_vae/source"),
-                &pixels,
+                &values,
                 1,
                 request.height as usize,
                 request.width as usize,
@@ -441,15 +462,29 @@ impl Engine {
                 ));
             }
 
-            keyframes.push(frame);
-            rows.extend(
+            out.keyframes.push(frame);
+            out.rows.extend(
                 condition::anchor_rows(&latent, request.seed)
                     .map_err(|error| EngineError::new(format!("anchor rows: {error}")))?,
             );
+            out.pixels.push(condition::AnchorPixels {
+                values,
+                height: request.height as u32,
+                width: request.width as u32,
+            });
         }
 
-        Ok((keyframes, rows))
+        Ok(out)
     }
+}
+
+/// One request's anchors: the keyframe indices the layout places, the rows the
+/// DiT consumes, and the pixels the prompt's vision spans borrow
+/// (`h3.c:1231-1252`).
+struct Anchors {
+    keyframes: Vec<i32>,
+    rows: Vec<f32>,
+    pixels: Vec<condition::AnchorPixels>,
 }
 
 /// The engine owns a thread; the host holds this handle. Commands are served
@@ -568,5 +603,38 @@ impl RenderReport {
             self.mux_seconds,
             scale,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(frames: i32, anchors: u64) -> PreparedKey {
+        PreparedKey {
+            prompt: "p".to_string(),
+            width: 512,
+            height: 192,
+            frames,
+            steps: 20,
+            reuse: 1,
+            rope: 16,
+            anchors,
+        }
+    }
+
+    /// `h3_conditioning_key` folds the anchor media into the key
+    /// (`h3.c:143-166`). The port folds the rows, not the path, so the same
+    /// pads saved elsewhere hit; one changed value misses, and so does a
+    /// different frame count.
+    #[test]
+    fn the_prepared_key_folds_the_anchor_rows() {
+        let rows = vec![0.5f32; 96 * 96];
+        let mut other = rows.clone();
+        other[0] = 0.25;
+
+        assert_eq!(key(5, fnv_f32(&rows)), key(5, fnv_f32(&rows)));
+        assert_ne!(key(5, fnv_f32(&rows)), key(5, fnv_f32(&other)));
+        assert_ne!(key(5, fnv_f32(&rows)), key(6, fnv_f32(&rows)));
     }
 }

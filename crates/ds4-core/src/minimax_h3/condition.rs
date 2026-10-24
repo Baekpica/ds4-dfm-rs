@@ -13,9 +13,16 @@
 //! `img_cond_rows * 96` and `audio_cond_rows * 32` (`h3_dit.c:1617-1624`), and
 //! the DiT validates them again before it writes (`:2420-2428`).
 
+use std::path::Path;
+
 use super::dit::{patchify_video, DitError};
 use super::host::Rng;
+use super::multimodal;
+use super::text_forward::{self, Embedding};
+use super::tokenizer::Tokenizer;
 use super::vae_encoder::{Latent, LATENT_CHANNELS};
+use super::vision::Grid;
+use super::vision_forward;
 
 /// `VIDEO_CHANNELS` (`h3_dit.c:22`): the latent channels, four per row patch.
 const VIDEO_PATCH: usize = 4;
@@ -32,6 +39,52 @@ pub fn augment_span(values: &mut [f32], seed: u64) {
     for value in values.iter_mut() {
         *value = 0.999 * *value + 0.001 * rng.normal();
     }
+}
+
+/// One anchored image at the render size, as the image reader produced it.
+/// The Qwen vision tower and the video VAE encoder both read these pixels
+/// (`h3.c:1231-1252`, `:1345-1397`), so one read feeds both.
+pub struct AnchorPixels {
+    pub values: Vec<f32>,
+    pub height: u32,
+    pub width: u32,
+}
+
+/// The FL2VA prompt embedding of a request that carries anchors.
+///
+/// The reference runs the Qwen vision tower over every anchor and splices the
+/// features into the prompt as `<Picture n>:` spans before the text encoder
+/// (`h3.c:1345-1414`). With no anchors it takes the plain text path
+/// (`h3.c:1424-1436`), which is why callers use this only when one exists.
+pub fn anchor_embedding(
+    text_encoder: &Path,
+    tokenizer: &Tokenizer,
+    prompt: &str,
+    anchors: &[AnchorPixels],
+) -> Result<Embedding, String> {
+    let mut outputs = Vec::with_capacity(anchors.len());
+
+    for anchor in anchors {
+        let grid = Grid::new(1, anchor.height as usize, anchor.width as usize)
+            .map_err(|error| format!("vision grid: {}", error.token()))?;
+        outputs.push(
+            vision_forward::encode_dir(text_encoder, &anchor.values, 1, grid)
+                .map_err(|error| format!("vision: {}", error.token()))?,
+        );
+    }
+
+    let images: Vec<&vision_forward::VisionOutput> = outputs.iter().collect();
+    let presentation = multimodal::fl2va(tokenizer, prompt, &images)
+        .map_err(|error| format!("presentation: {}", error.token()))?;
+
+    text_forward::encode_multimodal(
+        text_encoder,
+        presentation.ids(),
+        presentation.spans(),
+        presentation.positions(),
+        presentation.tags(),
+    )
+    .map_err(|error| format!("text encoder: {}", error.token()))
 }
 
 /// The condition rows one anchor latent contributes: patchified, then jittered

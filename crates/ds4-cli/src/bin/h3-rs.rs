@@ -95,13 +95,35 @@ fn run() -> Result<ExitCode, String> {
     let tokenizer_path = component("tokenizer/tokenizer.json");
     let tokenizer = Tokenizer::load(&tokenizer_path)
         .map_err(|error| format!("tokenizer: {}", error.token()))?;
-    let ids = tokenizer
-        .encode(&options.prompt, EmptyPrompt::Pad)
-        .map_err(|error| format!("tokenizer: {}", error.token()))?;
+
+    let shape = temporal(frame_count);
+    let (latent_w, latent_h) = canvas.latent();
+    let anchors = read_anchors(&options, frame_count, latent_h, latent_w)?;
+    if !anchors.keyframes.is_empty() {
+        println!(
+            "ANCHORS keyframes={} rows={}",
+            anchors.keyframes.len(),
+            anchors.rows.len() / condition::VIDEO_ROW_WIDTH
+        );
+    }
 
     let started = Instant::now();
-    let text =
-        text_forward::encode(&component("text_encoder"), &ids).map_err(|error| error.token())?;
+    let text = match anchors.pixels.is_empty() {
+        true => {
+            let ids = tokenizer
+                .encode(&options.prompt, EmptyPrompt::Pad)
+                .map_err(|error| format!("tokenizer: {}", error.token()))?;
+            text_forward::encode(&component("text_encoder"), &ids).map_err(|error| error.token())
+        }
+        // `h3.c:1345-1414`: an anchor is a vision span in the prompt, not only
+        // a VAE row, so the text encoder runs after the tower.
+        false => condition::anchor_embedding(
+            &component("text_encoder"),
+            &tokenizer,
+            &options.prompt,
+            &anchors.pixels,
+        ),
+    }?;
     println!(
         "TEXT tokens={} width={} fnv={:016x} seconds={:.3}",
         text.tokens(),
@@ -110,16 +132,7 @@ fn run() -> Result<ExitCode, String> {
         started.elapsed().as_secs_f64()
     );
 
-    let shape = temporal(frame_count);
-    let (latent_w, latent_h) = canvas.latent();
-    let (keyframes, condition_rows) = anchor_rows(&options, frame_count, latent_h, latent_w)?;
-    if !keyframes.is_empty() {
-        println!(
-            "ANCHORS keyframes={} rows={}",
-            keyframes.len(),
-            condition_rows.len() / condition::VIDEO_ROW_WIDTH
-        );
-    }
+    let (keyframes, condition_rows) = (anchors.keyframes, anchors.rows);
     let spec = Spec {
         text_len: text.tokens(),
         latent_t: shape.video_t,
@@ -319,17 +332,22 @@ fn info(options: &Options, canvas: &Canvas, frame_count: i32) -> Result<ExitCode
     Ok(ExitCode::SUCCESS)
 }
 
-/// Returns `None` for `--help`, which prints and exits successfully.
-/// The anchor rows that lead the video latent (`h3.c:1231-1345`): each frame is
-/// read with its released fit, encoded to one latent frame, patchified and
-/// jittered. Both anchors of one request see the same jitter sequence because
+/// The anchors of one request, read once: the pixels feed the vision tower and
+/// the video VAE encoder, and the latent becomes the leading rows
+/// (`h3.c:1231-1345`). Both anchors see the same jitter sequence because
 /// `h3_augment_span` reseeds per span (`h3.c:315-322`).
-fn anchor_rows(
+struct Anchors {
+    keyframes: Vec<i32>,
+    rows: Vec<f32>,
+    pixels: Vec<condition::AnchorPixels>,
+}
+
+fn read_anchors(
     options: &Options,
     frame_count: i32,
     latent_h: i32,
     latent_w: i32,
-) -> Result<(Vec<i32>, Vec<f32>), String> {
+) -> Result<Anchors, String> {
     let anchors = [
         (0, media::Fit::Stretch, options.first_frame.as_deref()),
         (
@@ -338,16 +356,19 @@ fn anchor_rows(
             options.last_frame.as_deref(),
         ),
     ];
-    let mut keyframes = Vec::new();
-    let mut rows = Vec::new();
+    let mut out = Anchors {
+        keyframes: Vec::new(),
+        rows: Vec::new(),
+        pixels: Vec::new(),
+    };
 
     for (frame, fit, path) in anchors {
         let Some(path) = path else { continue };
-        let pixels = media::read_image_f32(path, options.width as u32, options.height as u32, fit)
+        let values = media::read_image_f32(path, options.width as u32, options.height as u32, fit)
             .map_err(|error| format!("anchor {}: {}", path.display(), error.detail()))?;
         let latent = vae_encoder::encode(
             &options.model_dir.join(FL2VA).join("video_vae/source"),
-            &pixels,
+            &values,
             1,
             options.height as usize,
             options.width as usize,
@@ -368,14 +389,19 @@ fn anchor_rows(
                 latent_w
             ));
         }
-        keyframes.push(frame);
-        rows.extend(
+        out.keyframes.push(frame);
+        out.rows.extend(
             condition::anchor_rows(&latent, options.seed)
                 .map_err(|error| format!("anchor {}: {error}", path.display()))?,
         );
+        out.pixels.push(condition::AnchorPixels {
+            values,
+            height: options.height as u32,
+            width: options.width as u32,
+        });
     }
 
-    Ok((keyframes, rows))
+    Ok(out)
 }
 
 fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
