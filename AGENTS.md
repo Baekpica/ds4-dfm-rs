@@ -150,7 +150,7 @@ Within a family campaign, order the phases so each finished phase speeds up the 
 4. **Plain decode before MTP.** The non-speculative decode step is the baseline every MTP comparison divides by, and a verify pass is built from the same kernels; optimize it first, then the drafter, verify widths and acceptance.
 5. **Text before vision performance.** Optimization rounds run on text workloads; once the text path is done, optimize the vision encoder and media prefill. Do not feed media into every text round.
 
-The target for each phase is ~85-90% of the theoretical upper bound of its dominant work (tensor-core peak for compute-bound kernels, memory bandwidth for streaming ones), measured and stated per kernel class.
+Measure each phase against the theoretical upper bound of its dominant work (tensor-core peak for compute-bound kernels, memory bandwidth for streaming ones), stated per kernel class, and aim near 85-90% of it. The usable floors set the priority: once a context segment's (8K, 64K, 128K, 256K, 1M ...) prefill floor is above ~1,000 tok/s, further prefill work on it drops in priority (1,200-1,300 tok/s is comfortable); decode must reach at least 20 tok/s, with MTP where a segment's plain-decode bandwidth bound is below that.
 
 Use this order as an investigation heuristic, not a fixed optimization sequence; measured contribution and detailed profiling determine priority:
 

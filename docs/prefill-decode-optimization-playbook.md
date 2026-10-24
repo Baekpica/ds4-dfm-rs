@@ -43,7 +43,11 @@ Optimize in the order that makes the next phase cheaper to measure:
 6. vision encoder and media prefill, after the text path (text rounds do not
    carry media).
 
-Each phase aims at ~85-90 % of the theoretical bound of its dominant work.
+Each phase aims at ~85-90 % of the theoretical bound of its dominant work;
+the usable floors decide priority: a context segment whose prefill floor is
+above ~1,000 tok/s drops in priority (1,200-1,300 tok/s is comfortable), and
+decode must reach at least 20 tok/s (with MTP where the segment's plain-decode
+bandwidth bound is lower).
 
 ## Local scout with ds4-perf
 
