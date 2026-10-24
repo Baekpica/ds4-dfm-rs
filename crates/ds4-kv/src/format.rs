@@ -15,6 +15,7 @@ pub const VERSION: u8 = 1;
 pub const PAYLOAD_ABI: u8 = 2;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+const PAYLOAD_WRITEBACK_BYTES: u64 = 64 * 1024 * 1024;
 
 pub const EXT_TOOL_MAP: u8 = 1 << 0;
 pub const EXT_RESPONSES_VISIBLE: u8 = 1 << 1;
@@ -376,12 +377,32 @@ pub(crate) fn stage_stream(
         le_put32(&mut raw_text_bytes, text.len() as u32);
         f.write_all(&raw_text_bytes)?;
         f.write_all(text)?;
-        let copied = io::copy(&mut payload.take(payload_bytes), &mut f)?;
-        if copied != payload_bytes {
+        // Large checkpoints trade periodic writeback latency for bounded dirty
+        // output cache. Small payloads retain their single-copy/flush path.
+        let bounded = payload_bytes > PAYLOAD_WRITEBACK_BYTES;
+        let mut remaining = payload_bytes;
+        let mut writeback_start = 0;
+        let mut writeback_end = (FIXED_HEADER + raw_text_bytes.len() + text.len()) as u64;
+        while remaining > PAYLOAD_WRITEBACK_BYTES {
+            let copied = io::copy(&mut (&mut *payload).take(PAYLOAD_WRITEBACK_BYTES), &mut f)?;
+            if copied != PAYLOAD_WRITEBACK_BYTES {
+                return Err(FormatError::Truncated);
+            }
+            remaining -= copied;
+            writeback_end += copied;
+            payload_writeback(&f, writeback_start, writeback_end - writeback_start)?;
+            writeback_start = writeback_end;
+        }
+        let copied = io::copy(&mut payload.take(remaining), &mut f)?;
+        if copied != remaining {
             return Err(FormatError::Truncated);
         }
         f.write_all(trailer)?;
         f.flush()?;
+        if bounded {
+            let tail_bytes = writeback_end - writeback_start + copied + trailer.len() as u64;
+            payload_writeback(&f, writeback_start, tail_bytes)?;
+        }
         drop(f);
         Ok(())
     })();
@@ -390,6 +411,28 @@ pub(crate) fn stage_stream(
         return Err(error);
     }
     Ok(tmp)
+}
+
+fn payload_writeback(file: &fs::File, offset: u64, bytes: u64) -> io::Result<()> {
+    file.sync_data()?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        // Reclaim only the completed destination range, including the envelope
+        // prefix in the first window and the trailer in the final one.
+        // DONTNEED is advisory; sync_data is the required writeback boundary.
+        unsafe {
+            libc::posix_fadvise(
+                file.as_raw_fd(),
+                offset as libc::off_t,
+                bytes as libc::off_t,
+                libc::POSIX_FADV_DONTNEED,
+            )
+        };
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (offset, bytes);
+    Ok(())
 }
 
 pub fn read_path(path: &Path) -> Result<Record, FormatError> {
@@ -546,6 +589,8 @@ pub fn is_automatic_exact_replay(reason: Reason, ext_flags: u8) -> bool {
 mod tests {
     use super::*;
 
+    const PAYLOAD_FILL: u8 = 0xa5;
+
     struct ErrorAfterPrefix {
         offset: usize,
     }
@@ -559,6 +604,35 @@ mod tests {
             let n = buf.len().min(PREFIX.len() - self.offset);
             buf[..n].copy_from_slice(&PREFIX[self.offset..self.offset + n]);
             self.offset += n;
+            Ok(n)
+        }
+    }
+
+    struct FinitePayload {
+        remaining: u64,
+        read: u64,
+        fail_after: Option<u64>,
+    }
+
+    impl Read for FinitePayload {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            if self.fail_after == Some(self.read) {
+                return Err(io::Error::other("injected large payload read failure"));
+            }
+            let until_error = self.fail_after.map_or(u64::MAX, |at| at - self.read);
+            let window_left = PAYLOAD_WRITEBACK_BYTES - self.read % PAYLOAD_WRITEBACK_BYTES;
+            let n = self
+                .remaining
+                .min(until_error)
+                .min(window_left)
+                .min(buf.len() as u64) as usize;
+            let value = PAYLOAD_FILL ^ (self.read / PAYLOAD_WRITEBACK_BYTES) as u8;
+            buf[..n].fill(value);
+            self.remaining -= n as u64;
+            self.read += n as u64;
             Ok(n)
         }
     }
@@ -749,6 +823,86 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(&path).unwrap(), encode_file(&rec));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn large_stream_exact_envelope() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-stream-large-{}", std::process::id()));
+        let path = dir.join("entry.kv");
+        let _ = fs::remove_dir_all(&dir);
+        let rec = sample();
+        let bytes = 2 * PAYLOAD_WRITEBACK_BYTES + 17;
+        let trailer = b"KVT1 trailer";
+        let mut payload = FinitePayload {
+            remaining: bytes + 23,
+            read: 0,
+            fail_after: None,
+        };
+        write_stream(&path, &rec.header, &rec.text, &mut payload, bytes, trailer).unwrap();
+        assert_eq!(payload.read, bytes);
+        assert_eq!(payload.remaining, 23);
+
+        let envelope = read_envelope(&path).unwrap();
+        let mut expected = rec.header;
+        expected.payload_bytes = bytes;
+        assert_eq!(envelope.header, expected);
+        assert_eq!(envelope.text, rec.text);
+        assert_eq!(envelope.trailer_bytes, trailer.len() as u64);
+        assert_eq!(
+            envelope.file_size,
+            envelope.payload_offset + bytes + trailer.len() as u64
+        );
+
+        // Verify the full payload without allocating its serialized size.
+        let mut file = fs::File::open(&path).unwrap();
+        file.seek(SeekFrom::Start(envelope.payload_offset)).unwrap();
+        let mut remaining = bytes;
+        let mut buf = [0u8; 65536];
+        while remaining > 0 {
+            let n = remaining.min(buf.len() as u64) as usize;
+            let value = PAYLOAD_FILL ^ ((bytes - remaining) / PAYLOAD_WRITEBACK_BYTES) as u8;
+            file.read_exact(&mut buf[..n]).unwrap();
+            assert!(buf[..n].iter().all(|&byte| byte == value));
+            remaining -= n as u64;
+        }
+        assert_eq!(
+            read_trailer(&path, trailer.len() as u64).unwrap().1,
+            trailer.as_slice()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn large_stream_failure_cleanup() {
+        let dir =
+            std::env::temp_dir().join(format!("ds4-kv-stream-large-fail-{}", std::process::id()));
+        let path = dir.join("entry.kv");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, b"original KVC bytes").unwrap();
+        let rec = sample();
+        let bytes = PAYLOAD_WRITEBACK_BYTES + 17;
+
+        // Both failures occur after one complete writeback window.
+        for fail_after in [None, Some(PAYLOAD_WRITEBACK_BYTES)] {
+            let mut payload = FinitePayload {
+                remaining: fail_after.map_or(PAYLOAD_WRITEBACK_BYTES, |_| bytes),
+                read: 0,
+                fail_after,
+            };
+            let result = write_stream(&path, &rec.header, &rec.text, &mut payload, bytes, &[]);
+            match fail_after {
+                None => assert!(matches!(result, Err(FormatError::Truncated))),
+                Some(_) => assert!(matches!(result, Err(FormatError::Io(_)))),
+            }
+            assert_eq!(fs::read(&path).unwrap(), b"original KVC bytes");
+            let names: Vec<_> = fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(names, [std::ffi::OsString::from("entry.kv")]);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -356,6 +356,9 @@ version = "0.1.3"
 [[package]]
 name = "ds4-kv"
 version = "0.1.3"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "ds4-perf"

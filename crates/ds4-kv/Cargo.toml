@@ -8,3 +8,6 @@ description = "KVC checkpoint store (Phase 4)"
 
 [lib]
 path = "src/lib.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
