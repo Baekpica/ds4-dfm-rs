@@ -528,6 +528,22 @@ and to be taken exhaustively from `h3_cli.c` at P8: `--info`, `-d` model dir,
 the interactive `!` commands. Parity means the port's numbers can be compared
 with the reference's on the same command line.
 
+### 6.4 The OpenAI Videos surface
+
+Operator-requested on 2026-10-24, additive and h3-only. The wire is the OpenAI
+Videos API as published at `developers.openai.com/api/reference/resources/videos`
+(the reference is retired but retained as documentation): `POST /v1/videos`,
+`GET /v1/videos`, `GET|DELETE /v1/videos/{id}`, `GET|HEAD
+/v1/videos/{id}/content`, plus `GET /v1/models`. `crates/ds4-core` owns the
+wire types and job store (`minimax_h3::video_api`); `crates/ds4-server` owns
+the blocking HTTP surface (`h3_video.rs`) and the `h3-server-rs` binary.
+
+Because the port's renderer lands at P8, the surface runs real jobs through an
+operator-configured external program fixed at startup, never one chosen by a
+request body. The contract, the h3-specific size and duration rules, and the
+deviations are in [openai-videos.md](openai-videos.md). This is the one
+sanctioned HTTP route in the h3 family; `AGENTS.md` records the exception.
+
 ## 7. Build order and gates
 
 One unit per branch, no unit without its gate written before it starts. The

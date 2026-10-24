@@ -10,6 +10,7 @@ pub mod error;
 pub mod expected_plan;
 pub mod format;
 pub mod generate;
+pub mod h3_video;
 pub mod http;
 pub mod json;
 pub mod kv_cli;

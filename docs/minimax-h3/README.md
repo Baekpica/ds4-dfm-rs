@@ -11,6 +11,7 @@ Branch `feature/minimax-h3`. Model root on the Spark: `/mnt/h3-artifacts`.
 | [port-plan.md](port-plan.md) | The port plan: phases P0-P10, the Spark budget, the DiT rung, the render gate |
 | [cheatsheet.md](cheatsheet.md) | Sizes, quality, reach, memory and layout in one page |
 | [vq-recipe.md](vq-recipe.md) | The 13-bit GVQ1 v1 conversion of the DiT and its fallback |
+| [openai-videos.md](openai-videos.md) | The OpenAI Videos API surface, its renderer bridge and its deviations |
 
 Related, outside this directory:
 
@@ -25,6 +26,8 @@ Related, outside this directory:
 | Encoder forward | `crates/ds4-core/src/minimax_h3/text_forward.rs` |
 | Encoder gate | `crates/ds4-core/examples/h3_text_gate.rs` (`make tests/h3_text_gate`) |
 | Native encoder primitives | `native/h3/h3_text_gpu.cu` |
+| OpenAI Videos wire | `crates/ds4-core/src/minimax_h3/video_api.rs` |
+| OpenAI Videos server | `crates/ds4-server/src/h3_video.rs`, `h3-server-rs` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |
 | Inventory example | `crates/ds4-core/examples/minimax_h3_inspect/main.rs` |
 | Reference-parser probe | `tools/minimax_h3/st_probe.c` |
