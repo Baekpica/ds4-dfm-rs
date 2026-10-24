@@ -36,7 +36,7 @@ The request's effective and qualified plan remains authoritative.
 | IQuest-Q1 | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
 | Ling-3.1-flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
 | Beam-1.0-501B-A23B-VQ | persistent / unverified | partial / unverified | unverified | unverified | Sidecar / serial / unverified |
-| MiniMax-M3.1-Flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | None / none / none |
+| MiniMax-M3.1-Flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial / unverified |
 
 ## Bounds and allocator controls
 
