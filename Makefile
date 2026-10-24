@@ -2209,6 +2209,10 @@ tests/test_glm_vq_verify: tests/test_glm_vq_verify.cu cuda/glm_vq_linear.cuh cud
 test-glm-vq-verify: tests/test_glm_vq_verify
 	./tests/test_glm_vq_verify
 
+# GB10 peak probes behind docs/gb10-hardware.md (no model; run on an idle GPU).
+tools/gb10_peaks: tools/gb10_peaks.cu
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
 # R13+8 residual stage: restore bits, decode/verify experts and FP8 prefill MMA.
 tests/test_glm_vq_res: tests/test_glm_vq_res.cu cuda/glm_vq.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_mma8.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas

@@ -140,6 +140,18 @@ For every optimization:
 7. Report both kernel-level improvement and end-to-end prefill/decode impact.
 8. Verify that improving prefill does not regress decode, and vice versa.
 
+### Phase order: optimize what makes the next phase cheaper to measure
+
+Within a family campaign, order the phases so each finished phase speeds up the measurement of the next:
+
+1. **Input paths exist first.** Every input the family accepts (text, and image/video through a vision sidecar) must work end to end before any phase is optimized; the functional implementation is a prerequisite, not a later phase.
+2. **Prefill before decode.** Decode measurements on a realistic workload start with a prefill (long prompts, sweeps, cold frontiers); a faster prefill shortens every later run.
+3. **TTFT next.** Time to first token also depends on functional reuse (disk KV, partial reuse, cache hits); the compute share of it is optimized here, the rest belongs to those features.
+4. **Plain decode before MTP.** The non-speculative decode step is the baseline every MTP comparison divides by, and a verify pass is built from the same kernels; optimize it first, then the drafter, verify widths and acceptance.
+5. **Text before vision performance.** Optimization rounds run on text workloads; once the text path is done, optimize the vision encoder and media prefill. Do not feed media into every text round.
+
+The target for each phase is ~85-90% of the theoretical upper bound of its dominant work (tensor-core peak for compute-bound kernels, memory bandwidth for streaming ones), measured and stated per kernel class.
+
 Use this order as an investigation heuristic, not a fixed optimization sequence; measured contribution and detailed profiling determine priority:
 
 unexpected fallback paths → repeated transformations → redundant memory traffic → routing/indexing overhead → launch fragmentation → fast-path utilization → individual optimized-kernel tuning.
@@ -150,8 +162,14 @@ The guiding principle is:
 
 ## GB10 (DGX Spark) bottleneck know-how
 
-Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
-300–2,200 MHz policy. Background and history: [GLM VQ](docs/glm53-vq.md).
+GB10 is the engine's optimization target. Its limits (SMs, clocks, `mma.sync`
+peaks per type, DRAM/L2/shared-memory/NVMe numbers, missing `wgmma`/`tcgen05`)
+and how they were measured live in [docs/gb10-hardware.md](docs/gb10-hardware.md);
+start every roofline there and add new hardware facts there, not here.
+
+The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
+2,184–2,190 MHz under the 300–2,200 MHz policy. Background and history:
+[GLM VQ](docs/glm53-vq.md).
 
 - **Attribute first.** Export the Nsight trace to SQLite and sum kernels inside
   the `ds4.prefill` / `ds4.decode` NVTX ranges; divide by tokens. For each
@@ -210,8 +228,10 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
   blind at first (GLM one-draft acceptance 0.63 → 0.97 within one run).
   Fill its KV during prefill. Check generated text for loops: a repeating
   bench continuation accepts ~100% and overstates MTP gains.
-- **Peaks.** `mma.sync` FP8/INT8 ~215 T(FL)OPS, F16/BF16 ~108; cuBLAS BF16
-  65–90 TFLOPS. Large sequential reads stream 250–265 GB/s.
+- **Peaks.** Per SM and clock `mma.sync` does 1,024 F16/BF16 FLOP, 2,048
+  FP8/INT8 and 4,096 NVFP4: ~108 / 215 TFLOPS at the 2.19 GHz cap, 128 / 255
+  / 509 at ~2.5 GHz; cuBLAS BF16 65–90 TFLOPS. Streaming reads 231–246 GB/s
+  (spec 273). Details: [docs/gb10-hardware.md](docs/gb10-hardware.md).
 - **Store BF16-rounded rows as BF16.** F32 buffers of values already rounded
   at a BF16 boundary doubled GLM residual and expert-output traffic; BF16
   storage is lossless (prefill 1042 → 1121 tok/s).
