@@ -1107,6 +1107,44 @@ impl Dit {
         ))
     }
 
+    /// Write the anchor rows into the leading condition spans.
+    ///
+    /// This is `h3_dit_reset_run`'s write (`h3_dit.c:2408-2440`) after its
+    /// count check: the rows land at offset 0 of `video_input` and
+    /// `audio_input`, ahead of the sampled rows the forward appends at
+    /// `img_cond_rows`/`audio_cond_rows` (`:2455-2462`). The reference also
+    /// clears its core-reuse counters here; this port keeps no such counter —
+    /// `denoise` decides reuse on the host — so the write is the whole job.
+    ///
+    /// Empty slices are legal only when the packed layout has no condition
+    /// rows for that modality; anything else is the reference's "prepared DiT
+    /// condition rows do not match".
+    pub fn set_conditions(&mut self, video: &[f32], audio: &[f32]) -> Result<(), DitError> {
+        let wanted_video = self.video_cond_rows as usize * self.video_width as usize;
+        let wanted_audio = self.audio_cond_rows as usize * self.audio_width as usize;
+
+        if video.len() != wanted_video || audio.len() != wanted_audio {
+            return Err(DitError::Geometry {
+                detail: format!(
+                    "condition rows of {}x{}, expected {}x{}",
+                    video.len(),
+                    audio.len(),
+                    wanted_video,
+                    wanted_audio
+                ),
+            });
+        }
+
+        if wanted_video != 0 {
+            device(self.gpu.upload_at(&self.video_input, 0, &pack_f32(video)))?;
+        }
+        if wanted_audio != 0 {
+            device(self.gpu.upload_at(&self.audio_input, 0, &pack_f32(audio)))?;
+        }
+
+        Ok(())
+    }
+
     /// `h3_dit_forward` (`h3_dit.c:2442-2505`): pack the host latents, run the
     /// graph once at `step`, and return both velocities in the reference's
     /// `[24,T,H,W]` / `[32,2,T]` layouts.

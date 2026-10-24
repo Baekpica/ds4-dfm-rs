@@ -74,6 +74,7 @@
 #include "h3_host.h"
 #include "h3_text_encoder.h"
 #include "h3_tokenizer.h"
+#include "h3_video_encoder.h"
 #include "h3_video_vae.h"
 
 #include <math.h>
@@ -148,6 +149,16 @@ static uint8_t *rgb8_from_f32(const float *rgb, size_t count) {
     return output;
 }
 
+/* `h3.c:315-322` `h3_augment_span` is static in the reference, so the jitter is
+ * restated here on the exported generator: a fresh PCG per span, seeded by the
+ * request seed, and the same expression the release uses. */
+static void augment_span(float *values, size_t count, uint64_t seed) {
+    h3_rng rng;
+    h3_rng_seed(&rng, seed);
+    for (size_t index = 0; index < count; index++)
+        values[index] = 0.999f * values[index] + 0.001f * h3_rng_normal(&rng);
+}
+
 static void usage(void) {
     fprintf(stderr,
             "usage: h3_dit_probe <text_encoder_dir> <tokenizer.json> "
@@ -157,6 +168,8 @@ static void usage(void) {
             "       [--seed N] [--layers N] [--rope-scale X]\n"
             "       [--denoise [--reuse K] [--gpu-sampler]] "
             "[--decode --audio-vae DIR] [--video-vae DIR]\n"
+            "       [--first-frame PNG] [--last-frame PNG "
+            "(needs --video-vae)]\n"
             "       [--out FILE --out-width W --out-height H]\n"
             "       h3_dit_probe <FL2VA/transformer> --adaln-only [--steps N]\n"
             "       h3_dit_probe --features [--steps N]\n");
@@ -498,6 +511,7 @@ int main(int argc, char **argv) {
     int steps = 2, step = 0, layers = DIT_BLOCKS;
     int denoise = 0, reuse = 1, gpu_sampler = 0, decode = 0;
     const char *audio_vae = NULL, *video_vae = NULL;
+    const char *first_frame = NULL, *last_frame = NULL;
     const char *out_path = NULL;
     int out_width = 0, out_height = 0;
     unsigned long long seed = 1;
@@ -539,6 +553,10 @@ int main(int argc, char **argv) {
             audio_vae = value;
         } else if (!strcmp(argument, "--video-vae")) {
             video_vae = value;
+        } else if (!strcmp(argument, "--first-frame")) {
+            first_frame = value;
+        } else if (!strcmp(argument, "--last-frame")) {
+            last_frame = value;
         } else if (!strcmp(argument, "--out")) {
             out_path = value;
         } else if (!strcmp(argument, "--out-width")) {
@@ -612,9 +630,88 @@ int main(int argc, char **argv) {
     int latent_w = 0, latent_h = 0;
     h3_latent_canvas(width, height, &latent_w, &latent_h);
 
+    /* FL2VA anchors (`h3.c:1231-1345`): read at the canvas, encoded by the
+     * video VAE, patchified to 96-wide rows and jittered. The first frame is
+     * stretched, the last covered, and the keyframe index is the clip edge
+     * (`h3.c:1233-1255`), not the media's. */
+    int keyframes[2];
+    int keyframe_count = 0;
+    float *condition_rows = NULL;
+    size_t condition_elements = 0;
+    if (first_frame || last_frame) {
+        if (!video_vae) {
+            fprintf(stderr, "h3_dit_probe: anchors need --video-vae\n");
+            h3_text_embedding_free(&text);
+            return 2;
+        }
+        const char *paths[2] = {first_frame, last_frame};
+        const int indices[2] = {0, temporal.frame_count - 1};
+        const h3_image_fit fits[2] = {H3_IMAGE_FIT_STRETCH, H3_IMAGE_FIT_COVER};
+        for (int anchor = 0; anchor < 2; anchor++) {
+            if (!paths[anchor]) continue;
+            float *pixels = NULL;
+            if (!h3_ffmpeg_read_image_f32(paths[anchor], width, height,
+                                          fits[anchor], &pixels, error,
+                                          sizeof(error))) {
+                fprintf(stderr, "%s\n", error);
+                h3_text_embedding_free(&text);
+                return 1;
+            }
+            h3_video_latent latent;
+            memset(&latent, 0, sizeof(latent));
+            if (!h3_video_vae_encode(video_vae, "h3_shaders.metal", pixels, 1,
+                                     height, width, NULL, NULL, &latent,
+                                     error, sizeof(error))) {
+                fprintf(stderr, "%s\n", error);
+                free(pixels);
+                h3_text_embedding_free(&text);
+                return 1;
+            }
+            free(pixels);
+            if (latent.time != 1 || latent.height != latent_h ||
+                latent.width != latent_w) {
+                fprintf(stderr,
+                        "h3_dit_probe: anchor VAE produced unexpected geometry\n");
+                h3_video_latent_free(&latent);
+                h3_text_embedding_free(&text);
+                return 1;
+            }
+            size_t row_elements = (size_t)latent.time *
+                (size_t)latent.height * (size_t)latent.width / 4 * 96;
+            float *grown = realloc(condition_rows,
+                                   (condition_elements + row_elements) *
+                                   sizeof(*condition_rows));
+            if (!grown) {
+                fprintf(stderr, "h3_dit_probe: out of memory\n");
+                h3_video_latent_free(&latent);
+                h3_text_embedding_free(&text);
+                return 1;
+            }
+            condition_rows = grown;
+            if (!h3_dit_patchify_video(latent.values, 24, latent.time,
+                                       latent.height, latent.width,
+                                       condition_rows + condition_elements,
+                                       row_elements)) {
+                fprintf(stderr, "h3_dit_probe: cannot patchify anchor\n");
+                h3_video_latent_free(&latent);
+                h3_text_embedding_free(&text);
+                return 1;
+            }
+            augment_span(condition_rows + condition_elements, row_elements,
+                         seed);
+            h3_video_latent_free(&latent);
+            keyframes[keyframe_count++] = indices[anchor];
+            condition_elements += row_elements;
+        }
+        printf("ANCHORS keyframes=%d elements=%zu fnv=%016llx\n",
+               keyframe_count, condition_elements,
+               (unsigned long long)fnv(condition_rows, condition_elements *
+                                       sizeof(*condition_rows)));
+    }
+
     h3_layout_spec spec = {(int)text.tokens, temporal.video_t, latent_h,
                            latent_w, temporal.audio_t, temporal.frame_count,
-                           NULL, 0, NULL, 0};
+                           keyframes, keyframe_count, NULL, 0};
     h3_layout layout;
     if (!h3_layout_build(&spec, &layout, error, sizeof(error))) {
         fprintf(stderr, "%s\n", error);
@@ -656,11 +753,20 @@ int main(int argc, char **argv) {
     putchar('\n');
 
     started = seconds();
-    h3_dit *dit = h3_dit_load_t2va(
-        argv[3], "h3_shaders.metal", &text, &layout, &sigmas,
-        (unsigned)layers, 1, 0, 0, rope_scale,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        NULL, NULL, error, sizeof(error));
+    h3_dit *dit = keyframe_count
+        ? h3_dit_load_conditioned(
+              argv[3], "h3_shaders.metal", &text, &layout, &sigmas,
+              (unsigned)layers, 1, 0, 0, rope_scale,
+              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+              condition_rows, condition_elements, NULL, 0,
+              NULL, NULL, error, sizeof(error))
+        : h3_dit_load_t2va(
+              argv[3], "h3_shaders.metal", &text, &layout, &sigmas,
+              (unsigned)layers, 1, 0, 0, rope_scale,
+              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+              NULL, NULL, error, sizeof(error));
+    free(condition_rows);
+    condition_rows = NULL;
     if (!dit) {
         fprintf(stderr, "%s\n", error);
         h3_layout_free(&layout);

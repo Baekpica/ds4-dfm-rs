@@ -7,6 +7,7 @@
 //!                    [--reuse K] [--stream] [--expect-video HEX]
 //!                    [--expect-audio HEX]
 //!                    [--expect-adaln BLOCK:FINAL] [--adaln-only]
+//!                    [--first-frame PNG] [--last-frame PNG] [--video-vae DIR]
 //!
 //! Prints the prompt ids, the text hash (the E4 gate's), the packed layout,
 //! the seeded noise and the two velocities, or with `--denoise` the final
@@ -49,6 +50,23 @@
 //! `--stream` loads the two-slot ring instead of the 50 resident blocks; the
 //! latents must be identical to the resident run. The recorded 2-step pair
 //! is video=4307e38ab75bf72d audio=775b6fbbcf79889b in all three.
+//!
+//! The unit-5 conditioning goldens, both anchors set to the pilot PNG
+//! (`--width 512 --height 192 --frames 5 --steps 4 --denoise --seed 1
+//! --first-frame <png> --last-frame <png> --video-vae .../video_vae/source`):
+//!
+//!   ANCHORS keyframes=2 elements=18432 fnv=fe11c049cced3a13
+//!   LAYOUT rows=406 segments=5 positions=a47f8985c9beac72 cond=192+0
+//!          target=192+16 latent=2x12x32 audio_t=8
+//!   NOISE seed=1 video=18432=993dc9b32198325f audio=512=094d71985b0c77d7
+//!   DENOISE steps=4 reuse=1 selected=4 video=dd0c9126e2bcbe37
+//!          audio=d27bae4151be2e5b
+//!   edges video=-0.665142894/0.602844954 audio=-0.487401962/0.098681927
+//!
+//! Every line equals the reference. The decode leg then stops at the
+//! reference's own two-token rule (`h3_video_vae.c:1222`): `t = 2` supports
+//! one spatial tile and 512 px is two, so a five-frame decode needs a
+//! narrower canvas.
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -59,7 +77,9 @@ use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
 use ds4_core::minimax_h3::vae_audio;
+use ds4_core::minimax_h3::vae_encoder;
 use ds4_core::minimax_h3::vae_video;
+use ds4_core::minimax_h3::{condition, media};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -113,6 +133,59 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 
     let temporal = temporal(options.frames);
     let (latent_w, latent_h) = latent_canvas(options.width, options.height);
+
+    // FL2VA anchors (`h3.c:1231-1345`): read at the canvas, encoded by the
+    // video VAE, patchified and jittered. The first frame is stretched, the
+    // last covered, and the keyframe index is the clip edge, not the media's.
+    let mut keyframes = Vec::new();
+    let mut condition_rows = Vec::new();
+    for (frame, fit, path) in [
+        (0, media::Fit::Stretch, options.first_frame.as_deref()),
+        (
+            temporal.frame_count - 1,
+            media::Fit::Cover,
+            options.last_frame.as_deref(),
+        ),
+    ] {
+        let Some(path) = path else { continue };
+        let directory = options
+            .video_vae
+            .as_deref()
+            .ok_or_else(|| usage("--first-frame/--last-frame need --video-vae"))?;
+        let pixels = media::read_image_f32(path, options.width as u32, options.height as u32, fit)
+            .map_err(|error| error.detail().to_string())?;
+        let latent = vae_encoder::encode(
+            directory,
+            &pixels,
+            1,
+            options.height as usize,
+            options.width as usize,
+            |_, _| {},
+        )
+        .map_err(|error| error.to_string())?;
+
+        if latent.time != 1
+            || latent.height != latent_h as usize
+            || latent.width != latent_w as usize
+        {
+            return Err(usage("anchor VAE produced unexpected latent geometry"));
+        }
+
+        keyframes.push(frame);
+        condition_rows.extend(
+            condition::anchor_rows(&latent, options.seed)
+                .map_err(|error| format!("anchor rows: {error}"))?,
+        );
+    }
+    if !condition_rows.is_empty() {
+        println!(
+            "ANCHORS keyframes={} elements={} fnv={:016x}",
+            keyframes.len(),
+            condition_rows.len(),
+            fnv_f32(&condition_rows)
+        );
+    }
+
     let spec = Spec {
         text_len: text.tokens(),
         latent_t: temporal.video_t,
@@ -120,7 +193,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         latent_w,
         audio_t: temporal.audio_t,
         frame_count: temporal.frame_count,
-        keyframes: &[],
+        keyframes: &keyframes,
     };
     let sequence = sequence::build(&spec).map_err(|error| format!("layout: {error:?}"))?;
     println!(
@@ -158,6 +231,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     )
     .map_err(|error| error.to_string())?;
     println!("LOAD seconds={:.3}", start.elapsed().as_secs_f64());
+    if !condition_rows.is_empty() {
+        model
+            .set_conditions(&condition_rows, &[])
+            .map_err(|error| format!("conditions: {error}"))?;
+    }
     if let Some(bytes) = model.stream_slot_bytes() {
         println!("STREAM slots=2 slot_bytes={bytes}");
     }
@@ -396,6 +474,8 @@ struct Options {
     decode: bool,
     audio_vae: Option<std::path::PathBuf>,
     video_vae: Option<std::path::PathBuf>,
+    first_frame: Option<std::path::PathBuf>,
+    last_frame: Option<std::path::PathBuf>,
     expect_pcm: Option<u64>,
     expect_frames: Option<u64>,
     expect_video: Option<u64>,
@@ -420,6 +500,8 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         decode: false,
         audio_vae: None,
         video_vae: None,
+        first_frame: None,
+        last_frame: None,
         expect_pcm: None,
         expect_frames: None,
         expect_video: None,
@@ -462,6 +544,8 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
             }
             "--audio-vae" => options.audio_vae = Some(value()?.into()),
             "--video-vae" => options.video_vae = Some(value()?.into()),
+            "--first-frame" => options.first_frame = Some(value()?.into()),
+            "--last-frame" => options.last_frame = Some(value()?.into()),
             "--expect-pcm" => {
                 options.expect_pcm = Some(
                     parse_hash(value()?)

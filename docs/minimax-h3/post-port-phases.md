@@ -461,6 +461,37 @@ port against reference: 13.460/12.824 s, 45.258/45.195 s, 34.540/34.240 s. The
 goldens are in `h3_video_encoder_gate.rs`; seven device-free tests cover the
 tile plan, the stitch and the temporal rule.
 
+**Unit 5 landed** (`condition.rs`, `Dit::set_conditions`,
+`Engine::anchor_rows`, `--first-frame` / `--last-frame` / `--video-vae` in
+`h3_dit_gate` and `dit_probe.c`): the anchor spans that lead the video latent,
+from the image read to the conditioned run. Three facts read from the
+reference rather than assumed:
+
+- The order is encode, patchify, jitter: the anchor latent is patchified
+  straight into its span (`h3.c:1300-1331`) and `h3_augment_conditions`
+  (`h3.c:326-372`) rewrites the assembled buffer afterwards as
+  `0.999*v + 0.001*normal(seed)`. Each span seeds a fresh PCG32 from
+  `params->seed`, so two anchors of one request replay the same jitter
+  sequence instead of continuing it; reference audio spans use `seed + 1`
+  (`h3.c:358`), which FL2VA never reaches.
+- A span is `latent_t(1) * latent_h * latent_w / 4` rows of 96, and the
+  anchor count must cover the condition buffer exactly (`h3.c:333-343`).
+- The rows live at offset 0 of `video_input` and are rewritten on every run:
+  once at load (`h3_dit.c:1615-1624`, `:1685-1690`) and again by
+  `h3_dit_reset_run` (`:2419-2437`), which also clears the core-reuse
+  counters. `set_conditions` enforces the same element counts.
+
+Gated on the Spark on 2026-10-24 against `dit_probe.c` with the pilot PNG as
+both anchors at 512x192, five frames, four evaluations, seed 1: `ANCHORS
+keyframes=2 elements=18432 fnv=fe11c049cced3a13`, `LAYOUT ... cond=192+0
+target=192+16 latent=2x12x32`, `NOISE video=993dc9b32198325f
+audio=094d71985b0c77d7` and `DENOISE video=dd0c9126e2bcbe37
+audio=d27bae4151be2e5b` all equal, with the same edges. The decode leg then
+stops at the reference's own two-token rule (`h3_video_vae.c:1222`): `t = 2`
+supports one spatial tile and this canvas is two. The goldens are in
+`h3_dit_gate.rs`; four device-free tests cover the jitter seed, the fresh
+per-span generator, the patchified rows and the geometry refusal.
+
 ## P12.6 — The remaining reference surface
 
 The surfaces that are neither conditioning nor the test suite, each with its

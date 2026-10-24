@@ -26,11 +26,12 @@ use std::time::Instant;
 
 use super::dit::{Dit, LoadMode};
 use super::host::{reuse_schedule, temporal, Rng, Schedule};
+use super::media::{self, Fit};
 use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
 use super::sequence::{self, Spec};
 use super::text_forward::{self, Embedding};
 use super::tokenizer::{EmptyPrompt, Tokenizer};
-use super::{vae_audio, vae_video};
+use super::{condition, vae_audio, vae_encoder, vae_video};
 
 /// The component layout `h3.c:425-436` resolves under the model directory.
 const FL2VA: &str = "FL2VA";
@@ -70,6 +71,10 @@ pub struct RenderRequest {
     pub steps: usize,
     pub reuse: usize,
     pub seed: u64,
+    /// FL2VA anchors: the first and last frame the clip must start and end on
+    /// (`h3.c:1231-1257`). They condition the DiT; they are not delivered.
+    pub first_frame: Option<PathBuf>,
+    pub last_frame: Option<PathBuf>,
     pub output: PathBuf,
 }
 
@@ -130,6 +135,10 @@ struct PreparedKey {
     steps: usize,
     reuse: usize,
     rope: u32,
+    /// The anchor rows themselves, as `h3_conditioning_key` folds the media
+    /// pixels into its key (`h3.c:143-166`): identical pads over other pixels
+    /// must prefill again.
+    anchors: u64,
 }
 
 struct Prepared {
@@ -231,6 +240,12 @@ impl Engine {
 
         let shape = temporal(frame_count);
         let (latent_w, latent_h) = canvas.latent();
+
+        // Anchors (`h3.c:1231-1345`): each frame is read at the canvas, encoded
+        // by the video VAE, patchified and jittered before the layout is built,
+        // because the cond row count is part of the packed signature.
+        let (keyframes, video_rows) = self.anchor_rows(request, frame_count, latent_h, latent_w)?;
+
         let key = PreparedKey {
             prompt: request.prompt.clone(),
             width: request.width,
@@ -239,6 +254,7 @@ impl Engine {
             steps: request.steps,
             reuse: request.reuse,
             rope: canvas.rope_scale(false).to_bits(),
+            anchors: fnv_f32(&video_rows),
         };
 
         // Prepared DiT (`h3.c:168-190`, `h3.c:1505-1516`): a hit skips the
@@ -256,7 +272,7 @@ impl Engine {
                 latent_w,
                 audio_t: shape.audio_t,
                 frame_count: shape.frame_count,
-                keyframes: &[],
+                keyframes: &keyframes,
             };
             let sequence = sequence::build(&spec)
                 .map_err(|error| EngineError::new(format!("layout: {error:?}")))?;
@@ -278,6 +294,13 @@ impl Engine {
             .as_mut()
             .expect("the prepared DiT was just inserted")
             .dit;
+
+        // The leading spans are refreshed on every call, cached graph or fresh
+        // (`h3_dit_reset_run`, `h3_dit.c:2408-2440`). With no anchors both
+        // counts are zero and this only validates.
+        dit.set_conditions(&video_rows, &[])
+            .map_err(|error| EngineError::new(format!("conditions: {error}")))?;
+
         let mut video = vec![0.0f32; dit.video_elements()];
         let mut audio = vec![0.0f32; dit.audio_elements()];
         Rng::seed(request.seed).fill_normal(&mut video);
@@ -369,6 +392,63 @@ impl Engine {
             video_seconds,
             mux_seconds,
         })
+    }
+
+    /// Read, encode, patchify and jitter the anchor frames (`h3.c:1231-1345`).
+    ///
+    /// The reference fits the first frame by stretching and the last by
+    /// covering (`h3.c:1233-1255`), and the keyframe index is the clip edge, not
+    /// the media's. Each anchor contributes the target canvas' own row span, so
+    /// a latent of any other geometry is an error rather than a short span
+    /// (`h3.c:1338-1341`).
+    fn anchor_rows(
+        &self,
+        request: &RenderRequest,
+        frame_count: i32,
+        latent_h: i32,
+        latent_w: i32,
+    ) -> Result<(Vec<i32>, Vec<f32>), EngineError> {
+        let anchors = [
+            (0, Fit::Stretch, request.first_frame.as_deref()),
+            (frame_count - 1, Fit::Cover, request.last_frame.as_deref()),
+        ];
+        let mut keyframes = Vec::new();
+        let mut rows = Vec::new();
+
+        for (frame, fit, path) in anchors {
+            let Some(path) = path else { continue };
+            let pixels =
+                media::read_image_f32(path, request.width as u32, request.height as u32, fit)
+                    .map_err(|error| {
+                        EngineError::new(format!("anchor {}: {}", path.display(), error.detail()))
+                    })?;
+            let latent = vae_encoder::encode(
+                &self.component("video_vae/source"),
+                &pixels,
+                1,
+                request.height as usize,
+                request.width as usize,
+                |_, _| {},
+            )
+            .map_err(|error| EngineError::new(format!("anchor {}: {error}", path.display())))?;
+
+            if latent.time != 1
+                || latent.height != latent_h as usize
+                || latent.width != latent_w as usize
+            {
+                return Err(EngineError::new(
+                    "anchor VAE produced unexpected latent geometry",
+                ));
+            }
+
+            keyframes.push(frame);
+            rows.extend(
+                condition::anchor_rows(&latent, request.seed)
+                    .map_err(|error| EngineError::new(format!("anchor rows: {error}")))?,
+            );
+        }
+
+        Ok((keyframes, rows))
     }
 }
 

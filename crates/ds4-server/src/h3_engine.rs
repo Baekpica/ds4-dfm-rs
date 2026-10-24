@@ -58,6 +58,10 @@ impl Renderer for EngineRenderer {
             steps: self.steps,
             reuse: self.reuse,
             seed: self.seed,
+            // Anchors are a render-surface field (P12 unit 6); the serving
+            // renderer carries the prompt path only.
+            first_frame: None,
+            last_frame: None,
             output: output.to_path_buf(),
         };
         let report = self
