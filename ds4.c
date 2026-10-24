@@ -72628,7 +72628,12 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
     if (DS4_MODEL_VARIANT == DS4_VARIANT_V41) return;
     // VQ owns its source graph scratch; generic DeepSeek prewarm is unrelated.
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) { return; }
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ) { return; }
+    /* MiniMax's first prefill paid ~0.13 s of first-use module loads (MMQ,
+     * cuBLAS) and its first decode its own kernels: warm a 300-row q4p chunk,
+     * a 100-row MMQ chunk and two one-row steps in a throwaway session (the
+     * batch runtime's banks own their graphs). */
+    const bool minimax = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ;
     e->boot_prewarm_done = true;
     const double warm_t0 = now_sec();
     /* memgov D0b-3 (S8): prewarm allocates by design (post-placement
@@ -72686,10 +72691,12 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
         for (int i = 0; i < warm_len; i++)
             toks.v[i] = nv + (i % 997);
         char warm_err[128];
-        toks.len = warm_len / 2;
-        int warm_rc = ds4_session_sync(warm, &toks, warm_err, sizeof(warm_err));
-        if (warm_rc == 0) {
-            toks.len = warm_len;
+        static const int deepseek_steps[] = {256, 512}, minimax_steps[] = {300, 400, 401, 402};
+        const int *steps = minimax ? minimax_steps : deepseek_steps;
+        const int nsteps = minimax ? 4 : 2;
+        int warm_rc = 0;
+        for (int i = 0; warm_rc == 0 && i < nsteps; i++) {
+            toks.len = steps[i];
             warm_rc = ds4_session_sync(warm, &toks, warm_err, sizeof(warm_err));
         }
         if (warm_rc != 0)
@@ -72697,8 +72704,8 @@ void ds4_engine_boot_prewarm(ds4_engine *e) {
                             "request pays the one-time driver costs\n",
                     warm_err);
         else
-            fprintf(stderr, "ds4: boot prewarm done (%d tokens, 2 chunks) in %.1fs\n",
-                    warm_len, now_sec() - warm_t0);
+            fprintf(stderr, "ds4: boot prewarm done (%d tokens, %d syncs) in %.1fs\n",
+                    steps[nsteps - 1], nsteps, now_sec() - warm_t0);
         free(toks.v);
         ds4_session_free(warm);
         /* Return device reserves the warm session no longer backs (unused
