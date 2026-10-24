@@ -375,6 +375,44 @@ lifetimes*; spend Q1/Q2's surplus on the VAE's tiling and on a
 persistent Daemon so that repeated prompts never pay the load again. That, not
 a bigger latent budget, is what "as much as possible" buys here.
 
+What the upstream MiniMax SSD tier settles for P9. The branch under review
+(`Baekpica/ds4-dfm-rs` `feat/add-minimax-vq`, cloned read-only at
+`/data/ds4-minimax-vq-ref`) runs a mature SSD tier, but for a different
+object: a `[layer][block]` K/V paging file with a pinned LRU pool, because a
+transformer's cache has random misses (`ds4_minimax_kv.inc:1-25`). H3 streams
+weights in a strict ring, so only the contract transfers, not the machinery:
+
+- Tier does not change arithmetic: both tiers run the same kernels on the same
+  bytes, and the branch proves it on logits and tokens. H3's reference already
+  proves the same for weight tiering (one SHA-256, SSIM 1.0).
+- Reserve the file at open and fail there, not mid-forward
+  (`ds4_minimax_kv.inc:365-372`); H3 needs 1.44 GiB for two BF16 matrix slots,
+  so admission is trivial.
+- O_DIRECT transfers must advance iovecs on a 512-byte boundary when a read
+  comes back short (`:159-171`); `STATX_DIOALIGN` on this class of NVMe is 512.
+- Prefetch overlaps compute and is measured as exposed vs hidden time; the
+  branch starts a streamed layer's reads once the previous layer's attention
+  has run, on an event rather than after a sync (`ds4_minimax_kv.inc:492-505`,
+  `ds4_minimax_graph.inc:269-270`).
+- AIO helps only small random reads: 8 x 72 KiB random reads cost 0.94 ms on
+  worker threads and 0.24 ms through one `io_submit`, because GB10's cores
+  idle in LPI-3 with a 433 us exit (`:223-231`). H3 reads 735 MiB per block,
+  so one reader thread suffices and AIO adds nothing.
+- The rate that decides the tier is the artifact's, not the model's: the
+  branch measured its internal NVMe at 6.3 GB/s sequential and 6.2 GB/s of
+  72 KB random reads (`docs/gb10-hardware.md:60`), while this Spark's
+  `/mnt/h3-artifacts` reads cold at 1.3 GB/s.
+
+H3's P9 therefore has a fixed shape: two slots of four BF16 matrices
+(735.0 MiB each, 1.44 GiB total), norms resident, one prefetch thread reading
+ascending checkpoint offsets, the first active block re-primed during the last
+block so the next denoise step starts ready, and a gate that compares final
+latents for byte identity. The arithmetic that decides whether it is ever on:
+one evaluation streams 35.9 GiB (38.5 GB) and a 20-step render 718 GiB
+(771 GB), which is ~593 s at 1.3 GB/s and ~122 s at 6.3 GB/s against 4.87 s
+resident — the mode exists for a memory tier that would not otherwise fit,
+never for speed.
+
 ## 5. The quality question
 
 "Full quality" is the operator's requirement and it needs a definition before
