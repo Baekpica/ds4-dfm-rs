@@ -555,6 +555,8 @@ extern "C" int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, co
  * routed_scaling_factor 2.0 (exact). */
 __global__ void mm_router_kernel(int32_t *ids, float *weights, const float *logits, const float *bias,
         uint32_t rows) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31, row = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     if (row >= rows) { return; }
     float s[4], c[4];
@@ -603,6 +605,14 @@ enum { MM_ROUTER_ROWS = DS4_MINIMAX_SPLIT_ROWS, MM_ROUTER_WARPS = 4 };
  * argument: with a runtime count their unrolled per-row loops issued every
  * predicated row, eight rows' instructions for a decode row. `launch` gets
  * std::integral_constant<uint32_t, R> for the R == rows instance. */
+/* Decode and verify widths launch MiniMax's kernels with programmatic
+ * dependent launch (glmvq_pdl_open first, glmvq_pdl_wait before reading a
+ * predecessor's output or writing): a chain of plain launches between the
+ * Q4_K and expert kernels kept those from staging their weights while the
+ * short kernels ran, and each boundary waited for a full drain.
+ * DS4_GLMVQ_PDL=0 turns it off with the GVQ kernels'. */
+static glmvq_launch mm_mode(uint32_t rows) { return rows <= DS4_MINIMAX_SPLIT_ROWS ? g_gvq_pdl : GLMVQ_LAUNCH_PLAIN; }
+
 template <uint32_t MAX, typename F>
 static void mm_rows(uint32_t rows, F launch) {
     if constexpr (MAX > 1) {
@@ -614,6 +624,8 @@ static void mm_rows(uint32_t rows, F launch) {
 template <uint32_t ROWS>
 __global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *logits, const float *w,
         const float *x) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31, e = blockIdx.x * MM_ROUTER_WARPS + threadIdx.x / 32;
     const float4 *we = (const float4 *)(w + (uint64_t)e * MM_HIDDEN);
     float acc[ROWS];
@@ -658,12 +670,15 @@ __global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(float *out, const
     extern __shared__ __align__(16) uint8_t mm_q8_rows[];
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, o0 = blockIdx.x * MM_Q8_WARPS;
     const uint32_t blocks = cols / MM_Q8_BLOCK, row_bytes = blocks * MM_Q8_BYTES;
+    glmvq_pdl_open();
+    // The weights are constant: they stage while the predecessor drains.
     if (staged) {
         const uint32_t pieces = min((uint32_t)MM_Q8_WARPS, outs - o0) * row_bytes / 16;
         const uint4 *src = (const uint4 *)(weight + (uint64_t)o0 * row_bytes);
         for (uint32_t i = threadIdx.x; i < pieces; i += MM_Q8_WARPS * 32) { ((uint4 *)mm_q8_rows)[i] = src[i]; }
         __syncthreads();
     }
+    glmvq_pdl_wait();
     const uint32_t o = o0 + warp;
     if (o >= outs) { return; }
     const uint8_t *w = staged ? mm_q8_rows + warp * row_bytes : weight + (uint64_t)o * row_bytes;
@@ -698,8 +713,8 @@ extern "C" int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     const uint32_t row_bytes = cols / MM_Q8_BLOCK * MM_Q8_BYTES;
     const bool staged = row_bytes % 16 == 0 && (uintptr_t)w % 16 == 0 && MM_Q8_WARPS * row_bytes <= 48 * 1024;
     mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
-        mm_q8_gemv<decltype(r)::value><<<(outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS, MM_Q8_WARPS * 32,
-            staged ? MM_Q8_WARPS * row_bytes : 0, ds4_current_stream()>>>((float *)out->ptr, w,
+        glmvq_launch_kernel(mm_mode(rows), mm_q8_gemv<decltype(r)::value>, (outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS,
+            MM_Q8_WARPS * 32, staged ? MM_Q8_WARPS * row_bytes : 0, ds4_current_stream(), (float *)out->ptr, w,
             (const float *)input->ptr, cols, outs, staged);
     });
     return cuda_ok(cudaGetLastError(), "MiniMax Q8_0 rows");
@@ -732,8 +747,8 @@ extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected
     const float alpha = 1.0f, beta = 0.0f;
     if (rows <= MM_ROUTER_ROWS) {
         mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
-            mm_router_gemv<decltype(r)::value><<<MM_EXPERTS / MM_ROUTER_WARPS, MM_ROUTER_WARPS * 32, 0,
-                ds4_current_stream()>>>((float *)logits->ptr, w, (const float *)input->ptr);
+            glmvq_launch_kernel(mm_mode(rows), mm_router_gemv<decltype(r)::value>, MM_EXPERTS / MM_ROUTER_WARPS,
+                MM_ROUTER_WARPS * 32, 0, ds4_current_stream(), (float *)logits->ptr, w, (const float *)input->ptr);
         });
     } else if (!cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, MM_EXPERTS, (int)rows, MM_HIDDEN,
             &alpha, w, CUDA_R_32F, MM_HIDDEN, input->ptr, CUDA_R_32F, MM_HIDDEN, &beta, logits->ptr, CUDA_R_32F,
@@ -741,8 +756,8 @@ extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected
         return 0;
     }
     enum { WARPS = 8 };
-    mm_router_kernel<<<(rows + WARPS - 1) / WARPS, WARPS * 32, 0, ds4_current_stream()>>>(
-        (int32_t *)selected->ptr, (float *)weights->ptr, (const float *)logits->ptr, b, rows);
+    glmvq_launch_kernel(mm_mode(rows), mm_router_kernel, (rows + WARPS - 1) / WARPS, WARPS * 32, 0,
+        ds4_current_stream(), (int32_t *)selected->ptr, (float *)weights->ptr, (const float *)logits->ptr, b, rows);
     return cuda_ok(cudaGetLastError(), "MiniMax router");
 }
 
@@ -776,6 +791,8 @@ __device__ __forceinline__ void mm_row_rms(const float *x, const __nv_bfloat16 *
 
 __global__ void mm_rms_kernel(float *out, const float *input, const __nv_bfloat16 *weight) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint64_t base = (uint64_t)blockIdx.x * MM_HIDDEN;
     float x[MM_ROW_VALUES], y[MM_ROW_VALUES];
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { x[j] = glmvq_round(input[base + threadIdx.x + j * MM_ROW_THREADS]); }
@@ -788,7 +805,8 @@ extern "C" int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const 
     const auto *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, MM_HIDDEN);
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
     if (!w || !rows || !gvq_floats(out, count) || !gvq_floats(x, count)) { return 0; }
-    mm_rms_kernel<<<rows, MM_ROW_THREADS, 0, ds4_current_stream()>>>((float *)out->ptr, (const float *)x->ptr, w);
+    glmvq_launch_kernel(mm_mode(rows), mm_rms_kernel, rows, MM_ROW_THREADS, 0, ds4_current_stream(), (float *)out->ptr,
+        (const float *)x->ptr, w);
     return cuda_ok(cudaGetLastError(), "MiniMax RMS");
 }
 
@@ -824,6 +842,8 @@ __device__ __forceinline__ void mm_row_q4p(const float *x, uint32_t cols, __half
 __global__ void mm_residual_kernel(float *cur, const float *branch, float *norm, const __nv_bfloat16 *next,
         __half *q4h, float *q4s) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint64_t base = (uint64_t)blockIdx.x * MM_HIDDEN;
     float x[MM_ROW_VALUES], y[MM_ROW_VALUES];
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
@@ -845,13 +865,15 @@ extern "C" int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, c
     if ((next != DS4_GVQ_NO_LINK && !n) || !rows || !gvq_floats(cur, count) || !gvq_floats(branch, count) ||
         (n && !gvq_floats(norm, count)) || (q4h && (!n || q4h->bytes < count * sizeof(__half) ||
             !gvq_floats(q4s, rows)))) { return 0; }
-    mm_residual_kernel<<<rows, MM_ROW_THREADS, 0, ds4_current_stream()>>>((float *)cur->ptr,
-        (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n, q4h ? (__half *)q4h->ptr : nullptr,
-        q4h ? (float *)q4s->ptr : nullptr);
+    glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel, rows, MM_ROW_THREADS, 0, ds4_current_stream(),
+        (float *)cur->ptr, (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n,
+        q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
     return cuda_ok(cudaGetLastError(), "MiniMax residual");
 }
 
 __global__ void mm_swiglu_kernel(float *out, const float *gate, const float *up, uint64_t count) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
     out[i] = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(glmvq_round(gate[i]), glmvq_round(up[i]), MM_LIMIT);
@@ -894,8 +916,9 @@ extern "C" int ds4_gpu_minimax_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor 
         uint32_t rows, uint32_t width) {
     const uint64_t count = (uint64_t)rows * width;
     if (!count || !gvq_floats(out, count) || !gvq_floats(gate, count) || !gvq_floats(up, count)) { return 0; }
-    mm_swiglu_kernel<<<(uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0,
-        ds4_current_stream()>>>((float *)out->ptr, (const float *)gate->ptr, (const float *)up->ptr, count);
+    glmvq_launch_kernel(mm_mode(rows), mm_swiglu_kernel, (uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS),
+        GLMVQ_THREADS, 0, ds4_current_stream(), (float *)out->ptr, (const float *)gate->ptr, (const float *)up->ptr,
+        count);
     return cuda_ok(cudaGetLastError(), "MiniMax SwiGLU-OAI");
 }
 
@@ -923,6 +946,8 @@ extern "C" int ds4_gpu_minimax_rope(ds4_gpu_tensor *rope, uint32_t rows, uint32_
 __global__ void mm_qk_kernel(float *x, const __nv_bfloat16 *weight, uint32_t heads, const float *rope) {
     __shared__ float scratch[MM_HEAD / 32];
     __shared__ float y[MM_HEAD];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t h = blockIdx.x, r = blockIdx.y, i = threadIdx.x;
     float *p = x + ((uint64_t)r * heads + h) * MM_HEAD;
     const float v = glmvq_round(p[i]);
@@ -951,8 +976,8 @@ extern "C" int ds4_gpu_minimax_qk(ds4_gvq_ctx *ctx, ds4_gpu_tensor *x, uint32_t 
     const auto *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, MM_HEAD);
     if (!w || !rows || !heads || !gvq_floats(x, (uint64_t)rows * heads * MM_HEAD) ||
         !gvq_floats(rope, (uint64_t)rows * MM_ROT)) { return 0; }
-    mm_qk_kernel<<<dim3(heads, rows), MM_HEAD, 0, ds4_current_stream()>>>((float *)x->ptr, w, heads,
-        (const float *)rope->ptr);
+    glmvq_launch_kernel(mm_mode(rows), mm_qk_kernel, dim3(heads, rows), MM_HEAD, 0, ds4_current_stream(),
+        (float *)x->ptr, w, heads, (const float *)rope->ptr);
     return cuda_ok(cudaGetLastError(), "MiniMax q/k norm");
 }
 
@@ -986,6 +1011,8 @@ __device__ __forceinline__ void mm_fp4_encode(const float *src, uint8_t *data, u
 // side) encodes KV head w. A table maps blocks to pool slots (SSD tier).
 __global__ void mm_kv_store_kernel(uint8_t *pages, const int32_t *table, const float *k, const float *v,
         uint32_t pos) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t r = blockIdx.x, side = blockIdx.y, head = threadIdx.x / 32;
     const uint32_t t = pos + r, block = t / MM_BLOCK, slot = t % MM_BLOCK;
     const uint64_t page_id = table ? (uint64_t)table[block] : block;
@@ -1006,13 +1033,16 @@ extern "C" int ds4_gpu_minimax_kv_store(ds4_gpu_tensor *pages, const ds4_gpu_ten
         const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos) {
     const uint64_t count = (uint64_t)rows * MM_KV_HEADS * MM_HEAD;
     if (!rows || !mm_pages_ok(pages, table, pos + rows) || !gvq_floats(k, count) || !gvq_floats(v, count)) { return 0; }
-    mm_kv_store_kernel<<<dim3(rows, 2), MM_KV_HEADS * 32, 0, ds4_current_stream()>>>((uint8_t *)pages->ptr,
-        table ? (const int32_t *)table->ptr : nullptr, (const float *)k->ptr, (const float *)v->ptr, pos);
+    glmvq_launch_kernel(mm_mode(rows), mm_kv_store_kernel, dim3(rows, 2), MM_KV_HEADS * 32, 0, ds4_current_stream(),
+        (uint8_t *)pages->ptr, table ? (const int32_t *)table->ptr : nullptr, (const float *)k->ptr,
+        (const float *)v->ptr, pos);
     return cuda_ok(cudaGetLastError(), "MiniMax K/V store");
 }
 
 // Index keys: one 72-byte row per token, data then scales.
 __global__ void mm_index_store_kernel(uint8_t *pool, const float *key, uint32_t pos, uint32_t rows) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t r = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     if (r >= rows) { return; }
     uint8_t *row = pool + (uint64_t)(pos + r) * MM_FP4_ROW;
@@ -1024,8 +1054,8 @@ extern "C" int ds4_gpu_minimax_index_store(ds4_gpu_tensor *pool, const ds4_gpu_t
     if (!rows || !pool || pool->bytes < (uint64_t)(pos + rows) * MM_FP4_ROW ||
         !gvq_floats(key, (uint64_t)rows * MM_HEAD)) { return 0; }
     enum { WARPS = 4 };
-    mm_index_store_kernel<<<(rows + WARPS - 1) / WARPS, WARPS * 32, 0, ds4_current_stream()>>>(
-        (uint8_t *)pool->ptr, (const float *)key->ptr, pos, rows);
+    glmvq_launch_kernel(mm_mode(rows), mm_index_store_kernel, (rows + WARPS - 1) / WARPS, WARPS * 32, 0,
+        ds4_current_stream(), (uint8_t *)pool->ptr, (const float *)key->ptr, pos, rows);
     return cuda_ok(cudaGetLastError(), "MiniMax index store");
 }
 
@@ -1104,6 +1134,8 @@ __global__ void __launch_bounds__(MM_BLOCK) mm_score_few_kernel(float *scores, c
     __shared__ __align__(16) uint8_t raw[MM_BLOCK * MM_FP4_ROW];
     __shared__ __align__(16) float q[V][MM_HEAD];
     __shared__ float part[MM_BLOCK / 32][V];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t block = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid / 32;
     const uint32_t last = pos + first + COUNT - 1, t0 = block * MM_BLOCK;
     if (t0 > last) { return; }
@@ -1168,6 +1200,8 @@ __device__ __forceinline__ bool mm_topk_before(float v, uint32_t i, float w, uin
 __global__ void mm_topk_kernel(int32_t *blocks, const float *scores, uint32_t pos, uint32_t first, uint32_t count,
         uint32_t stride) {
     constexpr uint32_t KEEP = MM_TOPK - 1;
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31;
     const uint32_t v = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
     if (v >= count * MM_KV_HEADS) { return; }
@@ -1268,8 +1302,9 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
             if (!gvq_floats(scores, (uint64_t)count * MM_KV_HEADS * stride) || stride > nblocks) { return 0; }
             if (count <= MM_SCORE_FEW && !mm_score_tiled()) {
                 mm_rows<MM_SCORE_FEW>(count, [&](auto r) {
-                    mm_score_few_kernel<decltype(r)::value><<<stride, MM_BLOCK, 0, stream>>>((float *)scores->ptr,
-                        (const float *)query->ptr, (const uint8_t *)pool->ptr, pos, first, stride);
+                    glmvq_launch_kernel(mm_mode(count), mm_score_few_kernel<decltype(r)::value>, stride, MM_BLOCK, 0,
+                        stream, (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)pool->ptr, pos,
+                        first, stride);
                 });
             } else if (!mm_score_tiled()) {
                 if (!mm_score_mma_ready()) { return 0; }
@@ -1281,11 +1316,11 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
                     MM_SCORE_SMEM, stream>>>((float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)pool->ptr,
                     pos, first, count, stride);
             }
-            mm_topk_kernel<<<(count * MM_KV_HEADS + WARPS - 1) / WARPS, WARPS * 32, 0, stream>>>(
-                (int32_t *)blocks->ptr, (float *)scores->ptr, pos, first, count, stride);
+            glmvq_launch_kernel(mm_mode(count), mm_topk_kernel, (count * MM_KV_HEADS + WARPS - 1) / WARPS, WARPS * 32,
+                0, stream, (int32_t *)blocks->ptr, (const float *)scores->ptr, pos, first, count, stride);
         } else {
-            mm_topk_kernel<<<(count * MM_KV_HEADS + WARPS - 1) / WARPS, WARPS * 32, 0, stream>>>(
-                (int32_t *)blocks->ptr, (float *)scores->ptr, pos, first, count, 1u);
+            glmvq_launch_kernel(mm_mode(count), mm_topk_kernel, (count * MM_KV_HEADS + WARPS - 1) / WARPS, WARPS * 32,
+                0, stream, (int32_t *)blocks->ptr, (const float *)scores->ptr, pos, first, count, 1u);
         }
     }
     return cuda_ok(cudaGetLastError(), "MiniMax block selection");
@@ -1724,6 +1759,8 @@ __global__ void __launch_bounds__(128) mm_attn_split_mma_kernel(float *partial, 
     extern __shared__ __align__(16) uint8_t mm_at_smem[];
     __nv_bfloat16 *ks = (__nv_bfloat16 *)mm_at_smem, *vs = ks + MM_BLOCK * MM_AT_LD;
     __shared__ float wm[4][MM_GROUP], wl[4][MM_GROUP];
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane >> 2, t = lane & 3;
     const uint32_t kv = blockIdx.x / MM_TOPK, j = blockIdx.x % MM_TOPK, row = blockIdx.y, p = pos + row;
     float *out = partial + ((uint64_t)row * MM_SPLITS + blockIdx.x) * MM_GROUP * (MM_HEAD + 2);
@@ -1883,6 +1920,8 @@ static bool mm_attn_simt(void) {
 // Row blockIdx.y's partials: per head the max of the splits' maxima, then
 // the rescaled sums and outputs, rounded once.
 __global__ void mm_attn_combine(float *heads, const float *partial) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
     const uint32_t head = blockIdx.x, d = threadIdx.x, kv = head / MM_GROUP, h = head % MM_GROUP;
     partial += (uint64_t)blockIdx.y * MM_SPLITS * MM_GROUP * (MM_HEAD + 2);
     heads += (uint64_t)blockIdx.y * MM_HEADS * MM_HEAD;
@@ -1934,13 +1973,14 @@ extern "C" int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor 
                     MM_AT_SMEM), "MiniMax split MMA attention shared memory")) { return 0; }
             ready = true;
         }
-        mm_attn_split_mma_kernel<<<dim3(MM_SPLITS, rows), 128, MM_AT_SMEM, stream>>>((float *)partials->ptr,
-            (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos);
+        glmvq_launch_kernel(mm_mode(rows), mm_attn_split_mma_kernel, dim3(MM_SPLITS, rows), 128, MM_AT_SMEM, stream,
+            (float *)partials->ptr, (const float *)q->ptr, (const uint8_t *)pages->ptr, slots,
+            (const int32_t *)blocks->ptr, pos);
     } else {
         mm_attn_kernel<false><<<MM_SPLITS, MM_ATTN_THREADS, 0, stream>>>(nullptr, (float *)partials->ptr,
             (const float *)q->ptr, (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, 1u);
     }
-    mm_attn_combine<<<dim3(MM_HEADS, rows), MM_HEAD, 0, stream>>>((float *)heads->ptr,
+    glmvq_launch_kernel(mm_mode(rows), mm_attn_combine, dim3(MM_HEADS, rows), MM_HEAD, 0, stream, (float *)heads->ptr,
         (const float *)partials->ptr);
     return cuda_ok(cudaGetLastError(), "MiniMax decode attention");
 }
