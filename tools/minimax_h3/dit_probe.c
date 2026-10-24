@@ -37,9 +37,14 @@
  * times= first=`, with no weights and no device: it separates host feature
  * arithmetic from the device chain.
  *
- * `--decode` additionally decodes the final audio latent with the released
- * BigVGAN decoder (`h3_audio_vae.h`) and prints `AUDIO channels= samples=
- * rate= fnv= first= last=`. It needs `--audio-vae <dir>`.
+ * `--decode` additionally decodes the final latents and prints `AUDIO
+ * channels= samples= rate= fnv= first= last=` and `FRAMES frames= height=
+ * width= fnv= first= last=`. It needs `--audio-vae <dir>` and/or
+ * `--video-vae <dir>`. The two directories have different conventions in the
+ * reference: the audio VAE reads `latents_mean`/`latents_std` from
+ * `<dir>/config.json` (`h3_audio_vae.c:303-309`), the video VAE from
+ * `<dir>/../config.json` (`h3_video_vae.c:273-279`), so `--video-vae` takes
+ * `FL2VA/video_vae/source` and finds `FL2VA/video_vae/config.json`.
  *
  * `--denoise` runs the whole Euler sampler instead of one step: the same
  * seeded latents, `--steps` evaluations and `--reuse K` (default 1), through
@@ -60,6 +65,7 @@
 #include "h3_host.h"
 #include "h3_text_encoder.h"
 #include "h3_tokenizer.h"
+#include "h3_video_vae.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -126,7 +132,7 @@ static void usage(void) {
             "[--step S]\n"
             "       [--seed N] [--layers N] [--rope-scale X]\n"
             "       [--denoise [--reuse K] [--gpu-sampler]] "
-            "[--decode --audio-vae DIR]\n"
+            "[--decode --audio-vae DIR] [--video-vae DIR]\n"
             "       h3_dit_probe <FL2VA/transformer> --adaln-only [--steps N]\n"
             "       h3_dit_probe --features [--steps N]\n");
 }
@@ -466,7 +472,7 @@ int main(int argc, char **argv) {
     int width = 256, height = 256, frames = 5;
     int steps = 2, step = 0, layers = DIT_BLOCKS;
     int denoise = 0, reuse = 1, gpu_sampler = 0, decode = 0;
-    const char *audio_vae = NULL;
+    const char *audio_vae = NULL, *video_vae = NULL;
     unsigned long long seed = 1;
     float rope_scale = 1.0f;
 
@@ -504,6 +510,8 @@ int main(int argc, char **argv) {
             if (!parse_int(value, &layers)) return 2;
         } else if (!strcmp(argument, "--audio-vae")) {
             audio_vae = value;
+        } else if (!strcmp(argument, "--video-vae")) {
+            video_vae = value;
         } else if (!strcmp(argument, "--reuse")) {
             if (!parse_int(value, &reuse)) return 2;
         } else if (!strcmp(argument, "--seed")) {
@@ -714,6 +722,29 @@ int main(int argc, char **argv) {
                    waveform.pcm[(size_t)waveform.channels * waveform.samples - 1]);
             printf("TIME decode_seconds=%.3f\n", decode_seconds);
             h3_audio_waveform_free(&waveform);
+        }
+
+        if (decode && video_vae) {
+            h3_video_frames frames = {0};
+            started = seconds();
+            if (!h3_video_vae_decode(video_vae, "h3_shaders.metal", video,
+                                     temporal.video_t, latent_h,
+                                     latent_w, NULL, NULL, &frames,
+                                     error, sizeof(error))) {
+                fprintf(stderr, "%s\n", error);
+                return 1;
+            }
+            double frames_seconds = seconds() - started;
+            size_t frame_values = (size_t)frames.frames * frames.height *
+                                  frames.width * 3;
+            printf("FRAMES frames=%d height=%d width=%d fnv=%016llx "
+                   "first=%.9g last=%.9g\n", frames.frames, frames.height,
+                   frames.width,
+                   (unsigned long long)fnv(frames.rgb,
+                       frame_values * sizeof(*frames.rgb)),
+                   frames.rgb[0], frames.rgb[frame_values - 1]);
+            printf("TIME frames_seconds=%.3f\n", frames_seconds);
+            h3_video_frames_free(&frames);
         }
 
         free(video);

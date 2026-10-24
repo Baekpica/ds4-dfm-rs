@@ -906,6 +906,35 @@ Deviation: the reference loads the weight store once per decode call, and so
 does the port; a resident decoder is P9. The VAE encoders (keyframe
 conditioning) are not ported.
 
+**E8 — The video VAE decode.** Started 2026-10-24.
+
+Phase A, the oracle. `tools/minimax_h3/dit_probe.c` gained
+`--decode --video-vae DIR`, which calls `h3_video_vae_decode` and prints
+`FRAMES frames= height= width= fnv= first= last=`. The directory is the shard
+directory, not its parent: the reference reads the latent normalization from
+`<dir>/../config.json` (`h3_video_vae.c:273-279`), where the audio VAE reads
+`<dir>/config.json` (`h3_audio_vae.c:303-309`); passing `video_vae` itself
+fails by name with "cannot open video VAE config", and `video_vae/source` is
+correct. Golden at 256x256, 5 frames, 2 steps, seed 1, on the E6 latents
+`4307e38ab75bf72d`/`775b6fbbcf79889b`: `FRAMES frames=5 height=256 width=256
+fnv=c644de410531e21d first=0.822910547 last=0.736599445`, 8.778 s including
+the 9.700 GiB weight load. At `latent_time == 2` the reference takes the
+two-token path (`h3_video_vae.c:1184-1252`): the 7-latent chunk is padded by
+repeating the last frame (`:320-346`), one spatial tile is allowed
+(`:1218-1223`), 5 frames come out.
+
+Read for phase B, all from the source: the chunk schedule is 22 frames for the
+first chunk and 17 new frames per later chunk with a 5-frame overlap blended
+by `frame/5` (`:1047-1183`, `:831-952`); the spatial tiling is 256-pixel tiles
+with a minimum 64-pixel overlap distributed in 16-pixel units (`:658-731`),
+blended across tiles before stitching (`:761-830`); the output patch order is
+`((channel * 4 + within_t) * 16 + within_y) * 16 + within_x` decoded with
+`mean = {0.485, 0.456, 0.406}` and `std = {0.229, 0.224, 0.225}`
+(`:579-656`); the sequence is `patches + 5` — four register tokens and one
+zero suffix token (`:12-13`, `:458-532`); the video RoPE walks
+`(t, h, w)` axes with 8 frequencies each and `powf(100, k/8)`, leaving the
+suffix rows at cos 1 / sin 0 (`:348-396`).
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
