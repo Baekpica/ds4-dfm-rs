@@ -51,14 +51,28 @@ top-4 by `sigmoid + bias` in one warp per row (ties to the lower id). The
 routed experts run MiniMax's own top-4 decode kernels: the 64 KiB layer book
 staged in shared memory, a persistent grid, one gain multiply after the dot;
 the residual stage adds GVR8 codewords from a 2 KiB book, down's 1,024-column
-tail included. q/k/v Q4_K projections of a token run as one launch; the Q8_0
-indexer projections take the generic aligned Q8_0 path.
+tail included. q/k/v Q4_K projections of a token run as one launch; the
+router and the Q8_0 indexer projections run row-stable F32 GEMVs (one warp
+per output, every row in the same lane and step order), so up to eight rows
+compute exactly what one row does. These GEMVs and the block scorer take the
+row count as a template argument (`mm_rows`): with a runtime count their
+unrolled per-row loops issued all eight predicated rows for a decode row.
+At decode and verify widths every MiniMax kernel launches with programmatic
+dependent launch like the Q4_K and expert kernels, so those stage their
+weights while the short kernels before them run (`DS4_GLMVQ_PDL=0` turns it
+off).
 
 **Prefill (4,096-row chunks).** Q4_K projections run the q4p FP16 tensor-core
-kernel; routed experts run GLM's `glmvq_mma8_kernel` on E4M3 codewords after
-host grouping (rows ≥ 5), with the SwiGLU-OAI clamp mode. RoPE rows are
-computed once per forward in double, and the next chunk's embedding rows are
-read ahead. Every chunk streams each routed expert's weights once, so the
+kernel; the residual kernel beside each norm and a row-wise SwiGLU-OAI write
+q4p's prepared FP16 input themselves when q4p takes the consumer. Routed
+experts (rows ≥ 9, after host grouping) run `cuda/minimax_mma8w.cuh`:
+tokens × weights^T on E4M3 codewords (a codeword is an m16n8k32 B fragment),
+four producer warps filling a two-stage ring for four consumer warps of 32
+rows, one activation scale per (row, 128 k) as `glmvq_mma8_kernel` (which
+it equals bit for bit; `DS4_MINIMAX_MMA_WS=0` keeps it). The indexer's two
+Q8_0 projections share one Q8_1 quantization. RoPE rows are computed once
+per forward in double, and the next chunk's embedding rows are read
+ahead. Every chunk streams each routed expert's weights once, so the
 chunk size sets the expert bytes per token: 4,096 rows read half of 2,048's
 (8K prefill 938 -> 1,044 tok/s) and the 1M plan still fits (1.86 GiB of
 scratch); 8,192 rows measured +4% at 16K for 1.72 GiB more and are not
@@ -73,7 +87,9 @@ visible keys of `index_q · index_key`; the own block always wins; the top 16
 per (row, KV head) are sorted ascending. Prefill rows score on BF16 tensor
 cores (32 rows by up to 32 blocks per CTA, each block's keys decoded once to
 BF16, exactly); up to eight rows keep a SIMT scorer that reads each block
-once. Scoring grows with the context: the SIMT tiled scorer was 26% of a
+once. The top 16 come from one pass over the scores (each lane keeps its
+best fifteen in registers, fifteen warp rounds merge the lanes): fifteen
+argmax passes took 12 µs per layer at 124K. Scoring grows with the context: the SIMT tiled scorer was 26% of a
 32K prefill (690 tok/s), the tensor-core one 0.4% of an 8K prefill (32K:
 929 tok/s). Attention reads only those blocks,
 on BF16 tensor cores (each block's NVFP4 page decoded once into shared memory
@@ -110,7 +126,21 @@ keys to decide what attention reads, so:
   - per layer, once the indexer has selected, the selected blocks missing
     from the pool are read into least-recently-used slots, file-contiguous
     runs in one `preadv` on eight I/O threads, dirty victims written back
-    first.
+    first;
+  - a prefill chunk long against the history (rows >= blocks / 4: 2,048 rows
+    at 1M) reads the layer's every block instead. Those reads need no
+    selection, so they start as soon as the previous layer's attention has
+    run (an event, not a device sync) and overlap that layer's MoE and this
+    layer's projections and block scores. Selective resolves of a 4,096-row
+    chunk had read ~65% of the blocks anyway, with the GPU idle: ~4 s of a
+    ~14.5 s chunk at 940K;
+  - selective reads (decode, verify) go out as one Linux AIO submission with
+    polled completions instead of the I/O threads: GB10's cores idle in
+    LPI-3 (433 µs exit latency) between layers, and each pooled read paid a
+    worker's wake-up and its completion's. Eight random 72 KiB reads of a
+    freshly written file took 0.94 ms on the pool, 0.24 ms through AIO (one
+    read: ~0.1 ms). A 256K decode settles at ~350 misses per token (~6 per
+    layer, ~13 ms of reads) and went 10.5 -> 14.7 tok/s.
 
   The pool holds one layer's every block plus a forward's pins (8,192 +
   1,980 slots, 0.70 GiB at 1M), so a prefill chunk's union of selections
@@ -161,6 +191,114 @@ layers, the 0.69 GB head and one Markov GEMV per proposal) plus the verify
 forward, whose routed experts grow with every row. Two or three proposals
 are the useful range on GB10.
 
+## Performance
+
+One GB10 (`sm_121a`, CUDA 13.4, driver 615.71.10, SM clock 2.41-2.59 GHz
+under load on 2026-10-24; limits in [gb10-hardware.md](gb10-hardware.md)),
+model `74e5a9fd`, `ds4-bench`, cold frontiers, greedy decode, MTP off.
+`promessi_sposi` is `speed-bench/promessi_sposi.txt`; the code corpus is
+6.5 MB of source files concatenated.
+
+| Frontier | Prompt | Prefill | Decode | Build, notes |
+|---|---|---:|---:|---|
+| 64 | promessi_sposi | 177 tok/s (0.36 s) | 18.2 tok/s | `85086da5`, 3 runs |
+| 8K | promessi_sposi | 1,125-1,132 tok/s | 20.2 tok/s | `152fa899`, 128 tokens, mean of 3 (18.3 at `d7479ef9`) |
+| 64K resident | code corpus | 1,045 tok/s | 19.2 tok/s | `a0153343`, 64 tokens |
+| 124K resident | code corpus | 999 tok/s | 19.0 tok/s | `152fa899`, 64 tokens (14.6 at `d1eff63e`) |
+| 256K SSD tier | code corpus | 884 tok/s | 14.7 tok/s | `a0153343`, 64 tokens (8.8 at `14d39b71`; 753 prefill before streamed reads) |
+| 1,048,319 SSD tier | code corpus | 580 tok/s (1,807 s) | 5.5 tok/s | `6fd141ff`, 256 tokens decoded (before the decode round below); 422 (2,485 s) before streamed reads; peak RSS 110.7 GiB |
+
+Prefill went 874 -> 1,126 tok/s at 8K in the 2026-10-24 round:
+tensor-core block scoring (the SIMT scorer was 26% of a 32K prefill and
+grows with the context), 4,096-row chunks (each chunk streams every touched
+expert's weights once), warp-specialized experts, one Q8_1 quantization for
+the indexer pair, q4p inputs written by their producers. Past 128K the
+streamed SSD reads took 256K from 753 to 892 tok/s.
+
+Where an 8K prefill's GPU time goes (nsys, `85086da5`): routed experts
+48.6%, q4p projections 24.4%, attention 6.7%, the residual kernel 6.3%,
+the MoE reduce 2.4%, q/k norms 2.0%, the F32 router 1.6%, the rest under
+1.5% each. Against per-class floors (E4M3 / FP16 MMA peaks, the DRAM rate)
+the experts run at ~31% of their MMA floor (0.60 s per 4,096-row chunk), q4p
+at ~65% of the FP16 peak, attention at ~46%, the elementwise passes at ~73%
+of their DRAM floor: the prefill as a whole sits at ~40-50% of the sum of
+those floors. The expert kernel is bounded by its shared-memory operand
+path, not by MMA latency (one warp per scheduler saturates the E4M3 pipe
+with two to four accumulator chains); its comment in
+`cuda/minimax_mma8w.cuh` records the measured limits and the variants that
+did not help. At long frontiers block scoring and attention grow with the
+context.
+
+**TTFT.** A 64-token prefill takes 0.36 s (`ds4-bench`); through the server
+a ~60-token chat prompt took 0.59-0.61 s to its first token (`d1eff63e`).
+A short prompt's prefill streams the weights of every expert its tokens
+route to (~70-110 of 128 per layer for 64 tokens), ~0.3 s of DRAM reads,
+and the expert kernel runs near that rate there. Grouping the routes on the
+device instead of the host (one sync per MoE layer) measured no change at
+64 tokens or 8K and was not kept. Boot prewarms the first-use module loads
+(MMQ, cuBLAS, the decode kernels: 1.3 s once), which had added 0.2 s to a
+server's first request.
+
+**Decode round (2026-10-24 evening).** 8K 18.3 -> 20.2 tok/s, 124K 14.6
+-> 19.0, 256K 8.8 -> 14.7, every step with identical tokens and logits:
+the scorer, top-k, indexer and router kernels take their row count as a
+template argument; the top-k is one pass; the short kernels launch with
+PDL; the indexer GEMVs run as one grid; the SSD tier reads its misses
+through AIO; and the host argmax lost a 0.53 ms dependency chain that
+`-ffast-math` had made of it (most of the idle time between tokens). An 8K
+token now takes ~49.6 ms against ~42 ms for its ~10.2 GB at ~240 GB/s:
+Q4_K GEMVs ~27.9 ms (~230 GB/s), routed experts ~15 ms (~210 GB/s), the
+short kernels ~6 ms. Past 128K plain decode is bounded by the index keys
+(72 bytes per token and layer, 4.5 GB per token at 1M) and the SSD tier's
+misses (~350 per token at 256K, ~13 ms through AIO), so 20 tok/s there
+takes DSpark.
+
+**DSpark** (8K frontier, 128 greedy tokens, `d7479ef9` era): plain 17.75
+tok/s; draft 2 21.57 tok/s (2.46 tokens per step, verify 99.7 ms, draft
+13.8 ms); draft 3 21.57 (2.95, 121.6 ms); at `344dee7d` draft 3 ran 24.2
+tok/s over 64 tokens. Greedy output equals plain decoding token for token.
+Verify rows run the one-row expert kernels per row, so an expert two rows
+share is read twice; a batched verify as GLM's is the next step.
+
+## Image and video input
+
+Chat requests carry images (`image_url`, PNG or JPEG) and videos
+(`video_url`, MP4) as base64 data; up to four per request, on the serial
+lane. The host prepares them as the shipped processor does
+(`crates/ds4-core/src/minimax_vq/media.rs`, contract: the handoff's
+`tools/minimax_vision_ref.py`):
+
+- `smart_resize` to multiples of 28 (images 3,136-451,584 pixels, at most
+  576 language rows; video frames up to 602,112), PIL's antialiased bicubic,
+  CLIP mean/std, patches of 3 x 2 x 14 x 14 in the processor's order (frame
+  pairs, then 2 x 2 blocks row-major); a still image is one frame doubled;
+- videos are decoded by ffmpeg at 1 frame per second (bicubic to the
+  resized size, at most 768 frames, an odd count repeating its last frame);
+- the template's `]<]image[>[` becomes `]<]start of image[>[` + one image
+  pad per 2 x 2 patches + `]<]end of image[>[`; `]<]video[>[` becomes, per
+  frame pair k, the text `]<]{2k:.1f} seconds[>[` and the same span with
+  video pads.
+
+The vision part (`vision-bf16.gguf`, the source tower in BF16) is mapped at
+open and never resident: a request streams its 1.7 GB through V4.1's 8 MiB
+pinned window layer by layer, then drops the part's page cache
+(`ds4_minimax_vision.inc`). The tower is the reference's: F32 patch
+embedding, pre-LN, 32 CLIP layers (16 heads x 80, 3-D RoPE on 78 dims,
+bidirectional attention per segment: an image, or at most four frame pairs
+of a video), the projector per patch and the 2 x 2 merge MLP. A 504 x 728
+image (468 rows) encodes in 1.8 s cold, 0.35 s with the part cached; a 6 s
+clip at 364 x 644 (3 pairs, 897 rows) in 0.84 s.
+
+The prefill overwrites each pad's embedding row with its visual's row. A
+media prompt extends the session checkpoint only under the same media tag
+(geometry and pixels), so identical pads over other pixels prefill again; a
+pad without rows is refused, and snapshots (disk KV, partial reuse) refuse
+media prompts. `tests/minimax_vision` checks the tower against the reference
+rerun in BF16 and in F32: to the F32 run the engine's relative RMS is 0.0316
+(mean row cosine 0.99860) against the BF16 reference's own 0.0302 (0.99883);
+the host's pixels match the reference's grid, with 1,746 of 2.2M values one
+or two steps apart (PIL against torchvision).
+
 ## Output protocol
 
 The chat template is rendered from the original `chat_template.jinja`.
@@ -193,8 +331,10 @@ temperature 1.0, top-p 0.95).
 | `DS4_KV_OFFLOAD_DIR` | directory of the SSD tier's unlinked files |
 | `DS4_MINIMAX_KV_POOL_SLOTS` | a smaller SSD-tier pool, to make tests evict and read back |
 | `DS4_MINIMAX_KV_TRACE` | print the SSD tier's hits, misses, bytes and I/O time per forward |
+| `DS4_MINIMAX_KV_STREAM=0` | SSD tier: selective resolves for prefill chunks too (A/B of the streamed reads) |
 | `DS4_MINIMAX_TRACE=DIR` | per-layer tensor dumps of one forward (`DS4_MINIMAX_TRACE_POS`) |
 | `DS4_MINIMAX_ATTN_SIMT=1` | F32 SIMT attention at every width instead of the tensor-core kernels |
+| `DS4_MINIMAX_MMA_WS=0` | prefill routed experts on `glmvq_mma8_kernel` instead of the warp-specialized kernels |
 | `DS4_MINIMAX_SCORE_TILED=1` | the tiled SIMT block scorer at every width |
 | `DS4_MINIMAX_VERIFY_CHECK=1` | re-run each DSpark verify row as a decode and print the logit difference |
 | `DS4_MINIMAX_DSPARK_MARKOV=0` | DSpark proposals without the Markov bias |
