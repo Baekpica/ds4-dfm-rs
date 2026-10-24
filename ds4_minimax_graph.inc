@@ -251,14 +251,12 @@ static bool minimax_mm_many(ds4_minimax_graph *g, const ds4_model *m, ds4_gpu_te
 }
 
 // The Q8_0 indexer projections (index_q [512], index_k [128]) of one input:
-// row-stable GEMVs at decode and verify widths, one MMQ pair (the input
-// quantized to Q8_1 once) for prefill rows.
+// one row-stable GEMV launch at decode and verify widths, one MMQ pair (the
+// input quantized to Q8_1 once) for prefill rows.
 static bool minimax_indexer(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t rows) {
     const uint32_t q = minimax_index(m, l->attn_idx_q_b), k = minimax_index(m, l->attn_idx_k);
-    const bool ok = rows > DS4_MINIMAX_SPLIT_ROWS
-        ? ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ, MINIMAX_INDEX, rows) != 0
-        : ds4_gpu_minimax_q8(g->gvq, g->iq, q, g->norm, MINIMAX_EMBD, MINIMAX_IQ, rows) &&
-              ds4_gpu_minimax_q8(g->gvq, g->ik, k, g->norm, MINIMAX_EMBD, MINIMAX_INDEX, rows);
+    const bool ok =
+        ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ, MINIMAX_INDEX, rows) != 0;
     if (!ok) { fprintf(stderr, "ds4: MiniMax indexer projection failed (rows=%u)\n", rows); }
     return ok;
 }

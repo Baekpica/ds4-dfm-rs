@@ -599,7 +599,7 @@ __global__ void mm_router_kernel(int32_t *ids, float *weights, const float *logi
  * tree. A row's logits do not depend on how many rows share the launch,
  * so verify rows route exactly as decode rows. cuBLAS took 62-116 us per
  * layer at two or three rows (gemmSN) for a 3 MiB matrix. */
-enum { MM_ROUTER_ROWS = DS4_MINIMAX_SPLIT_ROWS, MM_ROUTER_WARPS = 4 };
+enum { MM_ROUTER_ROWS = DS4_MINIMAX_SPLIT_ROWS, MM_ROUTER_WARPS = 2 };
 
 /* Decode and verify kernels take their row count (1..MAX) as a template
  * argument: with a runtime count their unrolled per-row loops issued every
@@ -631,9 +631,10 @@ __global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *lo
     float acc[ROWS];
     #pragma unroll
     for (uint32_t r = 0; r < ROWS; r++) { acc[r] = 0.0f; }
-    // Four steps' loads in flight per lane (the sums keep their order): one
-    // load at a time held the 3 MiB matrix at ~120 GB/s.
-    #pragma unroll 4
+    // Eight steps' loads in flight per lane (the sums keep their order): one
+    // load at a time held the 3 MiB matrix at ~120 GB/s. Two warps per CTA
+    // spread the 128 experts over every SM (four left 16 SMs idle).
+    #pragma unroll 8
     for (uint32_t i = lane; i < MM_HIDDEN / 4; i += 32) {
         const float4 a = __ldg(we + i);
         #pragma unroll
@@ -653,22 +654,35 @@ __global__ void __launch_bounds__(MM_ROUTER_WARPS * 32) mm_router_gemv(float *lo
     }
 }
 
-/* Q8_0 projections of up to MM_ROUTER_ROWS rows (the indexer's index_q and
- * index_k at decode and verify widths): warp o streams output o's 34-byte
- * blocks once, lane l takes element l of every block (d * q is exact in
- * F32) against the F32 input, in block order, then a fixed xor tree. A
- * row's result does not depend on the launch's other rows; the mmvq path
- * picked its column layout by width and quantized the input to Q8_1. The
- * CTA's four output rows (contiguous) first land in shared memory by 16-byte
- * loads: a warp reading one block per step with byte loads held this at
- * ~17% of the DRAM rate, 6 ms of a decode token. */
-enum { MM_Q8_WARPS = 4, MM_Q8_BLOCK = 32, MM_Q8_BYTES = 34, MM_TYPE_Q8_0 = 8 };   // ggml's Q8_0 id
+/* The indexer's two Q8_0 projections (index_q, index_k) of up to
+ * MM_ROUTER_ROWS rows in one launch, CTAs [0, first1) on the first matrix:
+ * warp o streams output o's 34-byte blocks once, lane l takes element l of
+ * every block (d * q is exact in F32) against the F32 input, in block
+ * order, then a fixed xor tree. A row's result does not depend on the
+ * launch's other rows; the mmvq path picked its column layout by width and
+ * quantized the input to Q8_1. The CTA's two output rows (contiguous) first
+ * land in shared memory by 16-byte loads: a warp reading one block per step
+ * with byte loads held this at ~17% of the DRAM rate, 6 ms of a decode
+ * token. */
+enum { MM_Q8_WARPS = 2, MM_Q8_BLOCK = 32, MM_Q8_BYTES = 34, MM_TYPE_Q8_0 = 8 };   // ggml's Q8_0 id
+
+struct mm_q8_two {
+    const uint8_t *w0, *w1;
+    float *out0, *out1;
+    uint32_t outs0, outs1, first1;
+};
 
 template <uint32_t ROWS>
-__global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(float *out, const uint8_t *weight, const float *x,
-        uint32_t cols, uint32_t outs, bool staged) {
+__global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(mm_q8_two m, const float *x, uint32_t cols,
+        bool staged) {
     extern __shared__ __align__(16) uint8_t mm_q8_rows[];
-    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, o0 = blockIdx.x * MM_Q8_WARPS;
+    // Selected by compares: a dynamic index would copy the parameters to local memory.
+    const bool second = blockIdx.x >= m.first1;
+    const uint8_t *weight = second ? m.w1 : m.w0;
+    float *out = second ? m.out1 : m.out0;
+    const uint32_t outs = second ? m.outs1 : m.outs0;
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32;
+    const uint32_t o0 = (second ? blockIdx.x - m.first1 : blockIdx.x) * MM_Q8_WARPS;
     const uint32_t blocks = cols / MM_Q8_BLOCK, row_bytes = blocks * MM_Q8_BYTES;
     glmvq_pdl_open();
     // The weights are constant: they stage while the predecessor drains.
@@ -701,39 +715,34 @@ __global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(float *out, const
     }
 }
 
-extern "C" int ds4_gpu_minimax_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
-        uint32_t cols, uint32_t outs, uint32_t rows) {
-    const uint64_t bytes = (uint64_t)outs * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES;
-    const auto *w = (const uint8_t *)gvq_weight(ctx, weight, MM_TYPE_Q8_0, bytes / 2);
-    if (!w || !rows || rows > MM_ROUTER_ROWS || !cols || cols % MM_Q8_BLOCK || !outs ||
-        !gvq_floats(input, (uint64_t)rows * cols) || !gvq_floats(out, (uint64_t)rows * outs) || !gvq_stream(ctx)) {
-        return 0;
-    }
-    // The staged copy takes whole 16-byte pieces (every MiniMax indexer row: 6,528 bytes).
-    const uint32_t row_bytes = cols / MM_Q8_BLOCK * MM_Q8_BYTES;
-    const bool staged = row_bytes % 16 == 0 && (uintptr_t)w % 16 == 0 && MM_Q8_WARPS * row_bytes <= 48 * 1024;
-    mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
-        glmvq_launch_kernel(mm_mode(rows), mm_q8_gemv<decltype(r)::value>, (outs + MM_Q8_WARPS - 1) / MM_Q8_WARPS,
-            MM_Q8_WARPS * 32, staged ? MM_Q8_WARPS * row_bytes : 0, ds4_current_stream(), (float *)out->ptr, w,
-            (const float *)input->ptr, cols, outs, staged);
-    });
-    return cuda_ok(cudaGetLastError(), "MiniMax Q8_0 rows");
-}
-
-// Prefill rows of the indexer's two Q8_0 projections over one input: MMQ
-// quantizes the input to Q8_1 once (it did once per projection), each
-// output as ds4_mmq_q8_0_dense computes it.
+/* The indexer's two Q8_0 projections of one input: mm_q8_gemv at decode and
+ * verify widths, MMQ for prefill rows (the input quantized to Q8_1 once, each
+ * output as ds4_mmq_q8_0_dense computes it). */
 extern "C" int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, ds4_gpu_tensor *out1, uint32_t w0,
         uint32_t w1, const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows) {
     const auto *a = (const uint8_t *)gvq_weight(ctx, w0, MM_TYPE_Q8_0, (uint64_t)outs0 * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES / 2);
     const auto *b = (const uint8_t *)gvq_weight(ctx, w1, MM_TYPE_Q8_0, (uint64_t)outs1 * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES / 2);
-    if (!a || !b || !rows || !cols || cols % MM_Q8_BLOCK || !gvq_floats(input, (uint64_t)rows * cols) ||
-        !gvq_floats(out0, (uint64_t)rows * outs0) || !gvq_floats(out1, (uint64_t)rows * outs1) || !gvq_stream(ctx)) {
+    if (!a || !b || !rows || !cols || cols % MM_Q8_BLOCK || !outs0 || !outs1 ||
+        !gvq_floats(input, (uint64_t)rows * cols) || !gvq_floats(out0, (uint64_t)rows * outs0) ||
+        !gvq_floats(out1, (uint64_t)rows * outs1) || !gvq_stream(ctx)) {
         return 0;
     }
-    return ds4_mmq_q8_0_dense_pair(a, b, (const float *)input->ptr, (float *)out0->ptr, (float *)out1->ptr, (int)outs0,
-        (int)outs1, (int)rows, (int)cols, ds4_mmq_stream_for_call()) == 0 &&
-        cuda_ok(cudaGetLastError(), "MiniMax indexer projections");
+    if (rows > MM_ROUTER_ROWS) {
+        return ds4_mmq_q8_0_dense_pair(a, b, (const float *)input->ptr, (float *)out0->ptr, (float *)out1->ptr,
+            (int)outs0, (int)outs1, (int)rows, (int)cols, ds4_mmq_stream_for_call()) == 0 &&
+            cuda_ok(cudaGetLastError(), "MiniMax indexer projections");
+    }
+    // The staged copy takes whole 16-byte pieces (every MiniMax indexer row: 6,528 bytes).
+    const uint32_t row_bytes = cols / MM_Q8_BLOCK * MM_Q8_BYTES;
+    const bool staged = row_bytes % 16 == 0 && (uintptr_t)a % 16 == 0 && (uintptr_t)b % 16 == 0 &&
+        MM_Q8_WARPS * row_bytes <= 48 * 1024;
+    const uint32_t first1 = (outs0 + MM_Q8_WARPS - 1) / MM_Q8_WARPS, grid = first1 + (outs1 + MM_Q8_WARPS - 1) / MM_Q8_WARPS;
+    const mm_q8_two m = {a, b, (float *)out0->ptr, (float *)out1->ptr, outs0, outs1, first1};
+    mm_rows<MM_ROUTER_ROWS>(rows, [&](auto r) {
+        glmvq_launch_kernel(mm_mode(rows), mm_q8_gemv<decltype(r)::value>, grid, MM_Q8_WARPS * 32,
+            staged ? MM_Q8_WARPS * row_bytes : 0, ds4_current_stream(), m, (const float *)input->ptr, cols, staged);
+    });
+    return cuda_ok(cudaGetLastError(), "MiniMax indexer projections");
 }
 
 extern "C" int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
