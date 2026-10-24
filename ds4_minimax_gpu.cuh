@@ -2317,6 +2317,21 @@ extern "C" int ds4_gpu_minimax_mark_wait(void) {
 
 /* ----------------------------------------------------------- vision tower */
 
+extern "C" int ds4_gpu_minimax_vit_clear(void) {
+    if (ds4_capture_active() || !cuda_ok(cudaDeviceSynchronize(), "MiniMax vision completion")) { return 0; }
+    v41_scratch *slots[] = {&g_vis_qkv16, &g_vis_s, &g_vis_p, &g_v41_dense_xbf};
+    bool ok = true, released = false;
+    for (v41_scratch *s : slots) {
+        if (!s->p) { s->cap = 0; continue; }
+        if (!cuda_ok(cudaFree(s->p), "MiniMax vision scratch free")) { ok = false; continue; }
+        *s = {};
+        released = true;
+    }
+    // Captured ds41 graphs also consume the shared BF16 slot; force recapture.
+    if (released) { g_v41_scratch_gen++; }
+    return ok;
+}
+
 /* The CLIP-style tower of the vision part (ds4_minimax_vision.inc): F32
  * compute, values on the BF16 grid at the module boundaries the reference
  * rounds at (torch BF16 modules). Linears, GELU, attention and row

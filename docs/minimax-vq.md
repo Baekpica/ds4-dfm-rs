@@ -326,6 +326,23 @@ of a video), the projector per patch and the 2 x 2 merge MLP. A 504 x 728
 image (468 rows) encodes in 1.8 s cold, 0.35 s with the part cached; a 6 s
 clip at 364 x 644 (3 pairs, 897 rows) in 0.84 s.
 
+The serial server budgets media before decoding it: retained host patches,
+all encoded outputs, the largest sequential tower/projector workspace and
+preprocessing growth must fit beside the pending graph and memory floor.
+It refreshes that budget before encoding; a missing byte quote refuses the
+request. A capacity refusal before resizing preserves the current session.
+Videos keep their existing frame/raw-byte limits and check each prospective
+frame-pair expansion. ffmpeg's codec buffers remain covered by the process
+memory guard, outside the exact Rust allocation estimate.
+
+The tower now releases dead transformer buffers before the projector and
+clears shared Vision scratch after synchronization. Source accounting lowers
+the maximum still-image native transient from 0.900 to 0.421 GiB and a
+12,288-patch video pass from 2.062 to 1.022 GiB. These are allocation estimates,
+excluding retained host patches/output rows and reclaimable source pages;
+fresh numeric and HTTP qualification is tracked in the
+[2026-10-25 report](benchmarks/minimax-vq-2026-10-25/README.md).
+
 The prefill overwrites each pad's embedding row with its visual's row. A
 media prompt extends the session checkpoint only under the same media tag
 (geometry and pixels), so identical pads over other pixels prefill again; a

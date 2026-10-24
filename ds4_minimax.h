@@ -172,6 +172,9 @@ int ds4_gpu_minimax_vit_ln(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const d
 int ds4_gpu_minimax_vit_rope(ds4_gpu_tensor *qkv, uint32_t rows, uint32_t gh, uint32_t gw, uint32_t seg_frames);
 int ds4_gpu_minimax_vit_patch(ds4_gpu_tensor *out, const ds4_gpu_tensor *w, const ds4_gpu_tensor *pixels,
     uint32_t rows);
+/* Eager vision boundary: synchronize, then release only the shared vision
+ * attention and BF16 linear scratch. Releasing a slot invalidates graph pointers. */
+int ds4_gpu_minimax_vit_clear(void);
 
 /* logits = -inf on the head rows past the tokenizer (`tokens`). */
 int ds4_gpu_minimax_logits(ds4_gpu_tensor *logits, uint32_t rows, uint32_t tokens);

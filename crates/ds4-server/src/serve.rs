@@ -22,7 +22,7 @@ use crate::cont::{monotonic_now, place_bank_continuation, ContOwner, ContPin, Co
 use crate::error::{http_response_bytes, wire_http_error_bytes, wire_stream_error_bytes};
 use crate::generate::{
     generate_terminal_prepared, prepare_serial_prompt, DecodeIo, GenerateError, GenerateOutcome,
-    NativeGraphFit,
+    NativeGraphFit, PrepareError, SerialSessionProbe,
 };
 use crate::http::{
     chunked_enabled, parse_surface_for_path, read_http_request, shed_surface_for_path,
@@ -44,11 +44,11 @@ use crate::serve_cont::{cont_prompt_tokens, ContExec, ContPreparedPrompt};
 use crate::serve_cont_roll::RejectReason;
 use crate::serve_serial_fit::{
     serial_fit_bounds, serial_live_preserve_msg, serial_session_fit_plan, SerialFitPlan,
-    SerialFrameKind,
+    SerialFitBounds, SerialFrameKind,
 };
 use crate::serve_serial_reclaim::{
     resolve_serial_fit, serial_capacity_refuse_msg, serial_fit_from_native, serial_reclaim_gate,
-    serial_reclaim_want, AvailBytes, MemFloor, SerialFitQuote, SerialReclaimOutcome,
+    serial_reclaim_want, AvailBytes, MemFloor, NeedBytes, SerialFitQuote, SerialReclaimOutcome,
 };
 use crate::serve_static::{
     run_static_routed, write_static_completion, DetachedStatic, StaticFinish, StaticJob, StaticRow,
@@ -1645,11 +1645,17 @@ fn run_serial<W: TerminalSink>(
         };
     }
 
-    // Host prompt preparation does not allocate the inference graph. Resize
-    // first so admission quotes this request, rather than the unused boot ctx.
-    let prep = match prepare_serial_prompt(engine, parsed) {
+    // Reserve the pending graph before decoding media; retained graph bytes
+    // are already absent from live availability. Preparation never swaps it.
+    let media_budget = serial_media_budget(cfg, engine);
+    let prep = match prepare_serial_prompt(engine, parsed, media_budget) {
         Ok(prep) => prep,
-        Err(error) => return settle_generation_result(cfg, job, Err(error), out),
+        Err(PrepareError::Capacity) => {
+            return refuse_serial_capacity(cfg, inner, job, i64::from(engine.pos()), out);
+        }
+        Err(PrepareError::Generate(error)) => {
+            return settle_generation_result(cfg, job, Err(error), out);
+        }
     };
     // RequiredMiss frames were answered with the protocol-native 409 above;
     // a still-live requires_live frame is C's SERIAL_FRAME_RESOLVED_LIVE.
@@ -1679,6 +1685,7 @@ fn run_serial<W: TerminalSink>(
         frame,
         prompt_len,
         budget,
+        prep.media_reserve(),
         out,
     ) {
         return refusal;
@@ -1693,8 +1700,24 @@ fn run_serial<W: TerminalSink>(
         }
         serial_native_fit(quote)
     });
-    let mut quote = resolve_serial_fit(cfg.serial_fit, live);
+    let mut quote = match media_refresh_quote(cfg.serial_fit, live, prep.media_reserve()) {
+        Some(quote) => quote,
+        None => return refuse_serial_capacity(cfg, inner, job, prompt_len, out),
+    };
+    if prep.media_reserve() > 0 && probe.is_some_and(|p| !p.graph_pending) {
+        quote.need = NeedBytes::from_raw(0);
+    }
     let floor = MemFloor::from_gb(cfg.mem_floor_gb);
+    // The refreshed availability includes prepared patches, but not outputs
+    // or Vision scratch. Preserve whichever reserve (floor/headroom) is larger.
+    let media_headroom = if prep.media_reserve() > 0 {
+        quote.headroom.raw().saturating_sub(floor.bytes())
+    } else {
+        0
+    };
+    quote.need = NeedBytes::from_raw(
+        quote.need.raw().saturating_add(prep.media_reserve()).saturating_add(media_headroom),
+    );
     let mut ask = quote.ask(floor);
     let want = serial_reclaim_want(ask);
     if want > 0 {
@@ -1774,6 +1797,7 @@ fn ensure_serial_session_fit<W: Write>(
     frame: SerialFrameKind,
     prompt_len: i64,
     budget: i64,
+    media_bytes: u64,
     out: &mut W,
 ) -> Option<Settlement> {
     // Stub/test engines have no native serial session: pass native and
@@ -1810,7 +1834,14 @@ fn ensure_serial_session_fit<W: Write>(
     }
     let exec = cont?;
     let current_fits = if probe.graph_pending && cur_ctx <= bounds.request_cap {
-        serial_ctx_fits(cfg, engine, probe.cur_ctx)
+        if media_bytes > 0 {
+            media_replacement_quote(cfg, engine, probe.cur_ctx, media_bytes, 0)
+                .is_some_and(|fit| {
+                    serial_reclaim_gate(fit.ask(MemFloor::from_gb(cfg.mem_floor_gb))).admitted()
+                })
+        } else {
+            serial_ctx_fits(cfg, engine, probe.cur_ctx)
+        }
     } else {
         true
     };
@@ -1833,6 +1864,25 @@ fn ensure_serial_session_fit<W: Write>(
             out,
         )),
         SerialFitPlan::Resize => {
+            if media_bytes > 0 {
+                // Price every replacement candidate before destroying the old
+                // frontier. Credit its graph once; never credit its media.
+                let Some(target) = serial_media_target(cfg, engine, exec, probe, bounds, media_bytes) else {
+                    return Some(refuse_serial_capacity(cfg, inner, job, prompt_len, out));
+                };
+                engine.serial_session_reset();
+                lock_inner(inner).creg.demote_serial();
+                if fit_settle_probe(cfg, engine, target, media_bytes)
+                    && engine.serial_session_rightsize(target).is_ok()
+                {
+                    eprintln!("ds4-server-rs: serial media session right-sized ctx={cur_ctx} -> {target} (media reserve={media_bytes})");
+                    return None;
+                }
+                // External pressure may change after an accepted preflight;
+                // an allocator failure retains the ordinary admission boundary.
+                engine.serial_session_reset();
+                return Some(refuse_serial_capacity(cfg, inner, job, prompt_len, out));
+            }
             // Free BEFORE probing so a committed right-sized graph's own
             // GiBs count as available for its replacement (the C regrow
             // case). The live continuation records described that session's
@@ -1840,7 +1890,7 @@ fn ensure_serial_session_fit<W: Write>(
             engine.serial_session_reset();
             lock_inner(inner).creg.demote_serial();
             let need_min_ctx = i32::try_from(bounds.need_min).unwrap_or(i32::MAX);
-            let mut min_fits = fit_settle_probe(cfg, engine, need_min_ctx);
+            let mut min_fits = fit_settle_probe(cfg, engine, need_min_ctx, 0);
             if !min_fits {
                 // C deepmem D4-2: collect from the commons before refusing.
                 // The quote's exact deficit bounds the collect (deficit +
@@ -1858,7 +1908,7 @@ fn ensure_serial_session_fit<W: Write>(
                     _ => u64::MAX,
                 };
                 if exec.trim_idle_banks(want) > 0 {
-                    min_fits = fit_settle_probe(cfg, engine, need_min_ctx);
+                    min_fits = fit_settle_probe(cfg, engine, need_min_ctx, 0);
                 }
             }
             let mut target: i64 = 0;
@@ -1906,17 +1956,138 @@ fn ensure_serial_session_fit<W: Write>(
     }
 }
 
+fn media_replacement_quote(
+    cfg: &ServerConfig,
+    engine: &dyn DecodeIo,
+    ctx: i32,
+    media_bytes: u64,
+    credit: u64,
+) -> Option<SerialFitQuote> {
+    let live = engine.native_graph_fit(ctx).and_then(serial_native_fit);
+    let mut quote = cfg.serial_fit.or(live)?;
+    let floor = MemFloor::from_gb(cfg.mem_floor_gb);
+    // Native `fits` has no old-graph credit. Compare the byte quote instead.
+    quote.avail = AvailBytes::from_raw(quote.avail.raw().saturating_add(credit));
+    quote.need = NeedBytes::from_raw(
+        quote.need.raw().saturating_add(media_bytes)
+            .saturating_add(quote.headroom.raw().saturating_sub(floor.bytes())),
+    );
+    Some(quote)
+}
+
+fn serial_media_target(
+    cfg: &ServerConfig,
+    engine: &dyn DecodeIo,
+    exec: &mut dyn ContExec,
+    probe: SerialSessionProbe,
+    bounds: SerialFitBounds,
+    media_bytes: u64,
+) -> Option<i32> {
+    let credit = if probe.graph_pending {
+        0
+    } else {
+        if engine.model_id() != ds4_core::Variant::MinimaxVq as i32 {
+            return None;
+        }
+        // MiniMax's immutable engine options make this old-context quote a
+        // graph-owned release credit (ds4_minimax_bind.inc:minimax_memory).
+        let old = engine.native_graph_fit(probe.cur_ctx).and_then(serial_native_fit)?;
+        if old.need.raw() == 0 {
+            return None;
+        }
+        old.need.raw()
+    };
+    let floor = MemFloor::from_gb(cfg.mem_floor_gb);
+    let min_ctx = i32::try_from(bounds.need_min).ok()?;
+    let mut quote = media_replacement_quote(cfg, engine, min_ctx, media_bytes, credit)?;
+    if !serial_reclaim_gate(quote.ask(floor)).admitted() {
+        if exec.trim_idle_banks(serial_reclaim_want(quote.ask(floor))) == 0 {
+            return None;
+        }
+        quote = media_replacement_quote(cfg, engine, min_ctx, media_bytes, credit)?;
+        if !serial_reclaim_gate(quote.ask(floor)).admitted() {
+            return None;
+        }
+    }
+    let mut lo = bounds.need_min;
+    let mut hi = bounds.request_cap;
+    while hi - lo > 1024 {
+        let mid = lo + (hi - lo) / 2;
+        let fits = media_replacement_quote(cfg, engine, i32::try_from(mid).ok()?, media_bytes, credit)
+            .is_some_and(|fit| serial_reclaim_gate(fit.ask(floor)).admitted());
+        if fits {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let target = i32::try_from(lo).ok()?;
+    let final_quote = media_replacement_quote(cfg, engine, target, media_bytes, credit)?;
+    serial_reclaim_gate(final_quote.ask(floor)).admitted().then_some(target)
+}
+
 /// C ensure-fit settle window: freed graph bytes reach MemAvailable with
 /// driver-reclaim lag (the WAIT_MEM class); give the fit probe a bounded
 /// settle window. An engine without a native probe fails open.
-fn fit_settle_probe(cfg: &ServerConfig, engine: &dyn DecodeIo, ctx: i32) -> bool {
+fn fit_settle_probe(cfg: &ServerConfig, engine: &dyn DecodeIo, ctx: i32, media_bytes: u64) -> bool {
     for _ in 0..20 {
-        if serial_ctx_fits(cfg, engine, ctx) {
+        let fits = if media_bytes > 0 {
+            media_replacement_quote(cfg, engine, ctx, media_bytes, 0)
+                .is_some_and(|fit| {
+                    serial_reclaim_gate(fit.ask(MemFloor::from_gb(cfg.mem_floor_gb))).admitted()
+                })
+        } else {
+            serial_ctx_fits(cfg, engine, ctx)
+        };
+        if fits {
             return true;
         }
         thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+fn media_refresh_quote(
+    configured: Option<SerialFitQuote>,
+    live: Option<SerialFitQuote>,
+    media_bytes: u64,
+) -> Option<SerialFitQuote> {
+    // Media must retain a byte quote through sync admission. Only ordinary
+    // text keeps the existing unquoted fallback when the refresh fails.
+    if media_bytes > 0 {
+        return configured.or(live);
+    }
+    Some(resolve_serial_fit(configured, live))
+}
+
+fn media_allowance(quote: SerialFitQuote, probe: Option<SerialSessionProbe>, floor: MemFloor) -> u64 {
+    let pending = if probe.is_some_and(|p| !p.graph_pending) {
+        0
+    } else {
+        quote.need.raw()
+    };
+    quote.avail.raw()
+        .saturating_sub(pending)
+        .saturating_sub(floor.bytes().max(quote.headroom.raw()))
+}
+
+fn serial_media_budget(
+    cfg: &ServerConfig,
+    engine: &dyn DecodeIo,
+) -> Option<ds4_core::minimax_media::MediaBudget> {
+    if syntax_for_model_id(engine.model_id()) != ModelSyntax::MinimaxVq {
+        return None;
+    }
+    let probe = engine.serial_session_probe();
+    let ctx = probe.map_or(cfg.ctx, |p| p.cur_ctx);
+    let live = engine.native_graph_fit(ctx).and_then(serial_native_fit);
+    // restore_chat may bring back media absent from the incoming turn. Quote
+    // every MiniMax request, but spend this allowance only on actual media.
+    // Missing byte quotes cannot authorize unbounded media allocations.
+    let bytes = cfg.serial_fit.or(live).map_or(0, |quote| {
+        media_allowance(quote, probe, MemFloor::from_gb(cfg.mem_floor_gb))
+    });
+    Some(ds4_core::minimax_media::MediaBudget::new(bytes))
 }
 
 fn serial_ctx_fits(cfg: &ServerConfig, engine: &dyn DecodeIo, ctx: i32) -> bool {
@@ -2760,6 +2931,29 @@ mod owner_tests {
         let cfg = ServerConfig::test_cfg();
         assert!(cfg.have_engine);
         assert!(cfg.serial_fit.is_none());
+    }
+
+    #[test]
+    fn media_allowance_tracks_graph() {
+        const GIB: u64 = 1 << 30;
+        let quote = serial_fit_from_native(6 * GIB, 10 * GIB, 2 * GIB, 0, false).unwrap();
+        let mut probe = SerialSessionProbe { cur_ctx: 1_048_576, graph_pending: true };
+        assert_eq!(media_allowance(quote, Some(probe), MemFloor::from_gb(4)), 0);
+        probe.graph_pending = false;
+        assert_eq!(media_allowance(quote, Some(probe), MemFloor::from_gb(4)), 6 * GIB);
+        let quote = serial_fit_from_native(6 * GIB, 10 * GIB, 7 * GIB, 0, false).unwrap();
+        assert_eq!(media_allowance(quote, Some(probe), MemFloor::from_gb(4)), 3 * GIB);
+    }
+
+    #[test]
+    fn media_refresh_requires_quote() {
+        assert!(media_refresh_quote(None, None, 1).is_none());
+        let quote = serial_fit_from_native(2, 8, 1, 0, false).unwrap();
+        assert_eq!(media_refresh_quote(None, Some(quote), 1), Some(quote));
+        assert_eq!(media_refresh_quote(Some(quote), None, 1), Some(quote));
+        let text = media_refresh_quote(None, None, 0).unwrap();
+        assert_eq!(text.avail.raw(), u64::MAX);
+        assert_eq!(text.need.raw(), 0);
     }
 
     #[test]
@@ -4421,6 +4615,7 @@ mod owner_tests {
         resets: u32,
         memory_budget: Option<u64>,
         bytes_per_ctx: Option<u64>,
+        release_on_reset: u64,
     }
 
     impl FitProbeDecode {
@@ -4436,6 +4631,7 @@ mod owner_tests {
                 resets: 0,
                 memory_budget: None,
                 bytes_per_ctx: None,
+                release_on_reset: 0,
             }
         }
     }
@@ -4502,6 +4698,10 @@ mod owner_tests {
         }
         fn serial_session_reset(&mut self) {
             self.resets += 1;
+            if let Some(available) = &mut self.memory_budget {
+                *available += self.release_on_reset;
+            }
+            self.release_on_reset = 0;
         }
         fn pos(&self) -> i32 {
             0
@@ -4552,6 +4752,55 @@ mod owner_tests {
         cfg.ctx = boot_ctx;
         cfg.serial_rightsize = true;
         cfg
+    }
+
+    #[test]
+    fn serial_media_resize_budget() {
+        const GIB: u64 = 1 << 30;
+        const OLD_CTX: i32 = 8_192;
+        const BYTES_PER_CTX: u64 = 256 << 10;
+        let media = GIB / 4;
+        for (available, refuse) in [(Some(3 * GIB / 2), true), (Some(2 * GIB), false), (None, true)] {
+            let mut cfg = serial_fit_cfg(32_768);
+            cfg.mem_floor_gb = 1;
+            let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+            let job = queued_completion("media resize", 32);
+            let mut engine = FitProbeDecode::new(OLD_CTX, false, cfg.ctx);
+            engine.model_id = ds4_core::Variant::MinimaxVq as i32;
+            engine.memory_budget = available;
+            engine.bytes_per_ctx = Some(BYTES_PER_CTX);
+            engine.release_on_reset = OLD_CTX as u64 * BYTES_PER_CTX;
+            let mut cont = NoTrimCont;
+            let mut out = Vec::new();
+            let ids = vec!["call-media-resize".to_string()];
+            let now = monotonic_now();
+            lock_inner(&inner).creg.publish_serial(Api::Responses, &ids, 7, 37, now);
+            assert!(lock_inner(&inner).creg.resolve_serial(Api::Responses, &ids, 7, 37, now));
+
+            let result = ensure_serial_session_fit(
+                &cfg, &inner, &job, &mut engine, Some(&mut cont),
+                SerialFrameKind::Canonical, 9_000, 1_024, media, &mut out,
+            );
+            assert_eq!(result.is_some(), refuse);
+            assert_eq!(engine.resets, u32::from(!refuse));
+            assert_eq!(lock_inner(&inner).creg.resolve_serial(Api::Responses, &ids, 7, 37, now), refuse);
+            if refuse {
+                assert_eq!(engine.probe.cur_ctx, OLD_CTX);
+                assert!(!engine.probe.graph_pending);
+                assert!(engine.rightsized.is_none());
+                assert_eq!(engine.memory_budget, available);
+                assert!(out.starts_with(b"HTTP/1.1 503"));
+                continue;
+            }
+            let target = engine.rightsized.expect("a funded media graph can replace the old one");
+            assert!(target > OLD_CTX);
+            let quote = engine.native_graph_fit(target).unwrap();
+            assert!(quote.need_bytes > available.unwrap(), "the pre-reset native verdict lacked release credit");
+            assert!(quote.fits);
+            assert!(quote.need_bytes + media + GIB <= quote.avail_bytes);
+            assert_eq!(engine.release_on_reset, 0);
+            assert!(out.is_empty());
+        }
     }
 
     #[test]
@@ -4655,6 +4904,7 @@ mod owner_tests {
             SerialFrameKind::Canonical,
             1,
             65_536,
+            0,
             &mut out,
         )
         .is_none());
@@ -4682,6 +4932,7 @@ mod owner_tests {
             SerialFrameKind::Canonical,
             26,
             384,
+            0,
             &mut out,
         );
         assert!(refusal.is_none());
@@ -4714,6 +4965,7 @@ mod owner_tests {
                 SerialFrameKind::Canonical,
                 26,
                 384,
+                0,
                 &mut out,
             )
             .is_none());
@@ -4742,6 +4994,7 @@ mod owner_tests {
             SerialFrameKind::Canonical,
             26,
             384,
+            0,
             &mut out,
         )
         .is_some());
@@ -4767,6 +5020,7 @@ mod owner_tests {
             SerialFrameKind::Canonical,
             26,
             384,
+            0,
             &mut out,
         );
         assert!(refusal.is_some());
@@ -4805,6 +5059,7 @@ mod owner_tests {
             SerialFrameKind::ResolvedLive,
             5000,
             1024,
+            0,
             &mut out,
         );
         assert!(refusal.is_some());
@@ -4840,6 +5095,7 @@ mod owner_tests {
             SerialFrameKind::Canonical,
             100,
             384,
+            0,
             &mut out,
         )
         .is_none());
@@ -4858,6 +5114,7 @@ mod owner_tests {
             SerialFrameKind::Canonical,
             9000,
             384,
+            0,
             &mut out,
         )
         .is_none());
@@ -4875,6 +5132,7 @@ mod owner_tests {
             SerialFrameKind::Canonical,
             9000,
             384,
+            0,
             &mut out,
         )
         .is_none());

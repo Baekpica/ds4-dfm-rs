@@ -63,6 +63,11 @@ static ds4_gpu_tensor *mm_vis_view(ds4_gpu_tensor *t, uint64_t row, uint64_t row
     return ds4_gpu_tensor_view(t, row * width * sizeof(float), rows * width * sizeof(float));
 }
 
+static void mm_vis_free(ds4_gpu_tensor **t) {
+    ds4_gpu_tensor_free(*t);
+    *t = NULL;
+}
+
 /* One pass over rows [0, n) of whole segments (`pairs` frame pairs of gh x gw
  * patches; segments of MM_VIS_SEG_PAIRS pairs restart t). out: [n/4][6144]. */
 static bool mm_vis_pass(const ds4_model *vm, const ds4_minimax_vision *V, const float *patches, uint32_t pairs,
@@ -76,8 +81,10 @@ static bool mm_vis_pass(const ds4_model *vm, const ds4_minimax_vision *V, const 
     ok = ok && ds4_gpu_tensor_write(pix, 0, patches, (uint64_t)n * MM_VIT_PATCH * 4);
     // Patch embedding (F32 weight) and pre_layrnorm.
     ok = ok && mm_vis_bf16(vm, V->patch, &w[0], 0, V->patch->bytes, stage) &&
-        ds4_gpu_minimax_vit_patch(x, w[0], pix, n) &&
-        mm_vis_f32(vm, V->pre_w, &b[0], 0, D, host) && mm_vis_f32(vm, V->pre_b, &b[1], 0, D, host) &&
+        ds4_gpu_minimax_vit_patch(x, w[0], pix, n);
+    // cudaMalloc-owned tensors free only after their queued readers complete.
+    mm_vis_free(&pix);
+    ok = ok && mm_vis_f32(vm, V->pre_w, &b[0], 0, D, host) && mm_vis_f32(vm, V->pre_b, &b[1], 0, D, host) &&
         ds4_gpu_minimax_vit_ln(x, x, b[0], b[1], n, D, 1e-5f);
     const uint64_t square = (uint64_t)D * D * 2;
     for (uint32_t il = 0; ok && il < MM_VIS_LAYERS; il++) {
@@ -112,23 +119,41 @@ static bool mm_vis_pass(const ds4_model *vm, const ds4_minimax_vision *V, const 
             mm_vis_linear(xn, w[3], b[3], MM_VIS_FF, D, mid, n) && ds4_gpu_v41_add_tensor(x, xn, (uint64_t)n * D) &&
             ds4_gpu_v41_round_bf16_tensor(x, (uint64_t)n * D);
     }
+    // Only x crosses the tower boundary. Drop attention scratch before the
+    // larger projector allocations; its BF16 linear slot regrows as needed.
+    const bool cleared = ds4_gpu_minimax_vit_clear();
+    ok = ok && cleared;
+    mm_vis_free(&xn);
+    mm_vis_free(&qkv);
+    mm_vis_free(&at);
+    mm_vis_free(&mid);
+    v41_vis_free_list(w, sizeof(w) / sizeof(w[0]));
+    v41_vis_free_list(b, sizeof(b) / sizeof(b[0]));
+
     // Projector per patch, then the merge MLP over 2 x 2 groups (4 consecutive rows).
-    ds4_gpu_tensor *p1 = v41_alloc((uint64_t)n * MM_VIS_OUT * 4, &ok), *p2 = v41_alloc((uint64_t)n * MM_VIS_OUT * 4, &ok);
+    ds4_gpu_tensor *p1 = ok ? v41_alloc((uint64_t)n * MM_VIS_OUT * 4, &ok) : NULL;
+    ds4_gpu_tensor *p2 = ok ? v41_alloc((uint64_t)n * MM_VIS_OUT * 4, &ok) : NULL;
     const uint32_t groups = n / 4;
     ok = ok && mm_vis_bf16(vm, V->p1_w, &w[0], 0, V->p1_w->bytes, stage) &&
         mm_vis_f32(vm, V->p1_b, &b[0], 0, MM_VIS_OUT, host) &&
-        mm_vis_linear(p1, w[0], b[0], D, MM_VIS_OUT, x, n) && ds4_gpu_v41_gelu_tensor(p1, (uint64_t)n * MM_VIS_OUT) &&
-        mm_vis_bf16(vm, V->p2_w, &w[1], 0, V->p2_w->bytes, stage) &&
-        mm_vis_f32(vm, V->p2_b, &b[1], 0, MM_VIS_OUT, host) &&
-        mm_vis_linear(p2, w[1], b[1], MM_VIS_OUT, MM_VIS_OUT, p1, n) &&
-        mm_vis_bf16(vm, V->m1_w, &w[2], 0, V->m1_w->bytes, stage) &&
-        mm_vis_f32(vm, V->m1_b, &b[2], 0, MM_VIS_OUT, host) &&
-        mm_vis_linear(p1, w[2], b[2], 4 * MM_VIS_OUT, MM_VIS_OUT, p2, groups) &&
+        mm_vis_linear(p1, w[0], b[0], D, MM_VIS_OUT, x, n) && ds4_gpu_v41_gelu_tensor(p1, (uint64_t)n * MM_VIS_OUT);
+    mm_vis_free(&x);
+    // Uploads and GEMMs share the default stream; overwrite one weight/bias
+    // slot only after the preceding projection has consumed it.
+    ok = ok && mm_vis_bf16(vm, V->p2_w, &w[0], 0, V->p2_w->bytes, stage) &&
+        mm_vis_f32(vm, V->p2_b, &b[0], 0, MM_VIS_OUT, host) &&
+        mm_vis_linear(p2, w[0], b[0], MM_VIS_OUT, MM_VIS_OUT, p1, n) &&
+        mm_vis_bf16(vm, V->m1_w, &w[0], 0, V->m1_w->bytes, stage) &&
+        mm_vis_f32(vm, V->m1_b, &b[0], 0, MM_VIS_OUT, host) &&
+        mm_vis_linear(p1, w[0], b[0], 4 * MM_VIS_OUT, MM_VIS_OUT, p2, groups) &&
         ds4_gpu_v41_gelu_tensor(p1, (uint64_t)groups * MM_VIS_OUT) &&
-        mm_vis_bf16(vm, V->m2_w, &w[3], 0, V->m2_w->bytes, stage) &&
-        mm_vis_f32(vm, V->m2_b, &b[3], 0, MM_VIS_OUT, host) &&
-        mm_vis_linear(p2, w[3], b[3], MM_VIS_OUT, MM_VIS_OUT, p1, groups) &&
+        mm_vis_bf16(vm, V->m2_w, &w[0], 0, V->m2_w->bytes, stage) &&
+        mm_vis_f32(vm, V->m2_b, &b[0], 0, MM_VIS_OUT, host) &&
+        mm_vis_linear(p2, w[0], b[0], MM_VIS_OUT, MM_VIS_OUT, p1, groups) &&
         ds4_gpu_tensor_read(p2, 0, out, (uint64_t)groups * MM_VIS_OUT * 4);
+    // A projector's larger BF16 slot must not raise the next pass's tower peak.
+    const bool completed = ds4_gpu_minimax_vit_clear();
+    ok = ok && completed;
     ds4_gpu_tensor *all[] = {pix, x, xn, qkv, at, mid, p1, p2, w[0], w[1], w[2], w[3], b[0], b[1], b[2], b[3]};
     v41_vis_free_list(all, sizeof(all) / sizeof(all[0]));
     return ok;
@@ -161,7 +186,9 @@ static bool minimax_vision_rows(ds4_engine *e, const float *patches, uint32_t gt
         ok = mm_vis_pass(&e->vision_model, V, patches + (uint64_t)p0 * per * MM_VIT_PATCH, pairs, gh, gw,
             out + (uint64_t)p0 * per / 4 * MM_VIS_OUT, stage, host);
     }
-    ok = ok && ds4_gpu_synchronize();
+    // Run even after a failed pass: no request retains grow-only media scratch.
+    const bool cleared = ds4_gpu_minimax_vit_clear();
+    ok = ok && cleared;
     if (stage) { ds4_gpu_host_free(stage); }
     free(host);
     v41_vis_drop_pages(&e->vision_model);
