@@ -1,5 +1,6 @@
 /* MiniMax's warp-specialized prefill experts (cuda/minimax_mma8w.cuh)
- * against glmvq_mma8_kernel on one 2,048-row chunk at production shapes:
+ * against glmvq_mma8_kernel on one prefill chunk (DS4_MW_ROWS, default the
+ * 4,096-row production chunk) at production shapes:
  * 128 experts x (6144 -> 3072 -> 6144), top-4, 13-bit books with and
  * without the GVR8 residual. Random books, indices and routes; no model.
  * Gate rows, up scales, E4M3 down inputs (un-permuted) and down rows must
@@ -16,7 +17,8 @@
 #include <random>
 #include <vector>
 
-enum { H = 6144, F = 3072, E = 128, USED = 4, ROWS = 2048, OLD_BM = 256, OLD_BT = 64 };
+enum { H = 6144, F = 3072, E = 128, USED = 4, OLD_BM = 256, OLD_BT = 64 };
+static uint32_t ROWS = 4096;
 // Distinct weight sets behind the 128 experts (DS4_MW_SETS; 1 keeps every
 // expert's index stream in L2, which separates DRAM from kernel limits).
 static int SETS = 32;
@@ -226,6 +228,7 @@ static int run_case(const std::vector<matrix_set> &sets, const uint8_t *book, co
 int main() {
     const int iters = getenv("DS4_MW_ITERS") ? atoi(getenv("DS4_MW_ITERS")) : 5;
     if (getenv("DS4_MW_SETS")) { SETS = atoi(getenv("DS4_MW_SETS")); }
+    if (getenv("DS4_MW_ROWS")) { ROWS = (uint32_t)atoi(getenv("DS4_MW_ROWS")); }
     const char *only = getenv("DS4_MW_ONLY");
     const auto book_h = make_book(8192), res_h = make_book(GLMVQ_RES_WORDS);
     const auto *book = (const uint8_t *)dev(book_h.size(), book_h.data());

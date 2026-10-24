@@ -139,7 +139,8 @@ __device__ __forceinline__ float glmvq_swiglu_value(float gate, float up, float 
     if constexpr (CLAMP == GLMVQ_CLAMP_OAI) {
         const float g = fminf(gate, limit);
         const float u = fminf(fmaxf(up, -limit), limit);
-        const float s = __fdiv_rn(1.0f, glmvq_add(1.0f, expf(-glmvq_mul(1.702f, g))));
+        // rcp.rn is div.rn(1, x) bit for bit, without the division's slow-path branch.
+        const float s = __frcp_rn(glmvq_add(1.0f, expf(-glmvq_mul(1.702f, g))));
         return glmvq_round(glmvq_mul(glmvq_mul(g, s), glmvq_add(u, 1.0f)));
     } else if constexpr (CLAMP == GLMVQ_CLAMP_SILU) {
         const float u = fminf(fmaxf(up, -limit), limit);

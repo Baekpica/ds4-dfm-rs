@@ -36,9 +36,18 @@
  * gate 4.8 ms with weights streamed, 3.6 ms with every expert in L2, 2.3 ms
  * with the producers' copies removed (134 TFLOPS, 53% of the E4M3 peak); the
  * copies' L1 wavefronts and the consumers' ldmatrix plus book gathers share
- * the shared-memory pipe. Up spends ~1.7 ms more on its epilogue (128
- * consumer threads run SwiGLU and the E4M3 quantization). TMA bulk copies of
- * the 16-128-byte pieces were 3x slower. */
+ * the shared-memory pipe. TMA bulk copies of the 16-128-byte pieces were 3x
+ * slower. At the 4,096-row production chunk (R13 / R13+8): gate 7.3 / 9.8
+ * ms, up 10.0 / 12.8, down 7.7 / 10.5 against MMA floors of 2.6 / 5.2 ms per
+ * projection; with every expert in L2, gate 6.6 / 9.1. ncu: tensor pipe
+ * 38-44%, shared-memory pipe 48% (42% of its load wavefronts are book-gather
+ * bank conflicts); the consumer warps spend ~57% in the MMA loop, ~25%
+ * waiting on `full` slots and ~18% (up) in the epilogue: SwiGLU, F32
+ * divisions, E4M3 stores (batching its gate loads saved 0.5 ms). Rejected,
+ * slower or even: 128-pair items over 64-k stages (half the gathers per MMA;
+ * the two-stage ring then covers half the time, +16-19%), separate index and
+ * input barriers per slot (index filled a stage ahead, +16% on R13), and
+ * accumulators rescaled per stage in place of the per-stage sum (even). */
 enum { MW_BM = 128, MW_BT = 64, MW_MT = MW_BT / 16, MW_STAGES = 2, MW_CONSUMERS = 4, MW_PRODUCERS = 4,
        MW_NT = MW_BM / (8 * MW_CONSUMERS),
        MW_THREADS = (MW_CONSUMERS + MW_PRODUCERS) * 32, MW_PF_FIRST = 4,
@@ -193,6 +202,10 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                 g_scale[j] = act_scale + (uint64_t)src[j] * stages;
                 bytes[j] = t < nt ? 16u : 0u;   // zero rows pad the last m16 tile, scales too
                 live[j] = t < padded;
+            }
+            if constexpr (MODE == GLMVQ_MMA_UP) {
+                // The up epilogue's gate lines (this tile's 128 BF16 columns of each pair row).
+                if (pt < nt) { glmvq_mma_prefetch(gate + (uint64_t)(cur.offset + pt) * rows + crow, BM * 2); }
             }
             for (uint32_t kt = 0; kt < stages; kt++, ringc++) {
                 const uint32_t s = ringc % S, use = ringc / S;
@@ -363,7 +376,23 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
             }
         } else {
             // SwiGLU-OAI on the BF16 gate, then E4M3 rows for down with one
-            // scale per (pair, 128 rows): this tile's rows are one block.
+            // scale per (pair, 128 rows): this tile's rows are one block. The
+            // gate values load in one batch from lines the producers queued
+            // into L2 when the unit began: a load per (m, h) pass paid the
+            // memory latency eight times (~30% of up at 4,096 rows).
+            __nv_bfloat162 gx[MT][2][NT];
+            #pragma unroll
+            for (uint32_t m = 0; m < MT; m++) {
+                #pragma unroll
+                for (uint32_t h = 0; h < 2; h++) {
+                    const uint32_t t = m * 16 + h * 8 + g, tt = t < nt ? t : 0;
+                    const uint64_t base = (uint64_t)(offset + tt) * rows + c0;
+                    #pragma unroll
+                    for (uint32_t n = 0; n < NT; n++) {
+                        if (m < nmt) { gx[m][h][n] = *(const __nv_bfloat162 *)(gate + base + 8 * n); }
+                    }
+                }
+            }
             for (uint32_t i = tid; i < BT; i += C * 32) { amax[i] = 0; }
             consumers_sync();
             #pragma unroll
@@ -371,12 +400,11 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                 if (m >= nmt) { break; }
                 #pragma unroll
                 for (uint32_t h = 0; h < 2; h++) {
-                    const uint32_t t = m * 16 + h * 8 + g, tt = t < nt ? t : 0;
-                    const uint64_t base = (uint64_t)(offset + tt) * rows + c0;
+                    const uint32_t t = m * 16 + h * 8 + g;
                     float peak = 0.0f;
                     #pragma unroll
                     for (uint32_t n = 0; n < NT; n++) {
-                        const float2 x = __bfloat1622float2(*(const __nv_bfloat162 *)(gate + base + 8 * n));
+                        const float2 x = __bfloat1622float2(gx[m][h][n]);
                         const float y0 = glmvq_round(glmvq_mul(acc[m][n][2 * h], gn[n][0]));
                         const float y1 = glmvq_round(glmvq_mul(acc[m][n][2 * h + 1], gn[n][1]));
                         const float v0 = glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(x.x, y0, limit);
