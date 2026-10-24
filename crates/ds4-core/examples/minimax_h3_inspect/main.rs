@@ -3,6 +3,7 @@
 //!
 //! Usage: minimax_h3_inspect <dir> [index.json]
 //!        minimax_h3_inspect --layout <dir>
+//!        minimax_h3_inspect --weights <dir>
 //!
 //! Output is one TSV row per tensor (shard, name, dtype, dims, bytes, offset),
 //! then a TOTAL line, then the manifest when an index is given. The reference
@@ -12,12 +13,35 @@
 //! `--layout` checks the shards against `config.json` instead: one TSV row per
 //! tensor (name, role, dtype, dims), then a LAYOUT line. A mismatch prints its
 //! token and exits non-zero.
+//!
+//! `--weights` maps every shard through `minimax_h3::weights`, reads both ends
+//! of all 535 spans, and compares them with the same offsets read by `pread`.
+//! A WEIGHTS line then carries the role count, mapped shards, bytes and the
+//! sampled hash. Any disagreement names the role and exits non-zero.
 
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::process::ExitCode;
 
 use ds4_core::minimax_h3::layout::{Layout, Role};
 use ds4_core::minimax_h3::safetensors::{open_dir, reconcile};
+use ds4_core::minimax_h3::weights::Weights;
+
+/// Bytes taken from each end of a span for the mmap/pread comparison.
+const SAMPLE_EDGE: u64 = 8;
+
+/// FNV-1a 64-bit, so the printed sample does not depend on the std hasher.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Which report the arguments ask for.
+enum Mode {
+    Inventory,
+    Layout,
+    Weights,
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,20 +51,23 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let (layout, args) = match args.split_first() {
-        Some((flag, rest)) if flag == "--layout" => (true, rest),
-        _ => (false, args.as_slice()),
+    let (mode, args) = match args.split_first() {
+        Some((flag, rest)) if flag == "--layout" => (Mode::Layout, rest),
+        Some((flag, rest)) if flag == "--weights" => (Mode::Weights, rest),
+        _ => (Mode::Inventory, args.as_slice()),
     };
 
     if args.is_empty() {
-        eprintln!("usage: minimax_h3_inspect [--layout] <dir> [index.json]");
+        eprintln!("usage: minimax_h3_inspect [--layout|--weights] <dir> [index.json]");
         return ExitCode::from(2);
     }
 
     let dir = Path::new(&args[0]);
 
-    if layout {
-        return report_layout(dir);
+    match mode {
+        Mode::Layout => return report_layout(dir),
+        Mode::Weights => return report_weights(dir),
+        Mode::Inventory => {}
     }
 
     let store = match open_dir(dir) {
@@ -147,6 +174,89 @@ fn report_layout(dir: &Path) -> ExitCode {
     );
 
     ExitCode::SUCCESS
+}
+
+/// Map every shard and prove the mapped bytes against `pread`.
+fn report_weights(dir: &Path) -> ExitCode {
+    match weights_report(dir) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(detail) => {
+            eprintln!("{detail}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn weights_report(dir: &Path) -> Result<(), String> {
+    let weights = Weights::open(dir).map_err(|error| error.token())?;
+
+    let mut files: BTreeMap<&Path, File> = BTreeMap::new();
+    let mut bytes = 0u64;
+    let mut sample = FNV_OFFSET;
+
+    for entry in weights.layout().entries() {
+        let span = weights.span(entry.role).map_err(|error| error.token())?;
+        let payload = weights.bytes(entry.role).map_err(|error| error.token())?;
+
+        let file = match files.entry(span.path) {
+            std::collections::btree_map::Entry::Occupied(slot) => slot.into_mut(),
+            std::collections::btree_map::Entry::Vacant(slot) => slot.insert(
+                File::open(span.path)
+                    .map_err(|error| format!("open {}: {error}", span.path.display()))?,
+            ),
+        };
+
+        let mapped = edges(payload);
+        let disk = read_edges(file, span.file_offset, span.bytes)
+            .map_err(|error| format!("read {}: {error}", span.path.display()))?;
+
+        if mapped != disk {
+            return Err(format!(
+                "role {:?}: mapped bytes differ from pread at offset {}",
+                entry.role, span.file_offset
+            ));
+        }
+
+        fnv(&mut sample, &disk);
+        bytes += span.bytes;
+    }
+
+    println!(
+        "WEIGHTS\troles={}\tshards_mapped={}\tbytes={bytes}\tsample={sample:016x}",
+        weights.layout().entries().len(),
+        weights.mapped()
+    );
+
+    Ok(())
+}
+
+/// The first and last `SAMPLE_EDGE` bytes of a span, in that order.
+fn edges(payload: &[u8]) -> Vec<u8> {
+    let edge = payload.len().min(SAMPLE_EDGE as usize);
+    let mut values = Vec::with_capacity(edge * 2);
+
+    values.extend_from_slice(&payload[..edge]);
+    values.extend_from_slice(&payload[payload.len() - edge..]);
+
+    values
+}
+
+/// The same two windows, read from the file rather than the mapping.
+fn read_edges(file: &File, offset: u64, bytes: u64) -> std::io::Result<Vec<u8>> {
+    let edge = bytes.min(SAMPLE_EDGE);
+    let mut values = vec![0u8; (edge * 2) as usize];
+
+    file.read_exact_at(&mut values[..edge as usize], offset)?;
+    file.read_exact_at(&mut values[edge as usize..], offset + bytes - edge)?;
+
+    Ok(values)
+}
+
+fn fnv(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
 }
 
 /// The role with its block index, for the TSV column.

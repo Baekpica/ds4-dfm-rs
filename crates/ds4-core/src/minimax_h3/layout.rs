@@ -146,7 +146,10 @@ impl Config {
 }
 
 /// What a tensor is for. One role per distinct reference load site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Ordered so a role can key the loader's span table
+/// (`minimax_h3::weights`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Role {
     ConditionWeight,
     ConditionBias,

@@ -590,6 +590,27 @@ route: `minimax_h3_inspect --layout <FL2VA/transformer>` exits 0 with
 3.1 s, header-only. Negative cases (absent, unlisted, duplicate, wrong dtype,
 wrong shape, wrong timestep width) are unit tests, as is the config itself.
 
+**P3.1 — The mapped role table.** The operator deferred the VQ campaign
+(2026-10-24) and asked for the exact/BF16 family first, so the next unit is the
+loader the graph will call: `minimax_h3::weights` resolves every `Role` to one
+shard and one byte span at open (`h3_weights.c:129-142`: sorted path order, the
+first shard holding the name wins), maps a shard on first use instead of
+copying its payload (`h3_gpu.m:608-660`), and gives the device route a `Span`
+(path, absolute offset, bytes) or host code a borrowed `&[u8]`. *Gate:*
+`minimax_h3_inspect --weights <FL2VA/transformer>` walks all 535 roles, its
+sampled bytes equal the same offsets read with `pread`, and the process maximum
+RSS stays under 1 GiB with all 13 shards mapped — that last number is what
+proves no payload is copied. *Rollback:* additive module, nothing imports it
+yet.
+
+P3.1 shipped as `minimax_h3::weights`. Live gate over the gvfs route, binary
+run directly (not through `cargo`, whose own footprint is 519 MB): 535 roles,
+13 shards mapped, 66,280,430,144 bytes = 61.728 GiB, sample
+`eb95a483889d3913`, 0.52 s wall, 22.6 MB maximum RSS, 329 major faults. Each
+tensor's first and last 8 bytes from the mapping equal the same offsets read
+with `pread`; a mismatch names the role and exits non-zero. The device route is
+`Weights::span` (path, absolute offset, bytes), the host route `Weights::bytes`.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
