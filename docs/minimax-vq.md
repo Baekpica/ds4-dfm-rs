@@ -144,7 +144,13 @@ keys to decide what attention reads, so:
 
   The pool holds one layer's every block plus a forward's pins (8,192 +
   1,980 slots, 0.70 GiB at 1M), so a prefill chunk's union of selections
-  always fits without splitting. Until anything is evicted, the per-layer
+  always fits without splitting. Decode misses fall with a larger pool: at
+  256K (128 plain tokens, code corpus) 300 misses and 10.9 ms of reads per
+  token with the default 9,660 slots, 107 / 4.9 ms with 32,700 (2.25 GiB)
+  and 68 / 3.3 ms with 65,000 (4.46 GiB), decode 14.7 -> 15.8 -> 16.7
+  tok/s, tokens identical. The default stays small because the 512K
+  DSpark and the 1M configurations leave a 128 GB host only a few GiB;
+  `DS4_MINIMAX_KV_POOL_SLOTS` sets it where memory allows. Until anything is evicted, the per-layer
   resolve (and its device sync) is skipped: short conversations run as in the
   resident tier.
 
@@ -350,7 +356,7 @@ temperature 1.0, top-p 0.95).
 | `DS4_MINIMAX_PREFILL_CHUNK` | prefill rows per chunk (default and maximum 4,096) |
 | `DS4_MINIMAX_KV_RESIDENT_CTX` | largest context with resident K/V pages (default 131,072; 0 = SSD tier always) |
 | `DS4_KV_OFFLOAD_DIR` | directory of the SSD tier's unlinked files |
-| `DS4_MINIMAX_KV_POOL_SLOTS` | a smaller SSD-tier pool, to make tests evict and read back |
+| `DS4_MINIMAX_KV_POOL_SLOTS` | SSD-tier pool slots (73,728 bytes each): fewer make tests evict and read back; more cut decode misses where memory allows (256K: 65,000 slots, 4.46 GiB, took decode from 14.7 to 16.7 tok/s) |
 | `DS4_MINIMAX_KV_TRACE` | print the SSD tier's hits, misses, bytes and I/O time per forward |
 | `DS4_MINIMAX_KV_STREAM=0` | SSD tier: selective resolves for prefill chunks too (A/B of the streamed reads) |
 | `DS4_MINIMAX_TRACE=DIR` | per-layer tensor dumps of one forward (`DS4_MINIMAX_TRACE_POS`) |

@@ -334,10 +334,12 @@ static bool minimax_kv_open(minimax_kv *kv, uint32_t ctx) {
     kv->spill = true;
     kv->blocks = (uint32_t)minimax_blocks(ctx);
     kv->slots = (uint32_t)minimax_pool_slots(ctx);
-    // DS4_MINIMAX_KV_POOL_SLOTS (diagnostic): a smaller pool, to make tests
-    // evict and read back; a forward that cannot pin or resolve fails.
+    // DS4_MINIMAX_KV_POOL_SLOTS (diagnostic): another pool size, smaller to
+    // make tests evict and read back, larger to measure decode misses; a
+    // forward that cannot pin or resolve fails.
     const char *forced = getenv("DS4_MINIMAX_KV_POOL_SLOTS");
-    if (forced && *forced && strtoul(forced, NULL, 10) > 0 && strtoul(forced, NULL, 10) < kv->slots) {
+    if (forced && *forced && strtoul(forced, NULL, 10) > 0 &&
+        strtoul(forced, NULL, 10) <= (uint64_t)MINIMAX_LAYERS * kv->blocks + MINIMAX_PIN_PAGES) {
         kv->slots = (uint32_t)strtoul(forced, NULL, 10);
     }
     const uint64_t table = (uint64_t)MINIMAX_LAYERS * kv->blocks;
