@@ -1,6 +1,8 @@
 /* GB10 peak probes for docs/gb10-hardware.md: mma.sync throughput per input
- * type (eight independent accumulators per warp, 32 warps per SM), streaming
- * DRAM reads, a device copy and L2 reads. Run with nothing else on the GPU:
+ * type (eight independent accumulators per warp, 32 warps per SM), the E4M3
+ * rate of one warp per scheduler against its independent accumulator chains
+ * (a kernel with one MMA warp per SMSP), streaming DRAM reads, a device copy
+ * and L2 reads. Run with nothing else on the GPU:
  *
  *   make tools/gb10_peaks && ./tools/gb10_peaks
  *
@@ -53,6 +55,22 @@ __device__ __forceinline__ void mma_once(uint32_t (&d)[4], const uint32_t (&a)[4
             : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(scale), "r"(scale));
 #endif
     }
+}
+
+// One warp per scheduler (128 threads per SM), CHAINS dependent E4M3 chains.
+template <int CHAINS>
+__global__ void __launch_bounds__(128) chain_probe(uint32_t *out, uint32_t seed, int iters) {
+    uint32_t a[4], b[2], d[CHAINS][4];
+    for (int i = 0; i < 4; i++) { a[i] = (seed + threadIdx.x * 4 + i) & 0x3c3c3c3cu; }
+    for (int i = 0; i < 2; i++) { b[i] = (seed * 3 + threadIdx.x + i) & 0x3c3c3c3cu; }
+    for (int j = 0; j < CHAINS; j++) { d[j][0] = d[j][1] = d[j][2] = d[j][3] = 0u; }
+    for (int it = 0; it < iters; it++) {
+        #pragma unroll
+        for (int j = 0; j < CHAINS; j++) { mma_once<E4M3_F32>(d[j], a, b); }
+    }
+    uint32_t sum = 0;
+    for (int j = 0; j < CHAINS; j++) { sum ^= d[j][0] ^ d[j][3]; }
+    if (sum == seed) { out[blockIdx.x * blockDim.x + threadIdx.x] = sum; }
 }
 
 template <mma_kind K>
@@ -113,6 +131,15 @@ static float median_ms(F launch) {
     return ms[2];
 }
 
+template <int CHAINS>
+static void run_chains(int sms, uint32_t *out) {
+    const int iters = 131072 / CHAINS;
+    const float ms = median_ms([&] { chain_probe<CHAINS><<<sms, 128>>>(out, 7u, iters); CK(cudaGetLastError()); });
+    const double mmas = (double)iters * CHAINS;   // per warp = per scheduler
+    printf("e4m3, 1 warp/SMSP, %2d chains   %6.1f ns per MMA %8.1f TFLOPS\n", CHAINS, ms * 1e6 / mmas,
+        (double)sms * 4 * mmas * 2.0 * 16 * 8 * 32 / (ms * 1e-3) / 1e12);
+}
+
 // Read the SM clock beside the run (nvidia-smi): rates scale with it.
 template <mma_kind K>
 static void run_mma(const char *name, double flops_per_mma, int sms, uint32_t *out) {
@@ -141,6 +168,7 @@ int main() {
 #if defined(DS4_CUDA_HAVE_MXF4)
     run_mma<E2M1_NVF4>("mma nvfp4 block-scaled (k64)", 2.0 * 16 * 8 * 64, sms, out);
 #endif
+    run_chains<1>(sms, out); run_chains<2>(sms, out); run_chains<4>(sms, out);
     float *sink;
     CK(cudaMalloc(&sink, sizeof(float)));
     const uint64_t big = 4ull << 30;   // 4 GiB: far beyond L2

@@ -35,6 +35,15 @@ The 2,190 MHz column is [Beam's floors](beam-vq-optimization-2026-10-21.md#floor
 accumulation is not faster than F32 accumulation. cuBLAS BF16 GEMMs reached
 65-90 TFLOPS at the 2.2 GHz cap; the engine's own kernels are the fast path.
 
+One warp per scheduler reaches the E4M3 peak with two to four independent
+accumulator chains: an `m16n8k32` E4M3 MMA issues every ~6.3 ns (~15
+clocks) per scheduler, and a dependent chain waits ~11.3 ns (~27 clocks)
+per MMA: 139 TFLOPS with one chain, 232 with two, 248 with four
+(`tools/gb10_peaks`, 2026-10-24, SM clock 2,489 MHz after the run). A
+warp-specialized kernel with one MMA warp per scheduler is therefore
+bounded by its operand loads (shared-memory wavefronts, their latency), not
+by MMA latency.
+
 ## Memory system
 
 | Level | Limit |
