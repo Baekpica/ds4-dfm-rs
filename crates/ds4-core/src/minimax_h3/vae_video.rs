@@ -342,9 +342,13 @@ fn rope_tables(sequence: usize, latent_h: usize, latent_w: usize) -> (Vec<f32>, 
 /// `prepare_input` (`:320-346`): de-normalize each latent and pad time to the
 /// chunk by repeating the last frame, in `(t, h, w, c)` row order. `tile` is
 /// `[channel, latent_time, height, width]`.
+///
+/// The tile's own time extent sets the row stride. A chunk tile carries
+/// `CHUNK_LATENT_TIME` steps even when the whole latent is longer, so taking
+/// the caller's total latent time here would read past the tile: that is what
+/// a 107-frame request (27 latent steps, 7-step tiles) exposed.
 fn prepare_input_rows(
     tile: &[f32],
-    latent_time: usize,
     latent_h: usize,
     latent_w: usize,
     mean: &[f32],
@@ -353,6 +357,12 @@ fn prepare_input_rows(
     let patches = CHUNK_LATENT_TIME * latent_h * latent_w;
     let mut rows = vec![0.0f32; patches * LATENT_CHANNELS];
     let mut row = 0;
+    let frame = LATENT_CHANNELS * latent_h * latent_w;
+    assert!(
+        frame > 0 && !tile.is_empty() && tile.len() % frame == 0,
+        "video VAE tile is not a whole number of latent frames"
+    );
+    let latent_time = tile.len() / frame;
 
     for time in 0..CHUNK_LATENT_TIME {
         let source_t = time.min(latent_time - 1);
@@ -886,14 +896,8 @@ fn decode_chunk(
                 tile_h,
                 tile_w,
             );
-            let rows = prepare_input_rows(
-                &input,
-                latent_time,
-                tile_h,
-                tile_w,
-                &decoder.mean,
-                &decoder.deviation,
-            );
+            let rows =
+                prepare_input_rows(&input, tile_h, tile_w, &decoder.mean, &decoder.deviation);
             let projected = decoder.run_tile(&rows)?;
             tiles.push(unpack_frames(
                 &projected,
@@ -1010,7 +1014,6 @@ pub fn decode(
     if latent_time == 2 {
         let rows = prepare_input_rows(
             latent,
-            latent_time,
             latent_h,
             latent_w,
             &decoder.mean,
@@ -1128,7 +1131,6 @@ mod tests {
         let input = vec![1.0f32; LATENT_CHANNELS * 2 * 1 * 1];
         let rows = prepare_input_rows(
             &input,
-            2,
             1,
             1,
             &[0.0; LATENT_CHANNELS],
@@ -1136,6 +1138,37 @@ mod tests {
         );
         assert_eq!(rows.len(), CHUNK_LATENT_TIME * LATENT_CHANNELS);
         assert!(rows.iter().all(|value| *value == 1.0));
+    }
+
+    #[test]
+    fn a_chunk_tile_is_read_with_its_own_time_stride() {
+        // Regression: a 107-frame request denoises to 27 latent steps and
+        // decodes in 7-step chunk tiles. Reading a tile with the whole
+        // latent's time stride indexed past its end.
+        let (latent_time, height, width) = (12usize, 2usize, 2usize);
+        let latent: Vec<f32> = (0..LATENT_CHANNELS * latent_time * height * width)
+            .map(|value| value as f32)
+            .collect();
+        let tile = extract_latent_tile(&latent, latent_time, height, width, 0, 0, 0, height, width);
+        let rows = prepare_input_rows(
+            &tile,
+            height,
+            width,
+            &[0.0; LATENT_CHANNELS],
+            &[1.0; LATENT_CHANNELS],
+        );
+
+        assert_eq!(
+            rows.len(),
+            CHUNK_LATENT_TIME * height * width * LATENT_CHANNELS
+        );
+        // Row 0 is (t, h, w, c) = (0, 0, 0, 0), the tile's own first value.
+        assert_eq!(rows[0], tile[0]);
+        // The chunk's last step reads the tile's seventh latent frame, which
+        // in this shape is source value 24, not the zero past the tile's end.
+        let step = height * width * LATENT_CHANNELS;
+        let last = (CHUNK_LATENT_TIME - 1) * step;
+        assert_eq!(rows[last], latent[(CHUNK_LATENT_TIME - 1) * height * width]);
     }
 
     #[test]
