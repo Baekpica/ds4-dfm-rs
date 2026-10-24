@@ -4,8 +4,10 @@ The default text-to-video path is complete and bit-identical to the reference
 end to end (`port-plan.md`, E1-E9). This page is the work list from there:
 P8.5 the upstream branch survey, P9 speed, P10 serving with a resident engine,
 P11 delivery formats (YouTube, Instagram, the highest resolution the model
-has), P12 the conditioning and editing surface, P12.5 the reference test suite
-ported to Rust, P13 close.
+has), P12 the conditioning and editing surface, P12.6 the remaining reference
+knobs, P13 close, and P12.5 last: the reference test suite ported to Rust
+(operator, 2026-10-24 — it is the evidence pass over a finished surface, not a
+gate in front of it).
 
 Each phase ends with a gate that runs on the Spark and a record in
 `port-plan.md`. A phase is not done because code exists; it is done when its
@@ -434,7 +436,107 @@ and 7.028 s against 8.570 s at 512x512. The goldens are in
 Ref2VA (`h3_multimodal.c:243-360`) remains unported: it needs the ordered
 audio/video reference surface from units 4-5, not just the presentation.
 
-## P12.5 — Port the reference test suite
+## P12.6 — The remaining reference surface
+
+The surfaces that are neither conditioning nor the test suite, each with its
+verdict so nothing stays "missing" without a reason:
+
+1. **Device probe.** `h3_device_cuda.cu` / `h3_device_probe` fills
+   `h3_device_info`; the port's `--info` prints components and geometry but no
+   device line. Small CUDA call set, and `tests/test_device.c` is the gate.
+2. **`--token-reduction`.** Real DiT behavior: `configure_token_reduction`
+   (`h3_dit.c:378-470`) pairs video tokens in a middle-block window with an
+   early-step window and a scale, controlled by `token_reduction_begin`,
+   `_end`, `_early_steps`, `_early_end`, `_scale`. It changes compute and
+   numerics, so the port needs the hash gate at 2 evaluations plus a measured
+   end-to-end gain, and a kill switch.
+3. **`--use-int8-row-fc2`.** Accepted by the reference and inert on CUDA:
+   `dit->int8_mlp` requires `h3_gpu_has_int8_mlp(gpu)` (`h3_dit.c:1633`), and
+   the CUDA backend returns 0 from it (`h3_gpu_cuda.cu:334`). The port parses
+   the flag and records the zero, exactly as the reference does.
+4. **`--show` / `--zoom` and the resident preview.** A terminal preview built
+   from the denoise callback (`h3_dit_denoise_euler_preview`, `h3_dit.c:2861`)
+   on the continue-event chain (`h3_gpu_continue`). It must never change the
+   rendered file: the gate is a hash identical with the preview on and off.
+5. **The tiled-VAE quality bench** (`h3_vae_bench_quality`): tile seams and
+   temporal blend against the untiled decode, still unbuilt (P0 remainder).
+6. **The reference tests** are P12.5 and cover units 1-5 above file by file.
+
+## P13 — Close
+
+The rule 19 QA gate once, the evidence file, docs, memory, handoff, push.
+
+This is the point where the port is complete and runnable. The reference test
+suite (P12.5) does not gate the close: it runs afterwards, as the evidence pass
+over the finished surface (operator, 2026-10-24).
+
+### P13.1 — The CI must pass on the branch
+
+Recorded 2026-10-24 from the live check, not from a guess: `Host parity` is red
+on PR 111 (Baekpica/ds4-dfm-rs, run 40127087166, job 120970719438). Format and
+Clippy pass; the failure is in the step `C and Rust host parity`, inside
+`make test-catalog-parity`, whose last command is `cargo test -p ds4-core`
+(Makefile:731). That command builds every example target, and the four h3 gate
+examples call `h3t_*`/`h3d_*` entry points that exist only in
+`native/h3/*.o`, which a plain `cargo test` does not link. The log names
+`h3t_read`, `h3t_embed`, `h3t_write`, `h3t_linear`, `h3t_upload`,
+`h3t_rms_norm`, `h3t_silu_mul` and `h3t_rope_text` as undefined, then
+`collect2: error: ld returned 1 exit status`.
+
+The remaining steps have never run on this branch, because the job stops at
+the first failure. Treat the CI as unknown past that point until the fix lands.
+
+The fix, landed 2026-10-24:
+
+1. `crates/ds4-core/Cargo.toml` declares the additive, empty `h3-gates`
+   feature and one `[[example]]` entry per h3 gate with `required-features =
+   ["h3-gates"]`, so `cargo test`, `cargo check --all-targets` and `cargo
+   clippy --all-targets` skip them instead of linking them.
+2. The `tests/h3_*_gate` make targets pass `--features h3-gates`. They already
+   name the native objects and their fingerprints on the link line; only the
+   feature was missing.
+
+Verification record, replayed step by step on this host with
+`/tmp/ci-host-parity.sh` (one PASS/FAIL per workflow step, log at
+`/tmp/ci-host-parity.log`): 16 of 19 steps pass, including `make
+test-catalog-parity`, the step that failed on PR 111. Three fail on code this
+branch does not touch (`git diff origin/main...HEAD` is empty for every file
+involved):
+
+- `server-parity` and `workspace-tests`: `cache_identity::tests::
+  bounded_sidecar_and_ple` (crates/ds4-server/src/cache_identity.rs:501) and
+  two `ds4-perf` artifact tests (crates/ds4-perf/src/artifact.rs:449 and
+  :489) rewrite a file to the same byte length and expect the stat-based
+  identity to change. This host stamps consecutive writes with the same
+  mtime/ctime — measured: five back-to-back `echo > f` on /data (xfs) and on
+  /tmp (tmpfs) produced identical `%y %z` values for writes inside one ~4 ms
+  tick — so the rewrite is invisible on this kernel and the assertion fails
+  (4 of 5 runs). The same steps are green on main's Host parity runs
+  (397139481086, 395545266396, 395387760326), whose runner has fine-grained
+  timestamps.
+- `v41-lifecycle`: `make test-vq-source-release` fails `resident(primary) ==
+  0` (tests/test_vq_source_release.cpp:154): this host's `mincore` still
+  reports the mapped source pages resident after the release advice, where
+  the CI runner reports zero. The file and the gate are unchanged on the
+  branch, and the step is green on the three main runs named above.
+
+Still open after the replay: the PR check itself. The replay proves the step
+that failed now passes; only the runner can prove the whole job. Confirm green
+at the branch tip, not only locally, before the PR leaves draft.
+
+Do not make the workflow pass by deleting steps or by excluding `ds4-core`:
+the point of the job is that the branch's host code builds on a model-free
+runner. The h3 device gates stay on-demand make targets (P12.5, rule 2) and
+are not CI's job.
+
+## P12.5 — Port the reference test suite (runs last, after P13)
+
+Ordering decision (operator, 2026-10-24): this phase is moved to the end of the
+work list. The port becomes complete and runnable at P13; the reference suite
+is the evidence pass over a finished surface, not a gate in front of it, so it
+runs after the close. The identifier P12.5 is kept because the handoff, the PR
+body and the disposition table already name it that way; the position in this
+file is the authority on when it runs.
 
 `/data/h3.c/tests` holds 33 files and 9,177 lines. They are the reference's own
 evidence, and the port currently reproduces only the text and DiT gates plus
@@ -503,36 +605,6 @@ then the P12-dependent ones (vision, multimodal, encoders) as their units
 land. `make tests/h3-suite` runs every one by hand and prints, per artifact
 test, either its result or the missing artifact; it is the operator's single
 command, never an automatic step.
-
-## P12.6 — The remaining reference surface
-
-The surfaces that are neither conditioning nor the test suite, each with its
-verdict so nothing stays "missing" without a reason:
-
-1. **Device probe.** `h3_device_cuda.cu` / `h3_device_probe` fills
-   `h3_device_info`; the port's `--info` prints components and geometry but no
-   device line. Small CUDA call set, and `tests/test_device.c` is the gate.
-2. **`--token-reduction`.** Real DiT behavior: `configure_token_reduction`
-   (`h3_dit.c:378-470`) pairs video tokens in a middle-block window with an
-   early-step window and a scale, controlled by `token_reduction_begin`,
-   `_end`, `_early_steps`, `_early_end`, `_scale`. It changes compute and
-   numerics, so the port needs the hash gate at 2 evaluations plus a measured
-   end-to-end gain, and a kill switch.
-3. **`--use-int8-row-fc2`.** Accepted by the reference and inert on CUDA:
-   `dit->int8_mlp` requires `h3_gpu_has_int8_mlp(gpu)` (`h3_dit.c:1633`), and
-   the CUDA backend returns 0 from it (`h3_gpu_cuda.cu:334`). The port parses
-   the flag and records the zero, exactly as the reference does.
-4. **`--show` / `--zoom` and the resident preview.** A terminal preview built
-   from the denoise callback (`h3_dit_denoise_euler_preview`, `h3_dit.c:2861`)
-   on the continue-event chain (`h3_gpu_continue`). It must never change the
-   rendered file: the gate is a hash identical with the preview on and off.
-5. **The tiled-VAE quality bench** (`h3_vae_bench_quality`): tile seams and
-   temporal blend against the untiled decode, still unbuilt (P0 remainder).
-6. **The reference tests** are P12.5 and cover units 1-5 above file by file.
-
-## P13 — Close
-
-The rule 19 QA gate once, the evidence file, docs, memory, handoff, push.
 
 ## Unported reference surface and its disposition
 
