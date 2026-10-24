@@ -26,4 +26,5 @@
 //! gate is a two-sided manifest check (index against shard headers), so
 //! `reconcile` compares the two and reports any disagreement.
 
+pub mod layout;
 pub mod safetensors;

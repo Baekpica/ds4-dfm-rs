@@ -17,6 +17,7 @@ Related, outside this directory:
 | Surface | Path |
 |---|---|
 | Rust reader | `crates/ds4-core/src/minimax_h3/` |
+| DiT tensor layout | `crates/ds4-core/src/minimax_h3/layout.rs` |
 | Inventory example | `crates/ds4-core/examples/minimax_h3_inspect/main.rs` |
 | Reference-parser probe | `tools/minimax_h3/st_probe.c` |
 | VQ converter | `tools/minimax_h3/vq/` |

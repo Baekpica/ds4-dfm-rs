@@ -581,6 +581,15 @@ name/type/rank/dims/bytes/offset), reconciled against the shard headers and
 against the reference's expectations. *Gate:* a two-sided diff with zero
 unexplained differences; runs on this host, no GPU.
 
+P3 shipped in two parts: the reader (`minimax_h3::safetensors`) and the DiT
+layout (`minimax_h3::layout`), which derives all 535 expected names from
+`config.json` and checks each dtype and shape against the reference's loaders
+(`h3_dit.c:501-525`, `h3_dit_schedule.c:267-307`). Live gate over the gvfs
+route: `minimax_h3_inspect --layout <FL2VA/transformer>` exits 0 with
+`tensors=535 blocks=50 refiner=2 hidden=5376 inner=7168 video_patch=96` in
+3.1 s, header-only. Negative cases (absent, unlisted, duplicate, wrong dtype,
+wrong shape, wrong timestep width) are unit tests, as is the config itself.
+
 **P4 — Converter, rungs R1 and R2.** The C driver, per-shard containers, nocal
 Lloyd, f16 books, gains, and the five converter gates of the
 [VQ recipe](vq-recipe.md) section 6. *Gate:* determinism by re-encode
