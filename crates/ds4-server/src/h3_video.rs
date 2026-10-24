@@ -1170,6 +1170,7 @@ pub fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ds4_core::minimax_h3::engine::Presentation;
     use ds4_core::minimax_h3::video_api::{
         VideoSize, DEFAULT_MODEL, DEFAULT_SIZE, MAX_PROMPT_CHARS,
     };
@@ -1788,6 +1789,8 @@ mod tests {
             prompt: "a cube; rm -rf / --width 9".to_string(),
             model: DEFAULT_MODEL.to_string(),
             size: VideoSize::new(512, 768),
+            render: VideoSize::new(512, 768),
+            presentation: Presentation::Native,
             seconds: "4".to_string(),
             frames: 96,
         };
@@ -1835,6 +1838,8 @@ mod tests {
             prompt: "p".to_string(),
             model: DEFAULT_MODEL.to_string(),
             size: VideoSize::new(512, 512),
+            render: VideoSize::new(512, 512),
+            presentation: Presentation::Native,
             seconds: "4".to_string(),
             frames: 96,
         };

@@ -246,46 +246,71 @@ Gate: the transcript, the MP4 hashes, the two-request timings, and the
 ## P11 — Delivery presets: YouTube, Instagram, the highest resolution, audio
 
 The model canvas is the quality ceiling; a preset chooses the canvas, the
-output canvas, the encode and the container. All presets still obey P9.5
+delivered frame, the encode and the container. All presets still obey P9.5
 (multi-chunk) and the contract table above.
 
-The reference caps the **output** canvas, not only the render canvas:
-`params->width * params->height <= 768*1344` (`h3.c:497-500`), and when a
-render canvas is given it must be the same aspect exactly
-(`render_w * height == render_h * width`) and no larger (`h3.c:505-520`).
-So 1920x1080 and 1080x1920 are refused by the reference engine itself. Legal
-presets, all multiples of 32 inside 1,032,192 px:
+The official request names geometry as a resolution tier plus an aspect ratio,
+not as pixels: `resolution` in `480P | 768P | 2K` and `ratio` in
+`adaptive | 21:9 | 16:9 | 4:3 | 1:1 | 3:4 | 9:16`
+(`platform.minimax.io/docs/api-reference/video-generation-v2-create`, read
+2026-10-24). The model card fixes the tier: "the shorter side is set to 768
+pixels by default", and 2K is H3-Regenerate-2K, a hosted module this release
+does not include. 480P and 2K therefore belong to other variants (H3-Lite/Max
+and Regenerate-2K) and are refused by name; this checkpoint serves 768P.
 
-The delivery the operator asked for is the phone vertical reel, 1080x1920
-(9:16), which is the same frame for Instagram Reels and YouTube Shorts. Inside
-the contract the largest exactly-9:16 canvas is 576x1024, because both edges
-must be multiples of 32 and 864x1536 would exceed the area; 1080x1920 is
-therefore a 1.875x delivery upscale, never a render size.
+Pixels then follow from the released cap: short edge 768, long edge
+`round(768 * ratio)` snapped to a multiple of 32, clamped to `768*1344`
+(`h3.c:490-500`). That rule is checked against the platform's own artifact,
+not inferred: `assets/h3_direct_768p.mp4` is 1344x768, square pixels, 24 fps.
+`round(768 * 16/9)` is 1365.33, which snaps to 1376, and 1376x768 is
+1,056,768 px, above the cap, so the platform ships 1344x768 for 16:9. The same
+clamp gives 768x1344 for 9:16, while 4:3, 3:4 and 1:1 are exact at 1024x768,
+768x1024 and 768x768 — the reference's own canvas presets
+(`webui/frontend/src/generated/options.ts`, `CANVAS_PRESETS`).
 
-| Preset | Model canvas | Delivery | Notes |
-|---|---|---|---|
-| `reel_phone` | 576x1024 | 1080x1920, 24 fps | phone Reel/Shorts; 1.875x bilinear delivery upscale, logged |
-| `reel_phone_native` | 576x1024 | 576x1024, 24 fps | the same render with no upscale, inside the reference contract |
-| `youtube_16x9` | 1024x576 | 1024x576, 24 fps | largest exactly-16:9 canvas; 1280x720 fails the multiple-of-32 rule, 1536x864 exceeds the area |
-| `model_max_wide` | 1344x768 | 1344x768, 24 fps | the largest area the model allows, native, no resize |
-| `instagram_1x1` | 992x992 | 992x992, 24 fps | 1024x1024 is above the area limit |
-| `instagram_4x5` | 896x1120 | 896x1120, 24 fps | exactly 4:5, 1,003,520 px |
+| Preset | Model canvas | Delivered frame | Scale | Notes |
+|---|---|---|---|---|
+| `16:9` | 1344x768 | 1920x1080 | anamorphic 1.6 % | the platform's 768P wide canvas, exact 16:9 frame |
+| `9:16` | 768x1344 | 1080x1920 | anamorphic 1.6 % | phone Reel/Shorts, the same frame for both |
+| `21:9` | 1344x576 | 2520x1080 | uniform 1.875x | 7:3, so no distortion; 1568x672 would exceed the cap |
+| `4:3` | 1024x768 | 1024x768 | none | exact ratio at the tier canvas |
+| `3:4` | 768x1024 | 768x1024 | none | exact ratio at the tier canvas |
+| `1:1` | 768x768 | 768x768 | none | exact ratio at the tier canvas |
+| `native_16x9` | 1344x768 | 1344x768 | none | platform parity: the file is the canvas |
+| `native_9x16` | 768x1344 | 768x1344 | none | platform parity |
+| `instagram_4x5` | 768x960 | 1080x1350 | uniform 1.406x | outside the official ratio set; exact 4:5 canvas |
 
-Delivery sizes above the model's ceiling are a named deviation, not a preset:
-`youtube_1080p` would render 1024x576 and upscale to 1920x1080 (1.875x) with
-the ported bilinear resize, and `instagram_reel_1080` would upscale 576x1024
-to 1080x1920 (1.875x). The reference binary refuses those outputs; if the
-operator wants them, they are served as an explicit `deliver_scale` with the
-factor logged in the response and the deviation recorded in `port-plan.md`.
+The operator's earlier names stay as aliases of the same presets:
+`reel_phone` is `9:16`, `youtube_1080p` is `16:9`, `instagram_1x1` is `1:1`,
+`cinema_21x9` is `21:9`.
+
+### Anamorphic delivery
+
+Both official wide and tall frames are 1.75:1 at this tier, so the exact 16:9
+and 9:16 frames are a non-uniform scale of the canvas: 1344x768 to 1920x1080
+stretches x by 1.4286 and y by 1.4063, a 1.6 % difference. The reference
+refuses any frame that is not the canvas aspect (`h3.c:505-520`), so this is a
+named deviation, never an inference: the caller sets
+`RenderRequest.presentation`, `render::OutputRule::Anamorphic` is the only rule
+that skips the aspect check, and the engine reports both factors
+(`RenderReport.scale`, printed as `anamorphic` in the one-line summary).
+
+No new math is involved. The reference's resize kernel already scales x and y
+independently (`h3_host.c:557-635`), and the port transcribes it; only the
+validator refused the mismatch. Parity follows: the same kernel, the same
+half-pixel centers, the same round-half-to-even write.
+
+A preset may not stretch beyond a quarter (`MAX_DISTORTION`, checked at
+construction): past that the squeeze reads as distortion rather than as a
+rounding correction, and a canvas that bad is a preset error, not a request.
 
 Work items:
 
-1. A preset table in Rust (`render.rs` or a new `presets.rs`) holding the
-   canvas, output, fps and encoder settings, with the area arithmetic checked
-   at construction, so an impossible preset is refused by name.
-2. `size` on the OpenAI surface accepts the preset names as aliases in
-   addition to `WxH`, and `POST /v1/videos` maps them to the same spec the CLI
-   uses. A literal `WxH` stays available.
+1. The preset table landed in `presets.rs`, with the area, grid, even-frame
+   and distortion rules checked at construction, so an impossible preset is
+   refused by name.
+2. `size` on the OpenAI surface accepts the preset names and the aliases in
+   addition to `WxH`; a literal `WxH` stays the model canvas.
 3. Resolution ladder measured on the Spark: 1344x768 at 22, 39 and 56 frames,
    20 steps. The unified 121 GiB has to hold 61.7 GiB of DiT plus activations
    that grow with rows; record the largest canvas x frames that fits rather
@@ -303,7 +328,10 @@ Work items:
    measurement and do not claim a fix.
 
 Gate: one rendered file per preset, `ffprobe` geometry/duration/streams, an
-audio statistics block, and a reference comparison at the model canvas.
+audio statistics block, and a reference comparison at the model canvas. The
+first gate must include a multi-chunk request (39 frames or more): the
+107-frame run exposed a tile-stride bug in the video VAE
+(`vae_video.rs`, `prepare_input_rows`) that 22-frame renders never reached.
 
 ## P12 — Conditioning and editing (the unported surface)
 

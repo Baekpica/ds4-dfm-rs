@@ -28,6 +28,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde_json::{json, Value};
 
+use super::engine::Presentation;
+use super::presets;
+
 /// Canonical wire reference used to verify every field in this module.
 pub const WIRE_REFERENCE: &str = "https://developers.openai.com/api/reference/resources/videos";
 
@@ -274,7 +277,14 @@ pub struct VideoRequest {
 pub struct RenderSpec {
     pub prompt: String,
     pub model: String,
+    /// The delivered frame (the MP4 geometry).
     pub size: VideoSize,
+    /// The model canvas. Equal to `size` unless a preset scales it
+    /// (`presets.rs`), in which case the render stays the model canvas.
+    pub render: VideoSize,
+    /// How `size` relates to `render`. A ratio preset whose canvas is clamped
+    /// by the released area names itself anamorphic here.
+    pub presentation: Presentation,
     pub seconds: String,
     pub frames: u32,
 }
@@ -416,20 +426,48 @@ impl VideoRequest {
         }
 
         let size_text = self.size.as_deref().unwrap_or(DEFAULT_SIZE);
-        let size = VideoSize::parse(size_text).ok_or_else(|| {
-            ApiError::bad_request(
-                "invalid_value",
-                Some("size"),
-                format!("Invalid 'size': '{size_text}'. Expected width x height, for example '512x512'."),
-            )
-        })?;
-        size.check_h3().map_err(|reason| {
-            ApiError::bad_request(
-                "invalid_value",
-                Some("size"),
-                format!("Invalid 'size': '{size_text}': {reason}."),
-            )
-        })?;
+
+        // A preset name carries both canvases and how they relate; a literal
+        // WxH is the model canvas and the delivered frame at once.
+        let (size, render, presentation) = match presets::resolve(size_text) {
+            Some(preset) => {
+                let presentation = if !preset.is_scaled() {
+                    Presentation::Native
+                } else if preset.is_anamorphic() {
+                    Presentation::Anamorphic
+                } else {
+                    Presentation::Uniform
+                };
+
+                (
+                    VideoSize::new(preset.output.0 as u32, preset.output.1 as u32),
+                    VideoSize::new(preset.render.0 as u32, preset.render.1 as u32),
+                    presentation,
+                )
+            }
+            None => {
+                let size = VideoSize::parse(size_text).ok_or_else(|| {
+                    ApiError::bad_request(
+                        "invalid_value",
+                        Some("size"),
+                        format!(
+                            "Invalid 'size': '{size_text}'. Expected width x height, for \
+                             example '512x512', or one of: {}.",
+                            presets::names().collect::<Vec<_>>().join(", ")
+                        ),
+                    )
+                })?;
+                size.check_h3().map_err(|reason| {
+                    ApiError::bad_request(
+                        "invalid_value",
+                        Some("size"),
+                        format!("Invalid 'size': '{size_text}': {reason}."),
+                    )
+                })?;
+
+                (size, size, Presentation::Native)
+            }
+        };
 
         let seconds = self.seconds.as_deref().unwrap_or(DEFAULT_SECONDS);
         let frames = validate_seconds(seconds)?;
@@ -438,6 +476,8 @@ impl VideoRequest {
             prompt: prompt.to_string(),
             model: model_id.to_string(),
             size,
+            render,
+            presentation,
             seconds: seconds.to_string(),
             frames,
         })

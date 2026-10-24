@@ -192,12 +192,20 @@ Every deviation is named; none is silent.
    `model_not_found`.
 2. **Sizes.** All four official `VideoSize` values are illegal for h3:
    `720x1280` and `1280x720` fail the multiple-of-32 rule, and `1024x1792` and
-   `1792x1024` exceed the pixel cap. Accepted sizes follow the reference
-   engine (`/data/h3.c` at `eae5d54`): width and height multiples of 32, at
-   least 32, product at most `768 * 1344` (`h3.c:492-497`,
-   `h3_host.h:8`). The default is `512x512`, the reference's safest
-   development canvas, not the official `720x1280`.
-3. **Seconds.** The reference allows the strings `"4"`, `"8"`, `"12"`. h3
+   `1792x1024` exceed the pixel cap. A literal `WxH` therefore follows the
+   reference engine (`/data/h3.c` at `eae5d54`): width and height multiples of
+   32, at least 32, product at most `768 * 1344` (`h3.c:492-497`,
+   `h3_host.h:8`), and the file is that canvas. The default is `512x512`, the
+   reference's safest development canvas, not the official `720x1280`.
+3. **Sizes by name.** A `size` that is not `WxH` resolves through
+   `presets.rs`, which follows the platform's own geometry naming (resolution
+   tier plus ratio) and delivers either the exact ratio frame or the model
+   canvas: `16:9`, `9:16`, `21:9`, `4:3`, `3:4`, `1:1`, `native_16x9`,
+   `native_9x16`, `instagram_4x5`, and the aliases `reel_phone`,
+   `youtube_1080p`, `instagram_1x1`, `cinema_21x9`. The `16:9` and `9:16`
+   frames are a named 1.6 % anamorphic scale of the 1.75:1 released canvas
+   (`docs/minimax-h3/post-port-phases.md`, P11); the engine logs both factors.
+4. **Seconds.** The reference allows the strings `"4"`, `"8"`, `"12"`. h3
    accepts any positive duration whose frame count at 24 fps (`h3_host.h:9`),
    rounded as in `main.c:78-91`, lands in the released 5..362 request range
    (`h3.c:518-519`) and aligns to at least the 22-frame decoder chunk
@@ -205,28 +213,28 @@ Every deviation is named; none is silent.
    default stays `"4"`. The response echoes the requested string; the actual
    clip is aligned upward to `5 + 17*n` frames, so `"4"` becomes 107 frames
    (4.458 s).
-4. **Id scheme.** The reference's example uses the `video_` prefix; this
+5. **Id scheme.** The reference's example uses the `video_` prefix; this
    server uses `video_N` with a monotonic counter. Deleted ids are not reused.
-5. **Progress.** The bridge cannot see inside the renderer, so progress is
+6. **Progress.** The bridge cannot see inside the renderer, so progress is
    coarse: 0 while queued or in progress, 100 on completion, 0 on failure.
-6. **input_reference.** The field exists in the reference. The bridge refuses
+7. **input_reference.** The field exists in the reference. The bridge refuses
    it with 400 `unsupported_parameter` instead of dropping it; reference
    images arrive with the port's own renderer at P8.
-7. **Content variants.** Only `variant=video` (the default MP4) exists.
+8. **Content variants.** Only `variant=video` (the default MP4) exists.
    `thumbnail` and `spritesheet` answer 400.
-8. **List defaults.** The reference states no default for `limit` or `order`.
+9. **List defaults.** The reference states no default for `limit` or `order`.
    The bridge uses `limit=20` and `order=desc`; both are assumptions, not
    verified API behaviour.
-9. **Capacity.** `--max-jobs` bounds retained jobs and therefore render
-   concurrency. A create at capacity answers 429 `queue_full`; delete a
-   finished job to make room.
-10. **Unserved methods.** Characters, edits, extensions and remixes are not
+10. **Capacity.** `--max-jobs` bounds retained jobs and therefore render
+    concurrency. A create at capacity answers 429 `queue_full`; delete a
+    finished job to make room.
+11. **Unserved methods.** Characters, edits, extensions and remixes are not
     served (404 `unknown_url`). `expires_at` and `remixed_from_video_id` are
     always null.
-11. **Renderer failure codes.** Inside `error.code`: `render_failed`
+12. **Renderer failure codes.** Inside `error.code`: `render_failed`
     (nonzero exit), `render_timeout`, `render_output_missing` (exit 0 without
     a non-empty output file), `renderer_spawn_failed`.
-12. **Form field scope.** Form bodies (`urlencoded` and multipart) accept only
+13. **Form field scope.** Form bodies (`urlencoded` and multipart) accept only
     the five official field names; an unknown form field is 400
     `unknown_parameter`. JSON keeps the reference's tolerance for unknown
     keys. Chunked request bodies are refused (400 `unsupported_encoding`).

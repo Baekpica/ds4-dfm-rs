@@ -30,6 +30,7 @@ pub mod dit;
 pub mod engine;
 pub mod host;
 pub mod layout;
+pub mod presets;
 pub mod render;
 pub mod safetensors;
 pub mod sequence;

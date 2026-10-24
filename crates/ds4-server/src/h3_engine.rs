@@ -49,8 +49,11 @@ impl Renderer for EngineRenderer {
     fn render(&self, spec: &RenderSpec, output: &Path) -> Result<(), RenderError> {
         let request = RenderRequest {
             prompt: spec.prompt.clone(),
-            width: spec.size.width as i32,
-            height: spec.size.height as i32,
+            width: spec.render.width as i32,
+            height: spec.render.height as i32,
+            output_width: spec.size.width as i32,
+            output_height: spec.size.height as i32,
+            presentation: spec.presentation,
             frames: spec.frames as i32,
             steps: self.steps,
             reuse: self.reuse,
