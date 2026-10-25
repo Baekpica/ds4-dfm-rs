@@ -102,6 +102,36 @@ int h3d_gate(h3d_context *context, h3d_tensor *output,
              uint32_t rows, uint32_t width, uint32_t slots,
              uint32_t gate_slot, char *error, size_t error_size);
 
+/* `h3_gpu_token_pool_bf16` (`h3_gpu_cuda.cu:3297-3349`) with
+ * `h3_token_pool_kernel` (`:3271-3295`): snapshot the source rows this pass
+ * replaces, average each pair, and store the pooled video rows in the
+ * baseline buffer the expansion later subtracts. A pair whose two rows are the
+ * same (every non-video row, and an unpaired last column) passes through
+ * unchanged. */
+int h3d_token_pool(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, size_t input_element,
+                   h3d_tensor *original, size_t original_element,
+                   h3d_tensor *baseline, size_t baseline_element,
+                   const h3d_tensor *baseline_indices,
+                   const h3d_tensor *pairs, uint32_t input_rows,
+                   uint32_t rows, uint32_t baseline_rows, uint32_t width,
+                   char *error, size_t error_size);
+
+/* `h3_gpu_token_expand_delta_bf16` (`:3353-3383`) with
+ * `h3_token_expand_kernel` (`:3328-3351`): every row takes its parent's
+ * reduced value as a delta over the pooled baseline, scaled and added to the
+ * snapshot; rows before `prefix_rows` and rows with no baseline index take the
+ * reduced value directly. */
+int h3d_token_expand(h3d_context *context, h3d_tensor *output,
+                     const h3d_tensor *original, size_t original_element,
+                     const h3d_tensor *reduced, const h3d_tensor *baseline,
+                     size_t baseline_element,
+                     const h3d_tensor *baseline_indices,
+                     const h3d_tensor *parents, uint32_t rows,
+                     uint32_t reduced_rows, uint32_t baseline_rows,
+                     uint32_t width, uint32_t prefix_rows, float scale,
+                     char *error, size_t error_size);
+
 /* `h3_gpu_rms_norm_bf16` (`:2512-2530`) with `h3_rms_norm_bf16_kernel`
  * (`:2462-2489`). */
 int h3d_rms_norm(h3d_context *context, h3d_tensor *output,

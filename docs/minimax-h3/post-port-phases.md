@@ -597,6 +597,40 @@ verdict so nothing stays "missing" without a reason:
    `_end`, `_early_steps`, `_early_end`, `_scale`. It changes compute and
    numerics, so the port needs the hash gate at 2 evaluations plus a measured
    end-to-end gain, and a kill switch.
+   **Landed 2026-10-25** (`Reduction`/`ReductionWindow`, the pairing and
+   parent maps, `reduced_rope_tables`, `h3d_token_pool`/`h3d_token_expand`,
+   `--token-reduction` in `h3-rs` and `h3_dit_gate`). Read from the reference,
+   not inferred: pooling halves one spatial axis of the video target
+   (`reduced_width = (spatial_width + 1) / 2`, `:440-447`); a reduced row's
+   RoPE position is the mean of its pair, the spatial coordinate scaled in F32
+   (`:927-948`); the reduced AdaLN map takes each pair's first row
+   (`:1034-1041`); the restore is `original + scale * (reduced - baseline)`
+   with the prefix rows copied through (`h3_gpu_cuda.cu:3328-3351`); the window
+   defaults to blocks 4..30 with 10 early steps ending at 40 below a 40-block
+   end, and every bound is validated (`:383-439`). Measured on the Spark,
+   512x192, five frames, both anchors, seed 1:
+   - 20 evaluations: reference `6720bb389eeaef0b`/`3a88f90bede2da9b` off and
+     `35fc6b4a61d34881`/`52dd7ce1c6106c42` on; the port prints those same four
+     hashes. Denoise 9.637 -> 8.425 s in the reference, 9.539/9.615 -> 8.348 s
+     in the port (12.5%, two off runs and two on runs).
+   - Two evaluations: `7606d402d9cac721`/`6a8e8b2323eaea5a` off and
+     `4dc60b25c9b1a6f2`/`8bbab603d0908469` on, equal on both sides; 0.991 ->
+     0.821 s and 0.989 -> 0.812 s. That pair is confounded by weight
+     page-cache warmth (off ran first after the load); the 20-step repeat is
+     the measurement.
+   - The off path is unchanged: the unit-5 four-step conditioned gate still
+     prints `dd0c9126e2bcbe37`/`d27bae4151be2e5b`.
+   - The kill switch works: `H3_DISABLE_TOKEN_REDUCTION=1` beside
+     `--token-reduction` prints the off hash at two evaluations.
+   - End to end at 22 frames and 20 steps with both anchors: both paths write
+     an MP4 (`e9891e13929b2a9746908eeec31edb8b` off,
+     `05f4ea3f99322a830d3993c99393430b` on), denoise 45.153 -> 32.733 s, and
+     frame 0 of the reduced render is the anchored comic
+     (`~/unit10-render-*.mp4`).
+   The reference's fused pool/expand-with-AdaLN entries compute pool + adaln
+   in one kernel; the port calls the two parts, which is the same arithmetic,
+   so `H3_DISABLE_FUSED_TOKEN_POOL_ADALN` and `H3_DISABLE_FUSED_TOKEN_ADALN`
+   are inert here and recorded as such, like `--use-int8-row-fc2`.
 3. **`--use-int8-row-fc2`.** Accepted by the reference and inert on CUDA:
    `dit->int8_mlp` requires `h3_gpu_has_int8_mlp(gpu)` (`h3_dit.c:1633`), and
    the CUDA backend returns 0 from it (`h3_gpu_cuda.cu:334`). The port parses
@@ -760,7 +794,7 @@ command, never an automatic step.
 | SSD weight streaming | `h3.h:98`, `h3.c` streaming tier | Refused: a residency policy, same bytes; measured slower for this artifact. The port's `--ssd-streaming` exists and is bit-identical |
 | `--layers 45/40` | `h3.h:82` | Not ported; `h3-rs` refuses anything but 50. Port only with the reference's own quality caveat and a gate |
 | `--core-reuse N` | `h3.h:85` | Not ported. Speed knob that changes bytes; park behind a gate |
-| `--token-reduction` | `h3.h:89` | Not ported. Changes composition; park behind a gate |
+| `--token-reduction` | `h3.h:89`, `h3_dit.c:378-470` | Ported and gated (`h3d_token_pool`/`h3d_token_expand`, `--token-reduction` in `h3-rs`); hashes equal to the reference on and off |
 | `--reuse N` | `h3.h:79` | Ported and gated (reuse 1 and 3) |
 | `--use-int8-row-fc2` | Metal/M5 only, CUDA no-op (`README.md:119-121`) | Refused |
 | `--show`, `--zoom`, preview frames | `h3_terminal.c`, `h3.h:125-127` | Refused for the server; optional for the CLI only if the preview decoder is ported |

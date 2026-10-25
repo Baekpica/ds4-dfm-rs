@@ -54,6 +54,13 @@
  * `h3_host.h:9`). It needs both VAEs: the soundtrack comes from the audio
  * decoder, as in the reference.
  *
+ * `--token-reduction` passes the reference's `token_reduction` parameter to
+ * the DiT loader (`h3_dit.c:1613`), and `--reduction-blocks B:E`,
+ * `--reduction-early S:E|0` and `--reduction-scale X` set the environment
+ * variables `configure_token_reduction` reads (`h3_dit.c:378-470`) before the
+ * load, so one command spells the whole window. Output: `REDUCTION on
+ * blocks=... early=... scale=...`.
+ *
  * `--denoise` runs the whole Euler sampler instead of one step: the same
  * seeded latents, `--steps` evaluations and `--reuse K` (default 1), through
  * `h3_dit_denoise_euler` (`h3_dit.c:2986-2991`). On CUDA the reference takes
@@ -168,6 +175,8 @@ static void usage(void) {
             "       [--seed N] [--layers N] [--rope-scale X]\n"
             "       [--denoise [--reuse K] [--gpu-sampler]] "
             "[--decode --audio-vae DIR] [--video-vae DIR]\n"
+            "       [--token-reduction [--reduction-blocks B:E]\n"
+            "        [--reduction-early S:E|0] [--reduction-scale X]]\n"
             "       [--first-frame PNG] [--last-frame PNG "
             "(needs --video-vae)]\n"
             "       [--out FILE --out-width W --out-height H]\n"
@@ -510,6 +519,9 @@ int main(int argc, char **argv) {
     int width = 256, height = 256, frames = 5;
     int steps = 2, step = 0, layers = DIT_BLOCKS;
     int denoise = 0, reuse = 1, gpu_sampler = 0, decode = 0;
+    int token_reduction = 0;
+    const char *reduction_blocks = NULL, *reduction_early = NULL;
+    const char *reduction_scale = NULL;
     const char *audio_vae = NULL, *video_vae = NULL;
     const char *first_frame = NULL, *last_frame = NULL;
     const char *out_path = NULL;
@@ -529,6 +541,10 @@ int main(int argc, char **argv) {
         }
         if (!strcmp(argument, "--decode")) {
             decode = 1;
+            continue;
+        }
+        if (!strcmp(argument, "--token-reduction")) {
+            token_reduction = 1;
             continue;
         }
         if (index + 1 >= argc) {
@@ -563,6 +579,12 @@ int main(int argc, char **argv) {
             if (!parse_int(value, &out_width)) return 2;
         } else if (!strcmp(argument, "--out-height")) {
             if (!parse_int(value, &out_height)) return 2;
+        } else if (!strcmp(argument, "--reduction-blocks")) {
+            reduction_blocks = value;
+        } else if (!strcmp(argument, "--reduction-early")) {
+            reduction_early = value;
+        } else if (!strcmp(argument, "--reduction-scale")) {
+            reduction_scale = value;
         } else if (!strcmp(argument, "--reuse")) {
             if (!parse_int(value, &reuse)) return 2;
         } else if (!strcmp(argument, "--seed")) {
@@ -752,17 +774,44 @@ int main(int argc, char **argv) {
     }
     putchar('\n');
 
+    /* `configure_token_reduction` reads its window from the environment
+     * (`h3_dit.c:378-470`), so the overrides are set before the load and the
+     * loader itself validates them. */
+    if (reduction_blocks &&
+        setenv("H3_TOKEN_REDUCTION_BLOCKS", reduction_blocks, 1) != 0) {
+        fprintf(stderr, "h3_dit_probe: cannot set H3_TOKEN_REDUCTION_BLOCKS\n");
+        return 1;
+    }
+    if (reduction_early &&
+        setenv("H3_TOKEN_REDUCTION_EARLY", reduction_early, 1) != 0) {
+        fprintf(stderr, "h3_dit_probe: cannot set H3_TOKEN_REDUCTION_EARLY\n");
+        return 1;
+    }
+    if (reduction_scale &&
+        setenv("H3_TOKEN_REDUCTION_SCALE", reduction_scale, 1) != 0) {
+        fprintf(stderr, "h3_dit_probe: cannot set H3_TOKEN_REDUCTION_SCALE\n");
+        return 1;
+    }
+    if (token_reduction || reduction_blocks || reduction_early ||
+        reduction_scale) {
+        printf("REDUCTION requested=%d blocks=%s early=%s scale=%s\n",
+               token_reduction,
+               reduction_blocks ? reduction_blocks : "default",
+               reduction_early ? reduction_early : "default",
+               reduction_scale ? reduction_scale : "default");
+    }
+
     started = seconds();
     h3_dit *dit = keyframe_count
         ? h3_dit_load_conditioned(
               argv[3], "h3_shaders.metal", &text, &layout, &sigmas,
-              (unsigned)layers, 1, 0, 0, rope_scale,
+              (unsigned)layers, 1, token_reduction, 0, rope_scale,
               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
               condition_rows, condition_elements, NULL, 0,
               NULL, NULL, error, sizeof(error))
         : h3_dit_load_t2va(
               argv[3], "h3_shaders.metal", &text, &layout, &sigmas,
-              (unsigned)layers, 1, 0, 0, rope_scale,
+              (unsigned)layers, 1, token_reduction, 0, rope_scale,
               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
               NULL, NULL, error, sizeof(error));
     free(condition_rows);

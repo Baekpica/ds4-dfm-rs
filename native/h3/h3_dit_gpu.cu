@@ -549,6 +549,143 @@ int h3d_gate(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("BF16 gate", error, error_size);
 }
 
+/* ---------------------------------------------------------------------------
+ * Token reduction: pool paired video columns before a block and expand the
+ * reduced stack's delta back after it (`h3_dit.c:378-470` configures the
+ * window; these two kernels are the arithmetic).
+ * ------------------------------------------------------------------------- */
+
+/* `h3_token_pool_kernel` (`:3271-3295`). */
+__global__ static void h3d_token_pool_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *input,
+        size_t input_offset, __nv_bfloat16 *original, size_t original_offset,
+        __nv_bfloat16 *baseline, size_t baseline_offset,
+        const uint32_t *baseline_indices, const uint32_t *pairs,
+        uint32_t rows, uint32_t width) {
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y;
+    if (row >= rows || column >= width) return;
+    uint32_t first_row = pairs[(size_t)row * 2];
+    uint32_t second_row = pairs[(size_t)row * 2 + 1];
+    __nv_bfloat16 first =
+        input[input_offset + (size_t)first_row * width + column];
+    original[original_offset + (size_t)first_row * width + column] = first;
+    __nv_bfloat16 pooled = first;
+    if (first_row != second_row) {
+        __nv_bfloat16 second =
+            input[input_offset + (size_t)second_row * width + column];
+        original[original_offset + (size_t)second_row * width + column] =
+            second;
+        pooled = __float2bfloat16(
+            (__bfloat162float(first) + __bfloat162float(second)) * 0.5f);
+    }
+    output[(size_t)row * width + column] = pooled;
+    uint32_t baseline_row = baseline_indices[row];
+    if (baseline_row != UINT32_MAX) {
+        baseline[baseline_offset + (size_t)baseline_row * width + column] =
+            pooled;
+    }
+}
+
+int h3d_token_pool(h3d_context *context, h3d_tensor *output,
+                   const h3d_tensor *input, size_t input_element,
+                   h3d_tensor *original, size_t original_element,
+                   h3d_tensor *baseline, size_t baseline_element,
+                   const h3d_tensor *baseline_indices,
+                   const h3d_tensor *pairs, uint32_t input_rows,
+                   uint32_t rows, uint32_t baseline_rows, uint32_t width,
+                   char *error, size_t error_size) {
+    size_t input_elements = 0, output_elements = 0, baseline_elements = 0;
+    if (!context ||
+        !h3d_mul_size(input_rows, width, &input_elements) ||
+        !h3d_mul_size(rows, width, &output_elements) ||
+        !h3d_mul_size(baseline_rows, width, &baseline_elements) ||
+        input_element > SIZE_MAX - input_elements ||
+        original_element > SIZE_MAX - input_elements ||
+        baseline_element > SIZE_MAX - baseline_elements ||
+        !h3d_is(output, H3D_BF16, output_elements) ||
+        !h3d_is(input, H3D_BF16, input_element + input_elements) ||
+        !h3d_is(original, H3D_BF16, original_element + input_elements) ||
+        !h3d_is(baseline, H3D_BF16, baseline_element + baseline_elements) ||
+        !h3d_is(baseline_indices, H3D_U32, rows) ||
+        rows > SIZE_MAX / 2 ||
+        !h3d_is(pairs, H3D_U32, (size_t)rows * 2)) {
+        return h3d_set_error(error, error_size, "invalid token pool arguments");
+    }
+    dim3 grid((width + 255) / 256, rows);
+    h3d_token_pool_kernel<<<grid, 256, 0, context->stream>>>(
+        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
+        input_element, (__nv_bfloat16 *)original->data, original_element,
+        (__nv_bfloat16 *)baseline->data, baseline_element,
+        (const uint32_t *)baseline_indices->data,
+        (const uint32_t *)pairs->data, rows, width);
+    return h3d_launch_ok("BF16 token pool", error, error_size);
+}
+
+/* `h3_token_expand_kernel` (`:3328-3351`). */
+__global__ static void h3d_token_expand_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *original,
+        size_t original_offset, const __nv_bfloat16 *reduced,
+        const __nv_bfloat16 *baseline, size_t baseline_offset,
+        const uint32_t *baseline_indices, const uint32_t *parents,
+        uint32_t rows, uint32_t width, uint32_t exact_prefix_rows,
+        float update_scale) {
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y;
+    if (row >= rows || column >= width) return;
+    uint32_t parent = parents[row];
+    size_t destination = (size_t)row * width + column;
+    size_t reduced_index = (size_t)parent * width + column;
+    uint32_t baseline_row = baseline_indices[parent];
+    if (row < exact_prefix_rows || baseline_row == UINT32_MAX) {
+        output[destination] = reduced[reduced_index];
+        return;
+    }
+    float update = __bfloat162float(reduced[reduced_index]) -
+                   __bfloat162float(baseline[baseline_offset +
+                                             (size_t)baseline_row * width +
+                                             column]);
+    output[destination] = __float2bfloat16(
+        __bfloat162float(original[original_offset + destination]) +
+        update_scale * update);
+}
+
+int h3d_token_expand(h3d_context *context, h3d_tensor *output,
+                     const h3d_tensor *original, size_t original_element,
+                     const h3d_tensor *reduced, const h3d_tensor *baseline,
+                     size_t baseline_element,
+                     const h3d_tensor *baseline_indices,
+                     const h3d_tensor *parents, uint32_t rows,
+                     uint32_t reduced_rows, uint32_t baseline_rows,
+                     uint32_t width, uint32_t prefix_rows, float scale,
+                     char *error, size_t error_size) {
+    size_t output_elements = 0, reduced_elements = 0, baseline_elements = 0;
+    if (!context ||
+        !h3d_mul_size(rows, width, &output_elements) ||
+        !h3d_mul_size(reduced_rows, width, &reduced_elements) ||
+        !h3d_mul_size(baseline_rows, width, &baseline_elements) ||
+        prefix_rows > rows || original_element > SIZE_MAX - output_elements ||
+        baseline_element > SIZE_MAX - baseline_elements ||
+        !h3d_is(output, H3D_BF16, output_elements) ||
+        !h3d_is(original, H3D_BF16, original_element + output_elements) ||
+        !h3d_is(reduced, H3D_BF16, reduced_elements) ||
+        !h3d_is(baseline, H3D_BF16, baseline_element + baseline_elements) ||
+        !h3d_is(baseline_indices, H3D_U32, reduced_rows) ||
+        !h3d_is(parents, H3D_U32, rows)) {
+        return h3d_set_error(error, error_size,
+                             "invalid token expand arguments");
+    }
+    dim3 grid((width + 255) / 256, rows);
+    h3d_token_expand_kernel<<<grid, 256, 0, context->stream>>>(
+        (__nv_bfloat16 *)output->data,
+        (const __nv_bfloat16 *)original->data, original_element,
+        (const __nv_bfloat16 *)reduced->data,
+        (const __nv_bfloat16 *)baseline->data, baseline_element,
+        (const uint32_t *)baseline_indices->data,
+        (const uint32_t *)parents->data, rows, width, prefix_rows, scale);
+    return h3d_launch_ok("BF16 token expand", error, error_size);
+}
+
 /* `h3_rms_norm_bf16_kernel` (`:2462-2489`): 256 threads, a strided fmaf sum,
  * a shared-memory tree, then `value * inverse * weight`. */
 __global__ static void h3d_rms_norm_kernel(__nv_bfloat16 *output,

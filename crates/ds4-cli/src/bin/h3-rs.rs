@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::dit::{Dit, LoadMode};
+use ds4_core::minimax_h3::dit::{Dit, LoadMode, Reduction};
 use ds4_core::minimax_h3::host::{reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::render::mux_mp4;
 use ds4_core::minimax_h3::render::{check_frames, Canvas, RgbFrames};
@@ -60,6 +60,8 @@ struct Options {
     last_frame: Option<PathBuf>,
     reference_rope: bool,
     stream: bool,
+    /// `--token-reduction` (`main.c:34`, `:306`, `:394`).
+    token_reduction: bool,
     info: bool,
     hash: bool,
 }
@@ -151,6 +153,13 @@ fn run() -> Result<ExitCode, String> {
     } else {
         LoadMode::Resident
     };
+    // `--token-reduction` sets the loader's flag; the window itself always
+    // comes from `H3_TOKEN_REDUCTION_*` (`h3_dit.c:378-439`).
+    let reduction = if options.token_reduction {
+        Reduction::Enabled
+    } else {
+        Reduction::Environment
+    };
 
     let started = Instant::now();
     let mut model = Dit::load_with(
@@ -160,6 +169,7 @@ fn run() -> Result<ExitCode, String> {
         &text,
         canvas.rope_scale(options.reference_rope),
         mode,
+        reduction,
     )
     .map_err(|error| error.to_string())?;
     println!(
@@ -438,6 +448,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         last_frame: None,
         reference_rope: false,
         stream: false,
+        token_reduction: false,
         info: false,
         hash: false,
     };
@@ -473,6 +484,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--last-frame" => options.last_frame = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--use-reference-rope" => options.reference_rope = true,
             "--ssd-streaming" => options.stream = true,
+            "--token-reduction" => options.token_reduction = true,
             "--info" => options.info = true,
             "--hash" => options.hash = true,
             other => return Err(format!("unknown flag {other}; see --help")),
@@ -577,6 +589,8 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --last-frame PATH         anchor: the clip's last frame
   --use-reference-rope      rope scale 1.0 even at 256x256
   --ssd-streaming           stream the DiT blocks from the checkpoint
+  --token-reduction         pair video tokens in middle DiT blocks
+                            (window from H3_TOKEN_REDUCTION_* env)
   --info                    resolve the device, components and geometry, run nothing
   --hash                    print the gate hashes of the pipeline stages
   --help                    this text

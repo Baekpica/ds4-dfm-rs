@@ -63,6 +63,19 @@
 //!          audio=d27bae4151be2e5b
 //!   edges video=-0.665142894/0.602844954 audio=-0.487401962/0.098681927
 //!
+//! The token-reduction pair, the same conditioned clip at two evaluations
+//! (`--steps 2`, the second run with `--token-reduction`), recorded on the
+//! Spark with `dit_probe --token-reduction`:
+//!
+//!   REDUCTION begin=4 end=30 early=10:40 scale=1.000
+//!   off  DENOISE video=7606d402d9cac721 audio=6a8e8b2323eaea5a (0.991 s)
+//!   on   DENOISE video=4dc60b25c9b1a6f2 audio=8bbab603d0908469 (0.821 s)
+//!
+//! At the CLI's 20 evaluations the same clip gives
+//! `video=6720bb389eeaef0b audio=3a88f90bede2da9b` off and
+//! `video=35fc6b4a61d34881 audio=52dd7ce1c6106c42` on; 9.637 -> 8.425 s in
+//! the reference and 9.539/9.615 -> 8.348 s in the port.
+//!
 //! Every line equals the reference. The decode leg then stops at the
 //! reference's own two-token rule (`h3_video_vae.c:1222`): `t = 2` supports
 //! one spatial tile and 512 px is two, so a five-frame decode needs a
@@ -71,7 +84,7 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::dit::{self, Dit, LoadMode};
+use ds4_core::minimax_h3::dit::{self, Dit, LoadMode, Reduction};
 use ds4_core::minimax_h3::host::{latent_canvas, reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
@@ -215,6 +228,20 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         Schedule::serving(options.steps).ok_or_else(|| usage("--steps is outside 2..=1000"))?;
     println!("{}", sigmas_line(&schedule));
 
+    // `h3_dit.c:378-470`: the window is resolved from the environment, so it
+    // is printed here as the run's configuration record.
+    let reduction = if options.token_reduction {
+        Reduction::Enabled
+    } else {
+        Reduction::Environment
+    };
+    if let Some(window) = reduction.window().map_err(|error| error.to_string())? {
+        println!(
+            "REDUCTION begin={} end={} early={}:{} scale={:.3}",
+            window.begin, window.end, window.early_steps, window.early_end, window.scale
+        );
+    }
+
     let start = Instant::now();
     let mode = if options.stream {
         LoadMode::Stream
@@ -228,6 +255,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         &text,
         options.rope_scale,
         mode,
+        reduction,
     )
     .map_err(|error| error.to_string())?;
     println!("LOAD seconds={:.3}", start.elapsed().as_secs_f64());
@@ -471,6 +499,7 @@ struct Options {
     reuse: usize,
     denoise: bool,
     stream: bool,
+    token_reduction: bool,
     decode: bool,
     audio_vae: Option<std::path::PathBuf>,
     video_vae: Option<std::path::PathBuf>,
@@ -497,6 +526,7 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         reuse: 1,
         denoise: false,
         stream: false,
+        token_reduction: false,
         decode: false,
         audio_vae: None,
         video_vae: None,
@@ -534,6 +564,11 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
             }
             "--stream" => {
                 options.stream = true;
+                index += 1;
+                continue;
+            }
+            "--token-reduction" => {
+                options.token_reduction = true;
                 index += 1;
                 continue;
             }
@@ -611,7 +646,7 @@ fn usage(detail: &str) -> String {
         "{detail}\nusage: h3_dit_gate <FL2VA/text_encoder> <tokenizer.json> \
          <FL2VA/transformer> <prompt> [--width W] [--height H] [--frames F] \
          [--steps N] [--step S] [--seed N] [--rope-scale X] [--denoise] \
-         [--reuse K] [--stream] [--expect-video HEX] \
+         [--reuse K] [--stream] [--token-reduction] [--expect-video HEX] \
          [--decode --audio-vae DIR] [--decode --video-vae DIR] \
          [--expect-pcm HEX] [--expect-frames HEX] \
          [--expect-audio HEX] [--expect-adaln BLOCK:FINAL]\n       \

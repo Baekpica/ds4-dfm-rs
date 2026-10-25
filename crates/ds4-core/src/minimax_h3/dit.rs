@@ -42,6 +42,16 @@
 //!   `h3_gpu_cuda.cu:2203-2218` is `linear`, `swiglu`, `linear`. The port calls
 //!   the parts, so the arithmetic is identical and the fusion is a launch
 //!   count, not a numerical choice.
+//! - Token reduction calls `enter_token_reduction`/`leave_token_reduction`
+//!   and then the block's own AdaLN, which is exactly what the reference's
+//!   fused `h3_gpu_token_pool_adaln_bf16`/`h3_gpu_token_expand_adaln_bf16`
+//!   pair computes (`h3_dit.c:3400-3434`), so the reference's
+//!   `H3_DISABLE_FUSED_TOKEN_POOL_ADALN`/`_ADALN` switches select between two
+//!   spellings of the same arithmetic and have no analogue here.
+//! - The reduced pass keeps its snapshot, baseline and reduced stream in their
+//!   own tensors; the reference aliases them into `qkv` and
+//!   `attention_output` (`h3_dit.c:1506-1527`). Buffer identity is a memory
+//!   choice, not arithmetic, and the hashes are gated against the reference.
 //! - `h3_gpu_adaln_linear_bf16` (`:1195-1226`) also writes an `inverse` buffer
 //!   that no later call reads; the effective math is `adaln` then `linear`,
 //!   which is what the final head here does.
@@ -89,6 +99,10 @@ pub const EPSILON: f32 = 1e-5;
 
 /// `ROPE_FREQS` in the checkpoint's `rope.inv_freq`.
 const INV_FREQ_ELEMENTS: usize = 16;
+
+/// `H3_DIT_BLOCKS` (`h3_dit.c:15-30`): the reference's block count. The
+/// token-reduction window is validated against it even when fewer blocks load.
+pub const DIT_BLOCKS: usize = 50;
 
 #[derive(Debug)]
 pub enum DitError {
@@ -164,6 +178,41 @@ pub enum LoadMode {
     Resident,
     /// Two matrix slots, read from the checkpoint per block.
     Stream,
+}
+
+/// Everything one reduced pass needs (`h3_dit.c:149-177`, `:440-470`): the
+/// pair maps, the reduced AdaLN and RoPE tables, and the buffers the pool
+/// snapshots into. The reference aliases these buffers with its activations
+/// (`:1506-1527`); the port keeps them separate, which changes no arithmetic.
+struct ReductionState {
+    window: ReductionWindow,
+    /// Reduced packed rows: text, condition and audio rows plus one row per
+    /// video pair (`h3_dit.c:470`).
+    rows: u32,
+    /// Reduced video rows that pooled two rows, one baseline each (`:469`).
+    baseline_rows: u32,
+    pairs: Tensor,
+    baseline_indices: Tensor,
+    parents: Tensor,
+    rope_cos: Tensor,
+    rope_sin: Tensor,
+    row_maps: Vec<Tensor>,
+    /// The reduced residual stream a pooled block reads and writes.
+    hidden: Tensor,
+    /// Every full row the pool replaced, and the pooled value it replaced
+    /// (`:1506-1527`).
+    original: Tensor,
+    baseline: Tensor,
+}
+
+/// What one core block reads and writes: the full residual stream or the
+/// reduced one inside the pairing window (`h3_dit.c:1893-1897`).
+struct Active<'a> {
+    rows: u32,
+    hidden: &'a Tensor,
+    row_map: &'a Tensor,
+    rope_cos: &'a Tensor,
+    rope_sin: &'a Tensor,
 }
 
 /// One checkpoint range, owned so the reader thread does not borrow `Weights`.
@@ -569,6 +618,340 @@ fn row_map(tree: &TimeRows, step: usize, sequence: &Sequence) -> Result<Vec<u32>
     Ok(rows)
 }
 
+/// Whether the reference's video-token pairing runs (`h3_dit.c:380-382`).
+///
+/// The reference's decision is `requested` OR the environment: `H3_TOKEN_REDUCTION`
+/// set to anything but an empty string or "0" enables it on its own. The window
+/// itself always comes from the environment (`:383-439`), never from a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reduction {
+    /// `configure_token_reduction(dit, 0, ...)`: the environment alone decides.
+    Environment,
+    /// `configure_token_reduction(dit, 1, ...)`: on unless a later
+    /// `H3_DISABLE_TOKEN_REDUCTION` skips it for one forward.
+    Enabled,
+}
+
+/// The resolved window `configure_token_reduction` keeps on the DiT
+/// (`h3_dit.c:462-467`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReductionWindow {
+    /// First block that runs on the reduced video grid (`:378`, default 4).
+    pub begin: u32,
+    /// First block back on the full grid (`:379`, default 30).
+    pub end: u32,
+    /// Steps that take the early window (`:413-415`, 10 below a 40-block end).
+    pub early_steps: u32,
+    /// `end` for those steps (`:414-415`, 40 below a 40-block end).
+    pub early_end: u32,
+    /// Scale on the restored delta (`:434`, default 1.0).
+    pub scale: f32,
+}
+
+impl ReductionWindow {
+    /// The `end` this step uses (`h3_dit.c:2168-2170`).
+    pub fn end_for_step(&self, step: usize) -> u32 {
+        if self.early_steps != 0 && (step as u32) < self.early_steps {
+            self.early_end
+        } else {
+            self.end
+        }
+    }
+}
+
+/// `h3_dit.c:15-30`, `H3_DIT_BLOCKS`.
+fn block_count() -> u32 {
+    DIT_BLOCKS as u32
+}
+
+/// Parse one `BEGIN:END` environment value the way `:383-405` does: two
+/// unsigned decimal fields and nothing else.
+fn parse_pair(value: &str, message: &str) -> Result<(u32, u32), DitError> {
+    let malformed = || DitError::Geometry {
+        detail: message.to_string(),
+    };
+    let (first, second) = value.split_once(':').ok_or_else(malformed)?;
+    let begin: u32 = first.parse().map_err(|_| malformed())?;
+    let end: u32 = second.parse().map_err(|_| malformed())?;
+    Ok((begin, end))
+}
+
+impl Reduction {
+    /// `h3_dit.c:378-439`: the environment spelling, its defaults and its
+    /// rejections, with the geometry check left to the caller.
+    pub fn window(self) -> Result<Option<ReductionWindow>, DitError> {
+        let environment = std::env::var("H3_TOKEN_REDUCTION").ok();
+        let enabled = matches!(
+            environment.as_deref(),
+            Some(value) if !value.is_empty() && value != "0"
+        );
+        if self == Reduction::Environment && !enabled {
+            return Ok(None);
+        }
+
+        let mut begin = 4u32;
+        let mut end = 30u32;
+        if let Some(range) = std::env::var("H3_TOKEN_REDUCTION_BLOCKS")
+            .ok()
+            .filter(|v| !v.is_empty())
+        {
+            let (parsed_begin, parsed_end) =
+                parse_pair(&range, "H3_TOKEN_REDUCTION_BLOCKS must be BEGIN:END")?;
+            if parsed_begin >= parsed_end || parsed_end > block_count() {
+                return Err(DitError::Geometry {
+                    detail: "token-reduction block range must satisfy 0 <= BEGIN < END <= 50"
+                        .into(),
+                });
+            }
+            begin = parsed_begin;
+            end = parsed_end;
+        }
+
+        // `:411-415`: coarse structure tolerates a deeper reduced stack while
+        // the first noisy samples form; fine detail needs the full grid earlier.
+        let mut early_steps = if end < 40 { 10 } else { 0 };
+        let mut early_end = if end < 40 { 40 } else { end };
+        if let Some(early) = std::env::var("H3_TOKEN_REDUCTION_EARLY")
+            .ok()
+            .filter(|value| !value.is_empty())
+        {
+            if early == "0" {
+                early_steps = 0;
+                early_end = end;
+            } else {
+                let (parsed_steps, parsed_end) =
+                    parse_pair(&early, "H3_TOKEN_REDUCTION_EARLY must be STEPS:END")?;
+                if parsed_steps == 0
+                    || parsed_steps > 1000
+                    || parsed_end <= end
+                    || parsed_end > block_count()
+                {
+                    return Err(DitError::Geometry {
+                        detail: "early token reduction requires STEPS > 0 and base END < END <= 50"
+                            .into(),
+                    });
+                }
+                early_steps = parsed_steps;
+                early_end = parsed_end;
+            }
+        }
+
+        let mut scale = 1.0f32;
+        if let Some(text) = std::env::var("H3_TOKEN_REDUCTION_SCALE")
+            .ok()
+            .filter(|value| !value.is_empty())
+        {
+            let value: f32 = text.parse().map_err(|_| DitError::Geometry {
+                detail: "H3_TOKEN_REDUCTION_SCALE must be in [0, 2]".into(),
+            })?;
+            if !value.is_finite() || !(0.0..=2.0).contains(&value) {
+                return Err(DitError::Geometry {
+                    detail: "H3_TOKEN_REDUCTION_SCALE must be in [0, 2]".into(),
+                });
+            }
+            scale = value;
+        }
+
+        Ok(Some(ReductionWindow {
+            begin,
+            end,
+            early_steps,
+            early_end,
+            scale,
+        }))
+    }
+}
+
+/// The geometry the pairing maps need: the video target's first packed row and
+/// the pool widths (`h3_dit.c:440-470`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PoolGeometry {
+    start: u32,
+    spatial_width: u32,
+    reduced_width: u32,
+    /// Reduced packed rows (`h3_dit.c:470`).
+    rows: u32,
+    /// Full video target rows, for the baseline count (`:469`).
+    video_rows: u32,
+}
+
+/// `token_pool_sources` (`h3_dit.c:475-493`): the two full rows a reduced row
+/// averages. A row before the video target, and the unpaired last column,
+/// pools from itself.
+fn pool_sources(geometry: PoolGeometry, reduced_row: u32) -> (u32, u32) {
+    if reduced_row < geometry.start {
+        return (reduced_row, reduced_row);
+    }
+    let local = reduced_row - geometry.start;
+    let source = geometry.start
+        + (local / geometry.reduced_width) * geometry.spatial_width
+        + (local % geometry.reduced_width) * 2;
+    let column = (source - geometry.start) % geometry.spatial_width;
+    let second = source + u32::from(column + 1 < geometry.spatial_width);
+    (source, second)
+}
+
+/// `token_reduced_parent` (`h3_dit.c:496-506`): the reduced row a full row
+/// expands from.
+fn reduced_parent(geometry: PoolGeometry, full_row: u32) -> u32 {
+    if full_row < geometry.start {
+        return full_row;
+    }
+    let local = full_row - geometry.start;
+    geometry.start
+        + (local / geometry.spatial_width) * geometry.reduced_width
+        + (local % geometry.spatial_width) / 2
+}
+
+impl PoolGeometry {
+    /// Rows the baseline buffer holds: one per reduced video row that pooled
+    /// two rows, which is `video_rows - reduced_video_rows` (`h3_dit.c:469`).
+    fn baseline_rows(&self) -> u32 {
+        self.video_rows - (self.rows - self.start)
+    }
+}
+
+/// `h3_dit.c:440-470`: the pairing geometry, refused unless the video target
+/// ends the packed layout, which is what makes `sequence` an exact multiple of
+/// the reduced row count.
+fn pool_geometry(geometry: &Geometry, sequence_rows: usize) -> Result<PoolGeometry, DitError> {
+    let spatial_height = geometry.latent_h / 2;
+    let spatial_width = geometry.latent_w / 2;
+    let reduced_width = spatial_width.div_ceil(2);
+    let reduced_video = geometry.latent_t as u64 * spatial_height as u64 * reduced_width as u64;
+    let inconsistent = spatial_height == 0
+        || spatial_width == 0
+        || geometry.latent_t as u64 * spatial_height as u64 * spatial_width as u64
+            != geometry.video_rows as u64
+        || geometry.video_target_start as u64 + geometry.video_rows as u64 != sequence_rows as u64
+        || reduced_video > u32::MAX as u64
+        || reduced_video > u32::MAX as u64 - geometry.video_target_start as u64;
+    if inconsistent {
+        return Err(DitError::Geometry {
+            detail: "token reduction requires the target video to end the packed layout".into(),
+        });
+    }
+
+    Ok(PoolGeometry {
+        start: geometry.video_target_start,
+        spatial_width,
+        reduced_width,
+        rows: geometry.video_target_start + reduced_video as u32,
+        video_rows: geometry.video_rows,
+    })
+}
+
+/// `h3_dit.c:1131-1178` `prepare_token_reduction_maps`: the pair list, the
+/// baseline row each pooled video row lands in, and every full row's parent.
+fn reduction_tables(
+    gpu: &Gpu,
+    sequence: &Sequence,
+    pool: PoolGeometry,
+) -> Result<(Tensor, Tensor, Tensor), DitError> {
+    let mut pairs = Vec::with_capacity(pool.rows as usize * 2);
+    let mut baseline_indices = vec![u32::MAX; pool.rows as usize];
+    let mut baseline_row = 0u32;
+
+    for row in 0..pool.rows {
+        let (first, second) = pool_sources(pool, row);
+        pairs.push(first);
+        pairs.push(second);
+        if row >= pool.start && first != second {
+            baseline_indices[row as usize] = baseline_row;
+            baseline_row += 1;
+        }
+    }
+
+    if baseline_row != pool.baseline_rows() {
+        return Err(DitError::Geometry {
+            detail: "token-reduction baseline map is inconsistent".into(),
+        });
+    }
+
+    let parents: Vec<u32> = (0..sequence.rows() as u32)
+        .map(|row| reduced_parent(pool, row))
+        .collect();
+
+    Ok((
+        u32_tensor(gpu, &pairs)?,
+        u32_tensor(gpu, &baseline_indices)?,
+        u32_tensor(gpu, &parents)?,
+    ))
+}
+
+/// `h3_dit.c:1034-1041`: the per-step modulation map of the reduced rows,
+/// which takes the first row of each pair.
+fn reduced_maps(
+    gpu: &Gpu,
+    tree: &TimeRows,
+    sequence: &Sequence,
+    pool: PoolGeometry,
+) -> Result<Vec<Tensor>, DitError> {
+    let mut maps = Vec::with_capacity(tree.steps);
+
+    for step in 0..tree.steps {
+        let full = row_map(tree, step, sequence)?;
+        let reduced: Vec<u32> = (0..pool.rows)
+            .map(|row| full[pool_sources(pool, row).0 as usize])
+            .collect();
+        maps.push(u32_tensor(gpu, &reduced)?);
+    }
+
+    Ok(maps)
+}
+
+/// `h3_dit.c:896-948`: the reduced RoPE tables, whose positions are the mean
+/// of the two pooled rows. The reference multiplies the averaged spatial
+/// coordinate by the scale in F32 (`:940-941`); the same grouping is kept.
+fn reduced_rope_tables(
+    gpu: &Gpu,
+    weights: &Weights,
+    sequence: &Sequence,
+    pool: PoolGeometry,
+    spatial_scale: f32,
+) -> Result<(Tensor, Tensor), DitError> {
+    let inverse = read_f32(weights, Role::RopeFreq)?;
+    if inverse.len() != INV_FREQ_ELEMENTS {
+        return Err(DitError::Geometry {
+            detail: format!("rope.inv_freq holds {} values", inverse.len()),
+        });
+    }
+
+    let rows = pool.rows as usize;
+    let mut cosines = vec![0.0f32; rows * ROPE_HALF];
+    let mut sines = vec![0.0f32; rows * ROPE_HALF];
+
+    for row in 0..rows {
+        let (first, second) = pool_sources(pool, row as u32);
+        let left = &sequence.positions[first as usize];
+        let right = &sequence.positions[second as usize];
+        let axes = [
+            ((left.t + right.t) * 0.5) as f32,
+            (((left.h + right.h) * 0.5) as f32) * spatial_scale,
+            (((left.w + right.w) * 0.5) as f32) * spatial_scale,
+        ];
+        for (axis, coordinate) in axes.iter().enumerate() {
+            for (frequency, inverse_frequency) in inverse.iter().enumerate() {
+                let index = row * ROPE_HALF + axis * ROPE_FREQS + frequency;
+                let angle = *coordinate * inverse_frequency;
+                cosines[index] = angle.cos();
+                sines[index] = angle.sin();
+            }
+        }
+    }
+
+    let cos_f32 = gpu_alloc(gpu, Dtype::F32, cosines.len())?;
+    let sin_f32 = gpu_alloc(gpu, Dtype::F32, sines.len())?;
+    device(gpu.upload(&cos_f32, &pack_f32(&cosines)))?;
+    device(gpu.upload(&sin_f32, &pack_f32(&sines)))?;
+    let cos_bf16 = gpu_alloc(gpu, Dtype::Bf16, cosines.len())?;
+    let sin_bf16 = gpu_alloc(gpu, Dtype::Bf16, sines.len())?;
+    device(gpu.cast_f32_to_bf16(&cos_bf16, &cos_f32))?;
+    device(gpu.cast_f32_to_bf16(&sin_bf16, &sin_f32))?;
+
+    Ok((cos_bf16, sin_bf16))
+}
+
 /// `h3_dit.c:3064-3097`: `[C,T,H,W]` latent to `[T,H/2,W/2,C,2,2]` rows.
 pub fn patchify_video(
     latent: &[f32],
@@ -902,6 +1285,9 @@ pub struct Dit {
     row_maps: Vec<Tensor>,
     final_audio_maps: Vec<Tensor>,
     final_video_maps: Vec<Tensor>,
+    /// `None` unless the caller asked for the reference's token pairing or
+    /// the environment enabled it (`h3_dit.c:378-382`).
+    reduction: Option<ReductionState>,
     video_projection_map: Option<Tensor>,
     audio_projection_map: Option<Tensor>,
 
@@ -946,6 +1332,7 @@ impl Dit {
             text,
             spatial_rope_scale,
             LoadMode::Resident,
+            Reduction::Environment,
         )
     }
 
@@ -960,6 +1347,7 @@ impl Dit {
         text: &Embedding,
         spatial_rope_scale: f32,
         mode: LoadMode,
+        reduction: Reduction,
     ) -> Result<Dit, DitError> {
         let weights = Weights::open(dir).map_err(|error| DitError::Weights(error.to_string()))?;
         let config = weights.config().clone();
@@ -999,6 +1387,42 @@ impl Dit {
         let bf16 = |elements: usize| gpu_alloc(&gpu, Dtype::Bf16, elements);
         let f32t = |elements: usize| gpu_alloc(&gpu, Dtype::F32, elements);
         let rows = sequence.rows();
+
+        // `h3_dit.c:440-470`, `:1131-1178` and `:896-948`: the pairing maps,
+        // the reduced AdaLN rows, the averaged RoPE tables and the three
+        // buffers one reduced pass snapshots into.
+        let reduction = match reduction.window()? {
+            Some(window) => {
+                let pool = pool_geometry(&geometry, rows)?;
+                let (pairs, baseline_indices, parents) = reduction_tables(&gpu, &sequence, pool)?;
+                let (rope_cos, rope_sin) =
+                    reduced_rope_tables(&gpu, &weights, &sequence, pool, spatial_rope_scale)?;
+                let row_maps = reduced_maps(&gpu, &tree, &sequence, pool)?;
+                Some(ReductionState {
+                    window,
+                    rows: pool.rows,
+                    baseline_rows: pool.baseline_rows(),
+                    pairs,
+                    baseline_indices,
+                    parents,
+                    rope_cos,
+                    rope_sin,
+                    row_maps,
+                    hidden: gpu_alloc(
+                        &gpu,
+                        Dtype::Bf16,
+                        pool.rows as usize * hidden_width as usize,
+                    )?,
+                    original: gpu_alloc(&gpu, Dtype::Bf16, rows * hidden_width as usize)?,
+                    baseline: gpu_alloc(
+                        &gpu,
+                        Dtype::Bf16,
+                        pool.baseline_rows() as usize * hidden_width as usize,
+                    )?,
+                })
+            }
+            None => None,
+        };
 
         // `h3_dit.c:1356-1553` with `activation_aliases = 1`: `attention_heads`
         // is `qkv`, `mod_mlp` is `qkv` and `mlp_output` is `attention_output`,
@@ -1058,6 +1482,7 @@ impl Dit {
             row_maps,
             final_audio_maps,
             final_video_maps,
+            reduction,
             video_projection_map,
             audio_projection_map,
             refined_text,
@@ -1326,8 +1751,8 @@ impl Dit {
     }
 
     /// `h3_dit.c:2050-2396` `encode_forward` with `core_reuse_interval = 1`,
-    /// `token_reduction = 0`, `ssd_streaming = 0` and the CUDA flag set of
-    /// `h3_dit.c:1601-1665`.
+    /// `ssd_streaming = 0` and the CUDA flag set of (`h3_dit.c:1601-1665`);
+    /// token reduction runs when it was configured at load.
     fn encode_forward(&mut self, step: usize) -> Result<(), DitError> {
         let hidden = self.hidden_width;
 
@@ -1421,12 +1846,53 @@ impl Dit {
             });
         }
 
+        // `h3_dit.c:2166-2210`: the reduced window for this step. A forward
+        // can skip it for diagnosis, as `H3_DISABLE_TOKEN_REDUCTION` does.
+        let window = self
+            .reduction
+            .as_ref()
+            .filter(|_| std::env::var_os("H3_DISABLE_TOKEN_REDUCTION").is_none())
+            .map(|state| (state, state.window.end_for_step(step)));
+
         // `h3_dit.c:2181-2306`: every block, with the next block's attention
         // AdaLN fused into this block's MLP gate.
         let mut carried = false;
         let streamed = self.streamer.is_some();
         for block in 0..self.blocks.len() {
-            let fuse_next = block + 1 < self.blocks.len();
+            let mut reduced = false;
+            if let Some((state, end)) = window {
+                let index = block as u32;
+                if index == state.window.begin {
+                    self.pool_tokens(state)?;
+                }
+                if index == end && (end as usize) < self.blocks.len() {
+                    self.expand_tokens(state)?;
+                }
+                reduced = index >= state.window.begin && index < end;
+            }
+            let active = match (reduced, window) {
+                (true, Some((state, _))) => Active {
+                    rows: state.rows,
+                    hidden: &state.hidden,
+                    row_map: &state.row_maps[step],
+                    rope_cos: &state.rope_cos,
+                    rope_sin: &state.rope_sin,
+                },
+                _ => Active {
+                    rows: self.rows,
+                    hidden: &self.hidden,
+                    row_map: &self.row_maps[step],
+                    rope_cos: &self.rope_cos,
+                    rope_sin: &self.rope_sin,
+                },
+            };
+            // `h3_dit.c:2210-2214`: the next block's attention AdaLN is not
+            // fused across a row-count boundary.
+            let boundary = window.is_some_and(|(state, end)| {
+                let next = block as u32 + 1;
+                next == state.window.begin || next == end
+            });
+            let fuse_next = block + 1 < self.blocks.len() && !boundary;
             if streamed {
                 let streamer = self.streamer.as_mut().expect("streamed forward");
                 streamer.ensure(&self.gpu, block)?;
@@ -1440,12 +1906,22 @@ impl Dit {
                 };
                 streamer.start(next)?;
             }
-            self.run_block(block, step, fuse_next, &mut carried, streamed)?;
+            self.run_block(block, &active, fuse_next, &mut carried, streamed)?;
             if streamed {
                 self.streamer
                     .as_mut()
                     .expect("streamed forward")
                     .finish(&self.gpu)?;
+            }
+        }
+
+        // `h3_dit.c:2304-2306`: a window that ends at or past the last block
+        // has no boundary inside the loop. (The reference always walks all 50
+        // blocks; the port loads them all too, but the comparison keeps the
+        // pooled stream from surviving a short load.)
+        if let Some((state, end)) = window {
+            if end as usize >= self.blocks.len() {
+                self.expand_tokens(state)?;
             }
         }
 
@@ -1504,6 +1980,49 @@ impl Dit {
         device(self.gpu.sync())
     }
 
+    /// `h3_dit.c:1789-1805` `enter_token_reduction`: snapshot every row the
+    /// reduced pass replaces, average each video pair into the reduced stream,
+    /// and keep the pooled values for the expansion to subtract.
+    fn pool_tokens(&self, state: &ReductionState) -> Result<(), DitError> {
+        device(self.gpu.token_pool(
+            &state.hidden,
+            &self.hidden,
+            0,
+            &state.original,
+            0,
+            &state.baseline,
+            0,
+            &state.baseline_indices,
+            &state.pairs,
+            self.rows,
+            state.rows,
+            state.baseline_rows,
+            self.hidden_width,
+        ))
+    }
+
+    /// `h3_dit.c:1831-1849` `leave_token_reduction`: every full row takes its
+    /// parent's reduced value as a scaled delta over the pooled baseline, and
+    /// the prefix rows take the reduced value directly.
+    fn expand_tokens(&self, state: &ReductionState) -> Result<(), DitError> {
+        device(self.gpu.token_expand(
+            &self.hidden,
+            &state.original,
+            0,
+            &state.hidden,
+            &state.baseline,
+            0,
+            &state.baseline_indices,
+            &state.parents,
+            self.rows,
+            state.rows,
+            state.baseline_rows,
+            self.hidden_width,
+            self.video_target_start,
+            state.window.scale,
+        ))
+    }
+
     /// `h3_dit.c:1876-2047` `run_block` with the int8 and NAX branches off.
     ///
     /// `carried` is the `attention_adaln_ready` flag the previous block left
@@ -1512,16 +2031,16 @@ impl Dit {
     fn run_block(
         &self,
         block: usize,
-        step: usize,
+        active: &Active,
         fuse_next_attention: bool,
         carried: &mut bool,
         streamed: bool,
     ) -> Result<(), DitError> {
-        let rows = self.rows;
+        let rows = active.rows;
         let hidden = self.hidden_width;
         let inner = self.inner;
         let modulation = &self.modulation[block];
-        let row_map = &self.row_maps[step];
+        let row_map = active.row_map;
         let norms = &self.blocks[block].norms;
         let matrices = match streamed {
             true => self
@@ -1540,7 +2059,7 @@ impl Dit {
         if !attention_adaln_ready {
             device(self.gpu.adaln(
                 &self.mod_attention,
-                &self.hidden,
+                active.hidden,
                 0,
                 &norms.norm1,
                 modulation,
@@ -1573,8 +2092,8 @@ impl Dit {
             &self.qkv,
             &norms.q_norm,
             &norms.k_norm,
-            &self.rope_cos,
-            &self.rope_sin,
+            active.rope_cos,
+            active.rope_sin,
             rows,
             self.config.heads as u32,
             self.config.head_dim as u32,
@@ -1608,8 +2127,8 @@ impl Dit {
         // `h3_dit.c:1958-1982`: the attention gate, then the MLP AdaLN, which
         // reuses the qkv buffer as `mod_mlp`.
         device(self.gpu.gate(
-            &self.hidden,
-            &self.hidden,
+            active.hidden,
+            active.hidden,
             &self.attention_output,
             modulation,
             row_map,
@@ -1620,7 +2139,7 @@ impl Dit {
         ))?;
         device(self.gpu.adaln(
             &self.qkv,
-            &self.hidden,
+            active.hidden,
             0,
             &norms.norm2,
             modulation,
@@ -1662,8 +2181,8 @@ impl Dit {
         // `h3_dit.c:2015-2046`: the MLP gate, and, when another block follows,
         // the next block's attention AdaLN in the same step.
         device(self.gpu.gate(
-            &self.hidden,
-            &self.hidden,
+            active.hidden,
+            active.hidden,
             &self.attention_output,
             modulation,
             row_map,
@@ -1680,7 +2199,7 @@ impl Dit {
         let next = &self.blocks[block + 1];
         device(self.gpu.adaln(
             &self.mod_attention,
-            &self.hidden,
+            active.hidden,
             0,
             &next.norms.norm1,
             &self.modulation[block + 1],
@@ -2449,6 +2968,85 @@ mod tests {
         assert_eq!(features.len(), TIME_INPUT);
         assert_eq!(features[0], 1.0);
         assert_eq!(features[TIME_INPUT / 2], 0.0);
+    }
+
+    /// `h3_dit.c:475-506`: every reduced row pools two adjacent columns of one
+    /// video plane, and every full row expands from a parent that actually
+    /// contains it. A pairing that dropped or duplicated a row would still
+    /// produce plausible output, so the maps are checked as maps.
+    #[test]
+    fn pairing_covers_every_video_row_once() {
+        // One 2x2 plane of 3x3 patches is impossible; use 3 planes of 2x5 so
+        // the odd width exercises the unpaired last column.
+        let pool = PoolGeometry {
+            start: 6,
+            spatial_width: 5,
+            reduced_width: 3,
+            rows: 6 + 2 * 3,
+            video_rows: 10,
+        };
+
+        let mut seen = vec![0u8; 10];
+        for row in pool.start..pool.rows {
+            let (first, second) = pool_sources(pool, row);
+            seen[(first - pool.start) as usize] += 1;
+            if second != first {
+                seen[(second - pool.start) as usize] += 1;
+            }
+        }
+        assert_eq!(seen, vec![1u8; 10], "every video row pools exactly once");
+        // Two paired reduced rows per 5-wide plane: 10 video rows - 6 reduced.
+        assert_eq!(pool.baseline_rows(), 4);
+
+        for row in 0..pool.rows + 4 {
+            let parent = reduced_parent(pool, row);
+            let (first, second) = pool_sources(pool, parent);
+            assert!(
+                row == first || row == second,
+                "row {row} expands from {parent}, whose pair is {first}/{second}"
+            );
+        }
+    }
+
+    /// `h3_dit.c:475-493`: a prefix row pools from itself, so pooling leaves
+    /// text, condition and audio rows untouched.
+    #[test]
+    fn prefix_rows_pool_from_themselves() {
+        let pool = PoolGeometry {
+            start: 3,
+            spatial_width: 2,
+            reduced_width: 1,
+            rows: 4,
+            video_rows: 2,
+        };
+
+        assert_eq!(pool_sources(pool, 0), (0, 0));
+        assert_eq!(pool_sources(pool, 2), (2, 2));
+        assert_eq!(pool_sources(pool, 3), (3, 4));
+        assert_eq!(reduced_parent(pool, 1), 1);
+        assert_eq!(reduced_parent(pool, 4), 3);
+    }
+
+    /// `h3_dit.c:2168-2170`: the early window is a step predicate, and with no
+    /// early steps every step takes the base end.
+    #[test]
+    fn early_window_is_per_step() {
+        let window = ReductionWindow {
+            begin: 4,
+            end: 30,
+            early_steps: 2,
+            early_end: 40,
+            scale: 1.0,
+        };
+        assert_eq!(window.end_for_step(0), 40);
+        assert_eq!(window.end_for_step(1), 40);
+        assert_eq!(window.end_for_step(2), 30);
+
+        let flat = ReductionWindow {
+            early_steps: 0,
+            ..window
+        };
+        assert_eq!(flat.end_for_step(0), 30);
     }
 
     /// The seed and prime are the probe family's, so a golden taken from the

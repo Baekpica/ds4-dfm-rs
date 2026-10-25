@@ -152,6 +152,45 @@ unsafe extern "C" {
         error_size: usize,
     ) -> c_int;
 
+    fn h3d_token_pool(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        input_element: usize,
+        original: *mut CTensor,
+        original_element: usize,
+        baseline: *mut CTensor,
+        baseline_element: usize,
+        baseline_indices: *const CTensor,
+        pairs: *const CTensor,
+        input_rows: u32,
+        rows: u32,
+        baseline_rows: u32,
+        width: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_token_expand(
+        context: *mut Context,
+        output: *mut CTensor,
+        original: *const CTensor,
+        original_element: usize,
+        reduced: *const CTensor,
+        baseline: *const CTensor,
+        baseline_element: usize,
+        baseline_indices: *const CTensor,
+        parents: *const CTensor,
+        rows: u32,
+        reduced_rows: u32,
+        baseline_rows: u32,
+        width: u32,
+        prefix_rows: u32,
+        scale: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
     fn h3d_swiglu(
         context: *mut Context,
         output: *mut CTensor,
@@ -818,6 +857,94 @@ impl Gpu {
                 )
             },
             "gate",
+        )
+    }
+
+    /// `h3_gpu_token_pool_bf16`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn token_pool(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        input_element: usize,
+        original: &Tensor,
+        original_element: usize,
+        baseline: &Tensor,
+        baseline_element: usize,
+        baseline_indices: &Tensor,
+        pairs: &Tensor,
+        input_rows: u32,
+        rows: u32,
+        baseline_rows: u32,
+        width: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_token_pool(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    input_element,
+                    original.raw(),
+                    original_element,
+                    baseline.raw(),
+                    baseline_element,
+                    baseline_indices.raw(),
+                    pairs.raw(),
+                    input_rows,
+                    rows,
+                    baseline_rows,
+                    width,
+                    error,
+                    size,
+                )
+            },
+            "token pool",
+        )
+    }
+
+    /// `h3_gpu_token_expand_delta_bf16`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn token_expand(
+        &self,
+        output: &Tensor,
+        original: &Tensor,
+        original_element: usize,
+        reduced: &Tensor,
+        baseline: &Tensor,
+        baseline_element: usize,
+        baseline_indices: &Tensor,
+        parents: &Tensor,
+        rows: u32,
+        reduced_rows: u32,
+        baseline_rows: u32,
+        width: u32,
+        prefix_rows: u32,
+        scale: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_token_expand(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    original.raw(),
+                    original_element,
+                    reduced.raw(),
+                    baseline.raw(),
+                    baseline_element,
+                    baseline_indices.raw(),
+                    parents.raw(),
+                    rows,
+                    reduced_rows,
+                    baseline_rows,
+                    width,
+                    prefix_rows,
+                    scale,
+                    error,
+                    size,
+                )
+            },
+            "token expand",
         )
     }
 

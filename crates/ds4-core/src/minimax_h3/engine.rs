@@ -24,7 +24,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
-use super::dit::{Dit, LoadMode};
+use super::dit::{Dit, LoadMode, Reduction};
 use super::host::{reuse_schedule, temporal, Rng, Schedule};
 use super::media::{self, Fit};
 use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
@@ -301,6 +301,7 @@ impl Engine {
                 &text,
                 canvas.rope_scale(false),
                 LoadMode::Resident,
+                Reduction::Environment,
             )
             .map_err(|error| EngineError::new(format!("transformer: {error}")))?;
             self.prepared = Some(Prepared { key, dit });
