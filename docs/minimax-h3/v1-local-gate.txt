@@ -441,3 +441,38 @@ surface with the real engine and the real checkpoint, and it completed.
 `AUDIO ... seconds=2.318`, `FRAMES ... seconds=81.038` (video VAE),
 `VIDEO ... seconds=0.428` (mux), 874,261 bytes. Wall clock from launch to file
 was about 9 minutes.
+
+## 2026-10-25 — the load experiment: faster, and wrong
+
+The clean A/B put the port 118 s behind the reference at one shape, and 94 s
+of that was the checkpoint load (116.1 s against 21.9 s). Two traces with the
+same bytes (126,551 MB host-to-device, 2,210 copies) showed the reference's
+copies costing 4.44 s as 2,219 synchronous `cudaMemcpy` calls while the port's
+cost 105.4 s as 2,210 `cudaMemcpyAsync` calls from a pageable source.
+
+Two changes were tried, both reverted:
+
+1. A blocking copy for checkpoint weights (`h3d_upload_blocking`,
+   `cudaMemcpy` instead of `cudaMemcpyAsync`). Load 116.07 -> 106.65 s, wall
+   560.04 -> 625.98 s. Small, and the wall got worse.
+2. Reading each tensor into an anonymous buffer and copying from there, which
+   is the reference's own structure (`h3_weights.c:144-186`,
+   `h3_gpu_cuda.cu:375-425`). Load 106.65 -> 23.65 s, wall 467.72 s, which is
+   within 8% of the reference's 433.39 s.
+
+Both changes altered the output. The port's committed output is
+byte-identical to the reference at this shape
+(`74d862fef9dc904d69c20f3dffec74f4`); with either change it is
+`7991a015b1a161ec95d6b3f1aae8e3fc`, and the decoded video and audio MD5s
+differ too, so the frames themselves changed. The copy path must not change
+numerics, so the difference is unexplained and the change is out until it is.
+
+The open question for the next unit: why does copying the same bytes through
+`cudaMemcpy` (or through an anonymous staging buffer) change the result at
+all? Candidates to test before the speed can be kept: the legacy default
+stream versus the non-blocking context stream (`cudaStreamCreateWithFlags`),
+and whether any load-time kernel reads a tensor the copy is still writing.
+
+Records: `tests/h3/perf/perf.csv` rows labelled `loadfix` and `stage` are the
+two experiments, with their phase times; their MP4s are on the Spark under
+`~/ds4-h3-port/tests/h3/perf/runs/`.
