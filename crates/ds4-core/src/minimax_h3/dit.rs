@@ -569,8 +569,24 @@ fn time_features(times: &[f32]) -> Vec<f32> {
 }
 
 /// `h3_dit_schedule.c:380-445` `h3_dit_schedule_row_map`: one modulation row
-/// selector per sequence row, `time_row * MODALITIES + tag`.
-fn row_map(tree: &TimeRows, step: usize, sequence: &Sequence) -> Result<Vec<u32>, DitError> {
+/// selector per sequence row, `time_row * MODALITIES + tag`. The text rows take
+/// the presentation's tags, because an anchored prompt carries vision spans
+/// tagged 0 among prompt rows tagged 1 (`h3_multimodal.c:173`, `:182`), and the
+/// reference feeds them to this map (`h3_dit.c:1028`).
+fn row_map(
+    tree: &TimeRows,
+    step: usize,
+    sequence: &Sequence,
+    text_tags: Option<&[u8]>,
+) -> Result<Vec<u32>, DitError> {
+    // `h3_dit_schedule.c:440`: the tags cover the text rows exactly.
+    let text_rows = sequence.signature[0] as usize;
+    if matches!(text_tags, Some(tags) if tags.len() != text_rows) {
+        return Err(DitError::Geometry {
+            detail: format!("presentation tags do not cover the {text_rows} text rows"),
+        });
+    }
+
     let mut rows = vec![0u32; sequence.rows()];
     let mut text_index = 0usize;
 
@@ -579,7 +595,14 @@ fn row_map(tree: &TimeRows, step: usize, sequence: &Sequence) -> Result<Vec<u32>
             SegmentKind::Text => {
                 let time_row = tree.video[step];
                 for cell in &mut rows[segment.start..segment.stop] {
-                    *cell = time_row * MODALITIES + 1;
+                    // `h3_dit_schedule.c:452-454`: the presented tag, else text.
+                    let tag = text_tags.map_or(1, |tags| tags[text_index]);
+                    if u32::from(tag) >= MODALITIES {
+                        return Err(DitError::Geometry {
+                            detail: "a presentation tag is outside the modality count".into(),
+                        });
+                    }
+                    *cell = time_row * MODALITIES + u32::from(tag);
                     text_index += 1;
                 }
                 continue;
@@ -1034,11 +1057,12 @@ fn reduced_maps(
     tree: &TimeRows,
     sequence: &Sequence,
     pool: PoolGeometry,
+    text_tags: Option<&[u8]>,
 ) -> Result<Vec<Tensor>, DitError> {
     let mut maps = Vec::with_capacity(tree.steps);
 
     for step in 0..tree.steps {
-        let full = row_map(tree, step, sequence)?;
+        let full = row_map(tree, step, sequence, text_tags)?;
         let reduced: Vec<u32> = (0..pool.rows)
             .map(|row| full[pool_sources(pool, row).0 as usize])
             .collect();
@@ -1543,8 +1567,10 @@ impl Dit {
         let (_, modulation, final_modulation) = adaln_projections(&gpu, &weights, &config, &tree)?;
         let (rope_cos, rope_sin) =
             rope_tables(&gpu, &weights, &config, &sequence, spatial_rope_scale)?;
+        // `h3_dit.c:1028`: the presentation's tags reach the row map.
+        let text_tags = text.tags();
         let (row_maps, final_audio_maps, final_video_maps) =
-            modulation_maps(&gpu, &tree, &sequence)?;
+            modulation_maps(&gpu, &tree, &sequence, text_tags)?;
 
         // `h3_dit.c:1685-1688`: the core, then the activation arena.
         let blocks = load_blocks(&gpu, &weights, &config, mode)?;
@@ -1569,7 +1595,7 @@ impl Dit {
                 let (pairs, baseline_indices, parents) = reduction_tables(&gpu, &sequence, pool)?;
                 let (rope_cos, rope_sin) =
                     reduced_rope_tables(&gpu, &weights, &sequence, pool, spatial_rope_scale)?;
-                let row_maps = reduced_maps(&gpu, &tree, &sequence, pool)?;
+                let row_maps = reduced_maps(&gpu, &tree, &sequence, pool, text_tags)?;
                 Some(ReductionState {
                     window,
                     rows: pool.rows,
@@ -2826,13 +2852,14 @@ fn modulation_maps(
     gpu: &Gpu,
     tree: &TimeRows,
     sequence: &Sequence,
+    text_tags: Option<&[u8]>,
 ) -> Result<ModulationMaps, DitError> {
     let mut row_maps = Vec::with_capacity(tree.steps);
     let mut final_audio = Vec::with_capacity(tree.steps);
     let mut final_video = Vec::with_capacity(tree.steps);
 
     for step in 0..tree.steps {
-        let rows = row_map(tree, step, sequence)?;
+        let rows = row_map(tree, step, sequence, text_tags)?;
         row_maps.push(u32_tensor(gpu, &rows)?);
 
         let audio: Vec<u32> = vec![tree.audio[step]; sequence.audio_target_rows];
@@ -3164,7 +3191,7 @@ mod tests {
             signature: [2, 2, 16, 16, 8],
         };
         let tree = time_rows(&schedule, false, false);
-        let rows = row_map(&tree, 1, &sequence).expect("row map");
+        let rows = row_map(&tree, 1, &sequence, None).expect("row map");
 
         assert_eq!(
             rows,
@@ -3175,6 +3202,58 @@ mod tests {
                 tree.video[1] * MODALITIES
             ]
         );
+    }
+
+    /// `h3_multimodal.c:173`, `:182`: an anchored prompt's vision spans are
+    /// tagged 0 and its prompt rows 1, and `row_map` must carry them through
+    /// (`h3_dit.c:1028`). A tag set that does not cover the text rows, or one
+    /// outside the modality count, is refused (`h3_dit_schedule.c:440`, `:453`).
+    #[test]
+    fn row_map_carries_the_presentation_tags() {
+        let schedule = Schedule::serving(2).expect("two steps");
+        let sequence = Sequence {
+            positions: vec![
+                Position {
+                    t: 0.0,
+                    h: 0.0,
+                    w: 0.0
+                };
+                3
+            ],
+            segments: vec![
+                Segment {
+                    start: 0,
+                    stop: 2,
+                    kind: SegmentKind::Text,
+                },
+                Segment {
+                    start: 2,
+                    stop: 3,
+                    kind: SegmentKind::Video,
+                },
+            ],
+            img_cond_rows: 0,
+            img_target_rows: 1,
+            audio_cond_rows: 0,
+            audio_target_rows: 0,
+            signature: [2, 2, 16, 16, 8],
+        };
+        let tree = time_rows(&schedule, false, false);
+
+        // One vision span row, one prompt row: the picture row takes slot 0.
+        let rows = row_map(&tree, 1, &sequence, Some(&[0, 1])).expect("row map");
+        assert_eq!(
+            rows,
+            vec![
+                tree.video[1] * MODALITIES,
+                tree.video[1] * MODALITIES + 1,
+                tree.video[1] * MODALITIES
+            ]
+        );
+
+        // A short tag set and an out-of-range tag are both errors.
+        assert!(row_map(&tree, 1, &sequence, Some(&[0])).is_err());
+        assert!(row_map(&tree, 1, &sequence, Some(&[0, MODALITIES as u8])).is_err());
     }
 
     /// `h3_dit_schedule.c:147-157` against the reference's own table:
