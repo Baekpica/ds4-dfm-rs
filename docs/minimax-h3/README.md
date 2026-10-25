@@ -50,6 +50,8 @@ Related, outside this directory:
 | Device probe (`--info`) | `crates/ds4-core/src/minimax_h3/device.rs` + `native/h3/h3_device_gpu.cu`; gate `crates/ds4-core/examples/h3_device_gate.rs` (`make tests/h3_device_gate`) |
 | Renderer CLI | `crates/ds4-cli/src/bin/h3-rs.rs` (`make h3-rs`) |
 | Spark install and run script | `tools/minimax_h3/install-minimax-h3-spark.sh` |
+| Frame comparator (PSNR, bbox, bands) | `tools/minimax_h3/ppm_diff.c` |
+| Balloon composite for a delivered clip | `tools/minimax_h3/letterballoons.sh` |
 | OpenAI Videos wire | `crates/ds4-core/src/minimax_h3/video_api.rs` |
 | OpenAI Videos server | `crates/ds4-server/src/h3_video.rs`, `h3-server-rs` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |
