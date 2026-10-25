@@ -4,6 +4,11 @@ Status: research only, 2026-10-25. No source, test, build or git change accompan
 the official repository at /data/MiniMax-H3 (read-only, HEAD d21241f, clean), then the official documentation pages. Nothing was run
 against the hosted API, so every live-behavior statement is a statement about the documented contract.
 
+Superseded in part, 2026-10-25: the operator redirected the served surface to the *local* contract, `POST /v1/videos` with the SGLang
+body (`local-v1-contract.md`, P15 in post-port-phases.md). Sections 1-3 below stay valid as research - they are the evidence that two
+contracts exist and which scripts call which. Section 4 (implementation report), 4.9's compatibility decision and the section 5 units
+U1-U7 are dead plan material for this host, kept only as the record of what was weighed; `/v2` gets no route, not even a 501.
+
 1. Source inventory
 
 Repository (read-only):
@@ -312,6 +317,9 @@ never hands it a delivered-frame size the h3 canvas refuses (api-usage.md:88-95 
 
 4.9 Compatibility decision
 
+Superseded the same day: the operator reversed this decision and the served surface stays the local `/v1` contract
+(`local-v1-contract.md`, P15). The paragraph below is the record of what was weighed before that reversal.
+
 Decided by the operator, 2026-10-25: the official v2 surface replaces /v1. /v1 is retired in the same release, immediately after the
 v2 Spark gate passes, not kept for one release as a deprecated alias. The procedure is P15 in post-port-phases.md.
 
@@ -321,7 +329,7 @@ at once removes a surface whose upstream reference the repo records as shut down
 statement not verified live here), and whose body is not MiniMax's product. The operator chose the replacement; the only added risk
 is that /v1 is the sole serving surface until the v2 gate passes, so P15 orders the deletion after it.
 
-5. Phased units
+5. Phased units (superseded 2026-10-25, none of these is planned)
 
 Each unit is one commit with its own evidence and tests.
 
@@ -388,6 +396,9 @@ a silent substitution.
 
 Bottom line
 
+Superseded, 2026-10-25: the port serves the local `/v1` contract, and the v2 units below are not planned
+(`local-v1-contract.md`). The description of the hosted contract stays as the record.
+
 The official MiniMax-H3 contract is an asynchronous, Bearer-authenticated v2 task API: POST /v2/video_generation, /v2/h3_context_ir or
 /v2/video_regeneration with a multimodal content array (text, image, video, audio) plus model, resolution, duration and ratio; a shared
 query, list and cancel/delete surface over task objects with queued/running/succeeded/failed/cancelled states; a task_id only on create; a
@@ -396,4 +407,5 @@ Videos surface (flat prompt/size/seconds, /v1/videos, local byte download, no au
 validation, the task object and state machine, the error envelope and Bearer auth, reuse the existing engine and renderer flags, and refuse
 by name everything the open checkpoint cannot do: H3-Context-IR, H3-Regenerate-2K and 2K output, the three hosted model variants,
 reference-to-video until P14, public-URL media, callbacks and moderation. Decision taken 2026-10-25: this honest subset counts as
-official support. The v2 surface ships now and /v1 is retired in the same release after the v2 Spark gate (P15).
+official support. The v2 surface ships now and /v1 is retired in the same release after the v2 Spark gate (P15). [Reversed
+2026-10-25: no v2 surface exists in this tree.]

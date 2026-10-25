@@ -128,6 +128,138 @@ pub struct Paths<'a> {
     pub audio_vae: &'a Path,
 }
 
+/// One request's ordered references: the layout the sequence places, the rows
+/// the DiT consumes, the pixels the prompt's vision spans read, and the row
+/// hash the embedding memo folds in (`h3.c:143-166`). Shared by the resident
+/// engine and the CLI so `h3.c:1027-1200` has one port, not two.
+#[derive(Debug, Clone, Default)]
+pub struct Set {
+    pub layout: Vec<super::sequence::Reference>,
+    pub video_rows: Vec<f32>,
+    pub audio_rows: Vec<f32>,
+    pub pixels: Vec<super::condition::ReferencePixels>,
+    /// Source samples over the whole set, against `MAX_AUDIO_SAMPLES`.
+    pub samples: usize,
+    pub hash: u64,
+}
+
+/// The gate hash convention: FNV-1a over little-endian bytes, the same one the
+/// probe family uses (`text_forward::fnv1a`).
+pub(crate) fn fnv_f32(values: &[f32]) -> u64 {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    super::text_forward::fnv1a(&bytes)
+}
+
+/// Fold two hashes into one. The memo needs a single value for the media it
+/// folds (`h3.c:143-166`); moving a byte moves the mix's input.
+pub(crate) fn combine(first: u64, second: u64) -> u64 {
+    first.rotate_left(17) ^ second.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
+/// Prepare every ordered reference (`h3.c:1027-1200`). The twelve cap
+/// (`h3.c:588`) and the 15-second soundtrack budget (`h3.c:1171-1176`) are the
+/// reference's own set rules, so they are enforced here for every caller.
+pub fn prepare_set(
+    paths: &Paths<'_>,
+    references: &[Reference],
+    image_size: ImageSize,
+    canvas: (u32, u32),
+    frame_count: usize,
+    seed: u64,
+) -> Result<Set, ReferenceError> {
+    let mut out = Set {
+        layout: Vec::with_capacity(references.len()),
+        video_rows: Vec::new(),
+        audio_rows: Vec::new(),
+        pixels: Vec::with_capacity(references.len()),
+        samples: 0,
+        hash: 0,
+    };
+
+    // `h3.c:588`: the reference refuses a thirteenth before any decode.
+    if references.len() > MAX_REFERENCES {
+        return Err(ReferenceError(format!(
+            "Ref2VA supports at most {MAX_REFERENCES} references"
+        )));
+    }
+
+    for (index, media) in references.iter().enumerate() {
+        let prepared = prepare(paths, media, image_size, canvas, frame_count, seed, index)?;
+        out.samples = out.samples.saturating_add(prepared.audio_samples);
+        if out.samples > MAX_AUDIO_SAMPLES {
+            return Err(ReferenceError(
+                "ordered reference audio exceeds 15 seconds in total".to_string(),
+            ));
+        }
+
+        layout_one(&mut out, media, prepared);
+    }
+
+    out.hash = combine(fnv_f32(&out.video_rows), fnv_f32(&out.audio_rows));
+
+    Ok(out)
+}
+
+/// Fold one prepared reference into the set: its layout span, its rows and its
+/// vision span, in request order (`h3_host.c:367-433`).
+fn layout_one(out: &mut Set, media: &Reference, prepared: Prepared) {
+    let presentation = prepared
+        .presentation
+        .expect("every prepared reference names its class");
+    // A video's own soundtrack counts only when the caller kept it
+    // (`h3.c:1126-1151`).
+    let has_audio = match (media.kind, media.include_embedded_audio) {
+        (Kind::Audio, _) | (Kind::VideoAudio, _) => true,
+        (Kind::Video, embedded) => embedded,
+        (Kind::Image, _) => false,
+    };
+
+    out.layout.push(match presentation {
+        Presentation::Image => super::sequence::Reference {
+            kind: super::sequence::ReferenceKind::Image,
+            latent_t: 1,
+            latent_h: prepared.latent_h as i32,
+            latent_w: prepared.latent_w as i32,
+            audio_t: 0,
+        },
+        Presentation::Audio => super::sequence::Reference {
+            kind: super::sequence::ReferenceKind::Audio,
+            latent_t: 0,
+            latent_h: 0,
+            latent_w: 0,
+            audio_t: prepared.audio_t as i32,
+        },
+        Presentation::Video => super::sequence::Reference {
+            kind: super::sequence::ReferenceKind::Video,
+            latent_t: prepared.latent_t as i32,
+            latent_h: prepared.latent_h as i32,
+            latent_w: prepared.latent_w as i32,
+            audio_t: prepared.audio_t as i32,
+        },
+    });
+
+    out.video_rows.extend_from_slice(&prepared.video_rows);
+    out.audio_rows.extend_from_slice(&prepared.audio_rows);
+    out.pixels.push(super::condition::ReferencePixels {
+        presentation: match presentation {
+            Presentation::Image => super::multimodal::ReferenceKind::Image,
+            Presentation::Video => super::multimodal::ReferenceKind::Video,
+            Presentation::Audio => super::multimodal::ReferenceKind::Audio,
+        },
+        has_audio,
+        pixels: prepared.pixels,
+        height: prepared.height,
+        width: prepared.width,
+        frames: prepared.frames,
+        timestamps: prepared.timestamps,
+    });
+}
+
 #[derive(Debug)]
 pub struct ReferenceError(String);
 
@@ -316,6 +448,38 @@ fn prepare_visual(
         pixels,
         ..Prepared::default()
     })
+}
+
+/// `h3.c:832-855`: Qwen reads a reference video as time-major two-frame
+/// blocks, while the media reader and the VAE keep channel-major
+/// `[3, T, H, W]`. `first` and `second` are frame indices; a repeated index
+/// pairs a frame with itself, which is what the last odd sample does.
+pub fn vision_pair(
+    pixels: &[f32],
+    frames: usize,
+    height: usize,
+    width: usize,
+    first: usize,
+    second: usize,
+) -> Result<Vec<f32>, ReferenceError> {
+    let area = height * width;
+    if frames < 1 || height < 1 || width < 1 || first >= frames || second >= frames {
+        return Err(ReferenceError(
+            "reference vision pair is outside the decoded frames".to_string(),
+        ));
+    }
+
+    let mut pair = vec![0.0f32; 2 * 3 * area];
+    for (time, index) in [first, second].into_iter().enumerate() {
+        for channel in 0..3 {
+            let source = (channel * frames + index) * area;
+            let destination = (time * 3 + channel) * area;
+            pair[destination..destination + area]
+                .copy_from_slice(&pixels[source..source + area]);
+        }
+    }
+
+    Ok(pair)
 }
 
 /// `h3.c:1096-1114`: one timestamp per two-frame pair, `(first + second) / 4`.

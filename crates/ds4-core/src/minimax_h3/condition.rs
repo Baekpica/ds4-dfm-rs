@@ -87,6 +87,104 @@ pub fn anchor_embedding(
     .map_err(|error| format!("text encoder: {}", error.token()))
 }
 
+/// One prepared Ref2VA reference as the prompt embedding needs it.
+///
+/// The visual half is the decoded pixels the tower reads: one image, or every
+/// decoded frame of a video (`h3.c:1345-1414`). Audio references carry no
+/// pixels; their soundtrack reaches the DiT as audio rows instead.
+#[derive(Debug, Clone)]
+pub struct ReferencePixels {
+    pub presentation: multimodal::ReferenceKind,
+    pub has_audio: bool,
+    pub pixels: Vec<f32>,
+    pub height: u32,
+    pub width: u32,
+    pub frames: usize,
+    pub timestamps: Vec<f64>,
+}
+
+/// The Ref2VA prompt embedding: every reference's Qwen vision output in
+/// request order, spliced as `<Picture n>: ` / `<Video n>: <t seconds>` spans
+/// before the prompt (`h3_multimodal.c:243-360`).
+pub fn reference_embedding(
+    text_encoder: &Path,
+    tokenizer: &Tokenizer,
+    prompt: &str,
+    references: &[ReferencePixels],
+) -> Result<Embedding, String> {
+    // `h3.c:1345-1414`: an image is one tower call; a video runs one call per
+    // two-frame pair extracted from its channel-major pixels.
+    let mut outputs: Vec<Vec<vision_forward::VisionOutput>> = Vec::with_capacity(references.len());
+    for reference in references {
+        match reference.presentation {
+            multimodal::ReferenceKind::Audio => outputs.push(Vec::new()),
+            multimodal::ReferenceKind::Image => {
+                let grid = Grid::new(1, reference.height as usize, reference.width as usize)
+                    .map_err(|error| format!("vision grid: {}", error.token()))?;
+                outputs.push(vec![
+                    vision_forward::encode_dir(text_encoder, &reference.pixels, 1, grid)
+                        .map_err(|error| format!("vision: {}", error.token()))?,
+                ]);
+            }
+            multimodal::ReferenceKind::Video => {
+                let grid = Grid::new(2, reference.height as usize, reference.width as usize)
+                    .map_err(|error| format!("vision grid: {}", error.token()))?;
+                let area = reference.height as usize * reference.width as usize;
+                let samples = reference.frames.div_ceil(12);
+                let mut blocks = Vec::with_capacity(reference.timestamps.len());
+                for block in 0..reference.timestamps.len() {
+                    // `h3.c:1367-1372`: sample 2b and 2b+1, the last one
+                    // repeating when it runs past the sample count.
+                    let first_sample = 2 * block;
+                    let second_sample = if first_sample + 1 < samples {
+                        first_sample + 1
+                    } else {
+                        first_sample
+                    };
+                    let pair = super::reference::vision_pair(
+                        &reference.pixels,
+                        reference.frames,
+                        reference.height as usize,
+                        reference.width as usize,
+                        first_sample * 12,
+                        second_sample * 12,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    debug_assert_eq!(pair.len(), 2 * 3 * area);
+                    blocks.push(
+                        vision_forward::encode_dir(text_encoder, &pair, 2, grid)
+                            .map_err(|error| format!("vision: {}", error.token()))?,
+                    );
+                }
+                outputs.push(blocks);
+            }
+        }
+    }
+
+    let items: Vec<multimodal::Reference<'_>> = references
+        .iter()
+        .zip(outputs.iter())
+        .map(|(reference, vision)| multimodal::Reference {
+            kind: reference.presentation,
+            has_audio: reference.has_audio,
+            vision,
+            timestamps: &reference.timestamps,
+        })
+        .collect();
+
+    let presentation = multimodal::ref2va(tokenizer, prompt, &items)
+        .map_err(|error| format!("presentation: {}", error.token()))?;
+
+    text_forward::encode_multimodal(
+        text_encoder,
+        presentation.ids(),
+        presentation.spans(),
+        presentation.positions(),
+        presentation.tags(),
+    )
+    .map_err(|error| format!("text encoder: {}", error.token()))
+}
+
 /// The condition rows one anchor latent contributes: patchified, then jittered
 /// in place (`h3.c:1384-1406`, `:319-321`).
 pub fn anchor_rows(latent: &Latent, seed: u64) -> Result<Vec<f32>, DitError> {

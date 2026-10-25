@@ -1,0 +1,321 @@
+MiniMax-H3 local v1 wire gate (stand-in renderer)
+=================================================
+
+Date: 2026-10-25. Box: RTX 4070 SUPER 12 GB, 31 GB RAM, 28 cores.
+Binary: target/debug/h3-server-rs, built from the worktree at HEAD fca63484
+plus P15.1-P15.4 (the local v1 swap, uncommitted).
+Contract: docs/minimax-h3/local-v1-contract.md.
+
+What this gate proves: the three routes exist and nothing else does; the five
+field SGLang body reaches a resolved plan (task, canvas, duration, frames,
+seed, keyframe); the task record and the MP4 travel as the contract says; and
+every documented refusal comes back with its code over a real socket.
+
+What it does not prove: nothing about the engine. The renderer here is a
+stand-in that writes a real H.264/AAC clip with ffmpeg from the argv the bridge
+builds, so it proves the wire and the mapping, not h3 output. The real engine
+gate is P15.6, on the host that holds the weights.
+
+Host start:
+
+  $ H3_STANDIN_LOG=/tmp/h3-gate/standin.log \
+      target/debug/h3-server-rs --bind 127.0.0.1:18766 \
+      --out-dir /tmp/h3-gate/out --renderer /tmp/h3-standin.sh
+
+  h3-server-rs: local v1 video API on http://127.0.0.1:18766/v1/videos
+    output /tmp/h3-gate/out
+    renderer /tmp/h3-standin.sh (0 fixed args, 3600s timeout)
+
+The stand-in renderer, verbatim (/tmp/h3-standin.sh, outside the repo):
+
+  #!/usr/bin/env bash
+  set -euo pipefail
+  out=""; w=""; h=""; s=""; seed=""; first=""; last=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p) shift 2 ;;
+      --width) w=$2; shift 2 ;;
+      --height) h=$2; shift 2 ;;
+      --seconds) s=$2; shift 2 ;;
+      --seed) seed=$2; shift 2 ;;
+      --first-frame) first=$2; shift 2 ;;
+      --last-frame) last=$2; shift 2 ;;
+      -o) out=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  { printf 'argv: width=%s height=%s seconds=%s seed=%s first=%s last=%s out=%s\n' \
+      "$w" "$h" "$s" "$seed" "${first:--}" "${last:--}" "$out"
+    if [ -n "$first" ]; then
+      printf 'first-frame: exists=%s bytes=%s header=%s\n' \
+        "$([ -f "$first" ] && echo yes || echo no)" "$(wc -c <"$first")" \
+        "$(head -c 8 "$first" | od -An -tx1 | tr -d ' \n')"
+    fi
+  } >>"${H3_STANDIN_LOG:-/dev/null}"
+  ffmpeg -v error -y \
+    -f lavfi -i "testsrc=size=${w}x${h}:rate=24:duration=${s}" \
+    -f lavfi -i "anullsrc=r=32000:cl=mono" \
+    -t "$s" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest \
+    "$out"
+
+The keyframe for the FL2VA call is a 960x540 PNG (18680 bytes) made with
+ffmpeg, so `aspect_ratio: "auto"` has a 16:9 anchor to read.
+
+Transcript
+----------
+
+$ curl -s -X POST $BASE/v1/videos -d '{"task":"t2va","prompt":"A red cube rotates on a white background.","conditions":[],"target":{"short_edge":768,"aspect_ratio":"16:9","duration_seconds":10},"seed":0}'
+{"id":"video_1"}
+
+$ curl -s $BASE/v1/videos/video_1        # immediately
+{"id":"video_1","status":"in_progress","size":"1344x768","seconds":10,"frames":243,"seed":0,"created_at":1792942142,"completed_at":null,"error":null}
+
+$ curl -s $BASE/v1/videos/video_1        # after 2 polls
+{"id":"video_1","status":"completed","size":"1344x768","seconds":10,"frames":243,"seed":0,"created_at":1792942142,"completed_at":1792942142,"error":null}
+
+$ curl -sS -o t2va.mp4 $BASE/v1/videos/video_1/content
+$ ffprobe -v error -count_frames -show_entries stream=codec_type,codec_name,width,height,nb_read_frames,r_frame_rate:format=duration,size -of default=noprint_wrappers=1 t2va.mp4
+codec_name=h264
+codec_type=video
+width=1344
+height=768
+r_frame_rate=24/1
+nb_read_frames=240
+codec_name=aac
+codec_type=audio
+r_frame_rate=0/0
+nb_read_frames=313
+duration=10.000000
+size=546837
+
+$ curl -s -X POST $BASE/v1/videos -d "$FL2VA"     # conditions[0].uri is the 18680-byte PNG above, base64
+{"id":"video_2"}
+
+$ curl -s $BASE/v1/videos/video_2
+{"id":"video_2","status":"completed","size":"1344x768","seconds":8,"frames":192,"seed":3,"created_at":1792942142,"completed_at":1792942142,"error":null}
+
+$ curl -sS -o fl2va.mp4 $BASE/v1/videos/video_2/content
+$ ffprobe -v error -show_entries stream=codec_type,codec_name,width,height:format=duration -of default=noprint_wrappers=1 fl2va.mp4
+codec_name=h264
+codec_type=video
+width=1344
+height=768
+codec_name=aac
+codec_type=audio
+duration=8.000000
+
+$ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18766/v1/models
+404
+  body: {"error":{"message":"Invalid URL (GET /v1/models)","type":"invalid_request_error","param":null,"code":"unknown_url"}}
+
+$ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18766/v1/videos
+404
+  body: {"error":{"message":"Invalid URL (GET /v1/videos)","type":"invalid_request_error","param":null,"code":"unknown_url"}}
+
+$ curl -s -o /dev/null -w "%{http_code}" -X DELETE http://127.0.0.1:18766/v1/videos/video_1
+404
+  body: {"error":{"message":"Invalid URL (DELETE /v1/videos/video_1)","type":"invalid_request_error","param":null,"code":"unknown_url"}}
+
+$ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:18766/v1/videos -H Content-Type: application/json -d {"task":"ref2va","prompt":"p","conditions":[],"target":{"short_edge":768,"aspect_ratio":"16:9","duration_seconds":8},"seed":0}
+400
+  body: {"error":{"message":"ref2va needs the reference-media path (reference, reference_video, reference_audio, base_video), which this host does not carry yet; t2va and fl2va are served","type":"invalid_request_error","param":"task","code":"unsupported_task"}}
+
+$ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:18766/v1/videos -H Content-Type: application/json -d {"task":"t2va","prompt":"p","conditions":[],"target":{"short_edge":768,"aspect_ratio":"21:9","duration_seconds":8},"seed":0}
+400
+  body: {"error":{"message":"21:9 needs 1792x768 at this tier, which exceeds the 1344x768 released area; the widest canvas is 1344x768, a 1.333x stretch. Use 16:9","type":"invalid_request_error","param":"target.aspect_ratio","code":"invalid_aspect_ratio"}}
+
+$ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:18766/v1/videos -H Content-Type: application/json -d {"task":"t2va","prompt":"p","conditions":[],"target":{"short_edge":480,"aspect_ratio":"16:9","duration_seconds":8},"seed":0}
+400
+  body: {"error":{"message":"short_edge 480 is not served: the open checkpoint renders at 768","type":"invalid_request_error","param":"target.short_edge","code":"unsupported_short_edge"}}
+
+$ curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:18766/v1/videos -H Content-Type: application/json -d {"task":"t2va","prompt":"p","conditions":[],"target":{"short_edge":768,"aspect_ratio":"16:9","duration_seconds":8},"seed":0,"size":"1x1"}
+400
+  body: {"error":{"message":"the body carries size, which this contract does not define","type":"invalid_request_error","param":null,"code":"unknown_field"}}
+
+$ cat standin.log
+argv: width=1344 height=768 seconds=10 seed=0 first=- last=- out=/tmp/h3-gate/out/video_1.mp4
+argv: width=1344 height=768 seconds=8 seed=3 first=/tmp/h3-gate/out/video_2.first.png last=- out=/tmp/h3-gate/out/video_2.mp4
+first-frame: exists=yes bytes=18680 header=89504e470d0a1a0a
+
+$ ls -l out
+total 972
+-rw-rw-r-- 1 leandro leandro 546837 Oct 25 16:29 video_1.mp4
+-rw-rw-r-- 1 leandro leandro 444228 Oct 25 16:29 video_2.mp4
+----------
+
+Reading the transcript
+----------------------
+
+- Create answers the id alone, as `full-2k-t2va-h3-base.sh:24` reads it.
+- The record is already `in_progress` on the first poll, and it carries the
+  resolved target: 10 s at 16:9 768P is 1344x768 and 243 frames
+  (240 at 24 fps, aligned up to 5 + 17*14), with the body's seed 0.
+- The stand-in clip has 240 frames because it honours `--seconds` literally;
+  the engine receives the same `--seconds 10` and does the alignment itself
+  (`main.c:78-91`), which is why the record and the CLI never disagree. The
+  243 is the number the engine will render, not the stand-in's.
+- `auto` took the anchor's 16:9 aspect and reached the same 1344x768; the
+  stand-in log shows it received `--first-frame` as a 18680-byte
+  `89504e47` (PNG) file beside the output, and no `--last-frame`.
+- Both downloads are real MP4s: H.264 1344x768 at 24 fps plus an AAC track.
+- The absent routes answer 404 `unknown_url` with no stub: `/v1/models`, the
+  list route, and DELETE.
+- ref2va, 21:9, 480P and a field outside the contract are refused with their
+  documented codes, and 21:9 prints the numbers that refuse it.
+- No anchor file survives its render: `out/` holds the two MP4s only.
+
+Not covered here, by design: a last-frame keyframe (P15.3 plumbing is unit
+tested, the live proof is P15.6), the real engine, the Spark, and ComfyUI.
+
+Addendum, 2026-10-25: ref2va on the same wire (P15.8)
+=====================================================
+
+Same box, same stand-in approach, a rebuilt binary (HEAD fca63484 plus
+P15.1-P15.8, uncommitted). The renderer additionally logs every `--ref-*`
+flag and the file size behind it. Fixtures, made with ffmpeg: `ref.mp4`
+(320x180, 2 s, H.264), `ref.mp3` (2 s, 440 Hz, mono 32 kHz) and `ref.png`
+(640x360).
+
+Host:
+
+  $ H3_STANDIN_LOG=/tmp/h3-gate2/standin.log \
+      target/debug/h3-server-rs --bind 127.0.0.1:18767 \
+      --out-dir /tmp/h3-gate2/out --renderer /tmp/h3-standin-ref.sh
+
+Transcript
+----------
+
+$ POST /v1/videos    task ref2va, video + audio references, auto, 4 s
+{"id":"video_1"}
+
+$ GET /v1/videos/video_1
+{"id":"video_1","status":"completed","size":"1344x768","seconds":4,"frames":107,"seed":0,"created_at":1792943340,"completed_at":1792943340,"error":null}
+
+$ GET /v1/videos/video_1/content    then ffprobe
+codec_name=h264
+codec_type=video
+width=1344
+height=768
+codec_name=aac
+codec_type=audio
+duration=4.000000
+size=230722
+
+$ POST /v1/videos    task ref2va, image + audio references, 16:9, 5 s
+{"id":"video_2"}
+
+$ GET /v1/videos/video_2
+{"id":"video_2","status":"completed","size":"1344x768","seconds":5,"frames":124,"seed":7,"created_at":1792943352,"completed_at":1792943352,"error":null}
+
+$ cat standin.log
+argv: width=1344 height=768 seconds=4 seed=0 first=- last=- out=/tmp/h3-gate2/out/video_1.mp4 refs=[--ref-video:video_1.ref0.mp4:35507,--ref-audio:video_1.ref1.mp3:12536]
+argv: width=1344 height=768 seconds=5 seed=7 first=- last=- out=/tmp/h3-gate2/out/video_2.mp4 refs=[--ref-image:video_2.ref0.png:1636,--ref-audio:video_2.ref1.mp3:12536]
+
+$ ls out
+video_1.mp4  230722
+video_2.mp4  282847
+
+$ POST ref2va, role base_video
+400 {"error":{"message":"base_video is the platform's source-video edit role, which this host does not carry; reference, reference_video and reference_audio are served","type":"invalid_request_error","param":"conditions","code":"unsupported_condition"}}
+
+$ POST ref2va, audio reference only
+400 {"error":{"message":"ordered audio needs an image or video reference","type":"invalid_request_error","param":"conditions","code":"invalid_condition"}}
+
+$ POST ref2va, keyframe role
+400 {"error":{"message":"ref2va carries reference media, not a keyframe anchor; use fl2va for frame anchors","type":"invalid_request_error","param":"conditions","code":"invalid_condition"}}
+
+$ POST ref2va, video condition carrying an image data URI
+400 {"error":{"message":"a video reference needs a video/ data URI, not image/png","type":"invalid_request_error","param":"conditions","code":"invalid_uri"}}
+
+$ POST ref2va, corrupt video reference under auto
+400 {"error":{"message":"aspect_ratio auto takes the aspect from the first image or video reference, and its pixel size cannot be read","type":"invalid_request_error","param":"target.aspect_ratio","code":"invalid_aspect_ratio"}}
+
+Reading the transcript
+----------------------
+
+- `auto` resolved 1344x768 from the 320x180 video reference: the create-time
+  probe ran FFprobe on a temp copy and deleted it, and the reference supplied
+  the geometry the body does not state.
+- Request order is the renderer's order, one flag per reference
+  (`main.c:438-490`), and each reference arrived as a real file whose size
+  matches its fixture (35507, 12536, 1636 bytes).
+- No reference file survives the render: `out/` holds the two MP4s only.
+- A video reference keeps its own soundtrack, so that body reached the engine
+  as `--ref-video` plus `--ref-audio`; the engine labels them `<Audio 1>`
+  (the video's) and `<Audio 2>` (the mp3) in that order.
+- The refusals are the contract page's rows, each with its code and field.
+
+Not covered here: the engine path itself (no Ref2VA checkpoint on this box),
+the 15-second soundtrack budget inside the engine, the two-second minimum on a
+video's soundtrack, and the Ref2VA vs FL2VA transformer choice. Those need the
+Spark and ride the same gate as P15.6.
+
+Addendum, 2026-10-25 (later): the real engine on the Spark
+---------------------------------------------------------
+
+Same bodies, the port's own engine instead of the stand-in renderer. The tree
+was cloned from the fork at fca63484 (feature/minimax-h3) into ~/ds4-h3-port on
+the Spark and the twenty-three worktree paths were copied over the gvfs sftp
+mount; a sha256 manifest over the H3 scope matched on both sides. Built there
+with `make h3-rs CUDA_ARCH=sm_121` and `make h3-server-rs CUDA_ARCH=sm_121`
+(cargo 1.98.0, CUDA 13.0, aarch64), the latter because `--model-dir` needs the
+native feature.
+
+Server: `./h3-server-rs --model-dir /mnt/h3-artifacts/MiniMax-H3 --bind
+127.0.0.1:18111 --out-dir ~/h3-gate2/out --steps 20`. It answered
+`404 video_not_found` for an unknown id and `404 unknown_url` for
+`GET /v1/models` and `GET /v2/videos`.
+
+Refusals, live, each with its code (h3-gate2/results/*.json):
+
+  ratio 21:9                400 invalid_aspect_ratio  "21:9 needs 1792x768 ...
+                                                        the widest canvas is 1344x768"
+  duration 16               400 invalid_duration       "4 through 15, not 16"
+  extra field "model"       400 unknown_field          "the body carries model, ..."
+  audio-only reference      400 invalid_condition      "ordered audio needs an image or video reference"
+  base_video role           400 unsupported_condition  "base_video is the platform's source-video edit role ..."
+  reference in t2va         400 unsupported_condition  "the reference role belongs to ref2va; a t2va or fl2va clip carries only keyframes"
+  empty prompt              400 invalid_prompt         "prompt must not be empty"
+  unknown id                404 video_not_found
+  GET /v1/models            404 unknown_url
+  GET /v2/videos            404 unknown_url
+
+Create and record:
+
+  POST t2va 768P 16:9 4 s seed 42   -> {"id":"video_1"}
+  GET  /v1/videos/video_1           -> {"id":"video_1","status":"in_progress",
+                                        "size":"1344x768","seconds":4,"frames":107,
+                                        "seed":42,"created_at":...,"completed_at":null,
+                                        "error":null}
+
+The render did not finish. Two attempts (33 minutes, then 9 minutes on an
+instrumented build) were stopped by the operator; no MP4 was written and no
+error was raised. Measurements taken during the first attempt, all from this
+host: GPU 96 % at 2405-2411 MHz, 80-88 W, 82 C; the process had read 48.8 GB
+from disk and stopped reading; the h3-engine thread held ~98 % of one core;
+nvidia-smi showed no other compute process.
+
+Why the shape is hours: the per-step cost measured on this box is
+40.2 s at 1344x576/22 f (4,536 tokens) and 112.9 s at 1344x576/39 f (9,072
+tokens) - 2.8x for 2x, exponent ~1.5 (post-port-phases.md:905, :975). The gate
+shape, 1344x768/107 f, is 32,256 tokens, 3.6x the larger of those, so the step
+lands near 10-13 minutes and 20 steps is hours. The cheatsheet's 11.6-minute
+row for this shape assumed 104 TFLOP/s and is contradicted by that pair.
+
+Two gaps came out of the attempt, both closed in the worktree:
+
+- Observability: `h3.c:649-676` reports `on_progress(phase, completed, total)`
+  and the reference CLI prints it; the in-process engine installed no sink, so
+  a render was silent until the MP4 landed. engine.rs now prints
+  `STEP n/N seconds=<step> total=<since denoise start>` per evaluated step.
+- The renderer CLI: `h3-rs` parsed none of the reference flags
+  (`main.c:51-56`, `:333-338`, `:429-490`), so only `--model-dir` could serve a
+  reference. It now parses all six, switches to `Ref2VA` (`h3.c:872-875`),
+  refuses anchors with references (`h3.c:597-600`), and shares
+  `reference::prepare_set` with the engine.
+
+Not covered here: any MP4 from the real engine through /v1, the fl2va and
+ref2va live renders, and the two audio set rules inside the engine. The
+shortest honest wire render this contract can express is 768P, 4 s,
+`--steps 2`: about two steps plus a load and a VAE decode, roughly 30-40
+minutes, because `short_edge` is fixed at 768 and 4 s is the minimum duration.

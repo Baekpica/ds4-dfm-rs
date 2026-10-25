@@ -218,6 +218,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         audio_t: temporal.audio_t,
         frame_count: temporal.frame_count,
         keyframes: &keyframes,
+        references: &[],
     };
     let sequence = sequence::build(&spec).map_err(|error| format!("layout: {error:?}"))?;
     println!(

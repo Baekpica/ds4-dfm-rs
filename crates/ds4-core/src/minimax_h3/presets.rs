@@ -90,23 +90,32 @@ impl Ratio {
 /// released area. Measured against `assets/h3_direct_768p.mp4` (1344x768).
 pub fn tier_canvas(ratio: Ratio) -> (i32, i32) {
     let (width, height) = ratio.parts();
+    canvas_for(width as u32, height as u32)
+}
+
+/// The same rule for an aspect the caller states as pixels: an anchored image
+/// whose ratio has no name (`aspect_ratio: auto`). The short edge is the
+/// tier's, the long edge is snapped to the released grid and clamped by the
+/// released area, exactly as [`tier_canvas`] does for a name.
+pub fn canvas_for(width: u32, height: u32) -> (i32, i32) {
     let (long, short) = if width >= height {
         (width, height)
     } else {
         (height, width)
     };
+    if long == 0 || short == 0 {
+        return (0, 0);
+    }
 
     let edge = f64::from(TIER_SHORT_EDGE) * f64::from(long) / f64::from(short);
     let snapped = (edge / f64::from(CANVAS_MULTIPLE)).round() as i32 * CANVAS_MULTIPLE;
     let cap = MAX_PIXELS / i64::from(TIER_SHORT_EDGE);
     let clamped = snapped.min((cap as i32) / CANVAS_MULTIPLE * CANVAS_MULTIPLE);
 
-    if width > height {
+    if width >= height {
         (clamped, TIER_SHORT_EDGE)
-    } else if width < height {
-        (TIER_SHORT_EDGE, clamped)
     } else {
-        (TIER_SHORT_EDGE, TIER_SHORT_EDGE)
+        (TIER_SHORT_EDGE, clamped)
     }
 }
 
@@ -309,6 +318,13 @@ mod tests {
         assert_eq!(tier_canvas(Ratio::Square), (768, 768));
         // 21:9 wants 1792 px of width, which the cap refuses.
         assert_eq!(tier_canvas(Ratio::Wide21x9), (1344, 768));
+
+        // An anchored image states its aspect as pixels; the same rule
+        // applies, including the square and the cap.
+        assert_eq!(canvas_for(1920, 1080), (1344, 768));
+        assert_eq!(canvas_for(1080, 1920), (768, 1344));
+        assert_eq!(canvas_for(1024, 1024), (768, 768));
+        assert_eq!(canvas_for(0, 0), (0, 0));
 
         for entry in &PRESETS {
             let (width, height) = entry.render;

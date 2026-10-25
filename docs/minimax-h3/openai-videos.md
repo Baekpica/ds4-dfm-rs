@@ -1,10 +1,18 @@
 # OpenAI Videos API surface for MiniMax-H3
 
-Status: served by the standalone `h3-server-rs` binary. Two generation
-backends: `--model-dir` runs the port's resident engine (P10) in process;
-`--renderer PROGRAM` delegates to an operator-configured external program. They
-are exclusive, and with neither every create answers 503 `renderer_disabled`;
-no request field, header or call sequence selects a backend.
+Status: historical. P10 built and measured this surface on `h3-server-rs`;
+P15 replaced it with the official local contract
+([local-v1-contract.md](local-v1-contract.md)), so none of the routes below is
+served any more except `POST /v1/videos`, `GET /v1/videos/{id}` and
+`GET /v1/videos/{id}/content`, none of which reads an OpenAI body. The page is
+kept as the record of what P10 verified and why the OpenAI shape was the wrong
+carriage for a local model.
+
+Two generation backends survive unchanged: `--model-dir` runs the port's
+resident engine (P10) in process; `--renderer PROGRAM` delegates to an
+operator-configured external program. They are exclusive, and with neither
+every create answers 503 `renderer_disabled`; no request field, header or call
+sequence selects a backend.
 
 ## Verified wire reference
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # MiniMax-H3 (FL2VA) on the DGX Spark: fetch the released checkpoint, verify
 # it, build the Rust renderer, prove it against the recorded gate, and serve it
-# through the OpenAI Videos API.
+# through the local v1 video API (docs/minimax-h3/local-v1-contract.md).
 #
 #   artifact  MiniMaxAI/MiniMax-H3 on Hugging Face, about 465 GB
 #             (the reference README records the size; this script never pins a
@@ -414,8 +414,10 @@ $live"
 
     local waited=0
     while [ "$waited" -lt 60 ]; do
-        if curl -fsS "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
-            say "ready: http://127.0.0.1:$PORT/v1/models"
+        # Any HTTP answer proves the listener is up; the contract has no
+        # /v1/models, so an unknown id's 404 is the cheapest probe.
+        if curl -sS -o /dev/null "http://127.0.0.1:$PORT/v1/videos/video_0" 2>/dev/null; then
+            say "ready: http://127.0.0.1:$PORT/v1/videos"
             return
         fi
         sleep 1
@@ -461,8 +463,8 @@ status() {
     live="$(owners)"
     [ -z "$live" ] || printf '%s\n' "$live"
 
-    if curl -fsS "http://127.0.0.1:$PORT/v1/models" 2>/dev/null; then
-        echo
+    if curl -sS -o /dev/null "http://127.0.0.1:$PORT/v1/videos/video_0" 2>/dev/null; then
+        echo "  api: http://127.0.0.1:$PORT/v1/videos"
     fi
 }
 
@@ -472,14 +474,17 @@ logs() {
 }
 
 # --------------------------------------------------------------------------
-# test: one job through the OpenAI Videos surface
+# test: one job through the local v1 surface
 # --------------------------------------------------------------------------
 api_test() {
     say "POST /v1/videos"
+    # The contract serves one tier (short edge 768) and 4..15 seconds; a square
+    # target is the cheapest legal clip, so the smoke does not wait for 16:9.
     local body
     body="$(curl -fsS -X POST "http://127.0.0.1:$PORT/v1/videos" \
         -H 'Content-Type: application/json' \
-        -d "{\"model\":\"minimax-h3\",\"prompt\":\"$PROMPT\",\"seconds\":\"1\"}")" \
+        -d "{\"task\":\"t2va\",\"prompt\":\"$PROMPT\",\"conditions\":[],\
+\"target\":{\"short_edge\":768,\"aspect_ratio\":\"1:1\",\"duration_seconds\":4},\"seed\":0}")" \
         || die "the API host refused the job (is it running? '$0 start')"
 
     local id
@@ -505,7 +510,7 @@ api_test() {
 
     [ "$waited" -lt "${RENDER_TIMEOUT:-3600}" ] || die "job $id timed out"
 
-    local out="$OUT_DIR/openai-$id.mp4"
+    local out="$OUT_DIR/v1-$id.mp4"
     curl -fsS "http://127.0.0.1:$PORT/v1/videos/$id/content" -o "$out"
     [ -s "$out" ] || die "no content for job $id"
 

@@ -29,6 +29,7 @@ use super::host::{reuse_schedule, temporal, Rng, Schedule};
 use super::media::{self, Fit};
 use super::partition::{Catalog, Partition, TOKENIZER};
 use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
+use super::reference::{self, combine, fnv_f32};
 use super::sequence::{self, Spec};
 use super::text_forward::{self, Embedding};
 use super::tokenizer::{EmptyPrompt, Tokenizer};
@@ -73,6 +74,10 @@ pub struct RenderRequest {
     /// (`h3.c:1231-1257`). They condition the DiT; they are not delivered.
     pub first_frame: Option<PathBuf>,
     pub last_frame: Option<PathBuf>,
+    /// Ref2VA references, in request order (`h3.c:1027-1050`). Mutually
+    /// exclusive with the anchors (`h3.c:597-600`) and served from the
+    /// Ref2VA partition (`h3.c:872-875`).
+    pub references: Vec<reference::Reference>,
     pub output: PathBuf,
 }
 
@@ -133,10 +138,13 @@ struct PreparedKey {
     steps: usize,
     reuse: usize,
     rope: u32,
-    /// The anchor rows themselves, as `h3_conditioning_key` folds the media
-    /// pixels into its key (`h3.c:143-166`): identical pads over other pixels
-    /// must prefill again.
-    anchors: u64,
+    /// The conditioning rows themselves, as `h3_conditioning_key` folds the
+    /// media pixels into its key (`h3.c:143-166`): identical pads over other
+    /// pixels must prefill again. Anchors and reference media both land here.
+    media: u64,
+    /// Ordered references are a different partition and a different packed
+    /// layout even when their rows hash alike (`h3.c:168-190`).
+    references: usize,
 }
 
 struct Prepared {
@@ -179,6 +187,14 @@ impl Engine {
         self.catalog.component(Partition::Fl2va, name)
     }
 
+    /// Which partition the request reads (`h3.c:872-875`): ordered references
+    /// need the Ref2VA transformer, everything else the FL2VA one.
+    pub fn partition(&self, references: usize) -> Result<Partition, EngineError> {
+        self.catalog
+            .partition(references)
+            .map_err(|error| EngineError::new(error.message()))
+    }
+
     pub fn render(&mut self, request: &RenderRequest) -> Result<RenderReport, EngineError> {
         // The presentation is the caller's claim about the delivery, so it is
         // validated rather than re-derived: a mismatch would either stretch a
@@ -216,6 +232,16 @@ impl Engine {
 
         let shape = temporal(frame_count);
         let (latent_w, latent_h) = canvas.latent();
+        let partition = self.partition(request.references.len())?;
+
+        // `h3.c:597-600`: an ordered-reference request carries no anchors.
+        if !request.references.is_empty()
+            && (request.first_frame.is_some() || request.last_frame.is_some())
+        {
+            return Err(EngineError::new(
+                "full references cannot be combined with frame anchors",
+            ));
+        }
 
         // Anchors (`h3.c:1231-1345`): each frame is read at the canvas, encoded
         // by the video VAE, patchified and jittered before the layout is built,
@@ -223,41 +249,59 @@ impl Engine {
         // pixels are the prompt's vision spans, so they are read once.
         let anchors = self.read_anchors(request, frame_count, latent_h, latent_w)?;
         let anchor_hash = fnv_f32(&anchors.rows);
-        let (keyframes, video_rows) = (anchors.keyframes, anchors.rows);
+        let (keyframes, mut video_rows) = (anchors.keyframes, anchors.rows);
+
+        // References (`h3.c:1027-1200`): decoded at their own canvases,
+        // encoded and jittered in request order. Their rows join the anchors'
+        // only in a request that cannot carry both.
+        let references = self.read_references(request, shape.frame_count)?;
+        let media_hash = combine(anchor_hash, references.hash);
+        video_rows.extend_from_slice(&references.video_rows);
+        let audio_rows = references.audio_rows.clone();
 
         // Conditioning: the reference memoizes the prompt embedding
         // (`h3.c:223-309`) because the encoder is the largest read of the run.
-        // An anchor changes the embedding (it is a vision span), so the anchor
-        // rows are part of the memo key, as `h3.c:143-166` folds the media in.
+        // Anchors and references change the embedding (they are vision spans),
+        // so their rows are part of the memo key, as `h3.c:143-166` folds the
+        // media in.
         let text_started = Instant::now();
-        let cached = self.embedding.as_ref().and_then(|(prompt, anchors, text)| {
-            (prompt == &request.prompt && *anchors == anchor_hash).then(|| text.clone())
+        let cached = self.embedding.as_ref().and_then(|(prompt, media, text)| {
+            (prompt == &request.prompt && *media == media_hash).then(|| text.clone())
         });
         let text_hit = cached.is_some();
         let text = match cached {
             Some(text) => text,
             None => {
-                let text = match anchors.pixels.is_empty() {
-                    true => {
-                        let ids = self
-                            .tokenizer
-                            .encode(&request.prompt, EmptyPrompt::Pad)
-                            .map_err(|error| {
-                                EngineError::new(format!("tokenizer: {}", error.token()))
-                            })?;
-                        text_forward::encode(&self.component("text_encoder"), &ids).map_err(
-                            |error| EngineError::new(format!("text encoder: {}", error.token())),
-                        )
-                    }
-                    false => condition::anchor_embedding(
+                // `h3.c:1345-1436`: references take the Ref2VA presentation,
+                // anchors the FL2VA one, and neither takes the plain text path.
+                let text = if !references.pixels.is_empty() {
+                    condition::reference_embedding(
+                        &self.component("text_encoder"),
+                        &self.tokenizer,
+                        &request.prompt,
+                        &references.pixels,
+                    )
+                    .map_err(EngineError::new)?
+                } else if !anchors.pixels.is_empty() {
+                    condition::anchor_embedding(
                         &self.component("text_encoder"),
                         &self.tokenizer,
                         &request.prompt,
                         &anchors.pixels,
                     )
-                    .map_err(EngineError::new),
-                }?;
-                self.embedding = Some((request.prompt.clone(), anchor_hash, text.clone()));
+                    .map_err(EngineError::new)?
+                } else {
+                    let ids = self
+                        .tokenizer
+                        .encode(&request.prompt, EmptyPrompt::Pad)
+                        .map_err(|error| {
+                            EngineError::new(format!("tokenizer: {}", error.token()))
+                        })?;
+                    text_forward::encode(&self.component("text_encoder"), &ids).map_err(|error| {
+                        EngineError::new(format!("text encoder: {}", error.token()))
+                    })?
+                };
+                self.embedding = Some((request.prompt.clone(), media_hash, text.clone()));
                 text
             }
         };
@@ -271,7 +315,8 @@ impl Engine {
             steps: request.steps,
             reuse: request.reuse,
             rope: canvas.rope_scale(false).to_bits(),
-            anchors: anchor_hash,
+            media: media_hash,
+            references: request.references.len(),
         };
 
         // Prepared DiT (`h3.c:168-190`, `h3.c:1505-1516`): a hit skips the
@@ -290,11 +335,12 @@ impl Engine {
                 audio_t: shape.audio_t,
                 frame_count: shape.frame_count,
                 keyframes: &keyframes,
+                references: &references.layout,
             };
             let sequence = sequence::build(&spec)
                 .map_err(|error| EngineError::new(format!("layout: {error:?}")))?;
             let dit = Dit::load_with(
-                &self.component("transformer"),
+                &self.catalog.component(partition, "transformer"),
                 sequence,
                 schedule,
                 &text,
@@ -313,9 +359,9 @@ impl Engine {
             .dit;
 
         // The leading spans are refreshed on every call, cached graph or fresh
-        // (`h3_dit_reset_run`, `h3_dit.c:2408-2440`). With no anchors both
-        // counts are zero and this only validates.
-        dit.set_conditions(&video_rows, &[])
+        // (`h3_dit_reset_run`, `h3_dit.c:2408-2440`). With no media both counts
+        // are zero and this only validates.
+        dit.set_conditions(&video_rows, &audio_rows)
             .map_err(|error| EngineError::new(format!("conditions: {error}")))?;
 
         let mut video = vec![0.0f32; dit.video_elements()];
@@ -324,7 +370,23 @@ impl Engine {
         Rng::seed(request.seed).fill_normal(&mut audio);
 
         let denoise_started = Instant::now();
-        dit.denoise(&mut video, &mut audio, request.reuse)
+        // The reference reports progress through `on_progress(phase, done,
+        // total)` (`h3.c:649-676`); without a sink an in-process render is
+        // silent until the MP4 lands, which reads as a stall. One line per
+        // evaluated step, with the seconds since the previous one.
+        let mut step_started = Instant::now();
+        let mut progress = |step: usize, _latent: &[f32]| {
+            eprintln!(
+                "STEP {}/{} seconds={:.3} total={:.3}",
+                step + 1,
+                request.steps,
+                step_started.elapsed().as_secs_f64(),
+                denoise_started.elapsed().as_secs_f64()
+            );
+            step_started = Instant::now();
+            Ok(())
+        };
+        dit.denoise_with(&mut video, &mut audio, request.reuse, Some(&mut progress))
             .map_err(|error| EngineError::new(format!("denoise: {error}")))?;
         let denoise_seconds = denoise_started.elapsed().as_secs_f64();
 
@@ -409,6 +471,36 @@ impl Engine {
             video_seconds,
             mux_seconds,
         })
+    }
+
+    /// Read, encode and jitter the ordered references (`h3.c:1027-1200`).
+    ///
+    /// A reference is decoded at its own canvas, never the render canvas, and
+    /// a video is truncated to the request's frame count so its soundtrack and
+    /// its rows describe the same clip. The twelve cap (`h3.c:588`) and the
+    /// 15-second budget over the whole set (`h3.c:1171-1176`) live in
+    /// `reference::prepare_set`, which the CLI renderer calls too.
+    fn read_references(
+        &self,
+        request: &RenderRequest,
+        frame_count: i32,
+    ) -> Result<reference::Set, EngineError> {
+        let video_vae = self.component("video_vae/source");
+        let audio_vae = self.component("audio_vae");
+        let paths = reference::Paths {
+            video_vae: &video_vae,
+            audio_vae: &audio_vae,
+        };
+
+        reference::prepare_set(
+            &paths,
+            &request.references,
+            reference::ImageSize::Match,
+            (request.width as u32, request.height as u32),
+            frame_count as usize,
+            request.seed,
+        )
+        .map_err(|error| EngineError::new(error.message()))
     }
 
     /// Read, encode, patchify and jitter the anchor frames (`h3.c:1231-1345`).
@@ -563,18 +655,6 @@ fn small(value: impl TryInto<i32>) -> Result<i32, EngineError> {
         .map_err(|_| EngineError::new("a decoded dimension does not fit an i32"))
 }
 
-/// The gate hash convention: FNV-1a over little-endian bytes, the same one the
-/// probe family uses (`text_forward::fnv1a`).
-fn fnv_f32(values: &[f32]) -> u64 {
-    let mut bytes = Vec::with_capacity(values.len() * 4);
-
-    for value in values {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
-    text_forward::fnv1a(&bytes)
-}
-
 /// Kept for the operator's log line; the server prints it per request.
 impl RenderReport {
     pub fn summary(&self) -> String {
@@ -609,7 +689,7 @@ impl RenderReport {
 mod tests {
     use super::*;
 
-    fn key(frames: i32, anchors: u64) -> PreparedKey {
+    fn key(frames: i32, media: u64) -> PreparedKey {
         PreparedKey {
             prompt: "p".to_string(),
             width: 512,
@@ -618,7 +698,8 @@ mod tests {
             steps: 20,
             reuse: 1,
             rope: 16,
-            anchors,
+            media,
+            references: 0,
         }
     }
 

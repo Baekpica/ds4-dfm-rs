@@ -28,7 +28,7 @@ use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
 use ds4_core::minimax_h3::{
-    condition, device, media, render, terminal, vae_audio, vae_encoder, vae_video,
+    condition, device, media, reference, render, terminal, vae_audio, vae_encoder, vae_video,
 };
 
 /// `h3.h:13-17`.
@@ -43,6 +43,8 @@ const DEFAULT_OUTPUT: &str = "outputs/h3.mp4";
 
 /// The component layout `h3.c:425-436` resolves under `-d`.
 const FL2VA: &str = "FL2VA";
+/// The ordered-reference partition (`h3.c:444-452`, selected at `:872-875`).
+const REF2VA: &str = "Ref2VA";
 
 struct Options {
     model_dir: PathBuf,
@@ -60,6 +62,11 @@ struct Options {
     /// `--first-frame` / `--last-frame` (`main.c:47-48`): the FL2VA anchors.
     first_frame: Option<PathBuf>,
     last_frame: Option<PathBuf>,
+    /// `--ref-image`, `--ref-video`, `--ref-silent-video`, `--ref-video-audio`
+    /// and `--ref-audio` (`main.c:51-56`): ordered Ref2VA references.
+    references: Vec<reference::Reference>,
+    /// `--ref-image-size` (`main.c:52`, `:448-457`): `match` unless asked.
+    reference_image_size: reference::ImageSize,
     reference_rope: bool,
     stream: bool,
     /// `--token-reduction` (`main.c:34`, `:306`, `:394`).
@@ -101,11 +108,26 @@ fn run() -> Result<ExitCode, String> {
     )?;
     let frame_count = check_frames(options.frames)?;
 
+    // `h3.c:597-600`: a request carries anchors or ordered references, never
+    // both; refuse before any weight is read.
+    if !options.references.is_empty()
+        && (options.first_frame.is_some() || options.last_frame.is_some())
+    {
+        return Err("full references cannot be combined with frame anchors".to_string());
+    }
+
     if options.info {
         return info(&options, &canvas, frame_count);
     }
 
-    let component = |name: &str| options.model_dir.join(FL2VA).join(name);
+    // `h3.c:872-875`: ordered references read the Ref2VA partition, and every
+    // component comes from it (`h3.c:927-936`).
+    let partition = if options.references.is_empty() {
+        FL2VA
+    } else {
+        REF2VA
+    };
+    let component = |name: &str| options.model_dir.join(partition).join(name);
     let tokenizer_path = component("tokenizer/tokenizer.json");
     let tokenizer = Tokenizer::load(&tokenizer_path)
         .map_err(|error| format!("tokenizer: {}", error.token()))?;
@@ -121,22 +143,41 @@ fn run() -> Result<ExitCode, String> {
         );
     }
 
+    // `h3.c:1027-1200`: each reference at its own canvas, in request order.
+    let references = read_references(&options, &component, frame_count)?;
+    if !references.layout.is_empty() {
+        println!(
+            "REFERENCES count={} video_rows={} audio_rows={} samples={} hash={:016x}",
+            references.layout.len(),
+            references.video_rows.len() / condition::VIDEO_ROW_WIDTH,
+            references.audio_rows.len(),
+            references.samples,
+            references.hash
+        );
+    }
+
     let started = Instant::now();
-    let text = match anchors.pixels.is_empty() {
-        true => {
-            let ids = tokenizer
-                .encode(&options.prompt, EmptyPrompt::Pad)
-                .map_err(|error| format!("tokenizer: {}", error.token()))?;
-            text_forward::encode(&component("text_encoder"), &ids).map_err(|error| error.token())
-        }
-        // `h3.c:1345-1414`: an anchor is a vision span in the prompt, not only
-        // a VAE row, so the text encoder runs after the tower.
-        false => condition::anchor_embedding(
+    let text = if !references.pixels.is_empty() {
+        // `h3.c:1345-1414`: a reference is a vision span in the prompt under
+        // the Ref2VA presentation, so the encoder runs after the tower.
+        condition::reference_embedding(
+            &component("text_encoder"),
+            &tokenizer,
+            &options.prompt,
+            &references.pixels,
+        )
+    } else if !anchors.pixels.is_empty() {
+        condition::anchor_embedding(
             &component("text_encoder"),
             &tokenizer,
             &options.prompt,
             &anchors.pixels,
-        ),
+        )
+    } else {
+        let ids = tokenizer
+            .encode(&options.prompt, EmptyPrompt::Pad)
+            .map_err(|error| format!("tokenizer: {}", error.token()))?;
+        text_forward::encode(&component("text_encoder"), &ids).map_err(|error| error.token())
     }?;
     println!(
         "TEXT tokens={} width={} fnv={:016x} seconds={:.3}",
@@ -146,7 +187,8 @@ fn run() -> Result<ExitCode, String> {
         started.elapsed().as_secs_f64()
     );
 
-    let (keyframes, condition_rows) = (anchors.keyframes, anchors.rows);
+    let (keyframes, mut condition_rows) = (anchors.keyframes, anchors.rows);
+    condition_rows.extend_from_slice(&references.video_rows);
     let spec = Spec {
         text_len: text.tokens(),
         latent_t: shape.video_t,
@@ -155,6 +197,7 @@ fn run() -> Result<ExitCode, String> {
         audio_t: shape.audio_t,
         frame_count: shape.frame_count,
         keyframes: &keyframes,
+        references: &references.layout,
     };
     let sequence = sequence::build(&spec).map_err(|error| format!("layout: {error:?}"))?;
 
@@ -200,9 +243,9 @@ fn run() -> Result<ExitCode, String> {
         shape.audio_t
     );
 
-    if !condition_rows.is_empty() {
+    if !condition_rows.is_empty() || !references.audio_rows.is_empty() {
         model
-            .set_conditions(&condition_rows, &[])
+            .set_conditions(&condition_rows, &references.audio_rows)
             .map_err(|error| error.to_string())?;
     }
 
@@ -517,7 +560,14 @@ fn info(options: &Options, canvas: &Canvas, frame_count: i32) -> Result<ExitCode
         if device.unified_memory { "yes" } else { "no" }
     );
 
-    let component = |name: &str| options.model_dir.join(FL2VA).join(name);
+    // `h3.c:872-875` applies to `--info` too: the component probe names the
+    // partition the run below would read.
+    let partition = if options.references.is_empty() {
+        FL2VA
+    } else {
+        REF2VA
+    };
+    let component = |name: &str| options.model_dir.join(partition).join(name);
     let required = [
         component("tokenizer/tokenizer.json"),
         component("text_encoder"),
@@ -562,8 +612,31 @@ struct Anchors {
     pixels: Vec<condition::AnchorPixels>,
 }
 
-fn read_anchors(
+/// Prepare the ordered references the way the resident engine does: one shared
+/// port (`h3.c:1027-1200`), so the CLI and `--model-dir` cannot drift.
+fn read_references(
     options: &Options,
+    component: &impl Fn(&str) -> PathBuf,
+    frame_count: i32,
+) -> Result<reference::Set, String> {
+    let (video_vae, audio_vae) = (component("video_vae/source"), component("audio_vae"));
+    let paths = reference::Paths {
+        video_vae: &video_vae,
+        audio_vae: &audio_vae,
+    };
+
+    reference::prepare_set(
+        &paths,
+        &options.references,
+        options.reference_image_size,
+        (options.width as u32, options.height as u32),
+        frame_count as usize,
+        options.seed,
+    )
+    .map_err(|error| error.message().to_string())
+}
+
+fn read_anchors(    options: &Options,
     frame_count: i32,
     latent_h: i32,
     latent_w: i32,
@@ -640,6 +713,8 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         seed: DEFAULT_SEED,
         first_frame: None,
         last_frame: None,
+        references: Vec::new(),
+        reference_image_size: reference::ImageSize::Match,
         reference_rope: false,
         stream: false,
         token_reduction: false,
@@ -681,6 +756,54 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             }
             "--first-frame" => options.first_frame = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--last-frame" => options.last_frame = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            // `main.c:429-490`: each flag appends one ordered reference; the
+            // video forms differ only in whether the embedded track is read.
+            "--ref-image" => options.references.push(reference::Reference {
+                kind: reference::Kind::Image,
+                path: PathBuf::from(value(&mut argv, &flag)?),
+                audio_path: None,
+                include_embedded_audio: false,
+            }),
+            "--ref-image-size" => {
+                let text = value(&mut argv, &flag)?;
+                options.reference_image_size = match text.as_str() {
+                    "match" => reference::ImageSize::Match,
+                    "max" => reference::ImageSize::Max,
+                    other => {
+                        return Err(format!(
+                            "--ref-image-size must be match or max, not {other}"
+                        ))
+                    }
+                };
+            }
+            "--ref-video" => options.references.push(reference::Reference {
+                kind: reference::Kind::Video,
+                path: PathBuf::from(value(&mut argv, &flag)?),
+                audio_path: None,
+                include_embedded_audio: true,
+            }),
+            "--ref-silent-video" => options.references.push(reference::Reference {
+                kind: reference::Kind::Video,
+                path: PathBuf::from(value(&mut argv, &flag)?),
+                audio_path: None,
+                include_embedded_audio: false,
+            }),
+            "--ref-video-audio" => {
+                let path = PathBuf::from(value(&mut argv, &flag)?);
+                let audio = PathBuf::from(value(&mut argv, &flag)?);
+                options.references.push(reference::Reference {
+                    kind: reference::Kind::VideoAudio,
+                    path,
+                    audio_path: Some(audio),
+                    include_embedded_audio: false,
+                });
+            }
+            "--ref-audio" => options.references.push(reference::Reference {
+                kind: reference::Kind::Audio,
+                path: PathBuf::from(value(&mut argv, &flag)?),
+                audio_path: None,
+                include_embedded_audio: false,
+            }),
             "--use-reference-rope" => options.reference_rope = true,
             "--ssd-streaming" => options.stream = true,
             "--token-reduction" => options.token_reduction = true,
@@ -780,11 +903,11 @@ fn seconds_to_frames(text: &str) -> Result<i32, String> {
 }
 
 fn usage() -> &'static str {
-    "h3-rs - MiniMax-H3 FL2VA renderer
+    "h3-rs - MiniMax-H3 renderer
 
 Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
 
-  -d, --model-dir DIR       checkpoint root holding FL2VA/ (required)
+  -d, --model-dir DIR       checkpoint root holding FL2VA/ and Ref2VA/ (required)
   -p, --prompt TEXT         prompt (required unless --info)
   -o, --output PATH         MP4 path (default outputs/h3.mp4)
   --width N                 output canvas width (default 864)
@@ -799,6 +922,12 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --seed N                  seed, each modality (default 42)
   --first-frame PATH        anchor: the clip's first frame
   --last-frame PATH         anchor: the clip's last frame
+  --ref-image PATH          append an ordered Ref2VA image
+  --ref-image-size S        image sizing: match (default) or max
+  --ref-video PATH          append a video, including embedded audio
+  --ref-silent-video PATH   append a video without its audio
+  --ref-video-audio VIDEO AUDIO  append a video and a separate soundtrack
+  --ref-audio PATH          append an ordered standalone audio clip
   --use-reference-rope      rope scale 1.0 even at 256x256
   --ssd-streaming           stream the DiT blocks from the checkpoint
   --token-reduction         pair video tokens in middle DiT blocks

@@ -44,6 +44,18 @@ pub struct VisionOutput {
 }
 
 impl VisionOutput {
+    /// A shape-only output for the presentation tests, which never run the
+    /// decoder.
+    #[cfg(test)]
+    pub(crate) fn fixture(grid: Grid, tokens: usize) -> VisionOutput {
+        VisionOutput {
+            grid,
+            tokens,
+            merged: vec![0u8; tokens * OUTPUT_WIDTH as usize * 2],
+            deepstack: std::array::from_fn(|_| Vec::new()),
+        }
+    }
+
     pub fn grid(&self) -> Grid {
         self.grid
     }

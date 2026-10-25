@@ -214,7 +214,8 @@ none is implemented before the attribution above.
 
 ## P10 — The OpenAI Videos API, end to end, with a resident engine
 
-Surface superseded 2026-10-25: the routes are now the official v2 ones (P15).
+Surface superseded 2026-10-25: the routes are the official *local* `/v1` ones
+with the SGLang body, not the OpenAI Videos body (`local-v1-contract.md`, P15).
 The residency, admission and memo work recorded below stands unchanged.
 
 Today `h3-server-rs` spawns the renderer per request (`CommandRenderer`,
@@ -1310,70 +1311,136 @@ frames at 512x192 (45 s). A first attempt at 107 frames and 1344x576 was
 aborted after ten minutes; P14.6 must size its parity clip with this cost in
 mind.
 
-## P15 — The official v2 surface (opened 2026-10-25)
+## P15 — The local v1 contract (opened and redirected 2026-10-25)
 
-Operator decision, 2026-10-25: the official `/v2` contract is the port's
-MiniMax-H3 serving surface; the `/v1/videos` surface is retired, not kept as a
-deprecated alias. MKV output is a future nice-to-have and is not part of this
-phase.
+History, because it reverses a committed decision. P15 first adopted the hosted
+platform's `/v2` contract (commit 2093add4) on the reading that the official
+repo's own scripts call it. A full read of those scripts the same day showed
+two contracts, not one:
 
-Why the switch follows from the artifacts, not from preference:
+- every `/v2` caller uses `$MINIMAX_API_BASE` with a Bearer token — the hosted
+  platform: `full-2k-t2va-reference-768p-result-by-directly-calling-open-platform-api.sh:8`,
+  `full-2k-i2va-h3-context-ir.sh:8`, `full-2k-i2va-h3-regenerate-2k.sh:39`;
+- every local caller uses `$SGLANG_DEPLOYMENT_URL` or `localhost:30010` and
+  the same three routes — `POST /v1/videos`, `GET /v1/videos/{id}`,
+  `GET /v1/videos/{id}/content`: `full-2k-t2va-h3-base.sh:24-31`,
+  `reproducible-768p-fl2va-request.sh:10-44`;
+- the two `/v2` routes the local contract lacks, context-ir and regeneration,
+  are the hosted-only features (`README.md:104`, `:170`).
 
-- The official contract is the product's: `POST /v2/video_generation` with
-  Bearer auth and a content array (`/data/MiniMax-H3`, HEAD `d21241f`,
-  `scripts/readme/full-2k-t2va-reference-768p-result-by-directly-calling-open-platform-api.sh:6-23`),
-  the query `:26-31`, the `content.url` download `:34-35`, the base URLs
-  `README.md:303-305`.
-- The current `/v1/videos` is neither the hosted contract nor the reference's
-  local one. Its routes and body are OpenAI's Videos reference
-  (`h3_video.rs:7-12`); the reference's own local SGLang contract uses the same
-  path with a different body — `task`, `prompt`, `conditions`, `target`
-  (`scripts/readme/reproducible-768p-t2va-request.sh:6-35`). A client written
-  for either side cannot use it unchanged.
-- The local contract's upstream is recorded as shut down (`openai-videos.md`
-  notes it); the official v2 is live.
+The operator reversed the decision the same day. The served surface is the
+local one, `/v1` with the SGLang body; `/v2` gets no route at all — not
+implemented and not stubbed with a 501, because no local client speaks it.
+
+The contract is `docs/minimax-h3/local-v1-contract.md`: three routes, five
+body fields (`task`, `prompt`, `conditions`, `target`, `seed`), t2va and fl2va
+at 768P, keyframes as data URIs, every other value refused by name.
 
 The units, in order, each one commit with its own tests and evidence:
 
-1. **P15.1 — wire types and store, no HTTP**
-   (`crates/ds4-core/src/minimax_h3/task_api.rs`): content-array parsing and
-   validation, the Task object and the
-   `queued/running/succeeded/failed/cancelled` state machine, the
-   `{type, error{type, message, http_code}, request_id}` envelope with numeric
-   codes, the 7-day window, list filters, the delete state machine.
-2. **P15.2 — routes** (`crates/ds4-server/src/h3_official.rs` plus
-   `h3-server-rs` wiring): create, query, list, delete, the content route,
-   Bearer auth and `--public-base-url`. The content route is the one route the
-   official contract does not name — it names an opaque URL — so serving the
-   bytes under the port's base URL is the named deviation.
-3. **P15.3 — create-to-render mapping**: resolution/ratio/duration to
-   `VideoSize` and frames (`presets::tier_canvas`, not the P11 delivery
-   presets), adaptive from the anchor's size, data URI to `AnchorImage`, the
-   additive `last_frame` field on `RenderSpec`, usage and echoed metadata.
-4. **P15.4 — refusals**, each by name in the official envelope: H3-Context-IR
-   and H3-Regenerate-2K (501, hosted-only per `README.md:104` and `:170`), 2K
-   (400/2013), the three other model ids (400/2022), reference roles until
-   P14.5-P14.6, `callback_url`, `extra`, public URLs and `mm_file://` (data
-   URIs only), HEIC, a second text item, no renderer, queue full.
-5. **P15.5 — operator documentation** (`docs/minimax-h3/official-api.md`):
-   routes, fields, state machine, the deviation list; doc-index update.
-6. **P15.6 — Spark gate**: one 768P t2va through `/v2` (text, 16:9), poll to
-   `succeeded`, download `content.url`, `ffprobe` against
-   `assets/h3_direct_768p.mp4`; one i2va with a data-URI first frame.
-7. **P15.7 — retire `/v1`** in the same release, immediately after P15.6
-   passes: delete the `/v1` route table, the OpenAI wire types and their tests;
-   keep the `Renderer` trait, the engine and the worker. The research report
-   recommended keeping `/v1` one release as a deprecated alias; the operator's
-   decision overrides that.
+1. **P15.1 — the contract and the mapping, no HTTP**
+   (`crates/ds4-core/src/minimax_h3/local_api.rs`): body parsing with unknown
+   fields refused, task/role/condition validation, ratio to canvas
+   (`presets::tier_canvas`), anchor aspect to canvas (`presets::canvas_for`,
+   the same rule for a ratio stated as pixels), duration to aligned frames,
+   anchor bytes to `AnchorImage`, and the 21:9 refusal with its numbers.
+2. **P15.2 — the swap** (in the worktree, uncommitted): `/v1/videos` takes the
+   SGLang body through `local_api`, and the OpenAI carriage is gone —
+   `ImageRef`, `VideoRequest`, `parse_request`, the thirteen-field
+   `VideoResource`, `VideoList`, `VideoDelete` and `ListQuery` deleted from
+   `video_api.rs`, `/v1/models`, list and delete deleted from `h3_video.rs`.
+   What remains there is the task record, the four states and the bounded
+   store. Consequences, each measured by a test:
+   - the create answer is the id alone, as `full-2k-t2va-h3-base.sh:24` reads
+     it; the record is `{id, status, size, seconds, frames, seed, created_at,
+     completed_at, error}` and does not echo the prompt;
+   - `RenderSpec` is gone: the renderer takes the validated `Plan`, so the
+     wire's resolved target is the render contract and the seed comes from the
+     body instead of a startup flag. `--model` and `--seed` leave the binary
+     with it;
+   - the query string is dropped before routing, because the contract has no
+     query parameter (`?variant=` was the OpenAI download knob);
+   - the renderer argv gains `--seed` (`main.c:330`) beside `-p`, `-o`,
+     `--width`, `--height` and `--seconds`.
+3. **P15.3 — the engine request**: `last_frame` reaches `RenderRequest`
+   (`engine.rs:71`) through both renderers and `AnchorFile`. Folded into
+   P15.2, since `RenderSpec` disappeared and both anchors now ride the plan;
+   `CommandRenderer` passes `--first-frame`/`--last-frame` (`main.c:331-332`).
+   What is left for P15.6 is the live proof with a last-frame keyframe.
+4. **P15.4 — refusals on the wire** (landed with P15.2): one test drives every
+   row of the contract page's refusal table through `server.handle` and
+   asserts the status and the code — eighteen bodies, from `invalid_json` to
+   `unsupported_uri`, plus the four 404 rows and the 429 and 503 ones in their
+   own tests.
+5. **P15.5 — the stand-in gate on the 4070** (landed 2026-10-25,
+   `docs/minimax-h3/v1-local-gate.txt`): the real server on a real socket, a
+   renderer that writes an H.264/AAC clip from the argv the bridge builds, a
+   fixed curl transcript over every route, and `ffprobe` of both downloads.
+   It proves the wire, the mapping and the refusals; it says nothing about h3
+   output, which is P15.6's job.
+6. **P15.6 — the real engine gate**, on the host that holds the weights: t2va
+   768P 16:9, then fl2va with a data-URI keyframe, poll to `completed`,
+   download, `ffprobe`, and the engine's stage seconds. Open, with the wire
+   proven and the render stopped 2026-10-25: the Spark clone answered
+   `{"id":"video_1"}` and the record read `1344x768`, `4 s`, `107 frames`, then
+   `in_progress` for 33 minutes before the operator stopped it. Measured
+   per-step cost says why: 40.2 s at 4,536 tokens and 112.9 s at 9,072 (2.8x
+   for 2x), so the gate shape's 32,256 tokens is hours at 20 steps. Two
+   changes came out of that attempt: the in-process engine now emits the
+   reference's progress channel (`STEP n/N seconds=`, `h3.c:649-676`), and the
+   CLI renderer learned the reference flags (`h3-rs`, `main.c:429-490`).
+   The next bounded gate is 768P, 4 s, `--steps 2`.
+7. **P15.7 — ComfyUI and the operator skill**: the node lives outside this
+   repo, in ComfyUI's own Python runtime; it calls the three routes and hands
+   ComfyUI a local file. Then `h3-prompt-writing`, the one portable skill of
+   the nine in `/data/MiniMax-H3/skills`.
+8. **P15.8 — ref2va on the local contract** (landed in the worktree,
+   2026-10-25): the ordered-reference path ported from the reference.
+   - the ordered presentation, `h3_multimodal.c:243-360`: `<Audio n>: ` for a
+     reference with a soundtrack, `<Picture n>: ` for an image, `<Video n>: `
+     then one `<t.t seconds>` per sampled block, then the prompt
+     (`multimodal::ref2va`); a video's blocks are the two-frame pairs
+     `h3.c:832-855` extracts from channel-major pixels (`reference::vision_pair`).
+   - the layout segments, `h3_host.c:367-433`: image, audio and video reference
+     spans in request order, the cursor advancing by one, by the audio length
+     and by `max(audio, video span)`; a video's rows carry `REF_IMAGE`, as the
+     reference labels them. Both cases are pinned against `h3_layout_build`
+     compiled from `/data/h3.c` at `eae5d54`.
+   - the engine (`engine.rs`): references decoded at their own canvases, rows
+     concatenated in order, soundtracks held to the 15-second set budget
+     (`h3.c:1171-1176`), the Ref2VA partition selected by
+     `Catalog::partition` (`h3.c:872-875`), and the reference rows in the memo
+     key so a second request cannot reuse another clip's embedding.
+   - the contract (`local_api.rs`): `ref2va` accepted with up to 12 references
+     (`h3.c:588`), roles `reference`/`reference_video`/`reference_audio`,
+     `base_video` refused, media type checked against the condition, and
+     `auto` resolved from the first visual reference (a video's size probed at
+     create from a temp copy, removed at once).
+   - the renderer boundary: `--ref-image`, `--ref-video`, `--ref-silent-video`
+     and `--ref-audio` in request order (`main.c:438-490`), temp copies removed
+     after the render (`MediaFile::write_reference`).
+   - the renderer CLI itself (a port gap found on the Spark, 2026-10-25):
+     `h3-rs` parsed none of the reference flags the reference CLI carries
+     (`main.c:51-56`, `:333-338`, `:429-490`), so only `--model-dir` could
+     serve a reference. It now parses all six, including
+     `--ref-video-audio VIDEO AUDIO` and `--ref-image-size match|max`, switches
+     its component root to `Ref2VA` (`h3.c:872-875`), refuses anchors with
+     references (`h3.c:597-600`) before reading a weight, and shares one port
+     of `h3.c:1027-1200` with the engine (`reference::prepare_set`).
+   - tests: presentation order and refusals, two layout cases pinned to the C
+     oracle, the contract mapping and its refusals, the wire reaching the
+     renderer, and the argv order and cleanup.
+   - what is not proven here: no Ref2VA checkpoint on the 4070, so the live
+     ref2va render is the same blocked gate as P15.6 (it needs the Spark).
 
-Ordering constraint: `/v1` is the only serving surface until P15.6 passes, so
-it is deleted after the v2 gate, never before it. Until then both route tables
-live in one binary, and no release ships with neither.
+Ordering constraint: the body swap and the engine request land before any
+gate, and the real engine gate passes before the ComfyUI node is called done.
+ref2va's live render rides the same host and gate as P15.6.
 
-What the port knowingly does not provide, stated as deviations in its own
-docs: moderation (the hosted service refuses content the port will generate),
-quota, billing and token usage, CDN URLs with expiry (the local URL never
-rotates), callbacks, H3-Context-IR and H3-Regenerate-2K.
+What the port knowingly does not provide: HTTP auth (loopback bind only),
+moderation, quota, billing and token usage, callbacks, CDN URLs with expiry,
+the hosted platform's routes, and `base_video`. The two hosted-only features
+get no route rather than a stub.
 
 Watermarking is not provided either, and nothing implements it (operator
 decision, 2026-10-25). The create schema declares seven properties and no
@@ -1381,6 +1448,7 @@ watermark (`VideoGenerationV2Req` in `v2-video-generation.openapi.json`); the
 field exists only on the two regeneration request schemas (`:1444`, `:1503`),
 and regeneration is not served. So there is no create field to accept, no
 branch to refuse, and no watermark ever applied to the output.
+
 
 ## P12.5 — Port the reference test suite (runs last, after P13)
 
@@ -1475,7 +1543,7 @@ command, never an automatic step.
 | Resident preview decoder | `h3.c` preview path | Ported (`vae_video::PreviewDecoder`, one frame per step from the middle chunk) |
 | CPU decode | `h3.c` CPU path | Refused; Linux CUDA is the reference |
 | Metal backend | `h3_metal.m`, `metal/*` | Out of scope; CUDA is the release reference |
-| h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The official v2 surface is the replacement (P15) |
+| h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The official local v1 surface is the replacement (P15); a UI is ComfyUI, outside this repo |
 | Postprocessing hook | `docs/POSTPROCESSING.md` | Out of scope |
 | Device probe | `h3_device_cuda.cu` | Ported and gated (`h3_device_gate`, `h3-rs --info`); field parity with the reference's `h3_device_test` |
 | Tiled-VAE quality bench | `h3_vae_bench_quality` | P0 remainder; run with P9.5/P11 |

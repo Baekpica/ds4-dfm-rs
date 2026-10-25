@@ -12,8 +12,10 @@ Branch `feature/minimax-h3`. Model root on the Spark: `/mnt/h3-artifacts`.
 | [post-port-phases.md](post-port-phases.md) | After the port: P9 speed, P10 server with a resident engine, P11 YouTube/Instagram presets, P12 conditioning, P13 close |
 | [cheatsheet.md](cheatsheet.md) | Sizes, quality, reach, memory and layout in one page |
 | [vq-recipe.md](vq-recipe.md) | The 13-bit GVQ1 v1 conversion of the DiT and its fallback |
-| [openai-videos.md](openai-videos.md) | The OpenAI Videos API surface, the resident engine and the bridge, its deviations |
-| [api-usage.md](api-usage.md) | Using the served Videos API: start the host, the five routes, size names, lifecycle, errors, limits |
+| [openai-videos.md](openai-videos.md) | Historical: the OpenAI Videos surface as P10 built it. Not served any more; kept as the record of that phase |
+| [local-v1-contract.md](local-v1-contract.md) | The served local v1 contract: three routes, the five-field body, the canvases, the refusals, the deviations |
+| [api-usage.md](api-usage.md) | Running the local v1 host: start, create, poll, download, errors, limits, what is not served |
+| [v1-local-gate.txt](v1-local-gate.txt) | The local v1 wire gate, 2026-10-25: stand-in renderer, a real socket, every route and every refusal |
 | [upstream-m31-survey.md](upstream-m31-survey.md) | The M3.1 text-family branch: what transfers to h3, what is rejected, why h3 has no KV cache |
 | [ref-media-tests.md](ref-media-tests.md) | The conditioning matrix: FL2VA anchors and Ref2VA image/video/audio cases, fixtures and acceptance |
 
@@ -52,8 +54,8 @@ Related, outside this directory:
 | Spark install and run script | `tools/minimax_h3/install-minimax-h3-spark.sh` |
 | Frame comparator (PSNR, bbox, bands) | `tools/minimax_h3/ppm_diff.c` |
 | Balloon composite for a delivered clip | `tools/minimax_h3/letterballoons.sh` |
-| OpenAI Videos wire | `crates/ds4-core/src/minimax_h3/video_api.rs` |
-| OpenAI Videos server | `crates/ds4-server/src/h3_video.rs`, `h3-server-rs` |
+| Task store and state machine | `crates/ds4-core/src/minimax_h3/video_api.rs` |
+| Local v1 server | `crates/ds4-server/src/h3_video.rs`, `h3-server-rs` |
 | Prompt tokenizer | `crates/ds4-core/src/minimax_h3/tokenizer.rs` |
 | Inventory example | `crates/ds4-core/examples/minimax_h3_inspect/main.rs` |
 | Reference-parser probe | `tools/minimax_h3/st_probe.c` |

@@ -23,8 +23,8 @@
 //! by the gate against the reference, not hardcoded here
 //! (`h3_multimodal.c:221-225`).
 //!
-//! Ref2VA (`h3_multimodal.c:243-360`) is a separate ordered presentation and is
-//! not part of this module yet.
+//! Ref2VA (`h3_multimodal.c:243-360`) is the ordered presentation: the
+//! references are labelled in request order and the prompt follows them.
 
 use std::fmt;
 
@@ -98,6 +98,7 @@ impl<'a> Image<'a> {
 
 /// The decoder's input: the ids with their vision spans, the axis-major mRoPE
 /// coordinates, and the DiT modality tag of every row.
+#[derive(Debug)]
 pub struct Presentation<'a> {
     ids: Vec<u32>,
     spans: Vec<VisionSpan<'a>>,
@@ -134,7 +135,7 @@ impl<'a> Presentation<'a> {
 }
 
 /// One span plus the payloads the decoder splices and adds.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct VisionSpan<'a> {
     pub start: usize,
     pub tokens: usize,
@@ -168,6 +169,14 @@ pub enum PresentationError {
     TagOverflow,
     /// `multimodal presentation is too large` (`:162`).
     TooLarge,
+    /// `invalid Ref2VA presentation arguments` (`h3_multimodal.c:258`).
+    ReferenceArguments,
+    /// `invalid Ref2VA reference presentation` (`:340`).
+    Reference,
+    /// `Ref2VA audio requires an image or video reference` (`:300-302`).
+    ReferenceAudioOnly,
+    /// `invalid Ref2VA video timestamp` (`:342`).
+    Timestamp,
 }
 
 impl PresentationError {
@@ -190,6 +199,18 @@ impl PresentationError {
             PresentationError::PositionOverflow => "multimodal mRoPE position overflow".to_string(),
             PresentationError::TagOverflow => "multimodal tag span overflow".to_string(),
             PresentationError::TooLarge => "multimodal presentation is too large".to_string(),
+            PresentationError::ReferenceArguments => {
+                "invalid Ref2VA presentation arguments".to_string()
+            }
+            PresentationError::Reference => {
+                "invalid Ref2VA reference presentation".to_string()
+            }
+            PresentationError::ReferenceAudioOnly => {
+                "Ref2VA audio requires an image or video reference".to_string()
+            }
+            PresentationError::Timestamp => {
+                "invalid Ref2VA video timestamp".to_string()
+            }
         }
     }
 }
@@ -281,6 +302,170 @@ where
         positions,
         tags,
     })
+}
+
+/// `h3_presentation_kind` (`h3_multimodal.h:25-29`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    Image,
+    Video,
+    Audio,
+}
+
+/// One ordered reference as the presentation sees it
+/// (`h3_reference_presentation`, `h3_multimodal.h:32-39`). A video owns one
+/// vision output per sampled two-frame block and one timestamp per block; an
+/// image owns exactly one output; audio owns none.
+pub struct Reference<'a> {
+    pub kind: ReferenceKind,
+    pub has_audio: bool,
+    pub vision: &'a [VisionOutput],
+    pub timestamps: &'a [f64],
+}
+
+/// Build the Ref2VA presentation for `prompt` and ordered `references`
+/// (`h3_multimodal.c:243-360`).
+///
+/// Labels come in request order: `<Audio n>: ` for every reference that
+/// carries a soundtrack, `<Picture n>: ` for an image, `<Video n>: ` once for
+/// a video followed by one `<t.t seconds>` per block, then the prompt.
+pub fn ref2va<'a>(
+    tokenizer: &Tokenizer,
+    prompt: &str,
+    references: &'a [Reference<'a>],
+) -> Result<Presentation<'a>, PresentationError> {
+    assemble_references(
+        |text| {
+            tokenizer
+                .encode(text, EmptyPrompt::Nothing)
+                .map_err(PresentationError::Tokenizer)
+        },
+        prompt,
+        references,
+    )
+}
+
+/// The Ref2VA walk, with the tokenizer as a function so the id layout can be
+/// tested without the BPE.
+fn assemble_references<'a, F>(
+    mut token: F,
+    prompt: &str,
+    references: &'a [Reference<'a>],
+) -> Result<Presentation<'a>, PresentationError>
+where
+    F: FnMut(&str) -> Result<Vec<u32>, PresentationError>,
+{
+    if prompt.is_empty() || references.is_empty() {
+        return Err(PresentationError::ReferenceArguments);
+    }
+
+    // `h3_multimodal.c:264-284`: each kind's structural requirement.
+    let mut span_count = 0usize;
+    let mut have_visual = false;
+    for reference in references {
+        match reference.kind {
+            ReferenceKind::Image => {
+                if reference.has_audio || reference.vision.len() != 1 {
+                    return Err(PresentationError::Reference);
+                }
+                span_count += 1;
+                have_visual = true;
+            }
+            ReferenceKind::Video => {
+                if reference.vision.is_empty()
+                    || reference.timestamps.len() != reference.vision.len()
+                {
+                    return Err(PresentationError::Reference);
+                }
+                span_count += reference.vision.len();
+                have_visual = true;
+            }
+            ReferenceKind::Audio => {
+                if !reference.has_audio || !reference.vision.is_empty() {
+                    return Err(PresentationError::Reference);
+                }
+            }
+        }
+    }
+    if !have_visual || span_count == 0 {
+        return Err(PresentationError::ReferenceAudioOnly);
+    }
+
+    let mut ids = Vec::new();
+    let mut spans = Vec::with_capacity(span_count);
+    let mut grids = Vec::with_capacity(span_count);
+    let (mut image_ordinal, mut video_ordinal, mut audio_ordinal) = (0usize, 0usize, 0usize);
+
+    for reference in references {
+        // `h3_multimodal.c:320-325`: an audio label is emitted for the video's
+        // own soundtrack too, before the visual labels.
+        if reference.has_audio {
+            audio_ordinal += 1;
+            ids.extend(token(&format!("<Audio {audio_ordinal}>: "))?);
+        }
+
+        match reference.kind {
+            ReferenceKind::Audio => continue,
+            ReferenceKind::Image => {
+                image_ordinal += 1;
+                ids.extend(token(&format!("<Picture {image_ordinal}>: "))?);
+                span(&mut ids, &mut spans, &mut grids, &reference.vision[0], IMAGE_PAD)?;
+            }
+            ReferenceKind::Video => {
+                video_ordinal += 1;
+                for (block, output) in reference.vision.iter().enumerate() {
+                    let timestamp = reference.timestamps[block];
+                    if !timestamp.is_finite() || timestamp < 0.0 {
+                        return Err(PresentationError::Timestamp);
+                    }
+                    if block == 0 {
+                        ids.extend(token(&format!("<Video {video_ordinal}>: "))?);
+                    }
+                    ids.extend(token(&format!("<{timestamp:.1} seconds>"))?);
+                    span(&mut ids, &mut spans, &mut grids, output, VIDEO_PAD)?;
+                }
+            }
+        }
+    }
+
+    // `h3_multimodal.c:331-332`: the prompt follows the last reference.
+    ids.extend(token(prompt)?);
+
+    if ids.is_empty() || ids.len() > MAX_TOKENS {
+        return Err(PresentationError::TooLarge);
+    }
+
+    let positions = build_positions(&spans, &grids, ids.len())?;
+    let tags = build_tags(&spans, ids.len())?;
+
+    Ok(Presentation {
+        ids,
+        spans,
+        positions,
+        tags,
+    })
+}
+
+/// Append one vision span and keep the grid its positions are built from.
+fn span<'a>(
+    ids: &mut Vec<u32>,
+    spans: &mut Vec<VisionSpan<'a>>,
+    grids: &mut Vec<(usize, usize)>,
+    output: &'a VisionOutput,
+    pad: u32,
+) -> Result<(), PresentationError> {
+    let image = Image::of(output);
+    check_geometry(&image)?;
+    let span = append_vision(ids, pad, image.tokens);
+    spans.push(VisionSpan {
+        start: span.start,
+        tokens: span.tokens,
+        merged: image.merged,
+        deepstack: image.deepstack,
+    });
+    grids.push(image.grid);
+
+    Ok(())
 }
 
 /// Refuse a grid the reference refuses (`h3_multimodal.c:84-86`).
@@ -405,6 +590,7 @@ fn build_tags(spans: &[VisionSpan<'_>], sequence: usize) -> Result<Vec<u8>, Pres
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::minimax_h3::vision::Grid;
 
     /// A stand-in tokenizer: one id per character, offset so the fake ids can
     /// never collide with a special one.
@@ -421,6 +607,180 @@ mod tests {
             merged: &[],
             deepstack: [&[], &[], &[]],
         }
+    }
+
+    /// Render an id sequence as text, one `<vision>` per span, so the label
+    /// order can be compared with `h3_multimodal.c:320-332`.
+    fn render(ids: &[u32]) -> String {
+        let mut text = String::new();
+        for id in ids {
+            match *id {
+                VISION_START => text.push_str("<vision>"),
+                VISION_END | IMAGE_PAD | VIDEO_PAD => {}
+                value => text.push(char::from((value - 1000) as u8)),
+            }
+        }
+        text
+    }
+
+    fn output(rows: usize) -> VisionOutput {
+        let edge = rows * 16;
+        VisionOutput::fixture(Grid::new(1, edge, edge).expect("grid"), rows * rows / 4)
+    }
+
+    fn ordered_references() -> (Vec<VisionOutput>, [f64; 2]) {
+        let outputs = vec![output(4), output(4), output(4)];
+        let timestamps = [0.0, 0.5];
+        (outputs, timestamps)
+    }
+
+    /// `h3_multimodal.c:320-332`: labels follow request order, an audio label
+    /// precedes the visual labels of the same reference, and the prompt is
+    /// last.
+    #[test]
+    fn ref2va_labels_follow_request_order() {
+        let (outputs, timestamps) = ordered_references();
+        let references = [
+            Reference {
+                kind: ReferenceKind::Image,
+                has_audio: false,
+                vision: &outputs[0..1],
+                timestamps: &[],
+            },
+            Reference {
+                kind: ReferenceKind::Audio,
+                has_audio: true,
+                vision: &[],
+                timestamps: &[],
+            },
+            Reference {
+                kind: ReferenceKind::Video,
+                has_audio: true,
+                vision: &outputs[1..3],
+                timestamps: &timestamps,
+            },
+        ];
+
+        let presentation =
+            assemble_references(characters, "p", &references).expect("the references are legal");
+
+        assert_eq!(
+            render(presentation.ids()),
+            "<Picture 1>: <vision><Audio 1>: <Audio 2>: <Video 1>: <0.0 seconds><vision>\
+             <0.5 seconds><vision>p"
+        );
+        assert_eq!(presentation.spans().len(), 3);
+        assert_eq!(presentation.positions().len(), 3 * presentation.tokens());
+        assert_eq!(presentation.tags().len(), presentation.tokens());
+    }
+
+    /// An image may not own a soundtrack and owns exactly one output.
+    #[test]
+    fn an_image_reference_is_one_silent_output() {
+        let outputs = vec![output(4)];
+        let with_audio = [Reference {
+            kind: ReferenceKind::Image,
+            has_audio: true,
+            vision: &outputs,
+            timestamps: &[],
+        }];
+        assert_eq!(
+            assemble_references(characters, "p", &with_audio)
+                .unwrap_err()
+                .token(),
+            "invalid Ref2VA reference presentation"
+        );
+
+        let doubled = vec![output(4), output(4)];
+        let two_outputs = [Reference {
+            kind: ReferenceKind::Image,
+            has_audio: false,
+            vision: &doubled,
+            timestamps: &[],
+        }];
+        assert_eq!(
+            assemble_references(characters, "p", &two_outputs)
+                .unwrap_err()
+                .token(),
+            "invalid Ref2VA reference presentation"
+        );
+    }
+
+    /// Audio alone cannot condition a clip (`h3_multimodal.c:283-285`).
+    #[test]
+    fn audio_needs_a_visual_reference() {
+        let references = [Reference {
+            kind: ReferenceKind::Audio,
+            has_audio: true,
+            vision: &[],
+            timestamps: &[],
+        }];
+        assert_eq!(
+            assemble_references(characters, "p", &references).unwrap_err().token(),
+            "Ref2VA audio requires an image or video reference"
+        );
+    }
+
+    /// A video needs one timestamp per block, finite and non-negative.
+    #[test]
+    fn video_blocks_need_matching_timestamps() {
+        let outputs = vec![output(4), output(4)];
+        let short = [Reference {
+            kind: ReferenceKind::Video,
+            has_audio: false,
+            vision: &outputs,
+            timestamps: &[0.0],
+        }];
+        assert_eq!(
+            assemble_references(characters, "p", &short).unwrap_err().token(),
+            "invalid Ref2VA reference presentation"
+        );
+
+        let negative = [Reference {
+            kind: ReferenceKind::Video,
+            has_audio: false,
+            vision: &outputs,
+            timestamps: &[0.0, -1.0],
+        }];
+        assert_eq!(
+            assemble_references(characters, "p", &negative).unwrap_err().token(),
+            "invalid Ref2VA video timestamp"
+        );
+    }
+
+    /// Empty arguments are refused before anything is tokenized.
+    #[test]
+    fn ref2va_needs_a_prompt_and_references() {
+        let (outputs, _) = ordered_references();
+        let references = [Reference {
+            kind: ReferenceKind::Image,
+            has_audio: false,
+            vision: &outputs[0..1],
+            timestamps: &[],
+        }];
+        for (prompt, list) in [("", &references[..]), ("p", &[])] {
+            assert_eq!(
+                assemble_references(characters, prompt, list).unwrap_err().token(),
+                "invalid Ref2VA presentation arguments"
+            );
+        }
+    }
+
+    /// A grid that disagrees with its merged rows is refused by the position
+    /// builder (`h3_multimodal.c:116-119`).
+    #[test]
+    fn ref2va_refuses_a_grid_token_mismatch() {
+        let outputs = vec![VisionOutput::fixture(Grid::new(1, 64, 64).expect("grid"), 3)];
+        let references = [Reference {
+            kind: ReferenceKind::Image,
+            has_audio: false,
+            vision: &outputs,
+            timestamps: &[],
+        }];
+        assert_eq!(
+            assemble_references(characters, "p", &references).unwrap_err().token(),
+            "Qwen merged grid does not match token span"
+        );
     }
 
     #[test]

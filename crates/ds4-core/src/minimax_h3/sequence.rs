@@ -18,11 +18,13 @@
 //! h = w = 0            h,w = 32-scaled grid           h = 0, w = edge     h,w = 32-scaled grid
 //! ```
 //!
-//! Deviation, named: `H3_LAYOUT_REF_IMAGE` / `REF_AUDIO` / `REF_VIDEO`
-//! (Ref2VA references, `h3_host.c:367-433`) are not ported; `build` returns
-//! `Unsupported::References` for a non-empty reference list instead of
-//! approximating them. Keyframes are ported because the same condition path
-//! feeds them (`:351-366`).
+//! Ref2VA references (`H3_LAYOUT_REF_IMAGE` / `REF_AUDIO` / `REF_VIDEO`,
+//! `h3_host.c:367-433`) follow the keyframe segments in the order the request
+//! names them. Each one advances the cursor: an image by one, an audio
+//! reference by its latent length, a video by the larger of its audio length
+//! and its video span. A video's rows are emitted under `REF_IMAGE`, exactly
+//! as the reference labels them. Keyframes and references are mutually
+//! exclusive (`h3_host.c:326-328`).
 
 /// `h3_segment_kind` (`h3_host.h:27-36`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +82,25 @@ impl Sequence {
     }
 }
 
-/// `h3_layout_spec` (`h3_host.h:57-68`) restricted to what the port builds.
+/// `h3_layout_ref_kind` (`h3_host.h:45-49`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    Image,
+    Audio,
+    Video,
+}
+
+/// `h3_layout_ref` (`h3_host.h:51-57`): one ordered reference's latent shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reference {
+    pub kind: ReferenceKind,
+    pub latent_t: i32,
+    pub latent_h: i32,
+    pub latent_w: i32,
+    pub audio_t: i32,
+}
+
+/// `h3_layout_spec` (`h3_host.h:59-71`) restricted to what the port builds.
 #[derive(Debug, Clone, Copy)]
 pub struct Spec<'a> {
     pub text_len: usize,
@@ -90,6 +110,7 @@ pub struct Spec<'a> {
     pub audio_t: i32,
     pub frame_count: i32,
     pub keyframes: &'a [i32],
+    pub references: &'a [Reference],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,14 +123,16 @@ pub enum LayoutError {
     Canvas { latent_h: i32, latent_w: i32 },
     /// `h3_host.c:356-359`: only the first and last frame may be keyframes.
     Keyframe { index: i32, frame_count: i32 },
-    /// The named deviation above.
-    References,
 }
 
-/// `h3_layout_build` (`h3_host.c:315-475`) for the text/keyframe path.
+/// `h3_layout_build` (`h3_host.c:315-475`) for the text, keyframe and
+/// reference paths.
 pub fn build(spec: &Spec<'_>) -> Result<Sequence, LayoutError> {
     if spec.text_len < 1 || spec.latent_t < 1 || spec.audio_t < 0 || spec.frame_count < 5 {
         return Err(LayoutError::Dimensions);
+    }
+    if !spec.keyframes.is_empty() && !spec.references.is_empty() {
+        return Err(LayoutError::KeyframesAndReferences);
     }
 
     let frame = frame_grid(spec.latent_h, spec.latent_w)?;
@@ -128,8 +151,9 @@ pub fn build(spec: &Spec<'_>) -> Result<Sequence, LayoutError> {
 
     // `h3_host.c:349-366`: the cursor starts after the text and a keyframe
     // reuses either the first or the last video time.
-    let cursor = spec.text_len as f64;
+    let mut cursor = spec.text_len as f64;
     let mut img_cond_rows = 0usize;
+    let mut audio_cond_rows = 0usize;
     let mut frame_rows = frame.clone();
 
     for &keyframe in spec.keyframes {
@@ -156,10 +180,75 @@ pub fn build(spec: &Spec<'_>) -> Result<Sequence, LayoutError> {
         img_cond_rows += frame_rows.len();
     }
 
+    let widths = width_axis(spec.latent_h, spec.latent_w)?;
+    let (low, high) = (widths[0], widths[widths.len() - 1]);
+
+    // `h3_host.c:367-433`: ordered references in request order, each moving
+    // the cursor by its own span.
+    for reference in spec.references {
+        match reference.kind {
+            ReferenceKind::Image => {
+                let mut rows = frame_grid(reference.latent_h, reference.latent_w)?;
+                for position in rows.iter_mut() {
+                    position.t = cursor;
+                }
+                emit(
+                    &mut positions,
+                    &mut segments,
+                    SegmentKind::RefImage,
+                    &rows,
+                );
+                img_cond_rows += rows.len();
+                cursor += 1.0;
+            }
+            ReferenceKind::Audio => {
+                let rows = audio_grid(cursor, reference.audio_t, low, high);
+                if !rows.is_empty() {
+                    emit(
+                        &mut positions,
+                        &mut segments,
+                        SegmentKind::RefAudio,
+                        &rows,
+                    );
+                }
+                audio_cond_rows += rows.len();
+                cursor += f64::from(reference.audio_t);
+            }
+            ReferenceKind::Video => {
+                let rows = frame_grid(reference.latent_h, reference.latent_w)?;
+                let (ref_low, ref_high) = (rows[0].w, rows[rows.len() - 1].w);
+
+                // A video's soundtrack keeps the reference's own width edges
+                // and shares the cursor with its frames (`:394-418`).
+                if reference.audio_t > 0 {
+                    let audio = audio_grid(cursor, reference.audio_t, ref_low, ref_high);
+                    emit(
+                        &mut positions,
+                        &mut segments,
+                        SegmentKind::RefAudio,
+                        &audio,
+                    );
+                    audio_cond_rows += audio.len();
+                }
+
+                // The reference emits a video's rows under `REF_IMAGE`, not a
+                // separate kind (`:420-431`).
+                let video = video_grid(cursor, reference.latent_t, &rows);
+                emit(
+                    &mut positions,
+                    &mut segments,
+                    SegmentKind::RefImage,
+                    &video,
+                );
+                img_cond_rows += video.len();
+                cursor += f64::max(f64::from(reference.audio_t), video_span_sum(reference.latent_t));
+            }
+        }
+    }
+
     // `h3_host.c:435-457`: the audio target spans the canvas width edges, then
     // the video target walks the latent frames.
-    let widths = width_axis(spec.latent_h, spec.latent_w)?;
-    let audio = audio_grid(cursor, spec.audio_t, widths[0], widths[widths.len() - 1]);
+    let audio = audio_grid(cursor, spec.audio_t, low, high);
     emit(&mut positions, &mut segments, SegmentKind::Audio, &audio);
     let audio_target_rows = audio.len();
 
@@ -172,7 +261,7 @@ pub fn build(spec: &Spec<'_>) -> Result<Sequence, LayoutError> {
         segments,
         img_cond_rows,
         img_target_rows,
-        audio_cond_rows: 0,
+        audio_cond_rows,
         audio_target_rows,
         signature: [
             spec.text_len as i32,
@@ -316,6 +405,7 @@ mod tests {
             audio_t: 8,
             frame_count: 5,
             keyframes: &[],
+            references: &[],
         };
         let sequence = build(&spec).expect("the smallest clip is legal");
 
@@ -381,6 +471,7 @@ mod tests {
             audio_t: 8,
             frame_count: 22,
             keyframes: &[7],
+            references: &[],
         };
         assert_eq!(
             build(&spec),
@@ -402,6 +493,7 @@ mod tests {
             audio_t: 8,
             frame_count: 5,
             keyframes: &[],
+            references: &[],
         };
         assert_eq!(
             build(&Spec {
@@ -424,6 +516,133 @@ mod tests {
 
     /// The reference's own position hash: FNV over `seq_len` x 24 bytes of
     /// `{t, h, w}` in that order.
+    /// The oracle's `refs` case: text 6, a 16x16 canvas, an image reference, an
+    /// audio reference and a video reference carrying a soundtrack. Expected
+    /// values come from `h3_layout_build` compiled from `/data/h3.c` at
+    /// `eae5d54` (`cc -std=c11 -I/data/h3.c h3_host.c <oracle>.c`), not from
+    /// this port.
+    #[test]
+    fn ordered_references_match_the_reference_layout() {
+        let references = [
+            Reference {
+                kind: ReferenceKind::Image,
+                latent_t: 1,
+                latent_h: 16,
+                latent_w: 16,
+                audio_t: 0,
+            },
+            Reference {
+                kind: ReferenceKind::Audio,
+                latent_t: 0,
+                latent_h: 0,
+                latent_w: 0,
+                audio_t: 10,
+            },
+            Reference {
+                kind: ReferenceKind::Video,
+                latent_t: 2,
+                latent_h: 16,
+                latent_w: 16,
+                audio_t: 12,
+            },
+        ];
+        let spec = Spec {
+            text_len: 6,
+            latent_t: 4,
+            latent_h: 16,
+            latent_w: 16,
+            audio_t: 8,
+            frame_count: 5,
+            keyframes: &[],
+            references: &references,
+        };
+        let sequence = build(&spec).expect("references are legal");
+
+        assert_eq!(sequence.rows(), 514);
+        assert_eq!(sequence.img_cond_rows, 192);
+        assert_eq!(sequence.audio_cond_rows, 44);
+        assert_eq!(sequence.img_target_rows, 256);
+        assert_eq!(sequence.audio_target_rows, 16);
+
+        // The video's rows are `ref_image`, as the reference labels them.
+        let kinds: Vec<_> = sequence
+            .segments
+            .iter()
+            .map(|segment| (segment.kind, segment.start, segment.stop))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (SegmentKind::Text, 0, 6),
+                (SegmentKind::RefImage, 6, 70),
+                (SegmentKind::RefAudio, 70, 90),
+                (SegmentKind::RefAudio, 90, 114),
+                (SegmentKind::RefImage, 114, 242),
+                (SegmentKind::Audio, 242, 258),
+                (SegmentKind::Video, 258, 514),
+            ]
+        );
+
+        // The cursor walks 6 -> 7 (image) -> 17 (audio, +10) -> 29
+        // (video, +max(12, 5/3*(1+4))).
+        assert_eq!(sequence.positions[242].t, 29.0);
+        assert_eq!(sequence.positions[249].t, 36.0);
+        assert_eq!(sequence.positions[258].t, 29.0);
+    }
+
+    /// The oracle's `video` case: a silent video reference. The cursor moves by
+    /// the video span, because the soundtrack length is zero.
+    #[test]
+    fn a_silent_video_reference_advances_by_its_video_span() {
+        let references = [Reference {
+            kind: ReferenceKind::Video,
+            latent_t: 3,
+            latent_h: 12,
+            latent_w: 20,
+            audio_t: 0,
+        }];
+        let spec = Spec {
+            text_len: 5,
+            latent_t: 3,
+            latent_h: 12,
+            latent_w: 20,
+            audio_t: 6,
+            frame_count: 5,
+            keyframes: &[],
+            references: &references,
+        };
+        let sequence = build(&spec).expect("a silent video reference is legal");
+
+        assert_eq!(sequence.rows(), 377);
+        assert_eq!(sequence.segments[1].kind, SegmentKind::RefImage);
+        assert_eq!((sequence.segments[1].start, sequence.segments[1].stop), (5, 185));
+        assert_eq!(sequence.audio_cond_rows, 0);
+        assert_eq!(sequence.positions[185].t, 20.0);
+    }
+
+    /// `h3_host.c:326-328`.
+    #[test]
+    fn keyframes_and_references_are_mutually_exclusive() {
+        let references = [Reference {
+            kind: ReferenceKind::Image,
+            latent_t: 1,
+            latent_h: 16,
+            latent_w: 16,
+            audio_t: 0,
+        }];
+        let spec = Spec {
+            text_len: 4,
+            latent_t: 2,
+            latent_h: 16,
+            latent_w: 16,
+            audio_t: 8,
+            frame_count: 5,
+            keyframes: &[0],
+            references: &references,
+        };
+        assert_eq!(build(&spec), Err(LayoutError::KeyframesAndReferences));
+    }
+
     fn fnv_positions(sequence: &Sequence) -> u64 {
         let mut hash = 1_469_598_103_934_665_603u64;
         for position in &sequence.positions {
