@@ -748,6 +748,44 @@ Work, in order:
 3. A sharper source is its own question: the fixture is 432x171, so upscaling
    it into a larger canvas cannot add glyph detail.
 
+**Landed 2026-10-25 — re-lettering with the workstation's image stack.** The
+page can be made legible outside the checkpoint. `/data/imagegen` runs
+stable-diffusion.cpp master-890 with Qwen-Image-2.1 Q6_K, the Qwen3-VL-8B
+encoder and its VAE on this box's RTX 4070 SUPER; a single img2img pass from
+the 432x171 source upscaled to 1536x608 (lanczos) restores the balloons:
+
+    sd-cli --diffusion-model models/diffusion_models/qwen-image-2.1-Q6_K.gguf \
+      --vae models/vae/qwen_image_2.1_vae_bf16.safetensors \
+      --llm models/text_encoders/Qwen3VL-8B-Instruct-Q4_K_M.gguf \
+      --backend te=cpu,diffusion=cuda0,vae=cpu \
+      --params-backend te=cpu,diffusion=cuda0,vae=cpu -M img_gen \
+      -i init-1536.png -W 1536 -H 608 --strength 0.5 --steps 28 \
+      --cfg-scale 6.0 --sampling-method euler -s 7 -p "<two-panel prompt with
+      both balloon texts quoted>" -n "blurry text, unreadable letters, ..." \
+      -o out/h3-comic-reletter-1536-strength050.png
+
+181 s, and both balloons read exactly, in the source's wording; the panel
+art is redrawn but faithful in composition, characters and colours
+(`/data/imagegen/out/h3-comic-reletter-1536-strength050.{png,log}`). So the
+deliverable can carry readable lettering: deliver the re-lettered still, or
+composite its balloon art into the H3 frames.
+
+The price of a global pass, measured against the upscaled init: 16.95 dB PSNR
+over the frame, 17.02 dB below y=220 and 19.89 dB in the margin strip, so
+strength 0.5 redraws everywhere it is allowed to. The masked pass is therefore
+the next step, and Gemini 4 Argon (asked through the agy session) gave the
+numbers to use: inpaint the balloon regions at strength 0.65-0.70 (18-20 of
+28 steps), dilate the mask 16 px past the ink rim, and composite in pixel
+space with an 8-12 px Gaussian feather so the unmasked art is untouched; the
+two-pass variant (0.35 global for line quality, then 0.70 on the balloons)
+doubles the run to about 365 s. Its gates: art drift (unmasked region MAE at
+most 12/255, PSNR at least 24 dB), invented words (OCR character error 0
+against the transcript, Michelson contrast at least 0.80) and seams (gradient
+ratio at most 1.25, ring MAE at most 6/255). `adetailer` needs a YOLOv8
+detector that is not on disk and `upscale` is unconditioned ESRGAN, so
+neither fits. Its sd-cli code offsets come from its own disassembly and are
+unverified here; the drift figures above are ours.
+
 ### The decode agrees; the CLI path above it does not
 
 Item 4's open difference (the reference's 22-frame CLI render against the
@@ -807,13 +845,34 @@ the DiT's row map, not in the splice and not in the decoder:
   (`dit.rs:573-584`) and never reads `Embedding::tags` (`text_forward.rs:74-79`).
   Plain text carries no tags, which is why every unanchored gate matched.
 
-Fix: thread `Embedding::tags` into `Dit::load_with` and use it in `row_map`,
-validating `tags.len() == text_rows` and `tag < MODALITIES` as the reference
-does (`h3_dit_schedule.c:440`, `:453`). Gate it both ways: the plain-text
-hashes must not move (`DENOISE video=2df00020bb691fb6` at nine tokens and
-`dd0c9126e2bcbe37`/`d27bae4151be2e5b` at four steps), and the anchored pair
-must converge to the reference's frames, compared with `--frames-dir` and
-`h3_ppm_diff`.
+**Landed 2026-10-25.** `row_map` takes the tags and validates them
+(`dit.rs:576-611`), `modulation_maps` and `reduced_maps` pass them, and
+`load_with` reads them from the embedding, one line with the reference's
+(`dit.rs:1571`). A tag set that does not cover the text rows, or a tag outside
+the modality count, is refused the way `h3_dit_schedule.c:440` and `:453`
+refuse it; two unit tests pin the untagged and the tagged map.
+
+Measured on the Spark, 512x192, 22 frames, 2 steps, seed 1, both anchors:
+
+- the anchored CLI's frames are now byte-identical to the reference's, 0 of
+  22 differing (frame 0 md5 `9b48614dec433c052816063069fdbbb2` on both sides),
+  against 27.085 dB before the change;
+- the plain-text path did not move: the five-frame four-step gate reads
+  `DENOISE video=12c4ef3f4203bf56 audio=c825b5090644a38c` on both the pre-fix
+  and post-fix trees (`~/u13-ab-{head,fixed}.log`), and the 22-frame gate
+  still reads `2df00020bb691fb6`/`4bd5b8fe0e7ec495`.
+
+The tag fix is the port's own; the canvas finding above stands independently,
+so anchored renders now match the reference exactly and still cannot carry
+this page's lettering. The re-lettering pass is how the deliverable gets both.
+
+A stale golden found on the way: the unit-5 four-step block in
+`h3_dit_gate.rs`'s header (`LAYOUT rows=406 ... positions=a47f8985c9beac72`,
+`DENOISE video=dd0c9126e2bcbe37`) does not reproduce on either side of this
+change; the current tree prints `rows=409`,
+`positions=e93dddf46639aa52` and `video=12c4ef3f4203bf56` for that command,
+which is consistent with a different prompt in the original run (three more
+tokens). Re-record it with the prompt spelled out.
 
 ## P13 — Close
 
