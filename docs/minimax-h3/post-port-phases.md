@@ -665,6 +665,11 @@ verdict so nothing stays "missing" without a reason:
    without `--audio-vae`, so the reference probe stopped before `FRAMES`; the
    port printed `FRAMES frames=22 height=192 width=512
    fnv=e706c198483b3c0c`. Settle it with item 5 below (`~/unit12-*`).
+   Correction, measured 2026-10-25: 47.2 dB was `step-0000` only, whose input
+   is pure noise; `step-0001` is 24.75 dB, and the 22 delivered frames
+   (`--frames-dir`, before the mux) differ at 23.3-27.3 dB. The decode itself
+   is not the cause (it hashes identically, P12.7); the difference enters
+   before it, in the CLI's conditioning assembly. Now P12.7.
 5. **The tiled-VAE quality bench** (`h3_vae_bench_quality`): tile seams and
    temporal blend against the untiled decode, still unbuilt (P0 remainder).
 6. **The reference tests** are P12.5 and cover units 1-5 above file by file.
@@ -691,6 +696,124 @@ verdict so nothing stays "missing" without a reason:
   evaluations -> `f7237de7a7c714c2`/`06d1170ae45c365f` (2.868 s against the
   reference's 2.939) and core-reuse 6 -> `aabb0a542ebe4980`/`a10445642d3fe201`
   (2.425 s against 2.437). Equal on both sides.
+
+## P12.7 — Anchored lettering and the CLI conditioning split (opened 2026-10-25)
+
+Operator report on `~/unit12-portprev/step-0001.ppm` (Spark): the two-panel
+comic renders as intended but the balloon text cannot be read. Confirmed, and
+two separate findings follow, one about the canvas and one about the port.
+
+### The canvas, not the renderer
+
+Measured 2026-10-25, 512x192, 22 frames, 2 steps, seed 1, both anchors:
+
+- The reference is as soft as the port. Its own `step-0001.ppm`
+  (`~/unit12-refprev`) and its own MP4 frames read identically; the balloon
+  lettering is mush in both. So this is not a port defect and not a preview
+  defect: the delivered frames (`~/u12-port-frames/frame-0021.ppm`, written by
+  `--frames-dir`) are just as soft.
+- The canvas is the caller's number (`h3.c:488-498`: multiples of 32, at least
+  32, area at most `768*1344` = 1,032,192, `h3_host.h:8`). 512x192 is 98,304
+  px, 9.5 % of the cap, and its VAE latent is 32x12: `h3_latent_canvas` is
+  `w/16, h/16` (`h3_host.c:43-46`) with `H3_VAE_SPATIAL_RATIO` 16
+  (`h3_host.h:11`).
+- Both anchors pass through that canvas before the encode: the first frame is
+  resampled with `H3_IMAGE_FIT_STRETCH`, the last with `H3_IMAGE_FIT_COVER`
+  (`h3.c:1233-1247`), then encoded at the latent canvas above.
+- The source is `tests/fixtures/h3/costello-crocodile-2panel.png`, 432x171,
+  whose lettering is about 4 px tall (measured on a 6x nearest-neighbour crop;
+  the strokes are one pixel). A glyph is therefore a quarter of a latent cell:
+  the encoder has nowhere to put it.
+
+The arithmetic bounds the improvement. One latent cell is 16 canvas pixels,
+so a glyph needs about 32 canvas pixels to fill two cells. The largest
+exact-aspect canvases under the cap are 1536x608 for the fixture's 48:19
+(933,888 px) and 1536x576 for 8:3 (884,736 px); a panel is then 768 px wide
+and a 20-character balloon line is about 12 px per glyph, under one cell.
+Rendering larger helps definition and cannot make this page's lettering
+readable. With a 16x spatial VAE, text at this density is outside the
+checkpoint's contract.
+
+Work, in order:
+
+1. Render 1536x608 (48:19, no anchor stretch) and 1536x576 (8:3) at 2 steps,
+   and read `step-0001` and final frame 21 against 512x192: does the lettering
+   go from mush to shape, and what does it cost (denoise s, decode s, peak
+   memory)? No port change is needed; `Canvas::new` enforces the reference's
+   rules (`render.rs:127-140`, `h3.c:488-498`).
+2. If a legible page is required, the composite is the honest route: run the
+   motion at the largest canvas and keep the source's own balloon art in the
+   delivered frames instead of asking the decoder to carry lettering it
+   cannot.
+3. A sharper source is its own question: the fixture is 432x171, so upscaling
+   it into a larger canvas cannot add glyph detail.
+
+### The decode agrees; the CLI path above it does not
+
+Item 4's open difference (the reference's 22-frame CLI render against the
+port's) is now split in two, and the decode is cleared. Same command, 217-token
+prompt, 512x192, 22 frames, 2 steps, both VAEs:
+
+- The DiT and the video VAE decode are bit-identical. The reference's own
+  probe prints `FRAMES frames=22 height=192 width=512 fnv=6f49c158bf764365
+  first=0.985459328 last=0.591346204` (`~/unit12-refdecode22.log`) and the
+  port's gate prints the same four values (`~/unit12-long-port.log`), from
+  `DENOISE video=0f3c1d473e28c1cc audio=218ed318614f2ba7` equal on both sides.
+  The tiled spatial decode at this shape is therefore correct, and item 5's
+  seams are a quality question, not a parity bug. Temporal chunk blending is
+  not covered by this run: 22 frames are exactly one decoder chunk.
+- The two CLIs still deliver different frames: `--frames-dir` at the same
+  command writes 22 frames that differ at 23.3-27.3 dB PSNR (frames 0, 1, 11,
+  21: 27.09, 23.27, 24.75, 25.53; `ffmpeg -lavfi psnr` on
+  `~/u12-{ref,port}-frames`). The error is edge structure over the whole
+  frame, not a tile seam (23.86/23.91/27.31 dB left/mid/right thirds) and not
+  a phase offset (+1 px is worse: 20.48; +1 row: 19.49); a 0.5 sigma blur on
+  the reference does not close it (25.19 dB).
+- The untested stage is the CLI's own conditioning assembly. Both CLIs take
+  the released multimodal presentation here (the reference: `h3.c:1407-1414`,
+  `<Picture n>: ` plus the vision span per image,
+  `h3_multimodal.c:200-232`; the port prints `TEXT tokens=217
+  fnv=e596a5d1874ee131` for a 9-token prompt), while every gate that matches
+  bit for bit supplies the anchors as VAE condition rows and a plain text
+  prompt (`TEXT tokens=9`). The vision span, not the decoder, is where these
+  two renders part.
+
+Attribution, with `h3_ppm_diff` (`tools/minimax_h3/ppm_diff.c`, which reports
+`PIXELS`/`PSNR`/`BBOX` and per-128-pixel `BAND` counts): 95,641 of 98,304
+pixels differ, rms 14.75 of 255, and the x bands split evenly (24,395 /
+22,874 / 23,923 / 24,449 of 24,576 each). Nearly every pixel moves, so this is
+two different generations from different conditioning, not a filtered or
+shifted image.
+
+The 2x2 at 22 frames and 2 steps, both CLIs, with and without the anchors,
+answers it (`~/u13-*`; 22 is the CLI's minimum, both refuse five with
+`generation requires at least one trained 22-frame decoder chunk`):
+
+- anchor-free: all 22 frames are byte-identical, 0 of 22 differing;
+- anchored: frame 0 differs at 27.085 dB PSNR, rms 11.28, 95,331 of 98,304
+  pixels, reproducing the unit-12 number exactly.
+
+So the plain CLI path is correct and the anchored path is the defect. It is in
+the DiT's row map, not in the splice and not in the decoder:
+
+- the reference builds each row's AdaLN selector from the presentation's
+  modality tags: `h3_dit_schedule_row_map` receives `text->tags`
+  (`h3_dit.c:1028`) and uses `time_row * H3_DIT_MODALITIES + text_tags[index]`
+  for text-segment rows (`h3_dit_schedule.c:449-456`);
+- the presentation marks vision rows 0 and text rows 1 (`h3_multimodal.c:173`,
+  `:182`), so this render's 192 vision rows select a different modulation slot
+  than its nine prompt rows;
+- the port hardcodes `time_row * MODALITIES + 1` for every text row
+  (`dit.rs:573-584`) and never reads `Embedding::tags` (`text_forward.rs:74-79`).
+  Plain text carries no tags, which is why every unanchored gate matched.
+
+Fix: thread `Embedding::tags` into `Dit::load_with` and use it in `row_map`,
+validating `tags.len() == text_rows` and `tag < MODALITIES` as the reference
+does (`h3_dit_schedule.c:440`, `:453`). Gate it both ways: the plain-text
+hashes must not move (`DENOISE video=2df00020bb691fb6` at nine tokens and
+`dd0c9126e2bcbe37`/`d27bae4151be2e5b` at four steps), and the anchored pair
+must converge to the reference's frames, compared with `--frames-dir` and
+`h3_ppm_diff`.
 
 ## P13 — Close
 
