@@ -731,8 +731,10 @@ exact-aspect canvases under the cap are 1536x608 for the fixture's 48:19
 (933,888 px) and 1536x576 for 8:3 (884,736 px); a panel is then 768 px wide
 and a 20-character balloon line is about 12 px per glyph, under one cell.
 Rendering larger helps definition and cannot make this page's lettering
-readable. With a 16x spatial VAE, text at this density is outside the
-checkpoint's contract.
+readable: the fixture carries ~4 px glyphs, and upscaling to 1536 adds no
+glyph detail. That bound is the source's, not the checkpoint's, and P12.9
+measures the difference: the same canvas fed a page whose glyphs really are
+18 px keeps its text.
 
 Work, in order:
 
@@ -916,6 +918,48 @@ with frame anchors (`h3_cli.c:316-318`). The port carries `RefImage` in the
 sequence and the DiT (`sequence.rs:32`, `dit.rs:610`) but no CLI or engine
 path builds it, so an image-conditioned clip (Ref2VA) is not reachable yet.
 A prompt is the only way to steer a picture into this engine today.
+
+## P12.9 — A new lettered clip, and what the checkpoint really does with text
+
+Operator, 2026-10-25: a new video, the page as reference only, and the text
+read back by vision. Two results.
+
+**The 16x bound was the source's, not the checkpoint's.** P12.7 reasoned that
+no legal canvas carries this page's lettering. That holds for the 432x171
+fixture, whose glyphs are ~4 px and gain nothing from upscaling. Feed the same
+canvas a page that really has ~18 px glyphs and the line moves: the re-lettered
+1536x608 art anchored at 1536x608 (1:1, no stretch, `H3_IMAGE_FIT_STRETCH`,
+`h3.c:1233-1247`) round-trips at PSNR 28.90 dB (rms 9.15, max 131,
+`ppm_diff` against the source page) and its balloons read in the decoded
+frame: "IT ISN'T A LOG, COSTELLO! CAN YOU SWIM?" and "WHY, SURE! I'M THE
+HUNDRED METER CHAMP! ER- MEET THE NEW CHAMP!". A glyph an 18 px tall spans a
+latent cell; at 4 px it is a quarter of one, which is the whole difference.
+
+Cost at that shape, 22 frames, 2 steps (`~/u15-probe`, 1536x608, one anchor,
+912 anchor rows): TEXT 39.9 s, LOAD 103.3 s, DENOISE 182.3 s (91.1 s per
+step), AUDIO 1.5 s, FRAMES 95.6 s. The anchor and the larger latent canvas
+roughly double the per-step cost against 40.4 s at 1344x576 without one.
+
+**The delivered clip is new, and its lettering is composited.** `u16` is a
+fresh prompt-only render: 1344x576, 22 frames, 20 steps, seed 7, no anchor,
+`DENOISE video=6e3b447a8f4bbcd7 audio=df6a25f98b33682a frames=737bdfe443bd30cc`
+(`~/u16-new.mp4`, sha256 114537c8...). Nothing of the page's pixels enters it;
+the prompt takes the scene and the gag. The alligator rises out of the water
+between the two bathers by frame 21, which the page does not do.
+
+The balloons are a static composite, authored here, not sampled: two
+antialiased white ellipses with a 6 px black rim (`geq` on a hypot mask in
+`ffmpeg`), DejaVu Sans Bold 26 and 23 px, overlaid at 12,14 and 560,8 so
+neither covers a face. Delivered as `~/u16-lettered.mp4`, sha256
+5c2b1fa2..., 599,209 bytes. The reason for the composite is the previous
+paragraph: at 1344x576 the checkpoint would invent glyphs, and invented
+glyphs are not the gag's dialogue.
+
+Re-read from the encoded H.264, not from the pre-encode frames, both balloons
+parse exactly: "IT ISN'T A LOG, COSTELLO! CAN YOU SWIM?" and "WHY, SURE! I'M
+THE HUNDRED METER CHAMP! ER- MEET THE NEW CHAMP!". That is the operator's
+vision check, and it is the only claim about readability here that was made
+against the delivered file.
 
 ## P13 — Close
 
