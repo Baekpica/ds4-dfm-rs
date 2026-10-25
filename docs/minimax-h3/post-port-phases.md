@@ -1258,6 +1258,55 @@ Still open in P14.3: the reference media prep itself (decode at the canvases
 above, the `vae_encoder` tile encode, `vae_audio::encode` plus the
 `[32,2,t] -> [2,t,32]` repack and the per-span jitter at `seed`/`seed + 1`).
 
+### P14.3b — Reference media prep (2026-10-25)
+
+Done. `minimax_h3::reference::prepare` turns one `Reference` into a
+`Prepared`: the media canvas from P14.3a, the decode at that canvas, the video
+VAE encode, the patchified rows, the Qwen vision blocks and timestamps, and the
+audio rows. Citations: the visual half is `h3.c:1052-1128`, the patchify
+`:1296-1328`, the timestamps `:1096-1114`, the audio source choice and
+truncation `:1126-1170`, the `[32,2,t] -> [2,t,32]` repack `:1182-1197`, and
+the per-span jitter with `seed` for video and `seed + 1` for audio
+(`h3.c:344`, `:348`) — a fresh generator per span, as `augment_span` does for
+anchors.
+
+One reference rule the gate found, and it is a real constraint on any
+reference request: the video reader trims decoded frames to `frames % 17 == 5`
+(the released cadence, `h3_ffmpeg.c`), and a truncated soundtrack needs at
+least 64000 samples = 48 decoded frames. 48 frames trims to 39, which is
+52000 samples, so the smallest *accepted* request is 56 frames, which is what
+the reference's own message says ("request at least 56 output frames").
+
+Evidence, Spark, media `p143-image.png` (1344x576, one frame of
+`u17-long.mp4`) and `p143-video-small.mp4` (256x128, 120 frames, 5 s, AAC
+track), `--frames 56 --seed 42`:
+
+  image       1344x576 frames=1  latent=1x36x84   row_elements=72576
+              rows_fnv=4068bd8e1946076b  vision_blocks=1
+  video       256x128  frames=56 latent=14x8x16   row_elements=43008
+              rows_fnv=d3b99fd56eec6ab9  audio_t=93 audio_rows=5952
+              audio_fnv=2d6f8000a6ab0c99 samples=73643
+              vision_blocks=3 timestamps=0.250,1.250,2.000
+  video+audio the same numbers: both forms cut the same track to the same
+              length (samples 73643 each), so an independent second encode of
+              the same pixels reproduces both hashes
+  TOTAL       references=3 audio_samples=147286 within_15s=true 331.631 s
+
+Three runs, the third rebuilt after the audio-source refactor, returned
+identical hashes and TOTAL (331.631 s, 330.763 s, 332.454 s), so the
+composition is deterministic on the Spark.
+
+The gate is port-side. Its primitives each have a two-sided gate already
+(canvas policy P14.3a, media readers, the video VAE encoder at P12.4, the
+audio VAE encoder at P14.1); the two-sided proof of this composition is
+P14.6's render parity, and nothing here claims more than that.
+
+The 331 s is the VAE encoder's cost at this canvas, not a regression: 56
+frames at 256x128 is ~2.2x the pixels-times-frames of the P12.4 gate's five
+frames at 512x192 (45 s). A first attempt at 107 frames and 1344x576 was
+aborted after ten minutes; P14.6 must size its parity clip with this cost in
+mind.
+
 ## P12.5 — Port the reference test suite (runs last, after P13)
 
 Ordering decision (operator, 2026-10-24): this phase is moved to the end of the

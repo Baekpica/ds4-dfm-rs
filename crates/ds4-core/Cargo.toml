@@ -69,3 +69,7 @@ required-features = ["h3-gates"]
 [[example]]
 name = "h3_canvas_gate"
 required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_reference_gate"
+required-features = ["h3-gates"]

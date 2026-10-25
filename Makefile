@@ -517,6 +517,16 @@ tests/h3_canvas_gate: $(DS4_RS_SOURCES)
 	$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_canvas_gate" $@
 
+# The reference gate prepares ordered references end to end: media decode at
+# the reference canvas, the video VAE encode, the audio VAE encode and the
+# row assembly. Same DiT object as the encoders it composes.
+tests/h3_reference_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
+	cargo rustc -p ds4-core --example h3_reference_gate --release --features h3-gates -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
+	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_reference_gate" $@
+
 # The PPM diff is host-only: it reads the frames and step previews the CLI
 # writes (`main.c:162-176`, `:196-245`) and turns "the renders differ" into
 # pixel counts, PSNR and per-band attribution, with no image library.
