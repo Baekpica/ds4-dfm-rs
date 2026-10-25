@@ -270,3 +270,6 @@ tests/naive_banks
 
 # tools/minimax_h3/vq build outputs
 /tools/minimax_h3/vq/bin/
+
+# tools/minimax_h3 host driver outputs
+/tools/minimax_h3/ppm_diff

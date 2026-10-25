@@ -491,6 +491,12 @@ tests/h3_device_gate: $(DS4_RS_SOURCES) native/h3/h3_device_gpu.o
 	$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_device_gate" $@
 
+# The PPM diff is host-only: it reads the frames and step previews the CLI
+# writes (`main.c:162-176`, `:196-245`) and turns "the renders differ" into
+# pixel counts, PSNR and per-band attribution, with no image library.
+tools/minimax_h3/ppm_diff: tools/minimax_h3/ppm_diff.c
+	$(CC) $(CFLAGS) -o $@ $< -lm
+
 # The h3 renderer: the CLI binary plus the three h3 device objects. It
 # deliberately does not link the bridge or the core objects: the h3 path
 # reaches only the `h3d_` and `h3v_` ABIs, so the binary also builds in a tree

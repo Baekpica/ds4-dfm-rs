@@ -66,6 +66,8 @@ struct Options {
     token_reduction: bool,
     /// `--core-reuse` (`main.c:33`, `:305`, `:392`).
     core_reuse: u32,
+    /// `--frames-dir` (`main.c:57`, `:339`, `:492`): the decoded frames.
+    frames_dir: Option<PathBuf>,
     /// `--preview-dir` (`main.c:58`, `:340`, `:493`).
     preview_dir: Option<PathBuf>,
     /// `--show` (`main.c:59`, `:541-560`).
@@ -314,6 +316,12 @@ fn run() -> Result<ExitCode, String> {
         );
     }
 
+    // `main.c:214-245`: `--frames-dir` writes every final frame as a PPM,
+    // after the resize and before the mux.
+    if let Some(dir) = &options.frames_dir {
+        write_frames(dir, &frames)?;
+    }
+
     let program = std::env::var_os("H3_FFMPEG")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("ffmpeg"));
@@ -466,6 +474,32 @@ fn write_ppm(
         .map_err(|error| format!("cannot rename preview {}: {error}", path.display()))
 }
 
+/// `cli_frame`'s frame branch (`main.c:214-245`): `--frames-dir` gets one
+/// `frame-%04d.ppm` per generated frame, written straight rather than through
+/// a scratch name, as the reference does for final frames.
+fn write_frames(dir: &std::path::Path, frames: &RgbFrames) -> Result<(), String> {
+    use std::io::Write;
+
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("cannot create frame directory {}: {error}", dir.display()))?;
+    let (width, height) = (frames.width() as u32, frames.height() as u32);
+    let row_bytes = frames.width() as usize * 3;
+    let length = frames.frames() as usize;
+
+    for index in 0..length {
+        let path = dir.join(format!("frame-{index:04}.ppm"));
+        let start = index * height as usize * row_bytes;
+        let rgb = &frames.bytes()[start..start + height as usize * row_bytes];
+        let mut file = std::fs::File::create(&path)
+            .map_err(|error| format!("cannot write frame {index} to {}: {error}", dir.display()))?;
+        write!(file, "P6\n{width} {height}\n255\n")
+            .and_then(|_| file.write_all(rgb))
+            .map_err(|_| format!("incomplete frame {index} in {}", dir.display()))?;
+    }
+
+    Ok(())
+}
+
 fn info(options: &Options, canvas: &Canvas, frame_count: i32) -> Result<ExitCode, String> {
     // `h3_load_dir` probes while opening the context and fails on an error
     // (`h3.c:456-463`); the port has no context here, so the probe runs once
@@ -610,6 +644,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         stream: false,
         token_reduction: false,
         core_reuse: 1,
+        frames_dir: None,
         preview_dir: None,
         show: false,
         zoom: 2,
@@ -649,6 +684,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--use-reference-rope" => options.reference_rope = true,
             "--ssd-streaming" => options.stream = true,
             "--token-reduction" => options.token_reduction = true,
+            "--frames-dir" => options.frames_dir = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--preview-dir" => options.preview_dir = Some(PathBuf::from(value(&mut argv, &flag)?)),
             "--show" => options.show = true,
             "--zoom" => {
@@ -768,6 +804,7 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --token-reduction         pair video tokens in middle DiT blocks
                             (window from H3_TOKEN_REDUCTION_* env)
   --core-reuse N            core refresh: 1 exact, 4 fast, 6 aggressive
+  --frames-dir PATH         write one PPM per generated frame
   --preview-dir PATH        write one PPM preview per denoising step
   --show                    display a preview frame per step (Kitty/iTerm2)
   --zoom N                  preview zoom for the terminal (default 2)
