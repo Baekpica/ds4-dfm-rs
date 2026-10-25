@@ -48,8 +48,12 @@
  * consumers waited on `full` (mw_stages). Rejected, slower or even: 128-pair
  * items over 64-k stages (half the gathers per MMA; the two-stage ring then
  * covers half the time, +16-19%), separate index and input barriers per
- * slot (index filled a stage ahead, +16% on R13), and accumulators rescaled
- * per stage in place of the per-stage sum (even). */
+ * slot (index filled a stage ahead, +16% on R13), accumulators rescaled
+ * per stage in place of the per-stage sum (even), a k-outer loop with one
+ * activation scale per row and no per-stage promotion (180 registers,
+ * even), and the next stage's codewords loaded between a stage's MMA
+ * halves (consumers hold two of three slots and starve the producers: +11%
+ * on R13; R13+8 spills). */
 enum { MW_BM = 128, MW_BT = 64, MW_MT = MW_BT / 16, MW_CONSUMERS = 4, MW_PRODUCERS = 4,
        MW_NT = MW_BM / (8 * MW_CONSUMERS),
        MW_THREADS = (MW_CONSUMERS + MW_PRODUCERS) * 32, MW_PF_FIRST = 4,
@@ -244,10 +248,14 @@ __global__ void __launch_bounds__(MW_THREADS, 1) mw_kernel(const mw_item *items,
                         "l"(g_main1 + win) : "memory");
                 } else {
                     const uint8_t *g_ix = g_main0 + kt * GLMVQ_MMA8_INDEX;   // 8-byte aligned
+                    // Rows lie 1,152 B (9 x 128 B) apart, so one piece of every
+                    // lane's row maps to one L1 bank pair (32 wavefronts per
+                    // copy); rotating the pieces spreads a copy over three.
                     #pragma unroll
                     for (uint32_t k = 0; k < 3; k++) {
-                        asm volatile("cp.async.ca.shared.global [%0], [%1], 8;" :: "r"(slot + o_main0 + 8 * k),
-                            "l"(g_ix + 8 * k) : "memory");
+                        const uint32_t p = (k + pt) % 3;
+                        asm volatile("cp.async.ca.shared.global [%0], [%1], 8;" :: "r"(slot + o_main0 + 8 * p),
+                            "l"(g_ix + 8 * p) : "memory");
                     }
                 }
                 if (!(kt & 1u)) {
