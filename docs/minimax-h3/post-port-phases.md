@@ -1394,11 +1394,31 @@ The units, in order, each one commit with its own tests and evidence:
    (`STEP n/N seconds=`, `h3.c:649-676`), and the CLI renderer learned the
    reference flags (`h3-rs`, `main.c:429-490`). The next bounded gate is
    768P, 4 s, `--steps 2`.
-7. **P15.7 — the operator skill**: `h3-prompt-writing`, the one portable
-   skill of the nine in `/data/MiniMax-H3/skills`, written as a plain
-   `SKILL.md` plus a shell/curl recipe so codex, open-grok and claude can all
-   use it. The ComfyUI node is removed from the work list (operator,
-   2026-10-25): no ComfyUI deliverable is planned, in this repo or beside it.
+7. **P15.7 — the operator skills** (landed in the worktree, 2026-10-25):
+   `h3-prompt-writing` and `h3-video`, the two portable pieces of the nine
+   skills in `/data/MiniMax-H3/skills`, each written as a plain `SKILL.md`
+   plus an `AGENTS.md` for harnesses that read instruction files, with the
+   wire handed to a shell script instead of a plugin API:
+   - `skills/h3-prompt-writing`: the field names and order of the base modes
+     (`references/base-en.txt`) and the six Ref2VA sections
+     (`references/ref-en.txt`), the task mapping (`i2va` and `l2va` are
+     `fl2va` with one keyframe, `full-2k-i2va-h3-base.sh:9-16`), and the
+     per-kind reference labels (`h3_multimodal.c:290-320`).
+   - `skills/h3-video`: start the server, post the five-field body, poll,
+     download, the canvas and duration rules, the refusal codes, the measured
+     cost, and the LAN bind. `scripts/h3-video.sh` is the whole client
+     (dry-run, keyframe and reference flags, body from a file so a 16 MiB
+     keyframe fits), `scripts/h3-serve.sh` the server launch.
+   - install targets: `~/.opengrok/skills/<name>` and `~/.claude/skills/<name>`
+     take the same `SKILL.md`; `~/.codex/AGENTS.md` is a pointer file naming
+     the two `AGENTS.md` documents and the one command. Verified on this host
+     with `open-grok inspect`, which lists both as user skills, and by driving
+     the script against a stand-in renderer (t2va, fl2va, ref2va ordering, and
+     the three refusal paths exercised there: invalid_condition,
+     renderer_disabled, queue_full; the other codes are covered only by the
+     nine the P15.5 gate recorded).
+   The ComfyUI node is removed from the work list (operator, 2026-10-25): no
+   ComfyUI deliverable is planned, in this repo or beside it.
 8. **P15.8 — ref2va on the local contract** (landed in the worktree,
    2026-10-25): the ordered-reference path ported from the reference.
    - the ordered presentation, `h3_multimodal.c:243-360`: `<Audio n>: ` for a
@@ -1458,10 +1478,11 @@ Ordering constraint: the body swap and the engine request land before any
 gate. ref2va's engine path is proven (P15.9); its served render rides the
 768P gate.
 
-What the port knowingly does not provide: HTTP auth (loopback bind only),
-moderation, quota, billing and token usage, callbacks, CDN URLs with expiry,
-the hosted platform's routes, and `base_video`. The two hosted-only features
-get no route rather than a stub.
+What the port knowingly does not provide: HTTP auth (the listener's address is
+the operator's, so a bind beyond loopback publishes an unauthenticated
+renderer), moderation, quota, billing and token usage, callbacks, CDN URLs with
+expiry, the hosted platform's routes, and `base_video`. The two hosted-only
+features get no route rather than a stub.
 
 Watermarking is not provided either, and nothing implements it (operator
 decision, 2026-10-25). The create schema declares seven properties and no
@@ -1509,11 +1530,11 @@ Rules for the port:
 | Reference file | Lines | Pins | Port |
 |---|---:|---|---|
 | `test_device.c` | 23 | device probe | `ds4-sys` probe test |
-| `test_host_portable.c` | 24 | RGB resize | `render` unit tests |
-| `test_tokenizer_portable.c` + fixture | 60 | tokenizer fixture | `tokenizer` unit tests |
+| `test_host_portable.c` | 24 | RGB resize | `tests/h3/test_host_portable.rs` (ported 2026-10-25) |
+| `test_tokenizer_portable.c` + fixture | 60 | tokenizer fixture | `tests/h3/test_tokenizer_portable.rs` (ported 2026-10-25) |
 | `test_tokenizer.c` | 73 | model tokenizer.json vectors | artifact gate |
 | `test_checkpoint_schema.c` | 102 | four-component safetensors schema | `layout`/`weights` gate |
-| `test_av_mux.c` | 112 | container geometry and streams | model-free mux test |
+| `test_av_mux.c` | 112 | container geometry and streams | `tests/h3/test_av_mux.rs` (ported 2026-10-25) |
 | `test_h3.c` | 414 | host parsing, safetensors, terminal | split across host/terminal units |
 | `test_bf16.c` | 1,714 | BF16 arithmetic breadth | model-free GPU-vs-reference test |
 | `test_semantic_dit.c` | 120 | 256x256x22 latent, rel-max/abs/rel-L2 | artifact gate |
@@ -1547,6 +1568,92 @@ then the P12-dependent ones (vision, multimodal, encoders) as their units
 land. `make tests/h3-suite` runs every one by hand and prints, per artifact
 test, either its result or the missing artifact; it is the operator's single
 command, never an automatic step.
+
+### Coverage check (step 1), 2026-10-25
+
+`/data/h3.c` at `eae5d54` holds 32 `.c` files (9,164 lines) plus
+`tests/tokenizer_portable_fixture.json` (13 lines): the 33 files and 9,177
+lines this section counts. Reading every file's headers and assertions found
+three findings that change the work left.
+
+1. **Sixteen of the 32 read goldens the reference does not carry.** They load
+   `misc/fixtures/*.safetensors`: `bench_dit`, `test_bf16`, `test_metal`,
+   `test_real_audio_encoder`, `test_real_audio_vae`, `test_real_dit`,
+   `test_real_dit_block`, `test_real_dit_schedule`, `test_real_multimodal_text`,
+   `test_real_qwen_vision`, `test_real_ref_video_text`,
+   `test_real_video_encoder`, `test_real_video_vae`, `test_semantic_dit`,
+   `test_semantic_vae`, `test_text_metal`. The directory is ignored in the
+   reference (`.gitignore:2`, `misc/`), absent from the clone, and no tracked
+   file generates it: the 34 tracked Python files are the webui and
+   `scripts/benchmark_sdpa.py`, and `git grep -l h3_real_dit_step0` over them
+   finds nothing. The reference's own `make test` skips a test whose fixture is
+   missing (`Makefile:235-241`, `:247-251`, `:253-264`). Rule 4 therefore
+   cannot mean "replay the MLX golden": for the rows whose assertion is an
+   absolute relative-error bound against that tensor (`test_semantic_dit`'s
+   rel-max/abs/rel-L2, `test_metal`'s `5e-3` bounds), the golden either has to
+   be installed on the Spark or the assertion has to be retargeted to the
+   reference C output with the deviation named. That is an operator decision,
+   not a port decision.
+2. **The Metal split is not two files.** Six tests create the Metal runtime
+   with `h3_gpu_create("h3_shaders.metal", ...)`: `test_audio_gpu.c:138`,
+   `test_bf16.c:1274`, `test_metal.c:140`, `test_real_dit_block.c:364`,
+   `test_real_dit_schedule.c:42`, `test_text_metal.c:140`. The shader argument
+   is not itself the blocker: the CUDA backend ignores it
+   (`h3_gpu_cuda.cu:272-274`) and maintains the same `stats.mps_*` counters
+   (`:778`, `:1647`, `:1753`), so a CUDA run reaches those assertions; whether
+   the counts match the port's CUDA path is unmeasured. What blocks the rows is
+   the absent fixture (point 1) plus, in `test_text_metal.c` only, a dispatch
+   count that is a Metal implementation fact (`:284`,
+   `mps_linear_dispatches == 5`). `test_metal.c`'s own assertions are relative
+   bounds and counter invariants (`:291-303`), not Metal kernels. Rule 5's list
+   of two unportable files stands as a disposition; its stated reason does not,
+   and the number of tests touching the shader path is six.
+3. **`test_h3.c` asserts surface the port deliberately omits.** Its
+   `test_schedule` block checks `h3_schedule_build` (`h3_host.c:137-150`),
+   `h3_time_shift_sigma` and `h3_time_shift_slope` (`:119-129`), and
+   `h3_res_step` (`:641`), which together are the RES multistep sampler
+   `h3_dit_denoise` (`h3_dit.c:2787-2860`). The release render entry calls
+   `h3_dit_denoise_euler_preview` instead (`h3.c:1582`), which is the sampler
+   the port has (`dit.rs:1874-1995`), and `host.rs:19-21` records the omission
+   by name. The RES half of `test_schedule` is 51 runtime checks: the 20-step
+   grid's eight value checks, the forty monotonic pairs over that grid, and the
+   two shift helpers (`tests/test_h3.c:78-92`). Either the RES sampler is
+   ported from the reference (it is reference code, about 40 lines: two shift
+   helpers, the 1000-quantized schedule grid and the step), or the omission
+   becomes a row in the disposition table below and the test records those
+   assertions as unported. That is an operator decision.
+
+### Landed 2026-10-25: the harness and the three model-free tests
+
+Sources live at `tests/h3/<name>.rs`, the reference file's own name (rule 1).
+Each is a `[[example]]` target in `crates/ds4-core/Cargo.toml` with
+`path = "../../tests/h3/<name>.rs"` and `required-features = ["h3-gates"]`, so a
+default `cargo test`, `cargo check --all-targets` or `cargo clippy
+--all-targets` skips it exactly as it skips the existing gates, while
+`cargo fmt --all` still formats it. `make tests/h3-<name>` builds one and copies
+the binary to that name; `make tests/h3-suite` runs every ported test. A test
+that lacks an artifact prints the artifact and exits 3, which the suite reports
+as a skip, matching the reference's `skip:` lines (`Makefile:240`).
+
+Ported and green on the RTX 4070 host (ffmpeg 7.1.5, 2026-10-25):
+
+| Test | Reference assertions reproduced | Result |
+|---|---|---|
+| `tests/h3/test_host_portable.rs` | `tests/test_host_portable.c:13-23`: a 2x2 constant frame upscaled to 8x8 is constant at all 64 pixels | `ok: portable RGB resize` |
+| `tests/h3/test_tokenizer_portable.rs` | `tests/test_tokenizer_portable.c:36-48`: `"A A"` to `{1,3}`, `"e"+U+0301` to `{4}` to `"é"`, `"<special>A"` to `{10,1}`, empty prompt to `{151643}` | `ok: portable ICU byte-level BPE tokenizer` |
+| `tests/h3/test_av_mux.rs` | `tests/test_av_mux.c:18-110`: the container exceeds 1000 bytes, probes 32x32, one image decodes channel-major with red and green sums above 100 and blue below 80, a cover fit at 32x64 decodes, an 8-frame clip trims to 5, and the soundtrack returns 64,000 stereo samples with both channels energized and no peak above 1.0 | `ok: concurrent FFmpeg video/PCM pipes created /tmp/h3-av-mux-test.mp4 (48065 bytes)` |
+
+The tokenizer fixture is vendored byte for byte at
+`tests/h3/fixtures/tokenizer_portable_fixture.json` and pinned by sha256
+(`4f300dcd98c564e1e04b0131a1a50f5b5f30b467cb48a45c6ce6745240a47e73`, the
+reference file's own hash). A one-byte change to a copy fails before any
+assertion runs, and the reference file at its original path passes the same
+pin.
+
+Next in the phase: `test_h3.c` (414 lines, 153 assertions, host parsing,
+safetensors and terminal), `test_tokenizer.c` against the released
+`tokenizer.json`, then the artifact rows once the rule-4 goldens question is
+settled.
 
 ## Unported reference surface and its disposition
 
