@@ -1038,9 +1038,10 @@ half-written and no error. `render.rs` says so at the call site.
 
 Deviations, all named in the CLI's usage text: `--layers` is refused unless it
 is the released 50 blocks (the port has no truncated stack to offer), and
-`--token-reduction`, `--use-int8-row-fc2` (a measured CUDA no-op in the
-reference), `--show`, `--zoom`, the interactive session, keyframe conditioning
-and Ref2VA are not implemented. Flags are refused, never accepted and ignored.
+`--use-int8-row-fc2` (a measured CUDA no-op in the reference), the interactive
+session, Ref2VA and the audio VAE's encode half are not implemented. Flags are
+refused, never accepted and ignored. The unported-surface table in
+[post-port-phases.md](post-port-phases.md) is the running record.
 
 The install script for the operator's Spark recipe shape is
 `tools/minimax_h3/install-minimax-h3-spark.sh`

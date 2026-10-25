@@ -1,1430 +1,919 @@
-# CUDA ldmatrix review (PR 67)
-
-QA evidence: ldmatrix address operand fix, ds4_cuda.cu plus the mmq extension (extended unit)
-
-Unit identification
-Repository /data/ds4-dfm-rs, branch fix/ldmatrix-address-operand. HEAD 7a78fcd,
-identical to origin/main. All changes are uncommitted working-tree changes.
-Files in the extended unit:
-FILE ds4_cuda.cu, modified,
-  sha256 ca69e1999f7028e9d51690f8ceb1824b218d5db08ab1ad831cca939562a72738
-  (byte-identical to the revision the Part A QA pass verified; re-checked with
-  sha256sum against that pass's backup)
-FILE cuda/mmq/ds4_fattn.cu, modified,
-  sha256 a227e30ea586f3d76799d02c4f9c44523b04ace11fe668b051223c23e5e9f823
-FILE cuda/mmq/inkling_attention.cuh, modified,
-  sha256 2e37571cb2ffc3df928b17fff4a176e3e6a92770653489e833ca1acf0c7096b7
-FILE Makefile, modified (adds the tests/cuda_tokentile_ldmatrix rule and the
-  test-cuda-tokentile-ldmatrix target)
-FILE .gitignore, modified (adds /tests/cuda_tokentile_ldmatrix)
-FILE tests/cuda_tokentile_ldmatrix.c, new file, untracked (token-tile guard)
-FILE tests/qa-gate.sh, new file, untracked (rule 19 guardrail mount)
-FILE tests/run.sh, new file, untracked (local unit entry)
-The extension since the previous QA pass: the same "r"(cvta) to "l"(ptr)
-operand fix in the five mmq ldmatrix helpers (solar_fattn_ldsm_x4,
-solar_fattn_ldsm_x4_trans, dots3_ldsm_x2 in cuda/mmq/ds4_fattn.cu and
-ia_ldsm_x4, ia_ldsm_x4_trans in cuda/mmq/inkling_attention.cuh), plus the
-tests/qa-gate.sh + tests/run.sh guardrail mount. Both changed mmq surfaces are
-in one translation unit: cuda/mmq/ds4_fattn.cu includes inkling_attention.cuh
-(line 42), so one object rebuild covers both.
-
-Environment
-GPU RTX 4070 SUPER, sm_89, CUDA 13.3 at /usr/local/cuda. Shared GPU; runs
-serialized one at a time. Builds: make -j4 <target> CUDA_ARCH=native. The three
-changed sources carry no changes to any other toolchain (Metal/macOS untouched
-by this unit).
-
-Covered surfaces
-FILE ds4_cuda.cu
-FILE cuda/mmq/ds4_fattn.cu
-FILE cuda/mmq/inkling_attention.cuh
-FILE Makefile
-FILE .gitignore
-FILE tests/cuda_tokentile_ldmatrix.c
-FILE tests/qa-gate.sh
-FILE tests/run.sh
-FUNCTION tt_ldmatrix_x4_addr, tt_ldmatrix_x2_addr, tt_ldmatrix_x2_trans_addr
-  (and the pass-through wrappers tt_ldmatrix_x4/x2/x2_trans)
-FUNCTION tt_hmma_score_stage, tt_pv_mma_stage
-FUNCTION attention_tokentile_hmma_kernel
-FUNCTION solar_fattn_ldsm_x4, solar_fattn_ldsm_x4_trans, dots3_ldsm_x2
-FUNCTION ia_ldsm_x4, ia_ldsm_x4_trans
-TARGET test-cuda-tokentile-ldmatrix
-TARGET test-solar-fattn, test-inkling-attention
-
-PART A, the original token-tile unit (verified in the previous QA pass; the
-changed file is byte-identical, and the claims that must still hold were
-re-checked live, see Part C)
-
-Claim A1: the defect is in the committed revision and gone after the fix.
-Ran: grep -n '"r"(a)' ds4_cuda.cu and on origin/main:ds4_cuda.cu.
-Observed: origin/main has exactly 3, at lines 14931/14942/14953; the worktree
-has 0; repo-wide 0 outside misc/scratch. CLAIM HOLDS.
-
-Claim A2: reachability. The three helpers are called only from
-tt_hmma_score_stage (line 15578) and tt_pv_mma_stage (lines 15723, 15728), both
-instantiated only inside attention_tokentile_hmma_kernel; the three wrappers are
-dead code. Three dispatch gates launch that kernel: 30630 (decode-mixed, allows
-n_comp == 0), 31092 (indexed, requires n_comp != 0), 31500 (zero-prefix
-prefill). The shape gates are head_dim 512, n_head 64, window 128; reading the
-shape catalog, only the DeepSeek V4 Flash shape meets all three (DS4 Pro fails
-n_head 128, GLM 5.3 Flash fails n_swa 0, MiMo2 fails head_dim 192). The unit's
-cited gate lines 30624/31086/31490 are off by 6-10 lines; same gates. CLAIM
-HOLDS.
-
-Claim A3: mechanism. Pre-fix object SASS: all 104 LDSM sites in
-attention_tokentile_hmma_kernel take their address register from
-IADD3 Rx, Ry, -c[0x0][0x18], RZ. The operand probe (ldm_variants.cu) faults for
-every "r" form and loads for every "l" form; compute-sanitizer names the LDSM PC
-("Invalid __shared__ read of size 16 bytes ... out of bounds"). Post-fix the
-same IADD3 remains but its input is the generic shared-window base, so it is the
-correct conversion. The vendored cuda/mmq/mma.cuh uses "l" at all four of its
-ldmatrix sites. CLAIM HOLDS.
-
-Claim A4: the guard catches the defect. Stashed ds4_cuda.cu, rebuilt
-(make -j4 tests/cuda_tokentile_ldmatrix CUDA_ARCH=native, rc 0), ran
-./tests/cuda_tokentile_ldmatrix 0: cudaErrorIllegalAddress from the attention
-kernel, exit 1. Restored (sha256 verified, grep 0, stash empty), rebuilt, same
-run: PASS, exit 0. The unit's guard-ab.log prints "case0 rc=0" for the failing
-pre-fix run, which is a capture artifact; the true exit code is 1. CLAIM HOLDS.
-
-Claim A5: make test-cuda-tokentile-ldmatrix CUDA_ARCH=native exits 0 with three
-PASS lines. CLAIM HOLDS (re-run live in Part C).
-
-Claim A6: compute-sanitizer memcheck 0 errors on the tile path with the fix.
-CLAIM HOLDS (re-run live in Part C).
-
-Claim A7: the oracle is independent of the kernels and models the documented
-semantics. Every modeled element maps to the dense builder, raw mirror,
-softmax/sink code; the kill-switch fallback (a different kernel) matches the
-same reference at 1.08e-6, corroborating the model. Residual: ref_row leaves
-out[] unwritten for nk == 0 or nk >= MAX_KEYS; no committed case reaches it
-(nk 97 to 224). CLAIM HOLDS.
-
-Claim A8: warnings. ds4_cuda.cu emits the same two pre-existing warnings (lines
-1258 and 9084) in both states; warning delta zero; the literal phrase
-"warning-free" is inaccurate since those two remain. CLAIM HOLDS AS DEFINED.
-
-Claim A9: honesty checks. cuda_long_context_smoke fails identically (rc 1,
-byte-identical stderr) pre-fix and post-fix; the failing step is a host-side
-tensor upload in a second attention case (cannot reach the token-tile gates).
-Running one case per process hides nothing about this fix. No throughput claim
-was made. CLAIM HOLDS.
-
-PART B, the extension (claims of this pass)
-
-Claim B1: the mmq diffs are the operand change with the address arithmetic
-unchanged.
-Ran: git diff -- cuda/mmq/ds4_fattn.cu cuda/mmq/inkling_attention.cuh, plus:
-  git stash push -- <the two files>; grep -c '"r"(addr)' (3 and 2 matches);
-  git stash pop; grep -c '"r"(addr)' (0 and 0); sha256sum -c against backups.
-Observed: each of the five helpers loses the
-  const uint32_t addr = (uint32_t)__cvta_generic_to_shared(...); line and passes
-  the pointer itself: "l"(row_ptr) in the three ds4_fattn.cu helpers,
-  "l"(p) in the two inkling helpers. No arithmetic line changes: the callers
-  still pass the same row_ptr/p expressions, and the row/column index code is
-  not in the diff. The diff hunks are only those five functions plus added
-  comments. The pre-fix grep count (3 and 2) equals the number of patched
-  helpers, and the post-fix count is 0. CLAIM HOLDS.
-
-Claim B2: the extension is what revives the kernels (A/B re-derived).
-Ran: sha256 backups; git stash push -- the two files; make -j4
-tests/test_solar_fattn tests/test_inkling_attention CUDA_ARCH=native (rc 0,
-0 warnings); ./tests/test_solar_fattn -> rc 1 with
-  "ds4: CUDA synchronize failed: an illegal memory access was encountered"
-  "FAIL line 96: ds4_gpu_synchronize()"
-./tests/test_inkling_attention -> rc 1 with
-  "ds4: CUDA tensor read failed: an illegal memory access was encountered"
-  "FAIL line 184: ds4_gpu_tensor_read(f->out, 0, got, bytes)"
-Then git stash pop; sha256sum -c: both OK; grep count 0/0; stash list empty.
-Rebuilt the same way (rc 0); ./tests/test_solar_fattn -> rc 0, last line
-  "Solar attention rollback parity passed", different=0 on every printed shape
-  (largest: rows=4096 pos=61440 cap=65601 heads=64 pair=309.918 ms ws=188.576 ms
-  different=0; the unit's log has pair=319.030 ws=194.922 for that shape, timing
-  noise on a shared GPU).
-./tests/test_inkling_attention -> rc 0, last line
-  "Inkling attention/KV checks passed" (tensor-core=2706.979 us grouped=12638.393
-  per-head=120582.137 at extent=1024/rows=512 and 792.395/726.331/5088.208 at
-  rows=16; the unit's log has 2922.678/13146.133/134980.209 and
-  803.624/787.637/5048.379).
-Log consistency: the unit's misc/scratch/ldm/mmq-ab.log is consistent with my
-run line for line in every failure and pass signature. One apparent oddity in
-that log, a PASS line ("attention extent=512 chunk=8201 outputs/cache passed
-(exact)") printed after the pre-fix inkling FAIL lines, is a stdout/stderr
-buffering artifact: that line is the pre-HMMA exact pass, whose block-buffered
-stdout is flushed at exit after the unbuffered stderr FAIL lines; my own capture
-reproduces the same ordering. CLAIM HOLDS.
-
-Claim B3: the mmq-shape probe.
-Ran: nvcc -arch=native -o ldm_mmq_variants misc/scratch/ldm/ldm_mmq_variants.cu;
-./ldm_mmq_variants 1..6.
-Observed:
-  v1 (x4 "r"):      sync=an illegal memory access was encountered r0=0
-  v2 (x4 "l"):      sync=no error r0=0x3c003c00
-  v3 (x4t "r"):     sync=an illegal memory access was encountered r0=0
-  v4 (x4t "l"):     sync=no error r0=0x3c003c00
-  v5 (x2 "r"):      sync=an illegal memory access was encountered r0=0
-  v6 (x2 "l"):      sync=no error r0=0x3c003c00
-CLAIM HOLDS.
-
-Claim B4: the gate enforces rather than rubber-stamps.
-Ran before the report update: QA_MODEL=deepseek-v4.1-CC-flash bash
-tests/qa-gate.sh -> exit 1, exactly two red checks:
-  "FAIL report covers surface: tests/qa-gate.sh"
-  "FAIL report covers surface: tests/run.sh"
-with the verdict check PASS (the old report's last line was the verdict) and
-"SKIP freshness (the branch has no pushed base yet;
-origin/fix/ldmatrix-address-operand is unborn)". Note: the two mmq surfaces
-passed coverage in that run only because the old report mentioned them in a
-finding, which shows the coverage check is a substring presence test.
-Negative controls on scratch copies of a report (QA_SURFACES=ds4_cuda.cu):
-  last non-empty line "verdict: overall FAIL" -> red, rc 1
-  "verdict: overall PASS" followed by a stray non-empty line -> red, rc 1
-  missing report file -> 3 red (exists, verdict, coverage), rc 1
-  clean "verdict: overall PASS" -> green, rc 0
-CI skip: GITHUB_ACTIONS=true bash tests/qa-gate.sh -> "SKIP tests/qa-gate.sh ...",
-rc 0.
-Exclusion filter: the raw git-status entry list is
-  .callgraph-index.bin, cuda/mmq/ds4_fattn.cu, cuda/mmq/inkling_attention.cuh,
-  ds4_cuda.cu, ds4-dfm-rs-handoff.md, .gitignore, graphify-out/, Makefile,
-  qa-evidence/, tests/cuda_long_context_smoke, tests/cuda_tokentile_ldmatrix.c,
-  tests/qa-gate.sh, tests/run.sh
-and after the default exclusion the surfaces are the unit's own five modified
-files, the regression test and the two guardrail scripts; dropped are
-.callgraph-index.bin, ds4-dfm-rs-handoff.md, graphify-out/, qa-evidence/ and the
-untracked built binary tests/cuda_long_context_smoke. The built token-tile test
-binary does not appear because .gitignore covers it. The filter keeps every
-reviewable surface and drops only machine-local or regenerable ones. Run again
-after the report update (the state this file is in): exit 0, "QA GATE: overall
-PASS", report exists PASS, operative verdict PASS, all eight surfaces covered,
-freshness still SKIP. CLAIM HOLDS
-with two recorded limitations: the freshness check is skipped on this branch
-because origin/<branch> does not exist (it would engage once the branch is
-pushed), and surface coverage is a presence test, not a content check.
-
-Claim B5: tests/run.sh ordering, exit handling, --full.
-Ran: read tests/run.sh; ran QA_MODEL=deepseek-v4.1-CC-flash bash tests/run.sh
-before the report update and (after the update) again.
-Observed (pre-update run, log qa2-run-preupdate.log): the gate output comes
-first and is red (same two surface failures), then all three suites still run
-and pass (three token-tile PASS lines, "Solar attention rollback parity passed",
-"Inkling attention/KV checks passed", 0 "FAIL line" occurrences), and the script
-exits 1. So ordering is gate first as documented, every failure is captured by
-the per-step "or status=1" guard, later suites still run after an earlier
-failure (no short-circuit),
-and the accumulated status is propagated. After the update: the first post-update
-run of the same command failed in the inkling suite with "FAIL line 45: t" (the
-ds4_gpu_tensor_alloc inside tests/test_inkling_attention.c upload() returned
-NULL) while a co-tenant held the GPU at 10147 MiB used of 12282 MiB, 100 percent
-utilization; the same binary passed alone immediately after ("Inkling attention/KV
-checks passed") and the next run of bash tests/run.sh exited 0 with 0 "FAIL line"
-occurrences and all three suites passing (log qa2-run-postupdate2.log). That is
-an environmental allocation failure of the shared box, not a code regression.
---full is recognized only as the first
-argument and adds make test, whose recipe runs ds4-eval --self-test-extractors,
-ds4_test and tests/test_split_gguf; that matches the documented model-free suite
-and the documented usage "bash tests/run.sh --full". I did not execute the
---full path end to end (it builds and runs the full C suite); the branch was
-judged by reading, and everything else on that path was exercised live. CLAIM
-HOLDS.
-
-PART C, earlier claims re-checked live after the extension
-
-C1 token-tile parity: make test-cuda-tokentile-ldmatrix CUDA_ARCH=native exits 0
-with three PASS lines: max_rel 0.000983 (limit 0.004), 0.00101, 1.37e-07.
-C2 compute-sanitizer: DS4_ATTN_TOKENTILE=1 compute-sanitizer --tool memcheck
---launch-timeout 300 ./tests/cuda_tokentile_ldmatrix 0 -> PASS line, "ERROR
-SUMMARY: 0 errors", rc 0.
-C3 warnings: cuda/mmq/ds4_fattn.cu compiles with 0 warnings pre-fix and 0
-post-fix (my own A/B builds, logs qa2-prefix-build.log / qa2-postfix-build.log).
-ds4_cuda.cu is byte-identical to the version whose A/B showed the same two
-pre-existing warnings (lines 1258, 9084) in both states, so its warning delta
-remains zero.
-
-Findings
-1. The gate's surface coverage is a substring presence test and its freshness
-   check is skipped while origin/<branch> does not exist; both are recorded
-   limitations, not claim failures. (Evidence in Claim B4.)
-2. run.sh continues through the suites when the gate is red and still exits
-   nonzero; that is a reasonable local-entry design but means a red gate does
-   not short-circuit the run.
-3. Claim A8 wording: the ds4_cuda.cu translation unit is not literally
-   warning-free; two pre-existing warnings remain in both states. The change's
-   warning delta is zero.
-4. The unit's guard-ab.log records "case0 rc=0" for the pre-fix failing run;
-   the true exit code is 1. Background artifact of that log's capture, not of
-   the guard.
-5. The regression test's header comment frames the token-tile path as mattering
-   for "a DeepSeek V4 or GLM 5.3 artifact"; per the shape catalog only the
-   DeepSeek V4 Flash shape meets all three gates (GLM 5.3 Flash has n_swa 0).
-   Context wording only, no claim depends on it.
-6. Oracle robustness nit: tests/cuda_tokentile_ldmatrix.c ref_row leaves out[]
-   unwritten if nk == 0 or nk >= MAX_KEYS (no committed case reaches it).
-7. The five out-of-scope ldmatrix sites flagged by the previous QA pass are now
-   fixed and covered by Claims B1-B3; that finding is closed.
-8. The unit's mmq-ab.log ordering oddity (PASS line after FAIL lines in the
-   pre-fix inkling section) is a stdout buffering artifact, reproduced and
-   explained in Claim B2.
-9. Observed once during this pass: a transient device-allocation failure in the
-   inkling suite under co-tenant GPU pressure (FAIL line 45, tensor alloc NULL;
-   10147 MiB of 12282 MiB used by other processes). The binary passed alone and
-   the next full run.sh run was green. Environmental, recorded for the box's
-   shared-GPU context.
-
-What I could not verify
-- The make test (--full) path end to end: it builds and runs the full model-free
-  C suite; the branch was verified by reading, the rest of run.sh live.
-- Root cause of the pre-existing second-round tensor-upload failure
-  (cudaErrorInvalidValue) that forces one case per process; only its
-  pre-existence and pre/post identity were checked.
-- Runtime of the indexed (31092) and zero-prefix (31500) token-tile tiers; only
-  the decode-mixed tier is driven by the test, the other two are source-read
-  reachability.
-- End-to-end serving with real model artifacts: everything is verified at the
-  kernel geometry with synthetic tensors.
-- Performance: no throughput claim exists for this unit, so nothing
-  performance-related was measured.
-
-verdict: overall PASS
-
-# Prism Bonsai review (PR 69)
-
-QA report: feature/qwen35-port — Bonsai (qwen35) CUDA kernels and CUDA graph
-
-Unit under test: 8c887e4 "feat(cuda): port the Bonsai attention and gated
-delta-net kernels", 349e93b "feat(cuda): run the Bonsai trunk on the CUDA
-graph", and 7818a7a "fix(cuda): keep the Bonsai graph out of the CPU-only
-build", on top of a02ecd2. 7818a7a answers the single defect this QA pass
-found in the first round; the re-verification is below.
-Branch feature/qwen35-port. Base origin/main. Head 7818a7a (tree clean, no
-tracked modification during this pass).
-Tester: independent QA session (rule 19). Date 2026-09-30.
-Host: RTX 4070 SUPER (sm_89, CUDA 13.3), 28 cores, RLIMIT_MEMLOCK 8192 KiB.
-Artifact: /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf (6.71 GiB, 851
-tensors, blk.0..blk.63 = 64 blocks).
-Oracle: /data/ds4 branch bonsai tip bbaf298, prebuilt ./ds4 (read only, not
-modified).
-Every CUDA model run below sets DS4_CUDA_COPY_MODEL=1 and waits for the
-single-instance slot. Scratch work lives in misc/scratch/qa/ (gitignored); no
-tracked file other than this report was touched.
-
-VERDICT SUMMARY
-
-Pass. The CUDA unit verifies end to end (kernel gate, both runbooks, the
-recorded stream, bit-identical logits against the sibling, the nine entries'
-guards, the engine gate, the per-layer bound), the CPU-only build regression
-that failed the first round is fixed and re-verified three ways, the release
-report's three falsified statements are corrected, and the chat-prompt near
-tie is now explained by measurement rather than by assumption.
-
-RE-VERIFICATION OF THE FIX (7818a7a) — the defect of the first round is closed
-
-The fix wraps the graph section in #ifndef DS4_NO_GPU and adds refusing stubs
-for the CPU build (ds4.c: qwen35_graph_open/forward/free, plus the small
-struct). Re-run of all three reproductions:
-
-1. The ds4_cpu.o rule's exact command:
-     cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 \
-        -D_GNU_SOURCE -fno-finite-math-only -DDS4_NO_GPU -c -o /dev/null ds4.c
-   -> exit 0, 0 errors, 17 warnings (all the pre-existing unused-function
-   set, same as the a02ecd2 baseline). Before the fix: exit 1, 70 errors.
-   The same command with -o misc/scratch/qa/ds4_cpu_postfix.o -> exit 0.
-
-2. make -B tests/test_qwen35_rows -> exit 0, 6.63 s; then
-     make test-qwen35-rows
-   -> exit 0, 0.86 s:
-     qwen35 rows: 851 tensors matched the reference dequantizer (first 64 rows each)
-   Before the fix this target died with
-   "tests/../ds4.c:69351:10: error: implicit declaration of function
-   'ds4_gpu_flush_commands'" and make Error 1.
-
-3. tests/test_motif3_loader: make -B tests/test_motif3_loader -> exit 0, and
-   the raw compile with the target's flags (this time including -lm -pthread,
-   which my first-round command omitted, so its earlier exit 1 was my link
-   line and not the tree) -> exit 0, 0 errors.
-
-Full CPU link, end to end, without touching the tree's ds4-c: the ds4_cpu.o
-rule compiled into scratch and linked with the existing CPU objects
-(ds4_cli_cpu.o linenoise.o ds4_cpu_postfix.o ds4_ple.o ds4_distributed.o
--lm -pthread) -> exit 0, and the resulting binary runs:
-
-    DS4_QWEN35_STEPS=1 misc/scratch/qa/ds4-c-cpu -m <artifact> --cpu \
-      --first-token-test -p x
-    token 21: 760 The
-    ds4: prompt 21 token(s); next-token top-5: 760(20.5268)The ...
-    ds4: diagnostic run completed on the native cpu path.
-    exit 0, WALL 73.32 s
-    misc/scratch/qa/ds4-c-cpu -m <artifact> --cuda -p x
-    ds4: Bonsai (qwen35) runs only through --first-token-test, ...
-    exit 1
-
-So the CPU stubs resolve at link time and the CPU host works. make cpu itself
-was deliberately not run: its recipe links ds4-c and would overwrite the
-CUDA-linked binary in this shared tree. The compile, the link and the run
-above cover the same ground per object.
-
-CUDA SIDE UNTOUCHED BY THE FIX (re-measured on the current build)
-
-    make ds4-c CUDA_ARCH=sm_89            -> exit 0 ("ds4-c is up to date";
-    ds4.c 09:29:18, ds4.o 09:30:16, ds4-c 09:30:17; the guard is a no-op for
-    the CUDA build, which compiles the same block either way)
-    make test-qwen35-cuda CUDA_ARCH=sm_89 -> exit 0, 20.74 s,
-      PQ2_0 CUDA parity: PASS
-      gdn out norm, sigmoid (qwen4exp) gate: max_abs=3.57628e-07 failures=0/18432: PASS
-      gdn out norm, silu (Bonsai) gate: max_abs=9.53674e-07 failures=0/18432: PASS
-      eight attention cases, token-tile at 4.53e-08 / 4.12e-08 / 6.12e-08 / 3.67e-08
-    make bonsai-cuda-parity              -> "bonsai cuda parity: PASS", exit 0,
-      43.90 s, the two token files identical (the eight recorded ids)
-
-Logits re-measured on this build (three fresh dumps, 5 x 248320 f32):
-
-    cuda - cpu    : max|d|=0.08093 rms_rel=0.264% argmax 5/5 bit_identical=False
-    sibling - cpu : max|d|=0.08093 rms_rel=0.264% argmax 5/5 bit_identical=False
-    cuda - sibling: max|d|=0.00000 rms_rel=0.000% argmax 5/5 bit_identical=True
-    new cuda dump - first-round cuda dump: bit_identical=True
-    new cpu  dump - first-round cpu  dump: bit_identical=True
-
-The entry-guard probe was rebuilt against the post-fix hooks object and
-re-run: 101 checks, 90 refusals (got=0), 11 valid runs (got=1), 0 FAIL.
-
-CAST OF THE FIRST ROUND'S DEFECT, KEPT FOR THE RECORD
-
-349e93b added the graph block unguarded, so the -DDS4_NO_GPU compilation of
-ds4.c failed with 70 errors on 67 distinct lines (first ds4.c:68987 unknown
-type name ds4_gpu_tensor, last ds4.c:69351 implicit declaration of
-ds4_gpu_flush_commands), which broke make cpu and every target that compiles
-ds4.c with that switch (test-qwen35-rows, test-motif3-loader,
-test-motif3-reference, test-exaone-tokenizer, tokenizer_c_oracle). The
-regression boundary was verified then: a02ecd2 compiled clean with the same
-command. Fixed in 7818a7a and re-verified above.
-
-KERNEL GATE AND RUNBOOKS (first round, re-confirmed above)
-
-    make test-qwen35-cuda CUDA_ARCH=sm_89 -> PQ2_0 CUDA parity: PASS, with the
-    restored gdn-output-gate group (sigmoid 3.57628e-07, silu 9.53674e-07) and
-    the eight attention split cases including the four token-tile ones.
-    make bonsai-cuda-check  -> exit 0: the greedy stream on "The capital of
-    France is", tokens 25..36.
-    make bonsai-cuda-parity -> PASS (above).
-    make bonsai-fold-selftest, make bonsai-ref-check, make pq2-0-test,
-    make test-qwen35-rows, make test-qwen35-cuda: all exit 0.
-
-REFERENCE STREAM AND LOGITS
-
-With DS4_QWEN35_TOKENS=760,6511,314,9338,369 DS4_QWEN35_STEPS=8 the CUDA
-graph prints exactly token 5..12 = 11751, 13, 198, 760, 6511, 314, 9564, 369,
-and the 64-step run reproduces the recorded stream for its first 16 positions
-(adds 19241 Berlin). The logits comparison is in the section above.
-
-NINE ENTRIES AND THEIR GUARDS
-
-Scratch probe misc/scratch/qa/entry_guards.cu (built by
-misc/scratch/qa/build-guards.sh with the flags and objects of
-tests/test_qwen35_cuda), log misc/scratch/qa/52-entry-guards-postfix.log:
-
-    101 checks, 90 refusals, 11 valid runs, 0 FAIL
-      ds4_gpu_qwen4_conv_stream_tensor          10 checks / 1 valid
-      ds4_gpu_qwen4_gdn_prep_tensor             12 / 1
-      ds4_gpu_qwen4_gdn_scan_tensor             11 / 1
-      ds4_gpu_qwen4_gdn_out_tensor (sigmoid)     9 / 1
-      ds4_gpu_qwen35_gdn_out_tensor (silu)       9 / 1
-      ds4_gpu_qwen4_attn_decode_tensor          17 / 3
-      ds4_gpu_qwen4_attn_tokentile_available     8 / 1
-      ds4_gpu_qwen35_attn_prep_tensor           16 / 1
-      ds4_gpu_qwen35_matvec_bf16_tensor          9 / 1
-
-Each malformed case isolates one guard while the rest of the request is
-valid, so a dead guard would show as a 1 where a 0 is required: T=0, K out of
-2..4, D<32 / D>128 / D%32, Hv%Hk, H%Hkv, D not in 32/128/256, nrot>64 and odd
-nrot, pos0+T>cap, every undersized tensor, a weight offset at or past the map
-end, a weight range that overflows it, a NULL map, and the missing or
-undersized sparse / split-K tensors.
-
-ds4_gpu_qwen35_matvec_bf16_tensor numerics: kernel against the float-activation
-reference max|d| = 1.297e-06, against the bf16-rounded-activation reference
-3.023e-02, so the activation is not rounded to bf16 (the property the entry
-exists for).
-
-Reachability: six of the nine are called from the ds4.c graph (69046 matvec,
-69108 conv, 69113 gdn_prep, 69118 gdn_scan, 69122 gdn_out, 69145 attn_prep,
-69155 attn_decode). ds4_gpu_qwen4_attn_tokentile_available (ds4_gpu.h:1058,
-defined in cuda/qwen35_attn_gdn.cuh) has no caller in this tree: the same
-decision lives in qwen35_attn_tokentile_ok inside the header, which the decode
-dispatcher uses, and the sibling's graph calls the entry (its ds4.c:69037).
-Reachable through the ABI and exercised by the probe; a note, not a defect.
-
-Probe artefact worth recording: with the first probe version, which freed its
-mmap'd scratch maps and let the next mmap reuse the address, the matvec valid
-case returned 0 with "CUDA model range copy failed for Bonsai weights ...
-invalid argument (serving mapped)". The resolver caches host ranges by address
-(comment at ds4_cuda.cu:1745). Keeping the maps alive for the process lifetime
-makes every case pass; the model run resolves from the real artifact mapping.
-
-ENGINE GATE
-
-    ./ds4-c -m <artifact> --cuda -p x    exit 1
-    ./ds4-c -m <artifact> --cpu  -p x    exit 1
-    ./ds4-c -m <artifact>        -p x    exit 1
-    all three: "ds4: Bonsai (qwen35) runs only through --first-token-test, on
-    the CPU reference (--cpu) or the CUDA graph (--cuda); the session and
-    server paths are not implemented yet"
-    ./ds4-c -m <artifact> --cpu --first-token-test -p x    exit 0
-    and the CPU-only scratch binary refuses --cuda the same way.
-
-PER-LAYER ARRAY BOUND
-
-DS4_MAX_LAYER = 61 (ds4.c:317, the DeepSeek bound); DS4_QWEN35_MAX_LAYER 64u
-with the aliasing comment (68982); the four arrays sized with it (68990-68993);
-qwen35_graph_open refuses a model with more blocks than the arrays hold
-(69233-69236, "Bonsai CUDA graph: %u blocks exceed the %u-slot state
-arrays"), and the string is in the built ds4-c. The artifact really has 64
-blocks (independent GGUF parse, blk.0..blk.63). The live adequacy proof is the
-bit-identical CUDA logits against the sibling, which aliased state would
-break. The refusal path itself cannot be provoked here (no >64-block
-artifact).
-
-CHAT-PROMPT NEAR TIE — SETTLED BY MEASUREMENT
-
-All runs on the current binary, one model process at a time, artifact
---first-token-test with the CLI's 25-token chat template. Exact command shape:
-
-    env DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS=<n> ./ds4-c -m <artifact> \
-        --cuda --first-token-test -p "The capital of Germany is"
-    env DS4_QWEN35_STEPS=<n> ./ds4-c -m <artifact> \
-        --cpu  --first-token-test -p "The capital of Germany is"
-
-    1) Germany, cuda, 16 steps:
-       760(22.1969)The 90700(16.3264)Thinking 77264(13.6300)Hmm
-       1421(13.5868)User 15893(12.9160)Simple     token 29: 883  about
-       (WALL 2.34 s)
-    2) Germany, cuda, 16 steps, repeat:
-       byte-identical top-5 and stream              token 29: 883  about
-       (WALL 2.31 s)
-    3) Germany, cuda, 32 steps:
-       byte-identical top-5 and stream              token 29: 883  about
-       (WALL 2.78 s)
-    4) Germany, cpu, 16 steps:
-       760(22.1780)The 90700(16.3378)Thinking 77264(13.6195)Hmm
-       1421(13.5884)User 15893(12.9233)Simple       token 29: 264  a
-       (WALL 141.37 s)
-    5) Germany, cpu, 32 steps:
-       byte-identical top-5 and stream              token 29: 264  a
-       (WALL 195.15 s)
-    control) France, cuda, 16 steps:
-       760(21.9915)The 90700(16.0678)Thinking 1421(13.8667)User
-       15893(13.5789)Simple 77264(13.4640)Hmm        token 29: 264  a
-       (WALL 2.37 s)
-
-What this settles:
-
-- The CUDA stream is deterministic in this environment: two 16-step repeats
-  are byte-identical, and the 16- and 32-step runs agree on the whole stream.
-- On the Germany prompt the CUDA values are the author's to the digit
-  (22.1969 / 16.3264 / 13.6300 / 13.5868 / 12.9160 and 883 "about"), and the
-  CPU values are the author's to the digit (22.1780 / 16.3378 / 13.6195 /
-  13.5884 / 12.9233 and 264 "a"). So the author's CPU-versus-CUDA divergence
-  on that prompt reproduces here; it is not an environment difference.
-- My earlier "the backends agree" observation was made on the France prompt
-  (The capital of France is), where this environment gives CUDA 760(21.9915)
-  with 264 "a" and CPU 760(21.9951) with 264 "a" (32/32 identical). The
-  control run above repeats the France prompt on the same binary and gets the
-  same 264 "a", so the difference between the two observations is the prompt
-  (last token 9338 France against 9564 Germany), not nondeterminism on either
-  backend.
-- The step count does not change the first-token top-5 on either backend
-  (16 and 32 identical), so there is no step-count-dependent top-5 defect to
-  name.
-- The doc's "the deciding gap is about 0.1 on a 22-magnitude top logit" could
-  not be checked: the diagnostic prints the top-5 of the prompt position only,
-  not per-step candidates, so the 883-against-264 gap at token 29 is not
-  observable from these runs. What is measurable on the same prompt is the
-  top-1 difference between the backends: 22.1969 - 22.1780 = 0.0189.
-
-RELEASE REPORT CHECK (docs/releases/bonsai-cuda-graph-2026-09-30.md)
-
-The first round falsified three statements; all three are corrected in
-7818a7a:
-
-- Section 4 no longer claims the flip as expected behaviour. It now says the
-  backends agree for the first 24 tokens and then differ in the author's runs
-  while the QA's run agreed 32/32, that the CPU is stable across the author's
-  three runs, and concludes that the long chat continuation is a near-tie coin
-  flip at the artifact's decode precision, with the explicit-prompt stream as
-  the gate. Addressed. Two nits remain in the same section: its parenthetical
-  compares 21.9951 (the QA's France-prompt CPU top-1) with 22.1780 (the
-  author's Germany-prompt CPU top-1), which mixes prompts — the like-for-like
-  numbers are in the section above, and same-prompt the two environments agree
-  on each backend; and the "about 0.1" candidate gap is not measurable from
-  the diagnostic (see above).
-- Section 5 now says the sibling tree's constant is 79 (which is what
-  /data/ds4/ds4.c:496 defines) instead of 64, keeping the same conclusion.
-  Addressed.
-- Section 0 now marks the failing tensor as one run's observation and notes
-  that it varies with allocation order. Addressed (my run died at
-  blk.35.attn_q.weight, the author's example was blk.32.ffn_gate.weight; the
-  symptom, "CUDA host registration skipped: invalid argument" then a matmul
-  failure part-way through the trunk, is the same).
-- The report also records the CPU-build guard as the third commit. The rest of
-  the document re-checks against this pass: section 1 kernel gates, section 2
-  parity, section 3 logits, section 6 rates (1.66/3.10 s and 0.703 s copy
-  measured here against 1.64/3.09 s and 26 ms per token claimed) all hold.
-
-SURFACES COVERED (the gate's list for this branch)
-
-Live in this pass: ds4_gpu_qwen4_conv_stream_tensor,
-ds4_gpu_qwen4_gdn_prep_tensor, ds4_gpu_qwen4_gdn_scan_tensor,
-ds4_gpu_qwen4_gdn_out_tensor, ds4_gpu_qwen4_attn_decode_tensor,
-ds4_gpu_qwen4_attn_tokentile_available, ds4_gpu_qwen35_gdn_out_tensor,
-ds4_gpu_qwen35_attn_prep_tensor, ds4_gpu_qwen35_matvec_bf16_tensor (probe, 101
-checks); ds4_gpu_matmul_pq2_0_tensor, ds4_gpu_qwen35_fold_forward_tensor,
-ds4_gpu_qwen35_fold_inverse_tensor (make test-qwen35-cuda); DS4_QWEN35_TOKENS,
-DS4_QWEN35_STEPS, DS4_QWEN35_LOGITS (stream, logits and chat-prompt runs);
-DS4_QWEN35_FOLD_SELFTEST (make bonsai-fold-selftest); bonsai-cuda-check,
-bonsai-cuda-parity, bonsai-fold-selftest, bonsai-ref-check, pq2-0-test,
-test-qwen35-cuda, test-qwen35-rows (all exit 0; test-qwen35-rows was the
-target the first round found broken and now builds and runs).
-
-Not re-run in this pass, present at HEAD, outside this unit's diff (they come
-from the earlier catalogue commit and none of their sources is touched by the
-three commits): in crates/ds4-core/src/qwen35.rs and
-crates/ds4-core/src/shape.rs:
-  pub const CTX_MAX, pub const FOLDABLE_SUFFIXES, pub const FULL_ATTN_INTERVAL,
-  pub const LIN_CONV, pub const LIN_HEAD_DIM, pub const LIN_K_DIM,
-  pub const LIN_K_HEAD, pub const LIN_V_DIM, pub const LIN_V_HEAD,
-  pub const SHAPE_QWEN35, pub fn is_foldable_weight_name,
-  pub fn layer_is_full_attention.
-Their C-against-Rust parity harness (make test-catalog-parity) was not
-executed here.
-
-NOT RUN, AND WHY
-
-- make cpu itself: its recipe links ds4-c and would overwrite the CUDA-linked
-  binary in this shared tree. The ds4_cpu.o compile, the full CPU link into
-  scratch and a CPU-only run stand in for it.
-- No forced full rebuild of ds4-c: the binary already postdates ds4.c and the
-  guard does not change the CUDA build's code; freshness was established from
-  timestamps plus make -q.
-- The >64-block refusal path cannot be provoked (no artifact with more than
-  64 blocks here).
-- Prefill throughput is not measured by this diagnostic (the release report
-  says so too); only the decode shape was timed.
-- The token-tile attention kernel is not reached by the trunk (T stays under
-  its 32-token gate), so it is verified through the kernel gate only.
-- The 883-against-264 candidate gap at token 29 is not observable from the
-  diagnostic's output (prompt-position top-5 only).
-- The Rust catalogue items listed above were not re-executed.
-
-================================================================================
-QA pass 2 — Bonsai session unit: 4a2a412 "feat(core): run Bonsai sessions on
-both backends" (docs/releases/bonsai-session-2026-09-30.md)
-
-Unit: 4a2a412 on feature/qwen35-port-cpu, HEAD at pass time 4a2a412 (the
-working tree carried only this report and the gitignored misc/scratch/qa logs;
-no tracked source was modified). Tester: independent rule 19 QA session,
-2026-09-30. Host RTX 4070 SUPER (sm_89, CUDA 13.3).
-Artifact /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf. Every CUDA run sets
-DS4_CUDA_COPY_MODEL=1. Runs were serialised on /tmp/ds4.lock (pgrep -a -x
-ds4-c was empty before each heavy run; no process not started here was killed).
-
-Build — the release report's trap is real: the tree held a CPU-only ds4-c newer
-than ds4.o, so the documented CUDA rebuild is a no-op unless the binary is
-removed first.
-
-    rm -f ds4-c && make ds4-c CUDA_ARCH=sm_89        -> exit 0
-    ldd ds4-c | grep libcudart
-      libcudart.so.13 => /usr/local/cuda-13.3/lib64/libcudart.so.13
-
-The four surfaces the gate requires for this unit, each exercised:
-
-1. DS4_QWEN35_SESSION
-
-   Baseline (no session), CUDA:
-     DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_TOKENS=760,6511,314,9338,369 \
-     DS4_QWEN35_STEPS=8 ./ds4-c -m <model> --cuda --first-token-test -p x
-     prompt: 760 6511 314 9338 369
-     token 5: 11751 Paris / 6: 13 . / 7: 198 / 8: 760 The /
-     9: 6511 capital / 10: 314 of / 11: 9564 Germany / 12: 369 is   exit 0
-
-   With DS4_QWEN35_SESSION=1, same env and args:
-     ds4: Bonsai session path (ds4_session create, sync, eval)
-     ds4: Bonsai prefill chunk: 14 tokens (ctx 14)
-     the identical eight ids                                        exit 0
-
-   With DS4_QWEN35_SESSION=1 on the CPU backend, same env and args:
-     ds4: Bonsai session path (ds4_session create, sync, eval)
-     the identical eight ids                                        exit 0
-
-   PASS — the diagnostic drives a real ds4_session (create, sync, eval) on both
-   backends and prints the same stream. The CPU session is also exercised by
-   the make target below and by run-bonsai.sh session.
-
-2. DS4_QWEN35_PREFILL_CHUNK
-
-   Same session command with the variable set, ids diffed against the baseline:
-
-     DS4_QWEN35_PREFILL_CHUNK=2    -> "Bonsai prefill chunk: 2 tokens (ctx 14)"
-                                      ids identical to the baseline
-     DS4_QWEN35_PREFILL_CHUNK=0    -> "Bonsai prefill chunk: 14 tokens (ctx 14)"
-                                      ids identical (0 falls back to the default)
-     DS4_QWEN35_PREFILL_CHUNK=2048 -> "Bonsai prefill chunk: 14 tokens (ctx 14)"
-                                      ids identical (>1024 falls back)
-   Default (unset) on a 32768 context, plain generation -n 4:
-     "Bonsai prefill chunk: 512 tokens (ctx 32768)" — the documented 512 default.
-
-   PASS — the log line follows the variable and an out-of-range value falls back
-   to the default instead of being accepted silently. The multichunk make target
-   below crosses many chunk boundaries through the same path.
-
-3. test-qwen35-session  (make target, both backends)
-
-     make test-qwen35-session CUDA_ARCH=sm_89        -> exit 0
-       CUDA: 20 PASS, 0 FAIL, "qwen35 session path: PASS"
-         scenarios plain / prefix reuse / rewind replay / invalidate /
-         context bound on the 5-token prompt, and the same four (no context
-         bound) on the 68-token long prompt; every id compared against the
-         in-process CPU reference (the oracle hook ds4_test_qwen35_ref_greedy,
-         ds4.c:68867).
-       CPU (DS4_TEST_BACKEND=cpu, 4 steps, long pass skipped): 10 PASS, 0 FAIL,
-         "qwen35 session path: PASS"
-
-   PASS on both backends.
-
-4. test-qwen35-session-multichunk  (make target, DS4_QWEN35_PREFILL_CHUNK=2)
-
-     make test-qwen35-session-multichunk CUDA_ARCH=sm_89  -> exit 0
-       every scenario logs "Bonsai prefill chunk: 2 tokens", 20 PASS, 0 FAIL,
-       "qwen35 session path: PASS"; the prefill crosses many chunk boundaries
-       and the ids still match the reference.
-
-   PASS.
-
-    ./run-bonsai.sh session                            -> exit 0
-      "IDENTICAL: the CPU session reproduces the CPU reference" and
-      "IDENTICAL: all 16 generated token ids agree".
-
-Engine gate — accepts a session, keeps the refusals:
-
-    ./ds4-c -m <model> --cuda --first-token-test -p x --mtp /tmp/qa-mtp-sidecar.gguf
-      -> exit 1: "ds4: Bonsai (qwen35) runs on the CPU reference (--cpu) or on
-         the CUDA graph (--cuda); tensor parallelism, distributed ranks, SSD
-         streaming, MTP/DSpark and steering are not supported"
-    the same with --cpu                                -> exit 1, same message
-    DS4_QWEN35_SESSION=1 DS4_QWEN35_LOGITS=/tmp/qa-logits.bin ... -> exit 1:
-      "ds4: DS4_QWEN35_LOGITS needs the per-position logits and is not
-       available with DS4_QWEN35_SESSION"; /tmp/qa-logits.bin was NOT created
-    ./run-bonsai.sh server                             -> exit 2:
-      "ERROR: \"server\" is not implemented in this tree."
-    plain generation ./ds4-c -m <model> --cuda -p "The capital of France is" -n 4
-      -> exit 0, opened a session ("Bonsai prefill chunk: 512 tokens
-         (ctx 32768)") and printed "The user is asking", so the gate admits the
-         family outside --first-token-test too.
-
-Snapshot refusal — source-verified, not live: ds4_session_payload_bytes returns
-0 for the family (ds4.c:54790-54793); ds4_session_save_payload refuses "Bonsai
-session snapshots are not implemented yet" (ds4.c:55024-55028) and
-ds4_session_load_payload the same (ds4.c:55485-55493). No CLI flag exposes
-payload save/load in this tree, so this one claim rests on the source read, not
-on a command; the context bound is covered live by scenario 5 of the test.
-
-Regression gates (all exit 0):
-
-    make test-qwen35-cuda CUDA_ARCH=sm_89           "PQ2_0 CUDA parity: PASS"
-    make bonsai-fold-selftest                       fold selftest line printed
-    make bonsai-ref-check (DS4_BONSAI_STEPS=12)      12 token lines, exit 0
-    make bonsai-cuda-parity                         "bonsai cuda parity: PASS"
-    ./run-bonsai.sh ids                             IDENTICAL (the 8 ids)
-    DS4_BONSAI_MODEL=<model> make test-qwen35-rows  "851 tensors matched"
-    bash tests/run.sh                               green (see below)
-
-    Note: `DS4_QWEN35_STEPS=4 make bonsai-ref-check` does not pass 4 through —
-    the recipe assigns DS4_QWEN35_STEPS=$(DS4_BONSAI_STEPS)=12, so the
-    environment value is superseded and the target ran 12 steps. The target is
-    green either way; the anomaly is in the invocation, not the gate.
-
-Release report check: docs/releases/bonsai-session-2026-09-30.md matches this
-pass — the 20/10 PASS counts, the "Bonsai prefill chunk" log, the session diff
-IDENTICAL, the CPU-build trap, and the stated limits (decode is one row per
-eval; no snapshots or disk KV; the CPU reference is ~3 s per forward). No
-falsified statement was found.
-
-Surfaces this pass adds to the gate's coverage: DS4_QWEN35_SESSION,
-DS4_QWEN35_PREFILL_CHUNK, test-qwen35-session, test-qwen35-session-multichunk
-(all named and exercised above); the rest of the gate's list is covered by the
-earlier section.
-
-verdict: overall PASS
-
-================================================================================
-QA pass 3 — Rust-host load path: 78c086f "fix(core): apply the fold and the
-rope on the host path"
-
-Unit: 78c086f on feature/qwen35-port (recorded as feature/qwen35-port-cpu in
-the handoff), HEAD at pass time 78c086f. Working tree carried only this report
-and gitignored misc/scratch; no tracked source was modified. Tester:
-independent rule 19 QA session, 2026-09-30. Host RTX 4070 SUPER (sm_89, CUDA
-13.3). Artifact /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf. Every CUDA run
-sets DS4_CUDA_COPY_MODEL=1. Runs were serialised on the single model slot;
-pgrep -a -x ds4 / ds4-c was checked before each heavy run and nothing not
-started here was killed.
-
-BUILD
-
-    rm -f ds4-c && make ds4-c CUDA_ARCH=sm_89   -> exit 0
-    ldd ds4-c | grep libcudart
-      libcudart.so.13 => /usr/local/cuda-13.3/lib64/libcudart.so.13 (CUDA-linked)
-    make ds4 CUDA_ARCH=sm_89                    -> "ds4 is up to date"
-      (ds4 14:28:40 and the rebuilt ds4-c both newer than ds4.c 14:27:49 and
-      Makefile 14:28:14, so the Rust host already carried the fix)
-
-FIRST ATTEMPT AND THE MODEL SLOT
-
-The first make test-qwen35-rust-host run reported both legs FAIL with an empty
-"got" because a foreign ./ds4 -m <model> --backend cuda -p "The capital of
-France is" -n 12 --temp 0 (PID 1123973, not started here) held the model slot.
-I waited 30 s for it to exit and re-ran; nothing was killed.
-
-THE NEW SURFACE: test-qwen35-rust-host (make target, both backends)
-
-    DS4_BONSAI_MODEL=/data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf \
-      make test-qwen35-rust-host
-      qwen35 rust host parity (cuda): PASS
-      qwen35 rust host parity (cpu): PASS
-      exit 0
-
-The target runs ./ds4 (the Rust host, the default binary) with
---token-ids 760,6511,314,9338,369 --predict 8 --temp 0 on --backend cuda (with
-DS4_CUDA_COPY_MODEL=1) and --backend cpu and pins the output to the eight ids
-the C host prints. PASS on both backends is the surface verified live.
-
-HALF 1 — THE RUST HOST NOW AGREES WITH THE C HOST
-
-Rust host (cuda):
-
-    DS4_CUDA_COPY_MODEL=1 ./ds4 -m <model> --backend cuda \
-      --token-ids 760,6511,314,9338,369 --predict 8 --temp 0
-    stdout: 11751 13 198 760 6511 314 9564 369 19241        exit 0
-
-C host (cuda, the oracle):
-
-    DS4_QWEN35_TOKENS=760,6511,314,9338,369 DS4_QWEN35_STEPS=8 \
-      DS4_CUDA_COPY_MODEL=1 ./ds4-c -m <model> --cuda --first-token-test -p x
-    prompt: 760 6511 314 9338 369
-    token 5: 11751  Paris
-    token 6: 13 .
-    token 7: 198
-    token 8: 760 The
-    token 9: 6511  capital
-    token 10: 314  of
-    token 11: 9564  Germany
-    token 12: 369  is                                       exit 0
-
-The Rust host's leading ids 11751 13 198 760 6511 314 9564 369 are byte-for-
-byte the C host's tokens 5..12. They agree.
-
-HALF 2 — THE FIX'S PREMISE, THE HOST PATH, BOTH DIRECTIONS
-
-Positive (post-fix, this binary). The Rust host's stderr carries the fold line
-on the ids run:
-
-    DS4_CUDA_COPY_MODEL=1 ./ds4 -m <model> --backend cuda \
-      --token-ids 760,6511,314,9338,369 --predict 8 --temp 0 2>err
-    err: ds4: prism.hadamard folding: block 1024, 3 sign vector(s), gdn_v_grouped 1
-         ds4: Bonsai prefill chunk: 512 tokens (ctx 32768)
-
-and the chat prompt answers coherent English:
-
-    DS4_CUDA_COPY_MODEL=1 ./ds4 -m <model> --backend cuda \
-      -p "The capital of France is" -n 12 --temp 0
-    stdout: The user is asking a simple factual question: "The capital   exit 0
-    (the same run's stderr carries the hadamard folding line)
-
-Negative (live, cheap). I built the parent commit 8d172e7 in a scratch
-worktree (misc/scratch/qa/prefix-wt, gitignored: git worktree add --detach,
-then make ds4 CUDA_ARCH=sm_89, exit 0) and ran the same two commands on it:
-
-    DS4_CUDA_COPY_MODEL=1 prefix-wt/ds4 -m <model> --backend cuda \
-      -p "The capital of France is" -n 12 --temp 0
-    stdout: etalorry途bewendanấnavourума!/学前estinahaf          exit 0
-    stderr hadamard-folding lines: 0 (absent)
-
-    DS4_CUDA_COPY_MODEL=1 prefix-wt/ds4 -m <model> --backend cuda \
-      --token-ids 760,6511,314,9338,369 --predict 8 --temp 0
-    stdout: 55783 211805 72082 96641 80597 97146 101425 132488 174713
-
-Both reproduce the commit body's recorded pre-fix output exactly (the nonsense
-string and the "55783 211805 72082 ..." stream), and the pre-fix binary never
-prints the fold line. So the divergence was the load path rather than the
-tokenizer, the kernels or the session path, and the fix closes it. The
-worktree was removed with git worktree remove --force after the run; the main
-tree's source was not touched.
-
-REGRESSION GATES
-
-    cargo test -p ds4-core        -> exit 0; 5 passed (lib) + 4 passed
-      (validate.rs), 0 failed
-    make bonsai-cuda-parity       -> "bonsai cuda parity: PASS", exit 0
-    ./run-bonsai.sh ids           -> "IDENTICAL: both backends print the same
-      8 ids", exit 0 (cuda 1.65 s, cpu 44.01 s)
-    make test-qwen35-session CUDA_ARCH=sm_89 -> 30 PASS, 0 FAIL; both legs
-      print "qwen35 session path: PASS" (CUDA then CPU)
-    bash tests/run.sh             -> green on the re-run below; its only earlier
-      red was this gate's own "report covers surface: test-qwen35-rust-host"
-      check, which this pass fixes by naming the surface here
-
-SURFACE THIS PASS ADDS
-
-test-qwen35-rust-host (named and exercised live on both backends above). Every
-other surface in the gate's list stays covered by the earlier sections.
-
-verdict: overall PASS
-
-QA report: feature/qwen35-port — Bonsai (qwen35) served on ds4-server
-
-Unit under test: a7fbee4 "feat(server): serve Bonsai (qwen35) on ds4-server".
-Branch feature/qwen35-port. HEAD at pass time:
-a7fbee442e089f6b835ab523cfbdc91daa5391a9 (tree clean apart from this report
-and pre-existing untracked test binaries; no tracked source was modified by
-this pass).
-Tester: independent QA session (rule 19), model deepseek-v4.1-CC-flash.
-Date 2026-09-30. Host: RTX 4070 SUPER (sm_89, CUDA 13.3.73), 28 cores,
-Debian 6.12.107, RLIMIT_MEMLOCK 8192 KiB.
-Artifact: /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf (6.71 GiB).
-Every CUDA run set DS4_CUDA_COPY_MODEL=1 (run-bonsai.sh sets it; the
-hand-started servers were started with it explicitly), and every model run
-was serialized on the single-instance flock /tmp/ds4.lock (pgrep -x
-ds4-server/ds4/ds4-c checked before each heavy step; the slot was free each
-time). Captures: misc/scratch/qa39/ (gitignored). The unit's own servers were
-stopped with pgrep -x ds4-server | xargs -r kill; no foreign process was
-touched.
-
-CLAIM 1 — the CUDA server answers "Paris." (verified)
-
-    ./run-bonsai.sh server
-    server:  up; listening on 127.0.0.1:8899
-             model_id=Ternary-Bonsai-2-27B-PQ2_0 engine=open
-    wall:    1.30s for the request
-    finish:  stop
-    answer:  Paris.
-    reasoning: The user is asking a simple factual question: "The capital of
-    France is". I just need to complete the sentence. The capital of France
-    is Paris.
-    usage:   prompt_tokens 45, completion_tokens 36, total_tokens 81
-Exit 0. Answer "Paris.", non-empty reasoning block, finish_reason "stop" —
-all three as claimed. Log: misc/scratch/qa39/claim1-cuda-server.log.
-
-CLAIM 2 — the CPU reference prints the same answer (verified)
-
-    DS4_BONSAI_BACKEND=cpu DS4_BONSAI_CTX=8192 DS4_BONSAI_PORT=8898 \
-      ./run-bonsai.sh server
-    wall:    282.04s for the request
-    finish:  stop
-    answer:  Paris.
-    reasoning: the same sentence as the CUDA leg
-    usage:   prompt_tokens 45, completion_tokens 36, total_tokens 81
-Exit 0, ~283 s as stated. One discrepancy in the given command, not in the
-unit: run-bonsai.sh:81 reads DS4_BONSAI_SERVER_PORT (docs/BONSAI.md:166
-documents the same name), so the given DS4_BONSAI_PORT=8898 was ignored and
-the server listened on the default 8899. The claim it tests (same answer on
-the CPU reference) holds. Log: misc/scratch/qa39/claim2-cpu-server.log.
-
-CLAIM 3 — model ids (verified)
-
-    GET /v1/models -> 200, data ids ['Ternary-Bonsai-2-27B-PQ2_0']
-    GET /v1/models/prism-bonsai-2-27b -> 200,
-      {"id":"prism-bonsai-2-27b","object":"model",
-       "name":"Ternary-Bonsai-2-27B-PQ2_0","context_length":32768,...}
-    GET /v1/models/prism/bonsai-2-27b -> 200, id "prism/bonsai-2-27b"
-    GET /v1/models/no-such-alias -> 404 {"error":{"message":"unknown endpoint"}}
-The advertised id is the GGUF stem; the sibling names resolve as model
-lookups (alias list crates/ds4-server/src/models.rs:32-37).
-
-CLAIM 4 — the memory quote is honest (verified, exact arithmetic)
-
-    ./ds4-server -m <artifact> --backend cuda -c 32768 --mem-floor-gb 1 \
-      --check-config
-    exit 0; quote: per_bank 2570354688, shared_weights 7206168928,
-    floor 1073741824, available 12158238720, banks 1, total 10850265440;
-    only warn partial_unqualified.
-    same with --mem-floor-gb 4 -> exit 2, error quote_overflow
-      ("memory quote cannot host the mix at one bank"), per_bank unchanged.
-    same with -c 65536 --mem-floor-gb 1 -> exit 2, error quote_overflow,
-      per_bank 4718362624.
-
-Own derivation from ds4.c (qwen35_graph_open, ds4.c:69341-69430; shape at
-ds4.c:962; layer predicate ds4_qwen35_layer_is_linear, (il+1)%4, = 16
-gated-attention + 48 delta-net layers), ctx 32768:
-    16 x 32768 x 2 x 4 x 256 x 2 = 2147483648   (fp16 k+v caches)
-    48 x 6144 x 128 x 4          =  150994944   (delta-net state)
-    48 x 3 x 10240 x 4           =    5898240   (conv window)
-    chunk transient (cap 512)    =  264984576   (17 f32 scratch rows
-        512x129120x4, tokens 512x4, h_row 5120x4, pos3 32768x16)
-    f32 logits row 248320 x 4    =     993280
-    sum                          = 2570354688   (2.3938 GiB) — exactly the
-    reported per_bank; ctx 65536 gives 4718362624, also exact. The fence in
-    crates/ds4-core/src/serving_host.rs:2066 (qwen35_bank_bytes, transient at
-    :2115) mirrors the native allocations line for line. Live honesty check:
-    with that accepted plan serving, nvidia-smi memory.used peaked at
-    9988 MiB (samples 9936, 9988) against a quoted total of 10850265440
-    bytes = 10.10 GiB on a 12282 MiB card — the plan fits and runs, and the
-    quote is not optimistic.
-
-CLAIM 5 — --kv-disk-dir is refused by name (verified)
-
-    ./ds4-server -m <artifact> --backend cuda -c 32768 --mem-floor-gb 1 \
-      --kv-disk-dir misc/scratch/qa39/kvdisk --check-config
-    exit 2; issues include {"level":"error","code":"disk_unsupported",
-    "message":"qwen35 session snapshots are unsupported"}; stderr prints
-    "error: qwen35 session snapshots are unsupported (disk_unsupported)";
-    effective.disk=false, so the directory is dropped rather than silently
-    used (resolve_disk, crates/ds4-core/src/serving.rs:2049-2056).
-
-CLAIM 6 — the two crash fixes (verified live; historical segfault not rebuilt)
-
-Static: diffing the QWEN35 lines of 78c086f:ds4.c with HEAD ds4.c adds
-exactly two arms: ds4.c:71751 (ds4_engine_supports_batching -> false) and
-ds4.c:72589-72595 (ds4_engine_session_graph_fit_quote -> budget-less
-fail_open inside the family bound). At 78c086f the batching function falls
-through to the DeepSeek slab body and the quote into the generic estimate;
-render.rs maps engine id 13 to ModelSyntax::DeepSeek at 78c086f and to
-ModelSyntax::Qwen35 at HEAD (crates/ds4-server/src/render.rs:106-107).
-
-Live: a hand-started server (DS4_CUDA_COPY_MODEL=1, ctx 32768, floor 1,
-setsid) served four requests in a row, pid alive after each:
-    req1 non-stream "The capital of France is" -> 200, stop, "Paris." (1.24s)
-    req2 non-stream "Reply with the single word: hello", model id
-         prism-bonsai-2-27b -> 200, stop, "hello"
-    req3 stream:true -> 200, 37 SSE chunks, [DONE] seen, finish stop,
-         reassembled content "Paris.", reasoning 144 chars
-    req4 non-stream "Say OK", max_tokens 16 -> 200, finish "length", empty
-         content (the cap was consumed inside the reasoning block)
-The log had no segfault/panic/abort marker; the process died only to the
-tester's kill. Not re-run: the 78c086f segfault itself — no prebuilt old
-server exists (the old worktree has ds4-c only) and a release rebuild of that
-commit was outside this pass. The accepted evidence (code delta + current
-survival across four requests) is what this check rests on.
-
-CLAIM 7 — regression gates (verified)
-
-    ./run-bonsai.sh ids -> "IDENTICAL: both backends print the same 8 ids",
-      exit 0 (CUDA 1.65 s, CPU 41.03 s)
-    make bonsai-cuda-parity CUDA_ARCH=sm_89 -> "bonsai cuda parity: PASS",
-      exit 0
-    make test-qwen35-rust-host CUDA_ARCH=sm_89 -> "qwen35 rust host parity
-      (cuda): PASS", "(cpu): PASS", exit 0
-    cargo test -p ds4-core -> exit 0; lib 295 passed/0 failed/4 ignored,
-      bind 13, catalog 5, chat_* (7+1+9+25+1+7), inkling_catalog 7 (+1 ign),
-      layout 13, ling3vl 3, mimo2 1, native_api 2, payload 5, serving_docs 1,
-      session 4, shape 1, tensors 7, tokenizer 5, validate 4 — all ok
-    bash tests/run.sh -> "tests/run.sh: all checks passed", exit 0
-      (pq2-0-test, test-catalog-parity and tests/qa-gate.sh all PASS)
-
-cargo test -p ds4-server --lib (the named pre-existing failure): at HEAD
-314 passed, 1 failed (cache_identity::tests::bounded_sidecar_and_ple),
-1 ignored, exit 101. Reproduced at 78c086f in a scratch worktree
-(misc/scratch/qa-wt detached at 78c086f, CARGO_TARGET_DIR
-misc/scratch/qa39/target-78): first full run 312 passed, 3 failed — the two
-extra ones (tool_memory::tests::ktm_codec_matches_c_oracle and
-ktm_decode_matches_c_string_nul_truncation) were fresh-worktree artifacts:
-the compiled tests/parity/kv_c_oracle was absent (Command::new hit ENOENT,
-tool_memory.rs:584-588); after make tests/parity/kv_c_oracle in the worktree
-the suite ran once at 315 passed/0 failed. The cache_identity failure is
-timing-dependent, not deterministic: isolated at HEAD it failed 3/3; isolated
-at 78c086f it failed 2/3 with one pass; the complete worktree suite passed
-315/0 once. The test (crates/ds4-server/src/cache_identity.rs:400-417)
-rewrites a 4-byte file and asserts the stat snapshot changed; this host's
-tmpfs /tmp gives both writes the same coarse timestamp tick (observed
-mtime/ctime identical, [1790776944, 180865037]), so the assert_ne fails
-whenever the writes share a tick. cache_identity.rs is not in the unit's diff
-(a7fbee4 touches ds4.c, run-bonsai.sh, crates/ds4-core/src/serving_host.rs,
-crates/ds4-server/src/{bin/ds4-server-rs.rs,generate.rs,models.rs,render.rs,
-tools.rs,worker_run.rs} and docs), so it is pre-existing and unrelated. The
-worktree and the copied target dir were removed afterwards; the main tree's
-sources were not touched.
-
-NOTES
-- The given claim-2 command's DS4_BONSAI_PORT is not a variable the script
-  reads; DS4_BONSAI_SERVER_PORT (run-bonsai.sh:81, docs/BONSAI.md:166) is.
-  Script and docs agree with each other; only the test instruction's name
-  differs.
-- This pass adds no new public surface; every surface listed by
-  tests/qa-gate.sh stays covered by the earlier sections of this report.
-
-========================================================================
-UNIT 2026-09-30 — run-bonsai.sh `serve` (keep a ds4-server up for a client)
-========================================================================
-
-Diff: run-bonsai.sh (serve_pid/serve_start/serve_stop/serve_status/serve_logs
-and dispatch), docs/BONSAI.md, docs/releases/bonsai-serving-2026-09-30.md.
-Uncommitted working tree; the rule 19 gate diffs commits only, so none of
-these paths is in its surface list. All checks below run LIVE against the
-ds4-server already serving /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf on
-127.0.0.1:8899.
-
-FUNCTION serve_status — `./run-bonsai.sh serve status` (exit 0):
-    server:  running (pid 1356568)
-             listening on 127.0.0.1:8899 model_id=Ternary-Bonsai-2-27B-PQ2_0 ...
-    base_url: http://127.0.0.1:8899/v1
-    serving: Ternary-Bonsai-2-27B-PQ2_0 ctx 45056
-    vram:    10815 MiB, 12282 MiB
-  ENDPOINT /v1/models returned id Ternary-Bonsai-2-27B-PQ2_0 and
-  context_length 45056, the same id and context status printed. The vram line
-  is the host's whole-card use: 10815 MiB once requests had run, 7449-7474 MiB
-  on a freshly started server before any request.
-
-FUNCTION serve_logs — `serve logs 5` tailed the last 5 capture lines (exit 0);
-  `serve logs` with no arg tails 20. The capture is
-  misc/scratch/bonsai-serve.log; serve_start clears it before each start.
-
-ENDPOINT /v1/chat/completions — advertised id and alias both answer (temp 0):
-  model=Ternary-Bonsai-2-27B-PQ2_0, max_tokens 16: finish_reason length,
-  content "", reasoning_content "The user is asking a simple factual
-  question: ...", usage 45/16/61.
-  model=prism-bonsai-2-27b, max_tokens 128: finish_reason stop, content
-  "\n\nParis.", reasoning_content "... The capital of France is Paris.\n",
-  usage 45/36/81.
-  The family emits the reasoning block before any content, so a short
-  max_tokens returns empty content with finish_reason length. Matches the
-  release doc's "finish stop, usage 45/36/81"; the exact content carries two
-  leading newlines (the doc writes it as "Paris.").
-
-ENDPOINT /v1/chat/completions stream:true — SSE: 27 `data:` lines, deltas
-  carrying reasoning_content, a final delta:{} with finish_reason length, then
-  `data: [DONE]`. exit 0.
-
-CLIENT METHOD open-grok chat completion — the operator's path:
-    mkdir -p /tmp/bonsai-og-qa && open-grok --cwd /tmp/bonsai-og-qa
-      -m bonsai-local --max-turns 1 -p "Reply with exactly this text and ..."
-  stdout "BONSAI-OK", exit 0. The [model.bonsai-local] block (config.toml:308-
-  318) uses model "prism-bonsai-2-27b", base_url .../v1, context_window 45056,
-  matching the served context. Read and verified.
-
-FUNCTION serve_pid / serve_stop — pid-file safety. Planted a foreign pid (a
-  `sleep 300`) in the pid file: `serve stop` printed "server:  not running",
-  exit 0, and the sleep was STILL ALIVE. serve_pid rejects the number because
-  /proc/<pid>/cmdline carries no "ds4-server"; kill "$pid" runs only on the
-  recorded pid.
-
-FUNCTION serve_start — refusals:
-  - second start with the server up: "server:  already running (pid 1356568);
-    ./run-bonsai.sh serve stop first", exit 0 (started nothing).
-  - slot held by another ds4 (pid file moved aside so the pid guard did not
-    short-circuit): "another ds4 process holds the single model slot; stop it
-    first:" plus the pgrep line naming pid 1356568, exit 1, no server started.
-  - bad subcommand: "ERROR: serve wants start, stop, status or logs (got:
-    bogus)", exit 1. `serve` with no arg == `serve start`; `help` lists the
-    serve line (usage() sed range moved 5,14p -> 5,15p).
-
-FUNCTION serve_stop / serve_start cycle (left running, as required):
-    serve stop  -> "server:  stopped (pid 1356568)"; real 1.008s; port 8899
-                   refused (curl exit 7); /tmp/ds4.lock released; no ds4-server.
-    serve start -> up, new pid 1383741; real 2.306s; id read back from
-                   /v1/models; listening line printed.
-  Timing matches the release doc's "start 2.3 s, stop 1 s". Final state:
-  `serve status` reports running pid 1383741, serving ctx 45056, vram 7471 MiB;
-  curl /v1/models -> Ternary-Bonsai-2-27B-PQ2_0 45056; ss shows
-  LISTEN 127.0.0.1:8899 users:(("ds4-server",pid=1383741)).
-
-bash tests/run.sh -> first run: "tests/run.sh: all checks passed", exit 0
-  (pq2-0-test, catalog parity, tests/qa-gate.sh all PASS). Second run: exit 1
-  — make test-catalog-parity failed on
-  serving_host::tests::cpu_quote_uses_ram_not_discrete_fb, assert_eq!(cpu,
-  metal) at serving_host.rs:3950 (left 19929518080, right 19929145344, diff
-  372736 bytes). Both calls read /proc/meminfo MemAvailable
-  (host_available_bytes -> meminfo_available, serving_host.rs:699,2281-2282),
-  so the assert compares two consecutive samples of a live kernel counter and
-  races under parallel suite load. Isolated: 5/5 pass; full ds4-core lib suite
-  6/6 pass (295 passed each). serving_host.rs is not in this unit's diff
-  (run-bonsai.sh + docs only): the flake is pre-existing and unrelated.
-
-NOTES
-- docs/BONSAI.md's status example shows "vram: 7474 MiB" (a pre-request
-  reading: reproduced 7449-7474 MiB right after start) and the sizing table
-  calls it "7.47 GiB device use measured". 7474 MiB is 7.30 GiB, so the GiB
-  figure is ~0.17 GiB high — a MiB/GiB slip in the prose, not a live failure.
-  After requests run, `serve status` vram reads ~10.8 GiB (the KV bank and
-  graph buffers allocate on first use); the 45056 context still opens and
-  serves. Not exercised: a client window above 45056 (the doc says the session
-  refuses past its bound).
-- stop only ever kills the pid the file records; a reused pid number is
-  rejected unless the reused process is itself a ds4-server (the
-  /proc/<pid>/cmdline text test is the guard's only check).
-
-========================================================================
-UNIT 2026-09-30 — Bonsai bf16 gated delta-net matvec tile (prefill)
-========================================================================
-
-Diff: cuda/qwen35_attn_gdn.cuh (matvec_bf16_tiled + the dispatch in
-ds4_gpu_qwen35_matvec_bf16_tensor), tests/test_qwen35_cuda.cu (test 6
-test_bf16_matvec_tile), docs/releases/bonsai-perf-2026-09-30.md.
-Uncommitted working tree; tests/qa-gate.sh diffs commits only, so none of
-these paths is in its surface list. The one gate surface this unit moves,
-ds4_gpu_qwen35_matvec_bf16_tensor, stays covered by the earlier sections.
-Read-only pass: no tracked file other than this report was touched.
-Binaries current with the edit: cuda/qwen35_attn_gdn.cuh 17:04:03,
-ds4-server/ds4-c 17:04:54, and both embed DS4_QWEN35_BF16_MATVEC_TILED plus
-the two kernels (nm _Z11matvec_bf16... and _Z17matvec_bf16_tiled...);
-tests/test_qwen35_cuda is newer than the test edit.
-
-1. PARITY — `make test-qwen35-cuda CUDA_ARCH=sm_89` (exit 0). Full group 6,
-   every width bit-identical, rel L2 ~2-4e-07 (the float-rounding band):
-
-    bf16 tile T=1:   bit-identical to the untiled kernel, max abs 1.45e-05, rel L2 3.52e-07
-    bf16 tile T=8:   bit-identical to the untiled kernel, max abs 1.72e-05, rel L2 2.42e-07
-    bf16 tile T=9:   bit-identical to the untiled kernel, max abs 1.91e-05, rel L2 2.42e-07
-    bf16 tile T=11:  bit-identical to the untiled kernel, max abs 1.81e-05, rel L2 2.32e-07
-    bf16 tile T=486: bit-identical to the untiled kernel, max abs 2.67e-05, rel L2 2.36e-07
-    bf16 matvec tile parity: PASS
-    PQ2_0 CUDA parity: PASS
-
-   The T=9/11/486 lines are byte-identical to the three the release doc
-   quotes. The rest of the suite (PQ2_0 row lookup, shape guards, host embed,
-   fold, gdn gates, attention split and token-tile, MMQ/MMVQ) all PASS;
-   PQ2_0 CUDA parity: PASS.
-
-2. A/B on the served path — /tmp/ab-tiled.sh, three interleaved pairs, one
-   fresh ds4-server per sample, model prism-bonsai-2-27b, a 2140-token prompt
-   with 64 decode tokens, base = DS4_QWEN35_BF16_MATVEC_TILED=0:
-
-    arm base (TILED=0)                     arm tiled (default)
-    ttft 3408.8/3295.8/3275.6 ms           2242.2/2130.7/2141.7 ms
-    prefill 640.1/662.7/666.2 tok/s        983.7/1033.3/1030.0 tok/s
-    decode 17.30/17.60/17.90 tok/s         17.10/17.80/18.00 tok/s
-    mean 3326.7 ms / 656.3 tok/s           2171.5 ms / 1015.7 tok/s
-
-   -34.7% ttft / +54.8% prefill, against the report's means 3291.9 / 663.2
-   and 2154.0 / 1023.3 (-34.6% / +54.3%): reproduced within ~1%. Decode means
-   17.60 vs 17.63 tok/s — unchanged, as the T<=8 dispatch intends. The
-   64-token completions are identical between the arms (same reasoning_content,
-   finish_reason length). Clocks 2775-2790 MHz of a 3105 MHz maximum,
-   119-123 W, 51-55 C.
-
-   Kernel level, nsys, the doc's own method (ds4-c --cuda --first-token-test
-   with DS4_QWEN35_SESSION=1, one 483-token chunk, one step):
-
-    base  matvec_bf16        96 calls x 3,013,202 ns = 289.27 ms (41.2% of GPU)
-    tiled matvec_bf16_tiled  96 calls x   168,583 ns =  16.18 ms ( 3.8%)
-
-   Total GPU kernel time 702.9 -> 427.1 ms; the matvec delta 273.1 ms is 99%
-   of the 275.8 ms drop. Both arms print the same step token (id 760). The
-   doc's 259.0 -> 13.7 ms at 463 tokens is the same kernel and ratio (17.9x
-   here vs 18.9x there); the absolute figures differ because my prompt is 483
-   tokens and the clocks are not the doc's.
-
-3. DISPATCH BOUNDARY AND TAIL — cuda/qwen35_attn_gdn.cuh:703-706:
-   `if (T > MATVEC_BF16_TT && !(tiled && tiled[0] == '0'))` with
-   MATVEC_BF16_TT = 8 (line 465): T <= 8 takes the untiled matvec_bf16, T > 8
-   the tiled kernel, and a first char '0' in DS4_QWEN35_BF16_MATVEC_TILED
-   forces the untiled path. The claim holds.
-   Tail safety from the kernel (467-491): gridDim.y = ceil(T/8),
-   t0 = blockIdx.y * 8, nt = min(8, T - t0); every x read (t0+j) and out
-   write (t0+j) is guarded by j < nt, and t0 < T for every launched block
-   (by <= ceil(T/8)-1), so t0 + nt <= T for any T — no read or write outside
-   [0, T). M = 48 is a multiple of 4 here and `if (row >= M) return` covers
-   the rest. Observed tails: T=11 (nt=3) and T=486 (nt=6) are bit-identical
-   in the suite; the served 2140-token run's last chunk is 92 (nt=4, since
-   ds4.c:74458 chunks by prefill_cap 512) and the nsys chunk T=483 has nt=3
-   (483 = 60*8+3), both with correct output. T=15 was not added: the width
-   list is hardcoded in the test (1069) and this pass is read-only.
-   compute-sanitizer --tool memcheck --kernel-name regex=matvec_bf16 reported
-   no invalid __global__ access in the matvec kernels, but its run is polluted
-   by cudaErrorInvalidValue on cudaMemcpy (the test's mmap/register path) that
-   fails four earlier groups, so the tool is inconclusive as a gate — not a
-   device OOB finding. The OOB conclusion rests on the code argument above.
-
-4. KILL SWITCH — the A/B base arm (TILED=0) is the SLOW arm (3326.7 ms ttft,
-   nsys shows only matvec_bf16); the default arm is the fast one (2171.5 ms,
-   only matvec_bf16_tiled). The switch changes the executed kernel.
-
-5. `bash tests/run.sh` -> "tests/run.sh: all checks passed", exit 0
-   (make pq2-0-test PASS; make test-catalog-parity, ds4-core lib 295 passed /
-   0 failed / 4 ignored plus every integration suite PASS; tests/qa-gate.sh
-   overall PASS). No flake this run.
-
-HOST STATE — after the pass pgrep -a ds4-server / ds4-c / ds4 / nsys are all
-empty; the A/B's own `serve stop` and the self-terminating session runs left
-nothing behind. GPU idle: 242 MiB of 12282 MiB (Xorg + cinnamon), 39 C,
-12.43 W, clocks 465 / 3105 MHz.
-
-NOT RUN / UNVERIFIED
-- The doc's "Unchanged gates" line (./run-bonsai.sh ids, session,
-  make test-qwen35-session and -multichunk) was not re-run here; this pass
-  verified the CUDA unit gate and the served path only.
-- The doc's parenthetical "486 the chunk this host really prefills" is not a
-  width I could tie to the server: the chunk knob default is 512
-  (DS4_QWEN35_CHUNK_DEFAULT, ds4.c:69059) and my session run used 483. A
-  comment imprecision, not a functional issue.
-- The doc's "58 blocks for a 463-token chunk" is gridDim.y; the grid is
-  12 x 58 = 696 blocks of 128 threads. Prose, not a defect.
-- ncu remains unusable on this host per the doc (ERR_NVGPUCTRPERM); not
-  re-checked.
-
-==========================================================================
-RULE 19 RE-VERIFICATION — fb8ee47 "perf(cuda): split the Bonsai decode
-attention over its key range" (branch feature/qwen35-port, HEAD fb8ee47)
-==========================================================================
-
-Claim (docs/releases/bonsai-splitk-2026-09-30.md): the qwen35 graph now hands
-the decode attention a split-K partial buffer; at a 15k context decode goes
-4.14 -> 33.81 tokens/s, level with /data/ds4 (33.83), prefill unchanged and
-the token ids unchanged.
-
-1. KILL-SWITCH A/B — one interleaved pair, a fresh server process per arm.
-   Server: /data/ds4-dfm-rs/ds4-server -m
-   /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf --cuda -c 45056
-   --mem-floor-gb 1 --host 127.0.0.1 --port 8899, with DS4_CUDA_COPY_MODEL=1.
-   Body /tmp/cmp-body-15k.json (85090 bytes, ~15k-token prompt, 64 decode
-   tokens, streamed); timing by /tmp/cmp-measure.py, which counts SSE
-   content/reasoning deltas (ttft = first such token, decode rate = (n-1)/
-   window).
-
-     arm                          decode tok/s   ttft      first_byte  window
-     DS4_QWEN35_ATTN_SPLITK=0     4.11           20.70 s   5.03 s      15.34 s
-     default (split-K on)         34.11          19.53 s   5.03 s      1.85 s
-
-   Reproduces the report within noise: base 4.11 vs 4.14, split-K 34.11 vs
-   33.81, ttft 20.70/19.53 vs 20.10/19.54 — an 8.3x gap between the arms. The
-   SLOW arm is the DS4_QWEN35_ATTN_SPLITK=0 arm, so the knob changes the
-   executed kernel, not merely a code path.
-
-2. Both arms run the row-exact path; only the split selection changed. Decode
-   is T=1 (ds4.c:69664, 69773 call qwen35_graph_forward(...,1u,...)), so
-   tokentile = T >= 32 && ... is false in both arms (ds4.c:69306,
-   cuda/qwen35_attn_gdn.cuh:579-585) and the dispatcher takes attention<DIM>
-   (row-exact) in both. The only difference is partial = NULL (splits = 1)
-   versus g->attn_partial (splits = min(64, (keys+31)/32) then attn_merge)
-   (cuda/qwen35_attn_gdn.cuh:609-628). At T >= 32 prefill both arms hand no
-   partial buffer and take the token-tile kernel, so prefill is unchanged and
-   the ~19.5 s ttft is prefill in both arms.
-
-3. qwen35_graph_free: g->attn_partial is in the scratch[] list (ds4.c:69374,
-   the GPU definition at :69370), so the 24.2 MiB buffer is freed on graph
-   close; :69586 is the DS4_NO_GPU stub. The leak the audit found is closed.
-
-4. Gates. make test-qwen35-cuda CUDA_ARCH=sm_89: exit 0, 60 PASS, 0 FAIL; the
-   attention group (split vs single and token-tile vs split at ctx 2048 and
-   32768, T = 1 / 16 / 32 / 33 / 64) all PASS.
-   DS4_CUDA_COPY_MODEL=1 DS4_TEST_MODEL=... DS4_TEST_BACKEND=cuda
-   ./tests/test_qwen35_session: exit 0, 21 PASS, 0 FAIL (368.8 s), including
-   "PASS  long prompt: the split-K order does not move the ids".
-   Multichunk (same plus DS4_QWEN35_PREFILL_CHUNK=2): exit 0, 21 PASS, 0 FAIL
-   (375.1 s). ./run-bonsai.sh ids: IDENTICAL on both backends, exit 0.
-
-5. bash tests/run.sh: exit 1 — the only red is tests/qa-gate.sh "report covers
-   surface: DS4_QWEN35_ATTN_SPLITK", the new env knob absent from this report
-   until this section. make pq2-0-test and make test-catalog-parity (ds4-core
-   299 passed / 0 failed / 4 ignored, every integration suite PASS) are green.
-   Re-run after this section: tests/run.sh: all checks passed, exit 0.
-
-HOST STATE — the operator's server is back on 8899 (pid 2522625); /v1/models
-answers and a chat completion returned (ttft 292.8 ms, decode 39.6 tok/s, 8
-tokens). No stray ds4 processes. GPU 10779 MiB of 12282 MiB used (this
-server's compute 10446 MiB — the bank materialises on the first request, per
-the release doc's limit note), 37 C, clocks 2505 MHz.
-
-NOT VERIFIED / LIMITS
-- One interleaved pair (base then fix), one sample per arm; not the report's
-  three rounds.
-- The /data/ds4 sibling arm and the 30k rows were not re-measured: the "level
-  with /data/ds4" clause rests on the release report's numbers.
-- The row batch (16) and split ceiling (64) are the reference's; no sweep.
-- Clock readings are idle samples before each request (base 2805 MHz, fix
-  2505 MHz), not a per-clock comparison.
-- The first session-test run was killed at a 600 s wrapper cap while inside
-  the long-prompt CPU-reference; the re-run finished in 368.8 s, so that was
-  the wrapper budget, not a test hang.
-- GPU memory at rest exceeds the pre-pass idle sample (7525 MiB) because the
-  restored server has served one verification request; the state left is a
-  live, answering server as required.
-
-verdict: overall PASS
-
-## Maintainer CPU regression review - 2026-10-01
-
-Scope: `ds4.c` stateless FFN projection; no arithmetic change.
-`tests/test_qwen35_ref.c` exercises unfolded and Hadamard-folded projections
-without recurrent state. `make test-qwen35-ref` failed before the fix with
-UBSan null member access and passes after it. Catalogue/tokenizer parity and
-`make pq2-0-test` pass. The new target runs in `tests/run.sh` and
-`.github/workflows/host-parity.yml`; `Makefile` cleanup and `.gitignore` cover
-the binary. These model-free checks do not extend artifact qualification.
-
-## Maintainer integration review - 2026-10-01
-
-Merged main at 22a3f05c into the Bonsai branch. The three add/add conflicts
-were confined to this report, tests/qa-gate.sh, and tests/run.sh. Both dated
-reports remain above. The QA gate retains file and ABI coverage, fork/base
-selection, and quiet ref validation. The test entry runs model-free checks
-by default; --cuda runs all four CUDA suites; --full also runs make test.
-
-Reviewed the changed Rust family binding, layout, tokenizer, and serial
-serving paths:
-- crates/ds4-cli/src/session_exec.rs
-- crates/ds4-core/src/bind.rs
-- crates/ds4-core/src/layout.rs
-- crates/ds4-core/src/lib.rs
-- crates/ds4-core/src/tensors.rs
-- crates/ds4-core/src/tok.rs
-- crates/ds4-core/src/validate.rs
-- crates/ds4-core/tests/layout.rs
-- crates/ds4-core/tests/tokenizer.rs
-- crates/ds4-server/src/bin/ds4-server-rs.rs
-- crates/ds4-server/src/generate.rs
-- crates/ds4-server/src/tools.rs
-- crates/ds4-server/src/worker_run.rs
-- native/bridge/ds4_host_load.h
-- ds4.h
-- ds4_cli.c
-
-Reviewed the PQ2_0 layout, MMQ/MMVQ dispatch, fold, and native GPU integration:
-- cuda/mmq/common.cuh
-- cuda/mmq/ds4_ggml_stubs.h
-- cuda/mmq/ds4_mmq.cu
-- cuda/mmq/ds4_mmq.h
-- cuda/mmq/ggml-common.h
-- cuda/mmq/mmq.cuh
-- cuda/mmq/mmvq.cu
-- cuda/mmq/vecdotq.cuh
-- cuda/qwen35_primitives.cuh
-- ds4_qwen35_gpu.cuh
-
-Reviewed the fixtures and qualification bounds:
-- tests/parity/tokenizer_c_oracle.c
-- tests/pq2_0/pq2_ref_generator.c
-- tests/pq2_0/reference_checksums.txt
-- tests/test_pq2_0.c
-- tests/test_qwen35_rows.c
-- tests/test_qwen35_session.c
-- docs/README.md
-- docs/releases/bonsai-cpu-reference-2026-09-30.md
-
-Local catalog/tokenizer parity, PQ2_0, and UBSan CPU regression passed. The
-CPU regression and PQ2_0 were repeated after integration and passed again.
-PR 67's token-tile, Solar, and Inkling GPU checks passed on GB10. Actual
-Bonsai artifact and serving qualification remains bounded by the original
-RTX 4070 SUPER records above; it was not rerun on GB10 in this review.
-Combined CUDA validation is required separately before merge.
-
-README.md now lists the pinned Bonsai artifact contract and unsupported
-serving modes, with a link to docs/BONSAI.md. This changes no execution path.
-
-## Concurrent main update integration - 2026-10-01
-
-PR 70 advanced main to 2f02f631 during this review. Resolved the twelve
-conflicting files without dropping either family's branches. Keep Naive's
-published family id 11 and variant/syntax id 13. Bonsai now uses family id
-12 and variant/syntax id 14 consistently in native and Rust code.
-docs/BONSAI.md records the new current syntax id; earlier receipts above
-retain the ids of their recorded commits.
-
-Preserved Naive admission, template, snapshot and reset behavior alongside
-Bonsai fold loading, serial capabilities, ChatML and replay/reset behavior.
-Makefile keeps both families' CUDA header dependencies.
-
-Fresh integrated checks passed: test-catalog-parity, test-tokenizer-parity,
-pq2-0-test, test-qwen35-ref (UBSan), test-server-parity, Rust formatting,
-and diff checks. The direct server unit attempt initially lacked its C
-oracle executable; the documented test-server-parity target built it and
-passed the server suites. Final CI and combined CUDA checks remain merge
-gates, with no expansion of full-artifact qualification.
+Rule 19 QA report - MiniMax-H3 (h3) P13 close
+
+repository : /data/ds4-dfm-rs
+branch     : feature/minimax-h3
+HEAD       : 02ba4b674a3a857b19163ec75654bb55c90e1d76
+             (the brief named 7ed11690; one docs-only commit landed during the
+             first QA pass and the tree has since been edited, uncommitted, with
+             the fixes this report verifies: openai-videos.md,
+             tests/fixtures/h3/README.md, post-port-phases.md, port-plan.md,
+             render.rs and vae_video.rs. The 559-surface list is identical
+             before and after those edits.)
+base       : origin/main = 02a6b5be83231f847d89433a90a48334bdfce247
+date       : 2026-10-25
+qa model   : deepseek-v4.1-CC-flash
+host       : x86_64, nvcc 13.3.73, RTX 4070 SUPER. The h3 execution target is
+             the DGX Spark (GB10, sm_121, 192.168.1.91) with the checkpoint
+             under /mnt/h3-artifacts; nothing that needs the checkpoint ran
+             here (ACCEPTED RISKS).
+
+Surfaces required by tests/qa-gate.sh (QA_BASE=origin/main): 559
+= 186 changed files + 2 Makefile targets (h3-rs, h3-server-rs) + 371 pub items.
+Every one is listed with its disposition in COVERED SURFACES below.
+
+This is the second pass. The first pass (same session) reported FAIL on two
+documentation defects (D1, D2) and two worth-fixing observations (O1, O5). All
+four have been corrected in the working tree, and section S6 records the
+evidence each correction was checked against. Everything else in this report
+was re-run or re-read against the corrected tree; the checks whose inputs did
+not change (native objects, VQ toolchain, both tools, fixtures, the Spark-only
+items) are marked as carried over from this session's runs.
+
+
+COVERED SURFACES
+
+One line per surface string the gate printed. FILE lines carry a changed path or
+a Makefile target; ITEM lines carry a Rust pub item the branch added, with the
+definition site it was found at. The trailing clause names the check that covers
+the surface. To keep this honest: the h3 Rust sources, the native objects, the
+VQ tree and the two reviewed tools were executed in the live checks above; files
+I did not read line by line are covered by presence plus that build or test, and
+those lines say so. Several items share a tail because one run covers them all
+(the clippy/build/646-test run for ds4-core, the 24-test run for ds4-server).
+FILE .gitignore - read: adds /tools/minimax_h3/vq/bin/, /tools/minimax_h3/ppm_diff and /outputs/; git check-ignore confirms vq/bin and ppm_diff are ignored
+FILE AGENTS.md - read: +40 lines, the additive h3 family section only; no other family's text is touched
+FILE Makefile - read: +126 lines, the h3 object rules, the six tests/h3_* gates plus h3-rs/h3-server-rs; the four .cu objects were compiled here with the same flags (exit 0)
+FILE crates/ds4-cli/Cargo.toml - read: bin h3-rs with required-features = ["native"] (Cargo.toml:28-30)
+FILE crates/ds4-cli/src/bin/h3-rs.rs - read in full for the flag table; compiled and linked (exit 0); --help exit 0; flag diff against /data/h3.c/main.c recorded in STATIC CHECKS
+FILE crates/ds4-core/Cargo.toml - read: feature h3-gates (Cargo.toml:19-20) and the six example gates it gates
+FILE crates/ds4-core/examples/h3_device_gate.rs - compiled: cargo check --examples -p ds4-core --features h3-gates exit 0; a full build of h3_dit_gate compiles and fails only at link on h3d_*/h3t_* (no native objects on this host), as expected
+FILE crates/ds4-core/examples/h3_dit_gate.rs - compiled: cargo check --examples -p ds4-core --features h3-gates exit 0; a full build of h3_dit_gate compiles and fails only at link on h3d_*/h3t_* (no native objects on this host), as expected
+FILE crates/ds4-core/examples/h3_multimodal_gate.rs - compiled: cargo check --examples -p ds4-core --features h3-gates exit 0; a full build of h3_dit_gate compiles and fails only at link on h3d_*/h3t_* (no native objects on this host), as expected
+FILE crates/ds4-core/examples/h3_text_gate.rs - compiled: cargo check --examples -p ds4-core --features h3-gates exit 0; a full build of h3_dit_gate compiles and fails only at link on h3d_*/h3t_* (no native objects on this host), as expected
+FILE crates/ds4-core/examples/h3_video_encoder_gate.rs - compiled: cargo check --examples -p ds4-core --features h3-gates exit 0; a full build of h3_dit_gate compiles and fails only at link on h3d_*/h3t_* (no native objects on this host), as expected
+FILE crates/ds4-core/examples/h3_vision_gate.rs - compiled: cargo check --examples -p ds4-core --features h3-gates exit 0; a full build of h3_dit_gate compiles and fails only at link on h3d_*/h3t_* (no native objects on this host), as expected
+FILE crates/ds4-core/examples/minimax_h3_inspect/main.rs - compiled: cargo check --examples -p ds4-core --features h3-gates exit 0; a full build of h3_dit_gate compiles and fails only at link on h3d_*/h3t_* (no native objects on this host), as expected
+FILE crates/ds4-core/src/lib.rs - read: additive module declarations only; compiled (clippy exit 0)
+FILE crates/ds4-core/src/minimax_h3.rs - read: the module header and layout rule; compiled (clippy exit 0), gated by the h3 tests
+FILE crates/ds4-core/src/minimax_h3/condition.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/device.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/dit.rs - read: row_map and its callers; the presentation-tag port is line-for-line against h3_dit_schedule.c:434-484 (STATIC CHECKS); gated by row_map_tags_by_segment_kind and row_map_carries_the_presentation_tags
+FILE crates/ds4-core/src/minimax_h3/engine.rs - read: the anchor read path (media::read_image_f32 on a server-generated path); the engine is the served renderer
+FILE crates/ds4-core/src/minimax_h3/host.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/layout.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/media.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/multimodal.rs - read: build_tags against h3_multimodal.c:173, :182; gated by the presentation tests
+FILE crates/ds4-core/src/minimax_h3/presets.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/render.rs - read; the clippy fix at :633 (needless mut on audio_write) verified: clippy now reports 0 warnings from h3 files (was 2), mux_mp4 is untouched otherwise, cargo test -p ds4-core --lib 646 passed / 7 ignored
+FILE crates/ds4-core/src/minimax_h3/safetensors.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/sequence.rs - read in full: build/emit geometry and the named Ref2VA deviation; compiled, tested
+FILE crates/ds4-core/src/minimax_h3/terminal.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/text.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/text_forward.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/text_rope.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/text_weights.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/tokenizer.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/vae_audio.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/vae_encoder.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/vae_store.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/vae_video.rs - read; the clippy fix at :362 (tile.len().is_multiple_of(frame) under the same frame > 0 guard) verified: 0 h3 clippy warnings, tests unchanged (646 passed / 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/video_api.rs - read: parse_request, validate, decode_reference (data-URI only), store ids and Video serialization; gated by the video_api and h3_video tests
+FILE crates/ds4-core/src/minimax_h3/vision.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/vision_forward.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/vision_weights.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/src/minimax_h3/weights.rs - compiled (clippy -p ds4-core --lib --features h3-gates exit 0); gated by cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE crates/ds4-core/tests/fixtures/h3/tokenizer_portable.json - valid JSON (jq); read by the tokenizer tests
+FILE crates/ds4-server/Cargo.toml - read: additive bin entry and the native feature
+FILE crates/ds4-server/src/bin/h3-server-rs.rs - read; built and run: --help exit 0, GET /v1/videos 200 from a live listener
+FILE crates/ds4-server/src/h3_engine.rs - read: EngineRenderer and the RenderRequest it builds; the anchor path is server-generated
+FILE crates/ds4-server/src/h3_video.rs - read: routes, renderer bridge, anchor file, store paths, into_image_ref; 24 h3_ tests pass and the live route and anchor matrices (checks 8 and 18) match the docs
+FILE crates/ds4-server/src/lib.rs - read: one additive module line
+FILE crates/ds4-sys/src/h3_device.rs - compiled; its extern declarations resolved at link against the four objects compiled here (70 h3d_/h3t_/h3v_/h3g_ symbols in target/debug/h3-rs)
+FILE crates/ds4-sys/src/h3_dit.rs - compiled; its extern declarations resolved at link against the four objects compiled here (70 h3d_/h3t_/h3v_/h3g_ symbols in target/debug/h3-rs)
+FILE crates/ds4-sys/src/h3_text.rs - compiled; its extern declarations resolved at link against the four objects compiled here (70 h3d_/h3t_/h3v_/h3g_ symbols in target/debug/h3-rs)
+FILE crates/ds4-sys/src/h3_vision.rs - compiled; its extern declarations resolved at link against the four objects compiled here (70 h3d_/h3t_/h3v_/h3g_ symbols in target/debug/h3-rs)
+FILE crates/ds4-sys/src/lib.rs - compiled; its extern declarations resolved at link against the four objects compiled here (70 h3d_/h3t_/h3v_/h3g_ symbols in target/debug/h3-rs)
+FILE docs/README.md - read: index rows for the h3 documents; the two newest rows are an uncommitted concurrent edit, no duplication
+FILE docs/benchmarks/ds41-spark-head-2026-10-14/frontier-run-1.csv.meta.txt - read: path rewrites only (/home/leandro -> ~), the recorded values are unchanged
+FILE docs/benchmarks/ds41-spark-vision-2026-10-14/vision-run-1.csv.meta.txt - read: path rewrites only (/home/leandro -> ~), the recorded values are unchanged
+FILE docs/benchmarks/ds41-spark-vision-2026-10-14/vision-run-2.csv.meta.txt - read: path rewrites only (/home/leandro -> ~), the recorded values are unchanged
+FILE docs/benchmarks/ds41-spark-vision-2026-10-14/vision-run-3.csv.meta.txt - read: path rewrites only (/home/leandro -> ~), the recorded values are unchanged
+FILE docs/minimax-h3/README.md - read: the family index; its rows name every h3 surface in this list
+FILE docs/minimax-h3/api-usage.md - read: the served contract (input_reference, anchors, limits); its anchor description is what the fixed openai-videos.md now matches
+FILE docs/minimax-h3/cheatsheet.md - read: the measured numbers ([M]/[A]/[E]) and the layout summary; no executable surface
+FILE docs/minimax-h3/openai-videos.md - read in full after the fix: routes/methods still match, and every input_reference claim now matches decode_reference/data_uri/check_anchor (video_api.rs:526-599, MAX_ANCHOR_BYTES :47, extension() :315-323) and the live POST matrix of check 18; D1 closed
+FILE docs/minimax-h3/port-plan.md - read: the phase plan, the Spark budget and 6.3 the CLI surface target; its --use-int8-row-fc2 "drop it and say so" matches the code (O1), and its deviations paragraph at :1038-1045 now matches what is implemented (S6.5)
+FILE docs/minimax-h3/post-port-phases.md - read: the P9-P13 record; the unported-surface table at :1120-1140 is the disposition of the missing CLI flags, and the --use-int8-row-fc2 item at :632-638 now records the refusal (O1 closed)
+FILE docs/minimax-h3/ref-media-tests.md - read: the conditioning matrix and the recorded probe gates; no executable surface
+FILE docs/minimax-h3/upstream-m31-survey.md - read: the M3.1 transfer/reject decisions; no executable surface
+FILE docs/minimax-h3/vq-recipe.md - read: the GVQ1 v1 recipe, its fallback and the bake checklist
+FILE docs/qwen38-benchmark-reference.md - read: two path rewrites to ~, no benchmark number changed
+FILE h3-rs - Makefile target (Makefile:507): the four h3 objects + cublasLt/cudart; reproduced by hand, link exit 0, --help exit 0
+FILE h3-server-rs - Makefile target (Makefile:520): same objects; a feature-less cargo build also links and serves /v1/videos 200 (renderer disabled 503 without --model-dir/--renderer)
+FILE native/h3/h3_device_gpu.cu - compiled here: nvcc 13.3 -O3 -std=c++17 -gencode arch=compute_121a,code=sm_121a -c exit 0; the device gates need the Spark's checkpoint
+FILE native/h3/h3_device_gpu.h - compiled against: the paired .cu builds with it; the Rust FFI link resolved its symbols
+FILE native/h3/h3_dit_gpu.cu - compiled here: nvcc 13.3 -O3 -std=c++17 -gencode arch=compute_121a,code=sm_121a -c exit 0; the device gates need the Spark's checkpoint
+FILE native/h3/h3_dit_gpu.h - compiled against: the paired .cu builds with it; the Rust FFI link resolved its symbols
+FILE native/h3/h3_text_gpu.cu - compiled here: nvcc 13.3 -O3 -std=c++17 -gencode arch=compute_121a,code=sm_121a -c exit 0; the device gates need the Spark's checkpoint
+FILE native/h3/h3_text_gpu.h - compiled against: the paired .cu builds with it; the Rust FFI link resolved its symbols
+FILE native/h3/h3_vision_gpu.cu - compiled here: nvcc 13.3 -O3 -std=c++17 -gencode arch=compute_121a,code=sm_121a -c exit 0; the device gates need the Spark's checkpoint
+FILE native/h3/h3_vision_gpu.h - compiled against: the paired .cu builds with it; the Rust FFI link resolved its symbols
+ITEM pub const AUDIO_LATENT_FPS - defined crates/ds4-core/src/minimax_h3/host.rs:23; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const AUDIO_SIGMA_SHIFT - defined crates/ds4-core/src/minimax_h3/host.rs:33; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const AUDIO_STREAMS - defined crates/ds4-core/src/minimax_h3/dit.rs:90; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const BLOCK_SLOTS - defined crates/ds4-core/src/minimax_h3/dit.rs:88; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const CANVAS_MULTIPLE - defined crates/ds4-core/src/minimax_h3/host.rs:25; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const CHANNELS - defined crates/ds4-core/src/minimax_h3/media.rs:32; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DEEPSTACKS - defined crates/ds4-core/src/minimax_h3/vision.rs:76; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DEEPSTACK_LAYERS - defined crates/ds4-core/src/minimax_h3/vision.rs:83; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DEFAULT_LIST_LIMIT - defined crates/ds4-core/src/minimax_h3/video_api.rs:53; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DEFAULT_MODEL - defined crates/ds4-core/src/minimax_h3/video_api.rs:82; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DEFAULT_SECONDS - defined crates/ds4-core/src/minimax_h3/video_api.rs:79; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DEFAULT_SIZE - defined crates/ds4-core/src/minimax_h3/video_api.rs:75; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DELETE_OBJECT - defined crates/ds4-core/src/minimax_h3/video_api.rs:39; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DIT_BLOCKS - defined crates/ds4-core/src/minimax_h3/dit.rs:105; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const DIT_CLASS - defined crates/ds4-core/src/minimax_h3/layout.rs:44; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const EMBEDDING - defined crates/ds4-core/src/minimax_h3/text.rs:69; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const EPSILON - defined crates/ds4-core/src/minimax_h3/dit.rs:98; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FINAL_SLOTS - defined crates/ds4-core/src/minimax_h3/dit.rs:86; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FNV_OFFSET - defined crates/ds4-core/src/minimax_h3/text_forward.rs:55; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FNV_PRIME - defined crates/ds4-core/src/minimax_h3/text_forward.rs:58; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FPS - defined crates/ds4-core/src/minimax_h3/host.rs:21; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FRAME_CHANNELS - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:724; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FRAME_PER_TOKEN - defined crates/ds4-core/src/minimax_h3/host.rs:38; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FRAME_RATE - defined crates/ds4-core/src/minimax_h3/media.rs:41; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FRAME_RESCALE - defined crates/ds4-core/src/minimax_h3/host.rs:40; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const FRAME_STEP - defined crates/ds4-core/src/minimax_h3/media.rs:46; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_ALIGN_BASE - defined crates/ds4-core/src/minimax_h3/video_api.rs:64; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_ALIGN_STEP - defined crates/ds4-core/src/minimax_h3/video_api.rs:65; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_CANVAS_MULTIPLE - defined crates/ds4-core/src/minimax_h3/video_api.rs:69; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_FPS - defined crates/ds4-core/src/minimax_h3/video_api.rs:63; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_MAX_FRAMES - defined crates/ds4-core/src/minimax_h3/video_api.rs:67; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_MAX_PIXELS - defined crates/ds4-core/src/minimax_h3/video_api.rs:70; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_MIN_FRAMES - defined crates/ds4-core/src/minimax_h3/video_api.rs:66; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const H3_MIN_GEN_FRAMES - defined crates/ds4-core/src/minimax_h3/video_api.rs:68; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const HEADS - defined crates/ds4-core/src/minimax_h3/vision.rs:40; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const HEAD_DIM - defined crates/ds4-core/src/minimax_h3/text.rs:54; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const HIDDEN - defined crates/ds4-core/src/minimax_h3/text.rs:42; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const HOP_LENGTH - defined crates/ds4-core/src/minimax_h3/vae_audio.rs:32; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const IMAGE_PAD - defined crates/ds4-core/src/minimax_h3/multimodal.rs:41; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const INTERMEDIATE - defined crates/ds4-core/src/minimax_h3/text.rs:45; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const KV_HEADS - defined crates/ds4-core/src/minimax_h3/text.rs:51; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const LANGUAGE_PREFIX - defined crates/ds4-core/src/minimax_h3/text.rs:66; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const LATENT_CHANNELS - defined crates/ds4-core/src/minimax_h3/vae_audio.rs:22; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const LAYERS - defined crates/ds4-core/src/minimax_h3/text.rs:39; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const LAYER_NORM_EPSILON - defined crates/ds4-core/src/minimax_h3/vision.rs:79; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const LENGTH_BYTES - defined crates/ds4-core/src/minimax_h3/safetensors.rs:32; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const LIST_OBJECT - defined crates/ds4-core/src/minimax_h3/video_api.rs:38; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_ALIGNED_FRAMES - defined crates/ds4-core/src/minimax_h3/render.rs:39; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_ANCHOR_BYTES - defined crates/ds4-core/src/minimax_h3/video_api.rs:47; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_DISTORTION - defined crates/ds4-core/src/minimax_h3/presets.rs:38; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_HEADER_BYTES - defined crates/ds4-core/src/minimax_h3/safetensors.rs:30; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_LIST_LIMIT - defined crates/ds4-core/src/minimax_h3/video_api.rs:52; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_PIXELS - defined crates/ds4-core/src/minimax_h3/host.rs:27; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_PROMPT_CHARS - defined crates/ds4-core/src/minimax_h3/video_api.rs:42; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_RANK - defined crates/ds4-core/src/minimax_h3/safetensors.rs:34; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_SECONDS - defined crates/ds4-core/src/minimax_h3/media.rs:38; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MAX_STEPS - defined crates/ds4-core/src/minimax_h3/host.rs:35; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MERGE - defined crates/ds4-core/src/minimax_h3/vision.rs:55; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MERGED_BLOCK - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:727; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MERGE_DIM - defined crates/ds4-core/src/minimax_h3/vision.rs:64; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MERGE_ROWS - defined crates/ds4-core/src/minimax_h3/vision.rs:89; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MIN_EDGE - defined crates/ds4-core/src/minimax_h3/vision.rs:86; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MIN_FRAMES - defined crates/ds4-core/src/minimax_h3/media.rs:44; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MIN_GENERATION_FRAMES - defined crates/ds4-core/src/minimax_h3/render.rs:37; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MIN_LIST_LIMIT - defined crates/ds4-core/src/minimax_h3/video_api.rs:51; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MIN_SAMPLES - defined crates/ds4-core/src/minimax_h3/media.rs:35; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const MODALITIES - defined crates/ds4-core/src/minimax_h3/dit.rs:82; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const OUTPUT_WIDTH - defined crates/ds4-core/src/minimax_h3/vision.rs:73; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const PAD_TOKEN_ID - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:49; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const PATCH - defined crates/ds4-core/src/minimax_h3/vision.rs:49; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const PATCH_DIM - defined crates/ds4-core/src/minimax_h3/vision.rs:61; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const POSITION_COUNT - defined crates/ds4-core/src/minimax_h3/vision.rs:70; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const POSITION_SIDE - defined crates/ds4-core/src/minimax_h3/vision.rs:67; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const QUERY_HEADS - defined crates/ds4-core/src/minimax_h3/text.rs:48; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const REFERENCE_BLOCKS - defined crates/ds4-core/src/minimax_h3/layout.rs:38; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const REFERENCE_TIME_INPUT - defined crates/ds4-core/src/minimax_h3/layout.rs:41; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const RMS_EPSILON - defined crates/ds4-core/src/minimax_h3/text.rs:63; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const ROPE_FREQS - defined crates/ds4-core/src/minimax_h3/dit.rs:94; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const ROPE_HALF - defined crates/ds4-core/src/minimax_h3/text_rope.rs:40; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const ROPE_THETA - defined crates/ds4-core/src/minimax_h3/text.rs:60; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const SAMPLE_RATE - defined crates/ds4-core/src/minimax_h3/vae_audio.rs:30; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const SLOTS - defined crates/ds4-core/src/minimax_h3/dit.rs:84; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const TEMPORAL_PATCH - defined crates/ds4-core/src/minimax_h3/vision.rs:52; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const THETA - defined crates/ds4-core/src/minimax_h3/text_rope.rs:43; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const TIER_SHORT_EDGE - defined crates/ds4-core/src/minimax_h3/presets.rs:34; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const TIME_INPUT - defined crates/ds4-core/src/minimax_h3/dit.rs:92; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VAE_SPATIAL_RATIO - defined crates/ds4-core/src/minimax_h3/host.rs:29; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VIDEO_OBJECT - defined crates/ds4-core/src/minimax_h3/video_api.rs:37; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VIDEO_PAD - defined crates/ds4-core/src/minimax_h3/multimodal.rs:44; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VIDEO_ROW_WIDTH - defined crates/ds4-core/src/minimax_h3/condition.rs:32; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VIDEO_SIGMA_SHIFT - defined crates/ds4-core/src/minimax_h3/host.rs:31; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VISION_END - defined crates/ds4-core/src/minimax_h3/multimodal.rs:38; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VISION_START - defined crates/ds4-core/src/minimax_h3/multimodal.rs:35; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const VOCAB - defined crates/ds4-core/src/minimax_h3/text.rs:57; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub const WIRE_REFERENCE - defined crates/ds4-core/src/minimax_h3/video_api.rs:35; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum DitError - defined crates/ds4-core/src/minimax_h3/dit.rs:108; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Dtype - defined crates/ds4-core/src/minimax_h3/safetensors.rs:38; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum EmptyPrompt - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:66; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Fit - defined crates/ds4-core/src/minimax_h3/media.rs:50; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum ForwardError - defined crates/ds4-core/src/minimax_h3/text_forward.rs:137; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum LayoutError - defined crates/ds4-core/src/minimax_h3/layout.rs:710; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum LoadError - defined crates/ds4-core/src/minimax_h3/weights.rs:208; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum LoadMode - defined crates/ds4-core/src/minimax_h3/dit.rs:176; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum MergerPart - defined crates/ds4-core/src/minimax_h3/vision.rs:114; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum OutputRule - defined crates/ds4-core/src/minimax_h3/render.rs:57; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Part - defined crates/ds4-core/src/minimax_h3/text.rs:79; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Presentation - defined crates/ds4-core/src/minimax_h3/engine.rs:45; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum PresentationError - defined crates/ds4-core/src/minimax_h3/multimodal.rs:154; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Protocol - defined crates/ds4-core/src/minimax_h3/terminal.rs:25; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Ratio - defined crates/ds4-core/src/minimax_h3/presets.rs:42; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Reduction - defined crates/ds4-core/src/minimax_h3/dit.rs:650; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum Role - defined crates/ds4-core/src/minimax_h3/layout.rs:153; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum SegmentKind - defined crates/ds4-core/src/minimax_h3/sequence.rs:29; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum SortOrder - defined crates/ds4-core/src/minimax_h3/video_api.rs:769; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum StError - defined crates/ds4-core/src/minimax_h3/safetensors.rs:220; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum TextError - defined crates/ds4-core/src/minimax_h3/text.rs:478; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum TextLoadError - defined crates/ds4-core/src/minimax_h3/text_weights.rs:188; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum TokenizerError - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:73; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum VideoStatus - defined crates/ds4-core/src/minimax_h3/video_api.rs:166; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum VisionError - defined crates/ds4-core/src/minimax_h3/vision.rs:607; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub enum VisionLoadError - defined crates/ds4-core/src/minimax_h3/vision_weights.rs:205; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn adaln_hashes - defined crates/ds4-core/src/minimax_h3/dit.rs:2658; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn align_frame_count - defined crates/ds4-core/src/minimax_h3/host.rs:44; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn align_frames - defined crates/ds4-core/src/minimax_h3/video_api.rs:85; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn anchor_embedding - defined crates/ds4-core/src/minimax_h3/condition.rs:59; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn anchor_rows - defined crates/ds4-core/src/minimax_h3/condition.rs:92; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn append_vision - defined crates/ds4-core/src/minimax_h3/multimodal.rs:306; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn as_str - defined crates/ds4-core/src/minimax_h3/video_api.rs:174; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn as_string - defined crates/ds4-core/src/minimax_h3/video_api.rs:235; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn attention_scale - defined crates/ds4-core/src/minimax_h3/text_forward.rs:177; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn audio_elements - defined crates/ds4-core/src/minimax_h3/dit.rs:1737; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn audio_total_rows - defined crates/ds4-core/src/minimax_h3/sequence.rs:78; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn augment_span - defined crates/ds4-core/src/minimax_h3/condition.rs:36; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn bad_request - defined crates/ds4-core/src/minimax_h3/video_api.rs:127; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn bf16_to_f32 - defined crates/ds4-core/src/minimax_h3/vision.rs:359; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn block_stride - defined crates/ds4-core/src/minimax_h3/layout.rs:308; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn build - defined crates/ds4-core/src/minimax_h3/layout.rs:225; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn build_multimodal - defined crates/ds4-core/src/minimax_h3/text_rope.rs:108; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn bytes - defined crates/ds4-core/src/minimax_h3/safetensors.rs:127; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn check_frames - defined crates/ds4-core/src/minimax_h3/render.rs:267; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn check_h3 - defined crates/ds4-core/src/minimax_h3/video_api.rs:240; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn complete - defined crates/ds4-core/src/minimax_h3/video_api.rs:875; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn config - defined crates/ds4-core/src/minimax_h3/layout.rs:292; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn cosines - defined crates/ds4-core/src/minimax_h3/text_rope.rs:92; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn decode - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:214; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn deepstack - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:66; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn deepstack_fnv - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:76; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn delete - defined crates/ds4-core/src/minimax_h3/video_api.rs:978; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn denoise - defined crates/ds4-core/src/minimax_h3/dit.rs:1874; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn denoise_with - defined crates/ds4-core/src/minimax_h3/dit.rs:1887; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn detail - defined crates/ds4-core/src/minimax_h3/media.rs:65; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn detect - defined crates/ds4-core/src/minimax_h3/terminal.rs:32; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn display_dimensions - defined crates/ds4-core/src/minimax_h3/terminal.rs:69; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn display_rgb24 - defined crates/ds4-core/src/minimax_h3/terminal.rs:162; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn distortion - defined crates/ds4-core/src/minimax_h3/render.rs:235; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn elements - defined crates/ds4-core/src/minimax_h3/safetensors.rs:121; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn encode - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:184; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn encode_dir - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:711; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn encode_layers - defined crates/ds4-core/src/minimax_h3/text_forward.rs:189; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn encode_multimodal - defined crates/ds4-core/src/minimax_h3/text_forward.rs:205; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn encode_with - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:120; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn end - defined crates/ds4-core/src/minimax_h3/multimodal.rs:62; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn end_for_step - defined crates/ds4-core/src/minimax_h3/dit.rs:676; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn entries - defined crates/ds4-core/src/minimax_h3/layout.rs:296; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn euler_step - defined crates/ds4-core/src/minimax_h3/host.rs:256; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn extension - defined crates/ds4-core/src/minimax_h3/video_api.rs:315; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn extrapolate_velocity - defined crates/ds4-core/src/minimax_h3/host.rs:232; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn extrapolation_ratio - defined crates/ds4-core/src/minimax_h3/host.rs:205; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn f1 - defined crates/ds4-core/src/minimax_h3/vae_store.rs:116; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn f2 - defined crates/ds4-core/src/minimax_h3/vae_store.rs:120; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn f3 - defined crates/ds4-core/src/minimax_h3/vae_store.rs:124; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn f32_to_bf16 - defined crates/ds4-core/src/minimax_h3/vision.rs:350; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn fail - defined crates/ds4-core/src/minimax_h3/video_api.rs:890; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn fill_normal - defined crates/ds4-core/src/minimax_h3/host.rs:140; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn find - defined crates/ds4-core/src/minimax_h3/safetensors.rs:143; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn first_words - defined crates/ds4-core/src/minimax_h3/text_forward.rs:113; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn fl2va - defined crates/ds4-core/src/minimax_h3/multimodal.rs:213; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn fnv - defined crates/ds4-core/src/minimax_h3/text_forward.rs:96; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn fnv1a - defined crates/ds4-core/src/minimax_h3/text_forward.rs:61; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn forward - defined crates/ds4-core/src/minimax_h3/dit.rs:1803; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn frames - defined crates/ds4-core/src/minimax_h3/render.rs:323; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn frames_from_seconds - defined crates/ds4-core/src/minimax_h3/video_api.rs:96; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn from_f32 - defined crates/ds4-core/src/minimax_h3/render.rs:296; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn from_store - defined crates/ds4-core/src/minimax_h3/layout.rs:276; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn get - defined crates/ds4-core/src/minimax_h3/video_api.rs:908; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn grid - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:47; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn half - defined crates/ds4-core/src/minimax_h3/text_rope.rs:87; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn height - defined crates/ds4-core/src/minimax_h3/render.rs:212; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn ids - defined crates/ds4-core/src/minimax_h3/multimodal.rs:110; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn inner - defined crates/ds4-core/src/minimax_h3/layout.rs:138; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn interleave_pcm - defined crates/ds4-core/src/minimax_h3/render.rs:505; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn inventory - defined crates/ds4-core/src/minimax_h3/safetensors.rs:885; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn inverse_frequency - defined crates/ds4-core/src/minimax_h3/text_rope.rs:165; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn is_anamorphic - defined crates/ds4-core/src/minimax_h3/render.rs:241; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn is_empty - defined crates/ds4-core/src/minimax_h3/video_api.rs:929; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn is_scaled - defined crates/ds4-core/src/minimax_h3/presets.rs:142; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn kv_dim - defined crates/ds4-core/src/minimax_h3/text.rs:245; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn last_words - defined crates/ds4-core/src/minimax_h3/text_forward.rs:118; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn latent - defined crates/ds4-core/src/minimax_h3/render.rs:248; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn latent_canvas - defined crates/ds4-core/src/minimax_h3/host.rs:83; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn latent_normalization - defined crates/ds4-core/src/minimax_h3/vae_video.rs:929; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn latent_time - defined crates/ds4-core/src/minimax_h3/vae_encoder.rs:121; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn layout - defined crates/ds4-core/src/minimax_h3/weights.rs:91; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn len - defined crates/ds4-core/src/minimax_h3/video_api.rs:925; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn list - defined crates/ds4-core/src/minimax_h3/video_api.rs:933; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn load - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:135; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn load_with - defined crates/ds4-core/src/minimax_h3/dit.rs:1523; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn mapped - defined crates/ds4-core/src/minimax_h3/weights.rs:135; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn max_jobs - defined crates/ds4-core/src/minimax_h3/video_api.rs:809; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn media_type_for_extension - defined crates/ds4-core/src/minimax_h3/video_api.rs:327; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn merged - defined crates/ds4-core/src/minimax_h3/vision.rs:403; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn message - defined crates/ds4-core/src/minimax_h3/engine.rs:109; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn model - defined crates/ds4-core/src/minimax_h3/video_api.rs:805; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn modulation_hashes - defined crates/ds4-core/src/minimax_h3/dit.rs:1748; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn mrope_axis - defined crates/ds4-core/src/minimax_h3/text_rope.rs:142; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn mux_args - defined crates/ds4-core/src/minimax_h3/render.rs:534; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn mux_mp4 - defined crates/ds4-core/src/minimax_h3/render.rs:596; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn name - defined crates/ds4-core/src/minimax_h3/safetensors.rs:76; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn names - defined crates/ds4-core/src/minimax_h3/presets.rs:279; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn new - defined crates/ds4-core/src/minimax_h3/video_api.rs:111; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn new_anamorphic - defined crates/ds4-core/src/minimax_h3/render.rs:104; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn new_delivery - defined crates/ds4-core/src/minimax_h3/render.rs:86; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn next_u32 - defined crates/ds4-core/src/minimax_h3/host.rs:114; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn normal - defined crates/ds4-core/src/minimax_h3/host.rs:125; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn not_found - defined crates/ds4-core/src/minimax_h3/video_api.rs:135; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn of - defined crates/ds4-core/src/minimax_h3/multimodal.rs:85; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn open - defined crates/ds4-core/src/minimax_h3/layout.rs:267; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn open_dir - defined crates/ds4-core/src/minimax_h3/safetensors.rs:868; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn output_path - defined crates/ds4-core/src/minimax_h3/video_api.rs:916; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn outside - defined crates/ds4-core/src/minimax_h3/text.rs:338; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn pack_audio - defined crates/ds4-core/src/minimax_h3/dit.rs:1206; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn parse - defined crates/ds4-core/src/minimax_h3/safetensors.rs:56; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn parse_request - defined crates/ds4-core/src/minimax_h3/video_api.rs:339; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn parts - defined crates/ds4-core/src/minimax_h3/presets.rs:53; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn patch_rows - defined crates/ds4-core/src/minimax_h3/vision.rs:413; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn patchify_video - defined crates/ds4-core/src/minimax_h3/dit.rs:1128; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn position_rows - defined crates/ds4-core/src/minimax_h3/vision.rs:471; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn positions - defined crates/ds4-core/src/minimax_h3/multimodal.rs:121; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn probe_visual_size - defined crates/ds4-core/src/minimax_h3/media.rs:157; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn protocol_name - defined crates/ds4-core/src/minimax_h3/terminal.rs:50; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn query_dim - defined crates/ds4-core/src/minimax_h3/text.rs:240; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read - defined crates/ds4-core/src/minimax_h3/layout.rs:75; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read_audio_f32 - defined crates/ds4-core/src/minimax_h3/media.rs:350; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read_data - defined crates/ds4-core/src/minimax_h3/safetensors.rs:149; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read_image_f32 - defined crates/ds4-core/src/minimax_h3/media.rs:219; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read_index - defined crates/ds4-core/src/minimax_h3/safetensors.rs:939; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read_into - defined crates/ds4-core/src/minimax_h3/text_weights.rs:107; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read_shard - defined crates/ds4-core/src/minimax_h3/safetensors.rs:395; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn read_video_f32 - defined crates/ds4-core/src/minimax_h3/media.rs:269; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn reconcile - defined crates/ds4-core/src/minimax_h3/safetensors.rs:995; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn render - defined crates/ds4-core/src/minimax_h3/engine.rs:183; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn render_height - defined crates/ds4-core/src/minimax_h3/render.rs:220; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn render_width - defined crates/ds4-core/src/minimax_h3/render.rs:216; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn resident - defined crates/ds4-core/src/minimax_h3/dit.rs:807; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn resize_rgb24 - defined crates/ds4-core/src/minimax_h3/render.rs:388; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn resized_to - defined crates/ds4-core/src/minimax_h3/render.rs:341; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn resolve - defined crates/ds4-core/src/minimax_h3/presets.rs:262; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn reuse_schedule - defined crates/ds4-core/src/minimax_h3/host.rs:191; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn rgb_f32_to_u8 - defined crates/ds4-core/src/minimax_h3/render.rs:375; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn role - defined crates/ds4-core/src/minimax_h3/text_forward.rs:940; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn rope_rows - defined crates/ds4-core/src/minimax_h3/vision.rs:564; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn rope_scale - defined crates/ds4-core/src/minimax_h3/render.rs:256; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn round_bf16 - defined crates/ds4-core/src/minimax_h3/text_rope.rs:156; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn rows - defined crates/ds4-core/src/minimax_h3/sequence.rs:68; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn scale - defined crates/ds4-core/src/minimax_h3/render.rs:226; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn seed - defined crates/ds4-core/src/minimax_h3/host.rs:99; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn serving - defined crates/ds4-core/src/minimax_h3/host.rs:162; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn set_conditions - defined crates/ds4-core/src/minimax_h3/dit.rs:1770; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn set_zoom - defined crates/ds4-core/src/minimax_h3/terminal.rs:59; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn shards - defined crates/ds4-core/src/minimax_h3/safetensors.rs:195; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn sines - defined crates/ds4-core/src/minimax_h3/text_rope.rs:97; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn size - defined crates/ds4-core/src/minimax_h3/safetensors.rs:95; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn slot_bytes - defined crates/ds4-core/src/minimax_h3/dit.rs:290; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn span - defined crates/ds4-core/src/minimax_h3/weights.rs:96; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn spans - defined crates/ds4-core/src/minimax_h3/multimodal.rs:115; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn spawn - defined crates/ds4-core/src/minimax_h3/engine.rs:503; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn specs - defined crates/ds4-core/src/minimax_h3/vision.rs:221; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn start - defined crates/ds4-core/src/minimax_h3/video_api.rs:862; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn stream_slot_bytes - defined crates/ds4-core/src/minimax_h3/dit.rs:1742; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn submit - defined crates/ds4-core/src/minimax_h3/video_api.rs:822; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn summary - defined crates/ds4-core/src/minimax_h3/engine.rs:581; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn tags - defined crates/ds4-core/src/minimax_h3/text_forward.rs:103; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn tags_fnv - defined crates/ds4-core/src/minimax_h3/text_forward.rs:108; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn temporal - defined crates/ds4-core/src/minimax_h3/host.rs:72; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn tensor_bytes - defined crates/ds4-core/src/minimax_h3/safetensors.rs:174; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn tensor_count - defined crates/ds4-core/src/minimax_h3/safetensors.rs:207; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn tier_canvas - defined crates/ds4-core/src/minimax_h3/presets.rs:91; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn to_json - defined crates/ds4-core/src/minimax_h3/video_api.rs:151; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn to_value - defined crates/ds4-core/src/minimax_h3/video_api.rs:703; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn token - defined crates/ds4-core/src/minimax_h3/safetensors.rs:300; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn tokens - defined crates/ds4-core/src/minimax_h3/text_rope.rs:82; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn too_many - defined crates/ds4-core/src/minimax_h3/video_api.rs:143; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn total - defined crates/ds4-core/src/minimax_h3/text.rs:127; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn unavailable - defined crates/ds4-core/src/minimax_h3/video_api.rs:147; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn unpack_audio - defined crates/ds4-core/src/minimax_h3/dit.rs:1236; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn unpatchify_video - defined crates/ds4-core/src/minimax_h3/dit.rs:1167; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn validate - defined crates/ds4-core/src/minimax_h3/video_api.rs:421; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn values - defined crates/ds4-core/src/minimax_h3/text_forward.rs:91; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn video_elements - defined crates/ds4-core/src/minimax_h3/dit.rs:1732; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn video_latent_t - defined crates/ds4-core/src/minimax_h3/host.rs:57; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn video_patch - defined crates/ds4-core/src/minimax_h3/layout.rs:143; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn video_total_rows - defined crates/ds4-core/src/minimax_h3/sequence.rs:74; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn width - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:178; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn window - defined crates/ds4-core/src/minimax_h3/dit.rs:709; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub fn with_store - defined crates/ds4-core/src/minimax_h3/text.rs:312; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct AdalnHashes - defined crates/ds4-core/src/minimax_h3/dit.rs:2684; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct AnchorImage - defined crates/ds4-core/src/minimax_h3/video_api.rs:306; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct AnchorPixels - defined crates/ds4-core/src/minimax_h3/condition.rs:47; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct ApiError - defined crates/ds4-core/src/minimax_h3/video_api.rs:102; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Canvas - defined crates/ds4-core/src/minimax_h3/render.rs:43; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Config - defined crates/ds4-core/src/minimax_h3/layout.rs:54; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Decoder - defined crates/ds4-core/src/minimax_h3/vae_video.rs:255; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Dit - defined crates/ds4-core/src/minimax_h3/dit.rs:1426; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Embedding - defined crates/ds4-core/src/minimax_h3/text_forward.rs:74; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Encoder - defined crates/ds4-core/src/minimax_h3/vae_encoder.rs:245; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct EncoderError - defined crates/ds4-core/src/minimax_h3/vae_encoder.rs:69; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Engine - defined crates/ds4-core/src/minimax_h3/engine.rs:149; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct EngineError - defined crates/ds4-core/src/minimax_h3/engine.rs:102; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct EngineHandle - defined crates/ds4-core/src/minimax_h3/engine.rs:493; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Entry - defined crates/ds4-core/src/minimax_h3/layout.rs:202; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Frames - defined crates/ds4-core/src/minimax_h3/vae_video.rs:72; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Grid - defined crates/ds4-core/src/minimax_h3/vision.rs:365; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Image - defined crates/ds4-core/src/minimax_h3/multimodal.rs:70; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct ImageRef - defined crates/ds4-core/src/minimax_h3/video_api.rs:265; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Index - defined crates/ds4-core/src/minimax_h3/safetensors.rs:934; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Inventory - defined crates/ds4-core/src/minimax_h3/safetensors.rs:181; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Latent - defined crates/ds4-core/src/minimax_h3/vae_encoder.rs:60; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Layout - defined crates/ds4-core/src/minimax_h3/layout.rs:219; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct ListQuery - defined crates/ds4-core/src/minimax_h3/video_api.rs:762; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct LoadOptions - defined crates/ds4-core/src/minimax_h3/dit.rs:796; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Manifest - defined crates/ds4-core/src/minimax_h3/safetensors.rs:987; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct MediaError - defined crates/ds4-core/src/minimax_h3/media.rs:58; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Outside - defined crates/ds4-core/src/minimax_h3/text.rs:110; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Position - defined crates/ds4-core/src/minimax_h3/sequence.rs:48; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Presentation - defined crates/ds4-core/src/minimax_h3/multimodal.rs:101; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Preset - defined crates/ds4-core/src/minimax_h3/presets.rs:114; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct PreviewDecoder - defined crates/ds4-core/src/minimax_h3/vae_video.rs:986; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct ReductionWindow - defined crates/ds4-core/src/minimax_h3/dit.rs:661; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct RenderReport - defined crates/ds4-core/src/minimax_h3/engine.rs:83; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct RenderRequest - defined crates/ds4-core/src/minimax_h3/engine.rs:57; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct RenderSpec - defined crates/ds4-core/src/minimax_h3/video_api.rs:285; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct RgbFrames - defined crates/ds4-core/src/minimax_h3/render.rs:287; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Rng - defined crates/ds4-core/src/minimax_h3/host.rs:89; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Rope - defined crates/ds4-core/src/minimax_h3/text_rope.rs:47; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Schedule - defined crates/ds4-core/src/minimax_h3/host.rs:150; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Segment - defined crates/ds4-core/src/minimax_h3/sequence.rs:40; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Sequence - defined crates/ds4-core/src/minimax_h3/sequence.rs:56; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Shard - defined crates/ds4-core/src/minimax_h3/safetensors.rs:134; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Span - defined crates/ds4-core/src/minimax_h3/weights.rs:31; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Spec - defined crates/ds4-core/src/minimax_h3/sequence.rs:85; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Store - defined crates/ds4-core/src/minimax_h3/safetensors.rs:190; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Temporal - defined crates/ds4-core/src/minimax_h3/host.rs:66; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Tensor - defined crates/ds4-core/src/minimax_h3/safetensors.rs:107; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct TensorRef - defined crates/ds4-core/src/minimax_h3/layout.rs:194; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct TextWeights - defined crates/ds4-core/src/minimax_h3/text_weights.rs:30; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Tokenizer - defined crates/ds4-core/src/minimax_h3/tokenizer.rs:122; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VaeError - defined crates/ds4-core/src/minimax_h3/vae_audio.rs:49; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Video - defined crates/ds4-core/src/minimax_h3/video_api.rs:687; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VideoDelete - defined crates/ds4-core/src/minimax_h3/video_api.rs:750; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VideoError - defined crates/ds4-core/src/minimax_h3/video_api.rs:186; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VideoList - defined crates/ds4-core/src/minimax_h3/video_api.rs:728; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VideoRequest - defined crates/ds4-core/src/minimax_h3/video_api.rs:275; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VideoSize - defined crates/ds4-core/src/minimax_h3/video_api.rs:206; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VideoStore - defined crates/ds4-core/src/minimax_h3/video_api.rs:787; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VisionLayout - defined crates/ds4-core/src/minimax_h3/vision.rs:161; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VisionOutput - defined crates/ds4-core/src/minimax_h3/vision_forward.rs:39; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VisionRope - defined crates/ds4-core/src/minimax_h3/vision.rs:540; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VisionSpan - defined crates/ds4-core/src/minimax_h3/multimodal.rs:138; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct VisionWeights - defined crates/ds4-core/src/minimax_h3/vision_weights.rs:32; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Waveform - defined crates/ds4-core/src/minimax_h3/vae_audio.rs:40; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+ITEM pub struct Weights - defined crates/ds4-core/src/minimax_h3/weights.rs:49; compiled: clippy -p ds4-core --lib --features h3-gates exit 0; gated: cargo test -p ds4-core --lib (646 passed, 7 ignored)
+FILE tests/fixtures/h3/README.md - read after the fix; the anchor status matches the served wire (check 18) and h3-rs --first-frame, its sha256 and 432x171 RGBA claims were re-verified, and the 28.90 dB re-lettered bound matches post-port-phases.md:933-934; D2 closed
+FILE tests/fixtures/h3/costello-crocodile-2panel.png - PNG 432x171 8-bit RGBA (file); sha256 f364705ae974c13f709c3776ebe9e7eadcd45ada8c1a7f75d1bc7df31698f7d6 matches the fixture README
+FILE tools/minimax_h3/README.md - read; the new directory index, incomplete over the later probes and host tools (O2)
+FILE tools/minimax_h3/dit_probe.c - cc -fsyntax-only -I/data/h3.c exit 0; running it needs the Spark's libh3.a and checkpoint
+FILE tools/minimax_h3/install-minimax-h3-spark.sh - read: checkpoint fetch, build, gate and serve on the Spark
+FILE tools/minimax_h3/letterballoons.sh - read in full; run on a synthetic 1344x576 clip (exit 0): audio md5 identical to the input on both sides, the changed-pixel BBOX is x0=12 y0=8 x1=940 y1=199, the balloon fill is white and the rim black
+FILE tools/minimax_h3/multimodal_probe.c - cc -fsyntax-only -I/data/h3.c exit 0; running it needs the Spark's libh3.a and checkpoint
+FILE tools/minimax_h3/p9_copy_bench.cu - nvcc 13.3 -arch=compute_121a -I/data/h3.c -c exit 0; the measurement itself is Spark-only
+FILE tools/minimax_h3/ppm_diff.c - read in full; compiled with cc -O2 and exercised: identical 0, differing 1 with BBOX, geometry 2, truncated 2; O3 records the band bound
+FILE tools/minimax_h3/ref_gate.sh - read: the reference-media matrix driver (FL2VA and Ref2VA families); it runs the reference binary on the Spark
+FILE tools/minimax_h3/st_probe.c - cc -fsyntax-only -I/data/h3.c exit 0; running it needs the Spark's libh3.a and checkpoint
+FILE tools/minimax_h3/text_probe.c - cc -fsyntax-only -I/data/h3.c exit 0; running it needs the Spark's libh3.a and checkpoint
+FILE tools/minimax_h3/tok_probe.c - cc -fsyntax-only -I/data/h3.c exit 0; running it needs the Spark's libh3.a and checkpoint
+FILE tools/minimax_h3/video_encoder_probe.c - cc -fsyntax-only -I/data/h3.c exit 0; running it needs the Spark's libh3.a and checkpoint
+FILE tools/minimax_h3/vision_probe.c - cc -fsyntax-only -I/data/h3.c exit 0; running it needs the Spark's libh3.a and checkpoint
+FILE tools/minimax_h3/vq/LICENSE-YoungAi - present: the vendored license of the transferred bake sources
+FILE tools/minimax_h3/vq/README.md - read: provenance, the tested table and the rung A/B contract
+FILE tools/minimax_h3/vq/bake/ds4_gguf_write.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/bake/eg2_artifact_check.sh - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/bake/eg2_gguf.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/bake/eg2_pack.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/bake/eg2_vq.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/bake/h3_gvq.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/bake/h3_gvq.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/bake/h3_pack.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/build.sh - read and run: exit 0, five binaries built into the ignored bin/
+FILE tools/minimax_h3/vq/tests/make_fixture.c - cc -c with the toolchain's include roots exit 0
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/deepseek4-quantize.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/deepseek4-quantize_p1.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/deepseek4-quantize_p2.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/deepseek4-quantize_p3.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/deepseek4-quantize_p4.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/deepseek4-quantize_p5.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/deepseek4-quantize_p6.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/dump_gguf_meta.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/dump_st_meta.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/engram_probe.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/engram_wkv_probe.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/expert_probe.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/go2b_parity.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/go2b_qc.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/head_row_probe.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/ladder_vq4.txt - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/onebit_quant.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/onebit_quant.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/quantize_gpu.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/quants.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/quants.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/quants_p1.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/quants_p2.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/quants_p3.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/rplan_solve.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/st_bridge.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/st_dump_tensor.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/st_locate.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/st_read_decl.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_calib.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_calib.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_cfg.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_codebook.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_dq.cuh - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_ef.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_ef.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_fp4.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_nc_alloc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_q4k.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_quant.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_quantize.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_quantize_cli.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_shcb.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_st_write.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_to_gguf.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_to_gguf_mtp.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_to_gguf_tok.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_to_gguf_vision.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_to_gguf_vq3.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_vq.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_vq3_bits.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_vq_pool.inc.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_vq_rate.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/v41_vq_rate.inc.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq2q2k_probe.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_em.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_gpu.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_gpu_attn.inc.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_gpu_moe.inc.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_gpu_moefused.inc.cu - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_merge_v4.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_merge_v4_p1.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_merge_v4_p2.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_merge_v4_p3.inc.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_qc.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_qc_bytes.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/gguf-tools/quantize/vq_shim.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_amp_fmt.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_etgd.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_float.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_fp8.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_gguf.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_gguf.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_gguf_write.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_gr_fnv.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_json.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_json.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_quantfmt.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_quantfmt.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_sha256.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_sha256.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_st.c - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+FILE tools/minimax_h3/vq/youngai/src/common/ds4_st41.h - built by vq/build.sh (exit 0) and exercised: bin/h3_gvq selftest exit 0 (13-bit round trip, strict read, determinism, 20 GVQ1 + 5 GVR8 rejections)
+LIVE CHECKS (command - exit - key line)
+
+Re-run against the corrected tree:
+ 1  cargo fmt --check
+    exit 0 - no output (0 bytes).
+ 2  cargo clippy -p ds4-core --lib --features h3-gates
+    exit 0 - "generated 109 warnings ... Finished `dev` profile in 0.05s"; zero
+    of them come from a minimax_h3 file (was 2 before the O5 fix).
+ 3  cargo test -p ds4-core --lib
+    exit 0 - "test result: ok. 646 passed; 0 failed; 7 ignored; 0 measured;
+    0 filtered out; finished in 0.62s" (653 run). The 7 ignored need the h3
+    objects and checkpoint.
+ 4  cargo test -p ds4-server --lib h3_
+    exit 0 - "test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured;
+    365 filtered out; finished in 0.12s".
+ 5  cargo clippy -p ds4-server
+    exit 0 - "generated 116 warnings ... Finished in 1.25s"; none from
+    h3_video.rs or h3_engine.rs.
+ 6  cargo check --examples -p ds4-core --features h3-gates
+    exit 0 - the six gates plus examples/minimax_h3_inspect type-check.
+
+Carried from this session's first pass; the files and inputs they touch were not
+modified by the fixes (git status lists only the five fixed paths plus this
+report):
+ 7  cargo build --example h3_dit_gate -p ds4-core --features h3-gates
+    exit 101 - compiles, then fails only at link: "undefined symbol: h3d_alloc
+    ... referenced by h3_dit.rs:602", 20 undefined h3d_*/h3t_* symbols before
+    the linker's error limit stopped the list. Expected: the objects are built
+    and linked by the Makefile rule (Makefile:434-446), not by cargo.
+ 8  cargo build -p ds4-server --bin h3-server-rs, then a live listener
+    exit 0 - GET /v1/models 200, GET /v1/videos 200, GET and DELETE
+    /v1/videos/video_9 404, HEAD /v1/videos/video_9/content 404, GET /v1/nope
+    404; --help exit 0; startup line "renderer disabled (POST /v1/videos
+    answers 503)".
+ 9  cargo build -p ds4-cli --bin h3-rs
+    exit 101 - "target `h3-rs` in package `ds4-cli` requires the features:
+    `native`" (the Makefile passes --features native, Makefile:508); a usage
+    error, not a defect.
+10  cargo rustc -p ds4-cli --bin h3-rs --features native --, linked against the
+    four objects compiled in check 11 plus -lcublasLt -lcudart -lstdc++
+    exit 0 - ./target/debug/h3-rs --help exit 0; the no-argument path prints
+    "h3-rs: -d MODEL_DIR is required" and exits 2; nm finds 70 resolved
+    h3d_/h3t_/h3v_/h3g_ text symbols, so the ds4-sys FFI declarations agree
+    with the native headers at link time.
+11  nvcc -O3 -std=c++17 -gencode arch=compute_121a,code=sm_121a
+    -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -fPIC -Xcompiler -pthread -c
+    native/h3/{h3_device,h3_text,h3_vision,h3_dit}_gpu.cu
+    exit 0 for all four (the Makefile's H3_NVCCFLAGS, Makefile:409).
+12  sh tools/minimax_h3/vq/build.sh
+    exit 0 - five binaries; 55 compiler warnings, all in the vendored youngai
+    sources. Output under the gitignored tools/minimax_h3/vq/bin (.gitignore:272).
+13  tools/minimax_h3/vq/bin/h3_gvq selftest
+    exit 0 - "ok decode == value rule on 65536 values; cos=0.999668
+    relL2=2.5762%", thread-count determinism, "ok 20 GVQ1 + 5 GVR8 mutations
+    rejected".
+14  cc -O2 -o ppm_diff tools/minimax_h3/ppm_diff.c -lm, then four runs
+    identical pair exit 0; one-pixel change exit 1 ("BBOX x0=1 y0=0 x1=1 y1=0");
+    geometry mismatch exit 2; truncated file exit 2.
+15  sh tools/minimax_h3/letterballoons.sh in.mp4 out.mp4
+    exit 0 - synthetic 1344x576 clip: 48 frames and the aac track survive, the
+    audio md5 f8e7f1ce8d8c256c25fd480ae125099c is identical on input and
+    output, frame 5 differs only inside the balloons (BBOX x0=12 y0=8 x1=940
+    y1=199), fill 255,255,255, rim 0,0,0.
+16  cc -fsyntax-only -I/data/h3.c on the seven probe sources, cc -c on
+    vq/tests/make_fixture.c, nvcc -c on p9_copy_bench.cu
+    exit 0 each.
+17  file / sha256sum / jq on the fixtures
+    PNG 432x171 8-bit RGBA, sha256 f364705ae974c13f709c3776ebe9e7eadcd45ada8c1a7f75d1bc7df31698f7d6
+    (matches tests/fixtures/h3/README.md); tokenizer_portable.json is JSON.
+
+New in this pass, run to verify the fixed documents against the served code:
+18  live POST /v1/videos matrix (`h3-server-rs --renderer /bin/true`, so the
+    request reaches decoding instead of the disabled-renderer 503)
+    multipart ref.png 200; multipart ref.jpeg 200; multipart ref.tiff 400;
+    JSON {"input_reference":{"file_id":"file_1"}} 400; JSON https image_url
+    400 ("expected a base64 data URI", invalid_value); JSON data URI 200.
+19  live anchor size bound
+    a data URI decoding to exactly 16 MiB (16,777,216 bytes, 22,369,624 base64
+    characters, 22,369,695-byte body) 200; one byte more 400 with
+    "Invalid 'input_reference': decoded size must be 1..=16777216 bytes.",
+    code invalid_value. Both edges of the documented bound hold.
+
+No Python computed anything in this QA: every check above is shell, cargo, cc or
+nvcc. One "python3 -c 1" no-op guard appears in a command line from the first
+pass and produced nothing; no Python code was written or used.
+
+STATIC CHECKS
+
+S1. h3-rs flags against the reference CLI /data/h3.c/main.c (reference at
+    eae5d54, read-only).
+    Reference option table main.c:292-348 with the getopt string "d:p:o:h";
+    port parser crates/ds4-cli/src/bin/h3-rs.rs:657-702.
+    Eighteen reference flags have no port equivalent, each accounted for:
+      --ref-image, --ref-image-size, --ref-video, --ref-silent-video,
+      --ref-video-audio, --ref-audio (six): INTENTIONAL and recorded. Ref2VA is
+      unported - post-port-phases.md:436 and :916-921, and sequence.rs:20-25
+      names the deviation in code (build returns Unsupported::References).
+      --use-int8-row-fc2 and the ten --use-slower-* flags (eleven): INTENTIONAL.
+      In the reference they are CUDA no-ops or slow-path selectors
+      (h3_gpu_cuda.cu:1058-1059, :1139-1141, :1307-1308; dit->int8_* selection
+      at h3_dit.c:1634-1646). h3-rs.rs:16-18 states the policy and the parser
+      refuses them (h3-rs.rs:702); the unported table records the refusal
+      (post-port-phases.md:1133) and the P12 item now agrees (post-port-phases.md:632-638,
+      O1 closed).
+      --profile: INTENTIONAL; per-phase Metal timing (main.c:61-62), Metal out
+      of scope (post-port-phases.md:1137).
+    Port-only flag: --hash (gate hashes), a diagnostic addition.
+    No other difference: model-dir, prompt, output, width, height,
+    render-width, render-height, frames, seconds, steps, reuse, layers,
+    core-reuse, token-reduction, ssd-streaming, use-reference-rope, seed,
+    first-frame, last-frame, frames-dir, preview-dir, show, zoom, info and
+    -h/--help all exist on both sides.
+
+S2. Server routes and fields against docs/minimax-h3/openai-videos.md:24-36.
+    Dispatch h3_video.rs:395-411 and router :601-621 implement exactly the seven
+    documented method/path pairs; anything else is 404 unknown_url. Live in
+    checks 8 and 18. The create body (video_api.rs:339-401) accepts prompt,
+    model, seconds, size and input_reference{file_id,image_url} from JSON,
+    urlencoded and multipart bodies, as documented. The input_reference
+    semantics now match the document in every clause checked against the code
+    and live (S6.1): the mismatch of the first pass (D1) is gone.
+
+S3. "executes nothing" from a request body.
+    Search: grep -n 'Command::new|std::process|reqwest|ureq|TcpStream::connect|
+    fs::read|fs::write|fs::remove_file|File::open|File::create'
+    crates/ds4-server/src/h3_video.rs crates/ds4-server/src/h3_engine.rs
+    crates/ds4-server/src/bin/h3-server-rs.rs
+    Hits: h3_video.rs:216 Command::new(&argv[0]) and the file calls at :135,
+    :151, :511, :547 - all on server-generated paths. No HTTP client appears in
+    ds4-server/Cargo.toml [dependencies], and h3_engine.rs has no process, path
+    or network call of its own. argv is built at h3_video.rs:186-206 with the
+    program and fixed arguments from startup and request values appended as
+    separate entries at fixed positions, so a prompt cannot become an option.
+    Ids are server-generated video_N (video_api.rs:838-841); the output is
+    out_dir.join("{id}.mp4") (h3_video.rs:430); the anchor is
+    output.with_extension("anchor.<ext>") (h3_video.rs:118-140) over a
+    three-entry extension map (video_api.rs:315-323). References: a data: URI
+    only (video_api.rs:526-563) or a multipart part; file_id refused; nothing
+    is fetched - measured in check 18, where the https image_url answers 400.
+    NUANCE, stated plainly: a POST does start a process - the operator's own
+    renderer, which is the documented alternative backend
+    (openai-videos.md:242-282, "--renderer PROGRAM ... chosen here, never by a
+    request body"). The AGENTS.md "executes nothing" clause is the ds41
+    carriage rule; the h3 addendum allows this one HTTP surface, and no request
+    value selects a program, an argument position, a working directory or a
+    path.
+
+S4. Tool deliverables.
+    tools/minimax_h3/ppm_diff.c - every claim in its header holds when run
+    (check 14): SIZE, PIXELS, PSNR against full scale, BBOX including both
+    ends, BAND lines, and the 0/1/2 exit contract. O3 records its 64-band
+    (8192 px) bound and the undocumented axis=y lines; both are unchanged and
+    neither is reachable from an h3 canvas (H3_MAX_PIXELS, video_api.rs:70).
+    tools/minimax_h3/letterballoons.sh - its geometry claim and its audio claim
+    ("Audio is stream-copied; the model's track is untouched") both hold;
+    check 15 is the measurement.
+
+S5. The DiT row map carrying presentation modality tags (commit 30dfe326,
+    crates/ds4-core/src/minimax_h3/dit.rs).
+    Reference h3_dit_schedule_row_map at h3_dit_schedule.c:434-484; port
+    row_map at dit.rs:576-641. Arm by arm: the validity and tag-count gate
+    (:436-440 against :583-588), text rows with the 1 fallback and the
+    MODALITIES refusal (:448-457 against :594-606), COND and REF_IMAGE (:458-462
+    against :608-616), REF_AUDIO (:463-466 against :617-624), AUDIO (:467-470
+    against :625), VIDEO (:471-473 against :626), the modulation fill (:476-483
+    against :628-631) and the signature check (:484 against :636-640). The
+    tags reach the map where the reference passes text->tags (h3_dit.c:1027-1030):
+    dit.rs:1571-1573 and :1598, with the length pinned to signature[0] by
+    Geometry::check (dit.rs:1324). The reference's malformed-segment refusals
+    (:441-443) have no port counterpart; O4 records why that is unreachable.
+
+S6. Fixes verified (the corrections to D1, D2, O1, O5).
+
+S6.1 docs/minimax-h3/openai-videos.md - every changed claim checked against the
+    code and, where the code path is reachable without a checkpoint, live:
+      status line: the resident engine is the port's own backend (h3_engine.rs)
+      and the external program is the alternative; the bin's own header says the
+      same (h3-server-rs.rs:3-5) and the selection is startup-only (:190-205).
+      See O7 for the one wording reservation.
+      create-body row and the paragraph after the encodings list: a data URI or
+      a multipart file part becomes the anchor (decode_reference
+      video_api.rs:526-563; data_uri :595-604 requires "data:" plus
+      ";base64," with non-empty parts; check_anchor :569-588). Measured live:
+      data URI 200 (check 18); multipart .png 200; .tiff 400.
+      "A decoded anchor must be 1 byte to 16 MiB": MAX_ANCHOR_BYTES
+      (video_api.rs:47) is 16 * 1024 * 1024 and check_anchor refuses
+      empty or larger with invalid_value (:570-578). Measured at both edges in
+      check 19.
+      "file_id is refused with 400 unsupported_parameter": video_api.rs:532-540;
+      the unit test an_anchor_is_refused_by_name asserts the same
+      (video_api.rs:1487-1500), and the live matrix confirms 400.
+      the three new error-table rows match the codes above.
+      deviation 7: pixels base64-only, last frame CLI-only - h3_engine.rs:65-68
+      sets first_frame from the anchor and leaves last_frame None.
+    One incompleteness found, recorded as O6: the multipart sentence says the
+    part name must end in .png, .jpg or .webp, while media_type_for_extension
+    (video_api.rs:327-338) also accepts .jpeg, case-insensitively; measured
+    live (ref.jpeg 200).
+
+S6.2 tests/fixtures/h3/README.md - the anchor status now matches the served
+    wire (S6.1) and the CLI flag name --first-frame is right
+    (h3-rs.rs:682, usage line :800); "pixels arrive base64-only there" matches
+    the served decode. The sha256 and 432x171 RGBA claims were re-verified
+    (check 17). The "28.90 dB" re-lettered bound matches the record:
+    post-port-phases.md:933-934 ("1536x608 art anchored at 1536x608 ... PSNR
+    28.90 dB (rms 9.15, max 131)"), with the 1536x608 canvas for the 48:19
+    fixture at :732. Ref2VA unported is consistent with :436 and :916-921.
+
+S6.3 docs/minimax-h3/post-port-phases.md - the --use-int8-row-fc2 item now
+    reads "The port refuses the flag instead of accepting an inert switch
+    (h3-rs.rs:16-18, port plan section 6.3); no output differs either way",
+    which matches the parser (unknown flag, h3-rs.rs:702), the CLI header
+    (:16-18), port-plan.md:564 ("drop it and say so") and the unported table
+    (:1133). The inert-environment-variable sentence no longer likens them to
+    it (:632-633). O1 closed.
+
+S6.4 clippy fixes - render.rs:633 drops the needless "mut" from
+    "(audio_read, audio_write)" in mux_mp4; the rest of the function is
+    unchanged (git diff is one line). vae_video.rs:362 becomes
+    "tile.len().is_multiple_of(frame)" under the same "frame > 0" and
+    "!tile.is_empty()" guards, which is the same predicate for a usize and
+    cannot divide by zero. Confirmed: cargo clippy -p ds4-core --lib
+    --features h3-gates exit 0 with 0 warnings from h3 files (check 2), cargo
+    fmt --check exit 0 (check 1), and the test totals are unchanged, 646 passed
+    / 7 ignored (check 3) and 24 passed (check 4). O5 closed.
+
+
+S6.5 docs/minimax-h3/port-plan.md (edited by the same fix pass after the first
+    report) - its deviations paragraph at :1038-1045 no longer claims
+    --token-reduction, --show and --zoom are unimplemented (all three are parsed,
+    h3-rs.rs:686, :689, :690) and correctly keeps the interactive session,
+    Ref2VA and the audio VAE's encode half as not implemented (vae_audio.rs
+    exposes only pub fn decode, :386, and no stdin loop exists in h3-rs); it now
+    points at the post-port-phases unported table as the running record.
+
+ACCEPTED RISKS (checks that could not run on this host)
+
+R1  No h3 model work ran: no h3_*_gate, no h3-rs --info, no render, no MP4, no
+    quantization bake. The FL2VA checkpoint lives only on the Spark
+    (/mnt/h3-artifacts, ~144 GB) and the four native objects are sm_121a SASS,
+    which this host's RTX 4070 SUPER (sm_89) cannot execute. Every recorded
+    Spark number in the branch docs (hash gates, the 27.085 dB anchored-frame
+    note, the 28.90 dB re-lettered bound, the lettered-clip renders, the VQ bake
+    measurements) is accepted as recorded, not re-measured here.
+R2  The Makefile's tests/h3_* gates were not run for the same reason: they link
+    the native objects and then load the checkpoint.
+R3  The reference-side probes (dit_probe, text_probe, vision_probe,
+    multimodal_probe, video_encoder_probe, ref_gate.sh) need the reference's
+    libh3.a and the checkpoint; only their compilation was verified (check 16).
+R4  The DiT/vision/multimodal parity this branch claims cannot be reproduced on
+    this machine at all; the row_map review in S5 is a source comparison against
+    /data/h3.c, not a numerics check.
+R5  The fixes verified in S6 are uncommitted working-tree edits on top of
+    02ba4b67, and the surface list they leave is byte-identical to the one the
+    first pass read (559, same set), so the gate's coverage requirement is met
+    by the same lines. docs/README.md still carries an unrelated uncommitted
+    index edit by a concurrent writer; I did not touch it.
+R6  ppm_diff's out-of-range band behaviour (O3) was measured on a synthetic
+    9000-wide PPM, not on an h3 frame; no h3 canvas can reach the bound.
+R7  The two live HTTP checks (18, 19) ran against the debug, feature-less
+    h3-server-rs with a stub renderer, so they verify request decoding,
+    validation and error mapping, not a render: nothing was generated.
+
+FINDINGS
+
+D1  CLOSED - VERIFIED FIXED (was: docs/minimax-h3/openai-videos.md contradicted
+    the served surface about input_reference). The status line, the create-body
+    row, the paragraph after the encodings list, the three error-table rows and
+    deviation 7 now describe the served behaviour, and each clause was checked
+    against decode_reference/data_uri/check_anchor and the live matrix
+    (S6.1, checks 18 and 19). The only residue is the wording nit O6.
+D2  CLOSED - VERIFIED FIXED (was: tests/fixtures/h3/README.md repeated the
+    stale refusal). It now states the anchor status, names --first-frame
+    correctly (h3-rs.rs:682, usage :800) and records the P12.9 28.90 dB bound
+    that post-port-phases.md:933-934 holds (S6.2).
+O1  CLOSED - VERIFIED FIXED: post-port-phases.md now records that the port
+    refuses --use-int8-row-fc2 (h3-rs.rs:16-18, :702; port-plan.md:564;
+    unported table :1133) and no longer likens the inert environment variables
+    to it (S6.3).
+O5  CLOSED - VERIFIED FIXED: the two clippy warnings in new h3 code are gone
+    (render.rs:633, vae_video.rs:362), clippy reports 0 warnings from h3 files,
+    fmt is clean and the test totals are unchanged (S6.4, checks 1-4).
+O2  OPEN, observation, not a defect: tools/minimax_h3/README.md indexes four
+    probes plus vq/ while the directory also holds multimodal_probe.c,
+    vision_probe.c, video_encoder_probe.c, p9_copy_bench.cu, ref_gate.sh,
+    ppm_diff.c, letterballoons.sh and install-minimax-h3-spark.sh, all of which
+    the h3 docs reference. Unchanged in this pass.
+O3  OPEN, observation, not a defect: ppm_diff.c's band arrays are MAX_BANDS=64
+    (8192 px) with no bound check - a 9000-wide PPM wrote past columns[63]
+    without crashing - and its usage block documents only the axis=x band lines
+    while the code prints axis=y too. Unreachable for h3 frames
+    (H3_MAX_PIXELS, video_api.rs:70). Unchanged in this pass.
+O4  OPEN, observation, not a defect: row_map has no counterpart to
+    h3_dit_schedule.c:441-443 and would panic on a hand-built malformed
+    Sequence (fields are pub), though sequence::build and Geometry::check make
+    that unreachable. Unchanged in this pass.
+O6  CLOSED - VERIFIED FIXED: docs/minimax-h3/openai-videos.md:88-89 now reads
+    ".png, .jpg/.jpeg or .webp", which matches media_type_for_extension
+    (video_api.rs:327-338: png; jpg|jpeg; webp, matched after
+    to_ascii_lowercase) and the live matrix of check 18 (ref.jpeg 200,
+    ref.tiff 400).
+O7  CLOSED - VERIFIED FIXED: the status paragraph (openai-videos.md:3-8) now
+    names the two exclusive backends and the 503, checked against
+    h3-server-rs.rs:3-8 (the host still starts with neither and every create
+    answers 503), :51-57 (usage: --model-dir renders in process, --renderer
+    delegates, without either 503), :120-121 (--renderer is startup-only),
+    :190-195 (the two are exclusive, exit 2, backend chosen before any request)
+    and :154-157 (EngineRenderer opened once at startup); the 503 carries code
+    renderer_disabled (h3_video.rs:101, :416; ApiError::unavailable is 503
+    service_unavailable_error, video_api.rs:147-149), asserted by the test
+    disabled_renderer_answers_503 (h3_video.rs:1778-1786).
+
+Nothing else failed. 559/559 surfaces are covered, the two first-pass defects
+and the two fixable observations are closed with the evidence in S6, and every
+residual note above is an observation about a non-served tool or a wording
+precision, none of which contradicts the served code.
 
 verdict: overall PASS

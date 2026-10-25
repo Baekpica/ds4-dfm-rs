@@ -1,8 +1,10 @@
 # OpenAI Videos API surface for MiniMax-H3
 
-Status: served by the standalone `h3-server-rs` binary. The port's own renderer
-lands at phase P8; until then generation is delegated to an operator-configured
-external program (the renderer bridge).
+Status: served by the standalone `h3-server-rs` binary. Two generation
+backends: `--model-dir` runs the port's resident engine (P10) in process;
+`--renderer PROGRAM` delegates to an operator-configured external program. They
+are exclusive, and with neither every create answers 503 `renderer_disabled`;
+no request field, header or call sequence selects a backend.
 
 ## Verified wire reference
 
@@ -60,7 +62,7 @@ Exactly the reference's thirteen fields:
 | Field | Type | Notes |
 |---|---|---|
 | `prompt` | string, required | 1 to 32000 characters |
-| `input_reference` | object, string or file part, optional | recognised and refused until P8 |
+| `input_reference` | object, string or file part, optional | the clip's first frame: `image_url` data URI or a multipart file part |
 | `model` | string, optional | must equal the configured model id |
 | `seconds` | string, optional | h3 range below; default `"4"` |
 | `size` | string, optional | h3 canvas rule below; default `512x512` |
@@ -82,9 +84,12 @@ Accepted request encodings:
   `unknown_parameter`. Text values must be UTF-8. The body is bounded by the
   server's 64 MiB request limit and at most 64 parts.
 
-`input_reference` is decoded from all three encodings into the reference's
-object shape and refused with 400 `unsupported_parameter`, whether it arrives
-as a JSON object, a form string or a multipart file part.
+`input_reference` is decoded from all three encodings into the anchor the engine
+takes as the clip's first frame. A JSON or form string must be a base64 data
+URI (`data:image/png;base64,...`, also jpeg and webp); a multipart file part
+carries the bytes and its name must end in `.png`, `.jpg`/`.jpeg` or `.webp`. A
+decoded anchor must be 1 byte to 16 MiB. `file_id` is refused with 400
+`unsupported_parameter` because this host has no uploads store.
 
 All three encodings produce the same internal request and run through one
 validation and submission path.
@@ -172,7 +177,9 @@ Validation mapping:
 | unknown model | 400 | invalid_request_error | `model` | `model_not_found` |
 | size not a legal h3 canvas | 400 | invalid_request_error | `size` | `invalid_value` |
 | seconds outside the h3 frame range | 400 | invalid_request_error | `seconds` | `invalid_value` |
-| `input_reference` supplied | 400 | invalid_request_error | `input_reference` | `unsupported_parameter` |
+| `input_reference.file_id` supplied | 400 | invalid_request_error | `input_reference` | `unsupported_parameter` |
+| `input_reference` not a base64 data URI | 400 | invalid_request_error | `input_reference` | `invalid_value` |
+| anchor larger than 16 MiB or of an unserved type | 400 | invalid_request_error | `input_reference` | `invalid_value` |
 | bad `limit` | 400 | invalid_request_error | `limit` | `invalid_value` |
 | bad `order` | 400 | invalid_request_error | `order` | `invalid_value` |
 | unknown `after` cursor | 400 | invalid_request_error | `after` | `invalid_after` |
@@ -217,9 +224,10 @@ Every deviation is named; none is silent.
    server uses `video_N` with a monotonic counter. Deleted ids are not reused.
 6. **Progress.** The bridge cannot see inside the renderer, so progress is
    coarse: 0 while queued or in progress, 100 on completion, 0 on failure.
-7. **input_reference.** The field exists in the reference. The bridge refuses
-   it with 400 `unsupported_parameter` instead of dropping it; reference
-   images arrive with the port's own renderer at P8.
+7. **input_reference.** Served as the clip's first frame. Pixels arrive
+   base64-only, either as a `data:` URI or as a multipart file part; `file_id`
+   is refused because there is no uploads store. The last frame stays
+   CLI-only, as the wire has one reference.
 8. **Content variants.** Only `variant=video` (the default MP4) exists.
    `thumbnail` and `spritesheet` answer 400.
 9. **List defaults.** The reference states no default for `limit` or `order`.

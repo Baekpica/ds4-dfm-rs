@@ -630,7 +630,7 @@ pub fn mux_mp4(
         channels,
         audio_fd,
     );
-    let (audio_read, mut audio_write) =
+    let (audio_read, audio_write) =
         io::pipe().map_err(|error| format!("cannot create FFmpeg A/V pipes: {error}"))?;
     let (video_read, mut video_write) =
         io::pipe().map_err(|error| format!("cannot create FFmpeg A/V pipes: {error}"))?;

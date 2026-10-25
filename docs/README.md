@@ -67,6 +67,8 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [MiniMax-H3](minimax-h3/README.md) | The family index: layout rule, port plan, cheat sheet and VQ recipe |
 | [MiniMax-H3 (plan)](minimax-h3/port-plan.md) | Proposal: the FL2VA video/audio CLI without the web UI, the Spark budget, the 13-bit DiT rung and its render gate |
 | [MiniMax-H3 (VQ recipe)](minimax-h3/vq-recipe.md) | The 13-bit GVQ1 v1 conversion of the DiT, the MiniMax-M3.1 precedent, the recovery lever and the exact block-streaming fallback |
+| [MiniMax-H3 (post-port phases)](minimax-h3/post-port-phases.md) | After the port: P9 speed, P10 resident engine, P11 presets, P12 conditioning and the recorded renders, P13 close |
+| [MiniMax-H3 (OpenAI Videos)](minimax-h3/openai-videos.md) | The served Videos API: five routes, the resident engine, deviations from the wire |
 
 ## Development
 

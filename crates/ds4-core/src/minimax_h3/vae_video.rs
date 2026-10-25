@@ -359,7 +359,7 @@ fn prepare_input_rows(
     let mut row = 0;
     let frame = LATENT_CHANNELS * latent_h * latent_w;
     assert!(
-        frame > 0 && !tile.is_empty() && tile.len() % frame == 0,
+        frame > 0 && !tile.is_empty() && tile.len().is_multiple_of(frame),
         "video VAE tile is not a whole number of latent frames"
     );
     let latent_time = tile.len() / frame;

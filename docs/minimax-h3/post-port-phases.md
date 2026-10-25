@@ -630,11 +630,13 @@ verdict so nothing stays "missing" without a reason:
    The reference's fused pool/expand-with-AdaLN entries compute pool + adaln
    in one kernel; the port calls the two parts, which is the same arithmetic,
    so `H3_DISABLE_FUSED_TOKEN_POOL_ADALN` and `H3_DISABLE_FUSED_TOKEN_ADALN`
-   are inert here and recorded as such, like `--use-int8-row-fc2`.
+   are inert here and recorded as such; `--use-int8-row-fc2` is refused
+   instead.
 3. **`--use-int8-row-fc2`.** Accepted by the reference and inert on CUDA:
    `dit->int8_mlp` requires `h3_gpu_has_int8_mlp(gpu)` (`h3_dit.c:1633`), and
-   the CUDA backend returns 0 from it (`h3_gpu_cuda.cu:334`). The port parses
-   the flag and records the zero, exactly as the reference does.
+   the CUDA backend returns 0 from it (`h3_gpu_cuda.cu:334`). The port refuses
+   the flag instead of accepting an inert switch (`h3-rs.rs:16-18`, port plan
+   section 6.3); no output differs either way.
 4. **`--show` / `--zoom` and the resident preview.** A terminal preview built
    from the denoise callback (`h3_dit_denoise_euler_preview`, `h3_dit.c:2861`)
    on the continue-event chain (`h3_gpu_continue`). It must never change the
@@ -1044,6 +1046,92 @@ the point of the job is that the branch's host code builds on a model-free
 runner. The h3 device gates stay on-demand make targets (P12.5, rule 2) and
 are not CI's job.
 
+### P13.2 — The close evidence (2026-10-25)
+
+CI at the branch tip `7ed11690`: `Host parity` completed success, the only
+check the repository reports. The P13.1 fix holds on the runner, not only in
+the replay.
+
+Rule 19 QA, run on `deepseek-v4.1-CC-flash` against base `origin/main` (the
+default base is the pushed head and would pass trivially): 559 surfaces (186
+files, 2 Makefile targets, 371 public items), every one present with a
+disposition; 562 checks PASS, gate exit 0, report
+`qa-evidence/qa-report.md` 919 lines ending `verdict: overall PASS`.
+
+The first pass returned FAIL on two shipped documents that contradicted the
+served wire: `docs/minimax-h3/openai-videos.md` and
+`tests/fixtures/h3/README.md` still described `input_reference` as refused,
+although `video_api.rs:526-599` and `h3_video.rs:794-820` accept a base64 data
+URI or a multipart file part as the clip's first frame, with a live matrix
+(`.png` 200, `.tiff` 400, `file_id` 400, `https` URL 400, data URI 200, and
+the 16 MiB bound at both edges). Two more documents carried the same class of
+error: `port-plan.md:1039` listed `--token-reduction`, `--show` and `--zoom`
+as unported while all three are parsed and wired (`h3-rs.rs:686-690`), and
+`post-port-phases.md` said the port parses `--use-int8-row-fc2` while it
+refuses it (`h3-rs.rs:16-18`). All four were corrected against the code, the
+unported-surface table gained the Ref2VA and interactive-session rows, and two
+clippy warnings in new h3 code were removed (`render.rs:633`, a needless
+`mut`; `vae_video.rs:362`, `is_multiple_of`). The re-verified pass is the one
+recorded above.
+
+Docs index: `docs/README.md` now indexes the post-port phase record and the
+served Videos API beside the family index.
+
+Open observations from the report, all judged unreachable or cosmetic and
+recorded rather than fixed: the `tools/minimax_h3/README.md` index covers 5 of
+13 tools; `ppm_diff.c` bounds a band to 8,192 px (no h3 canvas reaches it) and
+prints `axis=y` bands its header does not name; `row_map` omits the
+reference's two malformed-segment refusals, which `sequence::build` and
+`Geometry::check` make unreachable.
+
+## P14 — Ref2VA, and the code the port is missing
+
+Opened 2026-10-25 on the operator's instruction ("lets start with that port we
+were missing"). This is the one substantial surface the close left unported:
+ordered image/video/audio references, plus the AudioVAE encode half it needs.
+
+What the reference does, read from the source:
+
+- A reference is `{kind, path, audio_path, include_embedded_audio}` with kind
+  image, video, audio or video+audio (`h3.h:30-42`); image sizing is a policy,
+  `match` (default) or `max` (`h3.h:44-47`).
+- At most 12 (`h3.c:588`, `main.c:107-110`). Any reference requires the
+  Ref2VA checkpoint component (`h3.c:872-875`), inventoried as
+  `Ref2VA/transformer` (`h3.c:448-452`), and the prompt is encoded by
+  `h3_multimodal_encode_ref2va_bf16` (`h3_multimodal.c:243`).
+- References enter the conditioning key byte for byte, media and soundtrack
+  included (`h3.c:155-161`), and are given their own noise spans per modality
+  (`h3.c:323-360`).
+- CLI: `--ref-image`, `--ref-image-size`, `--ref-video`, `--ref-silent-video`,
+  `--ref-video-audio VIDEO AUDIO`, `--ref-audio` (`main.c:51-56`, `:333-335`).
+
+What the port already has: the FFmpeg readers at the reference's shapes
+(`media.rs`), the VideoVAE encoder (`vae_encoder.rs`, P12.4 gate), the vision
+tower, `SegmentKind::RefImage` (`sequence.rs:32`) and the DiT's
+COND/REF_IMAGE/REF_AUDIO row arms (`dit.rs:610`, `:1376`, `:2112`).
+
+What it lacks, in the order it must be built:
+
+1. **P14.1 — the AudioVAE encode half** (`h3_audio_vae.c:1275`, its stages
+   `:746-1273`, 5 stages with strides `{2,4,4,5,5}` at `:714-720`). The port
+   has the decode half only (`vae_audio.rs:386`). Gate:
+   `tests/test_real_audio_encoder.c`'s assertions against a pinned golden.
+2. **P14.2 — the Ref2VA component** beside the FL2VA transformer
+   (`h3.c:448-452`): loader, tensor table and a gate that hashes it.
+3. **P14.3 — reference media prep**: decode at the reference's sizes, encode
+   tiles with `vae_encoder.rs`, audio with P14.1, honour the image-size
+   policy.
+4. **P14.4 — the Ref2VA presentation** (`h3_multimodal.c:243`): ordered
+   references, their spans and tags.
+5. **P14.5 — plumbing**: sequence rows, conditioning key, CLI flags, the 12
+   cap, the checkpoint requirement.
+6. **P14.6 — parity gate**: 512x512, 22 frames, 2 steps, two image references,
+   hashes equal to the reference's, then one render.
+
+Acceptance: the 2-step hashes equal on both sides for an image-only reference
+set, a reference-free run unchanged (existing goldens), the 12-reference and
+missing-checkpoint refusals, and one rendered clip.
+
 ## P12.5 — Port the reference test suite (runs last, after P13)
 
 Ordering decision (operator, 2026-10-24): this phase is moved to the end of the
@@ -1130,6 +1218,8 @@ command, never an automatic step.
 | `--core-reuse N` | `h3.h:85` | Ported and gated: cached core delta (`h3_dit.c:2161-2165`, `:2306-2312`), hashes equal at 4 and 6 |
 | `--token-reduction` | `h3.h:89`, `h3_dit.c:378-470` | Ported and gated (`h3d_token_pool`/`h3d_token_expand`, `--token-reduction` in `h3-rs`); hashes equal to the reference on and off |
 | `--reuse N` | `h3.h:79` | Ported and gated (reuse 1 and 3) |
+| Ref2VA ordered references | `h3_multimodal.c:243`, `h3_cli.c:173`, `:322`, `:332` (up to 12) | Unported; P14 builds it. Only `SegmentKind::RefImage` (`sequence.rs:32`) and the DiT row-map arms (`dit.rs:610`) exist |
+| Interactive session (`!` commands) | `h3_cli.c:625` and the handlers above it | Unported: the CLI is one shot |
 | `--use-int8-row-fc2` | Metal/M5 only, CUDA no-op (`README.md:119-121`) | Refused |
 | `--show`, `--zoom`, preview frames | `h3_terminal.c`, `h3.h:125-127` | Ported for the CLI (`--preview-dir` PPMs, Kitty/iTerm2 display); the server stays headless |
 | Resident preview decoder | `h3.c` preview path | Ported (`vae_video::PreviewDecoder`, one frame per step from the middle chunk) |
@@ -1139,7 +1229,7 @@ command, never an automatic step.
 | Postprocessing hook | `docs/POSTPROCESSING.md` | Out of scope |
 | Device probe | `h3_device_cuda.cu` | Ported and gated (`h3_device_gate`, `h3-rs --info`); field parity with the reference's `h3_device_test` |
 | Tiled-VAE quality bench | `h3_vae_bench_quality` | P0 remainder; run with P9.5/P11 |
-| Image/video/audio encoders | `h3_vision_encoder.c`, `h3_video_encoder.c`, `h3_audio_vae.c` encode half | P12 |
+| Image/video/audio encoders | `h3_vision_encoder.c`, `h3_video_encoder.c`, `h3_audio_vae.c` encode half | Vision tower and the VideoVAE encoder ported and gated (`h3_vision_gate`, `h3_video_encoder_gate`); the audio VAE's encode half (`h3_audio_vae.c:1275`) is unported |
 
 ## What has been measured so far, and what has not
 
