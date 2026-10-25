@@ -309,13 +309,14 @@ never hands it a delivered-frame size the h3 canvas refuses (api-usage.md:88-95 
 
 4.9 Compatibility decision
 
-Keep /v1 beside /v2 for one release, with /v2 documented as primary, then delete /v1.
+Decided by the operator, 2026-10-25: the official v2 surface replaces /v1. /v1 is retired in the same release, immediately after the
+v2 Spark gate passes, not kept for one release as a deprecated alias. The procedure is P15 in post-port-phases.md.
 
-Tradeoffs: keeping both costs a second store, envelope and route table and doubles the HTTP tests, but preserves openai-python clients and
-the Spark receipt in openai-videos.md. Replacing at once removes a surface whose upstream reference the repo records as shut down on
-2026-09-24 (openai-videos.md:21-24, a repo statement not verified live here), and whose body is not MiniMax's product. Recommendation: add
-/v2, mark /v1 deprecated in its doc and banner, keep it one release, then remove it while keeping the Renderer trait and the engine
-unchanged.
+The recommendation below is kept as the record of what was weighed before the decision: keeping both costs a second store, envelope
+and route table and doubles the HTTP tests, but preserves openai-python clients and the Spark receipt in openai-videos.md. Replacing
+at once removes a surface whose upstream reference the repo records as shut down on 2026-09-24 (openai-videos.md:21-24, a repo
+statement not verified live here), and whose body is not MiniMax's product. The operator chose the replacement; the only added risk
+is that /v1 is the sole serving surface until the v2 gate passes, so P15 orders the deletion after it.
 
 5. Phased units
 
@@ -393,6 +394,5 @@ time-limited content.url on success; and an error envelope with numeric codes. T
 Videos surface (flat prompt/size/seconds, /v1/videos, local byte download, no auth). The port must add the v2 route table, content-array
 validation, the task object and state machine, the error envelope and Bearer auth, reuse the existing engine and renderer flags, and refuse
 by name everything the open checkpoint cannot do: H3-Context-IR, H3-Regenerate-2K and 2K output, the three hosted model variants,
-reference-to-video until P14, public-URL media, callbacks and moderation. The single decision the operator has to make is whether that
-honest subset counts as official support: if yes, the v2 surface ships now and /v1 is kept for one release as a deprecated alias; if no,
-the v2 surface waits for Ref2VA and 2K and the port keeps serving only /v1.
+reference-to-video until P14, public-URL media, callbacks and moderation. Decision taken 2026-10-25: this honest subset counts as
+official support. The v2 surface ships now and /v1 is retired in the same release after the v2 Spark gate (P15).

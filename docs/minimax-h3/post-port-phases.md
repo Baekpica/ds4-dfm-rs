@@ -214,6 +214,9 @@ none is implemented before the attribution above.
 
 ## P10 — The OpenAI Videos API, end to end, with a resident engine
 
+Surface superseded 2026-10-25: the routes are now the official v2 ones (P15).
+The residency, admission and memo work recorded below stands unchanged.
+
 Today `h3-server-rs` spawns the renderer per request (`CommandRenderer`,
 `h3_video.rs:107-241`), so every `POST /v1/videos` pays the full load: at the
 measured rates that is over a minute before the first denoise step. The
@@ -1307,6 +1310,72 @@ frames at 512x192 (45 s). A first attempt at 107 frames and 1344x576 was
 aborted after ten minutes; P14.6 must size its parity clip with this cost in
 mind.
 
+## P15 — The official v2 surface (opened 2026-10-25)
+
+Operator decision, 2026-10-25: the official `/v2` contract is the port's
+MiniMax-H3 serving surface; the `/v1/videos` surface is retired, not kept as a
+deprecated alias. MKV output is a future nice-to-have and is not part of this
+phase.
+
+Why the switch follows from the artifacts, not from preference:
+
+- The official contract is the product's: `POST /v2/video_generation` with
+  Bearer auth and a content array (`/data/MiniMax-H3`, HEAD `d21241f`,
+  `scripts/readme/full-2k-t2va-reference-768p-result-by-directly-calling-open-platform-api.sh:6-23`),
+  the query `:26-31`, the `content.url` download `:34-35`, the base URLs
+  `README.md:303-305`.
+- The current `/v1/videos` is neither the hosted contract nor the reference's
+  local one. Its routes and body are OpenAI's Videos reference
+  (`h3_video.rs:7-12`); the reference's own local SGLang contract uses the same
+  path with a different body — `task`, `prompt`, `conditions`, `target`
+  (`scripts/readme/reproducible-768p-t2va-request.sh:6-35`). A client written
+  for either side cannot use it unchanged.
+- The local contract's upstream is recorded as shut down (`openai-videos.md`
+  notes it); the official v2 is live.
+
+The units, in order, each one commit with its own tests and evidence:
+
+1. **P15.1 — wire types and store, no HTTP**
+   (`crates/ds4-core/src/minimax_h3/task_api.rs`): content-array parsing and
+   validation, the Task object and the
+   `queued/running/succeeded/failed/cancelled` state machine, the
+   `{type, error{type, message, http_code}, request_id}` envelope with numeric
+   codes, the 7-day window, list filters, the delete state machine.
+2. **P15.2 — routes** (`crates/ds4-server/src/h3_official.rs` plus
+   `h3-server-rs` wiring): create, query, list, delete, the content route,
+   Bearer auth and `--public-base-url`. The content route is the one route the
+   official contract does not name — it names an opaque URL — so serving the
+   bytes under the port's base URL is the named deviation.
+3. **P15.3 — create-to-render mapping**: resolution/ratio/duration to
+   `VideoSize` and frames (`presets::tier_canvas`, not the P11 delivery
+   presets), adaptive from the anchor's size, data URI to `AnchorImage`, the
+   additive `last_frame` field on `RenderSpec`, usage and echoed metadata.
+4. **P15.4 — refusals**, each by name in the official envelope: H3-Context-IR
+   and H3-Regenerate-2K (501, hosted-only per `README.md:104` and `:170`), 2K
+   (400/2013), the three other model ids (400/2022), reference roles until
+   P14.5-P14.6, `callback_url`, `extra`, `aigc_watermark=true`, public URLs and
+   `mm_file://` (data URIs only), HEIC, a second text item, no renderer, queue
+   full.
+5. **P15.5 — operator documentation** (`docs/minimax-h3/official-api.md`):
+   routes, fields, state machine, the deviation list; doc-index update.
+6. **P15.6 — Spark gate**: one 768P t2va through `/v2` (text, 16:9), poll to
+   `succeeded`, download `content.url`, `ffprobe` against
+   `assets/h3_direct_768p.mp4`; one i2va with a data-URI first frame.
+7. **P15.7 — retire `/v1`** in the same release, immediately after P15.6
+   passes: delete the `/v1` route table, the OpenAI wire types and their tests;
+   keep the `Renderer` trait, the engine and the worker. The research report
+   recommended keeping `/v1` one release as a deprecated alias; the operator's
+   decision overrides that.
+
+Ordering constraint: `/v1` is the only serving surface until P15.6 passes, so
+it is deleted after the v2 gate, never before it. Until then both route tables
+live in one binary, and no release ships with neither.
+
+What the port knowingly does not provide, stated as deviations in its own
+docs: moderation (the hosted service refuses content the port will generate),
+quota, billing and token usage, CDN URLs with expiry (the local URL never
+rotates), callbacks, H3-Context-IR and H3-Regenerate-2K.
+
 ## P12.5 — Port the reference test suite (runs last, after P13)
 
 Ordering decision (operator, 2026-10-24): this phase is moved to the end of the
@@ -1400,7 +1469,7 @@ command, never an automatic step.
 | Resident preview decoder | `h3.c` preview path | Ported (`vae_video::PreviewDecoder`, one frame per step from the middle chunk) |
 | CPU decode | `h3.c` CPU path | Refused; Linux CUDA is the reference |
 | Metal backend | `h3_metal.m`, `metal/*` | Out of scope; CUDA is the release reference |
-| h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The OpenAI Videos API is the replacement |
+| h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The official v2 surface is the replacement (P15) |
 | Postprocessing hook | `docs/POSTPROCESSING.md` | Out of scope |
 | Device probe | `h3_device_cuda.cu` | Ported and gated (`h3_device_gate`, `h3-rs --info`); field parity with the reference's `h3_device_test` |
 | Tiled-VAE quality bench | `h3_vae_bench_quality` | P0 remainder; run with P9.5/P11 |
