@@ -15,6 +15,29 @@ The [v0.1.2 ledger](docs/releases/v0.1.2.md) records shared Jinja qualification.
 New families use [official input templates](docs/chat-templates.md); keep
 tokenizer/media processing and output protocol work outside input grammar.
 
+## Required reading by task
+
+Read these before starting the task; a brief handed to another agent must
+name them too.
+
+| Task | Read first |
+|---|---|
+| Any change that alters rounding, precision or accumulation order | [Goals](#goals) (mixed-quant acceptance), [Numerical tolerance](#gb10-dgx-spark-bottleneck-know-how), playbook §5 change classes. Bit identity is not a requirement (VQ weights are approximate already): gate on final output against a noise floor measured on this host from an existing configuration change |
+| Performance optimization | [Optimization guidelines](#inference-performance-optimization-guidelines) and phase order, [GB10 know-how](#gb10-dgx-spark-bottleneck-know-how), [playbook](docs/prefill-decode-optimization-playbook.md), [gb10-hardware.md](docs/gb10-hardware.md), [ds4-perf.md](docs/ds4-perf.md), the family doc and its latest `docs/<family>-optimization-*.md` |
+| Builds, probes, profiling, or a brief that names tools | Check the live toolchain first (`nvcc --version`, `readlink -f /usr/local/cuda`, `nvidia-smi`); call tools as `/usr/local/cuda/bin/{nvcc,nsys,ncu}` (the Makefile's `CUDA_HOME`), never a versioned path copied from notes |
+| Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
+| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md) |
+| Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
+
+Parallel analysis agents: one kernel or scope per agent; read-only (no GPU
+runs, builds or repository edits while a model or measurement runs; notes
+under their own scratch directory); the brief carries the documents above,
+the commit and artifact measured, current numbers, profile paths, and what
+was already done or rejected. Each report gives the kernel's floor against
+GB10 peaks, measured fraction, causes ranked by recoverable time with
+evidence, each change's numerical class, and the cheapest measurement that
+confirms it.
+
 ## DeepSeek V4.1 (ds41) — the port's reference is /data/YoungAi
 
 The `ds41` family is a port of the DeepSeek V4.1 Flash engine kept at
@@ -110,6 +133,8 @@ Follow this evidence-driven sequence for every optimization round, regardless of
 
 Do not impose a fixed percentage floor on adoption. A gain below 1% is worth retaining when repeated comparable A/B runs consistently improve performance beyond observed noise, preserve correctness, and show no meaningful regression elsewhere. Prefer such gains when they require no additional VRAM, arithmetic work, or other material resource cost. Check the relevant costs rather than assuming that unchanged tensor shapes imply unchanged work. If costs increase, report the tradeoff and judge it against the measured benefit; neither a small percentage nor one counter alone decides adoption. An automatic tool threshold is a screening heuristic, not the final engineering decision. (Codex learning)
 
+**Adoption rule.** A free-lunch change with a consistent repeated gain is adopted however small; a change with a cost (memory, numerics, a regression elsewhere) is weighed against its gain or left to the user with both numbers; a rejection names the cost that outweighs the gain; when targets conflict, ask the user which to secure first. Cases: [playbook, Adoption](docs/prefill-decode-optimization-playbook.md#adoption).
+
 **Fast-path coverage** is a common opportunity: maximize the fraction of the inference graph executed by the runtime's best hardware-appropriate primitives where measurements support it. The objective is verified end-to-end improvement; no implementation direction is mandatory.
 
 Before optimizing an already-fast kernel, search for:
@@ -140,6 +165,18 @@ For every optimization:
 7. Report both kernel-level improvement and end-to-end prefill/decode impact.
 8. Verify that improving prefill does not regress decode, and vice versa.
 
+### Phase order: optimize what makes the next phase cheaper to measure
+
+Within a family campaign, order the phases so each finished phase speeds up the measurement of the next:
+
+1. **Input paths exist first.** Every input the family accepts (text, and image/video through a vision sidecar) must work end to end before any phase is optimized; the functional implementation is a prerequisite, not a later phase.
+2. **Prefill before decode.** Decode measurements on a realistic workload start with a prefill (long prompts, sweeps, cold frontiers); a faster prefill shortens every later run.
+3. **TTFT next.** Time to first token also depends on functional reuse (disk KV, partial reuse, cache hits); the compute share of it is optimized here, the rest belongs to those features.
+4. **Plain decode before MTP.** The non-speculative decode step is the baseline every MTP comparison divides by, and a verify pass is built from the same kernels; optimize it first, then the drafter, verify widths and acceptance.
+5. **Text before vision performance.** Optimization rounds run on text workloads; once the text path is done, optimize the vision encoder and media prefill. Do not feed media into every text round.
+
+Measure each phase against the theoretical upper bound of its dominant work (tensor-core peak for compute-bound kernels, memory bandwidth for streaming ones), stated per kernel class, and aim near 85-90% of it. The usable floors set the priority: once a context segment's (8K, 64K, 128K, 256K, 1M ...) prefill floor is above ~1,000 tok/s, further prefill work on it drops in priority (1,200-1,300 tok/s is comfortable); decode must reach at least 20 tok/s, with MTP where a segment's plain-decode bandwidth bound is below that.
+
 Use this order as an investigation heuristic, not a fixed optimization sequence; measured contribution and detailed profiling determine priority:
 
 unexpected fallback paths → repeated transformations → redundant memory traffic → routing/indexing overhead → launch fragmentation → fast-path utilization → individual optimized-kernel tuning.
@@ -150,8 +187,14 @@ The guiding principle is:
 
 ## GB10 (DGX Spark) bottleneck know-how
 
-Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
-300–2,200 MHz policy. Background and history: [GLM VQ](docs/glm53-vq.md).
+GB10 is the engine's optimization target. Its limits (SMs, clocks, `mma.sync`
+peaks per type, DRAM/L2/shared-memory/NVMe numbers, missing `wgmma`/`tcgen05`)
+and how they were measured live in [docs/gb10-hardware.md](docs/gb10-hardware.md);
+start every roofline there and add new hardware facts there, not here.
+
+The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
+2,184–2,190 MHz under the 300–2,200 MHz policy. Background and history:
+[GLM VQ](docs/glm53-vq.md).
 
 - **Attribute first.** Export the Nsight trace to SQLite and sum kernels inside
   the `ds4.prefill` / `ds4.decode` NVTX ranges; divide by tokens. For each
@@ -210,8 +253,10 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
   blind at first (GLM one-draft acceptance 0.63 → 0.97 within one run).
   Fill its KV during prefill. Check generated text for loops: a repeating
   bench continuation accepts ~100% and overstates MTP gains.
-- **Peaks.** `mma.sync` FP8/INT8 ~215 T(FL)OPS, F16/BF16 ~108; cuBLAS BF16
-  65–90 TFLOPS. Large sequential reads stream 250–265 GB/s.
+- **Peaks.** Per SM and clock `mma.sync` does 1,024 F16/BF16 FLOP, 2,048
+  FP8/INT8 and 4,096 NVFP4: ~108 / 215 TFLOPS at the 2.19 GHz cap, 128 / 255
+  / 509 at ~2.5 GHz; cuBLAS BF16 65–90 TFLOPS. Streaming reads 231–246 GB/s
+  (spec 273). Details: [docs/gb10-hardware.md](docs/gb10-hardware.md).
 - **Store BF16-rounded rows as BF16.** F32 buffers of values already rounded
   at a BF16 boundary doubled GLM residual and expert-output traffic; BF16
   storage is lossless (prefill 1042 → 1121 tok/s).
@@ -302,6 +347,30 @@ Measured on GB10, sm_121, CUDA 13.4, busy clock 2,184–2,190 MHz under the
   pulled in by `ds4_beam_gpu.cuh` but missing from the `ds4_cuda.o`
   dependency line left the object stale, and an unchanged binary was
   measured as a variant. Check the object's timestamp after each edit.
+- **Verify rows meet in L2 when every row walks the same order.** One
+  launch with a CTA group per verify row (each stages only its row) and
+  one task order across groups streamed each shared expert about once:
+  MiniMax's 4-row expert verify ran 1.3-1.6x faster per layer. An
+  input-union kernel did not fit (three 6,144-wide rows beside a 66 KiB
+  book exceed 99 KiB). One row keeps the expert-major order.
+- **L1 bank conflicts also hit `cp.async.ca`.** Rows 1,152 B (9 x 128 B)
+  apart put all 32 lanes of an 8-byte copy on one bank pair (32
+  wavefronts); rotating each lane's piece order spread them over three
+  and cut MiniMax's R13 expert gate 6%, bit-identical.
+- **Probe an estimate before building on it.** A model of the expert
+  kernel projected 25-35% from a k-outer loop with per-row activation
+  scales; the harness ran it even, and loading the next stage's codewords
+  between a stage's MMA halves ran 11% slower (consumers holding two of
+  three ring slots starve the producers).
+- **Frontier logits are chaotic in a 60-layer MoE.** Two accepted MiniMax
+  attention paths (F32 vs BF16 P) differ by logit rel-RMS 0.15-0.76 and KL
+  up to 14 at single frontiers, greedy tokens within a few tokens. Gate
+  value changes on paired NLL and top-1 over many assistant positions
+  (`tests/minimax_quality`), not on single-position logits.
+- **systemd-oomd acts on pressure, not on available memory.** A +1.6 GiB
+  pinned pool left 3.6 GiB available, yet a 60 s cold prefill drove the
+  user slice's memory pressure to 58% (> 50% for 20 s) and oomd killed
+  the run. Budget pinned and device allocations against reclaim pressure.
 
 # Agent Notes
 

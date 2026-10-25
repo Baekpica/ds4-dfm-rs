@@ -35,6 +35,7 @@ pub enum ModelFamily {
     Glm53Vq = 14,
     Ling31Vq = 15,
     BeamVq = 16,
+    MinimaxVq = 17,
 }
 
 impl ModelFamily {
@@ -50,6 +51,7 @@ impl ModelFamily {
             "glm5-next-vq" => Some(Self::Glm53Vq),
             "ling31_vq" => Some(Self::Ling31Vq),
             "beam_vq" => Some(Self::BeamVq),
+            "minimax_m3_vq" => Some(Self::MinimaxVq),
             "inkling" => Some(Self::Inkling),
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
@@ -73,6 +75,7 @@ impl ModelFamily {
             Self::Glm53Vq => "glm5-next-vq",
             Self::Ling31Vq => "ling31_vq",
             Self::BeamVq => "beam_vq",
+            Self::MinimaxVq => "minimax_m3_vq",
             Self::Inkling => "inkling",
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
@@ -107,6 +110,7 @@ pub enum Variant {
     Glm53FlashVq = 17,
     Ling31FlashVq = 18,
     BeamVq = 19,
+    MinimaxVq = 20,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -365,6 +369,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"iquest_q1") => ArchRoute::Fixed(Variant::IQuestQ1),
         Some(b"ling31_vq") => ArchRoute::Fixed(Variant::Ling31FlashVq),
         Some(b"beam_vq") => ArchRoute::Fixed(Variant::BeamVq),
+        Some(b"minimax_m3_vq") => ArchRoute::Fixed(Variant::MinimaxVq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -391,6 +396,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::DeepSeek41Flash => SHAPE_V41_FLASH,
         Variant::Ling31FlashVq => SHAPE_LING31_VQ,
         Variant::BeamVq => SHAPE_BEAM_VQ,
+        Variant::MinimaxVq => SHAPE_MINIMAX_VQ,
     }
 }
 
@@ -1364,6 +1370,37 @@ pub(crate) const SHAPE_BEAM_VQ: Shape = Shape {
     n_full_attn_count: 9,
     use_qk_norm: true,
     rope_freq_base: 10_000.0,
+    rope_orig_ctx: 1_048_576,
+    ..SHAPE_K2_HORIZON_375B
+};
+
+// MiniMax-M3.1-Flash: 64 q / 4 KV heads of 128 over hidden 6144, MSA on all
+// 60 layers (one 128-wide index key, four index query heads, top-16 blocks
+// of 128), partial RoPE on 64 of 128 dims, 128 sigmoid-routed experts top-4
+// plus one shared expert, native 1M context (minimax_vq/layout.rs).
+pub(crate) const SHAPE_MINIMAX_VQ: Shape = Shape {
+    name: "MiniMax-M3.1-Flash-VQ",
+    family: ModelFamily::MinimaxVq,
+    variant: Variant::MinimaxVq,
+    n_layer: 60,
+    n_embd: 6144,
+    n_vocab: 200_064,
+    n_head: 64,
+    n_head_kv: 4,
+    n_rot: 64,
+    n_expert: 128,
+    n_expert_used: 4,
+    n_expert_shared: 1,
+    n_ff_exp: 3072,
+    n_ff_dense: 12288,
+    n_ff_shexp: 3072,
+    n_indexer_head: 4,
+    n_indexer_head_dim: 128,
+    n_indexer_top_k: 2048,
+    n_full_attn_count: 60,
+    use_qk_norm: true,
+    expert_weight_scale: 2.0,
+    rope_freq_base: 10_000_000.0,
     rope_orig_ctx: 1_048_576,
     ..SHAPE_K2_HORIZON_375B
 };

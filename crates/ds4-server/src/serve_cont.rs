@@ -1143,13 +1143,16 @@ fn thinking_bank_retire_key(
         .windows(close.len())
         .position(|window| window == close);
 
-    // Official IQuest, Bailing V3 (Ling) and Beam history retains supplied
-    // reasoning even without tools. Keep that exact prefix; a visible-only
+    // Official IQuest, Bailing V3 (Ling), Beam and MiniMax history retains
+    // supplied reasoning even without tools. Keep that exact prefix; a visible-only
     // rewrite cannot describe its KV.
     if prompt_preserves_reasoning
         || matches!(
             syntax,
-            ModelSyntax::IQuestQ1 | ModelSyntax::Ling3Vl | ModelSyntax::BeamVq
+            ModelSyntax::IQuestQ1
+                | ModelSyntax::Ling3Vl
+                | ModelSyntax::BeamVq
+                | ModelSyntax::MinimaxVq
         )
     {
         if engine_finished && has_tools && !saw_tool_start {

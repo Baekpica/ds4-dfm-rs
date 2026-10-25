@@ -111,6 +111,8 @@ pub struct VisionPromptInput {
     /// Packed MiMo frames from the prepare pass. Empty for still images
     /// and for a video the sync path still has to decode itself.
     pub frames: Vec<ds4_core::PackedVisual>,
+    /// A MiniMax image or video, preprocessed by the prepare pass.
+    pub minimax: Option<Arc<ds4_core::minimax_media::Visual>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1221,8 +1223,8 @@ pub struct GenerateOutcome {
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
     let syntax = syntax_for_model_id(model_id);
-    if !parsed.videos.is_empty() && syntax != ModelSyntax::Mimo2 {
-        return Some("video input requires MiMo");
+    if !parsed.videos.is_empty() && !matches!(syntax, ModelSyntax::Mimo2 | ModelSyntax::MinimaxVq) {
+        return Some("video input requires MiMo or MiniMax");
     }
     if !parsed.audios.is_empty() && !matches!(syntax, ModelSyntax::Inkling | ModelSyntax::Mimo2) {
         return Some("audio input requires Inkling or MiMo");
@@ -1237,14 +1239,15 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         | ModelSyntax::Inkling
         | ModelSyntax::Step37
         | ModelSyntax::Ling3Vl
-        | ModelSyntax::Mimo2 => None,
+        | ModelSyntax::Mimo2
+        | ModelSyntax::MinimaxVq => None,
         ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
         // V4.1 carries its own vision tower as a sidecar; whether that
         // sidecar is open is checked in prepare_serial_prompt, which knows
         // the engine (the 400 lives there, 80296d3).
         ModelSyntax::DeepSeek if v41 => None,
         _ => {
-            Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo")
+            Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling, MiMo or MiniMax")
         }
     };
     if image_gate.is_some() {
@@ -1289,6 +1292,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::IQuestQ1 => ChatFormat::IQuestQ1,
         ModelSyntax::BeamVq => ChatFormat::Beam,
+        ModelSyntax::MinimaxVq => ChatFormat::Minimax,
         // Ling shares GLM's thinking and tool-call XML.
         ModelSyntax::DeepSeek
         | ModelSyntax::Motif3
@@ -1708,6 +1712,7 @@ fn retry_chat(
     engine: &mut dyn DecodeIo,
     parsed: &mut ParsedRequest,
     prompt: &mut Vec<u8>,
+    vision: &[VisionPromptInput],
     acc: &SemAccum,
     detail: &str,
 ) -> Result<(), GenerateError> {
@@ -1739,7 +1744,12 @@ fn retry_chat(
     }
     let rendered = engine.render_request(&retry)?;
     let tokens = engine.tokenize_rendered_chat(&rendered)?;
-    let media = prepare_media(engine, &retry, tokens)?;
+    let media =
+        if syntax_for_model_id(engine.model_id()) == ModelSyntax::MinimaxVq && !vision.is_empty() {
+            expand_minimax(engine, &retry, tokens, vision.to_vec())?
+        } else {
+            prepare_media(engine, &retry, tokens)?
+        };
     engine.invalidate();
     if media.vision.is_empty() && media.audios.is_empty() && media.videos.is_empty() {
         engine.sync(&media.tokens)?;
@@ -2025,6 +2035,47 @@ pub(crate) struct PreparedSerialPrompt {
     pub(crate) vision: Vec<VisionPromptInput>,
     audios: Vec<AudioPromptInput>,
     videos: Vec<VisionPromptInput>,
+    media_reserve: u64,
+}
+
+impl PreparedSerialPrompt {
+    pub(crate) fn media_reserve(&self) -> u64 {
+        self.media_reserve
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum PrepareError {
+    Capacity,
+    Generate(GenerateError),
+}
+
+impl From<GenerateError> for PrepareError {
+    fn from(error: GenerateError) -> Self {
+        Self::Generate(error)
+    }
+}
+
+impl From<ds4_core::minimax_media::Error> for PrepareError {
+    fn from(error: ds4_core::minimax_media::Error) -> Self {
+        match error {
+            ds4_core::minimax_media::Error::Capacity => Self::Capacity,
+            ds4_core::minimax_media::Error::Invalid(message) => {
+                Self::Generate(GenerateError::Engine(message))
+            }
+        }
+    }
+}
+
+impl PrepareError {
+    fn generation(self) -> GenerateError {
+        match self {
+            Self::Capacity => GenerateError::Unsupported(
+                "MiniMax media exceeds live memory capacity; retry later",
+            ),
+            Self::Generate(error) => error,
+        }
+    }
 }
 
 struct MediaPrompt {
@@ -2049,6 +2100,9 @@ fn prepare_media(
     }
     if syntax_for_model_id(engine.model_id()) == ModelSyntax::Mimo2 {
         return prepare_mimo(engine, parsed, tokens);
+    }
+    if syntax_for_model_id(engine.model_id()) == ModelSyntax::MinimaxVq {
+        return prepare_minimax(engine, parsed, tokens, None).map_err(PrepareError::generation);
     }
     if !parsed.videos.is_empty() {
         return Err(GenerateError::Unsupported("video input requires MiMo"));
@@ -2168,6 +2222,7 @@ fn prepare_media(
             data: image.data.clone(),
             token_offset,
             frames: Vec::new(),
+            minimax: None,
         });
         image_index += 1;
     }
@@ -2189,6 +2244,113 @@ fn prepare_media(
 
 /// 2 fps frames and a temporal patch of 2, so each pair is one second.
 const MIMO_SECONDS_PER_PAIR: f32 = 1.0;
+
+/// MiniMax images and videos, in message order: preprocessed here, their
+/// template placeholders expanded to the processor's spans (a video's frame
+/// pairs each behind its timestamp). Both kinds sync through `vision`.
+fn prepare_minimax(
+    engine: &dyn DecodeIo,
+    parsed: &ParsedRequest,
+    tokens: Vec<i32>,
+    budget: Option<&mut ds4_core::minimax_media::MediaBudget>,
+) -> Result<MediaPrompt, PrepareError> {
+    use ds4_core::minimax_media;
+    if !parsed.audios.is_empty() {
+        return Err(GenerateError::Unsupported("audio input is not supported by MiniMax").into());
+    }
+    if parsed.images.len() + parsed.videos.len() > 4 {
+        return Err(GenerateError::Unsupported("serial media supports 1 to 4 inputs").into());
+    }
+    let mut unbounded = minimax_media::MediaBudget::new(u64::MAX);
+    let budget = budget.unwrap_or(&mut unbounded);
+    let mut vision = Vec::new();
+    for message in &parsed.messages {
+        for part in &message.parts {
+            let Some((is_video, data)) = minimax_input(parsed, part)? else {
+                continue;
+            };
+            let visual = if is_video {
+                minimax_media::video_budget(data, budget)
+            } else {
+                minimax_media::image_budget(data, budget)
+            }?;
+            vision.push(VisionPromptInput {
+                data: data.clone(),
+                token_offset: 0,
+                frames: Vec::new(),
+                minimax: Some(Arc::new(visual)),
+            });
+        }
+    }
+    expand_minimax(engine, parsed, tokens, vision).map_err(PrepareError::Generate)
+}
+
+fn minimax_input<'a>(
+    parsed: &'a ParsedRequest,
+    part: &ChatPart,
+) -> Result<Option<(bool, &'a Arc<[u8]>)>, GenerateError> {
+    match part {
+        ChatPart::Image(slot) => parsed
+            .images
+            .get(*slot)
+            .map(|input| Some((false, &input.data)))
+            .ok_or_else(|| GenerateError::Engine("image reference is missing".into())),
+        ChatPart::Video(slot) => parsed
+            .videos
+            .get(*slot)
+            .map(|input| Some((true, &input.data)))
+            .ok_or_else(|| GenerateError::Engine("video reference is missing".into())),
+        _ => Ok(None),
+    }
+}
+
+fn expand_minimax(
+    engine: &dyn DecodeIo,
+    parsed: &ParsedRequest,
+    tokens: Vec<i32>,
+    vision: Vec<VisionPromptInput>,
+) -> Result<MediaPrompt, GenerateError> {
+    use ds4_core::minimax_media;
+    let mut visuals = Vec::new();
+    for message in &parsed.messages {
+        for part in &message.parts {
+            let Some((is_video, data)) = minimax_input(parsed, part)? else {
+                continue;
+            };
+            let input = vision
+                .get(visuals.len())
+                .ok_or_else(|| GenerateError::Engine("media input is missing".into()))?;
+            // Retries share the original patches only for the same source Arc.
+            if !Arc::ptr_eq(data, &input.data) {
+                return Err(GenerateError::Engine(
+                    "MiniMax media identity changed".into(),
+                ));
+            }
+            let visual = input
+                .minimax
+                .as_deref()
+                .ok_or_else(|| GenerateError::Engine("MiniMax patches are missing".into()))?;
+            visuals.push((is_video, visual));
+        }
+    }
+    if visuals.len() != vision.len() {
+        return Err(GenerateError::Engine(
+            "media inputs without a placeholder".into(),
+        ));
+    }
+    let (tokens, _spans) = minimax_media::expand(&tokens, &visuals, |pair| {
+        engine
+            .tokenize_text(&minimax_media::timestamp(pair))
+            .map_err(|e| e.to_string())
+    })
+    .map_err(GenerateError::Engine)?;
+    Ok(MediaPrompt {
+        tokens,
+        vision,
+        audios: Vec::new(),
+        videos: Vec::new(),
+    })
+}
 
 fn prepare_mimo(
     engine: &dyn DecodeIo,
@@ -2231,6 +2393,7 @@ fn prepare_mimo(
                         data: image.data.clone(),
                         token_offset: 0,
                         frames: Vec::new(),
+                        minimax: None,
                     });
                     index += 1;
                 }
@@ -2322,6 +2485,7 @@ fn prepare_mimo(
                         data: video.data.clone(),
                         token_offset: 0,
                         frames: packed,
+                        minimax: None,
                     });
                 }
             }
@@ -2343,9 +2507,10 @@ fn prepare_mimo(
 pub(crate) fn prepare_serial_prompt(
     engine: &mut dyn DecodeIo,
     parsed: &ParsedRequest,
-) -> Result<PreparedSerialPrompt, GenerateError> {
+    mut media_budget: Option<ds4_core::minimax_media::MediaBudget>,
+) -> Result<PreparedSerialPrompt, PrepareError> {
     if let Some(msg) = generation_blocked(parsed, engine.model_id()) {
-        return Err(GenerateError::Unsupported(msg));
+        return Err(GenerateError::Unsupported(msg).into());
     }
     // V4.1 images are served by the model's own tower, which is a sidecar
     // (--vision-gguf).  A request that carries an image while no tower is open
@@ -2356,7 +2521,8 @@ pub(crate) fn prepare_serial_prompt(
     {
         return Err(GenerateError::BadRequest(
             "image input requires the DeepSeek V4.1 vision sidecar (--vision-gguf)",
-        ));
+        )
+        .into());
     }
 
     let mut parsed = parsed.clone();
@@ -2388,7 +2554,16 @@ pub(crate) fn prepare_serial_prompt(
         vision,
         audios,
         videos,
-    } = prepare_media(engine, &parsed, tokens)?;
+    } = if syntax == ModelSyntax::MinimaxVq
+        && (!parsed.images.is_empty() || !parsed.videos.is_empty())
+    {
+        prepare_minimax(engine, &parsed, tokens, media_budget.as_mut())?
+    } else {
+        prepare_media(engine, &parsed, tokens)?
+    };
+    let media_reserve = media_budget
+        .as_ref()
+        .map_or(0, |budget| budget.reserve_bytes());
     Ok(PreparedSerialPrompt {
         parsed,
         tool_replay,
@@ -2397,6 +2572,7 @@ pub(crate) fn prepare_serial_prompt(
         vision,
         audios,
         videos,
+        media_reserve,
     })
 }
 
@@ -2412,7 +2588,7 @@ pub(crate) fn generate_terminal_at(
     t_arrive: Instant,
     out: &mut impl Write,
 ) -> Result<(GenerateOutcome, Vec<u8>), GenerateError> {
-    let prep = prepare_serial_prompt(engine, parsed)?;
+    let prep = prepare_serial_prompt(engine, parsed, None).map_err(PrepareError::generation)?;
     generate_terminal_prepared(
         engine,
         prep,
@@ -2446,6 +2622,7 @@ pub(crate) fn generate_terminal_prepared(
         vision,
         audios,
         videos,
+        media_reserve: _,
     } = prep;
     // The engine's one-line dispatch (server_generate.c:19): a V4.1 engine
     // has no ds4_session, so the pull loop below cannot run for it — the
@@ -2623,6 +2800,7 @@ pub(crate) fn generate_terminal_prepared(
                     engine,
                     &mut parsed,
                     &mut prompt,
+                    &vision,
                     &acc,
                     "unterminated tool call",
                 )
@@ -2670,7 +2848,16 @@ pub(crate) fn generate_terminal_prepared(
                 acc.saw_tool_start,
             )
         {
-            if retry_chat(engine, &mut parsed, &mut prompt, &acc, "invalid tool call").is_ok() {
+            if retry_chat(
+                engine,
+                &mut parsed,
+                &mut prompt,
+                &vision,
+                &acc,
+                "invalid tool call",
+            )
+            .is_ok()
+            {
                 recovery_attempted = true;
                 continue;
             }
@@ -4021,7 +4208,9 @@ fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, d
         | ds4_core::ModelFamily::NaiveN05 => sidecar,
         // Beam's DFlash2 file binds natively (no sibling attach): an MTP-off
         // open leaves the default one-token draft.
-        ds4_core::ModelFamily::Mimo2 | ds4_core::ModelFamily::BeamVq => draft > 1,
+        ds4_core::ModelFamily::Mimo2
+        | ds4_core::ModelFamily::BeamVq
+        | ds4_core::ModelFamily::MinimaxVq => draft > 1,
         _ => false,
     }
 }
@@ -4515,6 +4704,11 @@ impl DecodeIo for NativeDecode<'_> {
         self.thinking_visible = None;
         self.reuse = ReuseTaken::Cold;
         let tokens = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
+        // MiniMax images and videos arrive preprocessed, in prompt order.
+        let minimax = images
+            .iter()
+            .filter_map(|image| image.minimax.as_deref())
+            .collect::<Vec<_>>();
         let images = images
             .iter()
             .map(|image| ds4_core::VisionInput {
@@ -4542,7 +4736,9 @@ impl DecodeIo for NativeDecode<'_> {
             .collect::<Vec<_>>();
         let started = Instant::now();
         let session = self.session()?;
-        let result = if videos_in.is_empty() {
+        let result = if !minimax.is_empty() {
+            session.sync_minimax_media(&tokens, &minimax)
+        } else if videos_in.is_empty() {
             session.sync_media(&tokens, &images, &audios)
         } else {
             session.sync_mimo(&tokens, &images, &audios, &videos_in, &packed)
@@ -6992,8 +7188,12 @@ mod disk_sync_tests {
 
 #[cfg(test)]
 mod mimo_prepare {
-    use super::{prepare_media, ScriptedDecode};
+    use super::{
+        expand_minimax, prepare_media, prepare_minimax, PrepareError, ScriptedDecode,
+        VisionPromptInput,
+    };
     use crate::parse::{parse_chat_request, ParseEnv};
+    use std::sync::Arc;
 
     fn engine() -> ScriptedDecode {
         ScriptedDecode {
@@ -7007,6 +7207,54 @@ mod mimo_prepare {
             live: Vec::new(),
             suffix_tokens: Vec::new(),
         }
+    }
+
+    #[test]
+    fn minimax_capacity_preserves() {
+        let parsed = parse_chat_request(&ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}"#).unwrap();
+        let mut engine = engine();
+        engine.model_id = ds4_core::Variant::MinimaxVq as i32;
+        engine.pos = 37;
+        let source = parsed.images[0].data.clone();
+        let mut budget = ds4_core::minimax_media::MediaBudget::new(0);
+        let result = prepare_minimax(
+            &engine,
+            &parsed,
+            vec![ds4_core::minimax_media::IMAGE_PAD],
+            Some(&mut budget),
+        );
+        assert!(matches!(result, Err(PrepareError::Capacity)));
+        assert_eq!(engine.pos, 37);
+        assert!(Arc::ptr_eq(&source, &parsed.images[0].data));
+        assert_eq!(budget.reserve_bytes(), 0);
+    }
+
+    #[test]
+    fn minimax_retry_checks_source() {
+        let mut parsed = parse_chat_request(&ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}"#).unwrap();
+        let visual = Arc::new(ds4_core::minimax_media::Visual {
+            patches: Vec::new(),
+            grid_t: 1,
+            grid_h: 2,
+            grid_w: 2,
+        });
+        let input = VisionPromptInput {
+            data: parsed.images[0].data.clone(),
+            token_offset: 0,
+            frames: Vec::new(),
+            minimax: Some(visual.clone()),
+        };
+        let tokens = vec![ds4_core::minimax_media::IMAGE_PAD];
+        let prepared =
+            expand_minimax(&engine(), &parsed, tokens.clone(), vec![input.clone()]).unwrap();
+        assert!(Arc::ptr_eq(
+            prepared.vision[0].minimax.as_ref().unwrap(),
+            &visual
+        ));
+        parsed.images[0].data = Arc::from([1u8]);
+        assert!(expand_minimax(&engine(), &parsed, tokens, vec![input]).is_err());
     }
 
     fn pads(tokens: &[i32], pad: i32) -> usize {

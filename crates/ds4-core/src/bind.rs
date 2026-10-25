@@ -993,6 +993,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::Glm53Vq => return layout_names(crate::glm_vq::layouts()),
         ModelFamily::Ling31Vq => return layout_names(crate::ling31_vq::layouts()),
         ModelFamily::BeamVq => return layout_names(crate::beam_vq::layouts()),
+        ModelFamily::MinimaxVq => return layout_names(crate::minimax_vq::layouts()),
         ModelFamily::Glm53 => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output_norm.weight");
@@ -1210,7 +1211,7 @@ impl BindPlan {
             if slot.name.starts_with("mtp.") || slot.name.starts_with("dspark.") {
                 continue;
             }
-            // Ling-3.1, GLM and Beam VQ keep HF expert names; their GVQ1
+            // Ling-3.1, GLM, Beam and MiniMax VQ keep HF expert names; their GVQ1
             // codes count as 2-bit (disk KV records accept only 2 or 4).
             let routed = match self.shape.family {
                 ModelFamily::Inkling => {
@@ -1219,6 +1220,11 @@ impl BindPlan {
                 }
                 ModelFamily::Ling31Vq | ModelFamily::Glm53Vq | ModelFamily::BeamVq => {
                     slot.name.contains(".mlp.experts.") && slot.name.ends_with(".gate_proj.weight")
+                }
+                // MiniMax names its routed gate w1.
+                ModelFamily::MinimaxVq => {
+                    slot.name.contains(".block_sparse_moe.experts.")
+                        && slot.name.ends_with(".w1.weight")
                 }
                 _ => slot.name.contains("ffn_gate_exps"),
             };

@@ -26,6 +26,8 @@ const GLM_CTX_MAX: u32 = 1_048_576;
 const LING31_CTX_MAX: u32 = 262_144;
 /// Beam's max_position_embeddings: NoPE full layers, no RoPE scaling.
 const BEAM_CTX_MAX: u32 = 1_048_576;
+/// MiniMax-M3.1's max_position_embeddings (rope_scaling null).
+const MINIMAX_CTX_MAX: u32 = 1_048_576;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -655,7 +657,7 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
     if matches!(
         caps.family,
-        ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::BeamVq
+        ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::BeamVq | ModelFamily::MinimaxVq
     ) {
         caps.ctx_max
     } else {
@@ -914,6 +916,32 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_banks: None,
             qualified_prompt: None,
             media_serial: false,
+        },
+        // Banks own their MSA index keys and NVFP4 K/V over graph 0's
+        // scratch; the native 1M context leaves room for one. The release's
+        // DSpark part (mapped only when drafting, as Ling-3.1's MTP part)
+        // drafts in the serial session (Beam's rule).
+        ModelFamily::MinimaxVq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            // A one-token draft is the open's default with MTP off.
+            spec_draft_min: 2,
+            host: HostNeed::Cuda,
+            ctx_max: Some(MINIMAX_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            // Images and videos sync on the serial lane (the release's vision part).
+            media_serial: true,
         },
         // Ling matches the Qwen text-bank surface: two persistent banks,
         // partial reuse and disk KV. Images stay serial beside those banks
@@ -1554,6 +1582,7 @@ impl ServingCaps {
             Variant::Glm53FlashVq => "GLM-5.3-Flash-VQ",
             Variant::Ling31FlashVq => "ling31_vq",
             Variant::BeamVq => "beam_vq",
+            Variant::MinimaxVq => "minimax_m3_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1755,6 +1784,7 @@ impl ResolvedPlan {
             Some(ModelFamily::Glm53Vq) => Some("DS4_GLMVQ_PREFILL_ROWS"),
             Some(ModelFamily::Ling31Vq) => Some("DS4_LING31_PREFILL_CHUNK"),
             Some(ModelFamily::BeamVq) => Some("DS4_BEAM_PREFILL_CHUNK"),
+            Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
             _ => None,
         }
     }
