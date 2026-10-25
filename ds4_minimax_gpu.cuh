@@ -10,7 +10,8 @@
  * expert's row before one rounding (the reference's F32 index_add):
  *
  *   rows <= 8    decode and DSpark verify: device routing, persistent CTAs
- *                keep the book; one row at a time, so every width runs the
+ *                keep the book, one CTA group per row in one launch (an
+ *                expert two rows share meets in L2); every width runs the
  *                one-row arithmetic
  *   rows >= 9    prefill: host grouping, FP8 MMA on the E4M3 codewords
  *
@@ -38,32 +39,37 @@ static uint64_t mm_align(uint64_t bytes) { return (bytes + MM_ALIGN - 1) / MM_AL
 
 /* ------------------------------------------------------------------ experts */
 
-// N=1 routing on the GPU: thread t places expert selected[t] at its rank, so
-// items run in ascending expert order with no host sync.
+// Routing of up to MM_DECODE_ROWS rows on the GPU: thread t (row t / 4)
+// places expert selected[t] at its rank in the row, so each row's items run
+// in ascending expert order with no host sync.
 __global__ void mm_decode_route(glmvq_decode_item *items, const int32_t *selected, const uint32_t *table,
         const glmvq_source *sources) {
     glmvq_pdl_open();
     glmvq_pdl_wait();
-    const uint32_t t = threadIdx.x;
+    const uint32_t t = threadIdx.x, base = t - t % MM_USED;
     const uint32_t e = min((uint32_t)selected[t], (uint32_t)MM_EXPERTS - 1u);
     uint32_t rank = 0;
-    for (uint32_t j = 0; j < MM_USED; j++) { rank += (uint32_t)selected[j] < (uint32_t)selected[t]; }
-    items[rank] = {sources[table[e]].vq, sources[table[MM_EXPERTS + e]].vq, sources[table[2 * MM_EXPERTS + e]].vq, t};
+    for (uint32_t j = 0; j < MM_USED; j++) { rank += (uint32_t)selected[base + j] < (uint32_t)selected[t]; }
+    items[base + rank] = {sources[table[e]].vq, sources[table[MM_EXPERTS + e]].vq,
+        sources[table[2 * MM_EXPERTS + e]].vq, t};
 }
 
-// The F32 sum of weight * BF16 expert row in ascending expert order, plus
-// the shared expert's row, rounded once.
+// Per row (blockIdx.y): the F32 sum of weight * BF16 expert row in ascending
+// expert order, plus the shared expert's row, rounded once.
 __global__ void mm_decode_reduce(float *out, const float *partial, const float *weights,
         const glmvq_decode_item *items, const float *shared) {
     glmvq_pdl_open();
     glmvq_pdl_wait();
-    const uint32_t col = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t col = blockIdx.x * blockDim.x + threadIdx.x, r = blockIdx.y;
     if (col >= MM_HIDDEN) { return; }
+    partial += (uint64_t)r * MM_USED * MM_HIDDEN;
+    items += r * MM_USED;
     float sum = 0.0f;
     for (uint32_t e = 0; e < MM_USED; e++) {
         sum = glmvq_add(sum, glmvq_mul(partial[e * MM_HIDDEN + col], weights[items[e].pair]));
     }
-    out[col] = glmvq_round(glmvq_add(sum, glmvq_round(shared[col])));
+    const uint64_t at = (uint64_t)r * MM_HIDDEN + col;
+    out[at] = glmvq_round(glmvq_add(sum, glmvq_round(shared[at])));
 }
 
 // Prefill: pair rows of `down` (grouped order) per token in ascending expert
@@ -110,9 +116,9 @@ static mm_decode_layout mm_decode_plan() {
     mm_decode_layout l = {};
     uint64_t at = 0;
     auto take = [&](uint64_t bytes) { const uint64_t here = at; at += mm_align(bytes); return here; };
-    l.items = take(sizeof(glmvq_decode_item) * MM_USED);
-    l.mid = take((uint64_t)MM_USED * MM_FFN * sizeof(__nv_bfloat16));
-    l.partial = take((uint64_t)MM_USED * MM_HIDDEN * sizeof(float));
+    l.items = take(sizeof(glmvq_decode_item) * MM_DECODE_ROWS * MM_USED);
+    l.mid = take((uint64_t)MM_DECODE_ROWS * MM_USED * MM_FFN * sizeof(__nv_bfloat16));
+    l.partial = take((uint64_t)MM_DECODE_ROWS * MM_USED * MM_HIDDEN * sizeof(float));
     l.tables = take((uint64_t)MM_LAYERS * MM_TABLE * sizeof(uint32_t));
     l.bytes = at;
     return l;
@@ -268,7 +274,8 @@ static const uint32_t *mm_table(ds4_minimax_moe *moe, const uint32_t *matrices) 
 
 template <bool RES>
 static cudaError_t mm_decode_run(ds4_minimax_moe *moe, float *out, const float *input, const int32_t *selected,
-        const float *weights, const float *shared, const uint32_t *table, const void *book, const void *res_book) {
+        const float *weights, const float *shared, const uint32_t *table, const void *book, const void *res_book,
+        uint32_t rows) {
     const mm_decode_layout l = mm_decode_plan();
     uint8_t *base = (uint8_t *)moe->decode->ptr;
     auto *items = (glmvq_decode_item *)(base + l.items);
@@ -277,16 +284,18 @@ static cudaError_t mm_decode_run(ds4_minimax_moe *moe, float *out, const float *
     const cudaStream_t stream = ds4_current_stream();
     const glmvq_launch launch = moe->gvq->launch;
     constexpr uint32_t books = glmvq_decode_books<13, RES>();
-    glmvq_launch_kernel(launch, mm_decode_route, 1, MM_USED, 0, stream, items, selected, table,
+    // One CTA group per row (mm_decode_gu).
+    const uint32_t grid = rows * (moe->decode_blocks / rows);
+    glmvq_launch_kernel(launch, mm_decode_route, 1, rows * MM_USED, 0, stream, items, selected, table,
         (const glmvq_source *)moe->gvq->model->device->ptr);
-    glmvq_launch_kernel(launch, mm_decode_gu<RES>, moe->decode_blocks, MM_WARPS * 32,
+    glmvq_launch_kernel(launch, mm_decode_gu<RES>, grid, MM_WARPS * 32,
         books + MM_HIDDEN * sizeof(__nv_bfloat16), stream, (const glmvq_decode_item *)items, (const uint4 *)book,
-        (const uint4 *)res_book, input, mid);
-    glmvq_launch_kernel(launch, mm_decode_down<RES>, moe->decode_blocks, MM_WARPS * 32,
+        (const uint4 *)res_book, input, mid, rows);
+    glmvq_launch_kernel(launch, mm_decode_down<RES>, grid, MM_WARPS * 32,
         books + MM_USED * MM_FFN * sizeof(__nv_bfloat16), stream, (const glmvq_decode_item *)items,
-        (const uint4 *)book, (const uint4 *)res_book, (const __nv_bfloat16 *)mid, partial);
-    glmvq_launch_kernel(launch, mm_decode_reduce, MM_HIDDEN / GLMVQ_THREADS, GLMVQ_THREADS, 0, stream, out,
-        (const float *)partial, weights, (const glmvq_decode_item *)items, shared);
+        (const uint4 *)book, (const uint4 *)res_book, (const __nv_bfloat16 *)mid, partial, rows);
+    glmvq_launch_kernel(launch, mm_decode_reduce, dim3(MM_HIDDEN / GLMVQ_THREADS, rows), GLMVQ_THREADS, 0, stream,
+        out, (const float *)partial, weights, (const glmvq_decode_item *)items, shared);
     return cudaGetLastError();
 }
 
@@ -447,19 +456,15 @@ extern "C" int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, co
     const glmvq_matrix &first = moe->gvq->model->source[matrices[0]].vq;
     const bool res = first.res_book != nullptr;
     if (rows <= MM_DECODE_ROWS) {
-        // Every row takes the one-row kernels: verify rows equal decode rows.
+        // Every row runs the one-row arithmetic in one launch per stage:
+        // verify rows equal decode rows.
         const auto *sel = (const int32_t *)selected->ptr;
         const auto *w = (const float *)weights->ptr, *sh = (const float *)shared->ptr;
         const auto *x = (const float *)input->ptr;
         auto *y = (float *)out->ptr;
-        cudaError_t err = cudaSuccess;
-        for (uint32_t r = 0; err == cudaSuccess && r < rows; r++) {
-            const uint64_t at = (uint64_t)r * MM_USED, row = (uint64_t)r * MM_HIDDEN;
-            err = res ? mm_decode_run<true>(moe, y + row, x + row, sel + at, w + at, sh + row, table, first.book,
-                            first.res_book)
-                      : mm_decode_run<false>(moe, y + row, x + row, sel + at, w + at, sh + row, table, first.book,
-                            nullptr);
-        }
+        const cudaError_t err = res
+            ? mm_decode_run<true>(moe, y, x, sel, w, sh, table, first.book, first.res_book, rows)
+            : mm_decode_run<false>(moe, y, x, sel, w, sh, table, first.book, nullptr, rows);
         return cuda_ok(err, "MiniMax routed decode");
     }
     std::vector<uint32_t> offsets(MM_EXPERTS + 1);

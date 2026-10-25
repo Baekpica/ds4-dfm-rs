@@ -308,8 +308,16 @@ takes DSpark.
 tok/s; draft 2 21.57 tok/s (2.46 tokens per step, verify 99.7 ms, draft
 13.8 ms); draft 3 21.57 (2.95, 121.6 ms); at `344dee7d` draft 3 ran 24.2
 tok/s over 64 tokens. Greedy output equals plain decoding token for token.
-Verify rows run the one-row expert kernels per row, so an expert two rows
-share is read twice; a batched verify as GLM's is the next step.
+Verify rows share one launch per expert stage: CTA group r stages row r's
+input and every group walks the weight rows in the same order, so an
+expert two rows share is fetched from DRAM about once (the groups meet in
+L2) while each row runs the one-row arithmetic; one row keeps the
+expert-major order (2-8% faster alone). Per 4-row layer on real 8K routes
+(model-free): R13 890 -> 670 us, R13+8 1,435 -> 905 us, outputs identical.
+Card sweep (512K, draft 3, 2K-32K): mean decode 20.32 -> 21.24 tok/s, 64K
+18.39 -> 19.18, frontier logits identical. Where acceptance stays below
+~2.5 tokens per trial (8K, 12K, 20K-30K) the gate mostly decodes plain, so
+those frontiers follow plain decode.
 
 ## Image and video input
 

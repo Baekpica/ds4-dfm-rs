@@ -57,23 +57,35 @@ __device__ __forceinline__ float mm_down_dot(const glmvq_matrix &m, uint32_t row
     return glmvq_round(glmvq_mul(sum, gain));
 }
 
-// gate/up of the four experts: one warp per (expert, row); the layer book
-// (and residual book) stays in shared memory of a persistent CTA.
+/* gate/up of the four experts of `rows` rows (decode, DSpark verify): CTA
+ * group r = blockIdx.x / (gridDim.x / rows) keeps row r's input beside the
+ * layer book (and residual book) in shared memory of persistent CTAs, one
+ * warp per (weight row, expert). Every group walks the weight rows in the
+ * same order, so an expert two rows share is fetched from DRAM about once
+ * (the groups meet in L2) while each row runs the one-row arithmetic. */
 template <bool RES>
 __global__ void __launch_bounds__(MM_WARPS * 32, 1) mm_decode_gu(const glmvq_decode_item *items,
-        const uint4 *book, const uint4 *book2, const float *input, __nv_bfloat16 *mid) {
+        const uint4 *book, const uint4 *book2, const float *input, __nv_bfloat16 *mid, uint32_t rows = 1) {
     extern __shared__ __align__(16) uint8_t mm_stage[];
     constexpr uint32_t books = glmvq_decode_books<13, RES>();
     auto *x = (__nv_bfloat16 *)(mm_stage + books);
     const auto *res_book = (const uint2 *)(mm_stage + MM_WORDS * GLMVQ_VECTOR);
+    const uint32_t ctas = gridDim.x / rows, r = blockIdx.x / ctas;
+    items += r * MM_USED;
+    input += (uint64_t)r * MM_HIDDEN;
+    mid += (uint64_t)r * MM_USED * MM_FFN;
     glmvq_pdl_open();
     glmvq_decode_book<13, RES>((uint4 *)mm_stage, book, book2);
     glmvq_pdl_wait();
     for (uint32_t i = threadIdx.x; i < MM_HIDDEN; i += blockDim.x) { x[i] = __float2bfloat16_rn(input[i]); }
     __syncthreads();
-    const uint32_t lane = threadIdx.x & 31, warp = blockIdx.x * MM_WARPS + threadIdx.x / 32;
-    for (uint32_t task = warp; task < MM_USED * MM_FFN; task += gridDim.x * MM_WARPS) {
-        const uint32_t e = task / MM_FFN, row = task % MM_FFN;
+    const uint32_t lane = threadIdx.x & 31, warp = (blockIdx.x % ctas) * MM_WARPS + threadIdx.x / 32;
+    for (uint32_t task = warp; task < MM_USED * MM_FFN; task += ctas * MM_WARPS) {
+        // One row keeps the expert-major order (a CTA's warps read consecutive
+        // rows of one expert, 3-8% faster alone); several rows interleave the
+        // experts so the groups reach a shared expert's rows together.
+        const uint32_t e = rows == 1 ? task / MM_FFN : task % MM_USED;
+        const uint32_t row = rows == 1 ? task % MM_FFN : task / MM_USED;
         const glmvq_decode_item item = items[e];
         const auto *gm = (const uint32_t *)item.gate.main + (uint64_t)row * MM_HIDDEN * 3 / 64;
         const auto *gp = (const uint32_t *)item.gate.plane + (uint64_t)row * MM_HIDDEN / 256;
@@ -86,19 +98,23 @@ __global__ void __launch_bounds__(MM_WARPS * 32, 1) mm_decode_gu(const glmvq_dec
             (const uint2 *)mm_stage, &carry, um, up, res_book, ur);
         const float u = glmvq_decode_dot<MM_HIDDEN, 13, GLMVQ_GAIN_DOT, RES>(item.up, row, x,
             (const uint2 *)mm_stage, &carry, nullptr, nullptr, res_book, nullptr);
-        if (!lane) { mid[task] = __float2bfloat16_rn(glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g, u, MM_LIMIT)); }
+        if (!lane) { mid[e * MM_FFN + row] = __float2bfloat16_rn(glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g, u, MM_LIMIT)); }
     }
 }
 
 // down of the four experts over their staged mid rows (4 x 3072 BF16 fit
-// beside the 64 KiB book: 90,112 / 92,160 of 101,376 B).
+// beside the 64 KiB book: 90,112 / 92,160 of 101,376 B), rows as mm_decode_gu.
 template <bool RES>
 __global__ void __launch_bounds__(MM_WARPS * 32, 1) mm_decode_down(const glmvq_decode_item *items,
-        const uint4 *book, const uint4 *book2, const __nv_bfloat16 *mid, float *partial) {
+        const uint4 *book, const uint4 *book2, const __nv_bfloat16 *mid, float *partial, uint32_t rows = 1) {
     extern __shared__ __align__(16) uint8_t mm_stage[];
     constexpr uint32_t books = glmvq_decode_books<13, RES>();
     auto *x = (__nv_bfloat16 *)(mm_stage + books);
     const auto *res_book = (const uint2 *)(mm_stage + MM_WORDS * GLMVQ_VECTOR);
+    const uint32_t ctas = gridDim.x / rows, r = blockIdx.x / ctas;
+    items += r * MM_USED;
+    mid += (uint64_t)r * MM_USED * MM_FFN;
+    partial += (uint64_t)r * MM_USED * MM_HIDDEN;
     glmvq_pdl_open();
     glmvq_decode_book<13, RES>((uint4 *)mm_stage, book, book2);
     glmvq_pdl_wait();
@@ -106,11 +122,12 @@ __global__ void __launch_bounds__(MM_WARPS * 32, 1) mm_decode_down(const glmvq_d
         ((uint4 *)x)[i] = ((const uint4 *)mid)[i];
     }
     __syncthreads();
-    const uint32_t lane = threadIdx.x & 31, warp = blockIdx.x * MM_WARPS + threadIdx.x / 32;
-    for (uint32_t task = warp; task < MM_USED * MM_HIDDEN; task += gridDim.x * MM_WARPS) {
-        const uint32_t e = task / MM_HIDDEN, row = task % MM_HIDDEN;
+    const uint32_t lane = threadIdx.x & 31, warp = (blockIdx.x % ctas) * MM_WARPS + threadIdx.x / 32;
+    for (uint32_t task = warp; task < MM_USED * MM_HIDDEN; task += ctas * MM_WARPS) {
+        const uint32_t e = rows == 1 ? task / MM_HIDDEN : task % MM_USED;
+        const uint32_t row = rows == 1 ? task % MM_HIDDEN : task / MM_USED;
         const float value = mm_down_dot<RES>(items[e].down, row, x + e * MM_FFN, (const uint2 *)mm_stage, res_book);
-        if (!lane) { partial[task] = value; }
+        if (!lane) { partial[e * MM_HIDDEN + row] = value; }
     }
 }
 
