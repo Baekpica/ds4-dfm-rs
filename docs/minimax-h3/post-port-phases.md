@@ -874,6 +874,49 @@ change; the current tree prints `rows=409`,
 which is consistent with a different prompt in the original run (three more
 tokens). Re-record it with the prompt spelled out.
 
+## P12.8 — A prompt-only render at the 21:9 canvas (2026-10-25)
+
+A fresh clip, not an anchored reproduction: the 432x171 page (the operator's
+panel strip) supplied the prompt only, and no pixel of it entered the
+conditioning. Canvas 1344x576, the 21:9 preset (`presets.rs:211-216`,
+774,144 px against the 1,032,192 cap), 22 frames, 20 steps, seed 42.
+
+Command (`~/ds4-h3-port`):
+
+    ./h3-rs -d /mnt/h3-artifacts/MiniMax-H3 -p '<prompt>' \
+      -o ~/u14-new.mp4 --width 1344 --height 576 --frames 22 --steps 20 \
+      --seed 42 --hash --frames-dir ~/u14-frames
+
+Prompt: an animated comic-book cartoon, flat ink outlines and watercolour
+washes, a tropical swamp lagoon at midday, a lanky bather in red trunks
+treading water in alarm beside a drifting log that opens a long green
+alligator grin, a second bather sitting on the log and laughing, lily pads,
+splashes, bold saturated colours, hand-drawn 24 fps look, no text and no
+speech balloons.
+
+Measured: TEXT 27.0 s, LOAD 106.3 s, DENOISE 804.5 s for 20 steps
+(40.2 s per step), AUDIO 1.5 s, FRAMES 84.6 s, 1023.9 s total.
+`frames=bc3d7ce34d585bd5 rgb8=6975023b964dc0c7`; the MP4 is 1344x576,
+22 frames at 24 fps, 32000 Hz stereo, 817,823 bytes. Audio is not silent
+(mean -27.5 dB, peak -11.8 dB).
+
+A 2-step probe of the same shape measured 40.0 s per step against the
+render's 40.2, so denoise cost here is linear in steps at this width.
+
+The picture holds a readable comic frame: the wide canvas carries clean
+inked linework, the log is the alligator's body and its jaws open across the
+clip. Its defect is the open jaw, which late in the clip draws a second
+mouth ring in the water (frames 7-21); frame 0 is clean. That is a model
+artifact at this width, not a decode or conditioning fault, and it is the
+thing a longer or deeper render would have to fix.
+
+Unported surface this exposed: the reference's own reference conditioning,
+`--ref-image` plus `--ref-image-size` (`main.c:440-449`), refused together
+with frame anchors (`h3_cli.c:316-318`). The port carries `RefImage` in the
+sequence and the DiT (`sequence.rs:32`, `dit.rs:610`) but no CLI or engine
+path builds it, so an image-conditioned clip (Ref2VA) is not reachable yet.
+A prompt is the only way to steer a picture into this engine today.
+
 ## P13 — Close
 
 The rule 19 QA gate once, the evidence file, docs, memory, handoff, push.
