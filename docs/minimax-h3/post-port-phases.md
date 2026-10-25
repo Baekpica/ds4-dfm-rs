@@ -961,6 +961,10 @@ THE HUNDRED METER CHAMP! ER- MEET THE NEW CHAMP!". That is the operator's
 vision check, and it is the only claim about readability here that was made
 against the delivered file.
 
+The composite is reproduced by `tools/minimax_h3/letterballoons.sh`; rerunning
+it on `u16-new.mp4` wrote a byte-identical file (sha256 5c2b1fa2...), so the
+delivered clip is a script result, not a hand edit.
+
 ## P13 — Close
 
 The rule 19 QA gate once, the evidence file, docs, memory, handoff, push.
