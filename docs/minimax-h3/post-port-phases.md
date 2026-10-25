@@ -540,8 +540,32 @@ Measured on the Spark, 512x192, 22 frames, 20 steps, seed 1:
 - The unit-6 arguments after the splice open on the anchored comic, as the
   reference does, with `TEXT` growing from 6 to 214 tokens (`~/unit8`).
 
-Open: the two-image presentation has no hash gate yet; `multimodal_probe.c`
-and `h3_multimodal_gate` take one image, and the one-image hashes above stand.
+**Unit 8 landed** (`multimodal_probe.c` / `h3_multimodal_gate` taking one
+`--image` per span, served forms exercised live): the anchor path is now
+hash-gated, not only frame-gated. Measured on the Spark on 2026-10-25:
+
+- Two images (the pilot PNG on both spans), 512x192, prompt `A red fox walking
+  through snow`: `TOKENS 214 spans=2 zeros=196`, PARITY
+  `14553bf8e35815b6`, TAGS `8db87703b7392495` — equal to the reference probe,
+  edges included, 5.938 s against 17.492 s.
+- Served forms, one live run each: a JSON `data:image/png;base64,` anchor and
+  a multipart file part both render 512x192x22 with byte-identical MP4s
+  (`cde156d793a2a9032143533b67520c5f`) whose frame 0 is the anchored comic;
+  `file_id` answers 400 `unsupported_parameter`, an `https://` URL 400
+  `invalid_value`, and no `*.anchor.*` file survives the render.
+- The anchor-less path is unchanged: `h3-rs` at the install gate's arguments
+  prints `TEXT tokens=6` and `HASH video=70973d0a2c32e378
+  audio=f776839e1170733b frames=541455fe622e267f rgb8=62b36816b6e1248e`, the
+  values recorded before the splice.
+- The unit-5 conditioned `h3_dit_gate` run, repeated on the merged tree, still
+  prints `ANCHORS fnv=fe11c049cced3a13`, `LAYOUT
+  positions=a47f8985c9beac72`, `NOISE video=993dc9b32198325f
+  audio=094d71985b0c77d7` and `DENOISE video=dd0c9126e2bcbe37
+  audio=d27bae4151be2e5b`.
+
+Open: the live two-request memo pair (same anchor hits, a different anchor
+prefill-loads) is still unit 3's open item; the key itself is covered by
+device-free tests.
 
 ## P12.6 — The remaining reference surface
 

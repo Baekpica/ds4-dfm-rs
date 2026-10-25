@@ -38,7 +38,7 @@ load (`h3_dit_load_conditioned`, `h3_dit.c:1742`) and a different text encode
 | Reference row layout | `h3_host.c:367-433` | Absent: `build` returns `Unsupported::References` |
 | Media read: probe, image, video, audio at 32 kHz | `h3_ffmpeg.c:77`, `:156`, `:269`, `:392` | Ported (`media.rs`) |
 | Vision tower (Qwen vision) | `h3_vision_encoder.c`, `h3_vision_encode_bf16` (`h3_vision_encoder.h:27`) | Ported and reachable from the anchor path (`vision_forward::encode_dir`) |
-| Multimodal presentation and decoder | `h3_multimodal.c:15` (FL2VA), `:43` (Ref2VA) | FL2VA ported (`multimodal::fl2va`, `text_forward::encode_multimodal`); Ref2VA absent |
+| Multimodal presentation and decoder | `h3_multimodal.c:15` (FL2VA), `:43` (Ref2VA) | FL2VA ported (`multimodal::fl2va`, `text_forward::encode_multimodal`), one- and two-image hashes equal to the reference; Ref2VA absent |
 | Anchor latents (VAE encoder) | `h3_video_encoder.c:22`, `h3_video_vae_encode` | Ported (`vae_encoder.rs`) |
 | Conditioned DiT graph | `h3_dit.c:1742` `h3_dit_load_conditioned`, `:2408` `h3_dit_reset_run` | Ported as `Dit::set_conditions` at offset 0, refreshed per run |
 | Condition time rows in the schedule | `dit.rs` `time_rows` (`h3_dit.c:1666-1684`) | Ported |
@@ -53,7 +53,9 @@ Unit order, each with its case from the matrix above:
    presentation, the VAE encoder and the conditioned DiT. `fl2va-first` and
    `fl2va-first-last` run on the Spark; the DiT hashes are equal to
    `dit_probe.c` and the anchor is a vision span as well as a row span
-   (`h3.c:1345-1414`).
+   (`h3.c:1345-1414`). The presentation is hash-gated at one image (512x192
+   and 512x512) and at two images (512x192, `TOKENS 214 spans=2`, PARITY
+   `14553bf8e35815b6`, TAGS `8db87703b7392495`).
 2. **Landed** — the seeded augmentation, gated by `fl2va-first-last` against
    the reference at 512x192, five frames, four evaluations.
 3. Conditioning keys in the engine memo: two consecutive identical conditioned
@@ -66,9 +68,14 @@ Unit order, each with its case from the matrix above:
 5. Video and audio references, gated by `ref2va-video`, `ref2va-silent`,
    `ref2va-video-audio` and `ref2va-mixed`.
 
-Open on the FL2VA side: the two-image presentation has no hash gate (the probe
-takes one image), and the served forms have unit tests but no live run since
-the vision object joined the link.
+Closed on the FL2VA side on 2026-10-25: the two-image presentation is hash
+gated against `multimodal_probe.c`, and the served forms ran live after the
+vision object joined the link — a JSON data-URI anchor and a multipart file
+part rendered byte-identical MP4s opening on the anchor, while `file_id` and
+an `https://` URL were refused at validation.
+
+Open on the FL2VA side: the live two-request memo pair (same anchor hits, a
+different anchor prefill-loads).
 
 ## Rules the cases respect
 

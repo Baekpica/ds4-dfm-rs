@@ -34,7 +34,18 @@
 //!     PARITY fnv=9f8deeb453edfecc
 //!     TAGS   fnv=0f10ec04569ce77b
 //!
-//! The port matched both hashes and both eight-word edges at each shape.
+//! Two images, the pilot PNG on both spans, at 512x192 — the served unit-8
+//! arguments and prompt (`A red fox walking through snow`):
+//!
+//!   GRID 12x32 merged=96 images=2
+//!   TOKENS 214 spans=2 zeros=196
+//!   PARITY fnv=14553bf8e35815b6
+//!   TAGS   fnv=8db87703b7392495
+//!
+//! Recorded on the Spark on 2026-10-25 against `multimodal_probe.c` with the
+//! same two images and prompt: equal hashes and equal eight-word edges, 5.938
+//! s against 17.492 s. The port matched both one-image hashes and both
+//! eight-word edges at each shape.
 //! Wall time with a warm page cache: 5.245 s against the reference's 19.756 s
 //! at 512x192 (the reference's run read the 62 GiB shard cold), and 7.028 s
 //! against 8.570 s at 512x512.
