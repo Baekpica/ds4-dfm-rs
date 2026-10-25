@@ -1353,9 +1353,8 @@ The units, in order, each one commit with its own tests and evidence:
 4. **P15.4 — refusals**, each by name in the official envelope: H3-Context-IR
    and H3-Regenerate-2K (501, hosted-only per `README.md:104` and `:170`), 2K
    (400/2013), the three other model ids (400/2022), reference roles until
-   P14.5-P14.6, `callback_url`, `extra`, `aigc_watermark=true`, public URLs and
-   `mm_file://` (data URIs only), HEIC, a second text item, no renderer, queue
-   full.
+   P14.5-P14.6, `callback_url`, `extra`, public URLs and `mm_file://` (data
+   URIs only), HEIC, a second text item, no renderer, queue full.
 5. **P15.5 — operator documentation** (`docs/minimax-h3/official-api.md`):
    routes, fields, state machine, the deviation list; doc-index update.
 6. **P15.6 — Spark gate**: one 768P t2va through `/v2` (text, 16:9), poll to
@@ -1375,6 +1374,13 @@ What the port knowingly does not provide, stated as deviations in its own
 docs: moderation (the hosted service refuses content the port will generate),
 quota, billing and token usage, CDN URLs with expiry (the local URL never
 rotates), callbacks, H3-Context-IR and H3-Regenerate-2K.
+
+Watermarking is not provided either, and nothing implements it (operator
+decision, 2026-10-25). The create schema declares seven properties and no
+watermark (`VideoGenerationV2Req` in `v2-video-generation.openapi.json`); the
+field exists only on the two regeneration request schemas (`:1444`, `:1503`),
+and regeneration is not served. So there is no create field to accept, no
+branch to refuse, and no watermark ever applied to the output.
 
 ## P12.5 — Port the reference test suite (runs last, after P13)
 

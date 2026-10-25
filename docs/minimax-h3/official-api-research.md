@@ -83,8 +83,9 @@ successfully; the /docs/en/ prefixed create page returned an empty body. Every o
 - extra - object, optional - only prompt_expansion_mode (disabled, balanced, quality; default balanced), documented for MiniMax-H3-Max
   only; undeclared fields are forbidden.
 - callback_url - string, optional - see 2.7.
-- aigc_watermark - boolean, default false - listed by CN for this route, absent from EN and from the OpenAPI schema. The language
-  versions disagree (2.9).
+- aigc_watermark - not a create field. The vendored OpenAPI create schema declares seven properties and no watermark
+  (VideoGenerationV2Req, v2-video-generation.openapi.json); the field is declared only by the two regeneration request schemas
+  (:1444, :1503). Out of port scope (decision below); regeneration is not served.
 
 Media limits (content description): body <= 64 MB; image <= 30 MB, 256..5760 px per edge, aspect 0.4..2.5, first frame <=1, last frame <=1,
 reference images <=9; video <=50 MB, MP4/MOV, H.264/AVC or H.265/HEVC with AAC/MP3, <=3 clips, 2..15 s each and <=15 s total, 23.976..60
@@ -161,7 +162,8 @@ exist, 2064 high load, 2066 processing timeout, 2069 model no longer available.
   (video-generation.md).
 - Moderation (422/1026/1027), balance (402/1008), account ownership, whitelist access, CDN hosting and URL expiry, and the 300 RPM / 30
   inflight quota are service behavior, not model behavior.
-- EN and CN disagree on aigc_watermark for create (CN lists it, EN does not). Which is current is unknown.
+- EN and CN disagree on aigc_watermark for create (CN lists it, EN does not). The vendored OpenAPI create schema settles it:
+  no such field (4.1), and the port implements no watermark path.
 
 3. The port's current surface
 
@@ -243,7 +245,8 @@ CreateTaskRequest:
 - extra: refused 2013 (prompt_expansion_mode is Max-only, and Max is refused).
 - callback_url: refused 2013. A callback means POSTing to a caller-supplied URL, which the repo forbids ("no network fetch
   reachable from a request body", AGENTS.md).
-- aigc_watermark: accept false or absent; refuse true 2013 (no watermark path). Record the EN/CN discrepancy.
+- aigc_watermark: not handled. It is not a create field in the vendored schema, and the only schemas that declare it belong to the
+  unserved regeneration route, so no branch accepts or applies a watermark (operator decision, 2026-10-25).
 
 Media handling:
 - Only data: URIs are accepted. A public URL needs an outbound fetch from a request body, which is forbidden and absent from
@@ -287,7 +290,7 @@ ratio, task_type, modality}. TaskContent is Video{url} or Prompt{prompt}. TaskUs
 - resolution 2K: 400/2013. Model MiniMax-H3-Highspeed/-Lite/-Max: 400/2022.
 - reference_image, reference_video, reference_audio: 400/2013 until P14 lands. The port refuses Ref2VA segments by name
   (port-plan.md:801-805); P14.2-P14.6 are open (post-port-phases.md:1089-1130) and only P14.1, the AudioVAE encoder, is done.
-- callback_url, extra, aigc_watermark=true, public URLs, mm_file://, HEIC/HEIF, a second text item.
+- callback_url, extra, public URLs, mm_file://, HEIC/HEIF, a second text item.
 - Queue bound: 429 rate_limit_error/1045 (task concurrency), the closest documented code; the platform's 30 inflight is a quota, not the
   same limit.
 - No renderer configured: every create fails; the official set has no 503, so use 500 server_error/1024 and name it.
@@ -334,7 +337,7 @@ anchor's probed size; data URI to AnchorImage; last_frame wiring and the additiv
 ratio to canvas, each duration to frames, adaptive, last-frame argv, usage arithmetic; h3_video tests unchanged. Evidence: the same test
 run.
 
-U4 - Refusals. Hosted-only routes, 2K, the three other model ids, reference roles, callback_url, extra, aigc_watermark, URL forms, HEIC,
+U4 - Refusals. Hosted-only routes, 2K, the three other model ids, reference roles, callback_url, extra, URL forms, HEIC,
 second text, renderer disabled, queue full. Tests: one per case asserting status, error.type, http_code and code. Evidence: cargo test plus
 a curl transcript.
 
@@ -353,11 +356,10 @@ Evidence: the full test suite and doc updates.
 1. The HTTP status and code for querying an expired or unknown task ("invalid task_id") and for DELETE on a running or
    cancelled task ("returns an error"); the docs state neither.
 2. Whether a second text item is accepted, ignored or refused; the docs say "one", not "exactly one".
-3. Whether aigc_watermark is current on create; CN lists it, EN and OpenAPI do not.
-4. Whether extra.prompt_expansion_mode is ignored or refused for MiniMax-H3.
-5. Whether ratio is adaptive or concrete in an i2va query response.
-6. The exact lifetime of content.url; no duration is stated.
-7. The default and maximum page_size.
+3. Whether extra.prompt_expansion_mode is ignored or refused for MiniMax-H3.
+4. Whether ratio is adaptive or concrete in an i2va query response.
+5. The exact lifetime of content.url; no duration is stated.
+6. The default and maximum page_size.
 8. Whether output_seconds is the requested integer or the actual aligned clip length.
 9. Which code a hosted deployment returns for an unsupported model variant: 2022, 2069 or 2013.
 10. Whether the 107..362-frame, increment-17 rule is the generation output rule or only a regeneration input constraint; it
@@ -382,8 +384,7 @@ a silent substitution.
    work, and the 64 MB cap makes video references impractical even after P14.
 8. Callbacks are refused for the same outbound-request reason; a callback would be a new unit with its own security review.
 9. Local task ids are chosen, not platform ids; the 7-day window is retention, and files are deleted at the same boundary.
-10. Deleting a running task is refused, which is faithful, but the exact error is unknown; the CN/EN aigc_watermark disagreement
-    makes any choice a guess, with the OpenAPI document as the tie-breaker here.
+10. Deleting a running task is refused, which is faithful, but the exact error is unknown; any choice is a guess here.
 
 Bottom line
 
