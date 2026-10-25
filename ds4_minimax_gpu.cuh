@@ -1398,7 +1398,7 @@ __global__ void mm_score_kernel(float *scores, const float *query, const uint8_t
 }
 
 /* Block scores of COUNT <= MM_SCORE_FEW rows (decode, verify) against one
- * key block per CTA: the block's raw keys land in shared memory with 8-byte
+ * key block per CTA: the block's raw keys land in shared memory with 16-byte
  * loads, thread t decodes key t and dots it with every row and head in the
  * tiled kernel's d order, then a block max. Same scores bit for bit; a
  * decode row reads the pool once at stream rate instead of decoding every
@@ -1410,18 +1410,26 @@ enum { MM_SCORE_FEW = 8 };
 template <uint32_t COUNT>
 __global__ void __launch_bounds__(MM_BLOCK) mm_score_few_kernel(float *scores, const float *query, const uint8_t *pool,
         uint32_t pos, uint32_t first, uint32_t stride) {
-    constexpr uint32_t V = COUNT * MM_KV_HEADS;
+    constexpr uint32_t V = COUNT * MM_KV_HEADS, WORDS = MM_BLOCK * MM_FP4_ROW / sizeof(uint4);
     __shared__ __align__(16) uint8_t raw[MM_BLOCK * MM_FP4_ROW];
     __shared__ __align__(16) float q[V][MM_HEAD];
     __shared__ float part[MM_BLOCK / 32][V];
     glmvq_pdl_open();
-    glmvq_pdl_wait();
     const uint32_t block = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid / 32;
-    const uint32_t last = pos + first + COUNT - 1, t0 = block * MM_BLOCK;
-    if (t0 > last) { return; }
-    const uint32_t visible = min((uint32_t)MM_BLOCK, last + 1 - t0);
-    const uint2 *src = (const uint2 *)(pool + (uint64_t)t0 * MM_FP4_ROW);
-    for (uint32_t i = tid; i < visible * (MM_FP4_ROW / 8); i += MM_BLOCK) { ((uint2 *)raw)[i] = src[i]; }
+    const uint32_t t0 = block * MM_BLOCK;
+    // The grid stops below the last row's own block (no row reads that
+    // score), so every block here is full. Keys of earlier forwards load
+    // while the predecessor drains; keys this forward stores (verify rows
+    // across a block boundary) wait for the tail.
+    const uint4 *src = (const uint4 *)(pool + (uint64_t)t0 * MM_FP4_ROW);
+    const bool stored = t0 + MM_BLOCK <= pos + first;
+    if (stored) {
+        for (uint32_t i = tid; i < WORDS; i += MM_BLOCK) { ((uint4 *)raw)[i] = src[i]; }
+    }
+    glmvq_pdl_wait();
+    if (!stored) {
+        for (uint32_t i = tid; i < WORDS; i += MM_BLOCK) { ((uint4 *)raw)[i] = src[i]; }
+    }
     for (uint32_t i = tid; i < V * MM_HEAD; i += MM_BLOCK) {
         q[i / MM_HEAD][i % MM_HEAD] = glmvq_round(query[(uint64_t)first * MM_KV_HEADS * MM_HEAD + i]);
     }
@@ -1429,7 +1437,7 @@ __global__ void __launch_bounds__(MM_BLOCK) mm_score_few_kernel(float *scores, c
     float dot[V];
     #pragma unroll
     for (uint32_t v = 0; v < V; v++) { dot[v] = 0.0f; }
-    if (tid < visible) {
+    {
         const uint8_t *key = raw + tid * MM_FP4_ROW;
         #pragma unroll 1
         for (uint32_t g = 0; g < MM_HEAD / 16; g++) {
@@ -1446,11 +1454,11 @@ __global__ void __launch_bounds__(MM_BLOCK) mm_score_few_kernel(float *scores, c
             }
         }
     }
-    // Row r sees keys up to its position; past it (or past `visible`) -inf.
+    // Row r sees keys up to its position; past it -inf.
     #pragma unroll
     for (uint32_t v = 0; v < V; v++) {
         const uint32_t p = pos + first + v / MM_KV_HEADS;
-        float best = tid < visible && t0 + tid <= p ? dot[v] : -INFINITY;
+        float best = t0 + tid <= p ? dot[v] : -INFINITY;
         for (uint32_t s = 16; s; s >>= 1) { best = fmaxf(best, __shfl_xor_sync(0xffffffffu, best, s)); }
         if (!lane) { part[warp][v] = best; }
     }
@@ -1581,8 +1589,9 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
             const uint32_t stride = (pos + first + count - 1) / MM_BLOCK + 1;
             if (!gvq_floats(scores, (uint64_t)count * MM_KV_HEADS * stride) || stride > nblocks) { return 0; }
             if (count <= MM_SCORE_FEW && !mm_score_tiled()) {
+                // The rows' top-k reads only blocks below each own block.
                 mm_rows<MM_SCORE_FEW>(count, [&](auto r) {
-                    glmvq_launch_kernel(mm_mode(count), mm_score_few_kernel<decltype(r)::value>, stride, MM_BLOCK, 0,
+                    glmvq_launch_kernel(mm_mode(count), mm_score_few_kernel<decltype(r)::value>, stride - 1, MM_BLOCK, 0,
                         stream, (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)pool->ptr, pos,
                         first, stride);
                 });
