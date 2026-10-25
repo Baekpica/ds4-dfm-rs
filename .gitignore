@@ -273,3 +273,6 @@ tests/naive_banks
 
 # tools/minimax_h3 host driver outputs
 /tools/minimax_h3/ppm_diff
+
+# CLI render output (h3-rs default -o outputs/h3.mp4)
+/outputs/
