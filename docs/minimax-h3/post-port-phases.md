@@ -965,6 +965,18 @@ The composite is reproduced by `tools/minimax_h3/letterballoons.sh`; rerunning
 it on `u16-new.mp4` wrote a byte-identical file (sha256 5c2b1fa2...), so the
 delivered clip is a script result, not a hand edit.
 
+**The longer cut, 39 frames.** The same prompt and seed at the same canvas,
+with 39 frames instead of 22: TEXT 27.0 s, LOAD 106.1 s, DENOISE 2258.2 s for
+20 steps, AUDIO 1.9 s, FRAMES 138.2 s, 2531 s total. The latent is 12x36x84,
+1.71x the 22-frame token count, but the step costs 112.9 s against 40.4 s,
+2.8x, so denoise at this width grows faster than tokens. Hashes
+`video=2c3fd6319ed9db1b audio=1b8a70fe2911603c frames=014d65241aee7346`
+(`~/u17-long.mp4`). Lettered by the same script to `~/u17-lettered.mp4`,
+1,042,101 bytes, sha256 3809f8de..., 1.625 s at 24 fps with 52,000 samples of
+audio (mean -36.5 dB, peak -15.3 dB). Both balloons re-read exactly from the
+encoded file at frame 38; the crocodile surfaces between frames 0 and 38 and
+its head sits under the second balloon without touching it.
+
 ## P13 — Close
 
 The rule 19 QA gate once, the evidence file, docs, memory, handoff, push.
