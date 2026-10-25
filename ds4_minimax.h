@@ -67,12 +67,13 @@ int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu
 int ds4_gpu_minimax_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
     ds4_gpu_tensor *logits, const ds4_gpu_tensor *input, uint32_t router, uint32_t bias, uint32_t rows);
 
-/* ds4_gpu_minimax_router's two steps apart, for decode and verify widths:
- * the shared expert's Q4_K gate/up (`weights` into outs) and the router
- * logits of one input in one launch (0 when a record is not of those
- * types), then the top-4 of the logits. */
+/* ds4_gpu_minimax_router for decode and verify widths beside the shared
+ * expert's Q4_K gate/up (`weights` into outs): logits and routes of one
+ * input in one launch (0 when a record is not of those types).
+ * ds4_gpu_minimax_route alone takes the top-4 of given logits. */
 int ds4_gpu_minimax_shared_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
-    ds4_gpu_tensor *logits, uint32_t router, const ds4_gpu_tensor *input, uint32_t rows);
+    ds4_gpu_tensor *logits, uint32_t router, const ds4_gpu_tensor *input, uint32_t rows, ds4_gpu_tensor *selected,
+    ds4_gpu_tensor *route_weights, uint32_t bias);
 int ds4_gpu_minimax_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_tensor *weights,
     const ds4_gpu_tensor *logits, uint32_t bias, uint32_t rows);
 

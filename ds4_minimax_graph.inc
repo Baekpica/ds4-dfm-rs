@@ -400,11 +400,11 @@ static bool minimax_moe(ds4_minimax_graph *g, const ds4_model *m, const ds4_laye
     ds4_gpu_tensor *const outs[] = {g->ff_gate, g->ff_up};
     const uint32_t gu[] = {minimax_index(m, l->ffn_gate_shexp), minimax_index(m, l->ffn_up_shexp)};
     const bool joint = rows <= DS4_MINIMAX_SPLIT_ROWS && !prepared &&
-        ds4_gpu_minimax_shared_router(g->gvq, outs, gu, g->router, router, g->norm, rows);
+        ds4_gpu_minimax_shared_router(g->gvq, outs, gu, g->router, router, g->norm, rows, g->selected,
+            g->route_weights, bias);
     if (joint) { g->mlp_bf16 = false; }
     const bool ok = joint ?
-        minimax_mlp_down(g, m, l->ffn_down_shexp, g->shared, MINIMAX_FF, rows) &&
-            ds4_gpu_minimax_route(g->gvq, g->selected, g->route_weights, g->router, bias, rows) :
+        minimax_mlp_down(g, m, l->ffn_down_shexp, g->shared, MINIMAX_FF, rows) :
         minimax_mlp(g, m, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, g->shared, MINIMAX_FF, rows,
             prepared) &&
             ds4_gpu_minimax_router(g->gvq, g->selected, g->route_weights, g->router, g->norm, router, bias, rows);

@@ -481,16 +481,14 @@ extern "C" int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, co
  * choice c = s + bias; the top-4 by c, ties to the lower index as torch.topk
  * does on these sizes; weights are the unbiased s over their F32 sum, times
  * routed_scaling_factor 2.0 (exact). */
-__global__ void mm_router_kernel(int32_t *ids, float *weights, const float *logits, const float *bias,
-        uint32_t rows) {
-    glmvq_pdl_open();
-    glmvq_pdl_wait();
-    const uint32_t lane = threadIdx.x & 31, row = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
-    if (row >= rows) { return; }
+// Row `row`'s pick by one warp (lane l holds experts 4l..4l+3); logits load
+// through L2 because the fused caller reads other CTAs' stores.
+__device__ __forceinline__ void mm_route_row(int32_t *ids, float *weights, const float *logits, const float *bias,
+        uint32_t row, uint32_t lane) {
     float s[4], c[4];
     for (uint32_t j = 0; j < 4; j++) {
         const uint32_t e = lane * 4 + j;
-        s[j] = (float)(1.0 / (1.0 + exp(-(double)logits[(uint64_t)row * MM_EXPERTS + e])));
+        s[j] = (float)(1.0 / (1.0 + exp(-(double)__ldcg(logits + (uint64_t)row * MM_EXPERTS + e))));
         c[j] = glmvq_add(s[j], bias[e]);
     }
     float sum = 0.0f;
@@ -519,6 +517,15 @@ __global__ void mm_router_kernel(int32_t *ids, float *weights, const float *logi
         ids[(uint64_t)row * MM_USED + k] = (int32_t)chosen[k];
         weights[(uint64_t)row * MM_USED + k] = glmvq_mul(__fdiv_rn(chosen_s[k], sum), 2.0f);
     }
+}
+
+__global__ void mm_router_kernel(int32_t *ids, float *weights, const float *logits, const float *bias,
+        uint32_t rows) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
+    const uint32_t lane = threadIdx.x & 31, row = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    if (row >= rows) { return; }
+    mm_route_row(ids, weights, logits, bias, row, lane);
 }
 
 /* Router logits of up to MM_ROUTER_ROWS rows in F32 (decode and verify):
@@ -678,7 +685,7 @@ extern "C" int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, d
  * work in the CTAs after its groups. */
 template <uint32_t NT>
 __device__ __forceinline__ void mm_q4_group(const glmvq_q4_many &many, const float *input, uint32_t cols,
-        uint32_t tokens, uint4 *staged, float *partial) {
+        uint32_t tokens, uint4 *staged, float *partial, uint32_t block) {
     // Selected by compares, not an index: a dynamic index would copy the
     // parameter block to local memory in every thread.
     const uint8_t *weight = many.weight[0];
@@ -686,11 +693,11 @@ __device__ __forceinline__ void mm_q4_group(const glmvq_q4_many &many, const flo
     uint32_t rows = many.rows[0], first = 0;
     #pragma unroll
     for (uint32_t c = 1; c < GLMVQ_Q4_MANY; c++) {
-        if (blockIdx.x >= many.first[c]) { weight = many.weight[c]; out = many.out[c]; rows = many.rows[c]; first = many.first[c]; }
+        if (block >= many.first[c]) { weight = many.weight[c]; out = many.out[c]; rows = many.rows[c]; first = many.first[c]; }
     }
     constexpr uint32_t split = 2, rpb = GLMVQ_Q4_WARPS / split;
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5, local = warp / split, part = warp % split;
-    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK, group = blockIdx.x - first;
+    const uint32_t blocks = cols / GLMVQ_Q4_BLOCK, group = block - first;
     const uint32_t row16 = blocks * (GLMVQ_Q4_BYTES / sizeof(uint4));
     glmvq_q4_copy<GLMVQ_Q4_STAGE>(staged, (const uint4 *)weight + (uint64_t)group * rpb * row16,
         min(rpb, rows - group * rpb) * row16);
@@ -761,7 +768,7 @@ __global__ void __launch_bounds__(GLMVQ_Q4_WARPS * 32, 4) mm_proj_kernel(glmvq_q
     glmvq_pdl_open();
     const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     if (blockIdx.x < q4_groups) {
-        mm_q4_group<NT>(many, input, cols, tokens, mm_proj_smem, partial);
+        mm_q4_group<NT>(many, input, cols, tokens, mm_proj_smem, partial, blockIdx.x);
         return;
     }
     const uint32_t bx = blockIdx.x - q4_groups;
@@ -843,18 +850,26 @@ extern "C" int ds4_gpu_minimax_proj(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *out
  * (mm_q4_group), the rest one expert per warp as mm_router_gemv<ROWS>
  * computes it. Apart, the router's CTAs waited for the whole down
  * projection before streaming their 3 MiB. */
+// Router CTAs of the joint launch (one warp per expert), first in its grid,
+// and their count of finished CTAs. A launch passes griddepcontrol.wait only
+// after every earlier kernel completed, so one ticket serves every layer.
+enum { MM_SR_ROUTER = MM_EXPERTS / GLMVQ_Q4_WARPS };
+__device__ uint32_t mm_sr_ticket;
+
 template <uint32_t NT, uint32_t ROWS>
 __global__ void __launch_bounds__(GLMVQ_Q4_WARPS * 32, 4) mm_shared_router_kernel(glmvq_q4_many many,
-        uint32_t q4_groups, float *logits, const float *router, const float *input, uint32_t tokens) {
+        float *logits, const float *router, const float *input, uint32_t tokens, int32_t *ids, float *weights,
+        const float *bias) {
     extern __shared__ uint4 mm_sr_smem[];
     __shared__ float partial[GLMVQ_Q4_WARPS * NT];
+    __shared__ bool last;
     glmvq_pdl_open();
-    if (blockIdx.x < q4_groups) {
-        mm_q4_group<NT>(many, input, MM_HIDDEN, tokens, mm_sr_smem, partial);
+    if (blockIdx.x >= MM_SR_ROUTER) {
+        mm_q4_group<NT>(many, input, MM_HIDDEN, tokens, mm_sr_smem, partial, blockIdx.x - MM_SR_ROUTER);
         return;
     }
     glmvq_pdl_wait();
-    const uint32_t lane = threadIdx.x & 31, e = (blockIdx.x - q4_groups) * GLMVQ_Q4_WARPS + threadIdx.x / 32;
+    const uint32_t lane = threadIdx.x & 31, e = blockIdx.x * GLMVQ_Q4_WARPS + threadIdx.x / 32;
     const float4 *we = (const float4 *)(router + (uint64_t)e * MM_HIDDEN);
     float acc[ROWS];
     #pragma unroll
@@ -877,18 +892,33 @@ __global__ void __launch_bounds__(GLMVQ_Q4_WARPS * 32, 4) mm_shared_router_kerne
         for (uint32_t stride = 16; stride; stride >>= 1) { v += __shfl_xor_sync(0xffffffffu, v, stride); }
         if (!lane) { logits[(uint64_t)r * MM_EXPERTS + e] = v; }
     }
+    // The last router CTA picks every row's experts while the shared
+    // expert's CTAs stream (mm_router_kernel's arithmetic, off the chain).
+    __threadfence();
+    __syncthreads();
+    if (!threadIdx.x) { last = atomicAdd(&mm_sr_ticket, 1u) == MM_SR_ROUTER - 1; }
+    __syncthreads();
+    if (!last) { return; }
+    __threadfence();
+    if (threadIdx.x / 32 < ROWS) { mm_route_row(ids, weights, logits, bias, threadIdx.x / 32, lane); }
+    // Every router CTA has counted: the next launch starts from zero.
+    if (!threadIdx.x) { mm_sr_ticket = 0; }
 }
 
-/* The shared expert's gate/up (`weights`, Q4_K, into outs) and the router
- * logits (record `router`) of `input` at decode and verify widths in one
- * launch; ds4_gpu_minimax_route then picks the experts. 0 when a record is
- * not of those types. */
+/* The shared expert's gate/up (`weights`, Q4_K, into outs), the router
+ * logits (record `router`) of `input` and the routes (selected, route
+ * weights; bias record `bias`) at decode and verify widths in one launch.
+ * 0 when a record is not of those types. */
 extern "C" int ds4_gpu_minimax_shared_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const uint32_t *weights,
-        ds4_gpu_tensor *logits, uint32_t router, const ds4_gpu_tensor *input, uint32_t rows) {
+        ds4_gpu_tensor *logits, uint32_t router, const ds4_gpu_tensor *input, uint32_t rows, ds4_gpu_tensor *selected,
+        ds4_gpu_tensor *route_weights, uint32_t bias) {
     static_assert(MM_EXPERTS % GLMVQ_Q4_WARPS == 0, "whole router CTAs");
     if (!ctx || !rows || rows > MM_ROUTER_ROWS || !ctx->direct_q4 || !input || (uintptr_t)input->ptr % 16 ||
         !gvq_stream(ctx)) { return 0; }
     const auto *w = (const float *)gvq_weight(ctx, router, GVQ_TYPE_F32, (uint64_t)MM_EXPERTS * MM_HIDDEN);
+    const auto *b = (const float *)gvq_weight(ctx, bias, GVQ_TYPE_F32, MM_EXPERTS);
+    if (!b || !selected || selected->bytes < (uint64_t)rows * MM_USED * sizeof(int32_t) ||
+        !gvq_floats(route_weights, (uint64_t)rows * MM_USED)) { return 0; }
     glmvq_q4_many many;
     uint32_t cols = 0;
     const uint32_t groups = mm_q4_many(ctx, &many, outs, weights, 2u, rows, &cols);
@@ -901,9 +931,9 @@ extern "C" int ds4_gpu_minimax_shared_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *c
         static const cudaError_t carve =
             cudaFuncSetAttribute(mm_shared_router_kernel<NT, R>, cudaFuncAttributePreferredSharedMemoryCarveout, 50);
         (void)carve;
-        glmvq_launch_kernel(mm_mode(rows), mm_shared_router_kernel<NT, R>, groups + MM_EXPERTS / GLMVQ_Q4_WARPS,
-            GLMVQ_Q4_WARPS * 32, bytes, ds4_current_stream(), many, groups, (float *)logits->ptr, w,
-            (const float *)input->ptr, rows);
+        glmvq_launch_kernel(mm_mode(rows), mm_shared_router_kernel<NT, R>, MM_SR_ROUTER + groups,
+            GLMVQ_Q4_WARPS * 32, bytes, ds4_current_stream(), many, (float *)logits->ptr, w,
+            (const float *)input->ptr, rows, (int32_t *)selected->ptr, (float *)route_weights->ptr, b);
     });
     return cuda_ok(cudaGetLastError(), "MiniMax shared expert and router logits");
 }
