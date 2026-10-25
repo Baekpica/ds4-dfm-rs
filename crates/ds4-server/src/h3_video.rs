@@ -849,6 +849,19 @@ mod tests {
             .map_err(|error| RenderError::new("render_failed", error.to_string()))
     }
 
+    /// A renderer that stays in `running` until the test releases it. A check
+    /// for "content before completion" is otherwise a race against the render
+    /// thread: the stub writes its 8-byte file faster than the next request.
+    fn gated_renderer() -> (SharedRenderer, std::sync::mpsc::Sender<()>) {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
+        let renderer = renderer(move |_, output| {
+            let _ = wait.lock().unwrap().recv();
+            write_output(output)
+        });
+        (renderer, release)
+    }
+
     fn test_server(renderer: SharedRenderer, max_jobs: usize) -> (Arc<VideoServer>, PathBuf) {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -957,7 +970,8 @@ mod tests {
 
     #[test]
     fn the_three_routes_serve_create_poll_and_content() {
-        let (server, _dir) = test_server(renderer(|_, output| write_output(output)), 8);
+        let (renderer, release) = gated_renderer();
+        let (server, _dir) = test_server(renderer, 8);
 
         let response = post(&server, T2VA);
         assert_eq!(response.status, 200);
@@ -968,6 +982,10 @@ mod tests {
         let early = server.handle(&request("GET", &format!("/v1/videos/{id}/content")));
         assert_eq!(early.status, 404);
         assert_eq!(json_of(&early)["error"]["code"], "video_not_ready");
+
+        // Only now may the render finish; until this point the job cannot be
+        // completed, so the 404 above is a decision, not a scheduling accident.
+        release.send(()).expect("the renderer is still waiting");
 
         let done = poll_until(&server, &id, "completed");
         assert!(!done["completed_at"].is_null());
