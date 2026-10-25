@@ -32,6 +32,8 @@ mod mem;
 mod mem_gov;
 mod mimo2;
 pub mod minimax_h3;
+mod minimax_mtp;
+mod minimax_vq;
 mod naive;
 mod naive_mtp;
 mod payload;
@@ -106,6 +108,8 @@ pub use mimo2::{
     MIXED_SHARDS, MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START,
     VISION_END, VISION_START,
 };
+pub use minimax_vq::media as minimax_media;
+pub use minimax_vq::Feature as MinimaxFeature;
 pub use payload::{
     dump_cmd as payload_dump_cmd, dump_script as payload_dump_script, encode_fields, parse_prefix,
     put_u32, tail as payload_tail, HostPrefix, PayloadError, PayloadLayout, HEADER_BYTES,
@@ -189,8 +193,9 @@ use ds4_sys::{
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
     ds4_bridge_session_load_layer_payload, ds4_bridge_session_load_payload,
     ds4_bridge_session_load_payload_range, ds4_bridge_session_load_snapshot,
-    ds4_bridge_session_output_head_bench, ds4_bridge_session_power, ds4_bridge_session_prefill_cap,
-    ds4_bridge_session_rewind, ds4_bridge_session_sample, ds4_bridge_session_sample_excluding,
+    ds4_bridge_session_output_head_bench, ds4_bridge_session_payload_bytes,
+    ds4_bridge_session_power, ds4_bridge_session_prefill_cap, ds4_bridge_session_rewind,
+    ds4_bridge_session_sample, ds4_bridge_session_sample_excluding,
     ds4_bridge_session_save_layer_payload, ds4_bridge_session_save_payload,
     ds4_bridge_session_save_snapshot, ds4_bridge_session_set_power, ds4_bridge_session_sync,
     ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
@@ -301,6 +306,9 @@ impl Default for OpenTuning {
 /// Native L31_MTP_DRAFTS: each draft adds one 276 MiB KDA journal slot.
 const LING31_MTP_DRAFTS: i32 = 3;
 
+/// DSpark's seven block rows each propose one token (anchor-first).
+const MINIMAX_MTP_DRAFTS: i32 = 7;
+
 pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
     let message = if draft <= 0 {
         "MTP draft tokens must be positive"
@@ -312,6 +320,8 @@ pub fn check_mtp_draft(family: ModelFamily, draft: i32) -> Result<()> {
         "GLM-5.3 accepts at most three recursive draft tokens"
     } else if family == ModelFamily::Ling31Vq && draft > LING31_MTP_DRAFTS {
         "Ling-3.1 accepts at most three recursive draft tokens"
+    } else if family == ModelFamily::MinimaxVq && draft > MINIMAX_MTP_DRAFTS {
+        "MiniMax DSpark drafts at most seven tokens per block"
     } else {
         return Ok(());
     };
@@ -1292,6 +1302,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::MinimaxVq {
+        let g = minimax_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1338,6 +1354,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => Ling31Feature::Mtp,
         };
         TensorInventory::open_ling31(Path::new(path), feature)
+    } else if identified.shape.family == ModelFamily::MinimaxVq {
+        let feature = match parts {
+            ProbeParts::Trunk => MinimaxFeature::Trunk,
+            ProbeParts::WithMtp => MinimaxFeature::Draft,
+        };
+        TensorInventory::open_minimax(Path::new(path), feature)
     } else {
         TensorInventory::open(std::path::Path::new(path))
     }
@@ -1572,6 +1594,20 @@ impl Model {
                 message: "Beam VQ requires one CUDA model without DSpark or vision sidecars".into(),
             });
         }
+        // MiniMax's drafter and vision tower are parts of its release.
+        if identified.shape.family == ModelFamily::MinimaxVq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "MiniMax VQ requires one CUDA release directory without sidecar paths"
+                    .into(),
+            });
+        }
         ssd::check_tuning(&tuning, Some(identified.shape.family), backend, distributed)?;
         // Refuse impossible IQuest widths before tensor validation or native
         // open, which would otherwise hide the requested width behind a clamp.
@@ -1634,11 +1670,17 @@ impl Model {
         }
         let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
         let mut ffi_vocab = pack_host_vocab(&vocab);
-        // Ling-3.1 maps its MTP part only when the open drafts with it.
+        // Ling-3.1 maps its MTP part only when the open drafts with it;
+        // MiniMax its DSpark drafter part.
         let inventory = if identified.shape.family == ModelFamily::Ling31Vq {
             TensorInventory::open_ling31(
                 Path::new(path),
                 ling31_vq::feature(tuning.mtp_draft_tokens),
+            )
+        } else if identified.shape.family == ModelFamily::MinimaxVq {
+            TensorInventory::open_minimax(
+                Path::new(path),
+                minimax_vq::feature(tuning.mtp_draft_tokens),
             )
         } else {
             TensorInventory::open(std::path::Path::new(path))
@@ -1882,6 +1924,11 @@ impl Model {
             return Err(fail(check, &err));
         }
         let c_path = cstring_path(path)?;
+        // MiniMax maps its release's vision part (read only for media).
+        if identified.shape.family == ModelFamily::MinimaxVq {
+            tuning.vision_path =
+                minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
+        }
         let vision_path = tuning
             .vision_path
             .as_deref()
@@ -2710,6 +2757,121 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// Language rows [tokens][6144] of one MiniMax image or video.
+    pub fn minimax_vision_rows(&self, visual: &minimax_media::Visual) -> Result<Vec<f32>> {
+        if visual.patches.len()
+            != (visual.grid_t * visual.grid_h * visual.grid_w) as usize
+                * minimax_media::PATCH_VALUES
+        {
+            return Err(Error {
+                code: 1,
+                message: "MiniMax patches do not match their grid".into(),
+            });
+        }
+        let mut out = vec![0.0f32; visual.tokens() as usize * 6144];
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_minimax_encode_vision(
+                self.raw.as_ptr(),
+                visual.patches.as_ptr(),
+                visual.grid_t,
+                visual.grid_h,
+                visual.grid_w,
+                out.as_mut_ptr(),
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        Ok(out)
+    }
+
+    /// A MiniMax prompt whose image (200025) and video (200026) pad runs,
+    /// in order, take the rows of `visuals` (each image one run, each video
+    /// one run per frame pair), encoded by the release's vision part.
+    pub fn sync_minimax_media(
+        &mut self,
+        tokens: &TokenBuffer,
+        visuals: &[&minimax_media::Visual],
+    ) -> Result<()> {
+        use minimax_media::{IMAGE_PAD, VIDEO_PAD};
+        self.check_sync(tokens)?;
+        let ids = tokens.as_slice();
+        const WIDTH: usize = 6144;
+        let rows = visuals
+            .iter()
+            .map(|visual| self.minimax_vision_rows(visual))
+            .collect::<Result<Vec<_>>>()?;
+        let (mut starts, mut counts, mut ptrs) = (Vec::new(), Vec::new(), Vec::<*const f32>::new());
+        let (mut visual, mut row) = (0usize, 0u32);
+        let mut index = 0usize;
+        while index < ids.len() {
+            let pad = ids[index];
+            if pad != IMAGE_PAD && pad != VIDEO_PAD {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < ids.len() && ids[index] == pad {
+                index += 1;
+            }
+            let count = (index - start) as u32;
+            let Some(v) = visuals.get(visual) else {
+                return Err(Error {
+                    code: 1,
+                    message: "MiniMax prompt has more media pads than inputs".into(),
+                });
+            };
+            if count != v.pair_tokens() && count != v.tokens() || row + count > v.tokens() {
+                return Err(Error {
+                    code: 1,
+                    message: "MiniMax media pads do not match their input".into(),
+                });
+            }
+            starts.push(start as u32);
+            counts.push(count);
+            ptrs.push(rows[visual][row as usize * WIDTH..].as_ptr());
+            row += count;
+            if row == v.tokens() {
+                visual += 1;
+                row = 0;
+            }
+        }
+        if visual != visuals.len() {
+            return Err(Error {
+                code: 1,
+                message: "MiniMax media inputs without pads".into(),
+            });
+        }
+        let tag = visuals
+            .iter()
+            .fold(0x9e37_79b9_7f4a_7c15u64, |h, v| h.rotate_left(17) ^ v.tag())
+            | 1;
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_minimax_sync_media(
+                self.raw.as_ptr(),
+                ids.as_ptr(),
+                ids.len() as i32,
+                starts.as_ptr(),
+                counts.as_ptr(),
+                ptrs.as_ptr(),
+                starts.len() as u32,
+                tag,
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(ids);
+        Ok(())
+    }
+
     fn encode_mimo_vision(
         &self,
         patches: &[f32],
@@ -3032,6 +3194,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::BeamVq {
             return self.eval_beam_argmax(first, max_tokens, eos);
         }
+        if self.host.family == ModelFamily::MinimaxVq {
+            return self.eval_minimax_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -3234,6 +3399,11 @@ impl Session<'_> {
         }
     }
 
+    /// Bytes a snapshot of the current checkpoint would take, without taking it.
+    pub fn payload_bytes(&self) -> u64 {
+        unsafe { ds4_bridge_session_payload_bytes(self.raw.as_ptr()) }
+    }
+
     pub fn save_snapshot(&self, snapshot: &mut SessionSnapshot) -> Result<()> {
         snapshot.host = None;
         let mut err = [0u8; 512];
@@ -3282,7 +3452,11 @@ impl Session<'_> {
             self.host.generation = self.native_generation();
             return Err(fail(rc, &err));
         }
+        // The DSpark gate's measured rates belong to the runtime, not to the
+        // restored tokens.
+        let gate = std::mem::take(&mut self.host.dspark_gate);
         self.host = saved.clone();
+        self.host.dspark_gate = gate;
         self.host.generation = self.native_generation();
         Ok(())
     }
@@ -4053,6 +4227,30 @@ mod tests {
 
     #[no_mangle]
     extern "C" fn ds4_bridge_beam_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_minimax_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_minimax_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
         err: *mut c_char,

@@ -237,9 +237,10 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
+    // GLM, Ling-3.1 and MiniMax draft from parts of their own release.
     if matches!(
         family,
-        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq
+        ModelFamily::Glm53 | ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::MinimaxVq
     ) {
         return mtp.is_none()
             && draft > 1
@@ -615,7 +616,11 @@ fn run_sweep<W: Write>(
         let prefill_tokens = frontier - previous;
         write_frontier_logits_json(args, model, session, frontier, previous)?;
 
-        if args.gen_tokens > 0 && !replay {
+        // The snapshot only restores the frontier for the next one: the last
+        // frontier reports its size instead (a 1M SSD-tier session would copy
+        // its whole K/V file into memory).
+        let payload_bytes = session.payload_bytes();
+        if args.gen_tokens > 0 && !replay && frontier < args.ctx_max {
             let snapshot = snapshot
                 .as_mut()
                 .ok_or_else(|| "local bench snapshot is missing".to_string())?;
@@ -732,11 +737,7 @@ fn run_sweep<W: Write>(
             gen_tps: rate(args.gen_tokens, gen_sec),
             gen_tps_ss: rate(ss_tokens, ss_sec),
             first_token_sec,
-            kvcache_bytes: if replay {
-                0
-            } else {
-                snapshot.as_ref().map_or(0, SessionSnapshot::len)
-            },
+            kvcache_bytes: if replay { 0 } else { payload_bytes },
         };
         writeln!(out, "{}", row.csv_line()).map_err(|e| e.to_string())?;
         out.flush().map_err(|e| e.to_string())?;

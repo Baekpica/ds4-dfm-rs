@@ -243,6 +243,9 @@ int ds4_bridge_naive_commit(ds4_bridge_session *s, int32_t keep, char *err, size
 int ds4_bridge_beam_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                           int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen);
 int ds4_bridge_beam_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_minimax_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                             int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen);
+int ds4_bridge_minimax_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
 int ds4_bridge_iquest_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                            int32_t *tokens, int32_t *target, int32_t cap, char *err, size_t errlen);
 int ds4_bridge_iquest_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
@@ -264,6 +267,12 @@ int ds4_bridge_mimo2_encode_vision(ds4_bridge_session *s, const float *patches,
                                    float *out, char *err, size_t errlen);
 int ds4_bridge_mimo2_encode_audio(ds4_bridge_session *s, const float *mel, uint32_t frames,
                                   float *out, uint32_t cap, uint32_t *rows,
+                                  char *err, size_t errlen);
+int ds4_bridge_minimax_encode_vision(ds4_bridge_session *s, const float *patches, uint32_t grid_t,
+                                     uint32_t grid_h, uint32_t grid_w, float *out, char *err, size_t errlen);
+int ds4_bridge_minimax_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                  const uint32_t *starts, const uint32_t *counts,
+                                  const float *const *rows, uint32_t nspans, uint64_t tag,
                                   char *err, size_t errlen);
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t first_token,
@@ -472,6 +481,8 @@ int ds4_bridge_snapshot_create(ds4_bridge_snapshot **out,
                                char *err, size_t errlen);
 void ds4_bridge_snapshot_free(ds4_bridge_snapshot *snap);
 uint64_t ds4_bridge_snapshot_len(const ds4_bridge_snapshot *snap);
+/* Bytes a snapshot of the session's checkpoint would take (0: none). */
+uint64_t ds4_bridge_session_payload_bytes(ds4_bridge_session *s);
 int ds4_bridge_session_save_snapshot(ds4_bridge_session *s,
                                      ds4_bridge_snapshot *snap,
                                      char *err, size_t errlen);

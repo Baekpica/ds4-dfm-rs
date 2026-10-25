@@ -4,7 +4,8 @@ What the 2026-09 optimization campaigns on this engine taught, written down
 so the next campaign (another family, another host) starts from the method
 and the failure modes instead of rediscovering them.  Everything below was
 measured on one DGX Spark (GB10, `sm_121`, 128 GB unified memory, ~240 GB/s
-LPDDR5X, ~90K random 4 KiB IOPS from the NVMe) with mixed-quant MoE models
+LPDDR5X, ~90K random 4 KiB IOPS from the NVMe; all limits in
+[gb10-hardware.md](gb10-hardware.md)) with mixed-quant MoE models
 served from a resident VMM weight owner.  The numbers are quoted so the
 weight of each lesson is visible; they do not transfer to other hardware,
 only the reasoning does.
@@ -27,6 +28,26 @@ is the order the engine's `AGENTS.md` prescribes and the campaigns confirmed
 it round after round.
 
 ---
+
+## Phase order
+
+Optimize in the order that makes the next phase cheaper to measure:
+
+1. every input path works first (text, and image/video when the family has a
+   vision sidecar): optimization never starts before the functional path;
+2. prefill, because every realistic decode or sweep measurement starts with one;
+3. TTFT, whose compute share is optimized here (disk KV, partial reuse and
+   cache hits own the rest);
+4. plain decode, the baseline every MTP comparison divides by;
+5. MTP: drafter, verify widths, acceptance;
+6. vision encoder and media prefill, after the text path (text rounds do not
+   carry media).
+
+Each phase aims at ~85-90 % of the theoretical bound of its dominant work;
+the usable floors decide priority: a context segment whose prefill floor is
+above ~1,000 tok/s drops in priority (1,200-1,300 tok/s is comfortable), and
+decode must reach at least 20 tok/s (with MTP where the segment's plain-decode
+bandwidth bound is lower).
 
 ## Local scout with ds4-perf
 
@@ -119,6 +140,31 @@ What counts as the metric matters as much as the protocol:
   text, which moves with any fp32 reorder (a near-tie token flips ~25 tokens
   into the standard prompt).  93 -> 52 ms per step is a kernel result;
   18 -> 31 tok/s is that plus acceptance luck.
+
+### Adoption
+
+A change is kept or dropped on its costs, not on the size of its gain.
+
+- **Free lunch** (no extra memory, arithmetic, numerics risk or regression
+  elsewhere): adopt any gain that repeats consistently, however small.  When
+  it sits below end-to-end noise, confirm it where it is measurable (a
+  model-free harness, nsys kernel times) together with its class's
+  correctness check (section 5).  MiniMax's R13 expert copy-piece rotation
+  (2026-10-25) cut the gate kernel 6% and down 2.6% in the harness,
+  bit-identical, about 0.7% of a prefill segment: adopted.
+- **Trade-off** (more memory, a value change, a slower path elsewhere):
+  weigh the gain against the cost, and when the call is not clear put both
+  numbers in front of the user and let them decide.  A 2.25 GiB SSD-tier
+  pool took MiniMax's 64K plain decode from 18.6 to 20.2 tok/s for +1.6 GiB
+  of pinned memory; the user accepted it, the 512K 64K run then died to
+  systemd-oomd (memory pressure above 50% for 20 s at 3.6 GiB available),
+  and it was reverted.
+- **A rejection names its cost**: which metric or resource regresses, and by
+  how much.  "The gain is small" is not a reason.
+- **Conflicting targets**: when two targets cannot both be reached with the
+  levers at hand (MiniMax's decode >= 22 tok/s needs the drafter, whose
+  context costs prefill ~1.6% per segment), ask the user which to secure
+  first, and keep aiming for both.
 
 ---
 

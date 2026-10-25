@@ -945,6 +945,14 @@ ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_m
 ds4.o ds4_cuda_test_hooks.o: ds4_ds41_kvreuse.inc
 
 ds4.o ds4_cpu.o ds4_cuda_test_hooks.o: native/bridge/ds4_host_load.h native/bridge/ds4_named_map.inc
+ds4.o ds4_cpu.o ds4_cuda_test_hooks.o: ds4_snapshot.inc
+
+tests/test_snapshot_backing: tests/test_snapshot_backing.c ds4_snapshot.inc ds4.h
+	$(CC) $(CFLAGS) -Werror -o $@ $<
+
+.PHONY: test-snapshot-backing
+test-snapshot-backing: tests/test_snapshot_backing
+	./tests/test_snapshot_backing
 
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_cli.c
@@ -2113,6 +2121,27 @@ tests/beam_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/beam_quality" $@
 
+tests/minimax_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example minimax_quality --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/minimax_quality" $@
+
+tests/minimax_vision: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example minimax_vision --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/minimax_vision" $@
+
+tests/minimax_state: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example minimax_state --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/minimax_state" $@
+
 tests/beam_mtp_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cargo rustc -p ds4-cli --example beam_mtp_gate --release --features native -- \
 		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
@@ -2306,6 +2335,29 @@ tests/test_glm_vq_verify: tests/test_glm_vq_verify.cu cuda/glm_vq_linear.cuh cud
 test-glm-vq-verify: tests/test_glm_vq_verify
 	./tests/test_glm_vq_verify
 
+# GB10 peak probes behind docs/gb10-hardware.md (no model; run on an idle GPU).
+tools/gb10_peaks: tools/gb10_peaks.cu
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+# MiniMax warp-specialized prefill experts vs glmvq_mma8_kernel (bit parity + timing, no model).
+tests/test_minimax_mma8w: tests/test_minimax_mma8w.cu cuda/minimax_mma8w.cuh cuda/beam_mma8w.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
+
+tests/test_minimax_decode: tests/test_minimax_decode.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+tests/test_minimax_artifacts: tests/test_minimax_artifacts.c ds4.c ds4.h ds4_minimax.h ds4_minimax_bind.inc ds4_model_catalog.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-minimax-artifacts
+test-minimax-artifacts: tests/test_minimax_artifacts
+	./tests/test_minimax_artifacts
+
+.PHONY: test-minimax-mma8w
+test-minimax-mma8w: tests/test_minimax_mma8w
+	./tests/test_minimax_mma8w
+
 # R13+8 residual stage: restore bits, decode/verify experts and FP8 prefill MMA.
 tests/test_glm_vq_res: tests/test_glm_vq_res.cu cuda/glm_vq.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_mma8.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
@@ -2370,6 +2422,19 @@ BEAM_NATIVE_DEPS = ds4_beam.h ds4_beam_bind.inc ds4_beam_graph.inc ds4_beam_payl
 	ds4_beam_batch.inc ds4_beam_bank_payload.inc
 ds4.o ds4_cpu.o: $(BEAM_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_beam.h ds4_beam_gpu.cuh cuda/beam_mma8w.cuh
+MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_minimax_graph.inc \
+	ds4_minimax_payload.inc ds4_minimax_session.inc ds4_minimax_batch.inc ds4_minimax_bank_payload.inc \
+	ds4_minimax_draft.inc ds4_minimax_vision.inc
+ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
+ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/glm_vq_ops.cuh
+
+tests/test_minimax_payload: tests/test_minimax_payload.c ds4.c ds4.h ds4_gpu.h ds4_snapshot.inc $(MINIMAX_NATIVE_DEPS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-minimax-payload
+test-minimax-payload: tests/test_minimax_payload
+	./tests/test_minimax_payload
 
 tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
 	$(CC) $(CFLAGS) -Werror -o $@ $<
@@ -2852,7 +2917,8 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
-	rm -f tests/test_glm_vq_mtp_mode
+	rm -f tests/test_snapshot_backing
+	rm -f tests/test_glm_vq_mtp_mode tests/test_minimax_artifacts tests/test_minimax_payload
 	rm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate
 	rm -f tests/test_glm_vq_kv tests/test_glm_vq_kv.o
 	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
@@ -2905,7 +2971,7 @@ clean:
 	rm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
 	rm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o tests/test_glm53_bounds tests/test_glm53_bounds.o tests/test_k2_lifecycle tests/test_k2_lifecycle.o
-	rm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/ling31_quality tests/beam_quality tests/beam_mtp_gate tests/ling31_mtp_gate tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so gguf-tools/libds4q-ieee.so
+	rm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/ling31_quality tests/beam_quality tests/minimax_quality tests/minimax_vision tests/minimax_state tests/beam_mtp_gate tests/ling31_mtp_gate tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so gguf-tools/libds4q-ieee.so
 	rm -f tests/test_k2_rewind tests/test_deepseek_budget
 	rm -f ds4 ds4-server ds4-bench ds4-bench-perf ds4-eval ds4-agent ds4-c ds4-server-c ds4-bench-c ds4-agent-c ds4-rs ds4-bench-rs ds4-server-rs ds4-agent-rs ds4_weight_server tests/parity/shape_c_oracle tests/parity/shape_c_oracle.o tests/parity/catalog_c_oracle tests/parity/catalog_c_oracle.o tests/parity/tensor_c_oracle tests/parity/tensor_c_oracle.o tests/parity/bind_c_oracle tests/parity/bind_c_oracle.o tests/parity/bind_lookup_c_oracle tests/parity/bind_lookup_c_oracle.o tests/parity/load_c_oracle tests/parity/load_c_oracle.o tests/parity/validate_c_oracle tests/parity/validate_c_oracle.o tests/parity/layout_c_oracle tests/parity/layout_c_oracle.o tests/parity/vocab_c_oracle tests/parity/vocab_c_oracle.o tests/parity/tokenizer_c_oracle tests/parity/tokenizer_c_oracle.o tests/parity/session_c_oracle tests/parity/session_c_oracle.o tests/parity/payload_c_oracle tests/parity/payload_c_oracle.o tests/parity/kv_c_oracle tests/parity/kv_c_oracle.o tests/parity/kv_c_stubs.o tests/parity/web_c_oracle tests/parity/web_c_oracle.o tests/parity/dist_c_oracle tests/parity/dist_c_oracle.o tests/parity/route_c_oracle tests/parity/route_c_oracle.o tests/parity/server_c_oracle tests/parity/server_c_oracle.o tests/parity/parse_c_oracle tests/parity/parse_c_oracle.o tests/parity/stream_c_oracle tests/parity/stream_c_oracle.o tests/parity/tool_stream_c_oracle tests/parity/tool_stream_c_oracle.o tests/parity/dsml_c_oracle tests/parity/dsml_c_oracle.o tests/parity/retry_c_oracle tests/parity/retry_c_oracle.o tests/parity/admit_c_oracle tests/parity/admit_c_oracle.o tests/parity/render_c_oracle tests/parity/render_c_oracle.o tests/parity/bridge_null_oracle tests/parity/bridge_null_oracle.o tests/parity/bridge_null_stubs.o tests/parity/cont_c_oracle tests/parity/cont_c_oracle.o tests/parity/memgov_c_oracle tests/parity/memgov_c_oracle.o ds4_cpu ds4_native ds4_server_test ds4_test tests/test_motif3_loader tests/test_motif3_reference tests/test_motif3_tokenizer tests/test_motif3_cuda tests/test_motif3_resident tests/test_motif3_batch tests/test_motif3_long tests/test_motif3_resident.o tests/test_motif3_batch.o tests/test_motif3_long.o tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_batch tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_batch.o *.o cuda/mmq/test/test_mmq_parity.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o tests/cuda_tokentile_ldmatrix tests/cuda_tokentile_ldmatrix.o tests/test_split_gguf tests/test_solar_loader tests/test_solar_tokenizer tests/test_repack_premapped tests/test_mmq_parity tests/test_mmid_fast tests/test_mmid_fast.o tests/test_model_family_kernels tests/test_model_family_kernels.o tests/test_solar_forward tests/test_solar_forward.o tests/test_solar_session tests/test_solar_session.o tests/test_solar_kda tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_solar_gates tests/test_solar_kv tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_kda_chunk.o tests/test_solar_gates.o tests/test_solar_kv.o native/bridge/ds4_bridge.o
 	rm -f tests/test_qwen4exp_loader tests/test_qwen4exp_tokenizer tests/test_qwen4exp_ple tests/test_qwen4exp_ple_cuda tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_primitives tests/test_qwen4exp_primitives.o tests/test_qwen4exp_hc_forward tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_ple_forward tests/test_qwen4exp_ple_forward.o tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_batch tests/test_qwen4exp_batch.o tests/libds4ple_test.so cuda/qwen38_ple.o

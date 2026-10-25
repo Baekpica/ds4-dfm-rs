@@ -16,6 +16,7 @@ use crate::render::{
 
 pub(crate) mod beam;
 pub(crate) mod iquest;
+pub(crate) mod minimax;
 use crate::stream::{think_end, think_start, ChatFormat};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -1971,6 +1972,7 @@ pub fn parse_generated_message(
         ModelSyntax::Inkling => return crate::render::inkling::parse(text).unwrap_or_default(),
         ModelSyntax::BeamVq => beam::parse(text, orders),
         ModelSyntax::IQuestQ1 => Some(iquest::parse(text, require_thinking_closed, orders)),
+        ModelSyntax::MinimaxVq => Some(minimax::parse(text, require_thinking_closed, orders)),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
@@ -2156,6 +2158,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat, orders: &[ToolSchemaOrder])
         ChatFormat::Inkling => find_substr(s, crate::render::inkling::INVOKE.as_bytes()),
         // `<|constrain|>` never occurs in prose; ` to=` may.
         ChatFormat::Beam => find_substr(s, beam::TOOL.as_bytes()),
+        ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_START.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -2202,6 +2205,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_END.as_bytes()),
         ChatFormat::Inkling => find_substr(s, crate::render::inkling::END.as_bytes()),
         ChatFormat::Beam => find_substr(s, beam::CALL.as_bytes()),
+        ChatFormat::Minimax => find_substr(s, minimax::TOOL_CALL_END.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -2411,6 +2415,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::K2Horizon => &[crate::render::K2_TOOL_CALLS_START.as_bytes()],
         ChatFormat::Inkling => &[crate::render::inkling::INVOKE.as_bytes()],
         ChatFormat::Beam => &[beam::TOOL.as_bytes()],
+        ChatFormat::Minimax => &[minimax::TOOL_CALL_START.as_bytes()],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -2510,7 +2515,7 @@ impl SemAccum {
         };
         if !prompt.is_empty() {
             a.feed_thinking(prompt);
-        } else if think_enabled && format != ChatFormat::Inkling {
+        } else if think_enabled && !matches!(format, ChatFormat::Inkling | ChatFormat::Minimax) {
             a.thinking_inside = true;
         }
         // Harmony opens every reply with its analysis message.
@@ -2551,9 +2556,10 @@ impl SemAccum {
             }
             return;
         }
-        if self.chat_format == ChatFormat::Inkling {
-            let start = crate::render::inkling::THINK.as_bytes();
-            let end = crate::render::inkling::END.as_bytes();
+        // Inkling and MiniMax open their think span in the generation.
+        if matches!(self.chat_format, ChatFormat::Inkling | ChatFormat::Minimax) {
+            let start = think_start(self.chat_format).as_bytes();
+            let end = think_end(self.chat_format).as_bytes();
             let keep = start.len().max(end.len());
             for &byte in piece {
                 if self.think_tail.len() == keep {

@@ -201,6 +201,9 @@ pub fn identify_gguf(path: &Path) -> Result<Identified, IdentifyError> {
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::identify(path);
         }
+        if crate::minimax_vq::is_release(path) {
+            return crate::minimax_vq::identify(path);
+        }
         if crate::ling31_vq::is_release(path) {
             return crate::ling31_vq::identify(path);
         }

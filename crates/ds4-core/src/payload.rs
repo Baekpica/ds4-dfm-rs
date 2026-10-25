@@ -37,6 +37,9 @@ const LAYOUT_GLM_VQ_MTP: u32 = u32::from_le_bytes(*b"GVM1");
 const LAYOUT_LING31: u32 = u32::from_le_bytes(*b"LG31");
 const LAYOUT_LING31_FP8: u32 = u32::from_le_bytes(*b"LG3F");
 const LAYOUT_BEAM: u32 = u32::from_le_bytes(*b"BEM1");
+const LAYOUT_MINIMAX: u32 = u32::from_le_bytes(*b"MMX1");
+const LAYOUT_MINIMAX_DRAFT: u32 = u32::from_le_bytes(*b"MMX2");
+const MINIMAX_DRAFT_WINDOW: u32 = 4096;
 const GLMVQ_DENSE_KEYS: u32 = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +60,7 @@ pub enum PayloadLayout {
     Glm53Vq,
     Ling31Vq,
     BeamVq,
+    MinimaxVq,
 }
 
 impl PayloadLayout {
@@ -80,6 +84,7 @@ impl PayloadLayout {
             LAYOUT_GLM_VQ | LAYOUT_GLM_VQ_MTP => Self::Glm53Vq,
             LAYOUT_LING31 | LAYOUT_LING31_FP8 => Self::Ling31Vq,
             LAYOUT_BEAM => Self::BeamVq,
+            LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
             _ => Self::DeepSeek,
         }
     }
@@ -102,6 +107,7 @@ impl PayloadLayout {
             Self::Glm53Vq => ModelFamily::Glm53Vq,
             Self::Ling31Vq => ModelFamily::Ling31Vq,
             Self::BeamVq => ModelFamily::BeamVq,
+            Self::MinimaxVq => ModelFamily::MinimaxVq,
         }
     }
 
@@ -119,6 +125,7 @@ impl PayloadLayout {
                         | Self::Glm53Vq
                         | Self::Ling31Vq
                         | Self::BeamVq
+                        | Self::MinimaxVq
                 ))
     }
 
@@ -323,6 +330,27 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 return Err(err("session payload token count does not match live rows"));
             }
         }
+        PayloadLayout::MinimaxVq => {
+            // MMX2 word 8 counts only committed draft-context rows. The
+            // native codec owns the exact tensor lengths and wrapped spans.
+            if p.version() != VERSION
+                || p.ctx() == 0
+                || p.tokens.is_empty()
+                || p.token_count() as usize != p.tokens.len()
+                || p.token_count() > p.ctx()
+                || p.fields[12] != p.token_count()
+                || p.fields[8] > p.token_count().min(MINIMAX_DRAFT_WINDOW)
+                || (p.fields[5] == LAYOUT_MINIMAX && p.fields[8] != 0)
+            {
+                return Err(err("invalid MiniMax session payload prefix"));
+            }
+            if p.tokens
+                .iter()
+                .any(|&token| token >= p.fields[11] || token > i32::MAX as u32)
+            {
+                return Err(err("invalid MiniMax session payload token"));
+            }
+        }
         PayloadLayout::Glm53 | PayloadLayout::Glm53Vq => {
             // Native owns the tensor tail and MTP cursor checks. Word 12 is
             // state bytes; the host validates only the serialized timeline.
@@ -434,7 +462,10 @@ impl SessionLedger {
             ));
         }
         let layout = prefix.layout();
-        if matches!(layout, PayloadLayout::Glm53 | PayloadLayout::Glm53Vq) {
+        if matches!(
+            layout,
+            PayloadLayout::Glm53 | PayloadLayout::Glm53Vq | PayloadLayout::MinimaxVq
+        ) {
             validate_layout(prefix)?;
         }
         if layout.exceeds_context(prefix.tokens.len(), self.ctx)
@@ -848,6 +879,83 @@ mod tests {
         let mut bad = prefix.clone();
         bad.fields[12] = 2;
         assert!(read(&bad, ModelFamily::BeamVq, 1048576).is_err());
+    }
+
+    #[test]
+    fn minimax_prefix_identity() {
+        // Native MMX1 header: ctx, row cap, layers, tag, blocks, n, 0, FP4
+        // row bytes, K/V page bytes, vocab, live rows (= n).
+        let prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                1048576,
+                2048,
+                60,
+                u32::from_le_bytes(*b"MMX1"),
+                1,
+                3,
+                0,
+                72,
+                18432,
+                200064,
+                3,
+            ],
+            tokens: vec![7, 8, 9],
+        };
+        assert_eq!(prefix.layout().family(), ModelFamily::MinimaxVq);
+        let read = |p: &HostPrefix, family, ctx| {
+            let bytes = p.encode();
+            read_prefix_range(&mut Cursor::new(&bytes), 0, bytes.len() as u64, family, ctx)
+        };
+        assert_eq!(
+            read(&prefix, ModelFamily::MinimaxVq, 3).unwrap().tokens,
+            [7, 8, 9]
+        );
+        assert!(read(&prefix, ModelFamily::MinimaxVq, 2).is_err());
+        assert!(read(&prefix, ModelFamily::BeamVq, 1048576).is_err());
+        let mut bad = prefix.clone();
+        bad.fields[12] = 2;
+        assert!(read(&bad, ModelFamily::MinimaxVq, 1048576).is_err());
+
+        for (tag, rows, valid) in [
+            (LAYOUT_MINIMAX, 0, true),
+            (LAYOUT_MINIMAX, 1, false),
+            (LAYOUT_MINIMAX_DRAFT, 0, true),
+            (LAYOUT_MINIMAX_DRAFT, 2, true),
+            (LAYOUT_MINIMAX_DRAFT, 3, true),
+            (LAYOUT_MINIMAX_DRAFT, 4, false),
+        ] {
+            let mut p = prefix.clone();
+            p.fields[5] = tag;
+            p.fields[8] = rows;
+            assert_eq!(p.layout(), PayloadLayout::MinimaxVq);
+            assert_eq!(read(&p, ModelFamily::MinimaxVq, 3).is_ok(), valid);
+            let mut host = SessionLedger::new(
+                ModelFamily::MinimaxVq,
+                crate::session::SessionBackend::Cuda,
+                3,
+                1,
+            );
+            assert_eq!(host.apply_payload(&p).is_ok(), valid);
+        }
+        let mut full = prefix.clone();
+        full.fields[5] = LAYOUT_MINIMAX_DRAFT;
+        full.fields[7] = MINIMAX_DRAFT_WINDOW + 1;
+        full.fields[12] = full.fields[7];
+        full.tokens = vec![7; full.fields[7] as usize];
+        for rows in [0, 1, MINIMAX_DRAFT_WINDOW, MINIMAX_DRAFT_WINDOW + 1] {
+            full.fields[8] = rows;
+            assert_eq!(
+                read(&full, ModelFamily::MinimaxVq, 1048576).is_ok(),
+                rows <= MINIMAX_DRAFT_WINDOW
+            );
+        }
+        for token in [200064, u32::MAX] {
+            let mut bad = prefix.clone();
+            bad.tokens[0] = token;
+            assert!(read(&bad, ModelFamily::MinimaxVq, 1048576).is_err());
+        }
     }
 
     #[test]

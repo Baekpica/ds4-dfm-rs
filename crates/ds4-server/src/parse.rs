@@ -21,15 +21,15 @@ pub const DEFAULT_TOP_P: f32 = 1.0;
 pub const DEFAULT_MIN_P: f32 = 0.05;
 
 /// Thinking requests sample with the fixed tuple above, whatever the client
-/// sent (the C server's rule for its DeepSeek family).  IQuest, GLM-5.3 and
-/// Beam keep the request's sampler instead: their client must be able to
+/// sent (the C server's rule for its DeepSeek family).  IQuest, GLM-5.3, Beam
+/// and MiniMax keep the request's sampler instead: their client must be able to
 /// lower the temperature, and their drafts only run at temperature 0 (Beam
 /// always writes its analysis channel).  An omitted value still takes the
 /// defaults above, so such a request samples as before.
 pub fn fixed_thinking_sampling(syntax: ModelSyntax) -> bool {
     !matches!(
         syntax,
-        ModelSyntax::IQuestQ1 | ModelSyntax::Glm53 | ModelSyntax::BeamVq
+        ModelSyntax::IQuestQ1 | ModelSyntax::Glm53 | ModelSyntax::BeamVq | ModelSyntax::MinimaxVq
     )
 }
 

@@ -95,6 +95,18 @@ name = "beam_quality"
 required-features = ["native"]
 
 [[example]]
+name = "minimax_quality"
+required-features = ["native"]
+
+[[example]]
+name = "minimax_vision"
+required-features = ["native"]
+
+[[example]]
+name = "minimax_state"
+required-features = ["native"]
+
+[[example]]
 name = "beam_mtp_gate"
 required-features = ["native"]
 

@@ -245,6 +245,30 @@ not qualify serving limits or long-context quality.
 
 ![Beam-1.0 VQ prefill and decode on one DGX Spark](benchmarks/beam-vq-spark-64k-2026-10-21-tuned/throughput.png)
 
+## MiniMax-M3.1-Flash VQ
+
+MiniMax-M3.1-Flash with GVQ1 routed experts (13-bit on all 57 MoE layers, an
+8-bit residual stage on 20) and Q4_K nonexperts
+([model card](https://huggingface.co/Baekpica/MiniMax-M3.1-Flash-VQ-GGUF),
+HF `74e5a9fd`) recorded **905.1 prefill / 19.56 decode** with the DSpark draft
+head (three proposals, gated on measured rates) across the 32 frontiers of
+the [2K–64K sweep](benchmarks/minimax-vq-spark-64k-2026-10-24-gate/README.md)
+(`ff430197`; 924.9 / 19.51 to 32K), medians of three run means in three
+fresh `ds4-bench` processes on one DGX Spark / GB10, in a 524,288-token
+session whose K/V pages live in the SSD tier. Each frontier is one
+2,048-row forward (a cold 8K prompt prefills at 1,126 tok/s in 4,096-row
+chunks); decode follows the drafter's acceptance on the Italian prose,
+16.0–26.1 tok/s per frontier, while plain decoding measures 20.2 tok/s at 8K
+and 19.0 at 124K. Without the gate the
+[same sweep](benchmarks/minimax-vq-spark-64k-2026-10-24/README.md)
+(`152fa899`) ran 902.7 / 18.65, dipping to 10.7 where proposals were
+mostly rejected. An exact 1,048,319-token prompt prefilled at 580 tok/s and
+decoded. The [MiniMax page](minimax-vq.md) records the execution paths, the
+K/V tiers, DSpark and media input. Throughput does not qualify serving
+limits or long-context quality.
+
+![MiniMax-M3.1-Flash VQ prefill and decode on one DGX Spark](benchmarks/minimax-vq-spark-64k-2026-10-24-gate/throughput.png)
+
 ## DeepSeek V4.1
 
 DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and

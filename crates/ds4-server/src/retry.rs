@@ -361,7 +361,8 @@ pub fn try_repair_tool_call_format(format: ChatFormat, s: &[u8]) -> Option<Vec<u
         | ChatFormat::K2Horizon
         | ChatFormat::Inkling
         | ChatFormat::IQuestQ1
-        | ChatFormat::Beam => None,
+        | ChatFormat::Beam
+        | ChatFormat::Minimax => None,
         ChatFormat::DeepSeek => try_repair_dsml(s),
     }
 }
