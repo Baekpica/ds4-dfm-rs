@@ -43,8 +43,8 @@ use crate::route::{
 use crate::serve_cont::{cont_prompt_tokens, ContExec, ContPreparedPrompt};
 use crate::serve_cont_roll::RejectReason;
 use crate::serve_serial_fit::{
-    serial_fit_bounds, serial_live_preserve_msg, serial_session_fit_plan, SerialFitPlan,
-    SerialFitBounds, SerialFrameKind,
+    serial_fit_bounds, serial_live_preserve_msg, serial_session_fit_plan, SerialFitBounds,
+    SerialFitPlan, SerialFrameKind,
 };
 use crate::serve_serial_reclaim::{
     resolve_serial_fit, serial_capacity_refuse_msg, serial_fit_from_native, serial_reclaim_gate,
@@ -1716,7 +1716,11 @@ fn run_serial<W: TerminalSink>(
         0
     };
     quote.need = NeedBytes::from_raw(
-        quote.need.raw().saturating_add(prep.media_reserve()).saturating_add(media_headroom),
+        quote
+            .need
+            .raw()
+            .saturating_add(prep.media_reserve())
+            .saturating_add(media_headroom),
     );
     let mut ask = quote.ask(floor);
     let want = serial_reclaim_want(ask);
@@ -1835,10 +1839,9 @@ fn ensure_serial_session_fit<W: Write>(
     let exec = cont?;
     let current_fits = if probe.graph_pending && cur_ctx <= bounds.request_cap {
         if media_bytes > 0 {
-            media_replacement_quote(cfg, engine, probe.cur_ctx, media_bytes, 0)
-                .is_some_and(|fit| {
-                    serial_reclaim_gate(fit.ask(MemFloor::from_gb(cfg.mem_floor_gb))).admitted()
-                })
+            media_replacement_quote(cfg, engine, probe.cur_ctx, media_bytes, 0).is_some_and(|fit| {
+                serial_reclaim_gate(fit.ask(MemFloor::from_gb(cfg.mem_floor_gb))).admitted()
+            })
         } else {
             serial_ctx_fits(cfg, engine, probe.cur_ctx)
         }
@@ -1867,7 +1870,9 @@ fn ensure_serial_session_fit<W: Write>(
             if media_bytes > 0 {
                 // Price every replacement candidate before destroying the old
                 // frontier. Credit its graph once; never credit its media.
-                let Some(target) = serial_media_target(cfg, engine, exec, probe, bounds, media_bytes) else {
+                let Some(target) =
+                    serial_media_target(cfg, engine, exec, probe, bounds, media_bytes)
+                else {
                     return Some(refuse_serial_capacity(cfg, inner, job, prompt_len, out));
                 };
                 engine.serial_session_reset();
@@ -1969,7 +1974,10 @@ fn media_replacement_quote(
     // Native `fits` has no old-graph credit. Compare the byte quote instead.
     quote.avail = AvailBytes::from_raw(quote.avail.raw().saturating_add(credit));
     quote.need = NeedBytes::from_raw(
-        quote.need.raw().saturating_add(media_bytes)
+        quote
+            .need
+            .raw()
+            .saturating_add(media_bytes)
             .saturating_add(quote.headroom.raw().saturating_sub(floor.bytes())),
     );
     Some(quote)
@@ -1991,7 +1999,9 @@ fn serial_media_target(
         }
         // MiniMax's immutable engine options make this old-context quote a
         // graph-owned release credit (ds4_minimax_bind.inc:minimax_memory).
-        let old = engine.native_graph_fit(probe.cur_ctx).and_then(serial_native_fit)?;
+        let old = engine
+            .native_graph_fit(probe.cur_ctx)
+            .and_then(serial_native_fit)?;
         if old.need.raw() == 0 {
             return None;
         }
@@ -2013,8 +2023,9 @@ fn serial_media_target(
     let mut hi = bounds.request_cap;
     while hi - lo > 1024 {
         let mid = lo + (hi - lo) / 2;
-        let fits = media_replacement_quote(cfg, engine, i32::try_from(mid).ok()?, media_bytes, credit)
-            .is_some_and(|fit| serial_reclaim_gate(fit.ask(floor)).admitted());
+        let fits =
+            media_replacement_quote(cfg, engine, i32::try_from(mid).ok()?, media_bytes, credit)
+                .is_some_and(|fit| serial_reclaim_gate(fit.ask(floor)).admitted());
         if fits {
             lo = mid;
         } else {
@@ -2023,7 +2034,9 @@ fn serial_media_target(
     }
     let target = i32::try_from(lo).ok()?;
     let final_quote = media_replacement_quote(cfg, engine, target, media_bytes, credit)?;
-    serial_reclaim_gate(final_quote.ask(floor)).admitted().then_some(target)
+    serial_reclaim_gate(final_quote.ask(floor))
+        .admitted()
+        .then_some(target)
 }
 
 /// C ensure-fit settle window: freed graph bytes reach MemAvailable with
@@ -2032,10 +2045,9 @@ fn serial_media_target(
 fn fit_settle_probe(cfg: &ServerConfig, engine: &dyn DecodeIo, ctx: i32, media_bytes: u64) -> bool {
     for _ in 0..20 {
         let fits = if media_bytes > 0 {
-            media_replacement_quote(cfg, engine, ctx, media_bytes, 0)
-                .is_some_and(|fit| {
-                    serial_reclaim_gate(fit.ask(MemFloor::from_gb(cfg.mem_floor_gb))).admitted()
-                })
+            media_replacement_quote(cfg, engine, ctx, media_bytes, 0).is_some_and(|fit| {
+                serial_reclaim_gate(fit.ask(MemFloor::from_gb(cfg.mem_floor_gb))).admitted()
+            })
         } else {
             serial_ctx_fits(cfg, engine, ctx)
         };
@@ -2060,13 +2072,19 @@ fn media_refresh_quote(
     Some(resolve_serial_fit(configured, live))
 }
 
-fn media_allowance(quote: SerialFitQuote, probe: Option<SerialSessionProbe>, floor: MemFloor) -> u64 {
+fn media_allowance(
+    quote: SerialFitQuote,
+    probe: Option<SerialSessionProbe>,
+    floor: MemFloor,
+) -> u64 {
     let pending = if probe.is_some_and(|p| !p.graph_pending) {
         0
     } else {
         quote.need.raw()
     };
-    quote.avail.raw()
+    quote
+        .avail
+        .raw()
         .saturating_sub(pending)
         .saturating_sub(floor.bytes().max(quote.headroom.raw()))
 }
@@ -2937,12 +2955,21 @@ mod owner_tests {
     fn media_allowance_tracks_graph() {
         const GIB: u64 = 1 << 30;
         let quote = serial_fit_from_native(6 * GIB, 10 * GIB, 2 * GIB, 0, false).unwrap();
-        let mut probe = SerialSessionProbe { cur_ctx: 1_048_576, graph_pending: true };
+        let mut probe = SerialSessionProbe {
+            cur_ctx: 1_048_576,
+            graph_pending: true,
+        };
         assert_eq!(media_allowance(quote, Some(probe), MemFloor::from_gb(4)), 0);
         probe.graph_pending = false;
-        assert_eq!(media_allowance(quote, Some(probe), MemFloor::from_gb(4)), 6 * GIB);
+        assert_eq!(
+            media_allowance(quote, Some(probe), MemFloor::from_gb(4)),
+            6 * GIB
+        );
         let quote = serial_fit_from_native(6 * GIB, 10 * GIB, 7 * GIB, 0, false).unwrap();
-        assert_eq!(media_allowance(quote, Some(probe), MemFloor::from_gb(4)), 3 * GIB);
+        assert_eq!(
+            media_allowance(quote, Some(probe), MemFloor::from_gb(4)),
+            3 * GIB
+        );
     }
 
     #[test]
@@ -4760,7 +4787,11 @@ mod owner_tests {
         const OLD_CTX: i32 = 8_192;
         const BYTES_PER_CTX: u64 = 256 << 10;
         let media = GIB / 4;
-        for (available, refuse) in [(Some(3 * GIB / 2), true), (Some(2 * GIB), false), (None, true)] {
+        for (available, refuse) in [
+            (Some(3 * GIB / 2), true),
+            (Some(2 * GIB), false),
+            (None, true),
+        ] {
             let mut cfg = serial_fit_cfg(32_768);
             cfg.mem_floor_gb = 1;
             let inner = Mutex::new(ServerInner::from_cfg(&cfg));
@@ -4774,16 +4805,33 @@ mod owner_tests {
             let mut out = Vec::new();
             let ids = vec!["call-media-resize".to_string()];
             let now = monotonic_now();
-            lock_inner(&inner).creg.publish_serial(Api::Responses, &ids, 7, 37, now);
-            assert!(lock_inner(&inner).creg.resolve_serial(Api::Responses, &ids, 7, 37, now));
+            lock_inner(&inner)
+                .creg
+                .publish_serial(Api::Responses, &ids, 7, 37, now);
+            assert!(lock_inner(&inner)
+                .creg
+                .resolve_serial(Api::Responses, &ids, 7, 37, now));
 
             let result = ensure_serial_session_fit(
-                &cfg, &inner, &job, &mut engine, Some(&mut cont),
-                SerialFrameKind::Canonical, 9_000, 1_024, media, &mut out,
+                &cfg,
+                &inner,
+                &job,
+                &mut engine,
+                Some(&mut cont),
+                SerialFrameKind::Canonical,
+                9_000,
+                1_024,
+                media,
+                &mut out,
             );
             assert_eq!(result.is_some(), refuse);
             assert_eq!(engine.resets, u32::from(!refuse));
-            assert_eq!(lock_inner(&inner).creg.resolve_serial(Api::Responses, &ids, 7, 37, now), refuse);
+            assert_eq!(
+                lock_inner(&inner)
+                    .creg
+                    .resolve_serial(Api::Responses, &ids, 7, 37, now),
+                refuse
+            );
             if refuse {
                 assert_eq!(engine.probe.cur_ctx, OLD_CTX);
                 assert!(!engine.probe.graph_pending);
@@ -4792,10 +4840,15 @@ mod owner_tests {
                 assert!(out.starts_with(b"HTTP/1.1 503"));
                 continue;
             }
-            let target = engine.rightsized.expect("a funded media graph can replace the old one");
+            let target = engine
+                .rightsized
+                .expect("a funded media graph can replace the old one");
             assert!(target > OLD_CTX);
             let quote = engine.native_graph_fit(target).unwrap();
-            assert!(quote.need_bytes > available.unwrap(), "the pre-reset native verdict lacked release credit");
+            assert!(
+                quote.need_bytes > available.unwrap(),
+                "the pre-reset native verdict lacked release credit"
+            );
             assert!(quote.fits);
             assert!(quote.need_bytes + media + GIB <= quote.avail_bytes);
             assert_eq!(engine.release_on_reset, 0);

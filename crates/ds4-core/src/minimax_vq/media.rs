@@ -51,7 +51,9 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Capacity => f.write_str("MiniMax media exceeds live memory capacity; retry later"),
+            Self::Capacity => {
+                f.write_str("MiniMax media exceeds live memory capacity; retry later")
+            }
             Self::Invalid(message) => f.write_str(message),
         }
     }
@@ -134,7 +136,11 @@ fn media_cost(pairs: u32, height: u32, width: u32) -> Result<MediaCost, Error> {
     let segment = u64::from(SEGMENT_PAIRS);
     let mut pass_pairs = VISION_PASS_ROWS / per / segment * segment;
     if pass_pairs == 0 {
-        pass_pairs = if segment <= VISION_PASS_ROWS / per { segment } else { 1 };
+        pass_pairs = if segment <= VISION_PASS_ROWS / per {
+            segment
+        } else {
+            1
+        };
     }
     if pass_pairs < segment && u64::from(pairs) > pass_pairs {
         return Err("MiniMax video segment exceeds one vision pass".into());
@@ -144,8 +150,8 @@ fn media_cost(pairs: u32, height: u32, width: u32) -> Result<MediaCost, Error> {
     let q = m.min(VISION_SCORE_BYTES / (VISION_CELL_BYTES * m));
     // ds4_minimax_vision.inc/mm_vis_pass and the cleared native scratch slots:
     // tower and projector peaks are disjoint; clean streamed weights are reclaimable.
-    let tower_fixed = 2 * VISION_DIM * (4 * VISION_DIM + 2 * VISION_FF)
-        + 4 * (3 * VISION_DIM + VISION_FF);
+    let tower_fixed =
+        2 * VISION_DIM * (4 * VISION_DIM + 2 * VISION_FF) + 4 * (3 * VISION_DIM + VISION_FF);
     let tower = tower_fixed + 6 * VISION_DIM * m + VISION_CELL_BYTES * m * q;
     let projector = 8 * VISION_WIDTH * VISION_WIDTH + 4 * VISION_WIDTH;
     let transient = VISION_ROW_BYTES * n + tower.max(projector) + VISION_STAGE_BYTES;
@@ -184,7 +190,8 @@ fn image_work(decoded: u64, height: u32, width: u32, th: u32, tw: u32, patches: 
         .max(target.saturating_add(patches));
     if (th, tw) != (height, width) {
         let horizontal_peak = if tw != width {
-            source.saturating_mul(2)
+            source
+                .saturating_mul(2)
                 .saturating_add(horizontal)
                 .saturating_add(coeff_bytes(width, tw))
         } else {
@@ -193,7 +200,11 @@ fn image_work(decoded: u64, height: u32, width: u32, th: u32, tw: u32, patches: 
         let vertical_peak = source
             .saturating_add(horizontal)
             .saturating_add(target)
-            .saturating_add(if th != height { coeff_bytes(height, th) } else { 0 });
+            .saturating_add(if th != height {
+                coeff_bytes(height, th)
+            } else {
+                0
+            });
         peak = peak.max(horizontal_peak).max(vertical_peak);
     }
     peak
@@ -358,7 +369,10 @@ pub fn image_budget(data: &[u8], budget: &mut MediaBudget) -> Result<Visual, Err
     } else {
         0
     };
-    let decode_room = budget.room().checked_sub(decoder_input).ok_or(Error::Capacity)?;
+    let decode_room = budget
+        .room()
+        .checked_sub(decoder_input)
+        .ok_or(Error::Capacity)?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(limits.max_alloc.unwrap_or(u64::MAX).min(decode_room));
     let edge = decode_room.min(u64::from(u32::MAX)) as u32;
@@ -413,7 +427,8 @@ pub fn video_budget(data: &[u8], budget: &mut MediaBudget) -> Result<Visual, Err
         let mut file = std::fs::File::create(&path).map_err(|e| format!("video temp file: {e}"))?;
         std::io::Write::write_all(&mut file, data).map_err(|e| format!("video temp file: {e}"))?;
         // The source file becomes clean/reclaimable before raw frames grow.
-        file.sync_data().map_err(|e| format!("video temp file writeback: {e}"))?;
+        file.sync_data()
+            .map_err(|e| format!("video temp file writeback: {e}"))?;
         drop(file);
         decode_video(&path, budget)
     })();
@@ -434,7 +449,10 @@ pub fn video_budget(data: &[u8], budget: &mut MediaBudget) -> Result<Visual, Err
     Ok(visual)
 }
 
-fn decode_video(path: &std::path::Path, budget: &MediaBudget) -> Result<(Vec<u8>, u32, u32), Error> {
+fn decode_video(
+    path: &std::path::Path,
+    budget: &MediaBudget,
+) -> Result<(Vec<u8>, u32, u32), Error> {
     let probe = std::process::Command::new("ffprobe")
         .args([
             "-v",
@@ -501,7 +519,11 @@ fn decode_video(path: &std::path::Path, budget: &MediaBudget) -> Result<(Vec<u8>
             } else {
                 old_capacity
             };
-            let growing = if capacity > old_capacity { old_capacity } else { 0 };
+            let growing = if capacity > old_capacity {
+                old_capacity
+            } else {
+                0
+            };
             video_growth(budget, bytes, capacity, growing, th, tw)?;
             if capacity > old_capacity {
                 raw.try_reserve_exact(capacity - raw.len())
@@ -645,7 +667,10 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         let mut budget = MediaBudget::new(0);
-        assert!(matches!(image_budget(&png, &mut budget), Err(Error::Capacity)));
+        assert!(matches!(
+            image_budget(&png, &mut budget),
+            Err(Error::Capacity)
+        ));
         assert_eq!(budget.patches, 0);
         assert_eq!(budget.reserve_bytes(), 0);
     }

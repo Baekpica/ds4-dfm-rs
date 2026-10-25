@@ -190,9 +190,10 @@ fn main() -> Result<()> {
     // Native getenv treats even an empty value or "0" as disabled.
     for name in ["DS4_MTP_SPEC_DISABLE", "DS4_MINIMAX_DSPARK_NOCTX"] {
         if std::env::var_os(name).is_some() {
-            return Err(
-                format!("unset {name}; disabled drafting or context makes this gate vacuous").into(),
-            );
+            return Err(format!(
+                "unset {name}; disabled drafting or context makes this gate vacuous"
+            )
+            .into());
         }
     }
     let prefix: usize = args
@@ -337,12 +338,22 @@ fn main() -> Result<()> {
         contaminate(&mut legacy, &b)?;
         legacy.load_payload(path)?;
         same_prefix(&legacy, &a, &frontier)?;
-        rows.push(legacy_probe(&mut legacy, &model, "legacy_contaminated_payload", &expected)?);
+        rows.push(legacy_probe(
+            &mut legacy,
+            &model,
+            "legacy_contaminated_payload",
+            &expected,
+        )?);
         drop(legacy);
         let mut fresh = model.session(context)?;
         fresh.load_payload(path)?;
         same_prefix(&fresh, &a, &frontier)?;
-        rows.push(legacy_probe(&mut fresh, &model, "legacy_fresh_payload", &expected)?);
+        rows.push(legacy_probe(
+            &mut fresh,
+            &model,
+            "legacy_fresh_payload",
+            &expected,
+        )?);
     }
     let pass = rows.iter().all(|r| r["pass"] == true);
     let report = json!({"pass":pass, "mode":args[3], "prefix":prefix, "context":context,
