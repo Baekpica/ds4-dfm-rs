@@ -27,7 +27,7 @@ use ds4_core::minimax_h3::render::{check_frames, Canvas, RgbFrames};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
-use ds4_core::minimax_h3::{condition, media, vae_audio, vae_encoder, vae_video};
+use ds4_core::minimax_h3::{condition, device, media, vae_audio, vae_encoder, vae_video};
 
 /// `h3.h:13-17`.
 const DEFAULT_WIDTH: i32 = 864;
@@ -297,6 +297,22 @@ fn run() -> Result<ExitCode, String> {
 }
 
 fn info(options: &Options, canvas: &Canvas, frame_count: i32) -> Result<ExitCode, String> {
+    // `h3_load_dir` probes while opening the context and fails on an error
+    // (`h3.c:456-463`); the port has no context here, so the probe runs once
+    // and reports the same five CUDA fields `main.c:128-139` prints.
+    let device = device::probe().map_err(|error| format!("device: {error}"))?;
+    let gib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+
+    println!(
+        "DEVICE name=\"{}\" architecture=\"{}\" physical_gib={:.1} working_set_gib={:.1} max_buffer_gib={:.1} unified={}",
+        device.name,
+        device.architecture,
+        gib(device.physical_memory),
+        gib(device.recommended_working_set),
+        gib(device.max_buffer_length),
+        if device.unified_memory { "yes" } else { "no" }
+    );
+
     let component = |name: &str| options.model_dir.join(FL2VA).join(name);
     let required = [
         component("tokenizer/tokenizer.json"),
@@ -561,7 +577,7 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --last-frame PATH         anchor: the clip's last frame
   --use-reference-rope      rope scale 1.0 even at 256x256
   --ssd-streaming           stream the DiT blocks from the checkpoint
-  --info                    resolve components and geometry, run nothing
+  --info                    resolve the device, components and geometry, run nothing
   --hash                    print the gate hashes of the pipeline stages
   --help                    this text
 

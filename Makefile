@@ -476,6 +476,21 @@ tests/h3_video_encoder_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_video_encoder_gate" $@
 
+# The device probe is its own object: it needs neither a stream nor cuBLAS, and
+# `--info` must resolve without the render path's ABI (`h3_device_cuda.cu:17-50`
+# is the whole reference surface). Same flags and the same fingerprint trap.
+H3_DEVICE_LINK_FINGERPRINT = $(shell cksum native/h3/h3_device_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
+
+native/h3/h3_device_gpu.o: native/h3/h3_device_gpu.cu native/h3/h3_device_gpu.h
+	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
+
+tests/h3_device_gate: $(DS4_RS_SOURCES) native/h3/h3_device_gpu.o
+	cargo rustc -p ds4-core --example h3_device_gate --release --features h3-gates -- \
+	-C metadata=$(H3_DEVICE_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_device_gpu.o \
+	$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_device_gate" $@
+
 # The h3 renderer: the CLI binary plus the three h3 device objects. It
 # deliberately does not link the bridge or the core objects: the h3 path
 # reaches only the `h3d_` and `h3v_` ABIs, so the binary also builds in a tree
@@ -483,12 +498,13 @@ tests/h3_video_encoder_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
 # are not reachable from ds4-rs's link set, so they are named here and folded
 # into the metadata. The vision object is the anchor path's: a keyframe is a
 # `<Picture n>:` span in the prompt as well as a row span (`h3.c:1345-1414`).
-h3-rs: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o native/h3/h3_vision_gpu.o
+h3-rs: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o native/h3/h3_vision_gpu.o native/h3/h3_device_gpu.o
 	cargo rustc -p ds4-cli --bin h3-rs --release --features native -- \
-	-C metadata=$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT) \
+	-C metadata=$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT)-$(H3_DEVICE_LINK_FINGERPRINT) \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
 	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_device_gpu.o \
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/h3-rs" $@
 

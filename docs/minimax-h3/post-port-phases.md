@@ -575,6 +575,22 @@ verdict so nothing stays "missing" without a reason:
 1. **Device probe.** `h3_device_cuda.cu` / `h3_device_probe` fills
    `h3_device_info`; the port's `--info` prints components and geometry but no
    device line. Small CUDA call set, and `tests/test_device.c` is the gate.
+   **Landed 2026-10-25** (`native/h3/h3_device_gpu.{h,cu}`,
+   `ds4_sys::h3_device`, `minimax_h3::device`, `h3_device_gate`,
+   `h3_device_gpu.o` on the `h3-rs` link line). The probe is the reference's
+   call set line for line (`h3_device_cuda.cu:17-50`): device 0, its
+   properties, `snprintf("%.127s")` of the name, "CUDA sm_%d%d"
+   (`:38-40`), `sysinfo(2)` totalram × mem_unit (`:41-45`), `totalGlobalMem`
+   twice (`:46-47`), `unifiedAddressing` (`:48`). `apple_gpu_family` and
+   `metal4` are the shared struct's Metal fields and stay zero
+   (`h3.h:135-136`, `h3_device_cuda.cu:23`). Measured on the Spark: the
+   reference's `h3_device_test` prints `ok: NVIDIA GB10 (CUDA sm_121), 121.6
+   GiB GPU memory, unified=yes`; the port's gate prints that same line and
+   `h3-rs --info` the same record (`physical_gib=121.6 working_set_gib=121.6
+   max_buffer_gib=121.6`), and the reference's own `h3 --info` prints
+   `physical memory / recommended GPU set / max GPU buffer` at 121.6 GiB each
+   and `unified memory yes` (`~/unit9-device-port.log`, `~/unit9-ref-info.log`
+   on the Spark).
 2. **`--token-reduction`.** Real DiT behavior: `configure_token_reduction`
    (`h3_dit.c:378-470`) pairs video tokens in a middle-block window with an
    early-step window and a scale, controlled by `token_reduction_begin`,
@@ -753,7 +769,7 @@ command, never an automatic step.
 | Metal backend | `h3_metal.m`, `metal/*` | Out of scope; CUDA is the release reference |
 | h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The OpenAI Videos API is the replacement |
 | Postprocessing hook | `docs/POSTPROCESSING.md` | Out of scope |
-| Device probe | `h3_device_cuda.cu` | Cheap; port in P13 so `h3-rs --info` prints the device |
+| Device probe | `h3_device_cuda.cu` | Ported and gated (`h3_device_gate`, `h3-rs --info`); field parity with the reference's `h3_device_test` |
 | Tiled-VAE quality bench | `h3_vae_bench_quality` | P0 remainder; run with P9.5/P11 |
 | Image/video/audio encoders | `h3_vision_encoder.c`, `h3_video_encoder.c`, `h3_audio_vae.c` encode half | P12 |
 
