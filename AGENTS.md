@@ -133,6 +133,8 @@ Follow this evidence-driven sequence for every optimization round, regardless of
 
 Do not impose a fixed percentage floor on adoption. A gain below 1% is worth retaining when repeated comparable A/B runs consistently improve performance beyond observed noise, preserve correctness, and show no meaningful regression elsewhere. Prefer such gains when they require no additional VRAM, arithmetic work, or other material resource cost. Check the relevant costs rather than assuming that unchanged tensor shapes imply unchanged work. If costs increase, report the tradeoff and judge it against the measured benefit; neither a small percentage nor one counter alone decides adoption. An automatic tool threshold is a screening heuristic, not the final engineering decision. (Codex learning)
 
+**Adoption rule.** A free-lunch change with a consistent repeated gain is adopted however small; a change with a cost (memory, numerics, a regression elsewhere) is weighed against its gain or left to the user with both numbers; a rejection names the cost that outweighs the gain; when targets conflict, ask the user which to secure first. Cases: [playbook, Adoption](docs/prefill-decode-optimization-playbook.md#adoption).
+
 **Fast-path coverage** is a common opportunity: maximize the fraction of the inference graph executed by the runtime's best hardware-appropriate primitives where measurements support it. The objective is verified end-to-end improvement; no implementation direction is mandatory.
 
 Before optimizing an already-fast kernel, search for:
@@ -345,6 +347,30 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   pulled in by `ds4_beam_gpu.cuh` but missing from the `ds4_cuda.o`
   dependency line left the object stale, and an unchanged binary was
   measured as a variant. Check the object's timestamp after each edit.
+- **Verify rows meet in L2 when every row walks the same order.** One
+  launch with a CTA group per verify row (each stages only its row) and
+  one task order across groups streamed each shared expert about once:
+  MiniMax's 4-row expert verify ran 1.3-1.6x faster per layer. An
+  input-union kernel did not fit (three 6,144-wide rows beside a 66 KiB
+  book exceed 99 KiB). One row keeps the expert-major order.
+- **L1 bank conflicts also hit `cp.async.ca`.** Rows 1,152 B (9 x 128 B)
+  apart put all 32 lanes of an 8-byte copy on one bank pair (32
+  wavefronts); rotating each lane's piece order spread them over three
+  and cut MiniMax's R13 expert gate 6%, bit-identical.
+- **Probe an estimate before building on it.** A model of the expert
+  kernel projected 25-35% from a k-outer loop with per-row activation
+  scales; the harness ran it even, and loading the next stage's codewords
+  between a stage's MMA halves ran 11% slower (consumers holding two of
+  three ring slots starve the producers).
+- **Frontier logits are chaotic in a 60-layer MoE.** Two accepted MiniMax
+  attention paths (F32 vs BF16 P) differ by logit rel-RMS 0.15-0.76 and KL
+  up to 14 at single frontiers, greedy tokens within a few tokens. Gate
+  value changes on paired NLL and top-1 over many assistant positions
+  (`tests/minimax_quality`), not on single-position logits.
+- **systemd-oomd acts on pressure, not on available memory.** A +1.6 GiB
+  pinned pool left 3.6 GiB available, yet a 60 s cold prefill drove the
+  user slice's memory pressure to 58% (> 50% for 20 s) and oomd killed
+  the run. Budget pinned and device allocations against reclaim pressure.
 
 # Agent Notes
 

@@ -141,6 +141,31 @@ What counts as the metric matters as much as the protocol:
   into the standard prompt).  93 -> 52 ms per step is a kernel result;
   18 -> 31 tok/s is that plus acceptance luck.
 
+### Adoption
+
+A change is kept or dropped on its costs, not on the size of its gain.
+
+- **Free lunch** (no extra memory, arithmetic, numerics risk or regression
+  elsewhere): adopt any gain that repeats consistently, however small.  When
+  it sits below end-to-end noise, confirm it where it is measurable (a
+  model-free harness, nsys kernel times) together with its class's
+  correctness check (section 5).  MiniMax's R13 expert copy-piece rotation
+  (2026-10-25) cut the gate kernel 6% and down 2.6% in the harness,
+  bit-identical, about 0.7% of a prefill segment: adopted.
+- **Trade-off** (more memory, a value change, a slower path elsewhere):
+  weigh the gain against the cost, and when the call is not clear put both
+  numbers in front of the user and let them decide.  A 2.25 GiB SSD-tier
+  pool took MiniMax's 64K plain decode from 18.6 to 20.2 tok/s for +1.6 GiB
+  of pinned memory; the user accepted it, the 512K 64K run then died to
+  systemd-oomd (memory pressure above 50% for 20 s at 3.6 GiB available),
+  and it was reverted.
+- **A rejection names its cost**: which metric or resource regresses, and by
+  how much.  "The gain is small" is not a reason.
+- **Conflicting targets**: when two targets cannot both be reached with the
+  levers at hand (MiniMax's decode >= 22 tok/s needs the drafter, whose
+  context costs prefill ~1.6% per segment), ask the user which to secure
+  first, and keep aiming for both.
+
 ---
 
 ## 2. Prefill: where the time went and how it was removed
