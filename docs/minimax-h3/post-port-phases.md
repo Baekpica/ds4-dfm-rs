@@ -643,6 +643,29 @@ verdict so nothing stays "missing" without a reason:
    temporal blend against the untiled decode, still unbuilt (P0 remainder).
 6. **The reference tests** are P12.5 and cover units 1-5 above file by file.
 
+**Core execution options landed 2026-10-25** (`LoadOptions`, `--layers`,
+`--core-reuse`, `h3d_sub`):
+
+- `--layers N` (25..=50) applies `configure_active_blocks`
+  (`h3_dit.c:1181-1194`) and then the reference's default gate ranking
+  (`:1196-1244`): the lowest mean |gate| over slots 2 and 5 is dropped unless
+  `H3_DIT_LAYER_POLICY=uniform`. The port computes the same score from its own
+  modulation tensors, over the same rows and slots. Deviation, named: every
+  block is still loaded, where the reference skips inactive ones at load, so
+  the port uses more memory for the same arithmetic.
+- `--core-reuse N` (1..=6) implements `evaluate_core` (`h3_dit.c:2161-2165`):
+  the first forward, every Nth one and the last step run the core; the others
+  add the cached `hidden - core_input` delta to the freshly packed rows
+  (`:2306-2312`). `set_conditions` resets the counter, as `h3_dit_reset_run`
+  does (`:2437-2438`), and the token-reduction window only applies to steps
+  that evaluate the core (`:2166-2167`).
+- Measured on the Spark, 512x192, five frames, both anchors, seed 1, against
+  `dit_probe`: layers 45 -> `f2874fa151da44d2`/`5d53523c468fa314`, layers 40 ->
+  `a542928c46756e5a`/`0ca938b91455931a` at two evaluations; core-reuse 4 at 20
+  evaluations -> `f7237de7a7c714c2`/`06d1170ae45c365f` (2.868 s against the
+  reference's 2.939) and core-reuse 6 -> `aabb0a542ebe4980`/`a10445642d3fe201`
+  (2.425 s against 2.437). Equal on both sides.
+
 ## P13 — Close
 
 The rule 19 QA gate once, the evidence file, docs, memory, handoff, push.
@@ -792,8 +815,8 @@ command, never an automatic step.
 | Surface | Reference | Disposition |
 |---|---|---|
 | SSD weight streaming | `h3.h:98`, `h3.c` streaming tier | Refused: a residency policy, same bytes; measured slower for this artifact. The port's `--ssd-streaming` exists and is bit-identical |
-| `--layers 45/40` | `h3.h:82` | Not ported; `h3-rs` refuses anything but 50. Port only with the reference's own quality caveat and a gate |
-| `--core-reuse N` | `h3.h:85` | Not ported. Speed knob that changes bytes; park behind a gate |
+| `--layers 45/40` | `h3.h:82` | Ported and gated: gate-ranked mask (`h3_dit.c:1196-1244`), hashes equal at 45 and 40 |
+| `--core-reuse N` | `h3.h:85` | Ported and gated: cached core delta (`h3_dit.c:2161-2165`, `:2306-2312`), hashes equal at 4 and 6 |
 | `--token-reduction` | `h3.h:89`, `h3_dit.c:378-470` | Ported and gated (`h3d_token_pool`/`h3d_token_expand`, `--token-reduction` in `h3-rs`); hashes equal to the reference on and off |
 | `--reuse N` | `h3.h:79` | Ported and gated (reuse 1 and 3) |
 | `--use-int8-row-fc2` | Metal/M5 only, CUDA no-op (`README.md:119-121`) | Refused |

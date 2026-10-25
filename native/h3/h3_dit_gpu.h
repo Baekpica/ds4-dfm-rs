@@ -170,6 +170,11 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
 int h3d_add(h3d_context *context, h3d_tensor *output,
             const h3d_tensor *left, const h3d_tensor *right, size_t elements,
             char *error, size_t error_size);
+/* `h3_gpu_sub_bf16` (`h3_gpu_cuda.cu:2378-2382`): the core-reuse residual
+ * (`h3_dit.c:2306-2312`). */
+int h3d_sub(h3d_context *context, h3d_tensor *output,
+            const h3d_tensor *left, const h3d_tensor *right, size_t elements,
+            char *error, size_t error_size);
 int h3d_cast_f32_to_bf16(h3d_context *context, h3d_tensor *output,
                          const h3d_tensor *input, size_t elements, char *error,
                          size_t error_size);

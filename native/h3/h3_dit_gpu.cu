@@ -1026,6 +1026,34 @@ int h3d_add(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("BF16 add", error, error_size);
 }
 
+/* `h3_binary_bf16_kernel` (`:2347-2357`), subtract branch only. */
+__global__ static void h3d_sub_kernel(__nv_bfloat16 *output,
+                                      const __nv_bfloat16 *left,
+                                      const __nv_bfloat16 *right,
+                                      size_t count) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) return;
+    float a = __bfloat162float(left[index]);
+    float b = __bfloat162float(right[index]);
+    output[index] = __float2bfloat16(a - b);
+}
+
+int h3d_sub(h3d_context *context, h3d_tensor *output,
+            const h3d_tensor *left, const h3d_tensor *right, size_t elements,
+            char *error, size_t error_size) {
+    if (!context || !h3d_is(output, H3D_BF16, elements) ||
+        !h3d_is(left, H3D_BF16, elements) ||
+        !h3d_is(right, H3D_BF16, elements)) {
+        return h3d_set_error(error, error_size, "invalid BF16 subtract tensors");
+    }
+    if (!elements) return 1;
+    h3d_sub_kernel<<<(unsigned)((elements + 255) / 256), 256, 0,
+                     context->stream>>>(
+        (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)left->data,
+        (const __nv_bfloat16 *)right->data, elements);
+    return h3d_launch_ok("BF16 subtract", error, error_size);
+}
+
 /* `h3_f32_to_bf16_kernel` (`h3_gpu_cuda.cu:519-525`). */
 __global__ static void h3d_cast_kernel(__nv_bfloat16 *output,
                                        const float *input, size_t elements) {

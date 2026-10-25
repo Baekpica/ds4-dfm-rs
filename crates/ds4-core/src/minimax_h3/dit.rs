@@ -762,6 +762,150 @@ impl Reduction {
     }
 }
 
+/// How the core runs: residency, active block count and token pairing
+/// (`h3_dit.c:1601-1665`). The reference takes the same three choices as
+/// separate loader arguments; one struct keeps the call sites readable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadOptions {
+    pub mode: LoadMode,
+    /// Blocks that run, 25..=50 (`h3_dit.c:1590-1591`).
+    pub layers: u32,
+    pub reduction: Reduction,
+    /// Core refresh interval, 1..=6 (`h3_dit.c:1591-1592`, `:2161-2163`).
+    pub core_reuse: u32,
+}
+
+impl LoadOptions {
+    /// Every block resident and every block active: the reference's defaults.
+    pub fn resident() -> LoadOptions {
+        LoadOptions {
+            mode: LoadMode::Resident,
+            layers: DIT_BLOCKS as u32,
+            reduction: Reduction::Environment,
+            core_reuse: 1,
+        }
+    }
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        LoadOptions::resident()
+    }
+}
+
+/// `configure_active_blocks` (`h3_dit.c:1181-1194`): the uniform starting
+/// mask. Blocks 0 and 49 always stay; a skipped block is clamped off the ends.
+fn uniform_blocks(layers: u32) -> Vec<bool> {
+    let blocks = DIT_BLOCKS as u32;
+    let mut active = vec![true; blocks as usize];
+    let skipped = blocks - layers;
+    if skipped == 0 {
+        return active;
+    }
+
+    for index in 0..skipped {
+        let mut block = ((2 * index + 1) * blocks) / (2 * skipped);
+        if block == 0 {
+            block = 1;
+        }
+        if block >= blocks - 1 {
+            block = blocks - 2;
+        }
+        active[block as usize] = false;
+    }
+
+    active
+}
+
+/// `h3_dit_schedule_gate_score` (`h3_dit_schedule.c:388-418`): the mean
+/// magnitude of the two gate slots (2 and 5) over every time row, modality and
+/// column. A read failure is the reference's -1.
+fn gate_score(
+    gpu: &Gpu,
+    modulation: &Tensor,
+    time_rows: usize,
+    hidden: usize,
+) -> Result<f64, DitError> {
+    let slots = BLOCK_SLOTS as usize;
+    let modalities = MODALITIES as usize;
+    let elements = time_rows * modalities * slots * hidden;
+    let mut bytes = vec![0u8; elements * 2];
+    if gpu.read(modulation, &mut bytes).is_err() {
+        return Ok(-1.0);
+    }
+
+    let mut total = 0.0f64;
+    for row in 0..time_rows {
+        for modality in 0..modalities {
+            for slot in [2usize, 5] {
+                let base = ((row * modalities + modality) * slots + slot) * hidden;
+                for column in 0..hidden {
+                    let offset = 2 * (base + column);
+                    let word = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+                    // The reference widens BF16 with the low half zero
+                    // (`h3_dit_schedule.c:409-411`).
+                    total += f64::from(f32::from_bits(u32::from(word) << 16).abs());
+                }
+            }
+        }
+    }
+
+    let samples = time_rows * modalities * 2 * hidden;
+    Ok(if samples > 0 {
+        total / samples as f64
+    } else {
+        -1.0
+    })
+}
+
+/// `h3_dit.c:1196-1244` `configure_gate_ranked_blocks`: with fewer than 50
+/// blocks the reference drops the lowest gate magnitudes outside blocks 0, 1
+/// and 49, unless `H3_DIT_LAYER_POLICY=uniform`. Any unreadable score leaves
+/// the uniform mask in place, as the reference does.
+fn active_blocks(
+    layers: u32,
+    time_rows: usize,
+    gpu: &Gpu,
+    modulation: &[Tensor],
+    hidden_width: u32,
+) -> Result<Vec<bool>, DitError> {
+    let blocks = DIT_BLOCKS as u32;
+    let uniform = matches!(
+        std::env::var("H3_DIT_LAYER_POLICY"),
+        Ok(value) if value == "uniform"
+    );
+    if layers >= blocks || uniform {
+        return Ok(uniform_blocks(layers));
+    }
+
+    let mut scores = Vec::with_capacity((blocks - 3) as usize);
+    for block in 2..blocks - 1 {
+        let score = gate_score(
+            gpu,
+            &modulation[block as usize],
+            time_rows,
+            hidden_width as usize,
+        )?;
+        if score < 0.0 {
+            return Ok(uniform_blocks(layers));
+        }
+        scores.push((block, score));
+    }
+
+    // Ascending by magnitude: the `skipped` smallest are dropped.
+    scores.sort_by(|left, right| {
+        left.1
+            .partial_cmp(&right.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut active = vec![true; blocks as usize];
+    for (block, _) in scores.iter().take((blocks - layers) as usize) {
+        active[*block as usize] = false;
+    }
+
+    Ok(active)
+}
+
 /// The geometry the pairing maps need: the video target's first packed row and
 /// the pool widths (`h3_dit.c:440-470`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1288,6 +1432,15 @@ pub struct Dit {
     /// `None` unless the caller asked for the reference's token pairing or
     /// the environment enabled it (`h3_dit.c:378-382`).
     reduction: Option<ReductionState>,
+    /// Which of the 50 blocks run (`h3_dit.c:1181-1244`).
+    active_blocks: Vec<bool>,
+    /// `core_reuse_interval`, its forward counter and the cached delta
+    /// (`h3_dit.c:103-105`).
+    core_reuse: u32,
+    core_forward_count: u32,
+    core_residual_ready: bool,
+    core_input: Option<Tensor>,
+    core_residual: Option<Tensor>,
     video_projection_map: Option<Tensor>,
     audio_projection_map: Option<Tensor>,
 
@@ -1331,8 +1484,7 @@ impl Dit {
             schedule,
             text,
             spatial_rope_scale,
-            LoadMode::Resident,
-            Reduction::Environment,
+            LoadOptions::resident(),
         )
     }
 
@@ -1346,9 +1498,25 @@ impl Dit {
         schedule: Schedule,
         text: &Embedding,
         spatial_rope_scale: f32,
-        mode: LoadMode,
-        reduction: Reduction,
+        options: LoadOptions,
     ) -> Result<Dit, DitError> {
+        if !(1..=6).contains(&options.core_reuse) {
+            return Err(DitError::Geometry {
+                detail: format!("core reuse {} is outside 1..=6", options.core_reuse),
+            });
+        }
+        if options.layers < DIT_BLOCKS as u32 / 2 || options.layers > DIT_BLOCKS as u32 {
+            return Err(DitError::Geometry {
+                detail: format!(
+                    "layers {} is outside {}..={}",
+                    options.layers,
+                    DIT_BLOCKS / 2,
+                    DIT_BLOCKS
+                ),
+            });
+        }
+        let mode = options.mode;
+        let reduction = options.reduction;
         let weights = Weights::open(dir).map_err(|error| DitError::Weights(error.to_string()))?;
         let config = weights.config().clone();
         let gpu = device(Gpu::create())?;
@@ -1424,6 +1592,16 @@ impl Dit {
             None => None,
         };
 
+        // `h3_dit.c:1181-1244`: the uniform mask first, then the gate-ranked
+        // one the reference prefers unless `H3_DIT_LAYER_POLICY=uniform`.
+        let active = active_blocks(
+            options.layers,
+            tree.times.len(),
+            &gpu,
+            &modulation,
+            hidden_width,
+        )?;
+
         // `h3_dit.c:1356-1553` with `activation_aliases = 1`: `attention_heads`
         // is `qkv`, `mod_mlp` is `qkv` and `mlp_output` is `attention_output`,
         // which is why this file passes those two buffers under both names.
@@ -1436,6 +1614,15 @@ impl Dit {
         let attention_output = bf16(rows * hidden_width as usize)?;
         let fc1 = bf16(rows * config.ffn as usize * 2)?;
         let activated = bf16(rows * config.ffn as usize)?;
+        // `h3_dit.c:1534-1543`: the cached core delta needs its own input copy.
+        let (core_input, core_residual) = if options.core_reuse > 1 {
+            (
+                Some(bf16(rows * hidden_width as usize)?),
+                Some(bf16(rows * hidden_width as usize)?),
+            )
+        } else {
+            (None, None)
+        };
         let final_norm_out =
             bf16(sequence.img_target_rows.max(sequence.audio_target_rows) * hidden_width as usize)?;
         let video_input = f32t(sequence.video_total_rows() * video_width as usize)?;
@@ -1483,6 +1670,12 @@ impl Dit {
             final_audio_maps,
             final_video_maps,
             reduction,
+            active_blocks: active,
+            core_reuse: options.core_reuse,
+            core_forward_count: 0,
+            core_residual_ready: false,
+            core_input,
+            core_residual,
             video_projection_map,
             audio_projection_map,
             refined_text,
@@ -1566,6 +1759,10 @@ impl Dit {
         if wanted_audio != 0 {
             device(self.gpu.upload_at(&self.audio_input, 0, &pack_f32(audio)))?;
         }
+
+        // `h3_dit.c:2437-2438`: a new run restarts the core-reuse counter.
+        self.core_forward_count = 0;
+        self.core_residual_ready = false;
 
         Ok(())
     }
@@ -1750,6 +1947,65 @@ impl Dit {
         Ok(())
     }
 
+    /// `h3_dit.c:2316-2396`: the fused final head, AdaLN then projection,
+    /// once per modality slice. Shared by the evaluated and the reused core
+    /// step, which both end here.
+    fn final_head(&self, step: usize) -> Result<(), DitError> {
+        let hidden = self.hidden_width;
+
+        device(self.gpu.adaln(
+            &self.final_norm_out,
+            &self.hidden,
+            self.audio_target_start as usize * hidden as usize,
+            &self.final_layer.norm,
+            &self.final_modulation,
+            &self.final_audio_maps[step],
+            self.audio_rows,
+            hidden,
+            FINAL_SLOTS,
+            0,
+            1,
+            EPSILON,
+        ))?;
+        device(self.gpu.linear(
+            &self.audio_output,
+            &self.final_norm_out,
+            &self.final_layer.audio_weight,
+            Some(&self.final_layer.audio_bias),
+            self.audio_rows,
+            hidden,
+            self.audio_width,
+            Dtype::Bf16,
+        ))?;
+
+        device(self.gpu.adaln(
+            &self.final_norm_out,
+            &self.hidden,
+            self.video_target_start as usize * hidden as usize,
+            &self.final_layer.norm,
+            &self.final_modulation,
+            &self.final_video_maps[step],
+            self.video_rows,
+            hidden,
+            FINAL_SLOTS,
+            0,
+            1,
+            EPSILON,
+        ))?;
+        device(self.gpu.linear(
+            &self.video_output,
+            &self.final_norm_out,
+            &self.final_layer.video_weight,
+            Some(&self.final_layer.video_bias),
+            self.video_rows,
+            hidden,
+            self.video_width,
+            Dtype::Bf16,
+        ))?;
+
+        device(self.gpu.sync())
+    }
+
     /// `h3_dit.c:2050-2396` `encode_forward` with `core_reuse_interval = 1`,
     /// `ssd_streaming = 0` and the CUDA flag set of (`h3_dit.c:1601-1665`);
     /// token reduction runs when it was configured at load.
@@ -1846,13 +2102,44 @@ impl Dit {
             });
         }
 
-        // `h3_dit.c:2166-2210`: the reduced window for this step. A forward
-        // can skip it for diagnosis, as `H3_DISABLE_TOKEN_REDUCTION` does.
+        // `h3_dit.c:2161-2165`: the core runs on the first forward, every
+        // `core_reuse`-th one, and the last step; other steps add the cached
+        // delta to the freshly packed rows.
+        let evaluate_core = self.core_reuse == 1
+            || !self.core_residual_ready
+            || self.core_forward_count.is_multiple_of(self.core_reuse)
+            || step == self.schedule.steps - 1;
+        let hidden_elements = self.rows as usize * hidden as usize;
+
+        if evaluate_core && self.core_reuse > 1 {
+            let core_input = self
+                .core_input
+                .as_ref()
+                .ok_or_else(|| DitError::Gpu("core reuse has no input buffer".into()))?;
+            device(
+                self.gpu
+                    .copy(core_input, 0, &self.hidden, 0, hidden_elements),
+            )?;
+        }
+
+        // `h3_dit.c:2166-2210`: the reduced window for this step, on the
+        // steps that evaluate the core. A forward can skip it for diagnosis,
+        // as `H3_DISABLE_TOKEN_REDUCTION` does.
         let window = self
             .reduction
             .as_ref()
-            .filter(|_| std::env::var_os("H3_DISABLE_TOKEN_REDUCTION").is_none())
+            .filter(|_| evaluate_core && std::env::var_os("H3_DISABLE_TOKEN_REDUCTION").is_none())
             .map(|state| (state, state.window.end_for_step(step)));
+
+        if !evaluate_core {
+            let residual = self
+                .core_residual
+                .as_ref()
+                .ok_or_else(|| DitError::Gpu("core reuse has no residual buffer".into()))?;
+            device(self.gpu.add(&self.hidden, &self.hidden, residual))?;
+            self.core_forward_count += 1;
+            return self.final_head(step);
+        }
 
         // `h3_dit.c:2181-2306`: every block, with the next block's attention
         // AdaLN fused into this block's MLP gate.
@@ -1869,6 +2156,11 @@ impl Dit {
                     self.expand_tokens(state)?;
                 }
                 reduced = index >= state.window.begin && index < end;
+            }
+            // `h3_dit.c:2217`: a dropped block does no work, but the pool and
+            // expand boundaries above still run at their own block indices.
+            if !self.active_blocks[block] {
+                continue;
             }
             let active = match (reduced, window) {
                 (true, Some((state, _))) => Active {
@@ -1887,12 +2179,14 @@ impl Dit {
                 },
             };
             // `h3_dit.c:2210-2214`: the next block's attention AdaLN is not
-            // fused across a row-count boundary.
+            // fused across a row-count boundary, and only into a block that
+            // runs (`h3_dit.c:2138-2140`).
             let boundary = window.is_some_and(|(state, end)| {
                 let next = block as u32 + 1;
                 next == state.window.begin || next == end
             });
-            let fuse_next = block + 1 < self.blocks.len() && !boundary;
+            let fuse_next =
+                block + 1 < self.blocks.len() && self.active_blocks[block + 1] && !boundary;
             if streamed {
                 let streamer = self.streamer.as_mut().expect("streamed forward");
                 streamer.ensure(&self.gpu, block)?;
@@ -1925,59 +2219,22 @@ impl Dit {
             }
         }
 
-        // `h3_dit.c:2316-2337`: the fused final head, AdaLN then projection,
-        // once per modality slice.
-        device(self.gpu.adaln(
-            &self.final_norm_out,
-            &self.hidden,
-            self.audio_target_start as usize * hidden as usize,
-            &self.final_layer.norm,
-            &self.final_modulation,
-            &self.final_audio_maps[step],
-            self.audio_rows,
-            hidden,
-            FINAL_SLOTS,
-            0,
-            1,
-            EPSILON,
-        ))?;
-        device(self.gpu.linear(
-            &self.audio_output,
-            &self.final_norm_out,
-            &self.final_layer.audio_weight,
-            Some(&self.final_layer.audio_bias),
-            self.audio_rows,
-            hidden,
-            self.audio_width,
-            Dtype::Bf16,
-        ))?;
+        // `h3_dit.c:2306-2312`: keep the delta the next reused step adds.
+        if self.core_reuse > 1 {
+            let core_input = self
+                .core_input
+                .as_ref()
+                .ok_or_else(|| DitError::Gpu("core reuse has no input buffer".into()))?;
+            let core_residual = self
+                .core_residual
+                .as_ref()
+                .ok_or_else(|| DitError::Gpu("core reuse has no residual buffer".into()))?;
+            device(self.gpu.sub(core_residual, &self.hidden, core_input))?;
+            self.core_residual_ready = true;
+        }
+        self.core_forward_count += 1;
 
-        device(self.gpu.adaln(
-            &self.final_norm_out,
-            &self.hidden,
-            self.video_target_start as usize * hidden as usize,
-            &self.final_layer.norm,
-            &self.final_modulation,
-            &self.final_video_maps[step],
-            self.video_rows,
-            hidden,
-            FINAL_SLOTS,
-            0,
-            1,
-            EPSILON,
-        ))?;
-        device(self.gpu.linear(
-            &self.video_output,
-            &self.final_norm_out,
-            &self.final_layer.video_weight,
-            Some(&self.final_layer.video_bias),
-            self.video_rows,
-            hidden,
-            self.video_width,
-            Dtype::Bf16,
-        ))?;
-
-        device(self.gpu.sync())
+        self.final_head(step)
     }
 
     /// `h3_dit.c:1789-1805` `enter_token_reduction`: snapshot every row the
@@ -2968,6 +3225,24 @@ mod tests {
         assert_eq!(features.len(), TIME_INPUT);
         assert_eq!(features[0], 1.0);
         assert_eq!(features[TIME_INPUT / 2], 0.0);
+    }
+
+    /// `h3_dit.c:1181-1194`: the uniform mask keeps block 0 and block 49 and
+    /// clamps every skipped index off both ends.
+    #[test]
+    fn uniform_mask_keeps_the_ends() {
+        for layers in [45u32, 40, 25] {
+            let mask = uniform_blocks(layers);
+            assert_eq!(mask.len(), DIT_BLOCKS);
+            assert_eq!(
+                mask.iter().filter(|active| **active).count(),
+                layers as usize
+            );
+            assert!(mask[0] && mask[DIT_BLOCKS - 1]);
+        }
+        assert!(uniform_blocks(DIT_BLOCKS as u32)
+            .iter()
+            .all(|active| *active));
     }
 
     /// `h3_dit.c:475-506`: every reduced row pools two adjacent columns of one

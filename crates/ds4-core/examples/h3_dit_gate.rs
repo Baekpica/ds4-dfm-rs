@@ -76,6 +76,17 @@
 //! `video=35fc6b4a61d34881 audio=52dd7ce1c6106c42` on; 9.637 -> 8.425 s in
 //! the reference and 9.539/9.615 -> 8.348 s in the port.
 //!
+//! The layer mask and core reuse, same clip, seed 1:
+//!
+//!   --layers 45 (two evaluations)  f2874fa151da44d2 / 5d53523c468fa314
+//!   --layers 40 (two evaluations)  a542928c46756e5a / 0ca938b91455931a
+//!   --core-reuse 4 (20 evaluations) f7237de7a7c714c2 / 06d1170ae45c365f
+//!   --core-reuse 6 (20 evaluations) aabb0a542ebe4980 / a10445642d3fe201
+//!
+//! Every line equals the reference; the reference's denoise times for that
+//! pair were 0.861/0.773 s and 2.939/2.437 s, the port's 0.864/0.773 and
+//! 2.868/2.425 s.
+//!
 //! Every line equals the reference. The decode leg then stops at the
 //! reference's own two-token rule (`h3_video_vae.c:1222`): `t = 2` supports
 //! one spatial tile and 512 px is two, so a five-frame decode needs a
@@ -84,7 +95,7 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::dit::{self, Dit, LoadMode, Reduction};
+use ds4_core::minimax_h3::dit::{self, Dit, LoadMode, LoadOptions, Reduction};
 use ds4_core::minimax_h3::host::{latent_canvas, reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
@@ -254,8 +265,12 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         schedule.clone(),
         &text,
         options.rope_scale,
-        mode,
-        reduction,
+        LoadOptions {
+            mode,
+            layers: options.layers,
+            reduction,
+            core_reuse: options.core_reuse,
+        },
     )
     .map_err(|error| error.to_string())?;
     println!("LOAD seconds={:.3}", start.elapsed().as_secs_f64());
@@ -497,6 +512,8 @@ struct Options {
     seed: u64,
     rope_scale: f32,
     reuse: usize,
+    layers: u32,
+    core_reuse: u32,
     denoise: bool,
     stream: bool,
     token_reduction: bool,
@@ -524,6 +541,8 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         seed: 1,
         rope_scale: 1.0,
         reuse: 1,
+        layers: dit::DIT_BLOCKS as u32,
+        core_reuse: 1,
         denoise: false,
         stream: false,
         token_reduction: false,
@@ -557,6 +576,8 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
             "--seed" => options.seed = number(value()?)?,
             "--rope-scale" => options.rope_scale = number(value()?)?,
             "--reuse" => options.reuse = number(value()?)?,
+            "--layers" => options.layers = number(value()?)?,
+            "--core-reuse" => options.core_reuse = number(value()?)?,
             "--denoise" => {
                 options.denoise = true;
                 index += 1;
@@ -646,7 +667,9 @@ fn usage(detail: &str) -> String {
         "{detail}\nusage: h3_dit_gate <FL2VA/text_encoder> <tokenizer.json> \
          <FL2VA/transformer> <prompt> [--width W] [--height H] [--frames F] \
          [--steps N] [--step S] [--seed N] [--rope-scale X] [--denoise] \
-         [--reuse K] [--stream] [--token-reduction] [--expect-video HEX] \
+         [--reuse K] [--layers N] [--core-reuse N] [--stream] \
+         [--token-reduction] \
+         [--expect-video HEX] \
          [--decode --audio-vae DIR] [--decode --video-vae DIR] \
          [--expect-pcm HEX] [--expect-frames HEX] \
          [--expect-audio HEX] [--expect-adaln BLOCK:FINAL]\n       \

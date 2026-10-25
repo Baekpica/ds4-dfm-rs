@@ -39,7 +39,7 @@ Related, outside this directory:
 | Multimodal gate | `crates/ds4-core/examples/h3_multimodal_gate.rs` (`make tests/h3_multimodal_gate`) |
 | Host arithmetic (canvas, noise, sigmas, reuse window, Euler step) | `crates/ds4-core/src/minimax_h3/host.rs` |
 | Packed sequence layout | `crates/ds4-core/src/minimax_h3/sequence.rs` |
-| DiT forward, Euler denoise, block stream, token reduction | `crates/ds4-core/src/minimax_h3/dit.rs` |
+| DiT forward, Euler denoise, block stream, token reduction, layer mask, core reuse | `crates/ds4-core/src/minimax_h3/dit.rs` |
 | DiT gate | `crates/ds4-core/examples/h3_dit_gate.rs` (`make tests/h3_dit_gate`) |
 | Native DiT primitives | `native/h3/h3_dit_gpu.cu` |
 | Audio VAE decode | `crates/ds4-core/src/minimax_h3/vae_audio.rs` |

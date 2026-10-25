@@ -172,7 +172,8 @@ static void usage(void) {
             "<FL2VA/transformer> <prompt>\n"
             "       [--width W] [--height H] [--frames F] [--steps N] "
             "[--step S]\n"
-            "       [--seed N] [--layers N] [--rope-scale X]\n"
+            "       [--seed N] [--layers N] [--core-reuse N] "
+            "[--rope-scale X]\n"
             "       [--denoise [--reuse K] [--gpu-sampler]] "
             "[--decode --audio-vae DIR] [--video-vae DIR]\n"
             "       [--token-reduction [--reduction-blocks B:E]\n"
@@ -520,6 +521,7 @@ int main(int argc, char **argv) {
     int steps = 2, step = 0, layers = DIT_BLOCKS;
     int denoise = 0, reuse = 1, gpu_sampler = 0, decode = 0;
     int token_reduction = 0;
+    int core_reuse = 1;
     const char *reduction_blocks = NULL, *reduction_early = NULL;
     const char *reduction_scale = NULL;
     const char *audio_vae = NULL, *video_vae = NULL;
@@ -579,6 +581,8 @@ int main(int argc, char **argv) {
             if (!parse_int(value, &out_width)) return 2;
         } else if (!strcmp(argument, "--out-height")) {
             if (!parse_int(value, &out_height)) return 2;
+        } else if (!strcmp(argument, "--core-reuse")) {
+            if (!parse_int(value, &core_reuse)) return 2;
         } else if (!strcmp(argument, "--reduction-blocks")) {
             reduction_blocks = value;
         } else if (!strcmp(argument, "--reduction-early")) {
@@ -805,13 +809,15 @@ int main(int argc, char **argv) {
     h3_dit *dit = keyframe_count
         ? h3_dit_load_conditioned(
               argv[3], "h3_shaders.metal", &text, &layout, &sigmas,
-              (unsigned)layers, 1, token_reduction, 0, rope_scale,
+              (unsigned)layers, (unsigned)core_reuse, token_reduction, 0,
+              rope_scale,
               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
               condition_rows, condition_elements, NULL, 0,
               NULL, NULL, error, sizeof(error))
         : h3_dit_load_t2va(
               argv[3], "h3_shaders.metal", &text, &layout, &sigmas,
-              (unsigned)layers, 1, token_reduction, 0, rope_scale,
+              (unsigned)layers, (unsigned)core_reuse, token_reduction, 0,
+              rope_scale,
               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
               NULL, NULL, error, sizeof(error));
     free(condition_rows);

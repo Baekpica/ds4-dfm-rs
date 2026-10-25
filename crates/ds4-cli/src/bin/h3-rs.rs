@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::dit::{Dit, LoadMode, Reduction};
+use ds4_core::minimax_h3::dit::{Dit, LoadMode, LoadOptions, Reduction};
 use ds4_core::minimax_h3::host::{reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::render::mux_mp4;
 use ds4_core::minimax_h3::render::{check_frames, Canvas, RgbFrames};
@@ -62,6 +62,8 @@ struct Options {
     stream: bool,
     /// `--token-reduction` (`main.c:34`, `:306`, `:394`).
     token_reduction: bool,
+    /// `--core-reuse` (`main.c:33`, `:305`, `:392`).
+    core_reuse: u32,
     info: bool,
     hash: bool,
 }
@@ -160,6 +162,12 @@ fn run() -> Result<ExitCode, String> {
     } else {
         Reduction::Environment
     };
+    let load_options = LoadOptions {
+        mode,
+        layers: options.layers as u32,
+        reduction,
+        core_reuse: options.core_reuse,
+    };
 
     let started = Instant::now();
     let mut model = Dit::load_with(
@@ -168,8 +176,7 @@ fn run() -> Result<ExitCode, String> {
         schedule,
         &text,
         canvas.rope_scale(options.reference_rope),
-        mode,
-        reduction,
+        load_options,
     )
     .map_err(|error| error.to_string())?;
     println!(
@@ -449,6 +456,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         reference_rope: false,
         stream: false,
         token_reduction: false,
+        core_reuse: 1,
         info: false,
         hash: false,
     };
@@ -485,6 +493,11 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--use-reference-rope" => options.reference_rope = true,
             "--ssd-streaming" => options.stream = true,
             "--token-reduction" => options.token_reduction = true,
+            "--core-reuse" => {
+                options.core_reuse = unsigned(&mut argv, &flag)?
+                    .try_into()
+                    .map_err(|_| "--core-reuse is larger than 6".to_string())?
+            }
             "--info" => options.info = true,
             "--hash" => options.hash = true,
             other => return Err(format!("unknown flag {other}; see --help")),
@@ -583,7 +596,7 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --seconds S               duration, converted at 24 fps
   --steps N                 denoise evaluations (default 20)
   --reuse N                 reuse window (default 1)
-  --layers N                DiT blocks to run (default 50)
+  --layers N                DiT blocks: 50 exact, 45 fast, 40 aggressive
   --seed N                  seed, each modality (default 42)
   --first-frame PATH        anchor: the clip's first frame
   --last-frame PATH         anchor: the clip's last frame
@@ -591,6 +604,7 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --ssd-streaming           stream the DiT blocks from the checkpoint
   --token-reduction         pair video tokens in middle DiT blocks
                             (window from H3_TOKEN_REDUCTION_* env)
+  --core-reuse N            core refresh: 1 exact, 4 fast, 6 aggressive
   --info                    resolve the device, components and geometry, run nothing
   --hash                    print the gate hashes of the pipeline stages
   --help                    this text
