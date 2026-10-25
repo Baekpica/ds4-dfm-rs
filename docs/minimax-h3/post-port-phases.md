@@ -1384,16 +1384,21 @@ The units, in order, each one commit with its own tests and evidence:
    proven and the render stopped 2026-10-25: the Spark clone answered
    `{"id":"video_1"}` and the record read `1344x768`, `4 s`, `107 frames`, then
    `in_progress` for 33 minutes before the operator stopped it. Measured
-   per-step cost says why: 40.2 s at 4,536 tokens and 112.9 s at 9,072 (2.8x
-   for 2x), so the gate shape's 32,256 tokens is hours at 20 steps. Two
-   changes came out of that attempt: the in-process engine now emits the
-   reference's progress channel (`STEP n/N seconds=`, `h3.c:649-676`), and the
-   CLI renderer learned the reference flags (`h3-rs`, `main.c:429-490`).
-   The next bounded gate is 768P, 4 s, `--steps 2`.
-7. **P15.7 — ComfyUI and the operator skill**: the node lives outside this
-   repo, in ComfyUI's own Python runtime; it calls the three routes and hands
-   ComfyUI a local file. Then `h3-prompt-writing`, the one portable skill of
-   the nine in `/data/MiniMax-H3/skills`.
+   per-step cost at the time: 40.2 s at 4,536 tokens and 112.9 s at 9,072
+   (2.8x for 2x), which put the gate shape's 32,256 tokens at hours for 20
+   steps. Two later points on 512x512 (5.37 s/step at 7,168 tokens, 47.75 at
+   17,408) do not fit that pair, so the step cost is shape-dependent and the
+   gate needs its own measurement. Paused by the operator 2026-10-25; P15.9
+   ran the ref2va engine path instead. Two changes came out of that attempt:
+   the in-process engine now emits the reference's progress channel
+   (`STEP n/N seconds=`, `h3.c:649-676`), and the CLI renderer learned the
+   reference flags (`h3-rs`, `main.c:429-490`). The next bounded gate is
+   768P, 4 s, `--steps 2`.
+7. **P15.7 — the operator skill**: `h3-prompt-writing`, the one portable
+   skill of the nine in `/data/MiniMax-H3/skills`, written as a plain
+   `SKILL.md` plus a shell/curl recipe so codex, open-grok and claude can all
+   use it. The ComfyUI node is removed from the work list (operator,
+   2026-10-25): no ComfyUI deliverable is planned, in this repo or beside it.
 8. **P15.8 — ref2va on the local contract** (landed in the worktree,
    2026-10-25): the ordered-reference path ported from the reference.
    - the ordered presentation, `h3_multimodal.c:243-360`: `<Audio n>: ` for a
@@ -1431,11 +1436,27 @@ The units, in order, each one commit with its own tests and evidence:
      oracle, the contract mapping and its refusals, the wire reaching the
      renderer, and the argv order and cleanup.
    - what is not proven here: no Ref2VA checkpoint on the 4070, so the live
-     ref2va render is the same blocked gate as P15.6 (it needs the Spark).
+     ref2va render needed the Spark; P15.9 then ran it there (item 9).
+9. **P15.9 — the ref2va engine gate** (landed 2026-10-25 on the Spark,
+   `docs/minimax-h3/v1-local-gate.txt`): one real Ref2VA render from a video
+   plus audio reference pair, and the two reference rules refused live.
+   - the render: `--ref-video` (3.0 s, own AAC track) plus `--ref-audio`,
+     512x512, 56 frames, `--steps 2`; `REFERENCES count=2 video_rows=840
+     audio_rows=11136 samples=138667`, `TEXT tokens=243`, `LOAD 52.5 s`,
+     `DENOISE 95.5 s` (47.75 s/step), `FRAMES 53.0 s`, 542 s wall, and a
+     747,734-byte H.264/AAC clip of 56 frames at 2.333 s whose 56 frame
+     hashes are all distinct.
+   - refusals, each exit 2 with no file written: the 2-second soundtrack
+     floor (`h3.c:1144-1151`, at `--frames 22`), the 15-second set budget
+     (`h3.c:1171-1176`, two 8 s clips behind one image), and the single-clip
+     15-second reader limit (`h3_ffmpeg.c:459-478`, a 16 s clip).
+   - what it does not cover: the served surface, which cannot express 56
+     frames or 512x512; a served ref2va render is the same 768P gate as
+     P15.6, which the operator paused.
 
 Ordering constraint: the body swap and the engine request land before any
-gate, and the real engine gate passes before the ComfyUI node is called done.
-ref2va's live render rides the same host and gate as P15.6.
+gate. ref2va's engine path is proven (P15.9); its served render rides the
+768P gate.
 
 What the port knowingly does not provide: HTTP auth (loopback bind only),
 moderation, quota, billing and token usage, callbacks, CDN URLs with expiry,
@@ -1543,7 +1564,7 @@ command, never an automatic step.
 | Resident preview decoder | `h3.c` preview path | Ported (`vae_video::PreviewDecoder`, one frame per step from the middle chunk) |
 | CPU decode | `h3.c` CPU path | Refused; Linux CUDA is the reference |
 | Metal backend | `h3_metal.m`, `metal/*` | Out of scope; CUDA is the release reference |
-| h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The official local v1 surface is the replacement (P15); a UI is ComfyUI, outside this repo |
+| h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The official local v1 surface is the replacement (P15); no UI is delivered. The ComfyUI node is removed from the work list too (operator, 2026-10-25) |
 | Postprocessing hook | `docs/POSTPROCESSING.md` | Out of scope |
 | Device probe | `h3_device_cuda.cu` | Ported and gated (`h3_device_gate`, `h3-rs --info`); field parity with the reference's `h3_device_test` |
 | Tiled-VAE quality bench | `h3_vae_bench_quality` | P0 remainder; run with P9.5/P11 |

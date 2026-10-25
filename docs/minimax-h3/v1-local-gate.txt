@@ -165,7 +165,7 @@ Reading the transcript
 - No anchor file survives its render: `out/` holds the two MP4s only.
 
 Not covered here, by design: a last-frame keyframe (P15.3 plumbing is unit
-tested, the live proof is P15.6), the real engine, the Spark, and ComfyUI.
+tested, the live proof is P15.6), the real engine and the Spark.
 
 Addendum, 2026-10-25: ref2va on the same wire (P15.8)
 =====================================================
@@ -319,3 +319,83 @@ ref2va live renders, and the two audio set rules inside the engine. The
 shortest honest wire render this contract can express is 768P, 4 s,
 `--steps 2`: about two steps plus a load and a VAE decode, roughly 30-40
 minutes, because `short_edge` is fixed at 768 and 4 s is the minimum duration.
+
+Addendum, 2026-10-25 (P15.9): the ref2va engine gate on the Spark
+=================================================================
+
+Tree and host: the Spark clone at `~/ds4-h3-port` was checked out to
+`7c68367a` (fork `feature/minimax-h3`; the earlier 22-path copy was stashed as
+`pre-p159-copies`) and `make h3-rs CUDA_ARCH=sm_121` rebuilt the CLI in 8.9 s.
+`--info --ref-video ref.mp4` names all five Ref2VA components under
+`/mnt/h3-artifacts/MiniMax-H3/Ref2VA` (135 GB, 13 transformer shards), so the
+optional partition is installed and probed. `h3-server-rs` went into that
+stash with the old copies and was not rebuilt; this gate is the CLI engine
+path.
+
+Fixtures (`~/h3-gate2/refs`, ffmpeg): `ref.mp4` 320x180 H.264 24 fps with an
+AAC stereo track, 3.0 s (72 frames); `ref.mp3` 32 kHz stereo, 2.0 s;
+`ref.png` 640x360; `a8.mp3` and `b8.mp3`, 8 s each; `a16.mp3`, 16 s.
+
+The two engine rules, refused live (exit 2, no MP4 written):
+
+  --ref-video ref.mp4 --frames 22                       120 s
+    h3-rs: video soundtrack 1 requires at least 2 seconds;
+           request at least 56 output frames                (h3.c:1144-1151)
+
+  --ref-image ref.png --ref-audio a8.mp3 --ref-audio b8.mp3 --frames 22
+                                                           49 s
+    h3-rs: ordered reference audio exceeds 15 seconds in total
+                                                            (h3.c:1171-1176)
+
+  --ref-image ref.png --ref-audio a16.mp3 --frames 22     35 s
+    h3-rs: reference audio exceeds the 15 second total limit
+                                                            (h3_ffmpeg.c:459-478)
+
+The render, one video+audio reference pair at a CLI shape:
+
+  $ ./h3-rs -d /mnt/h3-artifacts/MiniMax-H3 \
+      -p "Video 1 shows a colour test pattern; the tone in Audio 1 plays over
+          a slow pan across it." \
+      --ref-video refs/ref.mp4 --ref-audio refs/ref.mp3 \
+      --width 512 --height 512 --frames 56 --steps 2 --seed 42 \
+      -o out/ref2va-short.mp4
+
+  REFERENCES count=2 video_rows=840 audio_rows=11136 samples=138667
+             hash=feb5c734cfa6052b
+  TEXT       tokens=243 width=5120 fnv=b63c8d1f1d3c49bb  30.739 s
+  LOAD       52.547 s layers=50 latent=17x32x32 frames=56 audio_t=93
+  DENOISE    steps=2 reuse=1 selected=2  95.507 s  (47.75 s/step)
+  AUDIO      channels=2 samples=74400 rate=32000  1.662 s
+  FRAMES     56 at 512x512  52.981 s
+  VIDEO      mux 0.611 s
+  wall       542 s (9m02s)
+
+Output 747,734 B: H.264 512x512 at 24 fps, 56 frames; AAC 32 kHz stereo;
+duration 2.333 s; 56 distinct frame hashes, so no frame repeats; the
+soundtrack measures mean -23.3 dB and max -16.6 dB. Frame 28 is the fixture's
+colour bars, so the reference conditioned the render, blocky at two steps as
+the t2va two-step clip was.
+
+Reading the transcript
+----------------------
+
+- `samples=138667` is the two soundtracks summed: 74,667 cut from the video at
+  56 output frames (`h3.c:1144-1147`) plus 64,000 from `ref.mp3`, against the
+  480,000-sample set budget.
+- The 2-second floor reads the decoded reference frames
+  (`reference.rs:305-312`, `h3.c:1144-1151`), and the reader trims decoded
+  frames to 5+17n (`h3_ffmpeg.c:362`). A 2.000 s reference video is 48 frames,
+  trims to 39, and is refused by this same rule; the fixture was widened to
+  3.0 s (72 frames, 56 after the output cap) and the render ran. The reference
+  behaves identically, so this is a fixture lesson, not a deviation.
+- `DENOISE` is a third per-step measurement and it does not agree with the
+  pair recorded from the stopped 768P attempt: 47.75 s/step at 17,408 tokens
+  (512x512, 56 frames), 5.37 s/step at 7,168 tokens (512x512, 22 frames), and
+  40.2 s at 4,536 / 112.9 s at 9,072 (1344x576, earlier). 2.43x tokens cost
+  8.9x per step in the new pair and 2x cost 2.8x in the old one, so the step
+  cost is not a function of token count alone and a 768P budget still needs
+  its own measurement.
+- Not covered: the served surface. A ref2va body cannot ask for 56 frames (the
+  contract's floor is 4 s = 107 frames) and 512x512 is a CLI canvas, so this
+  proves the engine path, not the wire. A served ref2va render is the same
+  768P gate as P15.6.
