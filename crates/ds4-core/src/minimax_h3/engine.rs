@@ -28,8 +28,8 @@ use super::dit::{Dit, LoadOptions};
 use super::host::{reuse_schedule, temporal, Rng, Schedule};
 use super::media::{self, Fit};
 use super::partition::{Catalog, Partition, TOKENIZER};
-use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
 use super::reference::{self, combine, fnv_f32};
+use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
 use super::sequence::{self, Spec};
 use super::text_forward::{self, Embedding};
 use super::tokenizer::{EmptyPrompt, Tokenizer};
@@ -297,9 +297,9 @@ impl Engine {
                         .map_err(|error| {
                             EngineError::new(format!("tokenizer: {}", error.token()))
                         })?;
-                    text_forward::encode(&self.component("text_encoder"), &ids).map_err(|error| {
-                        EngineError::new(format!("text encoder: {}", error.token()))
-                    })?
+                    text_forward::encode(&self.component("text_encoder"), &ids).map_err(
+                        |error| EngineError::new(format!("text encoder: {}", error.token())),
+                    )?
                 };
                 self.embedding = Some((request.prompt.clone(), media_hash, text.clone()));
                 text

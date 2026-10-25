@@ -307,16 +307,13 @@ pub fn parse_create(body: &[u8]) -> Result<CreateBody, ApiError> {
         })?;
     let target = parse_target(target)?;
 
-    let seed = object
-        .get("seed")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            ApiError::bad_request(
-                "invalid_seed",
-                Some("seed"),
-                "seed must be a non-negative integer",
-            )
-        })?;
+    let seed = object.get("seed").and_then(Value::as_u64).ok_or_else(|| {
+        ApiError::bad_request(
+            "invalid_seed",
+            Some("seed"),
+            "seed must be a non-negative integer",
+        )
+    })?;
 
     Ok(CreateBody {
         task,
@@ -375,15 +372,21 @@ impl CreateBody {
             Task::Ref2va => (None, None, self.references()?),
         };
 
-        let (width, height) =
-            self.canvas(first_frame.as_ref().or(last_frame.as_ref()), &references, probe)?;
+        let (width, height) = self.canvas(
+            first_frame.as_ref().or(last_frame.as_ref()),
+            &references,
+            probe,
+        )?;
 
         let frames = align_frames(frames_from_seconds(f64::from(self.target.duration_seconds)));
         if !(H3_MIN_FRAMES..=H3_MAX_FRAMES).contains(&frames) {
             return Err(ApiError::bad_request(
                 "invalid_duration",
                 Some("target.duration_seconds"),
-                format!("{} s aligns to {frames} frames, outside the engine's range", self.target.duration_seconds),
+                format!(
+                    "{} s aligns to {frames} frames, outside the engine's range",
+                    self.target.duration_seconds
+                ),
             ));
         }
 
@@ -496,7 +499,10 @@ impl CreateBody {
                 "ref2va needs at least one image or video reference",
             ));
         }
-        if references.iter().all(|media| media.kind == ReferenceKind::Audio) {
+        if references
+            .iter()
+            .all(|media| media.kind == ReferenceKind::Audio)
+        {
             return Err(ApiError::bad_request(
                 "invalid_condition",
                 Some("conditions"),
@@ -569,13 +575,11 @@ impl CreateBody {
                     "t2va is text to video and carries no keyframe; use fl2va",
                 ))
             }
-            Task::Fl2va if first.is_none() && last.is_none() => {
-                return Err(ApiError::bad_request(
-                    "invalid_condition",
-                    Some("conditions"),
-                    "fl2va needs at least one keyframe: frame_index 0 (first frame) or 1 (last frame)",
-                ))
-            }
+            Task::Fl2va if first.is_none() && last.is_none() => return Err(ApiError::bad_request(
+                "invalid_condition",
+                Some("conditions"),
+                "fl2va needs at least one keyframe: frame_index 0 (first frame) or 1 (last frame)",
+            )),
             _ => {}
         }
 
@@ -627,7 +631,11 @@ impl CreateBody {
                 }
             };
             let canvas = presets::canvas_for(width, height);
-            check_stretch(canvas, f64::from(width.max(height)) / f64::from(width.min(height)), AUTO_RATIO)?;
+            check_stretch(
+                canvas,
+                f64::from(width.max(height)) / f64::from(width.min(height)),
+                AUTO_RATIO,
+            )?;
             return Ok(canvas);
         }
 
@@ -824,9 +832,10 @@ fn required_str<'a>(
     name: &'static str,
     code: &'static str,
 ) -> Result<&'a str, ApiError> {
-    object.get(name).and_then(Value::as_str).ok_or_else(|| {
-        ApiError::bad_request(code, Some(name), format!("{name} must be a string"))
-    })
+    object
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::bad_request(code, Some(name), format!("{name} must be a string")))
 }
 
 /// Unknown fields are refused, not ignored: a typo in a local contract should
@@ -988,8 +997,7 @@ fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
         if length < 2 || index + 2 + length > bytes.len() {
             return None;
         }
-        let is_sof = (0xC0..=0xCF).contains(&marker)
-            && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        let is_sof = (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
         if is_sof {
             if index + 9 > bytes.len() {
                 return None;
@@ -1009,8 +1017,10 @@ fn webp_size(bytes: &[u8]) -> Option<(u32, u32)> {
     }
     match &bytes[12..16] {
         b"VP8X" => {
-            let width = 1 + (u32::from(bytes[24]) | u32::from(bytes[25]) << 8 | u32::from(bytes[26]) << 16);
-            let height = 1 + (u32::from(bytes[27]) | u32::from(bytes[28]) << 8 | u32::from(bytes[29]) << 16);
+            let width =
+                1 + (u32::from(bytes[24]) | u32::from(bytes[25]) << 8 | u32::from(bytes[26]) << 16);
+            let height =
+                1 + (u32::from(bytes[27]) | u32::from(bytes[28]) << 8 | u32::from(bytes[29]) << 16);
             (width > 0 && height > 0).then_some((width, height))
         }
         b"VP8 " => {
@@ -1187,10 +1197,22 @@ mod tests {
 
     #[test]
     fn duration_is_the_documented_range() {
-        assert_eq!(planned(body("t2va", json!([]), "16:9", 4)).unwrap().frames, 107);
-        assert_eq!(planned(body("t2va", json!([]), "16:9", 5)).unwrap().frames, 124);
-        assert_eq!(planned(body("t2va", json!([]), "16:9", 10)).unwrap().frames, 243);
-        assert_eq!(planned(body("t2va", json!([]), "16:9", 15)).unwrap().frames, 362);
+        assert_eq!(
+            planned(body("t2va", json!([]), "16:9", 4)).unwrap().frames,
+            107
+        );
+        assert_eq!(
+            planned(body("t2va", json!([]), "16:9", 5)).unwrap().frames,
+            124
+        );
+        assert_eq!(
+            planned(body("t2va", json!([]), "16:9", 10)).unwrap().frames,
+            243
+        );
+        assert_eq!(
+            planned(body("t2va", json!([]), "16:9", 15)).unwrap().frames,
+            362
+        );
 
         for seconds in [3, 16] {
             let error = planned(body("t2va", json!([]), "16:9", seconds)).unwrap_err();
@@ -1228,14 +1250,12 @@ mod tests {
         assert_eq!(error.code, "invalid_aspect_ratio");
         assert!(error.message.contains("there is none"));
 
-        let error = planned(
-            body(
-                "ref2va",
-                json!([{ "type": "audio", "uri": data_uri("audio/mpeg", b"x"), "role": "reference" }]),
-                "auto",
-                8,
-            ),
-        )
+        let error = planned(body(
+            "ref2va",
+            json!([{ "type": "audio", "uri": data_uri("audio/mpeg", b"x"), "role": "reference" }]),
+            "auto",
+            8,
+        ))
         .unwrap_err();
         assert_eq!(error.code, "invalid_condition");
         assert!(error.message.contains("needs an image or video reference"));
@@ -1257,9 +1277,12 @@ mod tests {
         let error = planned(body("fl2va", json!([keyframe(2, 640, 480)]), "16:9", 8)).unwrap_err();
         assert_eq!(error.code, "invalid_condition");
 
-        let error = planned(
-            body("fl2va", json!([keyframe(0, 640, 480), keyframe(0, 640, 480)]), "16:9", 8),
-        )
+        let error = planned(body(
+            "fl2va",
+            json!([keyframe(0, 640, 480), keyframe(0, 640, 480)]),
+            "16:9",
+            8,
+        ))
         .unwrap_err();
         assert!(error.message.contains("carried twice"));
     }
@@ -1331,22 +1354,17 @@ mod tests {
         assert!(error.message.contains("base_video"));
 
         // A keyframe in ref2va is refused by name.
-        let error = planned(
-            body("ref2va", json!([keyframe(0, 640, 480)]), "16:9", 8),
-        )
-        .unwrap_err();
+        let error = planned(body("ref2va", json!([keyframe(0, 640, 480)]), "16:9", 8)).unwrap_err();
         assert_eq!(error.code, "invalid_condition");
         assert!(error.message.contains("not a"));
 
         // Audio alone conditions nothing.
-        let error = planned(
-            body(
-                "ref2va",
-                json!([{ "type": "audio", "uri": data_uri("audio/mpeg", b"x"), "role": "reference" }]),
-                "16:9",
-                8,
-            ),
-        )
+        let error = planned(body(
+            "ref2va",
+            json!([{ "type": "audio", "uri": data_uri("audio/mpeg", b"x"), "role": "reference" }]),
+            "16:9",
+            8,
+        ))
         .unwrap_err();
         assert_eq!(error.code, "invalid_condition");
         assert!(error.message.contains("needs an image or video reference"));
@@ -1412,14 +1430,12 @@ mod tests {
         assert_eq!(error.code, "unsupported_uri");
         assert!(error.message.contains("does not fetch"));
 
-        let error = planned(
-            body(
-                "fl2va",
-                json!([{ "type": "image", "uri": "/tmp/x.png", "role": "keyframe", "frame_index": 0 }]),
-                "16:9",
-                8,
-            ),
-        )
+        let error = planned(body(
+            "fl2va",
+            json!([{ "type": "image", "uri": "/tmp/x.png", "role": "keyframe", "frame_index": 0 }]),
+            "16:9",
+            8,
+        ))
         .unwrap_err();
         assert_eq!(error.code, "invalid_uri");
     }

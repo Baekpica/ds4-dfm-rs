@@ -636,7 +636,8 @@ fn read_references(
     .map_err(|error| error.message().to_string())
 }
 
-fn read_anchors(    options: &Options,
+fn read_anchors(
+    options: &Options,
     frame_count: i32,
     latent_h: i32,
     latent_w: i32,

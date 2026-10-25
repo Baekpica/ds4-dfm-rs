@@ -474,8 +474,7 @@ pub fn vision_pair(
         for channel in 0..3 {
             let source = (channel * frames + index) * area;
             let destination = (time * 3 + channel) * area;
-            pair[destination..destination + area]
-                .copy_from_slice(&pixels[source..source + area]);
+            pair[destination..destination + area].copy_from_slice(&pixels[source..source + area]);
         }
     }
 

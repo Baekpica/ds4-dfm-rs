@@ -1204,7 +1204,10 @@ mod tests {
             (r#"not json"#.to_string(), "invalid_json"),
             (r#"{"prompt":"p"}"#.to_string(), "invalid_task"),
             (r#"{"task":"t2va"}"#.to_string(), "invalid_prompt"),
-            (r#"{"task":"t2va","prompt":"","conditions":[],"seed":0}"#.to_string(), "invalid_prompt"),
+            (
+                r#"{"task":"t2va","prompt":"","conditions":[],"seed":0}"#.to_string(),
+                "invalid_prompt",
+            ),
             (
                 r#"{"task":"t2va","prompt":"p","conditions":[],"seed":0}"#.to_string(),
                 "invalid_target",
@@ -1429,7 +1432,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let output = dir.join("video_1.mp4");
         let mut spec = plan();
-        for (tag, frame) in [("first", &mut spec.first_frame), ("last", &mut spec.last_frame)] {
+        for (tag, frame) in [
+            ("first", &mut spec.first_frame),
+            ("last", &mut spec.last_frame),
+        ] {
             *frame = Some(AnchorImage {
                 media_type: "image/png".to_string(),
                 bytes: tag.as_bytes().to_vec(),
@@ -1522,8 +1528,7 @@ mod tests {
 
     #[test]
     fn the_reader_drops_the_query_and_reads_the_body() {
-        let wire =
-            b"POST /v1/videos?limit=2 HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody".to_vec();
+        let wire = b"POST /v1/videos?limit=2 HTTP/1.1\r\nContent-Length: 4\r\n\r\nbody".to_vec();
         let request = read_request(&mut wire.as_slice()).unwrap();
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/v1/videos");

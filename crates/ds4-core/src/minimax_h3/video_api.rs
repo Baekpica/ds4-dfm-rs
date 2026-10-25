@@ -447,12 +447,18 @@ mod tests {
         let video = store.submit(&plan(), 10).unwrap();
         assert_eq!(store.output_path(&video.id), None);
         assert!(store.start(&video.id));
-        assert_eq!(store.get(&video.id).unwrap().status, VideoStatus::InProgress);
+        assert_eq!(
+            store.get(&video.id).unwrap().status,
+            VideoStatus::InProgress
+        );
         assert!(store.complete(&video.id, 20, PathBuf::from("/tmp/x.mp4")));
         let done = store.get(&video.id).unwrap();
         assert_eq!(done.status, VideoStatus::Completed);
         assert_eq!(done.completed_at, Some(20));
-        assert_eq!(store.output_path(&video.id), Some(PathBuf::from("/tmp/x.mp4")));
+        assert_eq!(
+            store.output_path(&video.id),
+            Some(PathBuf::from("/tmp/x.mp4"))
+        );
         assert!(!store.is_empty());
     }
 

@@ -202,15 +202,11 @@ impl PresentationError {
             PresentationError::ReferenceArguments => {
                 "invalid Ref2VA presentation arguments".to_string()
             }
-            PresentationError::Reference => {
-                "invalid Ref2VA reference presentation".to_string()
-            }
+            PresentationError::Reference => "invalid Ref2VA reference presentation".to_string(),
             PresentationError::ReferenceAudioOnly => {
                 "Ref2VA audio requires an image or video reference".to_string()
             }
-            PresentationError::Timestamp => {
-                "invalid Ref2VA video timestamp".to_string()
-            }
+            PresentationError::Timestamp => "invalid Ref2VA video timestamp".to_string(),
         }
     }
 }
@@ -409,7 +405,13 @@ where
             ReferenceKind::Image => {
                 image_ordinal += 1;
                 ids.extend(token(&format!("<Picture {image_ordinal}>: "))?);
-                span(&mut ids, &mut spans, &mut grids, &reference.vision[0], IMAGE_PAD)?;
+                span(
+                    &mut ids,
+                    &mut spans,
+                    &mut grids,
+                    &reference.vision[0],
+                    IMAGE_PAD,
+                )?;
             }
             ReferenceKind::Video => {
                 video_ordinal += 1;
@@ -716,7 +718,9 @@ mod tests {
             timestamps: &[],
         }];
         assert_eq!(
-            assemble_references(characters, "p", &references).unwrap_err().token(),
+            assemble_references(characters, "p", &references)
+                .unwrap_err()
+                .token(),
             "Ref2VA audio requires an image or video reference"
         );
     }
@@ -732,7 +736,9 @@ mod tests {
             timestamps: &[0.0],
         }];
         assert_eq!(
-            assemble_references(characters, "p", &short).unwrap_err().token(),
+            assemble_references(characters, "p", &short)
+                .unwrap_err()
+                .token(),
             "invalid Ref2VA reference presentation"
         );
 
@@ -743,7 +749,9 @@ mod tests {
             timestamps: &[0.0, -1.0],
         }];
         assert_eq!(
-            assemble_references(characters, "p", &negative).unwrap_err().token(),
+            assemble_references(characters, "p", &negative)
+                .unwrap_err()
+                .token(),
             "invalid Ref2VA video timestamp"
         );
     }
@@ -760,7 +768,9 @@ mod tests {
         }];
         for (prompt, list) in [("", &references[..]), ("p", &[])] {
             assert_eq!(
-                assemble_references(characters, prompt, list).unwrap_err().token(),
+                assemble_references(characters, prompt, list)
+                    .unwrap_err()
+                    .token(),
                 "invalid Ref2VA presentation arguments"
             );
         }
@@ -770,7 +780,10 @@ mod tests {
     /// builder (`h3_multimodal.c:116-119`).
     #[test]
     fn ref2va_refuses_a_grid_token_mismatch() {
-        let outputs = vec![VisionOutput::fixture(Grid::new(1, 64, 64).expect("grid"), 3)];
+        let outputs = vec![VisionOutput::fixture(
+            Grid::new(1, 64, 64).expect("grid"),
+            3,
+        )];
         let references = [Reference {
             kind: ReferenceKind::Image,
             has_audio: false,
@@ -778,7 +791,9 @@ mod tests {
             timestamps: &[],
         }];
         assert_eq!(
-            assemble_references(characters, "p", &references).unwrap_err().token(),
+            assemble_references(characters, "p", &references)
+                .unwrap_err()
+                .token(),
             "Qwen merged grid does not match token span"
         );
     }

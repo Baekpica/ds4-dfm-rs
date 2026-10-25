@@ -121,10 +121,13 @@ pub fn reference_embedding(
             multimodal::ReferenceKind::Image => {
                 let grid = Grid::new(1, reference.height as usize, reference.width as usize)
                     .map_err(|error| format!("vision grid: {}", error.token()))?;
-                outputs.push(vec![
-                    vision_forward::encode_dir(text_encoder, &reference.pixels, 1, grid)
-                        .map_err(|error| format!("vision: {}", error.token()))?,
-                ]);
+                outputs.push(vec![vision_forward::encode_dir(
+                    text_encoder,
+                    &reference.pixels,
+                    1,
+                    grid,
+                )
+                .map_err(|error| format!("vision: {}", error.token()))?]);
             }
             multimodal::ReferenceKind::Video => {
                 let grid = Grid::new(2, reference.height as usize, reference.width as usize)

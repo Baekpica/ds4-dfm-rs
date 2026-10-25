@@ -192,24 +192,14 @@ pub fn build(spec: &Spec<'_>) -> Result<Sequence, LayoutError> {
                 for position in rows.iter_mut() {
                     position.t = cursor;
                 }
-                emit(
-                    &mut positions,
-                    &mut segments,
-                    SegmentKind::RefImage,
-                    &rows,
-                );
+                emit(&mut positions, &mut segments, SegmentKind::RefImage, &rows);
                 img_cond_rows += rows.len();
                 cursor += 1.0;
             }
             ReferenceKind::Audio => {
                 let rows = audio_grid(cursor, reference.audio_t, low, high);
                 if !rows.is_empty() {
-                    emit(
-                        &mut positions,
-                        &mut segments,
-                        SegmentKind::RefAudio,
-                        &rows,
-                    );
+                    emit(&mut positions, &mut segments, SegmentKind::RefAudio, &rows);
                 }
                 audio_cond_rows += rows.len();
                 cursor += f64::from(reference.audio_t);
@@ -222,26 +212,19 @@ pub fn build(spec: &Spec<'_>) -> Result<Sequence, LayoutError> {
                 // and shares the cursor with its frames (`:394-418`).
                 if reference.audio_t > 0 {
                     let audio = audio_grid(cursor, reference.audio_t, ref_low, ref_high);
-                    emit(
-                        &mut positions,
-                        &mut segments,
-                        SegmentKind::RefAudio,
-                        &audio,
-                    );
+                    emit(&mut positions, &mut segments, SegmentKind::RefAudio, &audio);
                     audio_cond_rows += audio.len();
                 }
 
                 // The reference emits a video's rows under `REF_IMAGE`, not a
                 // separate kind (`:420-431`).
                 let video = video_grid(cursor, reference.latent_t, &rows);
-                emit(
-                    &mut positions,
-                    &mut segments,
-                    SegmentKind::RefImage,
-                    &video,
-                );
+                emit(&mut positions, &mut segments, SegmentKind::RefImage, &video);
                 img_cond_rows += video.len();
-                cursor += f64::max(f64::from(reference.audio_t), video_span_sum(reference.latent_t));
+                cursor += f64::max(
+                    f64::from(reference.audio_t),
+                    video_span_sum(reference.latent_t),
+                );
             }
         }
     }
@@ -615,7 +598,10 @@ mod tests {
 
         assert_eq!(sequence.rows(), 377);
         assert_eq!(sequence.segments[1].kind, SegmentKind::RefImage);
-        assert_eq!((sequence.segments[1].start, sequence.segments[1].stop), (5, 185));
+        assert_eq!(
+            (sequence.segments[1].start, sequence.segments[1].stop),
+            (5, 185)
+        );
         assert_eq!(sequence.audio_cond_rows, 0);
         assert_eq!(sequence.positions[185].t, 20.0);
     }
