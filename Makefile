@@ -501,6 +501,14 @@ tests/h3_device_gate: $(DS4_RS_SOURCES) native/h3/h3_device_gpu.o
 	$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_device_gate" $@
 
+# The partition gate is host-only: it reads shard headers and tensor samples,
+# so it needs no device object and no CUDA library.
+tests/h3_partition_gate: $(DS4_RS_SOURCES)
+	cargo rustc -p ds4-core --example h3_partition_gate --release --features h3-gates -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+	$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_partition_gate" $@
+
 # The PPM diff is host-only: it reads the frames and step previews the CLI
 # writes (`main.c:162-176`, `:196-245`) and turns "the renders differ" into
 # pixel counts, PSNR and per-band attribution, with no image library.

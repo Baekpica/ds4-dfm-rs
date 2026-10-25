@@ -1173,6 +1173,63 @@ stereo soundtrack"; a 3.25 s looped copy failed this way while the port read
 it fine. The gate media must end at the cut (exactly 2 s here), or the
 reference fails on its own reader, not on the encoder.
 
+### P14.2 — The Ref2VA component (2026-10-25)
+
+Done. `minimax_h3::partition` reproduces `h3_create`'s checkpoint check
+(`h3.c:425-452`) without the device probe: `FL2VA/transformer/config.json` and
+`FL2VA/tokenizer/tokenizer.json` must be regular files with the reference's
+message (`h3.c:385-395`), the four `FL2VA` shard directories are inventoried
+in `h3.c:430-433`'s order through the existing `h3_st_inventory_dir` port, and
+`Ref2VA/transformer` is inventoried only when
+`Ref2VA/transformer/model.safetensors.index.json` is a regular file
+(`h3.c:444-452`). `Catalog::partition` is `h3.c:872-875`'s gate and returns
+that refusal verbatim; `Partition::component` is the five-path switch of
+`h3.c:927-936`, which reads *every* component from the reference partition and
+not only the transformer. `Engine::open` now builds the catalog, so a broken
+component fails at open (0.016 s here) instead of at the first render.
+
+The gate is `tests/h3_partition_gate <model_dir> [--references N]`, host-only
+(no device object, no CUDA library). It prints `h3_st_inventory_dir`'s four
+counters per component, an FNV `table` over every tensor's shard, name, dtype,
+shape, span and offset, an FNV `sample` over the first 4096 bytes of every
+tensor, and the selected partition.
+
+Evidence, Spark `gx10-e1d2`, root `/mnt/h3-artifacts/MiniMax-H3`. Both
+partitions are installed in full (all 14 text-encoder shards, 13 transformer
+shards), which `find` and `stat` confirm; a gvfs `ls` glob truncated its
+listing and briefly suggested two shards were missing.
+
+  fl2va/text_encoder     files=14 tensors=1058 tensor_bytes=66714780128
+  fl2va/transformer      files=13 tensors=535  tensor_bytes=66280430144
+  fl2va/video_vae/source files=1  tensors=560  tensor_bytes=10415484128
+  fl2va/audio_vae        files=1  tensors=1087 tensor_bytes=605306340
+  ref2va/*               the same five counters, every component
+  PARTITION references=2 selected=Ref2VA      references=0 selected=FL2VA
+  OPEN seconds=0.016
+
+The reference's own reader prints the same eight totals
+(`./st_probe <dir> | tail -1`, built from `h3.c` at `eae5d54`), so the
+inventory is two-sided. The port's layout check accepts the reference
+transformer unchanged: `minimax_h3_inspect --layout Ref2VA/transformer` exits
+0 with `tensors=535 blocks=50 refiner=2 hidden=5376`, the same line FL2VA
+prints, and the two index files agree on all 535 tensor names, shard
+assignments and metadata.
+
+Refusal, live: an FL2VA-only root (`~/p14-fl2va-root`, a symlink to `FL2VA`)
+with `--references 2` prints `REFUSED references=2 ordered references require
+the Ref2VA checkpoint` and exits 3, the reference's `h3.c:873-874` message.
+
+Measured artifact fact, and it changes the P14.4/P14.5 plan: full sha256 of
+every text-encoder shard, `audio_vae`, `video_vae/source` and the first
+transformer shard, both partitions, diffs to one line. The tokenizer, text
+encoder, video VAE and audio VAE are the *same bytes* in both partitions; only
+the transformer differs (sample hash `14705eea42ade724` against
+`484052d34b0ea2af`, shard 1 `0b338656...` against `902d6ae7...`). A reference
+request therefore needs only the 62 GB Ref2VA transformer as new weight state.
+The port still resolves every path through the partition, as the reference
+does; reusing the FL2VA-resident encoder is a path substitution over identical
+bytes and is left to P14.5, where the memory plan is decided.
+
 ## P12.5 — Port the reference test suite (runs last, after P13)
 
 Ordering decision (operator, 2026-10-24): this phase is moved to the end of the
@@ -1259,7 +1316,7 @@ command, never an automatic step.
 | `--core-reuse N` | `h3.h:85` | Ported and gated: cached core delta (`h3_dit.c:2161-2165`, `:2306-2312`), hashes equal at 4 and 6 |
 | `--token-reduction` | `h3.h:89`, `h3_dit.c:378-470` | Ported and gated (`h3d_token_pool`/`h3d_token_expand`, `--token-reduction` in `h3-rs`); hashes equal to the reference on and off |
 | `--reuse N` | `h3.h:79` | Ported and gated (reuse 1 and 3) |
-| Ref2VA ordered references | `h3_multimodal.c:243`, `h3_cli.c:173`, `:322`, `:332` (up to 12) | Unported; P14 builds it. Only `SegmentKind::RefImage` (`sequence.rs:32`) and the DiT row-map arms (`dit.rs:610`) exist |
+| Ref2VA ordered references | `h3_multimodal.c:243`, `h3_cli.c:173`, `:322`, `:332` (up to 12) | Component loader ported and gated (`partition.rs`, `h3_partition_gate`, P14.2); the reference media prep, the ordered presentation and the request plumbing are P14.3-P14.5. Only `SegmentKind::RefImage` (`sequence.rs:32`) and the DiT row-map arms (`dit.rs:610`) exist below them |
 | Interactive session (`!` commands) | `h3_cli.c:625` and the handlers above it | Unported: the CLI is one shot |
 | `--use-int8-row-fc2` | Metal/M5 only, CUDA no-op (`README.md:119-121`) | Refused |
 | `--show`, `--zoom`, preview frames | `h3_terminal.c`, `h3.h:125-127` | Ported for the CLI (`--preview-dir` PPMs, Kitty/iTerm2 display); the server stays headless |

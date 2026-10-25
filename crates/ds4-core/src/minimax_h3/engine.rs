@@ -27,14 +27,12 @@ use std::time::Instant;
 use super::dit::{Dit, LoadOptions};
 use super::host::{reuse_schedule, temporal, Rng, Schedule};
 use super::media::{self, Fit};
+use super::partition::{Catalog, Partition, TOKENIZER};
 use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
 use super::sequence::{self, Spec};
 use super::text_forward::{self, Embedding};
 use super::tokenizer::{EmptyPrompt, Tokenizer};
 use super::{condition, vae_audio, vae_encoder, vae_video};
-
-/// The component layout `h3.c:425-436` resolves under the model directory.
-const FL2VA: &str = "FL2VA";
 
 /// How the delivered frame relates to the model canvas.
 ///
@@ -147,7 +145,9 @@ struct Prepared {
 }
 
 pub struct Engine {
-    model_dir: PathBuf,
+    /// `h3_create`'s checkpoint check (`h3.c:425-452`), kept for the
+    /// partition a request reads.
+    catalog: Catalog,
     tokenizer: Tokenizer,
     /// `h3.c:223-309`: one conditioning entry is enough for a server; the
     /// reference keeps a small table and counts hits and misses. The anchor
@@ -161,15 +161,14 @@ impl Engine {
     /// loaded per encode, as the reference does (it frees the embedding after
     /// the DiT is prepared, `h3.c:1539`).
     pub fn open(model_dir: &Path) -> Result<Engine, EngineError> {
-        let path = model_dir
-            .join(FL2VA)
-            .join("tokenizer")
-            .join("tokenizer.json");
+        let catalog =
+            Catalog::open(model_dir).map_err(|error| EngineError::new(error.message()))?;
+        let path = catalog.component(Partition::Fl2va, TOKENIZER);
         let tokenizer = Tokenizer::load(&path)
             .map_err(|error| EngineError::new(format!("tokenizer: {}", error.token())))?;
 
         Ok(Engine {
-            model_dir: model_dir.to_path_buf(),
+            catalog,
             tokenizer,
             embedding: None,
             prepared: None,
@@ -177,7 +176,7 @@ impl Engine {
     }
 
     fn component(&self, name: &str) -> PathBuf {
-        self.model_dir.join(FL2VA).join(name)
+        self.catalog.component(Partition::Fl2va, name)
     }
 
     pub fn render(&mut self, request: &RenderRequest) -> Result<RenderReport, EngineError> {

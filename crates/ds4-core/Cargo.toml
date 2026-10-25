@@ -61,3 +61,7 @@ unicode-normalization = "0.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "=0.8.9"
 libc = "0.2"
+
+[[example]]
+name = "h3_partition_gate"
+required-features = ["h3-gates"]

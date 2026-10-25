@@ -34,6 +34,7 @@ pub mod host;
 pub mod layout;
 pub mod media;
 pub mod multimodal;
+pub mod partition;
 pub mod presets;
 pub mod render;
 pub mod safetensors;
