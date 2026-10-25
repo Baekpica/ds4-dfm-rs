@@ -399,3 +399,45 @@ Reading the transcript
   contract's floor is 4 s = 107 frames) and 512x512 is a CLI canvas, so this
   proves the engine path, not the wire. A served ref2va render is the same
   768P gate as P15.6.
+
+## 2026-10-25 — the first completed served render (t2va, 768x768, --steps 2)
+
+The P15.5 gate proved the wire with a stand-in renderer; this run is the same
+surface with the real engine and the real checkpoint, and it completed.
+
+- Request: `task t2va`, prompt "A red kite lifts off a grey beach at dawn, the
+  camera tracks it rising over wet sand. Wind, distant surf, and a low
+  sustained drone underneath.", `target {short_edge 768, aspect_ratio 1:1,
+  duration_seconds 4}`, seed 1, server `--steps 2 --max-jobs 2` on the Spark.
+- Answer: `{"id":"video_1"}`, then `in_progress`, then `completed`; created
+  1792951693, completed 1792953021, so 1328 s wall (22 min 8 s) for 107
+  frames. A second request (video_2, fl2va 16:9) was accepted at 1792952173
+  and its first-frame copy appeared on disk at 19:16, but that copy is written
+  while the request is prepared (`crates/ds4-server/src/h3_video.rs:287`) and
+  the render itself waits: the engine is one thread serving calls in order
+  (`crates/ds4-core/src/minimax_h3/engine.rs:589-601`), so this 1328 s is a
+  solo render.
+- Record: `size 768x768`, `frames 107`, `aspect_ratio 1:1`, `duration_seconds
+  4`.
+- File: `~/h3-api/out/video_1.mp4`, 900,652 bytes; `GET
+  /v1/videos/video_1/content` returned the same bytes. ffprobe: h264 768x768,
+  24 fps, 107 frames, aac 32 kHz stereo, 4.458 s.
+- Quality at two steps is a preview, not a deliverable: the frame is a smooth
+  gradient with a small red kite, and the kite moves a few pixels over the
+  clip. The reference's own four-pass mode measures SSIM 0.556 against a
+  29-pass render (README:245-250), and two passes is below that.
+- Concurrency lesson: `--max-jobs` bounds the job store (completed jobs
+  included) but not throughput. The in-process engine renders one request at a
+  time, and a queued job still reports `in_progress` once its render thread has
+  started, so the status a client sees does not distinguish waiting from
+  rendering. At two steps and 768x768 that one job cost 1328 s on its own.
+
+### The same shape on the CLI, for comparison
+
+`h3-rs --width 512 --height 512 --frames 56 --steps 8 --seed 7
+--first-frame .../video_2.first.jpg` printed, in order: `TEXT ... seconds=24.694`,
+`LOAD seconds=133.083 layers=50 latent=17x32x32 frames=56 audio_t=93`,
+`DENOISE steps=8 reuse=1 selected=8 seconds=291.869` (36.5 s per step),
+`AUDIO ... seconds=2.318`, `FRAMES ... seconds=81.038` (video VAE),
+`VIDEO ... seconds=0.428` (mux), 874,261 bytes. Wall clock from launch to file
+was about 9 minutes.

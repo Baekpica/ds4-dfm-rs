@@ -139,8 +139,11 @@ would mean inventing the target.
 Each is deliberate and named:
 
 1. **No HTTP auth.** The scripts call an SGLang deployment with no auth, so
-   this host matches them: no `Authorization` header is read, no key exists,
-   and the listener binds a loopback address only.
+   this host matches them: no `Authorization` header is read and no key
+   exists. The listener's address is the operator's (`--bind`, default
+   `127.0.0.1:8090`); a bind beyond loopback publishes an unauthenticated
+   renderer to that network, which is the operator's decision, not a
+   property of the contract. See "Running it as a shared server" below.
 2. **A condition `uri` must be a data URI.** The scripts pass `https://` CDN
    URLs. This host never fetches a URL from a request body and never reads a
    caller-named filesystem path, so the same image travels base64-encoded.
@@ -153,6 +156,36 @@ Each is deliberate and named:
 4. **`short_edge` is 768.** 480P and 2K belong to the other tiers and to
    H3-Regenerate-2K, which this checkpoint does not provide.
 5. **21:9 is refused**, with the numbers in the message.
+
+## Running it as a shared server
+
+The default is loopback. To serve another machine, bind the interface that
+machine can reach:
+
+```bash
+h3-server-rs --bind 0.0.0.0:8090 --out-dir ~/h3-api/out \
+  --model-dir /mnt/h3-artifacts/MiniMax-H3 --steps 20 --max-jobs 4
+```
+
+On the Spark that answers as `http://192.168.1.91:8090/v1/videos`, and any
+client on the same network can reach it — there is no auth to stop them.
+`tools/minimax_h3/systemd/h3-server-rs.service` plus `env.example` run it as
+a user service; `loginctl enable-linger` keeps it alive without a login
+session.
+
+Two consequences of exposing it:
+
+- every accepted create spends GPU time on the host, and `--max-jobs` is the
+  only bound on the job store: it caps retained jobs, completed ones included,
+  and it is also the render concurrency;
+- `--steps` is a startup setting, not a request field, so a shared server
+  serves one quality. `--steps 2` is a smoke-test setting, not the release
+  one, and it is not minute-scale at the served shapes: 768x768 with 107
+  frames measured 22 min 8 s at two steps, solo, because the in-process
+  engine renders one request at a time whatever `--max-jobs` allows.
+
+The host firewall is not configured by the server, and on the Spark `ufw` is
+inactive, so nothing sits between the network and this port.
 
 ## Not served
 
