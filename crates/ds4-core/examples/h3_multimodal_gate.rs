@@ -1,9 +1,14 @@
-//! The multimodal gate: one image plus a prompt, presented with the released
-//! `<Picture 1>: ` layout and encoded by the port's Qwen decoder.
+//! The multimodal gate: images plus a prompt, presented with the released
+//! `<Picture n>: ` layout and encoded by the port's Qwen decoder.
 //!
-//! Usage: h3_multimodal_gate <FL2VA/text_encoder> <image> <prompt>
-//!                            [--height H] [--width W]
+//! Usage: h3_multimodal_gate <FL2VA/text_encoder> <prompt> --image PATH
+//!                            [--image PATH]... [--height H] [--width W]
 //!                            [--expect HEX] [--tag-expect HEX]
+//!        h3_multimodal_gate <FL2VA/text_encoder> <image> <prompt>
+//!                            [--height H] [--width W]
+//!
+//! Each image is one `<Picture n>: ` span, in the order given
+//! (`h3_multimodal.c:200-232`); the second spelling is the one-image form.
 //!
 //! Prints the grid and presentation size, then one PARITY line for the BF16
 //! rows and one TAGS line, each with its FNV-1a hash and eight-word edges.
@@ -67,13 +72,16 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (positional, options) = split(args)?;
 
-    if positional.len() != 3 {
-        return Err(usage("expected three positional arguments"));
-    }
+    /* Two spellings, never mixed: `<prompt> --image ...`, or the legacy
+     * `<image> <prompt>`. */
+    let (prompt, images) = match (options.images.len(), positional.len()) {
+        (0, 3) => (positional[2].clone(), vec![positional[1].clone()]),
+        (0, _) => return Err(usage("expected <image> <prompt> or <prompt> --image")),
+        (_, 2) => (positional[1].clone(), options.images.clone()),
+        _ => return Err(usage("give <prompt> with --image, not both forms")),
+    };
 
     let encoder = Path::new(&positional[0]);
-    let image = Path::new(&positional[1]);
-    let prompt = &positional[2];
     let height = options.height.unwrap_or(DEFAULT_HEIGHT);
     let width = options.width.unwrap_or(DEFAULT_WIDTH);
     let expect = options
@@ -89,16 +97,25 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 
     let grid = Grid::new(1, height as usize, width as usize)
         .map_err(|error| format!("grid: {}", error.token()))?;
-    let pixels = read_image_f32(image, width, height, Fit::Stretch)
-        .map_err(|error| format!("image: {error}"))?;
     let tokenizer = Tokenizer::load(&encoder.join(TOKENIZER))
         .map_err(|error| format!("tokenizer: {}", error.token()))?;
 
+    /* One tower run per image, in request order; the states stay alive until
+     * the decoder has read every span. */
     let start = Instant::now();
-    let vision =
-        vision_forward::encode_dir(encoder, &pixels, 1, grid).map_err(|error| error.token())?;
+    let mut outputs = Vec::with_capacity(images.len());
+
+    for image in &images {
+        let pixels = read_image_f32(Path::new(image), width, height, Fit::Stretch)
+            .map_err(|error| format!("image {image}: {error}"))?;
+        outputs.push(
+            vision_forward::encode_dir(encoder, &pixels, 1, grid).map_err(|error| error.token())?,
+        );
+    }
+
+    let vision: Vec<&vision_forward::VisionOutput> = outputs.iter().collect();
     let presentation =
-        multimodal::fl2va(&tokenizer, prompt, &[&vision]).map_err(|error| error.token())?;
+        multimodal::fl2va(&tokenizer, &prompt, &vision).map_err(|error| error.token())?;
     let embedding = text_forward::encode_multimodal(
         encoder,
         presentation.ids(),
@@ -116,8 +133,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         .unwrap_or(0);
 
     println!(
-        "GRID {grid_h}x{grid_w} merged={}",
-        presentation.spans()[0].tokens
+        "GRID {grid_h}x{grid_w} merged={} images={}",
+        presentation.spans()[0].tokens,
+        presentation.spans().len()
     );
     println!(
         "TOKENS {} spans={} zeros={zeros}",
@@ -191,10 +209,11 @@ fn parse_hash(text: &str) -> Option<u64> {
     u64::from_str_radix(text, 16).ok()
 }
 
-/// The three positional arguments, plus the flags the gate knows.
+/// The positional arguments, plus the flags the gate knows.
 struct Options {
     height: Option<u32>,
     width: Option<u32>,
+    images: Vec<String>,
     expect: Option<String>,
     tag_expect: Option<String>,
 }
@@ -204,6 +223,7 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
     let mut options = Options {
         height: None,
         width: None,
+        images: Vec::new(),
         expect: None,
         tag_expect: None,
     };
@@ -213,6 +233,14 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
         let argument = &args[index];
 
         match argument.as_str() {
+            "--image" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| usage("--image needs a path"))?;
+
+                options.images.push(value.clone());
+                index += 2;
+            }
             "--height" | "--width" => {
                 let value = args
                     .get(index + 1)
@@ -255,7 +283,10 @@ fn split(args: &[String]) -> Result<(Vec<String>, Options), String> {
 
 fn usage(detail: &str) -> String {
     format!(
-        "{detail}\nusage: h3_multimodal_gate <FL2VA/text_encoder> <image> <prompt> \
-         [--height H] [--width W] [--expect HEX] [--tag-expect HEX]"
+        "{detail}\nusage: h3_multimodal_gate <FL2VA/text_encoder> <prompt> \
+         --image PATH [--image PATH]... [--height H] [--width W] \
+         [--expect HEX] [--tag-expect HEX]\n       \
+         h3_multimodal_gate <FL2VA/text_encoder> <image> <prompt> \
+         [--height H] [--width W]"
     )
 }

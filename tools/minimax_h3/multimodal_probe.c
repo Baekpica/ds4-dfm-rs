@@ -6,12 +6,17 @@
  * driver is ours (`h3_multimodal.h`, `h3_vision_encoder.h`).
  *
  * Usage:
+ *   h3_multimodal_probe <text_encoder_dir> <prompt> --image PATH
+ *                       [--image PATH]... [--height H] [--width W]
  *   h3_multimodal_probe <text_encoder_dir> <image> <prompt>
  *                       [--height H] [--width W]
  *
+ * Each image becomes one `<Picture n>: ` span, in the order given
+ * (`h3_multimodal.c:200-232`); the second spelling is the one-image form.
+ *
  * Output:
- *   GRID <h>x<w> merged=<merged rows>
- *   TOKENS <rows> spans=1 zeros=<tag zeros>
+ *   GRID <h>x<w> merged=<merged rows> images=<spans>
+ *   TOKENS <rows> spans=<spans> zeros=<tag zeros>
  *   PARITY tokens= width= values= fnv= first= last=     the BF16 rows
  *   TAGS tokens= fnv=                                   the modality tags
  *   SECONDS <wall clock, vision tower included>
@@ -31,6 +36,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* The probes' own bound; FL2VA renders carry two anchors. */
+#define MAX_IMAGES 16
 
 static const uint64_t FNV_SEED = UINT64_C(1469598103934665603);
 static const uint64_t FNV_PRIME = UINT64_C(1099511628211);
@@ -63,7 +71,9 @@ static int parse_int(const char *text, int *value) {
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: h3_multimodal_probe <text_encoder_dir> <image> <prompt> "
+            "usage: h3_multimodal_probe <text_encoder_dir> <prompt> "
+            "--image PATH [--image PATH]... [--height H] [--width W]\n"
+            "       h3_multimodal_probe <text_encoder_dir> <image> <prompt> "
             "[--height H] [--width W]\n");
 }
 
@@ -80,26 +90,49 @@ static void edges(char *buffer, size_t size, const uint16_t *values,
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) {
+    if (argc < 3) {
         usage();
         return 2;
     }
 
     const char *weights = argv[1];
-    const char *image = argv[2];
-    const char *prompt = argv[3];
+    const char *images[MAX_IMAGES];
+    size_t image_count = 0;
+    const char *positional[2];
+    size_t positional_count = 0;
+    const char *prompt = NULL;
     int height = 512;
     int width = 384;
 
-    for (int index = 4; index + 1 < argc; index += 2) {
-        if (!strcmp(argv[index], "--height")) {
-            if (!parse_int(argv[index + 1], &height)) return 2;
+    for (int index = 2; index < argc; index++) {
+        if (!strcmp(argv[index], "--image")) {
+            if (index + 1 >= argc || image_count == MAX_IMAGES) {
+                usage();
+                return 2;
+            }
+            images[image_count++] = argv[++index];
+        } else if (!strcmp(argv[index], "--height")) {
+            if (index + 1 >= argc || !parse_int(argv[++index], &height)) return 2;
         } else if (!strcmp(argv[index], "--width")) {
-            if (!parse_int(argv[index + 1], &width)) return 2;
-        } else {
+            if (index + 1 >= argc || !parse_int(argv[++index], &width)) return 2;
+        } else if (!strncmp(argv[index], "--", 2) || positional_count == 2) {
             usage();
             return 2;
+        } else {
+            positional[positional_count++] = argv[index];
         }
+    }
+
+    /* Two spellings, never mixed: `<prompt> --image ...`, or the legacy
+     * `<image> <prompt>`. */
+    if (image_count && positional_count == 1) {
+        prompt = positional[0];
+    } else if (!image_count && positional_count == 2) {
+        images[image_count++] = positional[0];
+        prompt = positional[1];
+    } else {
+        usage();
+        return 2;
     }
 
     char error[1024];
@@ -120,39 +153,49 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    float *pixels = NULL;
-    if (!h3_ffmpeg_read_image_f32(image, width, height, H3_IMAGE_FIT_STRETCH,
-                                  &pixels, error, sizeof(error))) {
-        fprintf(stderr, "%s\n", error);
-        h3_tokenizer_free(tokenizer);
-        return 1;
-    }
-
-    double started = seconds();
-    h3_vision_output vision;
+    h3_vision_output *vision = calloc(image_count, sizeof(*vision));
     h3_text_embedding text;
     memset(&text, 0, sizeof(text));
 
-    if (!h3_vision_encode_bf16(weights, "h3_shaders.metal", pixels, 1, height,
-                               width, NULL, NULL, &vision, error,
-                               sizeof(error))) {
-        fprintf(stderr, "%s\n", error);
-        free(pixels);
+    if (!vision) {
+        fprintf(stderr, "no memory for %zu vision outputs\n", image_count);
         h3_tokenizer_free(tokenizer);
         return 1;
     }
-    free(pixels);
+
+    /* One tower run per image, in request order; the states are released
+     * together after the decoder has read every span. */
+    double started = seconds();
+    size_t encoded_count = 0;
+    for (size_t image = 0; image < image_count; image++) {
+        float *pixels = NULL;
+        if (!h3_ffmpeg_read_image_f32(images[image], width, height,
+                                      H3_IMAGE_FIT_STRETCH, &pixels, error,
+                                      sizeof(error))) {
+            fprintf(stderr, "%s\n", error);
+            goto fail;
+        }
+
+        int encoded = h3_vision_encode_bf16(
+            weights, "h3_shaders.metal", pixels, 1, height, width, NULL, NULL,
+            &vision[image], error, sizeof(error));
+        free(pixels);
+
+        if (!encoded) {
+            fprintf(stderr, "%s\n", error);
+            goto fail;
+        }
+        encoded_count++;
+    }
 
     int ok = h3_multimodal_encode_fl2va_bf16(
-        tokenizer, weights, "h3_shaders.metal", prompt, &vision, 1, NULL, NULL,
-        &text, error, sizeof(error));
+        tokenizer, weights, "h3_shaders.metal", prompt, vision, image_count,
+        NULL, NULL, &text, error, sizeof(error));
     double elapsed = seconds() - started;
 
     if (!ok) {
         fprintf(stderr, "%s\n", error);
-        h3_vision_output_free(&vision);
-        h3_tokenizer_free(tokenizer);
-        return 1;
+        goto fail;
     }
 
     size_t tokens = text.tokens;
@@ -168,9 +211,9 @@ int main(int argc, char **argv) {
     edges(first, sizeof(first), text.values, values, 0);
     edges(last, sizeof(last), text.values, values, values > 8 ? values - 8 : 0);
 
-    printf("GRID %dx%d merged=%zu\n", vision.grid_h, vision.grid_w,
-           vision.tokens);
-    printf("TOKENS %zu spans=1 zeros=%zu\n", tokens, zeros);
+    printf("GRID %dx%d merged=%zu images=%zu\n", vision[0].grid_h,
+           vision[0].grid_w, vision[0].tokens, image_count);
+    printf("TOKENS %zu spans=%zu zeros=%zu\n", tokens, image_count, zeros);
     printf("PARITY tokens=%zu width=%zu values=%zu fnv=%016llx first=%s "
            "last=%s\n",
            tokens, width_hidden, values,
@@ -181,7 +224,16 @@ int main(int argc, char **argv) {
     printf("SECONDS %.3f\n", elapsed);
 
     h3_text_embedding_free(&text);
-    h3_vision_output_free(&vision);
+    for (size_t image = 0; image < encoded_count; image++)
+        h3_vision_output_free(&vision[image]);
+    free(vision);
     h3_tokenizer_free(tokenizer);
     return 0;
+
+fail:
+    for (size_t image = 0; image < encoded_count; image++)
+        h3_vision_output_free(&vision[image]);
+    free(vision);
+    h3_tokenizer_free(tokenizer);
+    return 1;
 }
