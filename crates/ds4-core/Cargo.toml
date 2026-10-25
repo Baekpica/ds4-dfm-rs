@@ -40,6 +40,10 @@ name = "h3_video_encoder_gate"
 required-features = ["h3-gates"]
 
 [[example]]
+name = "h3_audio_encoder_gate"
+required-features = ["h3-gates"]
+
+[[example]]
 name = "h3_device_gate"
 required-features = ["h3-gates"]
 

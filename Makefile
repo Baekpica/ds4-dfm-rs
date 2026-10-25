@@ -476,6 +476,16 @@ tests/h3_video_encoder_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_video_encoder_gate" $@
 
+# The AudioVAE encoder shares the DiT object too: its LayerNorm, GEGLU, plain
+# Snake1d, QKV split, causal attention and attention pool sit beside the
+# decoder primitives.
+tests/h3_audio_encoder_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
+	cargo rustc -p ds4-core --example h3_audio_encoder_gate --release --features h3-gates -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
+	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
+	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_audio_encoder_gate" $@
+
 # The device probe is its own object: it needs neither a stream nor cuBLAS, and
 # `--info` must resolve without the render path's ABI (`h3_device_cuda.cu:17-50`
 # is the whole reference surface). Same flags and the same fingerprint trap.

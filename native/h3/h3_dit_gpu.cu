@@ -2107,3 +2107,275 @@ int h3d_group_norm_silu(h3d_context *context, h3d_tensor *output,
         channels, groups, rows, epsilon);
     return h3d_launch_ok("VAE group norm SiLU", error, error_size);
 }
+
+/* `h3_geglu_kernel` (`h3_gpu_cuda.cu:2912-2920`): tanh-approximated GELU of
+ * the gate times the linear half, the same constant 0.7978845608028654 and
+ * 0.044715 the reference uses. */
+__global__ static void h3d_geglu_kernel(float *output, const float *gate,
+                                        const float *linear, uint32_t count) {
+    uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) {
+        return;
+    }
+    float value = gate[index];
+    float gelu = 0.5f * value * (1.0f + tanhf(0.7978845608028654f *
+        (value + 0.044715f * value * value * value)));
+    output[index] = gelu * linear[index];
+}
+
+int h3d_geglu_f32(h3d_context *context, h3d_tensor *output,
+                  const h3d_tensor *gate, const h3d_tensor *linear,
+                  size_t elements, char *error, size_t error_size) {
+    if (!context || !h3d_is(output, H3D_F32, elements) ||
+        !h3d_is(gate, H3D_F32, elements) ||
+        !h3d_is(linear, H3D_F32, elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid F32 GEGLU tensors");
+    }
+    if (!elements) {
+        return 1;
+    }
+    h3d_geglu_kernel<<<(elements + 255) / 256, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)gate->data,
+        (const float *)linear->data, (uint32_t)elements);
+    return h3d_launch_ok("F32 GEGLU", error, error_size);
+}
+
+/* `h3_snake_kernel` (`h3_gpu_cuda.cu:2935-2943`): the plain Snake1d the
+ * AudioVAE encoder uses, `x + sin(a*x)^2 / (a + 1e-9)`, with `a = alpha`
+ * already exponentiated by the caller (`h3_audio_vae.c:839`, `:917`, `:965`).
+ * Not the alias-free variant above; they are different ops. */
+__global__ static void h3d_snake1d_kernel(float *output, const float *input,
+                                          const float *alpha, size_t count,
+                                          uint32_t channels) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) {
+        return;
+    }
+    float a = alpha[index % channels];
+    float value = input[index];
+    float wave = sinf(a * value);
+    output[index] = value + wave * wave / (a + 1e-9f);
+}
+
+int h3d_snake1d_f32(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *input, const h3d_tensor *alpha,
+                    uint32_t batch, uint32_t length, uint32_t channels,
+                    char *error, size_t error_size) {
+    size_t count;
+    if (!context || !batch || !length || !channels ||
+        !h3d_mul_size((size_t)batch * length, channels, &count) ||
+        !h3d_is(output, H3D_F32, count) ||
+        !h3d_is(input, H3D_F32, count) ||
+        !h3d_is(alpha, H3D_F32, channels)) {
+        return h3d_set_error(error, error_size,
+                             "invalid F32 Snake1d tensors or shape");
+    }
+    if (!count) {
+        return 1;
+    }
+    h3d_snake1d_kernel<<<(count + 255) / 256, 256, 0, context->stream>>>(
+        (float *)output->data, (const float *)input->data,
+        (const float *)alpha->data, count, channels);
+    return h3d_launch_ok("F32 Snake1d", error, error_size);
+}
+
+/* `h3_audio_qkv_split_kernel` (`h3_gpu_cuda.cu:1829-1848`): q, k and v come
+ * out of one interleaved `[batch, length, 3*width]` row, each with its own
+ * bias, and land head-major `[batch, heads, length, head_dim]`. */
+__global__ static void h3d_audio_qkv_split_kernel(
+    float *query, float *key, float *value, const float *qkv,
+    const float *q_bias, const float *k_bias, const float *v_bias,
+    size_t count, uint32_t length, uint32_t heads, uint32_t head_dim) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) {
+        return;
+    }
+    uint32_t width = heads * head_dim;
+    uint32_t column = (uint32_t)(index % width);
+    size_t row = index / width;
+    uint32_t time = (uint32_t)(row % length);
+    uint32_t batch_index = (uint32_t)(row / length);
+    uint32_t head = column / head_dim;
+    uint32_t dimension = column % head_dim;
+    size_t output = (((size_t)batch_index * heads + head) * length + time) *
+                    head_dim + dimension;
+    size_t base = row * width * 3;
+    query[output] = qkv[base + column] + q_bias[column];
+    key[output] = qkv[base + width + column] + k_bias[column];
+    value[output] = qkv[base + width * 2 + column] + v_bias[column];
+}
+
+int h3d_audio_qkv_split_f32(h3d_context *context, h3d_tensor *query,
+                            h3d_tensor *key, h3d_tensor *value,
+                            const h3d_tensor *qkv, const h3d_tensor *q_bias,
+                            const h3d_tensor *k_bias,
+                            const h3d_tensor *v_bias, uint32_t batch,
+                            uint32_t length, uint32_t heads,
+                            uint32_t head_dim, char *error,
+                            size_t error_size) {
+    size_t width, count;
+    if (!context || !batch || !length ||
+        !h3d_mul_size(heads, head_dim, &width) || !width ||
+        !h3d_mul_size((size_t)batch * length, width, &count) ||
+        count > SIZE_MAX / 3 ||
+        !h3d_is(qkv, H3D_F32, count * 3) ||
+        !h3d_is(q_bias, H3D_F32, width) ||
+        !h3d_is(k_bias, H3D_F32, width) ||
+        !h3d_is(v_bias, H3D_F32, width) ||
+        !h3d_is(query, H3D_F32, count) || !h3d_is(key, H3D_F32, count) ||
+        !h3d_is(value, H3D_F32, count)) {
+        return h3d_set_error(error, error_size,
+                             "invalid audio QKV tensors or shape");
+    }
+    h3d_audio_qkv_split_kernel<<<(count + 255) / 256, 256, 0,
+                                 context->stream>>>(
+        (float *)query->data, (float *)key->data, (float *)value->data,
+        (const float *)qkv->data, (const float *)q_bias->data,
+        (const float *)k_bias->data, (const float *)v_bias->data, count,
+        length, heads, head_dim);
+    return h3d_launch_ok("audio QKV split", error, error_size);
+}
+
+/* `h3_audio_pool_kernel` (`h3_gpu_cuda.cu:1874-1893`): one output value per
+ * (row, output channel) sums the matching slice of every head and divides by
+ * `heads * pool`; the reference's accumulation order is head-major. */
+__global__ static void h3d_audio_pool_kernel(float *output,
+                                             const float *attended,
+                                             size_t count, uint32_t heads,
+                                             uint32_t head_dim,
+                                             uint32_t output_dim) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) {
+        return;
+    }
+    uint32_t column = (uint32_t)(index % output_dim);
+    size_t row = index / output_dim;
+    uint32_t pool = head_dim / output_dim;
+    float sum = 0.0f;
+    for (uint32_t head = 0; head < heads; head++) {
+        size_t base = (row * heads + head) * head_dim + column * pool;
+        for (uint32_t item = 0; item < pool; item++) {
+            sum += attended[base + item];
+        }
+    }
+    output[index] = sum / (float)(heads * pool);
+}
+
+int h3d_audio_attention_pool_f32(h3d_context *context, h3d_tensor *output,
+                                 const h3d_tensor *attended, uint32_t batch,
+                                 uint32_t length, uint32_t heads,
+                                 uint32_t head_dim, uint32_t output_dim,
+                                 char *error, size_t error_size) {
+    size_t input_elements, output_elements;
+    if (!context || !batch || !length || !heads || !head_dim || !output_dim ||
+        head_dim % output_dim ||
+        !h3d_mul_size((size_t)batch * length * heads, head_dim,
+                      &input_elements) ||
+        !h3d_mul_size((size_t)batch * length, output_dim,
+                      &output_elements) ||
+        !h3d_is(attended, H3D_F32, input_elements) ||
+        !h3d_is(output, H3D_F32, output_elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid audio attention pool tensors");
+    }
+    h3d_audio_pool_kernel<<<(output_elements + 255) / 256, 256, 0,
+                            context->stream>>>(
+        (float *)output->data, (const float *)attended->data,
+        output_elements, heads, head_dim, output_dim);
+    return h3d_launch_ok("audio attention pool", error, error_size);
+}
+
+/* `h3_attention_kernel<float>` (`h3_gpu_cuda.cu:1337-1419`) with
+ * `causal = 1`, `head_major_input = 1`, `head_major_output = 0`, as
+ * `h3_gpu_sdpa_causal_f32` (`:1669-1676`) dispatches it: one block per
+ * (head, row, batch), 128 threads, a tree reduction for the dot product, the
+ * reference's running-maximum softmax, and the output written
+ * `[batch, length, heads, head_dim]`. */
+__global__ static void h3d_sdpa_causal_kernel(
+    float *output, const float *query, const float *key, const float *value,
+    uint32_t batch, uint32_t sequence, uint32_t heads, uint32_t head_dim,
+    float scale) {
+    __shared__ float partial[1024];
+    __shared__ float rescale;
+    __shared__ float weight;
+    __shared__ float denominator;
+    uint32_t head = blockIdx.x;
+    uint32_t row = blockIdx.y;
+    uint32_t batch_index = blockIdx.z;
+    uint32_t keys = row + 1;
+    size_t query_base =
+        (((size_t)batch_index * heads + head) * sequence + row) * head_dim;
+    uint32_t dimension = threadIdx.x;
+    float result = 0.0f;
+    float maximum = -INFINITY;
+    if (threadIdx.x == 0) {
+        denominator = 0.0f;
+    }
+    __syncthreads();
+    for (uint32_t key_row = 0; key_row < keys; key_row++) {
+        size_t key_base =
+            (((size_t)batch_index * heads + head) * sequence + key_row) *
+            head_dim;
+        float product = 0.0f;
+        if (dimension < head_dim) {
+            product = query[query_base + dimension] * key[key_base + dimension];
+        }
+        partial[threadIdx.x] = product;
+        __syncthreads();
+        for (uint32_t offset = blockDim.x / 2; offset; offset >>= 1) {
+            if (threadIdx.x < offset) {
+                partial[threadIdx.x] += partial[threadIdx.x + offset];
+            }
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            float score = partial[0] * scale;
+            float next_maximum = fmaxf(maximum, score);
+            rescale = expf(maximum - next_maximum);
+            weight = expf(score - next_maximum);
+            denominator = denominator * rescale + weight;
+            maximum = next_maximum;
+        }
+        __syncthreads();
+        if (dimension < head_dim) {
+            result = result * rescale + weight * value[key_base + dimension];
+        }
+        __syncthreads();
+    }
+    if (dimension < head_dim) {
+        result /= denominator;
+        size_t output_index =
+            (((size_t)batch_index * sequence + row) * heads + head) * head_dim +
+            dimension;
+        output[output_index] = result;
+    }
+}
+
+int h3d_sdpa_causal_f32(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *query, const h3d_tensor *key,
+                        const h3d_tensor *value, uint32_t batch,
+                        uint32_t sequence, uint32_t heads, uint32_t head_dim,
+                        float scale, char *error, size_t error_size) {
+    size_t elements;
+    if (!context || !batch || !sequence || !heads || !head_dim ||
+        head_dim > 1024 ||
+        !h3d_mul_size((size_t)batch * sequence * heads, head_dim,
+                      &elements) ||
+        !h3d_is(query, H3D_F32, elements) || !h3d_is(key, H3D_F32, elements) ||
+        !h3d_is(value, H3D_F32, elements) ||
+        !h3d_is(output, H3D_F32, elements)) {
+        return h3d_set_error(error, error_size,
+                             "invalid F32 causal attention tensors or shape");
+    }
+    uint32_t threads = 128;
+    while (threads < head_dim) {
+        threads <<= 1;
+    }
+    dim3 grid(heads, sequence, batch);
+    h3d_sdpa_causal_kernel<<<grid, threads, 0, context->stream>>>(
+        (float *)output->data, (const float *)query->data,
+        (const float *)key->data, (const float *)value->data, batch, sequence,
+        heads, head_dim, scale);
+    return h3d_launch_ok("F32 causal attention", error, error_size);
+}

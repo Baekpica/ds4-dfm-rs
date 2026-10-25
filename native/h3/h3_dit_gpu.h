@@ -345,6 +345,46 @@ int h3d_group_norm_silu(h3d_context *context, h3d_tensor *output,
                         uint32_t channels, uint32_t groups, float epsilon,
                         char *error, size_t error_size);
 
+/* `h3_gpu_geglu_f32` (`h3_gpu_cuda.cu:2922-2933`) with `h3_geglu_kernel`
+ * (`:2912-2920`): tanh GELU of the gate times the linear half. */
+int h3d_geglu_f32(h3d_context *context, h3d_tensor *output,
+                  const h3d_tensor *gate, const h3d_tensor *linear,
+                  size_t elements, char *error, size_t error_size);
+
+/* `h3_gpu_snake1d_f32` (`h3_gpu_cuda.cu:2945-2960`) with `h3_snake_kernel`
+ * (`:2935-2943`): plain `x + sin(a x)^2 / (a + 1e-9)`, no filters. */
+int h3d_snake1d_f32(h3d_context *context, h3d_tensor *output,
+                    const h3d_tensor *input, const h3d_tensor *alpha,
+                    uint32_t batch, uint32_t length, uint32_t channels,
+                    char *error, size_t error_size);
+
+/* `h3_gpu_audio_qkv_split_f32` (`h3_gpu_cuda.cu:1850-1888`) with
+ * `h3_audio_qkv_split_kernel` (`:1829-1848`). */
+int h3d_audio_qkv_split_f32(h3d_context *context, h3d_tensor *query,
+                            h3d_tensor *key, h3d_tensor *value,
+                            const h3d_tensor *qkv, const h3d_tensor *q_bias,
+                            const h3d_tensor *k_bias,
+                            const h3d_tensor *v_bias, uint32_t batch,
+                            uint32_t length, uint32_t heads,
+                            uint32_t head_dim, char *error,
+                            size_t error_size);
+
+/* `h3_gpu_audio_attention_pool_f32` (`h3_gpu_cuda.cu:1890-1926`) with
+ * `h3_audio_pool_kernel` (`:1874-1893`). */
+int h3d_audio_attention_pool_f32(h3d_context *context, h3d_tensor *output,
+                                 const h3d_tensor *attended, uint32_t batch,
+                                 uint32_t length, uint32_t heads,
+                                 uint32_t head_dim, uint32_t output_dim,
+                                 char *error, size_t error_size);
+
+/* `h3_gpu_sdpa_causal_f32` (`h3_gpu_cuda.cu:1659-1667`) with the F32 branch
+ * of `h3_attention_kernel` (`:1337-1419`), head-major input, row-major out. */
+int h3d_sdpa_causal_f32(h3d_context *context, h3d_tensor *output,
+                        const h3d_tensor *query, const h3d_tensor *key,
+                        const h3d_tensor *value, uint32_t batch,
+                        uint32_t sequence, uint32_t heads, uint32_t head_dim,
+                        float scale, char *error, size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif

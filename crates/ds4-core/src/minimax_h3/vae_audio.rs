@@ -1,23 +1,29 @@
-//! The released BigVGAN AudioVAE decoder (`h3_audio_vae.c:1-715`).
+//! The released BigVGAN AudioVAE (`h3_audio_vae.c:1-1343`).
 //!
-//! Decode only: the reference's encode half serves [keyframe and reference
-//! conditioning] and is a separate unit. The graph, the stage geometry, the
-//! weight-norm reconstruction and the alias-free Snake activation are
-//! transcribed in the reference's order, over the seven F32 primitives the
-//! decoder calls (`h3d_conv1d`, `h3d_conv_transpose1d`, `h3d_weight_norm`,
-//! `h3d_alias_free_snake`, `h3d_add_scaled`, `h3d_copy_f32`, `h3d_clip`).
+//! Decode (`:1-715`) and encode (`:708-1343`). The decoder serves every
+//! render; the encoder serves Ref2VA audio references and is gated on its own
+//! (`h3_audio_encoder_gate`). The graph, the stage geometry, the weight-norm
+//! reconstruction and the alias-free Snake activation are transcribed in the
+//! reference's order, over the F32 primitives the two halves call
+//! (`h3d_conv1d`, `h3d_conv_transpose1d`, `h3d_weight_norm`,
+//! `h3d_alias_free_snake`, `h3d_snake1d_f32`, `h3d_add_scaled`,
+//! `h3d_copy_f32`, `h3d_clip`, `h3d_layer_norm_f32`, `h3d_linear`,
+//! `h3d_geglu_f32`, `h3d_audio_qkv_split_f32`, `h3d_sdpa_causal_f32`,
+//! `h3d_audio_attention_pool_f32`).
 //!
 //! Layouts are the reference's: activations are [batch, time, channels] with
 //! the decoder's mono weights run over a batch of two (stereo folded into the
-//! batch, `h3_audio_vae.h:47-52`); the input latent is [32, 2, T] and is
-//! transposed and de-normalized in `prepare_input` (`:351-379`).
+//! batch, `h3_audio_vae.h:47-52`); the latent is [32, 2, T], transposed and
+//! normalized in `prepare_input` (`:351-379`) on the way out of the decoder
+//! and de-normalized in `encoder_output` (`:1253-1268`) on the way out of the
+//! encoder.
 
 use std::fmt;
 use std::path::Path;
 
 use ds4_sys::h3_dit::{Dtype, Gpu, Tensor};
 
-use super::vae_store::{f1, f3, Store};
+use super::vae_store::{f1, f2, f3, Store};
 
 pub const LATENT_CHANNELS: usize = 32;
 const LATENT_DIM: usize = 2048;
@@ -378,6 +384,18 @@ fn f32_alloc(gpu: &Gpu, elements: usize) -> Result<Tensor, VaeError> {
     device(gpu.alloc(Dtype::F32, elements))
 }
 
+/// `h3_gpu_tensor_read_f32` for the encoder's final readback.
+fn read_f32(gpu: &Gpu, tensor: &Tensor, elements: usize) -> Result<Vec<f32>, VaeError> {
+    let mut bytes = vec![0u8; elements * 4];
+    device(gpu.read(tensor, &mut bytes))?;
+    Ok(bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| f32::from_le_bytes(*word))
+        .collect())
+}
+
 /// The whole decoder, one call: `h3_audio_vae_decode` (`:660-705`).
 ///
 /// `latent` is normalized posterior means in [32, 2, T] with
@@ -709,4 +727,616 @@ mod tests {
         assert_eq!(length as usize, 6400);
         assert_eq!(length as usize, 8 * HOP_LENGTH);
     }
+}
+
+// --- the encode half (`h3_audio_vae.c:708-1343`) -------------------------
+
+/// `ENCODER_STAGES`/`ENCODER_RESIDUALS`/`ENCODER_HEADS`/`ENCODER_DIM`
+/// (`h3_audio_vae.c:708-713`).
+const ENCODER_STAGES: usize = 5;
+const ENCODER_RESIDUALS: usize = 3;
+const ENCODER_HEADS: u32 = 8;
+const ENCODER_DIM: u32 = 64;
+/// `encoder_strides` / `encoder_dilations` (`:715-716`).
+const ENCODER_STRIDES: [u32; ENCODER_STAGES] = [2, 4, 4, 5, 5];
+const ENCODER_DILATIONS: [u32; ENCODER_RESIDUALS] = [1, 3, 9];
+/// `1e-5f` in every encoder LayerNorm (`:1040`, `:1081`, `:1163`, `:1199`).
+const ENCODER_EPSILON: f32 = 1e-5;
+const ENCODER_RESIDUAL_KERNEL: u32 = 7;
+
+/// What `h3_audio_vae_encode` returns (`h3_audio_vae.h:16-30`):
+/// normalized posterior means in [32, 2, T], channel-major.
+pub struct Latent {
+    pub channels: usize,
+    pub stereo: usize,
+    pub length: usize,
+    pub values: Vec<f32>,
+}
+
+/// `encoder_conv_length` (`h3_audio_vae.c:746-755`).
+fn conv_length(length: u32, kernel: u32, stride: u32, padding: u32, dilation: u32) -> Option<u32> {
+    let effective = u64::from(dilation) * u64::from(kernel - 1) + 1;
+    let padded = u64::from(length) + 2 * u64::from(padding);
+
+    if padded < effective || stride == 0 {
+        return None;
+    }
+
+    let output = (padded - effective) / u64::from(stride) + 1;
+
+    if output == 0 || output > u64::from(u32::MAX) {
+        return None;
+    }
+
+    Some(output as u32)
+}
+
+/// `encoder_alpha` (`:757-761`): the checkpoint stores the log alpha as a
+/// [1, channels, 1] tensor.
+fn encoder_alpha(
+    store: &Store,
+    gpu: &Gpu,
+    prefix: &str,
+    channels: u32,
+) -> Result<Tensor, VaeError> {
+    Ok(f3(
+        store,
+        gpu,
+        &format!("{prefix}.alpha"),
+        1,
+        channels as u64,
+        1,
+    )?)
+}
+
+/// `load_linear` (`:995-1009`) for the pre-block: a 2-D weight and one bias.
+#[allow(clippy::too_many_arguments)]
+fn load_linear(
+    store: &Store,
+    gpu: &Gpu,
+    prefix: &str,
+    input_dim: u32,
+    output_dim: u32,
+    has_bias: bool,
+) -> Result<(Tensor, Option<Tensor>), VaeError> {
+    let weight = f2(
+        store,
+        gpu,
+        &format!("{prefix}.weight"),
+        output_dim as u64,
+        input_dim as u64,
+    )?;
+    let bias = match has_bias {
+        true => Some(f1(
+            store,
+            gpu,
+            &format!("{prefix}.bias"),
+            output_dim as u64,
+        )?),
+        false => None,
+    };
+
+    Ok((weight, bias))
+}
+
+/// `load_norm` (`:978-993`).
+fn load_norm(
+    store: &Store,
+    gpu: &Gpu,
+    prefix: &str,
+    width: u32,
+) -> Result<(Tensor, Tensor), VaeError> {
+    let weight = f1(store, gpu, &format!("{prefix}.weight"), width as u64)?;
+    let bias = f1(store, gpu, &format!("{prefix}.bias"), width as u64)?;
+
+    Ok((weight, bias))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_linear(
+    gpu: &Gpu,
+    output: &Tensor,
+    input: &Tensor,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    rows: u32,
+    input_dim: u32,
+    output_dim: u32,
+) -> Result<(), VaeError> {
+    device(gpu.linear(
+        output,
+        input,
+        weight,
+        bias,
+        rows,
+        input_dim,
+        output_dim,
+        Dtype::F32,
+    ))
+}
+
+fn run_layer_norm(
+    gpu: &Gpu,
+    output: &Tensor,
+    input: &Tensor,
+    weight: &Tensor,
+    bias: &Tensor,
+    rows: u32,
+    width: u32,
+) -> Result<(), VaeError> {
+    device(gpu.layer_norm_f32(output, input, weight, bias, rows, width, ENCODER_EPSILON))
+}
+
+fn run_snake(
+    gpu: &Gpu,
+    output: &Tensor,
+    input: &Tensor,
+    alpha: &Tensor,
+    length: u32,
+    channels: u32,
+) -> Result<(), VaeError> {
+    device(gpu.snake1d_f32(output, input, alpha, STEREO, length, channels))
+}
+
+/// `encoder_initial` (`:764-810`): zero-pad the waveform to a whole hop, then
+/// one 7-tap convolution from the two channels to 64.
+fn encoder_initial(
+    store: &Store,
+    gpu: &Gpu,
+    pcm: &[f32],
+    samples: usize,
+) -> Result<(Tensor, u32), VaeError> {
+    let padded = samples.div_ceil(HOP_LENGTH) * HOP_LENGTH;
+    let mut input_rows = vec![0.0f32; STEREO as usize * padded];
+
+    for channel in 0..STEREO as usize {
+        input_rows[channel * padded..channel * padded + samples]
+            .copy_from_slice(&pcm[channel * samples..(channel + 1) * samples]);
+    }
+
+    let input = f32_alloc(gpu, input_rows.len())?;
+    device(gpu.upload(&input, bytemuck_f32(&input_rows)))?;
+
+    let hidden = f32_alloc(gpu, STEREO as usize * padded * ENCODER_DIM as usize)?;
+    let conv = load_normalized_conv(
+        store,
+        gpu,
+        "encoder.block.0",
+        1,
+        ENCODER_DIM,
+        7,
+        3,
+        1,
+        1,
+        false,
+        true,
+    )?;
+    run_conv(gpu, &hidden, &input, &conv, padded as u32)?;
+
+    Ok((hidden, padded as u32))
+}
+
+/// `encoder_residual` (`:812-879`): Snake → dilated 7-tap → Snake → 1-tap,
+/// added into the running hidden state.
+fn encoder_residual(
+    store: &Store,
+    gpu: &Gpu,
+    stage: usize,
+    residual: usize,
+    channels: u32,
+    hidden: &Tensor,
+    length: u32,
+) -> Result<(), VaeError> {
+    let dilation = ENCODER_DILATIONS[residual];
+    let alpha1 = encoder_alpha(
+        store,
+        gpu,
+        &format!("encoder.block.{stage}.block.{residual}.block.0"),
+        channels,
+    )?;
+    let conv1 = load_normalized_conv(
+        store,
+        gpu,
+        &format!("encoder.block.{stage}.block.{residual}.block.1"),
+        channels,
+        channels,
+        ENCODER_RESIDUAL_KERNEL,
+        3 * dilation,
+        dilation,
+        1,
+        false,
+        true,
+    )?;
+    let alpha2 = encoder_alpha(
+        store,
+        gpu,
+        &format!("encoder.block.{stage}.block.{residual}.block.2"),
+        channels,
+    )?;
+    let conv2 = load_normalized_conv(
+        store,
+        gpu,
+        &format!("encoder.block.{stage}.block.{residual}.block.3"),
+        channels,
+        channels,
+        1,
+        0,
+        1,
+        1,
+        false,
+        true,
+    )?;
+
+    let elements = STEREO as usize * length as usize * channels as usize;
+    let activated = f32_alloc(gpu, elements)?;
+    let branch = f32_alloc(gpu, elements)?;
+
+    run_snake(gpu, &activated, hidden, &alpha1, length, channels)?;
+    run_conv(gpu, &branch, &activated, &conv1, length)?;
+    run_snake(gpu, &activated, &branch, &alpha2, length, channels)?;
+    run_conv(gpu, &branch, &activated, &conv2, length)?;
+    device(gpu.add_scaled(hidden, hidden, &branch, 1.0, 1.0))?;
+
+    Ok(())
+}
+
+/// `encoder_downsample` (`:881-938`): Snake, then a `2*stride`-tap strided
+/// convolution that doubles the channel count.
+fn encoder_downsample(
+    store: &Store,
+    gpu: &Gpu,
+    stage: usize,
+    channels: u32,
+    hidden: &Tensor,
+    length: u32,
+) -> Result<(Tensor, u32, u32), VaeError> {
+    let stride = ENCODER_STRIDES[stage - 1];
+    let kernel = stride * 2;
+    let padding = stride.div_ceil(2);
+    let output_channels = channels * 2;
+    let output_length = conv_length(length, kernel, stride, padding, 1)
+        .ok_or_else(|| VaeError("AudioVAE encoder downsample geometry".to_string()))?;
+    let alpha = encoder_alpha(
+        store,
+        gpu,
+        &format!("encoder.block.{stage}.block.3"),
+        channels,
+    )?;
+    let conv = load_normalized_conv(
+        store,
+        gpu,
+        &format!("encoder.block.{stage}.block.4"),
+        channels,
+        output_channels,
+        kernel,
+        padding,
+        1,
+        stride,
+        false,
+        true,
+    )?;
+
+    let activated = f32_alloc(gpu, STEREO as usize * length as usize * channels as usize)?;
+    let down = f32_alloc(
+        gpu,
+        STEREO as usize * output_length as usize * output_channels as usize,
+    )?;
+
+    run_snake(gpu, &activated, hidden, &alpha, length, channels)?;
+    run_conv(gpu, &down, &activated, &conv, length)?;
+
+    Ok((down, output_length, output_channels))
+}
+
+/// `encoder_final_conv` (`:940-976`): Snake at 2048, then a 3-tap
+/// convolution inside the same width.
+fn encoder_final_conv(
+    store: &Store,
+    gpu: &Gpu,
+    hidden: &Tensor,
+    length: u32,
+) -> Result<Tensor, VaeError> {
+    let channels = LATENT_DIM as u32;
+    let alpha = encoder_alpha(store, gpu, "encoder.block.6", channels)?;
+    let conv = load_normalized_conv(
+        store,
+        gpu,
+        "encoder.block.7",
+        channels,
+        channels,
+        3,
+        1,
+        1,
+        1,
+        false,
+        true,
+    )?;
+
+    let elements = STEREO as usize * length as usize * channels as usize;
+    let activated = f32_alloc(gpu, elements)?;
+    let output = f32_alloc(gpu, elements)?;
+
+    run_snake(gpu, &activated, hidden, &alpha, length, channels)?;
+    run_conv(gpu, &output, &activated, &conv, length)?;
+
+    Ok(output)
+}
+
+/// `encoder_projection_branch` (`:1011-1056`): LayerNorm at 2048, then the
+/// linear down to the 32-channel base.
+fn encoder_projection_branch(
+    store: &Store,
+    gpu: &Gpu,
+    hidden: &Tensor,
+    rows: u32,
+    length: u32,
+) -> Result<Tensor, VaeError> {
+    let (norm_weight, norm_bias) = load_norm(store, gpu, "pre_block.norm3", LATENT_DIM as u32)?;
+    let (proj_weight, proj_bias) = load_linear(
+        store,
+        gpu,
+        "pre_block.proj",
+        LATENT_DIM as u32,
+        LATENT_CHANNELS as u32,
+        true,
+    )?;
+    let bias = proj_bias.ok_or_else(|| VaeError("pre_block.proj has no bias".to_string()))?;
+
+    let normalized = f32_alloc(gpu, rows as usize * LATENT_DIM)?;
+    let projected = f32_alloc(gpu, rows as usize * LATENT_CHANNELS)?;
+
+    run_layer_norm(
+        gpu,
+        &normalized,
+        hidden,
+        &norm_weight,
+        &norm_bias,
+        rows,
+        LATENT_DIM as u32,
+    )?;
+    let _ = length;
+    run_linear(
+        gpu,
+        &projected,
+        &normalized,
+        &proj_weight,
+        Some(&bias),
+        rows,
+        LATENT_DIM as u32,
+        LATENT_CHANNELS as u32,
+    )?;
+
+    Ok(projected)
+}
+
+/// `encoder_attention_branch` (`:1058-1145`): the causal multi-head attention
+/// over the 2048-wide hidden state, pooled to 32 channels and added into the
+/// base. The q/k/v biases are separate tensors, and k's is the reference's
+/// `zero_k_bias`.
+fn encoder_attention_branch(
+    store: &Store,
+    gpu: &Gpu,
+    hidden: &Tensor,
+    base: &Tensor,
+    rows: u32,
+    length: u32,
+) -> Result<(), VaeError> {
+    let width = LATENT_DIM as u32;
+    let head_dim = width / ENCODER_HEADS;
+    let (norm_weight, norm_bias) = load_norm(store, gpu, "pre_block.norm1", width)?;
+    let (qkv_weight, unused) =
+        load_linear(store, gpu, "pre_block.attn.qkv", width, width * 3, false)?;
+    if unused.is_some() {
+        return fail("pre_block.attn.qkv must not carry a bias");
+    }
+    let q_bias = f1(store, gpu, "pre_block.attn.q_bias", width as u64)?;
+    let k_bias = f1(store, gpu, "pre_block.attn.zero_k_bias", width as u64)?;
+    let v_bias = f1(store, gpu, "pre_block.attn.v_bias", width as u64)?;
+    let (proj_weight, proj_bias) = load_linear(
+        store,
+        gpu,
+        "pre_block.attn.proj",
+        LATENT_CHANNELS as u32,
+        LATENT_CHANNELS as u32,
+        true,
+    )?;
+    let proj_bias =
+        proj_bias.ok_or_else(|| VaeError("pre_block.attn.proj has no bias".to_string()))?;
+
+    let normalized = f32_alloc(gpu, rows as usize * LATENT_DIM)?;
+    let qkv = f32_alloc(gpu, rows as usize * LATENT_DIM * 3)?;
+    let query = f32_alloc(gpu, rows as usize * LATENT_DIM)?;
+    let key = f32_alloc(gpu, rows as usize * LATENT_DIM)?;
+    let value = f32_alloc(gpu, rows as usize * LATENT_DIM)?;
+    let attended = f32_alloc(gpu, rows as usize * LATENT_DIM)?;
+    let pooled = f32_alloc(gpu, rows as usize * LATENT_CHANNELS)?;
+    let projected = f32_alloc(gpu, rows as usize * LATENT_CHANNELS)?;
+
+    run_layer_norm(
+        gpu,
+        &normalized,
+        hidden,
+        &norm_weight,
+        &norm_bias,
+        rows,
+        width,
+    )?;
+    run_linear(
+        gpu,
+        &qkv,
+        &normalized,
+        &qkv_weight,
+        None,
+        rows,
+        width,
+        width * 3,
+    )?;
+    device(gpu.audio_qkv_split_f32(
+        &query,
+        &key,
+        &value,
+        &qkv,
+        &q_bias,
+        &k_bias,
+        &v_bias,
+        STEREO,
+        length,
+        ENCODER_HEADS,
+        head_dim,
+    ))?;
+    device(gpu.sdpa_causal_f32(
+        &attended,
+        &query,
+        &key,
+        &value,
+        STEREO,
+        length,
+        ENCODER_HEADS,
+        head_dim,
+        1.0 / (head_dim as f32).sqrt(),
+    ))?;
+    device(gpu.audio_attention_pool_f32(
+        &pooled,
+        &attended,
+        STEREO,
+        length,
+        ENCODER_HEADS,
+        head_dim,
+        LATENT_CHANNELS as u32,
+    ))?;
+    run_linear(
+        gpu,
+        &projected,
+        &pooled,
+        &proj_weight,
+        Some(&proj_bias),
+        rows,
+        LATENT_CHANNELS as u32,
+        LATENT_CHANNELS as u32,
+    )?;
+    device(gpu.add_scaled(base, base, &projected, 1.0, 1.0))?;
+
+    Ok(())
+}
+
+/// `encoder_mlp` (`:1147-1221`): two LayerNorms at 32, a 32→64 gate and a
+/// 32→64 linear through GEGLU, then 64→32 added into the base.
+fn encoder_mlp(store: &Store, gpu: &Gpu, base: &Tensor, rows: u32) -> Result<(), VaeError> {
+    let width = LATENT_CHANNELS as u32;
+    let (n2w, n2b) = load_norm(store, gpu, "pre_block.norm2", width)?;
+    let (nmw, nmb) = load_norm(store, gpu, "pre_block.mlp.norm", width)?;
+    let (w0, b0) = load_linear(store, gpu, "pre_block.mlp.w0", width, width * 2, true)?;
+    let (w1, b1) = load_linear(store, gpu, "pre_block.mlp.w1", width, width * 2, true)?;
+    let (w2, b2) = load_linear(store, gpu, "pre_block.mlp.w2", width * 2, width, true)?;
+    let b0 = b0.ok_or_else(|| VaeError("pre_block.mlp.w0 has no bias".to_string()))?;
+    let b1 = b1.ok_or_else(|| VaeError("pre_block.mlp.w1 has no bias".to_string()))?;
+    let b2 = b2.ok_or_else(|| VaeError("pre_block.mlp.w2 has no bias".to_string()))?;
+
+    let norm2 = f32_alloc(gpu, rows as usize * LATENT_CHANNELS)?;
+    let normm = f32_alloc(gpu, rows as usize * LATENT_CHANNELS)?;
+    let gate = f32_alloc(gpu, rows as usize * LATENT_CHANNELS * 2)?;
+    let linear = f32_alloc(gpu, rows as usize * LATENT_CHANNELS * 2)?;
+    let geglu = f32_alloc(gpu, rows as usize * LATENT_CHANNELS * 2)?;
+    let branch = f32_alloc(gpu, rows as usize * LATENT_CHANNELS)?;
+
+    run_layer_norm(gpu, &norm2, base, &n2w, &n2b, rows, width)?;
+    run_layer_norm(gpu, &normm, &norm2, &nmw, &nmb, rows, width)?;
+    run_linear(gpu, &gate, &normm, &w0, Some(&b0), rows, width, width * 2)?;
+    run_linear(gpu, &linear, &normm, &w1, Some(&b1), rows, width, width * 2)?;
+    device(gpu.geglu_f32(&geglu, &gate, &linear, rows as usize * LATENT_CHANNELS * 2))?;
+    run_linear(gpu, &branch, &geglu, &w2, Some(&b2), rows, width * 2, width)?;
+    device(gpu.add_scaled(base, base, &branch, 1.0, 1.0))?;
+
+    Ok(())
+}
+
+/// `encoder_output` (`:1223-1273`): the 1-tap mean projection, then the
+/// inverse latent normalization into [32, 2, T].
+fn encoder_output(
+    store: &Store,
+    gpu: &Gpu,
+    base: &Tensor,
+    length: u32,
+    mean: &[f32],
+    deviation: &[f32],
+) -> Result<Latent, VaeError> {
+    let channels = LATENT_CHANNELS as u32;
+    let conv = load_plain_conv(store, gpu, "mean_proj", channels, channels, 1, 0, 1, true)?;
+    let elements = STEREO as usize * length as usize * LATENT_CHANNELS;
+    let latent = f32_alloc(gpu, elements)?;
+
+    run_conv(gpu, &latent, base, &conv, length)?;
+
+    let rows = read_f32(gpu, &latent, elements)?;
+
+    let mut values = vec![0.0f32; elements];
+    for channel in 0..LATENT_CHANNELS {
+        for stereo in 0..STEREO as usize {
+            for time in 0..length as usize {
+                let source = (stereo * length as usize + time) * LATENT_CHANNELS + channel;
+                let destination = (channel * STEREO as usize + stereo) * length as usize + time;
+                values[destination] = (rows[source] - mean[channel]) / deviation[channel];
+            }
+        }
+    }
+
+    Ok(Latent {
+        channels: LATENT_CHANNELS,
+        stereo: STEREO as usize,
+        length: length as usize,
+        values,
+    })
+}
+
+/// The whole encoder, one call: `h3_audio_vae_encode` (`:1275-1343`).
+///
+/// `pcm` is channel-major F32 stereo at [`SAMPLE_RATE`], at most 15 seconds
+/// (`:1285`); the returned latent is [32, 2, ceil(samples / 800)].
+pub fn encode(weight_directory: &Path, pcm: &[f32], samples: usize) -> Result<Latent, VaeError> {
+    if samples == 0 || samples > SAMPLE_RATE as usize * 15 {
+        return fail("audio VAE encoder needs 1..=480000 samples");
+    }
+    if pcm.len() != samples * STEREO as usize {
+        return fail(format!(
+            "audio VAE encoder input is {} values, expected {}",
+            pcm.len(),
+            samples * STEREO as usize
+        ));
+    }
+
+    let (mean, deviation) = latent_normalization(weight_directory)?;
+    let store = Store::open(weight_directory, "audio VAE")?;
+    let gpu = device(Gpu::create())?;
+
+    let (mut hidden, mut length) = encoder_initial(&store, &gpu, pcm, samples)?;
+    let mut channels = ENCODER_DIM;
+
+    for stage in 1..=ENCODER_STAGES {
+        for residual in 0..ENCODER_RESIDUALS {
+            encoder_residual(&store, &gpu, stage, residual, channels, &hidden, length)?;
+        }
+
+        let (down, next_length, next_channels) =
+            encoder_downsample(&store, &gpu, stage, channels, &hidden, length)?;
+        hidden = down;
+        length = next_length;
+        channels = next_channels;
+    }
+
+    let expected_length = samples.div_ceil(HOP_LENGTH);
+    if channels != LATENT_DIM as u32 || length as usize != expected_length {
+        return fail(format!(
+            "AudioVAE encoder produced {channels} channels over {length} steps, \
+             expected {LATENT_DIM} over {expected_length}"
+        ));
+    }
+
+    let hidden = encoder_final_conv(&store, &gpu, &hidden, length)?;
+    let rows = STEREO * length;
+    let base = encoder_projection_branch(&store, &gpu, &hidden, rows, length)?;
+
+    encoder_attention_branch(&store, &gpu, &hidden, &base, rows, length)?;
+    encoder_mlp(&store, &gpu, &base, rows)?;
+
+    encoder_output(&store, &gpu, &base, length, &mean, &deviation)
 }

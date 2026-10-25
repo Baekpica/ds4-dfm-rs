@@ -526,6 +526,73 @@ unsafe extern "C" {
         error: *mut c_char,
         error_size: usize,
     ) -> c_int;
+
+    fn h3d_geglu_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        gate: *const CTensor,
+        linear: *const CTensor,
+        elements: usize,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_snake1d_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        input: *const CTensor,
+        alpha: *const CTensor,
+        batch: u32,
+        length: u32,
+        channels: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_audio_qkv_split_f32(
+        context: *mut Context,
+        query: *mut CTensor,
+        key: *mut CTensor,
+        value: *mut CTensor,
+        qkv: *const CTensor,
+        q_bias: *const CTensor,
+        k_bias: *const CTensor,
+        v_bias: *const CTensor,
+        batch: u32,
+        length: u32,
+        heads: u32,
+        head_dim: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_audio_attention_pool_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        attended: *const CTensor,
+        batch: u32,
+        length: u32,
+        heads: u32,
+        head_dim: u32,
+        output_dim: u32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
+
+    fn h3d_sdpa_causal_f32(
+        context: *mut Context,
+        output: *mut CTensor,
+        query: *const CTensor,
+        key: *const CTensor,
+        value: *const CTensor,
+        batch: u32,
+        sequence: u32,
+        heads: u32,
+        head_dim: u32,
+        scale: f32,
+        error: *mut c_char,
+        error_size: usize,
+    ) -> c_int;
 }
 
 /// `h3d_dtype`.
@@ -1727,6 +1794,165 @@ impl Gpu {
                 )
             },
             "group_norm_silu",
+        )
+    }
+
+    /// `h3_gpu_geglu_f32` (`:2922-2933`): tanh GELU of the gate times the
+    /// linear half.
+    pub fn geglu_f32(
+        &self,
+        output: &Tensor,
+        gate: &Tensor,
+        linear: &Tensor,
+        elements: usize,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_geglu_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    gate.raw(),
+                    linear.raw(),
+                    elements,
+                    error,
+                    size,
+                )
+            },
+            "geglu_f32",
+        )
+    }
+
+    /// `h3_gpu_snake1d_f32` (`:2945-2960`): the plain Snake1d, not the
+    /// alias-free variant the decoder uses.
+    pub fn snake1d_f32(
+        &self,
+        output: &Tensor,
+        input: &Tensor,
+        alpha: &Tensor,
+        batch: u32,
+        length: u32,
+        channels: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_snake1d_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    input.raw(),
+                    alpha.raw(),
+                    batch,
+                    length,
+                    channels,
+                    error,
+                    size,
+                )
+            },
+            "snake1d_f32",
+        )
+    }
+
+    /// `h3_gpu_audio_qkv_split_f32` (`:1850-1888`): one interleaved row to
+    /// three head-major tensors, each with its own bias.
+    pub fn audio_qkv_split_f32(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        qkv: &Tensor,
+        q_bias: &Tensor,
+        k_bias: &Tensor,
+        v_bias: &Tensor,
+        batch: u32,
+        length: u32,
+        heads: u32,
+        head_dim: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_audio_qkv_split_f32(
+                    self.raw.as_ptr(),
+                    query.raw(),
+                    key.raw(),
+                    value.raw(),
+                    qkv.raw(),
+                    q_bias.raw(),
+                    k_bias.raw(),
+                    v_bias.raw(),
+                    batch,
+                    length,
+                    heads,
+                    head_dim,
+                    error,
+                    size,
+                )
+            },
+            "audio_qkv_split_f32",
+        )
+    }
+
+    /// `h3_gpu_audio_attention_pool_f32` (`:1890-1926`): per-head slices to
+    /// one `output_dim` row.
+    pub fn audio_attention_pool_f32(
+        &self,
+        output: &Tensor,
+        attended: &Tensor,
+        batch: u32,
+        length: u32,
+        heads: u32,
+        head_dim: u32,
+        output_dim: u32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_audio_attention_pool_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    attended.raw(),
+                    batch,
+                    length,
+                    heads,
+                    head_dim,
+                    output_dim,
+                    error,
+                    size,
+                )
+            },
+            "audio_attention_pool_f32",
+        )
+    }
+
+    /// `h3_gpu_sdpa_causal_f32` (`:1659-1667`): head-major input, causal
+    /// mask, row-major output.
+    pub fn sdpa_causal_f32(
+        &self,
+        output: &Tensor,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        batch: u32,
+        sequence: u32,
+        heads: u32,
+        head_dim: u32,
+        scale: f32,
+    ) -> Result<(), String> {
+        self.call(
+            |error, size| unsafe {
+                h3d_sdpa_causal_f32(
+                    self.raw.as_ptr(),
+                    output.raw(),
+                    query.raw(),
+                    key.raw(),
+                    value.raw(),
+                    batch,
+                    sequence,
+                    heads,
+                    head_dim,
+                    scale,
+                    error,
+                    size,
+                )
+            },
+            "sdpa_causal_f32",
         )
     }
 

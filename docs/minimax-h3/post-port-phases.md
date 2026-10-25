@@ -1132,6 +1132,47 @@ Acceptance: the 2-step hashes equal on both sides for an image-only reference
 set, a reference-free run unchanged (existing goldens), the 12-reference and
 missing-checkpoint refusals, and one rendered clip.
 
+### P14.1 — The AudioVAE encode half (2026-10-25)
+
+Done. The encoder is `vae_audio::encode`. The five stages and their strides
+are `h3_audio_vae.c:714-720`'s (`{2,4,4,5,5}`); each stage is `snake ->
+dilated residual stack -> downsample`, then the final `snake` at 2048, the
+`conv1` to 32, the attention branch's causal SDPA, attention pool and
+projection, and the MLP's GEGLU, all read from `:746-1273`. The output is the
+released inverse normalization (`:1253-1268`): channel-major `[32,2,t]`.
+
+Five F32 primitives carry it, each citing its reference kernel:
+`h3d_geglu_f32` (`h3_gpu_cuda.cu:2912-2920`), `h3d_snake1d_f32`
+(`:2935-2943`, the plain snake, not the alias-free variant),
+`h3d_audio_qkv_split_f32` (`:1829-1848`), `h3d_audio_attention_pool_f32`
+(`:1874-1893`) and `h3d_sdpa_causal_f32` (the F32 branch of
+`h3_attention_kernel`, `:1337-1419`). Layer norm reuses the existing
+`h3d_layer_norm_f32` (`h3_dit_gpu.cu:1671`).
+
+Evidence, on the Spark: media `p14-audio-2s.wav`, 64000 samples at 32 kHz
+stereo, built from `u17-long.mp4` with `-af apad -t 2.0` (`duration_ts`
+64000, sha256 `301bfd0f...`). The reference probe
+`tools/minimax_h3/audio_encoder_probe.c` (built against `~/h3-oracle/libh3.a`,
+ffmpeg 6.1.1) and the port gate `h3_audio_encoder_gate`, same media,
+`--samples 64000`:
+
+  PCM    samples=64000 fnv=edc4afefc0ec1d6a                both sides
+  LATENT channels=32 stereo=2 t=80 values=5120
+         fnv=d03a1d52c0a4352b
+         first=0.217818677 last=0.404173136                both sides
+
+Bit-identical, so there is no deviation to name. Times: reference encode
+2.032 s; port 2.318 s plus 0.053 s read. The hashes reproduce across an
+independent rerun.
+
+Recorded reference behaviour: `h3_ffmpeg_read_audio_f32` (`h3_ffmpeg.c:450-484`)
+reads exactly `max_samples*2*4` bytes, then one byte, then closes the pipe and
+requires ffmpeg to exit 0. Media longer than the `-t` cut therefore makes a
+still-writing ffmpeg take SIGPIPE and the probe report "could not decode a
+stereo soundtrack"; a 3.25 s looped copy failed this way while the port read
+it fine. The gate media must end at the cut (exactly 2 s here), or the
+reference fails on its own reader, not on the encoder.
+
 ## P12.5 — Port the reference test suite (runs last, after P13)
 
 Ordering decision (operator, 2026-10-24): this phase is moved to the end of the
