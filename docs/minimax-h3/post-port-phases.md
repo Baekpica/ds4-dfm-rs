@@ -1230,6 +1230,34 @@ The port still resolves every path through the partition, as the reference
 does; reusing the FL2VA-resident encoder is a path substitution over identical
 bytes and is left to P14.5, where the memory plan is decided.
 
+### P14.3a — The reference media canvas policy (2026-10-25)
+
+Done. `host::adapt_canvas`, `host::reference_image_canvas` and
+`host::reference_video_canvas` port `h3_host.c:49-124` exactly: the 768-px
+nominal canvas at the source aspect with the `H3_MAX_PIXELS` downscale
+(`:49-76`), the down-only aspect-preserving image policy that matches the
+target area or a short-edge cap (`:77-100`), and the video policy that keeps a
+smaller source's own snapped size instead of enlarging it (`:101-124`). Every
+axis snaps with `nearbyint`, which rounds ties to even, so the port uses
+`round_ties_even`: `720 / 32` is exactly 22.5 and the reference answers 704,
+not 736.
+
+The gate is `tests/h3_canvas_gate` (host-only) against
+`tools/minimax_h3/reference_canvas_probe.c` built from `/data/h3.c` at
+`eae5d54`. Both run the same 170-row sweep (17 sources x {adapt, video} plus
+17 x 4 targets x 2 caps for images) and print the same TSV rows:
+
+  REF_EXIT=0  PORT_EXIT=0  DIFF_EXIT=0      170 rows, no line differs
+
+Rows worth keeping: `ADAPT 17x9993 -> 32x24640` (the one-multiple clamp),
+`VIDEO 1280x720 -> 1280x704` (ties to even) and `VIDEO 100x100 -> 96x96` (a
+small source is snapped down, never enlarged). Three unit tests in `host.rs`
+pin those values, so a later `round()` swap fails locally.
+
+Still open in P14.3: the reference media prep itself (decode at the canvases
+above, the `vae_encoder` tile encode, `vae_audio::encode` plus the
+`[32,2,t] -> [2,t,32]` repack and the per-span jitter at `seed`/`seed + 1`).
+
 ## P12.5 — Port the reference test suite (runs last, after P13)
 
 Ordering decision (operator, 2026-10-24): this phase is moved to the end of the

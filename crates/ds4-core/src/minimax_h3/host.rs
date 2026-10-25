@@ -6,6 +6,9 @@
 //! - `h3_host.c:17-41` `h3_align_frame_count`, `h3_video_latent_t`,
 //!   `h3_temporal` (24 fps canvas frames, 40 fps audio latents).
 //! - `h3_host.c:43-46` `h3_latent_canvas` (VAE spatial ratio 16).
+//! - `h3_host.c:49-124` `h3_adapt_canvas`, `h3_reference_image_canvas` and
+//!   `h3_reference_video_canvas`: the Ref2VA media sizing policy. `nearbyint`
+//!   rounds ties to even, so the port uses `round_ties_even`, not `round`.
 //! - `h3_host.c:495-530` `h3_rng_*`, PCG32 plus Box-Muller on doubles. The
 //!   released server seeds each modality from its own generator with the same
 //!   requested seed (`h3.c:1574-1581`), which is why `fill_normal` is called
@@ -82,6 +85,93 @@ pub fn temporal(requested_frames: i32) -> Temporal {
 /// the order the reference writes them.
 pub fn latent_canvas(width: i32, height: i32) -> (i32, i32) {
     (width / VAE_SPATIAL_RATIO, height / VAE_SPATIAL_RATIO)
+}
+
+/// The canvas multiple every reference side snaps to (`H3_CANVAS_MULTIPLE`,
+/// `h3_host.h:7`).
+const CANVAS_MULTIPLE_F: f64 = CANVAS_MULTIPLE as f64;
+
+/// The 768P nominal short edge (`h3_host.c:66-72`).
+const ADAPT_NOMINAL: f64 = 768.0;
+
+/// `nearbyint(x / 32) * 32` on both axes (`h3_host.c:78-86`): round to the
+/// nearest multiple of 32, ties to even, and never below one multiple.
+fn snap(value: f64) -> f64 {
+    let snapped = (value / CANVAS_MULTIPLE_F).round_ties_even() * CANVAS_MULTIPLE_F;
+    snapped.max(CANVAS_MULTIPLE_F)
+}
+
+/// `h3_adapt_canvas` (`h3_host.c:49-76`): the 768-px-short-edge nominal canvas
+/// for the source aspect, scaled down to `H3_MAX_PIXELS` when it overflows,
+/// then snapped to 32.
+pub fn adapt_canvas(width: i32, height: i32) -> Option<(i32, i32)> {
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+
+    let ratio = f64::from(width) / f64::from(height);
+    let (mut nominal_w, mut nominal_h) = match ratio >= 1.0 {
+        true => (ADAPT_NOMINAL * ratio, ADAPT_NOMINAL),
+        false => (ADAPT_NOMINAL, ADAPT_NOMINAL / ratio),
+    };
+
+    let pixels = nominal_w * nominal_h;
+    if pixels > f64::from(MAX_PIXELS) {
+        let scale = (f64::from(MAX_PIXELS) / pixels).sqrt();
+        nominal_w *= scale;
+        nominal_h *= scale;
+    }
+
+    Some((snap(nominal_w) as i32, snap(nominal_h) as i32))
+}
+
+/// `h3_reference_image_canvas` (`h3_host.c:77-100`): down-only and
+/// aspect-preserving. `max_short_edge` of zero matches the target pixel area;
+/// a positive value caps the short edge instead.
+pub fn reference_image_canvas(
+    width: i32,
+    height: i32,
+    target_width: i32,
+    target_height: i32,
+    max_short_edge: i32,
+) -> Option<(i32, i32)> {
+    if width < 1 || height < 1 || target_width < 1 || target_height < 1 || max_short_edge < 0 {
+        return None;
+    }
+
+    let scale = match max_short_edge {
+        0 => {
+            let target_area = f64::from(target_width) * f64::from(target_height);
+            let source_area = f64::from(width) * f64::from(height);
+            (target_area / source_area).sqrt().min(1.0)
+        }
+        cap => (f64::from(cap) / f64::from(width.min(height))).min(1.0),
+    };
+
+    let out_w = snap(f64::from(width) * scale);
+    let out_h = snap(f64::from(height) * scale);
+    if out_w > f64::from(i32::MAX) || out_h > f64::from(i32::MAX) {
+        return None;
+    }
+
+    Some((out_w as i32, out_h as i32))
+}
+
+/// `h3_reference_video_canvas` (`h3_host.c:101-124`): the target canvas, never
+/// enlarged: a source smaller than the adapted canvas snaps on its own size
+/// instead.
+pub fn reference_video_canvas(width: i32, height: i32) -> Option<(i32, i32)> {
+    let (adapted_w, adapted_h) = adapt_canvas(width, height)?;
+    let source_area = f64::from(width) * f64::from(height);
+    let target_area = f64::from(adapted_w) * f64::from(adapted_h);
+    if source_area >= target_area {
+        return Some((adapted_w, adapted_h));
+    }
+
+    Some((
+        snap(f64::from(width)) as i32,
+        snap(f64::from(height)) as i32,
+    ))
 }
 
 /// `h3_rng` (`h3_host.h:88-93`), PCG32 with the Box-Muller spare.
@@ -273,6 +363,53 @@ pub fn euler_step(sample: &mut [f32], velocity: &[f32], sigma: f32, sigma_next: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Values from the reference's own sweep (`reference_canvas_probe`, run on
+    /// the Spark): the 768-px nominal canvas at the source aspect, snapped to
+    /// 32, with the short edge clamped to one multiple.
+    #[test]
+    fn adapt_canvas_matches_the_reference_sweep() {
+        assert_eq!(adapt_canvas(1920, 1080), Some((1344, 768)));
+        assert_eq!(adapt_canvas(3000, 1000), Some((1760, 576)));
+        assert_eq!(adapt_canvas(640, 480), Some((1024, 768)));
+        assert_eq!(adapt_canvas(17, 9993), Some((32, 24640)));
+        assert_eq!(adapt_canvas(0, 768), None);
+    }
+
+    /// A smaller video reference keeps its own snapped size instead of being
+    /// enlarged; `720 / 32` is exactly 22.5, which `nearbyint` ties to even
+    /// (`704`), so a `round()` here would be caught.
+    #[test]
+    fn reference_video_never_enlarges_and_ties_to_even() {
+        assert_eq!(reference_video_canvas(3840, 2160), Some((1344, 768)));
+        assert_eq!(reference_video_canvas(1280, 720), Some((1280, 704)));
+        assert_eq!(reference_video_canvas(720, 1280), Some((704, 1280)));
+        assert_eq!(reference_video_canvas(100, 100), Some((96, 96)));
+    }
+
+    /// The image policy is down-only and aspect preserving, by target area or
+    /// by short-edge cap (`h3.c:1049-1051` selects the cap with `--ref-image-size max`).
+    #[test]
+    fn reference_image_matches_the_reference_sweep() {
+        assert_eq!(
+            reference_image_canvas(1344, 768, 512, 512, 0),
+            Some((672, 384))
+        );
+        assert_eq!(
+            reference_image_canvas(1344, 768, 1344, 768, 0),
+            Some((1344, 768))
+        );
+        assert_eq!(
+            reference_image_canvas(1280, 720, 1344, 768, 0),
+            Some((1280, 704))
+        );
+        assert_eq!(
+            reference_image_canvas(1344, 768, 1344, 768, 2048),
+            Some((1344, 768))
+        );
+        assert_eq!(reference_image_canvas(0, 768, 512, 512, 0), None);
+        assert_eq!(reference_image_canvas(64, 64, 512, 512, -1), None);
+    }
 
     /// `h3_host.c:17-23`: the canvas floor is 5 frames and the stride is 17.
     #[test]

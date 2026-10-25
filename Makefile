@@ -509,6 +509,14 @@ tests/h3_partition_gate: $(DS4_RS_SOURCES)
 	$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_partition_gate" $@
 
+# The canvas gate is host-only too: it replays the reference's media sizing
+# policy over a fixed sweep (`h3_host.c:49-124`).
+tests/h3_canvas_gate: $(DS4_RS_SOURCES)
+	cargo rustc -p ds4-core --example h3_canvas_gate --release --features h3-gates -- \
+	-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+	$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_canvas_gate" $@
+
 # The PPM diff is host-only: it reads the frames and step previews the CLI
 # writes (`main.c:162-176`, `:196-245`) and turns "the renders differ" into
 # pixel counts, PSNR and per-band attribution, with no image library.

@@ -65,3 +65,7 @@ libc = "0.2"
 [[example]]
 name = "h3_partition_gate"
 required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_canvas_gate"
+required-features = ["h3-gates"]
