@@ -244,7 +244,10 @@ One GB10 (`sm_121a`, CUDA 13.4, driver 615.71.10, SM clock 2.41-2.59 GHz
 under load on 2026-10-24; limits in [gb10-hardware.md](gb10-hardware.md)),
 model `74e5a9fd`, `ds4-bench`, cold frontiers, greedy decode, MTP off.
 `promessi_sposi` is `speed-bench/promessi_sposi.txt`; the code corpus is
-6.5 MB of source files concatenated.
+6.5 MB of source files concatenated. The [October 25 optimization
+round](minimax-vq-optimization-2026-10-25.md) has the per-kernel analysis
+at the 2,200 MHz clock cap, the 2K-64K card sweep, what was rejected and
+the open levers.
 
 | Frontier | Prompt | Prefill | Decode | Build, notes |
 |---|---|---:|---:|---|
