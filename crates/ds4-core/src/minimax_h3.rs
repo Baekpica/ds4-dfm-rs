@@ -38,6 +38,7 @@ pub mod presets;
 pub mod render;
 pub mod safetensors;
 pub mod sequence;
+pub mod terminal;
 pub mod text;
 pub mod text_forward;
 pub mod text_rope;

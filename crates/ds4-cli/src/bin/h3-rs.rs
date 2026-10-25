@@ -20,14 +20,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::dit::{Dit, LoadMode, LoadOptions, Reduction};
+use ds4_core::minimax_h3::dit::{Dit, DitError, LoadMode, LoadOptions, Reduction};
 use ds4_core::minimax_h3::host::{reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::render::mux_mp4;
 use ds4_core::minimax_h3::render::{check_frames, Canvas, RgbFrames};
 use ds4_core::minimax_h3::sequence::{self, Spec};
 use ds4_core::minimax_h3::text_forward;
 use ds4_core::minimax_h3::tokenizer::{EmptyPrompt, Tokenizer};
-use ds4_core::minimax_h3::{condition, device, media, vae_audio, vae_encoder, vae_video};
+use ds4_core::minimax_h3::{
+    condition, device, media, render, terminal, vae_audio, vae_encoder, vae_video,
+};
 
 /// `h3.h:13-17`.
 const DEFAULT_WIDTH: i32 = 864;
@@ -64,6 +66,12 @@ struct Options {
     token_reduction: bool,
     /// `--core-reuse` (`main.c:33`, `:305`, `:392`).
     core_reuse: u32,
+    /// `--preview-dir` (`main.c:58`, `:340`, `:493`).
+    preview_dir: Option<PathBuf>,
+    /// `--show` (`main.c:59`, `:541-560`).
+    show: bool,
+    /// `--zoom` (`main.c:60`, `:342`, `:496`).
+    zoom: u16,
     info: bool,
     hash: bool,
 }
@@ -205,10 +213,30 @@ fn run() -> Result<ExitCode, String> {
         .ok_or_else(|| "--reuse is outside 1..=32".to_string())?;
     let evaluated = selected.iter().filter(|flag| **flag).count();
 
+    // `main.c:540-560`: the preview decoder is loaded once, beside the DiT,
+    // and `--show` warns and falls back to no display when the terminal has no
+    // graphics protocol. Neither path touches the latents that are decoded
+    // into the file.
+    let mut preview = Preview::prepare(
+        &options,
+        shape.video_t as usize,
+        latent_h,
+        latent_w,
+        component("video_vae/source"),
+    )?;
+
     let started = Instant::now();
-    model
-        .denoise(&mut video, &mut audio, options.reuse)
-        .map_err(|error| error.to_string())?;
+    match preview.as_mut() {
+        Some(sink) => {
+            let mut hook = |step: usize, latent: &[f32]| sink.deliver(step, latent);
+            model
+                .denoise_with(&mut video, &mut audio, options.reuse, Some(&mut hook))
+                .map_err(|error| error.to_string())?;
+        }
+        None => model
+            .denoise(&mut video, &mut audio, options.reuse)
+            .map_err(|error| error.to_string())?,
+    }
     println!(
         "DENOISE steps={} reuse={} selected={} seconds={:.3}",
         options.steps,
@@ -311,6 +339,131 @@ fn run() -> Result<ExitCode, String> {
     );
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// The denoise preview (`main.c:196-260`, `:540-575`): one decoded frame after
+/// every step, written to `--preview-dir` and/or displayed by the terminal.
+struct Preview {
+    decoder: vae_video::PreviewDecoder,
+    dir: Option<PathBuf>,
+    protocol: terminal::Protocol,
+    width: i32,
+    height: i32,
+    latent_t: usize,
+    steps: usize,
+}
+
+impl Preview {
+    fn prepare(
+        options: &Options,
+        latent_t: usize,
+        latent_h: i32,
+        latent_w: i32,
+        vae: PathBuf,
+    ) -> Result<Option<Preview>, String> {
+        let protocol = match options.show {
+            true => terminal::detect(),
+            false => terminal::Protocol::None,
+        };
+        if options.show && protocol == terminal::Protocol::None {
+            eprintln!("h3-rs: warning: --show needs Kitty, Ghostty, iTerm2, WezTerm, or Konsole");
+        }
+        if options.preview_dir.is_none() && protocol == terminal::Protocol::None {
+            return Ok(None);
+        }
+        if !terminal::set_zoom(options.zoom) {
+            return Err("--zoom must be at least 1".to_string());
+        }
+        if let Some(dir) = &options.preview_dir {
+            std::fs::create_dir_all(dir).map_err(|error| {
+                format!("cannot create preview directory {}: {error}", dir.display())
+            })?;
+        }
+
+        let decoder = vae_video::PreviewDecoder::load(&vae, latent_h as usize, latent_w as usize)
+            .map_err(|error| error.to_string())?;
+
+        Ok(Some(Preview {
+            decoder,
+            dir: options.preview_dir.clone(),
+            protocol,
+            width: options.width,
+            height: options.height,
+            latent_t,
+            steps: options.steps,
+        }))
+    }
+
+    /// `h3_deliver_denoise_preview` (`h3.c:755-830`): decode the middle
+    /// chunk's frame, convert and resize to the output canvas, then write it
+    /// and/or display it. A display failure only disables the terminal
+    /// (`main.c:257-260`); a file failure ends the render.
+    fn deliver(&mut self, step: usize, latent: &[f32]) -> Result<(), DitError> {
+        let (frames, index) = self
+            .decoder
+            .decode(latent, self.latent_t)
+            .map_err(|error| DitError::Gpu(error.to_string()))?;
+        let mut rgb = render::rgb_f32_to_u8(&frames.rgb);
+        if frames.width != self.width as usize || frames.height != self.height as usize {
+            rgb = render::resize_rgb24(
+                &rgb,
+                1,
+                frames.width as i32,
+                frames.height as i32,
+                self.width,
+                self.height,
+            )
+            .map_err(DitError::Gpu)?;
+        }
+
+        if let Some(dir) = &self.dir {
+            write_ppm(dir, step, self.width as u32, self.height as u32, &rgb)
+                .map_err(DitError::Gpu)?;
+        }
+
+        if self.protocol == terminal::Protocol::None {
+            return Ok(());
+        }
+        match terminal::display_rgb24(self.protocol, &rgb, self.width as u32, self.height as u32) {
+            Ok(()) => eprintln!(
+                "h3-rs: denoise preview {}/{}, video frame {}/{} via {}",
+                step + 1,
+                self.steps,
+                index + 1,
+                (self.latent_t - 2) / 5 * 17 + 5,
+                terminal::protocol_name(self.protocol)
+            ),
+            Err(error) => {
+                eprintln!("h3-rs: terminal display disabled: {error}");
+                self.protocol = terminal::Protocol::None;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// `cli_write_ppm` (`main.c:196-213`): a scratch name and a rename, so a
+/// reader never sees a partial preview.
+fn write_ppm(
+    dir: &std::path::Path,
+    step: usize,
+    width: u32,
+    height: u32,
+    rgb: &[u8],
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let staging = dir.join(".step.ppm");
+    let path = dir.join(format!("step-{step:04}.ppm"));
+    let mut file = std::fs::File::create(&staging)
+        .map_err(|error| format!("cannot write preview {}: {error}", staging.display()))?;
+    write!(file, "P6\n{width} {height}\n255\n")
+        .and_then(|_| file.write_all(rgb))
+        .map_err(|error| format!("cannot write preview {}: {error}", staging.display()))?;
+    drop(file);
+    std::fs::rename(&staging, &path)
+        .map_err(|error| format!("cannot rename preview {}: {error}", path.display()))
 }
 
 fn info(options: &Options, canvas: &Canvas, frame_count: i32) -> Result<ExitCode, String> {
@@ -457,6 +610,9 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         stream: false,
         token_reduction: false,
         core_reuse: 1,
+        preview_dir: None,
+        show: false,
+        zoom: 2,
         info: false,
         hash: false,
     };
@@ -493,6 +649,13 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
             "--use-reference-rope" => options.reference_rope = true,
             "--ssd-streaming" => options.stream = true,
             "--token-reduction" => options.token_reduction = true,
+            "--preview-dir" => options.preview_dir = Some(PathBuf::from(value(&mut argv, &flag)?)),
+            "--show" => options.show = true,
+            "--zoom" => {
+                options.zoom = unsigned(&mut argv, &flag)?
+                    .try_into()
+                    .map_err(|_| "--zoom is larger than 65535".to_string())?
+            }
             "--core-reuse" => {
                 options.core_reuse = unsigned(&mut argv, &flag)?
                     .try_into()
@@ -605,6 +768,9 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --token-reduction         pair video tokens in middle DiT blocks
                             (window from H3_TOKEN_REDUCTION_* env)
   --core-reuse N            core refresh: 1 exact, 4 fast, 6 aggressive
+  --preview-dir PATH        write one PPM preview per denoising step
+  --show                    display a preview frame per step (Kitty/iTerm2)
+  --zoom N                  preview zoom for the terminal (default 2)
   --info                    resolve the device, components and geometry, run nothing
   --hash                    print the gate hashes of the pipeline stages
   --help                    this text

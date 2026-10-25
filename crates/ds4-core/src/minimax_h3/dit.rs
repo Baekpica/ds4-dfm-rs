@@ -659,6 +659,10 @@ impl ReductionWindow {
     }
 }
 
+/// The per-step preview hook (`h3_dit_preview`): the completed step index and
+/// the video latent after that step's Euler update.
+pub type PreviewHook<'a> = &'a mut dyn FnMut(usize, &[f32]) -> Result<(), DitError>;
+
 /// `h3_dit.c:15-30`, `H3_DIT_BLOCKS`.
 fn block_count() -> u32 {
     DIT_BLOCKS as u32
@@ -1847,6 +1851,20 @@ impl Dit {
         audio: &mut [f32],
         reuse: usize,
     ) -> Result<(), DitError> {
+        self.denoise_with(video, audio, reuse, None)
+    }
+
+    /// `h3_dit_denoise_euler_preview` (`h3_dit.c:2861-2985`): the same sampler
+    /// with a per-step hook. `preview` receives the step index and the video
+    /// latent after that step's Euler update (`:2969-2974`), which is what the
+    /// reference decodes into the preview frame.
+    pub fn denoise_with(
+        &mut self,
+        video: &mut [f32],
+        audio: &mut [f32],
+        reuse: usize,
+        mut preview: Option<PreviewHook>,
+    ) -> Result<(), DitError> {
         let steps = self.schedule.steps;
         let selected = host::reuse_schedule(steps, reuse).ok_or_else(|| DitError::Geometry {
             detail: format!("reuse {reuse} outside 1..=32 or {steps} steps"),
@@ -1941,6 +1959,12 @@ impl Dit {
                 return Err(DitError::Geometry {
                     detail: format!("Euler solver rejected step {step}"),
                 });
+            }
+
+            // `h3_dit.c:2969-2974`: the hook runs after the update, on the
+            // step's own latent, and a refusal ends the sampler.
+            if let Some(hook) = preview.as_mut() {
+                hook(step, video)?;
             }
         }
 

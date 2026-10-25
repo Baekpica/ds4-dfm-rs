@@ -639,6 +639,32 @@ verdict so nothing stays "missing" without a reason:
    from the denoise callback (`h3_dit_denoise_euler_preview`, `h3_dit.c:2861`)
    on the continue-event chain (`h3_gpu_continue`). It must never change the
    rendered file: the gate is a hash identical with the preview on and off.
+   **Landed 2026-10-25** (`PreviewDecoder` in `vae_video`, `terminal.rs`,
+   `Dit::denoise_with`, `--preview-dir`/`--show`/`--zoom` in `h3-rs`). Read
+   from the reference: the preview asks the resident decoder for one frame
+   from the middle chunk, its `FIRST_CHUNK_FRAMES / 2` frame
+   (`h3_video_vae.c:953-975`), and only that frame is unpacked per tile
+   (`:850`, `:874-877`); the frame is resized to the output canvas and handed
+   to the CLI callback after every Euler step, evaluated or reused
+   (`h3_dit.c:2969-2974`, `h3.c:755-830`); `--preview-dir` writes
+   `step-%04d.ppm` through a scratch name (`main.c:196-213`); `--show`
+   detects Kitty/Ghostty or the iTerm2 family and warns instead of failing on
+   anything else (`h3_terminal.c:29-50`, `main.c:541-560`).
+   Measured on the Spark, 512x192, 22 frames, 2 steps, both anchors, seed 1:
+   the port's MP4 is byte-identical with the preview on and off
+   (`3e16ffa2dd4392382f1593cfed8a4a31`) and both runs print `HASH
+   video=701962e123127810 audio=fe06b9a6e575195f`; the preview wrote
+   `step-0000.ppm` and `step-0001.ppm`, 294,927 bytes each; denoise 10.898 s
+   with the preview against 4.538 s without it (two extra chunk decodes).
+   OPEN: the reference's own CLI render for that command differs from the
+   port's — its preview PPM against the port's is 47.2 dB PSNR and the MP4s
+   differ — while the anchor-row DiT gate at the same shape matches bit for
+   bit (`DENOISE video=2df00020bb691fb6 audio=4bd5b8fe0e7ec495`). The
+   difference is therefore downstream of the latents: the CLI's spliced
+   prompt or the multi-tile VAE decode. The `--decode` comparison was run
+   without `--audio-vae`, so the reference probe stopped before `FRAMES`; the
+   port printed `FRAMES frames=22 height=192 width=512
+   fnv=e706c198483b3c0c`. Settle it with item 5 below (`~/unit12-*`).
 5. **The tiled-VAE quality bench** (`h3_vae_bench_quality`): tile seams and
    temporal blend against the untiled decode, still unbuilt (P0 remainder).
 6. **The reference tests** are P12.5 and cover units 1-5 above file by file.
@@ -820,8 +846,8 @@ command, never an automatic step.
 | `--token-reduction` | `h3.h:89`, `h3_dit.c:378-470` | Ported and gated (`h3d_token_pool`/`h3d_token_expand`, `--token-reduction` in `h3-rs`); hashes equal to the reference on and off |
 | `--reuse N` | `h3.h:79` | Ported and gated (reuse 1 and 3) |
 | `--use-int8-row-fc2` | Metal/M5 only, CUDA no-op (`README.md:119-121`) | Refused |
-| `--show`, `--zoom`, preview frames | `h3_terminal.c`, `h3.h:125-127` | Refused for the server; optional for the CLI only if the preview decoder is ported |
-| Resident preview decoder | `h3.c` preview path | Not ported; only the preview needs it |
+| `--show`, `--zoom`, preview frames | `h3_terminal.c`, `h3.h:125-127` | Ported for the CLI (`--preview-dir` PPMs, Kitty/iTerm2 display); the server stays headless |
+| Resident preview decoder | `h3.c` preview path | Ported (`vae_video::PreviewDecoder`, one frame per step from the middle chunk) |
 | CPU decode | `h3.c` CPU path | Refused; Linux CUDA is the reference |
 | Metal backend | `h3_metal.m`, `metal/*` | Out of scope; CUDA is the release reference |
 | h3c studio (FastAPI + React) | `webui/` | Refused: no Python in the deliverable. The OpenAI Videos API is the replacement |

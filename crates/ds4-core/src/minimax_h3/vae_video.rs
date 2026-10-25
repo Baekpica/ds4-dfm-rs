@@ -873,14 +873,23 @@ fn decode_chunk(
     y_axis: &TileAxis,
     x_axis: &TileAxis,
     total_frames: usize,
+    selected: Option<usize>,
 ) -> Result<Frames, VaeError> {
     let tile_h = y_axis.length / SPATIAL_RATIO;
     let tile_w = x_axis.length / SPATIAL_RATIO;
     let mut tiles = Vec::with_capacity(y_axis.count() * x_axis.count());
-    let frame_count = if total_frames == FIRST_CHUNK_FRAMES {
-        FIRST_CHUNK_FRAMES
-    } else {
-        total_frames
+    // `h3_video_vae.c:850`: a preview asks for one frame, so only that frame
+    // is unpacked per tile (`:874-877`) instead of the whole chunk.
+    let (first_frame, frame_count) = match selected {
+        Some(frame) => (frame, 1),
+        None => (
+            0,
+            if total_frames == FIRST_CHUNK_FRAMES {
+                FIRST_CHUNK_FRAMES
+            } else {
+                total_frames
+            },
+        ),
     };
 
     for tile_y in 0..y_axis.count() {
@@ -904,7 +913,7 @@ fn decode_chunk(
                 tile_h,
                 tile_w,
                 total_frames,
-                0,
+                first_frame,
                 frame_count,
             )?);
         }
@@ -968,6 +977,88 @@ fn float_array(text: &str, key: &str, count: usize) -> Result<Vec<f32>, VaeError
         ));
     }
     Ok(values)
+}
+
+/// The resident preview decoder (`h3_video_vae_decoder_load`,
+/// `h3_video_vae.c:891-951`): loaded once and reused for every denoising
+/// step, which is what the reference's `h3_acquire_video_decoder` cache gives
+/// the preview.
+pub struct PreviewDecoder {
+    decoder: Decoder,
+    latent_h: usize,
+    latent_w: usize,
+    y_axis: TileAxis,
+    x_axis: TileAxis,
+}
+
+impl PreviewDecoder {
+    pub fn load(
+        weight_directory: &Path,
+        latent_h: usize,
+        latent_w: usize,
+    ) -> Result<PreviewDecoder, VaeError> {
+        if latent_h < 1 || latent_w < 1 {
+            return fail("invalid video VAE latent shape");
+        }
+        let pixel_h = latent_h * SPATIAL_RATIO;
+        let pixel_w = latent_w * SPATIAL_RATIO;
+        let tile_pixels = configured_tile_pixels(pixel_h, pixel_w);
+        let y_axis = tile_axis(pixel_h, tile_pixels)?;
+        let x_axis = tile_axis(pixel_w, tile_pixels)?;
+        let (mean, deviation) = latent_normalization(weight_directory)?;
+        let decoder = Decoder::load(
+            weight_directory,
+            y_axis.length / SPATIAL_RATIO,
+            x_axis.length / SPATIAL_RATIO,
+            mean,
+            deviation,
+        )?;
+
+        Ok(PreviewDecoder {
+            decoder,
+            latent_h,
+            latent_w,
+            y_axis,
+            x_axis,
+        })
+    }
+
+    /// `h3_video_vae_decoder_preview` (`:953-975`): the middle chunk, its
+    /// `FIRST_CHUNK_FRAMES / 2` frame, and that frame's index in the clip.
+    pub fn decode(&self, latent: &[f32], latent_time: usize) -> Result<(Frames, usize), VaeError> {
+        let (chunks, output_frames) = chunk_plan(latent_time)?;
+        if latent_time < CHUNK_LATENT_TIME {
+            return fail("video VAE preview needs a released chunk count");
+        }
+        let expected = LATENT_CHANNELS * latent_time * self.latent_h * self.latent_w;
+        if latent.len() != expected {
+            return fail(format!(
+                "video VAE latent has {} values, expected {expected}",
+                latent.len()
+            ));
+        }
+
+        let chunk = chunks / 2;
+        let local_frame = FIRST_CHUNK_FRAMES / 2;
+        let mut global_frame = chunk * CHUNK_STRIDE + local_frame;
+        if global_frame >= output_frames {
+            global_frame = output_frames - 1;
+        }
+        let frames = decode_chunk(
+            &self.decoder,
+            latent,
+            latent_time,
+            chunk,
+            self.latent_h,
+            self.latent_w,
+            &self.y_axis,
+            &self.x_axis,
+            FIRST_CHUNK_FRAMES,
+            Some(local_frame),
+        )?;
+
+        Ok((frames, global_frame))
+    }
 }
 
 /// `h3_video_vae_decode` (`:1184-1252`): the whole video, one chunk at a time,
@@ -1051,6 +1142,7 @@ pub fn decode(
             &y_axis,
             &x_axis,
             FIRST_CHUNK_FRAMES,
+            None,
         )?;
         // `:1105-1113`: the repeated 5 frames fade from the previous chunk's
         // tail into this chunk's own prediction.
