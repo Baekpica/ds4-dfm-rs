@@ -379,8 +379,8 @@ would be a new mechanism, not a port.
    (`h3.c:344-370`). Gate: `test_real_dit.c`, then a final-latent and frame
    hash against the reference at the same seed.
 6. **The wire and the session.** CLI spellings from `main.c:47-56` and the
-   server's base64 `input_reference` (refused by name today,
-   `video_api.rs:386-405`). The memo keys on media pixels as the reference's
+   server's base64 `input_reference`, which is the clip's first frame
+   (`video_api.rs:526-592`). The memo keys on media pixels as the reference's
    conditioning key does (`h3.c:149-180`), not on the prompt alone.
 7. **Quality.** Every unit ends with a 20-evaluation operator render at a
    legal canvas near the pilot's 2.53 aspect (576x224 or 512x192 from
@@ -491,6 +491,57 @@ stops at the reference's own two-token rule (`h3_video_vae.c:1222`): `t = 2`
 supports one spatial tile and this canvas is two. The goldens are in
 `h3_dit_gate.rs`; four device-free tests cover the jitter seed, the fresh
 per-span generator, the patchified rows and the geometry refusal.
+
+**Unit 6 landed** (`video_api.rs`, `h3_video.rs`, `h3_engine.rs`,
+`h3-rs --first-frame/--last-frame`, `docs/minimax-h3/api-usage.md`): anchors
+reach the renderer from the wire and the CLI. Three facts read from the
+reference rather than assumed:
+
+- Anchors are paths (`h3.h:71-77`), and the CLI spellings are
+  `--first-frame PATH` / `--last-frame PATH` (`main.c:47-49`). Neither side
+  fetches a URL, so the served form accepts one base64 `data:` URI and refuses
+  every other scheme by name.
+- The image reader is told the format by the file name, not by sniffing
+  (`h3_ffmpeg.c:143-160`), so a multipart part's extension picks the media
+  type and an extension outside PNG/JPEG/WebP is refused instead of guessed.
+- The OpenAI Videos `input_reference` is the clip's first frame; last-frame
+  anchoring stays CLI-only because the surface carries one reference.
+
+The decoded bytes become a request-scoped `AnchorFile` beside the output, the
+server's only writable state, and are removed when the render returns.
+`file_id` is 400 `unsupported_parameter`: this host has no uploads store.
+
+Gated by 18 `video_api` tests and the 24 `h3_video` tests (data URI, multipart
+part, `file_id`, non-data URL, unknown media type, anchor cleanup). The Spark
+render of unit 6 — both anchors on the pilot PNG, 512x192, 22 frames, 20
+steps, seed 1, "A red fox walking through snow" — is what opened unit 7: the
+port's frame 0 was the prompt's fox while the reference's was the anchored
+comic.
+
+**Unit 7 landed** (`condition::anchor_embedding`, `AnchorPixels`, the same two
+hosts, `h3_vision_gpu.o` on the `h3-rs` / `h3-server-rs` link line): an anchor
+is a vision span in the prompt, not only a row span in the latent. Two facts
+read from the reference rather than assumed:
+
+- `h3.c:1345-1414` runs `h3_vision_encode_bf16` over every visual condition at
+  the render size and passes the outputs to
+  `h3_multimodal_encode_fl2va_bf16`; with no visual condition the run takes
+  the plain `h3_text_encode_bf16` path (`h3.c:1424-1436`). The port therefore
+  uses `encode_multimodal` only when an anchor exists.
+- `h3_conditioning_key` folds the media into the key (`h3.c:143-166`), so the
+  engine's text memo keys on the anchor rows as well as the prompt.
+
+Measured on the Spark, 512x192, 22 frames, 20 steps, seed 1:
+- One first-frame anchor with a prompt that animates the comic: the port and
+  the reference both open on the anchored panels and animate (`~/unit7`).
+- One anchor, then two anchors, both on the comic prompt: frame 0 is the comic
+  in either layout (`~/diag-anchors`), so the earlier fox frame was never a
+  placement bug.
+- The unit-6 arguments after the splice open on the anchored comic, as the
+  reference does, with `TEXT` growing from 6 to 214 tokens (`~/unit8`).
+
+Open: the two-image presentation has no hash gate yet; `multimodal_probe.c`
+and `h3_multimodal_gate` take one image, and the one-image hashes above stand.
 
 ## P12.6 — The remaining reference surface
 

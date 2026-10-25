@@ -6,10 +6,11 @@ pass. The flags are the reference's own, read from
 `/data/h3.c/main.c:47-56` with the option table at `:333-338`; none of them is
 invented here.
 
-Status: `h3-rs` does not parse these flags yet, and the Spark artifact has no
-Ref2VA partition. The harness exists so the cases are fixed before the code
-lands, and so a skipped case says which artifact is missing instead of failing
-mysteriously.
+Status (2026-10-25): the FL2VA anchors are ported end to end — CLI and served
+wire, vision span, VAE latent, conditioned DiT — and `fl2va-first` /
+`fl2va-first-last` run on the Spark. Ref2VA is not ported, and the Spark
+artifact has no Ref2VA partition. A skipped case names the missing piece
+instead of failing mysteriously.
 
 ## Two families, two artifacts
 
@@ -32,39 +33,42 @@ load (`h3_dit_load_conditioned`, `h3_dit.c:1742`) and a different text encode
 
 | Piece | Reference | Port state |
 |---|---|---|
-| CLI flags | `main.c:47-56`, table `:333-338` | Absent; `h3-rs` has no conditioning flags |
-| Keyframe row layout | `h3_host.c:349-366` | Ported (`sequence.rs:129-160`), unused: every caller passes `keyframes: &[]` |
-| Reference row layout | `h3_host.c:367-433` | Absent: `build` returns `Unsupported::References` (`sequence.rs:21-24`) |
-| Media read: probe, image, video, audio at 32 kHz | `h3_ffmpeg.c:77`, `:156`, `:269`, `:392` | Absent; only the write side (`mux_mp4`) is ported |
-| Vision tower (Qwen vision) | `h3_vision_encoder.c`, `h3_vision_encode_bf16` (`h3_vision_encoder.h:27`) | Absent. Weights are present: `FL2VA/text_encoder` is 63 GiB and carries them |
-| Multimodal presentation and decoder | `h3_multimodal.c:15` (FL2VA), `:43` (Ref2VA) | Absent; `text_forward::encode` is the plain prompt path |
-| Anchor latents (VAE encoder) | `h3_video_encoder.c:22`, `h3_video_vae_encode` | Absent; only the decoder is ported |
-| Conditioned DiT graph | `h3_dit.c:1742` `h3_dit_load_conditioned`, `:2408` `h3_dit_reset_run` | Absent; `Dit::load_with` takes no condition rows |
-| Condition time rows in the schedule | `dit.rs` `time_rows` (`h3_dit.c:1666-1684`) | Ported, reachable only through the sequence |
-| Seeded condition augmentation | `h3.c:323-360` `h3_augment_conditions` | Absent |
-| Conditioning memo key | `h3.c:143-190` | Prompt-only in the engine (`engine.rs`, `PreparedKey`) |
+| CLI flags | `main.c:47-56`, table `:333-338` | Ported: `h3-rs --first-frame` / `--last-frame`; the served wire takes the first frame only |
+| Keyframe row layout | `h3_host.c:349-366` | Ported and reachable (`sequence.rs:129-160`, `Spec::keyframes`) |
+| Reference row layout | `h3_host.c:367-433` | Absent: `build` returns `Unsupported::References` |
+| Media read: probe, image, video, audio at 32 kHz | `h3_ffmpeg.c:77`, `:156`, `:269`, `:392` | Ported (`media.rs`) |
+| Vision tower (Qwen vision) | `h3_vision_encoder.c`, `h3_vision_encode_bf16` (`h3_vision_encoder.h:27`) | Ported and reachable from the anchor path (`vision_forward::encode_dir`) |
+| Multimodal presentation and decoder | `h3_multimodal.c:15` (FL2VA), `:43` (Ref2VA) | FL2VA ported (`multimodal::fl2va`, `text_forward::encode_multimodal`); Ref2VA absent |
+| Anchor latents (VAE encoder) | `h3_video_encoder.c:22`, `h3_video_vae_encode` | Ported (`vae_encoder.rs`) |
+| Conditioned DiT graph | `h3_dit.c:1742` `h3_dit_load_conditioned`, `:2408` `h3_dit_reset_run` | Ported as `Dit::set_conditions` at offset 0, refreshed per run |
+| Condition time rows in the schedule | `dit.rs` `time_rows` (`h3_dit.c:1666-1684`) | Ported |
+| Seeded condition augmentation | `h3.c:323-360` `h3_augment_conditions` | Ported (`condition::augment_span`, fresh PCG32 per span) |
+| Conditioning memo key | `h3.c:143-190` | Ported: prompt plus anchor rows (`engine.rs`, `PreparedKey` and the text memo) |
 | Audio reference preparation | `h3_ffmpeg.c:392` plus its presentation labels | Absent |
 | Ref2VA partition | `h3.c:872-874`, `:927-935` | Not on the Spark: only `FL2VA/` is downloaded |
 
 Unit order, each with its case from the matrix above:
 
-1. Media read (`ffprobe`, image, video, audio) and the `h3-rs` flags for
-   `fl2va-first` / `fl2va-first-last`. This needs the vision tower, the
-   multimodal encoder and the VAE encoder, so it is the largest unit and the
-   one that unlocks the operator's cartoon pilot.
-2. Conditioned DiT graph and the seeded augmentation, gated by
-   `fl2va-first-last` against the reference.
-3. Reference row layout, Ref2VA loader and ordered presentation, gated by
+1. **Landed** — media read, the `h3-rs` flags, the vision tower, the FL2VA
+   presentation, the VAE encoder and the conditioned DiT. `fl2va-first` and
+   `fl2va-first-last` run on the Spark; the DiT hashes are equal to
+   `dit_probe.c` and the anchor is a vision span as well as a row span
+   (`h3.c:1345-1414`).
+2. **Landed** — the seeded augmentation, gated by `fl2va-first-last` against
+   the reference at 512x192, five frames, four evaluations.
+3. Conditioning keys in the engine memo: two consecutive identical conditioned
+   requests hit; a different anchor prefill-loads. The key folds the rows
+   (`PreparedKey::anchors`) and the text memo folds them too, both covered by
+   device-free tests; the live two-request pair is still open.
+4. Reference row layout, Ref2VA loader and ordered presentation, gated by
    `ref2va-image` and `ref2va-image-audio` — after the Ref2VA partition is
    downloaded.
-4. Video and audio references, gated by `ref2va-video`, `ref2va-silent`,
+5. Video and audio references, gated by `ref2va-video`, `ref2va-silent`,
    `ref2va-video-audio` and `ref2va-mixed`.
-5. Conditioning keys in the engine memo, gated by two consecutive identical
-   conditioned requests.
 
-Nothing above is claimed as ported. The only conditioning code in the tree
-today is the keyframe row layout and the schedule's condition rows, and
-neither is reachable from a request.
+Open on the FL2VA side: the two-image presentation has no hash gate (the probe
+takes one image), and the served forms have unit tests but no live run since
+the vision object joined the link.
 
 ## Rules the cases respect
 
