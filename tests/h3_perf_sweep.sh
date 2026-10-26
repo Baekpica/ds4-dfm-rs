@@ -121,6 +121,7 @@ esac
 
 [ -x "$BINARY" ] || fail "no executable at $BINARY"
 [ -d "$MODEL_DIR" ] || fail "no checkpoint at $MODEL_DIR"
+[ -z "$ANCHOR" ] || [ -r "$ANCHOR" ] || fail "no readable anchor at $ANCHOR"
 
 ARGS=(-d "$MODEL_DIR" -p "$PROMPT" --width "$WIDTH" --height "$HEIGHT"
       --frames "$FRAMES" --steps "$STEPS" --seed "$SEED")
@@ -142,10 +143,37 @@ CLOCK_BEFORE=$(nvidia-smi --query-gpu=clocks.sm --format=csv,noheader 2>/dev/nul
 CKPT_BYTES=$(du -sb "$MODEL_DIR" 2>/dev/null | cut -f1)
 CACHE_BEFORE=$(awk '/^Cached:/ {print $2}' /proc/meminfo)
 PROMPT_SHA=$(printf '%s' "$PROMPT" | sha256sum | cut -d' ' -f1)
+ANCHOR_SHA=$(sha256sum "$ANCHOR" 2>/dev/null | cut -d' ' -f1)
+
+# The arch the h3 objects were built with. The 2026-10-26 session lost exactly
+# this: an object recompiled with no arch (compute_75 PTX, JIT'd on the device)
+# was measured as a variant, and only the pipeline that built it could say so.
+# Prefer what the object itself packs (that is what ran), then the tree's
+# recorded configuration; `unknown` when neither is readable. The object's
+# identity is the Makefile's own link fingerprint, so a binary built elsewhere
+# gives a pointer, not a proof.
+cuda_arch() {
+  local tree object config
+  for tree in "$(dirname "$BINARY")" "$REPO_ROOT"; do
+    object="$tree/native/h3/h3_dit_gpu.o"
+    if [ -f "$object" ] && command -v strings >/dev/null 2>&1; then
+      strings "$object" | grep -oE 'sm_[0-9]+[a-z]?' | sort -u | paste -sd+ -
+      return 0
+    fi
+  done
+  for tree in "$(dirname "$BINARY")" "$REPO_ROOT"; do
+    config="$tree/.ds4-cuda-config.mk"
+    [ -f "$config" ] || continue
+    sed -n 's/^CUDA_ARCH[[:space:]]*:=[[:space:]]*//p' "$config" | head -1
+    return 0
+  done
+  printf 'unknown'
+}
+CUDA_ARCH=$(cuda_arch)
 
 if [ ! -f "$OUT" ]; then
   mkdir -p "$(dirname "$OUT")"
-  echo "ts_utc,engine,label,profile,binary_sha256,git_rev,dirty_files,driver,clock_before,clock_after,width,height,frames,steps,layers,seed,text_s,load_s,denoise_s,per_step_s,audio_s,vae_s,mux_s,wall_s,peak_rss_kb,output_bytes,ckpt_bytes,cache_before_kb,cache_after_kb,prompt_sha256,anchor" >"$OUT" ||
+  echo "ts_utc,engine,label,profile,binary_sha256,git_rev,dirty_files,driver,clock_before,clock_after,width,height,frames,steps,layers,seed,text_s,load_s,denoise_s,per_step_s,audio_s,vae_s,mux_s,wall_s,peak_rss_kb,output_bytes,ckpt_bytes,cache_before_kb,cache_after_kb,prompt_sha256,anchor,anchor_sha256,cuda_arch" >"$OUT" ||
     fail "cannot write the header to $OUT"
 fi
 
@@ -220,7 +248,7 @@ run_once() {
 
   # Free text can contain commas (a label, a path), so those two fields are
   # quoted per RFC 4180; every other field is a number, a hash or a name.
-  row=$(printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s' \
+  row=$(printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ENGINE" "$tag" "$PROFILE_PHASES" \
     "$BIN_SHA" "$GIT_REV" \
     "$GIT_DIRTY" "$DRIVER" "$CLOCK_BEFORE" \
@@ -229,7 +257,7 @@ run_once() {
     "$text_s" "$load_s" "$denoise_s" "$per_step" "$audio_s" "$vae_s" "$mux_s" \
     "$wall" "$rss_peak" "$bytes" "$CKPT_BYTES" "$CACHE_BEFORE" \
     "$(awk '/^Cached:/ {print $2}' /proc/meminfo)" "$PROMPT_SHA" \
-    "$(csv_field "${ANCHOR:-none}")")
+    "$(csv_field "${ANCHOR:-none}")" "$ANCHOR_SHA" "$CUDA_ARCH")
   printf '%s\n' "$row" >>"$OUT" || fail "cannot append a row to $OUT"
 
   # The MP4 and its log stay under $KEEP_DIR so a later run can be compared

@@ -31,7 +31,7 @@ header once, appends nothing on a failed run, and prints the kept path.
 clock_before, clock_after, width, height, frames, steps, layers, seed, text_s,
 load_s, denoise_s, per_step_s, audio_s, vae_s, mux_s, wall_s, peak_rss_kb,
 output_bytes, ckpt_bytes, cache_before_kb, cache_after_kb, prompt_sha256,
-anchor`
+anchor, anchor_sha256, cuda_arch`
 
 - `profile` is 1 when the run emitted phase marks. For the reference that
   means `--profile` plus `H3_PROFILE=1`, and those marks synchronize the
@@ -53,6 +53,23 @@ anchor`
 - The identity columns exist so a row can be trusted later: same binary hash,
   same checkpoint bytes, same prompt and anchor, and preferably the same
   driver and clock.
+- `anchor_sha256` is the anchor's bytes, not its path: two rows with the same
+  path are the same workload only if the file has not moved under them.
+  Empty when the run carried no anchor.
+- `cuda_arch` is the arch the h3 objects were built with, read from the DiT
+  object's own packed target strings (`native/h3/h3_dit_gpu.o`, which is what
+  the binary in that tree links) and, failing that, from the tree's
+  `.ds4-cuda-config.mk`; `unknown` when neither is readable. It exists
+  because the 2026-10-26 session could not recover it after the fact: an
+  object recompiled with no arch carries compute_75 PTX that the driver JITs
+  on the device, which is a different numeric profile, and it was measured as
+  a variant of an arch-native build. The object's identity is the Makefile's
+  `H3_DIT_LINK_FINGERPRINT`, so a row whose `binary_sha256` came from another
+  tree has a pointer here, not a proof.
+- The three rows recorded before 2026-10-26 carry `anchor_sha256` computed
+  from the anchor file afterwards (its mtime, 19:16, precedes all three runs)
+  and an empty `cuda_arch`: that build's arch was never recorded, which is
+  the gap the column closes.
 
 ## Comparing
 
