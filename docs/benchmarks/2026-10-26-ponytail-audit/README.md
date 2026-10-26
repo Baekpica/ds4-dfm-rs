@@ -302,6 +302,17 @@ are separate from the source-code line counts above.
 
 ## Reproduction and limits
 
+PR #112 review found a transient ACL exposure: restoring the original group
+mode could activate a different inherited named-user ACL on the staging file.
+The follow-up applies the original ACL before restoring mode bits.
+`tests/agent_acl_window.py <ds4-cli lib-test binary>` delays ACL removal with
+`strace` and checks effective staging access. It failed before the reorder
+and passed afterward with 169 observations; `make -j1 test-agent-parity`
+also passed (107 agent tests, one manual fault test ignored).
+[Follow-up receipts](review-followup.json) record source and log hashes.
+Only agent file metadata ordering changed; the CUDA/model results above
+remain the recorded `4a6d030d` runs, not new release-tag measurements.
+
 Integration commands run for this change:
 
 ```sh

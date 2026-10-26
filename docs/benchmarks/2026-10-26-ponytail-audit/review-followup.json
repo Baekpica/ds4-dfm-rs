@@ -1,0 +1,28 @@
+{
+  "base_commit": "dc03745ec3f2db196cd3e0d87cfb0511c91f321d",
+  "change": "Apply the original ACL before chmod can widen an inherited ACL mask.",
+  "source_sha256": {
+    "crates/ds4-cli/src/agent/file_write.rs": "c03de577d818ce10e1355f7921e4446cb9f1db7e026c48e0e7ea50f478d5e98c",
+    "tests/agent_acl_window.py": "24fa99438b302042e8e6ba8165ae5d06c9624382de32ad575c8377c63e7a7b53"
+  },
+  "regression_command": "python3 tests/agent_acl_window.py <ds4-cli lib-test binary>",
+  "before": "failed: staging ACL exposed new file contents to inherited user 65534",
+  "after": "passed: staging ACL remained inaccessible (169 observations)",
+  "integration_command": "make -j1 test-agent-parity",
+  "integration": "passed: 107 agent tests, one manual fault test ignored; prerequisite tokenizer/parity tests passed",
+  "logs": {
+    "acl-window-red": {
+      "path": "scratch/release-v014/acl-window-red.log",
+      "sha256": "82ae4599861162efb66a9c00a9b161351585df03961f6aee08b30992bcaf4183"
+    },
+    "acl-window-green": {
+      "path": "scratch/release-v014/acl-window-green.log",
+      "sha256": "defdddd293594f8f05ac0e7b0c706c56ff40b95a1a9bb633bafa14ddce74cf0d"
+    },
+    "acl-review-agent-parity": {
+      "path": "scratch/release-v014/acl-review-agent-parity.log",
+      "sha256": "62086deff9de334dacafd3313d070ba69751fb860161568209d30a7d621e5841"
+    }
+  },
+  "limits": "Linux/strace model-free check. No native inference change, GPU run or Docker rebuild."
+}

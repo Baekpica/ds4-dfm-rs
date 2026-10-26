@@ -127,9 +127,10 @@ pub(super) fn replace(path: &Path, data: &[u8]) -> Result<(), (&'static str, io:
             if rc != 0 {
                 return Err(io::Error::last_os_error());
             }
-            file.set_permissions(meta.permissions())?;
+            // Replace inherited access before chmod can widen its mask.
             #[cfg(target_os = "linux")]
             copy_access_acl(original.as_ref().expect("original metadata"), &file)?;
+            file.set_permissions(meta.permissions())?;
             let current = fs::symlink_metadata(&path)?;
             if current.dev() != meta.dev()
                 || current.ino() != meta.ino()
