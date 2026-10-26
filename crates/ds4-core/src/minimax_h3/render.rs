@@ -47,22 +47,6 @@ pub struct Canvas {
     render_height: i32,
 }
 
-/// How strictly the delivered frame must follow the model canvas.
-///
-/// The reference serves the first two and refuses anything else
-/// (`h3.c:505-520`). `Anamorphic` is the named delivery deviation: the frame
-/// is an exact presentation ratio, the canvas is the model canvas, and the
-/// resize stretches each axis by a different factor (`presets.rs`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OutputRule {
-    /// `h3_valid_params`: released area, multiples of 32, exact aspect.
-    Released,
-    /// A delivery frame of the same aspect, above the released area.
-    Delivery,
-    /// A delivery frame of any aspect: the scale is not uniform.
-    Anamorphic,
-}
-
 impl Canvas {
     /// Validate a request. `render_width`/`render_height` of `0` mean "decode
     /// at the output canvas" (`h3.c:500-514`, `h3.c:863-866`).
@@ -72,70 +56,15 @@ impl Canvas {
         render_width: i32,
         render_height: i32,
     ) -> Result<Canvas, String> {
-        Canvas::build(
-            width,
-            height,
-            render_width,
-            render_height,
-            OutputRule::Released,
-        )
-    }
-
-    /// The same validation with the delivery exception: the output may be
-    /// larger than 768*1344 px, the render canvas still may not.
-    pub fn new_delivery(
-        width: i32,
-        height: i32,
-        render_width: i32,
-        render_height: i32,
-    ) -> Result<Canvas, String> {
-        Canvas::build(
-            width,
-            height,
-            render_width,
-            render_height,
-            OutputRule::Delivery,
-        )
-    }
-
-    /// A delivery frame of any aspect. The reference refuses this
-    /// (`h3.c:505-520`); the port names it as the anamorphic deviation and
-    /// keeps every other canvas rule.
-    pub fn new_anamorphic(
-        width: i32,
-        height: i32,
-        render_width: i32,
-        render_height: i32,
-    ) -> Result<Canvas, String> {
-        Canvas::build(
-            width,
-            height,
-            render_width,
-            render_height,
-            OutputRule::Anamorphic,
-        )
-    }
-
-    fn build(
-        width: i32,
-        height: i32,
-        render_width: i32,
-        render_height: i32,
-        rule: OutputRule,
-    ) -> Result<Canvas, String> {
-        if width < CANVAS_MULTIPLE || height < CANVAS_MULTIPLE {
-            return Err("width and height must be multiples of 32 and at least 32".to_string());
-        }
-
-        // The multiple-of-32 rule is the release's canvas rule. A delivery
-        // frame such as 1080x1920 is not one, and the render canvas still is.
-        if rule == OutputRule::Released
-            && (width % CANVAS_MULTIPLE != 0 || height % CANVAS_MULTIPLE != 0)
+        if width < CANVAS_MULTIPLE
+            || height < CANVAS_MULTIPLE
+            || width % CANVAS_MULTIPLE != 0
+            || height % CANVAS_MULTIPLE != 0
         {
             return Err("width and height must be multiples of 32 and at least 32".to_string());
         }
 
-        if rule == OutputRule::Released && i64::from(width) * i64::from(height) > MAX_PIXELS {
+        if i64::from(width) * i64::from(height) > MAX_PIXELS {
             return Err("canvas exceeds the released 768*1344 pixel limit".to_string());
         }
 
@@ -144,53 +73,21 @@ impl Canvas {
         }
 
         let (render_width, render_height) = if render_width == 0 {
-            // The output is also the render canvas here, so the render rules
-            // apply to it even in delivery mode.
-            if rule != OutputRule::Released
-                && (width % CANVAS_MULTIPLE != 0
-                    || height % CANVAS_MULTIPLE != 0
-                    || i64::from(width) * i64::from(height) > MAX_PIXELS)
-            {
-                return Err(
-                    "a delivery canvas with no render size must be a released canvas".to_string(),
-                );
-            }
-
             (width, height)
         } else {
-            let geometry_broken = render_width < CANVAS_MULTIPLE
+            if render_width < CANVAS_MULTIPLE
                 || render_height < CANVAS_MULTIPLE
                 || render_width % CANVAS_MULTIPLE != 0
                 || render_height % CANVAS_MULTIPLE != 0
                 || render_width > width
-                || render_height > height;
-            // The cross-multiplication is the reference's aspect rule; an
-            // anamorphic delivery is the one case that does not apply it.
-            let aspect_broken = rule != OutputRule::Anamorphic
-                && i64::from(render_width) * i64::from(height)
-                    != i64::from(render_height) * i64::from(width);
-
-            if geometry_broken || aspect_broken {
-                // The reference reports one message for both failures. An
-                // anamorphic canvas drops the aspect clause because that rule
-                // does not apply to it.
-                return Err(if rule == OutputRule::Anamorphic {
-                    "internal render canvas must be multiples of 32 no larger than the output \
-                     canvas"
-                        .to_string()
-                } else {
-                    "internal render canvas must be same-aspect multiples of 32 \
-                            no larger than the output canvas"
-                        .to_string()
-                });
-            }
-
-            // The render canvas is the model canvas, so the released area
-            // governs it in every rule. A delivery frame above the cap does
-            // not license a bigger canvas.
-            if i64::from(render_width) * i64::from(render_height) > MAX_PIXELS {
+                || render_height > height
+                || i64::from(render_width) * i64::from(height)
+                    != i64::from(render_height) * i64::from(width)
+            {
                 return Err(
-                    "the render canvas exceeds the released 768*1344 pixel limit".to_string(),
+                    "internal render canvas must be same-aspect multiples of 32 \
+                     no larger than the output canvas"
+                        .to_string(),
                 );
             }
 
@@ -219,28 +116,6 @@ impl Canvas {
 
     pub fn render_height(&self) -> i32 {
         self.render_height
-    }
-
-    /// The delivery scale per axis, `(x, y)`. Equal factors unless the frame
-    /// aspect differs from the canvas.
-    pub fn scale(&self) -> (f64, f64) {
-        (
-            f64::from(self.width) / f64::from(self.render_width),
-            f64::from(self.height) / f64::from(self.render_height),
-        )
-    }
-
-    /// Horizontal scale over vertical scale: 1.0 means square pixels, and any
-    /// other value is the exact stretch the anamorphic delivery applies.
-    pub fn distortion(&self) -> f64 {
-        let (x, y) = self.scale();
-        x / y
-    }
-
-    /// Whether the delivered frame has a different aspect from the canvas.
-    pub fn is_anamorphic(&self) -> bool {
-        i64::from(self.render_width) * i64::from(self.height)
-            != i64::from(self.render_height) * i64::from(self.width)
     }
 
     /// The latent canvas the DiT denoises, from the render canvas
@@ -811,64 +686,6 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-    }
-
-    /// The phone reel: the model renders 576x1024, the file is 1080x1920.
-    /// The reference refuses that output (`h3.c:497-500`); the delivery
-    /// constructor is the named exception, and everything else still holds.
-    #[test]
-    fn delivery_canvas_allows_an_upscaled_output() {
-        let canvas = Canvas::new_delivery(1080, 1920, 576, 1024).expect("the phone reel");
-        assert_eq!(canvas.render_width(), 576);
-        assert_eq!(canvas.render_height(), 1024);
-        assert_eq!(canvas.latent(), latent_canvas(576, 1024));
-
-        assert!(Canvas::new(1080, 1920, 576, 1024).is_err());
-        // Wrong aspect, a render canvas larger than the output, and a
-        // non-canonical render canvas all stay refused.
-        assert!(Canvas::new_delivery(1080, 1920, 640, 1024).is_err());
-        assert!(Canvas::new_delivery(1080, 1920, 1152, 2048).is_err());
-        assert!(Canvas::new_delivery(1080, 1920, 600, 1067).is_err());
-    }
-
-    #[test]
-    fn anamorphic_canvas_stretches_each_axis_by_a_named_factor() {
-        // The platform's own 768P 16:9 file is 1344x768 (1.75), so a 16:9
-        // presentation frame from that canvas is a 1.6 % non-uniform scale.
-        let canvas = Canvas::new_anamorphic(1920, 1080, 1344, 768).expect("16:9 from 768P");
-        let (x, y) = canvas.scale();
-        assert!((x - 1.428_571_428_571_428_6).abs() < 1e-12);
-        assert!((y - 1.406_25).abs() < 1e-12);
-        assert!((canvas.distortion() - 1.015_873_015_873_015_9).abs() < 1e-12);
-        assert!(canvas.is_anamorphic());
-
-        // The same delivery under the reference's rules is refused.
-        assert!(Canvas::new_delivery(1920, 1080, 1344, 768).is_err());
-        assert!(Canvas::new(1920, 1080, 1344, 768).is_err());
-
-        // An exact-aspect delivery is not anamorphic.
-        let reel = Canvas::new_anamorphic(576, 1024, 288, 512).expect("9:16");
-        assert!(!reel.is_anamorphic());
-        assert!((reel.distortion() - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn anamorphic_canvas_keeps_every_other_canvas_rule() {
-        // The render canvas may not be larger than the output.
-        assert_eq!(
-            Canvas::new_anamorphic(1080, 1920, 1152, 2048).unwrap_err(),
-            "internal render canvas must be multiples of 32 no larger than the output canvas"
-        );
-        // Nor leave the released grid.
-        assert!(Canvas::new_anamorphic(1080, 1920, 600, 1067).is_err());
-        // A delivery frame above the released area does not license a bigger
-        // model canvas.
-        assert_eq!(
-            Canvas::new_anamorphic(1080, 1920, 768, 1408).unwrap_err(),
-            "the render canvas exceeds the released 768*1344 pixel limit"
-        );
-        // The output itself still needs at least 32 pixels per edge.
-        assert!(Canvas::new_anamorphic(16, 1920, 0, 0).is_err());
     }
 
     #[test]

@@ -3,8 +3,8 @@
 //! The tower's weights live inside the FL2VA text partition: the reference
 //! hands `h3_vision_encode_bf16` the same directory it hands the prompt
 //! encoder (`h3.c:1347`), and resolves `model.visual.*` names there. This
-//! module therefore mirrors [`crate::minimax_h3::text_weights`] — shard order,
-//! per-shard mapping, checked shapes — but keyed by the vision role table.
+//! module resolves the same shard order and checks shapes, keyed by the vision
+//! role table.
 //!
 //! Policy, unchanged from the reference:
 //!
@@ -15,16 +15,11 @@
 //!   does that at open time.
 //! - `h3_st_read_data` (`h3_safetensors.c:492-534`): the read is the tensor's
 //!   own byte span, `pread` into a host buffer.
-//!
-//! One mapping per shard, taken on first use: the same 14 shards carry 62 GiB
-//! and the host must not hold a second copy.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::Path;
 
-use crate::mapped::MappedFile;
 use crate::minimax_h3::safetensors::{self, Store};
 use crate::minimax_h3::vision::{Role, VisionError, VisionLayout};
 
@@ -33,7 +28,6 @@ pub struct VisionWeights {
     layout: VisionLayout,
     store: Store,
     sites: BTreeMap<Role, Site>,
-    maps: Vec<OnceLock<MappedFile>>,
 }
 
 /// Where a role lives: shard index and tensor index.
@@ -55,13 +49,11 @@ impl VisionWeights {
     pub fn from_store(store: Store) -> Result<VisionWeights, VisionLoadError> {
         let layout = check(&store)?;
         let sites = resolve(&layout, &store)?;
-        let maps = (0..store.shards().len()).map(|_| OnceLock::new()).collect();
 
         Ok(VisionWeights {
             layout,
             store,
             sites,
-            maps,
         })
     }
 
@@ -88,62 +80,6 @@ impl VisionWeights {
             .read_data(tensor, buffer)
             .map_err(|error| VisionLoadError::Reader(error.token()))
     }
-
-    /// The mapped view of a role's bytes. The shard is mapped on first use.
-    pub fn bytes(&self, role: Role) -> Result<&[u8], VisionLoadError> {
-        let site = *self
-            .sites
-            .get(&role)
-            .ok_or(VisionLoadError::Unmapped(role))?;
-        let shard = &self.store.shards()[site.shard];
-        let tensor = &shard.tensors[site.tensor];
-        let map = self.map(site.shard)?;
-        let begin = usize::try_from(tensor.file_offset).map_err(|_| VisionLoadError::Range {
-            role,
-            offset: tensor.file_offset,
-        })?;
-        let width = usize::try_from(tensor.bytes()).map_err(|_| VisionLoadError::Range {
-            role,
-            offset: tensor.file_offset,
-        })?;
-        let end = begin.checked_add(width).ok_or(VisionLoadError::Range {
-            role,
-            offset: tensor.file_offset,
-        })?;
-
-        map.as_slice()
-            .get(begin..end)
-            .ok_or(VisionLoadError::Bounds {
-                role,
-                end: end as u64,
-                mapped: map.as_slice().len() as u64,
-            })
-    }
-
-    /// How many shards are mapped right now.
-    pub fn mapped(&self) -> usize {
-        self.maps.iter().filter(|cell| cell.get().is_some()).count()
-    }
-
-    fn map(&self, index: usize) -> Result<&MappedFile, VisionLoadError> {
-        let cell = &self.maps[index];
-
-        if let Some(map) = cell.get() {
-            return Ok(map);
-        }
-
-        let path = &self.store.shards()[index].path;
-        let opened = MappedFile::open_ro(path).map_err(|error| VisionLoadError::Map {
-            path: path.clone(),
-            detail: error.to_string(),
-        })?;
-
-        // A concurrent caller that won the race leaves its mapping in place;
-        // `opened` drops here and one mapping survives.
-        let _ = cell.set(opened);
-
-        Ok(cell.get().expect("a mapping was just installed"))
-    }
 }
 
 impl fmt::Debug for VisionWeights {
@@ -152,7 +88,6 @@ impl fmt::Debug for VisionWeights {
             .debug_struct("VisionWeights")
             .field("shards", &self.store.shards().len())
             .field("roles", &self.sites.len())
-            .field("mapped", &self.mapped())
             .finish()
     }
 }
@@ -209,21 +144,8 @@ pub enum VisionLoadError {
     Reader(String),
     /// A role the layout did not produce.
     Unmapped(Role),
-    Map {
-        path: PathBuf,
-        detail: String,
-    },
     /// An offset that does not fit this process's address space.
-    Range {
-        role: Role,
-        offset: u64,
-    },
-    /// The mapping is shorter than the tensor's span.
-    Bounds {
-        role: Role,
-        end: u64,
-        mapped: u64,
-    },
+    Range { role: Role, offset: u64 },
 }
 
 impl VisionLoadError {
@@ -233,12 +155,8 @@ impl VisionLoadError {
             VisionLoadError::Layout(error) => error.token(),
             VisionLoadError::Reader(detail) => format!("reader: {detail}"),
             VisionLoadError::Unmapped(role) => format!("unmapped {role:?}"),
-            VisionLoadError::Map { path, detail } => format!("map {}: {detail}", path.display()),
             VisionLoadError::Range { role, offset } => {
                 format!("range {role:?}: offset {offset} does not fit")
-            }
-            VisionLoadError::Bounds { role, end, mapped } => {
-                format!("bounds {role:?}: span ends at {end}, mapping is {mapped}")
             }
         }
     }
@@ -256,6 +174,7 @@ impl std::error::Error for VisionLoadError {}
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

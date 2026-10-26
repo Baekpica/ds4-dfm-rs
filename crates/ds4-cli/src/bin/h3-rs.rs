@@ -296,9 +296,6 @@ fn run() -> Result<ExitCode, String> {
         started.elapsed().as_secs_f64()
     );
 
-    let video_hash = fnv_f32(&video);
-    let audio_hash = fnv_f32(&audio);
-
     // Retire the DiT before the two VAEs are loaded: their weights are
     // allocated in the same unified pool the denoise just used.
     drop(model);
@@ -334,16 +331,14 @@ fn run() -> Result<ExitCode, String> {
     let decoded_frames = small(decoded.frames, "decoded frames")?;
     let decoded_width = small(decoded.width, "decoded width")?;
     let decoded_height = small(decoded.height, "decoded height")?;
-    let frames_hash = fnv_f32(&decoded.rgb);
 
     // `h3.c:1638-1660`: RGB24 at the decoded canvas, then the resize only when
     // the requested output canvas differs.
     let native = RgbFrames::from_f32(&decoded.rgb, decoded_frames, decoded_width, decoded_height)?;
-    let mut frames = native.clone();
-
-    if canvas.width() != native.width() || canvas.height() != native.height() {
+    let native_hash = options.hash.then(|| fnv_bytes(native.bytes()));
+    let frames = if canvas.width() != native.width() || canvas.height() != native.height() {
         let started = Instant::now();
-        frames = native.resized_to(canvas.width(), canvas.height())?;
+        let frames = native.resized_to(canvas.width(), canvas.height())?;
         println!(
             "RESIZE {}x{} to {}x{} seconds={:.3}",
             native.width(),
@@ -352,18 +347,23 @@ fn run() -> Result<ExitCode, String> {
             frames.height(),
             started.elapsed().as_secs_f64()
         );
-    }
+        frames
+    } else {
+        native
+    };
 
-    if options.hash {
+    if let Some(native_hash) = native_hash {
         println!(
             "HASH video={:016x} audio={:016x} frames={:016x} rgb8={:016x} wrote={:016x}",
-            video_hash,
-            audio_hash,
-            frames_hash,
-            fnv_bytes(native.bytes()),
+            fnv_f32(&video),
+            fnv_f32(&audio),
+            fnv_f32(&decoded.rgb),
+            native_hash,
             fnv_bytes(frames.bytes())
         );
     }
+
+    drop(decoded);
 
     // `main.c:214-245`: `--frames-dir` writes every final frame as a PPM,
     // after the resize and before the mux.
@@ -372,6 +372,7 @@ fn run() -> Result<ExitCode, String> {
     }
 
     let program = std::env::var_os("H3_FFMPEG")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("ffmpeg"));
     let started = Instant::now();
@@ -877,13 +878,12 @@ fn unsigned(argv: &mut impl Iterator<Item = String>, flag: &str) -> Result<usize
 /// The gate hash convention: FNV-1a over the little-endian bytes, the same
 /// seed and prime the probe family uses (`text_forward::fnv1a`).
 fn fnv_f32(values: &[f32]) -> u64 {
-    let mut bytes = Vec::with_capacity(values.len() * 4);
-
-    for value in values {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
-    text_forward::fnv1a(&bytes)
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .fold(text_forward::FNV_OFFSET, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(text_forward::FNV_PRIME)
+        })
 }
 
 fn fnv_bytes(values: &[u8]) -> u64 {

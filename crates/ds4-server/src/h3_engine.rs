@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ds4_core::minimax_h3::engine::{EngineHandle, Presentation, RenderRequest};
+use ds4_core::minimax_h3::engine::{EngineHandle, RenderRequest};
 use ds4_core::minimax_h3::local_api::{Plan, ReferenceKind};
 use ds4_core::minimax_h3::reference;
 
@@ -68,13 +68,9 @@ impl Renderer for EngineRenderer {
             .collect();
         let request = RenderRequest {
             prompt: spec.prompt.clone(),
-            // The local contract has one canvas: the file is the model canvas,
-            // so the delivery resize is the identity (`Presentation::Native`).
+            // The local contract has one canvas: the file is the model canvas.
             width: spec.size.width as i32,
             height: spec.size.height as i32,
-            output_width: spec.size.width as i32,
-            output_height: spec.size.height as i32,
-            presentation: Presentation::Native,
             frames: spec.frames as i32,
             steps: self.steps,
             reuse: self.reuse,

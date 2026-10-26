@@ -31,36 +31,14 @@ use super::text_forward::{self, Embedding};
 use super::tokenizer::{EmptyPrompt, Tokenizer};
 use super::{condition, vae_audio, vae_encoder, vae_video};
 
-/// How the delivered frame relates to the model canvas.
-///
-/// The reference serves the first two (`h3.c:1644-1660`) and refuses a frame
-/// of a different aspect (`h3.c:505-520`), so `Anamorphic` is the named
-/// deviation: each axis takes its own scale and the report carries both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Presentation {
-    /// The file is the model canvas; the resize is the identity.
-    Native,
-    /// A different pixel count of the same aspect: one uniform scale.
-    Uniform,
-    /// A different aspect: an anamorphic scale, per axis.
-    Anamorphic,
-}
-
 /// One render request. The canvas is the reference's `h3_params` canvas; the
-/// output canvas is native, so the resize step is the identity.
+/// delivered frame is the model canvas.
 #[derive(Debug, Clone)]
 pub struct RenderRequest {
     pub prompt: String,
     /// The model canvas: denoised and decoded.
     pub width: i32,
     pub height: i32,
-    /// The delivered frame. Equal to the canvas unless a presentation preset
-    /// scales it (`presets.rs`); the render canvas stays the model canvas.
-    pub output_width: i32,
-    pub output_height: i32,
-    /// How the frame relates to the canvas. The caller names it, so an
-    /// anamorphic stretch is never inferred.
-    pub presentation: Presentation,
     /// Requested frames, before `5 + 17k` alignment (`h3.c:867-870`).
     pub frames: i32,
     pub steps: usize,
@@ -82,8 +60,6 @@ pub struct RenderRequest {
 pub struct RenderReport {
     pub frames: i32,
     pub evaluated: usize,
-    /// The delivery scale per axis; `(1.0, 1.0)` when the file is the canvas.
-    pub scale: (f64, f64),
     pub text_hit: bool,
     pub prepared_hit: bool,
     pub video_hash: u64,
@@ -184,33 +160,8 @@ impl Engine {
     }
 
     pub fn render(&mut self, request: &RenderRequest) -> Result<RenderReport, EngineError> {
-        // The presentation is the caller's claim about the delivery, so it is
-        // validated rather than re-derived: a mismatch would either stretch a
-        // frame silently or skip a promised resize.
-        let delivered =
-            request.output_width != request.width || request.output_height != request.height;
-        let canvas = match request.presentation {
-            Presentation::Native if delivered => {
-                return Err(EngineError::new(
-                    "native presentation requires the model canvas as the output size",
-                ));
-            }
-            Presentation::Native => Canvas::new(request.width, request.height, 0, 0),
-            Presentation::Uniform => Canvas::new_delivery(
-                request.output_width,
-                request.output_height,
-                request.width,
-                request.height,
-            ),
-            Presentation::Anamorphic => Canvas::new_anamorphic(
-                request.output_width,
-                request.output_height,
-                request.width,
-                request.height,
-            ),
-        }
-        .map_err(|error| EngineError::new(format!("canvas: {error}")))?;
-        let scale = canvas.scale();
+        let canvas = Canvas::new(request.width, request.height, 0, 0)
+            .map_err(|error| EngineError::new(format!("canvas: {error}")))?;
         let frame_count = check_frames(request.frames).map_err(EngineError::new)?;
         let schedule = Schedule::serving(request.steps)
             .ok_or_else(|| EngineError::new("--steps is outside 2..=1000"))?;
@@ -407,18 +358,9 @@ impl Engine {
             RgbFrames::from_f32(&decoded.rgb, decoded_frames, decoded_width, decoded_height)
                 .map_err(|error| EngineError::new(format!("rgb24: {error}")))?;
 
-        // Delivery preset: the picture is the model canvas, the file is the
-        // requested frame. The caller logs the scale as a named deviation.
-        let frames = if delivered {
-            frames
-                .resized_to(request.output_width, request.output_height)
-                .map_err(|error| EngineError::new(format!("delivery resize: {error}")))?
-        } else {
-            frames
-        };
-
         let mux_started = Instant::now();
         let program = std::env::var_os("H3_FFMPEG")
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("ffmpeg"));
         mux_mp4(
@@ -443,7 +385,6 @@ impl Engine {
         Ok(RenderReport {
             frames: shape.frame_count,
             evaluated,
-            scale,
             text_hit,
             prepared_hit,
             video_hash,
@@ -707,18 +648,9 @@ fn small(value: impl TryInto<i32>) -> Result<i32, EngineError> {
 /// Kept for the operator's log line; the server prints it per request.
 impl RenderReport {
     pub fn summary(&self) -> String {
-        let (x, y) = self.scale;
-        // A non-uniform scale is the named anamorphic delivery, so the log
-        // carries it instead of leaving the stretch invisible.
-        let scale = if (x - y).abs() < 1e-9 {
-            format!(" scale={x:.4}")
-        } else {
-            format!(" scale={x:.4}x{y:.4} anamorphic")
-        };
-
         format!(
             "frames={} evaluated={} text={:.3}s{} load={:.3}s{} denoise={:.3}s \
-             audio={:.3}s video={:.3}s mux={:.3}s{}",
+             audio={:.3}s video={:.3}s mux={:.3}s scale=1.0000",
             self.frames,
             self.evaluated,
             self.text_seconds,
@@ -729,7 +661,6 @@ impl RenderReport {
             self.audio_seconds,
             self.video_seconds,
             self.mux_seconds,
-            scale,
         )
     }
 }

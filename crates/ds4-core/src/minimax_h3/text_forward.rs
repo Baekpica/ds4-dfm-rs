@@ -16,14 +16,8 @@
 //! - `h3_gpu_cuda.cu:733-779` `h3_linear_lt`: every projection is one
 //!   cuBLASLt BF16 matmul with the descriptors the reference sets.
 //!
-//! Deviation, named: the reference prefetches the next layers' weights on
-//! extra threads (`h3_text_encoder.c:124-143`, `:324-390`, `:648-730`) and
-//! submits each layer with a stream sync. This port streams each layer's
-//! weights right before its ops and never syncs between layers. Layer *i*
-//! only reads weights *i*, and every upload is ordered on the same stream, so
-//! the numbers are unchanged.
-//!
-//! The prefetch ring is ported here in `prefetch`: the same
+//! The reference prefetch ring (`h3_text_encoder.c:124-143`, `:324-390`,
+//! `:648-730`) uses the same
 //! `H3_QWEN_PREFETCH` lanes and `H3_QWEN_PREFETCH_DEPTH` ring, reading each
 //! layer into host buffers while the previous layer runs on the device. It
 //! changes when bytes are read, never which bytes: the gate hash is the

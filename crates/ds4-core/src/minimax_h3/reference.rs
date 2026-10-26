@@ -146,13 +146,12 @@ pub struct Set {
 /// The gate hash convention: FNV-1a over little-endian bytes, the same one the
 /// probe family uses (`text_forward::fnv1a`).
 pub(crate) fn fnv_f32(values: &[f32]) -> u64 {
-    let mut bytes = Vec::with_capacity(values.len() * 4);
-
-    for value in values {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
-    super::text_forward::fnv1a(&bytes)
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .fold(super::text_forward::FNV_OFFSET, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(super::text_forward::FNV_PRIME)
+        })
 }
 
 /// Fold two hashes into one. The memo needs a single value for the media it
@@ -527,6 +526,25 @@ fn repack_audio(latent: &vae_audio::Latent) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f32_hash_preserves_all_bits() {
+        let values = [
+            0.0f32,
+            -0.0,
+            1.25,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7fc0_0123),
+        ];
+        for end in 0..=values.len() {
+            let bytes: Vec<_> = values[..end].iter().flat_map(|v| v.to_le_bytes()).collect();
+            assert_eq!(
+                fnv_f32(&values[..end]),
+                super::super::text_forward::fnv1a(&bytes)
+            );
+        }
+    }
 
     /// `h3.c:1096-1114`: pairs of 12-frame samples, the odd tail repeated, and
     /// the timestamp is the pair's mean divided by two.

@@ -55,12 +55,9 @@
 //! - `h3_gpu_adaln_linear_bf16` (`:1195-1226`) also writes an `inverse` buffer
 //!   that no later call reads; the effective math is `adaln` then `linear`,
 //!   which is what the final head here does.
-//! - int8, NAX and SSD-streaming variants are not ported: CUDA reports
-//!   `h3_gpu_has_int8_mlp`/`h3_gpu_has_nax_mlp` as 0 (`h3_gpu_cuda.cu:332-334`)
-//!   and the serving path passes `ssd_streaming = 0`, so the reference's own
-//!   CUDA run takes exactly the path implemented here.
-//! - The weight stream is load-everything-then-run. The reference can stream
-//!   matrix slots from SSD; that and the hot/cold AdaLN split are P9 items.
+//! - int8 and NAX variants are not ported: CUDA reports
+//!   `h3_gpu_has_int8_mlp`/`h3_gpu_has_nax_mlp` as 0 (`h3_gpu_cuda.cu:332-334`).
+//!   BF16 block weights use `Streamer`; the refiner remains resident.
 //! - The device Euler sampler (`h3_dit.c:2613-2787` `denoise_euler_gpu`) is
 //!   not ported. It is the reference's default only on M5
 //!   (`h3_dit.c:2572-2578` returns `h3_gpu_is_m5`, 0 on CUDA per
@@ -1761,8 +1758,7 @@ impl Dit {
     /// count check: the rows land at offset 0 of `video_input` and
     /// `audio_input`, ahead of the sampled rows the forward appends at
     /// `img_cond_rows`/`audio_cond_rows` (`:2455-2462`). The reference also
-    /// clears its core-reuse counters here; this port keeps no such counter —
-    /// `denoise` decides reuse on the host — so the write is the whole job.
+    /// clears its core-reuse counters here, as this port does after upload.
     ///
     /// Empty slices are legal only when the packed layout has no condition
     /// rows for that modality; anything else is the reference's "prepared DiT

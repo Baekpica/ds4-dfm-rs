@@ -1,8 +1,6 @@
 //! MiniMax-H3 (h3) checkpoint access.
 //!
-//! Additive family: nothing in this module is called by an existing model
-//! family, and nothing in an existing family's path is edited to serve it
-//! (`AGENTS.md`, "MiniMax-H3 (h3) is additive").
+//! Independent diffusion family; existing LLM paths do not dispatch here.
 //!
 //! Source of truth is the reference engine `/data/h3.c` at `eae5d54`:
 //!
