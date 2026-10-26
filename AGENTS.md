@@ -119,46 +119,6 @@ owns the tool loop.
   `json_escape_bytes` writes U+FFFD; streams hold back a character cut between
   tokens only while the next token can still complete it.
 
-## MiniMax-H3 (h3) is additive — the other families are untouched
-
-The h3 work is a diffusion video+audio family, not an LLM serving family. It
-lives in its own module tree and its own binary target, and it must not change
-the behavior, types, defaults, or code paths of any existing family:
-
-- No edit to `ModelFamily` (`crates/ds4-core/src/shape.rs`), the family gates
-  in `ds4.c`, admission in `serving.rs` / `serving_host.rs`, the GGUF open
-  path, KV/session/bank state, or any shared kernel another family calls.
-- New shared-looking primitives are new code with new names. An existing
-  function is not bent to serve h3. A genuinely required shared change is its
-  own unit with its own gate over the other families' tests, reviewed before
-  h3 depends on it.
-- `lib.rs` gains only additive module declarations; manifests gain only
-  additive members or dependencies that no existing crate resolves differently.
-- The h3 generation surface is a CLI. No web UI, no Python runtime. One HTTP
-  surface is allowed, operator-requested on 2026-10-24: the h3-only OpenAI
-  Videos API in `crates/ds4-server/src/h3_video.rs`, served by the
-  `h3-server-rs` binary. It is additive (new h3 files plus one module line and
-  one bin entry) and no other family's route changes. Any further HTTP surface
-  is a separate unit with its own contract.
-- Layout: one namespace per surface, and nothing h3-named loose at the top of a
-  shared directory. Documents in `docs/minimax-h3/`, code in
-  `crates/ds4-core/src/minimax_h3/`, tooling in `tools/minimax_h3/`, the
-  inventory example in `crates/ds4-core/examples/minimax_h3_inspect/`. New h3
-  material goes inside one of those trees, never beside it.
-- Checkable: an h3 unit's diff names only h3 files plus additive registration
-  lines. A diff touching another family's code fails the unit.
-- Execution host: every h3 GPU gate and the finished CLI run on the NVIDIA DGX
-  Spark (GB10, `192.168.1.91`), reached only through the operator's two routes
-  — the ssh tmux pane (`tmux send-keys -t 2:0.0`, `tmux capture-pane -p -t
-  2:0.0`) and the gvfs sftp mount (`/run/user/1000/gvfs/sftp:host=192.168.1.91,
-  user=leandro`). Never open a third route (no direct `ssh`, no `sshpass`, no
-  mount of our own) and never edit `~/ds4-dfm-rs` there, which serves live
-  models. Local x86_64 runs are host-side tests only; no x86 number describes
-  the target.
-- Native h3 code lives in `native/h3/` with `h3t_` names. It is compiled by its
-  own `Makefile` rule and linked only into the h3 gate binary, so the serving
-  families' link line is unchanged.
-
 ## Inference Performance Optimization Guidelines
 
 When optimizing inference performance, prioritize end-to-end execution-path efficiency over isolated kernel micro-optimizations.
