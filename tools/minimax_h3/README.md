@@ -34,3 +34,7 @@ sequentially. Supply the same input bytes, seed, workload and build target.
 Comparison gates decoded video/audio hashes and geometry; elapsed time and
 MP4 bytes remain diagnostics. `python3 tests/h3/test_ref_gate.py` checks the
 gate with tiny media and a stub renderer, without loading a model.
+
+After building `h3-rs`, `python3 tests/h3/test_cli_conditioning.py` checks
+the CLI's conditioning dimensions. It stops at a stub decoder before any
+model weights or GPU work; `H3_BINARY` can select a different port binary.

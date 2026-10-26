@@ -1,7 +1,7 @@
 //! The h3 renderer: prompt to MP4, the way the reference CLI does it.
 //!
 //! This binary is the operator-facing end of the port and the renderer the
-//! OpenAI Videos host spawns (`h3-server-rs --renderer`). Flags and defaults
+//! local video API host spawns (`h3-server-rs --renderer`). Flags and defaults
 //! are the reference's (`h3_cli.c:293-345`, `h3.h:131-135`,
 //! `main.c:347-350`): `-d` model dir, `-p` prompt, `-o` output, `--width`
 //! 864, `--height` 480, `--frames` 56, `--steps` 20, `--seed` 42, `--reuse` 1,
@@ -11,7 +11,7 @@
 //! canvas, encode the prompt, build the sequence, denoise, decode audio and
 //! video, convert and resize, mux.
 //!
-//! Two spellings differ on purpose and are recorded in the port plan:
+//! Two spellings differ from the reference:
 //! `--ssd-streaming` selects the port's block ring (`LoadMode::Stream`), and
 //! the flags the CUDA reference accepts as no-ops (`--use-int8-row-fc2`) are
 //! not parsed at all rather than accepted and ignored.
@@ -138,7 +138,7 @@ fn run() -> Result<ExitCode, String> {
     // reference labels it (`h3.c:691`, the encode itself at `:1307`), and
     // without it the wall clock does not account for its ~50 s.
     let anchor_started = Instant::now();
-    let anchors = read_anchors(&options, frame_count, latent_h, latent_w)?;
+    let anchors = read_anchors(&options, &canvas, frame_count)?;
     let anchor_seconds = anchor_started.elapsed().as_secs_f64();
     if !anchors.keyframes.is_empty() {
         println!(
@@ -150,7 +150,7 @@ fn run() -> Result<ExitCode, String> {
     }
 
     // `h3.c:1027-1200`: each reference at its own canvas, in request order.
-    let references = read_references(&options, &component, frame_count)?;
+    let references = read_references(&options, &component, &canvas, frame_count)?;
     if !references.layout.is_empty() {
         println!(
             "REFERENCES count={} video_rows={} audio_rows={} samples={} hash={:016x}",
@@ -623,6 +623,7 @@ struct Anchors {
 fn read_references(
     options: &Options,
     component: &impl Fn(&str) -> PathBuf,
+    canvas: &Canvas,
     frame_count: i32,
 ) -> Result<reference::Set, String> {
     let (video_vae, audio_vae) = (component("video_vae/source"), component("audio_vae"));
@@ -635,19 +636,18 @@ fn read_references(
         &paths,
         &options.references,
         options.reference_image_size,
-        (options.width as u32, options.height as u32),
+        (canvas.render_width() as u32, canvas.render_height() as u32),
         frame_count as usize,
         options.seed,
     )
     .map_err(|error| error.message().to_string())
 }
 
-fn read_anchors(
-    options: &Options,
-    frame_count: i32,
-    latent_h: i32,
-    latent_w: i32,
-) -> Result<Anchors, String> {
+fn read_anchors(options: &Options, canvas: &Canvas, frame_count: i32) -> Result<Anchors, String> {
+    // Anchors condition the internal latent canvas, before output resizing
+    // (`h3.c:1233-1256`).
+    let (width, height) = (canvas.render_width(), canvas.render_height());
+    let (latent_w, latent_h) = canvas.latent();
     let anchors = [
         (0, media::Fit::Stretch, options.first_frame.as_deref()),
         (
@@ -664,14 +664,14 @@ fn read_anchors(
 
     for (frame, fit, path) in anchors {
         let Some(path) = path else { continue };
-        let values = media::read_image_f32(path, options.width as u32, options.height as u32, fit)
+        let values = media::read_image_f32(path, width as u32, height as u32, fit)
             .map_err(|error| format!("anchor {}: {}", path.display(), error.detail()))?;
         let latent = vae_encoder::encode(
             &options.model_dir.join(FL2VA).join("video_vae/source"),
             &values,
             1,
-            options.height as usize,
-            options.width as usize,
+            height as usize,
+            width as usize,
             |_, _| {},
         )
         .map_err(|error| format!("anchor {}: {error}", path.display()))?;
@@ -696,8 +696,8 @@ fn read_anchors(
         );
         out.pixels.push(condition::AnchorPixels {
             values,
-            height: options.height as u32,
-            width: options.width as u32,
+            height: height as u32,
+            width: width as u32,
         });
     }
 
@@ -925,7 +925,7 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --seconds S               duration, converted at 24 fps
   --steps N                 denoise evaluations (default 20)
   --reuse N                 reuse window (default 1)
-  --layers N                DiT blocks: 50 exact, 45 fast, 40 aggressive
+  --layers N                DiT blocks (only the released 50-block stack)
   --seed N                  seed, each modality (default 42)
   --first-frame PATH        anchor: the clip's first frame
   --last-frame PATH         anchor: the clip's last frame
