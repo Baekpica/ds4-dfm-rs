@@ -89,7 +89,7 @@ pub struct PayloadTemp {
     path: PathBuf,
 }
 
-/// Holds the validated inode while a native loader reopens its descriptor path.
+/// Holds an inode while a native loader reopens its descriptor path.
 /// An atomic replacement at the catalog path cannot swap the loaded artifact.
 #[derive(Debug)]
 pub struct PayloadGuard {
@@ -98,12 +98,52 @@ pub struct PayloadGuard {
 }
 
 impl PayloadGuard {
+    /// Hold an inode while metadata and native payload are read through path().
+    pub fn open(path: &Path) -> io::Result<Self> {
+        Self::from_file(fs::File::open(path)?)
+    }
+
+    fn from_file(file: fs::File) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let held_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        #[cfg(all(unix, not(target_os = "linux")))]
+        let held_path = PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()));
+        #[cfg(not(unix))]
+        let held_path = {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "held KVC payloads need Unix descriptors",
+            ));
+        };
+        Ok(PayloadGuard {
+            _file: file,
+            path: held_path,
+        })
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
 }
 
 impl PayloadTemp {
+    /// Reserve a private temporary payload; Drop removes it.
+    pub fn create(dir: &Path) -> io::Result<PayloadTemp> {
+        loop {
+            let seq = PAYLOAD_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!(".payload.{}.{}", std::process::id(), seq));
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            match options.open(&path) {
+                Ok(_) => return Ok(PayloadTemp { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -201,21 +241,7 @@ impl Store {
     }
 
     pub fn payload_temp(&self) -> io::Result<PayloadTemp> {
-        loop {
-            let seq = PAYLOAD_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-            let path = self
-                .dir
-                .join(format!(".payload.{}.{}", std::process::id(), seq));
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            options.mode(0o600);
-            match options.open(&path) {
-                Ok(_) => return Ok(PayloadTemp { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
+        PayloadTemp::create(&self.dir)
     }
 
     pub fn refresh(&mut self) {
@@ -478,21 +504,7 @@ impl Store {
 
     pub fn open_payload(&self, path: &Path, expected: &Envelope) -> io::Result<PayloadGuard> {
         let file = self.payload_file(path, expected, FileAccess::ReadOnly)?;
-        #[cfg(target_os = "linux")]
-        let held_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
-        #[cfg(all(unix, not(target_os = "linux")))]
-        let held_path = PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()));
-        #[cfg(not(unix))]
-        let held_path = {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "held KVC payloads need Unix descriptors",
-            ));
-        };
-        Ok(PayloadGuard {
-            _file: file,
-            path: held_path,
-        })
+        PayloadGuard::from_file(file)
     }
 
     fn payload_file(

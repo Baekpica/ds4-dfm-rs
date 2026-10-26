@@ -315,6 +315,48 @@ pub fn write_path(path: &Path, record: &Record) -> Result<(), FormatError> {
     Ok(())
 }
 
+/// Stream a native payload file into an atomically replaced KVC checkpoint.
+/// None stores text and metadata only. Identity uses the existing KVI footer.
+pub fn write_checkpoint(
+    path: &Path,
+    header: &Header,
+    text: &[u8],
+    payload: Option<&Path>,
+    trailer: &[u8],
+    identity: Option<[u8; 32]>,
+) -> Result<(), FormatError> {
+    let mut header = header.clone();
+    let mut trailer = trailer.to_vec();
+    if let Some(identity) = identity {
+        header.ext_flags |= crate::identity::FLAG;
+        crate::identity::append(&mut trailer, &identity);
+    }
+    let staged = match payload {
+        Some(source) => {
+            let mut file = fs::File::open(source)?;
+            let bytes = file.metadata()?.len();
+            stage_stream(path, &header, text, &mut file, bytes, &trailer)?
+        }
+        None => stage_stream(path, &header, text, &mut io::empty(), 0, &trailer)?,
+    };
+    let result = fs::rename(&staged, path).map_err(FormatError::Io);
+    if result.is_err() {
+        let _ = fs::remove_file(staged);
+    }
+    result
+}
+
+/// Read only the fixed artifact/runtime footer; absent or malformed means unknown.
+pub fn read_identity(path: &Path) -> Result<Option<[u8; 32]>, FormatError> {
+    let metadata = read_metadata(path)?;
+    Ok(crate::identity::read(
+        path,
+        metadata.file_size,
+        metadata.trailer_bytes,
+        metadata.header.ext_flags,
+    ))
+}
+
 #[cfg(test)]
 pub(crate) fn write_stream(
     path: &Path,
@@ -673,6 +715,43 @@ mod tests {
         assert_eq!(&bytes[..3], b"KVC");
         assert_eq!(bytes[3], 1);
         assert_eq!(bytes[20], 2);
+    }
+
+    #[test]
+    fn checkpoint_file_and_identity() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-file-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let payload = crate::PayloadTemp::create(&dir).unwrap();
+        let path = dir.join("entry.kv");
+        let mut expected = sample();
+        fs::write(payload.path(), &expected.payload).unwrap();
+        write_checkpoint(
+            &path,
+            &expected.header,
+            &expected.text,
+            Some(payload.path()),
+            b"title",
+            Some([5; 32]),
+        )
+        .unwrap();
+        expected.header.ext_flags |= crate::identity::FLAG;
+        expected.trailer = b"title".to_vec();
+        crate::identity::append(&mut expected.trailer, &[5; 32]);
+        assert_eq!(read_path(&path).unwrap(), expected);
+        assert_eq!(read_identity(&path).unwrap(), Some([5; 32]));
+        assert!(write_checkpoint(
+            &path,
+            &expected.header,
+            &expected.text,
+            Some(&dir.join("missing")),
+            &[],
+            None
+        )
+        .is_err());
+        assert_eq!(read_path(&path).unwrap(), expected);
+        drop(payload);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
