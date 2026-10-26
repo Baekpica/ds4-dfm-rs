@@ -54,7 +54,7 @@ Usage: h3-server-rs [options]
   --renderer PROGRAM     external renderer executable; without --model-dir or
                          --renderer every create answers 503
   --renderer-arg ARG     fixed argument passed to the renderer (repeatable)
-  --max-jobs N           retained jobs, also render concurrency (default 8)
+  --max-jobs N           retained jobs (default 8)
   --timeout-secs N       per-render timeout in seconds (default 3600)
   --help                 this text
 
@@ -65,9 +65,10 @@ Routes (docs/minimax-h3/local-v1-contract.md):
   GET  /v1/videos/{id}/content  the MP4 bytes
 
 --model-dir and --renderer are exclusive. The in-process engine keeps the
-prompt embedding and the prepared DiT across requests (h3.h:180-184) and runs
-one render at a time, which is what one GPU allows; jobs queue in arrival
-order and report `queued` until their turn.
+prompt embedding and the prepared DiT across requests (h3.h:180-184). One GPU
+renders one request at a time, so the store admits one job and holds the rest:
+a job that does not get the slot reports `queued` with its place in line until
+its turn.
 
 An external renderer is invoked with the reference engine's own CLI spellings:
 

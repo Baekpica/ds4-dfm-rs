@@ -30,12 +30,13 @@ depends on.
 ### The task record
 
 The query route answers one record, in this order
-(`crates/ds4-core/src/minimax_h3/video_api.rs:206-235`):
+(`crates/ds4-core/src/minimax_h3/video_api.rs:223-258`):
 
 | Field | Meaning |
 | --- | --- |
 | `id` | the create answer's id, `video_N` from a monotonic counter |
 | `status` | `queued`, `in_progress`, `completed`, `failed` |
+| `queue_position` | 1 for the job the engine takes next, counted over the queued jobs; null while a job holds the single render slot and for a job that has run |
 | `size` | the resolved canvas, `1344x768` |
 | `seconds` | the requested duration |
 | `frames` | the aligned frame count the engine renders |
@@ -175,9 +176,11 @@ session.
 
 Two consequences of exposing it:
 
-- every accepted create spends GPU time on the host, and `--max-jobs` is the
-  only bound on the job store: it caps retained jobs, completed ones included,
-  and it is also the render concurrency;
+- every accepted create spends GPU time on the host. One device renders one
+  request at a time, so the store admits one job and holds the rest: a create
+  that does not get the slot answers `queued` with its `queue_position`, and
+  the position it reports is its place in arrival order. `--max-jobs` is the
+  only bound on the store and caps retained jobs, completed ones included;
 - `--steps` is a startup setting, not a request field, so a shared server
   serves one quality. `--steps 2` is a smoke-test setting, not the release
   one, and it is not minute-scale at the served shapes: 768x768 with 107

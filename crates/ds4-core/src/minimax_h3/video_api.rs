@@ -216,10 +216,15 @@ pub struct Video {
 }
 
 impl Video {
-    pub fn to_value(&self) -> Value {
+    /// The record as the query route answers it. `queue_position` is the one
+    /// field the store derives at read time instead of storing: 1 for the job
+    /// the engine takes next, null while a job holds the single render slot and
+    /// for a job that has already run.
+    pub fn to_value(&self, queue_position: Option<usize>) -> Value {
         json!({
             "id": self.id,
             "status": self.status.as_str(),
+            "queue_position": queue_position,
             "size": self.size.as_string(),
             "seconds": self.seconds,
             "frames": self.frames,
@@ -230,6 +235,24 @@ impl Video {
         })
     }
 
+    pub fn to_json(&self, queue_position: Option<usize>) -> String {
+        self.to_value(queue_position).to_string()
+    }
+}
+
+/// A stored record plus the field the store derives at read time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoView {
+    pub video: Video,
+    /// 1 for the job the engine takes next, null otherwise.
+    pub queue_position: Option<usize>,
+}
+
+impl VideoView {
+    pub fn to_value(&self) -> Value {
+        self.video.to_value(self.queue_position)
+    }
+
     pub fn to_json(&self) -> String {
         self.to_value().to_string()
     }
@@ -237,7 +260,17 @@ impl Video {
 
 struct JobEntry {
     video: Video,
+    /// The validated plan, held until admission hands it to the renderer.
+    plan: Option<Plan>,
     output: Option<PathBuf>,
+}
+
+/// A job the store has admitted. One device renders one request at a time
+/// (`h3.c:697-723`), so admission belongs to the store, not to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admitted {
+    pub id: String,
+    pub plan: Plan,
 }
 
 struct StoreInner {
@@ -247,6 +280,9 @@ struct StoreInner {
 
 /// Bounded in-memory job store. `max_jobs` caps retained jobs, so a client
 /// that never stops creating gets a refusal instead of an unbounded table.
+///
+/// One job at a time: a submitted job waits in the queue until `admit_next`
+/// hands it the render slot, because one device renders one request at a time.
 ///
 /// There is no delete route in the local contract, so a job and its MP4 stay
 /// until the host restarts; the output directory is the operator's to prune.
@@ -305,21 +341,33 @@ impl VideoStore {
         };
         inner.jobs.push(JobEntry {
             video: video.clone(),
+            plan: Some(plan.clone()),
             output: None,
         });
         Ok(video)
     }
 
-    pub fn start(&self, id: &str) -> bool {
+    /// Admit the next queued job if the render slot is free. The caller
+    /// renders what it gets and calls this again when it finishes.
+    pub fn admit_next(&self) -> Option<Admitted> {
         let mut inner = self.lock();
-        let Some(job) = inner.jobs.iter_mut().find(|job| job.video.id == id) else {
-            return false;
-        };
-        if job.video.status != VideoStatus::Queued {
-            return false;
+        if inner
+            .jobs
+            .iter()
+            .any(|job| job.video.status == VideoStatus::InProgress)
+        {
+            return None;
         }
+        let job = inner
+            .jobs
+            .iter_mut()
+            .find(|job| job.video.status == VideoStatus::Queued)?;
+        let plan = job.plan.take()?;
         job.video.status = VideoStatus::InProgress;
-        true
+        Some(Admitted {
+            id: job.video.id.clone(),
+            plan,
+        })
     }
 
     pub fn complete(&self, id: &str, now: u64, output: PathBuf) -> bool {
@@ -361,6 +409,20 @@ impl VideoStore {
             .map(|job| job.video.clone())
     }
 
+    /// The record as the query route answers it, with its place in line.
+    pub fn view(&self, id: &str) -> Option<VideoView> {
+        let inner = self.lock();
+        let queue_position = queued_position(&inner, id);
+        inner
+            .jobs
+            .iter()
+            .find(|job| job.video.id == id)
+            .map(|job| VideoView {
+                video: job.video.clone(),
+                queue_position,
+            })
+    }
+
     pub fn output_path(&self, id: &str) -> Option<PathBuf> {
         self.lock()
             .jobs
@@ -377,6 +439,21 @@ impl VideoStore {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// A queued job's place in line, 1 for the job the engine takes next. `None`
+/// for a job that holds the slot or has finished, and for an unknown id.
+fn queued_position(inner: &StoreInner, id: &str) -> Option<usize> {
+    let queued = inner
+        .jobs
+        .iter()
+        .filter(|job| job.video.status == VideoStatus::Queued);
+    for (position, job) in queued.enumerate() {
+        if job.video.id == id {
+            return Some(position + 1);
+        }
+    }
+    None
 }
 
 pub fn unknown_video(id: &str) -> ApiError {
@@ -410,7 +487,7 @@ mod tests {
     fn the_record_carries_the_resolved_target_and_the_lifecycle() {
         let store = VideoStore::new(8);
         let video = store.submit(&plan(), 1_700_000_000).unwrap();
-        let object = video.to_value();
+        let object = video.to_value(None);
         let keys: Vec<&str> = object
             .as_object()
             .expect("object")
@@ -422,6 +499,7 @@ mod tests {
             vec![
                 "id",
                 "status",
+                "queue_position",
                 "size",
                 "seconds",
                 "frames",
@@ -433,6 +511,7 @@ mod tests {
         );
         assert_eq!(object["id"], "video_1");
         assert_eq!(object["status"], "queued");
+        assert_eq!(object["queue_position"], Value::Null);
         assert_eq!(object["size"], "1344x768");
         assert_eq!(object["seconds"], 10);
         assert_eq!(object["frames"], 243);
@@ -446,7 +525,7 @@ mod tests {
         let store = VideoStore::new(8);
         let video = store.submit(&plan(), 10).unwrap();
         assert_eq!(store.output_path(&video.id), None);
-        assert!(store.start(&video.id));
+        assert_eq!(store.admit_next().unwrap().id, video.id);
         assert_eq!(
             store.get(&video.id).unwrap().status,
             VideoStatus::InProgress
@@ -466,13 +545,35 @@ mod tests {
     fn a_failure_is_terminal_and_carries_its_code() {
         let store = VideoStore::new(8);
         let video = store.submit(&plan(), 10).unwrap();
-        assert!(store.start(&video.id));
+        assert!(store.admit_next().is_some());
         assert!(store.fail(&video.id, 20, VideoError::new("render_failed", "exit 1")));
-        assert!(!store.start(&video.id));
+        assert!(
+            store.admit_next().is_none(),
+            "a failed job is not re-admitted"
+        );
         assert!(!store.complete(&video.id, 30, PathBuf::from("/tmp/x.mp4")));
         let failed = store.get(&video.id).unwrap();
         assert_eq!(failed.status, VideoStatus::Failed);
         assert_eq!(failed.error.unwrap().code, "render_failed");
+    }
+
+    #[test]
+    fn the_store_admits_one_job_and_queues_the_rest() {
+        let store = VideoStore::new(8);
+        let first = store.submit(&plan(), 10).unwrap();
+        let second = store.submit(&plan(), 11).unwrap();
+        assert_eq!(store.view(&first.id).unwrap().queue_position, Some(1));
+        assert_eq!(store.view(&second.id).unwrap().queue_position, Some(2));
+
+        let admitted = store.admit_next().expect("the slot is free");
+        assert_eq!(admitted.id, first.id);
+        assert_eq!(store.view(&first.id).unwrap().queue_position, None);
+        assert_eq!(store.view(&second.id).unwrap().queue_position, Some(1));
+        assert!(store.admit_next().is_none(), "one slot, one job");
+
+        assert!(store.complete(&first.id, 20, PathBuf::from("/tmp/x.mp4")));
+        assert_eq!(store.admit_next().expect("the slot is free").id, second.id);
+        assert_eq!(store.view(&second.id).unwrap().queue_position, None);
     }
 
     #[test]

@@ -250,6 +250,44 @@ different one.
 Gate: the transcript, the MP4 hashes, the two-request timings, and the
 `ffprobe` output in `port-plan.md`.
 
+### P10.2 — admission: one render slot, and a queue position (2026-10-26)
+
+Landed. Read from the code before the change: `create` called
+`VideoStore::start` for its own job (`h3_video.rs:539`), so every accepted job
+read `in_progress` from the first poll and `queued` was unreachable, while the
+binary's own help text claimed the opposite ("jobs queue in arrival order and
+report `queued` until their turn"). The P15.5 gate had already recorded the
+same discrepancy in its words: "the status a client sees does not distinguish
+waiting from rendering".
+
+What changed, in two places:
+
+- `VideoStore` owns admission: `submit` leaves the job `queued` and keeps its
+  validated plan, and `admit_next` (`video_api.rs:352`) hands out the single
+  slot only when no job holds it, oldest first. The record gained
+  `queue_position` (`:223`), derived at read time (`:446`): 1 for the job the
+  engine takes next, null otherwise.
+- `pump` (`h3_video.rs:593`) replaces the per-request `spawn_render`: it admits
+  a job and renders it on its own thread, and that thread calls `pump` again
+  when it finishes, so the queue moves without a scheduler thread. A create
+  that does not get the slot answers `queued` with its position.
+
+Gates: `the_store_admits_one_job_and_queues_the_rest` (store, no device) and
+`a_second_job_waits_in_the_queue_with_its_position` (server, three creates on
+one gated renderer: the first `in_progress`, the second and third `queued` with
+positions 1 and 2, then release and all three complete). The contract page's
+record table and its `--max-jobs` sentence were corrected to match, and the
+binary's `--max-jobs` line no longer calls the store bound a concurrency.
+
+Cancel is refused, not deferred (operator, 2026-10-26): the local contract has
+three routes and cancel is not one of them, so P10.2's cancel clause is dropped
+rather than served as a fourth route. The timeout stands (`--timeout-secs`,
+code `render_timeout`).
+
+P10.4, P10.5 and P10.6 are open: the default-path gate (512x512, 4 s, 107
+frames, 20 steps, MP4 against `h3-rs`), the install-script run on a tree not
+built by hand, and the two-request residency timing.
+
 ## P11 — Delivery presets: YouTube, Instagram, the highest resolution, audio
 
 The model canvas is the quality ceiling; a preset chooses the canvas, the

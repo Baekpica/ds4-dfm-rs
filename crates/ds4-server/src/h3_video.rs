@@ -41,7 +41,7 @@ use ds4_core::minimax_h3::local_api::{
 };
 use ds4_core::minimax_h3::media::probe_visual_size;
 use ds4_core::minimax_h3::video_api::{
-    unknown_video, AnchorImage, ApiError, VideoError, VideoStatus, VideoStore,
+    unknown_video, Admitted, AnchorImage, ApiError, VideoError, VideoStatus, VideoStore,
 };
 use serde_json::json;
 
@@ -534,72 +534,21 @@ impl VideoServer {
             Err(error) => return H3Response::error(&error),
         };
         let id = video.id.clone();
-        let output = self.out_dir.join(format!("{id}.mp4"));
-        self.store.start(&id);
-        self.spawn_render(id.clone(), plan, output);
+        // The store admits one job at a time. A create that does not get the
+        // slot waits, and its record says so: `queued` with its position.
+        pump(
+            Arc::clone(&self.store),
+            Arc::clone(&self.renderer),
+            self.out_dir.clone(),
+        );
         // The contract's create answer is the id alone
         // (`full-2k-t2va-h3-base.sh:24`); the task record is the query route's.
         H3Response::json(200, json!({ "id": id }).to_string())
     }
 
-    fn spawn_render(&self, id: String, spec: Plan, output: PathBuf) {
-        let store = Arc::clone(&self.store);
-        let renderer = Arc::clone(&self.renderer);
-        let fail_id = id.clone();
-        let spawn = thread::Builder::new()
-            .name(format!("h3-render-{id}"))
-            .spawn(move || {
-                let result = renderer.render(&spec, &output);
-                let now = unix_now();
-                match result {
-                    Ok(()) => match std::fs::metadata(&output) {
-                        Ok(meta) if meta.len() > 0 => {
-                            store.complete(&id, now, output);
-                        }
-                        Ok(_) => {
-                            store.fail(
-                                &id,
-                                now,
-                                VideoError::new(
-                                    "render_output_missing",
-                                    format!("renderer wrote an empty file at {}", output.display()),
-                                ),
-                            );
-                        }
-                        Err(error) => {
-                            store.fail(
-                                &id,
-                                now,
-                                VideoError::new(
-                                    "render_output_missing",
-                                    format!(
-                                        "renderer produced no readable output at {}: {error}",
-                                        output.display()
-                                    ),
-                                ),
-                            );
-                        }
-                    },
-                    Err(error) => {
-                        store.fail(&id, now, VideoError::new(error.code, error.message));
-                    }
-                }
-            });
-        if spawn.is_err() {
-            self.store.fail(
-                &fail_id,
-                unix_now(),
-                VideoError::new(
-                    "renderer_spawn_failed",
-                    "could not start the render thread".to_string(),
-                ),
-            );
-        }
-    }
-
     fn retrieve(&self, id: &str) -> H3Response {
-        match self.store.get(id) {
-            Some(video) => H3Response::json(200, video.to_json()),
+        match self.store.view(id) {
+            Some(view) => H3Response::json(200, view.to_json()),
             None => H3Response::error(&unknown_video(id)),
         }
     }
@@ -630,6 +579,82 @@ impl VideoServer {
             content_type: Some(CONTENT_TYPE_MP4),
             body,
             head_only,
+        }
+    }
+}
+
+/// Admit the next queued job when the render slot is free, and render it on its
+/// own thread; that thread admits the next one when it finishes. One device
+/// renders one request at a time, so the store hands out a single slot and a
+/// create that finds it taken leaves its job `queued` with a position.
+///
+/// Called at create and at every render's end, which is what keeps the queue
+/// moving without a scheduler thread.
+fn pump(store: Arc<VideoStore>, renderer: SharedRenderer, out_dir: PathBuf) {
+    loop {
+        let Some(Admitted { id, plan }) = store.admit_next() else {
+            return;
+        };
+        let output = out_dir.join(format!("{id}.mp4"));
+        let (job_store, job_renderer, job_dir) =
+            (Arc::clone(&store), Arc::clone(&renderer), out_dir.clone());
+        let thread_id = id.clone();
+        let spawned = thread::Builder::new()
+            .name(format!("h3-render-{id}"))
+            .spawn(move || {
+                let result = job_renderer.render(&plan, &output);
+                finish(&job_store, &thread_id, &output, result);
+                pump(job_store, job_renderer, job_dir);
+            });
+        if spawned.is_ok() {
+            return;
+        }
+        // The thread never started, so nothing will free the slot it took;
+        // fail the job here and let the loop admit the next one.
+        store.fail(
+            &id,
+            unix_now(),
+            VideoError::new(
+                "renderer_spawn_failed",
+                "could not start the render thread".to_string(),
+            ),
+        );
+    }
+}
+
+/// Record a render's outcome: a written file completes the job, anything else
+/// fails it under the code the renderer named.
+fn finish(store: &VideoStore, id: &str, output: &Path, result: Result<(), RenderError>) {
+    let missing = |detail: String| VideoError::new("render_output_missing", detail);
+
+    match result {
+        Ok(()) => match std::fs::metadata(output) {
+            Ok(meta) if meta.len() > 0 => {
+                store.complete(id, unix_now(), output.to_path_buf());
+            }
+            Ok(_) => {
+                store.fail(
+                    id,
+                    unix_now(),
+                    missing(format!(
+                        "renderer wrote an empty file at {}",
+                        output.display()
+                    )),
+                );
+            }
+            Err(error) => {
+                store.fail(
+                    id,
+                    unix_now(),
+                    missing(format!(
+                        "renderer produced no readable output at {}: {error}",
+                        output.display()
+                    )),
+                );
+            }
+        },
+        Err(error) => {
+            store.fail(id, unix_now(), VideoError::new(error.code, error.message));
         }
     }
 }
@@ -1027,6 +1052,45 @@ mod tests {
         poll_until(&server, &id, "in_progress");
         release.store(true, Ordering::SeqCst);
         poll_until(&server, &id, "completed");
+    }
+
+    #[test]
+    fn a_second_job_waits_in_the_queue_with_its_position() {
+        let release = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&release);
+        let (server, _dir) = test_server(
+            renderer(move |_, output| {
+                while !flag.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                write_output(output)
+            }),
+            8,
+        );
+        let record = |id: &str| json_of(&get(&server, &format!("/v1/videos/{id}")));
+
+        let first = create(&server, T2VA);
+        poll_until(&server, &first, "in_progress");
+
+        // One device renders one job, so the next two wait, in arrival order.
+        let second = create(&server, T2VA);
+        let third = create(&server, T2VA);
+        assert_eq!(record(&first)["queue_position"], Value::Null);
+        assert_eq!(record(&second)["status"], "queued");
+        assert_eq!(record(&second)["queue_position"], 1);
+        assert_eq!(record(&third)["queue_position"], 2);
+
+        // Releasing the renderer moves the queue one job at a time.
+        release.store(true, Ordering::SeqCst);
+        assert_eq!(
+            poll_until(&server, &first, "completed")["queue_position"],
+            Value::Null
+        );
+        poll_until(&server, &second, "completed");
+        assert_eq!(
+            poll_until(&server, &third, "completed")["queue_position"],
+            Value::Null
+        );
     }
 
     #[test]
