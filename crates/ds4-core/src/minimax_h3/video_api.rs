@@ -13,7 +13,9 @@
 //! - `h3.c:518-519` requested frames must land in 5..362 after alignment.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -289,16 +291,29 @@ struct StoreInner {
 pub struct VideoStore {
     inner: Mutex<StoreInner>,
     max_jobs: usize,
+    id_prefix: String,
 }
 
 impl VideoStore {
     pub fn new(max_jobs: usize) -> Self {
+        static NEXT_STORE: AtomicU64 = AtomicU64::new(0);
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
         Self {
             inner: Mutex::new(StoreInner {
                 jobs: Vec::new(),
                 next_seq: 1,
             }),
             max_jobs,
+            // Restarting the host must not reuse completed output names.
+            id_prefix: format!(
+                "video_{epoch:x}_{:x}_{:x}",
+                std::process::id(),
+                NEXT_STORE.fetch_add(1, Ordering::Relaxed)
+            ),
         }
     }
 
@@ -329,7 +344,7 @@ impl VideoStore {
         let seq = inner.next_seq;
         inner.next_seq += 1;
         let video = Video {
-            id: format!("video_{seq}"),
+            id: format!("{}_{seq}", self.id_prefix),
             status: VideoStatus::Queued,
             size: plan.size,
             seconds: plan.seconds,
@@ -509,7 +524,7 @@ mod tests {
                 "error"
             ]
         );
-        assert_eq!(object["id"], "video_1");
+        assert_eq!(object["id"], video.id);
         assert_eq!(object["status"], "queued");
         assert_eq!(object["queue_position"], Value::Null);
         assert_eq!(object["size"], "1344x768");

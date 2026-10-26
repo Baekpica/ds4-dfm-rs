@@ -602,7 +602,22 @@ fn pump(store: Arc<VideoStore>, renderer: SharedRenderer, out_dir: PathBuf) {
         let spawned = thread::Builder::new()
             .name(format!("h3-render-{id}"))
             .spawn(move || {
-                let result = job_renderer.render(&plan, &output);
+                // Reserve the name even if a clock rollback ever repeats an id.
+                let result = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&output)
+                    .map_err(|error| {
+                        let code = match error.kind() {
+                            io::ErrorKind::AlreadyExists => "render_output_exists",
+                            _ => "render_failed",
+                        };
+                        RenderError::new(code, format!("cannot reserve render output: {error}"))
+                    })
+                    .and_then(|file| {
+                        drop(file);
+                        job_renderer.render(&plan, &output)
+                    });
                 finish(&job_store, &thread_id, &output, result);
                 pump(job_store, job_renderer, job_dir);
             });
@@ -991,6 +1006,60 @@ mod tests {
             last_frame: None,
             references: Vec::new(),
         }
+    }
+
+    #[test]
+    fn existing_outputs_are_refused() {
+        let (server, dir) = test_server(renderer(|_, output| write_output(output)), 8);
+        let video = server.store.submit(&plan(), unix_now()).unwrap();
+        let output = dir.join(format!("{}.mp4", video.id));
+        std::fs::write(&output, b"saved clip").unwrap();
+
+        pump(
+            Arc::clone(&server.store),
+            Arc::clone(&server.renderer),
+            dir.clone(),
+        );
+        let failed = poll_until(&server, &video.id, "failed");
+        assert_eq!(failed["error"]["code"], "render_output_exists");
+        assert_eq!(std::fs::read(&output).unwrap(), b"saved clip");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restart_preserves_outputs() {
+        let (server, dir) = test_server(
+            renderer(|_, output| {
+                std::fs::write(output, b"first clip").unwrap();
+                Ok(())
+            }),
+            8,
+        );
+        let first = create(&server, T2VA);
+        poll_until(&server, &first, "completed");
+        drop(server);
+
+        let server = VideoServer::new(
+            Arc::new(VideoStore::new(8)),
+            renderer(|_, output| {
+                std::fs::write(output, b"second clip").unwrap();
+                Ok(())
+            }),
+            dir.clone(),
+        );
+        let second = create(&server, T2VA);
+        poll_until(&server, &second, "completed");
+
+        assert_eq!(
+            std::fs::read(dir.join(format!("{first}.mp4"))).unwrap(),
+            b"first clip"
+        );
+        assert_ne!(first, second);
+        assert_eq!(
+            std::fs::read(dir.join(format!("{second}.mp4"))).unwrap(),
+            b"second clip"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1589,7 +1658,8 @@ mod tests {
         let (server, _dir) = test_server(renderer(|_, output| write_output(output)), 8);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let thread = thread::spawn(move || serve_one(&listener, &server).unwrap());
+        let serving = Arc::clone(&server);
+        let thread = thread::spawn(move || serve_one(&listener, &serving).unwrap());
 
         let mut stream = TcpStream::connect(address).unwrap();
         let body = T2VA.as_bytes();
@@ -1605,7 +1675,10 @@ mod tests {
 
         let text = String::from_utf8_lossy(&response);
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
-        assert!(text.contains("\"id\":\"video_1\""), "{text}");
+        let (_, body) = text.split_once("\r\n\r\n").unwrap();
+        let created: Value = serde_json::from_str(body).unwrap();
+        let id = created["id"].as_str().unwrap();
+        assert!(server.store.get(id).is_some());
     }
 
     #[test]
