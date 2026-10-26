@@ -185,15 +185,6 @@ extern "C" int ds4_gpu_glm53_attn_low(ds4_gpu_tensor *low_out,
             return 0;
         }
     }
-#ifdef DS4_GLM53_DENSE_ENGINE
-    const char *dense = getenv("DS4_GLM53_DENSE_GEMM");
-    if (dense && strcmp(dense, "0") != 0 && g_cublas_ready &&
-        glm53_dense_shape(rows, pos0 + rows, heads, latent_dim,
-            selected ? GLM53_ATTN_SELECTED : GLM53_ATTN_ALL)) {
-        return glm53_dense_engine(low_out, low_q, cache, rows, pos0,
-            heads, latent_dim, head_dim);
-    }
-#endif
     if (!selected && pos0 + rows > DS4_GLM53_MAX_SELECTED) {
         glm53_low_all_kernel<<<dim3(heads, rows), GLM53_COMPACT_THREADS,
             0, ds4_current_stream()>>>(

@@ -48,7 +48,6 @@ pub mod trace;
 #[cfg(any(feature = "native", test))]
 mod v41_disk;
 pub mod worker;
-#[cfg(feature = "native")]
 pub mod worker_run;
 
 pub use admit::{
@@ -160,5 +159,4 @@ pub use tools::{
     parse_generated_for_response, parse_generated_message, ParsedGenerated, SemAccum, SemFeed,
 };
 pub use worker::{dist_weight_slice, server_launch, ServerLaunch, WORKER_REQUIRES_MODEL};
-#[cfg(feature = "native")]
 pub use worker_run::run_assembled_worker;

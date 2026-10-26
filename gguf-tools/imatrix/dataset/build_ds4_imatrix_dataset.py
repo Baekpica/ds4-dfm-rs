@@ -2122,6 +2122,15 @@ def make_agent_records(records: list[Record]) -> None:
                    tools_schema=TOOLSETS[ts], modes=("think", "nothink"))
 
 
+def write_rendered(path: Path, rows: Iterable[Record]) -> int:
+    count = 0
+    with path.open("w", encoding="utf-8") as f:
+        for count, r in enumerate(rows, start=1):
+            f.write(f"\n\n===== DS4_IMATRIX_PROMPT {r.rid} {r.category} {r.mode} {r.source} =====\n")
+            f.write(r.rendered)
+    return count
+
+
 def write_outputs(outdir: Path, records: list[Record]) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     records = sorted(records, key=lambda r: (r.category, r.source, r.mode, r.rid))
@@ -2147,14 +2156,6 @@ def write_outputs(outdir: Path, records: list[Record]) -> None:
                 "messages": r.messages,
                 "rendered": r.rendered,
             }, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-    def write_rendered(path: Path, rows: Iterable[Record]) -> int:
-        count = 0
-        with path.open("w", encoding="utf-8") as f:
-            for count, r in enumerate(rows, start=1):
-                f.write(f"\n\n===== DS4_IMATRIX_PROMPT {r.rid} {r.category} {r.mode} {r.source} =====\n")
-                f.write(r.rendered)
-        return count
 
     write_rendered(outdir / "rendered_prompts.txt", records)
     write_rendered(outdir / "rendered_prompts_nothink.txt", [r for r in records if r.mode == "nothink"])
@@ -2192,11 +2193,24 @@ def write_outputs(outdir: Path, records: list[Record]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=None, help="Output directory. Defaults to this script's directory.")
+    parser.add_argument("--render-splits-only", action="store_true",
+                        help="Recreate only mode splits from the committed prompts.jsonl.")
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
-    root = find_repo_root(script_dir)
     outdir = Path(args.out).resolve() if args.out else script_dir
+
+    if args.render_splits_only:
+        with (script_dir / "prompts.jsonl").open(encoding="utf-8") as source:
+            rows = [json.loads(line) for line in source]
+        records = [Record(rid=row.pop("id"), **row) for row in rows]
+        outdir.mkdir(parents=True, exist_ok=True)
+        for mode in ("nothink", "think"):
+            write_rendered(outdir / f"rendered_prompts_{mode}.txt",
+                           (r for r in records if r.mode == mode))
+        return
+
+    root = find_repo_root(script_dir)
 
     records: list[Record] = []
     make_source_records(root, records)

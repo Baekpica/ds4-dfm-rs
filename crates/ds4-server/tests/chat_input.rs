@@ -293,6 +293,28 @@ fn anthropic_system_first() {
 }
 
 #[test]
+fn audit_anthropic_tool_failure_survives_template() {
+    for failed in [false, true] {
+        let parsed = parse_anthropic_request(&env(), &json!({"messages":[
+            {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"","is_error":failed}]}
+        ]}).to_string()).unwrap();
+        let rendered =
+            String::from_utf8(chat_input::render(&template(IQUEST), IQUEST, &parsed).unwrap())
+                .unwrap();
+        assert_eq!(rendered.contains("[tool_error]"), failed, "{rendered}");
+        assert_eq!(
+            parsed.messages[1].content,
+            if failed {
+                "<tool_result>[tool_error] </tool_result>"
+            } else {
+                "<tool_result></tool_result>"
+            }
+        );
+    }
+}
+
+#[test]
 fn anthropic_tool_schema() {
     let body = r#"{
         "messages":[{"role":"user","content":"도구를 사용해."}],

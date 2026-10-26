@@ -3,7 +3,13 @@
 This directory contains DS4-rendered chat prompts for collecting activation
 statistics before building new low-bit GGUF files.
 
-Run:
+Recreate the untracked mode splits from the fixed `prompts.jsonl`:
+
+```sh
+python3 gguf-tools/imatrix/dataset/build_ds4_imatrix_dataset.py --render-splits-only
+```
+
+Rebuild the entire corpus from the current repository (changes the calibration inputs):
 
 ```sh
 python3 gguf-tools/imatrix/dataset/build_ds4_imatrix_dataset.py
@@ -34,4 +40,5 @@ prose fact recovery, delayed-constraint and small needle tasks, Metal/C code
 review tasks, and inference-specific debugging tasks.
 
 For normal imatrix collection, use `rendered_prompts.txt` so calibration covers
-both thinking and non-thinking modes. Split files are provided for ablations.
+both thinking and non-thinking modes. Generate split files for ablations with
+`--render-splits-only`; this preserves the committed corpus and manifest.

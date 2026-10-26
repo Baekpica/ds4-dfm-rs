@@ -103,9 +103,6 @@ static void glm53_graph_free(ds4_glm53_gpu_graph *g) {
     memset(g, 0, sizeof(*g));
 }
 static bool ds4_glm53_layer_is_kda(uint32_t il) { return il == 0u; }
-static uint64_t glm53_dense_reserve(uint32_t rows, uint32_t ctx) {
-    (void)rows; (void)ctx; return 0u;
-}
 static uint64_t glm53_mtp_bytes(uint32_t ctx) { return ctx * sizeof(float); }
 static bool glm53_mtp_enable(ds4_glm53_gpu_graph *g) { (void)g; return true; }
 static uint64_t ds4_gpu_solar_kda_prefill_scratch_bytes(uint32_t rows,

@@ -14,6 +14,7 @@ CFLAGS ?= -O3 -ffast-math $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -std=c
 OBJCFLAGS ?= -O3 -ffast-math $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -fobjc-arc
 
 LDLIBS ?= -lm -pthread
+DEPFLAGS = -MMD -MP -MF $@.d
 METAL_SRCS := $(wildcard metal/*.metal)
 DS4_MOTIF3_MODEL ?=
 DS4_MOTIF3_FIXTURES ?= ../motif-3-mixed-ds4/fixtures/official-final
@@ -203,11 +204,11 @@ help:
 # erase it), so spark defines travel via NVCC_EXTRA_FLAGS instead.
 cuda-spark:
 	@printf '%s\n' '# written by make cuda-spark (see the config include note in Makefile)' 'CUDA_ARCH := sm_121' 'NVCC_EXTRA_FLAGS :=' > .ds4-cuda-config.mk
-	$(MAKE) -B ds4-c ds4-server-c ds4-bench-c ds4-eval ds4-agent-c ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=sm_121 NVCC_EXTRA_FLAGS=""
+	$(MAKE) -B ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=sm_121 NVCC_EXTRA_FLAGS=""
 
 cuda-generic:
 	@printf '%s\n' '# written by make cuda-generic (see the config include note in Makefile)' 'CUDA_ARCH := native' > .ds4-cuda-config.mk
-	$(MAKE) ds4-c ds4-server-c ds4-bench-c ds4-eval ds4-agent-c ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=native
+	$(MAKE) ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=native
 
 cuda:
 	@if [ -z "$(strip $(CUDA_ARCH))" ]; then \
@@ -216,7 +217,7 @@ cuda:
 		exit 2; \
 	fi
 	@printf '%s\n' '# written by make cuda (see the config include note in Makefile)' 'CUDA_ARCH := $(strip $(CUDA_ARCH))' > .ds4-cuda-config.mk
-	$(MAKE) ds4-c ds4-server-c ds4-bench-c ds4-eval ds4-agent-c ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH="$(CUDA_ARCH)"
+	$(MAKE) ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH="$(CUDA_ARCH)"
 
 ds4-c: ds4_cli.o linenoise.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -320,14 +321,14 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 endif
 
 ds4.o: ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS) ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_batch.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc cuda/mimo2_dflash_host.h ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h ds41_forward.h ds41_kvfmt.h ds4_ds41_forward.inc vendor/stb_image.h ds4_ds41_sample.inc ds4_ds41_graph.inc ds4_ds41_draft.inc ds4_ds41_vision.inc
-	$(CC) $(CFLAGS) -c -o $@ ds4.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
 # Not linked into the C oracles. Phase 3 shadows link this object plus CORE_OBJS.
 rust-bridge: native/bridge/ds4_bridge.o
 
 native/bridge/ds4_bridge.o: native/bridge/ds4_bridge.c native/bridge/ds4_bridge.h native/bridge/ds4_host_load.h ds4.h ds4_distributed.h ds41_forward.h
-	$(CC) $(CFLAGS) -I. -c -o $@ native/bridge/ds4_bridge.c
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ native/bridge/ds4_bridge.c
 
 # Phase 9: Rust host is the default name. Cargo [[bin]] stays *-rs;
 # Makefile copies onto ./ds4 ./ds4-server ./ds4-bench ./ds4-agent.
@@ -699,9 +700,11 @@ test-ds41-kv-rows:
 test-ds41-rollback:
 	python3 tests/ds41_rollback_gate.py
 
-tests/test_iquest_prefix: tests/test_iquest_prefix.c ds4.c $(IQUEST_NATIVE_INCS) $(DS4_CUDA_SUPPORT_OBJS)
-	$(CC) $(CFLAGS) -DDS4_USE_CUDA -ffunction-sections -fdata-sections -c -o tests/test_iquest_prefix.o tests/test_iquest_prefix.c
-	$(NVCC) $(NVCCFLAGS) -o $@ tests/test_iquest_prefix.o $(DS4_CUDA_SUPPORT_OBJS) -Xlinker --gc-sections $(CUDA_LDLIBS)
+tests/test_iquest_prefix.o: tests/test_iquest_prefix.c ds4.c $(IQUEST_NATIVE_INCS)
+	$(CC) $(CFLAGS) -DDS4_USE_CUDA -ffunction-sections -fdata-sections $(DEPFLAGS) -c -o $@ $<
+
+tests/test_iquest_prefix: tests/test_iquest_prefix.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ -Xlinker --gc-sections $(CUDA_LDLIBS)
 
 tests/naive_serve_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cargo rustc -p ds4-cli --example naive_serve_gate --release --features native -- \
@@ -878,13 +881,13 @@ ds4-server-rs: ds4-server
 	cp -f ds4-server $@
 
 ds4_ple.o: ds4_ple.c ds4_ple.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_ple.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_ple.c
 
 ds4_cli.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_cli.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_cli.c
 
 ds4_distributed.o: ds4_distributed.c ds4_distributed.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_distributed.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_distributed.c
 
 # Version stamp: git describe in a checkout; the committed VERSION file
 # (bumped at each release cut) covers gitless trees and tag-less clones.
@@ -897,138 +900,92 @@ print-version:
 	@echo $(DS4_BUILD_VERSION)
 
 ds4_server.o: ds4_server.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h rax.h Makefile VERSION
-	$(CC) $(CFLAGS) -DDS4_BUILD_VERSION='"$(DS4_BUILD_VERSION)"' -c -o $@ ds4_server.c
+	$(CC) $(CFLAGS) -DDS4_BUILD_VERSION='"$(DS4_BUILD_VERSION)"' $(DEPFLAGS) -c -o $@ ds4_server.c
 
 ds4_bench.o: ds4_bench.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_bench.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_bench.c
 
 ds4_eval.o: ds4_eval.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_eval.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_eval.c
 
 ds4_agent.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h ds4_web.h linenoise.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_agent.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_agent.c
 
 ds4_web.o: ds4_web.c ds4_web.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_web.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_web.c
 
 ds4_kvstore.o: ds4_kvstore.c ds4_kvstore.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_kvstore.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ ds4_kvstore.c
 
 ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h rax.h
-	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_test.c
+	$(CC) $(CFLAGS) -Wno-unused-function $(DEPFLAGS) -c -o $@ tests/ds4_test.c
 
 tests/cuda_long_context_smoke.o: tests/cuda_long_context_smoke.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ tests/cuda_long_context_smoke.c
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ tests/cuda_long_context_smoke.c
 
 tests/cuda_tokentile_ldmatrix.o: tests/cuda_tokentile_ldmatrix.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ tests/cuda_tokentile_ldmatrix.c
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ tests/cuda_tokentile_ldmatrix.c
 
-tests/test_solar_kda.o: tests/test_solar_kda.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_solar_kda_prefill.o: tests/test_solar_kda_prefill.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_solar_gates.o: tests/test_solar_gates.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_solar_kv.o: tests/test_solar_kv.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_gates.o \
+    tests/test_solar_kv.o tests/test_model_family_kernels.o tests/test_qwen4exp_primitives.o \
+    tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_moe.o tests/test_qwen4exp_gdn.o \
+    tests/test_solar_kda_chunk.o tests/test_glm53_dsa.o: %.o: %.c ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_solar_fattn.o: tests/test_solar_fattn.c ds4_gpu.h cuda/mmq/ds4_mmq.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
-tests/test_model_family_kernels.o: tests/test_model_family_kernels.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_inkling_kernels.o: tests/test_inkling_kernels.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
+tests/test_inkling_kernels.o tests/test_qwen_vision_attention.o tests/test_qwen_vision_norm.o \
+    tests/test_qwen_vision_rope.o: %.o: %.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_inkling_moe.o: tests/test_inkling_moe.c tests/fixtures/inkling/moe-vectors.h ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -fno-fast-math -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/test_inkling_attn_prep.o: tests/test_inkling_attn_prep.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
+tests/test_inkling_attn_prep.o tests/test_inkling_attention.o tests/test_inkling_norm.o \
+    tests/test_inkling_linear.o tests/test_inkling_q8_batch.o tests/test_inkling_media.o: %.o: %.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/test_inkling_attention.o: tests/test_inkling_attention.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
-
-tests/test_inkling_norm.o: tests/test_inkling_norm.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
-
-tests/test_inkling_linear.o: tests/test_inkling_linear.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
-
-tests/test_inkling_q8_batch.o: tests/test_inkling_q8_batch.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
-
-tests/test_inkling_media.o: tests/test_inkling_media.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
-
-tests/test_inkling_forward.o: tests/test_inkling_forward.c ds4.c ds4_gpu.h
+tests/test_inkling_forward.o tests/test_inkling_mtp.o tests/test_inkling_mtp_shared.o: %.o: %.c ds4.c ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -c -o $@ $<
+		-Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_inkling_session.o: tests/test_inkling_session.c ds4.c ds4.h ds4_gpu.h native/bridge/ds4_host_load.h
 	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -c -o $@ $<
+		-Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_inkling_encoders.o: tests/test_inkling_encoders.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -c -o $@ $<
+		-Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/test_inkling_mtp.o: tests/test_inkling_mtp.c ds4.c ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -c -o $@ $<
-
-tests/test_inkling_mtp_shared.o: tests/test_inkling_mtp_shared.c ds4.c ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -c -o $@ $<
-
-tests/test_qwen4exp_primitives.o: tests/test_qwen4exp_primitives.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_hc_forward.o: tests/test_qwen4exp_hc_forward.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_ple_compute.o: tests/test_qwen4exp_ple_compute.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_moe_forward.o \
+    tests/test_qwen4exp_gdn_forward.o tests/test_qwen_vision_model.o tests/test_qwen4exp_verify.o \
+    tests/test_qwen4exp_draft.o: %.o: %.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_qwen4exp_ple_forward.o: tests/test_qwen4exp_ple_forward.c ds4.c ds4.h ds4_gpu.h ds4_ple.h cuda/qwen38_ple.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_moe.o: tests/test_qwen4exp_moe.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_moe_forward.o: tests/test_qwen4exp_moe_forward.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_gdn.o: tests/test_qwen4exp_gdn.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_gdn_forward.o: tests/test_qwen4exp_gdn_forward.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_qwen4exp_qsa.o: tests/test_qwen4exp_qsa.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -I$(CUDA_HOME)/include -c -o $@ $<
+	$(CC) $(CFLAGS) -fno-fast-math -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_qwen4exp_qsa_forward.o: tests/test_qwen4exp_qsa_forward.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
+	$(CC) $(CFLAGS) -fno-fast-math -Wno-unused-function -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_solar_forward.o: tests/test_solar_forward.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
-tests/test_solar_session.o: tests/test_solar_session.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+tests/test_solar_session.o tests/test_qwen4exp_batch.o tests/test_glm53_session.o: %.o: %.c ds4.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 rax.o: rax.c rax.h rax_malloc.h
-	$(CC) $(CFLAGS) -c -o $@ rax.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ rax.c
 
 linenoise.o: linenoise.c linenoise.h
-	$(CC) $(CFLAGS) -c -o $@ linenoise.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ linenoise.c
 
 ds4_cpu.o: ds4.c $(IQUEST_NATIVE_INCS) ds4_naive_bind.inc ds4_naive_plan.h ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h
-	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4.c
+	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4.c
 
 # Native checkpoint changes must reach incremental production/test builds.
 ds4.o ds4_cuda_test_hooks.o: ds4_ds41_kvreuse.inc
@@ -1044,34 +1001,34 @@ test-snapshot-backing: tests/test_snapshot_backing
 	./tests/test_snapshot_backing
 
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h linenoise.h
-	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_cli.c
+	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4_cli.c
 
 ds4_server_cpu.o: ds4_server.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h rax.h Makefile VERSION
-	$(CC) $(CFLAGS) -DDS4_NO_GPU -DDS4_BUILD_VERSION='"$(DS4_BUILD_VERSION)"' -c -o $@ ds4_server.c
+	$(CC) $(CFLAGS) -DDS4_NO_GPU -DDS4_BUILD_VERSION='"$(DS4_BUILD_VERSION)"' $(DEPFLAGS) -c -o $@ ds4_server.c
 
 ds4_bench_cpu.o: ds4_bench.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
-	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_bench.c
+	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4_bench.c
 
 ds4_eval_cpu.o: ds4_eval.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h
-	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_eval.c
+	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4_eval.c
 
 ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_kvstore.h ds4_web.h linenoise.h
-	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_agent.c
+	$(CC) $(CFLAGS) -DDS4_NO_GPU $(DEPFLAGS) -c -o $@ ds4_agent.c
 
 ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc ds4_iquest_stub.inc $(METAL_SRCS)
-	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
+	$(CC) $(OBJCFLAGS) $(DEPFLAGS) -c -o $@ ds4_metal.m
 
 # -lineinfo adds 41 MB of PTX text and line tables to this TU's cubin (61
 # MB, 20 MB without; identical SASS); loading it costs 143 MiB of host
 # memory against 62. CUDA_LINEINFO=-lineinfo restores it for profiling.
 CUDA_LINEINFO ?=
 ds4_cuda.o ds4_cuda_range_test.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_ds41_gpu.cuh ds41_vq_fmt.h cuda/ds41_primitives.cuh cuda/ds41_vq_row.cuh cuda/ds41_vq_probe.cuh cuda/ds41_vq_decode.cuh cuda/ds41_vq_group.cuh cuda/ds41_vq_persist.cuh cuda/ds41_vq_launch.cuh cuda/ds41_vq_prefill.cuh cuda/ds41_vq_prefill_fused.cuh cuda/ds41_vq_prefill_mma.cuh cuda/ds41_fp8blk.cuh cuda/ds41_engram.cuh cuda/ds41_q4k.cuh cuda/ds41_dense.cuh cuda/ds41_hc.cuh cuda/ds41_attn.cuh cuda/ds41_attn_mma.cuh cuda/ds41_indexer.cuh cuda/ds41_router.cuh cuda/ds41_draft.cuh cuda/ds41_graph.cuh cuda/ds41_sample.cuh cuda/ds41_vision.cuh ds41_kvfmt.h
-	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(CUDA_LINEINFO) $(if $(filter ds4_cuda_range_test.o,$@),-DDS4_TEST_HOOKS) -c -o $@ ds4_cuda.cu
+	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(CUDA_LINEINFO) $(if $(filter ds4_cuda_range_test.o,$@),-DDS4_TEST_HOOKS) $(DEPFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
 # heavy template instantiation - compile in its own TU and link in.
 cuda/mmq/ds4_ggml_stubs.o: cuda/mmq/ds4_ggml_stubs.cu cuda/mmq/ds4_ggml_stubs.h cuda/mmq/common.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 # -lineinfo adds 118 MB of PTX text and line tables to this TU's cubin
 # (159 MB, 41 MB without; identical SASS). The driver keeps about four
@@ -1079,28 +1036,28 @@ cuda/mmq/ds4_ggml_stubs.o: cuda/mmq/ds4_ggml_stubs.cu cuda/mmq/ds4_ggml_stubs.h 
 # first request. MMQ_LINEINFO=-lineinfo restores it for profiling.
 MMQ_LINEINFO ?=
 cuda/mmq/ds4_mmq.o: cuda/mmq/ds4_mmq.cu cuda/mmq/ds4_mmq.h cuda/mmq/ds4_mmq_d2r.cuh cuda/mmq/ds4_mmq_pipe.cuh cuda/mmq/mmq.cuh cuda/mmq/common.cuh cuda/mmq/quantize.cuh cuda/mmq/mmid.cuh cuda/mmq/mmvq.cuh cuda/mmq/vecdotq.cuh cuda/mmq/mma.cuh cuda/mmq/ds4_mimo2_swiglu.cuh cuda/mmq/ds4_glm_q2.h cuda/mmq/ds4_glm_shared.cuh
-	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(MMQ_LINEINFO) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(filter-out -lineinfo,$(NVCCFLAGS)) $(MMQ_LINEINFO) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 cuda/mmq/ds4_mmq_d2r.o: cuda/mmq/ds4_mmq_d2r.cu cuda/mmq/ds4_mmq_d2r.cuh cuda/mmq/mmq.cuh cuda/mmq/common.cuh cuda/mmq/vecdotq.cuh cuda/mmq/mma.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 cuda/mmq/quantize.o: cuda/mmq/quantize.cu cuda/mmq/quantize.cuh cuda/mmq/common.cuh cuda/mmq/mmq.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 cuda/mmq/mmid.o: cuda/mmq/mmid.cu cuda/mmq/mmid.cuh cuda/mmq/common.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 cuda/mmq/mmvq.o: cuda/mmq/mmvq.cu cuda/mmq/mmvq.cuh cuda/mmq/inkling_mmvq.cuh cuda/mmq/inkling_shared_tile.cuh cuda/mmq/inkling_q4.cuh cuda/mmq/inkling_q3.cuh cuda/mmq/common.cuh cuda/mmq/quantize.cuh cuda/mmq/vecdotq.cuh cuda/mmq/unary.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 # Shared aligned-artifact layout library: compiled into the engine (via
 # MMQ_OBJS) and linked into ds4_weight_server so both producers build
 # bit-identical repack artifacts.
 cuda/mmq/ds4_repack.o: cuda/mmq/ds4_repack.cu cuda/mmq/ds4_repack.h
-	$(NVCC) $(NVCCFLAGS) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 cuda/mmq/ds4_fattn.o: cuda/mmq/ds4_fattn.cu cuda/mmq/common.cuh cuda/mmq/mma.cuh cuda/mmq/ds4_mmq.h cuda/mmq/inkling_attention.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 tests/test_repack_premapped: tests/test_repack_premapped.cu cuda/mmq/ds4_repack.o
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1108,10 +1065,20 @@ tests/test_repack_premapped: tests/test_repack_premapped.cu cuda/mmq/ds4_repack.
 test-repack-premapped: tests/test_repack_premapped
 	./tests/test_repack_premapped
 
-tests/cuda_long_context_smoke: tests/cuda_long_context_smoke.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/cuda_tokentile_ldmatrix: tests/cuda_tokentile_ldmatrix.o $(DS4_CUDA_CORE_OBJS)
+tests/cuda_long_context_smoke tests/cuda_tokentile_ldmatrix tests/test_solar_kda \
+    tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_solar_gates tests/test_solar_kv \
+    tests/test_solar_fattn tests/test_mmid_fast tests/test_model_family_kernels \
+    tests/test_ling3vl_matmul tests/test_ling3vl_q5pair tests/test_ling3vl_moefuse \
+    tests/test_inkling_kernels tests/test_inkling_moe tests/test_inkling_attn_prep \
+    tests/test_inkling_attention tests/test_inkling_norm tests/test_inkling_linear \
+    tests/test_inkling_q8_batch tests/test_inkling_media tests/test_qwen4exp_primitives \
+    tests/test_qwen_vision_rope tests/test_qwen_vision_norm tests/test_qwen_vision_attention \
+    tests/test_qwen4exp_ple_compute tests/test_qwen4exp_moe tests/test_qwen4exp_gdn \
+    tests/test_qwen4exp_qsa tests/test_glm53_mixed tests/test_glm_vq_cache tests/test_glm_vq_q4 \
+    tests/test_glm_vq_kv tests/test_glm_vq_sparse tests/test_glm_vq_owner tests/test_glm53_compact \
+    tests/test_glm53_weight tests/test_glm53_dsa tests/test_k2_lifecycle tests/test_glm53_session \
+    tests/test_glm53_long tests/test_glm53_mtp_actual tests/test_glm53_mtp_long \
+    tests/bench_glm53_stream: %: %.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-cuda-tokentile-ldmatrix: tests/cuda_tokentile_ldmatrix
@@ -1119,48 +1086,28 @@ test-cuda-tokentile-ldmatrix: tests/cuda_tokentile_ldmatrix
 	./tests/cuda_tokentile_ldmatrix 1
 	./tests/cuda_tokentile_ldmatrix 2
 
-tests/test_solar_kda: tests/test_solar_kda.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-solar-kda: tests/test_solar_kda
 	./tests/test_solar_kda
-
-tests/test_solar_kda_prefill: tests/test_solar_kda_prefill.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-solar-kda-prefill: tests/test_solar_kda_prefill
 	./tests/test_solar_kda_prefill
 
-tests/test_solar_kda_chunk.o: tests/test_solar_kda_chunk.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_solar_kda_chunk: tests/test_solar_kda_chunk.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-solar-kda-chunk: tests/test_solar_kda_chunk
 	./tests/test_solar_kda_chunk
 
-tests/test_solar_gates: tests/test_solar_gates.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-solar-gates: tests/test_solar_gates
 	./tests/test_solar_gates
-
-tests/test_solar_kv: tests/test_solar_kv.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-solar-kv: tests/test_solar_kv
 	./tests/test_solar_kv
 
 .PHONY: test-solar-fattn
-tests/test_solar_fattn: tests/test_solar_fattn.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-solar-fattn: tests/test_solar_fattn
 	./tests/test_solar_fattn
 
 cuda/mmq/test/test_mmq_parity.o: cuda/mmq/test/test_mmq_parity.cu cuda/mmq/ds4_mmq.h
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 tests/test_mmq_parity: cuda/mmq/test/test_mmq_parity.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1189,7 +1136,7 @@ test-family-cont-spec-finish:
 # own reference code, reached through the DS4_TEST_HOOKS entry points, so the
 # test links ds4.c built with that switch instead of the normal object.
 ds4_cuda_test_hooks.o: ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I$(CUDA_HOME)/include -c -o $@ ds4.c
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ ds4.c
 
 tests/test_qwen35_cuda: tests/test_qwen35_cuda.cu ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -DDS4_TEST_HOOKS -I. $(MMQ_INCLUDES) -o $@ $^ $(CUDA_LDLIBS)
@@ -1418,7 +1365,7 @@ test-qwen35-rust-host: ds4 ds4-c
 # docs/BONSAI.md); the CPU run needs no card but pays the reference's ~3 s per
 # forward, so it runs fewer steps and skips the long-prompt pass.
 tests/test_qwen35_session.o: tests/test_qwen35_session.c ds4.h
-	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I. -I$(CUDA_HOME)/include -c -o $@ $<
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_qwen35_session: tests/test_qwen35_session.o ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1434,16 +1381,10 @@ test-qwen35-session-multichunk: tests/test_qwen35_session
 	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_PREFILL_CHUNK=2 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS="$${DS4_TEST_STEPS:-$(DS4_BONSAI_STEPS)}" ./tests/test_qwen35_session
 
 tests/test_mmid_fast.o: tests/test_mmid_fast.cu cuda/mmq/mmid.cuh
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
-
-tests/test_mmid_fast: tests/test_mmid_fast.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 test-mmid-fast: tests/test_mmid_fast
 	./tests/test_mmid_fast
-
-tests/test_model_family_kernels: tests/test_model_family_kernels.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-model-family-kernels: tests/test_model_family_kernels
 	./tests/test_model_family_kernels
@@ -1462,39 +1403,21 @@ tests/naive_state: tests/naive_state.c ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIV
 test-naive-state: tests/naive_state
 	./tests/naive_state
 
-tests/naive_dense.o: tests/naive_dense.c ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
-	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+tests/naive_dense.o tests/naive_trial_live.o tests/naive_draft_graph.o: %.o: %.c ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/naive_dense: tests/naive_dense.o $(DS4_CUDA_SUPPORT_OBJS)
+tests/naive_dense tests/naive_graph tests/naive_banks tests/naive_trial tests/naive_trial_live \
+    tests/test_inkling_forward tests/test_inkling_session tests/test_inkling_payload \
+    tests/test_inkling_encoders tests/test_inkling_mtp tests/test_inkling_mtp_shared \
+    tests/test_glm53_bounds: %: %.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-naive-dense
 test-naive-dense: tests/naive_dense
 	./tests/naive_dense
 
-tests/naive_graph.o: tests/naive_graph.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
-	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/naive_graph: tests/naive_graph.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/naive_banks.o: tests/naive_banks.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
-	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/naive_banks: tests/naive_banks.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/naive_trial.o: tests/naive_trial.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
-	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/naive_trial: tests/naive_trial.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/naive_trial_live.o: tests/naive_trial_live.c ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
-	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/naive_trial_live: tests/naive_trial_live.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+tests/naive_graph.o tests/naive_banks.o tests/naive_trial.o: %.o: %.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 .PHONY: test-naive-trial
 test-naive-trial: tests/naive_trial
@@ -1533,9 +1456,6 @@ tests/naive_draft_ops: tests/naive_draft_ops.cu cuda/naive_primitives.cuh cuda/n
 test-naive-draft-ops: tests/naive_draft_ops
 	./tests/naive_draft_ops
 
-tests/naive_draft_graph.o: tests/naive_draft_graph.c ds4.c $(NAIVE_NATIVE_INCS) $(IQUEST_NATIVE_INCS)
-	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
 tests/naive_draft_graph: tests/naive_draft_graph.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ -Xlinker --gc-sections $(CUDA_LDLIBS)
 
@@ -1556,13 +1476,8 @@ test-naive-primitives: tests/naive_primitives
 tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
-tests/naive_softmax: tests/naive_softmax.cu cuda/naive_primitives.cuh ds4_naive_plan.h
-	$(NVCC) $(NVCCFLAGS) -o $@ $<
-
-tests/naive_index_profile: tests/naive_index_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
-	$(NVCC) $(NVCCFLAGS) -o $@ $<
-
-tests/naive_index_u2_profile: tests/naive_index_u2_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+tests/naive_softmax tests/naive_index_profile tests/naive_index_u2_profile \
+    tests/naive_router_profile tests/naive_sum_profile: %: %.cu cuda/naive_primitives.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 .PHONY: test-naive-index-u2
@@ -1599,12 +1514,6 @@ test-naive-index-u2: tests/naive_index_u2_profile
 	    ./tests/naive_index_u2_profile $$args; \
 	done
 
-tests/naive_router_profile: tests/naive_router_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
-	$(NVCC) $(NVCCFLAGS) -o $@ $<
-
-tests/naive_sum_profile: tests/naive_sum_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
-	$(NVCC) $(NVCCFLAGS) -o $@ $<
-
 .PHONY: test-naive-sum
 test-naive-sum: tests/naive_sum_profile
 	@set -e; \
@@ -1632,87 +1541,58 @@ test-ling3vl-primitives: tests/test_ling3vl_primitives
 	./tests/test_ling3vl_primitives
 
 tests/test_ling3vl_matmul.o: tests/test_ling3vl_matmul.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_ling3vl_matmul.c
-
-tests/test_ling3vl_matmul: tests/test_ling3vl_matmul.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ tests/test_ling3vl_matmul.c
 
 .PHONY: test-ling3vl-matmul
 test-ling3vl-matmul: tests/test_ling3vl_matmul
 	./tests/test_ling3vl_matmul
 
 tests/test_ling3vl_q5pair.o: tests/test_ling3vl_q5pair.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_ling3vl_q5pair.c
-
-tests/test_ling3vl_q5pair: tests/test_ling3vl_q5pair.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ tests/test_ling3vl_q5pair.c
 
 .PHONY: test-ling3vl-q5pair
 test-ling3vl-q5pair: tests/test_ling3vl_q5pair
 	./tests/test_ling3vl_q5pair
 
 tests/test_ling3vl_moefuse.o: tests/test_ling3vl_moefuse.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_ling3vl_moefuse.c
-
-tests/test_ling3vl_moefuse: tests/test_ling3vl_moefuse.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ tests/test_ling3vl_moefuse.c
 
 .PHONY: test-ling3vl-moefuse
 test-ling3vl-moefuse: tests/test_ling3vl_moefuse
 	./tests/test_ling3vl_moefuse
 
-tests/test_ling3vl_mla: tests/test_ling3vl_mla.cu $(DS4_CUDA_CORE_OBJS)
+tests/test_ling3vl_mla tests/test_ling3vl_mla_expand tests/test_glm53_pair \
+    tests/test_glm53_upload_async: %: %.cu $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-ling3vl-mla
 test-ling3vl-mla: tests/test_ling3vl_mla
 	./tests/test_ling3vl_mla
 
-tests/test_ling3vl_mla_expand: tests/test_ling3vl_mla_expand.cu $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
-
 .PHONY: test-ling3vl-mla-expand
 test-ling3vl-mla-expand: tests/test_ling3vl_mla_expand
 	./tests/test_ling3vl_mla_expand
 
-tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-inkling-kernels: tests/test_inkling_kernels
 	./tests/test_inkling_kernels
-
-tests/test_inkling_moe: tests/test_inkling_moe.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-inkling-moe: tests/test_inkling_moe
 	./tests/test_inkling_moe
 
-tests/test_inkling_attn_prep: tests/test_inkling_attn_prep.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-inkling-attn-prep: tests/test_inkling_attn_prep
 	./tests/test_inkling_attn_prep
-
-tests/test_inkling_attention: tests/test_inkling_attention.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-inkling-attention: tests/test_inkling_attention
 	./tests/test_inkling_attention
 
-tests/test_inkling_norm: tests/test_inkling_norm.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-inkling-norm: tests/test_inkling_norm
 	./tests/test_inkling_norm
-
-tests/test_inkling_linear: tests/test_inkling_linear.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-inkling-linear: tests/test_inkling_linear
 	./tests/test_inkling_linear
 
 cuda/mmq/test/test_inkling_batch.o: cuda/mmq/test/test_inkling_batch.cu cuda/mmq/ds4_mmq.h cuda/mmq/mmvq.cuh ds4_gpu.h
-	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) $(DEPFLAGS) -c -o $@ $<
 
 tests/test_inkling_batch: cuda/mmq/test/test_inkling_batch.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1720,75 +1600,31 @@ tests/test_inkling_batch: cuda/mmq/test/test_inkling_batch.o $(DS4_CUDA_CORE_OBJ
 test-inkling-batch: tests/test_inkling_batch
 	./tests/test_inkling_batch
 
-tests/test_inkling_q8_batch: tests/test_inkling_q8_batch.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-inkling-q8-batch: tests/test_inkling_q8_batch
 	./tests/test_inkling_q8_batch
-
-tests/test_inkling_media: tests/test_inkling_media.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-inkling-media: tests/test_inkling_media
 	./tests/test_inkling_media
 
-tests/test_inkling_forward: tests/test_inkling_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_inkling_session: tests/test_inkling_session.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
 tests/test_inkling_payload.o: tests/test_inkling_payload.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -c -o $@ $<
-
-tests/test_inkling_payload: tests/test_inkling_payload.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_inkling_encoders: tests/test_inkling_encoders.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_inkling_mtp: tests/test_inkling_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_inkling_mtp_shared: tests/test_inkling_mtp_shared.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_qwen4exp_primitives: tests/test_qwen4exp_primitives.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_qwen_vision_attention.o: tests/test_qwen_vision_attention.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
-
-tests/test_qwen_vision_norm.o: tests/test_qwen_vision_norm.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
-
-tests/test_qwen_vision_rope.o: tests/test_qwen_vision_rope.c ds4_gpu.h
-	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
-
-tests/test_qwen_vision_rope: tests/test_qwen_vision_rope.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+		-Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<
 
 test-qwen-vision-rope: tests/test_qwen_vision_rope
 	./tests/test_qwen_vision_rope
 
-tests/test_qwen_vision_norm: tests/test_qwen_vision_norm.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-qwen-vision-norm: tests/test_qwen_vision_norm
 	./tests/test_qwen_vision_norm
-
-tests/test_qwen_vision_attention: tests/test_qwen_vision_attention.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-qwen-vision-attention: tests/test_qwen_vision_attention
 	./tests/test_qwen_vision_attention
 
 # Full numeric gate. A resident owner may supply weights through the IPC env.
-tests/test_qwen_vision_model.o: tests/test_qwen_vision_model.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
-tests/test_qwen_vision_model: tests/test_qwen_vision_model.o $(DS4_CUDA_SUPPORT_OBJS)
+tests/test_qwen_vision_model tests/test_qwen_vision_host tests/test_qwen4exp_hc_forward \
+    tests/test_qwen4exp_ple_forward tests/test_qwen4exp_moe_forward tests/test_qwen4exp_draft \
+    tests/test_qwen4exp_verify tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa_forward \
+    tests/test_solar_forward tests/test_glm53_vision: %: %.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-qwen-vision-model: tests/test_qwen_vision_model
@@ -1797,10 +1633,7 @@ test-qwen-vision-model: tests/test_qwen_vision_model
 
 # Rust-tokenized full-model gate; no retained C tokenizer is invoked.
 tests/test_qwen_vision_host.o: tests/test_qwen_vision_host.c ds4.c ds4.h ds4_gpu.h native/bridge/ds4_host_load.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen_vision_host: tests/test_qwen_vision_host.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 test-qwen-vision-host: tests/test_qwen_vision_host
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || (echo "Set DS4_QWEN4EXP_MODEL to the Qwen/Darwin GGUF"; exit 1)
@@ -1810,20 +1643,11 @@ test-qwen-vision-host: tests/test_qwen_vision_host
 test-qwen4exp-primitives: tests/test_qwen4exp_primitives
 	./tests/test_qwen4exp_primitives
 
-tests/test_qwen4exp_hc_forward: tests/test_qwen4exp_hc_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-qwen4exp-hc-forward: tests/test_qwen4exp_hc_forward
 	./tests/test_qwen4exp_hc_forward
 
-tests/test_qwen4exp_ple_compute: tests/test_qwen4exp_ple_compute.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-qwen4exp-ple-compute: tests/test_qwen4exp_ple_compute
 	./tests/test_qwen4exp_ple_compute
-
-tests/test_qwen4exp_ple_forward: tests/test_qwen4exp_ple_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-qwen4exp-ple-forward: tests/test_qwen4exp_ple_forward
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || \
@@ -1835,31 +1659,13 @@ test-qwen4exp-ple-forward: tests/test_qwen4exp_ple_forward
 	./tests/test_qwen4exp_ple_forward "$(DS4_QWEN4EXP_MODEL)" \
 		"$(DS4_QWEN4EXP_ROOT)" "$(DS4_QWEN4EXP_BF16_MODEL)"
 
-tests/test_qwen4exp_moe: tests/test_qwen4exp_moe.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-qwen4exp-moe: tests/test_qwen4exp_moe
 	./tests/test_qwen4exp_moe
-
-tests/test_qwen4exp_moe_forward: tests/test_qwen4exp_moe_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_qwen4exp_verify.o: tests/test_qwen4exp_verify.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_draft.o: tests/test_qwen4exp_draft.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_qwen4exp_draft: tests/test_qwen4exp_draft.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-qwen4exp-draft
 test-qwen4exp-draft: tests/test_qwen4exp_draft
 	./tests/test_qwen4exp_draft
 	DS4_QWEN_MTP_CPU_ARGMAX=1 ./tests/test_qwen4exp_draft
-
-tests/test_qwen4exp_verify: tests/test_qwen4exp_verify.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-qwen4exp-verify: tests/test_qwen4exp_verify
 	./tests/test_qwen4exp_verify "$(DS4_QWEN4EXP_MODEL)"
@@ -1869,36 +1675,21 @@ test-qwen4exp-moe-forward: tests/test_qwen4exp_moe_forward
 		{ echo "set DS4_QWEN4EXP_MODEL to the first SSD-PLE GGUF shard" >&2; exit 2; }
 	./tests/test_qwen4exp_moe_forward "$(DS4_QWEN4EXP_MODEL)"
 
-tests/test_qwen4exp_gdn: tests/test_qwen4exp_gdn.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-qwen4exp-gdn: tests/test_qwen4exp_gdn
 	./tests/test_qwen4exp_gdn
-
-tests/test_qwen4exp_gdn_forward: tests/test_qwen4exp_gdn_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-qwen4exp-gdn-forward: tests/test_qwen4exp_gdn_forward
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || \
 		{ echo "set DS4_QWEN4EXP_MODEL to the first SSD-PLE GGUF shard" >&2; exit 2; }
 	./tests/test_qwen4exp_gdn_forward "$(DS4_QWEN4EXP_MODEL)"
 
-tests/test_qwen4exp_qsa: tests/test_qwen4exp_qsa.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-qwen4exp-qsa: tests/test_qwen4exp_qsa
 	./tests/test_qwen4exp_qsa
-
-tests/test_qwen4exp_qsa_forward: tests/test_qwen4exp_qsa_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-qwen4exp-qsa-forward: tests/test_qwen4exp_qsa_forward
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || \
 		{ echo "set DS4_QWEN4EXP_MODEL to the first SSD-PLE GGUF shard" >&2; exit 2; }
 	./tests/test_qwen4exp_qsa_forward "$(DS4_QWEN4EXP_MODEL)"
-
-tests/test_qwen4exp_batch.o: tests/test_qwen4exp_batch.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
 tests/test_qwen4exp_batch: tests/test_qwen4exp_batch.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1911,8 +1702,6 @@ test-qwen4exp-batch: tests/test_qwen4exp_batch
 # The test includes ds4.c directly for its static graph seams, so it must
 # not also link ds4.o (duplicate externs); ds4_cuda.o resolves against the
 # test object's own copy.
-tests/test_solar_forward: tests/test_solar_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-solar-forward: tests/test_solar_forward
 	@test -n "$(DS4_SOLAR_MODEL)" || \
@@ -1951,22 +1740,16 @@ endif
 ifneq ($(UNAME_S),Darwin)
 # EXAONE harnesses include ds4.c to reach the reference and graph builders, so
 # link the external distributed/CUDA implementation without a second ds4.o.
-tests/test_exaone_ref.o: tests/test_exaone_ref.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
+tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_forward.o: %.o: %.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
-tests/test_exaone_ref: tests/test_exaone_ref.o $(DS4_CUDA_SUPPORT_OBJS)
+tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_forward: %: %.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-exaone-ref: tests/test_exaone_ref
 	@test -n "$(DS4_EXAONE_MODEL)" || \
 		{ echo "set DS4_EXAONE_MODEL to the EXAONE GGUF" >&2; exit 2; }
 	./tests/test_exaone_ref "$(DS4_EXAONE_MODEL)" 0
-
-tests/test_exaone_kernels.o: tests/test_exaone_kernels.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_exaone_kernels: tests/test_exaone_kernels.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-exaone-kernels: tests/test_exaone_kernels
 	./tests/test_exaone_kernels $(DS4_EXAONE_MODEL)
@@ -1981,37 +1764,26 @@ test-eos-sampling: tests/test_eos_sampling
 	./tests/test_eos_sampling
 
 tests/test_dots3_mtp.o: tests/test_dots3_mtp.c ds4.c ds4_dots3_mtp.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/test_dots3_mtp: tests/test_dots3_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
+tests/test_dots3_mtp tests/test_dots3_batch tests/test_dots3_checkpoint \
+    tests/test_exaone_checkpoint tests/test_exaone_partial: %: %.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
 tests/test_dots3_batch.o: tests/test_dots3_batch.c ds4.c ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_dots3_batch: tests/test_dots3_batch.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_dots3_checkpoint.o: tests/test_dots3_checkpoint.c ds4.c ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_dots3_checkpoint: tests/test_dots3_checkpoint.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_exaone_checkpoint.o: tests/test_exaone_checkpoint.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_exaone_checkpoint: tests/test_exaone_checkpoint.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_exaone_partial.o: tests/test_exaone_partial.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_exaone_partial: tests/test_exaone_partial.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_exaone_batch.o: tests/test_exaone_batch.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_exaone_batch: tests/test_exaone_batch.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -2021,15 +1793,9 @@ test-exaone-batch: tests/test_exaone_batch
 		{ echo "set DS4_EXAONE_MODEL to the first EXAONE GGUF shard" >&2; exit 2; }
 	./tests/test_exaone_batch "$(DS4_EXAONE_MODEL)"
 
-tests/test_exaone_forward.o: tests/test_exaone_forward.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_exaone_forward: tests/test_exaone_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 tests/test_exaone_tokenizer.o: tests/test_exaone_tokenizer.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -c -o $@ $<
+		-Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_exaone_tokenizer: tests/test_exaone_tokenizer.o
 	$(CC) $(CFLAGS) -O0 -o $@ $^ -Wl,--gc-sections $(LDLIBS)
@@ -2039,97 +1805,55 @@ tests/test_split_gguf: tests/test_split_gguf.c ds4.c ds4.h native/bridge/ds4_hos
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
-tests/test_inkling_loader: tests/test_inkling_loader.c ds4.c ds4.h ds4_gpu.h
+tests/test_inkling_loader tests/test_solar_loader tests/test_glm53_loader \
+    tests/test_glm53_vision_loader tests/test_glm53_image: %: %.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
-tests/test_step37_loader: tests/test_step37_loader.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
-tests/test_step37_state: tests/test_step37_state.c ds4.c ds4.h ds4_gpu.h
+tests/test_step37_loader tests/test_step37_state tests/test_glm53_quant: %: %.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 ifeq ($(UNAME_S),Linux)
 tests/test_step37_media.o: tests/test_step37_media.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/test_step37_media: tests/test_step37_media.o $(DS4_CUDA_SUPPORT_OBJS)
+tests/test_step37_media tests/test_ling3vl_media tests/test_step37_checkpoint \
+    tests/test_cuda_span_lease: %: %.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
 tests/test_ling3vl_media.o: tests/test_ling3vl_media.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_ling3vl_media: tests/test_ling3vl_media.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 .PHONY: test-ling3vl-media
 test-ling3vl-media: tests/test_ling3vl_media
 	./tests/test_ling3vl_media
 
 tests/test_ling3vl_vision.o: tests/test_ling3vl_vision.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/test_ling3vl_vision: tests/test_ling3vl_vision.o $(DS4_CUDA_SUPPORT_OBJS)
+tests/test_ling3vl_vision tests/test_step37_vision tests/test_step37_forward \
+    tests/test_step37_session tests/test_step37_mtp tests/test_step37_spec tests/test_step37_cont: %: %.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
-tests/test_step37_vision.o: tests/test_step37_vision.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_step37_vision: tests/test_step37_vision.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_step37_forward.o: tests/test_step37_forward.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_step37_forward: tests/test_step37_forward.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+tests/test_step37_vision.o tests/test_step37_forward.o tests/test_step37_session.o \
+    tests/test_step37_mtp.o tests/test_step37_spec.o tests/test_step37_cont.o: %.o: %.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_step37_norm.o: tests/test_step37_norm.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_step37_norm: tests/test_step37_norm.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
-tests/test_step37_session.o: tests/test_step37_session.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_step37_session: tests/test_step37_session.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_step37_mtp.o: tests/test_step37_mtp.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_step37_mtp: tests/test_step37_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_step37_spec.o: tests/test_step37_spec.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_step37_spec: tests/test_step37_spec.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_step37_cont.o: tests/test_step37_cont.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_step37_cont: tests/test_step37_cont.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 tests/test_step37_checkpoint.o: tests/test_step37_checkpoint.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_step37_checkpoint: tests/test_step37_checkpoint.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_cuda_span_lease.o: tests/test_cuda_span_lease.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h ds4_mem_gov.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_cuda_span_lease: tests/test_cuda_span_lease.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_cuda_artifact_scope.o: tests/test_cuda_artifact_scope.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_cuda_artifact_scope: tests/test_cuda_artifact_scope.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -2139,36 +1863,21 @@ test-cuda-artifact-scope: tests/test_cuda_artifact_scope
 	python3 tests/test_cuda_artifact_scope.py
 endif
 
-tests/test_solar_loader: tests/test_solar_loader.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 test-solar-loader: tests/test_solar_loader
 	@test -n "$(DS4_SOLAR_MODEL)" || \
 		{ echo "set DS4_SOLAR_MODEL to the first Solar GGUF shard" >&2; exit 2; }
 	./tests/test_solar_loader "$(DS4_SOLAR_MODEL)"
-
-tests/test_glm53_loader: tests/test_glm53_loader.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 test-glm53-loader: tests/test_glm53_loader
 	@test -n "$(DS4_GLM53_MODEL)" || \
 		{ echo "set DS4_GLM53_MODEL to GLM-5.3-Flash-Q2.gguf" >&2; exit 2; }
 	./tests/test_glm53_loader "$(DS4_GLM53_MODEL)"
 
-tests/test_glm53_quant: tests/test_glm53_quant.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 test-glm53-quant: tests/test_glm53_quant
 	./tests/test_glm53_quant
 
 tests/test_glm53_mixed.o: tests/test_glm53_mixed.c ds4_gpu.h cuda/mmq/ggml-common.h
-	$(CC) $(CFLAGS) -std=c11 -I. -c -o $@ $<
-
-tests/test_glm53_mixed: tests/test_glm53_mixed.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -std=c11 -I. $(DEPFLAGS) -c -o $@ $<
 
 test-glm53-mixed: tests/test_glm53_mixed
 	./tests/test_glm53_mixed
@@ -2246,28 +1955,13 @@ tests/glm_vq_state: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/glm_vq_state" $@
 
 tests/test_glm_vq_cache.o: tests/test_glm_vq_cache.c ds4_glmvq.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
-tests/test_glm_vq_cache: tests/test_glm_vq_cache.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_glm_vq_q4.o: tests/test_glm_vq_q4.c ds4.h ds4_glmvq.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_glm_vq_q4: tests/test_glm_vq_q4.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_glm_vq_kv.o: tests/test_glm_vq_kv.c ds4.h ds4_glmvq.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_glm_vq_kv: tests/test_glm_vq_kv.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+tests/test_glm_vq_q4.o tests/test_glm_vq_kv.o tests/test_glm_vq_owner.o: %.o: %.c ds4.h ds4_glmvq.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_glm_vq_sparse.o: tests/test_glm_vq_sparse.c ds4.h ds4_glmvq.h ds4_gpu.h ds4_glm53_compact.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_glm_vq_sparse: tests/test_glm_vq_sparse.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/libglm_vq_index.so: tests/test_glm_vq_index.cu cuda/glm_vq_index.cuh cuda/glm_vq_linear.cuh \
 	cuda/glm_vq_ops.cuh cuda/glm_vq.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh ds4_glm53_compact.h
@@ -2280,12 +1974,6 @@ test-glm-vq-index: tests/libglm_vq_index.so
 .PHONY: test-glm-vq-cache
 test-glm-vq-cache: tests/test_glm_vq_cache
 	./tests/test_glm_vq_cache
-
-tests/test_glm_vq_owner.o: tests/test_glm_vq_owner.c ds4.h ds4_glmvq.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_glm_vq_owner: tests/test_glm_vq_owner.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 .PHONY: test-glm-vq-owner
 test-glm-vq-owner: tests/test_glm_vq_owner
@@ -2308,7 +1996,7 @@ test-glm-vq-bind: tests/test_glm_vq_bind
 	$(GLMVQ_PYTHON) tests/test_glm_vq_bind.py --binary tests/test_glm_vq_bind --model "$(GLMVQ_MODEL)"
 
 tests/test_glm_vq_quote.o: tests/test_glm_vq_quote.c ds4.c
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -Wno-unused-function -I. -c -o $@ $<
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -Wno-unused-function -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_glm_vq_quote: tests/test_glm_vq_quote.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ -Xlinker --gc-sections $(CUDA_LDLIBS)
@@ -2455,20 +2143,8 @@ tests/test_glm_vq_res: tests/test_glm_vq_res.cu cuda/glm_vq.cuh cuda/glm_vq_line
 test-glm-vq-res: tests/test_glm_vq_res
 	./tests/test_glm_vq_res
 
-tests/test_glm53_pair: tests/test_glm53_pair.cu $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
-
 test-glm53-pair: tests/test_glm53_pair
 	./tests/test_glm53_pair
-
-tests/test_glm53_dense_gemm: tests/test_glm53_dense_gemm.cu cuda/glm53_dense_attn.cuh ds4_glm53_attn.h
-	$(NVCC) $(NVCCFLAGS) -DTEST_DENSE_GEMM -I. -o $@ $< $(CUDA_LDLIBS)
-
-test-glm53-dense-gemm: tests/test_glm53_dense_gemm
-	./tests/test_glm53_dense_gemm
-
-tests/test_glm53_upload_async: tests/test_glm53_upload_async.cu $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
 
 test-glm53-upload-async: tests/test_glm53_upload_async
 	./tests/test_glm53_upload_async
@@ -2501,7 +2177,7 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \
 tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
 	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc cuda/glm53_dense_attn.cuh \
+ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc \
 	cuda/glm53_vision_norm.cuh ds4_glm53_attn.h cuda/glm53_low_attn.cuh cuda/glm53_pool_score.cuh
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
@@ -2529,10 +2205,7 @@ tests/test_glm53_cache: tests/test_glm53_cache.c ds4_glm53_cache.h
 	$(CC) $(CFLAGS) -Werror -o $@ $<
 
 tests/test_glm53_compact.o: tests/test_glm53_compact.c ds4_glm53_compact.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_glm53_compact: tests/test_glm53_compact.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 .PHONY: test-glm53-cache test-glm53-compact
 test-glm53-cache: tests/test_glm53_cache
@@ -2572,10 +2245,7 @@ test-glm53-compact: tests/test_glm53_compact
 	./tests/test_glm53_compact
 
 tests/test_glm53_weight.o: tests/test_glm53_weight.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_glm53_weight: tests/test_glm53_weight.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 test-glm53-weight: tests/test_glm53_weight
 	./tests/test_glm53_weight
@@ -2588,7 +2258,7 @@ tests/test_glm53_payload: tests/test_glm53_payload.c ds4.c ds4.h ds4_glm53_paylo
 test-glm53-payload: tests/test_glm53_payload
 	./tests/test_glm53_payload
 
-tests/test_glm53_stop: tests/test_glm53_stop.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
+tests/test_glm53_stop tests/test_ling31_stop tests/test_glm53_tokens: %: %.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
@@ -2596,17 +2266,9 @@ tests/test_glm53_stop: tests/test_glm53_stop.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
 test-glm53-stop: tests/test_glm53_stop
 	./tests/test_glm53_stop
 
-tests/test_ling31_stop: tests/test_ling31_stop.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 .PHONY: test-ling31-stop
 test-ling31-stop: tests/test_ling31_stop
 	./tests/test_ling31_stop
-
-tests/test_glm53_tokens: tests/test_glm53_tokens.c ds4.c ds4.h $(GLM53_NATIVE_DEPS)
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 tests/test_glm53_mtp: tests/test_glm53_mtp.c ds4_glm53_mtp.inc ds4_gpu.h
 	$(CC) $(CFLAGS) -Werror -Wno-unused-function -I. -o $@ $< -lm
@@ -2657,38 +2319,21 @@ test-glm53-attention-cuda: tests/test_glm53_attention_cuda
 .PHONY: test-glm53-quant test-glm53-mixed test-glm53-weight \
 	test-glm53-payload test-glm53-mtp test-glm53-banks test-glm53-map test-glm53-vision-norm
 
-tests/test_glm53_vision_loader: tests/test_glm53_vision_loader.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 test-glm53-vision-loader: tests/test_glm53_vision_loader
 	@test -n "$(DS4_GLM53_VISION_MODEL)" || \
 		{ echo "set DS4_GLM53_VISION_MODEL to GLM-5.3-Flash-Vision-Encoder.gguf" >&2; exit 2; }
 	./tests/test_glm53_vision_loader "$(DS4_GLM53_VISION_MODEL)"
 
-tests/test_glm53_image: tests/test_glm53_image.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 test-glm53-image: tests/test_glm53_image
 	./tests/test_glm53_image
 
 tests/test_glm53_vision.o: tests/test_glm53_vision.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_glm53_vision: tests/test_glm53_vision.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 test-glm53-vision: tests/test_glm53_vision
 	@test -n "$(DS4_GLM53_VISION_MODEL)" || \
 		{ echo "set DS4_GLM53_VISION_MODEL to GLM-5.3-Flash-Vision-Encoder.gguf" >&2; exit 2; }
 	./tests/test_glm53_vision "$(DS4_GLM53_VISION_MODEL)"
-
-tests/test_glm53_dsa.o: tests/test_glm53_dsa.c ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_glm53_dsa: tests/test_glm53_dsa.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-glm53-dsa: tests/test_glm53_dsa
 	./tests/test_glm53_dsa
@@ -2700,52 +2345,22 @@ tests/test_deepseek_budget: tests/test_deepseek_budget.c ds4_server.c ds4.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -Wl,--gc-sections -o $@ $< -lm -pthread
 
 tests/test_k2_lifecycle.o: tests/test_k2_lifecycle.c ds4.h
-	$(CC) $(CFLAGS) -I. -c -o $@ $<
-
-tests/test_k2_lifecycle: tests/test_k2_lifecycle.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_glm53_bounds.o: tests/test_glm53_bounds.c ds4.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
-
-tests/test_glm53_bounds: tests/test_glm53_bounds.o $(DS4_CUDA_SUPPORT_OBJS)
-	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. $(DEPFLAGS) -c -o $@ $<
 
 test-glm53-bounds: tests/test_glm53_bounds
 	./tests/test_glm53_bounds
 
-tests/test_glm53_session.o: tests/test_glm53_session.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_glm53_session: tests/test_glm53_session.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_glm53_long.o: tests/test_glm53_long.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_glm53_long: tests/test_glm53_long.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
-tests/test_glm53_mtp_actual.o: tests/test_glm53_mtp_actual.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_glm53_mtp_actual: tests/test_glm53_mtp_actual.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+tests/test_glm53_long.o tests/test_glm53_mtp_actual.o tests/test_glm53_mtp_long.o: %.o: %.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
 tests/test_glm53_compare: tests/test_glm53_mtp_long.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -DGLM53_COMPARE_ONLY -I. -o $@ $<
 
-tests/test_glm53_mtp_long.o: tests/test_glm53_mtp_long.c ds4.h ds4_gpu.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_glm53_mtp_long: tests/test_glm53_mtp_long.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 tests/bench_glm53_stream.o: tests/bench_glm53_stream.cu ds4_gpu.h
-	$(NVCC) $(NVCCFLAGS) -I. -c -o $@ $<
-
-tests/bench_glm53_stream: tests/bench_glm53_stream.o $(DS4_CUDA_CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+	$(NVCC) $(NVCCFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 # Build only; the operator runs each arm in a separate process.
 .PHONY: bench-glm53-stream glm53-stream-plan
@@ -2822,10 +2437,10 @@ test-qwen35-rows: tests/test_qwen35_rows
 	./tests/test_qwen35_rows "$(DS4_BONSAI_MODEL)"
 
 .PHONY: bonsai-fold-selftest bonsai-ref-check
-bonsai-fold-selftest:
+bonsai-fold-selftest: ds4-c
 	DS4_QWEN35_FOLD_SELFTEST=1 ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "x" | grep "fold selftest"
 
-bonsai-ref-check:
+bonsai-ref-check: ds4-c
 	DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
 
 # The same greedy check on the CUDA graph.  On this box the whole-map host
@@ -2835,12 +2450,12 @@ DS4_BONSAI_PARITY_TOKENS ?= 760,6511,314,9338,369
 DS4_BONSAI_PARITY_STEPS ?= 8
 
 .PHONY: bonsai-cuda-check bonsai-cuda-parity
-bonsai-cuda-check:
+bonsai-cuda-check: ds4-c
 	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
 
 # CPU reference and CUDA graph on the same prompt ids: the two streams must
 # print the same ids.  Slow, the CPU reference is about 3 s per token.
-bonsai-cuda-parity:
+bonsai-cuda-parity: ds4-c
 	@mkdir -p misc/scratch
 	DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cpu.tokens
 	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cuda.tokens
@@ -2848,7 +2463,8 @@ bonsai-cuda-parity:
 
 # Metadata and full tensor-layout smoke. The structural GGUF is sparse, so
 # this validates all descriptors without materializing an 88 GiB copy.
-tests/test_motif3_loader: tests/test_motif3_loader.c ds4.c ds4.h
+tests/test_motif3_loader tests/test_dots3_loader tests/test_qwen4exp_loader \
+    tests/test_qwen4exp_tokenizer tests/test_motif3_reference tests/test_motif3_tokenizer: %: %.c ds4.c ds4.h
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
@@ -2857,27 +2473,15 @@ test-motif3-loader: tests/test_motif3_loader
 		{ echo "set DS4_MOTIF3_MODEL to the structural or completed GGUF" >&2; exit 2; }
 	./tests/test_motif3_loader "$(DS4_MOTIF3_MODEL)"
 
-tests/test_dots3_loader: tests/test_dots3_loader.c ds4.c ds4.h
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 test-dots3-loader: tests/test_dots3_loader
 	@test -n "$(DS4_DOTS3_MODEL)" || \
 		{ echo "set DS4_DOTS3_MODEL to the first dots3 GGUF shard" >&2; exit 2; }
 	./tests/test_dots3_loader "$(DS4_DOTS3_MODEL)"
 
-tests/test_qwen4exp_loader: tests/test_qwen4exp_loader.c ds4.c ds4.h
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
-
 test-qwen4exp-loader: tests/test_qwen4exp_loader
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || \
 		{ echo "set DS4_QWEN4EXP_MODEL to the first Qwen4Exp GGUF shard" >&2; exit 2; }
 	./tests/test_qwen4exp_loader "$(DS4_QWEN4EXP_MODEL)"
-
-tests/test_qwen4exp_tokenizer: tests/test_qwen4exp_tokenizer.c ds4.c ds4.h
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 test-qwen4exp-tokenizer: tests/test_qwen4exp_tokenizer
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || \
@@ -2914,10 +2518,10 @@ test-qwen4exp-ple-cuda:
 	@echo "test-qwen4exp-ple-cuda requires a CUDA build"
 else
 cuda/qwen38_ple.o: cuda/qwen38_ple.cu cuda/qwen38_ple.h ds4_ple.h
-	$(NVCC) $(NVCCFLAGS) -I. -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_qwen4exp_ple_cuda.o: tests/test_qwen4exp_ple_cuda.cu cuda/qwen38_ple.h ds4_ple.h
-	$(NVCC) $(NVCCFLAGS) -I. -c -o $@ $<
+	$(NVCC) $(NVCCFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
 
 tests/test_qwen4exp_ple_cuda: tests/test_qwen4exp_ple_cuda.o cuda/qwen38_ple.o ds4_ple.o
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -2927,10 +2531,6 @@ test-qwen4exp-ple-cuda: tests/test_qwen4exp_ple_cuda
 		{ echo "set DS4_QWEN4EXP_ROOT to the SSD-PLE artifact root" >&2; exit 2; }
 	./tests/test_qwen4exp_ple_cuda "$(DS4_QWEN4EXP_ROOT)"
 endif
-
-tests/test_motif3_reference: tests/test_motif3_reference.c ds4.c ds4.h
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 test-motif3-reference: tests/test_motif3_reference
 	./tests/test_motif3_reference "$(DS4_MOTIF3_FIXTURES)"
@@ -2943,10 +2543,6 @@ test-dots3-tokenizer: tests/test_dots3_tokenizer
 	@test -n "$(DS4_DOTS3_MODEL)" || \
 		{ echo "set DS4_DOTS3_MODEL to the first dots3 GGUF shard" >&2; exit 2; }
 	./tests/test_dots3_tokenizer "$(DS4_DOTS3_MODEL)"
-
-tests/test_motif3_tokenizer: tests/test_motif3_tokenizer.c ds4.c ds4.h
-	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
-		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 test-motif3-tokenizer: tests/test_motif3_tokenizer
 	@test -n "$(DS4_MOTIF3_MODEL)" || \
@@ -2967,10 +2563,12 @@ tests/test_dots3_cuda: tests/test_dots3_cuda.cu $(DS4_CUDA_CORE_OBJS)
 test-dots3-cuda: tests/test_dots3_cuda
 	./tests/test_dots3_cuda
 
-tests/test_dots3_resident.o: tests/test_dots3_resident.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+tests/test_dots3_resident.o tests/test_motif3_resident.o tests/test_motif3_batch.o \
+    tests/test_motif3_long.o: %.o: %.c ds4.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include $(DEPFLAGS) -c -o $@ $<
 
-tests/test_dots3_resident: tests/test_dots3_resident.o ds4_kvstore.o rax.o $(CORE_OBJS)
+tests/test_dots3_resident tests/test_motif3_resident tests/test_motif3_batch \
+    tests/test_motif3_long: %: %.o ds4_kvstore.o rax.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-dots3-resident: tests/test_dots3_resident
@@ -2978,89 +2576,155 @@ test-dots3-resident: tests/test_dots3_resident
 		{ echo "set DS4_DOTS3_MODEL to the first dots3 GGUF shard" >&2; exit 2; }
 	CUDA_VISIBLE_DEVICES=0 ./tests/test_dots3_resident "$(DS4_DOTS3_MODEL)"
 
-tests/test_motif3_resident.o: tests/test_motif3_resident.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_motif3_resident: tests/test_motif3_resident.o ds4_kvstore.o rax.o $(CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
-
 test-motif3-resident: tests/test_motif3_resident
 	CUDA_VISIBLE_DEVICES=0 ./tests/test_motif3_resident "$(DS4_MOTIF3_MODEL)"
-
-tests/test_motif3_batch.o: tests/test_motif3_batch.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_motif3_batch: tests/test_motif3_batch.o ds4_kvstore.o rax.o $(CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 test-motif3-batch: tests/test_motif3_batch
 	@test -n "$(DS4_MOTIF3_MODEL)" || \
 		{ echo "set DS4_MOTIF3_MODEL to the completed GGUF" >&2; exit 2; }
 	CUDA_VISIBLE_DEVICES=0 ./tests/test_motif3_batch "$(DS4_MOTIF3_MODEL)"
 
-tests/test_motif3_long.o: tests/test_motif3_long.c ds4.h
-	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS)
-	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 endif
 
+BUILD_OBJECTS := \
+    cuda/mmq/ds4_fattn.o cuda/mmq/ds4_ggml_stubs.o cuda/mmq/ds4_mmq.o cuda/mmq/ds4_mmq_d2r.o \
+    cuda/mmq/ds4_repack.o cuda/mmq/mmid.o cuda/mmq/mmvq.o cuda/mmq/quantize.o \
+    cuda/mmq/test/test_inkling_batch.o cuda/mmq/test/test_mmq_parity.o cuda/qwen38_ple.o ds4.o \
+    ds4_agent.o ds4_agent_cpu.o ds4_bench.o ds4_bench_cpu.o ds4_cli.o ds4_cli_cpu.o ds4_cpu.o \
+    ds4_cuda.o ds4_cuda_range_test.o ds4_cuda_test_hooks.o ds4_distributed.o ds4_eval.o ds4_eval_cpu.o ds4_kvstore.o ds4_metal.o \
+    ds4_ple.o ds4_server.o ds4_server_cpu.o ds4_test.o ds4_web.o linenoise.o \
+    native/bridge/ds4_bridge.o rax.o tests/bench_glm53_stream.o tests/cuda_long_context_smoke.o \
+    tests/cuda_tokentile_ldmatrix.o tests/naive_banks.o tests/naive_dense.o \
+    tests/naive_draft_graph.o tests/naive_graph.o tests/naive_trial.o tests/naive_trial_live.o \
+    tests/parity/admit_c_oracle.o tests/parity/agent_c_oracle.o tests/parity/bind_c_oracle.o \
+    tests/parity/bind_lookup_c_oracle.o tests/parity/bridge_null_oracle.o \
+    tests/parity/bridge_null_stubs.o tests/parity/catalog_c_oracle.o tests/parity/cont_c_oracle.o \
+    tests/parity/dist_c_oracle.o tests/parity/dsml_c_oracle.o tests/parity/kv_c_oracle.o \
+    tests/parity/kv_c_stubs.o tests/parity/layout_c_oracle.o tests/parity/load_c_oracle.o \
+    tests/parity/memgov_c_oracle.o tests/parity/parse_c_oracle.o tests/parity/payload_c_oracle.o \
+    tests/parity/render_c_oracle.o tests/parity/retry_c_oracle.o tests/parity/route_c_oracle.o \
+    tests/parity/server_c_oracle.o tests/parity/session_c_oracle.o tests/parity/shape_c_oracle.o \
+    tests/parity/stream_c_oracle.o tests/parity/tensor_c_oracle.o tests/parity/tokenizer_c_oracle.o \
+    tests/parity/tool_stream_c_oracle.o tests/parity/validate_c_oracle.o \
+    tests/parity/vocab_c_oracle.o tests/parity/web_c_oracle.o tests/test_cuda_artifact_scope.o \
+    tests/test_cuda_span_lease.o tests/test_dots3_batch.o tests/test_dots3_checkpoint.o \
+    tests/test_dots3_mtp.o tests/test_dots3_resident.o tests/test_exaone_batch.o \
+    tests/test_exaone_checkpoint.o tests/test_exaone_forward.o tests/test_exaone_kernels.o \
+    tests/test_exaone_partial.o tests/test_exaone_ref.o tests/test_exaone_tokenizer.o \
+    tests/test_glm53_bounds.o tests/test_glm53_compact.o tests/test_glm53_dsa.o \
+    tests/test_glm53_long.o tests/test_glm53_mixed.o tests/test_glm53_mtp_actual.o \
+    tests/test_glm53_mtp_long.o tests/test_glm53_session.o tests/test_glm53_vision.o \
+    tests/test_glm53_weight.o tests/test_glm_vq_cache.o tests/test_glm_vq_kv.o \
+    tests/test_glm_vq_owner.o tests/test_glm_vq_q4.o tests/test_glm_vq_quote.o \
+    tests/test_glm_vq_sparse.o tests/test_inkling_attention.o tests/test_inkling_attn_prep.o \
+    tests/test_inkling_encoders.o tests/test_inkling_forward.o tests/test_inkling_kernels.o \
+    tests/test_inkling_linear.o tests/test_inkling_media.o tests/test_inkling_moe.o \
+    tests/test_inkling_mtp.o tests/test_inkling_mtp_shared.o tests/test_inkling_norm.o \
+    tests/test_inkling_payload.o tests/test_inkling_q8_batch.o tests/test_inkling_session.o \
+    tests/test_k2_lifecycle.o tests/test_ling3vl_matmul.o tests/test_ling3vl_media.o \
+    tests/test_ling3vl_moefuse.o tests/test_ling3vl_q5pair.o tests/test_ling3vl_vision.o \
+    tests/test_mmid_fast.o tests/test_model_family_kernels.o tests/test_motif3_batch.o \
+    tests/test_motif3_long.o tests/test_motif3_resident.o tests/test_qwen35_session.o \
+    tests/test_qwen4exp_batch.o tests/test_qwen4exp_draft.o tests/test_qwen4exp_gdn.o \
+    tests/test_qwen4exp_gdn_forward.o tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_moe.o \
+    tests/test_qwen4exp_moe_forward.o tests/test_qwen4exp_ple_compute.o \
+    tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_ple_forward.o \
+    tests/test_qwen4exp_primitives.o tests/test_qwen4exp_qsa.o tests/test_qwen4exp_qsa_forward.o \
+    tests/test_qwen4exp_verify.o tests/test_qwen_vision_attention.o tests/test_qwen_vision_host.o \
+    tests/test_qwen_vision_model.o tests/test_qwen_vision_norm.o tests/test_qwen_vision_rope.o \
+    tests/test_solar_fattn.o tests/test_solar_forward.o tests/test_solar_gates.o \
+    tests/test_solar_kda.o tests/test_solar_kda_chunk.o tests/test_solar_kda_prefill.o \
+    tests/test_solar_kv.o tests/test_solar_session.o tests/test_step37_checkpoint.o \
+    tests/test_step37_cont.o tests/test_step37_forward.o tests/test_step37_media.o \
+    tests/test_step37_mtp.o tests/test_step37_norm.o tests/test_step37_session.o \
+    tests/test_step37_spec.o tests/test_step37_vision.o
+
+BUILD_PROGRAMS := \
+    ds4 ds4-agent ds4-agent-c ds4-agent-rs ds4-bench ds4-bench-c ds4-bench-perf ds4-bench-rs ds4-c \
+    ds4-eval ds4-rs ds4-server ds4-server-c ds4-server-rs ds4_cpu ds4_native ds4_server_test \
+    ds4_test ds4_weight_server gguf-tools/libds4q-ieee.so gguf-tools/libds4q.so glm-vq-gate \
+    tests/beam_mtp_gate tests/beam_quality tests/bench_glm53_attention tests/bench_glm53_pool \
+    tests/bench_glm53_shared tests/bench_glm53_stream tests/cuda_long_context_smoke \
+    tests/cuda_tokentile_ldmatrix tests/ds41_boundary_verify tests/glm53_mtp_gate \
+    tests/glm53_state_gate tests/glm_vq_quality tests/glm_vq_state tests/iquest_attention_profile \
+    tests/iquest_attn_precision tests/iquest_bank_verify tests/iquest_perf_verify \
+    tests/iquest_reduce_verify tests/iquest_router_profile tests/iquest_router_verify \
+    tests/iquest_verify tests/libds4ple_test.so tests/libglm_vq_attention.so \
+    tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
+    tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
+    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision \
+    tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
+    tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
+    tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
+    tests/naive_primitives tests/naive_router_profile tests/naive_serve_gate tests/naive_softmax \
+    tests/naive_state tests/naive_sum_profile tests/naive_swiglu_profile tests/naive_trial \
+    tests/naive_trial_live tests/parity/admit_c_oracle tests/parity/agent_c_oracle \
+    tests/parity/bind_c_oracle tests/parity/bind_lookup_c_oracle tests/parity/bridge_null_oracle \
+    tests/parity/catalog_c_oracle tests/parity/cont_c_oracle tests/parity/dist_c_oracle \
+    tests/parity/dsml_c_oracle tests/parity/kv_c_oracle tests/parity/layout_c_oracle \
+    tests/parity/load_c_oracle tests/parity/memgov_c_oracle tests/parity/parse_c_oracle \
+    tests/parity/payload_c_oracle tests/parity/render_c_oracle tests/parity/retry_c_oracle \
+    tests/parity/route_c_oracle tests/parity/server_c_oracle tests/parity/session_c_oracle \
+    tests/parity/shape_c_oracle tests/parity/stream_c_oracle tests/parity/tensor_c_oracle \
+    tests/parity/tokenizer_c_oracle tests/parity/tool_stream_c_oracle tests/parity/validate_c_oracle \
+    tests/parity/vocab_c_oracle tests/parity/web_c_oracle tests/test_cuda_artifact_scope \
+    tests/test_cuda_span_lease tests/test_deepseek_budget tests/test_dots3_batch \
+    tests/test_dots3_checkpoint tests/test_dots3_cuda tests/test_dots3_loader tests/test_dots3_mtp \
+    tests/test_dots3_mtp_guards tests/test_dots3_resident tests/test_dots3_tokenizer \
+    tests/test_ds41_bridge_lifetime tests/test_ds41_engram tests/test_ds41_forward \
+    tests/test_ds41_fp8 tests/test_ds41_generate tests/test_ds41_kv_import tests/test_ds41_moe \
+    tests/test_ds41_pick tests/test_ds41_sample tests/test_ds41_vq tests/test_eos_sampling \
+    tests/test_exaone_batch tests/test_exaone_checkpoint tests/test_exaone_forward \
+    tests/test_exaone_kernels tests/test_exaone_partial tests/test_exaone_ref \
+    tests/test_exaone_tokenizer tests/test_glm53_attention tests/test_glm53_attention_cuda \
+    tests/test_glm53_banks tests/test_glm53_bounds tests/test_glm53_cache tests/test_glm53_compact \
+    tests/test_glm53_compare tests/test_glm53_dsa tests/test_glm53_image \
+    tests/test_glm53_loader tests/test_glm53_long tests/test_glm53_map tests/test_glm53_mixed \
+    tests/test_glm53_mtp tests/test_glm53_mtp_actual tests/test_glm53_mtp_long tests/test_glm53_pair \
+    tests/test_glm53_payload tests/test_glm53_quant tests/test_glm53_session tests/test_glm53_stop \
+    tests/test_glm53_stream tests/test_glm53_tokens tests/test_glm53_upload_async \
+    tests/test_glm53_vision tests/test_glm53_vision_loader tests/test_glm53_vision_norm \
+    tests/test_glm53_weight tests/test_glm53_width tests/test_glm_vq_bind tests/test_glm_vq_cache \
+    tests/test_glm_vq_flash tests/test_glm_vq_kda tests/test_glm_vq_kv tests/test_glm_vq_mtp_mode \
+    tests/test_glm_vq_owner tests/test_glm_vq_q4 tests/test_glm_vq_q4p tests/test_glm_vq_quote \
+    tests/test_glm_vq_res tests/test_glm_vq_sparse tests/test_glm_vq_verify \
+    tests/test_inkling_attention tests/test_inkling_attn_prep tests/test_inkling_batch \
+    tests/test_inkling_encoders tests/test_inkling_forward tests/test_inkling_kernels \
+    tests/test_inkling_linear tests/test_inkling_loader tests/test_inkling_media \
+    tests/test_inkling_moe tests/test_inkling_mtp tests/test_inkling_mtp_shared \
+    tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
+    tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
+    tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual \
+    tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
+    tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
+    tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \
+    tests/test_minimax_decode tests/test_minimax_mma8w tests/test_minimax_payload \
+    tests/test_mmid_fast tests/test_mmq_parity tests/test_model_family_kernels \
+    tests/test_model_range tests/test_motif3_batch tests/test_motif3_cuda tests/test_motif3_loader \
+    tests/test_motif3_long tests/test_motif3_reference tests/test_motif3_resident \
+    tests/test_motif3_tokenizer tests/test_qwen35_cuda tests/test_qwen35_ref tests/test_qwen35_rows \
+    tests/test_qwen35_session tests/test_qwen4exp_batch tests/test_qwen4exp_draft \
+    tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_hc_forward \
+    tests/test_qwen4exp_loader tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward \
+    tests/test_qwen4exp_ple tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_cuda \
+    tests/test_qwen4exp_ple_forward tests/test_qwen4exp_primitives tests/test_qwen4exp_qsa \
+    tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_tokenizer tests/test_qwen4exp_verify \
+    tests/test_qwen_vision_attention tests/test_qwen_vision_host tests/test_qwen_vision_model \
+    tests/test_qwen_vision_norm tests/test_qwen_vision_rope tests/test_repack_premapped \
+    tests/test_snapshot_backing tests/test_solar_fattn tests/test_solar_forward \
+    tests/test_solar_gates tests/test_solar_kda tests/test_solar_kda_chunk \
+    tests/test_solar_kda_prefill tests/test_solar_kv tests/test_solar_loader \
+    tests/test_solar_session tests/test_solar_tokenizer tests/test_split_gguf \
+    tests/test_step37_checkpoint tests/test_step37_cont tests/test_step37_forward \
+    tests/test_step37_loader tests/test_step37_media tests/test_step37_mtp tests/test_step37_norm \
+    tests/test_step37_primitives tests/test_step37_session tests/test_step37_spec \
+    tests/test_step37_state tests/test_step37_vision tests/test_step37_vision_ops \
+    tests/weight_mapping_policy tests/weight_mapping_probe tools/gb10_peaks
+
+BUILD_OBJECTS += tests/test_iquest_prefix.o
+DEPFILES := $(addsuffix .d,$(BUILD_OBJECTS))
+-include $(wildcard $(DEPFILES))
+
 clean:
-	rm -f tests/test_snapshot_backing
-	rm -f tests/test_glm_vq_mtp_mode tests/test_minimax_artifacts tests/test_minimax_payload
-	rm -f tests/libglm_vq_linear.so tests/libglm_vq_attention.so tests/test_glm_vq_cache tests/test_glm_vq_owner tests/test_glm_vq_quote glm-vq-gate
-	rm -f tests/test_glm_vq_kv tests/test_glm_vq_kv.o
-	rm -f tests/bench_glm53_attention tests/bench_glm53_pool tests/bench_glm53_shared
-	rm -f tests/bench_glm53_stream tests/bench_glm53_stream.o
-	rm -f tests/test_glm53_tokens tests/test_glm53_long tests/test_glm53_long.o tests/test_glm53_mtp_actual tests/test_glm53_mtp_actual.o
-	rm -f tests/test_glm53_compare tests/test_glm53_mtp_long tests/test_glm53_mtp_long.o
-	rm -f tests/libglm_vq_test.so tests/test_glm_vq_bind tests/test_glm53_quant tests/test_glm53_mixed tests/test_glm53_mixed.o tests/test_glm53_compact tests/test_glm53_compact.o tests/test_glm53_cache tests/test_glm53_stream tests/test_glm53_weight tests/test_glm53_weight.o tests/test_glm53_payload tests/test_glm53_stop tests/test_ling31_stop tests/test_ling31_prefill_attn tests/test_glm53_mtp tests/test_glm53_banks tests/test_glm53_map tests/test_glm53_vision_norm tests/test_glm53_attention tests/test_glm53_attention_cuda
-	rm -f tests/test_qwen35_ref
-	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
-	rm -f tests/test_step37_media tests/test_step37_media.o
-	rm -f tests/test_ling3vl_media tests/test_ling3vl_media.o
-	rm -f tests/test_ling3vl_vision tests/test_ling3vl_vision.o
-	rm -f tests/test_ling3vl_primitives
-	rm -f tests/test_ling3vl_matmul tests/test_ling3vl_matmul.o
-	rm -f tests/test_ling3vl_q5pair tests/test_ling3vl_q5pair.o
-	rm -f tests/test_ling3vl_moefuse tests/test_ling3vl_moefuse.o
-	rm -f tests/test_ling3vl_mla tests/test_ling3vl_mla_expand
-	rm -f tests/test_step37_vision_ops tests/test_step37_vision tests/test_step37_vision.o
-	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
-	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state
-	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
-	rm -f tests/test_step37_spec tests/test_step37_spec.o
-	rm -f tests/test_step37_cont tests/test_step37_cont.o
-	rm -f tests/test_dots3_mtp tests/test_dots3_mtp.o tests/test_dots3_mtp_guards tests/test_eos_sampling
-	rm -f tests/test_dots3_checkpoint tests/test_dots3_checkpoint.o tests/test_dots3_batch tests/test_dots3_batch.o
-	rm -f tests/test_exaone_partial tests/test_exaone_partial.o
-	rm -f tests/test_exaone_checkpoint tests/test_exaone_checkpoint.o
-	rm -f tests/test_step37_checkpoint tests/test_step37_checkpoint.o
-	rm -f tests/test_step37_norm tests/test_step37_norm.o
-	rm -f tests/test_cuda_span_lease tests/test_cuda_span_lease.o
-	rm -f tests/test_cuda_artifact_scope tests/test_cuda_artifact_scope.o
-	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
-	rm -f tests/test_inkling_moe tests/test_inkling_moe.o
-	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o
-	rm -f tests/test_inkling_attention tests/test_inkling_attention.o
-	rm -f tests/test_inkling_norm tests/test_inkling_norm.o
-	rm -f tests/test_inkling_linear tests/test_inkling_linear.o
-	rm -f tests/test_inkling_batch cuda/mmq/test/test_inkling_batch.o
-	rm -f tests/test_inkling_q8_batch tests/test_inkling_q8_batch.o
-	rm -f tests/test_inkling_media tests/test_inkling_media.o
-	rm -f tests/test_inkling_loader
-	rm -f tests/test_inkling_forward tests/test_inkling_forward.o
-	rm -f tests/test_inkling_session tests/test_inkling_session.o
-	rm -f tests/test_inkling_mtp tests/test_inkling_mtp.o
-	rm -f tests/test_inkling_mtp_shared tests/test_inkling_mtp_shared.o
-	rm -f tests/test_inkling_encoders tests/test_inkling_encoders.o
-	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
-	rm -f tests/test_qwen_vision_rope tests/test_qwen_vision_rope.o
-	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
-	rm -f tests/test_qwen_vision_host tests/test_qwen_vision_host.o
-	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
-	rm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o tests/test_glm53_bounds tests/test_glm53_bounds.o tests/test_k2_lifecycle tests/test_k2_lifecycle.o
-	rm -f tests/libglm_vq_mma.so tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/glm_vq_quality tests/ling31_quality tests/beam_quality tests/minimax_quality tests/minimax_vision tests/minimax_state tests/beam_mtp_gate tests/ling31_mtp_gate tests/test_glm_vq_q4 tests/test_glm_vq_q4.o gguf-tools/libds4q.so gguf-tools/libds4q-ieee.so
-	rm -f tests/test_k2_rewind tests/test_deepseek_budget
-	rm -f ds4 ds4-server ds4-bench ds4-bench-perf ds4-eval ds4-agent ds4-c ds4-server-c ds4-bench-c ds4-agent-c ds4-rs ds4-bench-rs ds4-server-rs ds4-agent-rs ds4_weight_server tests/parity/shape_c_oracle tests/parity/shape_c_oracle.o tests/parity/catalog_c_oracle tests/parity/catalog_c_oracle.o tests/parity/tensor_c_oracle tests/parity/tensor_c_oracle.o tests/parity/bind_c_oracle tests/parity/bind_c_oracle.o tests/parity/bind_lookup_c_oracle tests/parity/bind_lookup_c_oracle.o tests/parity/load_c_oracle tests/parity/load_c_oracle.o tests/parity/validate_c_oracle tests/parity/validate_c_oracle.o tests/parity/layout_c_oracle tests/parity/layout_c_oracle.o tests/parity/vocab_c_oracle tests/parity/vocab_c_oracle.o tests/parity/tokenizer_c_oracle tests/parity/tokenizer_c_oracle.o tests/parity/session_c_oracle tests/parity/session_c_oracle.o tests/parity/payload_c_oracle tests/parity/payload_c_oracle.o tests/parity/kv_c_oracle tests/parity/kv_c_oracle.o tests/parity/kv_c_stubs.o tests/parity/web_c_oracle tests/parity/web_c_oracle.o tests/parity/dist_c_oracle tests/parity/dist_c_oracle.o tests/parity/route_c_oracle tests/parity/route_c_oracle.o tests/parity/server_c_oracle tests/parity/server_c_oracle.o tests/parity/parse_c_oracle tests/parity/parse_c_oracle.o tests/parity/stream_c_oracle tests/parity/stream_c_oracle.o tests/parity/tool_stream_c_oracle tests/parity/tool_stream_c_oracle.o tests/parity/dsml_c_oracle tests/parity/dsml_c_oracle.o tests/parity/retry_c_oracle tests/parity/retry_c_oracle.o tests/parity/admit_c_oracle tests/parity/admit_c_oracle.o tests/parity/render_c_oracle tests/parity/render_c_oracle.o tests/parity/bridge_null_oracle tests/parity/bridge_null_oracle.o tests/parity/bridge_null_stubs.o tests/parity/cont_c_oracle tests/parity/cont_c_oracle.o tests/parity/memgov_c_oracle tests/parity/memgov_c_oracle.o ds4_cpu ds4_native ds4_server_test ds4_test tests/test_motif3_loader tests/test_motif3_reference tests/test_motif3_tokenizer tests/test_motif3_cuda tests/test_motif3_resident tests/test_motif3_batch tests/test_motif3_long tests/test_motif3_resident.o tests/test_motif3_batch.o tests/test_motif3_long.o tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_batch tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_batch.o *.o cuda/mmq/test/test_mmq_parity.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o tests/cuda_tokentile_ldmatrix tests/cuda_tokentile_ldmatrix.o tests/test_split_gguf tests/test_solar_loader tests/test_solar_tokenizer tests/test_repack_premapped tests/test_mmq_parity tests/test_mmid_fast tests/test_mmid_fast.o tests/test_model_family_kernels tests/test_model_family_kernels.o tests/test_solar_forward tests/test_solar_forward.o tests/test_solar_session tests/test_solar_session.o tests/test_solar_kda tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_solar_gates tests/test_solar_kv tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_kda_chunk.o tests/test_solar_gates.o tests/test_solar_kv.o native/bridge/ds4_bridge.o
-	rm -f tests/test_qwen4exp_loader tests/test_qwen4exp_tokenizer tests/test_qwen4exp_ple tests/test_qwen4exp_ple_cuda tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_primitives tests/test_qwen4exp_primitives.o tests/test_qwen4exp_hc_forward tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_ple_forward tests/test_qwen4exp_ple_forward.o tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_batch tests/test_qwen4exp_batch.o tests/libds4ple_test.so cuda/qwen38_ple.o
+	rm -f $(BUILD_OBJECTS) $(BUILD_PROGRAMS) $(DEPFILES)

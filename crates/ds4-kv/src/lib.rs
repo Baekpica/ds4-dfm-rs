@@ -15,9 +15,10 @@ pub use extensions::{
 };
 pub use format::{
     decode_file, encode_file, fill_header, key_kind, parse_header, path_for_sha, read_envelope,
-    read_path, read_trailer, sha_hex_name, text_sha_hex, write_path, Envelope, FormatError, Header,
-    Reason, Record, EXT_BANK_REPLAY_V1, EXT_IMAGE_PIXELS_V2, EXT_RESPONSES_VISIBLE,
-    EXT_SESSION_TITLE, EXT_THINKING_VISIBLE, EXT_TOOL_MAP, FIXED_HEADER, PAYLOAD_ABI, VERSION,
+    read_identity, read_path, read_trailer, sha_hex_name, text_sha_hex, write_checkpoint,
+    write_path, Envelope, FormatError, Header, Reason, Record, EXT_BANK_REPLAY_V1,
+    EXT_IMAGE_PIXELS_V2, EXT_RESPONSES_VISIBLE, EXT_SESSION_TITLE, EXT_THINKING_VISIBLE,
+    EXT_TOOL_MAP, FIXED_HEADER, PAYLOAD_ABI, VERSION,
 };
 pub use host::{bank_checkpoint_due_from_host, continued_store_target_from_host, HostKvView};
 pub use policy::{

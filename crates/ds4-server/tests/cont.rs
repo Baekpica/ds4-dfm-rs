@@ -49,6 +49,73 @@ fn assert_script(name: &str) {
 }
 
 #[test]
+fn audit_responses_instructions_preserve_live_ids() {
+    for instructions in [None, Some("Continue carefully")] {
+        for role in [None, Some("system"), Some("developer")] {
+            let mut input = Vec::new();
+            if let Some(role) = role {
+                input.push(serde_json::json!({"role":role,"content":"policy"}));
+            }
+            input.push(
+                serde_json::json!({"type":"function_call_output","call_id":"call_1","output":"ok"}),
+            );
+            let mut body = serde_json::json!({"input": input});
+            if let Some(instructions) = instructions {
+                body["instructions"] = instructions.into();
+            }
+            let env = ds4_server::ParseEnv {
+                live_ids: vec!["call_1".into()],
+                ..Default::default()
+            };
+            let parsed = ds4_server::parse_responses_request(&env, &body.to_string()).unwrap();
+            assert_eq!(parsed.live_call_ids, ["call_1"], "{body}");
+        }
+    }
+}
+
+#[test]
+fn audit_responses_instructions_resume_live_turn() {
+    for instructions in [None, Some("Continue carefully")] {
+        let cfg = ServerConfig::test_cfg();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = thread::spawn(move || {
+            let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+            let mut engine = ScriptedDecode::from_pieces(&[concat!(
+                "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"lookup\">\n",
+                "</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+            )
+            .as_bytes()]);
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().unwrap();
+                handle_client_inner(&cfg, &inner, &mut s, Some(&mut engine), None);
+            }
+        });
+        let first = http_post(
+            addr,
+            "/v1/responses",
+            r#"{"input":"hello","max_output_tokens":8,"reasoning":{"effort":"none"},"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}"#,
+        );
+        assert!(first.starts_with("HTTP/1.1 200 "), "{first}");
+        let body: serde_json::Value =
+            serde_json::from_str(first.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let call = body["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["type"] == "function_call")
+            .unwrap();
+        let mut request = serde_json::json!({"input":[{"type":"function_call_output","call_id":call["call_id"],"output":"ok"}], "max_output_tokens":8});
+        if let Some(instructions) = instructions {
+            request["instructions"] = instructions.into();
+        }
+        let resumed = http_post(addr, "/v1/responses", &request.to_string());
+        h.join().unwrap();
+        assert!(resumed.starts_with("HTTP/1.1 200 "), "{resumed}");
+    }
+}
+
+#[test]
 fn publish_resolve_demote_matches_c() {
     assert_script("publish-resolve-demote");
 }

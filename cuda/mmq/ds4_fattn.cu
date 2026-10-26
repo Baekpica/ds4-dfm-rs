@@ -3546,7 +3546,7 @@ extern "C" int ds4_mmq_ling3vl_prefill_attn_hmma(
         int tk, cudaStream_t stream) {
     if (!heads || !q || !k || !v || n_query <= 0 || query_pos0 < 0 ||
         n_kv <= 0 || kv_pos0 < 0 || n_head <= 0 || qk_dim != L3_FA_QK ||
-        v_dim != L3_FA_V || kv_pos0 > query_pos0 || (tk != 32 && tk != 64)) {
+        v_dim != L3_FA_V || kv_pos0 > query_pos0 || tk != 64) {
         return -1;
     }
     const int device = ggml_cuda_get_device();
@@ -3554,15 +3554,9 @@ extern "C" int ds4_mmq_ling3vl_prefill_attn_hmma(
     const dim3 grid((n_query + L3_FA_TQ - 1) / L3_FA_TQ, n_head, 1);
     const __nv_bfloat16 *kb = (const __nv_bfloat16 *)k;
     const __nv_bfloat16 *vb = (const __nv_bfloat16 *)v;
-    if (tk == 32) {
-        ling3vl_fattn_hmma_kernel<32><<<grid, L3_FA_WARPS * 32, 0, stream>>>(
-            heads, lse, q, kb, vb, (uint32_t)n_query, (uint32_t)query_pos0,
-            (uint32_t)n_kv, (uint32_t)kv_pos0, (uint32_t)n_head, scale);
-    } else {
-        ling3vl_fattn_hmma_kernel<64><<<grid, L3_FA_WARPS * 32, 0, stream>>>(
-            heads, lse, q, kb, vb, (uint32_t)n_query, (uint32_t)query_pos0,
-            (uint32_t)n_kv, (uint32_t)kv_pos0, (uint32_t)n_head, scale);
-    }
+    ling3vl_fattn_hmma_kernel<64><<<grid, L3_FA_WARPS * 32, 0, stream>>>(
+        heads, lse, q, kb, vb, (uint32_t)n_query, (uint32_t)query_pos0,
+        (uint32_t)n_kv, (uint32_t)kv_pos0, (uint32_t)n_head, scale);
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
 }
 

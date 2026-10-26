@@ -169,22 +169,31 @@ impl<E: SliceExec, S: SnapshotStore> Worker<E, S> {
 
     fn drive_one<Stream: Read + Write>(&mut self, stream: &mut Stream) -> std::io::Result<()> {
         let (typ, body) = read_frame(stream)?;
+        self.handle_frame(stream, typ, &body)
+    }
+
+    pub(crate) fn handle_frame<Stream: Read + Write>(
+        &mut self,
+        stream: &mut Stream,
+        typ: u32,
+        body: &[u8],
+    ) -> std::io::Result<()> {
         if typ == MSG_ERROR {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                format!("coordinator error: {}", String::from_utf8_lossy(&body)),
+                format!("coordinator error: {}", String::from_utf8_lossy(body)),
             ));
         }
         match typ {
             MSG_WORK => {
-                let reply = self.process_work(&body, stream)?;
+                let reply = self.process_work(body, stream)?;
                 if let Some(frame) = reply {
                     stream.write_all(&frame)?;
                 }
                 Ok(())
             }
             MSG_SNAPSHOT_SAVE_REQ | MSG_SNAPSHOT_LOAD_BEGIN => {
-                self.apply_snapshot(stream, typ, &body)
+                self.apply_snapshot(stream, typ, body)
             }
             _ => {
                 write_frame(stream, MSG_ERROR, b"unsupported distributed worker frame")?;

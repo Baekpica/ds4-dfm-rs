@@ -1,6 +1,6 @@
-use super::identity::{clip_title, decode_title_trailer, title_from_text};
+use super::identity::{decode_title_trailer, title_from_text};
 use super::store::SessionStore;
-use ds4_kv::{decode_file, sha_hex_name, Record, EXT_SESSION_TITLE};
+use ds4_kv::{read_envelope, read_trailer, sha_hex_name, PayloadGuard, EXT_SESSION_TITLE};
 use std::fs;
 use std::path::PathBuf;
 
@@ -56,23 +56,37 @@ impl SessionStore {
                 continue;
             };
             let path = entry.path();
-            let Ok(bytes) = fs::read(&path) else {
+            let Ok(held) = PayloadGuard::open(&path) else {
                 continue;
             };
-            let Ok(record) = decode_file(&bytes) else {
+            let Ok((header, trailer)) = read_trailer(held.path(), u64::MAX) else {
                 continue;
             };
-            if record.header.model_id != self.model_id() {
+            if header.model_id != self.model_id() {
                 continue;
             }
+            let title = decode_title_trailer(&trailer)
+                .filter(|_| header.ext_flags & EXT_SESSION_TITLE != 0);
+            let title = match title {
+                Some(title) => title,
+                None => {
+                    let Ok(envelope) = read_envelope(held.path()) else {
+                        continue;
+                    };
+                    title_from_text(&envelope.text, 0)
+                }
+            };
+            let Ok(meta) = fs::metadata(held.path()) else {
+                continue;
+            };
             sessions.push(ListedSession {
                 sha,
-                title: session_title(&record, 0),
-                last_used: record.header.last_used,
-                created_at: record.header.created_at,
-                tokens: record.header.tokens,
-                file_size: bytes.len() as u64,
-                stripped: record.header.payload_bytes == 0,
+                title,
+                last_used: header.last_used,
+                created_at: header.created_at,
+                tokens: header.tokens,
+                file_size: meta.len(),
+                stripped: header.payload_bytes == 0,
             });
         }
         sessions.sort_by(|left, right| {
@@ -104,13 +118,10 @@ impl SessionStore {
                 continue;
             }
             let path = entry.path();
-            let Ok(bytes) = fs::read(&path) else {
+            let Ok((header, _)) = read_trailer(&path, u64::MAX) else {
                 continue;
             };
-            let Ok(record) = decode_file(&bytes) else {
-                continue;
-            };
-            if record.header.model_id != self.model_id() {
+            if header.model_id != self.model_id() {
                 continue;
             }
             matches += 1;
@@ -142,13 +153,4 @@ fn recency(session: &ListedSession) -> u64 {
 fn valid_prefix(prefix: &str) -> bool {
     let len = prefix.len();
     (1..=40).contains(&len) && prefix.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-pub(super) fn session_title(record: &Record, max_bytes: usize) -> String {
-    if record.header.ext_flags & EXT_SESSION_TITLE != 0 {
-        if let Some(title) = decode_title_trailer(&record.trailer) {
-            return clip_title(&title, max_bytes);
-        }
-    }
-    title_from_text(&record.text, max_bytes)
 }

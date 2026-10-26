@@ -138,6 +138,21 @@ pub fn utf8_stream_safe_len(s: &[u8], start: usize, limit: usize, final_: bool) 
     }
 }
 
+pub(crate) fn completion_delta<'a>(
+    raw: &'a [u8],
+    sent: &mut usize,
+    limit: usize,
+    final_: bool,
+) -> Option<&'a [u8]> {
+    let end = utf8_stream_safe_len(raw, *sent, limit.min(raw.len()), final_);
+    if end <= *sent {
+        return None;
+    }
+    let delta = &raw[*sent..end];
+    *sent = end;
+    Some(delta)
+}
+
 /// A buffered body as a string. json_escape_bytes already writes U+FFFD for
 /// model bytes that form no character; the lossy decode keeps any other stray
 /// byte from panicking the request into a 500.

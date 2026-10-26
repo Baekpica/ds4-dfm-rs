@@ -4690,7 +4690,7 @@ int ds4_gpu_ling3vl_gemv_pair(
 
 /* Prefill widths (rows >= 8, 32-head groups, latent 512) use the dots3
  * tensor-core absorbed-MLA kernel.  Decode and DS4_LING3VL_NO_MLA_HMMA=1
- * keep Motif.  DS4_LING3VL_MLA_TILE=1 is the rejected shared-KV tile. */
+ * keep Motif. */
 int ds4_gpu_ling3vl_latent_attn(
         ds4_gpu_tensor       *latent_out,
         const ds4_gpu_tensor *q_full,

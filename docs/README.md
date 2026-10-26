@@ -87,6 +87,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 
 | Ledger | Recorded scope |
 |---|---|
+| [v0.1.4](releases/v0.1.4.md) | Cumulative model/VQ support, inference work, audit repairs and bounded GB10 smoke |
 | [v0.1.3](releases/v0.1.3.md) | Common serving controls and scoped P0–P4 qualification |
 | [v0.1.2](releases/v0.1.2.md) | Shared Jinja and Inkling checkpoint |
 | [v0.1.1](releases/v0.1.1.md) | Performance workflow and FP8 PLE |
@@ -100,6 +101,7 @@ These reports preserve successful gates, rejected experiments and unresolved lim
 
 - **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
   three matched h3.c outputs, a native video API gate and measured generation cost.
+- **Ponytail audit:** [October 26 repairs, cleanup and local-model 8K smoke](benchmarks/2026-10-26-ponytail-audit/README.md).
 - **Qwen:** [September 4 long prefill](qwen38-long-context-prefill-2026-09-04.md),
   [September 6](qwen38-prefill-2026-09-06.md),
   [September 7 prefill](qwen38-prefill-2026-09-07.md),

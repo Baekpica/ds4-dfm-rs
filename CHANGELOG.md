@@ -14,6 +14,50 @@ for exact provenance. Historical entries retain their original scope.
   records three byte-identical h3.c comparisons and a completed native API
   request; [measured costs and limits](docs/minimax-h3/validation-2026-10-26.md)
   remain separate from LLM serving qualification.
+
+## v0.1.4 — 2026-10-27
+
+- Adds MiMo-V2.6-Flash RL/MOPD, Naive-N0.5-Flash, IQuest-Q1 and Prism
+  Bonsai 2 27B, with explicit artifact contracts and CUDA execution paths.
+  Adds Darwin-180B-RSI and ThinkingCap Qwen derivatives and accepts the
+  published Swift source pin. See the [Model Zoo](README.md#model-zoo).
+- Adds the DeepSeek V4.1 Flash port by JLFN, including its recorded
+  text/vision, DSML carriage and conversation-reuse work. The
+  [family guide](docs/deepseek41-flash.md) and
+  [DSML reference matrix](docs/ds41-dsml-reference-matrix.md) retain the
+  reference, deviations and qualification boundaries.
+- Adds GLM-5.3 Flash Uncensored mixed quant and GLM VQ, Ling-3.1 VQ,
+  Beam-1.0 VQ and MiniMax-M3.1 Flash VQ. Their guides specify artifact
+  validation, input/output protocols, banks, snapshots, disk KV and
+  embedded MTP or sidecar drafting where supported. See the
+  [release ledger](docs/releases/v0.1.4.md#model-and-serving-additions).
+- Expands family-specific media input, partial reuse and restart paths:
+  MiMo two-bank text with serial media, Qwen multi-image processing,
+  GLM optional SSD expert streaming and multi-turn reuse, and the
+  recorded DeepSeek V4.1 turn/disk checkpoints. Context and concurrency
+  limits remain artifact-specific; configured capacity is not a completed
+  long-context or quality result.
+- Includes measured Inkling, MiMo, Naive, IQuest, Qwen vision, GLM, Ling,
+  Beam, MiniMax and DeepSeek V4.1 optimization campaigns. The
+  [performance guide](docs/performance.md) preserves workload, numerical
+  and memory tradeoffs; these results are not one cumulative speedup.
+- Preserves valid UTF-8 in buffered and streamed output, Completion stop
+  lookahead and terminal bytes, Responses continuation with instructions,
+  and structured Anthropic tool errors. Retains EOS finish reasons during
+  reasoning and adds opt-in suppression of premature EOS.
+- Fixes the 19 audit defects: checked FFI/GGUF bounds and failed-session
+  state, atomic agent writes and KV trailer replacement, post-approval
+  edit checks, artifact-bound streaming checkpoints, distributed snapshot
+  ownership/partial frames, bounded continuous-request retention, shell
+  deadlines and bounded log reads. Agent writes preserve Linux access ACLs,
+  ownership, modes and symlink targets, and reject hardlinked targets.
+- Removes rejected Q8_1 fused MoE, Ling MLA and GLM dense-attention
+  candidates, the always-admit governor hook, duplicated worker code and
+  copied QA approval gate. Consolidates 174 Make rules with transitive
+  header dependencies; default CUDA targets build Rust hosts, while C
+  oracles remain explicit. Docker installs pinned Rust; IQuest model-free
+  checks enter CI. Generated calibration splits are reproduced on demand.
+
 - Adds `tools/vq_calib/`, the calibration-weighted GVQ converter that made
   the A.X-K2 VQ release. A data-parallel collector streams the FP8 source
   layer by layer and sums per-expert input energies, route weights and
@@ -30,6 +74,15 @@ for exact provenance. Historical entries retain their original scope.
   every layer's routed-expert error falls for the typical token (−7%), held-out KL
   0.369 → 0.350. The collector, reducer, converters and assemblers now bind every
   step to one calibration run (checkpoint fingerprints, run ids, reuse checks).
+
+The [audit report](docs/benchmarks/2026-10-26-ponytail-audit/README.md)
+records regression/parity checks, CUDA/Docker builds, identical retained SASS,
+and 21 selected artifacts completing 8K fresh input plus 32 plain decode
+tokens on code commit `4a6d030d`. It retains the interrupted Ling load and
+MiniMax raw-continuation repetition alongside successful follow-up checks.
+This does not renew Metal, maximum-context, media/MTP, sustained-load or
+broad quality qualification. A.X-K2 conversion tooling does not add an
+A.X-K2 runtime family. MiniMax-H3 video/audio generation (PR #111) is excluded.
 
 ## v0.1.3 — 2026-09-17
 

@@ -1082,6 +1082,7 @@ impl FfiBindPlan {
 pub struct Session<'m> {
     raw: NonNull<ds4_bridge_session>,
     host: SessionLedger,
+    shape: Shape,
     _model: PhantomData<&'m Model>,
     _not_send: PhantomData<*const ()>,
 }
@@ -2264,6 +2265,7 @@ impl Model {
         Ok(Session {
             raw,
             host,
+            shape: self.bind_plan.shape,
             _model: PhantomData,
             _not_send: PhantomData,
         })
@@ -2479,6 +2481,10 @@ impl Session<'_> {
                 | ModelFamily::IQuestQ1
                 | ModelFamily::Glm53
                 | ModelFamily::Glm53Vq
+                | ModelFamily::NaiveN05
+                | ModelFamily::Ling31Vq
+                | ModelFamily::BeamVq
+                | ModelFamily::MinimaxVq
         ) {
             return;
         }
@@ -2879,13 +2885,36 @@ impl Session<'_> {
         grid_w: u32,
         tokens: u32,
     ) -> Result<Vec<f32>> {
-        let mut out = vec![0.0f32; tokens as usize * crate::mimo2::VISION_WIDTH];
+        use crate::mimo2::{MERGE, PATCH, TEMPORAL, VISION_WIDTH};
+        let invalid = || Error {
+            code: 1,
+            message: "invalid MiMo visual grid, patches or token count".into(),
+        };
+        let cells = grid_h.checked_mul(grid_w).ok_or_else(invalid)?;
+        let patch_width = (3 * TEMPORAL * PATCH * PATCH) as usize;
+        let patch_len = (cells as usize)
+            .checked_mul(patch_width)
+            .ok_or_else(invalid)?;
+        let out_len = (tokens as usize)
+            .checked_mul(VISION_WIDTH)
+            .ok_or_else(invalid)?;
+        if grid_h == 0
+            || grid_w == 0
+            || grid_h % MERGE != 0
+            || grid_w % MERGE != 0
+            || tokens != cells / (MERGE * MERGE)
+            || patches.len() != patch_len
+            || out_len > isize::MAX as usize / size_of::<f32>()
+        {
+            return Err(invalid());
+        }
+        let mut out = vec![0.0f32; out_len];
         let mut err = [0u8; 512];
         let rc = unsafe {
             ds4_sys::ds4_bridge_mimo2_encode_vision(
                 self.raw.as_ptr(),
                 patches.as_ptr(),
-                grid_h * grid_w,
+                cells,
                 grid_h,
                 grid_w,
                 out.as_mut_ptr(),
@@ -3112,10 +3141,44 @@ impl Session<'_> {
             code: 1,
             message: "layer slice token count exceeds u32".into(),
         })?;
+        let hidden = req
+            .tokens
+            .len()
+            .checked_mul(self.shape.n_hc as usize)
+            .and_then(|n| n.checked_mul(self.shape.n_embd as usize))
+            .ok_or_else(|| Error {
+                code: 1,
+                message: "layer slice hidden-state size overflow".into(),
+            })?;
+        // Native writes one logits row (the final token), even for prefill.
+        for (name, len, needed) in [
+            (
+                "input hidden-state",
+                req.input_hc.as_ref().map(|v| v.len()),
+                hidden,
+            ),
+            (
+                "output hidden-state",
+                req.output_hc.as_ref().map(|v| v.len()),
+                hidden,
+            ),
+            (
+                "logits",
+                req.logits.as_ref().map(|v| v.len()),
+                self.shape.n_vocab as usize,
+            ),
+        ] {
+            if len.is_some_and(|len| len < needed) {
+                return Err(Error {
+                    code: 1,
+                    message: format!("layer slice {name} needs at least {needed} values"),
+                });
+            }
+        }
         let mut err = [0u8; 512];
         // SAFETY: [Category 8 — FFI] `raw` is a live session from create. Token
-        // and activation pointers are borrowed for the call only; empty slices
-        // still yield a non-null aligned pointer. Optional buffers pass NULL.
+        // and activation pointers are borrowed for the call only, with sizes
+        // checked against the model shape above. Optional buffers pass NULL.
         // The bridge does not retain the pointers.
         let rc = unsafe {
             ds4_bridge_session_eval_layer_slice(
@@ -3960,6 +4023,7 @@ mod tests {
     fn session_ctx_uses_host_ledger_not_native_scratch() {
         let session = std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::DeepSeek4, SessionBackend::Cuda, 8192, 1),
             _model: PhantomData,
             _not_send: PhantomData,
@@ -3970,6 +4034,8 @@ mod tests {
     }
 
     thread_local! {
+        static AUDIT_SLICE_CALLS: Cell<u32> = const { Cell::new(0) };
+        static AUDIT_VISION_CALLS: Cell<u32> = const { Cell::new(0) };
         static STEP_GENERATION: Cell<u64> = const { Cell::new(1) };
         static IQUEST_FAILURE: Cell<IQuestFailure> = const { Cell::new(IQuestFailure::Reject) };
         static GLM_TRIAL_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -4280,6 +4346,7 @@ mod tests {
         _err: *mut c_char,
         _errlen: usize,
     ) -> i32 {
+        AUDIT_VISION_CALLS.with(|calls| calls.set(calls.get() + 1));
         1
     }
 
@@ -4402,6 +4469,7 @@ mod tests {
             STEP_MEDIA_CALLS.with(|v| v.set(0));
             let mut session = std::mem::ManuallyDrop::new(Session {
                 raw: NonNull::<ds4_bridge_session>::dangling(),
+                shape: SHAPE_FLASH,
                 host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
                 _model: PhantomData,
                 _not_send: PhantomData,
@@ -4445,6 +4513,7 @@ mod tests {
             STEP_GENERATION.with(|g| g.set(1));
             let mut session = std::mem::ManuallyDrop::new(Session {
                 raw: NonNull::<ds4_bridge_session>::dangling(),
+                shape: SHAPE_FLASH,
                 host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
                 _model: PhantomData,
                 _not_send: PhantomData,
@@ -4467,6 +4536,7 @@ mod tests {
         IQUEST_FAILURE.with(|mode| mode.set(failure));
         let mut session = std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::IQuestQ1, SessionBackend::Cuda, 1024, 64),
             _model: PhantomData,
             _not_send: PhantomData,
@@ -4536,6 +4606,7 @@ mod tests {
             GLM_KEEP.with(|value| value.set(0));
             let mut session = std::mem::ManuallyDrop::new(Session {
                 raw: NonNull::<ds4_bridge_session>::dangling(),
+                shape: SHAPE_FLASH,
                 host: SessionLedger::new(family, SessionBackend::Cuda, 1024, 64),
                 _model: PhantomData,
                 _not_send: PhantomData,
@@ -4586,6 +4657,7 @@ mod tests {
             STEP_GENERATION.with(|g| g.set(1));
             let mut session = std::mem::ManuallyDrop::new(Session {
                 raw: NonNull::<ds4_bridge_session>::dangling(),
+                shape: SHAPE_FLASH,
                 host: SessionLedger::new(ModelFamily::Dots3Note, SessionBackend::Cuda, 1024, 64),
                 _model: PhantomData,
                 _not_send: PhantomData,
@@ -4607,6 +4679,7 @@ mod tests {
         STEP_GENERATION.with(|g| g.set(1));
         let mut session = std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::Dots3Note, SessionBackend::Cuda, 1024, 64),
             _model: PhantomData,
             _not_send: PhantomData,
@@ -4626,6 +4699,7 @@ mod tests {
         STEP_GENERATION.with(|g| g.set(1));
         let mut session = std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
             _model: PhantomData,
             _not_send: PhantomData,
@@ -4663,13 +4737,119 @@ mod tests {
         _err: *mut c_char,
         _errlen: usize,
     ) -> i32 {
+        AUDIT_SLICE_CALLS.with(|calls| calls.set(calls.get() + 1));
         i32::from(s.is_null())
+    }
+
+    fn audit_session(family: ModelFamily) -> std::mem::ManuallyDrop<Session<'static>> {
+        std::mem::ManuallyDrop::new(Session {
+            raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
+            host: SessionLedger::new(family, SessionBackend::Cuda, 4096, 64),
+            _model: PhantomData,
+            _not_send: PhantomData,
+        })
+    }
+
+    #[test]
+    fn audit_slice_bounds() {
+        let mut session = audit_session(ModelFamily::DeepSeek4);
+        for buffer in 0..3 {
+            AUDIT_SLICE_CALLS.with(|calls| calls.set(0));
+            let mut out = [0.0];
+            let mut logits = [0.0];
+            let result = session.eval_layer_slice(LayerSliceEval {
+                tokens: &[1, 2],
+                pos0: 0,
+                layer_start: 0,
+                layer_end: 42,
+                input_hc: (buffer == 0).then_some(&[0.0][..]),
+                output_hc: (buffer == 1).then_some(&mut out[..]),
+                logits: (buffer == 2).then_some(&mut logits[..]),
+            });
+            assert!(result.is_err(), "buffer {buffer}");
+            assert_eq!(AUDIT_SLICE_CALLS.with(Cell::get), 0);
+        }
+        session.shape.n_hc = u32::MAX;
+        session.shape.n_embd = u32::MAX;
+        assert!(session
+            .eval_layer_slice(LayerSliceEval {
+                tokens: &[1, 2],
+                pos0: 0,
+                layer_start: 0,
+                layer_end: 42,
+                input_hc: None,
+                output_hc: None,
+                logits: None,
+            })
+            .is_err());
+        assert_eq!(AUDIT_SLICE_CALLS.with(Cell::get), 0);
+
+        session.shape.n_hc = 2;
+        session.shape.n_embd = 3;
+        session.shape.n_vocab = 5;
+        let mut hidden = [0.0; 12];
+        let mut logits = [0.0; 5];
+        session
+            .eval_layer_slice(LayerSliceEval {
+                tokens: &[1, 2],
+                pos0: 0,
+                layer_start: 0,
+                layer_end: 42,
+                input_hc: Some(&[0.0; 12]),
+                output_hc: Some(&mut hidden),
+                logits: Some(&mut logits),
+            })
+            .unwrap();
+        assert_eq!(AUDIT_SLICE_CALLS.with(Cell::get), 1);
+    }
+
+    #[test]
+    fn audit_visual_bounds() {
+        let session = audit_session(ModelFamily::Mimo2);
+        let patches = vec![0.0; 4 * 1536];
+        for (data, h, w, tokens) in [
+            (&patches[..1], 2, 2, 1),
+            (&patches[..], 2, 2, 0),
+            (&patches[..], 3, 2, 1),
+            (&patches[..], 0, 2, 1),
+            (&patches[..], u32::MAX, u32::MAX, 1),
+        ] {
+            AUDIT_VISION_CALLS.with(|calls| calls.set(0));
+            assert!(session.encode_mimo_vision(data, h, w, tokens).is_err());
+            assert_eq!(AUDIT_VISION_CALLS.with(Cell::get), 0);
+        }
+        AUDIT_VISION_CALLS.with(|calls| calls.set(0));
+        // The stub rejects the call, but valid geometry must reach it.
+        assert!(session.encode_mimo_vision(&patches, 2, 2, 1).is_err());
+        assert_eq!(AUDIT_VISION_CALLS.with(Cell::get), 1);
+    }
+
+    #[test]
+    fn audit_family_failure_state() {
+        for family in [
+            ModelFamily::NaiveN05,
+            ModelFamily::Ling31Vq,
+            ModelFamily::BeamVq,
+            ModelFamily::MinimaxVq,
+        ] {
+            let mut session = audit_session(family);
+            session.host.replace_checkpoint(&[1, 2]);
+            STEP_GENERATION.with(|generation| generation.set(1));
+            assert!(session.sync(&TokenBuffer::from_tokens(vec![-1])).is_err());
+            assert!(session.host.valid);
+            assert!(session.sync(&TokenBuffer::from_tokens(vec![-2])).is_err());
+            assert!(!session.host.valid, "{family:?}");
+            assert!(session.host.tokens().is_empty());
+            assert_eq!(session.generation(), 2);
+        }
     }
 
     #[test]
     fn eval_layer_slice_extends_host_timeline_from_pos0() {
         let mut session = std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::DeepSeek4, SessionBackend::Cuda, 4096, 1),
             _model: PhantomData,
             _not_send: PhantomData,
@@ -4702,6 +4882,7 @@ mod tests {
     fn layer_slice_reset_clears_host_timeline() {
         let mut session = std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::DeepSeek4, SessionBackend::Cuda, 4096, 1),
             _model: PhantomData,
             _not_send: PhantomData,
@@ -4716,6 +4897,7 @@ mod tests {
     fn load_layer_payload_replaces_host_checkpoint() {
         let mut session = std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::DeepSeek4, SessionBackend::Cuda, 4096, 1),
             _model: PhantomData,
             _not_send: PhantomData,
@@ -4859,6 +5041,7 @@ mod tests {
         reset_destroy_stubs();
         let session = Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::DeepSeek4, SessionBackend::Cuda, 4096, 1),
             _model: PhantomData,
             _not_send: PhantomData,

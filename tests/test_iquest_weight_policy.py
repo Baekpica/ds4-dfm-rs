@@ -29,13 +29,16 @@ def harness():
 #include <cstring>
 #include <string>
 #include <vector>
+#include <unistd.h>
 using CUmemGenericAllocationHandle = uint64_t;
 using CUdeviceptr = uint64_t;
 static int g_quality_mode = 0, g_q8_f16_disabled_after_oom = 0, g_cublas = 1;
 static const char *g_derived_artifact_none_reason = nullptr;
 constexpr int cudaSuccess = 0, cudaDevAttrIntegrated = 1;
+constexpr int cudaDevAttrPageableMemoryAccessUsesHostPageTables = 2;
 static int cudaGetDevice(int *device) { *device = 0; return 0; }
 static int cudaDeviceGetAttribute(int *value, int, int) { *value = 1; return 0; }
+static int cudaGetLastError() { return 0; }
 ''']
     enum = "enum cuda_weight_policy {"
     if enum in source:
@@ -45,7 +48,7 @@ static int cudaDeviceGetAttribute(int *value, int, int) { *value = 1; return 0; 
     end = source.index("} cuda_weight_env_t;") + len("} cuda_weight_env_t;")
     start = source.rfind("typedef struct {", 0, end)
     pieces.append(source[start:end])
-    for name in ("cuda_parse_mib_env", "cuda_weight_env_read", "cuda_weight_env",
+    for name in ("cuda_unified_memory_host", "cuda_parse_mib_env", "cuda_weight_env_read", "cuda_weight_env",
                  "cuda_weight_policy_reset", "cuda_weight_no_derived"):
         marker = next((line for line in source.splitlines()
                        if line.startswith("static ") and

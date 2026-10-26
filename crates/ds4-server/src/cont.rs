@@ -566,7 +566,10 @@ pub fn live_tool_result_ids(api: Api, messages: &[crate::parse::ChatMsg]) -> Vec
                 return Vec::new();
             }
             let mut ids = Vec::new();
-            if tail_start > 0 {
+            if messages[..tail_start]
+                .iter()
+                .any(|m| !crate::render::role_is_system(&m.role))
+            {
                 let assistant = &messages[tail_start - 1];
                 if assistant.role != "assistant" || assistant.calls.is_empty() {
                     return Vec::new();

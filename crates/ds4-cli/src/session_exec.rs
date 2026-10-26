@@ -4,7 +4,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ds4_core::{LayerSliceEval, Model, ModelFamily, Session, Shape};
-use ds4_dist::{resolved_layer_end, Layers, SliceExec, WorkOutput, WorkRequest};
+pub use ds4_dist::SliceMeta;
+use ds4_dist::{Layers, SliceExec, WorkOutput, WorkRequest};
 
 pub fn hidden_values(shape: &Shape) -> u64 {
     match shape.family {
@@ -37,30 +38,15 @@ pub fn logits_buffer_len(vocab: u32, n_tokens: usize) -> usize {
     n_tokens.saturating_mul(vocab as usize)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SliceMeta {
-    pub model_id: u32,
-    pub n_layers: u32,
-    pub vocab: u32,
-    pub ctx_size: u32,
-    pub hidden_values: u64,
-    pub has_output: bool,
-    pub layer_start: u32,
-    pub layer_end: u32,
-}
-
 pub fn slice_meta(model_id: u32, shape: &Shape, ctx_size: u32, layers: &Layers) -> SliceMeta {
-    let n_layers = shape.n_layer;
-    SliceMeta {
+    ds4_dist::slice_meta(
         model_id,
-        n_layers,
-        vocab: shape.n_vocab,
+        shape.n_layer,
+        shape.n_vocab,
         ctx_size,
-        hidden_values: hidden_values(shape),
-        has_output: layers.has_output,
-        layer_start: layers.start,
-        layer_end: resolved_layer_end(layers, n_layers),
-    }
+        hidden_values(shape),
+        layers,
+    )
 }
 
 pub struct SessionSliceExec<'m> {

@@ -24,7 +24,7 @@ impl Fixture {
     }
 
     fn store(&self, model_id: u8) -> SessionStore {
-        SessionStore::open(&self.root, model_id)
+        SessionStore::open(&self.root, model_id, [1; 32])
     }
 }
 
@@ -41,13 +41,15 @@ fn save_named(
     last_used: u64,
     payload: &[u8],
 ) -> String {
+    let temp = ds4_kv::PayloadTemp::create(store.dir()).unwrap();
+    std::fs::write(temp.path(), payload).unwrap();
     store
         .save(SaveSpec {
             title,
             created_at,
             last_used,
             text: format!("<｜User｜>{title}<｜Assistant｜>ok").as_bytes(),
-            payload,
+            payload: temp.path(),
             tokens: 8,
             model_id: 1,
             quant_bits: 2,
@@ -81,13 +83,15 @@ fn list_orders_by_recent_then_sha() {
     let newer = save_named(&store, "newer", 200, 300, b"PAY2");
     let tie_b = save_named(&store, "tie-b", 150, 200, b"PAY3");
     let tie_a = save_named(&store, "tie-a", 160, 200, b"PAY4");
+    let temp = ds4_kv::PayloadTemp::create(store.dir()).unwrap();
+    std::fs::write(temp.path(), b"P").unwrap();
     let _other_model = store
         .save(SaveSpec {
             title: "other-model",
             created_at: 400,
             last_used: 400,
             text: b"x",
-            payload: b"P",
+            payload: temp.path(),
             tokens: 1,
             model_id: 9,
             quant_bits: 2,
@@ -250,4 +254,148 @@ fn ambiguous_prefix_errors_like_c() {
     }
     let err = store.find(&shared).unwrap_err().to_string();
     assert_eq!(err, format!("session prefix {shared:.40} is ambiguous"));
+}
+
+#[test]
+fn audit_foreign_kv_rebuild() {
+    for identity in [None, Some([2u8; 32])] {
+        let fx = Fixture::create();
+        let store = fx.store(1);
+        let title = "legacy or different weights";
+        let sha = identity_sha(title, 10);
+        let mut trailer = super::identity::encode_title_trailer(title);
+        let mut flags = ds4_kv::EXT_SESSION_TITLE;
+        if let Some(identity) = identity {
+            // Existing KVI footer fixture; the agent used to ignore it entirely.
+            flags |= 1 << 6;
+            trailer.extend_from_slice(b"KVI\x01");
+            trailer.extend_from_slice(&identity);
+            trailer.extend_from_slice(b"KVI!");
+        }
+        let text = b"<\xef\xbd\x9cUser\xef\xbd\x9c>saved conversation";
+        let raw = ds4_kv::fill_header(
+            1,
+            2,
+            ds4_kv::Reason::AgentSession,
+            flags,
+            8,
+            0,
+            1024,
+            10,
+            10,
+            2,
+        );
+        let header = ds4_kv::parse_header(&raw, text.len() as u32).unwrap();
+        ds4_kv::write_path(
+            &ds4_kv::path_for_sha(&fx.root, &sha),
+            &ds4_kv::Record {
+                header,
+                text: text.to_vec(),
+                payload: b"KV".to_vec(),
+                trailer,
+            },
+        )
+        .unwrap();
+        let plan = store.switch_plan(&sha).unwrap();
+        assert!(
+            plan.needs_prefill,
+            "unknown artifact must rebuild from text"
+        );
+        assert_eq!(plan.text, text);
+        assert_eq!(plan.title, title);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn audit_sparse_catalog() {
+    const CHILD: &str = "DS4_TEST_KV_MEMORY";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent::kv::tests::audit_sparse_catalog",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    use std::io::{Seek, SeekFrom, Write};
+    let fx = Fixture::create();
+    let store = fx.store(1);
+    let text = b"saved text";
+    let mut shas = Vec::new();
+    for created in 1..=2 {
+        let sha = identity_sha("sparse", created);
+        let mut file = std::fs::File::create(ds4_kv::path_for_sha(&fx.root, &sha)).unwrap();
+        let size = 8 * 1024u64.pow(3);
+        file.write_all(&ds4_kv::fill_header(
+            1,
+            2,
+            ds4_kv::Reason::AgentSession,
+            ds4_kv::EXT_SESSION_TITLE,
+            8,
+            0,
+            1024,
+            created,
+            created,
+            size,
+        ))
+        .unwrap();
+        file.write_all(&(text.len() as u32).to_le_bytes()).unwrap();
+        file.write_all(text).unwrap();
+        file.seek(SeekFrom::Current(size as i64)).unwrap();
+        file.write_all(&super::identity::encode_title_trailer("sparse"))
+            .unwrap();
+        shas.push(sha);
+    }
+    // Old whole-file reads cannot fit; no 8 GiB allocation reaches the host.
+    let mut old = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut old), 0);
+        let limit = libc::rlimit {
+            rlim_cur: 512 * 1024 * 1024,
+            rlim_max: old.rlim_max,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &limit), 0);
+    }
+    assert_eq!(store.list().unwrap().len(), 2);
+    assert_eq!(store.find(&shas[0]).unwrap().0, shas[0]);
+    assert_eq!(store.switch_plan(&shas[0]).unwrap().text, text);
+    store.delete(&shas[1]).unwrap();
+    store.strip(&shas[0], 8, 9).unwrap();
+    assert_eq!(store.switch_plan(&shas[0]).unwrap().payload_bytes, 0);
+    unsafe {
+        assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &old), 0);
+    }
+}
+
+#[test]
+fn audit_identity_and_held_file() {
+    let fx = Fixture::create();
+    let first = fx.store(1);
+    let sha = save_named(&first, "stable", 10, 10, b"first weights KV");
+    let plan = first.switch_plan(&sha).unwrap();
+    assert!(!plan.needs_prefill);
+    let other = SessionStore::open(&fx.root, 1, [2; 32]);
+    assert!(other.switch_plan(&sha).unwrap().needs_prefill);
+    assert_eq!(other.list().unwrap()[0].title, "stable");
+    save_named(&other, "stable", 10, 20, b"other weights KV");
+    assert_eq!(
+        ds4_kv::read_path(&plan.path).unwrap().payload,
+        b"first weights KV"
+    );
+    assert_eq!(ds4_kv::read_identity(&plan.path).unwrap(), Some([1; 32]));
+    assert!(first.switch_plan(&sha).unwrap().needs_prefill);
+    assert!(!other.switch_plan(&sha).unwrap().needs_prefill);
+    let path = ds4_kv::path_for_sha(&fx.root, &sha);
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_len(file.metadata().unwrap().len() - 1).unwrap();
+    assert!(other.switch_plan(&sha).unwrap().needs_prefill);
 }
