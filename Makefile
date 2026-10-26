@@ -401,150 +401,45 @@ tests/naive_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_gate" $@
 
-# MiniMax-H3 prompt encoder. Deliberately not $(NVCCFLAGS): --use_fast_math
-# lowers expf to __expf and changes the BF16 attention values, while the
-# reference (/data/h3.c, NVCCFLAGS at Makefile:26) compiles without it. The
-# E4 gate compares an FNV hash of the encoder output, so the flag set is part
-# of the numerical contract.
+# Match h3.c arithmetic: --use_fast_math changes BF16 attention values.
 H3_NVCCFLAGS := -O3 -std=c++17 $(NVCC_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
+H3_OBJS := $(addprefix native/h3/h3_,$(addsuffix _gpu.o,text dit vision device))
+H3_LIBS = $(DS4_RS_LIBS) -C link-arg=-lcublasLt
+# Cargo must relink whenever any linked object changes.
+H3_LINK_ARGS = -C metadata=$(shell cksum $(filter %.o,$^) </dev/null 2>/dev/null | cksum | awk '{print $$1}') \
+	$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(filter %.o,$^))
 
-# Cargo does not fingerprint an external link object; this one must be in the
-# metadata or a rebuilt h3_text_gpu.o is never linked (0.02 s "Finished" and a
-# stale binary). Recursive on purpose: evaluated after the object exists.
-H3_LINK_FINGERPRINT = $(shell cksum native/h3/h3_text_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
+$(H3_OBJS): %.o: %.cu %.h
+	$(NVCC) $(H3_NVCCFLAGS) $(DEPFLAGS) -c -o $@ $<
 
-# Every h3 gate example carries `required-features = ["h3-gates"]` in
-# ds4-core's manifest, so a plain `cargo test` on a model-free runner skips
-# them instead of failing to link the h3 objects it does not have. The five
-# targets below turn the feature on.
-native/h3/h3_text_gpu.o: native/h3/h3_text_gpu.cu native/h3/h3_text_gpu.h
-	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
+H3_GATES := $(addprefix tests/h3_,$(addsuffix _gate,text dit vision multimodal video_encoder audio_encoder device partition canvas reference))
+tests/h3_text_gate: native/h3/h3_text_gpu.o
+tests/h3_dit_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
+tests/h3_vision_gate: native/h3/h3_vision_gpu.o
+tests/h3_multimodal_gate: native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
+tests/h3_video_encoder_gate tests/h3_audio_encoder_gate tests/h3_reference_gate: native/h3/h3_dit_gpu.o
+tests/h3_device_gate: native/h3/h3_device_gpu.o
+tests/h3_device_gate: H3_LIBS = $(DS4_RS_LIBS)
+# Header/canvas readers do not need a GPU object or CUDA libraries.
+tests/h3_partition_gate tests/h3_canvas_gate: H3_LIBS =
 
-tests/h3_text_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o
-	cargo rustc -p ds4-core --example h3_text_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_text_gate" $@
-
-# The DiT shares the encoder's flags and the same fingerprint trap: cargo does
-# not fingerprint an external link object, so the object's checksum is part of
-# the metadata.
-H3_DIT_LINK_FINGERPRINT = $(shell cksum native/h3/h3_dit_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
-
-native/h3/h3_dit_gpu.o: native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h
-	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
+$(H3_GATES): tests/%: $(DS4_RS_SOURCES)
+	cargo rustc -p ds4-core --example $* --release --features h3-gates -- \
+		$(H3_LINK_ARGS) $(H3_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
 
 tests/h3/native_test: tests/h3/test_native.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
 	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
-
-tests/h3_dit_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
-	cargo rustc -p ds4-core --example h3_dit_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt -C link-arg=-lstdc++
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_dit_gate" $@
-
-# The vision tower is its own translation unit on purpose: the prompt encoder's
-# gated object must not be rebuilt for a new feature. Same flags and the same
-# fingerprint trap as the two above.
-H3_VISION_LINK_FINGERPRINT = $(shell cksum native/h3/h3_vision_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
-
-native/h3/h3_vision_gpu.o: native/h3/h3_vision_gpu.cu native/h3/h3_vision_gpu.h
-	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
-
-tests/h3_vision_gate: $(DS4_RS_SOURCES) native/h3/h3_vision_gpu.o
-	cargo rustc -p ds4-core --example h3_vision_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_vision_gate" $@
-
-# The multimodal gate runs the vision tower and then the prompt encoder, so it
-# links both objects and both fingerprints.
-tests/h3_multimodal_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
-	cargo rustc -p ds4-core --example h3_multimodal_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_multimodal_gate" $@
-
-# The VideoVAE encoder's pad/conv/group-norm primitives live in the DiT object
-# (one translation unit per family), so this gate links it alone.
-tests/h3_video_encoder_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
-	cargo rustc -p ds4-core --example h3_video_encoder_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_video_encoder_gate" $@
-
-# The AudioVAE encoder shares the DiT object too: its LayerNorm, GEGLU, plain
-# Snake1d, QKV split, causal attention and attention pool sit beside the
-# decoder primitives.
-tests/h3_audio_encoder_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
-	cargo rustc -p ds4-core --example h3_audio_encoder_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_audio_encoder_gate" $@
-
-# The device probe is its own object: it needs neither a stream nor cuBLAS, and
-# `--info` must resolve without the render path's ABI (`h3_device_cuda.cu:17-50`
-# is the whole reference surface). Same flags and the same fingerprint trap.
-H3_DEVICE_LINK_FINGERPRINT = $(shell cksum native/h3/h3_device_gpu.o 2>/dev/null | cksum | awk '{print $$1}')
-
-native/h3/h3_device_gpu.o: native/h3/h3_device_gpu.cu native/h3/h3_device_gpu.h
-	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
-
-tests/h3_device_gate: $(DS4_RS_SOURCES) native/h3/h3_device_gpu.o
-	cargo rustc -p ds4-core --example h3_device_gate --release --features h3-gates -- \
-	-C metadata=$(H3_DEVICE_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_device_gpu.o \
-	$(DS4_RS_LIBS)
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_device_gate" $@
-
-# The partition gate is host-only: it reads shard headers and tensor samples,
-# so it needs no device object and no CUDA library.
-tests/h3_partition_gate: $(DS4_RS_SOURCES)
-	cargo rustc -p ds4-core --example h3_partition_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
-	$(DS4_RS_LIBS)
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_partition_gate" $@
-
-# The canvas gate is host-only too: it replays the reference's media sizing
-# policy over a fixed sweep (`h3_host.c:49-124`).
-tests/h3_canvas_gate: $(DS4_RS_SOURCES)
-	cargo rustc -p ds4-core --example h3_canvas_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
-	$(DS4_RS_LIBS)
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_canvas_gate" $@
-
-# The reference gate prepares ordered references end to end: media decode at
-# the reference canvas, the video VAE encode, the audio VAE encode and the
-# row assembly. Same DiT object as the encoders it composes.
-tests/h3_reference_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
-	cargo rustc -p ds4-core --example h3_reference_gate --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_reference_gate" $@
 
 # Portable reference tests: host-only, without model weights.
 H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable
 H3_REFERENCE_SUITE := $(addprefix tests/h3-,$(H3_REFERENCE_TESTS))
 
-.PHONY: tests/h3-suite
-
-# Each source is `tests/h3/<name>.rs`, the reference file's own name, and each
-# binary is the same name after `tests/h3-`.
 $(H3_REFERENCE_SUITE): tests/h3-%: $(DS4_RS_SOURCES)
-	cargo rustc -p ds4-core --example $* --release --features h3-gates -- \
-	-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
-	$(DS4_RS_LIBS)
+	cargo build -p ds4-core --example $* --release --features h3-gates --locked
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
 
+.PHONY: tests/h3-suite
 # Report every result; exit 3 identifies missing optional test artifacts.
 tests/h3-suite: $(H3_REFERENCE_SUITE)
 	@status=0; \
@@ -559,40 +454,18 @@ tests/h3-suite: $(H3_REFERENCE_SUITE)
 	done; \
 	exit $$status
 
-# The PPM diff is host-only: it reads the frames and step previews the CLI
-# writes (`main.c:162-176`, `:196-245`) and turns "the renders differ" into
-# pixel counts, PSNR and per-band attribution, with no image library.
 tools/minimax_h3/ppm_diff: tools/minimax_h3/ppm_diff.c
 	$(CC) $(CFLAGS) -o $@ $< -lm
 
-# The h3 renderer: the CLI binary plus the three h3 device objects. It
-# deliberately does not link the bridge or the core objects: the h3 path
-# reaches only the `h3d_` and `h3v_` ABIs, so the binary also builds in a tree
-# that carries the h3 sources alone. The h3 objects
-# are not reachable from ds4-rs's link set, so they are named here and folded
-# into the metadata. The vision object is the anchor path's: a keyframe is a
-# `<Picture n>:` span in the prompt as well as a row span (`h3.c:1345-1414`).
-h3-rs: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o native/h3/h3_vision_gpu.o native/h3/h3_device_gpu.o
-	cargo rustc -p ds4-cli --bin h3-rs --release --features native -- \
-	-C metadata=$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT)-$(H3_DEVICE_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_device_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/h3-rs" $@
-
-# The H3 local video API with the in-process engine. Same h3 device objects as
-# h3-rs: the engine splices anchors into the prompt, so it reaches the vision
-# ABI too (h3_video.rs and the engine reach only concerns in ds4-core).
-h3-server-rs: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o native/h3/h3_vision_gpu.o
-	cargo rustc -p ds4-server --bin h3-server-rs --release --features native -- \
-	-C metadata=$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT)-$(H3_VISION_LINK_FINGERPRINT) \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_dit_gpu.o \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_text_gpu.o \
-	-C link-arg=$(DS4_RS_ROOT)/native/h3/h3_vision_gpu.o \
-	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
-	cp -f "$(DS4_RS_TARGET_DIR)/release/h3-server-rs" $@
+# H3 hosts link only H3 objects; the LLM engine remains independent.
+h3-rs: $(H3_OBJS)
+h3-rs: H3_PACKAGE = ds4-cli
+h3-server-rs: $(filter-out native/h3/h3_device_gpu.o,$(H3_OBJS))
+h3-server-rs: H3_PACKAGE = ds4-server
+h3-rs h3-server-rs: $(DS4_RS_SOURCES)
+	cargo rustc -p $(H3_PACKAGE) --bin $@ --release --features native -- \
+		$(H3_LINK_ARGS) $(H3_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/$@" $@
 
 # Common residency probes use at most one MiB of actual model-file mapping.
 tests/weight_mapping_probe: tests/test_weight_mapping.cu
@@ -2722,7 +2595,9 @@ BUILD_PROGRAMS := \
     tests/test_step37_state tests/test_step37_vision tests/test_step37_vision_ops \
     tests/weight_mapping_policy tests/weight_mapping_probe tools/gb10_peaks
 
-BUILD_OBJECTS += tests/test_iquest_prefix.o
+BUILD_OBJECTS += tests/test_iquest_prefix.o $(H3_OBJS)
+BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) $(H3_REFERENCE_SUITE) \
+    tests/h3/native_test tools/minimax_h3/ppm_diff
 DEPFILES := $(addsuffix .d,$(BUILD_OBJECTS))
 -include $(wildcard $(DEPFILES))
 
