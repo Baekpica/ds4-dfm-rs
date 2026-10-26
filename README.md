@@ -247,11 +247,12 @@ See [architecture](docs/rust-migration/ARCHITECTURE.md) and
 
 <a id="status"></a>
 
-The current repository version is **v0.1.3**. Its
-[ledger](docs/releases/v0.1.3.md) records common serving controls and scoped
-P0–P4 gates. Earlier ledgers preserve the Rust baseline, performance workflow
-and shared Jinja qualification. Dated reports describe their recorded build,
-artifact and workload; they do not describe live processes.
+The current repository version is **v0.1.4**. Its
+[ledger](docs/releases/v0.1.4.md) collects the model and VQ additions,
+measured inference work, and audit repairs since v0.1.3. Earlier ledgers
+preserve the Rust baseline, performance workflow, shared Jinja and serving
+qualification. Dated reports retain their recorded build, artifact and
+workload; they do not describe live processes.
 
 ## Contributing
 
