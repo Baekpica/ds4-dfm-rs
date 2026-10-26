@@ -981,6 +981,9 @@ fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
             index += 1;
             marker = bytes[index + 1];
         }
+        if index + 3 >= bytes.len() {
+            return None;
+        }
         match marker {
             0xD8 | 0x01 => {
                 index += 2;
@@ -1238,6 +1241,30 @@ mod tests {
 
         let square = planned(body("fl2va", json!([keyframe(0, 1024, 1024)]), "auto", 8)).unwrap();
         assert_eq!((square.size.width, square.size.height), (768, 768));
+    }
+
+    #[test]
+    fn auto_refuses_truncated_jpeg() {
+        let condition = json!({
+            "type": "image", "role": "keyframe", "frame_index": 0,
+            "uri": data_uri("image/jpeg", &[0xff, 0xd8, 0xff, 0xff, 0xff, 0xff])
+        });
+        let error = planned(body("fl2va", json!([condition]), "auto", 8)).unwrap_err();
+        assert_eq!(error.code, "invalid_condition");
+    }
+
+    #[test]
+    fn auto_refuses_extreme_dimensions() {
+        for (width, height) in [(u32::MAX, 1), (1, u32::MAX)] {
+            let error = planned(body(
+                "fl2va",
+                json!([keyframe(0, width, height)]),
+                "auto",
+                8,
+            ))
+            .unwrap_err();
+            assert_eq!(error.code, "invalid_aspect_ratio");
+        }
     }
 
     #[test]

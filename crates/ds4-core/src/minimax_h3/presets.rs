@@ -108,9 +108,11 @@ pub fn canvas_for(width: u32, height: u32) -> (i32, i32) {
     }
 
     let edge = f64::from(TIER_SHORT_EDGE) * f64::from(long) / f64::from(short);
-    let snapped = (edge / f64::from(CANVAS_MULTIPLE)).round() as i32 * CANVAS_MULTIPLE;
     let cap = MAX_PIXELS / i64::from(TIER_SHORT_EDGE);
-    let clamped = snapped.min((cap as i32) / CANVAS_MULTIPLE * CANVAS_MULTIPLE);
+    let units = (edge / f64::from(CANVAS_MULTIPLE))
+        .round()
+        .min((cap / i64::from(CANVAS_MULTIPLE)) as f64);
+    let clamped = units as i32 * CANVAS_MULTIPLE;
 
     if width >= height {
         (clamped, TIER_SHORT_EDGE)
