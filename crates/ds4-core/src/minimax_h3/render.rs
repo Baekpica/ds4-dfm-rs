@@ -590,9 +590,7 @@ pub fn mux_args(
 /// the PCM on a second inherited descriptor, both written from their own
 /// threads so neither pipe can starve the other.
 ///
-/// `program` is an explicit executable, which is how the CLI exposes
-/// `H3_FFMPEG` (`h3_ffmpeg.c:21-24`). This is a CLI capability only: the
-/// serving surface must never spawn a process (`AGENTS.md`).
+/// `program` is operator-configured; a generation request cannot choose it.
 pub fn mux_mp4(
     program: &Path,
     path: &Path,
@@ -651,6 +649,10 @@ pub fn mux_mp4(
             if libc::dup2(read_fd, audio_fd) < 0 {
                 return Err(io::Error::last_os_error());
             }
+            // dup2(fd, fd) leaves CLOEXEC set on io::pipe's original fd.
+            if libc::fcntl(audio_fd, libc::F_SETFD, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
 
             Ok(())
         });
@@ -660,6 +662,8 @@ pub fn mux_mp4(
         .spawn()
         .map_err(|error| format!("cannot start FFmpeg: {error}"))?;
 
+    // Release the parent's video reader so an exited child causes EPIPE.
+    drop(command);
     drop(audio_read);
 
     // Drain stderr while the pipes are being written: a full stderr pipe would
@@ -740,6 +744,74 @@ const MUX_AUDIO_FD: i32 = 3;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mux_pipe_lifetimes() {
+        const CHILD: &str = "DS4_H3_MUX_CHILD";
+        if let Ok(mode) = std::env::var(CHILD) {
+            assert_eq!(unsafe { libc::fcntl(MUX_AUDIO_FD, libc::F_GETFD) }, -1);
+            let edge = if mode == "early-exit" { 256 } else { 32 };
+            let frames = RgbFrames::from_f32(
+                &vec![0.25; 3 * 2 * edge * edge],
+                2,
+                edge as i32,
+                edge as i32,
+            )
+            .unwrap();
+            let path = std::env::temp_dir().join(format!("h3-mux-{}.mp4", std::process::id()));
+            let program = if mode == "early-exit" {
+                "/bin/false"
+            } else {
+                "ffmpeg"
+            };
+            let result = mux_mp4(
+                Path::new(program),
+                &path,
+                &frames,
+                &vec![0.0; 2 * 3200],
+                3200,
+                2,
+                32000,
+            );
+            let _ = std::fs::remove_file(path);
+            if mode == "early-exit" {
+                assert!(result.is_err());
+            } else {
+                assert!(result.is_ok(), "fd 3 must survive exec: {result:?}");
+            }
+            return;
+        }
+
+        use std::os::unix::process::CommandExt;
+        for mode in ["early-exit", "audio-fd"] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "minimax_h3::render::tests::mux_pipe_lifetimes",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .stdout(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success(), "{mode}: {status}");
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    unsafe {
+                        libc::kill(-(child.id() as i32), libc::SIGKILL);
+                    }
+                    child.wait().unwrap();
+                    panic!("{mode}: mux blocked after child exit");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
 
     /// The phone reel: the model renders 576x1024, the file is 1080x1920.
     /// The reference refuses that output (`h3.c:497-500`); the delivery
