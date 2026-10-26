@@ -769,9 +769,6 @@ The bandwidth figure is informational; we don't tier on it.
   (fall back to MMQ, N=20 agg ~26 vs N=16 ~51 on GB10) — prefer scheduling
   decode widths <=16 or >=24. `DS4_CUDA_MOE_SMALL16_DIRECT=1` selects the experimental
   Q8_K direct fallback instead of preserving the normal MMQ backup path.
-  `DS4_CUDA_MOE_Q81_FUSED=1` selects experimental canonical-Q8_1 fused
-  gate+up+mid and down+sum helpers; early GB10 probes preserved acceptance but
-  regressed throughput at wider routed batches, so this is diagnostic-only.
   `DS4_CUDA_MOE_Q8K_GATE_IN_VEC=1` and `DS4_CUDA_MOE_Q8K_DOWN_IN_VEC=1`
   are stage-isolation diagnostics: they keep the MMVQ branch active but swap
   only gate/up or only down to the Q8_K direct kernels.

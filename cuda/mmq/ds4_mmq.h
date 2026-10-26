@@ -1327,7 +1327,7 @@ int ds4_mmq_iq2_xxs_aligned_moe_vec(
 // caller still runs its clamp-aware SwiGLU.
 //
 // _gate_up_mid_vec: additionally folds the clamp/SwiGLU/router-weight
-// epilogue (identical semantics to ds4_mmq_moe_gate_up_mid_q8_1_qwarp32) and
+// epilogue (the same clamp and router-weight semantics as ds4_cuda.cu) and
 // writes mid[slot * M + row] directly.
 int ds4_mmq_iq2_xxs_aligned_moe_pair_vec(
     const void    * W_gate_aligned,
@@ -1346,104 +1346,6 @@ int ds4_mmq_iq2_xxs_aligned_moe_pair_vec(
 int ds4_mmq_iq2_xxs_aligned_moe_gate_up_mid_vec(
     const void    * W_gate_aligned,
     const void    * W_up_aligned,
-    const float   * X_f32,
-    const int32_t * ids,
-    const float   * weights,
-    float         * mid_f32,
-    int             M,
-    int             K,
-    int             n_tokens,
-    int             n_experts,
-    int             n_expert_used,
-    float           clamp,
-    cudaStream_t    stream);
-
-// Fused down+sum vector entries for routed MoE with top_k=6. These preserve
-// the canonical Q8_1 activation quantization used by the regular _moe_vec
-// path, but avoid materializing [token, slot, out_dim] down results and avoid
-// the separate slot-sum kernel. The caller must already have baked router
-// weights into X_f32, so the helper computes:
-//
-//   out[token, row] = sum_slot W[ids[token, slot], row, :] @ X[token, slot, :]
-//
-// Layouts:
-//   W:       [n_experts, M rows, K cols] in Q2_K or Q4_K blocks
-//   X_f32:   [n_tokens * 6, K] F32 row-major
-//   ids:     [n_tokens, 6] int32 row-major
-//   out_f32: [n_tokens, M] F32 row-major
-//
-// Constraints:
-//   - n_expert_used must be 6
-//   - K must be a multiple of 256
-//
-// Returns 0 on success, non-zero on validation or launch failure.
-
-int ds4_mmq_q2_K_moe_down_sum6_vec(
-    const void    * W,
-    const float   * X_f32,
-    const int32_t * ids,
-    float         * out_f32,
-    int             M,
-    int             K,
-    int             n_tokens,
-    int             n_experts,
-    int             n_expert_used,
-    cudaStream_t    stream);
-
-int ds4_mmq_q4_K_moe_down_sum6_vec(
-    const void    * W,
-    const float   * X_f32,
-    const int32_t * ids,
-    float         * out_f32,
-    int             M,
-    int             K,
-    int             n_tokens,
-    int             n_experts,
-    int             n_expert_used,
-    cudaStream_t    stream);
-
-// Fused gate+up+SwiGLU vector entries for routed MoE with top_k=6. These use
-// canonical Q8_1 activation quantization and compute weighted mid directly:
-//
-//   mid[token, slot, row] =
-//       silu(clamp_gate(W_gate[expert,row] @ X[token]))
-//     * clamp_up(W_up[expert,row] @ X[token])
-//     * router_weight[token, slot]
-//
-// Clamp semantics match ds4_cuda.cu: gate is capped above, up is clamped to
-// [-clamp, clamp], and no clamp is applied when clamp <= 1e-6.
-//
-// Layouts:
-//   W_gate/W_up: [n_experts, M rows, K cols] in IQ2_XXS or Q4_K blocks
-//   X_f32:       [n_tokens, K] F32 row-major
-//   ids:         [n_tokens, 6] int32 row-major
-//   weights:     [n_tokens, 6] F32 row-major
-//   mid_f32:     [n_tokens * 6, M] F32 row-major
-//
-// Constraints:
-//   - n_expert_used must be 6
-//   - K must be a multiple of 256
-//
-// Returns 0 on success, non-zero on validation or launch failure.
-
-int ds4_mmq_iq2_xxs_moe_gate_up_mid_vec(
-    const void    * W_gate,
-    const void    * W_up,
-    const float   * X_f32,
-    const int32_t * ids,
-    const float   * weights,
-    float         * mid_f32,
-    int             M,
-    int             K,
-    int             n_tokens,
-    int             n_experts,
-    int             n_expert_used,
-    float           clamp,
-    cudaStream_t    stream);
-
-int ds4_mmq_q4_K_moe_gate_up_mid_vec(
-    const void    * W_gate,
-    const void    * W_up,
     const float   * X_f32,
     const int32_t * ids,
     const float   * weights,

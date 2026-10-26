@@ -38175,8 +38175,6 @@ static int routed_moe_launch(
             int rc = -1;
             int gate_up_fused = 0;
             int down_sum_fused = 0;
-            const uint32_t use_q81_fused_moe =
-                getenv("DS4_CUDA_MOE_Q81_FUSED") != NULL;
             const uint32_t use_q8k_gate_in_vec =
                 n_expert_used == 6u && getenv("DS4_CUDA_MOE_Q8K_GATE_IN_VEC") != NULL;
             const uint32_t use_q8k_down_in_vec =
@@ -38217,7 +38215,7 @@ static int routed_moe_launch(
              * host mmap at ~100x cost (the 2026-07-03 batch_eval "hang"). */
             if (n_tokens <= 16u && gate_iq2_aligned && up_iq2_aligned &&
                 cuda_moe_iq2_aligned_enabled() &&
-                !use_q8k_gate_in_vec && !use_q81_fused_moe && !use_pair_raw_vec) {
+                !use_q8k_gate_in_vec && !use_pair_raw_vec) {
                 rc = ds4_mmq_iq2_xxs_aligned_moe_gate_up_mid_vec(
                     gate_iq2_aligned, up_iq2_aligned,
                     (const float *)x->ptr,
@@ -38293,31 +38291,6 @@ static int routed_moe_launch(
                     gate_up_fused = 1;
                 } else {
                     fprintf(stderr, "ds4: DS4_CUDA_MOE_Q8K_GATE_IN_VEC requested but scratch/shape invalid; falling back to Q8_1 gate/up\n");
-                }
-            } else if (use_q81_fused_moe && n_expert_used == 6u && !gate_is_q2k) {
-                if (gate_is_q4k) {
-                    rc = ds4_mmq_q4_K_moe_gate_up_mid_vec(gate_w, up_w,
-                                                          (const float *)x->ptr,
-                                                          (const int32_t *)selected->ptr,
-                                                          (const float *)weights->ptr,
-                                                          (float *)mid->ptr,
-                                                          (int)expert_mid_dim, (int)expert_in_dim,
-                                                          (int)n_tokens, (int)n_experts_total,
-                                                          (int)n_expert_used, clamp, moe_stream);
-                } else {
-                    rc = ds4_mmq_iq2_xxs_moe_gate_up_mid_vec(gate_w, up_w,
-                                                             (const float *)x->ptr,
-                                                             (const int32_t *)selected->ptr,
-                                                             (const float *)weights->ptr,
-                                                             (float *)mid->ptr,
-                                                             (int)expert_mid_dim, (int)expert_in_dim,
-                                                             (int)n_tokens, (int)n_experts_total,
-                                                             (int)n_expert_used, clamp, moe_stream);
-                }
-                if (rc == 0) {
-                    gate_up_fused = 1;
-                } else {
-                    fprintf(stderr, "ds4: ds4_mmq_<>_moe_gate_up_mid_vec returned %d; falling back to unfused gate/up\n", rc);
                 }
             }
             if (gate_up_fused) {
@@ -38511,27 +38484,6 @@ static int routed_moe_launch(
                 } else {
                     fprintf(stderr, "ds4: DS4_CUDA_MOE_Q8K_DOWN_IN_VEC requested but scratch/shape invalid; falling back to Q8_1 down\n");
                 }
-            } else if (use_q81_fused_moe && n_expert_used == 6u) {
-                if (!down_is_q2k) {
-                    rc = ds4_mmq_q4_K_moe_down_sum6_vec(down_w, (const float *)mid->ptr,
-                                                        (const int32_t *)selected->ptr,
-                                                        (float *)out->ptr,
-                                                        (int)out_dim, (int)expert_mid_dim,
-                                                        (int)n_tokens, (int)n_experts_total,
-                                                        (int)n_expert_used, moe_stream);
-                } else {
-                    rc = ds4_mmq_q2_K_moe_down_sum6_vec(down_w, (const float *)mid->ptr,
-                                                        (const int32_t *)selected->ptr,
-                                                        (float *)out->ptr,
-                                                        (int)out_dim, (int)expert_mid_dim,
-                                                        (int)n_tokens, (int)n_experts_total,
-                                                        (int)n_expert_used, moe_stream);
-                }
-                if (rc == 0) {
-                    down_sum_fused = 1;
-                } else {
-                    fprintf(stderr, "ds4: ds4_mmq_<>_moe_down_sum6_vec returned %d; falling back to unfused down\n", rc);
-                }
             }
             if (down_sum_fused) {
                 if (mmvq_prof_ev[3]) (void)cudaEventRecord(mmvq_prof_ev[3], ds4_current_stream());
@@ -38611,9 +38563,9 @@ static int routed_moe_launch(
                     (void)cudaEventElapsedTime(&ms_sum, mmvq_prof_ev[3], mmvq_prof_ev[4]);
                     (void)cudaEventElapsedTime(&ms_total, mmvq_prof_ev[0], mmvq_prof_ev[4]);
                     fprintf(stderr,
-                            "ds4: CUDA MoE mmvq profile tokens=%u assignments=%llu q4k=%u q81_fused=%u pair_raw=%u q8k_gate=%u q8k_down=%u gateup=%.3f swiglu=%.3f down=%.3f sum=%.3f total=%.3f ms\n",
+                            "ds4: CUDA MoE mmvq profile tokens=%u assignments=%llu q4k=%u pair_raw=%u q8k_gate=%u q8k_down=%u gateup=%.3f swiglu=%.3f down=%.3f sum=%.3f total=%.3f ms\n",
                             n_tokens, (unsigned long long)n_assignments, q4k_path,
-                            use_q81_fused_moe, use_pair_raw_vec, use_q8k_gate_in_vec, use_q8k_down_in_vec,
+                            use_pair_raw_vec, use_q8k_gate_in_vec, use_q8k_down_in_vec,
                             ms_gateup, ms_swiglu, ms_down, ms_sum, ms_total);
                 }
                 for (uint32_t i = 0; i < 5u; i++) {
