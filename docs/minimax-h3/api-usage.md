@@ -19,7 +19,7 @@ path. The contract itself, with every field and every refusal, is
 | `--steps N`, `--reuse N` | `20`, `1` | denoise evaluations, reuse window; engine only (`h3-server-rs.rs:28-29`) |
 | `--renderer PROGRAM` | none | external renderer executable |
 | `--renderer-arg ARG` | none | fixed renderer argument, repeatable |
-| `--max-jobs N` | `8` | retained jobs, also render concurrency (`h3-server-rs.rs:25`) |
+| `--max-jobs N` | `8` | retained jobs; the store's bound, and a render bound only under `--renderer` (`h3-server-rs.rs:25`) |
 | `--timeout-secs N` | `3600` | per-render timeout, external renderer only (`h3-server-rs.rs:26`) |
 
 `--model-dir` and `--renderer` are exclusive (exit 2). A `--model-dir` build
@@ -38,20 +38,21 @@ create answers 503.
 
 The engine keeps the prompt embedding and prepared DiT across requests and
 serves one render at a time in arrival order; the engine channel is the queue
-(`h3_engine.rs:5-8`, `engine.rs:11-16`). The external renderer runs per job as
+(`h3_engine.rs:3-7`, `engine.rs:13-16`, `video_api.rs:352-370`). The external
+renderer runs per job as
 
 ```text
 PROGRAM [fixed args...] -p P --width W --height H --seconds S
         [--first-frame P] [--last-frame P] --seed N -o PATH
 ```
 
-stdin null, stderr tail kept (`h3_video.rs:188-217`, `:222-313`). The request
-never chooses the program, an argument or a path (`h3_video.rs:26-33`).
+stdin null, stderr tail kept (`h3_video.rs:312-315`, `:330-366`). The request
+never chooses the program, an argument or a path (`h3_video.rs:21-27`).
 
 ## Create
 
 `POST /v1/videos` takes the SGLang body and answers the id alone
-(`h3_video.rs:423-445`); without a backend it answers 503 `renderer_disabled`
+(`h3_video.rs:518-548`); without a backend it answers 503 `renderer_disabled`
 before touching the store.
 
 ```bash
@@ -109,20 +110,21 @@ curl -s http://127.0.0.1:8090/v1/videos/video_1
 ```
 
 ```json
-{"id":"video_1","status":"in_progress","size":"1344x768","seconds":10,"frames":243,"seed":0,"created_at":1792846990,"completed_at":null,"error":null}
+{"id":"video_1","status":"in_progress","queue_position":null,"size":"1344x768","seconds":10,"frames":243,"seed":0,"created_at":1792846990,"completed_at":null,"error":null}
 ```
 
-The record is `video_api.rs:206-235`: the id, the state, the resolved target
-(`size`, `seconds`, `frames`), the seed and the failure, in the field order
-above. It does not echo the prompt: a poll answer would repeat up to 32000
-characters on every request. The job is already `in_progress` when the create
-answer is written, so the first poll never reads `queued`
-(`h3_video.rs:436-441`).
+The record is `video_api.rs:223-238`: the id, the state, its place in the
+queue, the resolved target (`size`, `seconds`, `frames`), the seed and the
+failure, in the field order above. It does not echo the prompt: a poll answer
+would repeat up to 32000 characters on every request. A create pumps the store
+at once (`h3_video.rs:539-543`), so a lone job reads `in_progress` on the
+first poll, and a create behind a running render reads `queued` with its
+`queue_position` (`video_api.rs:352-370`, `:446-456`).
 
 | `status` | Meaning |
 |---|---|
-| `queued` | accepted, inside a create that has not yet started |
-| `in_progress` | owned by a render thread |
+| `queued` | accepted, waiting for the single render slot; `queue_position` is its place in line |
+| `in_progress` | holds the render slot; the engine runs it |
 | `completed` | `completed_at` set, content available |
 | `failed` | `completed_at` set, `error` carries `code` and `message` |
 
@@ -194,13 +196,13 @@ applies (`video_api.rs:56-113`):
 
 ## Limits
 
-- `--max-jobs` (default 8) caps retained jobs and render threads. There is no
-  delete route, so at capacity every create is 429 `queue_full`
-  (`video_api.rs:282-304`) until the host restarts with a larger bound.
-  `--max-jobs 0` makes every create fail.
+- `--max-jobs` (default 8) caps retained jobs and, under `--renderer`, render
+  threads. There is no delete route, so at capacity every create is 429
+  `queue_full` (`video_api.rs:318-327`) until the host restarts with a larger
+  bound. `--max-jobs 0` makes every create fail.
 - The output directory is never pruned: one MP4 per job, kept until the
   operator removes it.
-- `--model-dir` renders serially in arrival order (`engine.rs:11-16`);
+- `--model-dir` renders serially in arrival order (`engine.rs:13-16`);
   `--renderer` gives each job a thread and a child, so up to `--max-jobs` run
   at once.
 - `--timeout-secs` (default 3600, clamped to at least 1) bounds the external

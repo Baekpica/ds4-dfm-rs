@@ -48,6 +48,28 @@ The query route answers one record, in this order
 The prompt is not echoed: a poll answer would repeat up to 32000 characters on
 every request. The content route answers `video/mp4` for a completed job only.
 
+### Queue state, and the retired OpenAI body
+
+`queue_position` is this surface's answer to a question the retired OpenAI
+Videos body answered differently. That body landed in `4acb3348` and was
+removed with the local contract in `31170377`; it served four more routes
+(`GET /v1/videos` list, `HEAD .../content`, `DELETE`, `GET /v1/models`,
+`openai-videos.md:38-44`) and carried a thirteen-field object
+(`openai-videos.md:57-58`).
+
+| Question | Retired OpenAI body | Local v1 surface |
+| --- | --- | --- |
+| The create answer | the whole record, serialized before admission, so its `status` read `queued` (`h3_video.rs:376-378` at `4acb3348`) | the id alone (`h3_video.rs:544-546`) |
+| Waiting, as the client sees it | the first poll read `in_progress`: the create admitted its own job (`store.start(&id)`, `h3_video.rs:376` at `4acb3348`) | `queued` with its `queue_position` while another job holds the slot (`video_api.rs:352-370`, `:446-456`); a lone create pumps at once (`h3_video.rs:539-543`) and reads `in_progress` |
+| Progress | `progress`: 0 while queued or in progress, 100 completed, 0 failed (`openai-videos.md:58`) | no progress field |
+| At capacity | 429 `queue_full`, whose message said "delete a finished job and retry" (`video_api.rs:620-627` at `4acb3348`) | 429 `queue_full` (`video_api.rs:321-322`), with no way to make room: three routes |
+| Making room | `DELETE /v1/videos/{id}`, finished jobs only, else 400 `video_not_ready` (`video_api.rs:978-1000` at `31170377^`) | nothing; a restart with a larger `--max-jobs` is the only way back under the bound |
+
+What the local surface lost with that body is the escape hatch, not the queue:
+capacity is still bounded and still refuses, and the only route back under the
+bound is a restart. `queue_position` is the one piece of queue information it
+gained.
+
 ## The create body
 
 Exactly five fields. An unknown field is refused, not ignored: a typo in a
