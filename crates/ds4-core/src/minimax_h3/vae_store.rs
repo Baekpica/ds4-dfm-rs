@@ -19,11 +19,11 @@ use crate::mapped::MappedFile;
 use crate::minimax_h3::safetensors::{self, Dtype as StDtype};
 
 /// One weight, resolved to its shard and byte range.
-#[derive(Clone, Copy)]
 struct Site {
     shard: usize,
     begin: usize,
     bytes: usize,
+    shape: Vec<u64>,
 }
 
 pub struct Store {
@@ -49,14 +49,12 @@ impl Store {
                     .map_err(|_| format!("{label} offset too wide"))?;
                 let bytes = usize::try_from(tensor.bytes())
                     .map_err(|_| format!("{label} range too wide"))?;
-                sites.insert(
-                    tensor.name.clone(),
-                    Site {
-                        shard: index,
-                        begin,
-                        bytes,
-                    },
-                );
+                sites.entry(tensor.name.clone()).or_insert_with(|| Site {
+                    shard: index,
+                    begin,
+                    bytes,
+                    shape: tensor.shape.clone(),
+                });
             }
         }
         let maps = (0..shards.len()).map(|_| OnceLock::new()).collect();
@@ -88,28 +86,28 @@ impl Store {
         shape: &[u64],
         error: &str,
     ) -> Result<Tensor, String> {
+        let bytes = self.bytes(name, shape)?;
+        let tensor = gpu.alloc(Dtype::F32, bytes.len() / 4)?;
+        gpu.upload(&tensor, bytes)
+            .map_err(|detail| format!("{error}: {detail}"))?;
+        Ok(tensor)
+    }
+
+    fn bytes(&self, name: &str, shape: &[u64]) -> Result<&[u8], String> {
         let site = self
             .sites
             .get(name)
             .ok_or_else(|| format!("VAE is missing {name}"))?;
-        let elements = shape.iter().product::<u64>();
-        if elements * 4 != site.bytes as u64 {
+        if shape != site.shape {
             return Err(format!(
-                "{name}: plan {shape:?} needs {} bytes, checkpoint has {}",
-                elements * 4,
-                site.bytes
+                "{name}: plan shape {shape:?}, checkpoint has {:?}",
+                site.shape
             ));
         }
         let map = self.map(site.shard)?;
-        let bytes = map
-            .as_slice()
+        map.as_slice()
             .get(site.begin..site.begin + site.bytes)
-            .ok_or_else(|| format!("{name}: range outside its shard"))?;
-
-        let tensor = gpu.alloc(Dtype::F32, elements as usize)?;
-        gpu.upload(&tensor, bytes)
-            .map_err(|detail| format!("{error}: {detail}"))?;
-        Ok(tensor)
+            .ok_or_else(|| format!("{name}: range outside its shard"))
     }
 }
 
@@ -130,4 +128,46 @@ pub fn f3(
     third: u64,
 ) -> Result<Tensor, String> {
     store.load(gpu, name, &[first, second, third], name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn fixture(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("h3-vae-store-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn shard(path: &Path, value: u8) {
+        let header = r#"{"w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&[value; 24]);
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn upload_requires_exact_shape() {
+        let dir = fixture("shape");
+        shard(&dir.join("a.safetensors"), 1);
+        let store = Store::open(&dir, "test VAE").unwrap();
+        assert_eq!(store.bytes("w", &[2, 3]).unwrap(), &[1; 24]);
+        assert!(store.bytes("w", &[3, 2]).is_err());
+        assert!(store.bytes("w", &[6]).is_err());
+        assert!(store.bytes("w", &[u64::MAX, u64::MAX]).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn first_shard_wins() {
+        let dir = fixture("duplicate");
+        shard(&dir.join("a.safetensors"), 1);
+        shard(&dir.join("b.safetensors"), 2);
+        let store = Store::open(&dir, "test VAE").unwrap();
+        assert_eq!(store.bytes("w", &[2, 3]).unwrap(), &[1; 24]);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

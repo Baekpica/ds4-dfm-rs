@@ -233,7 +233,11 @@ impl Tokenizer {
                 .ok_or(TokenizerError::Unknown(*id))?;
 
             for value in symbol.chars() {
-                let byte = self.byte_decoder[value as usize]
+                let byte = self
+                    .byte_decoder
+                    .get(value as usize)
+                    .copied()
+                    .flatten()
                     .ok_or_else(|| TokenizerError::ByteToken(symbol.clone()))?;
                 bytes.push(byte);
             }
@@ -397,9 +401,12 @@ fn read_merges(model: &Value) -> Result<HashMap<String, u32>, TokenizerError> {
                 .split_once(' ')
                 .ok_or(TokenizerError::Model("merge without a space"))?,
             Value::Array(pair) => {
-                let left = pair.first().and_then(Value::as_str);
-                let right = pair.get(1).and_then(Value::as_str);
-                left.zip(right).ok_or(TokenizerError::Model("merge pair"))?
+                let [left, right] = pair.as_slice() else {
+                    return Err(TokenizerError::Model("merge pair"));
+                };
+                left.as_str()
+                    .zip(right.as_str())
+                    .ok_or(TokenizerError::Model("merge pair"))?
             }
             _ => return Err(TokenizerError::Model("merge entry")),
         };
@@ -424,7 +431,10 @@ fn read_added(root: &Value) -> Result<Vec<(String, u32)>, TokenizerError> {
 
     for entry in list {
         for policy in ["single_word", "lstrip", "rstrip", "normalized"] {
-            if entry.get(policy).and_then(Value::as_bool) == Some(true) {
+            if entry
+                .get(policy)
+                .is_some_and(|value| value.as_bool() != Some(false))
+            {
                 return Err(TokenizerError::Added(policy));
             }
         }
@@ -753,6 +763,42 @@ mod tests {
             ADDED,
         ))
         .expect("a tokenizer")
+    }
+
+    #[test]
+    fn invalid_byte_symbol_returns_error() {
+        let tokenizer = load(&specification(&[("한", 300)], &[], "[]")).unwrap();
+        assert!(matches!(
+            tokenizer.decode(&[300]),
+            Err(TokenizerError::ByteToken(symbol)) if symbol == "한"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_merge_pair() {
+        let model = serde_json::json!({"merges": [["H", "e", "ignored"]]});
+        assert!(matches!(
+            read_merges(&model),
+            Err(TokenizerError::Model("merge pair"))
+        ));
+        assert!(read_merges(&serde_json::json!({"merges": [["H", "e"]]})).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_added_policy() {
+        for flag in ["single_word", "lstrip", "rstrip", "normalized"] {
+            for value in [
+                serde_json::Value::Null,
+                serde_json::json!(1),
+                serde_json::json!("false"),
+            ] {
+                let mut root = serde_json::json!({"added_tokens": [{"content": "x", "id": 9}]});
+                root["added_tokens"][0][flag] = value;
+                assert!(
+                    matches!(read_added(&root), Err(TokenizerError::Added(name)) if name == flag)
+                );
+            }
+        }
     }
 
     #[test]
