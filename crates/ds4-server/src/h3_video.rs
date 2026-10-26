@@ -314,9 +314,6 @@ impl Renderer for CommandRenderer {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        if let Some(dir) = output.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-            command.current_dir(dir);
-        }
         let mut child = command.spawn().map_err(|error| {
             RenderError::new(
                 "renderer_spawn_failed",
@@ -1620,6 +1617,30 @@ mod tests {
         assert!(!first_path.exists(), "the anchor outlives its render");
         assert!(!last_path.exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn relative_render_paths_work() {
+        let dir = PathBuf::from(format!("h3-relative-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("clip.mp4");
+        let mut spec = plan();
+        spec.first_frame = Some(AnchorImage {
+            media_type: "image/png".to_string(),
+            bytes: b"anchor bytes".to_vec(),
+        });
+        let script = "while [ $# -gt 0 ]; do case $1 in -o) output=$2; shift 2;; --first-frame) anchor=$2; shift 2;; *) shift;; esac; done; test -s \"$anchor\" || exit 77; printf rendered > \"$output\"";
+        let renderer = CommandRenderer::new(
+            "sh",
+            vec!["-c".to_string(), script.to_string(), "--".to_string()],
+            Duration::from_secs(5),
+        );
+        let result = renderer.render(&spec, &output);
+        let bytes = std::fs::read(&output);
+        std::fs::remove_dir_all(dir).unwrap();
+
+        result.unwrap();
+        assert_eq!(bytes.unwrap(), b"rendered");
     }
 
     #[test]
