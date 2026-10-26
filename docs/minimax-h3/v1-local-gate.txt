@@ -442,37 +442,252 @@ surface with the real engine and the real checkpoint, and it completed.
 `VIDEO ... seconds=0.428` (mux), 874,261 bytes. Wall clock from launch to file
 was about 9 minutes.
 
-## 2026-10-25 — the load experiment: faster, and wrong
+## 2026-10-26 — the load experiment re-read: the arch, not the copy path
 
-The clean A/B put the port 118 s behind the reference at one shape, and 94 s
-of that was the checkpoint load (116.1 s against 21.9 s). Two traces with the
-same bytes (126,551 MB host-to-device, 2,210 copies) showed the reference's
-copies costing 4.44 s as 2,219 synchronous `cudaMemcpy` calls while the port's
-cost 105.4 s as 2,210 `cudaMemcpyAsync` calls from a pageable source.
+The previous entry concluded that both reverted load experiments altered the
+output and left the difference unexplained. That conclusion is withdrawn: the
+output changed because those experiments recompiled `native/h3/h3_dit_gpu.o`
+without an arch, not because of the copy code.
 
-Two changes were tried, both reverted:
+What was re-measured on the Spark at 512x512, 56 frames, 8 steps, seed 7,
+anchor `~/h3-api/out/video_2.first.jpg`:
 
-1. A blocking copy for checkpoint weights (`h3d_upload_blocking`,
-   `cudaMemcpy` instead of `cudaMemcpyAsync`). Load 116.07 -> 106.65 s, wall
-   560.04 -> 625.98 s. Small, and the wall got worse.
-2. Reading each tensor into an anonymous buffer and copying from there, which
-   is the reference's own structure (`h3_weights.c:144-186`,
-   `h3_gpu_cuda.cu:375-425`). Load 106.65 -> 23.65 s, wall 467.72 s, which is
-   within 8% of the reference's 433.39 s.
+- The pair: the reference's `clean-r1` run (720,242 B) and the port's
+  `clean-r1` run (720,242 B) both hash `74d862fef9dc904d69c20f3dffec74f4`.
+  Frames 0, 1, 27 and 55 and the whole AAC stream are identical (frame-0 PSNR
+  inf; audio `95c5d90cb3fc` on both).
+- The port's binary for that row was built at 18:16:44 local from `7c68367a`
+  with `make h3-rs CUDA_ARCH=sm_121`; no build in the pane's scrollback
+  before the experiments passed anything else. The row's `git_rev` cell reads
+  `6cdc1679`, and the one commit between them (`6cdc1679` itself) touches only
+  `docs/minimax-h3`, so both name the same build input. Its DiT object is
+  arch-native SASS, which is the choice the reference's own Makefile makes
+  (`NVCC_ARCH ?= native`, `/data/h3.c/Makefile:25-26`), and the forced
+  rebuild below returns the same bytes from unchanged source.
+- Every later build recompiled that object with no arch, because the Spark
+  tree carries no `.ds4-cuda-config.mk` and the Makefile's `-include` is
+  silent: `nvcc -O3 -std=c++17 -Xcompiler -march=native -Xcompiler -pthread
+  -c -o native/h3/h3_dit_gpu.o native/h3/h3_dit_gpu.cu` (build-loadfix.log,
+  build-base.log, build-base2.log, build-loadstage2.log). That is the bare
+  default the Makefile warns about at lines 40-48: compute_75 PTX, JIT'd onto
+  the device, "a different numeric profile than the arch-native SASS the
+  tree's other objects carry".
+- Every such build hashes `7991a015b1a161ec95d6b3f1aae8e3fc` / 714,374 B,
+  including the build that carries neither experiment (`base-vaehoist`), and
+  at 512x320 both `base-320` and `new-320` hash `84592409...`. The hash
+  followed the arch.
+- The two configurations differ from each other and from the reference: frame
+  0 of `7991a015` sits 39.9 dB PSNR from frame 0 of `74d862fe`, frame 55 sits
+  36.2 dB from it, and the AAC stream differs (`62753ab8...` against
+  `95c5d90c...`). So the arch change is small and real, not cosmetic.
 
-Both changes altered the output. The port's committed output is
-byte-identical to the reference at this shape
-(`74d862fef9dc904d69c20f3dffec74f4`); with either change it is
-`7991a015b1a161ec95d6b3f1aae8e3fc`, and the decoded video and audio MD5s
-differ too, so the frames themselves changed. The copy path must not change
-numerics, so the difference is unexplained and the change is out until it is.
+    512x512, 56 frames, 8 steps, seed 7       load  denoise  audio frames  wall   md5
+    clean-r1  reference, marks off            21.9   279.9    -     43.3*  441.5  74d862fe
+    clean-r1  port, pageable, arch-native    116.1   279.8    2.27  78.4   560.0  74d862fe
+    loadfix   blocking cudaMemcpy            106.7   276.1    2.44  77.7   626.0  7991a015
+    stage     anonymous-buffer stage          23.6   280.8    2.45  77.1   467.7  7991a015
+    base-vaehoist pinned stage, no hoist      84.6   280.4    2.25  70.4   521.3  7991a015
+    vaehoist  pinned stage + hoist            84.9   281.0    2.26  70.1   570.6  7991a015
+    loadstage2 pinned stage + hoist, rebuilt   8.7   281.0    1.61  45.8   419.3  7991a015
+    loadstage  pinned stage, race              8.2   281.2    1.60  45.7   419.3  a28e01b1
+    sm121     committed, arch-native          105.0   276.4    2.23  77.1   544.6  74d862fe
+    sm121-new staged upload + hoist, native    8.2   279.3    1.43  45.7   417.2  74d862fe
 
-The open question for the next unit: why does copying the same bytes through
-`cudaMemcpy` (or through an anonymous staging buffer) change the result at
-all? Candidates to test before the speed can be kept: the legacy default
-stream versus the non-blocking context stream (`cudaStreamCreateWithFlags`),
-and whether any load-time kernel reads a tensor the copy is still writing.
+    * the reference's own log: "video VAE decoder: 43.256265s GPU". The CSV
+      leaves its phase cells empty: the sweep's pattern wants the number at
+      the end of the line.
 
-Records: `tests/h3/perf/perf.csv` rows labelled `loadfix` and `stage` are the
-two experiments, with their phase times; their MP4s are on the Spark under
-`~/ds4-h3-port/tests/h3/perf/runs/`.
+    512x320, same setting                     load  denoise  audio frames  wall   md5
+    base-320  committed pageable             107.0   120.3    2.47  64.1   377.9  84592409
+    new-320   staged upload + hoist            8.6   120.3    1.61  32.7   228.4  84592409
+
+Five different DiT loaders leave the bytes untouched in one configuration:
+blocking `cudaMemcpy` (`loadfix`), an anonymous-buffer stage (`stage`), the
+pinned-piece stage with and without the hoist (`base-vaehoist`, `vaehoist`),
+the rebuilt pair (`loadstage2`), and at 512x320 the committed pageable path
+against both changes together (`base-320`, `new-320`). The one run that did
+move them is `loadstage`, the staged upload whose first 8 MiB of every tensor
+after the first was overwritten while its DMA still read the pinned buffer
+(201,057 B, PSNR 11.9 dB, video `c83c89f6...` against `3084e728...`). It
+stays in the records as the counter-example: a load-path edit is checked by
+hash, never by timing.
+
+The 320 rows carry `dirty_files=0` because the sweep could not resolve the
+revision in that shell, not because the tree was clean; `ab-320.sh` checks out
+exactly `native/h3/h3_dit_gpu.cu` and
+`crates/ds4-core/src/minimax_h3/vae_video.rs` before building `base-320`.
+
+The anchor was not the cause either. `video_2.first.jpg` was last written
+2026-10-25 19:16:13.276 +0100 (18:16:13Z, md5
+`17e6f5d7a8928104cf72514d5463ee74`), before the first row of the series, and
+every file under `/mnt/h3-artifacts/MiniMax-H3` is dated 10-24. The previous
+handoff read that stamp as a run event; it is the file's own local time.
+
+## 2026-10-26 — the arch split, measured shut
+
+- Forcing the rebuild settles it. `rm -f native/h3/*.o` then
+  `make h3-rs CUDA_ARCH=sm_121` compiles the h3 objects with
+  `-gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1`
+  (build-sm121b.log), and the same shape then returns 720,242 B /
+  `74d862fe`: unchanged committed code, byte-identical to the reference. The
+  arch is the whole difference; the row is `sm121` in the table above, binary
+  sha `325640ec...` against `283a147c...` for the no-arch build.
+- The same rebuild with both changes in place (`sm121-new`, binary
+  `06b69a90...`) also returns 720,242 B / `74d862fe`, and its load is 8.2 s
+  against the committed arch-native 105.0 s, wall 544.6 -> 417.2 s. So the
+  staged upload and the hoist are byte-neutral in the release configuration
+  too, and the load win at this shape is 96.8 s.
+- That 127.4 s of wall is two phases, not one: load 105.0 -> 8.2 and the
+  video VAE 77.1 -> 45.7, i.e. 96.8 + 31.4; `text_s` is 29.652 against 30.119
+  and `denoise_s` 276.4 against 279.3, so the pair is otherwise matched. The
+  512x320 pair carries the same two (load 107.0 -> 8.6, VAE 64.1 -> 32.7) plus
+  a TEXT difference of its own, 46.892 against 29.414, which is page-cache
+  state and not a code difference. Which of the two pending changes buys the
+  VAE seconds is not established by these rows - the hoist alone was neutral
+  at no-arch (`base-vaehoist` 70.4 against `vaehoist` 70.1) - and both
+  configurations return the same bytes, so no correctness question rides on
+  it.
+- The reference is stable in the clean configuration: a repeat at
+  2026-10-26T04:56:24Z, 9.7 h after its own `clean-r1` row (19:16:32Z) and
+  with the GPU at 208 MHz before it, returned 720,242 B / `74d862fe` again.
+- The port is run-to-run deterministic: `det-320a` and `det-320b` are one
+  binary (`283a147c...`) run five minutes apart with different page-cache
+  state (load 104.8 s against 85.0 s) and both return 578,753 B / `84592409`.
+- Still open, and flagged `profile=1` so it is not compared with the clean
+  rows: the reference's `--profile` run is the one row that does not join its
+  own group. 718,093 B / `cea7cf1a`, frame 0 39.5 dB PSNR from the clean run's
+  frame 0, audio `43d481ee...` against `95c5d90c...`, same binary sha, anchor
+  and checkpoint. `--profile` only sets `H3_PROFILE` (`main.c:501`, `:534`)
+  and every `H3_PROFILE` use in the engine is a stream sync or a print
+  (`h3_gpu_cuda.cu:310`, `:659-670`, `h3_gpu.m:176`, `h3_dit.c:1232`, `:2630`,
+  `:2636`, `:2891`, `:3048`, `h3_video_vae.c:922`, `:1069`), so a
+  run-dependent execution split is the remaining candidate.
+- Harness gaps, proposed and not changed because the file sits outside this
+  workstream's paths: `tests/h3_perf_sweep.sh` records the anchor's path but
+  never its bytes and records no arch at all, which is how an arch difference
+  could be read as a copy-path difference for a session; and its reference-side
+  phase patterns match only marks that end in a bare number, so a reference
+  row's `audio_s`, `vae_s` and `mux_s` cells come out empty even with
+  `--profile-phases`. The VAE and encoder numbers do exist, in the per-label
+  line the context prints at teardown (`h3_gpu_cuda.cu:308-318`, which is where
+  `video VAE decoder: 43.256265s GPU` comes from), but the reference times no
+  muxing step at all, so `mux_s` has no source on that side.
+
+## 2026-10-26 — the wall now adds up: the anchor phase has a mark
+
+`h3-rs.rs` prints `ANCHORS ... seconds=` now. It was the one phase with no
+mark, and the reference labels the same work (`h3.c:691`, the encode call at
+`:1307`). Measured with it, 56 frames, 8 steps:
+
+    512x512   ANCHORS 52.772 + TEXT 29.849 + LOAD  96.870 + DENOISE 277.465
+              + AUDIO 2.184 + FRAMES 74.254 + VIDEO 0.331 = 533.7 of 534.7 s
+    512x320   ANCHORS 35.893 + TEXT 28.939 + LOAD 106.310 + DENOISE 119.231
+              + AUDIO 2.274 + FRAMES 64.322 + VIDEO 0.354 = 357.3 of 358.2 s
+
+So the ~52 s no mark carried was the anchor's video VAE encode (52.8 s at
+512x512, 35.9 s at 512x320; the encoder works at the anchor's target canvas),
+not a leak. The reference's own log marks the same encoder at 50.335610 s GPU
+(`20261025T192618Z-reference-...-ref-phases.log`), so nothing is behind there.
+
+## 2026-10-26 — TEXT is the drive, measured
+
+The prompt encoder reads 50.316 GB (46.86 GiB) once per encode: layers 0..49
+plus `embed_tokens`, summed from the checkpoint's own headers on the Spark
+(14 `model-*.safetensors`: executed 50.316 GB, layers 50..63 with the final
+norm and `lm_head` 15.209 GB, `model.visual.` 1.191 GB, total 66.716 GB, the
+shards' own file size).
+
+The same shard set read plainly, same host and mount (`/mnt/h3-artifacts` on
+`/dev/sda`, ext4, USB "OSC PSSD", 127.5 GB RAM), `dd bs=8M`, `xargs -P<lanes>`:
+
+    1 lane    33.517 s   1.99 GB/s
+    4 lanes   36.352 s   1.83 GB/s
+    8 lanes   36.262 / 36.526 / 36.750 / 36.753 / 36.829 s   1.81-1.83 GB/s
+                                                       (five runs, 1.6% spread)
+    16 lanes  23.382 s   2.85 GB/s   <- cache artifact, see below
+    32 lanes  35.477 s   1.88 GB/s
+
+    one cold shard   4.876 GB in 1.934 s = 2.52 GB/s
+    the same shard   0.185 s = 26 GB/s (page cache)
+    a middle shard   2.617 s = 1.86 GB/s
+
+The set does not survive a pass: after a full read the last shard answers at
+26 GB/s and the first at 2.5 GB/s, while `Cached` stays at 112.9 GB of
+`MemTotal` 127.5 GB (`MemFree` 13.0 GB, swap 64 MB used). The 16-lane row began
+with the previous pass's tail resident, which is why it stands alone.
+
+The port's own phase, against that: the recorded `text_s` cells are 28.939
+(`anchor-mark`, 512x320), 29.414 (`new-320`), 29.849 (`anchor-mark-512`) and
+30.119 (`sm121-new`), so 50.316 GB in 28.9-30.1 s = 1.67-1.74 GB/s, 92-96% of
+the drive's reproducible 8-lane rate. The read path adds nothing measurable; the
+ring (8 lanes, `text_forward.rs:251-270`, the reference's own clamp at
+`h3_text_encoder.c:124-133`) is already at the transport limit.
+
+Left on the table, not taken: one stream measured 1.99 GB/s against eight
+lanes' 1.82, so at most ~2.4 s of a 417 s wall (0.6%), and reaching it means
+reading the shards in file order instead of the reference's lane assignment.
+Residency is not a lever on this box either: the 66.7 GB set is larger than
+what a page cache already 112.9 GB full can keep.
+
+One comment to correct later: `text_weights.rs:17` says the encoder "reads
+48.8 GiB of weights"; the checkpoint's own headers say 50.316 GB (46.86 GiB)
+for the executed path, so that comment's unit is wrong.
+
+The other side of the same split: the sweep's cache cells sit flat at 81.0-82.4
+GB before and after every one of the ten rows, i.e. no row's cache grows by the
+66.7 GB the encoder read, and the resident-mode `LOAD` upload of 8.2 s cannot
+have had a cold source (that volume's device floor is 34 s at the measured
+rate), so the cache that is held is the DiT's working set and not the encoder's.
+The two together exceed the 127.5 GB box, which is why the encoder read never
+warms while the DiT is resident. Operational note: the plain reads above do
+evict that DiT set, so a render measured right after them pays a cold load.
+
+## 2026-10-26 — P10.2: the queue is observable, live on the 4070
+
+The record gained one field and the store gained the decision. Before: `create`
+called `VideoStore::start` for its own job, so every accepted job read
+`in_progress` from the first poll and `queued` was unreachable — the behaviour
+this file named as a concurrency lesson in the 2026-10-25 section above ("the
+status a client sees does not distinguish waiting from rendering"). After:
+`submit` leaves the job `queued` and keeps its plan, `admit_next` hands one job
+the single render slot, and the query route answers the job's place in line.
+
+Box: this host (RTX 4070 SUPER). Binary: `target/debug/h3-server-rs`, built
+from the worktree at HEAD 875a43fd plus this change. Renderer: the repo's
+`tools/minimax_h3/standin-renderer.sh` behind a 4 s sleep, so the first job
+holds the slot while the second create arrives; nothing here touches the model.
+Transcript (`/tmp/h3-qg3/transcript.txt`):
+
+  create twice, then poll:
+    POST t2va 768P 16:9 4s seed 0  -> {"id":"video_1"}
+    POST t2va 768P 1:1  4s seed 7  -> {"id":"video_2"}
+    GET  /v1/videos/video_1 -> {"id":"video_1","status":"in_progress",
+      "queue_position":null,"size":"1344x768","seconds":4,"frames":107,
+      "seed":0,"created_at":1792996791,"completed_at":null,"error":null}
+    GET  /v1/videos/video_2 -> {"id":"video_2","status":"queued",
+      "queue_position":1,"size":"768x768","seconds":4,"frames":107,
+      "seed":7,"created_at":1792996791,"completed_at":null,"error":null}
+
+  after the queue drains:
+    video_1 completed_at 1792996795
+    video_2 completed_at 1792996799
+
+  downloads: video_1.mp4 230,722 B, ffprobe h264 1344x768 + aac, 4.000 s;
+             video_2.mp4 177,114 B, ffprobe h264  768x768 + aac, 4.000 s
+  renderer argv: width=1344 height=768 seconds=4 seed=0 out=.../video_1.mp4
+                 width= 768 height= 768 seconds=4 seed=7 out=.../video_2.mp4
+
+  unchanged by this work: GET unknown id 404 video_not_found; GET /v1/models
+  404 unknown_url; POST duration_seconds 16 -> 400 invalid_duration.
+
+The two completion stamps are the measurement that matters: four seconds apart
+on a renderer that sleeps four seconds, so the second render started when the
+first freed the slot rather than beside it. `queue_position` is 1 for the job
+the engine takes next, counted over the queued jobs, and null while a job holds
+the slot or after it has run. The transcripts recorded earlier in this file were
+taken before the field existed, so they do not carry it; their single-job
+statuses stay valid as records of their commit. Unit gates: the store test
+`the_store_admits_one_job_and_queues_the_rest` and the server test
+`a_second_job_waits_in_the_queue_with_its_position` (three creates, one gated
+renderer, positions 1 and 2 observed, then release). Cancel stays out: it is not
+one of the contract's three routes (operator decision, 2026-10-26).

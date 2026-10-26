@@ -134,12 +134,18 @@ fn run() -> Result<ExitCode, String> {
 
     let shape = temporal(frame_count);
     let (latent_w, latent_h) = canvas.latent();
+    // The anchor's own video VAE encode is the one phase with no mark here: the
+    // reference labels it (`h3.c:691`, the encode itself at `:1307`), and
+    // without it the wall clock does not account for its ~50 s.
+    let anchor_started = Instant::now();
     let anchors = read_anchors(&options, frame_count, latent_h, latent_w)?;
+    let anchor_seconds = anchor_started.elapsed().as_secs_f64();
     if !anchors.keyframes.is_empty() {
         println!(
-            "ANCHORS keyframes={} rows={}",
+            "ANCHORS keyframes={} rows={} seconds={:.3}",
             anchors.keyframes.len(),
-            anchors.rows.len() / condition::VIDEO_ROW_WIDTH
+            anchors.rows.len() / condition::VIDEO_ROW_WIDTH,
+            anchor_seconds
         );
     }
 

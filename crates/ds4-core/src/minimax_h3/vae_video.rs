@@ -568,7 +568,7 @@ impl Decoder {
 
     /// `run_resident_tile` (`:533-578`): one tile through every block, then
     /// the output layer norm and projection, read back as F32 rows.
-    fn run_tile(&self, rows_input: &[f32]) -> Result<Vec<f32>, VaeError> {
+    fn run_tile(&self, scratch: &TileScratch, rows_input: &[f32]) -> Result<Vec<f32>, VaeError> {
         let gpu = &self.gpu;
         let patches = self.patches;
         let rows = u32::try_from(self.sequence)
@@ -577,14 +577,11 @@ impl Decoder {
         let latent = f32_alloc(gpu, patches * LATENT_CHANNELS)?;
         upload_f32(gpu, &latent, rows_input)?;
 
-        let buffers = Buffers::new(gpu, self.sequence)?;
-        let post = f32_alloc(gpu, patches * LATENT_CHANNELS)?;
-        let patch_hidden = f32_alloc(gpu, patches * HIDDEN)?;
-        let zero = f32_alloc(gpu, HIDDEN)?;
-        upload_f32(gpu, &zero, &[0.0f32; HIDDEN])?;
+        let buffers = &scratch.buffers;
+        let (post, patch_hidden, zero) = (&scratch.post, &scratch.patch_hidden, &scratch.zero);
 
         device(gpu.linear(
-            &post,
+            post,
             &latent,
             &self.parts.post_w,
             Some(&self.parts.post_b),
@@ -594,8 +591,8 @@ impl Decoder {
             Dtype::F32,
         ))?;
         device(gpu.linear(
-            &patch_hidden,
-            &post,
+            patch_hidden,
+            post,
             &self.parts.embed_w,
             Some(&self.parts.embed_b),
             patches as u32,
@@ -603,7 +600,7 @@ impl Decoder {
             HIDDEN as u32,
             Dtype::F32,
         ))?;
-        device(gpu.copy_f32(&buffers.hidden, 0, &patch_hidden, 0, patches * HIDDEN))?;
+        device(gpu.copy_f32(&buffers.hidden, 0, patch_hidden, 0, patches * HIDDEN))?;
         device(gpu.copy_f32(
             &buffers.hidden,
             patches * HIDDEN,
@@ -614,13 +611,13 @@ impl Decoder {
         device(gpu.copy_f32(
             &buffers.hidden,
             (patches + REGISTERS) * HIDDEN,
-            &zero,
+            zero,
             0,
             HIDDEN,
         ))?;
 
         for block in &self.blocks {
-            self.run_block(block, &buffers.hidden, &buffers, rows)?;
+            self.run_block(block, &buffers.hidden, buffers, rows)?;
         }
 
         device(gpu.layer_norm_f32(
@@ -684,6 +681,35 @@ impl Buffers {
             ff1: f32_alloc(gpu, sequence * FFN * 2)?,
             activated: f32_alloc(gpu, sequence * FFN)?,
             projected: f32_alloc(gpu, sequence * OUTPUT_PATCH)?,
+        })
+    }
+}
+
+/// Everything one tile needs that does not depend on the tile's latent:
+/// `allocate_activations` (`h3_video_vae.c:397-421`), called once per decode
+/// at `:1089`. The reference never touches the allocator inside the tile loop;
+/// this port allocated and freed the whole set per tile, a device-wide drain
+/// per tile for no arithmetic difference. Only the tile's own latent stays per
+/// tile (`:343`). Deviation, named: the reference's `zero` suffix row is a
+/// per-tile local (`:533-539`), a constant here, so it is allocated and
+/// uploaded once.
+struct TileScratch {
+    buffers: Buffers,
+    post: Tensor,
+    patch_hidden: Tensor,
+    zero: Tensor,
+}
+
+impl TileScratch {
+    fn new(gpu: &Gpu, patches: usize, sequence: usize) -> Result<TileScratch, VaeError> {
+        let zero = f32_alloc(gpu, HIDDEN)?;
+        upload_f32(gpu, &zero, &[0.0f32; HIDDEN])?;
+
+        Ok(TileScratch {
+            buffers: Buffers::new(gpu, sequence)?,
+            post: f32_alloc(gpu, patches * LATENT_CHANNELS)?,
+            patch_hidden: f32_alloc(gpu, patches * HIDDEN)?,
+            zero,
         })
     }
 }
@@ -865,6 +891,7 @@ fn extract_latent_tile(
 #[allow(clippy::too_many_arguments)]
 fn decode_chunk(
     decoder: &Decoder,
+    scratch: &TileScratch,
     latent: &[f32],
     latent_time: usize,
     chunk: usize,
@@ -907,7 +934,7 @@ fn decode_chunk(
             );
             let rows =
                 prepare_input_rows(&input, tile_h, tile_w, &decoder.mean, &decoder.deviation);
-            let projected = decoder.run_tile(&rows)?;
+            let projected = decoder.run_tile(scratch, &rows)?;
             tiles.push(unpack_frames(
                 &projected,
                 tile_h,
@@ -1044,8 +1071,14 @@ impl PreviewDecoder {
         if global_frame >= output_frames {
             global_frame = output_frames - 1;
         }
+        let scratch = TileScratch::new(
+            &self.decoder.gpu,
+            self.decoder.patches,
+            self.decoder.sequence,
+        )?;
         let frames = decode_chunk(
             &self.decoder,
+            &scratch,
             latent,
             latent_time,
             chunk,
@@ -1099,6 +1132,9 @@ pub fn decode(
         deviation,
     )?;
 
+    // One activation set for every tile of every chunk (`:1089`).
+    let scratch = TileScratch::new(&decoder.gpu, decoder.patches, decoder.sequence)?;
+
     // `:1226-1252`: the two-token path hands the whole latent, already padded
     // to the chunk, straight to the graph; one spatial tile, five frames, no
     // temporal blend and no tile extraction.
@@ -1110,7 +1146,7 @@ pub fn decode(
             &decoder.mean,
             &decoder.deviation,
         );
-        let projected = decoder.run_tile(&rows)?;
+        let projected = decoder.run_tile(&scratch, &rows)?;
         let rgb = unpack_frames(
             &projected,
             latent_h,
@@ -1134,6 +1170,7 @@ pub fn decode(
     for chunk in 0..chunks {
         let mut decoded = decode_chunk(
             &decoder,
+            &scratch,
             latent,
             latent_time,
             chunk,

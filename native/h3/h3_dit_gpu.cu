@@ -33,6 +33,9 @@ struct h3d_tensor {
 struct h3d_context {
     cudaStream_t stream;
     cublasLtHandle_t blas;
+    void *stage;          /* pinned upload staging, allocated on first use */
+    cudaEvent_t stage_done;
+    int stage_pending;    /* a DMA out of `stage` has not been waited for yet */
 };
 
 static int h3d_set_error(char *error, size_t error_size, const char *format,
@@ -120,6 +123,8 @@ h3d_context *h3d_create(char *error, size_t error_size) {
 
 void h3d_destroy(h3d_context *context) {
     if (!context) return;
+    if (context->stage_done) cudaEventDestroy(context->stage_done);
+    if (context->stage) cudaFreeHost(context->stage);
     if (context->stream) cudaStreamDestroy(context->stream);
     if (context->blas) cublasLtDestroy(context->blas);
     free(context);
@@ -156,17 +161,74 @@ void h3d_free(h3d_tensor *tensor) {
     free(tensor);
 }
 
+/* cudaMemcpyAsync from pageable memory is not a DMA: the driver stages the
+ * source into pinned memory on the calling thread and may synchronize with the
+ * stream (CUDA Runtime API, "API Synchronization behavior", asynchronous rule
+ * 3). Every upload here reads out of a read-only checkpoint mapping, so each
+ * one paid that staging: 126,551 MB in 2,210 copies took 105.4 s at 1.20 GB/s,
+ * against 4.44 s for the same bytes out of pinned memory. Staging in bounded
+ * pieces and DMAs from the pinned buffer keeps the copy on the caller's stream,
+ * so stream order and the numeric result are unchanged. */
+static const size_t H3D_STAGE_BYTES = (size_t)8 << 20;
+
+static int h3d_upload_range(h3d_context *context, void *destination,
+                            const void *source, size_t bytes, char *error,
+                            size_t error_size) {
+    if (!context->stage) {
+        if (!h3d_cuda_ok(cudaHostAlloc(&context->stage, H3D_STAGE_BYTES,
+                                       cudaHostAllocDefault),
+                         "allocate upload staging", error, error_size)) {
+            return 0;
+        }
+        if (!h3d_cuda_ok(cudaEventCreateWithFlags(&context->stage_done,
+                                                  cudaEventDisableTiming),
+                         "create upload event", error, error_size)) {
+            return 0;
+        }
+    }
+
+    const char *from = (const char *)source;
+    char *to = (char *)destination;
+
+    for (size_t done = 0; done < bytes;) {
+        size_t piece = bytes - done < H3D_STAGE_BYTES ? bytes - done
+                                                     : H3D_STAGE_BYTES;
+        /* The pinned buffer may only be refilled once the DMA that read it has
+         * landed. That includes the tail of the PREVIOUS upload, not just the
+         * previous piece of this one: skipping that wait corrupted the first
+         * 8 MiB of every tensor after the first, which shows up as a wrong
+         * render rather than as an error. */
+        if (context->stage_pending &&
+            !h3d_cuda_ok(cudaEventSynchronize(context->stage_done),
+                         "wait for staged upload", error, error_size)) {
+            return 0;
+        }
+        memcpy(context->stage, from + done, piece);
+        if (!h3d_cuda_ok(cudaMemcpyAsync(to + done, context->stage, piece,
+                                         cudaMemcpyHostToDevice,
+                                         context->stream),
+                         "upload tensor", error, error_size)) {
+            return 0;
+        }
+        if (!h3d_cuda_ok(cudaEventRecord(context->stage_done, context->stream),
+                         "record staged upload", error, error_size)) {
+            return 0;
+        }
+        context->stage_pending = 1;
+        done += piece;
+    }
+    return 1;
+}
+
 int h3d_upload(h3d_context *context, h3d_tensor *tensor, const void *host,
                char *error, size_t error_size) {
     if (!context || !tensor || !host) {
         return h3d_set_error(error, error_size, "invalid upload");
     }
     if (!tensor->elements) return 1;
-    return h3d_cuda_ok(
-        cudaMemcpyAsync(tensor->data, host,
-                        tensor->elements * h3d_dtype_size(tensor->dtype),
-                        cudaMemcpyHostToDevice, context->stream),
-        "upload tensor", error, error_size);
+    return h3d_upload_range(context, tensor->data, host,
+                            tensor->elements * h3d_dtype_size(tensor->dtype),
+                            error, error_size);
 }
 
 int h3d_upload_at(h3d_context *context, h3d_tensor *tensor, size_t element,
@@ -178,11 +240,8 @@ int h3d_upload_at(h3d_context *context, h3d_tensor *tensor, size_t element,
     }
     if (!elements) return 1;
     size_t item = h3d_dtype_size(tensor->dtype);
-    return h3d_cuda_ok(
-        cudaMemcpyAsync((char *)tensor->data + element * item, host,
-                        elements * item, cudaMemcpyHostToDevice,
-                        context->stream),
-        "upload tensor range", error, error_size);
+    return h3d_upload_range(context, (char *)tensor->data + element * item,
+                            host, elements * item, error, error_size);
 }
 
 int h3d_read(h3d_context *context, void *host, const h3d_tensor *tensor,
