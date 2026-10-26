@@ -7,6 +7,49 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_os = "linux")]
+fn copy_access_acl(source: &fs::File, target: &fs::File) -> io::Result<()> {
+    let name = c"system.posix_acl_access";
+    let mut value = vec![0u8; 65536]; // Linux XATTR_SIZE_MAX.
+    let size = unsafe {
+        libc::fgetxattr(
+            source.as_raw_fd(),
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            value.len(),
+        )
+    };
+    if size >= 0 {
+        let rc = unsafe {
+            libc::fsetxattr(
+                target.as_raw_fd(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                size as usize,
+                0,
+            )
+        };
+        return if rc == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        };
+    }
+    let error = io::Error::last_os_error();
+    if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)) {
+        return Err(error);
+    }
+    // Staging may inherit an ACL that the original file did not have.
+    let rc = unsafe { libc::fremovexattr(target.as_raw_fd(), name.as_ptr()) };
+    if rc != 0 {
+        let error = io::Error::last_os_error();
+        if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 fn target(path: &Path) -> io::Result<PathBuf> {
     let mut path = path.to_path_buf();
     // Follow even dangling final symlinks, as File::create did.
@@ -85,6 +128,8 @@ pub(super) fn replace(path: &Path, data: &[u8]) -> Result<(), (&'static str, io:
                 return Err(io::Error::last_os_error());
             }
             file.set_permissions(meta.permissions())?;
+            #[cfg(target_os = "linux")]
+            copy_access_acl(original.as_ref().expect("original metadata"), &file)?;
             let current = fs::symlink_metadata(&path)?;
             if current.dev() != meta.dev()
                 || current.ino() != meta.ino()

@@ -270,3 +270,91 @@ fn audit_commit_failure() {
     assert_eq!(saved, b"before");
     assert_eq!(entries, 1);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn audit_access_acl() {
+    use std::os::fd::AsRawFd;
+    fn acl(uid: u32) -> Vec<u8> {
+        let mut bytes = 2u32.to_le_bytes().to_vec();
+        for (tag, perm, id) in [
+            (1u16, 6u16, u32::MAX),
+            (2, 4, uid),
+            (4, 0, u32::MAX),
+            (16, 4, u32::MAX),
+            (32, 0, u32::MAX),
+        ] {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&perm.to_le_bytes());
+            bytes.extend_from_slice(&id.to_le_bytes());
+        }
+        bytes
+    }
+    fn set(path: &std::path::Path, name: &std::ffi::CStr, value: &[u8]) {
+        let file = std::fs::File::open(path).unwrap();
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    }
+    fn get(path: &std::path::Path) -> Option<Vec<u8>> {
+        let file = std::fs::File::open(path).unwrap();
+        let mut value = vec![0u8; 128];
+        let len = unsafe {
+            libc::fgetxattr(
+                file.as_raw_fd(),
+                c"system.posix_acl_access".as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+            )
+        };
+        if len < 0 {
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ENODATA)
+            );
+            return None;
+        }
+        value.truncate(len as usize);
+        Some(value)
+    }
+    let dir = temp_path("acl");
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("file");
+    std::fs::write(&path, "before").unwrap();
+    let wanted = acl(65533);
+    set(&path, c"system.posix_acl_access", &wanted);
+    set(&dir, c"system.posix_acl_default", &acl(65534));
+    assert!(write_result(path.to_str(), Some("after")).starts_with(b"Wrote"));
+    let written = get(&path);
+    assert!(
+        super::edit::edit_result(path.to_str(), Some("after"), Some("final"))
+            .starts_with(b"Edited")
+    );
+    let edited = get(&path);
+    std::fs::remove_file(&path).unwrap();
+    // An existing file without an ACL must not acquire its parent's default ACL.
+    let plain = dir.join("plain");
+    std::fs::write(&plain, "before").unwrap();
+    let file = std::fs::File::open(&plain).unwrap();
+    assert_eq!(
+        unsafe { libc::fremovexattr(file.as_raw_fd(), c"system.posix_acl_access".as_ptr()) },
+        0
+    );
+    assert!(write_result(plain.to_str(), Some("after")).starts_with(b"Wrote"));
+    let inherited = get(&plain);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(written.as_deref(), Some(wanted.as_slice()));
+    assert_eq!(edited.as_deref(), Some(wanted.as_slice()));
+    assert_eq!(inherited, None);
+}
