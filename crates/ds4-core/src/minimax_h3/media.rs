@@ -87,65 +87,16 @@ fn program(variable: &str, default: &str) -> String {
 /// and a zero exit status. That is the reference's read loop and its trailing
 /// byte check (`h3_ffmpeg.c:232-262`) in one place.
 fn capture(program: &str, arguments: &[String], expected: usize) -> Result<Vec<u8>, MediaError> {
-    let mut child = Command::new(program)
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MediaError::new(format!("cannot start {program}: {error}")))?;
-
-    let mut output = vec![0u8; expected];
-    let mut received = 0;
-
-    {
-        let stdout = child
-            .stdout
-            .as_mut()
-            .ok_or_else(|| MediaError::new("the child has no stdout".to_string()))?;
-
-        while received < expected {
-            match stdout.read(&mut output[received..]) {
-                Ok(0) => break,
-                Ok(amount) => received += amount,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    return Err(MediaError::new(format!("{program} output failed: {error}")))
-                }
-            }
-        }
-
-        // One more byte must be EOF: a longer stream is a shape error, not a
-        // truncation (`h3_ffmpeg.c:242-245`).
-        let mut trailing = [0u8; 1];
-        let extra = stdout.read(&mut trailing).unwrap_or(0);
-        if extra != 0 {
-            return Err(MediaError::new(format!(
-                "{program} wrote more than the {expected} bytes the shape allows"
-            )));
-        }
-    }
-
-    let status = child
-        .wait()
-        .map_err(|error| MediaError::new(format!("cannot wait for {program}: {error}")))?;
-
-    if !status.success() {
-        let mut detail = String::new();
-        if let Some(stderr) = child.stderr.as_mut() {
-            let _ = stderr.read_to_string(&mut detail);
-        }
-
+    let (output, overflow) = capture_up_to(program, arguments, expected)?;
+    if overflow {
         return Err(MediaError::new(format!(
-            "{program} failed ({}): {}",
-            status,
-            detail.trim()
+            "{program} wrote more than the {expected} bytes the shape allows"
         )));
     }
-
-    if received != expected {
+    if output.len() != expected {
         return Err(MediaError::new(format!(
-            "{program} produced {received} bytes, expected {expected}"
+            "{program} produced {} bytes, expected {expected}",
+            output.len()
         )));
     }
 
@@ -440,29 +391,30 @@ fn capture_up_to(
         .spawn()
         .map_err(|error| MediaError::new(format!("cannot start {program}: {error}")))?;
 
+    // Both pipes must keep moving, even when the decoder exceeds a bound.
+    let stderr = child.stderr.take().expect("piped decoder stderr");
+    let errors = std::thread::spawn(move || error_tail(stderr));
     let mut output = Vec::new();
-
-    {
-        let stdout = child
-            .stdout
-            .as_mut()
-            .ok_or_else(|| MediaError::new("the child has no stdout".to_string()))?;
+    let read = (|| {
+        let mut stdout = child.stdout.take().expect("piped decoder stdout");
         stdout
+            .by_ref()
             .take(capacity as u64 + 1)
-            .read_to_end(&mut output)
-            .map_err(|error| MediaError::new(format!("{program} output failed: {error}")))?;
+            .read_to_end(&mut output)?;
+        std::io::copy(&mut stdout, &mut std::io::sink())
+    })();
+    if read.is_err() {
+        let _ = child.kill();
     }
 
-    let status = child
-        .wait()
-        .map_err(|error| MediaError::new(format!("cannot wait for {program}: {error}")))?;
+    let status = child.wait();
+    let tail = errors.join().unwrap_or_default();
+    read.map_err(|error| MediaError::new(format!("{program} output failed: {error}")))?;
+    let status =
+        status.map_err(|error| MediaError::new(format!("cannot wait for {program}: {error}")))?;
 
     if !status.success() {
-        let mut detail = String::new();
-        if let Some(stderr) = child.stderr.as_mut() {
-            let _ = stderr.read_to_string(&mut detail);
-        }
-
+        let detail = String::from_utf8_lossy(&tail);
         return Err(MediaError::new(format!(
             "{program} failed ({}): {}",
             status,
@@ -474,6 +426,28 @@ fn capture_up_to(
     output.truncate(capacity);
 
     Ok((output, overflow))
+}
+
+fn error_tail(mut stream: impl Read) -> Vec<u8> {
+    const KEEP: usize = 4096;
+    let mut tail = Vec::new();
+    let mut buffer = [0; KEEP];
+
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                tail.extend_from_slice(&buffer[..count]);
+                if tail.len() > KEEP {
+                    tail.drain(..tail.len() - KEEP);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    tail
 }
 
 /// `value / 255` into channel-major `[3,T,H,W]` (`h3_ffmpeg.c:271-280`,
@@ -497,6 +471,62 @@ fn channel_major(rgb: &[u8], area: usize, frames: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_pipes_never_block() {
+        const CHILD: &str = "DS4_H3_MEDIA_PIPE_TEST";
+
+        if std::env::var_os(CHILD).is_some() {
+            let args = [
+                "-c".to_string(),
+                "dd if=/dev/zero bs=65536 count=4 >&2 2>/dev/null; printf decoder-failed >&2; printf x; exit 1".to_string(),
+            ];
+            let exact = capture("sh", &args, 1).unwrap_err();
+            let bounded = capture_up_to("sh", &args, 1).unwrap_err();
+
+            for error in [exact, bounded] {
+                assert!(error.detail().contains("decoder-failed"), "{error}");
+                assert!(error.detail().len() < 8192);
+            }
+
+            let args = [
+                "-c".to_string(),
+                "dd if=/dev/zero bs=65536 count=4 2>/dev/null".to_string(),
+            ];
+            let (bytes, overflow) = capture_up_to("sh", &args, 4).unwrap();
+            assert_eq!(bytes, [0; 4]);
+            assert!(overflow);
+            let exact = capture("sh", &args, 4).unwrap_err();
+            assert!(exact.detail().contains("more than the 4 bytes"));
+            return;
+        }
+
+        // A pipe regression must fail promptly rather than hang the test job.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "minimax_h3::media::tests::decoder_pipes_never_block",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "decoder pipe checks failed: {status}");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("decoder blocked on a full stdout or stderr pipe");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 
     /// The operator's conditioning pilot, 432x171 RGBA.
     fn pilot() -> std::path::PathBuf {
