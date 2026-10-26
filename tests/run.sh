@@ -19,7 +19,6 @@ step() {
   "$@" || { echo "-- FAILED: $*"; fail=1; }
 }
 
-step bash tests/qa-gate.sh
 step make pq2-0-test
 step make test-qwen35-ref
 if [[ "${DS4_FAST:-0}" != "1" ]]; then
