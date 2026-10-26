@@ -4,6 +4,8 @@ MiniMax-H3 generates video and audio with a diffusion transformer. Its Rust
 host and CUDA kernels are separate from the autoregressive model families;
 LLM context, KV-cache, token streaming and MTP options do not apply.
 
+H3 is an unreleased addition after v0.1.4.
+
 The runtime reads the released BF16 safetensors. FL2VA supplies text-to-video
 and first/last-frame conditioning. Ref2VA supplies ordered image, video and
 audio references. There is no H3 GGUF or VQ loader.
@@ -52,6 +54,9 @@ status polling. Larger canvases and more steps require separate measurement.
 The [dated validation](validation-2026-10-26.md) records exact inputs,
 phase timings, memory observations and qualification limits. These single
 runs are execution receipts, not throughput or broad quality guarantees.
+The [v0.1.4 integration review](validation-2026-10-26.md#v014-integration-review--2026-10-27)
+records subsequent fixes and model-free checks; full-model renders were not
+repeated for that review.
 
 ## Model files
 

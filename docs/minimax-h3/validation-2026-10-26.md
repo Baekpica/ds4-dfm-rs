@@ -162,3 +162,67 @@ no H3 VQ/GGUF runtime, FP8 speed claim or CUDA profiling campaign in this PR.
 API admission limits are a separate contract, not proof that every admitted
 workload fits a given host. Raw logs and generated media remain in ignored
 `scratch/pr111-review/`; the PR thread records the maintainer's results.
+
+## v0.1.4 integration review — 2026-10-27
+
+Reviewed the cumulative PR at `12392a691b24ea574e312c4ee74d210dba9a65f6`
+and integrated main/v0.1.4 at `f986d6a598a383ad2ccbda2da350e5cbcfacc9bc`.
+H3 remains under **Unreleased**; the published v0.1.4 tag is unchanged.
+The following checks use source `8517f0871af45f3b2fa7ce8571f84dfc8bbb0b00`
+on the same GB10/CUDA toolchain recorded above, with no model loaded.
+
+The review removed unused preset, delivery-mode and weight-mapping APIs,
+avoided unused CLI hashes and a frame-buffer copy, and consolidated Make
+rules while preserving linked objects and arithmetic flags. H3 headers now
+participate in dependency tracking and H3 outputs in `make clean`.
+The existing CLI internal-canvas resizing and all conditioning modes remain.
+
+Correctness fixes reject wrong-rank or wrong-shape VAE tensors before upload,
+retain the first shard's tensor when names repeat, return tokenizer errors
+for invalid byte symbols or malformed metadata, and validate media classes
+for frame anchors as well as references. Existing decoder-supported
+AAC/FLAC/AIFF/Matroska MIME types now receive the corresponding extensions.
+Each defect was reproduced before its fix with a model-free regression.
+
+Eleven DiT, text and vision launches now place their growing row/plane axis
+on CUDA `grid.x`, avoiding the 65,535-block `grid.y`/`grid.z` limit. This
+changes scheduling only: block sizes, per-row arithmetic and output indexing
+are unchanged. Tiny-width tests reproduced eight long-axis launch failures
+before the fix. Short multi-head/column fixtures also check exact outputs.
+Long attention launches were inspected against the grid limits; their
+quadratic workloads were not run.
+
+| Check | Result |
+|---|---|
+| `cargo test -p ds4-core --lib minimax_h3 --locked -- --test-threads=1` | 218 passed |
+| `cargo test -p ds4-server --lib h3_ --locked -- --test-threads=1` | 24 passed |
+| `cargo check -p ds4-core --examples --features h3-gates --locked` | Passed |
+| `timeout 30s tests/h3/native_test` | 29 passed; no checkpoint |
+| Portable host, tokenizer and real FFmpeg mux executables | 3 passed |
+| `python3 tests/h3/test_cli_conditioning.py` | 6 decoder-boundary cases passed |
+| `h3-rs --help`, `h3-server-rs --help` | Both passed |
+
+Final build command:
+
+```sh
+make -j2 CUDA_ARCH=sm_121 h3-rs h3-server-rs tests/h3/native_test \
+  tests/h3-test_host_portable tests/h3-test_tokenizer_portable tests/h3-test_av_mux
+```
+
+| Binary at `8517f087` | SHA256 |
+|---|---|
+| `h3-rs` | `f1d4596ddcc9414b454fb16226521fd07197206621d950a22e49e8f88911f090` |
+| `h3-server-rs` | `640c42a173a13ca7f6369b2b8aec15959cfb54ead1bf6ddbda6e821a97520de4` |
+| `tests/h3/native_test` | `231b712d10a918e3a63ed3731ee8cb78f49817738382c2c1235e795b0933d70a` |
+
+Raw logs, failing-first fixtures and the digest receipt remain under ignored
+`scratch/pr111-v014/` (`validation-receipt.json`). A Make dry-run comparison
+verified unchanged object sets for all 15 Rust targets and arithmetic flags
+for all four CUDA objects; host-only tests no longer link CUDA libraries.
+Header dependency rebuilding was checked with `make -n -W`.
+
+The full-model CLI/API outputs and timings above remain historical evidence
+at their named commits. This integration review did not repeat those renders,
+Darwin compilation or reference-script checks. It adds no qualification for
+long clips, larger canvases, sustained queues, warm caches or performance.
+The final PR's Host parity status is recorded in its GitHub checks.
