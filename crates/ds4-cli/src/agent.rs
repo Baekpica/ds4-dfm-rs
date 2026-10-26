@@ -433,6 +433,32 @@ pub fn run(name: &str, args: AgentArgs) -> Result<i32, String> {
         );
     }
 
+    let sidecars: Vec<_> = args
+        .mtp
+        .as_deref()
+        .map(std::path::Path::new)
+        .into_iter()
+        .collect();
+    let sources: Vec<_> = args
+        .steering_file
+        .as_deref()
+        .map(std::path::Path::new)
+        .into_iter()
+        .collect();
+    let settings = format!(
+        "backend={:?};threads={};options={:?};dist={:?};spec={}",
+        args.backend,
+        args.threads,
+        mtp_open_options(&args),
+        args.dist,
+        use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
+    );
+    let cache_identity = ds4_server::cache_identity::CacheIdentity::capture_with_sources(
+        std::path::Path::new(&args.model),
+        &sidecars,
+        &sources,
+        &settings,
+    )?;
     let mut log = trace::Trace::open(args.trace.as_deref(), name)?;
     let model = match crate::distributed_config(&args.dist) {
         Some(config) => ds4_core::Model::open_distributed_options(
@@ -459,7 +485,13 @@ pub fn run(name: &str, args: AgentArgs) -> Result<i32, String> {
     let mut session = session_ready(&model, &args)?;
     let cache_dir = kv::default_cache_dir();
     let _ = std::fs::create_dir_all(&cache_dir);
-    let store = kv::SessionStore::open(cache_dir, u8::try_from(model.model_id()).unwrap_or(0));
+    let artifact =
+        cache_identity.finish(&format!("ctx={};shape={:?}", session.ctx(), model.shape()))?;
+    let store = kv::SessionStore::open(
+        cache_dir,
+        u8::try_from(model.model_id()).unwrap_or(0),
+        artifact,
+    );
     let mut identity = kv::SessionIdentity::default();
     let mut transcript = build_system_transcript(model.vocab(), &args, think)?;
     session

@@ -1,17 +1,19 @@
-use super::catalog::{session_title, KvError};
+use super::catalog::KvError;
 use super::identity::{
-    decode_title_trailer, encode_title_trailer, file_identity_sha, identity_sha,
+    decode_title_trailer, encode_title_trailer, file_identity_sha, identity_sha, title_from_text,
 };
 use ds4_kv::{
-    decode_file, encode_file, path_for_sha, write_path, Header, Reason, Record, EXT_SESSION_TITLE,
+    path_for_sha, read_envelope, read_identity, read_trailer, write_checkpoint, Header,
+    PayloadGuard, Reason, EXT_SESSION_TITLE,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct SwitchPlan {
     pub(crate) sha: String,
     pub(crate) path: PathBuf,
+    _held: PayloadGuard,
     pub(crate) needs_prefill: bool,
     pub(crate) title: String,
     pub(crate) created_at: u64,
@@ -26,7 +28,7 @@ pub(crate) struct SaveSpec<'a> {
     pub(crate) created_at: u64,
     pub(crate) last_used: u64,
     pub(crate) text: &'a [u8],
-    pub(crate) payload: &'a [u8],
+    pub(crate) payload: &'a Path,
     pub(crate) tokens: u32,
     pub(crate) model_id: u8,
     pub(crate) quant_bits: u8,
@@ -36,13 +38,15 @@ pub(crate) struct SaveSpec<'a> {
 pub(crate) struct SessionStore {
     dir: PathBuf,
     model_id: u8,
+    artifact: [u8; 32],
 }
 
 impl SessionStore {
-    pub(crate) fn open(dir: impl Into<PathBuf>, model_id: u8) -> Self {
+    pub(crate) fn open(dir: impl Into<PathBuf>, model_id: u8, artifact: [u8; 32]) -> Self {
         Self {
             dir: dir.into(),
             model_id,
+            artifact,
         }
     }
 
@@ -62,27 +66,29 @@ impl SessionStore {
         }
         let sha = identity_sha(spec.title, spec.created_at);
         fs::create_dir_all(&self.dir).map_err(|error| KvError::Io(error.to_string()))?;
-        let record = Record {
-            header: Header {
-                quant_bits: spec.quant_bits,
-                reason: Reason::AgentSession,
-                ext_flags: EXT_SESSION_TITLE,
-                model_id: spec.model_id,
-                tokens: spec.tokens,
-                hits: 0,
-                ctx_size: spec.ctx_size,
-                created_at: spec.created_at,
-                last_used: spec.last_used,
-                payload_bytes: spec.payload.len() as u64,
-                text_bytes: spec.text.len() as u32,
-            },
-            text: spec.text.to_vec(),
-            payload: spec.payload.to_vec(),
-            trailer: encode_title_trailer(spec.title),
+        let header = Header {
+            quant_bits: spec.quant_bits,
+            reason: Reason::AgentSession,
+            ext_flags: EXT_SESSION_TITLE,
+            model_id: spec.model_id,
+            tokens: spec.tokens,
+            hits: 0,
+            ctx_size: spec.ctx_size,
+            created_at: spec.created_at,
+            last_used: spec.last_used,
+            payload_bytes: 0,
+            text_bytes: 0,
         };
         let path = path_for_sha(&self.dir, &sha);
-        write_path(&path, &record).map_err(|error| KvError::Io(error.to_string()))?;
-        debug_assert_eq!(&encode_file(&record)[..3], b"KVC");
+        write_checkpoint(
+            &path,
+            &header,
+            spec.text,
+            Some(spec.payload),
+            &encode_title_trailer(spec.title),
+            Some(self.artifact),
+        )
+        .map_err(|error| KvError::Io(error.to_string()))?;
         Ok(sha)
     }
 
@@ -99,52 +105,67 @@ impl SessionStore {
         now: u64,
     ) -> Result<String, KvError> {
         let (sha, path) = self.find(prefix)?;
-        let bytes = fs::read(&path).map_err(|error| KvError::Io(error.to_string()))?;
-        let mut record = decode_file(&bytes).map_err(|error| KvError::Io(error.to_string()))?;
-        let title = decode_title_trailer(&record.trailer);
-        let actual = file_identity_sha(
-            record.header.ext_flags,
+        let held = PayloadGuard::open(&path).map_err(|e| KvError::Io(e.to_string()))?;
+        let mut envelope = read_envelope(held.path()).map_err(|e| KvError::Io(e.to_string()))?;
+        let (_, trailer) =
+            read_trailer(held.path(), u64::MAX).map_err(|e| KvError::Io(e.to_string()))?;
+        let title = decode_title_trailer(&trailer);
+        if file_identity_sha(
+            envelope.header.ext_flags,
             title.as_deref(),
-            record.header.created_at,
-            &record.text,
-        );
-        if actual != sha {
+            envelope.header.created_at,
+            &envelope.text,
+        ) != sha
+        {
             return Err(KvError::IdentityMismatch);
         }
-        record.payload.clear();
-        record.header.payload_bytes = 0;
-        record.header.tokens = token_count;
-        record.header.last_used = now;
-        write_path(&path, &record).map_err(|error| KvError::Io(error.to_string()))?;
+        envelope.header.tokens = token_count;
+        envelope.header.last_used = now;
+        write_checkpoint(
+            &path,
+            &envelope.header,
+            &envelope.text,
+            None,
+            &trailer,
+            None,
+        )
+        .map_err(|error| KvError::Io(error.to_string()))?;
         Ok(sha)
     }
 
     pub(crate) fn switch_plan(&self, prefix: &str) -> Result<SwitchPlan, KvError> {
         let (sha, path) = self.find(prefix)?;
-        let bytes = fs::read(&path).map_err(|error| KvError::Io(error.to_string()))?;
-        let record = decode_file(&bytes).map_err(|error| KvError::Io(error.to_string()))?;
-        let title = session_title(&record, 0);
-        let trailer_title = decode_title_trailer(&record.trailer);
+        let held = PayloadGuard::open(&path).map_err(|e| KvError::Io(e.to_string()))?;
+        let envelope = read_envelope(held.path()).map_err(|e| KvError::Io(e.to_string()))?;
+        let (_, trailer) =
+            read_trailer(held.path(), u64::MAX).map_err(|e| KvError::Io(e.to_string()))?;
+        let trailer_title = decode_title_trailer(&trailer);
         let actual = file_identity_sha(
-            record.header.ext_flags,
+            envelope.header.ext_flags,
             trailer_title.as_deref(),
-            record.header.created_at,
-            &record.text,
+            envelope.header.created_at,
+            &envelope.text,
         );
         if actual != sha {
             return Err(KvError::IdentityMismatch);
         }
-        let payload_offset = (ds4_kv::FIXED_HEADER + 4 + record.text.len()) as u64;
+        let title = trailer_title
+            .filter(|_| envelope.header.ext_flags & EXT_SESSION_TITLE != 0)
+            .unwrap_or_else(|| title_from_text(&envelope.text, 0));
+        let compatible = read_identity(held.path()).map_err(|e| KvError::Io(e.to_string()))?
+            == Some(self.artifact);
+
         Ok(SwitchPlan {
             sha,
-            path,
-            needs_prefill: record.header.payload_bytes == 0,
+            path: held.path().to_path_buf(),
+            _held: held,
+            needs_prefill: envelope.header.payload_bytes == 0 || !compatible,
             title,
-            created_at: record.header.created_at,
-            text: record.text,
-            payload_offset,
-            payload_bytes: record.header.payload_bytes,
-            tokens: record.header.tokens,
+            created_at: envelope.header.created_at,
+            text: envelope.text,
+            payload_offset: envelope.payload_offset,
+            payload_bytes: envelope.header.payload_bytes,
+            tokens: envelope.header.tokens,
         })
     }
 }
