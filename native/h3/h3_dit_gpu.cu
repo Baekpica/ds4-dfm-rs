@@ -575,6 +575,7 @@ int h3d_adaln(h3d_context *context, h3d_tensor *output,
     return h3d_launch_ok("BF16 AdaLN", error, error_size);
 }
 
+/* Long video/reference rows use grid.x; CUDA grid.y/z stop at 65,535. */
 /* `h3_gate_kernel` (`:2689-2702`). */
 __global__ static void h3d_gate_kernel(__nv_bfloat16 *output,
                                        const __nv_bfloat16 *residual,
@@ -583,8 +584,8 @@ __global__ static void h3d_gate_kernel(__nv_bfloat16 *output,
                                        const uint32_t *row_map, uint32_t rows,
                                        uint32_t width, uint32_t slots,
                                        uint32_t gate_slot) {
-    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t column = blockIdx.y * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.x;
     if (row >= rows || column >= width) return;
     size_t index = (size_t)row * width + column;
     size_t base = (size_t)row_map[row] * slots * width;
@@ -607,7 +608,7 @@ int h3d_gate(h3d_context *context, h3d_tensor *output,
         !h3d_is(row_map, H3D_U32, rows)) {
         return h3d_set_error(error, error_size, "invalid gate arguments");
     }
-    dim3 grid((width + 255) / 256, rows);
+    dim3 grid(rows, (width + 255) / 256);
     h3d_gate_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)residual->data,
         (const __nv_bfloat16 *)branch->data,
@@ -629,8 +630,8 @@ __global__ static void h3d_token_pool_kernel(
         __nv_bfloat16 *baseline, size_t baseline_offset,
         const uint32_t *baseline_indices, const uint32_t *pairs,
         uint32_t rows, uint32_t width) {
-    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t column = blockIdx.y * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.x;
     if (row >= rows || column >= width) return;
     uint32_t first_row = pairs[(size_t)row * 2];
     uint32_t second_row = pairs[(size_t)row * 2 + 1];
@@ -679,7 +680,7 @@ int h3d_token_pool(h3d_context *context, h3d_tensor *output,
         !h3d_is(pairs, H3D_U32, (size_t)rows * 2)) {
         return h3d_set_error(error, error_size, "invalid token pool arguments");
     }
-    dim3 grid((width + 255) / 256, rows);
+    dim3 grid(rows, (width + 255) / 256);
     h3d_token_pool_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)input->data,
         input_element, (__nv_bfloat16 *)original->data, original_element,
@@ -697,8 +698,8 @@ __global__ static void h3d_token_expand_kernel(
         const uint32_t *baseline_indices, const uint32_t *parents,
         uint32_t rows, uint32_t width, uint32_t exact_prefix_rows,
         float update_scale) {
-    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t column = blockIdx.y * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.x;
     if (row >= rows || column >= width) return;
     uint32_t parent = parents[row];
     size_t destination = (size_t)row * width + column;
@@ -742,7 +743,7 @@ int h3d_token_expand(h3d_context *context, h3d_tensor *output,
         return h3d_set_error(error, error_size,
                              "invalid token expand arguments");
     }
-    dim3 grid((width + 255) / 256, rows);
+    dim3 grid(rows, (width + 255) / 256);
     h3d_token_expand_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data,
         (const __nv_bfloat16 *)original->data, original_element,
@@ -804,8 +805,8 @@ int h3d_rms_norm(h3d_context *context, h3d_tensor *output,
 __global__ static void h3d_swiglu_kernel(__nv_bfloat16 *output,
                                          const __nv_bfloat16 *fused,
                                          uint32_t rows, uint32_t width) {
-    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t column = blockIdx.y * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.x;
     if (row >= rows || column >= width) return;
     size_t base = (size_t)row * width * 2;
     float gate = __bfloat162float(fused[base + column]);
@@ -823,7 +824,7 @@ int h3d_swiglu(h3d_context *context, h3d_tensor *output,
         !h3d_is(fused, H3D_BF16, elements * 2)) {
         return h3d_set_error(error, error_size, "invalid SwiGLU arguments");
     }
-    dim3 grid((width + 255) / 256, rows);
+    dim3 grid(rows, (width + 255) / 256);
     h3d_swiglu_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)fused->data,
         rows, width);
@@ -839,9 +840,9 @@ __global__ static void h3d_qkv_rope_kernel(
         const __nv_bfloat16 *k_weight, const __nv_bfloat16 *rope_cos,
         const __nv_bfloat16 *rope_sin, uint32_t sequence, uint32_t heads,
         uint32_t head_dim, uint32_t rope_half, float epsilon) {
-    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t dimension = blockIdx.z * blockDim.x + threadIdx.x;
     uint32_t head = blockIdx.y;
-    uint32_t row = blockIdx.z;
+    uint32_t row = blockIdx.x;
     if (row >= sequence || head >= heads || dimension >= head_dim) return;
     size_t inner = (size_t)heads * head_dim;
     size_t row_base = (size_t)row * inner * 3;
@@ -908,7 +909,7 @@ int h3d_qkv_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
         !h3d_is(rope_sin, H3D_BF16, (size_t)sequence * rope_half)) {
         return h3d_set_error(error, error_size, "invalid QKV/RoPE tensors");
     }
-    dim3 grid((head_dim + 127) / 128, heads, sequence);
+    dim3 grid(sequence, heads, (head_dim + 127) / 128);
     h3d_qkv_rope_kernel<<<grid, 128, 0, context->stream>>>(
         (__nv_bfloat16 *)query->data, (__nv_bfloat16 *)key->data,
         (__nv_bfloat16 *)value->data, (const __nv_bfloat16 *)qkv->data,
@@ -932,8 +933,8 @@ __global__ static void h3d_attention_tiled_kernel(
     __shared__ float shared_value[HEAD_DIM];
     uint32_t warp = threadIdx.x / 32;
     uint32_t lane = threadIdx.x % 32;
-    uint32_t head = blockIdx.x;
-    uint32_t row = blockIdx.y * QUERIES + warp;
+    uint32_t head = blockIdx.y;
+    uint32_t row = blockIdx.x * QUERIES + warp;
     int active = row < sequence;
     size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
     float result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1006,7 +1007,7 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
         return h3d_set_error(error, error_size,
                              "invalid attention tensors or shape");
     }
-    dim3 grid(heads, (sequence + 7) / 8);
+    dim3 grid((sequence + 7) / 8, heads);
     h3d_attention_tiled_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
@@ -1962,9 +1963,9 @@ __global__ static void h3d_vae_pad_kernel(
     uint32_t height, uint32_t width, uint32_t channels, uint32_t depth_front,
     uint32_t height_before, uint32_t height_after, uint32_t width_before,
     uint32_t width_after) {
-    uint32_t channel = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t channel = blockIdx.z * blockDim.x + threadIdx.x;
     uint32_t output_x = blockIdx.y;
-    uint32_t plane = blockIdx.z;
+    uint32_t plane = blockIdx.x;
     uint32_t output_depth = depth + depth_front;
     uint32_t output_height = height + height_before + height_after;
     uint32_t output_width = width + width_before + width_after;
@@ -2013,8 +2014,8 @@ int h3d_vae_encoder_pad(h3d_context *context, h3d_tensor *output,
         !h3d_is(output, H3D_F32, output_elements)) {
         return h3d_set_error(error, error_size, "invalid VAE padding tensors");
     }
-    dim3 grid((channels + 127) / 128, (uint32_t)output_width,
-              (uint32_t)((uint64_t)batch * output_depth * output_height));
+    dim3 grid((uint32_t)((uint64_t)batch * output_depth * output_height),
+              (uint32_t)output_width, (channels + 127) / 128);
     h3d_vae_pad_kernel<<<grid, 128, 0, context->stream>>>(
         (float *)output->data, (const float *)input->data, batch, depth,
         height, width, channels, depth_front, height_before, height_after,

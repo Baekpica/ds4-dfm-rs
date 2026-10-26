@@ -394,9 +394,9 @@ __global__ static void h3v_qkv_rope_kernel(__nv_bfloat16 *query,
                                            uint32_t sequence, uint32_t heads,
                                            uint32_t head_dim,
                                            uint32_t rope_half) {
-    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t dimension = blockIdx.z * blockDim.x + threadIdx.x;
     uint32_t head = blockIdx.y;
-    uint32_t row = blockIdx.z;
+    uint32_t row = blockIdx.x;
     if (row >= sequence || head >= heads || dimension >= head_dim) return;
     size_t inner = (size_t)heads * head_dim;
     size_t row_base = (size_t)row * inner * 3;
@@ -442,7 +442,7 @@ int h3v_qkv_rope(h3v_context *context, h3v_tensor *query, h3v_tensor *key,
         !h3v_is(cosines, ropes) || !h3v_is(sines, ropes)) {
         return h3v_set_error(error, error_size, "invalid QKV/RoPE tensors");
     }
-    dim3 grid((head_dim + 127) / 128, heads, sequence);
+    dim3 grid(sequence, heads, (head_dim + 127) / 128);
     h3v_qkv_rope_kernel<<<grid, 128, 0, context->stream>>>(
         (__nv_bfloat16 *)query->data, (__nv_bfloat16 *)key->data,
         (__nv_bfloat16 *)value->data, (const __nv_bfloat16 *)qkv->data,
@@ -467,8 +467,8 @@ __global__ static void h3v_attention_kernel(__nv_bfloat16 *output,
     __shared__ float rescale;
     __shared__ float weight;
     __shared__ float denominator;
-    uint32_t head = blockIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t head = blockIdx.y;
+    uint32_t row = blockIdx.x;
     size_t query_base = ((size_t)head * sequence + row) * head_dim;
     uint32_t dimension = threadIdx.x;
     float result = 0.0f;
@@ -527,7 +527,7 @@ int h3v_sdpa(h3v_context *context, h3v_tensor *output, const h3v_tensor *query,
      * head dimension fits. The vision tower's 72 lands on 128. */
     uint32_t threads = 128;
     while (threads < head_dim) threads <<= 1;
-    dim3 grid(heads, sequence, 1);
+    dim3 grid(sequence, heads, 1);
     h3v_attention_kernel<<<grid, threads, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data,

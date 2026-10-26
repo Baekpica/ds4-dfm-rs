@@ -180,14 +180,15 @@ int h3t_sync(h3t_context *context, char *error, size_t error_size) {
                        error, error_size);
 }
 
+/* Reference-media prompts can exceed grid.y's 65,535-token limit. */
 /* `h3_embedding_kernel` (`:2811-2820`). */
 __global__ static void h3t_embed_kernel(__nv_bfloat16 *output,
                                         const __nv_bfloat16 *weight,
                                         const uint32_t *token_ids,
                                         uint32_t tokens, uint32_t vocab_size,
                                         uint32_t width) {
-    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t token = blockIdx.y;
+    uint32_t column = blockIdx.y * blockDim.x + threadIdx.x;
+    uint32_t token = blockIdx.x;
     if (token >= tokens || column >= width) return;
     uint32_t id = token_ids[token];
     output[(size_t)token * width + column] = id < vocab_size ?
@@ -220,7 +221,7 @@ int h3t_embed(h3t_context *context, h3t_tensor *output,
                      "token id upload", error, error_size)) {
         return 0;
     }
-    dim3 grid((width + 255) / 256, tokens);
+    dim3 grid(tokens, (width + 255) / 256);
     h3t_embed_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)weight->data,
         context->ids, tokens, vocab, width);
@@ -466,8 +467,8 @@ __global__ static void h3t_attention_kernel(__nv_bfloat16 *output,
     __shared__ float rescale;
     __shared__ float weight;
     __shared__ float denominator;
-    uint32_t query_head = blockIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t query_head = blockIdx.y;
+    uint32_t row = blockIdx.x;
     uint32_t kv_head = query_head / (query_heads / kv_heads);
     uint32_t keys = row + 1;
     size_t query_base =
@@ -533,7 +534,7 @@ int h3t_gqa_causal(h3t_context *context, h3t_tensor *output,
     }
     uint32_t threads = 128;
     while (threads < head_dim) threads <<= 1;
-    dim3 grid(query_heads, sequence, 1);
+    dim3 grid(sequence, query_heads, 1);
     h3t_attention_kernel<<<grid, threads, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
