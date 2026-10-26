@@ -434,6 +434,9 @@ H3_DIT_LINK_FINGERPRINT = $(shell cksum native/h3/h3_dit_gpu.o 2>/dev/null | cks
 native/h3/h3_dit_gpu.o: native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h
 	$(NVCC) $(H3_NVCCFLAGS) -c -o $@ $<
 
+tests/h3/native_test: tests/h3/test_native.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
+	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
+
 tests/h3_dit_gate: $(DS4_RS_SOURCES) native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
 	cargo rustc -p ds4-core --example h3_dit_gate --release --features h3-gates -- \
 	-C metadata=$(DS4_RS_LINK_FINGERPRINT)-$(H3_LINK_FINGERPRINT)-$(H3_DIT_LINK_FINGERPRINT) \

@@ -137,6 +137,10 @@ h3d_tensor *h3d_alloc(h3d_context *context, int dtype, size_t elements,
         h3d_set_error(error, error_size, "unknown DiT dtype %d", dtype);
         return NULL;
     }
+    if (elements > SIZE_MAX / h3d_dtype_size(dtype)) {
+        h3d_set_error(error, error_size, "tensor byte size overflow");
+        return NULL;
+    }
     h3d_tensor *tensor = (h3d_tensor *)calloc(1, sizeof(*tensor));
     if (!tensor) {
         h3d_set_error(error, error_size, "out of memory allocating tensor");
@@ -250,11 +254,15 @@ int h3d_read(h3d_context *context, void *host, const h3d_tensor *tensor,
         return h3d_set_error(error, error_size, "invalid read");
     }
     if (!tensor->elements) return 1;
-    return h3d_cuda_ok(
+    if (!h3d_cuda_ok(
         cudaMemcpyAsync(host, tensor->data,
                         tensor->elements * h3d_dtype_size(tensor->dtype),
                         cudaMemcpyDeviceToHost, context->stream),
-        "read tensor", error, error_size);
+        "read tensor", error, error_size)) {
+        return 0;
+    }
+    return h3d_cuda_ok(cudaStreamSynchronize(context->stream),
+                       "read tensor sync", error, error_size);
 }
 
 /* `h3_linear_lt` (`h3_gpu_cuda.cu:733-779`), byte for byte: row-major
@@ -596,7 +604,7 @@ int h3d_gate(h3d_context *context, h3d_tensor *output,
         !h3d_is(residual, H3D_BF16, elements) ||
         !h3d_is(branch, H3D_BF16, elements) ||
         !h3d_is(modulation, H3D_BF16, (size_t)slots * width) ||
-        !row_map || row_map->elements < rows) {
+        !h3d_is(row_map, H3D_U32, rows)) {
         return h3d_set_error(error, error_size, "invalid gate arguments");
     }
     dim3 grid((width + 255) / 256, rows);

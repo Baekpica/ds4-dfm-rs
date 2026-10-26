@@ -277,6 +277,7 @@ tests/naive_banks
 # P12.5 reference-suite binaries (`make tests/h3-<name>`). The sources live in
 # /tests/h3/, which this rule does not cover.
 /tests/h3-*
+/tests/h3/native_test
 
 # h3 host binaries (`make h3-rs`, `make h3-server-rs`)
 /h3-rs

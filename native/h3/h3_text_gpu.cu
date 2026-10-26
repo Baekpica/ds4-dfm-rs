@@ -103,6 +103,10 @@ h3t_tensor *h3t_alloc(h3t_context *context, int dtype, size_t elements,
         h3t_set_error(error, error_size, "unknown dtype %d", dtype);
         return NULL;
     }
+    if (elements > SIZE_MAX / h3t_dtype_size(dtype)) {
+        h3t_set_error(error, error_size, "tensor byte size overflow");
+        return NULL;
+    }
     h3t_tensor *tensor = (h3t_tensor *)calloc(1, sizeof(*tensor));
     if (!tensor) {
         h3t_set_error(error, error_size, "out of memory allocating tensor");

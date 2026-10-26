@@ -87,6 +87,10 @@ void h3v_destroy(h3v_context *context) {
 
 h3v_tensor *h3v_alloc(h3v_context *context, size_t elements, char *error,
                       size_t error_size) {
+    if (elements > SIZE_MAX / sizeof(__nv_bfloat16)) {
+        h3v_set_error(error, error_size, "tensor byte size overflow");
+        return NULL;
+    }
     h3v_tensor *tensor = (h3v_tensor *)calloc(1, sizeof(*tensor));
     if (!tensor) {
         h3v_set_error(error, error_size, "out of memory allocating tensor");
