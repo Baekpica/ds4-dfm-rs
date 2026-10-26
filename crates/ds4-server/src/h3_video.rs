@@ -28,10 +28,10 @@
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -54,6 +54,9 @@ pub const STDERR_TAIL_BYTES: usize = 4096;
 
 /// How often the renderer wait loop checks for exit or timeout.
 pub const RENDER_POLL: Duration = Duration::from_millis(20);
+
+const CLIENT_LIMIT: usize = 64;
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub const CONTENT_TYPE_MP4: &str = "video/mp4";
 pub const CONTENT_TYPE_JSON: &str = "application/json";
@@ -810,19 +813,63 @@ pub fn serve_one(listener: &TcpListener, server: &VideoServer) -> io::Result<()>
     answer(server, &mut stream)
 }
 
-/// Accept connections forever, one thread per connection.
+/// Bound connection threads separately from retained generation jobs.
 pub fn serve(listener: TcpListener, server: Arc<VideoServer>) -> io::Result<()> {
+    let clients = Arc::new(AtomicUsize::new(0));
     for incoming in listener.incoming() {
         match incoming {
-            Ok(mut stream) => {
-                let server = Arc::clone(&server);
-                thread::spawn(move || {
-                    let _ = answer(&server, &mut stream);
-                });
+            Ok(stream) => {
+                let _ = start_client(
+                    stream,
+                    Arc::clone(&server),
+                    Arc::clone(&clients),
+                    CLIENT_LIMIT,
+                    CLIENT_TIMEOUT,
+                );
             }
-            Err(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
         }
     }
+    Ok(())
+}
+
+struct ClientLease(Arc<AtomicUsize>);
+
+impl Drop for ClientLease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn start_client(
+    mut stream: TcpStream,
+    server: Arc<VideoServer>,
+    clients: Arc<AtomicUsize>,
+    limit: usize,
+    timeout: Duration,
+) -> io::Result<()> {
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    if clients
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            (count < limit).then_some(count + 1)
+        })
+        .is_err()
+    {
+        return stream.write_all(
+            &H3Response::error(&ApiError::unavailable(
+                "server_busy",
+                "Too many active connections.",
+            ))
+            .to_bytes(),
+        );
+    }
+    let lease = ClientLease(clients);
+    thread::Builder::new().spawn(move || {
+        let _lease = lease;
+        let _ = answer(&server, &mut stream);
+    })?;
     Ok(())
 }
 
@@ -858,6 +905,48 @@ mod tests {
     use serde_json::Value;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Mutex;
+
+    #[test]
+    fn idle_connections_are_bounded() {
+        let (server, dir) = test_server(Arc::new(DisabledRenderer), 1);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let clients = Arc::new(AtomicUsize::new(0));
+        let connect = || {
+            let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            start_client(
+                stream,
+                Arc::clone(&server),
+                Arc::clone(&clients),
+                1,
+                Duration::from_millis(60),
+            )
+            .unwrap();
+            client
+        };
+        let mut idle = connect();
+        let mut excess = connect();
+        let mut response = String::new();
+        excess.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+
+        idle.read_to_end(&mut Vec::new()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while clients.load(Ordering::Relaxed) != 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(clients.load(Ordering::Relaxed), 0);
+        let mut next = connect();
+        next.write_all(b"GET /missing HTTP/1.1\r\nHost: local\r\n\r\n")
+            .unwrap();
+        response.clear();
+        next.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// The official t2va body (`full-2k-t2va-h3-base.sh:6-21`), byte for
     /// byte in shape: five fields, no conditions, 768P 16:9, ten seconds.

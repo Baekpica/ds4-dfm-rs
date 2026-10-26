@@ -55,7 +55,7 @@ Usage: h3-server-rs [options]
                          --renderer every create answers 503
   --renderer-arg ARG     fixed argument passed to the renderer (repeatable)
   --max-jobs N           retained jobs (default 8)
-  --timeout-secs N       per-render timeout in seconds (default 3600)
+  --timeout-secs N       external renderer timeout in seconds (default 3600)
   --help                 this text
 
 Routes (docs/minimax-h3/local-v1-contract.md):

@@ -19,7 +19,7 @@ path. The contract itself, with every field and every refusal, is
 | `--steps N`, `--reuse N` | `20`, `1` | denoise evaluations, reuse window; engine only (`h3-server-rs.rs:28-29`) |
 | `--renderer PROGRAM` | none | external renderer executable |
 | `--renderer-arg ARG` | none | fixed renderer argument, repeatable |
-| `--max-jobs N` | `8` | retained jobs; the store's bound, and a render bound only under `--renderer` (`h3-server-rs.rs:25`) |
+| `--max-jobs N` | `8` | retained jobs, including completed and failed jobs |
 | `--timeout-secs N` | `3600` | per-render timeout, external renderer only (`h3-server-rs.rs:26`) |
 
 `--model-dir` and `--renderer` are exclusive (exit 2). A `--model-dir` build
@@ -196,15 +196,15 @@ applies (`video_api.rs:56-113`):
 
 ## Limits
 
-- `--max-jobs` (default 8) caps retained jobs and, under `--renderer`, render
-  threads. There is no delete route, so at capacity every create is 429
+- `--max-jobs` (default 8) caps retained jobs. There is no delete route, so
+  at capacity every create is 429
   `queue_full` (`video_api.rs:318-327`) until the host restarts with a larger
   bound. `--max-jobs 0` makes every create fail.
 - The output directory is never pruned: one MP4 per job, kept until the
   operator removes it.
-- `--model-dir` renders serially in arrival order (`engine.rs:13-16`);
-  `--renderer` gives each job a thread and a child, so up to `--max-jobs` run
-  at once.
+- Both backends render one job at a time in arrival order.
+- At most 64 HTTP connections are active; further connections receive 503
+  `server_busy`. Socket reads and writes have a 10-second inactivity timeout.
 - `--timeout-secs` (default 3600, clamped to at least 1) bounds the external
   renderer only; the engine path has no per-job timeout.
 - Steps and reuse are fixed at startup; the seed comes from the body.
