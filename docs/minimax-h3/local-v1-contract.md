@@ -81,6 +81,12 @@ local contract should fail loudly.
 
 ### References (ref2va)
 
+The built-in decoder accepts PNG/JPEG/WebP images, MP4/MOV and Matroska/WebM
+video, and WAV/MP3/AAC/M4A/FLAC/Ogg/AIFF audio. Playlists such as HLS, DASH
+and concat are refused before their references are opened. Inputs use the
+local file protocol only. An operator-supplied external renderer must enforce
+its own media policy.
+
 `task: ref2va` conditions with ordered references, at most 12 (`h3.c:588`),
 each label following request order (`h3_multimodal.c:320-332`):
 

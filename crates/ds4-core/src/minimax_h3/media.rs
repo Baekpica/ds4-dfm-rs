@@ -45,6 +45,23 @@ pub const MIN_FRAMES: usize = 5;
 
 pub const FRAME_STEP: usize = 17;
 
+// Uploaded containers must not open playlist URLs or other local files.
+const INPUT_FORMATS: &str =
+    "image2,png_pipe,jpeg_pipe,webp_pipe,mov,matroska,webm,mp3,wav,ogg,aac,flac,aiff";
+
+fn input_args(arguments: impl IntoIterator<Item = String>) -> Vec<String> {
+    [
+        "-protocol_whitelist",
+        "file",
+        "-format_whitelist",
+        INPUT_FORMATS,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(arguments)
+    .collect()
+}
+
 /// `h3_image_fit` (`h3_ffmpeg.h:9-12`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
@@ -106,7 +123,7 @@ fn capture(program: &str, arguments: &[String], expected: usize) -> Result<Vec<u
 /// `h3_ffprobe_visual_size` (`h3_ffmpeg.c:77-140`): the first visual stream's
 /// coded size, without decoding it.
 pub fn probe_visual_size(path: &Path) -> Result<(u32, u32), MediaError> {
-    let arguments = [
+    let arguments = input_args([
         "-v".to_string(),
         "error".to_string(),
         "-select_streams".to_string(),
@@ -116,7 +133,7 @@ pub fn probe_visual_size(path: &Path) -> Result<(u32, u32), MediaError> {
         "-of".to_string(),
         "csv=p=0:s=x".to_string(),
         path.display().to_string(),
-    ];
+    ]);
     let output = Command::new(program("H3_FFPROBE", "ffprobe"))
         .args(&arguments)
         .stdin(Stdio::null())
@@ -195,7 +212,7 @@ pub fn read_image_f32(
         ),
     };
 
-    let arguments = [
+    let arguments = input_args([
         "-v".to_string(),
         "error".to_string(),
         "-i".to_string(),
@@ -209,7 +226,7 @@ pub fn read_image_f32(
         "-pix_fmt".to_string(),
         "rgb24".to_string(),
         "pipe:1".to_string(),
-    ];
+    ]);
     let rgb = capture(&program("H3_FFMPEG", "ffmpeg"), &arguments, bytes)?;
 
     Ok(channel_major(&rgb, area, 1))
@@ -241,7 +258,7 @@ pub fn read_video_f32(
         .ok_or_else(|| MediaError::new("decoded video size overflows".to_string()))?;
 
     let filter = format!("fps={FRAME_RATE},scale={width}:{height}:flags=lanczos,setsar=1");
-    let arguments = [
+    let arguments = input_args([
         "-v".to_string(),
         "error".to_string(),
         "-i".to_string(),
@@ -258,7 +275,7 @@ pub fn read_video_f32(
         "-pix_fmt".to_string(),
         "rgb24".to_string(),
         "pipe:1".to_string(),
-    ];
+    ]);
 
     // A short clip is legal here: the reader takes what it gets, then trims.
     // `capture` wants an exact length, so the frame count is discovered from
@@ -315,7 +332,7 @@ pub fn read_audio_f32(
         seconds += 1.0 / f64::from(SAMPLE_RATE);
     }
 
-    let arguments = [
+    let arguments = input_args([
         "-v".to_string(),
         "error".to_string(),
         "-i".to_string(),
@@ -332,7 +349,7 @@ pub fn read_audio_f32(
         "-f".to_string(),
         "f32le".to_string(),
         "pipe:1".to_string(),
-    ];
+    ]);
 
     let capacity = max_samples * CHANNELS * std::mem::size_of::<f32>();
     let (raw, overflow) = capture_up_to(&program("H3_FFMPEG", "ffmpeg"), &arguments, capacity)?;
@@ -529,8 +546,7 @@ mod tests {
     }
 
     fn pattern() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/h3/test-pattern.png")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/h3/test-pattern.png")
     }
 
     fn fnv(values: &[f32]) -> u64 {
@@ -547,6 +563,81 @@ mod tests {
         let (width, height) = probe_visual_size(&pattern()).expect("ffprobe the pattern");
 
         assert_eq!((width, height), (64, 32));
+    }
+
+    #[test]
+    fn playlists_are_not_media() {
+        let dir = std::env::temp_dir().join(format!("h3-playlist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(pattern(), dir.join("frame.png")).unwrap();
+        let tone = soundtrack("playlist", 2.5);
+        std::fs::rename(tone, dir.join("tone.wav")).unwrap();
+        let visual = dir.join("visual.mp4");
+        let audio = dir.join("audio.wav");
+        std::fs::write(
+            &visual,
+            "ffconcat version 1.0\nfile frame.png\nduration 2.5\nfile frame.png\n",
+        )
+        .unwrap();
+        std::fs::write(&audio, "ffconcat version 1.0\nfile tone.wav\n").unwrap();
+
+        let refused = [
+            probe_visual_size(&visual).is_err(),
+            read_image_f32(&visual, 64, 32, Fit::Stretch).is_err(),
+            read_video_f32(&visual, 64, 32, 48).is_err(),
+            read_audio_f32(&audio, 96_000, false).is_err(),
+        ];
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            refused.iter().all(|value| *value),
+            "playlist accepted: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn common_formats_decode() {
+        let dir = std::env::temp_dir().join(format!("h3-formats-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("clip.mp4");
+        let audio = dir.join("tone.wav");
+        std::fs::rename(clip("formats", 8, "scale=64:32"), &video).unwrap();
+        std::fs::rename(soundtrack("formats", 2.5), &audio).unwrap();
+
+        for (input, extensions) in [
+            (pattern(), &["jpg", "webp"][..]),
+            (video, &["mov", "webm", "mkv"][..]),
+            (audio, &["mp3", "ogg", "m4a", "aac", "flac", "aiff"][..]),
+        ] {
+            for extension in extensions {
+                let output = dir.join(format!("sample.{extension}"));
+                let encoded = Command::new("ffmpeg")
+                    .args(["-v", "error", "-y", "-i"])
+                    .arg(&input)
+                    .arg(&output)
+                    .output()
+                    .unwrap();
+                assert!(
+                    encoded.status.success(),
+                    "{extension}: {}",
+                    String::from_utf8_lossy(&encoded.stderr)
+                );
+                match *extension {
+                    "jpg" | "webp" => {
+                        assert_eq!(probe_visual_size(&output).unwrap(), (64, 32));
+                        assert_eq!(
+                            read_image_f32(&output, 64, 32, Fit::Stretch).unwrap().len(),
+                            3 * 64 * 32
+                        );
+                    }
+                    "mov" | "webm" | "mkv" => {
+                        assert_eq!(probe_visual_size(&output).unwrap(), (64, 32));
+                        assert_eq!(read_video_f32(&output, 64, 32, 22).unwrap().1, 5);
+                    }
+                    _ => assert!(!read_audio_f32(&output, 96_000, false).unwrap().is_empty()),
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
