@@ -267,3 +267,6 @@ tests/naive_banks
 /tools/vq_calib/cuda/*.so
 /tools/vq_calib/cuda/*.build.json
 /tools/vq_calib/native/
+
+# Compiler-generated header dependencies.
+*.o.d
