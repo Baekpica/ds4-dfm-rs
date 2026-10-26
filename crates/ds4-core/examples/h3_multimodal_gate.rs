@@ -20,35 +20,6 @@
 //! `<Picture 1>: ` prefix is tokenized by the released BPE; it is never
 //! hardcoded.
 //!
-//! Goldens recorded on the Spark (gx10-e1d2, 2026-10-24) with the reference's
-//! own `h3_multimodal_encode_fl2va_bf16` through
-//! `tools/minimax_h3/multimodal_probe.c`, same image, prompt and shape. The
-//! prompt is `A crocodile walks through the swamp at dusk.`; the image is
-//! `tests/fixtures/h3/costello-crocodile-2panel.png`, read with `Fit::Stretch`,
-//! one frame.
-//!
-//!   512x192 (grid 32x12, 96 merged rows, 114 rows total)
-//!     PARITY fnv=6ced02fc6feb0fe6
-//!     TAGS   fnv=7d8b4561c21600fb
-//!   512x512 (grid 32x32, 256 merged rows, 274 rows total)
-//!     PARITY fnv=9f8deeb453edfecc
-//!     TAGS   fnv=0f10ec04569ce77b
-//!
-//! Two images, the pilot PNG on both spans, at 512x192 — the served unit-8
-//! arguments and prompt (`A red fox walking through snow`):
-//!
-//!   GRID 12x32 merged=96 images=2
-//!   TOKENS 214 spans=2 zeros=196
-//!   PARITY fnv=14553bf8e35815b6
-//!   TAGS   fnv=8db87703b7392495
-//!
-//! Recorded on the Spark on 2026-10-25 against `multimodal_probe.c` with the
-//! same two images and prompt: equal hashes and equal eight-word edges, 5.938
-//! s against 17.492 s. The port matched both one-image hashes and both
-//! eight-word edges at each shape.
-//! Wall time with a warm page cache: 5.245 s against the reference's 19.756 s
-//! at 512x192 (the reference's run read the 62 GiB shard cold), and 7.028 s
-//! against 8.570 s at 512x512.
 
 use std::path::Path;
 use std::process::ExitCode;

@@ -29,11 +29,11 @@ create answers 503.
 
 ```bash
 ./h3-server-rs --bind 127.0.0.1:8090 --out-dir /srv/h3-videos \
-  --model-dir /mnt/h3-artifacts/MiniMax-H3 --steps 20 --reuse 1
+  --model-dir /path/to/MiniMax-H3 --steps 20 --reuse 1
 
 ./h3-server-rs --out-dir /srv/h3-videos \
-  --renderer /home/leandro/h3-oracle/h3 \
-  --renderer-arg -d --renderer-arg /mnt/h3-artifacts/MiniMax-H3
+  --renderer /path/to/h3 \
+  --renderer-arg -d --renderer-arg /path/to/MiniMax-H3
 ```
 
 The engine keeps the prompt embedding and prepared DiT across requests and

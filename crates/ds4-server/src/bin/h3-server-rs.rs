@@ -77,13 +77,11 @@ An external renderer is invoked with the reference engine's own CLI spellings:
 
 A fixed model directory is supplied with two renderer args, for example:
 
-  --renderer /home/leandro/h3-oracle/h3 \\
-  --renderer-arg -d --renderer-arg /mnt/h3-artifacts/MiniMax-H3
+  --renderer /path/to/h3 \\
+  --renderer-arg -d --renderer-arg /path/to/MiniMax-H3
 
 with no shell. The program, its fixed arguments, the output directory and the
-working directory are chosen here, never by a request body. The P8 port keeps
-the same CLI flags (port-plan 6.3), so the renderer can be swapped without
-changing this surface.
+working directory are chosen here, never by a request body. The renderer must implement these CLI flags.
 "
 }
 

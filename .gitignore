@@ -268,13 +268,10 @@ tests/naive_banks
 /tools/vq_calib/cuda/*.build.json
 /tools/vq_calib/native/
 
-# tools/minimax_h3/vq build outputs
-/tools/minimax_h3/vq/bin/
-
 # tools/minimax_h3 host driver outputs
 /tools/minimax_h3/ppm_diff
 
-# P12.5 reference-suite binaries (`make tests/h3-<name>`). The sources live in
+# Reference-suite binaries (`make tests/h3-<name>`). The sources live in
 # /tests/h3/, which this rule does not cover.
 /tests/h3-*
 /tests/h3/native_test
@@ -285,8 +282,3 @@ tests/naive_banks
 
 # CLI render output (h3-rs default -o outputs/h3.mp4)
 /outputs/
-
-# H3 perf sweeps keep their MP4s and engine logs beside the CSV; the CSV rows
-# are the record, the media are local evidence (`tests/h3_perf_sweep.sh`).
-/tests/h3/perf/runs/
-/tests/h3/artifacts/

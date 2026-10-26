@@ -34,7 +34,7 @@ The query route answers one record, in this order
 
 | Field | Meaning |
 | --- | --- |
-| `id` | the create answer's id, `video_N` from a monotonic counter |
+| `id` | the create answer's id, an opaque identifier unique to the server instance and job |
 | `status` | `queued`, `in_progress`, `completed`, `failed` |
 | `queue_position` | 1 for the job the engine takes next, counted over the queued jobs; null while a job holds the single render slot and for a job that has run |
 | `size` | the resolved canvas, `1344x768` |
@@ -48,27 +48,12 @@ The query route answers one record, in this order
 The prompt is not echoed: a poll answer would repeat up to 32000 characters on
 every request. The content route answers `video/mp4` for a completed job only.
 
-### Queue state, and the retired OpenAI body
+### Queue state
 
-`queue_position` is this surface's answer to a question the retired OpenAI
-Videos body answered differently. That body landed in `4acb3348` and was
-removed with the local contract in `31170377`; it served four more routes
-(`GET /v1/videos` list, `HEAD .../content`, `DELETE`, `GET /v1/models`,
-`openai-videos.md:38-44`) and carried a thirteen-field object
-(`openai-videos.md:57-58`).
-
-| Question | Retired OpenAI body | Local v1 surface |
-| --- | --- | --- |
-| The create answer | the whole record, serialized before admission, so its `status` read `queued` (`h3_video.rs:376-378` at `4acb3348`) | the id alone (`h3_video.rs:544-546`) |
-| Waiting, as the client sees it | the first poll read `in_progress`: the create admitted its own job (`store.start(&id)`, `h3_video.rs:376` at `4acb3348`) | `queued` with its `queue_position` while another job holds the slot (`video_api.rs:352-370`, `:446-456`); a lone create pumps at once (`h3_video.rs:539-543`) and reads `in_progress` |
-| Progress | `progress`: 0 while queued or in progress, 100 completed, 0 failed (`openai-videos.md:58`) | no progress field |
-| At capacity | 429 `queue_full`, whose message said "delete a finished job and retry" (`video_api.rs:620-627` at `4acb3348`) | 429 `queue_full` (`video_api.rs:321-322`), with no way to make room: three routes |
-| Making room | `DELETE /v1/videos/{id}`, finished jobs only, else 400 `video_not_ready` (`video_api.rs:978-1000` at `31170377^`) | nothing; a restart with a larger `--max-jobs` is the only way back under the bound |
-
-What the local surface lost with that body is the escape hatch, not the queue:
-capacity is still bounded and still refuses, and the only route back under the
-bound is a restart. `queue_position` is the one piece of queue information it
-gained.
+The store admits one render at a time. `--max-jobs` bounds retained jobs,
+including finished jobs. There is no delete route or automatic expiry; a
+full store refuses new creates until the server restarts. Output files are
+preserved across restarts, but the in-memory task records are not restored.
 
 ## The create body
 
@@ -170,47 +155,19 @@ Each is deliberate and named:
 2. **A condition `uri` must be a data URI.** The scripts pass `https://` CDN
    URLs. This host never fetches a URL from a request body and never reads a
    caller-named filesystem path, so the same image travels base64-encoded.
-3. **`auto` over a reference is resolved from that reference.** The docs say
-   `adaptive` is "chosen automatically based on the input" and pin i2va to the
-   input image (`v2-video-generation.openapi.json:804`); a ref2va request has
-   no other geometry, so the first image or video reference decides. A video's
-   pixel size is probed with FFprobe at create time, from a temp copy that is
-   removed immediately; images are read from their header.
+3. **`auto` uses the first visual reference.** A video's pixel size is
+   probed with FFprobe at create time from a temporary copy; an image's
+   dimensions are read from its header.
 4. **`short_edge` is 768.** 480P and 2K belong to the other tiers and to
    H3-Regenerate-2K, which this checkpoint does not provide.
 5. **21:9 is refused**, with the numbers in the message.
 
-## Running it as a shared server
+## Deployment limits
 
-The default is loopback. To serve another machine, bind the interface that
-machine can reach:
-
-```bash
-h3-server-rs --bind 0.0.0.0:8090 --out-dir ~/h3-api/out \
-  --model-dir /mnt/h3-artifacts/MiniMax-H3 --steps 20 --max-jobs 4
-```
-
-On the Spark that answers as `http://192.168.1.91:8090/v1/videos`, and any
-client on the same network can reach it — there is no auth to stop them.
-`tools/minimax_h3/systemd/h3-server-rs.service` plus `env.example` run it as
-a user service; `loginctl enable-linger` keeps it alive without a login
-session.
-
-Two consequences of exposing it:
-
-- every accepted create spends GPU time on the host. One device renders one
-  request at a time, so the store admits one job and holds the rest: a create
-  that does not get the slot answers `queued` with its `queue_position`, and
-  the position it reports is its place in arrival order. `--max-jobs` is the
-  only bound on the store and caps retained jobs, completed ones included;
-- `--steps` is a startup setting, not a request field, so a shared server
-  serves one quality. `--steps 2` is a smoke-test setting, not the release
-  one, and it is not minute-scale at the served shapes: 768x768 with 107
-  frames measured 22 min 8 s at two steps, solo, because the in-process
-  engine renders one request at a time whatever `--max-jobs` allows.
-
-The host firewall is not configured by the server, and on the Spark `ufw` is
-inactive, so nothing sits between the network and this port.
+The default listener is loopback. This server has no authentication; any
+client that can reach the port can submit GPU work. The operator controls
+network access and the output directory. Each accepted render writes an MP4;
+the server does not prune output files. Steps and reuse are fixed at startup.
 
 ## Not served
 

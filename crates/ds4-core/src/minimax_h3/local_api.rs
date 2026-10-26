@@ -588,11 +588,7 @@ impl CreateBody {
 
     /// The canvas: the named ratio's, or the media's own aspect.
     ///
-    /// `auto` takes its aspect from the request's only geometry: the keyframe
-    /// for fl2va, the first visual reference for ref2va (`v2-video-generation.
-    /// openapi.json:804` says adaptive is chosen "based on the input"; for
-    /// i2va the docs pin it to the input image, and a ref2va request has no
-    /// other geometry to choose from).
+    /// `auto` uses the FL2VA keyframe or the first visual Ref2VA reference.
     fn canvas(
         &self,
         anchor: Option<&AnchorImage>,

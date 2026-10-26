@@ -11,20 +11,6 @@
 //! The image is read by `minimax_h3::media` (FFmpeg, Lanczos, channel-major)
 //! at the requested shape, which must be a multiple of 32 on both edges.
 //!
-//! Goldens recorded on the Spark (gx10-e1d2, 2026-10-24) with the reference's
-//! own `h3_vision_encode_bf16` through `tools/minimax_h3/vision_probe.c`, same
-//! image and shape. The port matched all four hashes at each shape, and the
-//! MERGED hash also at 512x224, 512x256, 512x320, 512x384 and 512x448:
-//!
-//!   512x192 (grid 32x12, 96 rows)
-//!     PARITY   b583e7a6059acdc0
-//!     DEEPSTACK 0 316017d0a0ccbc8e, 1 2d52638d8308c78d, 2 91ef1cab820cb4b3
-//!   512x512 (grid 32x32, 256 rows)
-//!     PARITY   defef5800918fc1b
-//!     DEEPSTACK 0 b5ad09518b677e73, 1 92910bbc32884dbc, 2 9aae4a41ec5a194d
-//!
-//! The image is `tests/fixtures/h3/costello-crocodile-2panel.png`, read with
-//! `Fit::Stretch`, one frame.
 
 use std::process::ExitCode;
 use std::time::Instant;

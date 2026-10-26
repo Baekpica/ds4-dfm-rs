@@ -1,43 +1,34 @@
-# tools/minimax_h3 — MiniMax-H3 tooling
+# MiniMax-H3 reference tools
 
-All h3 tooling lives under this directory; nothing h3-named sits loose in
-`tools/`.
+These probes compare the Rust port with the pinned
+[h3.c reference](../../docs/minimax-h3/README.md#source-and-ownership).
+They are not linked into production hosts.
 
-| Path | What it is |
+| Tool | Purpose |
 |---|---|
-| `st_probe.c` | The reference safetensors parser driven over a checkpoint directory, for the two-sided diff against `minimax_h3::safetensors` |
-| `tok_probe.c` | The reference tokenizer driven over stdin, for the two-sided diff against `minimax_h3::tokenizer` |
-| `text_probe.c` | The reference prompt encoder run on the Spark, printing the BF16 output hash the port's forward must reproduce |
-| `dit_probe.c` | The reference DiT run on the Spark: one forward, `--denoise [--reuse K] [--gpu-sampler]` for the whole sampler, `--adaln-only`/`--adaln-stages` for localization and `--features` for the timestep table |
-| [vq/](vq/README.md) | The GVQ1 v1 converter (rung A): build, selftest, encode, check, pack |
+| `st_probe.c`, `tok_probe.c` | Safetensors and tokenizer parity |
+| `text_probe.c`, `vision_probe.c`, `multimodal_probe.c` | Prompt and vision encoder parity |
+| `dit_probe.c` | DiT forward and sampler parity |
+| `audio_encoder_probe.c`, `video_encoder_probe.c` | Conditioning VAE parity |
+| `reference_canvas_probe.c` | Reference geometry selection |
+| `ref_gate.sh` | Render supplied media cases with either engine and compare manifests |
+| `ppm_diff.c` | Pixel differences, PSNR and spatial attribution |
+| `standin-renderer.sh` | Model-free HTTP plumbing, not model qualification |
+| `p9_copy_bench.cu` | Isolated upload staging diagnostic |
 
-All four are development oracles and converters. None is linked into the
-production hosts.
-
-```sh
-cc -O2 -o bin/st_probe tools/minimax_h3/st_probe.c   # from a checkout
-tools/minimax_h3/vq/build.sh                        # the VQ converter
-```
-
-`tok_probe.c` and `st_probe.c` include the reference headers, so they build
-against an unpacked `/data/h3.c` (or `~/h3-oracle` on the Spark):
+Build probes against a reference checkout supplied by the operator. For
+example, after building its `libh3.a`:
 
 ```sh
-cc -O2 -I ~/h3-oracle tools/minimax_h3/tok_probe.c ~/h3-oracle/libh3.a \
-   -licui18n -licuuc -lm -o ~/tok_probe
+REFERENCE_DIR=/path/to/h3.c
+cc -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -I "$REFERENCE_DIR" \
+  tools/minimax_h3/dit_probe.c "$REFERENCE_DIR/libh3.a" \
+  -L/usr/local/cuda/lib64 -lcudart -lcublasLt -lstdc++ -licui18n -licuuc -lm \
+  -o scratch/h3-dit-probe
 ```
 
-`text_probe.c` and `dit_probe.c` reach the CUDA backend, so they also link the
-CUDA runtime and C++ runtime the reference uses, and keep the reference's
-`_POSIX_C_SOURCE` define for `clock_gettime`:
-
-```sh
-cc -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -I ~/h3-oracle \
-   tools/minimax_h3/dit_probe.c ~/h3-oracle/libh3.a \
-   -L/usr/local/cuda/lib64 -lcudart -lcublasLt -lstdc++ -licui18n -licuuc -lm \
-   -o ~/dit_probe
-```
-
-The model root is `/mnt/h3-artifacts/MiniMax-H3` on the Spark. See
-[docs/minimax-h3/](../../docs/minimax-h3/README.md) for the plan, the cheat
-sheet and the VQ recipe.
+The media gate takes `--binary`, `--model`, `--out`, `--clip` and `--image`.
+Use `--case NAME` to limit work and `--compare DIR` to compare a prior run.
+It performs full 20-step renders; put the invocation under the
+[memory guard](../../docs/host-memory-guard.md), and run the two engines
+sequentially. Supply the same input bytes, seed, workload and build target.

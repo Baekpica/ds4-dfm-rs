@@ -528,10 +528,9 @@ mod tests {
         }
     }
 
-    /// The operator's conditioning pilot, 432x171 RGBA.
-    fn pilot() -> std::path::PathBuf {
+    fn pattern() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/h3/costello-crocodile-2panel.png")
+            .join("../../tests/fixtures/h3/test-pattern.png")
     }
 
     fn fnv(values: &[f32]) -> u64 {
@@ -544,16 +543,15 @@ mod tests {
     }
 
     #[test]
-    fn the_pilot_probes_at_its_coded_size() {
-        let (width, height) = probe_visual_size(&pilot()).expect("ffprobe the pilot");
+    fn image_probes_at_coded_size() {
+        let (width, height) = probe_visual_size(&pattern()).expect("ffprobe the pattern");
 
-        assert_eq!((width, height), (432, 171));
+        assert_eq!((width, height), (64, 32));
     }
 
     #[test]
     fn a_stretched_image_is_channel_major_and_normalized() {
-        // The pilot's 2.53 aspect at a legal canvas next to it.
-        let values = read_image_f32(&pilot(), 512, 192, Fit::Stretch).expect("stretch");
+        let values = read_image_f32(&pattern(), 512, 192, Fit::Stretch).expect("stretch");
 
         assert_eq!(values.len(), 3 * 512 * 192);
         assert!(values.iter().all(|value| (0.0..=1.0).contains(value)));
@@ -567,14 +565,14 @@ mod tests {
 
     #[test]
     fn cover_crops_instead_of_stretching() {
-        let stretched = read_image_f32(&pilot(), 512, 192, Fit::Stretch).expect("stretch");
-        let covered = read_image_f32(&pilot(), 512, 192, Fit::Cover).expect("cover");
+        let stretched = read_image_f32(&pattern(), 512, 192, Fit::Stretch).expect("stretch");
+        let covered = read_image_f32(&pattern(), 512, 192, Fit::Cover).expect("cover");
 
         assert_eq!(covered.len(), stretched.len());
         assert_ne!(fnv(&stretched), fnv(&covered));
     }
 
-    /// Build a probe clip from the pilot through the same FFmpeg the reader
+    /// Build a probe clip from the pattern through the same FFmpeg the reader
     /// uses, exactly as a reference video would arrive.
     fn clip(name: &str, frames: u32, size: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("h3-media-{name}-{}.mp4", std::process::id()));
@@ -586,7 +584,7 @@ mod tests {
                 "-loop",
                 "1",
                 "-i",
-                &pilot().display().to_string(),
+                &pattern().display().to_string(),
                 "-frames:v",
                 &frames.to_string(),
                 "-vf",

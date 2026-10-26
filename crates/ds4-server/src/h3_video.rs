@@ -1522,10 +1522,10 @@ mod tests {
     #[test]
     fn command_renderer_keeps_request_values_as_separate_argv() {
         let renderer = CommandRenderer::new(
-            "/home/leandro/h3-oracle/h3",
+            "/path/to/h3",
             vec![
                 "-d".to_string(),
-                "/mnt/h3-artifacts/MiniMax-H3".to_string(),
+                "/path/to/MiniMax-H3".to_string(),
                 "--steps".to_string(),
                 "20".to_string(),
             ],
@@ -1548,9 +1548,9 @@ mod tests {
         assert_eq!(
             argv,
             vec![
-                "/home/leandro/h3-oracle/h3",
+                "/path/to/h3",
                 "-d",
-                "/mnt/h3-artifacts/MiniMax-H3",
+                "/path/to/MiniMax-H3",
                 "--steps",
                 "20",
                 "-p",
