@@ -1,39 +1,22 @@
-//! Assemble a same-thread worker from shared Session exec/store.
+//! Session worker entry and compatibility helpers.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ds4_core::{Model, Session};
-use ds4_dist::{Hello, Options, Worker};
-
-use crate::session_exec::{slice_meta, SessionSliceExec, SliceMeta};
+use crate::session_exec::{SessionSliceExec, SliceMeta};
 use crate::session_snapshot::SessionSnapshotStore;
-use crate::worker_hello::{worker_hello, worker_model_name};
+use ds4_core::Session;
+
+pub use ds4_dist::{
+    print_worker_listen_banner, worker_listen_banner, worker_listen_port, worker_plan,
+    WorkerListenBanner, WorkerPlan,
+};
+pub use ds4_server::run_assembled_worker;
 
 pub const WORKER_USE_PREFETCH: bool = false;
 
-pub struct WorkerPlan {
-    pub hello: Hello,
-    pub model_name: String,
-}
-
-pub fn worker_plan(
-    meta: &SliceMeta,
-    quant_bits: u32,
-    listen_port: u32,
-    model_name: &str,
-) -> WorkerPlan {
-    let model_name = worker_model_name(model_name).to_string();
-    let hello = worker_hello(meta, quant_bits, listen_port, &model_name);
-    WorkerPlan { hello, model_name }
-}
-
-pub struct AssembledWorker<'m> {
-    pub hello: Hello,
-    pub model_name: String,
-    pub worker: Worker<SessionSliceExec<'m>, SessionSnapshotStore<'m>>,
-}
+pub type AssembledWorker<'m> =
+    ds4_dist::AssembledWorker<SessionSliceExec<'m>, SessionSnapshotStore<'m>>;
 
 pub fn assemble_worker<'m>(
     session: Rc<RefCell<Session<'m>>>,
@@ -45,103 +28,7 @@ pub fn assemble_worker<'m>(
     let plan = worker_plan(&meta, quant_bits, listen_port, model_name);
     let exec = SessionSliceExec::from_meta(Rc::clone(&session), meta);
     let store = SessionSnapshotStore::from_shared(session, meta.layer_start, meta.layer_end);
-    AssembledWorker {
-        hello: plan.hello,
-        model_name: plan.model_name,
-        worker: Worker::with_store(exec, store),
-    }
-}
-
-pub struct WorkerListenBanner<'a> {
-    pub layer_start: u32,
-    pub has_output: bool,
-    pub layer_end: u32,
-    pub model_id: i32,
-    pub listen_host: Option<&'a str>,
-    pub listen_port: u32,
-    pub coordinator_host: &'a str,
-    pub coordinator_port: i32,
-}
-
-pub fn worker_listen_banner(spec: &WorkerListenBanner<'_>) -> String {
-    let layer_end: Cow<'_, str> = if spec.has_output {
-        Cow::Borrowed("output")
-    } else {
-        Cow::Owned(spec.layer_end.to_string())
-    };
-    let listen_host = spec.listen_host.unwrap_or("*");
-    format!(
-        "ds4: distributed worker: layers {}:{} model_id={} data_listen={}:{} connecting to coordinator {}:{}",
-        spec.layer_start,
-        layer_end,
-        spec.model_id,
-        listen_host,
-        spec.listen_port,
-        spec.coordinator_host,
-        spec.coordinator_port,
-    )
-}
-
-pub fn print_worker_listen_banner(spec: &WorkerListenBanner<'_>) {
-    eprintln!("{}", worker_listen_banner(spec));
-}
-
-pub fn worker_listen_port(listen_port: i32) -> u16 {
-    u16::try_from(listen_port).unwrap_or(0)
-}
-
-pub fn run_assembled_worker(model: &Model, ctx: i32, dist: &Options) -> Result<i32, String> {
-    let session = Rc::new(RefCell::new(model.session(ctx).map_err(|e| e.to_string())?));
-    let (listener, bound) = ds4_dist::open_data_listener(
-        dist.listen_host.as_deref(),
-        worker_listen_port(dist.listen_port),
-    )
-    .map_err(|e| e.to_string())?;
-    let shape = &model.bind_plan().shape;
-    let mut meta = slice_meta(
-        u32::try_from(model.model_id()).unwrap_or(0),
-        shape,
-        u32::try_from(ctx).unwrap_or(0),
-        &dist.layers,
-    );
-    meta.vocab = u32::try_from(model.vocab().n_vocab().max(0)).unwrap_or(0);
-    let mut assembled = assemble_worker(
-        session,
-        meta,
-        u32::try_from(model.routed_quant_bits().max(0)).unwrap_or(0),
-        u32::from(bound),
-        shape.name,
-    );
-    let host = dist
-        .coordinator_host
-        .as_deref()
-        .ok_or("--role worker requires --coordinator HOST PORT")?;
-    print_worker_listen_banner(&WorkerListenBanner {
-        layer_start: assembled.hello.layer_start,
-        has_output: assembled.hello.has_output != 0,
-        layer_end: assembled.hello.layer_end,
-        model_id: model.model_id(),
-        listen_host: dist.listen_host.as_deref(),
-        listen_port: assembled.hello.listen_port,
-        coordinator_host: host,
-        coordinator_port: dist.coordinator_port,
-    });
-    let port = u16::try_from(dist.coordinator_port)
-        .map_err(|_| "--role worker requires --coordinator HOST PORT")?;
-    const { assert!(!WORKER_USE_PREFETCH) };
-    ds4_dist::reconnect_local(
-        &mut assembled.worker,
-        ds4_dist::LocalReconnect {
-            connect: || ds4_dist::connect_endpoint(host, port),
-            hello: &assembled.hello,
-            model_name: &assembled.model_name,
-            sleep: ds4_dist::sleep_reconnect,
-            should_stop: || false,
-            listener: Some(&listener),
-        },
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(0)
+    ds4_dist::assemble_worker(exec, store, plan.hello, plan.model_name)
 }
 
 #[cfg(test)]
@@ -149,7 +36,7 @@ mod tests {
     use super::*;
     use crate::session_exec::slice_meta;
     use ds4_core::SHAPE_FLASH;
-    use ds4_dist::Layers;
+    use ds4_dist::{Layers, Worker};
 
     #[test]
     fn worker_plan_uses_bound_data_listen_port() {
