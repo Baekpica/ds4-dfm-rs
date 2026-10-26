@@ -30,5 +30,8 @@ ds4-sys = { path = "../ds4-sys" }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = { version = "0.11", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 ds4-core = { path = "../ds4-core" }

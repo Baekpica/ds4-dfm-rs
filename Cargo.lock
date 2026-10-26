@@ -390,6 +390,7 @@ dependencies = [
  "ds4-dist",
  "ds4-kv",
  "ds4-sys",
+ "libc",
  "serde_json",
  "sha2",
 ]

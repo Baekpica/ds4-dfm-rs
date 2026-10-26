@@ -30,7 +30,7 @@ use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -314,6 +314,11 @@ impl Renderer for CommandRenderer {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         let mut child = command.spawn().map_err(|error| {
             RenderError::new(
                 "renderer_spawn_failed",
@@ -337,15 +342,12 @@ impl Renderer for CommandRenderer {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => {
                     if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
                         break None;
                     }
                     thread::sleep(RENDER_POLL);
                 }
                 Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    stop_renderer(&mut child);
                     return Err(RenderError::new(
                         "renderer_spawn_failed",
                         format!("could not wait for renderer: {error}"),
@@ -353,6 +355,8 @@ impl Renderer for CommandRenderer {
                 }
             }
         };
+        // Descendants must release stderr even if their parent exited first.
+        stop_renderer(&mut child);
         let stderr = reader
             .and_then(|handle| handle.join().ok())
             .map(|tail| String::from_utf8_lossy(&tail).trim().to_string())
@@ -384,6 +388,17 @@ impl Renderer for CommandRenderer {
         }
         Ok(())
     }
+}
+
+fn stop_renderer(child: &mut Child) {
+    #[cfg(unix)]
+    // The child leads the process group created for this render only.
+    unsafe {
+        libc::killpg(child.id() as i32, libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn read_tail(mut stream: impl Read, keep: usize) -> Vec<u8> {
@@ -1668,6 +1683,49 @@ mod tests {
                 .render(&plan(), Path::new("/tmp/h3-video-never.mp4"))
                 .unwrap_err();
             assert_eq!(error.code, "render_timeout", "{}", error.message);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn renderer_stops_descendants() {
+        for (ending, expected) in [("wait", Some("render_timeout")), ("exit 0", None)] {
+            let dir =
+                std::env::temp_dir().join(format!("h3-descendant-{}-{ending}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let pid_file = dir.join("child.pid");
+            let script = format!("sleep 60 & echo $! > \"$1\"; {ending}");
+            let renderer = CommandRenderer::new(
+                "/bin/sh",
+                vec![
+                    "-c".to_string(),
+                    script,
+                    "--".to_string(),
+                    pid_file.display().to_string(),
+                ],
+                Duration::from_millis(60),
+            );
+            let output = dir.join("out.mp4");
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let worker = thread::spawn(move || {
+                sender.send(renderer.render(&plan(), &output)).unwrap();
+            });
+            let result = receiver.recv_timeout(Duration::from_secs(2));
+            // Bound a regressed run without leaving its sleeping child behind.
+            if result.is_err() {
+                if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                    unsafe {
+                        libc::kill(pid.trim().parse().unwrap(), libc::SIGKILL);
+                    }
+                }
+            }
+            worker.join().unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            let result = result.expect("renderer left a descendant holding stderr");
+            match expected {
+                Some(code) => assert_eq!(result.unwrap_err().code, code),
+                None => result.unwrap(),
+            }
         }
     }
 
