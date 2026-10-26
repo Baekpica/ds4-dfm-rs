@@ -235,6 +235,20 @@ mod tests {
 
     #[test]
     fn bash_normal_stop_and_drop_reap_the_owned_group() {
+        // Count only this test's threads, even when the parent suite runs in parallel.
+        if std::env::var_os("DS4_AUDIT_BASH_LIFECYCLE_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "agent::bash::tests::bash_normal_stop_and_drop_reap_the_owned_group",
+                    "--test-threads=1",
+                ])
+                .env("DS4_AUDIT_BASH_LIFECYCLE_CHILD", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let threads = || std::fs::read_dir("/proc/self/task").unwrap().count();
         let baseline = threads();
         for action in ["exit", "stop", "drop"] {
