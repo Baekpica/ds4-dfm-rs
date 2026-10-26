@@ -403,6 +403,7 @@ pub(crate) fn stage_stream(
             let tail_bytes = writeback_end - writeback_start + copied + trailer.len() as u64;
             payload_writeback(&f, writeback_start, tail_bytes)?;
         }
+        f.sync_all()?;
         drop(f);
         Ok(())
     })();
