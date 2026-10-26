@@ -118,10 +118,12 @@ run_case() {
     output="$OUT/$name.mp4"
     log="$OUT/$name.log"
     started=$(date +%s)
-    if ! "$BINARY" -d "$MODEL" -p "$prompt" \
+    if "$BINARY" -d "$MODEL" -p "$prompt" \
             --width 512 --height 512 --frames "$frames" \
             --steps 20 --seed 42 --reuse 1 \
             -o "$output" "$@" > "$log" 2>&1; then
+        :
+    else
         echo "FAIL $name exit=$? log=$log" | tee -a "$MANIFEST"
         return 1
     fi
@@ -132,15 +134,19 @@ run_case() {
         return 1
     fi
 
-    # Bytes for the container, framemd5 for the picture and md5 for the
-    # samples: the first catches everything, the other two survive a muxer
-    # difference.
-    frames_md5=$(ffmpeg -v error -i "$output" -map 0:v:0 -f framemd5 - | md5sum | cut -d' ' -f1)
-    audio_md5=$(ffmpeg -v error -i "$output" -map 0:a:0 -f md5 - | cut -d' ' -f1)
+    # Check decoders directly: a pipeline's final hash command hides FFmpeg
+    # failures, and calling run_case in an OR-list disables shell errexit.
+    if ! ffmpeg -v error -xerror -i "$output" -map 0:v:0 -f framemd5 -y "$OUT/$name.frames.md5" \
+        || ! ffmpeg -v error -xerror -i "$output" -map 0:a:0 -f md5 -y "$OUT/$name.audio.md5" \
+        || ! geometry=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height,nb_frames -of csv=p=0 "$output"); then
+        echo "FAIL $name media decode/probe failed" | tee -a "$MANIFEST"
+        return 1
+    fi
+    frames_md5=$(md5sum "$OUT/$name.frames.md5" | cut -d' ' -f1)
+    audio_md5=$(cat "$OUT/$name.audio.md5")
     bytes=$(stat -c %s "$output")
     sha=$(sha256sum "$output" | cut -d' ' -f1)
-    geometry=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=width,height,nb_frames -of csv=p=0 "$output")
 
     echo "PASS $name frames=$frames geometry=$geometry bytes=$bytes seconds=$elapsed" | tee -a "$MANIFEST"
     echo "  mp4=$sha frames_md5=$frames_md5 audio_md5=$audio_md5" | tee -a "$MANIFEST"
@@ -151,20 +157,29 @@ status=0
 run_case fl2va-first 22 "$PROMPT_IMAGE" fl2va --first-frame "$IMAGE" || status=1
 run_case fl2va-first-last 22 "$PROMPT_IMAGE" fl2va --first-frame "$IMAGE" --last-frame "$LAST_FRAME" || status=1
 run_case ref2va-image 22 "$PROMPT_IMAGE" ref2va --ref-image "$IMAGE" || status=1
-run_case ref2va-video 22 "$PROMPT_VIDEO" ref2va --ref-video "$REF_CLIP" || status=1
+run_case ref2va-video 56 "$PROMPT_VIDEO" ref2va --ref-video "$REF_CLIP" || status=1
 run_case ref2va-silent 22 "$PROMPT_VIDEO" ref2va --ref-silent-video "$REF_CLIP" || status=1
 run_case ref2va-video-audio 56 "$PROMPT_VIDEO" ref2va --ref-video-audio "$REF_SILENT" "$REF_AUDIO" || status=1
 run_case ref2va-image-audio 56 "$PROMPT_AUDIO" ref2va --ref-image "$IMAGE" --ref-audio "$REF_AUDIO" || status=1
 run_case ref2va-mixed 56 "$PROMPT_AUDIO" ref2va --ref-image "$IMAGE" --ref-silent-video "$REF_CLIP" --ref-audio "$REF_AUDIO" || status=1
 
+[ -s "$MANIFEST" ] || { echo "ref_gate: unknown case $ONLY" >&2; exit 2; }
+
+# Keep timings and container identity as diagnostics, not decoded-media gates.
+stable_manifest() {
+    sed 's/ bytes=[0-9][0-9]* seconds=[0-9][0-9]*$//; s/^  mp4=[^ ]* /  /' "$1"
+}
+
 if [ -n "$COMPARE" ]; then
     other="$COMPARE/manifest.txt"
     [ -f "$other" ] || { echo "ref_gate: no manifest at $other" >&2; exit 2; }
     echo "COMPARE $other"
-    if diff -u "$other" "$MANIFEST" > "$OUT/compare.diff"; then
-        echo "MANIFEST identical"
+    stable_manifest "$other" > "$OUT/compare.reference.txt"
+    stable_manifest "$MANIFEST" > "$OUT/compare.current.txt"
+    if diff -u "$OUT/compare.reference.txt" "$OUT/compare.current.txt" > "$OUT/compare.diff"; then
+        echo "DECODED MEDIA identical"
     else
-        echo "MANIFEST differs; see $OUT/compare.diff"
+        echo "DECODED MEDIA differs; see $OUT/compare.diff"
         status=1
     fi
 fi

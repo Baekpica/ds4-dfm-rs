@@ -32,3 +32,6 @@ Use `--case NAME` to limit work and `--compare DIR` to compare a prior run.
 It performs full 20-step renders; put the invocation under the
 [memory guard](../../docs/host-memory-guard.md), and run the two engines
 sequentially. Supply the same input bytes, seed, workload and build target.
+Comparison gates decoded video/audio hashes and geometry; elapsed time and
+MP4 bytes remain diagnostics. `python3 tests/h3/test_ref_gate.py` checks the
+gate with tiny media and a stub renderer, without loading a model.
