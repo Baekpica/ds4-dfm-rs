@@ -20,23 +20,38 @@ make CUDA_ARCH=sm_121 h3-rs h3-server-rs
 ```
 
 Use the [host memory guard](../host-memory-guard.md) for model runs. Run one
-GPU job at a time. For example, a short functional render with a local model:
+GPU job at a time. For example, a short 20-step clip with a local model:
 
 ```sh
 MODEL_DIR=/path/to/MiniMax-H3
 python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 \
   --reserve-gib 2 --trip-gib 2 --psi-full-limit 0 --timeout 1800 \
   --log scratch/h3.memory.jsonl -- \
-  ./h3-rs -d "$MODEL_DIR" -p 'A red cube rotates on a white background.' \
-  --width 512 --height 512 --frames 56 --steps 2 --seed 42 \
-  -o scratch/h3-smoke.mp4
+  ./h3-rs -d "$MODEL_DIR" \
+  -p 'A man in a black coat walks through a rainy neon-lit city.' \
+  --width 512 --height 512 --frames 56 --steps 20 --seed 42 --reuse 1 \
+  -o scratch/h3-rain.mp4
 ```
 
-Two steps test execution, not generation quality. The normal denoise setting
-is 20 steps. First/last anchors use `--first-frame` and `--last-frame`.
+The normal denoise setting is 20 steps. Use `--steps 2` only for an execution
+check; two-step output does not establish generation quality.
+First/last anchors use `--first-frame` and `--last-frame`.
 Ordered references use `--ref-image`, `--ref-video`, `--ref-silent-video`,
 `--ref-video-audio` or `--ref-audio`; a request cannot combine references and
 frame anchors. Audio alone is insufficient for Ref2VA.
+
+## Measured generation cost
+
+On GB10, one 512×512, 56-frame, 20-step text run took **762.36 s** (12m42s)
+for a 2.333-second clip. The matched h3.c run took 764.62 s and produced the
+same MP4 bytes. The native API at its smallest square request (768×768,
+4 seconds requested, 107 aligned frames) took **1,340.264 s** to observed
+completion and download even at **two steps**. That includes 10-second
+status polling. Larger canvases and more steps require separate measurement.
+
+The [dated validation](validation-2026-10-26.md) records exact inputs,
+phase timings, memory observations and qualification limits. These single
+runs are execution receipts, not throughput or broad quality guarantees.
 
 ## Model files
 
@@ -69,6 +84,7 @@ The model's license is included in the downloaded repository.
 - [Local video API contract](local-v1-contract.md)
 - [Starting and using the API](api-usage.md)
 - [Reference probes and media comparison](../../tools/minimax_h3/README.md)
+- [GB10 maintainer validation, 2026-10-26](validation-2026-10-26.md)
 
 Model-free checks include H3 core and server unit tests, the portable
 host/tokenizer gates, and `make tests/h3-test_av_mux`. The CUDA boundary gate

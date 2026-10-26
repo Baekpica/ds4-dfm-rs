@@ -8,6 +8,12 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Adds experimental [MiniMax-H3](docs/minimax-h3/README.md) BF16 video/audio
+  generation through separate Rust CLI and local API binaries. Supports text,
+  frame anchors and ordered image/video/audio references. GB10 validation
+  records three byte-identical h3.c comparisons and a completed native API
+  request; [measured costs and limits](docs/minimax-h3/validation-2026-10-26.md)
+  remain separate from LLM serving qualification.
 - Adds `tools/vq_calib/`, the calibration-weighted GVQ converter that made
   the A.X-K2 VQ release. A data-parallel collector streams the FP8 source
   layer by layer and sums per-expert input energies, route weights and

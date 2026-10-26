@@ -23,6 +23,7 @@ artifact and workload. They do not describe live processes or qualify a new buil
 | [Chat templates](chat-templates.md) | Official input assets, normalization and continuation |
 | [API matrix](ds4-api-surface-matrix.md) | HTTP objects, routing, media forms and unsupported requests |
 | [Memory guard](host-memory-guard.md) | Large-model admission, job limits and cleanup |
+| [MiniMax-H3 API](minimax-h3/api-usage.md) | Start the separate video host, create/poll/download jobs and manage retention |
 | [SSD expert streaming](ssd-streaming.md) | Bounded GLM expert cache, options and memory policy |
 | [GLM Prefill on Spark, 2026-10-08](glm53-prefill-2026-10-08.md) | Large batches, partial offload, numerical contracts and measured adoption |
 
@@ -97,6 +98,8 @@ Other recipes and dated gates retain their hardware and workload limits.
 The [performance guide](performance.md) explains the README examples.
 These reports preserve successful gates, rejected experiments and unresolved limits.
 
+- **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
+  three matched h3.c outputs, a native video API gate and measured generation cost.
 - **Qwen:** [September 4 long prefill](qwen38-long-context-prefill-2026-09-04.md),
   [September 6](qwen38-prefill-2026-09-06.md),
   [September 7 prefill](qwen38-prefill-2026-09-07.md),

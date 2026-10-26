@@ -32,13 +32,18 @@ python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 \
   --reserve-gib 2 --trip-gib 2 --psi-full-limit 0 --timeout 0 \
   --log scratch/h3-server.memory.jsonl -- \
   ./h3-server-rs --bind 127.0.0.1:8090 --out-dir /srv/h3-videos \
-  --model-dir /path/to/MiniMax-H3 --steps 20 --reuse 1
+  --model-dir /path/to/MiniMax-H3 --steps 2 --reuse 1
 
 # Alternative backend; use the same memory guard for a model renderer.
 ./h3-server-rs --out-dir /srv/h3-videos \
   --renderer /path/to/h3 \
   --renderer-arg -d --renderer-arg /path/to/MiniMax-H3
 ```
+
+The native-engine example uses two steps to check execution. Use `--steps 20`
+for the normal denoise setting. On GB10, the smallest square API request
+below took about 22m20s at two steps, including status polling; see the
+[measured workload](validation-2026-10-26.md#native-api-gate).
 
 The engine keeps the prompt embedding and prepared DiT across requests and
 serves one render at a time in arrival order; the engine channel is the queue
@@ -67,7 +72,7 @@ video_id=$(curl --fail-with-body -sS http://127.0.0.1:8090/v1/videos \
     "task": "t2va",
     "prompt": "A man in a black coat walks through a rainy neon-lit city.",
     "conditions": [],
-    "target": {"short_edge": 768, "aspect_ratio": "16:9", "duration_seconds": 10},
+    "target": {"short_edge": 768, "aspect_ratio": "1:1", "duration_seconds": 4},
     "seed": 0
   }' | jq -er '.id')
 ```

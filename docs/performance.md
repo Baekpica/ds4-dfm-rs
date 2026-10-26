@@ -323,6 +323,23 @@ Loaded clocks were 2775–2790 MHz. IDs matched the control.
 The [later split-K report](releases/bonsai-splitk-2026-09-30.md) measures 15K/30K
 workloads. Its decode figures are not combined with this earlier prefill row.
 
+## MiniMax-H3 video and audio
+
+H3 is diffusion generation; its measurements are seconds per clip. The
+[October 26 GB10 validation](minimax-h3/validation-2026-10-26.md) pins the BF16
+model, runtime, full 50-layer stack, seed, prompt, conditioning and outputs.
+
+| Entry point | Workload | Observed wall time | Scope |
+|---|---|---:|---|
+| Rust CLI / h3.c | 512×512, 56 frames, 20 steps | 762.36 / 764.62 s | Identical MP4; one matched pair |
+| Native local API | 768×768, 107 frames, 2 steps | 1,340.264 s | Create through completed download, with 10-second polling |
+
+The CLI denoise phase took 620.051 s. The larger API workload spent
+975.987 s denoising and 263.217 s decoding video. These runs establish
+execution cost and bounded correctness; they do not establish sustained
+throughput, 20-step API performance or a Rust speedup. The two-step API clip
+is an execution check rather than quality evidence.
+
 ## Measuring and qualifying changes
 
 - [ds4-perf](ds4-perf.md): inspection, profiling, paired comparisons and serving workloads.
