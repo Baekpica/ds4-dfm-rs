@@ -1,0 +1,27 @@
+{
+  "delete": [
+    "GLM-5.3-Flash-VQ-Q4K-GGUF",
+    "GLM-5.3-Flash-VQ-Q4K-NonExpert-GGUF",
+    "GLM-5.3-Flash-VQ-Q4K-NonExpert-v3-GGUF",
+    "GLM-5.3-Flash-VQ-Q4K-v3-KeepHead-GGUF"
+  ],
+  "file_entries": 296,
+  "unique_inodes": 113,
+  "shared_inodes_preserved_elsewhere": 63,
+  "exclusive_allocated_bytes": 23119347712,
+  "external_links": [],
+  "live_uses": [],
+  "kept_because_referenced": [
+    ".glm-vq-q4k-v3-v1",
+    ".glm-vq-r13p8-l3-16",
+    "GLM-5.3-Flash-VQ-GGUF",
+    "GLM-5.3-Flash-VQ-Q4K-KDA-DSA-OQB-GGUF",
+    "GLM-5.3-Flash-VQ-Q4K-KDA-GGUF",
+    "GLM-5.3-Flash-VQ-Q4K-KDA-VO-GGUF",
+    "GLM-5.3-Flash-VQ-Q4K-NonExpert-KeepHead-GGUF"
+  ],
+  "completed_utc": "2026-10-26T10:02:35Z",
+  "free_bytes_before": 434045779968,
+  "free_bytes_after": 457165139968,
+  "latest_artifact_preserved": true
+}
