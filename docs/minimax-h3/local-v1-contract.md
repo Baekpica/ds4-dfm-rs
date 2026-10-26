@@ -1,8 +1,8 @@
 # The local v1 video contract (MiniMax-H3)
 
-The surface this host serves is the one the official repository's own local
-clients speak. Its authority is `/data/MiniMax-H3/scripts/readme/*.sh`, not
-the hosted platform contract and not the OpenAI Videos API:
+This host serves the request shape used by the
+[official local client scripts](https://github.com/MiniMax-AI/MiniMax-H3/tree/d21241f0a4b3acbb34c97dae47fa417b7065e438/scripts/readme),
+pinned at `d21241f0a4b3acbb34c97dae47fa417b7065e438`:
 
 - `full-2k-t2va-h3-base.sh:24-31`, `full-2k-i2va-h3-base.sh:24-38`,
   `full-2k-ref2va-h3-base.sh:24-42`: `POST $SGLANG_DEPLOYMENT_URL/v1/videos`,
@@ -10,8 +10,7 @@ the hosted platform contract and not the OpenAI Videos API:
 - `reproducible-768p-fl2va-request.sh:10-44`: the same three calls against
   `http://localhost:30010`, with the full FL2VA body and one keyframe.
 
-Every field and value below is one of those scripts sends. Where this host
-cannot honor a value, the refusal is named in the response and listed here.
+The tables below describe the implemented local limits and refusals.
 
 ## Routes
 
@@ -20,6 +19,8 @@ cannot honor a value, the refusal is named in the response and listed here.
 | POST | `/v1/videos` | `{"id": "<id>"}` |
 | GET | `/v1/videos/{id}` | the task record, whose `status` the client polls |
 | GET | `/v1/videos/{id}/content` | the MP4 bytes |
+
+The content route also accepts `HEAD`, returning its headers without a body.
 
 The scripts read `.id` from the create answer and `.status` from the query
 answer, and download once the status is `completed` (`full-2k-t2va-h3-base.sh:24`,
@@ -37,7 +38,7 @@ The query route answers one record, in this order
 | `id` | the create answer's id, an opaque identifier unique to the server instance and job |
 | `status` | `queued`, `in_progress`, `completed`, `failed` |
 | `queue_position` | 1 for the job the engine takes next, counted over the queued jobs; null while a job holds the single render slot and for a job that has run |
-| `size` | the resolved canvas, `1344x768` |
+| `size` | the resolved canvas, for example `1344x768` |
 | `seconds` | the requested duration |
 | `frames` | the aligned frame count the engine renders |
 | `seed` | the seed the body sent |
@@ -157,7 +158,7 @@ Each is deliberate and named:
    exists. The listener's address is the operator's (`--bind`, default
    `127.0.0.1:8090`); a bind beyond loopback publishes an unauthenticated
    renderer to that network, which is the operator's decision, not a
-   property of the contract. See "Running it as a shared server" below.
+   property of the contract. See "Deployment limits" below.
 2. **A condition `uri` must be a data URI.** The scripts pass `https://` CDN
    URLs. This host never fetches a URL from a request body and never reads a
    caller-named filesystem path, so the same image travels base64-encoded.

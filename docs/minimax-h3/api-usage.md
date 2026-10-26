@@ -3,8 +3,8 @@
 `h3-server-rs` serves the local video contract of MiniMax-H3: the three routes
 the official repository's own local clients call. This page is the operator
 path. The contract itself, with every field and every refusal, is
-[local-v1-contract.md](local-v1-contract.md); the authority behind both is
-`/data/MiniMax-H3/scripts/readme/*.sh`.
+[local-v1-contract.md](local-v1-contract.md). The upstream requests are in
+the [official local client scripts](https://github.com/MiniMax-AI/MiniMax-H3/tree/d21241f0a4b3acbb34c97dae47fa417b7065e438/scripts/readme).
 
 ## Start the host
 
@@ -28,9 +28,13 @@ exits 1. With neither backend the banner says `renderer disabled` and every
 create answers 503.
 
 ```bash
-./h3-server-rs --bind 127.0.0.1:8090 --out-dir /srv/h3-videos \
+python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 \
+  --reserve-gib 2 --trip-gib 2 --psi-full-limit 0 --timeout 0 \
+  --log scratch/h3-server.memory.jsonl -- \
+  ./h3-server-rs --bind 127.0.0.1:8090 --out-dir /srv/h3-videos \
   --model-dir /path/to/MiniMax-H3 --steps 20 --reuse 1
 
+# Alternative backend; use the same memory guard for a model renderer.
 ./h3-server-rs --out-dir /srv/h3-videos \
   --renderer /path/to/h3 \
   --renderer-arg -d --renderer-arg /path/to/MiniMax-H3
@@ -43,7 +47,8 @@ renderer runs per job as
 
 ```text
 PROGRAM [fixed args...] -p P --width W --height H --seconds S
-        [--first-frame P] [--last-frame P] --seed N -o PATH
+        [--first-frame P] [--last-frame P] [ordered reference flags...]
+        --seed N -o PATH
 ```
 
 stdin null, stderr tail kept (`h3_video.rs:312-315`, `:330-366`). The request
@@ -56,19 +61,23 @@ never chooses the program, an argument or a path (`h3_video.rs:21-27`).
 before touching the store.
 
 ```bash
-curl -s http://127.0.0.1:8090/v1/videos -H 'Content-Type: application/json' \
+video_id=$(curl --fail-with-body -sS http://127.0.0.1:8090/v1/videos \
+  -H 'Content-Type: application/json' \
   -d '{
     "task": "t2va",
-    "prompt": "A red cube rotates on a white background.",
+    "prompt": "A man in a black coat walks through a rainy neon-lit city.",
     "conditions": [],
     "target": {"short_edge": 768, "aspect_ratio": "16:9", "duration_seconds": 10},
     "seed": 0
-  }'
+  }' | jq -er '.id')
 ```
 
 ```json
-{"id":"video_1"}
+{"id":"<opaque id>"}
 ```
+
+Use the returned id for polling and download; ids are not sequential names.
+The shell examples require `jq`.
 
 Exactly five fields, and an unknown one is refused rather than ignored
 (`local_api.rs:55`, `:184-277`). The full table is the contract page; the
@@ -106,11 +115,11 @@ body cap, and the soundtracks share a 15-second budget
 ## Poll
 
 ```bash
-curl -s http://127.0.0.1:8090/v1/videos/video_1
+curl --fail-with-body -sS "http://127.0.0.1:8090/v1/videos/$video_id"
 ```
 
 ```json
-{"id":"video_1","status":"in_progress","queue_position":null,"size":"1344x768","seconds":10,"frames":243,"seed":0,"created_at":1792846990,"completed_at":null,"error":null}
+{"id":"<opaque id>","status":"in_progress","queue_position":null,"size":"1344x768","seconds":10,"frames":243,"seed":0,"created_at":1792846990,"completed_at":null,"error":null}
 ```
 
 The record is `video_api.rs:223-238`: the id, the state, its place in the
@@ -130,7 +139,8 @@ first poll, and a create behind a running render reads `queued` with its
 
 Only `completed` matters to the official client
 (`full-2k-t2va-h3-base.sh:26-31`). Nothing expires: the store is in memory
-only, and old MP4s in `--out-dir` are not re-adopted.
+only. A restart clears records while preserving MP4s in `--out-dir`; the
+old files are not re-adopted or overwritten by new jobs.
 
 Renderer failures land in `error.code`: `render_failed` (nonzero exit),
 `render_timeout` (killed at `--timeout-secs`), `render_output_missing` (exit 0
@@ -140,7 +150,8 @@ of stderr in the message (`h3_video.rs:447-500`, `:41`).
 ## Download
 
 ```bash
-curl -sS -o video_1.mp4 http://127.0.0.1:8090/v1/videos/video_1/content
+curl --fail-with-body -sS -o "$video_id.mp4" \
+  "http://127.0.0.1:8090/v1/videos/$video_id/content"
 ```
 
 The file on disk is `<out-dir>/<id>.mp4`; content is served with
@@ -176,6 +187,7 @@ applies (`video_api.rs:56-113`):
 | `unknown_url` | 404 | null | any route outside the three |
 | `queue_full` | 429 | null | store at `--max-jobs` |
 | `renderer_disabled` | 503 | null | no `--model-dir` and no `--renderer` |
+| `server_busy` | 503 | null | 64 HTTP connections already active |
 | `unsupported_encoding`, `request_too_large`, `invalid_request` | 400 | null | chunked, oversized or malformed HTTP |
 
 `type` is `invalid_request_error` for 400 and 404, `rate_limit_error` for 429,
@@ -198,8 +210,8 @@ applies (`video_api.rs:56-113`):
 
 - `--max-jobs` (default 8) caps retained jobs. There is no delete route, so
   at capacity every create is 429
-  `queue_full` (`video_api.rs:318-327`) until the host restarts with a larger
-  bound. `--max-jobs 0` makes every create fail.
+  `queue_full` until the host restarts and clears its in-memory records.
+  `--max-jobs 0` makes every create fail.
 - The output directory is never pruned: one MP4 per job, kept until the
   operator removes it.
 - Both backends render one job at a time in arrival order.
@@ -211,5 +223,5 @@ applies (`video_api.rs:56-113`):
 - `Content-Length` is required; body cap 64 MiB, header cap 64 KiB
   (`http.rs:7-8`).
 - One request per connection: every response carries `Connection: close`.
-- No authentication: dispatch matches method and route only. Bind to loopback
-  and reach a remote host through an SSH tunnel, never a LAN bind.
+- No authentication: any client that can reach the listener can submit GPU
+  work. The default bind is loopback; the operator controls network access.
