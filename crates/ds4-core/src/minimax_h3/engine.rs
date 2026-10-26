@@ -1,34 +1,30 @@
 //! The resident render engine: the reference's interactive session.
 //!
-//! With its cache enabled the reference keeps three things across calls
-//! (`h3_cache_info`, `/data/h3.c/h3.h:21-27`, cleared in `h3.c:53-64`): the
-//! prompt embedding (`h3.c:143-166`, `h3.c:223-309`), the prepared DiT keyed on
-//! the conditioning and the request shape (`h3.c:168-190`) and the video
-//! decoder (`h3.c:697-723`). A one-shot caller keeps the original
-//! phase-by-phase lifetime instead (`h3.h:180-184`), which is what the CLI
-//! does. This module mirrors the session mechanism for the port's pipeline, so
-//! a second OpenAI request does not re-read the 62 GiB text encoder or the
-//! 61.7 GiB DiT.
+//! Caches the prompt embedding (`h3.c:143-166`, `h3.c:223-309`) and the DiT
+//! prepared for that conditioning and request shape (`h3.c:168-190`). A
+//! matching request avoids reading the text encoder and DiT weights again.
 //!
 //! The device handles are `!Send` (`ds4_sys::h3_dit::{Gpu, Tensor}` hold
 //! `NonNull`), so the engine owns a thread and the host reaches it over a
 //! channel. That also makes admission serial by construction: one render at a
 //! time, which is what one GPU allows.
 //!
-//! Scope: the text-only path. The conditioning key collapses to the prompt
-//! while no anchor or reference media is served (`h3.c:145-149` returns the
-//! prompt-only key in exactly that case); P12 extends both keys.
+//! Both caches identify the prompt, ordered media and their presentation.
+//! The identity hashes decoded content, so equivalent files may share it;
+//! names or VAE rows alone cannot identify what the vision encoder consumes.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
+use sha2::{Digest, Sha256};
+
 use super::dit::{Dit, LoadOptions};
 use super::host::{reuse_schedule, temporal, Rng, Schedule};
 use super::media::{self, Fit};
 use super::partition::{Catalog, Partition, TOKENIZER};
-use super::reference::{self, combine, fnv_f32};
+use super::reference::{self, fnv_f32};
 use super::render::{check_frames, mux_mp4, Canvas, RgbFrames};
 use super::sequence::{self, Spec};
 use super::text_forward::{self, Embedding};
@@ -131,20 +127,13 @@ impl std::error::Error for EngineError {}
 /// serves exactly one execution path, so they cannot vary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PreparedKey {
-    prompt: String,
+    conditioning: [u8; 32],
     width: i32,
     height: i32,
     frames: i32,
     steps: usize,
     reuse: usize,
     rope: u32,
-    /// The conditioning rows themselves, as `h3_conditioning_key` folds the
-    /// media pixels into its key (`h3.c:143-166`): identical pads over other
-    /// pixels must prefill again. Anchors and reference media both land here.
-    media: u64,
-    /// Ordered references are a different partition and a different packed
-    /// layout even when their rows hash alike (`h3.c:168-190`).
-    references: usize,
 }
 
 struct Prepared {
@@ -158,9 +147,8 @@ pub struct Engine {
     catalog: Catalog,
     tokenizer: Tokenizer,
     /// `h3.c:223-309`: one conditioning entry is enough for a server; the
-    /// reference keeps a small table and counts hits and misses. The anchor
-    /// rows are part of the key because they are vision spans in the prompt.
-    embedding: Option<(String, u64, Embedding)>,
+    /// reference keeps a small table and counts hits and misses.
+    embedding: Option<([u8; 32], Embedding)>,
     prepared: Option<Prepared>,
 }
 
@@ -248,26 +236,25 @@ impl Engine {
         // because the cond row count is part of the packed signature. The same
         // pixels are the prompt's vision spans, so they are read once.
         let anchors = self.read_anchors(request, frame_count, latent_h, latent_w)?;
-        let anchor_hash = fnv_f32(&anchors.rows);
-        let (keyframes, mut video_rows) = (anchors.keyframes, anchors.rows);
 
         // References (`h3.c:1027-1200`): decoded at their own canvases,
         // encoded and jittered in request order. Their rows join the anchors'
         // only in a request that cannot carry both.
         let references = self.read_references(request, shape.frame_count)?;
-        let media_hash = combine(anchor_hash, references.hash);
+        let conditioning = conditioning_identity(&request.prompt, &anchors, &references);
+        let (keyframes, mut video_rows) = (anchors.keyframes, anchors.rows);
         video_rows.extend_from_slice(&references.video_rows);
         let audio_rows = references.audio_rows.clone();
 
         // Conditioning: the reference memoizes the prompt embedding
         // (`h3.c:223-309`) because the encoder is the largest read of the run.
-        // Anchors and references change the embedding (they are vision spans),
-        // so their rows are part of the memo key, as `h3.c:143-166` folds the
-        // media in.
+        // Position, presentation and original vision pixels belong to the key
+        // along with the VAE rows; both consumers must see the same request.
         let text_started = Instant::now();
-        let cached = self.embedding.as_ref().and_then(|(prompt, media, text)| {
-            (prompt == &request.prompt && *media == media_hash).then(|| text.clone())
-        });
+        let cached = self
+            .embedding
+            .as_ref()
+            .and_then(|(key, text)| (*key == conditioning).then(|| text.clone()));
         let text_hit = cached.is_some();
         let text = match cached {
             Some(text) => text,
@@ -301,22 +288,20 @@ impl Engine {
                         |error| EngineError::new(format!("text encoder: {}", error.token())),
                     )?
                 };
-                self.embedding = Some((request.prompt.clone(), media_hash, text.clone()));
+                self.embedding = Some((conditioning, text.clone()));
                 text
             }
         };
         let text_seconds = text_started.elapsed().as_secs_f64();
 
         let key = PreparedKey {
-            prompt: request.prompt.clone(),
+            conditioning,
             width: request.width,
             height: request.height,
             frames: frame_count,
             steps: request.steps,
             reuse: request.reuse,
             rope: canvas.rope_scale(false).to_bits(),
-            media: media_hash,
-            references: request.references.len(),
         };
 
         // Prepared DiT (`h3.c:168-190`, `h3.c:1505-1516`): a hit skips the
@@ -578,6 +563,70 @@ struct Anchors {
     pixels: Vec<condition::AnchorPixels>,
 }
 
+fn conditioning_identity(prompt: &str, anchors: &Anchors, references: &reference::Set) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"ds4-h3-conditioning-v1");
+    hash.update((prompt.len() as u64).to_le_bytes());
+    hash.update(prompt.as_bytes());
+    hash.update((anchors.keyframes.len() as u64).to_le_bytes());
+    for frame in &anchors.keyframes {
+        hash.update(frame.to_le_bytes());
+    }
+    hash_f32(&mut hash, &anchors.rows);
+    hash.update((anchors.pixels.len() as u64).to_le_bytes());
+    for pixels in &anchors.pixels {
+        hash.update(pixels.height.to_le_bytes());
+        hash.update(pixels.width.to_le_bytes());
+        hash_f32(&mut hash, &pixels.values);
+    }
+
+    // Equal VAE rows can have different positions, prefixes or vision pixels.
+    hash.update((references.layout.len() as u64).to_le_bytes());
+    for reference in &references.layout {
+        hash.update(match reference.kind {
+            sequence::ReferenceKind::Image => b"i",
+            sequence::ReferenceKind::Video => b"v",
+            sequence::ReferenceKind::Audio => b"a",
+        });
+        for dimension in [
+            reference.latent_t,
+            reference.latent_h,
+            reference.latent_w,
+            reference.audio_t,
+        ] {
+            hash.update(dimension.to_le_bytes());
+        }
+    }
+    hash_f32(&mut hash, &references.video_rows);
+    hash_f32(&mut hash, &references.audio_rows);
+    hash.update((references.pixels.len() as u64).to_le_bytes());
+    for pixels in &references.pixels {
+        hash.update(match pixels.presentation {
+            super::multimodal::ReferenceKind::Image => b"i",
+            super::multimodal::ReferenceKind::Video => b"v",
+            super::multimodal::ReferenceKind::Audio => b"a",
+        });
+        hash.update([u8::from(pixels.has_audio)]);
+        hash.update(pixels.height.to_le_bytes());
+        hash.update(pixels.width.to_le_bytes());
+        hash.update((pixels.frames as u64).to_le_bytes());
+        hash.update((pixels.timestamps.len() as u64).to_le_bytes());
+        for timestamp in &pixels.timestamps {
+            hash.update(timestamp.to_le_bytes());
+        }
+        hash_f32(&mut hash, &pixels.pixels);
+    }
+
+    hash.finalize().into()
+}
+
+fn hash_f32(hash: &mut Sha256, values: &[f32]) {
+    hash.update((values.len() as u64).to_le_bytes());
+    for value in values {
+        hash.update(value.to_le_bytes());
+    }
+}
+
 /// The engine owns a thread; the host holds this handle. Commands are served
 /// in arrival order, so a second render waits for the first instead of
 /// contending for the device.
@@ -689,32 +738,194 @@ impl RenderReport {
 mod tests {
     use super::*;
 
-    fn key(frames: i32, media: u64) -> PreparedKey {
+    fn key(frames: i32, conditioning: [u8; 32]) -> PreparedKey {
         PreparedKey {
-            prompt: "p".to_string(),
+            conditioning,
             width: 512,
             height: 192,
             frames,
             steps: 20,
             reuse: 1,
             rope: 16,
-            media,
-            references: 0,
         }
     }
 
-    /// `h3_conditioning_key` folds the anchor media into the key
-    /// (`h3.c:143-166`). The port folds the rows, not the path, so the same
-    /// pads saved elsewhere hit; one changed value misses, and so does a
-    /// different frame count.
-    #[test]
-    fn the_prepared_key_folds_the_anchor_rows() {
-        let rows = vec![0.5f32; 96 * 96];
-        let mut other = rows.clone();
-        other[0] = 0.25;
+    fn anchors(frame: i32) -> Anchors {
+        Anchors {
+            keyframes: vec![frame],
+            rows: vec![0.5; 96],
+            pixels: vec![condition::AnchorPixels {
+                values: vec![0.5; 3 * 32 * 32],
+                height: 32,
+                width: 32,
+            }],
+        }
+    }
 
-        assert_eq!(key(5, fnv_f32(&rows)), key(5, fnv_f32(&rows)));
-        assert_ne!(key(5, fnv_f32(&rows)), key(5, fnv_f32(&other)));
-        assert_ne!(key(5, fnv_f32(&rows)), key(6, fnv_f32(&rows)));
+    fn references() -> reference::Set {
+        reference::Set {
+            layout: vec![
+                sequence::Reference {
+                    kind: sequence::ReferenceKind::Image,
+                    latent_t: 1,
+                    latent_h: 2,
+                    latent_w: 2,
+                    audio_t: 0,
+                },
+                sequence::Reference {
+                    kind: sequence::ReferenceKind::Audio,
+                    latent_t: 0,
+                    latent_h: 0,
+                    latent_w: 0,
+                    audio_t: 2,
+                },
+            ],
+            video_rows: vec![0.25; 96],
+            audio_rows: vec![0.5; 128],
+            pixels: vec![
+                condition::ReferencePixels {
+                    presentation: super::super::multimodal::ReferenceKind::Image,
+                    has_audio: false,
+                    pixels: vec![0.25; 3 * 32 * 32],
+                    height: 32,
+                    width: 32,
+                    frames: 1,
+                    timestamps: Vec::new(),
+                },
+                condition::ReferencePixels {
+                    presentation: super::super::multimodal::ReferenceKind::Audio,
+                    has_audio: true,
+                    pixels: Vec::new(),
+                    height: 0,
+                    width: 0,
+                    frames: 0,
+                    timestamps: Vec::new(),
+                },
+            ],
+            ..reference::Set::default()
+        }
+    }
+
+    #[test]
+    fn anchor_role_invalidates_cache() {
+        let first = anchors(0);
+        let last = anchors(4);
+        let references = reference::Set::default();
+        assert_eq!(first.rows, last.rows);
+
+        let spec = Spec {
+            text_len: 3,
+            latent_t: 2,
+            latent_h: 2,
+            latent_w: 2,
+            audio_t: 8,
+            frame_count: 5,
+            keyframes: &first.keyframes,
+            references: &[],
+        };
+        let first_sequence = sequence::build(&spec).unwrap();
+        let last_sequence = sequence::build(&Spec {
+            keyframes: &last.keyframes,
+            ..spec
+        })
+        .unwrap();
+        assert_ne!(first_sequence.positions, last_sequence.positions);
+
+        let first_key = conditioning_identity("p", &first, &references);
+        let last_key = conditioning_identity("p", &last, &references);
+        assert_ne!(first_key, last_key);
+        assert_ne!(key(5, first_key), key(5, last_key));
+        assert_eq!(
+            first_key,
+            conditioning_identity("p", &anchors(0), &references)
+        );
+        assert_ne!(key(5, first_key), key(22, first_key));
+    }
+
+    #[test]
+    fn ref_order_invalidates_cache() {
+        let anchors = Anchors {
+            keyframes: Vec::new(),
+            rows: Vec::new(),
+            pixels: Vec::new(),
+        };
+        let image_first = references();
+        let mut audio_first = image_first.clone();
+        audio_first.layout.swap(0, 1);
+        audio_first.pixels.swap(0, 1);
+        assert_eq!(image_first.video_rows, audio_first.video_rows);
+        assert_eq!(image_first.audio_rows, audio_first.audio_rows);
+
+        let spec = Spec {
+            text_len: 3,
+            latent_t: 2,
+            latent_h: 2,
+            latent_w: 2,
+            audio_t: 8,
+            frame_count: 5,
+            keyframes: &[],
+            references: &image_first.layout,
+        };
+        let a = sequence::build(&spec).unwrap();
+        let b = sequence::build(&Spec {
+            references: &audio_first.layout,
+            ..spec
+        })
+        .unwrap();
+        assert_ne!(a.positions, b.positions);
+
+        let a = conditioning_identity("p", &anchors, &image_first);
+        let b = conditioning_identity("p", &anchors, &audio_first);
+        assert_ne!(a, b);
+        assert_ne!(key(5, a), key(5, b));
+        assert_eq!(
+            a,
+            conditioning_identity("p", &anchors, &image_first.clone())
+        );
+    }
+
+    #[test]
+    fn vision_pixels_are_in_the_key() {
+        let mut anchors = anchors(0);
+        let refs = reference::Set::default();
+        let original = conditioning_identity("p", &anchors, &refs);
+        anchors.pixels[0].values[0] = 0.0;
+        assert_ne!(original, conditioning_identity("p", &anchors, &refs));
+
+        let anchors = Anchors {
+            keyframes: Vec::new(),
+            rows: Vec::new(),
+            pixels: Vec::new(),
+        };
+        let mut refs = references();
+        let original = conditioning_identity("p", &anchors, &refs);
+        refs.pixels[0].pixels[0] = 0.0;
+        assert_ne!(original, conditioning_identity("p", &anchors, &refs));
+    }
+
+    #[test]
+    fn ref_time_invalidates_cache() {
+        let anchors = Anchors {
+            keyframes: Vec::new(),
+            rows: Vec::new(),
+            pixels: Vec::new(),
+        };
+        let mut refs = references();
+        refs.layout[0].kind = sequence::ReferenceKind::Video;
+        refs.layout[0].latent_t = 2;
+        refs.video_rows.resize(2 * 96, 0.25);
+        refs.pixels[0].presentation = super::super::multimodal::ReferenceKind::Video;
+        refs.pixels[0].frames = 2;
+        refs.pixels[0].pixels.resize(2 * 3 * 32 * 32, 0.25);
+        refs.pixels[0].timestamps = vec![0.0];
+        let original = conditioning_identity("p", &anchors, &refs);
+
+        refs.pixels[0].timestamps[0] = 0.5;
+        assert_ne!(original, conditioning_identity("p", &anchors, &refs));
+        refs.pixels[0].timestamps[0] = 0.0;
+        assert_ne!(
+            original,
+            conditioning_identity("different prompt", &anchors, &refs)
+        );
     }
 }
