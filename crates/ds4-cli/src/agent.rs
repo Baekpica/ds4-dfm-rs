@@ -10,6 +10,7 @@ mod approval;
 mod bash;
 mod compact;
 mod edit;
+mod file_write;
 mod kv;
 mod search;
 mod trace;
