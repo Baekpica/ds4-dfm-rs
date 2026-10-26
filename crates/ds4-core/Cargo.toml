@@ -9,6 +9,39 @@ description = "Safe host wrappers around ds4-sys plus GGUF shape catalog"
 [lib]
 path = "src/lib.rs"
 
+# H3 device examples need the native objects linked by their Makefile targets.
+# Keep them out of the default host-only build.
+[features]
+h3-gates = []
+
+[[example]]
+name = "h3_text_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_dit_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_vision_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_multimodal_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_video_encoder_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_audio_encoder_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_device_gate"
+required-features = ["h3-gates"]
+
 [dependencies]
 ds4-sys = { path = "../ds4-sys" }
 serde_json = { version = "1", features = ["float_roundtrip"] }
@@ -22,4 +55,34 @@ unicode-normalization = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "=0.8.9"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[[example]]
+name = "h3_partition_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_canvas_gate"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "h3_reference_gate"
+required-features = ["h3-gates"]
+
+# Portable reference tests, built by `make tests/h3-suite`.
+[[example]]
+name = "test_host_portable"
+path = "../../tests/h3/test_host_portable.rs"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "test_tokenizer_portable"
+path = "../../tests/h3/test_tokenizer_portable.rs"
+required-features = ["h3-gates"]
+
+[[example]]
+name = "test_av_mux"
+path = "../../tests/h3/test_av_mux.rs"
+required-features = ["h3-gates"]

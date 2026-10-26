@@ -25,6 +25,10 @@ is the 128 GB NVIDIA DGX Spark / GB10. Support is specific to the
 - Use family-specific MTP, drafters and media input within their verified limits.
 - Profile prefill and decode with [ds4-perf](docs/ds4-perf.md).
 
+Experimental [MiniMax-H3](docs/minimax-h3/README.md) video/audio generation
+uses a separate CUDA CLI and local video API with BF16 safetensors. Its
+workload limits and validation are separate from the LLM serving contracts.
+
 ## Performance and release evidence
 
 The native paths are tuned for prefill and decode on the reference hardware.
@@ -151,7 +155,7 @@ loading a model, and preserve unrelated servers and resident owners.
 
 <a id="model-zoo"></a>
 
-Only explicit GGUF layouts and execution paths are accepted. The table combines
+The LLM table lists explicit GGUF/VQ layouts and execution paths. It combines
 the supported artifacts and Model Zoo; see also the
 [`DS4-Mixed-Quant-for-Spark`](https://huggingface.co/collections/Baekpica/ds4-mixed-quant-for-spark)
 collection. Feature and context limits remain specific to each artifact.
@@ -195,6 +199,17 @@ release scopes live in the [model-family guide](docs/ds4-dfm-model-families.md).
 The [generated capabilities](docs/serving-capabilities.md) describe the runtime
 plan; dated family gates retain their narrower workload boundaries.
 
+### Video and audio generation
+
+| Model | Format | Artifact | Runtime guide / scope |
+|---|---|---|---|
+| MiniMax-H3 | BF16 safetensors, FL2VA + Ref2VA | [Official checkpoint at 42ed227](https://huggingface.co/MiniMaxAI/MiniMax-H3/tree/42ed227ee7df40d41602854ae760620d6eb651fe) | [Experimental CUDA CLI and local video API](docs/minimax-h3/README.md); text, frame anchors and image/video/audio references |
+
+H3 uses `h3-rs` and `h3-server-rs`. The selected download is **210.3 GB**;
+see the [GB10 validation and timings](docs/minimax-h3/validation-2026-10-26.md)
+for the tested workloads and their limits. Diffusion generation has its own
+frame, resolution and denoise-step contract.
+
 ## HTTP compatibility
 
 | Surface | Endpoint |
@@ -210,6 +225,10 @@ Buffered and SSE responses retain each surface's tool, reasoning, finish and
 error forms. Native state and serial/continuous/static routing stay
 family-specific. The [API matrix](docs/ds4-api-surface-matrix.md) documents
 supported fields, media shapes, routing and explicit refusals.
+
+The separate `h3-server-rs` implements MiniMax-H3's [local video API](docs/minimax-h3/local-v1-contract.md):
+create, poll and download under `/v1/videos`. Its request body and job lifecycle
+are documented in the [H3 operator guide](docs/minimax-h3/api-usage.md).
 
 <a id="compatibility-boundary"></a>
 
@@ -238,6 +257,7 @@ See [architecture](docs/rust-migration/ARCHITECTURE.md) and
 | [Documentation index](docs/README.md) | Find current guides, releases and dated reports |
 | [Serving contract](docs/serving-contract.md) | Options, resolved plans, owner/worker and reuse |
 | [Model families](docs/ds4-dfm-model-families.md) | Artifacts, media, context and state limits |
+| [MiniMax-H3](docs/minimax-h3/README.md) | BF16 video/audio generation, model files, CLI/API and measured limits |
 | [DeepSeek V4.1 Flash (ds41)](docs/deepseek41-flash.md) | Artifact, 40-layer shape, serving contract, gates and recorded benchmarks |
 | [Chat templates](docs/chat-templates.md) | Official assets and continuation |
 | [Performance](docs/performance.md) | Representative results and measurement conditions |

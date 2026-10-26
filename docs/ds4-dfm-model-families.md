@@ -17,6 +17,9 @@ The reference target is one NVIDIA DGX Spark with a GB10 GPU and 128 GB of
 unified memory. Bonsai has separately recorded RTX 4070 SUPER gates; inherited
 Metal and other accelerator paths require their own checks.
 
+The common serving and state contracts below describe autoregressive families.
+[MiniMax-H3](#minimax-h3-diffusion) adds a separate diffusion video/audio runtime.
+
 [Families](#integrated-families) · [Qwen](#qwen-release-scope) ·
 [GLM](#glm-53-flash-release-scope) · [K2](#k2-horizon-375b-release-scope) ·
 [V4.1](#deepseek-v41-flash-release-scope) ·
@@ -79,6 +82,19 @@ live in the [serving contract](serving-contract.md). The
 [generated capability table](serving-capabilities.md) records server lanes,
 reuse, disk, MTP and bounds directly from `ds4_core::serving_caps`; the core
 tests reject documentation drift. Dated campaign reports retain their scope.
+
+## MiniMax-H3 diffusion
+
+[MiniMax-H3](minimax-h3/README.md) reads the pinned BF16 FL2VA and Ref2VA
+safetensors through `h3-rs` and `h3-server-rs`. It generates video with audio
+from text, first/last-frame anchors or ordered image/video/audio references.
+Its frame, canvas, denoise and job contracts are independent of LLM KV,
+continuous banks and MTP. The selected artifact requires 210.3 GB on disk.
+
+The [GB10 validation](minimax-h3/validation-2026-10-26.md) records three exact
+output comparisons against h3.c and a native API generation at 768×768.
+Support is experimental and limited to the recorded workloads; use the
+[local API contract](minimax-h3/local-v1-contract.md) for accepted requests.
 
 ## Qwen release scope
 

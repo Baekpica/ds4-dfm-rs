@@ -401,6 +401,72 @@ tests/naive_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_gate" $@
 
+# Match h3.c arithmetic: --use_fast_math changes BF16 attention values.
+H3_NVCCFLAGS := -O3 -std=c++17 $(NVCC_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
+H3_OBJS := $(addprefix native/h3/h3_,$(addsuffix _gpu.o,text dit vision device))
+H3_LIBS = $(DS4_RS_LIBS) -C link-arg=-lcublasLt
+# Cargo must relink whenever any linked object changes.
+H3_LINK_ARGS = -C metadata=$(shell cksum $(filter %.o,$^) </dev/null 2>/dev/null | cksum | awk '{print $$1}') \
+	$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(filter %.o,$^))
+
+$(H3_OBJS): %.o: %.cu %.h
+	$(NVCC) $(H3_NVCCFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+H3_GATES := $(addprefix tests/h3_,$(addsuffix _gate,text dit vision multimodal video_encoder audio_encoder device partition canvas reference))
+tests/h3_text_gate: native/h3/h3_text_gpu.o
+tests/h3_dit_gate: native/h3/h3_text_gpu.o native/h3/h3_dit_gpu.o
+tests/h3_vision_gate: native/h3/h3_vision_gpu.o
+tests/h3_multimodal_gate: native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
+tests/h3_video_encoder_gate tests/h3_audio_encoder_gate tests/h3_reference_gate: native/h3/h3_dit_gpu.o
+tests/h3_device_gate: native/h3/h3_device_gpu.o
+tests/h3_device_gate: H3_LIBS = $(DS4_RS_LIBS)
+# Header/canvas readers do not need a GPU object or CUDA libraries.
+tests/h3_partition_gate tests/h3_canvas_gate: H3_LIBS =
+
+$(H3_GATES): tests/%: $(DS4_RS_SOURCES)
+	cargo rustc -p ds4-core --example $* --release --features h3-gates -- \
+		$(H3_LINK_ARGS) $(H3_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
+
+tests/h3/native_test: tests/h3/test_native.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
+	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
+
+# Portable reference tests: host-only, without model weights.
+H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable
+H3_REFERENCE_SUITE := $(addprefix tests/h3-,$(H3_REFERENCE_TESTS))
+
+$(H3_REFERENCE_SUITE): tests/h3-%: $(DS4_RS_SOURCES)
+	cargo build -p ds4-core --example $* --release --features h3-gates --locked
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
+
+.PHONY: tests/h3-suite
+# Report every result; exit 3 identifies missing optional test artifacts.
+tests/h3-suite: $(H3_REFERENCE_SUITE)
+	@status=0; \
+	for test in $(H3_REFERENCE_SUITE); do \
+		printf '== %s\n' "$$test"; \
+		./$$test; \
+		case $$? in \
+		0) ;; \
+		3) printf 'skip: %s reported a missing artifact\n' "$$test" ;; \
+		*) status=1 ;; \
+		esac; \
+	done; \
+	exit $$status
+
+tools/minimax_h3/ppm_diff: tools/minimax_h3/ppm_diff.c
+	$(CC) $(CFLAGS) -o $@ $< -lm
+
+# H3 hosts link only H3 objects; the LLM engine remains independent.
+h3-rs: $(H3_OBJS)
+h3-rs: H3_PACKAGE = ds4-cli
+h3-server-rs: $(filter-out native/h3/h3_device_gpu.o,$(H3_OBJS))
+h3-server-rs: H3_PACKAGE = ds4-server
+h3-rs h3-server-rs: $(DS4_RS_SOURCES)
+	cargo rustc -p $(H3_PACKAGE) --bin $@ --release --features native -- \
+		$(H3_LINK_ARGS) $(H3_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/$@" $@
+
 # Common residency probes use at most one MiB of actual model-file mapping.
 tests/weight_mapping_probe: tests/test_weight_mapping.cu
 	$(NVCC) $(NVCCFLAGS) -o $@ $< -lcudart
@@ -2529,7 +2595,9 @@ BUILD_PROGRAMS := \
     tests/test_step37_state tests/test_step37_vision tests/test_step37_vision_ops \
     tests/weight_mapping_policy tests/weight_mapping_probe tools/gb10_peaks
 
-BUILD_OBJECTS += tests/test_iquest_prefix.o
+BUILD_OBJECTS += tests/test_iquest_prefix.o $(H3_OBJS)
+BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) $(H3_REFERENCE_SUITE) \
+    tests/h3/native_test tools/minimax_h3/ppm_diff
 DEPFILES := $(addsuffix .d,$(BUILD_OBJECTS))
 -include $(wildcard $(DEPFILES))
 

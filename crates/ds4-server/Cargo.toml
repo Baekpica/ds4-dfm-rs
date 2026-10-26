@@ -14,6 +14,10 @@ name = "ds4-server-rs"
 path = "src/bin/ds4-server-rs.rs"
 required-features = ["native"]
 
+[[bin]]
+name = "h3-server-rs"
+path = "src/bin/h3-server-rs.rs"
+
 [features]
 default = []
 native = []
@@ -25,6 +29,9 @@ ds4-kv = { path = "../ds4-kv" }
 ds4-sys = { path = "../ds4-sys" }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = { version = "0.11", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 ds4-core = { path = "../ds4-core" }

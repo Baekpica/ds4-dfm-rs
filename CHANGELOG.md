@@ -6,6 +6,15 @@ through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
 Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
 for exact provenance. Historical entries retain their original scope.
 
+## Unreleased
+
+- Adds experimental [MiniMax-H3](docs/minimax-h3/README.md) BF16 video/audio
+  generation through separate Rust CLI and local API binaries. Supports text,
+  frame anchors and ordered image/video/audio references. GB10 validation
+  records three byte-identical h3.c comparisons and a completed native API
+  request; [measured costs and limits](docs/minimax-h3/validation-2026-10-26.md)
+  remain separate from LLM serving qualification.
+
 ## v0.1.4 — 2026-10-27
 
 - Adds MiMo-V2.6-Flash RL/MOPD, Naive-N0.5-Flash, IQuest-Q1 and Prism
