@@ -1503,6 +1503,13 @@ pub trait ContSource {
     /// Called after terminal bytes have been appended. The owner can release
     /// completed clients without waiting for the whole rolling epoch to drain.
     fn settled(&mut self, _key: usize, _result: &Result<GenerateOutcome, GenerateError>) {}
+
+    /// Return None when the owner consumed the result; otherwise retain it
+    /// for settlement after native generation drains.
+    fn settle_owned(&mut self, item: ContOwnedResult) -> Option<ContOwnedResult> {
+        self.settled(item.key, &item.result);
+        Some(item)
+    }
 }
 
 /// Trait seam so `handle_client_inner` can drive a continuous lane without
@@ -2192,10 +2199,19 @@ mod native {
         slots: std::collections::HashMap<usize, RollingSlot>,
         pending: Option<ContOwnedWork>,
         results: Vec<ContOwnedResult>,
+        draining: bool,
         next_user: usize,
     }
 
     impl RollingDriver<'_, '_> {
+        fn record_result(&mut self, item: ContOwnedResult) {
+            if let Some(item) = self.source.settle_owned(item) {
+                // Deferred fallback needs the serial engine after live banks drain.
+                self.draining |= item.result.is_err();
+                self.results.push(item);
+            }
+        }
+
         fn reserve(&self) -> crate::serve_cont_roll::RollReserve {
             let mut reserve = crate::serve_cont_roll::RollReserve::new();
             for slot in self.slots.values() {
@@ -2208,7 +2224,7 @@ mod native {
 
         fn finish_stranded(&mut self, error: String) {
             if let Some(work) = self.pending.take() {
-                self.results.push(ContOwnedResult {
+                self.record_result(ContOwnedResult {
                     key: work.key,
                     result: Err(GenerateError::Engine(error.clone())),
                 });
@@ -2222,7 +2238,7 @@ mod native {
                     slot.cors,
                     None,
                 );
-                self.results.push(ContOwnedResult {
+                self.record_result(ContOwnedResult {
                     key: slot.key,
                     result,
                 });
@@ -2232,6 +2248,9 @@ mod native {
 
     impl ContDriver for RollingDriver<'_, '_> {
         fn admit(&mut self) -> Option<ContAdmit> {
+            if self.draining {
+                return None;
+            }
             loop {
                 let work = match self.pending.take() {
                     Some(work) => work,
@@ -2277,10 +2296,13 @@ mod native {
                 let slot = match prepared {
                     Ok(slot) => slot,
                     Err(error) => {
-                        self.results.push(ContOwnedResult {
+                        self.record_result(ContOwnedResult {
                             key,
                             result: Err(error),
                         });
+                        if self.draining {
+                            return None;
+                        }
                         continue;
                     }
                 };
@@ -2318,8 +2340,7 @@ mod native {
                 Some(&mut publish),
             );
             drop(publish);
-            self.source.settled(key, &result);
-            self.results.push(ContOwnedResult { key, result });
+            self.record_result(ContOwnedResult { key, result });
         }
 
         fn sample_override(&mut self, user: usize) -> i32 {
@@ -3984,12 +4005,23 @@ mod native {
                 slots: std::collections::HashMap::new(),
                 pending: None,
                 results: Vec::new(),
+                draining: false,
                 next_user: 1,
             };
             loop {
                 match self.batch.continuous_generate(&mut driver) {
-                    Ok(()) if driver.pending.is_some() => continue,
-                    Ok(()) => break,
+                    Ok(()) if driver.pending.is_some() && !driver.draining => continue,
+                    Ok(()) => {
+                        if let Some(work) = driver.pending.take() {
+                            driver.record_result(ContOwnedResult {
+                                key: work.key,
+                                result: Err(GenerateError::Unsupported(
+                                    crate::serve_cont_roll::CONT_ADMIT_REFUSED,
+                                )),
+                            });
+                        }
+                        break;
+                    }
                     Err(error) => {
                         driver.finish_stranded(error.to_string());
                         break;
