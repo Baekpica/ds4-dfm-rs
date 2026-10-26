@@ -190,9 +190,6 @@ The bandwidth figure is informational; we don't tier on it.
 - `DS4_LING3VL_NO_BF16_VEC=1` restores cuBLAS for Ling n=1 BF16 projections.
   Unset uses the row-stable warp GEMV.
 
-- `DS4_LING3VL_MLA_TILE=1` opts into the rejected shared-KV MLA prefill
-  tile.
-
 - `DS4_LING3VL_NO_MLA_EXPAND=1` restores the absorbed-MLA prefill (below).
   Unset, Ling prefill chunks of 64+ rows expand each 4096-key latent
   segment to per-head K (192) / V (128) with two BF16 batched GEMMs and
@@ -204,8 +201,7 @@ The bandwidth figure is informational; we don't tier on it.
   key segments and Motif's range kernel. Unset writes the expanded K/V as
   BF16 (the GEMM output type), walks three-chunk segments so the LSE
   merges drop 3x, and runs the Ling range kernel (64-key tiles, ldmatrix
-  fragments). `DS4_LING3VL_MLA_TK=32` keeps the BF16 path on 32-key tiles
-  (slower; measured for the record).
+  fragments).
 
 - `DS4_LING3VL_NO_MLA_HMMA=1` restores Motif's SIMT latent attention on
   absorbed Ling prefill. Unset uses the dots3 tensor-core absorbed-MLA

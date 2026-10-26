@@ -116,7 +116,7 @@ int ds4_mmq_motif3_prefill_attn_hmma(
 
 // Ling expanded-MLA prefill attention: the Motif 192/128 range kernel for
 // BF16 K/V written by the expansion GEMMs, 64 query rows per block walking
-// `tk`-key tiles (32 or 64) with ldmatrix fragments.  Same masks, online
+// 64-key tiles (`tk` must be 64) with ldmatrix fragments. Same masks, online
 // softmax, output and LSE as the Motif kernel.  Returns 0, -1 when the
 // shape or tile is unsupported, -2 on a launch failure.
 int ds4_mmq_ling3vl_prefill_attn_hmma(
