@@ -155,6 +155,11 @@ impl<T> JobQueue<T> {
         Self::take_job(&mut g, &self.not_full)
     }
 
+    pub(crate) fn drained(&self) -> bool {
+        let g = self.inner.lock().expect("prefetch queue");
+        g.closed && g.jobs.is_empty()
+    }
+
     pub fn finish(&self) {
         let mut g = self.inner.lock().expect("prefetch queue");
         g.closed = true;

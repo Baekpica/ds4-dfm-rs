@@ -1255,3 +1255,194 @@ fn serve_prefetch_local_depth_2_queues_second_work_during_not_send_eval() {
         assert_eq!(decode_logits_payload(&result.payload).unwrap(), logits);
     }
 }
+
+struct AuditWorker {
+    coordinator: TcpStream,
+    port: u16,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<thread::JoinHandle<std::io::Result<()>>>,
+}
+
+impl AuditWorker {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (data, port) = ds4_dist::open_data_listener(Some("127.0.0.1"), 0).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let thread = thread::spawn(move || {
+            let mut worker = Worker::new(hop_logits_exec().0);
+            worker
+                .store_mut()
+                .insert(9, vec![1, 2], b"saved snapshot")
+                .unwrap();
+            let (hello, name) = worker.hello(port as u32, 128, "audit");
+            reconnect_local(
+                &mut worker,
+                LocalReconnect {
+                    connect: || TcpStream::connect(address),
+                    hello: &hello,
+                    model_name: &name,
+                    sleep: || thread::sleep(Duration::from_millis(1)),
+                    should_stop: || stopped.load(std::sync::atomic::Ordering::SeqCst),
+                    listener: Some(&data),
+                },
+            )
+        });
+        let mut coordinator = listener.accept().unwrap().0;
+        tune(&coordinator);
+        ds4_dist::recv_hello(&mut coordinator).unwrap();
+        Self {
+            coordinator,
+            port,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for AuditWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.coordinator.shutdown(std::net::Shutdown::Both);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[test]
+fn audit_fragmented_coordinator() {
+    let mut server = AuditWorker::start();
+    let frame = hop_work_frame(server.port);
+    server.coordinator.write_all(&frame[..5]).unwrap();
+    thread::sleep(Duration::from_millis(70));
+    server.coordinator.write_all(&frame[5..20]).unwrap();
+    thread::sleep(Duration::from_millis(70));
+    server.coordinator.write_all(&frame[20..]).unwrap();
+    let (typ, reply) = read_frame(&mut server.coordinator).unwrap();
+    assert_eq!(typ, MSG_RESULT);
+    assert_eq!(decode_result_body(&reply).unwrap().hdr.status, 0);
+}
+
+#[test]
+fn audit_prefetch_snapshot_load() {
+    use ds4_dist::{
+        encode_snapshot_begin_body, encode_snapshot_chunk_body, SnapshotBegin, MSG_SNAPSHOT_CHUNK,
+        MSG_SNAPSHOT_DONE, MSG_SNAPSHOT_LOAD_BEGIN,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate = EvalGate::new();
+    let queue = Arc::new(JobQueue::<PrefetchJob>::new(2));
+    let client_gate = Arc::clone(&gate);
+    let payload = b"saved payload in two chunks";
+    let hash = ds4_dist::token_hash_prefix(&[1, 2]);
+    let (token_hash_hi, token_hash_lo) = ds4_dist::u64_to_halves(hash);
+    let begin = SnapshotBegin {
+        model_id: 3,
+        session_hi: 0,
+        session_lo: 9,
+        request_hi: 0,
+        request_lo: 12,
+        token_hash_hi,
+        token_hash_lo,
+        token_count: 2,
+        layer_start: 2,
+        layer_end: 3,
+        payload_hi: 0,
+        payload_lo: payload.len() as u32,
+        status: 0,
+        token_bytes: 8,
+        message_bytes: 0,
+    };
+    let mut frames = Vec::new();
+    write_frame(
+        &mut frames,
+        MSG_SNAPSHOT_LOAD_BEGIN,
+        &encode_snapshot_begin_body(&begin, &[1, 2], b"").unwrap(),
+    )
+    .unwrap();
+    for chunk in payload.chunks(14) {
+        write_frame(
+            &mut frames,
+            MSG_SNAPSHOT_CHUNK,
+            &encode_snapshot_chunk_body(12, chunk).unwrap(),
+        )
+        .unwrap();
+    }
+    let client = thread::spawn(move || {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        tune(&stream);
+        stream.write_all(&hop_work_frame(port)).unwrap();
+        client_gate.wait_started();
+        stream.write_all(&frames).unwrap();
+        // A receiver must stop at LOAD_BEGIN while eval still owns the session.
+        thread::sleep(Duration::from_millis(70));
+        client_gate.release();
+        let first = read_frame(&mut stream);
+        let second = read_frame(&mut stream);
+        (first, second)
+    });
+    let mut stream = listener.accept().unwrap().0;
+    tune(&stream);
+    let mut worker = Worker::new(NotSendExec {
+        inner: hop_logits_exec().0,
+        gate,
+        _not_send: PhantomData,
+    });
+    let result = serve_prefetch_local_with(&mut worker, &mut stream, &queue);
+    let (first, second) = client.join().unwrap();
+    result.unwrap();
+    assert_eq!(first.unwrap().0, MSG_RESULT);
+    assert_eq!(second.unwrap().0, MSG_SNAPSHOT_DONE);
+    assert_eq!(worker.store_mut().read_shard(9).unwrap(), payload);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn audit_snapshot_socket_reap() {
+    fn sockets() -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .flatten()
+            .filter_map(|e| std::fs::read_link(e.path()).ok())
+            .filter(|p| p.to_string_lossy().starts_with("socket:"))
+            .count()
+    }
+    let server = AuditWorker::start();
+    let before = sockets();
+    for request_id in 1..=12 {
+        let mut hop = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        tune(&hop);
+        let meta = ds4_dist::SnapshotMeta {
+            model_id: 3,
+            session_id: 9,
+            request_id,
+            token_hash: ds4_dist::token_hash_prefix(&[1, 2]),
+            layer_start: 2,
+            layer_end: 3,
+        };
+        ds4_dist::coordinator_load_snapshot(
+            &mut hop,
+            meta,
+            &[1, 2],
+            &mut std::io::Cursor::new(b"saved snapshot"),
+            14,
+        )
+        .unwrap();
+        let mut payload = Vec::new();
+        ds4_dist::coordinator_save_snapshot(&mut hop, meta, &[1, 2], &mut payload).unwrap();
+        assert_eq!(payload, b"saved snapshot");
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while sockets() > before && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        sockets() <= before,
+        "closed snapshot sockets accumulated: {} -> {}",
+        before,
+        sockets()
+    );
+}
