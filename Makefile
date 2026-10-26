@@ -203,11 +203,11 @@ help:
 # erase it), so spark defines travel via NVCC_EXTRA_FLAGS instead.
 cuda-spark:
 	@printf '%s\n' '# written by make cuda-spark (see the config include note in Makefile)' 'CUDA_ARCH := sm_121' 'NVCC_EXTRA_FLAGS :=' > .ds4-cuda-config.mk
-	$(MAKE) -B ds4-c ds4-server-c ds4-bench-c ds4-eval ds4-agent-c ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=sm_121 NVCC_EXTRA_FLAGS=""
+	$(MAKE) -B ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=sm_121 NVCC_EXTRA_FLAGS=""
 
 cuda-generic:
 	@printf '%s\n' '# written by make cuda-generic (see the config include note in Makefile)' 'CUDA_ARCH := native' > .ds4-cuda-config.mk
-	$(MAKE) ds4-c ds4-server-c ds4-bench-c ds4-eval ds4-agent-c ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=native
+	$(MAKE) ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH=native
 
 cuda:
 	@if [ -z "$(strip $(CUDA_ARCH))" ]; then \
@@ -216,7 +216,7 @@ cuda:
 		exit 2; \
 	fi
 	@printf '%s\n' '# written by make cuda (see the config include note in Makefile)' 'CUDA_ARCH := $(strip $(CUDA_ARCH))' > .ds4-cuda-config.mk
-	$(MAKE) ds4-c ds4-server-c ds4-bench-c ds4-eval ds4-agent-c ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH="$(CUDA_ARCH)"
+	$(MAKE) ds4-eval ds4 ds4-server ds4-bench ds4-agent $(CUDA_EXTRA_BINS) CUDA_ARCH="$(CUDA_ARCH)"
 
 ds4-c: ds4_cli.o linenoise.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -2629,10 +2629,10 @@ test-qwen35-rows: tests/test_qwen35_rows
 	./tests/test_qwen35_rows "$(DS4_BONSAI_MODEL)"
 
 .PHONY: bonsai-fold-selftest bonsai-ref-check
-bonsai-fold-selftest:
+bonsai-fold-selftest: ds4-c
 	DS4_QWEN35_FOLD_SELFTEST=1 ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "x" | grep "fold selftest"
 
-bonsai-ref-check:
+bonsai-ref-check: ds4-c
 	DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
 
 # The same greedy check on the CUDA graph.  On this box the whole-map host
@@ -2642,12 +2642,12 @@ DS4_BONSAI_PARITY_TOKENS ?= 760,6511,314,9338,369
 DS4_BONSAI_PARITY_STEPS ?= 8
 
 .PHONY: bonsai-cuda-check bonsai-cuda-parity
-bonsai-cuda-check:
+bonsai-cuda-check: ds4-c
 	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
 
 # CPU reference and CUDA graph on the same prompt ids: the two streams must
 # print the same ids.  Slow, the CPU reference is about 3 s per token.
-bonsai-cuda-parity:
+bonsai-cuda-parity: ds4-c
 	@mkdir -p misc/scratch
 	DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cpu.tokens
 	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cuda.tokens

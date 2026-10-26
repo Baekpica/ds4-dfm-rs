@@ -45,6 +45,10 @@ make cuda-spark                     # DGX Spark / GB10
 # or: make cuda CUDA_ARCH=sm_N
 ```
 
+CUDA builds produce the Rust hosts, `ds4-eval` and the weight server. Build
+C host oracles explicitly with `make ds4-c ds4-server-c ds4-bench-c ds4-agent-c`;
+proof and diagnostic targets that use them declare their own dependencies.
+
 On macOS, `make` selects the inherited Metal build. `make cpu` builds the C
 reference executables; it is not a production CPU performance target. Avoid
 large CPU inference on macOS because of the documented VM failures.
