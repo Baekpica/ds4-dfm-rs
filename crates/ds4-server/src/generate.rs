@@ -40,8 +40,8 @@ use crate::retry::{
 use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind};
 use crate::stream::{
     anthropic_final_response, anthropic_sse_finish_live, anthropic_sse_start_live,
-    anthropic_sse_stream_update, final_response, openai_sse_finish_live, openai_sse_stream_update,
-    openai_stream_start, responses_final_response, responses_sse_created,
+    anthropic_sse_stream_update, completion_delta, final_response, openai_sse_finish_live,
+    openai_sse_stream_update, openai_stream_start, responses_final_response, responses_sse_created,
     responses_sse_finish_live, responses_sse_stream_update, responses_stream_init, sse_chunk,
     sse_done, sse_headers, stream_error, stream_heartbeat_if_due, think_end, think_start,
     AnthropicStream, ChatFormat, OpenaiStream, ReqTimings, ResponsesStream, StreamReq, ThinkBlock,
@@ -1782,6 +1782,7 @@ fn decode_pass(
     token_ids: &mut Vec<i32>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
+    let mut completion_sent = 0;
     'decode: while acc.completion < max_tokens && engine.pos() < engine.ctx() {
         if stop_requested.is_some_and(|stop| stop()) {
             *finish = "error";
@@ -1919,7 +1920,12 @@ fn decode_pass(
                 let view = &acc.text[..feed.emit_limit.min(acc.text.len())];
                 match req.api {
                     Api::Openai if req.kind == ReqKind::Completion => {
-                        if let Some(delta) = last_delta(&acc.text, feed.emit_limit, piece.len()) {
+                        if let Some(delta) = completion_delta(
+                            &acc.text,
+                            &mut completion_sent,
+                            feed.emit_limit,
+                            false,
+                        ) {
                             sse_chunk(w, req, job_id, Some(delta), None);
                         }
                     }
@@ -1971,6 +1977,13 @@ fn decode_pass(
                 break 'decode;
             }
         }
+    }
+    if req.stream && req.api == Api::Openai && req.kind == ReqKind::Completion {
+        if let Some(delta) = completion_delta(&acc.text, &mut completion_sent, acc.text.len(), true)
+        {
+            sse_chunk(w, req, job_id, Some(delta), None);
+        }
+        flush(w, out).inspect_err(|_| engine.invalidate())?;
     }
     Ok(())
 }
@@ -3112,6 +3125,7 @@ struct V41EmitState<'a, W: Write> {
     stop_requested: Option<fn() -> bool>,
     max_tokens: i32,
     acc: SemAccum,
+    completion_sent: usize,
     w: &'a mut Writer,
     out: &'a mut W,
     oa: Option<OpenaiStream>,
@@ -3176,7 +3190,12 @@ impl<W: Write> V41EmitState<'_, W> {
             let view = &self.acc.text[..feed.emit_limit.min(self.acc.text.len())];
             match self.req.api {
                 Api::Openai if self.req.kind == ReqKind::Completion => {
-                    if let Some(delta) = last_delta(&self.acc.text, feed.emit_limit, piece.len()) {
+                    if let Some(delta) = completion_delta(
+                        &self.acc.text,
+                        &mut self.completion_sent,
+                        feed.emit_limit,
+                        false,
+                    ) {
                         sse_chunk(self.w, &self.req, self.job_id, Some(delta), None);
                     }
                 }
@@ -3438,6 +3457,7 @@ fn generate_terminal_v41(
         stop_requested,
         max_tokens,
         acc,
+        completion_sent: 0,
         w: &mut w,
         out,
         oa,
@@ -3638,6 +3658,14 @@ fn generate_terminal_v41(
     let terminal = if st.req.stream {
         match st.req.api {
             Api::Openai if st.req.kind == ReqKind::Completion => {
+                if let Some(delta) = completion_delta(
+                    &st.acc.text,
+                    &mut st.completion_sent,
+                    st.acc.text.len(),
+                    true,
+                ) {
+                    sse_chunk(st.w, &st.req, job_id, Some(delta), None);
+                }
                 sse_chunk(st.w, &st.req, job_id, None, Some(finish));
                 sse_done(st.w, &st.req, job_id, prompt_n, completion);
                 std::mem::take(&mut st.w.out)
@@ -3818,17 +3846,6 @@ fn generate_terminal_v41(
         );
     }
     Ok((outcome, terminal))
-}
-
-fn last_delta(raw: &[u8], emit_limit: usize, piece_len: usize) -> Option<&[u8]> {
-    if emit_limit == 0 {
-        return None;
-    }
-    let start = raw.len().saturating_sub(piece_len);
-    if start >= emit_limit {
-        return None;
-    }
-    Some(&raw[start..emit_limit])
 }
 
 /// Tape engine for tests. Does not open a GGUF.

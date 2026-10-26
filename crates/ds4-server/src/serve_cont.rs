@@ -39,8 +39,8 @@ use crate::stream::stream_error;
 use crate::stream::stream_heartbeat_if_due;
 use crate::stream::{
     anthropic_final_response, anthropic_sse_finish_live, anthropic_sse_start_live,
-    anthropic_sse_stream_update, final_response, openai_sse_finish_live, openai_sse_stream_update,
-    openai_stream_start, responses_final_response, responses_sse_created,
+    anthropic_sse_stream_update, completion_delta, final_response, openai_sse_finish_live,
+    openai_sse_stream_update, openai_stream_start, responses_final_response, responses_sse_created,
     responses_sse_finish_live, responses_sse_stream_update, responses_stream_init, sse_chunk,
     sse_done, sse_headers, AnthropicStream, OpenaiStream, ReqTimings, ResponsesStream, StreamReq,
     ThinkBlock, Writer,
@@ -79,6 +79,7 @@ pub struct ContStepper {
     pub prompt_n: i32,
     pub max_tokens: i32,
     acc: SemAccum,
+    completion_sent: usize,
     eos_policy: EosPolicy,
     w: Writer,
     oa: Option<OpenaiStream>,
@@ -187,6 +188,7 @@ impl ContStepper {
                 prompt_n,
                 max_tokens,
                 acc,
+                completion_sent: 0,
                 eos_policy: parsed.eos_policy,
                 w,
                 oa,
@@ -278,21 +280,26 @@ impl ContStepper {
 
     pub fn feed(&mut self, piece: &[u8]) -> ContStep {
         let feed = self.acc.feed(piece, &self.stops);
-        self.step(piece, feed)
+        self.step(feed)
     }
 
     /// A stop token's text: streamed, not counted (`SemAccum::feed_stop`).
     pub fn feed_stop(&mut self, piece: &[u8]) -> ContStep {
         let feed = self.acc.feed_stop(piece, &self.stops);
-        self.step(piece, feed)
+        self.step(feed)
     }
 
-    fn step(&mut self, piece: &[u8], feed: SemFeed) -> ContStep {
+    fn step(&mut self, feed: SemFeed) -> ContStep {
         if self.req.stream {
             let view = &self.acc.text[..feed.emit_limit.min(self.acc.text.len())];
             match (self.req.api, self.req.kind) {
                 (Api::Openai, ReqKind::Completion) => {
-                    if let Some(delta) = last_delta(&self.acc.text, feed.emit_limit, piece.len()) {
+                    if let Some(delta) = completion_delta(
+                        &self.acc.text,
+                        &mut self.completion_sent,
+                        feed.emit_limit,
+                        false,
+                    ) {
                         sse_chunk(&mut self.w, &self.req, &self.job_id, Some(delta), None);
                     }
                 }
@@ -452,6 +459,14 @@ impl ContStepper {
         if self.req.stream {
             match (self.req.api, self.req.kind) {
                 (Api::Openai, ReqKind::Completion) => {
+                    if let Some(delta) = completion_delta(
+                        &self.acc.text,
+                        &mut self.completion_sent,
+                        self.acc.text.len(),
+                        true,
+                    ) {
+                        sse_chunk(&mut self.w, &self.req, &self.job_id, Some(delta), None);
+                    }
                     sse_chunk(
                         &mut self.w,
                         &self.req,
@@ -749,17 +764,6 @@ fn solar_stride_floor(cached: usize, ctx: i32) -> Option<usize> {
         return None;
     }
     Some((cached / stride) * stride)
-}
-
-fn last_delta(raw: &[u8], emit_limit: usize, piece_len: usize) -> Option<&[u8]> {
-    if emit_limit == 0 {
-        return None;
-    }
-    let start = raw.len().saturating_sub(piece_len).min(emit_limit);
-    if start >= emit_limit {
-        return None;
-    }
-    Some(&raw[start..emit_limit])
 }
 
 #[cfg(any(feature = "native", test))]

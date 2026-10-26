@@ -1719,9 +1719,13 @@ fn parse_anthropic_content_block(
             // Keep original bytes before the legacy encoder escapes XML.  The
             // part carries the plain text (no V4.1 placeholder): it is what the
             // non-DSML heads render.
+            let mut plain = tool_result_plain.take().unwrap_or_default();
+            if result_is_error {
+                plain.insert_str(0, "[tool_error] ");
+            }
             msg.parts.push(ChatPart::ToolResult {
                 id: id.clone().unwrap_or_default(),
-                content: tool_result_plain.take().unwrap_or_default(),
+                content: plain,
             });
             if let Some(ref i) = id {
                 add_tool_call_id(msg, i);
