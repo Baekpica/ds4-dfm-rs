@@ -1725,7 +1725,6 @@ mod native {
         warm_persist_min: i32,
         warm_checkpoint: bool,
         tool_memory: ToolMemory,
-        memgov: Box<dyn crate::serve_cont_roll::ContMemGov>,
         stop_requested: Option<fn() -> bool>,
     }
 
@@ -2454,7 +2453,6 @@ mod native {
                     warm_persist_min,
                     warm_checkpoint,
                     tool_memory: ToolMemory::default(),
-                    memgov: Box::new(crate::serve_cont_roll::AdmitAlways),
                     stop_requested: None,
                 },
             }
@@ -3360,12 +3358,6 @@ mod native {
             stepper.image_cache_spans = cache_spans;
             let (temperature, top_k, top_p, min_p) = stepper.sampling(parsed);
             let capture_done = bank_scope(parsed);
-            crate::serve_cont_roll::charge_roll_admit(
-                &mut *self.memgov,
-                prompt_n,
-                stepper.max_tokens,
-            )
-            .map_err(|_| GenerateError::Unsupported(crate::serve_cont_roll::CONT_ADMIT_REFUSED))?;
             // The trace records the mechanism, not the counters: an appended
             // frontier turn also prefills tokens, and a fork looks like any
             // other prefix hit.
