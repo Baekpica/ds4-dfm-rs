@@ -1227,10 +1227,6 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   Default enabled above 8 rows for raw/padded IQ2_XXS, IQ2_XS and Q4_K pairs.
   Share Q8_1 activations and routing maps without weight repacking. Same-width
   outputs are exact; small-width Decode keeps its existing path.
-- `DS4_GLM53_DENSE_GEMM=1` enables diagnostic dense Tensor Core attention.
-  Default Off: FP16 Q/probability with FP32 accumulation passes its rounded
-  reference but loses two codes in the recorded 6K retrieval at 2048 rows.
-  Dense rows 128–2048/keys<=2051 only; sparse and Decode remain unchanged.
 - `DS4_GLM53_PREFILL_ROWS=N` requests 1–2048 physical rows (default 2048).
   Rust fits workspace against weights, active KV/state, checkpoints, media
   and reserve; it reports the effective width while preserving context/banks.

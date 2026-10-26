@@ -144,9 +144,6 @@ const GLMVQ_FLASH_ALIGN: u64 = 256;
 // glmvq_kda_local record per (64-token chunk, head).
 const GLMVQ_KDA_RECORD_BYTES: u64 = 3 * 64 * 128 * 2 + 64 * 64 * 2 + 64 * 128 * 4 + 128 * 4;
 const GLM_MTP_ROWS: u64 = 4;
-const GLM_DENSE_GROUP: u64 = 8;
-const GLM_DENSE_MIN_ROWS: u64 = 128;
-const GLM_DENSE_ALIGN: u64 = 256;
 const GLM_ATTENTION_PERIOD: u32 = 4;
 const GLM_POOL_SIZE: u64 = 4;
 const GLM_MTP_SAVES: u64 = 5;
@@ -2382,20 +2379,8 @@ fn glm_graph_bytes(s: Shape, ctx: u64, rows: u64, kind: GlmGraph) -> u64 {
         + u64::from(s.n_indexer_top_k)
         + GLM_POOL_SIZE
         - 1;
-    let dense = if rows >= GLM_DENSE_MIN_ROWS
-        && std::env::var("DS4_GLM53_DENSE_GEMM").is_ok_and(|v| v != "0")
-    {
-        let query = GLM_DENSE_GROUP * rows * u64::from(s.n_kv_lora);
-        let scores =
-            GLM_DENSE_GROUP * rows * ctx.min(u64::from(s.n_indexer_top_k) + GLM_POOL_SIZE - 1);
-        let align = |n: u64| n.div_ceil(GLM_DENSE_ALIGN) * GLM_DENSE_ALIGN;
-        align(align(align(query * SIZEOF_U16) + scores * SIZEOF_F32) + scores * SIZEOF_U16)
-            + query * SIZEOF_F32
-    } else {
-        0
-    };
     let scratch = match kind {
-        GlmGraph::Source => kda_prefill_scratch_bytes(rows, heads, kda_head) + dense,
+        GlmGraph::Source => kda_prefill_scratch_bytes(rows, heads, kda_head),
         GlmGraph::Vq => glm_vq_extra_bytes(s, ctx, rows),
     };
     if scratch == u64::MAX {

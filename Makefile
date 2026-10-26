@@ -1953,12 +1953,6 @@ test-glm-vq-res: tests/test_glm_vq_res
 test-glm53-pair: tests/test_glm53_pair
 	./tests/test_glm53_pair
 
-tests/test_glm53_dense_gemm: tests/test_glm53_dense_gemm.cu cuda/glm53_dense_attn.cuh ds4_glm53_attn.h
-	$(NVCC) $(NVCCFLAGS) -DTEST_DENSE_GEMM -I. -o $@ $< $(CUDA_LDLIBS)
-
-test-glm53-dense-gemm: tests/test_glm53_dense_gemm
-	./tests/test_glm53_dense_gemm
-
 test-glm53-upload-async: tests/test_glm53_upload_async
 	./tests/test_glm53_upload_async
 
@@ -1990,7 +1984,7 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_glmvq.h ds4_glmvq_gpu.cuh \
 tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image \
 	tests/test_glm53_vision.o tests/test_glm53_bounds.o tests/test_glm53_stream \
 	tests/test_glm53_payload: $(GLM53_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc cuda/glm53_dense_attn.cuh \
+ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh ds4_glm53_map.inc \
 	cuda/glm53_vision_norm.cuh ds4_glm53_attn.h cuda/glm53_low_attn.cuh cuda/glm53_pool_score.cuh
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
@@ -2491,7 +2485,7 @@ BUILD_PROGRAMS := \
     tests/test_exaone_kernels tests/test_exaone_partial tests/test_exaone_ref \
     tests/test_exaone_tokenizer tests/test_glm53_attention tests/test_glm53_attention_cuda \
     tests/test_glm53_banks tests/test_glm53_bounds tests/test_glm53_cache tests/test_glm53_compact \
-    tests/test_glm53_compare tests/test_glm53_dense_gemm tests/test_glm53_dsa tests/test_glm53_image \
+    tests/test_glm53_compare tests/test_glm53_dsa tests/test_glm53_image \
     tests/test_glm53_loader tests/test_glm53_long tests/test_glm53_map tests/test_glm53_mixed \
     tests/test_glm53_mtp tests/test_glm53_mtp_actual tests/test_glm53_mtp_long tests/test_glm53_pair \
     tests/test_glm53_payload tests/test_glm53_quant tests/test_glm53_session tests/test_glm53_stop \
