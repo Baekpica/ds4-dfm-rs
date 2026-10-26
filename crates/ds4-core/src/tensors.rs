@@ -257,7 +257,7 @@ fn parse_one(
         let nlen = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
         pos += 8;
         let n = usize::try_from(nlen).map_err(|_| TensorError::Gguf(GgufError::Truncated))?;
-        if pos + n > data.len() {
+        if n > data.len() - pos {
             return Err(TensorError::Gguf(GgufError::Truncated));
         }
         let name = String::from_utf8_lossy(&data[pos..pos + n]).into_owned();

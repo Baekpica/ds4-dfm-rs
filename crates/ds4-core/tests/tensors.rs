@@ -50,6 +50,23 @@ fn put_str(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
+#[test]
+fn audit_tensor_name_overflow() {
+    let path = std::env::temp_dir().join(format!("ds4-bad-name-{}.gguf", std::process::id()));
+    let mut bytes = Vec::new();
+    put_u32(&mut bytes, 0x4655_4747);
+    put_u32(&mut bytes, 3);
+    put_u64(&mut bytes, 1);
+    put_u64(&mut bytes, 0);
+    put_u64(&mut bytes, u64::MAX);
+    fs::write(&path, bytes).unwrap();
+    let result = std::panic::catch_unwind(|| TensorInventory::open(&path));
+    fs::remove_file(&path).unwrap();
+    assert!(result
+        .expect("malformed tensor names must not panic")
+        .is_err());
+}
+
 struct Tens<'a> {
     name: &'a str,
     dims: &'a [u64],

@@ -242,6 +242,7 @@ mod tests {
     fn fake_session() -> std::mem::ManuallyDrop<Session<'static>> {
         std::mem::ManuallyDrop::new(Session {
             raw: NonNull::<ds4_bridge_session>::dangling(),
+            shape: crate::SHAPE_FLASH,
             host: SessionLedger::new(ModelFamily::DeepSeek4, SessionBackend::Cuda, 4096, 4),
             _model: PhantomData,
             _not_send: PhantomData,
