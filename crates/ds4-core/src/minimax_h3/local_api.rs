@@ -200,10 +200,14 @@ impl ReferenceMedia {
             "video/mp4" => Some("mp4"),
             "video/quicktime" => Some("mov"),
             "video/webm" => Some("webm"),
+            "video/x-matroska" => Some("mkv"),
             "audio/mpeg" | "audio/mp3" => Some("mp3"),
             "audio/wav" | "audio/x-wav" => Some("wav"),
             "audio/ogg" => Some("ogg"),
             "audio/mp4" | "audio/m4a" => Some("m4a"),
+            "audio/aac" => Some("aac"),
+            "audio/flac" | "audio/x-flac" => Some("flac"),
+            "audio/aiff" | "audio/x-aiff" => Some("aiff"),
             _ => None,
         }
     }
@@ -462,27 +466,6 @@ impl CreateBody {
                     ))
                 }
             };
-
-            let prefix = match kind {
-                ReferenceKind::Image => "image/",
-                ReferenceKind::Video => "video/",
-                ReferenceKind::Audio => "audio/",
-            };
-            if !condition.media_type.starts_with(prefix) {
-                return Err(ApiError::bad_request(
-                    "invalid_uri",
-                    Some("conditions"),
-                    format!(
-                        "a {} reference needs a {prefix} data URI, not {}",
-                        match kind {
-                            ReferenceKind::Image => "image",
-                            ReferenceKind::Video => "video",
-                            ReferenceKind::Audio => "audio",
-                        },
-                        condition.media_type
-                    ),
-                ));
-            }
 
             references.push(ReferenceMedia {
                 kind,
@@ -796,6 +779,21 @@ fn parse_condition(value: &Value) -> Result<Condition, ApiError> {
     };
     let uri = required_str(object, "uri", "invalid_uri")?;
     let (media_type, bytes) = decode_data_uri(uri)?;
+    let prefix = match kind {
+        ConditionType::Image => "image/",
+        ConditionType::Video => "video/",
+        ConditionType::Audio => "audio/",
+    };
+    if !media_type.starts_with(prefix) {
+        return Err(ApiError::bad_request(
+            "invalid_uri",
+            Some("conditions"),
+            format!(
+                "a {} condition needs a {prefix} data URI, not {media_type}",
+                kind_name(kind)
+            ),
+        ));
+    }
     if bytes.is_empty() {
         return Err(ApiError::bad_request(
             "invalid_uri",
@@ -1421,6 +1419,47 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, "invalid_uri");
         assert!(error.message.contains("video/"));
+    }
+
+    #[test]
+    fn documented_containers_reach_renderer() {
+        for (kind, mime, extension) in [
+            ("audio", "audio/aac", "aac"),
+            ("audio", "audio/flac", "flac"),
+            ("audio", "audio/FLAC", "flac"),
+            ("audio", "audio/x-flac", "flac"),
+            ("audio", "audio/aiff", "aiff"),
+            ("audio", "audio/x-aiff", "aiff"),
+            ("video", "video/x-matroska", "mkv"),
+        ] {
+            let plan = planned(body(
+                "ref2va",
+                json!([
+                    {"type": "image", "role": "reference", "uri": data_uri("image/png", &png_header(64, 64))},
+                    {"type": kind, "role": "reference", "uri": data_uri(mime, b"decoder input")},
+                ]),
+                "16:9",
+                8,
+            ))
+            .unwrap();
+            assert_eq!(plan.references[1].extension(), Some(extension), "{mime}");
+        }
+    }
+
+    #[test]
+    fn keyframe_mime_matches_its_condition() {
+        let error = planned(body(
+            "fl2va",
+            json!([{
+                "type": "image", "role": "keyframe", "frame_index": 0,
+                "uri": data_uri("audio/wav", &png_header(64, 64)),
+            }]),
+            "1:1",
+            4,
+        ))
+        .unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.code, "invalid_uri");
     }
 
     /// In fl2va, a reference role still names the path it would need.
