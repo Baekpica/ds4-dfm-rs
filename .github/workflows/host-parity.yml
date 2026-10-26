@@ -21,25 +21,7 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
       - name: Install media tools
-        # Bounded, and lean on purpose. Run 40229947520 spent 26 of the job's
-        # 30 minutes inside this step: apt was still fetching the optional
-        # set (pocketsphinx-en-us 27.4 MB, the VA-API/VDPAU/Mesa drivers,
-        # libaacs0, libbdplus0, librsvg2-common) when the job was cancelled.
-        # The tests need ffmpeg and ffprobe for file and frame work only, all
-        # of which comes from ffmpeg's own library dependency set, so the
-        # optional drivers are dropped and the fetches are time-boxed.
-        timeout-minutes: 12
-        run: |
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get update \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            --no-install-recommends \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
-            ffmpeg
-          ffmpeg -version | head -1
-          ffprobe -version | head -1
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy

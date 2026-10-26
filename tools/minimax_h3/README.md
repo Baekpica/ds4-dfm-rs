@@ -14,7 +14,6 @@ They are not linked into production hosts.
 | `ref_gate.sh` | Render supplied media cases with either engine and compare manifests |
 | `ppm_diff.c` | Pixel differences, PSNR and spatial attribution |
 | `standin-renderer.sh` | Model-free HTTP plumbing, not model qualification |
-| `p9_copy_bench.cu` | Isolated upload staging diagnostic |
 
 Build probes against a reference checkout supplied by the operator. For
 example, after building its `libh3.a`:

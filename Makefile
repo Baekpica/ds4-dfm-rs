@@ -530,11 +530,7 @@ tests/h3_reference_gate: $(DS4_RS_SOURCES) native/h3/h3_dit_gpu.o
 	$(DS4_RS_LIBS) -C link-arg=-lcublasLt
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/h3_reference_gate" $@
 
-# P12.5: the reference test suite, one target per file in `/data/h3.c/tests`.
-# These are on-demand evidence checks, not an automatic suite (operator,
-# 2026-10-24): no CI step, no hook and no push depends on them, so they may be
-# slow, artifact-backed and GPU-bound. The three below are model-free and
-# host-only; the artifact tests join this list as their units land.
+# Portable reference tests: host-only, without model weights.
 H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable
 H3_REFERENCE_SUITE := $(addprefix tests/h3-,$(H3_REFERENCE_TESTS))
 
@@ -548,10 +544,7 @@ $(H3_REFERENCE_SUITE): tests/h3-%: $(DS4_RS_SOURCES)
 	$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/$*" $@
 
-# The operator's single command. Every test is standalone: an artifact test
-# that cannot find its model root prints the artifact it needs and exits 3, so
-# one run says which evidence is present and which is missing. A skip keeps the
-# suite green, as the reference's own `make test` does (`Makefile:239-241`).
+# Report every result; exit 3 identifies missing optional test artifacts.
 tests/h3-suite: $(H3_REFERENCE_SUITE)
 	@status=0; \
 	for test in $(H3_REFERENCE_SUITE); do \

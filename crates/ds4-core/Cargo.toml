@@ -9,13 +9,8 @@ description = "Safe host wrappers around ds4-sys plus GGUF shape catalog"
 [lib]
 path = "src/lib.rs"
 
-# The h3 gates are on-demand device checks: each one calls `h3t_*`/`h3d_*`
-# entry points that live in `native/h3/*.o`, which only the `tests/h3-*` make
-# targets link (Makefile:446-475). A plain `cargo test`, `cargo check
-# --all-targets` or `cargo clippy --all-targets` builds every example, so
-# without the gate these five fail at link time on a model-free runner
-# (PR 111, Host parity run 40127087166). The feature is additive and empty:
-# it exists only to keep those targets out of the default build.
+# H3 device examples need the native objects linked by their Makefile targets.
+# Keep them out of the default host-only build.
 [features]
 h3-gates = []
 
@@ -76,12 +71,7 @@ required-features = ["h3-gates"]
 name = "h3_reference_gate"
 required-features = ["h3-gates"]
 
-# P12.5: the reference test suite, one target per file in
-# `/data/h3.c/tests`. Sources live under `tests/h3/` at the repository root and
-# carry the reference file's own name, so `make tests/h3-<name>` builds and runs
-# the port's counterpart. On-demand only (P12.5 rule 2): nothing in CI, no hook,
-# no push depends on them, and the empty `h3-gates` feature keeps them out of
-# every default build (`cargo test`, `cargo clippy --all-targets`).
+# Portable reference tests, built by `make tests/h3-suite`.
 [[example]]
 name = "test_host_portable"
 path = "../../tests/h3/test_host_portable.rs"
