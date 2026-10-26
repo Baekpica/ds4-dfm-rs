@@ -57,6 +57,7 @@ pub const RENDER_POLL: Duration = Duration::from_millis(20);
 
 const CLIENT_LIMIT: usize = 64;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+const ACCEPT_RETRY: Duration = Duration::from_millis(1);
 
 pub const CONTENT_TYPE_MP4: &str = "video/mp4";
 pub const CONTENT_TYPE_JSON: &str = "application/json";
@@ -815,9 +816,16 @@ pub fn serve_one(listener: &TcpListener, server: &VideoServer) -> io::Result<()>
 
 /// Bound connection threads separately from retained generation jobs.
 pub fn serve(listener: TcpListener, server: Arc<VideoServer>) -> io::Result<()> {
+    serve_incoming(listener.incoming(), server)
+}
+
+fn serve_incoming(
+    incoming: impl IntoIterator<Item = io::Result<TcpStream>>,
+    server: Arc<VideoServer>,
+) -> io::Result<()> {
     let clients = Arc::new(AtomicUsize::new(0));
-    for incoming in listener.incoming() {
-        match incoming {
+    for connection in incoming {
+        match connection {
             Ok(stream) => {
                 let _ = start_client(
                     stream,
@@ -828,7 +836,9 @@ pub fn serve(listener: TcpListener, server: Arc<VideoServer>) -> io::Result<()> 
                 );
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
+            // Match the production host: a peer reset must not kill renders,
+            // and resource errors need backoff rather than a busy loop.
+            Err(_) => thread::sleep(ACCEPT_RETRY),
         }
     }
     Ok(())
@@ -905,6 +915,32 @@ mod tests {
     use serde_json::Value;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Mutex;
+
+    #[test]
+    fn accept_errors_keep_serving() {
+        let (server, dir) = test_server(Arc::new(DisabledRenderer), 1);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        client
+            .write_all(b"GET /missing HTTP/1.1\r\nHost: local\r\n\r\n")
+            .unwrap();
+
+        let incoming = [
+            Err(io::Error::from(io::ErrorKind::Interrupted)),
+            Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
+            Err(io::Error::from(io::ErrorKind::Other)),
+            Ok(stream),
+        ];
+        serve_incoming(incoming, server).expect("accept errors must not stop the render host");
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn idle_connections_are_bounded() {
