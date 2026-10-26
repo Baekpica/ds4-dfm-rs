@@ -268,4 +268,37 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"aaaa");
         std::fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn audit_edit_approval_reread() {
+        struct SaveDuringAsk<'a> {
+            path: &'a std::path::Path,
+            text: &'a str,
+        }
+        impl Ask for SaveDuringAsk<'_> {
+            fn yes_no(&mut self, _: &str) -> bool {
+                std::fs::write(self.path, self.text).unwrap();
+                true
+            }
+        }
+        for (text, expected, success) in [
+            ("alpha\nnew tail\n", "beta\nnew tail\n", true),
+            ("gone\n", "gone\n", false),
+            ("alpha alpha\n", "alpha alpha\n", false),
+        ] {
+            let path = temp_path("concurrent-edit");
+            std::fs::write(&path, b"alpha\nkeep\n").unwrap();
+            let mut ask = SaveDuringAsk { path: &path, text };
+            let result = edit_result_with(
+                path.to_str(),
+                Some("alpha"),
+                Some("beta"),
+                &mut Approval::Interactive(&mut ask),
+            );
+            let saved = std::fs::read_to_string(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(saved, expected);
+            assert_eq!(result.starts_with(b"Edited"), success);
+        }
+    }
 }

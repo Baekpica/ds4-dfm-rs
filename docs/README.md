@@ -95,6 +95,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 The [performance guide](performance.md) explains the README examples.
 These reports preserve successful gates, rejected experiments and unresolved limits.
 
+- **Ponytail audit:** [October 26 repairs, cleanup and local-model 8K smoke](benchmarks/2026-10-26-ponytail-audit/README.md).
 - **Qwen:** [September 4 long prefill](qwen38-long-context-prefill-2026-09-04.md),
   [September 6](qwen38-prefill-2026-09-06.md),
   [September 7 prefill](qwen38-prefill-2026-09-07.md),

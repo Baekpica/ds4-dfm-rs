@@ -34,10 +34,17 @@
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/ds4
+ENV PATH="/root/.cargo/bin:${PATH}"
+COPY rust-toolchain.toml .
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh \
+    && sh /tmp/rustup-init.sh -y --default-toolchain none \
+    && rm /tmp/rustup-init.sh \
+    && rustup show active-toolchain
+
 COPY . .
 
 # cuda-spark: -gencode arch=compute_121a,code=sm_121a (+DS4_CUDA_HAVE_MXF4).

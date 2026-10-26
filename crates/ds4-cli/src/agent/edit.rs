@@ -1,8 +1,5 @@
 use super::approval::{Approval, DENIED_EDIT};
 use super::web_tools::{io_detail, read_bytes};
-use std::fs::File;
-use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
 
 mod obs;
 
@@ -38,13 +35,21 @@ pub(crate) fn edit_result_with(
         Ok(data) => data,
         Err(error) => return wrap_error(&error),
     };
+    if let Err(error) = find_old_span(&data, old.as_bytes()) {
+        return wrap_error(error.as_bytes());
+    }
+    if !approval.allow_edit(path) {
+        return DENIED_EDIT.to_vec();
+    }
+    // Approval can wait while an editor saves; apply only to the current bytes.
+    let data = match read_bytes(path) {
+        Ok(data) => data,
+        Err(error) => return wrap_error(&error),
+    };
     let (offset, remove_len, anchored) = match find_old_span(&data, old.as_bytes()) {
         Ok(found) => found,
         Err(error) => return wrap_error(error.as_bytes()),
     };
-    if !approval.allow_edit(path) {
-        return DENIED_EDIT.to_vec();
-    }
     apply_splice(path, &data, offset, remove_len, new.as_bytes(), anchored)
 }
 
@@ -160,12 +165,8 @@ fn line_for_offset(spans: &[LineSpan], offset: usize) -> i32 {
 }
 
 fn write_bytes(path: &str, data: &[u8]) -> Result<(), String> {
-    let os_path = std::ffi::OsStr::from_bytes(path.as_bytes());
-    let mut file =
-        File::create(os_path).map_err(|error| format!("open {path}: {}", io_detail(&error)))?;
-    file.write_all(data)
-        .and_then(|_| file.flush())
-        .map_err(|error| format!("write {path}: {}", io_detail(&error)))
+    super::file_write::replace(path.as_ref(), data)
+        .map_err(|(stage, error)| format!("{stage} {path}: {}", io_detail(&error)))
 }
 
 fn apply_splice(

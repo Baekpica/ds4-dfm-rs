@@ -1,13 +1,13 @@
 mod obs;
 mod spawn;
+mod watch;
 
 use super::search::scan::parse_int_default as parse_int;
 use obs::observation;
 use spawn::spawn_job;
 use std::ffi::CString;
-use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::process::Child;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 pub(crate) const BASH: &str = "bash";
@@ -20,7 +20,6 @@ const DEFAULT_REFRESH: i32 = 60;
 const MAX_REFRESH: i32 = 3600;
 
 unsafe extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
     fn strtod(nptr: *const std::ffi::c_char, endptr: *mut *mut std::ffi::c_char) -> f64;
 }
 
@@ -45,7 +44,8 @@ pub(crate) struct BashJob {
     pub(super) id: i32,
     pub(super) pid: i32,
     pub(super) path: PathBuf,
-    pub(super) child: Option<Child>,
+    control: Sender<i32>,
+    done: Receiver<watch::JobExit>,
     pub(super) start: Instant,
     pub(super) timeout_sec: f64,
     pub(super) observed_once: bool,
@@ -54,60 +54,37 @@ pub(crate) struct BashJob {
     pub(super) timed_out: bool,
 }
 
-impl Drop for BashTable {
+impl Drop for BashJob {
     fn drop(&mut self) {
-        for job in &mut self.jobs {
-            job.kill_group(SIGKILL);
-            let _ = job.reap(true);
-        }
+        self.stop(SIGKILL);
     }
 }
 
 impl BashJob {
-    fn kill_group(&self, sig: i32) {
-        if self.pid > 0 {
-            // SAFETY: [Category 8 — FFI] `pid` is a process group we created with
-            // `process_group(0)`. Negative pid signals the group; the second call
-            // covers the leader. libc does not retain the pid.
-            unsafe {
-                kill(-self.pid, sig);
-                kill(self.pid, sig);
-            }
+    fn stop(&mut self, signal: i32) {
+        if !self.running {
+            return;
         }
-    }
-
-    fn reap(&mut self, block: bool) -> bool {
-        let Some(child) = self.child.as_mut() else {
-            return !self.running;
-        };
-        let status = if block {
-            child.wait().ok()
-        } else {
-            child.try_wait().ok().flatten()
-        };
-        if let Some(status) = status {
-            self.exit_status = status
-                .code()
-                .unwrap_or_else(|| status.signal().map(|sig| 128 + sig).unwrap_or(-1));
-            self.running = false;
-            self.child = None;
-            true
-        } else {
-            false
+        let _ = self.control.send(signal);
+        if let Ok(done) = self.done.recv() {
+            self.exit_status = done.status;
+            self.timed_out = done.timed_out;
         }
+        self.running = false;
     }
 
     fn poll(&mut self) {
         if !self.running {
             return;
         }
-        if self.reap(false) {
-            return;
-        }
-        if self.start.elapsed().as_secs_f64() >= self.timeout_sec {
-            self.timed_out = true;
-            self.kill_group(SIGKILL);
-            self.reap(true);
+        match self.done.try_recv() {
+            Ok(done) => {
+                self.exit_status = done.status;
+                self.timed_out = done.timed_out;
+                self.running = false;
+            }
+            Err(TryRecvError::Disconnected) => self.running = false,
+            Err(TryRecvError::Empty) => {}
         }
     }
 }
@@ -183,7 +160,7 @@ fn finish_job(
     stop: bool,
 ) -> Vec<u8> {
     if stop {
-        stop_job(&mut table.jobs[index]);
+        table.jobs[index].stop(SIGTERM);
     }
     if wait || stop {
         refresh_for(&mut table.jobs[index], refresh);
@@ -197,25 +174,6 @@ fn finish_job(
     out
 }
 
-fn stop_job(job: &mut BashJob) {
-    if !job.running {
-        return;
-    }
-    job.kill_group(SIGTERM);
-    let start = Instant::now();
-    while job.running && start.elapsed().as_secs_f64() < 1.0 {
-        job.poll();
-        if !job.running {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    if job.running {
-        job.kill_group(SIGKILL);
-        job.reap(true);
-    }
-}
-
 fn refresh_for(job: &mut BashJob, refresh: i32) {
     let start = Instant::now();
     let limit = f64::from(refresh);
@@ -227,4 +185,118 @@ fn refresh_for(job: &mut BashJob, refresh: i32) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     job.poll();
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn assert_descendant_stopped(pid: i32) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            if state.is_empty() || state.split_whitespace().nth(2) == Some("Z") {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "descendant still running: {state}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn audit_bash_timeout_without_observation() {
+        let mut table = BashTable::default();
+        spawn_job(&mut table, "sleep 30 & echo $!; wait", 1).unwrap();
+        let pid = table.jobs[0].pid;
+        let path = table.jobs[0].path.clone();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while std::path::Path::new(&format!("/proc/{pid}")).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "deadline must reap without a status query"
+        );
+        let child: i32 = std::fs::read_to_string(&path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_descendant_stopped(child);
+        table.jobs[0].poll();
+        assert!(table.jobs[0].timed_out);
+        assert!(!table.jobs[0].running);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn bash_normal_stop_and_drop_reap_the_owned_group() {
+        // Count only this test's threads, even when the parent suite runs in parallel.
+        if std::env::var_os("DS4_AUDIT_BASH_LIFECYCLE_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "agent::bash::tests::bash_normal_stop_and_drop_reap_the_owned_group",
+                    "--test-threads=1",
+                ])
+                .env("DS4_AUDIT_BASH_LIFECYCLE_CHILD", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let threads = || std::fs::read_dir("/proc/self/task").unwrap().count();
+        let baseline = threads();
+        for action in ["exit", "stop", "drop"] {
+            let mut table = BashTable::default();
+            let command = if action == "exit" {
+                "sleep 30 & echo $!; exit 7"
+            } else {
+                "trap '' TERM; sleep 30 & echo $!; wait"
+            };
+            spawn_job(&mut table, command, 30).unwrap();
+            let pid = table.jobs[0].pid;
+            let path = table.jobs[0].path.clone();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while std::fs::metadata(&path).unwrap().len() == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if action == "stop" {
+                table.jobs[0].stop(SIGTERM);
+            }
+            if action == "drop" {
+                table.jobs.clear();
+            }
+            while std::path::Path::new(&format!("/proc/{pid}")).exists()
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                "{action}"
+            );
+            if let Some(job) = table.jobs.first_mut() {
+                job.poll();
+                assert!(!job.running && !job.timed_out);
+                assert_eq!(job.exit_status, if action == "exit" { 7 } else { 137 });
+            }
+            let child: i32 = std::fs::read_to_string(&path)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert_descendant_stopped(child);
+            drop(table);
+            while threads() > baseline && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(threads(), baseline, "watcher retired on {action}");
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 }

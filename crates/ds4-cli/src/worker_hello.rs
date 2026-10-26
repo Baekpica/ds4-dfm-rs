@@ -1,39 +1,6 @@
-//! Worker HELLO record from live slice metadata.
+//! Worker HELLO helpers shared with the server.
 
-use crate::session_exec::SliceMeta;
-use ds4_dist::{Hello, MAX_MODEL_NAME};
-
-pub const UNKNOWN_MODEL_NAME: &str = "unknown";
-
-pub fn worker_model_name(name: &str) -> &str {
-    if name.is_empty() {
-        UNKNOWN_MODEL_NAME
-    } else {
-        name
-    }
-}
-
-pub fn worker_hello(
-    meta: &SliceMeta,
-    quant_bits: u32,
-    listen_port: u32,
-    model_name: &str,
-) -> Hello {
-    let name = worker_model_name(model_name);
-    let name_len = name.len().min(MAX_MODEL_NAME as usize) as u32;
-    Hello {
-        model_id: meta.model_id,
-        quant_bits,
-        layer_start: meta.layer_start,
-        layer_end: meta.layer_end,
-        has_output: u32::from(meta.has_output),
-        has_hidden: 1,
-        ctx_size: meta.ctx_size,
-        n_layers: meta.n_layers,
-        listen_port,
-        model_name_len: name_len,
-    }
-}
+pub use ds4_dist::{worker_hello, worker_model_name, UNKNOWN_MODEL_NAME};
 
 #[cfg(test)]
 mod tests {

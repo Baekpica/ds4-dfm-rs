@@ -90,14 +90,6 @@ pub(crate) fn title_from_text(text: &[u8], max_bytes: usize) -> String {
     title_from_span(&body[..end], max_bytes, "(empty user prompt)")
 }
 
-pub(crate) fn clip_title(title: &str, max_bytes: usize) -> String {
-    if max_bytes == 0 || title.len() <= max_bytes {
-        return title.to_string();
-    }
-    let keep = max_bytes.max(4) - 3;
-    format!("{}...", &title[..keep.min(title.len())])
-}
-
 fn title_from_span(span: &[u8], max_bytes: usize, empty: &str) -> String {
     let limited = max_bytes != 0;
     let max_bytes = if limited { max_bytes.max(4) } else { 0 };

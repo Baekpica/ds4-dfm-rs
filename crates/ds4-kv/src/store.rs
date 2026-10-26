@@ -89,7 +89,7 @@ pub struct PayloadTemp {
     path: PathBuf,
 }
 
-/// Holds the validated inode while a native loader reopens its descriptor path.
+/// Holds an inode while a native loader reopens its descriptor path.
 /// An atomic replacement at the catalog path cannot swap the loaded artifact.
 #[derive(Debug)]
 pub struct PayloadGuard {
@@ -98,12 +98,52 @@ pub struct PayloadGuard {
 }
 
 impl PayloadGuard {
+    /// Hold an inode while metadata and native payload are read through path().
+    pub fn open(path: &Path) -> io::Result<Self> {
+        Self::from_file(fs::File::open(path)?)
+    }
+
+    fn from_file(file: fs::File) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let held_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        #[cfg(all(unix, not(target_os = "linux")))]
+        let held_path = PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()));
+        #[cfg(not(unix))]
+        let held_path = {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "held KVC payloads need Unix descriptors",
+            ));
+        };
+        Ok(PayloadGuard {
+            _file: file,
+            path: held_path,
+        })
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
 }
 
 impl PayloadTemp {
+    /// Reserve a private temporary payload; Drop removes it.
+    pub fn create(dir: &Path) -> io::Result<PayloadTemp> {
+        loop {
+            let seq = PAYLOAD_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!(".payload.{}.{}", std::process::id(), seq));
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            match options.open(&path) {
+                Ok(_) => return Ok(PayloadTemp { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -201,21 +241,7 @@ impl Store {
     }
 
     pub fn payload_temp(&self) -> io::Result<PayloadTemp> {
-        loop {
-            let seq = PAYLOAD_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-            let path = self
-                .dir
-                .join(format!(".payload.{}.{}", std::process::id(), seq));
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            options.mode(0o600);
-            match options.open(&path) {
-                Ok(_) => return Ok(PayloadTemp { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
+        PayloadTemp::create(&self.dir)
     }
 
     pub fn refresh(&mut self) {
@@ -334,8 +360,38 @@ impl Store {
             self.payload_file(&path, &visible, FileAccess::ReadOnly)?;
         } else {
             let trailer = self.scoped_trailer(&mut header, trailer);
-            let mut file = self.payload_file(&path, &visible, FileAccess::ReadWrite)?;
-            rewrite_compatible_trailer(&mut file, &existing, header.ext_flags, &trailer)?;
+            let payload_bytes = existing.header.payload_bytes;
+            if !file_size_fits(
+                self.budget_bytes,
+                text.len() as u64,
+                payload_bytes,
+                trailer.len() as u64,
+            ) {
+                return Err(io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "KVC file exceeds budget",
+                ));
+            }
+            let final_size =
+                file_size_bytes(text.len() as u64, payload_bytes, trailer.len() as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "KVC file size overflows")
+                    })?;
+            let mut file = self.payload_file(&path, &visible, FileAccess::ReadOnly)?;
+            let mut updated = existing.header;
+            updated.ext_flags |= header.ext_flags & EXT_TOOL_MAP;
+            updated.last_used = now_secs();
+            // Keep the validated inode intact until payload, trailer and footer are staged.
+            let staged = stage_stream(&path, &updated, text, &mut file, payload_bytes, &trailer)
+                .map_err(format_io_error)?;
+            let incoming = EvictionContext {
+                text,
+                model_id: updated.model_id,
+                quant_bits: updated.quant_bits,
+                ctx_size: updated.ctx_size,
+                reject_different_quant: self.reject_different_quant,
+            };
+            self.commit_staged(&path, staged, final_size, &incoming)?;
         }
         Ok(Some(path))
     }
@@ -398,13 +454,38 @@ impl Store {
         };
         let staged = stage_stream(&path, &header, text, &mut payload, payload_bytes, &trailer)
             .map_err(format_io_error)?;
-        self.evict_excluding(extra, Some(&incoming), Some(&path));
-        if let Err(error) = fs::rename(&staged, &path) {
+        self.commit_staged(&path, staged, extra, &incoming)?;
+        Ok(path)
+    }
+
+    fn commit_staged(
+        &mut self,
+        path: &Path,
+        staged: PathBuf,
+        final_size: u64,
+        incoming: &EvictionContext<'_>,
+    ) -> io::Result<()> {
+        // Excluding the old target credits its bytes without risking its removal.
+        self.evict_excluding(final_size, Some(incoming), Some(path));
+        self.refresh();
+        let total = self
+            .entries
+            .iter()
+            .filter(|e| e.path != path)
+            .try_fold(final_size, |sum, e| sum.checked_add(e.file_size));
+        let result = if self.budget_bytes != 0 && total.is_none_or(|n| n > self.budget_bytes) {
+            Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "KVC budget could not be reclaimed",
+            ))
+        } else {
+            fs::rename(&staged, path)
+        };
+        if result.is_err() {
             let _ = fs::remove_file(staged);
-            return Err(error);
         }
         self.refresh();
-        Ok(path)
+        result
     }
 
     pub fn read(&self, path: &Path) -> io::Result<Record> {
@@ -423,21 +504,7 @@ impl Store {
 
     pub fn open_payload(&self, path: &Path, expected: &Envelope) -> io::Result<PayloadGuard> {
         let file = self.payload_file(path, expected, FileAccess::ReadOnly)?;
-        #[cfg(target_os = "linux")]
-        let held_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
-        #[cfg(all(unix, not(target_os = "linux")))]
-        let held_path = PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()));
-        #[cfg(not(unix))]
-        let held_path = {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "held KVC payloads need Unix descriptors",
-            ));
-        };
-        Ok(PayloadGuard {
-            _file: file,
-            path: held_path,
-        })
+        PayloadGuard::from_file(file)
     }
 
     fn payload_file(
@@ -1255,43 +1322,6 @@ impl Store {
     }
 }
 
-fn rewrite_compatible_trailer(
-    file: &mut fs::File,
-    existing: &Envelope,
-    incoming_ext_flags: u8,
-    trailer: &[u8],
-) -> io::Result<()> {
-    // The C fast path is O(trailer); copying a multi-GiB payload here would
-    // turn a compatible save into a full checkpoint rewrite.
-    let payload_end = existing
-        .payload_offset
-        .checked_add(existing.header.payload_bytes)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "KVC payload end overflows"))?;
-    file.seek(SeekFrom::Start(payload_end))?;
-    file.set_len(payload_end)?;
-    file.write_all(trailer)?;
-    file.flush()?;
-
-    let mut header = existing.header.clone();
-    header.ext_flags |= incoming_ext_flags & EXT_TOOL_MAP;
-    header.last_used = now_secs();
-    let raw = fill_header(
-        header.model_id,
-        header.quant_bits,
-        header.reason,
-        header.ext_flags,
-        header.tokens,
-        header.hits,
-        header.ctx_size,
-        header.created_at,
-        header.last_used,
-        header.payload_bytes,
-    );
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(&raw)?;
-    file.flush()
-}
-
 /// Fold in a record the search would not take. A mismatch outranks one
 /// that is only too shallow, the way the lanes report the two, and both
 /// outrank having seen nothing.
@@ -1347,6 +1377,114 @@ mod tests {
             payload: vec![0xAA],
             trailer: Vec::new(),
         }
+    }
+
+    #[test]
+    fn audit_trailer_budget() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-budget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        store.bind_identity([9; 32]);
+        let row = rec(b"same prompt", 512);
+        let path = store.write(row.clone()).unwrap();
+        let sibling = store.write(rec(b"sibling", 512)).unwrap();
+        let before = fs::read(&path).unwrap();
+        store.budget_bytes = before.len() as u64;
+        let result = store.reuse_compatible(row.header.clone(), &row.text, &[7; 128]);
+        assert!(result.is_err(), "trailer growth must obey the budget");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(sibling.exists());
+        assert!(store.read(&path).is_ok());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn audit_trailer_growth_credit() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-growth-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        let row = rec(b"same prompt", 512);
+        let path = store.write(row.clone()).unwrap();
+        let sibling = store.write(rec(b"sibling", 512)).unwrap();
+        let final_size = file_size_bytes(row.text.len() as u64, 1, 128).unwrap();
+        store.budget_bytes = final_size + fs::metadata(&sibling).unwrap().len();
+        store
+            .reuse_compatible(row.header.clone(), &row.text, &[7; 128])
+            .unwrap();
+        assert!(
+            sibling.exists(),
+            "charge growth, not two copies of the target"
+        );
+        store.budget_bytes = crate::policy::budget_required(final_size).unwrap();
+        store
+            .reuse_compatible(row.header, &row.text, &[8; 128])
+            .unwrap();
+        assert!(!sibling.exists(), "make space before committing a trailer");
+        store.refresh();
+        assert_eq!(store.entries().len(), 1);
+        assert_eq!(store.read(&path).unwrap().trailer, [8; 128]);
+        assert!(fs::metadata(&path).unwrap().len() <= store.budget_bytes);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn audit_trailer_write_failure() {
+        const CHILD: &str = "DS4_TEST_KV_LIMIT";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "store::tests::audit_trailer_write_failure",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ds4-kv-write-failure-{}", std::process::id()));
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        store.bind_identity([9; 32]);
+        let mut row = rec(b"same prompt", 512);
+        row.header.ext_flags = EXT_TOOL_MAP;
+        row.trailer = crate::encode_ktm(&[crate::ExtensionRecord {
+            id: b"call-1".to_vec(),
+            body: b"old call".to_vec(),
+        }]);
+        let path = store.write(row.clone()).unwrap();
+        let before = fs::read(&path).unwrap();
+        let mut old = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // This child alone receives a partial write followed by EFBIG.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_FSIZE, &mut old), 0);
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let limit = libc::rlimit {
+                rlim_cur: 52 + row.text.len() as u64 + 1 + 2,
+                rlim_max: old.rlim_max,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limit), 0);
+        }
+        let result = store.reuse_compatible(row.header, &row.text, b"new tool map");
+        unsafe {
+            assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &old), 0);
+        }
+        let after = fs::read(&path).unwrap();
+        let readable = store.read(&path).is_ok();
+        let entries = fs::read_dir(&dir).unwrap().count();
+        fs::remove_dir_all(dir).unwrap();
+        assert!(result.is_err());
+        assert_eq!(after, before);
+        assert!(
+            readable,
+            "identity and tool mappings must survive the failure"
+        );
+        assert_eq!(entries, 1);
     }
 
     #[test]
@@ -2136,7 +2274,8 @@ mod tests {
         incoming.ctx_size = 4096;
         incoming.created_at = 99;
         incoming.last_used = 99;
-        store.budget_bytes = 1;
+        store.budget_bytes =
+            fs::metadata(&path).unwrap().len() + fs::metadata(&sibling).unwrap().len() + 1;
         let started = now_secs();
 
         let got = store
@@ -2188,7 +2327,8 @@ mod tests {
         incoming.ctx_size = 4096;
         incoming.created_at = 99;
         incoming.last_used = 99;
-        store.budget_bytes = 1;
+        store.budget_bytes =
+            fs::metadata(&path).unwrap().len() + fs::metadata(&sibling).unwrap().len() + 1;
         let started = now_secs();
 
         store

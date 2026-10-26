@@ -20,8 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
-      - name: Install media tools
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install host test dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -44,8 +44,12 @@ jobs:
             test-ds41-kv-import test-ds41-moe-fork test-ds41-gr-forward \
             test-ds41-boundary test-ds41-history test-ds41-trace \
             test-ds41-kv-rows test-ds41-rollback test-ds41-vision-gate
-      - name: IQuest evidence comparator
-        run: cargo test -p ds4-cli --example iquest_perf_verify --features native --locked
+      - name: IQuest model-free checks
+        run: |
+          cargo test -p ds4-cli --example iquest_perf_verify --features native --locked
+          python3 tests/test_iquest_weight_policy.py
+          python3 tests/test_iquest_prefix_compare.py
+          python3 tests/test_iquest_http_live.py
       - name: PLE storage formats
         run: make test-ple-formats
       - name: GLM bank fallback

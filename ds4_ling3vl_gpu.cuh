@@ -227,7 +227,7 @@ extern "C" int ds4_gpu_ling3vl_expand_kv(
 }
 
 /* Range attention over one expanded segment.  BF16 K/V take the Ling
- * kernel (64-key tiles; DS4_LING3VL_MLA_TK=32 restores the Motif tile);
+ * kernel (64-key tiles);
  * FP32 K/V take Motif's range kernel unchanged. */
 extern "C" int ds4_gpu_ling3vl_expanded_attn(
         ds4_gpu_tensor *out, ds4_gpu_tensor *lse, const ds4_gpu_tensor *q,
@@ -240,11 +240,6 @@ extern "C" int ds4_gpu_ling3vl_expanded_attn(
             out, lse, q, k_full, value, n_query, query_pos0, n_kv, kv_pos0,
             heads, heads, key_dim, value_dim, scale, 0u);
     }
-    static int tk = -1;
-    if (tk < 0) {
-        const char *env = getenv("DS4_LING3VL_MLA_TK");
-        tk = env && env[0] == '3' ? 32 : 64;
-    }
     const uint64_t elem = sizeof(__nv_bfloat16);
     if (!out || !lse || !q || !k_full || !value || !n_query || !n_kv ||
         !heads || kv_pos0 > query_pos0 ||
@@ -256,7 +251,7 @@ extern "C" int ds4_gpu_ling3vl_expanded_attn(
     const int rc = ds4_mmq_ling3vl_prefill_attn_hmma(
         (float *)out->ptr, (float *)lse->ptr, (const float *)q->ptr,
         k_full->ptr, value->ptr, (int)n_query, (int)query_pos0, (int)n_kv,
-        (int)kv_pos0, (int)heads, (int)key_dim, (int)value_dim, scale, tk,
+        (int)kv_pos0, (int)heads, (int)key_dim, (int)value_dim, scale, 64,
         ds4_current_stream());
     /* Launcher already consumed CUDA status: -1 rejected shape, -2 launch
      * fail. Neither leaves an error for cudaGetLastError() to re-read. */
@@ -633,166 +628,11 @@ extern "C" int ds4_gpu_ling3vl_matmul_f32(
 }
 
 enum {
-    L3V_MLA_H = 8u,
-    L3V_MLA_KV = 16u,
     L3V_MLA_LAT = 512u,
     L3V_MLA_ROPE = 64u,
     L3V_MLA_HMMA_MIN_ROWS = 8u,
     L3V_MLA_HMMA_HEADS = 32u
 };
-
-__device__ __forceinline__ static void ling3vl_mla_issue_kv(
-        __nv_bfloat16 lat[L3V_MLA_KV][L3V_MLA_LAT],
-        __nv_bfloat16 kpe[L3V_MLA_KV][L3V_MLA_ROPE],
-        const __nv_bfloat16 *latent_cache, const __nv_bfloat16 *k_pe_cache,
-        uint32_t tile, uint32_t nrows, uint32_t tid, uint32_t cache_cap) {
-    for (uint32_t i = tid; i < L3V_MLA_KV * 64u; i += 256u) {
-        const uint32_t row = i / 64u;
-        const uint32_t c8 = i % 64u;
-        const uint32_t slot = tile + row;
-        const bool pred = row < nrows && slot < cache_cap;
-        const __nv_bfloat16 *src =
-            latent_cache + (uint64_t)slot * L3V_MLA_LAT + c8 * 8u;
-        tt_cp_async_16B(&lat[row][c8 * 8u], src, pred);
-    }
-    if (tid < 128u) {
-        const uint32_t row = tid / 8u;
-        const uint32_t c8 = tid % 8u;
-        const uint32_t slot = tile + row;
-        const bool pred = row < nrows && slot < cache_cap;
-        const __nv_bfloat16 *src =
-            k_pe_cache + (uint64_t)slot * L3V_MLA_ROPE + c8 * 8u;
-        tt_cp_async_16B(&kpe[row][c8 * 8u], src, pred);
-    }
-    tt_cp_async_commit();
-}
-
-/* One head, eight queries.  They share each 16-row KV tile so historical
- * keys move through shared memory once.  Keys at or past a query's causal
- * end are skipped; softmax order for kept keys matches Motif's warp kernel. */
-__global__ static void ling3vl_mla_prefill_kvtile_kernel(
-        float *out, const float *q, const float *q_absorbed,
-        const __nv_bfloat16 *latent_cache, const __nv_bfloat16 *k_pe_cache,
-        uint32_t rows, uint32_t pos0, uint32_t cache_cap, uint32_t q_heads,
-        uint32_t qk_nope, float scale) {
-    __shared__ __nv_bfloat16 lat[2][L3V_MLA_KV][L3V_MLA_LAT];
-    __shared__ __nv_bfloat16 kpe[2][L3V_MLA_KV][L3V_MLA_ROPE];
-
-    const uint32_t tid = threadIdx.x;
-    const uint32_t warp = tid >> 5u;
-    const uint32_t lane = tid & 31u;
-    const uint32_t head = blockIdx.x;
-    const uint32_t q0 = blockIdx.y * L3V_MLA_H;
-    const uint32_t token = q0 + warp;
-    const bool live = head < q_heads && token < rows;
-    const uint32_t end = live ? pos0 + token + 1u : 0u;
-    const uint32_t group_hi = pos0 + min(q0 + L3V_MLA_H, rows);
-    const uint32_t key_dim = qk_nope + L3V_MLA_ROPE;
-
-    float4 low0 = make_float4(0.f, 0.f, 0.f, 0.f);
-    float4 low1 = low0, low2 = low0, low3 = low0;
-    float qrope[4] = {0.f, 0.f, 0.f, 0.f};
-    if (live) {
-        const float4 *low4 = (const float4 *)(q_absorbed +
-            ((uint64_t)token * q_heads + head) * L3V_MLA_LAT);
-        low0 = low4[lane];
-        low1 = low4[lane + 32u];
-        low2 = low4[lane + 64u];
-        low3 = low4[lane + 96u];
-        const float *qh =
-            q + ((uint64_t)token * q_heads + head) * key_dim;
-        if (lane < 16u) {
-            qrope[0] = qh[qk_nope + lane * 4u + 0u];
-            qrope[1] = qh[qk_nope + lane * 4u + 1u];
-            qrope[2] = qh[qk_nope + lane * 4u + 2u];
-            qrope[3] = qh[qk_nope + lane * 4u + 3u];
-        }
-    }
-
-    float M = -FLT_MAX / 2.0f;
-    float S = 0.0f;
-    float4 o0 = make_float4(0.f, 0.f, 0.f, 0.f);
-    float4 o1 = o0, o2 = o0, o3 = o0;
-    const uint32_t i0 = lane * 4u;
-    const uint32_t i1 = (lane + 32u) * 4u;
-    const uint32_t i2 = (lane + 64u) * 4u;
-    const uint32_t i3 = (lane + 96u) * 4u;
-
-    uint32_t buf = 0u;
-    if (group_hi > 0u) {
-        ling3vl_mla_issue_kv(lat[0], kpe[0], latent_cache, k_pe_cache, 0u,
-                             min((uint32_t)L3V_MLA_KV, group_hi), tid, cache_cap);
-        tt_cp_async_wait_group<0>();
-    }
-    __syncthreads();
-
-    for (uint32_t tile = 0u; tile < group_hi; tile += L3V_MLA_KV) {
-        const uint32_t nrows = min((uint32_t)L3V_MLA_KV, group_hi - tile);
-        const uint32_t next = tile + L3V_MLA_KV;
-        const uint32_t nrows_n =
-            next < group_hi ? min((uint32_t)L3V_MLA_KV, group_hi - next) : 0u;
-        const uint32_t nbuf = buf ^ 1u;
-        if (nrows_n) {
-            ling3vl_mla_issue_kv(lat[nbuf], kpe[nbuf], latent_cache, k_pe_cache,
-                                 next, nrows_n, tid, cache_cap);
-        }
-
-        if (live) {
-            for (uint32_t row = 0u; row < nrows; row++) {
-                if (tile + row >= end) { break; }
-                const float4 k0 = motif3_load_bf16x4(&lat[buf][row][i0]);
-                const float4 k1 = motif3_load_bf16x4(&lat[buf][row][i1]);
-                const float4 k2 = motif3_load_bf16x4(&lat[buf][row][i2]);
-                const float4 k3 = motif3_load_bf16x4(&lat[buf][row][i3]);
-                float partial =
-                    low0.x * k0.x + low0.y * k0.y + low0.z * k0.z + low0.w * k0.w +
-                    low1.x * k1.x + low1.y * k1.y + low1.z * k1.z + low1.w * k1.w +
-                    low2.x * k2.x + low2.y * k2.y + low2.z * k2.z + low2.w * k2.w +
-                    low3.x * k3.x + low3.y * k3.y + low3.z * k3.z + low3.w * k3.w;
-                if (lane < 16u) {
-                    const float4 kp = motif3_load_bf16x4(&kpe[buf][row][lane * 4u]);
-                    partial += qrope[0] * kp.x + qrope[1] * kp.y +
-                               qrope[2] * kp.z + qrope[3] * kp.w;
-                }
-                for (uint32_t off = 16u; off > 0u; off >>= 1u) {
-                    partial += __shfl_xor_sync(0xffffffffu, partial, off);
-                }
-                const float score = partial * scale;
-                const float new_m = fmaxf(M, score);
-                const float old_scale = expf(M - new_m);
-                const float row_scale = expf(score - new_m);
-#define L3V_ON4(o, k) do {                                                     \
-                    (o).x = (o).x * old_scale + (k).x * row_scale;             \
-                    (o).y = (o).y * old_scale + (k).y * row_scale;             \
-                    (o).z = (o).z * old_scale + (k).z * row_scale;             \
-                    (o).w = (o).w * old_scale + (k).w * row_scale;             \
-                } while (0)
-                L3V_ON4(o0, k0); L3V_ON4(o1, k1);
-                L3V_ON4(o2, k2); L3V_ON4(o3, k3);
-#undef L3V_ON4
-                S = S * old_scale + row_scale;
-                M = new_m;
-            }
-        }
-        if (nrows_n) {
-            tt_cp_async_wait_group<0>();
-        }
-        __syncthreads();
-        buf = nbuf;
-    }
-
-    if (!live) { return; }
-    const float inv_s = S > 0.0f ? 1.0f / S : 0.0f;
-    float4 *dst = (float4 *)(out +
-        ((uint64_t)token * q_heads + head) * L3V_MLA_LAT);
-#define L3V_ST4(idx, o) do {                                                   \
-        (o).x *= inv_s; (o).y *= inv_s; (o).z *= inv_s; (o).w *= inv_s;        \
-        dst[(idx)] = (o);                                                      \
-    } while (0)
-    L3V_ST4(lane, o0); L3V_ST4(lane + 32u, o1);
-    L3V_ST4(lane + 64u, o2); L3V_ST4(lane + 96u, o3);
-#undef L3V_ST4
-}
 
 static int ling3vl_mla_args_ok(
         const ds4_gpu_tensor *latent_out, const ds4_gpu_tensor *q_full,
@@ -830,28 +670,6 @@ extern "C" int ds4_gpu_ling3vl_latent_attn(
         uint32_t rows, uint32_t pos0, uint32_t cache_cap,
         uint32_t window, uint32_t q_heads, uint32_t kv_latent_dim,
         uint32_t qk_nope, uint32_t qk_rope, float scale) {
-    const char *tile_env = getenv("DS4_LING3VL_MLA_TILE");
-    const bool want_tile = tile_env && tile_env[0] == '1';
-    const bool tile = want_tile && rows >= 16u && window == 0u &&
-        kv_latent_dim == L3V_MLA_LAT && qk_rope == L3V_MLA_ROPE &&
-        (q_heads % L3V_MLA_H) == 0u && qk_nope == 128u;
-    if (tile) {
-        if (!ling3vl_mla_args_ok(
-                latent_out, q_full, q_absorbed, kv_latent_cache, k_pe_cache,
-                rows, pos0, cache_cap, q_heads, kv_latent_dim, qk_nope,
-                qk_rope)) {
-            return 0;
-        }
-        dim3 grid(q_heads, (rows + L3V_MLA_H - 1u) / L3V_MLA_H, 1);
-        ling3vl_mla_prefill_kvtile_kernel<<<grid, 256, 0, ds4_current_stream()>>>(
-            (float *)latent_out->ptr, (const float *)q_full->ptr,
-            (const float *)q_absorbed->ptr,
-            (const __nv_bfloat16 *)kv_latent_cache->ptr,
-            (const __nv_bfloat16 *)k_pe_cache->ptr,
-            rows, pos0, cache_cap, q_heads, qk_nope, scale);
-        return cuda_ok(cudaGetLastError(), "Ling-3.0 MLA prefill KV tile");
-    }
-
     /* Prefill: same absorbed-MLA layout as dots3 (shared BF16 latent + k_pe,
      * per-head Q).  Tensor-core FATTN owns 32 heads against one token's keys.
      * Decode and the kill switch stay on Motif (HG split at long context). */

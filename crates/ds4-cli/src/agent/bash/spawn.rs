@@ -6,6 +6,8 @@ use std::os::fd::FromRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Instant;
 
 unsafe extern "C" {
@@ -31,16 +33,45 @@ pub(super) fn spawn_job(
         )
     })?;
     drop(file);
-    let child = Command::new("/bin/sh")
+    let mut command_process = Command::new("/bin/sh");
+    command_process
         .arg("-c")
         .arg(command)
         .stdin(Stdio::inherit())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
-        .process_group(0)
-        .spawn()
-        .map_err(|error| format!("failed to fork: {}", io_detail(&error)))?;
-    let pid = child.id() as i32;
+        .process_group(0);
+    let (ready_tx, ready) = mpsc::sync_channel(1);
+    let (control, control_rx) = mpsc::channel();
+    let (done_tx, done) = mpsc::channel();
+    let watcher = thread::Builder::new()
+        .name("ds4-bash-watch".into())
+        .spawn(move || match command_process.spawn() {
+            Ok(child) => {
+                let _ = ready_tx.send(Ok(child.id() as i32));
+                let _ = done_tx.send(super::watch::run(child, timeout, control_rx));
+            }
+            Err(error) => {
+                let _ = ready_tx.send(Err(format!("failed to fork: {}", io_detail(&error))));
+            }
+        })
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&path);
+            format!("failed to start job watcher: {}", io_detail(&error))
+        })?;
+    let pid = match ready
+        .recv()
+        .unwrap_or_else(|_| Err("job watcher stopped during startup".into()))
+    {
+        Ok(pid) => pid,
+        Err(error) => {
+            let _ = watcher.join();
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+    };
+    // Retire the thread's stack even when no later tool call observes this job.
+    drop(watcher);
     if table.next_id <= 0 {
         table.next_id = 1;
     }
@@ -52,7 +83,8 @@ pub(super) fn spawn_job(
             id,
             pid,
             path,
-            child: Some(child),
+            control,
+            done,
             start: Instant::now(),
             timeout_sec: f64::from(timeout),
             observed_once: false,

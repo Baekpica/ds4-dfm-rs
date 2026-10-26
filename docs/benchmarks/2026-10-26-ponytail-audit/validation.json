@@ -1,0 +1,675 @@
+{
+  "baseline": "02a6b5be83231f847d89433a90a48334bdfce247",
+  "implementation": "4a6d030dd99abafa44b52cdc3dfff758e91a9d38",
+  "regressions": [
+    {
+      "before_failed_tests": [
+        "tests::audit_family_failure_state",
+        "tests::audit_slice_bounds",
+        "tests::audit_visual_bounds"
+      ],
+      "after_summaries": [
+        "test result: ok. 467 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 3.14s"
+      ],
+      "before_log": "scratch/ponytail/core-red-lib.log",
+      "before_sha256": "c1930a9e173d779b48ad3681934af9746daf4510716e1b48adb82d692eb61831",
+      "after_log": "scratch/ponytail/core-green-lib.log",
+      "after_sha256": "b201f04f1cd45bd18ad745faa4bb9a43ae0ee78e88bc449b63872ba9f81a37ec"
+    },
+    {
+      "before_failed_tests": [
+        "audit_tensor_name_overflow"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s"
+      ],
+      "before_log": "scratch/ponytail/core-red-tensors.log",
+      "before_sha256": "1b5e59aa7f36015dcfcae4a2a324ae435f4dc47d1ee9f741df78f46ecabd8021",
+      "after_log": "scratch/ponytail/core-green-tensors.log",
+      "after_sha256": "72418efa4d5c075720dab64b3a44ce2fc54571a6592558216a9730b708687d7a"
+    },
+    {
+      "before_failed_tests": [
+        "agent::approval::tests::audit_edit_approval_reread",
+        "agent::write_parity::audit_hardlink_write",
+        "agent::write_parity::audit_write_failure"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 207 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 205 filtered out; finished in 0.01s"
+      ],
+      "before_log": "scratch/ponytail/files-red.log",
+      "before_sha256": "c2f0fa7118f4ae5f4f9e7d48144140b69d5596cee12a577bdcc7213f6bd2b671",
+      "after_log": "scratch/ponytail/files-green.log",
+      "after_sha256": "91fdd38cee6bb684e18e07b679ec14497ae3b232985451d18eb08f09954a976e"
+    },
+    {
+      "before_failed_tests": [
+        "store::tests::audit_trailer_budget",
+        "store::tests::audit_trailer_growth_credit",
+        "store::tests::audit_trailer_write_failure"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 62 filtered out; finished in 0.00s",
+        "test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s"
+      ],
+      "before_log": "scratch/ponytail/kv-red.log",
+      "before_sha256": "6b5ff0fd573c5f8e0cae9c71c5b76088a50aefaac5a71138d45bc45ba7a88a2a",
+      "after_log": "scratch/ponytail/kv-green.log",
+      "after_sha256": "81a52093c86de65f29e22f28d86ccc70a3edd71e16635ce982ee915ea05d9024"
+    },
+    {
+      "before_failed_tests": [
+        "agent::kv::tests::audit_foreign_kv_rebuild",
+        "agent::kv::tests::audit_sparse_catalog"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 212 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.02s"
+      ],
+      "before_log": "scratch/ponytail/agent-kv-red.log",
+      "before_sha256": "d6b469e555153d48a54a2a325a08425ecb7de1ec24c7ca20215f9b590f10e49b",
+      "after_log": "scratch/ponytail/agent-kv-green.log",
+      "after_sha256": "5fca8b1975ed526527a041873d38e66bbcea00b506edcaa61b3794d5d8023e61"
+    },
+    {
+      "before_failed_tests": [
+        "audit_fragmented_coordinator",
+        "audit_prefetch_snapshot_load",
+        "audit_snapshot_socket_reap"
+      ],
+      "after_summaries": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 1.24s"
+      ],
+      "before_log": "scratch/ponytail/dist-red.log",
+      "before_sha256": "7bd43293bc2aba29058dfa923ee9d2ea5c5bc8587251e064053e8a7c639d8745",
+      "after_log": "scratch/ponytail/dist-green.log",
+      "after_sha256": "e68bbfd7bc1a5692b83eed43991ffff9369da17768597b449b2237049a6c282c"
+    },
+    {
+      "before_failed_tests": [
+        "audit_anthropic_tool_failure_survives_template"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.01s"
+      ],
+      "before_log": "scratch/ponytail/http-red.log",
+      "before_sha256": "cd8d70213403fd1c998da230624e32ae7eab0d6c7889f7f817ac58bfb758d368",
+      "after_log": "scratch/ponytail/http-green.log",
+      "after_sha256": "162279321c01f15e4501bbd8a77881260129c56521b752bd58c15d3a75e4ff4f"
+    },
+    {
+      "before_failed_tests": [
+        "audit_responses_instructions_preserve_live_ids",
+        "audit_completion_continuous",
+        "audit_completion_push",
+        "audit_completion_serial"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 77 filtered out; finished in 0.01s"
+      ],
+      "before_log": "scratch/ponytail/http-red-rest.log",
+      "before_sha256": "b71a7f007712439a29315a320d0f0966c1f7447fc2366e8fe9ebb2765ee0984f",
+      "after_log": "scratch/ponytail/http-green.log",
+      "after_sha256": "162279321c01f15e4501bbd8a77881260129c56521b752bd58c15d3a75e4ff4f"
+    },
+    {
+      "before_failed_tests": [
+        "serve::owner_cont::tests::audit_rolling_deferred_fallback_stops_admission",
+        "serve::owner_cont::tests::audit_rolling_retires_completed_slots"
+      ],
+      "after_summaries": [
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 355 filtered out; finished in 0.12s"
+      ],
+      "before_log": "scratch/ponytail/rolling-red.log",
+      "before_sha256": "acd0dad1e00c3b4bd00523bda18b10ef4748893588a6ffff6abdd941de15fee7",
+      "after_log": "scratch/ponytail/rolling-green.log",
+      "after_sha256": "7f9fd455748ef9cfacd19ed3808702b572cc6c0a1cf3065f81fe7f5e3dfe97e8"
+    },
+    {
+      "before_failed_tests": [
+        "agent::bash::obs::tests::audit_bash_large_log_bounded_memory",
+        "agent::bash::tests::audit_bash_timeout_without_observation"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 214 filtered out; finished in 1.12s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 210 filtered out; finished in 2.18s"
+      ],
+      "before_log": "scratch/ponytail/bash-red.log",
+      "before_sha256": "2c0c8c6d3a1dc54b969a50fbdb42fe80f5944fc947a80dc3ba1037b91337355e",
+      "after_log": "scratch/ponytail/bash-green.log",
+      "after_sha256": "ba6231dfd30b2526b929dcf87a686234981c6c0146f297393526dd0e6769fd73"
+    },
+    {
+      "before_failed_tests": [
+        "agent::write_parity::audit_access_acl"
+      ],
+      "after_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.01s"
+      ],
+      "before_log": "scratch/ponytail/acl-red.log",
+      "before_sha256": "f5a9abd2874a2a5fccb04f312b379e95134c021b2b728e54a3438f25bc029360",
+      "after_log": "scratch/ponytail/acl-final.log",
+      "after_sha256": "be348a4fc5b0021bf38c8ba057b67e02e26d3551bf2e604124ea6af4a806bf53"
+    }
+  ],
+  "integration": [
+    {
+      "name": "final-workspace-test",
+      "log": "scratch/ponytail/final-workspace-test.log",
+      "sha256": "f85324a2b2dde753322268cd2817b6cb303ee5eee655b2cd0d5219a91fceef61",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.65s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 1.11s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 1.09s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s",
+        "test result: ok. 215 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.95s",
+        "test result: ok. 467 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 3.06s",
+        "test result: ok. 1 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 12 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 1 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.15s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.85s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s",
+        "test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.05s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.98s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 363 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.94s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.25s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.66s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "final-clippy",
+      "log": "scratch/ponytail/final-clippy.log",
+      "sha256": "a6390d1d502d0d55967ce9aaac03bdd2d56eb83c67d9a3f4285bb641cabefe95",
+      "summary": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.63s"
+      ]
+    },
+    {
+      "name": "final-workspace-check",
+      "log": "scratch/ponytail/final-workspace-check.log",
+      "sha256": "c9ca229cfdbe7159480df02dc5c063d8a2f3d67860dd73773b857588c48af8d0",
+      "summary": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.25s"
+      ]
+    },
+    {
+      "name": "final-fmt",
+      "log": "scratch/ponytail/final-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summary": []
+    },
+    {
+      "name": "acl-cli-tests",
+      "log": "scratch/ponytail/acl-cli-tests.log",
+      "sha256": "43787358cc5680d837c96249f20f4ba715b192c58af7ca6428d68a4008a5ac36",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.98s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 1.11s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 1.09s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.00s",
+        "test result: ok. 216 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.94s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "acl-agent-parity",
+      "log": "scratch/ponytail/acl-agent-parity.log",
+      "sha256": "afc1b856010c5319be272066997d00f6dcb2d7bb3fb19e2b7cb90fce89f7d70c",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s",
+        "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.16s",
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 1.09s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 1.13s",
+        "test result: ok. 107 passed; 0 failed; 1 ignored; 0 measured; 109 filtered out; finished in 1.13s"
+      ]
+    },
+    {
+      "name": "acl-clippy",
+      "log": "scratch/ponytail/acl-clippy.log",
+      "sha256": "08b0a0024cef86715b594f698d6d52b6f95ec467e92ad452341257761523f799",
+      "summary": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.44s"
+      ]
+    },
+    {
+      "name": "acl-fmt",
+      "log": "scratch/ponytail/acl-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summary": []
+    },
+    {
+      "name": "final-test-kv-parity",
+      "log": "scratch/ponytail/final-test-kv-parity.log",
+      "sha256": "f062e043c2dd04f92c2953a32344ba788ee04f6378292048d473ccf31b6a73db",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 63 filtered out; finished in 0.00s",
+        "test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "final-test-web-parity",
+      "log": "scratch/ponytail/final-test-web-parity.log",
+      "sha256": "8f63746b93b9a24e5adda1a88c4be83d8e6e8fd2896537bc4353c59e2674cc99",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "final-test-dist-parity",
+      "log": "scratch/ponytail/final-test-dist-parity.log",
+      "sha256": "1c31670c9954645696f841a9e4612137a46d9adb2aa83199e42c9a2193ddc983",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "final-test-server-parity",
+      "log": "scratch/ponytail/final-test-server-parity.log",
+      "sha256": "ff9456fc3cad0501146593f72ff8eec4cac656da34c78252ad09b46243ca45b3",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.59s",
+        "test result: ok. 363 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.02s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.39s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "OK"
+      ]
+    },
+    {
+      "name": "final-test-catalog-parity",
+      "log": "scratch/ponytail/final-test-catalog-parity.log",
+      "sha256": "70fa45be64a933f5d78992a70c43831ff28b704cb4312092657bbda63bdff7ea",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.96s",
+        "test result: ok. 467 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 1.06s",
+        "test result: ok. 1 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 12 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 1 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.16s",
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s"
+      ]
+    },
+    {
+      "name": "final-test-tokenizer-parity",
+      "log": "scratch/ponytail/final-test-tokenizer-parity.log",
+      "sha256": "ab58eb328d69e16392d5659b383c9f3a407f65367272851ef9b32b8a133eb8a7",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s",
+        "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.16s"
+      ]
+    },
+    {
+      "name": "final-test-session-parity",
+      "log": "scratch/ponytail/final-test-session-parity.log",
+      "sha256": "c0b7aa15142d2e07f18b810e4f8e67556cbc483925fd62082d5de5d384c10764",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+      ]
+    },
+    {
+      "name": "acl-cuda-spark-build",
+      "log": "scratch/ponytail/acl-cuda-spark-build.log",
+      "sha256": "37f75cd7daa1231bac5f123ee03655f024c532d6d92a29af8b02a64973a7f05f",
+      "summary": [
+        "    Finished `release` profile [optimized] target(s) in 2.41s",
+        "    Finished `release` profile [optimized] target(s) in 2.99s",
+        "    Finished `release` profile [optimized] target(s) in 1.55s",
+        "    Finished `release` profile [optimized] target(s) in 1.06s"
+      ]
+    },
+    {
+      "name": "final-c-oracle-build",
+      "log": "scratch/ponytail/final-c-oracle-build.log",
+      "sha256": "e6c85ff097a2effba2175dc69db3e5d9c93a772a2e74e919608de3733805b9f8",
+      "summary": []
+    },
+    {
+      "name": "final-docker-build",
+      "log": "scratch/ponytail/final-docker-build.log",
+      "sha256": "321b97acc4f4b59c4cbf50931c64b14478d564fd52b32bd30fe6c22151c93fd1",
+      "summary": [
+        "#11 279.3     Finished `release` profile [optimized] target(s) in 17.10s",
+        "#11 280.0     Finished `release` profile [optimized] target(s) in 17.73s",
+        "#11 280.8     Finished `release` profile [optimized] target(s) in 18.71s",
+        "#11 286.9     Finished `release` profile [optimized] target(s) in 24.79s"
+      ]
+    },
+    {
+      "name": "acl-docker-build",
+      "log": "scratch/ponytail/acl-docker-build.log",
+      "sha256": "b905f4b66bfe4aff0c034e16e1be1a54ea3ac5e76603c1813b0be513bf1d7a57",
+      "summary": [
+        "#11 280.4     Finished `release` profile [optimized] target(s) in 14.67s",
+        "#11 281.0     Finished `release` profile [optimized] target(s) in 15.18s",
+        "#11 281.6     Finished `release` profile [optimized] target(s) in 15.73s",
+        "#11 286.0     Finished `release` profile [optimized] target(s) in 20.24s"
+      ]
+    },
+    {
+      "name": "make-recipe-check",
+      "log": "scratch/ponytail/make-recipe-check.log",
+      "sha256": "213a56cc0c070529866b63fb79ef3053d28b60043451a1375ce086944b973f64",
+      "summary": [
+        "Linux 174 grouped target commands unchanged after dependency flags are removed",
+        "Darwin 138 grouped target commands unchanged after dependency flags are removed"
+      ]
+    },
+    {
+      "name": "make-outputs-check",
+      "log": "scratch/ponytail/make-outputs-check.log",
+      "sha256": "026ec2963b228b5d95715fa658401ef1bb6de746474c647df3c621fe90dc035b",
+      "summary": [
+        "Transitive header change schedules CUDA object compilation",
+        "Explicit clean removes 612 known outputs and preserves sources, unknown objects, scratch, models and CUDA configuration"
+      ]
+    },
+    {
+      "name": "iquest-weight-policy-green",
+      "log": "scratch/ponytail/iquest-weight-policy-green.log",
+      "sha256": "6ed6b5a186c24c43e54e58b1a71f270ac448a96c8e5fe18596bc69f3d423a1f1",
+      "summary": [
+        "OK"
+      ]
+    },
+    {
+      "name": "iquest-prefix-compare-green",
+      "log": "scratch/ponytail/iquest-prefix-compare-green.log",
+      "sha256": "cafe0befc6204d742636f5a24376ea4683600e3bfa4dbf7d1f6d93fa609e5024",
+      "summary": [
+        "OK"
+      ]
+    },
+    {
+      "name": "docker-red",
+      "log": "scratch/ponytail/docker-red.log",
+      "sha256": "0e32a393ab8bb8b0a7fb906dcbd8993cb38bbc7a666791c30eaf8c1bc15a2e7c",
+      "summary": [
+        "/bin/sh: 1: cargo: not found"
+      ]
+    },
+    {
+      "name": "files-fsync",
+      "log": "scratch/ponytail/files-fsync.log",
+      "sha256": "fb11fce0a1faefa9d2d3f02b754d978e2bb5024d31a66b5ebdff973caeafcaa1",
+      "summary": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "files-rename",
+      "log": "scratch/ponytail/files-rename.log",
+      "sha256": "f1fe00fc9fb3b0787d4ce55f20085b072df99aeb73f32bd63b402c47ac457ce5",
+      "summary": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 0.01s"
+      ]
+    },
+    {
+      "name": "acl-fault",
+      "log": "scratch/ponytail/acl-fault.log",
+      "sha256": "ff3c79896667598d3e96b6146f48d0a53bc3b482ea8022a9164913679f760498",
+      "summary": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "iquest-http-checks",
+      "log": "scratch/ponytail/iquest-http-checks.log",
+      "sha256": "0e37cfea4181be57db4346629249012fe8b071c8f752f421c8a2168d2800f5ed",
+      "summary": [
+        "Ran 26 tests in 0.265s",
+        "OK"
+      ]
+    }
+  ],
+  "native_sass": [
+    {
+      "group": "q81",
+      "object": "ds4_cuda",
+      "before": 1070,
+      "after": 1070,
+      "retained": 1070,
+      "strict_changed": 0,
+      "changed_beyond_constant_offsets": [],
+      "removed": [],
+      "added": []
+    },
+    {
+      "group": "q81",
+      "object": "ds4_mmq",
+      "before": 772,
+      "after": 768,
+      "retained": 768,
+      "strict_changed": 0,
+      "changed_beyond_constant_offsets": [],
+      "removed": [
+        "_ZN43_GLOBAL__N__0ffe9e6c_10_ds4_mmq_cu_34c1083a41ds4_mmq_moe_down_sum6_q8_1_qwarp32_kernelIL9ggml_type10EEEvPKvPK10block_q8_1PKiPfjjjjjjj",
+        "_ZN43_GLOBAL__N__0ffe9e6c_10_ds4_mmq_cu_34c1083a41ds4_mmq_moe_down_sum6_q8_1_qwarp32_kernelIL9ggml_type12EEEvPKvPK10block_q8_1PKiPfjjjjjjj",
+        "_ZN43_GLOBAL__N__0ffe9e6c_10_ds4_mmq_cu_34c1083a43ds4_mmq_moe_gate_up_mid_q8_1_qwarp32_kernelIL9ggml_type12EEEvPKvS3_PK10block_q8_1PKiPKfPfjjjjjjjf",
+        "_ZN43_GLOBAL__N__0ffe9e6c_10_ds4_mmq_cu_34c1083a43ds4_mmq_moe_gate_up_mid_q8_1_qwarp32_kernelIL9ggml_type16EEEvPKvS3_PK10block_q8_1PKiPKfPfjjjjjjjf"
+      ],
+      "added": []
+    },
+    {
+      "group": "ling",
+      "object": "ds4_cuda",
+      "before": 1070,
+      "after": 1069,
+      "retained": 1069,
+      "strict_changed": 0,
+      "changed_beyond_constant_offsets": [],
+      "removed": [
+        "_Z33ling3vl_mla_prefill_kvtile_kernelPfPKfS1_PK13__nv_bfloat16S4_jjjjjf"
+      ],
+      "added": []
+    },
+    {
+      "group": "ling",
+      "object": "ds4_fattn",
+      "before": 33,
+      "after": 32,
+      "retained": 32,
+      "strict_changed": 0,
+      "changed_beyond_constant_offsets": [],
+      "removed": [
+        "_ZN45_GLOBAL__N__dbbe1349_12_ds4_fattn_cu_781c189a25ling3vl_fattn_hmma_kernelILi32EEEvPfS1_PKfPK13__nv_bfloat16S6_jjjjjf"
+      ],
+      "added": []
+    },
+    {
+      "group": "glm",
+      "object": "ds4_cuda",
+      "before": 1069,
+      "after": 1066,
+      "retained": 1066,
+      "strict_changed": 0,
+      "changed_beyond_constant_offsets": [],
+      "removed": [
+        "_Z29glm53_dense_pack_q_f16_kernelP6__halfPKfjjjjj",
+        "_Z29glm53_dense_unpack_f32_kernelPfPKfjjjjj",
+        "_Z37glm53_dense_causal_softmax_f16_kernelP6__halfPKfjjjf"
+      ],
+      "added": []
+    }
+  ]
+}

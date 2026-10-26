@@ -16,12 +16,6 @@ enum {
 };
 static const float GLM53_POOL_EPS = 1.0e-6f;
 
-static uint64_t glm53_dense_reserve(uint32_t rows, uint32_t ctx) {
-    const char *value = getenv("DS4_GLM53_DENSE_GEMM");
-    if (!value || strcmp(value, "0") == 0 || rows < GLM53_DENSE_MIN_ROWS) { return 0u; }
-    return glm53_dense_bytes(rows, ctx);
-}
-
 #ifndef __APPLE__
 #define GLM53_MTP_VERIFY  /* GLM VQ batched verify (ds4_glm53_mtp.inc) */
 #endif
@@ -181,7 +175,6 @@ static uint64_t glm53_graph_bytes_plan(uint32_t ctx_cap, uint32_t rows, uint32_t
 #endif
     } else {
         bytes += ds4_gpu_solar_kda_prefill_scratch_bytes(rows, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);
-        bytes += glm53_dense_reserve(rows, ctx_cap);
     }
     bytes += glm53_window_bytes(window);
 
@@ -375,10 +368,6 @@ static bool glm53_graph_alloc_plan(ds4_glm53_gpu_graph *g,
     const uint64_t logit_bytes = (uint64_t)DS4_N_VOCAB * sizeof(float);
     g->logits = ds4_gpu_tensor_alloc(logit_bytes);
     g->workspace_bytes += logit_bytes;
-    // The CUDA temporary arena retains the largest dense GEMM slab.
-    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53_VQ) {
-        g->workspace_bytes += glm53_dense_reserve(g->row_cap, ctx_cap);
-    }
     g->workspace_bytes += glm53_window_bytes(window);
     const uint64_t scratch_bytes = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ ? 0u :
         ds4_gpu_solar_kda_prefill_scratch_bytes(g->row_cap, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM);

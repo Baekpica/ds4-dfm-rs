@@ -17,6 +17,7 @@
 /tests/test_ling3vl_primitives
 /tests/test_ling3vl_matmul
 /tests/test_ling3vl_mla
+/tests/test_mmq_parity
 /tests/test_ling3vl_q5pair
 /tests/test_ds41_vq
 /tests/test_ds41_sample
@@ -226,7 +227,6 @@ tests/naive_banks
 /tests/glm53_state_gate
 /tests/glm53_mtp_gate
 /tests/test_glm53_pair
-/tests/test_glm53_dense_gemm
 /tests/test_glm53_upload_async
 /tests/test_glm53_width
 
@@ -267,3 +267,6 @@ tests/naive_banks
 /tools/vq_calib/cuda/*.so
 /tools/vq_calib/cuda/*.build.json
 /tools/vq_calib/native/
+
+# Compiler-generated header dependencies.
+*.o.d

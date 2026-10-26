@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -107,13 +108,16 @@ struct OwnerRollSource<'a> {
     jobs_rx: &'a Receiver<OwnerJob>,
     primed: Option<OwnerJob>,
     lookahead: Option<OwnerJob>,
-    jobs: Vec<Option<(String, OwnerJob)>>,
+    jobs: BTreeMap<usize, (String, OwnerJob)>,
+    next_key: usize,
+    served: usize,
+    draining: bool,
     created: i64,
 }
 
 impl ContSource for OwnerRollSource<'_> {
     fn next(&mut self, probe: &dyn ContProbe) -> Option<ContOwnedWork> {
-        if self.lookahead.is_some() {
+        if self.draining || self.lookahead.is_some() {
             return None;
         }
         loop {
@@ -168,7 +172,8 @@ impl ContSource for OwnerRollSource<'_> {
             }
             job.lease.start();
             let id = next_job_id(&mut lock_inner(self.inner).admit, job.prepared.parsed.kind);
-            let key = self.jobs.len();
+            let key = self.next_key;
+            self.next_key += 1;
             let prepared = job.prepared.cont_prompt.take();
             let work = ContOwnedWork {
                 key,
@@ -181,25 +186,27 @@ impl ContSource for OwnerRollSource<'_> {
                 t_arrive: job.prepared.arrived_at,
                 out: Box::new(job.sink.clone()),
             };
-            self.jobs.push(Some((id, job)));
+            self.jobs.insert(key, (id, job));
             return Some(work);
         }
     }
 
     fn publish(&mut self, key: usize, outcome: &GenerateOutcome) {
-        if let Some((_, job)) = self.jobs.get(key).and_then(Option::as_ref) {
+        if let Some((_, job)) = self.jobs.get(&key) {
             publish_continuous_tool_turn(self.inner, job.prepared.parsed.api, outcome);
         }
     }
 
     fn settled(&mut self, key: usize, result: &Result<GenerateOutcome, GenerateError>) {
         if !matches!(result, Ok(_) | Err(GenerateError::Io)) {
+            self.draining = true;
             return;
         }
-        let Some((_, job)) = self.jobs.get_mut(key).and_then(Option::take) else {
+        let Some((_, job)) = self.jobs.remove(&key) else {
             return;
         };
         if let Ok(outcome) = result {
+            self.served += 1;
             lock_inner(self.inner).record_generation(outcome);
         }
         let settlement = if job.sink.state.gone() || matches!(result, Err(GenerateError::Io)) {
@@ -208,6 +215,11 @@ impl ContSource for OwnerRollSource<'_> {
             Settlement::COMPLETED
         };
         finish_roll_lease(self.inner, job, settlement);
+    }
+
+    fn settle_owned(&mut self, item: ContOwnedResult) -> Option<ContOwnedResult> {
+        self.settled(item.key, &item.result);
+        self.jobs.contains_key(&item.key).then_some(item)
     }
 }
 
@@ -225,7 +237,10 @@ fn try_serve_rolling(
         jobs_rx,
         primed: Some(job),
         lookahead: None,
-        jobs: Vec::new(),
+        jobs: BTreeMap::new(),
+        next_key: 0,
+        served: 0,
+        draining: false,
         created: unix_now(),
     };
     let mut bank_hold_retry = |bank, live| {
@@ -241,27 +256,20 @@ fn try_serve_rolling(
             .take()
             .expect("bounded executor must leave the primed job untouched"));
     };
-    let mut by_key: Vec<Option<Result<GenerateOutcome, GenerateError>>> =
-        (0..source.jobs.len()).map(|_| None).collect();
+    let mut by_key = BTreeMap::new();
     for ContOwnedResult { key, result } in results {
-        if let Some(slot) = by_key.get_mut(key) {
-            *slot = Some(result);
+        if source.jobs.contains_key(&key) {
+            by_key.insert(key, result);
         }
     }
-    let served = by_key
-        .iter()
-        .filter(|result| result.as_ref().is_some_and(Result::is_ok))
-        .count();
+    let served = source.served + by_key.values().filter(|result| result.is_ok()).count();
     let fallback = by_key
-        .iter()
-        .filter(|result| matches!(result, Some(Err(GenerateError::Unsupported(_)))))
+        .values()
+        .filter(|result| matches!(result, Err(GenerateError::Unsupported(_))))
         .count();
     eprintln!("ds4-server-rs: continuous rolling path=cont served={served} fallback={fallback}");
-    for (key, item) in source.jobs.into_iter().enumerate() {
-        let Some((id, job)) = item else {
-            continue;
-        };
-        let result = by_key[key].take().unwrap_or_else(|| {
+    for (key, (id, job)) in source.jobs {
+        let result = by_key.remove(&key).unwrap_or_else(|| {
             Err(GenerateError::Engine(
                 "continuous rolling loop lost a job result".into(),
             ))

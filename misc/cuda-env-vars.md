@@ -190,9 +190,6 @@ The bandwidth figure is informational; we don't tier on it.
 - `DS4_LING3VL_NO_BF16_VEC=1` restores cuBLAS for Ling n=1 BF16 projections.
   Unset uses the row-stable warp GEMV.
 
-- `DS4_LING3VL_MLA_TILE=1` opts into the rejected shared-KV MLA prefill
-  tile.
-
 - `DS4_LING3VL_NO_MLA_EXPAND=1` restores the absorbed-MLA prefill (below).
   Unset, Ling prefill chunks of 64+ rows expand each 4096-key latent
   segment to per-head K (192) / V (128) with two BF16 batched GEMMs and
@@ -204,8 +201,7 @@ The bandwidth figure is informational; we don't tier on it.
   key segments and Motif's range kernel. Unset writes the expanded K/V as
   BF16 (the GEMM output type), walks three-chunk segments so the LSE
   merges drop 3x, and runs the Ling range kernel (64-key tiles, ldmatrix
-  fragments). `DS4_LING3VL_MLA_TK=32` keeps the BF16 path on 32-key tiles
-  (slower; measured for the record).
+  fragments).
 
 - `DS4_LING3VL_NO_MLA_HMMA=1` restores Motif's SIMT latent attention on
   absorbed Ling prefill. Unset uses the dots3 tensor-core absorbed-MLA
@@ -769,9 +765,6 @@ The bandwidth figure is informational; we don't tier on it.
   (fall back to MMQ, N=20 agg ~26 vs N=16 ~51 on GB10) — prefer scheduling
   decode widths <=16 or >=24. `DS4_CUDA_MOE_SMALL16_DIRECT=1` selects the experimental
   Q8_K direct fallback instead of preserving the normal MMQ backup path.
-  `DS4_CUDA_MOE_Q81_FUSED=1` selects experimental canonical-Q8_1 fused
-  gate+up+mid and down+sum helpers; early GB10 probes preserved acceptance but
-  regressed throughput at wider routed batches, so this is diagnostic-only.
   `DS4_CUDA_MOE_Q8K_GATE_IN_VEC=1` and `DS4_CUDA_MOE_Q8K_DOWN_IN_VEC=1`
   are stage-isolation diagnostics: they keep the MMVQ branch active but swap
   only gate/up or only down to the Q8_K direct kernels.
@@ -1234,10 +1227,6 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   Default enabled above 8 rows for raw/padded IQ2_XXS, IQ2_XS and Q4_K pairs.
   Share Q8_1 activations and routing maps without weight repacking. Same-width
   outputs are exact; small-width Decode keeps its existing path.
-- `DS4_GLM53_DENSE_GEMM=1` enables diagnostic dense Tensor Core attention.
-  Default Off: FP16 Q/probability with FP32 accumulation passes its rounded
-  reference but loses two codes in the recorded 6K retrieval at 2048 rows.
-  Dense rows 128–2048/keys<=2051 only; sparse and Decode remain unchanged.
 - `DS4_GLM53_PREFILL_ROWS=N` requests 1–2048 physical rows (default 2048).
   Rust fits workspace against weights, active KV/state, checkpoints, media
   and reserve; it reports the effective width while preserving context/banks.

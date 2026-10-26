@@ -79,7 +79,7 @@ fn save(live: Live<'_, '_>) -> String {
         created_at,
         last_used: unix_now(),
         text: &text,
-        payload: &payload,
+        payload: payload.path(),
         tokens,
         model_id,
         quant_bits,
@@ -134,7 +134,7 @@ fn switch(prefix: &str, live: Live<'_, '_>) -> String {
     let mut out = String::new();
     if plan.needs_prefill {
         out.push_str(&format!(
-            "rebuilding stripped session {:.8} from rendered text...\n",
+            "rebuilding session {:.8} from rendered text...\n",
             sha_short(&plan.sha)
         ));
         let ids = live.model.vocab().encode_rendered_bytes(&plan.text);
@@ -195,17 +195,16 @@ fn render_tokens(model: &Model, tokens: &[i32]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn stage_payload(store: &SessionStore, session: &Session<'_>) -> Result<Vec<u8>, String> {
+fn stage_payload(
+    store: &SessionStore,
+    session: &Session<'_>,
+) -> Result<ds4_kv::PayloadTemp, String> {
     std::fs::create_dir_all(store.dir()).map_err(|error| error.to_string())?;
-    let tmp = store
-        .dir()
-        .join(format!(".agent-save.{}.dsv4", std::process::id()));
-    let result = session
-        .save_payload(&tmp)
-        .map_err(|error| error.to_string())
-        .and_then(|_| std::fs::read(&tmp).map_err(|error| error.to_string()));
-    let _ = std::fs::remove_file(&tmp);
-    result
+    let tmp = ds4_kv::PayloadTemp::create(store.dir()).map_err(|error| error.to_string())?;
+    session
+        .save_payload(tmp.path())
+        .map_err(|error| error.to_string())?;
+    Ok(tmp)
 }
 
 fn format_age(now: u64, when: u64) -> String {

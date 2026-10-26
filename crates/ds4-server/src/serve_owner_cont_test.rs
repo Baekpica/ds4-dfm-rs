@@ -88,13 +88,14 @@ impl ContExec for RefillSpy {
         let probe = RollingProbe;
         let mut results = Vec::new();
         let first = source.next(&probe).expect("primed job");
-        results.push(complete_owned(source, first));
+        results.extend(complete_owned(source, first));
+        self.calls += 1;
         assert!(source.next(&probe).is_none(), "late job is not queued yet");
         std::thread::sleep(std::time::Duration::from_millis(60));
         while let Some(work) = source.next(&probe) {
-            results.push(complete_owned(source, work));
+            results.extend(complete_owned(source, work));
+            self.calls += 1;
         }
-        self.calls = results.len();
         Some(results)
     }
 }
@@ -102,7 +103,7 @@ impl ContExec for RefillSpy {
 fn complete_owned(
     source: &mut dyn ContSource,
     mut work: crate::serve_cont::ContOwnedWork,
-) -> ContOwnedResult {
+) -> Option<ContOwnedResult> {
     work.out
         .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}")
         .unwrap();
@@ -111,12 +112,10 @@ fn complete_owned(
         ..GenerateOutcome::default()
     };
     source.publish(work.key, &outcome);
-    let result = Ok(outcome);
-    source.settled(work.key, &result);
-    ContOwnedResult {
+    source.settle_owned(ContOwnedResult {
         key: work.key,
-        result,
-    }
+        result: Ok(outcome),
+    })
 }
 
 impl Default for RollSpy {
@@ -226,6 +225,103 @@ fn cont_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, JobDr
     drop(g);
     let lease = JobLease::new(Arc::clone(inner), prepared.body_bytes, None);
     owner_job(prepared, lease)
+}
+
+#[test]
+fn audit_rolling_retires_completed_slots() {
+    let cfg = ServerConfig {
+        have_engine: true,
+        continuous: true,
+        ..ServerConfig::default()
+    };
+    let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    let (first, first_drain) = cont_chat_job(&inner, "held bank");
+    let (tx, rx) = mpsc::channel();
+    let mut source = super::OwnerRollSource {
+        cfg: &cfg,
+        inner: &inner,
+        jobs_rx: &rx,
+        primed: Some(first),
+        lookahead: None,
+        jobs: Default::default(),
+        created: 0,
+        next_key: 0,
+        served: 0,
+        draining: false,
+    };
+    let first = source.next(&RollingProbe).unwrap();
+    for _ in 0..2000 {
+        let (job, drain) = cont_chat_job(&inner, "next bank");
+        tx.send(job).unwrap();
+        let work = source.next(&RollingProbe).unwrap();
+        assert_ne!(work.key, first.key);
+        assert!(complete_owned(&mut source, work).is_none());
+        assert_eq!(source.jobs.len(), 1, "only the held bank remains");
+        drop(drain.done.recv().unwrap());
+    }
+    assert!(complete_owned(&mut source, first).is_none());
+    assert!(source.jobs.is_empty());
+    assert_eq!(source.served, 2001);
+    drop(first_drain.done.recv().unwrap());
+}
+
+#[test]
+fn rolling_owned_default_preserves_borrowed_callback() {
+    #[derive(Default)]
+    struct LegacySource(usize);
+    impl ContSource for LegacySource {
+        fn next(&mut self, _: &dyn ContProbe) -> Option<crate::serve_cont::ContOwnedWork> {
+            None
+        }
+        fn settled(&mut self, key: usize, _: &Result<GenerateOutcome, GenerateError>) {
+            self.0 = key;
+        }
+    }
+    let mut source = LegacySource::default();
+    let item = source
+        .settle_owned(ContOwnedResult {
+            key: 42,
+            result: Ok(GenerateOutcome::default()),
+        })
+        .unwrap();
+    assert_eq!(source.0, 42);
+    assert_eq!(item.key, 42);
+}
+
+#[test]
+fn audit_rolling_deferred_fallback_stops_admission() {
+    let cfg = ServerConfig {
+        have_engine: true,
+        continuous: true,
+        ..ServerConfig::default()
+    };
+    let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    let (first, _first_drain) = cont_chat_job(&inner, "fallback");
+    let (tx, rx) = mpsc::channel();
+    let (later, _later_drain) = cont_chat_job(&inner, "later");
+    tx.send(later).unwrap();
+    let mut source = super::OwnerRollSource {
+        cfg: &cfg,
+        inner: &inner,
+        jobs_rx: &rx,
+        primed: Some(first),
+        lookahead: None,
+        jobs: Default::default(),
+        created: 0,
+        next_key: 0,
+        served: 0,
+        draining: false,
+    };
+    let first = source.next(&RollingProbe).unwrap();
+    source.settled(
+        first.key,
+        &Err(GenerateError::Unsupported("serial fallback")),
+    );
+    assert!(source.next(&RollingProbe).is_none());
+    assert!(
+        rx.try_recv().is_ok(),
+        "later work stays queued until the live banks drain"
+    );
 }
 
 #[test]

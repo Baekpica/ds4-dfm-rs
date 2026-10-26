@@ -46,6 +46,127 @@ fn user_req() -> ParsedRequest {
     r
 }
 
+fn audit_completion_stream(lane: &str) {
+    let cases: &[(&[&[u8]], &str, &str)] = &[
+        (&[b"hello", b" world"], "ZZZ", "hello world"),
+        (&[b"A", b"B", b"C"], "ZZ", "ABC"),
+        (&[b"helloZ", b"Z", b"Ztail"], "ZZZ", "hello"),
+        (&[b"\xed", b"\x95\x9c\xea", b"\xb8\x80!"], "ZZZ", "한글!"),
+        (&[b"\xed", b"A"], "ZZZ", "�A"),
+        (&[b"end\xed"], "ZZZ", "end�"),
+    ];
+    for &(pieces, stop, expected) in cases {
+        for cap in [pieces.len(), pieces.len() + 1] {
+            for stream in [false, true] {
+                let mut parsed = user_req();
+                parsed.kind = ds4_server::route::ReqKind::Completion;
+                parsed.prompt_text = Some("prompt".into());
+                parsed.stream = stream;
+                parsed.stops = vec![stop.into()];
+                parsed.max_tokens = cap as i32;
+                let mut out = Vec::new();
+                match lane {
+                    "serial" => {
+                        let mut engine = ScriptedDecode::from_pieces(pieces);
+                        generate_and_write(
+                            &mut engine,
+                            &parsed,
+                            "audit",
+                            CREATED_TEST,
+                            false,
+                            16,
+                            &mut out,
+                        )
+                        .unwrap();
+                    }
+                    "push" => {
+                        let mut engine = ScriptedV41::new(&[], 8192);
+                        engine.script = pieces
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| (i as i32 + 1, p.to_vec()))
+                            .collect();
+                        engine.script.push((engine.stop_id, Vec::new()));
+                        generate_and_write(
+                            &mut engine,
+                            &parsed,
+                            "audit",
+                            CREATED_TEST,
+                            false,
+                            16,
+                            &mut out,
+                        )
+                        .unwrap();
+                    }
+                    "continuous" => {
+                        let (mut stepper, head) = ContStepper::new(
+                            &parsed,
+                            0,
+                            "audit",
+                            CREATED_TEST,
+                            false,
+                            16,
+                            b"prompt".to_vec(),
+                            1,
+                            8192,
+                        );
+                        out.extend(head);
+                        for piece in pieces {
+                            let step = stepper.feed(piece);
+                            out.extend(step.bytes);
+                            if step.done {
+                                break;
+                            }
+                        }
+                        out.extend(
+                            stepper
+                                .finalize(cap > pieces.len(), 0, 1, ReqTimings::default(), false)
+                                .0,
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                let wire = String::from_utf8(out).unwrap();
+                let text = if stream {
+                    wire.lines()
+                        .filter_map(|line| line.strip_prefix("data: "))
+                        .filter(|line| *line != "[DONE]")
+                        .map(|line| {
+                            let chunk: serde_json::Value = serde_json::from_str(line).unwrap();
+                            chunk["choices"][0]["text"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_owned()
+                        })
+                        .collect::<String>()
+                } else {
+                    let body = wire
+                        .split_once("\r\n\r\n")
+                        .map_or(wire.as_str(), |(_, b)| b);
+                    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                    body["choices"][0]["text"].as_str().unwrap().to_owned()
+                };
+                assert_eq!(text, expected, "{lane} stream={stream} cap={cap}: {wire}");
+            }
+        }
+    }
+}
+
+#[test]
+fn audit_completion_serial() {
+    audit_completion_stream("serial");
+}
+
+#[test]
+fn audit_completion_continuous() {
+    audit_completion_stream("continuous");
+}
+
+#[test]
+fn audit_completion_push() {
+    audit_completion_stream("push");
+}
+
 #[test]
 fn ds41_chat_takes_the_c_renderer_with_the_v41_head() {
     // The C-rendered DSML families ship no chat template: model 16 is admitted

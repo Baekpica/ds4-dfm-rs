@@ -67,8 +67,6 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_EXAONE_PREFILL_GQA"
             | "DS4_LING3VL_PREFILL_CHUNK"
             | "DS4_LING3VL_NO_BF16_VEC"
-            | "DS4_LING3VL_NO_MLA_TILE"
-            | "DS4_LING3VL_MLA_TILE"
             | "DS4_LING3VL_NO_MLA_HMMA"
             | "DS4_LING3VL_NO_BF16_REUSE"
             | "DS4_LING3VL_NO_BF16_PAIR"
@@ -154,8 +152,6 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
             (family.starts_with("ling") || family == "bailingmoe3") && (1..=4096).contains(&n)
         }
         "DS4_LING3VL_NO_BF16_VEC"
-        | "DS4_LING3VL_NO_MLA_TILE"
-        | "DS4_LING3VL_MLA_TILE"
         | "DS4_LING3VL_NO_MLA_HMMA"
         | "DS4_LING3VL_NO_BF16_REUSE"
         | "DS4_LING3VL_NO_BF16_PAIR"
@@ -406,8 +402,6 @@ mod tests {
         assert!(validate("DS4_LING3VL_PREFILL_CHUNK", "2048", "qwen").is_err());
         for key in [
             "DS4_LING3VL_NO_BF16_VEC",
-            "DS4_LING3VL_NO_MLA_TILE",
-            "DS4_LING3VL_MLA_TILE",
             "DS4_LING3VL_NO_MLA_HMMA",
             "DS4_LING3VL_NO_BF16_REUSE",
             "DS4_LING3VL_NO_BF16_PAIR",
