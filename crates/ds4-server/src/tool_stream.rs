@@ -620,6 +620,13 @@ pub fn dump_script(name: &str) -> Vec<u8> {
                 raw2.as_bytes(),
                 false,
             );
+            let final_ = crate::tools::parse_generated_message(
+                r.syntax,
+                raw2.as_bytes(),
+                false,
+                r.chat_format,
+                &r.tool_orders,
+            );
             openai_sse_finish_live(
                 &mut w,
                 &r,
@@ -629,7 +636,7 @@ pub fn dump_script(name: &str) -> Vec<u8> {
                 "tool_calls",
                 10,
                 4,
-                &[],
+                &final_.calls,
             );
             w.out
         }
@@ -754,6 +761,13 @@ pub fn dump_script(name: &str) -> Vec<u8> {
                 DSML_TOOL_CALLS_END
             );
             anthropic_sse_stream_update(&mut w, &r, "msg_tool", &mut st, raw2.as_bytes(), false);
+            let final_ = crate::tools::parse_generated_message(
+                r.syntax,
+                raw2.as_bytes(),
+                false,
+                r.chat_format,
+                &r.tool_orders,
+            );
             anthropic_sse_finish_live(
                 &mut w,
                 &r,
@@ -763,7 +777,7 @@ pub fn dump_script(name: &str) -> Vec<u8> {
                 "tool_calls",
                 None,
                 5,
-                &[],
+                &final_.calls,
             );
             w.out
         }

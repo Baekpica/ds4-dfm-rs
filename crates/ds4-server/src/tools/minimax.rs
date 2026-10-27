@@ -157,6 +157,209 @@ pub(super) fn parse(
     out
 }
 
+#[derive(Debug)]
+enum StreamState {
+    Block,
+    Invoke,
+    Param,
+    String(String),
+    Failed,
+}
+
+/// M3 XML decoding only; the shared sink owns IDs' wire shape and SSE framing.
+#[derive(Debug)]
+pub(crate) struct Stream {
+    pos: usize,
+    state: StreamState,
+    name: String,
+    first: bool,
+}
+
+impl Stream {
+    pub(crate) fn new(pos: usize) -> Self {
+        Self {
+            pos,
+            state: StreamState::Block,
+            name: String::new(),
+            first: true,
+        }
+    }
+
+    pub(crate) fn update(
+        &mut self,
+        sink: &mut impl crate::tool_stream::ToolSink,
+        ids: &mut crate::tool_stream::DsmlToolStream,
+        raw: &[u8],
+        orders: &[ToolSchemaOrder],
+    ) -> bool {
+        while self.pos < raw.len() {
+            let tail = &raw[self.pos..];
+            match &self.state {
+                StreamState::Block => {
+                    let Some(rel) = find_substr(tail, TOOL_CALL_START.as_bytes()) else {
+                        return true;
+                    };
+                    self.pos += rel + TOOL_CALL_START.len();
+                    self.state = StreamState::Invoke;
+                }
+                StreamState::Invoke | StreamState::Param => {
+                    let limit =
+                        crate::stream::utf8_stream_safe_len(raw, self.pos, raw.len(), false);
+                    let Ok(text) = std::str::from_utf8(&raw[self.pos..limit]) else {
+                        return true;
+                    };
+                    let rest = text.trim_start();
+                    self.pos += text.len() - rest.len();
+                    if rest.is_empty() {
+                        return true;
+                    }
+                    let tail = &raw[self.pos..];
+                    if matches!(self.state, StreamState::Invoke) {
+                        if tail.starts_with(TOOL_CALL_END.as_bytes()) {
+                            self.pos += TOOL_CALL_END.len();
+                            self.state = StreamState::Block;
+                            continue;
+                        }
+                        if INVOKE.as_bytes().starts_with(tail)
+                            || TOOL_CALL_END.as_bytes().starts_with(tail)
+                        {
+                            return true;
+                        }
+                        let Some(head) = tail.strip_prefix(INVOKE.as_bytes()) else {
+                            self.state = StreamState::Failed;
+                            continue;
+                        };
+                        let Some(end) = find_substr(head, b"\">") else {
+                            return true;
+                        };
+                        let Ok(name) = std::str::from_utf8(&head[..end]) else {
+                            return true;
+                        };
+                        self.name = name.trim().to_owned();
+                        if self.name.is_empty() {
+                            self.state = StreamState::Failed;
+                            continue;
+                        }
+                        let id = ids.id_at(ids.index);
+                        if !sink.start_invoke(ids.index, &id, self.name.as_bytes())
+                            || !sink.args_fragment(ids.index, b"{")
+                        {
+                            return false;
+                        }
+                        ids.emitted_any = true;
+                        self.first = true;
+                        self.pos += INVOKE.len() + end + 2;
+                        self.state = StreamState::Param;
+                        continue;
+                    }
+                    let close = format!("{NS}</invoke>");
+                    if tail.starts_with(close.as_bytes()) {
+                        if !sink.args_fragment(ids.index, b"}") || !sink.close_invoke(ids.index) {
+                            return false;
+                        }
+                        ids.index += 1;
+                        self.pos += close.len();
+                        self.state = StreamState::Invoke;
+                        continue;
+                    }
+                    let Some(open) = tail
+                        .strip_prefix(NS.as_bytes())
+                        .and_then(|s| s.strip_prefix(b"<"))
+                    else {
+                        return true;
+                    };
+                    let Some(end) = open.iter().position(|&c| c == b'>') else {
+                        return true;
+                    };
+                    let Ok(key) = std::str::from_utf8(&open[..end]) else {
+                        return true;
+                    };
+                    let header = NS.len() + 1 + end + 1;
+                    if key.is_empty() || key.starts_with('/') {
+                        self.state = StreamState::Failed;
+                        continue;
+                    }
+                    let order = tool_schema_orders_find(orders, &self.name);
+                    let ty = tool_schema_order_prop_type(order, key)
+                        .filter(|t| !t.is_empty())
+                        .or_else(|| tool_schema_order_prop_type_first(order, key));
+                    let mut string = ty == Some("string");
+                    if string {
+                        let limit = crate::stream::utf8_stream_safe_len(
+                            raw,
+                            self.pos + header,
+                            raw.len(),
+                            false,
+                        );
+                        let Ok(body) = std::str::from_utf8(&raw[self.pos + header..limit]) else {
+                            return true;
+                        };
+                        let lead = body.trim_start().as_bytes();
+                        if lead.is_empty() || NS.as_bytes().starts_with(lead) {
+                            return true;
+                        }
+                        if let Some(tag) = lead.strip_prefix(NS.as_bytes()) {
+                            if b"</".starts_with(tag) {
+                                return true;
+                            }
+                            string = tag.starts_with(b"</");
+                        }
+                    }
+                    let mut fragment = if self.first { Vec::new() } else { vec![b','] };
+                    fragment.extend(crate::json::json_escape_bytes(key.as_bytes()));
+                    fragment.push(b':');
+                    if string {
+                        fragment.push(b'"');
+                        self.pos += header;
+                        self.state = StreamState::String(format!("{NS}</{key}>"));
+                    } else {
+                        // Complex and untyped values use the final parser's conversion.
+                        let Ok(text) = std::str::from_utf8(&raw[self.pos + header..]) else {
+                            return true;
+                        };
+                        let Some((n, rest)) = node(text, key) else {
+                            return true;
+                        };
+                        fragment.extend(value(n, ty).to_string().as_bytes());
+                        self.pos = raw.len() - rest.len();
+                    }
+                    if !sink.args_fragment(ids.index, &fragment) {
+                        return false;
+                    }
+                    self.first = false;
+                }
+                StreamState::String(close) => {
+                    let end = find_substr(tail, close.as_bytes());
+                    // Keep both a split close tag and a split UTF-8 character off the wire.
+                    let keep = (1..close.len().min(tail.len() + 1))
+                        .rev()
+                        .find(|&n| tail.ends_with(&close.as_bytes()[..n]))
+                        .unwrap_or(0);
+                    let limit = self.pos + end.unwrap_or(tail.len() - keep);
+                    let limit = crate::stream::utf8_stream_safe_len(raw, self.pos, limit, false);
+                    if limit > self.pos {
+                        let escaped = crate::json::json_escape_bytes(&raw[self.pos..limit]);
+                        if !sink.args_fragment(ids.index, &escaped[1..escaped.len() - 1]) {
+                            return false;
+                        }
+                        self.pos = limit;
+                    }
+                    if end.is_none() {
+                        return true;
+                    }
+                    if !sink.args_fragment(ids.index, b"\"") {
+                        return false;
+                    }
+                    self.pos += close.len();
+                    self.state = StreamState::Param;
+                }
+                StreamState::Failed => return true,
+            }
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +427,123 @@ mod tests {
         let open = parse(b"<mm:think>still thinking", true, &[]);
         assert!(open.ok && open.content.is_empty());
         assert_eq!(open.reasoning, b"still thinking");
+    }
+
+    #[test]
+    fn malformed_prefix_is_not_a_call() {
+        // vLLM, SGLang and TRT-LLM require the full wrapper too (#116).
+        for text in [
+            "]<]minimax[>[ slide",
+            "]<]minimax[>[<invoke native pptx table",
+            "]<]minimax[>[<invoke name=\"f\">]<]minimax[>[</invoke>",
+        ] {
+            let p = parse(text.as_bytes(), false, &[]);
+            assert!(p.ok && p.calls.is_empty());
+            assert_eq!(p.content, text.as_bytes());
+        }
+    }
+
+    #[test]
+    fn stream_matches_final_values() {
+        #[derive(Default)]
+        struct Sink(Vec<ToolCall>);
+        impl crate::tool_stream::ToolSink for Sink {
+            fn start_invoke(&mut self, index: i32, id: &str, name: &[u8]) -> bool {
+                assert_eq!(index as usize, self.0.len());
+                self.0.push(ToolCall {
+                    id: id.into(),
+                    name: std::str::from_utf8(name).unwrap().into(),
+                    ..Default::default()
+                });
+                true
+            }
+            fn args_fragment(&mut self, index: i32, bytes: &[u8]) -> bool {
+                self.0[index as usize]
+                    .arguments
+                    .push_str(std::str::from_utf8(bytes).unwrap());
+                true
+            }
+            fn close_invoke(&mut self, _: i32) -> bool {
+                true
+            }
+        }
+        let call = CALL
+            .replace("Seoul", "서울")
+            .replace(">42", ">a\"\\\n]<]mini");
+        let nested = call.replace("서울", "]<]minimax[>[<child>7]<]minimax[>[</child>");
+        let array = call.replace("서울", "]<]minimax[>[<item>7]<]minimax[>[</item>");
+        let raw = format!("{call}\n{nested}\n{array}");
+        let orders = [order(&[
+            ("city", "string"),
+            ("n", "integer"),
+            ("tags", "array"),
+            ("opts", "object"),
+            ("code", "string"),
+        ])];
+        let expected = parse(raw.as_bytes(), false, &orders);
+        assert!(expected.ok && expected.calls.len() == 3);
+        for width in [1, 2, 7, raw.len()] {
+            let mut stream = Stream::new(0);
+            let mut ids = crate::tool_stream::DsmlToolStream::default();
+            let mut sink = Sink::default();
+            for end in (width..raw.len()).step_by(width).chain([raw.len()]) {
+                assert!(stream.update(&mut sink, &mut ids, &raw.as_bytes()[..end], &orders));
+            }
+            assert_eq!(sink.0.len(), expected.calls.len());
+            for (actual, expected) in sink.0.iter().zip(&expected.calls) {
+                assert_eq!(actual.name, expected.name);
+                assert_eq!(
+                    serde_json::from_str::<Value>(&actual.arguments).unwrap(),
+                    serde_json::from_str::<Value>(&expected.arguments).unwrap()
+                );
+            }
+            assert_ne!(sink.0[0].id, sink.0[1].id);
+        }
+    }
+
+    #[test]
+    fn stream_accepts_unicode_space() {
+        #[derive(Default)]
+        struct Sink(Vec<ToolCall>);
+        impl crate::tool_stream::ToolSink for Sink {
+            fn start_invoke(&mut self, _: i32, _: &str, name: &[u8]) -> bool {
+                self.0.push(ToolCall {
+                    name: String::from_utf8_lossy(name).into(),
+                    ..Default::default()
+                });
+                true
+            }
+            fn args_fragment(&mut self, index: i32, bytes: &[u8]) -> bool {
+                self.0[index as usize]
+                    .arguments
+                    .push_str(std::str::from_utf8(bytes).unwrap());
+                true
+            }
+            fn close_invoke(&mut self, _: i32) -> bool {
+                true
+            }
+        }
+        for ws in ["\u{3000}", "\u{00a0}", "\u{000b}"] {
+            let raw = format!("{NS}<tool_call>{NS}<invoke name=\"f\">{ws}{NS}<city>서울{NS}</city>{ws}{NS}<n>3{NS}</n>{ws}{NS}</invoke>{ws}{NS}<invoke name=\"f\">{ws}{NS}</invoke>{NS}</tool_call>");
+            let orders = [order(&[("city", "string"), ("n", "integer")])];
+            let expected = parse(raw.as_bytes(), false, &orders);
+            assert!(expected.ok && expected.calls.len() == 2);
+            for width in [1, 2, raw.len()] {
+                let mut stream = Stream::new(0);
+                let mut ids = crate::tool_stream::DsmlToolStream::default();
+                let mut sink = Sink::default();
+                for end in (width..raw.len()).step_by(width).chain([raw.len()]) {
+                    assert!(stream.update(&mut sink, &mut ids, &raw.as_bytes()[..end], &orders));
+                }
+                assert_eq!(sink.0.len(), 2, "lost invoke: {ws:?}, width {width}");
+                for (actual, expected) in sink.0.iter().zip(&expected.calls) {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&actual.arguments).unwrap(),
+                        serde_json::from_str::<Value>(&expected.arguments).unwrap()
+                    );
+                }
+            }
+        }
     }
 
     // The namespace token arrives whole; the stream must hold it back until
