@@ -28,12 +28,14 @@ def load():
     rows = {}
     with (DATA / "h3-512-both-arms.csv").open() as source:
         for row in csv.DictReader(source):
-            if row["arm"] not in LABELS or not row["scope"].startswith("hq512-"):
+            if not row["scope"].startswith("hq512-"):
                 continue
             try:
-                rows[(row["scope"], row["arm"], row["metric"])] = float(row["value"])
+                value = float(row["value"])
             except ValueError:
                 continue    # the hashes share this file and are not numbers
+            arm = row["arm"] if row["arm"] in LABELS else "pair"
+            rows[(row["scope"], arm, row["metric"])] = value
     return rows
 
 
@@ -86,11 +88,14 @@ def plot(scope="hq512-rain", subject="Rain, 512x512, 56 frames, 20 steps",
     axes[1].legend(loc="lower left", framealpha=0.92)
     axes[1].margins(y=0.22)
 
+    psnr = rows[(scope, "pair", "psnr_y")]
+    ssim = rows[(scope, "pair", "ssim_all")]
+    share = rows[(scope, "scalar", "attention_share_of_step")]
     fig.text(0.5, 0.055,
              "Bars: one process per arm, the same binary, H3_DIT_ATTENTION_MMA the only difference, so each pair is its own control.\n"
-             "At 20 steps the two arms diverge more than at 2, which is the opposite of alarming: a per-step difference compounds through\n"
-             "the denoise. Luma PSNR 36.97 dB and SSIM 0.9779 here, against 42.75 dB and 0.9868 for the 2-step job A pair.\n"
-             "The attention is 86.2 percent of the scalar step at this shape, against 96.3 percent at 18,432 tokens.",
+             "At 20 steps the two arms diverge more than at 2, which is the expected direction: a per-step difference compounds through\n"
+             f"the denoise. This subject: luma PSNR {psnr:.2f} dB, SSIM {ssim:.4f}. Job A at 2 steps: 42.75 dB, 0.9868.\n"
+             f"The attention is {100 * share:.1f} percent of the scalar step at this shape, against 96.3 percent at 18,432 tokens.",
              ha="center", va="center", fontsize=9, color="#4b5563", linespacing=1.6)
     fig.subplots_adjust(top=0.885, bottom=0.165, left=0.1, right=0.97, hspace=0.34)
     target = DATA.parent / f"h3-512-2026-10-27{suffix}.png"
