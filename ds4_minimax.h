@@ -22,10 +22,12 @@ extern "C" {
  * handoff's tools/minimax_ref.py (matches transformers 5.20.2
  * MiniMaxM3VLDecoderLayer to BF16 rounding). */
 typedef struct ds4_minimax_moe ds4_minimax_moe;
+typedef enum { DS4_MINIMAX_NORM_F32, DS4_MINIMAX_NORM_Q8 } ds4_minimax_norm;
 typedef struct {
     ds4_gpu_tensor *cur, *norm, *q4h, *q4s;
     uint32_t next;
     ds4_gvq_rows format;
+    ds4_minimax_norm norm_format;
 } ds4_minimax_residual_out;
 
 enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 6144, DS4_MINIMAX_FFN = 3072,
@@ -91,7 +93,8 @@ int ds4_gpu_minimax_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_te
  * DS4_MINIMAX_SPLIT_ROWS rows compute each row as a lone row; prefill rows
  * take MMQ (the input quantized once). */
 int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, ds4_gpu_tensor *out1, uint32_t w0, uint32_t w1,
-    const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows);
+    const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows,
+    ds4_minimax_norm prepared);
 
 /* Up to DS4_MINIMAX_SPLIT_ROWS rows: the three Q4_K projections `weights`
  * (q, k, v) into outs and the indexer's Q8_0 pair into iq/ik, one launch,
@@ -110,10 +113,12 @@ int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_ten
  * `next` is a record, norm = gemma_rms(cur) with that weight; with q4h, the
  * norm rows also as q4p's prepared input (ds4_gpu_gvq_q4p_prepared: FP16
  * [rows][6144] in q4h, the row scales in q4s). `branch_bf16`: BF16 branch
- * rows. */
+ * rows. NORM_Q8 writes the indexer's prepared MMQ input into context scratch
+ * instead of norm; q4h must also be set, and its prepared QKV consumer must
+ * precede the indexer without borrowing that scratch. */
 int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
     ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16,
-    ds4_gvq_rows format);
+    ds4_gvq_rows format, ds4_minimax_norm norm_output);
 
 /* SwiGLU-OAI of [rows][width] gate and up rows into `out`:
  * min(g, 7) * sigmoid(1.702 * min(g, 7)) * (clamp(u, -7, 7) + 1), in F32,

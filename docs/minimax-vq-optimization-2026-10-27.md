@@ -1,7 +1,7 @@
 # MiniMax-M3.1 VQ optimization, 2026-10-27
 
 Campaign target: at least three adopted prefill rounds, emphasizing long
-contexts, and three decode rounds. Current adoption: **prefill 2, decode 1**.
+contexts, and three decode rounds. Current adoption: **prefill 3, decode 1**.
 HF publication remains pending the completed campaign. The
 [October 25 report](minimax-vq-optimization-2026-10-25.md) is historical;
 its rounds do not count toward this campaign.
@@ -200,3 +200,48 @@ availability was 7.33–7.61 GiB with PSI zero. The
 [P3 receipt](benchmarks/minimax-m31-2026-10-27/p3.json) records the complete
 cohort, resources, affinity and target counters. The earlier pool-only and
 broad-eager diagnostic pairs remain excluded from adoption evidence.
+
+## P4: prepare indexer Q8 in both residual paths — adopted
+
+The new retained P1+D1+P3 profile measured a 50.952 s 64K suffix. The
+indexer's input quantizer still took 0.464 s in 840 calls. P4 revisits P2
+on this controlled baseline and extends it to P3's fused MoE residual.
+Both producers emit the canonical MMQ D4 Q8 layout into existing context
+scratch; when QKV consumes prepared q4p input too, the F32 norm is dead.
+The prepared QKV path leaves that scratch intact until the indexer reads
+it. Dense residuals and the fused MoE residual share the same Q8 helper.
+`DS4_MINIMAX_NORM_Q8=0` restores the retained quantizer and F32 norm.
+Decode, verify, media and tracing retain the F32 path. No new tensor buffer
+or floating-point reduction order is introduced.
+
+The earlier rejected P2 remains a rejection on its measured baseline;
+these are new measurements of the combined retained path. Twenty-six
+model-free reduction cases compare the producer with the actual canonical
+`quantize_mmq_q8_1_cuda` entry, including untouched slack/guard and stale
+F32 norm. Thirty-two native row cases also exercise real 512/128 × 6,144
+Q8_0 indexer matrices, passing NULL raw input to prove prepared consumption.
+All seven retained hot/F32 instruction streams match the preceding binary.
+
+A warmed seven-sample 4,096-row median improved P3 residual plus canonical
+Q8 quantization from **2.940736 to 2.027328 ms (-31.06%)**. The remaining
+payload is about 431 MB: a 1.83 ms floor at 235 GB/s, against 2.03 ms measured.
+NCU with clock control disabled measured 2.028480 ms at 2.196 GHz, 64
+registers and no spills. Total issued instructions fell 2.17% and global
+request sectors 24.66% against the retained pair. Sector counts include
+cached scale/metadata requests and are not DRAM byte counts.
+
+Three fresh-process pairs, same fixed CPU and 8K → 64K/256-token protocol,
+P1/D1/P3 enabled, only Q8 emission varied; medians in tok/s:
+
+| Frontier | Prefill off | Prefill on | Change | Decode off | Decode on |
+|---:|---:|---:|---:|---:|---:|
+| 8K | 1,207.70 | 1,231.24 | +1.95% | 21.03 | 21.13 |
+| 64K | 1,129.13 | 1,147.85 | +1.66% | 20.67 | 20.77 |
+
+All pairs improved prefill; the smallest 64K gain is 1.46%, above the
+control range of 0.31%. Decode shows no regression (+0.48% marginal median
+at both frontiers). All frontier logits and 256 token IDs match exactly in
+all six samples, with PSI zero. The
+[P4 receipt](benchmarks/minimax-m31-2026-10-27/p4.json) retains samples,
+affinity, host availability and counters. P4 contributes one prefill round;
+the three-prefill target is closed, with two decode rounds still pending.

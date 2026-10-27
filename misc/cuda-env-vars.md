@@ -29,6 +29,12 @@ graph allocation, before prefill, without launches or new tensor buffers.
 The measured sustained decode gain and unresolved driver/cache mechanism
 are recorded in the same report.
 
+`DS4_MINIMAX_NORM_Q8=0` restores the separate indexer input quantizer and
+F32 norm materialization. By default, text-prefill residuals (including the
+fused MoE path) emit exact MMQ Q8 into existing context scratch when QKV
+also consumes prepared q4p input. Decode, verify, media and traces keep
+F32 norm. Prepared QKV runs before the indexer without borrowing that scratch.
+
 ## DeepSeek V4.1 vision transfers
 
 `DS41_VISION_PINNED=0` restores direct pageable uploads from the vision

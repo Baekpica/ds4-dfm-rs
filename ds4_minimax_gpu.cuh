@@ -24,6 +24,7 @@
  * has a BF16 tensor, since prefill projections leave F32 sums. */
 #include "ds4_minimax.h"
 #include "cuda/minimax_decode.cuh"
+#include "cuda/minimax_q8.cuh"
 #include "cuda/minimax_mma8w.cuh"
 
 enum { MM_EXPERTS = DS4_MINIMAX_EXPERTS, MM_TABLE = 3 * MM_EXPERTS, MM_LAYERS = DS4_MINIMAX_MOE_LAYERS,
@@ -662,13 +663,25 @@ __global__ void __launch_bounds__(MM_Q8_WARPS * 32) mm_q8_gemv(mm_q8_two m, cons
  * verify widths, MMQ for prefill rows (the input quantized to Q8_1 once, each
  * output as ds4_mmq_q8_0_dense computes it). */
 extern "C" int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, ds4_gpu_tensor *out1, uint32_t w0,
-        uint32_t w1, const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows) {
+        uint32_t w1, const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows,
+        ds4_minimax_norm prepared) {
     const auto *a = (const uint8_t *)gvq_weight(ctx, w0, MM_TYPE_Q8_0, (uint64_t)outs0 * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES / 2);
     const auto *b = (const uint8_t *)gvq_weight(ctx, w1, MM_TYPE_Q8_0, (uint64_t)outs1 * (cols / MM_Q8_BLOCK) * MM_Q8_BYTES / 2);
-    if (!a || !b || !rows || !cols || cols % MM_Q8_BLOCK || !outs0 || !outs1 ||
-        !gvq_floats(input, (uint64_t)rows * cols) || !gvq_floats(out0, (uint64_t)rows * outs0) ||
+    if ((prepared != DS4_MINIMAX_NORM_F32 && prepared != DS4_MINIMAX_NORM_Q8) ||
+        !a || !b || !rows || !cols || cols % MM_Q8_BLOCK || !outs0 || !outs1 ||
+        (prepared == DS4_MINIMAX_NORM_F32 && !gvq_floats(input, (uint64_t)rows * cols)) ||
+        !gvq_floats(out0, (uint64_t)rows * outs0) ||
         !gvq_floats(out1, (uint64_t)rows * outs1) || !gvq_stream(ctx)) {
         return 0;
+    }
+    if (prepared == DS4_MINIMAX_NORM_Q8) {
+        if (rows <= MM_ROUTER_ROWS || cols != MM_HIDDEN || ctx->scratch->bytes < mm_norm_q8_bytes(rows)) { return 0; }
+        const cudaStream_t stream = ds4_mmq_stream_for_call();
+        return ds4_mmq_q8_0_dense_preq(a, ctx->scratch->ptr, ctx->scratch->bytes, (float *)out0->ptr,
+                (int)outs0, (int)rows, (int)cols, stream) == 0 &&
+            ds4_mmq_q8_0_dense_preq(b, ctx->scratch->ptr, ctx->scratch->bytes, (float *)out1->ptr,
+                (int)outs1, (int)rows, (int)cols, stream) == 0 &&
+            cuda_ok(cudaGetLastError(), "MiniMax prepared indexer projections");
     }
     if (rows > MM_ROUTER_ROWS) {
         return ds4_mmq_q8_0_dense_pair(a, b, (const float *)input->ptr, (float *)out0->ptr, (float *)out1->ptr,
@@ -1014,11 +1027,16 @@ extern "C" int ds4_gpu_minimax_prepare_decode(void) {
 
 static bool mm_residual_valid(ds4_gvq_ctx *ctx, const ds4_minimax_residual_out *out, uint32_t rows) {
     if (!ctx || rows <= MM_DECODE_ROWS || !out ||
-        (out->format != DS4_GVQ_ROWS_F32 && out->format != DS4_GVQ_ROWS_BF16)) { return false; }
+        (out->format != DS4_GVQ_ROWS_F32 && out->format != DS4_GVQ_ROWS_BF16) ||
+        (out->norm_format != DS4_MINIMAX_NORM_F32 && out->norm_format != DS4_MINIMAX_NORM_Q8)) { return false; }
     const bool next = out->next != DS4_GVQ_NO_LINK;
+    const bool index_q8 = out->norm_format == DS4_MINIMAX_NORM_Q8;
+    if (index_q8 && (!next || !out->q4h || !ctx->scratch ||
+            ctx->scratch->bytes < mm_norm_q8_bytes(rows))) { return false; }
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
     return gvq_floats(out->cur, out->format == DS4_GVQ_ROWS_BF16 ? count / 2 : count) &&
-        (!next || (gvq_weight(ctx, out->next, GVQ_TYPE_BF16, MM_HIDDEN) && gvq_floats(out->norm, count))) &&
+        (!next || (gvq_weight(ctx, out->next, GVQ_TYPE_BF16, MM_HIDDEN) &&
+            (index_q8 || gvq_floats(out->norm, count)))) &&
         (!out->q4h || (next && out->q4h->bytes >= count * sizeof(__half) && gvq_floats(out->q4s, rows)));
 }
 
@@ -1032,18 +1050,28 @@ static cudaError_t mm_reduce_finish(ds4_gvq_ctx *ctx, void *out, const __nv_bflo
     }
     const auto *next = residual->next == DS4_GVQ_NO_LINK ? nullptr
         : (const __nv_bfloat16 *)gvq_weight(ctx, residual->next, GVQ_TYPE_BF16, MM_HIDDEN);
-    auto launch = [&](auto *cur, auto *sh) {
-        mm_moe_residual_kernel<<<rows, MM_ROW_THREADS, 0, stream>>>(cur, down, weights, pairs, order, sh,
-            next ? (float *)residual->norm->ptr : nullptr, next,
+    const bool index_q8 = residual->norm_format == DS4_MINIMAX_NORM_Q8;
+    float *target = next ? (float *)(index_q8 ? ctx->scratch->ptr : residual->norm->ptr) : nullptr;
+    auto launch = [&](auto *cur, auto *sh, auto index) {
+        using CT = std::remove_pointer_t<decltype(cur)>;
+        using ST = std::remove_const_t<std::remove_pointer_t<decltype(sh)>>;
+        constexpr bool INDEX = decltype(index)::value;
+        mm_moe_residual_kernel<CT, ST, INDEX><<<rows, MM_ROW_THREADS, 0, stream>>>(cur, down, weights, pairs, order, sh,
+            target, next,
             residual->q4h ? (__half *)residual->q4h->ptr : nullptr,
             residual->q4h ? (float *)residual->q4s->ptr : nullptr);
     };
-    auto select = [&](auto *cur) {
-        if (bf16 & DS4_MINIMAX_BF16_SHARED) { launch(cur, (const __nv_bfloat16 *)shared); }
-        else { launch(cur, (const float *)shared); }
+    auto select = [&](auto *cur, auto index) {
+        if (bf16 & DS4_MINIMAX_BF16_SHARED) { launch(cur, (const __nv_bfloat16 *)shared, index); }
+        else { launch(cur, (const float *)shared, index); }
     };
-    if (residual->format == DS4_GVQ_ROWS_BF16) { select((__nv_bfloat16 *)residual->cur->ptr); }
-    else { select((float *)residual->cur->ptr); }
+    if (residual->format == DS4_GVQ_ROWS_BF16) {
+        if (index_q8) { select((__nv_bfloat16 *)residual->cur->ptr, std::true_type{}); }
+        else { select((__nv_bfloat16 *)residual->cur->ptr, std::false_type{}); }
+    } else {
+        if (index_q8) { select((float *)residual->cur->ptr, std::true_type{}); }
+        else { select((float *)residual->cur->ptr, std::false_type{}); }
+    }
     return cudaGetLastError();
 }
 
@@ -1082,29 +1110,37 @@ extern "C" int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const 
 
 extern "C" int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
         ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16,
-        ds4_gvq_rows format) {
+        ds4_gvq_rows format, ds4_minimax_norm norm_output) {
     const auto *n = next == DS4_GVQ_NO_LINK ? nullptr
         : (const __nv_bfloat16 *)gvq_weight(ctx, next, GVQ_TYPE_BF16, MM_HIDDEN);
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
     const bool compact = format == DS4_GVQ_ROWS_BF16;
+    const bool index_q8 = norm_output == DS4_MINIMAX_NORM_Q8;
+    if (norm_output != DS4_MINIMAX_NORM_F32 && norm_output != DS4_MINIMAX_NORM_Q8) { return 0; }
+    if (index_q8 && (!n || !q4h || rows <= MM_DECODE_ROWS || !ctx ||
+            ctx->scratch->bytes < mm_norm_q8_bytes(rows))) { return 0; }
     if ((next != DS4_GVQ_NO_LINK && !n) || !rows || !gvq_floats(cur, compact ? count / 2 : count) ||
         !gvq_floats(branch, count) ||
-        (n && !gvq_floats(norm, count)) || (q4h && (!n || q4h->bytes < count * sizeof(__half) ||
+        (n && !index_q8 && !gvq_floats(norm, count)) || (q4h && (!n || q4h->bytes < count * sizeof(__half) ||
             !gvq_floats(q4s, rows)))) { return 0; }
-    auto launch = [&](auto *values) {
+    float *target = n ? (float *)(index_q8 ? ctx->scratch->ptr : norm->ptr) : nullptr;
+    auto launch = [&](auto *values, auto index) {
         using CT = std::remove_pointer_t<decltype(values)>;
+        constexpr bool INDEX = decltype(index)::value;
         if (branch_bf16) {
-            glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<CT, __nv_bfloat16>, rows, MM_ROW_THREADS, 0,
-                ds4_current_stream(), values, (const __nv_bfloat16 *)branch->ptr, n ? (float *)norm->ptr : nullptr,
+            glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<CT, __nv_bfloat16, INDEX>, rows, MM_ROW_THREADS, 0,
+                ds4_current_stream(), values, (const __nv_bfloat16 *)branch->ptr, target,
                 n, q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
         } else {
-            glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<CT, float>, rows, MM_ROW_THREADS, 0,
-                ds4_current_stream(), values, (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n,
+            glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<CT, float, INDEX>, rows, MM_ROW_THREADS, 0,
+                ds4_current_stream(), values, (const float *)branch->ptr, target, n,
                 q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
         }
     };
-    if (compact) { launch((__nv_bfloat16 *)cur->ptr); }
-    else { launch((float *)cur->ptr); }
+    if (compact && index_q8) { launch((__nv_bfloat16 *)cur->ptr, std::true_type{}); }
+    else if (compact) { launch((__nv_bfloat16 *)cur->ptr, std::false_type{}); }
+    else if (index_q8) { launch((float *)cur->ptr, std::true_type{}); }
+    else { launch((float *)cur->ptr, std::false_type{}); }
     return cuda_ok(cudaGetLastError(), "MiniMax residual");
 }
 

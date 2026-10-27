@@ -1,0 +1,360 @@
+{
+  "complete": true,
+  "samples": {
+    "off1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1207.70",
+        "gen_tokens": "256",
+        "gen_tps": "20.56",
+        "gen_tps_ss": "20.56",
+        "first_token_sec": "0.0510",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1128.33",
+        "gen_tokens": "256",
+        "gen_tps": "20.17",
+        "gen_tps_ss": "20.18",
+        "first_token_sec": "0.0522",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1232.44",
+        "gen_tokens": "256",
+        "gen_tps": "21.13",
+        "gen_tps_ss": "21.13",
+        "first_token_sec": "0.0495",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1145.96",
+        "gen_tokens": "256",
+        "gen_tps": "20.75",
+        "gen_tps_ss": "20.75",
+        "first_token_sec": "0.0500",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1226.67",
+        "gen_tokens": "256",
+        "gen_tps": "21.11",
+        "gen_tps_ss": "21.12",
+        "first_token_sec": "0.0497",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1148.37",
+        "gen_tokens": "256",
+        "gen_tps": "20.77",
+        "gen_tps_ss": "20.78",
+        "first_token_sec": "0.0508",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1210.56",
+        "gen_tokens": "256",
+        "gen_tps": "21.03",
+        "gen_tps_ss": "21.03",
+        "first_token_sec": "0.0506",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1131.88",
+        "gen_tokens": "256",
+        "gen_tps": "20.67",
+        "gen_tps_ss": "20.67",
+        "first_token_sec": "0.0501",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1206.76",
+        "gen_tokens": "256",
+        "gen_tps": "21.17",
+        "gen_tps_ss": "21.17",
+        "first_token_sec": "0.0498",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1129.13",
+        "gen_tokens": "256",
+        "gen_tps": "20.81",
+        "gen_tps_ss": "20.81",
+        "first_token_sec": "0.0500",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1231.24",
+        "gen_tokens": "256",
+        "gen_tps": "21.37",
+        "gen_tps_ss": "21.37",
+        "first_token_sec": "0.0494",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1147.85",
+        "gen_tokens": "256",
+        "gen_tps": "20.99",
+        "gen_tps_ss": "20.99",
+        "first_token_sec": "0.0495",
+        "kvcache_bytes": "2549102132"
+      }
+    ]
+  },
+  "frontiers": {
+    "8192": {
+      "prefill_tps": {
+        "off": [
+          1207.7,
+          1210.56,
+          1206.76
+        ],
+        "on": [
+          1232.44,
+          1226.67,
+          1231.24
+        ],
+        "off_median": 1207.7,
+        "on_median": 1231.24,
+        "change_pct": 1.949159559493241
+      },
+      "gen_tps": {
+        "off": [
+          20.56,
+          21.03,
+          21.17
+        ],
+        "on": [
+          21.13,
+          21.11,
+          21.37
+        ],
+        "off_median": 21.03,
+        "on_median": 21.13,
+        "change_pct": 0.4755111745125884
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.56,
+          21.03,
+          21.17
+        ],
+        "on": [
+          21.13,
+          21.12,
+          21.37
+        ],
+        "off_median": 21.03,
+        "on_median": 21.13,
+        "change_pct": 0.4755111745125884
+      }
+    },
+    "65536": {
+      "prefill_tps": {
+        "off": [
+          1128.33,
+          1131.88,
+          1129.13
+        ],
+        "on": [
+          1145.96,
+          1148.37,
+          1147.85
+        ],
+        "off_median": 1129.13,
+        "on_median": 1147.85,
+        "change_pct": 1.6579136149070361
+      },
+      "gen_tps": {
+        "off": [
+          20.17,
+          20.67,
+          20.81
+        ],
+        "on": [
+          20.75,
+          20.77,
+          20.99
+        ],
+        "off_median": 20.67,
+        "on_median": 20.77,
+        "change_pct": 0.4837929366231064
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.18,
+          20.67,
+          20.81
+        ],
+        "on": [
+          20.75,
+          20.78,
+          20.99
+        ],
+        "off_median": 20.67,
+        "on_median": 20.78,
+        "change_pct": 0.5321722302854326
+      }
+    }
+  },
+  "status": "adopted",
+  "scope": "P1+D1+P3 retained; emit prepared indexer Q8 from ordinary and fused-MoE residual; plain decode",
+  "source_base": "bd4e44d8",
+  "binary_sha256": "824fd08c593e2fac4c3a19c344f93f20f2774ca031dc91526ef226a8a76ed92e",
+  "protocol": {
+    "module_loading": "LAZY",
+    "main_cpu": 5,
+    "helper_cpus": "5-9,15-19",
+    "main_pinning": "after graph allocation during untimed warmup",
+    "cur_bf16": 1,
+    "preload_decode": 1,
+    "reduce_residual": 1,
+    "variable": "DS4_MINIMAX_NORM_Q8",
+    "ctx_alloc": 131072,
+    "warmup_prefill": 4096,
+    "generation_tokens": 256,
+    "frontiers": [
+      8192,
+      65536
+    ]
+  },
+  "numerics": "All 200064 logits and all 256 IDs bit-identical at both frontiers in all six samples. Seven retained hot/F32 kernel instruction streams unchanged.",
+  "resource_and_affinity": {
+    "off1": {
+      "min_available_gib": 7.4208221435546875,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 177,
+      "busy_sm_mhz_min": 2184.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "on1": {
+      "min_available_gib": 7.3887481689453125,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 173,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "on2": {
+      "min_available_gib": 7.405948638916016,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 173,
+      "busy_sm_mhz_min": 2184.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "off2": {
+      "min_available_gib": 7.405506134033203,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 175,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "off3": {
+      "min_available_gib": 7.608913421630859,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 175,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "on3": {
+      "min_available_gib": 7.250202178955078,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 173,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    }
+  },
+  "isolated_warm_median_ms": {
+    "P3_fused_plus_canonical_Q8": 2.940736,
+    "combined_P4": 2.027328,
+    "samples": 7,
+    "rows": 4096,
+    "routes": "synthetic skewed, not every producer cache state"
+  },
+  "focused_checks": {
+    "reduce_cases": 26,
+    "native_row_cases": 32,
+    "canonical": "actual quantize_mmq_q8_1_cuda entry with the same dimensions as ds4_mmq_q8_0_quantize_ref",
+    "checks": [
+      "prepared bytes",
+      "untouched tail and guard",
+      "dead F32 norm",
+      "actual 512/128 x 6144 Q8_0 MMQ consumers"
+    ]
+  },
+  "target_ncu": {
+    "gpu__time_duration.sum": {
+      "unit": "ns",
+      "value": 2028480.0
+    },
+    "launch__registers_per_thread": {
+      "unit": "register/thread",
+      "value": 64.0
+    },
+    "smsp__inst_executed.sum": {
+      "unit": "inst",
+      "value": 79507456.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "unit": "sector",
+      "value": 11403264.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "unit": "sector",
+      "value": 5115904.0
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "unit": "hz",
+      "value": 2196039029.22
+    }
+  },
+  "work_comparison": {
+    "separate_issued_instructions": 81268736.0,
+    "fused_issued_instructions": 79507456.0,
+    "instruction_change_pct": -2.167229474320853,
+    "separate_global_request_sectors": 21925888.0,
+    "fused_global_request_sectors": 16519168.0,
+    "request_change_pct": -24.65906968055296,
+    "note": "Cached metadata/scale requests are included; not DRAM byte counts. Canonical quantizer counter receipt reused at same 4096x6144 shape."
+  },
+  "source_sha256": {
+    "ds4_minimax.h": "ad108aeaba1bad6c268804aad96dc91849b8b46d18ff81fd345b3833a491ed72",
+    "ds4_minimax_gpu.cuh": "d10f5c4dfefa29c03f3287647c15c65304f47b09f67bec5de75fbfdc4441194d",
+    "ds4_minimax_graph.inc": "928812501acb7bf2a650e3cab29228849a74d2b664afe9e00c614ef780651b5a",
+    "ds4_minimax_draft.inc": "69d0f769966d15673092fe0986648339ff792d7f6df1843da83c3d292927c425",
+    "cuda/minimax_rows.cuh": "5fae51e97136f4a482d00e29ff5f0109a1c6ab30ac024ea7426cf95cec0b964e",
+    "cuda/minimax_q8.cuh": "589ba39e647a22e3ecd9cb69543780bdcbc1341d87a35348c2ad0c3e74dd0875"
+  }
+}

@@ -2010,8 +2010,8 @@ tests/test_minimax_mma8w: tests/test_minimax_mma8w.cu cuda/minimax_mma8w.cuh cud
 tests/test_minimax_decode: tests/test_minimax_decode.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
-tests/test_minimax_reduce: tests/test_minimax_reduce.cu cuda/minimax_rows.cuh cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h ds4_glmvq.h ds4_gpu.h
-	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+tests/test_minimax_reduce: tests/test_minimax_reduce.cu cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/mmq/quantize.cuh cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h ds4_glmvq.h ds4_gpu.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -std=c++17 -I. -o $@ $< cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
 
 tests/test_minimax_rows.o: tests/test_minimax_rows.c ds4.h ds4_gpu.h ds4_glmvq.h ds4_minimax.h
 	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
@@ -2087,7 +2087,7 @@ MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_
 	ds4_minimax_payload.inc ds4_minimax_session.inc ds4_minimax_batch.inc ds4_minimax_bank_payload.inc \
 	ds4_minimax_draft.inc ds4_minimax_vision.inc
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/minimax_rows.cuh cuda/glm_vq_ops.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/glm_vq_ops.cuh
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
 ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)

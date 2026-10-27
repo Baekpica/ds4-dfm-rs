@@ -3,6 +3,7 @@
 
 #include "../ds4_minimax.h"
 #include "glm_vq_q4p.cuh"
+#include "minimax_q8.cuh"
 
 enum { MM_ROW_THREADS = 256, MM_ROW_VALUES = DS4_MINIMAX_HIDDEN / MM_ROW_THREADS };
 
@@ -62,7 +63,7 @@ __device__ __forceinline__ void mm_row_q4p(const float *x, uint32_t cols, __half
 
 // With q4h, the norm row also lands as q4p's prepared input (the q4p pass
 // over it read 100 MB and wrote 50 MB per 4,096-row call).
-template <typename CT, typename BT>
+template <typename CT, typename BT, bool INDEX_Q8 = false>
 __global__ void mm_residual_kernel(CT *cur, const BT *branch, float *norm, const __nv_bfloat16 *next,
         __half *q4h, float *q4s) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
@@ -88,13 +89,16 @@ __global__ void mm_residual_kernel(CT *cur, const BT *branch, float *norm, const
     }
     if (!next) { return; }
     mm_row_rms(x, w, y, scratch);
-    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { norm[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
+    if constexpr (!INDEX_Q8) {
+        for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { norm[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
+    }
     if (q4h) { mm_row_q4p<MM_ROW_VALUES>(y, DS4_MINIMAX_HIDDEN, q4h, q4s, scratch); }
+    if constexpr (INDEX_Q8) { mm_row_q8<MM_ROW_VALUES>(y, (mm_norm_q8 *)norm, gridDim.x); }
 }
 
 // Prefill MoE output is consumed only by this residual: keep its four
 // expert rows in registers instead of materializing a BF16 branch.
-template <typename CT, typename ST>
+template <typename CT, typename ST, bool INDEX_Q8 = false>
 __global__ void mm_moe_residual_kernel(CT *cur, const __nv_bfloat16 *down, const float *weights,
         const uint32_t *pairs, const uint32_t *order, const ST *shared, float *norm,
         const __nv_bfloat16 *next, __half *q4h, float *q4s) {
@@ -129,8 +133,11 @@ __global__ void mm_moe_residual_kernel(CT *cur, const __nv_bfloat16 *down, const
     }
     if (!next) { return; }
     mm_row_rms(x, w, y, scratch);
-    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { norm[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
+    if constexpr (!INDEX_Q8) {
+        for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { norm[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
+    }
     if (q4h) { mm_row_q4p<MM_ROW_VALUES>(y, DS4_MINIMAX_HIDDEN, q4h, q4s, scratch); }
+    if constexpr (INDEX_Q8) { mm_row_q8<MM_ROW_VALUES>(y, (mm_norm_q8 *)norm, gridDim.x); }
 }
 
 #endif

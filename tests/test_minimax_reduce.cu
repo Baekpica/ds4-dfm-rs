@@ -1,5 +1,6 @@
 // Model-free prefill MoE reduce + residual: CPU sums and the separate path.
 #include "cuda/minimax_rows.cuh"
+#include "cuda/mmq/quantize.cuh"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -13,6 +14,11 @@ enum { H = DS4_MINIMAX_HIDDEN, U = DS4_MINIMAX_USED, E = DS4_MINIMAX_EXPERTS };
 #define CK(x) CHECK((x) == cudaSuccess)
 static uint32_t state = 0x98f62a71;
 static uint32_t rng() { state ^= state << 13; state ^= state >> 17; state ^= state << 5; return state; }
+static void canonical_q8(const float *input, void *out, unsigned rows) {
+    // Same entry and dimensions as ds4_mmq_q8_0_quantize_ref; H is padded.
+    quantize_mmq_q8_1_cuda(input, nullptr, out, GGML_TYPE_Q8_0, H, H, 0, 0, H, rows, 1, 1, nullptr);
+    CK(cudaGetLastError());
+}
 static float value(float x) { return x; }
 static float value(__nv_bfloat16 x) { return __bfloat162float(x); }
 template <typename T> static T cast(float x) {
@@ -44,7 +50,8 @@ __global__ void reference_reduce(__nv_bfloat16 *out, const __nv_bfloat16 *down, 
 }
 
 template <typename CT, typename ST>
-static void run(unsigned rows, bool next, bool prepared, bool timing) {
+static void run(unsigned rows, bool next, bool prepared, bool timing, bool index = false) {
+    CHECK(!index || (next && prepared));
     const size_t n = (size_t)rows * H;
     std::vector<uint32_t> expert(rows * U), counts(E), pairs(rows * U), order(rows * U), cursor(E), filled(rows);
     std::vector<float> weights(rows * U), scales(rows), norm(n);
@@ -73,15 +80,27 @@ static void run(unsigned rows, bool next, bool prepared, bool timing) {
     auto *rw = device(weights); auto *p = device(pairs), *o = device(order);
     auto *an = device(norm), *fn = device(norm), *as = device(scales), *fs = device(scales);
     auto *ah = device(half), *fh = device(half);
+    const size_t qbytes = mm_norm_q8_bytes(rows), qdata = (size_t)rows * (H / MM_NORM_Q8_TILE) * sizeof(mm_norm_q8);
+    uint8_t *aq = nullptr, *fq = nullptr;
+    if (index) {
+        CK(cudaMalloc(&aq, qbytes)); CK(cudaMalloc(&fq, qbytes + 64));
+        CK(cudaMemset(fq, 0xa5, qbytes + 64));
+    }
     CK(cudaMemset(an, 0xa5, n * sizeof(float))); CK(cudaMemset(fn, 0xa5, n * sizeof(float)));
     auto old = [&] {
         reference_reduce<<<(n + 255) / 256, 256>>>(b, d, rw, p, o, s, n);
         mm_residual_kernel<<<rows, MM_ROW_THREADS>>>(a, b, an, next ? w : nullptr,
             prepared ? ah : nullptr, prepared ? as : nullptr);
+        if (index) { canonical_q8(an, aq, rows); }
     };
     auto fused = [&] {
-        mm_moe_residual_kernel<<<rows, MM_ROW_THREADS>>>(f, d, rw, p, o, s, fn, next ? w : nullptr,
-            prepared ? fh : nullptr, prepared ? fs : nullptr);
+        if (index) {
+            mm_moe_residual_kernel<CT, ST, true><<<rows, MM_ROW_THREADS>>>(f, d, rw, p, o, s,
+                (float *)fq, w, fh, fs);
+        } else {
+            mm_moe_residual_kernel<<<rows, MM_ROW_THREADS>>>(f, d, rw, p, o, s, fn, next ? w : nullptr,
+                prepared ? fh : nullptr, prepared ? fs : nullptr);
+        }
     };
     old(); fused(); CK(cudaDeviceSynchronize());
     auto ac = read(a, n), fc = read(f, n);
@@ -101,9 +120,14 @@ static void run(unsigned rows, bool next, bool prepared, bool timing) {
         CHECK(!memcmp(&expected_cur, &fc[i], sizeof(CT)));
     }
     auto av = read(an, n), fv = read(fn, n);
-    CHECK(!memcmp(av.data(), fv.data(), n * sizeof(float)));
-    if (!next) {
+    if (!index) { CHECK(!memcmp(av.data(), fv.data(), n * sizeof(float))); }
+    if (!next || index) {
         for (size_t i = 0; i < n * sizeof(float); i++) { CHECK(((const uint8_t *)fv.data())[i] == 0xa5); }
+    }
+    if (index) {
+        auto expected = read(aq, qdata), actual = read(fq, qbytes + 64);
+        CHECK(!memcmp(expected.data(), actual.data(), qdata));
+        for (size_t i = qdata; i < actual.size(); i++) { CHECK(actual[i] == 0xa5); }
     }
     if (prepared) {
         auto ahv = read(ah, n), fhv = read(fh, n);
@@ -116,35 +140,46 @@ static void run(unsigned rows, bool next, bool prepared, bool timing) {
         std::vector<float> old_ms, fused_ms;
         for (unsigned i = 0; i < 7; i++) {
             CK(cudaMemcpy(a, original, n * sizeof(CT), cudaMemcpyDeviceToDevice));
-            CK(cudaEventRecord(start)); old(); CK(cudaEventRecord(end)); CK(cudaEventSynchronize(end));
+            CK(cudaEventRecord(start));
+            if (index) {
+                mm_moe_residual_kernel<<<rows, MM_ROW_THREADS>>>(a, d, rw, p, o, s, an, w, ah, as);
+                canonical_q8(an, aq, rows);
+            } else { old(); }
+            CK(cudaEventRecord(end)); CK(cudaEventSynchronize(end));
             float ms; CK(cudaEventElapsedTime(&ms, start, end)); old_ms.push_back(ms);
             CK(cudaMemcpy(f, original, n * sizeof(CT), cudaMemcpyDeviceToDevice));
             CK(cudaEventRecord(start)); fused(); CK(cudaEventRecord(end)); CK(cudaEventSynchronize(end));
             CK(cudaEventElapsedTime(&ms, start, end)); fused_ms.push_back(ms);
         }
         std::sort(old_ms.begin(), old_ms.end()); std::sort(fused_ms.begin(), fused_ms.end());
-        printf("REDUCE_TIME rows=%u old_ms=%.6f fused_ms=%.6f\n", rows, old_ms[3], fused_ms[3]);
+        printf("REDUCE_TIME rows=%u index_q8=%d old_ms=%.6f fused_ms=%.6f\n", rows, index, old_ms[3], fused_ms[3]);
         CK(cudaEventDestroy(end)); CK(cudaEventDestroy(start));
     }
-    printf("REDUCE rows=%u cur_bf16=%d shared_bf16=%d next=%d q4p=%d PASS\n", rows,
-        !std::is_same_v<CT, float>, !std::is_same_v<ST, float>, next, prepared);
+    printf("REDUCE rows=%u cur_bf16=%d shared_bf16=%d next=%d q4p=%d index_q8=%d PASS\n", rows,
+        !std::is_same_v<CT, float>, !std::is_same_v<ST, float>, next, prepared, index);
+    if (index) { CK(cudaFree(fq)); CK(cudaFree(aq)); }
     CK(cudaFree(fh)); CK(cudaFree(ah)); CK(cudaFree(fs)); CK(cudaFree(as)); CK(cudaFree(fn)); CK(cudaFree(an));
     CK(cudaFree(o)); CK(cudaFree(p)); CK(cudaFree(rw)); CK(cudaFree(f)); CK(cudaFree(a)); CK(cudaFree(original));
     CK(cudaFree(s)); CK(cudaFree(w)); CK(cudaFree(b)); CK(cudaFree(d));
 }
 
 int main(int argc, char **argv) {
-    CHECK(argc <= 2);
-    if (argc == 2) {
+    CHECK(argc <= 3);
+    if (argc >= 2) {
         const unsigned rows = (unsigned)strtoul(argv[1], nullptr, 10);
         CHECK(rows > DS4_MINIMAX_SPLIT_ROWS && rows <= 4096);
-        run<__nv_bfloat16, __nv_bfloat16>(rows, true, true, true);
+        CHECK(argc == 2 || !strcmp(argv[2], "q8"));
+        run<__nv_bfloat16, __nv_bfloat16>(rows, true, true, true, argc == 3);
     } else {
         for (unsigned rows : {9u, 128u, 4096u}) {
             run<float, float>(rows, true, true, false);
             run<float, __nv_bfloat16>(rows, true, true, false);
             run<__nv_bfloat16, float>(rows, true, true, false);
             run<__nv_bfloat16, __nv_bfloat16>(rows, true, true, rows == 4096);
+            run<float, float>(rows, true, true, false, true);
+            run<float, __nv_bfloat16>(rows, true, true, false, true);
+            run<__nv_bfloat16, float>(rows, true, true, false, true);
+            run<__nv_bfloat16, __nv_bfloat16>(rows, true, true, rows == 4096, true);
         }
         run<__nv_bfloat16, __nv_bfloat16>(9, false, false, false);
         run<__nv_bfloat16, __nv_bfloat16>(9, true, false, false);

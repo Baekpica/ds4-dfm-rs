@@ -27,7 +27,7 @@ typedef struct {
     uint32_t draft_first;
     bool ready, failed, borrowed;
     // q4h/q4s hold q4p's prepared copy of norm (the next layer's input norm).
-    bool norm_q4p;
+    bool norm_q4p, norm_q8;
     // This layer's branch rows as BF16 (prefill, from q4p or the MoE reduce;
     // every reader rounds them to BF16 first): o_proj's output, the MLP's
     // (shared or dense) output and the FFN output.
@@ -279,8 +279,8 @@ static bool minimax_projections(ds4_minimax_graph *g, const ds4_model *m, const 
     } else if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows, g->norm_q4p)) {
         return false;
     }
-    const bool ok =
-        ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ, MINIMAX_INDEX, rows) != 0;
+    const bool ok = ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ,
+        MINIMAX_INDEX, rows, g->norm_q8 ? DS4_MINIMAX_NORM_Q8 : DS4_MINIMAX_NORM_F32) != 0;
     if (!ok) { fprintf(stderr, "ds4: MiniMax indexer projection failed (rows=%u)\n", rows); }
     return ok;
 }
@@ -442,6 +442,15 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
     const ds4_layer_weights *n = il + 1u < MINIMAX_LAYERS ? &w->layer[il + 1u] : NULL;
     const ds4_tensor *const qkv[] = {n ? n->attn_q : NULL, n ? n->attn_k : NULL, n ? n->attn_v : NULL};
     const bool qkv_q4p = next && n && minimax_q4p(g, m, qkv, 3u, rows);
+    static int norm_q8 = -1;
+    if (norm_q8 < 0) {
+        const char *v = getenv("DS4_MINIMAX_NORM_Q8");
+        norm_q8 = !v || strcmp(v, "0");
+    }
+    // Prepared QKV leaves context scratch intact until the indexer reads it.
+    const bool index_q8 = norm_q8 && qkv_q4p && rows > DS4_MINIMAX_SPLIT_ROWS &&
+        !g->span_n && !minimax_traced();
+    const ds4_minimax_norm norm_format = index_q8 ? DS4_MINIMAX_NORM_Q8 : DS4_MINIMAX_NORM_F32;
     static int reduce_residual = -1;
     if (reduce_residual < 0) {
         const char *v = getenv("DS4_MINIMAX_REDUCE_RESIDUAL");
@@ -450,10 +459,10 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
     const bool fused = reduce_residual && !dense && rows > DS4_MINIMAX_SPLIT_ROWS &&
         !g->span_n && !minimax_traced();
     const ds4_minimax_residual_out residual = {g->cur, g->norm, qkv_q4p ? g->q4h : NULL, g->q4s,
-        next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, g->cur_rows};
+        next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, g->cur_rows, norm_format};
     const bool ok = minimax_attention(g, m, w, il, rows, pos) &&
         ds4_gpu_minimax_residual(g->gvq, g->cur, g->attn_out, g->norm, minimax_index(m, l->ffn_norm), rows,
-            gu_q4p ? g->q4h : NULL, g->q4s, g->attn_bf16, g->cur_rows) &&
+            gu_q4p ? g->q4h : NULL, g->q4s, g->attn_bf16, g->cur_rows, DS4_MINIMAX_NORM_F32) &&
         minimax_trace(il, pos, "attn", g->cur, hidden) &&
         minimax_ffn(g, m, l, il, rows, gu_q4p, fused ? &residual : NULL) &&
         (dense || (minimax_trace(il, pos, "routes", g->selected, route) &&
@@ -461,9 +470,10 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
         minimax_trace(il, pos, "ffn_out", g->ffn_out, hidden) &&
         (fused || ds4_gpu_minimax_residual(g->gvq, g->cur, g->ffn_out, g->norm,
             next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, rows, qkv_q4p ? g->q4h : NULL, g->q4s,
-            g->ffn_bf16, g->cur_rows)) &&
+            g->ffn_bf16, g->cur_rows, norm_format)) &&
         minimax_trace(il, pos, "ffn", g->cur, hidden);
     g->norm_q4p = ok && qkv_q4p;
+    g->norm_q8 = ok && index_q8;
     if (!ok) { fprintf(stderr, "ds4: MiniMax layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }
     return ok;
 }
@@ -555,6 +565,7 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
         return false;
     }
     g->norm_q4p = false;   // layer 0's q/k/v prepare their input themselves
+    g->norm_q8 = false;
     // DS4_MINIMAX_DSPARK_TAP=entry taps the residual entering a target layer
     // (TokenSpeed's reading); the default takes it after the layer (DFlash's
     // hidden_states[layer_id + 1], vLLM's boundary idx + 1, llama.cpp's
