@@ -116,6 +116,12 @@ static bool ling31_has_mtp(const ds4_model *m) {
     return model_find_tensor(m, "model.layers.72.input_layernorm.weight") != NULL;
 }
 
+static bool ling31_embedding_ssd(const ds4_model *m) {
+    ds4_str recipe;
+    return model_get_string(m, "ling_vq.recipe_id", &recipe) &&
+        ds4_streq(recipe, "ling31-1019-ivq8-all12-q4k-embssd-v1");
+}
+
 static void ling31_bind(ds4_weights *w, const ds4_model *m) {
     memset(w, 0, sizeof(*w));
     w->ling31 = xcalloc(LING31_LAYERS + 1u, sizeof(*w->ling31));
@@ -286,7 +292,9 @@ static ds4_context_memory ling31_memory(uint32_t ctx, uint32_t cap) {
     m.raw_cap = ctx;
     m.prefill_cap = cap;
     m.raw_bytes = (uint64_t)mla * ling31_latent_bytes(ctx) + ling31_state_bytes();
-    m.scratch_bytes = ling31_workspace_bytes(cap) + ling31_control_bytes();
+    // Reserve bounded host embedding staging, used by the 1019 recipe.
+    m.scratch_bytes = ling31_workspace_bytes(cap) + ling31_control_bytes() +
+        (uint64_t)cap * L31_EMBD * sizeof(float);
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }
@@ -300,8 +308,12 @@ static uint32_t ling31_index(const ds4_model *m, const ds4_tensor *t) {
  * Expert records link their layer book; FP8 records carry their scale. */
 static bool ling31_gpu_bind(ds4_weights *w, const ds4_model *m) {
     if (!w->ling31 || !m->n_tensors || m->n_tensors > UINT32_MAX) { return false; }
-    ds4_gvq_record *records = xcalloc((size_t)m->n_tensors, sizeof(*records));
-    for (uint32_t i = 0; i < m->n_tensors; i++) {
+    const bool ssd_embed = ling31_embedding_ssd(m);
+    if (ssd_embed && (w->token_embd->type != DS4_TENSOR_BF16 ||
+        ling31_index(m, w->token_embd) + 1u != m->n_tensors)) { return false; }
+    const uint32_t count = (uint32_t)m->n_tensors - (ssd_embed ? 1u : 0u);
+    ds4_gvq_record *records = xcalloc(count, sizeof(*records));
+    for (uint32_t i = 0; i < count; i++) {
         const ds4_tensor *t = &m->tensors[i];
         const uint64_t cols = t->ndim ? t->dim[0] : 1u;
         const uint64_t rows = cols ? t->elements / cols : 0u;
@@ -323,7 +335,7 @@ static bool ling31_gpu_bind(ds4_weights *w, const ds4_model *m) {
             records[ling31_index(m, e->down[expert])].book = book;
         }
     }
-    w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, (uint32_t)m->n_tensors);
+    w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, count);
     free(records);
     return w->glmvq_gpu != NULL;
 }

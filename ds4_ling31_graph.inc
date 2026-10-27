@@ -40,6 +40,7 @@ typedef struct {
     ds4_gpu_tensor *latent[DS4_MAX_LAYER], *k_pe[DS4_MAX_LAYER];
     uint32_t matrices[LING31_LAYERS + 1u][3u * L31_EXPERTS];
     int32_t *host_positions;
+    float *host_embed; // 1019: requested BF16 SSD rows widened exactly for cur.
     /* MTP (mtp_drafts > 0): the recursive draft hidden, a verify's hidden
      * rows (row 0 is the pre-trial hidden) and logits, and the KDA journal
      * (slot r: state after verify row r). Draft-layer rows [0, mtp_len) are
@@ -92,6 +93,7 @@ static void ling31_graph_free(ds4_ling31_graph *g) {
     for (size_t i = 0; i < sizeof(mtp) / sizeof(mtp[0]); i++) { ds4_gpu_tensor_free(mtp[i]); }
     ds4_gpu_tensor_free(g->control_pool);
     free(g->host_positions);
+    free(g->host_embed);
     memset(g, 0, sizeof(*g));
 }
 
@@ -252,6 +254,9 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     g->lse = ds4_gpu_tensor_view(g->g, 0u, lse_bytes);
     g->lse_tmp = ds4_gpu_tensor_view(g->g, lse_bytes, lse_bytes);
     g->host_positions = xmalloc((size_t)cap * 3u * sizeof(*g->host_positions));
+    if (ling31_embedding_ssd(m)) {
+        g->host_embed = xmalloc((size_t)cap * L31_EMBD * sizeof(float));
+    }
     if (!g->q_abs || !g->latent_out || !g->logits || !g->inv_freq || !g->k_full || !g->value ||
         !g->attn_tmp || !g->lse || !g->lse_tmp || k_bytes > ds4_gpu_tensor_bytes(g->k) ||
         v_bytes > ds4_gpu_tensor_bytes(g->v) || !ling31_rope_table(g) ||
@@ -595,9 +600,23 @@ static bool l31_embed(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights
     for (uint32_t r = 0; r < rows; r++) {
         for (uint32_t a = 0; a < 3u; a++) { g->host_positions[r * 3u + a] = (int32_t)(pos + r); }
     }
-    return ds4_gpu_tensor_write(g->token, 0u, tokens, (uint64_t)rows * sizeof(int32_t)) &&
-        ds4_gpu_tensor_write(g->positions, 0u, g->host_positions, (uint64_t)rows * 3u * sizeof(int32_t)) &&
-        ds4_gpu_embed_tokens_quant_tensor(g->cur, g->token, m->map, m->size, w->token_embd->abs_offset,
+    if (!ds4_gpu_tensor_write(g->token, 0u, tokens, (uint64_t)rows * sizeof(int32_t)) ||
+        !ds4_gpu_tensor_write(g->positions, 0u, g->host_positions, (uint64_t)rows * 3u * sizeof(int32_t))) {
+        return false;
+    }
+    if (g->host_embed) {
+        const uint16_t *table = (const uint16_t *)(m->map + w->token_embd->abs_offset);
+        for (uint32_t r = 0; r < rows; r++) {
+            if (tokens[r] < 0 || (uint32_t)tokens[r] >= DS4_N_VOCAB) { return false; }
+            const uint16_t *row = table + (uint64_t)tokens[r] * L31_EMBD;
+            for (uint32_t c = 0; c < L31_EMBD; c++) {
+                const uint32_t bits = (uint32_t)row[c] << 16;
+                memcpy(&g->host_embed[(uint64_t)r * L31_EMBD + c], &bits, sizeof(bits));
+            }
+        }
+        return ds4_gpu_tensor_write(g->cur, 0u, g->host_embed, (uint64_t)rows * L31_EMBD * sizeof(float));
+    }
+    return ds4_gpu_embed_tokens_quant_tensor(g->cur, g->token, m->map, m->size, w->token_embd->abs_offset,
             w->token_embd->type, (uint32_t)w->token_embd->dim[1], rows, L31_EMBD);
 }
 

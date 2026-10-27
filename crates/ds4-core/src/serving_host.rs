@@ -387,7 +387,12 @@ pub fn fill_quote_facts(
             let mla = u64::from(s.n_full_attn_count) + u64::from(drafts > 0);
             let logits = u64::from(s.n_vocab) * SIZEOF_F32;
             let bank = state + mla * ling31_latent_bytes(s, ctx) + logits + ctx * SIZEOF_I32;
-            let scratch = ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s);
+            // The 1019 recipe gathers BF16 embedding rows on the host and
+            // widens them to the F32 residual. Reserve this bounded staging
+            // for this family; older device-embedding recipes leave it unused.
+            let staging = u64::from(native) * u64::from(s.n_embd) * SIZEOF_F32;
+            let scratch =
+                ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s) + staging;
             let mtp = if drafts > 0 {
                 drafts * state
                     + (LING31_MTP_ROWS + 2) * u64::from(s.n_embd) * SIZEOF_F32
@@ -3484,7 +3489,11 @@ mod tests {
         assert_eq!(facts.per_bank_bytes, Some(state + 10 * latent + host));
         assert_eq!(
             facts.scratch_bytes,
-            Some(ling31_workspace_bytes(s, 2048) + ling31_control_bytes(s))
+            Some(
+                ling31_workspace_bytes(s, 2048)
+                    + ling31_control_bytes(s)
+                    + 2048 * u64::from(s.n_embd) * SIZEOF_F32
+            )
         );
         assert_eq!(
             facts.mtp_state_bytes,

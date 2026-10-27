@@ -26,8 +26,12 @@ use crate::tensors::{ShardPlan, TensorError, TensorInventory};
 const MAX_METADATA: u64 = 64 * 1024 * 1024;
 const RELEASE: &str = "release.json";
 const FILES: &str = "files.json";
-/// Pinned inclusionAI/Ling-3.1-flash revision of every stored weight.
-const SOURCE_REVISION: &str = "a4ccd6b45c002ddb236f9cb77d52cc427482bf19";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    Trunk,
+    Mtp,
+    Embedding,
+}
 
 /// `release.json` features. MTP adds the role=mtp parts to the trunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -154,9 +158,10 @@ pub(super) fn asset(root: &Path, name: &str) -> Result<Vec<u8>> {
 
 struct Part {
     name: String,
-    role: Feature,
+    role: Role,
     entry: Value,
     recipe: String,
+    source: String,
 }
 
 /// The verified release entrypoint and the parts the feature selects, in
@@ -175,7 +180,8 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
             text(&release, "recipe_id")?.as_bytes(),
             text(&release, "recipe_id")?.as_bytes(),
         )
-        || text(&release, "source_revision")? != SOURCE_REVISION
+        || Some(text(&release, "source_revision")?)
+            != super::source_revision(text(&release, "recipe_id")?.as_bytes())
         || text(&release, "entrypoint")? != RELEASE
     {
         return Err(fail("release format/recipe/source revision"));
@@ -187,8 +193,11 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
         let name = text(entry, "path")?;
         filename(name)?;
         let role = match text(entry, "role")? {
-            "trunk" => Feature::Trunk,
-            "mtp" => Feature::Mtp,
+            "trunk" => Role::Trunk,
+            "mtp" => Role::Mtp,
+            "embedding" if text(&release, "recipe_id")?.as_bytes() == super::RECIPE_1019 => {
+                Role::Embedding
+            }
             _ => return Err(fail("unknown part role")),
         };
         let listed = index
@@ -196,20 +205,21 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
             .ok_or(fail("part missing from files.json"))?;
         if !name.ends_with(".gguf")
             || !names.insert(name.to_owned())
-            || entry.get("required").and_then(Value::as_bool) != Some(role == Feature::Trunk)
+            || entry.get("required").and_then(Value::as_bool) != Some(role != Role::Mtp)
             || listed.get("sha256") != entry.get("sha256")
             || listed.get("bytes") != entry.get("bytes")
         {
             return Err(fail("part identity/role"));
         }
-        trunk |= role == Feature::Trunk;
-        mtp |= role == Feature::Mtp;
-        if role == Feature::Trunk || feature == Feature::Mtp {
+        trunk |= role == Role::Trunk;
+        mtp |= role == Role::Mtp;
+        if role != Role::Mtp || feature == Feature::Mtp {
             selected.push(Part {
                 name: name.to_owned(),
                 role,
                 entry: entry.clone(),
                 recipe: text(&release, "recipe_id")?.to_owned(),
+                source: text(&release, "source_revision")?.to_owned(),
             });
         }
     }
@@ -226,6 +236,18 @@ fn parts(root: &Path, feature: Feature) -> Result<Vec<Part>> {
             return Err(fail("unexpected GGUF part"));
         }
     }
+    if text(&release, "recipe_id")?.as_bytes() == super::RECIPE_1019 {
+        if selected
+            .iter()
+            .filter(|p| p.role == Role::Embedding)
+            .count()
+            != 1
+        {
+            return Err(fail("need exactly one embedding part"));
+        }
+        // Keep the host-only table last, so it has no GPU pointer record.
+        selected.sort_by_key(|p| p.role == Role::Embedding);
+    }
     Ok(selected)
 }
 
@@ -237,15 +259,18 @@ pub(super) fn part_count(root: &Path, feature: Feature) -> Result<u32> {
     Ok(parts(root, feature)?.len() as u32)
 }
 
-/// On-disk bytes of the selected parts: the span the model maps. Hashes are
-/// checked when the release opens, not here.
+/// Device-resident bytes of the selected parts, excluding the 1019 SSD
+/// embedding. Hashes are checked when the release opens, not here.
 pub(super) fn part_bytes(root: &Path, feature: Feature) -> Result<u64> {
-    parts(root, feature)?.iter().try_fold(0u64, |total, part| {
-        let len = std::fs::metadata(root.join(&part.name))
-            .map_err(GgufError::Io)?
-            .len();
-        Ok(total.saturating_add(len))
-    })
+    parts(root, feature)?
+        .iter()
+        .filter(|p| p.role != Role::Embedding)
+        .try_fold(0u64, |total, part| {
+            let len = std::fs::metadata(root.join(&part.name))
+                .map_err(GgufError::Io)?
+                .len();
+            Ok(total.saturating_add(len))
+        })
 }
 
 const MAX_VERIFIERS: usize = 16;
@@ -312,13 +337,13 @@ fn verify_part(root: &Path, part: &Part) -> Result<(PathBuf, u64, TensorInventor
     let path = root.join(&part.name);
     let g = GgufFile::open(&path)?;
     random_access(g.as_bytes());
-    let role: &[u8] = if part.role == Feature::Trunk {
-        b"trunk"
-    } else {
-        b"mtp"
+    let role: &[u8] = match part.role {
+        Role::Trunk => b"trunk",
+        Role::Mtp => b"mtp",
+        Role::Embedding => b"embedding",
     };
     if g.get_string("ling_vq.part_role") != Some(role)
-        || g.get_string("ling_vq.source_revision") != Some(SOURCE_REVISION.as_bytes())
+        || g.get_string("ling_vq.source_revision") != Some(part.source.as_bytes())
         || !part_recipe_ok(
             part.recipe.as_bytes(),
             g.get_string("ling_vq.recipe_id").unwrap_or_default(),
@@ -327,6 +352,39 @@ fn verify_part(root: &Path, part: &Part) -> Result<(PathBuf, u64, TensorInventor
         return Err(fail("part role/source revision/recipe mismatch"));
     }
     let inv = super::streamed(|| TensorInventory::from_file(&path, &g))?;
+    if part.recipe.as_bytes() == super::RECIPE_1019 {
+        let embedding = inv.tensors.len() == 1 && inv.tensors[0].name == super::EMBEDDING;
+        if (part.role == Role::Embedding) != embedding
+            || inv.tensors.iter().any(|t| t.name == super::EMBEDDING) != embedding
+        {
+            return Err(fail("embedding tensor outside its part"));
+        }
+        let recipe = json(&asset(root, "recipe.json")?)?;
+        if text(&recipe, "recipe_id")? != part.recipe
+            || text(&recipe, "source_revision")? != part.source
+        {
+            return Err(fail("recipe identity mismatch"));
+        }
+        let allocation = recipe
+            .get("layer_k")
+            .and_then(Value::as_object)
+            .ok_or(fail("missing precision allocation"))?;
+        if allocation.len() != 69
+            || (4..73).any(|i| allocation.get(&i.to_string()).and_then(Value::as_u64) != Some(4096))
+        {
+            return Err(fail("invalid 1019 precision allocation"));
+        }
+        for tensor in inv.tensors.iter().filter(|t| t.typ == super::CODEBOOK) {
+            let layer = tensor
+                .name
+                .strip_prefix("model.layers.")
+                .and_then(|n| n.strip_suffix(".mlp.vq_codebook"))
+                .ok_or(fail("codebook name"))?;
+            if allocation.get(layer).and_then(Value::as_u64) != Some(tensor.dim[1]) {
+                return Err(fail("stored codebook differs from selected allocation"));
+            }
+        }
+    }
     if inv.shards.len() != 1 || inv.alignment != ALIGN {
         return Err(fail("part is not one aligned GGUF"));
     }
