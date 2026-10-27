@@ -57,9 +57,15 @@ pub const MAX_CONDITIONS: usize = 2;
 /// The reference's cap on ordered references (`h3.c:588`).
 pub const MAX_REFERENCES: usize = 12;
 
-/// The five fields of the create body, and the only five.
-pub const CREATE_FIELDS: [&str; 6] =
-    ["task", "prompt", "conditions", "target", "seed", "attention"];
+/// The six fields of the create body, and the only six.
+pub const CREATE_FIELDS: [&str; 6] = [
+    "task",
+    "prompt",
+    "conditions",
+    "target",
+    "seed",
+    "attention",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {

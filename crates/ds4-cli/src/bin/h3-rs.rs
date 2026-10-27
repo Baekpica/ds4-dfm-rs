@@ -838,9 +838,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
                     "tensor" => Attention::Tensor,
                     "scalar" => Attention::Scalar,
                     other => {
-                        return Err(format!(
-                            "--attention must be tensor or scalar, not {other}"
-                        ))
+                        return Err(format!("--attention must be tensor or scalar, not {other}"))
                     }
                 }
             }
