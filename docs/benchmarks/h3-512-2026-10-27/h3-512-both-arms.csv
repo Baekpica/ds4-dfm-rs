@@ -1,0 +1,32 @@
+scope,shape,arm,metric,value,unit,source
+hq512-rain,512x512x56,scalar,TEXT,27.221,s,same binary switch off
+hq512-rain,512x512x56,tensor,TEXT,27.600,s,same binary switch on
+hq512-rain,512x512x56,scalar,LOAD,7.206,s,same binary switch off
+hq512-rain,512x512x56,tensor,LOAD,7.253,s,same binary switch on
+hq512-rain,512x512x56,scalar,DENOISE_20steps,385.830,s,same binary switch off
+hq512-rain,512x512x56,tensor,DENOISE_20steps,64.353,s,same binary switch on
+hq512-rain,512x512x56,scalar,seconds_per_denoise_step,19.292,s,385.830 over 20 steps
+hq512-rain,512x512x56,tensor,seconds_per_denoise_step,3.218,s,64.353 over 20 steps
+hq512-rain,512x512x56,scalar,AUDIO,1.425,s,same binary switch off
+hq512-rain,512x512x56,tensor,AUDIO,1.429,s,same binary switch on
+hq512-rain,512x512x56,scalar,FRAMES,37.506,s,same binary switch off
+hq512-rain,512x512x56,tensor,FRAMES,37.631,s,same binary switch on
+hq512-rain,512x512x56,scalar,VIDEO,0.450,s,same binary switch off
+hq512-rain,512x512x56,tensor,VIDEO,0.380,s,same binary switch on
+hq512-rain,512x512x56,scalar,wall,460.399,s,same binary switch off
+hq512-rain,512x512x56,tensor,wall,139.418,s,same binary switch on
+hq512-rain,512x512x56,scalar,speedup_denoise,5.995,times,385.830 over 64.353
+hq512-rain,512x512x56,scalar,speedup_wall,3.302,times,460.399 over 139.418
+hq512-rain,512x512x56,scalar,attention_share_of_step,0.862,fraction,derived: a(1-1/29.4) = 1 - 3.218/19.292
+hq512-rain,512x512x56,scalar,render_bytes,325818,bytes,same binary switch off
+hq512-rain,512x512x56,tensor,render_bytes,329185,bytes,same binary switch on
+hq512-rain,512x512x56,scalar,render_sha256,1102842fbe4475265a3037b6f82ae24c4996b4046739dc7b73fc9c3f1c816a91,hex,same binary switch off
+hq512-rain,512x512x56,tensor,render_sha256,ed8a1f03e4f656a6cec24452403c0ae98a4cae8cbf2f1096992e9b94264799f3,hex,same binary switch on
+hq512-rain,512x512x56,tensor_vs_scalar,psnr_y,36.971493,dB,ffmpeg psnr, 20 steps
+hq512-rain,512x512x56,tensor_vs_scalar,psnr_u,46.624637,dB,ffmpeg psnr, 20 steps
+hq512-rain,512x512x56,tensor_vs_scalar,psnr_v,44.741575,dB,ffmpeg psnr, 20 steps
+hq512-rain,512x512x56,tensor_vs_scalar,psnr_average,38.443217,dB,ffmpeg psnr, 20 steps
+hq512-rain,512x512x56,tensor_vs_scalar,ssim_y,0.972120,ratio,ffmpeg ssim, 20 steps
+hq512-rain,512x512x56,tensor_vs_scalar,ssim_all,0.977850,ratio,ffmpeg ssim, 20 steps
+hq512-rain,768x768x107,tensor_vs_scalar,psnr_y,42.748093,dB,ffmpeg psnr, 2 steps
+hq512-rain,768x768x107,tensor_vs_scalar,ssim_all,0.986782,ratio,ffmpeg ssim, 2 steps
