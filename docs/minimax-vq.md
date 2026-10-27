@@ -242,6 +242,30 @@ it latency-bound (21.1 against 24.5 tok/s row by row).
 
 ## Performance
 
+The [October 27 campaign](minimax-vq-optimization-2026-10-27.md) adopts
+three prefill and three plain-decode rounds. Its fresh
+[2K–64K DSpark sweep](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md)
+at source `84960118` records **1,011.0 prefill / 22.10 decode tok/s**
+(median of three run means). It allocates a 512K SSD-tier session, uses
+2,048-row incremental frontiers and a 2,048-row workspace cap, and generates
+128 tokens per frontier with gated draft 3. Busy clocks are 2,177–2,190 MHz
+under the operator's 300–2200 MHz policy. The receipt retains raw clocks,
+absolute ranges and the gate's per-frontier variability.
+
+The final resident plain-decode cohort instead uses a 128K allocation,
+4,096-row warmup/chunks, 8K followed by a 57,344-token suffix to 64K, MTP
+off, and 1,024 generated tokens. Its retained-build medians are:
+
+| Frontier | Prefill tok/s | Plain decode tok/s |
+|---:|---:|---:|
+| 8K | 1,224.27 | 21.45 |
+| 64K | 1,144.61 | 21.09 |
+
+These protocols are separate; neither table is a cumulative A/B against
+the older rows below.
+
+### Historical frontiers, 2026-10-24
+
 One GB10 (`sm_121a`, CUDA 13.4, driver 615.71.10, SM clock 2.41-2.59 GHz
 under load on 2026-10-24; limits in [gb10-hardware.md](gb10-hardware.md)),
 model `74e5a9fd`, `ds4-bench`, cold frontiers, greedy decode, MTP off.

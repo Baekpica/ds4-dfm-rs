@@ -103,7 +103,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
 - **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
   three matched h3.c outputs, a native video API gate and measured generation cost.
 - **MiniMax VQ:** [October 27 prefill/decode campaign](minimax-vq-optimization-2026-10-27.md),
-  per-round adoption, numerical contracts and long-context measurements.
+  three adopted rounds each; [fresh 2K–64K DSpark graph](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md),
+  raw clocks, exact output checks and observed repeat ranges.
 - **Ponytail audit:** [October 26 repairs, cleanup and local-model 8K smoke](benchmarks/2026-10-26-ponytail-audit/README.md).
 - **Qwen:** [September 4 long prefill](qwen38-long-context-prefill-2026-09-04.md),
   [September 6](qwen38-prefill-2026-09-06.md),

@@ -2,8 +2,10 @@
 
 Campaign target: at least three adopted prefill rounds, emphasizing long
 contexts, and three decode rounds. Current adoption: **prefill 3, decode 3**.
-The optimization target is closed. The requested fresh 2K–64K DSpark sweep
-and HF performance/graph refresh remain pending. The
+The optimization target is closed. The requested fresh
+[2K–64K DSpark sweep and graph](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md)
+record **1,011.0 prefill / 22.10 decode tok/s**, median of three fresh run
+means. The
 [October 25 report](minimax-vq-optimization-2026-10-25.md) is historical;
 its rounds do not count toward this campaign.
 
@@ -245,7 +247,7 @@ at both frontiers). All frontier logits and 256 token IDs match exactly in
 all six samples, with PSI zero. The
 [P4 receipt](benchmarks/minimax-m31-2026-10-27/p4.json) retains samples,
 affinity, host availability and counters. P4 contributes one prefill round;
-the three-prefill target is closed, with two decode rounds still pending.
+at this checkpoint the prefill target closed and two decode rounds remained.
 
 ## D2: 16-warps for one-row R13+8 gate/up — adopted
 
@@ -295,8 +297,8 @@ assumed, but no repeated prefill cost was established. First-token medians
 improve as well. All 200,064 logits and 1,024 IDs match at both frontiers in
 all six samples, including the prior 256-ID golden prefix. PSI is zero.
 The [D2 receipt](benchmarks/minimax-m31-2026-10-27/d2.json) contains the cold
-counter cost, resource tradeoff, affinity and raw cohort. One decode round
-remains; HF publication is still pending the completed campaign.
+counter cost, resource tradeoff, affinity and raw cohort. At this checkpoint
+one decode round remained.
 
 ## D3: add the decode residual during expert reduction — adopted
 
@@ -376,9 +378,38 @@ are 2,177–2,190 MHz. The [D3 receipt](benchmarks/minimax-m31-2026-10-27/d3.jso
 retains the raw samples, target attribution, counters and exclusions.
 
 The campaign has **three adopted prefill and three adopted decode rounds**.
-The requested fresh 2K–64K DSpark sweep and HF graph/performance publication
-are separate remaining deliverables; this resident plain-decode table does
-not replace that sweep.
+The [fresh 2K–64K DSpark sweep](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md)
+is a separate protocol; this resident plain-decode table does not replace it.
+
+## Final 2K–64K card sweep
+
+Three fresh processes use the retained binary above, 32 frontiers at
+2,048-token intervals, 128 forced greedy tokens, gated DSpark draft 3 and
+a 524,288-token SSD-tier allocation. To avoid unused workspace pressure,
+the prefill cap matches the actual 2,048-row forward width (1.00 GiB rather
+than 1.91 GiB). The completed default-cap payload remains an exact-output
+reference, but its controller was killed by systemd-oomd and its telemetry
+is incomplete, so it is excluded from the graph's performance cohort.
+
+| Median of three run means | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| 2K–64K, DSpark 3 gated | 1,011.0 | 22.10 |
+| 2K–32K, DSpark 3 gated | 1,033.1 | 21.90 |
+
+All 96 observations have finite full-vocabulary logits and 128 token IDs;
+the repeats are bit-identical. Run-mean ranges are 0.19% / 1.39%, but short
+frontier decode varies more with timing-based gate choices (58K min–max
+22.71–27.11 tok/s, 74 versus 48 calls). The graph retains those bands.
+Every guard/payload exits 0; full-run PSI is zero, minimum available RAM
+5.88 GiB, busy clocks 2,177–2,190 MHz under the operator's 300–2200 MHz
+policy. Main CPU 5 and helper pool `5-9,15-19` stay unchanged.
+
+The receipt archives samples, clocks, conditions, proof/cycle hashes and
+the graph. It supersedes the HF performance graph without claiming a
+matched cumulative percentage against the October 24 record: runtime,
+workspace cap and proof collection differ, and old clock metadata remains
+unreconciled. No model weights changed and no HTTP, vision or 1M gate was
+rerun for this publication.
 
 ## Other rejected decode probes
 

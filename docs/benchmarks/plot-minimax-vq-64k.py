@@ -19,7 +19,11 @@ import matplotlib.pyplot as plt
 
 DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("minimax-vq-spark-64k-2026-10-24-gate")
 BEFORE = (Path(sys.argv[2]), sys.argv[3]) if len(sys.argv) > 3 else None
-DATE = "2026-10-24"
+CONDITIONS = DATA / "conditions.json"
+CONDITIONS = json.loads(CONDITIONS.read_text()) if CONDITIONS.exists() else {}
+DATE = CONDITIONS.get("date", "2026-10-24")
+CLOCK = CONDITIONS.get("busy_sm_mhz")
+PREFILL_CHUNK = CONDITIONS.get("prefill_chunk", 4096)
 FRONTIERS = list(range(2048, 65537, 2048))
 GENERATED = 128
 NAME, COLOR, LABEL = "dspark3", "#087f8c", "DSpark draft 3"
@@ -57,7 +61,8 @@ def plot(report, before=None):
     fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
     fig.suptitle("MiniMax-M3.1-Flash · VQ (13-bit GVQ1, 8-bit residual) + Q4_K", fontsize=18,
                  fontweight="bold", y=0.98)
-    fig.text(0.5, 0.93, f"One DGX Spark / GB10 · 2K–64K card protocol · {DATE}", ha="center", color="#4b5563")
+    clock = f" · SM {CLOCK[0]:,.0f}–{CLOCK[1]:,.0f} MHz" if CLOCK else ""
+    fig.text(0.5, 0.93, f"One DGX Spark / GB10 · 2K–64K card protocol · {DATE}{clock}", ha="center", color="#4b5563")
     x = [f // 1024 for f in FRONTIERS]
     for ax, (metric, heading) in zip(axes, METRICS):
         data = report["variants"][NAME][metric]
@@ -79,7 +84,7 @@ def plot(report, before=None):
     axes[-1].set_xlim(2, 64)
     fig.text(0.5, 0.06, f"Curves: per-frontier medians; bands: observed min–max of {RUNS} fresh runs.\n"
              "Legend: median of run means. 2,048-token incremental prefill + 128 forced greedy tokens per frontier.\n"
-             "524,288-token session: index keys resident, K/V pages in the SSD tier · 4,096-row prefill chunks\n"
+             f"524,288-token session: index keys resident, K/V pages in the SSD tier · {PREFILL_CHUNK:,}-row prefill cap\n"
              "ds4-bench · promessi_sposi.txt · DSpark drafter, 3 proposals per step · forced non-EOS greedy · CUDA 13.4",
              ha="center", va="center", fontsize=9, color="#4b5563", linespacing=1.6)
     fig.subplots_adjust(top=0.87, bottom=0.19, left=0.1, right=0.97, hspace=0.3)
