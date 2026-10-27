@@ -70,6 +70,7 @@ local contract should fail loudly.
 | `target.aspect_ratio` | `auto`, `16:9`, `9:16`, `4:3`, `3:4`, `1:1` | the scripts use `16:9` and `auto`; the rest are the platform's named ratios, each resolving to a canvas of the requested short edge (see "The canvas") |
 | `target.duration_seconds` | 4 through 15 | the scripts send 5, 8 and 10; the range is the platform document's enum, and every value aligns inside the engine's 22..362 frames |
 | `seed` | non-negative integer | every script sends `seed` |
+| `attention` | `tensor` or `scalar`; optional | absent means `tensor`, the tensor-core kernel, which is the default and is not byte-identical to the reference; `scalar` asks for the byte-exact kernel and is slower ([why](tensor-default-2026-10-27.md)) |
 
 ### A condition
 
@@ -150,6 +151,7 @@ those numbers and suggests 16:9, and lowering `short_edge` serves the ratio:
 | body is not JSON / not an object | `invalid_json` |
 | a field the contract does not define | `unknown_field` |
 | missing `task`, `prompt`, `target` or `seed` | `invalid_task`, `invalid_prompt`, `invalid_target`, `invalid_seed` |
+| `attention` present and not `tensor` or `scalar` | `invalid_attention` |
 | `task` not one of the three | `invalid_task` |
 | ref2va with no image or video reference, or only audio | `invalid_condition` |
 | ref2va with a keyframe, or a reference carrying `frame_index` | `invalid_condition` |

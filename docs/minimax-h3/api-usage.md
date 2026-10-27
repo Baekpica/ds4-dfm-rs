@@ -86,8 +86,10 @@ video_id=$(curl --fail-with-body -sS http://127.0.0.1:8090/v1/videos \
 Use the returned id for polling and download; ids are not sequential names.
 The shell examples require `jq`.
 
-Exactly five fields, and an unknown one is refused rather than ignored
-(`local_api.rs:55`, `:184-277`). The full table is the contract page; the
+Exactly six fields, and an unknown one is refused rather than ignored
+(`local_api.rs:55`, `:184-277`). `attention` is the only optional one: absent
+means the tensor-core kernel, `scalar` asks for the byte-exact kernel. The full
+table is the contract page; the
 shapes this host enforces are:
 
 | Field | Rule |
@@ -99,6 +101,7 @@ shapes this host enforces are:
 | `target.aspect_ratio` | `auto`, `16:9`, `9:16`, `4:3`, `3:4`, `1:1` |
 | `target.duration_seconds` | 4 through 15 (`local_api.rs:45-46`) |
 | `seed` | non-negative integer, required |
+| `attention` | `tensor` or `scalar`; optional, absent means `tensor`. `tensor` is the tensor-core kernel and the default; `scalar` is the byte-exact kernel and is slower (see [why](tensor-default-2026-10-27.md)) |
 
 A keyframe `uri` must be a base64 data URI (PNG, JPEG or WebP), at most
 16 MiB decoded (`video_api.rs:30`, `local_api.rs:598-620`). Nothing is

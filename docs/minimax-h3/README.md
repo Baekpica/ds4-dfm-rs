@@ -55,6 +55,13 @@ and a lower `target.short_edge` is served at proportionally lower cost.
 The [dated validation](validation-2026-10-26.md) records exact inputs,
 phase timings, memory observations and qualification limits. These single
 runs are execution receipts, not throughput or broad quality guarantees.
+
+Those receipts are the byte-exact scalar path's, which is now the option rather
+than the default: the tensor-core kernel runs unless a caller asks otherwise, and
+on the same 512×512, 56-frame, 20-step shape it measures 139.418 s against the
+scalar kernel's 460.399 s, both on one binary. It is not byte-identical to the
+reference, which is why the choice is a switch
+([why it is the default](tensor-default-2026-10-27.md)).
 The [v0.1.4 integration review](validation-2026-10-26.md#v014-integration-review--2026-10-27)
 records subsequent fixes and model-free checks; full-model renders were not
 repeated for that review.
