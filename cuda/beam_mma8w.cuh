@@ -123,7 +123,7 @@ __global__ void beam_w_pairs(uint32_t *token_of, float *pair_scale, const float 
 template <glmvq_mma_stage MODE>
 __global__ void __launch_bounds__(BEAM_W_THREADS, 1) beam_w_kernel(const beam_w_item *items, uint32_t nitems,
         const uint8_t *book, const uint8_t *act, const uint32_t *token_of, const float *pair_scale,
-        __nv_bfloat16 *gate, uint32_t rows, uint32_t cols, uint8_t *mid8, float *mid_scale) {
+        __nv_bfloat16 *gate, uint32_t rows, uint32_t cols, uint8_t *mid8, float *mid_scale, float clamp) {
     static_assert(MODE == GLMVQ_MMA_GATE || MODE == GLMVQ_MMA_UP, "gate/up input rows are the token rows");
     constexpr uint32_t BM = BEAM_W_BM, BT = BEAM_W_BT, S = BEAM_W_STAGES, C = BEAM_W_CONSUMERS;
     constexpr uint32_t PT = BEAM_W_PRODUCERS * 32, MT = BT / 16, STB = BEAM_W_STAGE, TQ = PT / 8, TJ = BT / TQ;
@@ -332,8 +332,8 @@ __global__ void __launch_bounds__(BEAM_W_THREADS, 1) beam_w_kernel(const beam_w_
                             const float2 x = __bfloat1622float2(gv[mm][h][n]);
                             const float y0 = glmvq_round(glmvq_mul(acc[m][n][2 * h] * sv[m][h], gn[n][0]));
                             const float y1 = glmvq_round(glmvq_mul(acc[m][n][2 * h + 1] * sv[m][h], gn[n][1]));
-                            const float v0 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.x, y0, INFINITY);
-                            const float v1 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.y, y1, INFINITY);
+                            const float v0 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.x, y0, clamp);
+                            const float v1 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.y, y1, clamp);
                             acc[m][n][2 * h] = v0;
                             acc[m][n][2 * h + 1] = v1;
                             peak = fmaxf(peak, fmaxf(fabsf(v0), fabsf(v1)));
@@ -560,13 +560,13 @@ static cudaError_t beam_w_down_launch(const beam_w_item *items, uint32_t nitems,
 template <glmvq_mma_stage MODE>
 static cudaError_t beam_w_launch(const beam_w_item *items, uint32_t nitems, const uint8_t *book, const uint8_t *act,
         const uint32_t *token_of, const float *pair_scale, __nv_bfloat16 *gate, uint32_t rows, uint32_t cols,
-        uint8_t *mid8, float *mid_scale, uint32_t sms, cudaStream_t stream) {
+        uint8_t *mid8, float *mid_scale, float clamp, uint32_t sms, cudaStream_t stream) {
     static cudaError_t ready = cudaFuncSetAttribute(beam_w_kernel<MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize,
         BEAM_W_BYTES);
     if (ready != cudaSuccess) { return ready; }
     const uint32_t units = nitems * (rows / BEAM_W_BM);
     beam_w_kernel<MODE><<<min(units, sms), BEAM_W_THREADS, BEAM_W_BYTES, stream>>>(items, nitems, book, act, token_of,
-        pair_scale, gate, rows, cols, mid8, mid_scale);
+        pair_scale, gate, rows, cols, mid8, mid_scale, clamp);
     return cudaGetLastError();
 }
 

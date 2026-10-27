@@ -109,6 +109,9 @@ const LING31_ALIGN: u64 = 256;
 // FP8 MMA activation scales cover 128 inputs; glmvq_mma_item is five words.
 const LING31_SCALE_BLOCK: u64 = 128;
 const LING31_MMA_ITEM_BYTES: u64 = 20;
+// beam_w items: 128-token runs of one expert matrix, 32 bytes each.
+const LING31_WS_TOKENS: u64 = 128;
+const LING31_WS_ITEM_BYTES: u64 = 32;
 // Beam's 1M bank fits beside the 91.6 GiB trunk at 2,048-row chunks
 // (BEAM_PREFILL_DEFAULT, ds4_beam_bind.inc); 4,096 rows need ~1.4 GiB more.
 const BEAM_PREFILL_CHUNK_ENV: &str = "DS4_BEAM_PREFILL_CHUNK";
@@ -2672,7 +2675,8 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
     .max()
     .unwrap_or(0);
     // l31_mma_plan above verify widths: E4M3 rows and scales, gate, SwiGLU
-    // E4M3 rows and scales, down, worklist and order.
+    // E4M3 rows and scales, down, worklist and order, then the 12-bit
+    // warp-specialized items and each pair's token row and scale.
     let align = |n: u64| n.div_ceil(LING31_ALIGN) * LING31_ALIGN;
     let pairs = rows * used;
     let mma = if rows > GLMVQ_VERIFY_ROWS {
@@ -2684,6 +2688,9 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
             + align(pairs * hidden * SIZEOF_U16)
             + align(pairs * LING31_MMA_ITEM_BYTES)
             + align(pairs * SIZEOF_U32)
+            + align(3 * (u64::from(s.n_expert) + pairs / LING31_WS_TOKENS) * LING31_WS_ITEM_BYTES)
+            + align(pairs * SIZEOF_U32)
+            + align(pairs * SIZEOF_F32)
     } else {
         0
     };
