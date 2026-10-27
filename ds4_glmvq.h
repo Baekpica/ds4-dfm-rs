@@ -172,6 +172,8 @@ int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const uint32_t *matrices, uint32_t rows, float clamp, const ds4_gpu_tensor *shared);
 /* Chunked prefill planes for `rows` tokens; 0 when rows use the recurrence. */
 uint64_t ds4_gpu_gvq_kda_bytes(uint32_t rows, uint32_t heads);
+/* The tensor-core path's chunk records alone (ds4_gpu_gvq_kda_gated). */
+uint64_t ds4_gpu_gvq_kda_mma_bytes(uint32_t rows, uint32_t heads);
 /* `snap` (optional) receives the state and tails after each row but the
  * last, one `stride`-byte slot per row, laid out like the state pool. */
 int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,

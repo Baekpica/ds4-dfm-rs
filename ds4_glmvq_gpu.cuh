@@ -1605,6 +1605,10 @@ extern "C" uint64_t ds4_gpu_gvq_kda_bytes(uint32_t rows, uint32_t heads) {
     return std::max(planes + (uint64_t)rows * heads * sizeof(float), records);
 }
 
+extern "C" uint64_t ds4_gpu_gvq_kda_mma_bytes(uint32_t rows, uint32_t heads) {
+    return rows < GLMVQ_KC ? 0 : (uint64_t)((rows + GLMVQ_KC - 1) / GLMVQ_KC) * heads * GLMVQ_KR_BYTES;
+}
+
 extern "C" int ds4_gpu_gvq_kda_fused(ds4_gvq_ctx *ctx, uint32_t rows) {
     return ctx && ctx->kda_mma && rows >= GLMVQ_KC;
 }

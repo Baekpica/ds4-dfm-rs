@@ -143,10 +143,10 @@ enum {
     L31_KEY = L31_NOPE + L31_ROPE, L31_VALUE = 128, L31_KV_ROW = L31_KV_LORA + L31_ROPE,
     L31_QDIM = L31_HEADS * L31_KEY, L31_VDIM = L31_HEADS * L31_VALUE, L31_LATENT = L31_HEADS * L31_KV_LORA,
     L31_DENSE_FF = 10240, L31_FF = 1280, L31_EXPERTS = 512, L31_USED = 8,
-    // 4096-row chunks prefill 10-14% faster once allocated (8K/16K; a cold first
-    // allocation stalled them below 2048) but need 1.2 GiB more workspace, which a
-    // 128 GB Spark lacks beside the trunk and a bank.
-    L31_PREFILL_DEFAULT = 2048, L31_PREFILL_MAX = 4096,
+    // 4096-row chunks prefill 10-15% faster than 2048 (8K/16K, and a 130K prompt
+    // at 1M) for 1.0 GiB more workspace, which one or two 262K banks leave on a
+    // 128 GB Spark; tighter fits halve the rows.
+    L31_PREFILL_DEFAULT = 4096, L31_PREFILL_MAX = 4096,
     // Trained positions (max_position_embeddings, rope_scaling null); the
     // official SGLang recipe serves 1,048,576 with YaRN factor 4 over them.
     L31_CONTEXT_ORIG = 262144, L31_YARN_FACTOR = 4, L31_CONTEXT = L31_CONTEXT_ORIG * L31_YARN_FACTOR,
@@ -253,11 +253,20 @@ static uint64_t ling31_latent_bytes(uint32_t ctx) {
 }
 
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+// Prefill KDA runs on tensor cores and stages only its chunk records; the
+// Solar chunked kernels behind DS4_GLMVQ_KDA_MMA=0 also need six F32 planes
+// (4,096 rows: 371 MB against 873 MB).
+static uint64_t ling31_kda_scratch(uint32_t rows) {
+    const char *mma = getenv("DS4_GLMVQ_KDA_MMA");
+    return mma && !strcmp(mma, "0") ? ds4_gpu_gvq_kda_bytes(rows, L31_HEADS)
+                                    : ds4_gpu_gvq_kda_mma_bytes(rows, L31_HEADS);
+}
+
 // GVQ scratch: the largest temporary any projection, KDA chunk or q4p input
 // needs at `rows` (restore+GEMM paths keep F32/BF16 temporaries).
 static uint64_t ling31_gvq_scratch(uint32_t rows) {
     const uint64_t candidates[] = {
-        ds4_gpu_gvq_kda_bytes(rows, L31_HEADS),
+        ling31_kda_scratch(rows),
         ds4_gpu_gvq_linear_bytes(L31_KDA_DIM, L31_EMBD, rows, DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(L31_EMBD, L31_KDA_DIM, rows, DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(L31_EXPERTS, L31_EMBD, rows, DS4_TENSOR_BF16, DS4_GVQ_F32),
