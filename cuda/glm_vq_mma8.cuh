@@ -54,10 +54,15 @@ __host__ __device__ constexpr uint32_t glmvq_mma8_book() {
     return (1u << BITS) * GLMVQ_VECTOR + (RES ? GLMVQ_RES_WORDS * GLMVQ_VECTOR : 0u);
 }
 
+// Index bytes a row stages per 128-K stage: 16 x 12 bits (v1) or 16 low
+// bytes (v2, whose plane takes the same 4 bytes as a 13-bit one).
+template <uint32_t BITS>
+__host__ __device__ constexpr uint32_t glmvq_mma8_index() { return glmvq_v2<BITS>() ? 16u : GLMVQ_MMA8_INDEX; }
+
 template <uint32_t BM, uint32_t BT, uint32_t BITS = 13, bool RES = false>
 static constexpr uint32_t glmvq_mma8_bytes() {
     return glmvq_mma8_book<BITS, RES>() + glmvq_mma8_stages<BT, BITS, RES>() *
-        (BM * (GLMVQ_MMA8_INDEX + (BITS == 13 ? GLMVQ_MMA8_PLANE : 0u) +
+        (BM * (glmvq_mma8_index<BITS>() + (glmvq_planed<BITS>() ? GLMVQ_MMA8_PLANE : 0u) +
                (RES && !glmvq_mma8_res_regs<BT, RES>() ? GLMVQ_MMA8_RES : 0u)) +
          BT * (GLMVQ_MMA8_ROW + sizeof(float)));
 }
@@ -82,6 +87,20 @@ __device__ __forceinline__ uint32_t glmvq_mma8_code(const uint32_t (&w)[6], uint
     constexpr uint32_t P = 48 * K;
     const uint64_t window = ((uint64_t)w[P / 32 + 1] << 32) | w[P / 32];
     return (uint32_t)(window >> (P % 32 + 12 * q)) & 4095u;
+}
+
+// Codeword 4K+q of a staged row with its plane bits `e` (the stage's 16 or
+// 32 bits, lowest first). v2: low byte 4K+q (word K, byte q) and one (9-bit)
+// or two (10-bit) high bits; v1: the 12-bit window and the 13th bit.
+template <uint32_t BITS, uint32_t K>
+__device__ __forceinline__ uint32_t glmvq_mma8_index_at(const uint32_t (&w)[6], uint32_t e, uint32_t q) {
+    if constexpr (BITS == 9) {
+        return ((w[K] >> (8 * q)) & 255u) | ((e >> (4 * K + q)) & 1u) << 8;
+    } else if constexpr (BITS == 10) {
+        return ((w[K] >> (8 * q)) & 255u) | ((e >> (2 * (4 * K + q))) & 3u) << 8;
+    } else {
+        return glmvq_mma8_code<K>(w, q) | ((e >> (4 * K + q)) & 1u) << 12;
+    }
 }
 
 // Each persistent CTA keeps the layer book; a warp owns MT m16 row tiles of
@@ -112,12 +131,14 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
     constexpr uint32_t THREADS = glmvq_mma8_threads<BM, MT>(), NT = BT / 8, PREFETCH_AHEAD = 2;
     constexpr uint32_t STAGES = glmvq_mma8_stages<BT, BITS, RES>(), BOOK = glmvq_mma8_book<BITS, RES>();
     constexpr uint32_t BOOK1 = glmvq_mma8_book<BITS>();
-    constexpr uint32_t BSB = BM * GLMVQ_MMA8_INDEX, EXB = BITS == 13 ? BM * GLMVQ_MMA8_PLANE : 0u;
+    constexpr uint32_t INDEX = glmvq_mma8_index<BITS>(), PARTS = INDEX / 8;
+    constexpr uint32_t BSB = BM * INDEX, EXB = glmvq_planed<BITS>() ? BM * GLMVQ_MMA8_PLANE : 0u;
     // Staged residual bytes follow the plane; activations follow both.
     constexpr bool RREG = glmvq_mma8_res_regs<BT, RES>();
     constexpr uint32_t RSB = RES && !RREG ? BM * GLMVQ_MMA8_RES : 0u, IXB = BSB + EXB + RSB;
     constexpr uint32_t ATB = BT * GLMVQ_MMA8_ROW, STB = IXB + ATB + BT * sizeof(float);
-    static_assert(BITS == 12 || BITS == 13, "GVQ1 stores 12- or 13-bit indices");
+    static_assert(BITS == 12 || BITS == 13 || (glmvq_v2<BITS>() && !RES),
+        "GVQ1 stores 12- or 13-bit indices (v1) or 9- and 10-bit ones without a residual (v2)");
     static_assert(THREADS >= BT * 8 && THREADS >= BM, "one activation chunk and row per thread");
     extern __shared__ __align__(16) uint8_t memory[];
     uint8_t *ring = memory + BOOK;
@@ -143,7 +164,8 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         const glmvq_mma_item item = items[work / tiles];
         const glmvq_matrix mat = sources[item.matrix[MODE]].vq;
         const uint32_t row = (work % tiles) * BM, nt = item.tokens;
-        const uint32_t main_stride = cols * 3 / 16, plane_stride = cols / 64, res_stride = cols / 8;
+        const uint32_t main_stride = glmvq_v2<BITS>() ? cols / 8 : cols * 3 / 16;
+        const uint32_t plane_stride = BITS == 10 ? cols / 32 : cols / 64, res_stride = cols / 8;
         float gain[MT][2];
         #pragma unroll
         for (uint32_t m = 0; m < MT; m++) {
@@ -162,7 +184,7 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
             }
         };
         for (uint32_t chunk = 0; chunk < PREFETCH_AHEAD; chunk++) { prefetch(chunk); }
-        if (BITS == 13 && tid == 0) { glmvq_mma_prefetch(mat.plane + (uint64_t)row * plane_stride, BM * plane_stride); }
+        if (glmvq_planed<BITS>() && tid == 0) { glmvq_mma_prefetch(mat.plane + (uint64_t)row * plane_stride, BM * plane_stride); }
 
         const uint32_t padded = (nt + 7) / 8 * 8;
         // Each thread copies the same token chunk (and scale) at every stage.
@@ -172,14 +194,15 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
         const uint32_t copy_dst = glmvq_mma8_swz(copy_t, copy_c / 2) + (copy_c % 2) * 16;
         auto issue = [&](uint32_t stage) {
             uint8_t *dst = ring + (stage % STAGES) * STB;
-            for (uint32_t i = tid; i < BM * 3; i += THREADS) {
-                const uint32_t r = i / 3, part = i % 3;
-                glmvq_mma_copy<8>(dst + r * GLMVQ_MMA8_INDEX + part * 8,
-                    mat.main + (uint64_t)(row + r) * main_stride + stage * GLMVQ_MMA8_INDEX + part * 8);
+            for (uint32_t i = tid; i < BM * PARTS; i += THREADS) {
+                const uint32_t r = i / PARTS, part = i % PARTS;
+                glmvq_mma_copy<8>(dst + r * INDEX + part * 8,
+                    mat.main + (uint64_t)(row + r) * main_stride + stage * INDEX + part * 8);
             }
-            if (BITS == 13 && tid < BM) {
+            // A 13- or 9-bit plane word covers two stages, a 10-bit one one.
+            if (glmvq_planed<BITS>() && tid < BM) {
                 glmvq_mma_copy<4>(dst + BSB + tid * 4,
-                    mat.plane + (uint64_t)(row + tid) * plane_stride + 4 * (stage / 2));
+                    mat.plane + (uint64_t)(row + tid) * plane_stride + 4 * (BITS == 10 ? stage : stage / 2));
             }
             if (RES && !RREG && tid < BM) {
                 glmvq_mma_copy<16>(dst + BSB + EXB + tid * GLMVQ_MMA8_RES,
@@ -241,8 +264,8 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                 __syncthreads();
                 if (stage + STAGES - 1 < stages) { issue(stage + STAGES - 1); }
                 asm volatile("cp.async.commit_group;" ::: "memory");
-                if (stage % (GLMVQ_PREFETCH_BYTES / GLMVQ_MMA8_INDEX) == 0) {
-                    prefetch(stage / (GLMVQ_PREFETCH_BYTES / GLMVQ_MMA8_INDEX) + PREFETCH_AHEAD);
+                if (stage % (GLMVQ_PREFETCH_BYTES / INDEX) == 0) {
+                    prefetch(stage / (GLMVQ_PREFETCH_BYTES / INDEX) + PREFETCH_AHEAD);
                 }
                 const uint8_t *src = ring + (stage % STAGES) * STB;
                 const uint32_t bit = (stage & 1u) * 16;
@@ -252,11 +275,12 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                     #pragma unroll
                     for (uint32_t side = 0; side < 2; side++) {
                         #pragma unroll
-                        for (uint32_t k = 0; k < 3; k++) {
-                            const uint2 v = *(const uint2 *)(src + lr[m][side] * GLMVQ_MMA8_INDEX + k * 8);
+                        for (uint32_t k = 0; k < PARTS; k++) {
+                            const uint2 v = *(const uint2 *)(src + lr[m][side] * INDEX + k * 8);
                             w[m][side][2 * k] = v.x; w[m][side][2 * k + 1] = v.y;
                         }
-                        e[m][side] = BITS == 13 ? *(const uint32_t *)(src + BSB + lr[m][side] * 4) >> bit : 0u;
+                        e[m][side] = glmvq_planed<BITS>()
+                            ? *(const uint32_t *)(src + BSB + lr[m][side] * 4) >> (BITS == 10 ? 0u : bit) : 0u;
                     }
                 }
                 const uint8_t *activation = src + IXB + q * 8;
@@ -268,8 +292,8 @@ __global__ __launch_bounds__(glmvq_mma8_threads<BM, MT>(), 1) void glmvq_mma8_ke
                     [[maybe_unused]] uint32_t r[MT][4];
                     #pragma unroll
                     for (uint32_t m = 0; m < MT; m++) {
-                        const uint32_t ia = glmvq_mma8_code<K>(w[m][0], q) | ((e[m][0] >> (4 * K + q)) & 1u) << 12;
-                        const uint32_t ib = glmvq_mma8_code<K>(w[m][1], q) | ((e[m][1] >> (4 * K + q)) & 1u) << 12;
+                        const uint32_t ia = glmvq_mma8_index_at<BITS, K>(w[m][0], e[m][0], q);
+                        const uint32_t ib = glmvq_mma8_index_at<BITS, K>(w[m][1], e[m][1], q);
                         const uint2 ca = *(const uint2 *)(memory + ia * 8), cb = *(const uint2 *)(memory + ib * 8);
                         a[m][0] = ca.x; a[m][1] = cb.x; a[m][2] = ca.y; a[m][3] = cb.y;
                         if constexpr (RES) {
