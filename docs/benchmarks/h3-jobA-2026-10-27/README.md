@@ -34,9 +34,11 @@ of the DiT and is the next thing worth attacking if the step is to fall below
 
 - `h3-jobA-both-arms.csv` — every phase for both arms, the two speedups, both
   render hashes, the derived attention share, and the quality figures.
-- `chart-jobA.png` — the phase comparison and the wall.
-- `chart-speedup.png` — the four speedups side by side, which is what shows a
-  kernel gain turning into a job gain.
+- `../h3-jobA-2026-10-27.png` — the figure, rendered by
+  [`../plot-h3-jobA.py`](../plot-h3-jobA.py) in the same matplotlib convention as
+  the rest of this directory: the headline pair on top with the values on the
+  bars, the full phase breakdown below on a log axis, which is what shows that
+  only the denoise moves.
 
 The kernel-level sweep across sequence lengths, three runs per arm, is a
 separate folder: [../h3-attention-2026-10-27](../h3-attention-2026-10-27).
