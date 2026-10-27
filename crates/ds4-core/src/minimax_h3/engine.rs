@@ -104,7 +104,10 @@ impl std::error::Error for EngineError {}
 /// rope table and must not be reused.
 ///
 /// The two upstream `slow*` and `reduce` fields do not exist here: the port
-/// serves exactly one execution path, so they cannot vary.
+/// serves exactly one execution path, so they cannot vary. `attention` is the
+/// port's own addition and is not a variant of those: the attention kernel is
+/// chosen on the context the DiT is loaded with, so the choice does have to be
+/// part of the key even though it changes no weight.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PreparedKey {
     conditioning: [u8; 32],
@@ -114,6 +117,12 @@ struct PreparedKey {
     steps: usize,
     reuse: usize,
     rope: u32,
+    /// Which attention the held DiT was loaded with. Its path is set once, on
+    /// the context `Dit::load_with` creates, so a request that asks for the
+    /// other one has to miss rather than reuse a graph running the wrong
+    /// kernel: for `Scalar` that would silently drop the byte-exact promise the
+    /// create body makes.
+    attention: Attention,
 }
 
 struct Prepared {
@@ -257,6 +266,7 @@ impl Engine {
             steps: request.steps,
             reuse: request.reuse,
             rope: canvas.rope_scale(false).to_bits(),
+            attention: request.attention,
         };
 
         // Prepared DiT (`h3.c:168-190`, `h3.c:1505-1516`): a hit skips the
@@ -685,6 +695,7 @@ mod tests {
             steps: 20,
             reuse: 1,
             rope: 16,
+            attention: Attention::Tensor,
         }
     }
 
@@ -865,5 +876,31 @@ mod tests {
             original,
             conditioning_identity("different prompt", &anchors, &refs)
         );
+    }
+
+    #[test]
+    fn attention_invalidates_cache() {
+        // A request that differs from the previous one only in `attention` must
+        // not be a prepared hit: the held DiT had its path set at load, so a hit
+        // would run the wrong kernel and, for `scalar`, silently break the
+        // byte-exact promise the create body makes.
+        let conditioning = [7u8; 32];
+        let tensor = key(4, conditioning);
+
+        let mut scalar = key(4, conditioning);
+        scalar.attention = Attention::Scalar;
+        assert_ne!(
+            tensor, scalar,
+            "a scalar request must not reuse a tensor-prepared DiT"
+        );
+
+        // And the same request still hits, so the field does not defeat the
+        // cache it belongs to.
+        assert_eq!(tensor, key(4, conditioning));
+        assert_eq!(scalar, {
+            let mut same = key(4, conditioning);
+            same.attention = Attention::Scalar;
+            same
+        });
     }
 }
