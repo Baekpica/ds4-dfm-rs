@@ -8,6 +8,12 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Adds [A.X-K2 VQ](docs/axk2-vq.md) (SK Telecom A.X K2 with 9/10-bit GVQ1
+  experts): MLA with the DSA sparse indexer over FP8 latent and key rows,
+  gated RMSNorm, the native 262,144-token context in one bank, Hermes tool
+  calls and think spans. Banks, partial reuse, disk KV and snapshots are
+  present and unqualified; the release has no drafter. The engine matches a
+  GB10 rerun of the handoff's reference within its bands.
 - Adds experimental [MiniMax-H3](docs/minimax-h3/README.md) BF16 video/audio
   generation through separate Rust CLI and local API binaries. Supports text,
   frame anchors and ordered image/video/audio references. GB10 validation

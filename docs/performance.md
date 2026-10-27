@@ -269,6 +269,23 @@ limits or long-context quality.
 
 ![MiniMax-M3.1-Flash VQ prefill and decode on one DGX Spark](benchmarks/minimax-vq-spark-64k-2026-10-24-gate/throughput.png)
 
+## A.X-K2 VQ
+
+A.X-K2 with GVQ1 routed experts (10-bit on layers 16, 20, …, 40, 9-bit on the
+other 53) and Q4_K/Q8_0 nonexperts
+([model card](https://huggingface.co/Baekpica/A.X-K2-VQ-GGUF)) recorded
+**370.2 prefill / 14.91 decode** across the 32 frontiers of the
+[2K–64K sweep](benchmarks/axk2-vq-spark-64k-2026-10-27/README.md)
+(431.2 / 15.21 to 32K), medians of three run means in three fresh
+`ds4-bench` processes on one DGX Spark / GB10 (`a4a7659b`). Prefill falls
+from 581.4 at 2K to 272.1 at 64K, where the DSA indexer scores every causal
+key per row and layer; decode falls from 15.59 to 14.40. The release has no
+drafter. The [A.X-K2 page](axk2-vq.md) records the execution paths, the
+decode round, the quality receipt and the levers. Throughput does not
+qualify serving limits or long-context quality.
+
+![A.X-K2 VQ prefill and decode on one DGX Spark](benchmarks/axk2-vq-spark-64k-2026-10-27/throughput.png)
+
 ## DeepSeek V4.1
 
 DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and

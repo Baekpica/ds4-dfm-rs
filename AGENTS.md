@@ -371,6 +371,23 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   pinned pool left 3.6 GiB available, yet a 60 s cold prefill drove the
   user slice's memory pressure to 58% (> 50% for 20 s) and oomd killed
   the run. Budget pinned and device allocations against reclaim pressure.
+- **Drop caches before a model launch.** A previous run's page cache and
+  the driver's freed-page pool stalled a 107 GiB A.X-K2 server at the
+  guard's MemoryHigh (PSI 45%); the same launch after `clear_cache` came
+  up at PSI 0.
+- **Select a large top-k by radix, not by sorting.** A decode row's
+  top-2,048 of 8K keys took ~0.2 ms per layer in a chunk-sort-and-merge
+  tree; one block of four 8-bit digit passes (per-warp histograms), then a
+  counting and a writing pass, took 11 µs, and 2,048 prefill rows of 8K
+  keys 0.44 ms against a block sort's 1.9 ms. Ties go by index.
+- **Decode Q4_K by block, not by element.** A column pass (`W^T x`) that
+  decoded one Q4_K value per thread and row ran at 25 GB/s; lanes decoding
+  whole 256-blocks (`glmvq_q4_acc`'s layout) with partial rows summed in
+  warp order ran 4.5x faster.
+- **Give a one-row kernel more than one SM.** A gated RMSNorm with two
+  rank-16 BF16 projections (458 KB) in one block took 42 µs per row;
+  recomputing the norm in 16 blocks for `W_down` and splitting `W_up` over
+  28 took 13 µs, bit-identical.
 
 # Agent Notes
 
