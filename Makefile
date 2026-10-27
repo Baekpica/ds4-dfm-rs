@@ -1799,6 +1799,13 @@ tests/minimax_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/minimax_quality" $@
 
+tests/axk2_quality: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example axk2_quality --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/axk2_quality" $@
+
 tests/minimax_vision: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 	cargo rustc -p ds4-cli --example minimax_vision --release --features native -- \
 		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
@@ -1901,6 +1908,13 @@ tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/l31_
 .PHONY: test-ling31-flash
 test-ling31-flash: tests/test_ling31_flash
 	./tests/test_ling31_flash
+
+tests/test_axk2_topk: tests/test_axk2_topk.cu cuda/axk2_topk.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+.PHONY: test-axk2-topk
+test-axk2-topk: tests/test_axk2_topk
+	./tests/test_axk2_topk
 
 tests/test_ling31_prefill_attn: tests/test_ling31_prefill_attn.cu cuda/mmq/ds4_fattn.o cuda/mmq/ds4_ggml_stubs.o cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ tests/test_ling31_prefill_attn.cu cuda/mmq/ds4_fattn.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
@@ -2065,6 +2079,11 @@ MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_
 	ds4_minimax_draft.inc ds4_minimax_vision.inc
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
 ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/glm_vq_ops.cuh
+AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
+	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
+ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)
+ds4_cuda.o ds4_cuda_range_test.o: ds4_axk2.h ds4_axk2_gpu.cuh cuda/axk2_topk.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq.cuh \
+	cuda/l31_flash.cuh cuda/l31_latent.cuh
 
 tests/test_minimax_payload: tests/test_minimax_payload.c ds4.c ds4.h ds4_gpu.h ds4_snapshot.inc $(MINIMAX_NATIVE_DEPS)
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
@@ -2525,7 +2544,7 @@ BUILD_PROGRAMS := \
     tests/iquest_verify tests/libds4ple_test.so tests/libglm_vq_attention.so \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
-    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision \
+    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
@@ -2568,7 +2587,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_axk2_topk \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \

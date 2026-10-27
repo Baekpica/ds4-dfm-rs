@@ -12,6 +12,7 @@ use crate::gguf::{GgufError, GgufFile, GGUF_VALUE_INT32, GGUF_VALUE_STRING, GGUF
 use crate::shape::ModelFamily;
 use crate::TokenBuffer;
 
+mod axk2;
 mod beam;
 mod glm_vq;
 mod inkling;
@@ -370,6 +371,7 @@ impl Vocab {
             ModelFamily::Ling31Vq => ling31::specials(self, g)?,
             ModelFamily::BeamVq => beam::specials(self)?,
             ModelFamily::MinimaxVq => minimax::specials(self)?,
+            ModelFamily::Axk2Vq => axk2::specials(self)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
             ModelFamily::IQuestQ1 => {
@@ -676,6 +678,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("Beam release metadata"))?;
             return Self::load_tables(&g, family, Some(beam::tables(path)?));
         }
+        if family == ModelFamily::Axk2Vq {
+            let g = crate::axk2_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("A.X-K2 release metadata"))?;
+            return Self::load_tables(&g, family, Some(axk2::tables(path)?));
+        }
         if family == ModelFamily::MinimaxVq {
             let g = crate::minimax_vq::metadata(path)
                 .map_err(|_| TokError::InvalidTokenizer("MiniMax release metadata"))?;
@@ -698,6 +705,7 @@ impl Vocab {
                 | ModelFamily::Ling31Vq
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
+                | ModelFamily::Axk2Vq
         ) {
             tokenize_rendered_chat(self, text, &mut out);
         } else {
@@ -747,6 +755,9 @@ impl Vocab {
             )),
             ModelFamily::MinimaxVq => Some(TokError::InvalidTokenizer(
                 "MiniMax VQ chat requires official Jinja",
+            )),
+            ModelFamily::Axk2Vq => Some(TokError::InvalidTokenizer(
+                "A.X-K2 VQ chat requires official Jinja",
             )),
             _ => None,
         }
@@ -870,6 +881,7 @@ impl Vocab {
             | ModelFamily::Ling31Vq
             | ModelFamily::BeamVq
             | ModelFamily::MinimaxVq
+            | ModelFamily::Axk2Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -1072,6 +1084,7 @@ impl Vocab {
             | ModelFamily::Ling31Vq
             | ModelFamily::BeamVq
             | ModelFamily::MinimaxVq
+            | ModelFamily::Axk2Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1 => {
@@ -1242,6 +1255,12 @@ impl Vocab {
             }
             // `<|call|>` ends a tool-call turn as `<|return|>` ends an answer.
             ModelFamily::BeamVq => self.eot_id >= 0 && token == self.eot_id,
+            // `<|endoftext|>` ends a document and `<|im_start|>` opens the
+            // next turn: neither may leak into assistant content.
+            ModelFamily::Axk2Vq => {
+                (self.eot_id >= 0 && token == self.eot_id)
+                    || (self.im_start_id >= 0 && token == self.im_start_id)
+            }
             ModelFamily::Motif3 => {
                 (self.user_id >= 0 && token == self.user_id)
                     || (self.end_of_turn_id >= 0 && token == self.end_of_turn_id)
@@ -2350,6 +2369,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
             mimo2::encode(vocab, text, out)
         }
         ModelFamily::MinimaxVq => minimax::encode(vocab, text, out),
+        ModelFamily::Axk2Vq => axk2::encode(vocab, text, out),
         ModelFamily::Glm53 | ModelFamily::Glm53Vq => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2373,6 +2393,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::Ling31Vq
             | ModelFamily::BeamVq
             | ModelFamily::MinimaxVq
+            | ModelFamily::Axk2Vq
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
             | ModelFamily::IQuestQ1

@@ -130,6 +130,23 @@ const MINIMAX_SCORE_BUDGET: u64 = 64 * MIB;
 // C minimax_resident_ctx: the largest context whose K/V pages stay resident.
 const MINIMAX_RESIDENT_CTX_ENV: &str = "DS4_MINIMAX_KV_RESIDENT_CTX";
 const MINIMAX_RESIDENT_CTX: u32 = 131_072;
+// A.X-K2's 262K bank fits beside the 98 GiB trunk at 2,048-row chunks
+// (AXK2_PREFILL_DEFAULT, ds4_axk2_bind.inc).
+const AXK2_PREFILL_CHUNK_ENV: &str = "DS4_AXK2_PREFILL_CHUNK";
+const AXK2_NATIVE_DEFAULT: u32 = 2048;
+const AXK2_NATIVE_MAX: u32 = 4096;
+// Halving floor when the quote does not fit (Ling-3.1's rule): the 262K
+// plan keeps ~0.2-0.6 GiB beside the 2,048-row workspace, 1,024 rows free
+// ~0.9 GiB more. Snapshots are position-indexed, so the chunk is not part
+// of their identity.
+const AXK2_NATIVE_MIN: u32 = 512;
+// C ax_decode_plan: decode items, mid and partial rows, then 60 layers'
+// 3 x 256 expert tables (256-byte aligned regions).
+const AXK2_DECODE_BYTES: u64 = 448_256;
+// C l31_fa_scratch_bytes: 48 splits x 64 heads x (512 + 2) F32 partials.
+const AXK2_FLASH_BYTES: u64 = 48 * 64 * 514 * SIZEOF_F32;
+// C AXK2_SCORE_BUDGET: indexer scores of one row slice.
+const AXK2_SCORE_BUDGET: u64 = 128 * MIB;
 // ds4_glmvq_gpu.cuh workspace terms on the GLM shape.
 const GLMVQ_CUBLAS_WORKSPACE: u64 = 32 * MIB;
 const GLMVQ_MMA_TOKENS: u64 = 32;
@@ -413,6 +430,16 @@ pub fn fill_quote_facts(
             } else {
                 0
             },
+            0,
+        ),
+        // Each bank owns its latent, rope and index-key rows, host logits
+        // and history; graph 0 owns the row workspace and the host
+        // embedding staging. No drafter.
+        (ModelFamily::Axk2Vq, Some(s)) => (
+            axk2_kv_bytes(ctx) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32,
+            axk2_workspace_bytes(ctx, u64::from(native))
+                + u64::from(native) * u64::from(s.n_embd) * SIZEOF_U16,
+            0,
             0,
         ),
         (ModelFamily::Inkling, Some(s)) => {
@@ -725,6 +752,7 @@ pub fn fill_quote_facts(
     let halves = match caps.family {
         ModelFamily::Glm53 => native > 1,
         ModelFamily::Ling31Vq => native > LING31_NATIVE_MIN,
+        ModelFamily::Axk2Vq => native > AXK2_NATIVE_MIN,
         _ => false,
     };
     if !halves || host.available_bytes == 0 || facts.cont_lane == Some(true) {
@@ -740,7 +768,10 @@ pub fn fill_quote_facts(
         MaxSeqs::Auto
             if matches!(
                 caps.family,
-                ModelFamily::Ling31Vq | ModelFamily::BeamVq | ModelFamily::MinimaxVq
+                ModelFamily::Ling31Vq
+                    | ModelFamily::BeamVq
+                    | ModelFamily::MinimaxVq
+                    | ModelFamily::Axk2Vq
             ) =>
         {
             MaxSeqs::Fixed(1)
@@ -1006,6 +1037,10 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
         if crate::ling31_vq::is_release(path) {
             return crate::ling31_vq::part_bytes(path, crate::Ling31Feature::Trunk).unwrap_or(0);
         }
+        // A.X-K2's embedding part stays on SSD (Beam's rule).
+        if crate::axk2_vq::is_release(path) {
+            return crate::axk2_vq::trunk_bytes(path).unwrap_or(0);
+        }
         return crate::glm_vq::part_bytes(path).unwrap_or(0);
     }
     let count = split_count.max(1);
@@ -1186,6 +1221,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
         ModelFamily::Ling31Vq => LING31_NATIVE_MAX,
         ModelFamily::BeamVq => BEAM_NATIVE_MAX,
         ModelFamily::MinimaxVq => MINIMAX_NATIVE_MAX,
+        ModelFamily::Axk2Vq => AXK2_NATIVE_MAX,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
         ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
         ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
@@ -1268,6 +1304,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             MINIMAX_NATIVE_DEFAULT,
             1,
             MINIMAX_NATIVE_MAX,
+        ),
+        ModelFamily::Axk2Vq => env_u32(
+            AXK2_PREFILL_CHUNK_ENV,
+            AXK2_NATIVE_DEFAULT,
+            1,
+            AXK2_NATIVE_MAX,
         ),
         ModelFamily::ExaoneMoe => env_u32(
             EXAONE_PREFILL_CHUNK_ENV,
@@ -2761,6 +2803,97 @@ fn minimax_workspace_bytes(ctx: u64, rows: u64) -> u64 {
         + mma
 }
 
+// C axk2_kv_bytes: every layer keeps every position: a 512-byte E4M3
+// latent row and 64 BF16 rope keys, a 128-byte FP8 index key (256 BF16
+// bytes under DS4_AXK2_INDEX_KEYS=bf16), each FP8 cache with one exponent
+// per row rounded up to 32 rows.
+fn axk2_kv_bytes(ctx: u64) -> u64 {
+    let exps = ctx.div_ceil(32) * 32;
+    let keys = if std::env::var("DS4_AXK2_INDEX_KEYS").as_deref() == Ok("bf16") {
+        ctx * 128 * SIZEOF_U16
+    } else {
+        ctx * 128 + exps
+    };
+    61 * (ctx * 512 + exps + ctx * 64 * SIZEOF_U16 + keys)
+}
+
+// C axk2_workspace_bytes on the CUDA kernels: logits, the AXK2_ROW_BUFFERS
+// rows, attention slices of up to 256 rows (q_abs, latent output, the
+// cuBLAS absorb operands above four rows), flash partials, index scores
+// within AXK2_SCORE_BUDGET and the top-k tree's candidates (at most as
+// many), the q4p input, cuBLAS and routes, then the routed-expert decode
+// tables and, above one row, the FP8 MMA planes.
+fn axk2_workspace_bytes(ctx: u64, rows: u64) -> u64 {
+    const HIDDEN: u64 = 7168;
+    const FFN: u64 = 2048;
+    const USED: u64 = 8;
+    const LATENT: u64 = 64 * 512;
+    const NOPE: u64 = 64 * 128;
+    let align = |n: u64| n.div_ceil(256) * 256;
+    // Four-byte columns of AXK2_ROW_BUFFERS: cur/norm/attn_out/shared/
+    // ffn_out, q ranks, q_b input, kv, q_b, q, gate/heads, indexer q/k/w,
+    // selected, FFN up, router, routes and weights, embedding, RoPE and the
+    // gated norm's decode scratch.
+    const ROW: u64 = 5 * HIDDEN
+        + 2 * 1536
+        + 3072
+        + 576
+        + 20_480
+        + 12_288
+        + 2 * 8192
+        + 8192
+        + 128
+        + 64
+        + 2048
+        + 18_432
+        + 256
+        + 2 * USED
+        + HIDDEN / 2
+        + 64
+        + 17;
+    let slice = rows.min(256);
+    let attn = 2 * slice * LATENT * SIZEOF_F32;
+    // kv_b restored to BF16, q's BF16 nope part and latent output, F32 value.
+    let absorb = if slice > 4 {
+        align(16_384 * 512 * SIZEOF_U16)
+            + align(slice * NOPE * SIZEOF_U16)
+            + align(slice * LATENT * SIZEOF_U16)
+            + align(slice * NOPE * SIZEOF_F32)
+    } else {
+        0
+    };
+    let scores = 2
+        * (AXK2_SCORE_BUDGET / (ctx.max(1) * SIZEOF_F32))
+            .min(rows)
+            .max(1)
+        * ctx
+        * SIZEOF_F32;
+    let q4p = (rows * 18_432 * SIZEOF_U16 * 2).max(256 * HIDDEN * SIZEOF_F32);
+    let linear = GLMVQ_CUBLAS_WORKSPACE + rows * USED * SIZEOF_U32;
+    let pairs = rows * USED;
+    let mma = if rows > 1 {
+        align(rows * HIDDEN)
+            + align(rows * (HIDDEN / 128) * SIZEOF_F32)
+            + align(pairs * FFN * SIZEOF_U16)
+            + align(pairs * FFN)
+            + align(pairs * (FFN / 128) * SIZEOF_F32)
+            + align(pairs * HIDDEN * SIZEOF_U16)
+            + align(pairs * BEAM_MMA_ITEM_BYTES)
+            + align(pairs * SIZEOF_U32)
+    } else {
+        0
+    };
+    (163_840 + 32 + rows * ROW) * SIZEOF_F32
+        + attn
+        + absorb
+        + AXK2_FLASH_BYTES
+        + scores
+        + q4p
+        + linear
+        + AXK2_DECODE_BYTES
+        + mma
+}
+
 // C beam_workspace_bytes on the CUDA kernels: logits, the BEAM_ROW_BUFFERS
 // rows, split-decode partials, the q4p input, cuBLAS and routes, then the
 // routed-expert decode tables and, above verify widths, the FP8 MMA planes.
@@ -2857,6 +2990,7 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::Ling31Vq
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
+                | ModelFamily::Axk2Vq
         )
     {
         return serial;
@@ -3483,6 +3617,51 @@ mod tests {
     }
 
     #[test]
+    fn axk2_quote_matches_the_native_graph() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(AXK2_PREFILL_CHUNK_ENV);
+        let _keys = EnvGuard::unset("DS4_AXK2_INDEX_KEYS");
+        // Native graph logs at 2,048-row chunks: ctx 4096 KV 0.18 GiB,
+        // workspace 1.62 GiB; 16384: 0.72 / 1.81; 65536: 2.87 / 1.81. Every
+        // layer keeps 770 bytes per token (a 641-byte latent row and a
+        // 129-byte index key).
+        let gib = |b: u64| b as f64 / GIB as f64;
+        for (ctx, kv, workspace) in [(4096, 0.18, 1.62), (16384, 0.72, 1.81), (65536, 2.87, 1.81)] {
+            assert!((gib(axk2_kv_bytes(ctx)) - kv).abs() < 0.005);
+            assert!((gib(axk2_workspace_bytes(ctx, 2048)) - workspace).abs() < 0.005);
+        }
+        assert_eq!(axk2_kv_bytes(262_144), 61 * 262_144 * 770);
+
+        let s = crate::shape::SHAPE_AXK2_VQ;
+        let req = ServingRequest {
+            ctx: 262_144,
+            max_seqs: MaxSeqs::Fixed(1),
+            ..ServingRequest::default()
+        };
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            serving_caps(ModelFamily::Axk2Vq, Variant::Axk2Vq),
+            Some(s),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(AXK2_NATIVE_DEFAULT));
+        let host = 163_840 * SIZEOF_F32 + 262_144 * SIZEOF_I32;
+        assert_eq!(facts.per_bank_bytes, Some(axk2_kv_bytes(262_144) + host));
+        assert_eq!(
+            facts.scratch_bytes,
+            Some(axk2_workspace_bytes(262_144, 2048) + 2048 * 7168 * SIZEOF_U16)
+        );
+    }
+
+    #[test]
     fn ling31_latent_follows_the_native_switches() {
         let _env = lock_test_env();
         let s = SHAPE_LING31_VQ;
@@ -3550,6 +3729,50 @@ mod tests {
         assert_eq!(quote(room(2048)), Some(2048));
         assert_eq!(quote(room(1024)), Some(1024));
         assert_eq!(quote(room(512)), Some(512));
+        assert_eq!(quote(room(512) - GIB), Some(512));
+    }
+
+    #[test]
+    fn axk2_halves_rows_before_the_native_context() {
+        let _env = lock_test_env();
+        let _rows = EnvGuard::unset(AXK2_PREFILL_CHUNK_ENV);
+        let _keys = EnvGuard::unset("DS4_AXK2_INDEX_KEYS");
+        let _fit = EnvGuard::unset(FIT_HEADROOM_ENV);
+        let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        // One 262,144-token bank beside the 98.05 GiB trunk: rows halve
+        // when the 2,048-row workspace does not fit, down to 512.
+        let s = crate::shape::SHAPE_AXK2_VQ;
+        let ctx = 262_144u64;
+        let weights = 105_276_451_840;
+        let bank = axk2_kv_bytes(ctx) + u64::from(s.n_vocab) * SIZEOF_F32 + ctx * SIZEOF_I32;
+        let fixed = 4 * GIB + FIT_BURST_MB * MIB;
+        let quote = |available: u64| {
+            let req = ServingRequest {
+                ctx: ctx as i32,
+                ..ServingRequest::default()
+            };
+            let mut facts = EngineFacts::default();
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                serving_caps(ModelFamily::Axk2Vq, Variant::Axk2Vq),
+                Some(s),
+                QuoteHost {
+                    weights_bytes: weights,
+                    mtp_bytes: 0,
+                    available_bytes: available,
+                    native_chunk: None,
+                    vision: false,
+                },
+            );
+            facts.native_chunk
+        };
+        let room = |rows: u64| {
+            weights + bank + axk2_workspace_bytes(ctx, rows) + rows * 7168 * SIZEOF_U16 + fixed
+        };
+        assert_eq!(quote(room(2048)), Some(2048));
+        assert_eq!(quote(room(2048) - 1), Some(1024));
+        assert_eq!(quote(room(1024)), Some(1024));
         assert_eq!(quote(room(512) - GIB), Some(512));
     }
 

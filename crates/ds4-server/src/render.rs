@@ -198,6 +198,7 @@ pub enum ModelSyntax {
     IQuestQ1 = 15,
     BeamVq = 19,
     MinimaxVq = 20,
+    Axk2Vq = 21,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -221,6 +222,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         15 => ModelSyntax::IQuestQ1,
         19 => ModelSyntax::BeamVq,
         20 => ModelSyntax::MinimaxVq,
+        21 => ModelSyntax::Axk2Vq,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -228,7 +230,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
 pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
     match syntax {
         ModelSyntax::SolarOpen2 => SOLAR_TOOL_CALLS,
-        ModelSyntax::Motif3 | ModelSyntax::Exaone => MOTIF_TOOL_CALLS,
+        ModelSyntax::Motif3 | ModelSyntax::Exaone | ModelSyntax::Axk2Vq => MOTIF_TOOL_CALLS,
         ModelSyntax::Dots3 => DOTS3_TOOL_CALLS,
         ModelSyntax::Qwen4Exp
         | ModelSyntax::Step37
@@ -2476,6 +2478,9 @@ pub fn render_chat_choice_ex(
         ModelSyntax::MinimaxVq => Err(RenderError(
             "MiniMax input requires its official Jinja template",
         )),
+        ModelSyntax::Axk2Vq => Err(RenderError(
+            "A.X-K2 input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -2568,6 +2573,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::MinimaxVq => {
             return Err(RenderError(
                 "MiniMax tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::Axk2Vq => {
+            return Err(RenderError(
+                "A.X-K2 tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),

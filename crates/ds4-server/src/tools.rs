@@ -1950,7 +1950,7 @@ pub fn parse_generated_message(
     orders: &[ToolSchemaOrder],
 ) -> ParsedGenerated {
     let parsed = match syntax {
-        ModelSyntax::Motif3 | ModelSyntax::Exaone => {
+        ModelSyntax::Motif3 | ModelSyntax::Exaone | ModelSyntax::Axk2Vq => {
             parse_hermes_generated(text, require_thinking_closed)
         }
         ModelSyntax::Dots3 => parse_dots3_generated(text, require_thinking_closed),

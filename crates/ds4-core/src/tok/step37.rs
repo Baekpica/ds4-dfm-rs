@@ -27,7 +27,7 @@ struct Splitter {
     word: Regex,
 }
 
-fn isolated(text: &str, re: &Regex, mut emit: impl FnMut(&str)) {
+pub(super) fn isolated(text: &str, re: &Regex, mut emit: impl FnMut(&str)) {
     let mut start = 0;
     for m in re.find_iter(text) {
         if start < m.start() {

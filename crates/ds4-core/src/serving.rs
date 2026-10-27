@@ -28,6 +28,8 @@ const LING31_CTX_MAX: u32 = 262_144;
 const BEAM_CTX_MAX: u32 = 1_048_576;
 /// MiniMax-M3.1's max_position_embeddings (rope_scaling null).
 const MINIMAX_CTX_MAX: u32 = 1_048_576;
+/// A.X-K2's max_position_embeddings (YaRN x 2 over 131,072).
+const AXK2_CTX_MAX: u32 = 262_144;
 const GLM_QUALIFIED_CTX: u32 = 2048;
 const GLM_PREFILL_MAX: u32 = 2048;
 const GIB: u64 = 1 << 30;
@@ -657,7 +659,11 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
     if matches!(
         caps.family,
-        ModelFamily::Glm53Vq | ModelFamily::Ling31Vq | ModelFamily::BeamVq | ModelFamily::MinimaxVq
+        ModelFamily::Glm53Vq
+            | ModelFamily::Ling31Vq
+            | ModelFamily::BeamVq
+            | ModelFamily::MinimaxVq
+            | ModelFamily::Axk2Vq
     ) {
         caps.ctx_max
     } else {
@@ -912,6 +918,29 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(BEAM_CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
+        // Banks own their FP8 latent and index-key rows over graph 0's
+        // scratch; every prefix is exact, so partial reuse forks without
+        // checkpoint slots. The release ships no drafter.
+        ModelFamily::Axk2Vq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(AXK2_CTX_MAX),
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -1583,6 +1612,7 @@ impl ServingCaps {
             Variant::Ling31FlashVq => "ling31_vq",
             Variant::BeamVq => "beam_vq",
             Variant::MinimaxVq => "minimax_m3_vq",
+            Variant::Axk2Vq => "axk2_vq",
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
@@ -1785,6 +1815,7 @@ impl ResolvedPlan {
             Some(ModelFamily::Ling31Vq) => Some("DS4_LING31_PREFILL_CHUNK"),
             Some(ModelFamily::BeamVq) => Some("DS4_BEAM_PREFILL_CHUNK"),
             Some(ModelFamily::MinimaxVq) => Some("DS4_MINIMAX_PREFILL_CHUNK"),
+            Some(ModelFamily::Axk2Vq) => Some("DS4_AXK2_PREFILL_CHUNK"),
             _ => None,
         }
     }

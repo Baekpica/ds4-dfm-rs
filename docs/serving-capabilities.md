@@ -37,6 +37,7 @@ The request's effective and qualified plan remains authoritative.
 | Ling-3.1-flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
 | Beam-1.0-501B-A23B-VQ | persistent / unverified | partial / unverified | unverified | unverified | Sidecar / serial / unverified |
 | MiniMax-M3.1-Flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial / unverified |
+| A.X-K2-VQ | persistent / unverified | partial / unverified | unverified | unverified | None / none / none |
 
 ## Bounds and allocator controls
 
@@ -65,6 +66,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | Ling-3.1-flash-VQ | 262144 | — | — | — | `DS4_LING31_PREFILL_CHUNK` |
 | Beam-1.0-501B-A23B-VQ | 1048576 | — | — | — | `DS4_BEAM_PREFILL_CHUNK` |
 | MiniMax-M3.1-Flash-VQ | 1048576 | — | — | — | `DS4_MINIMAX_PREFILL_CHUNK` |
+| A.X-K2-VQ | 262144 | — | — | — | `DS4_AXK2_PREFILL_CHUNK` |
 
 Scheduler chunk candidates: 256, 512, 1024, 2048, 4096, 8192. The resolved plan only offers
 values at or below its known native capacity. Unknown capacity offers no
