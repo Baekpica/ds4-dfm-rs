@@ -112,6 +112,54 @@ int main(int argc, char **argv) {
     std::printf("first=%.6f last=%.6f\n", __bfloat162float(result.front()),
                 __bfloat162float(result.back()));
 
+    /* The tensor-core arm is a measurement path, not a gated one, so its
+     * deviation from the byte-exact kernel has to be quantified rather than
+     * hashed. `H3_ATTN_DUMP=<path>` writes this arm's raw BF16 output, and a
+     * fifth argument reads a dump of the other arm and prints the difference.
+     * Both arms round to BF16 at the same place, so this compares what the
+     * model would actually read. */
+    const char *dump = std::getenv("H3_ATTN_DUMP");
+    if (dump && *dump) {
+        std::FILE *file = std::fopen(dump, "wb");
+        if (!file) {
+            fail("dump", dump);
+        }
+        std::fwrite(result.data(), 2, result.size(), file);
+        std::fclose(file);
+    }
+    if (argc > 4) {
+        std::FILE *file = std::fopen(argv[4], "rb");
+        if (!file) {
+            fail("reference", argv[4]);
+        }
+        std::vector<__nv_bfloat16> reference(elements);
+        if (std::fread(reference.data(), 2, reference.size(), file) !=
+            reference.size()) {
+            fail("reference", "short read");
+        }
+        std::fclose(file);
+        double worst = 0.0, square = 0.0;
+        size_t differing = 0;
+        for (size_t index = 0; index < reference.size(); index++) {
+            const double left = __bfloat162float(result[index]);
+            const double right = __bfloat162float(reference[index]);
+            const double delta = left > right ? left - right : right - left;
+            if (delta > worst) {
+                worst = delta;
+            }
+            square += delta * delta;
+            if (delta != 0.0) {
+                differing++;
+            }
+        }
+        std::printf("against=%s max_abs=%.8g rms=%.8g differing=%zu of %zu "
+                    "(%.4f%%)\n",
+                    argv[4], worst,
+                    std::sqrt(square / (double)reference.size()), differing,
+                    reference.size(),
+                    100.0 * (double)differing / (double)reference.size());
+    }
+
     h3d_free(output);
     h3d_free(value);
     h3d_free(key);
