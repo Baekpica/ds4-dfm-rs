@@ -1,0 +1,270 @@
+{
+  "complete": true,
+  "samples": {
+    "off1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1178.52",
+        "gen_tokens": "64",
+        "gen_tps": "20.76",
+        "gen_tps_ss": "20.78",
+        "first_token_sec": "0.0503",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1102.36",
+        "gen_tokens": "64",
+        "gen_tps": "20.41",
+        "gen_tps_ss": "20.43",
+        "first_token_sec": "0.0514",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1197.63",
+        "gen_tokens": "64",
+        "gen_tps": "20.97",
+        "gen_tps_ss": "20.98",
+        "first_token_sec": "0.0497",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1122.32",
+        "gen_tokens": "64",
+        "gen_tps": "20.61",
+        "gen_tps_ss": "20.62",
+        "first_token_sec": "0.0511",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1197.36",
+        "gen_tokens": "64",
+        "gen_tps": "20.72",
+        "gen_tps_ss": "20.73",
+        "first_token_sec": "0.0503",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1118.39",
+        "gen_tokens": "64",
+        "gen_tps": "20.31",
+        "gen_tps_ss": "20.32",
+        "first_token_sec": "0.0509",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1173.31",
+        "gen_tokens": "64",
+        "gen_tps": "21.30",
+        "gen_tps_ss": "21.30",
+        "first_token_sec": "0.0483",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1097.95",
+        "gen_tokens": "64",
+        "gen_tps": "20.95",
+        "gen_tps_ss": "20.96",
+        "first_token_sec": "0.0496",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1175.68",
+        "gen_tokens": "64",
+        "gen_tps": "21.27",
+        "gen_tps_ss": "21.29",
+        "first_token_sec": "0.0494",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1100.65",
+        "gen_tokens": "64",
+        "gen_tps": "20.91",
+        "gen_tps_ss": "20.92",
+        "first_token_sec": "0.0503",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1201.26",
+        "gen_tokens": "64",
+        "gen_tps": "21.27",
+        "gen_tps_ss": "21.29",
+        "first_token_sec": "0.0493",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1121.21",
+        "gen_tokens": "64",
+        "gen_tps": "20.90",
+        "gen_tps_ss": "20.92",
+        "first_token_sec": "0.0497",
+        "kvcache_bytes": "2549102132"
+      }
+    ]
+  },
+  "frontiers": {
+    "8192": {
+      "prefill_tps": {
+        "off": [
+          1178.52,
+          1173.31,
+          1175.68
+        ],
+        "on": [
+          1197.63,
+          1197.36,
+          1201.26
+        ],
+        "off_median": 1175.68,
+        "on_median": 1197.63,
+        "change_pct": 1.8670046271094254
+      },
+      "gen_tps": {
+        "off": [
+          20.76,
+          21.3,
+          21.27
+        ],
+        "on": [
+          20.97,
+          20.72,
+          21.27
+        ],
+        "off_median": 21.27,
+        "on_median": 20.97,
+        "change_pct": -1.4104372355430272
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.78,
+          21.3,
+          21.29
+        ],
+        "on": [
+          20.98,
+          20.73,
+          21.29
+        ],
+        "off_median": 21.29,
+        "on_median": 20.98,
+        "change_pct": -1.4560826679192007
+      }
+    },
+    "65536": {
+      "prefill_tps": {
+        "off": [
+          1102.36,
+          1097.95,
+          1100.65
+        ],
+        "on": [
+          1122.32,
+          1118.39,
+          1121.21
+        ],
+        "off_median": 1100.65,
+        "on_median": 1121.21,
+        "change_pct": 1.8679870985326863
+      },
+      "gen_tps": {
+        "off": [
+          20.41,
+          20.95,
+          20.91
+        ],
+        "on": [
+          20.61,
+          20.31,
+          20.9
+        ],
+        "off_median": 20.91,
+        "on_median": 20.61,
+        "change_pct": -1.434720229555242
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.43,
+          20.96,
+          20.92
+        ],
+        "on": [
+          20.62,
+          20.32,
+          20.92
+        ],
+        "off_median": 20.92,
+        "on_median": 20.62,
+        "change_pct": -1.4340344168260022
+      }
+    }
+  },
+  "round": "P1",
+  "decision": "adopted",
+  "base_commit": "be372776",
+  "binary_sha256": "8e70bfaa965e05d7ba1d87622d8286819c39bbf1002b56d28309d43a00a37250",
+  "patch_sha256": "38d53a3d3b196a7a87baf80e1cc4790f4906256a8c3258681b02f1f70e6f0485",
+  "artifact_manifest_sha256": "2110c1e5cba8d59987e370d50dab6dde5d5f7fc82009cdc27d8131452536f4b0",
+  "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "correctness": {
+    "full_vocabulary_logits_exact": true,
+    "greedy_tokens_exact": true,
+    "fixture_cases": 20
+  },
+  "decode_followup": {
+    "frontier": 65536,
+    "gen_tokens": 256,
+    "exact_logits": true,
+    "exact_tokens": true,
+    "off": {
+      "prefill_tps": 1114.49,
+      "decode_tps": 20.42
+    },
+    "on": {
+      "prefill_tps": 1132.09,
+      "decode_tps": 20.4
+    },
+    "prefill_change_pct": 1.5791976599161872,
+    "decode_change_pct": -0.09794319294810228
+  },
+  "target": {
+    "old_ms": 1.88304,
+    "new_ms": 1.422912,
+    "registers_per_thread": 64,
+    "spill_bytes": 0,
+    "global_sectors_before": 14159872,
+    "global_sectors_after": 11014144
+  },
+  "scope": "GB10, resident KV, text prefill; no new serving/media/1M claim"
+}

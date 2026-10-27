@@ -109,8 +109,10 @@ combined per head, so every row runs the one-row arithmetic.
 
 **Numerics.** The engine follows the handoff's `tools/minimax_ref.py`, which
 matches transformers 5.20.2 layer by layer: Gemma norms rounded once,
-partial RoPE with float64 cos/sin, BF16 residual stream (stored as
-BF16-rounded F32), F32 router logits.
+partial RoPE with float64 cos/sin, BF16 residual stream (stored as BF16
+during text prefill, otherwise BF16-rounded F32), F32 router logits.
+The [October 27 campaign](minimax-vq-optimization-2026-10-27.md) records
+the storage gate, diagnostic fallback and fresh long-context comparisons.
 
 ## K/V tiers
 

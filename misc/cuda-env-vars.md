@@ -8,6 +8,15 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## MiniMax VQ residual storage
+
+`DS4_MINIMAX_CUR_BF16=0` restores F32 storage of BF16-rounded residuals.
+By default, text prefill wider than eight rows stores the same values as
+BF16; decode, verify, media spans and tensor traces keep F32. Embedding,
+RMS, residual adds, the head and DSpark taps carry the selected format.
+Arithmetic and tensor allocations are unchanged. See the
+[October 27 measurements](../docs/minimax-vq-optimization-2026-10-27.md).
+
 ## DeepSeek V4.1 vision transfers
 
 `DS41_VISION_PINNED=0` restores direct pageable uploads from the vision

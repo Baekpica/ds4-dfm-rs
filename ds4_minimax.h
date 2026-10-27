@@ -91,9 +91,10 @@ int ds4_gpu_minimax_proj(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const ui
     ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t wiq, uint32_t wik, uint32_t outs_q, uint32_t outs_k,
     const ds4_gpu_tensor *input, uint32_t rows);
 
-/* out = gemma_rms(x) over 6144-wide rows with a BF16 weight record. */
+/* out = gemma_rms(x) over 6144-wide rows with a BF16 weight record.
+ * BF16 input rows must be disjoint from the F32 output. */
 int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
-    uint32_t weight, uint32_t rows);
+    uint32_t weight, uint32_t rows, ds4_gvq_rows format);
 
 /* cur = round(cur + branch) (the reference's BF16 residual add), then, when
  * `next` is a record, norm = gemma_rms(cur) with that weight; with q4h, the
@@ -101,7 +102,8 @@ int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_ten
  * [rows][6144] in q4h, the row scales in q4s). `branch_bf16`: BF16 branch
  * rows. */
 int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16);
+    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16,
+    ds4_gvq_rows format);
 
 /* SwiGLU-OAI of [rows][width] gate and up rows into `out`:
  * min(g, 7) * sigmoid(1.702 * min(g, 7)) * (clamp(u, -7, 7) + 1), in F32,
@@ -168,7 +170,8 @@ int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const d
  * ceil((hi - lo) / 128) x 130 floats). markov: logits[v] +=
  * BF16(w2[v] . w1[*prev]) over `vocab` rows (rank 256, `prev` on the
  * device). */
-int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows);
+int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows,
+    ds4_gvq_rows format);
 int ds4_gpu_minimax_draft_widen(ds4_gpu_tensor *out, const ds4_gpu_tensor *taps, uint32_t r0, uint32_t rows);
 int ds4_gpu_minimax_draft_ring(ds4_gpu_tensor *ring_k, ds4_gpu_tensor *ring_v, const ds4_gpu_tensor *k,
     const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos, uint32_t cap);
@@ -210,7 +213,7 @@ int ds4_gpu_minimax_vit_clear(void);
 int ds4_gpu_minimax_logits(ds4_gpu_tensor *logits, uint32_t rows, uint32_t tokens);
 
 /* BF16 embedding rows (host-gathered) -> the F32 hidden rows. */
-int ds4_gpu_minimax_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *rows_bf16, uint32_t rows);
+int ds4_gpu_minimax_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *rows_bf16, uint32_t rows, ds4_gvq_rows format);
 
 #ifdef __cplusplus
 }

@@ -1005,7 +1005,8 @@ __device__ __forceinline__ void mm_row_rms(const float *x, const float *w, float
     }
 }
 
-__global__ void mm_rms_kernel(float *out, const float *input, const __nv_bfloat16 *weight) {
+template <typename T>
+__global__ void mm_rms_kernel(float *out, const T *input, const __nv_bfloat16 *weight) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
     glmvq_pdl_open();
     float w[MM_ROW_VALUES];
@@ -1013,18 +1014,27 @@ __global__ void mm_rms_kernel(float *out, const float *input, const __nv_bfloat1
     glmvq_pdl_wait();
     const uint64_t base = (uint64_t)blockIdx.x * MM_HIDDEN;
     float x[MM_ROW_VALUES], y[MM_ROW_VALUES];
-    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { x[j] = glmvq_round(input[base + threadIdx.x + j * MM_ROW_THREADS]); }
+    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
+        x[j] = glmvq_round(glmvq_value(input[base + threadIdx.x + j * MM_ROW_THREADS]));
+    }
     mm_row_rms(x, w, y, scratch);
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { out[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
 }
 
 extern "C" int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t weight,
-        uint32_t rows) {
+        uint32_t rows, ds4_gvq_rows format) {
     const auto *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, MM_HIDDEN);
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
-    if (!w || !rows || !gvq_floats(out, count) || !gvq_floats(x, count)) { return 0; }
-    glmvq_launch_kernel(mm_mode(rows), mm_rms_kernel, rows, MM_ROW_THREADS, 0, ds4_current_stream(), (float *)out->ptr,
-        (const float *)x->ptr, w);
+    const bool compact = format == DS4_GVQ_ROWS_BF16;
+    if (!w || !rows || !gvq_floats(out, count) || !gvq_floats(x, compact ? count / 2 : count) ||
+        (compact && out->ptr == x->ptr)) { return 0; }
+    if (compact) {
+        glmvq_launch_kernel(mm_mode(rows), mm_rms_kernel<__nv_bfloat16>, rows, MM_ROW_THREADS, 0,
+            ds4_current_stream(), (float *)out->ptr, (const __nv_bfloat16 *)x->ptr, w);
+    } else {
+        glmvq_launch_kernel(mm_mode(rows), mm_rms_kernel<float>, rows, MM_ROW_THREADS, 0,
+            ds4_current_stream(), (float *)out->ptr, (const float *)x->ptr, w);
+    }
     return cuda_ok(cudaGetLastError(), "MiniMax RMS");
 }
 
@@ -1057,8 +1067,8 @@ __device__ __forceinline__ void mm_row_q4p(const float *x, uint32_t cols, __half
 
 // With q4h, the norm row also lands as q4p's prepared input (the q4p pass
 // over it read 100 MB and wrote 50 MB per 4,096-row call).
-template <typename BT>
-__global__ void mm_residual_kernel(float *cur, const BT *branch, float *norm, const __nv_bfloat16 *next,
+template <typename CT, typename BT>
+__global__ void mm_residual_kernel(CT *cur, const BT *branch, float *norm, const __nv_bfloat16 *next,
         __half *q4h, float *q4s) {
     __shared__ float scratch[MM_ROW_THREADS / 32];
     glmvq_pdl_open();
@@ -1073,13 +1083,13 @@ __global__ void mm_residual_kernel(float *cur, const BT *branch, float *norm, co
     #pragma unroll
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
         const uint64_t at = base + threadIdx.x + j * MM_ROW_THREADS;
-        x[j] = cur[at];
+        x[j] = glmvq_value(cur[at]);
         y[j] = glmvq_value(branch[at]);
     }
     #pragma unroll
     for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
         x[j] = glmvq_round(glmvq_add(x[j], glmvq_round(y[j])));
-        cur[base + threadIdx.x + j * MM_ROW_THREADS] = x[j];
+        cur[base + threadIdx.x + j * MM_ROW_THREADS] = glmvq_cast<CT>(x[j]);
     }
     if (!next) { return; }
     mm_row_rms(x, w, y, scratch);
@@ -1088,22 +1098,30 @@ __global__ void mm_residual_kernel(float *cur, const BT *branch, float *norm, co
 }
 
 extern "C" int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-        ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16) {
+        ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16,
+        ds4_gvq_rows format) {
     const auto *n = next == DS4_GVQ_NO_LINK ? nullptr
         : (const __nv_bfloat16 *)gvq_weight(ctx, next, GVQ_TYPE_BF16, MM_HIDDEN);
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
-    if ((next != DS4_GVQ_NO_LINK && !n) || !rows || !gvq_floats(cur, count) || !gvq_floats(branch, count) ||
+    const bool compact = format == DS4_GVQ_ROWS_BF16;
+    if ((next != DS4_GVQ_NO_LINK && !n) || !rows || !gvq_floats(cur, compact ? count / 2 : count) ||
+        !gvq_floats(branch, count) ||
         (n && !gvq_floats(norm, count)) || (q4h && (!n || q4h->bytes < count * sizeof(__half) ||
             !gvq_floats(q4s, rows)))) { return 0; }
-    if (branch_bf16) {
-        glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<__nv_bfloat16>, rows, MM_ROW_THREADS, 0,
-            ds4_current_stream(), (float *)cur->ptr, (const __nv_bfloat16 *)branch->ptr, n ? (float *)norm->ptr : nullptr,
-            n, q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
-    } else {
-        glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<float>, rows, MM_ROW_THREADS, 0, ds4_current_stream(),
-            (float *)cur->ptr, (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n,
-            q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
-    }
+    auto launch = [&](auto *values) {
+        using CT = std::remove_pointer_t<decltype(values)>;
+        if (branch_bf16) {
+            glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<CT, __nv_bfloat16>, rows, MM_ROW_THREADS, 0,
+                ds4_current_stream(), values, (const __nv_bfloat16 *)branch->ptr, n ? (float *)norm->ptr : nullptr,
+                n, q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
+        } else {
+            glmvq_launch_kernel(mm_mode(rows), mm_residual_kernel<CT, float>, rows, MM_ROW_THREADS, 0,
+                ds4_current_stream(), values, (const float *)branch->ptr, n ? (float *)norm->ptr : nullptr, n,
+                q4h ? (__half *)q4h->ptr : nullptr, q4h ? (float *)q4s->ptr : nullptr);
+        }
+    };
+    if (compact) { launch((__nv_bfloat16 *)cur->ptr); }
+    else { launch((float *)cur->ptr); }
     return cuda_ok(cudaGetLastError(), "MiniMax residual");
 }
 
@@ -2393,18 +2411,25 @@ enum { MM_DRAFT_TAPS = 5, MM_DRAFT_KV = MM_KV_HEADS * MM_HEAD, MM_DRAFT_WARPS = 
 
 // taps[r][k] = the residual entering tap layer k, stored as BF16 (exact: the
 // residual stream holds BF16-rounded values).
-__global__ void mm_draft_tap_kernel(__nv_bfloat16 *taps, const float *cur, uint32_t k, uint64_t count) {
+template <typename T>
+__global__ void mm_draft_tap_kernel(__nv_bfloat16 *taps, const T *cur, uint32_t k, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
-    taps[(i / MM_HIDDEN * MM_DRAFT_TAPS + k) * MM_HIDDEN + i % MM_HIDDEN] = __float2bfloat16_rn(cur[i]);
+    taps[(i / MM_HIDDEN * MM_DRAFT_TAPS + k) * MM_HIDDEN + i % MM_HIDDEN] =
+        __float2bfloat16_rn(glmvq_value(cur[i]));
 }
 
-extern "C" int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows) {
+extern "C" int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows,
+        ds4_gvq_rows format) {
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
     if (!taps || k >= MM_DRAFT_TAPS || taps->bytes < count * MM_DRAFT_TAPS * sizeof(__nv_bfloat16) ||
-        !gvq_floats(cur, count)) { return 0; }
-    mm_draft_tap_kernel<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>((__nv_bfloat16 *)taps->ptr,
-        (const float *)cur->ptr, k, count);
+        !gvq_floats(cur, format == DS4_GVQ_ROWS_BF16 ? count / 2 : count)) { return 0; }
+    auto launch = [&](auto *values) {
+        mm_draft_tap_kernel<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>(
+            (__nv_bfloat16 *)taps->ptr, values, k, count);
+    };
+    if (format == DS4_GVQ_ROWS_BF16) { launch((const __nv_bfloat16 *)cur->ptr); }
+    else { launch((const float *)cur->ptr); }
     return cuda_ok(cudaGetLastError(), "MiniMax DSpark tap");
 }
 
@@ -2863,17 +2888,24 @@ extern "C" int ds4_gpu_minimax_logits(ds4_gpu_tensor *logits, uint32_t rows, uin
     return cuda_ok(cudaGetLastError(), "MiniMax logits");
 }
 
-__global__ void mm_embed_kernel(float *cur, const __nv_bfloat16 *rows, uint64_t count) {
+template <typename T>
+__global__ void mm_embed_kernel(T *cur, const __nv_bfloat16 *rows, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < count) { cur[i] = __bfloat162float(rows[i]); }
+    if (i < count) { cur[i] = glmvq_cast<T>(__bfloat162float(rows[i])); }
 }
 
-extern "C" int ds4_gpu_minimax_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *rows_bf16, uint32_t rows) {
+extern "C" int ds4_gpu_minimax_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *rows_bf16, uint32_t rows,
+        ds4_gvq_rows format) {
     const uint64_t count = (uint64_t)rows * MM_HIDDEN;
-    if (!rows || !gvq_floats(cur, count) || !rows_bf16 || rows_bf16->bytes < count * sizeof(__nv_bfloat16)) {
+    if (!rows || !gvq_floats(cur, format == DS4_GVQ_ROWS_BF16 ? count / 2 : count) || !rows_bf16 ||
+        rows_bf16->bytes < count * sizeof(__nv_bfloat16)) {
         return 0;
     }
-    mm_embed_kernel<<<(uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0,
-        ds4_current_stream()>>>((float *)cur->ptr, (const __nv_bfloat16 *)rows_bf16->ptr, count);
+    auto launch = [&](auto *values) {
+        mm_embed_kernel<<<(uint32_t)((count + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0,
+            ds4_current_stream()>>>(values, (const __nv_bfloat16 *)rows_bf16->ptr, count);
+    };
+    if (format == DS4_GVQ_ROWS_BF16) { launch((__nv_bfloat16 *)cur->ptr); }
+    else { launch((float *)cur->ptr); }
     return cuda_ok(cudaGetLastError(), "MiniMax embedding");
 }
