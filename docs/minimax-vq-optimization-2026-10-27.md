@@ -1,7 +1,7 @@
 # MiniMax-M3.1 VQ optimization, 2026-10-27
 
 Campaign target: at least three adopted prefill rounds, emphasizing long
-contexts, and three decode rounds. Current adoption: **prefill 3, decode 1**.
+contexts, and three decode rounds. Current adoption: **prefill 3, decode 2**.
 HF publication remains pending the completed campaign. The
 [October 25 report](minimax-vq-optimization-2026-10-25.md) is historical;
 its rounds do not count toward this campaign.
@@ -245,3 +245,54 @@ all six samples, with PSI zero. The
 [P4 receipt](benchmarks/minimax-m31-2026-10-27/p4.json) retains samples,
 affinity, host availability and counters. P4 contributes one prefill round;
 the three-prefill target is closed, with two decode rounds still pending.
+
+## D2: 16-warps for one-row R13+8 gate/up — adopted
+
+A fresh retained whole-workload diagnostic with PDL disabled separated
+execution from dependency waits. At 64K, gate/up took 2.550 s of the
+12.633 s decode range (174.76 µs per layer call); down took 1.288 s.
+PDL remains enabled for adoption measurements. Q4's apparent 157 µs output
+projection became 116 µs in isolation, already near the streaming floor.
+Changing its shared/L1 carveout slowed every tested shape and was rejected.
+
+The 1,024-thread gate/up bound limits each thread to 64 registers. R13+8
+spilled a 24-byte frame; model-free NCU measured 264,192 local-load and
+159,744 local-store sectors per call. D2 uses 512 threads for **one-row
+R13+8 only**: 112 registers per thread, no spills, 57,344 registers per CTA
+instead of 65,536, and the same shared memory and tensor buffers. Resident
+warps fall from 32 to 16. Plain R13 slowed with that schedule and keeps
+32 warps, as do verify widths. Per-warp arithmetic, task coverage and BF16
+outputs are unchanged. `DS4_MINIMAX_GU16=0` restores the original schedule.
+Both functions are prepared at initialization in either mode.
+
+The existing model-free harness now rotates distinct layer codebooks as
+well as weights, and compares every BF16 output with the original kernel.
+Eight-set repeated samples improved R13+8 gate/up from 228.6/229.6 to
+223.9/224.8 µs, and unchanged down from 121.8/122.4 to 117.2/118.0 µs.
+These use synthetic inputs and ordinary launches. Cold NCU replay instead
+slowed **230.720 → 252.576 µs (+9.48%)**, despite eliminating local requests
+and reducing issued instructions by 3.52%. This cold/steady difference is
+retained as a tradeoff, not explained away; spill removal alone does not
+explain the larger end-to-end gain. Descriptor-reference and cross-matrix
+prefetch probes were not retained.
+
+To resolve a potentially small decode gain, these fresh-process comparisons
+extend generation from 256 to **1,024 forced greedy tokens** at each of the
+same 8K/64K frontiers, with resident KV, fixed main CPU 5 and performance-core
+helpers. Rates are not a matched comparison with prior 256-token rounds.
+Three pairs use one frozen binary, P1/D1/P3/P4 enabled and only GU16 varied:
+
+| Frontier | Decode off | Decode on | Change | Prefill off | Prefill on |
+|---:|---:|---:|---:|---:|---:|
+| 8K | 20.78 | 21.39 | +2.94% | 1,223.87 | 1,227.63 |
+| 64K | 20.34 | 21.00 | +3.24% | 1,145.80 | 1,147.61 |
+
+All pairs improve decode and every on rate exceeds every off rate; the
+on ranges are only 0.04 tok/s at either frontier. Prefill medians are
++0.31%/+0.16%; the last pair is -0.02%/-0.37%, so zero regression is not
+assumed, but no repeated prefill cost was established. First-token medians
+improve as well. All 200,064 logits and 1,024 IDs match at both frontiers in
+all six samples, including the prior 256-ID golden prefix. PSI is zero.
+The [D2 receipt](benchmarks/minimax-m31-2026-10-27/d2.json) contains the cold
+counter cost, resource tradeoff, affinity and raw cohort. One decode round
+remains; HF publication is still pending the completed campaign.

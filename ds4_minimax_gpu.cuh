@@ -167,6 +167,7 @@ struct ds4_minimax_moe {
     int mma8_blocks[2][3] = {};     // [R13, R13+8][gate, up, down]
     // DS4_MINIMAX_MMA_WS=0: prefill experts on glmvq_mma8_kernel (A/B).
     bool mmaw = true;
+    bool gu16 = true;
     std::vector<uint32_t> keys;     // table slot per layer, keyed by expert 0's w1
     std::vector<glmvq_mma_item> items;
     std::vector<mw_item> witems;    // gate, up, down 64-pair items (mw_kernel)
@@ -190,6 +191,12 @@ static cudaError_t mm_prepare(ds4_minimax_moe *moe) {
     constexpr uint32_t books = glmvq_decode_books<13, RES>();
     cudaError_t err = cudaFuncSetAttribute(mm_decode_gu<RES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
         books + MM_HIDDEN * sizeof(__nv_bfloat16));
+    if constexpr (RES) {
+        if (err == cudaSuccess) {
+            err = cudaFuncSetAttribute(mm_decode_gu<RES, 16>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                books + MM_HIDDEN * sizeof(__nv_bfloat16));
+        }
+    }
     if (err == cudaSuccess) {
         err = cudaFuncSetAttribute(mm_decode_down<RES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             books + MM_USED * MM_FFN * sizeof(__nv_bfloat16));
@@ -211,6 +218,13 @@ extern "C" ds4_minimax_moe *ds4_gpu_minimax_moe_create(ds4_gvq_ctx *gvq, uint32_
     if (!gvq || !rows) { return nullptr; }
     ds4_minimax_moe *moe = new (std::nothrow) ds4_minimax_moe;
     if (!moe) { return nullptr; }
+    const char *gu16 = getenv("DS4_MINIMAX_GU16");
+    if (gu16 && strcmp(gu16, "0") && strcmp(gu16, "1")) {
+        fprintf(stderr, "ds4: DS4_MINIMAX_GU16 accepts 0 or 1\n");
+        delete moe;
+        return nullptr;
+    }
+    moe->gu16 = !gu16 || strcmp(gu16, "0");
     moe->gvq = gvq;
     moe->rows = rows;
     int device = 0, sms = 0;
@@ -294,9 +308,15 @@ static cudaError_t mm_decode_run(ds4_minimax_moe *moe, float *out, const float *
     const uint32_t grid = rows * (moe->decode_blocks / rows);
     glmvq_launch_kernel(launch, mm_decode_route, 1, rows * MM_USED, 0, stream, items, selected, table,
         (const glmvq_source *)moe->gvq->model->device->ptr);
-    glmvq_launch_kernel(launch, mm_decode_gu<RES>, grid, MM_WARPS * 32,
-        books + MM_HIDDEN * sizeof(__nv_bfloat16), stream, (const glmvq_decode_item *)items, (const uint4 *)book,
-        (const uint4 *)res_book, input, mid, rows);
+    if (RES && rows == 1 && moe->gu16) {
+        glmvq_launch_kernel(launch, mm_decode_gu<RES, 16>, grid, 16 * 32,
+            books + MM_HIDDEN * sizeof(__nv_bfloat16), stream, (const glmvq_decode_item *)items, (const uint4 *)book,
+            (const uint4 *)res_book, input, mid, rows);
+    } else {
+        glmvq_launch_kernel(launch, mm_decode_gu<RES>, grid, MM_WARPS * 32,
+            books + MM_HIDDEN * sizeof(__nv_bfloat16), stream, (const glmvq_decode_item *)items, (const uint4 *)book,
+            (const uint4 *)res_book, input, mid, rows);
+    }
     glmvq_launch_kernel(launch, mm_decode_down<RES>, grid, MM_WARPS * 32,
         books + MM_USED * MM_FFN * sizeof(__nv_bfloat16), stream, (const glmvq_decode_item *)items,
         (const uint4 *)book, (const uint4 *)res_book, (const __nv_bfloat16 *)mid, partial, rows);

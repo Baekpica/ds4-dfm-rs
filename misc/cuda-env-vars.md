@@ -35,6 +35,12 @@ fused MoE path) emit exact MMQ Q8 into existing context scratch when QKV
 also consumes prepared q4p input. Decode, verify, media and traces keep
 F32 norm. Prepared QKV runs before the indexer without borrowing that scratch.
 
+`DS4_MINIMAX_GU16=0` restores 32-warps for one-row R13+8 expert gate/up.
+The default uses 16 warps there to avoid register spills; plain R13,
+prefill and wider verification retain their schedules. Arithmetic and
+tensor allocations are unchanged. The October 27 report records both
+the cold NCU regression and the adopted repeated whole-workload gain.
+
 ## DeepSeek V4.1 vision transfers
 
 `DS41_VISION_PINNED=0` restores direct pageable uploads from the vision

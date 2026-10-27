@@ -62,9 +62,10 @@ __device__ __forceinline__ float mm_down_dot(const glmvq_matrix &m, uint32_t row
  * layer book (and residual book) in shared memory of persistent CTAs, one
  * warp per (weight row, expert). Every group walks the weight rows in the
  * same order, so an expert two rows share is fetched from DRAM about once
- * (the groups meet in L2) while each row runs the one-row arithmetic. */
-template <bool RES>
-__global__ void __launch_bounds__(MM_WARPS * 32, 1) mm_decode_gu(const glmvq_decode_item *items,
+ * (the groups meet in L2) while each row runs the one-row arithmetic.
+ * One-row R13+8 uses 16 warps to remove the 64-register launch cap's spills. */
+template <bool RES, uint32_t WARPS = MM_WARPS>
+__global__ void __launch_bounds__(WARPS * 32, 1) mm_decode_gu(const glmvq_decode_item *items,
         const uint4 *book, const uint4 *book2, const float *input, __nv_bfloat16 *mid, uint32_t rows = 1) {
     extern __shared__ __align__(16) uint8_t mm_stage[];
     constexpr uint32_t books = glmvq_decode_books<13, RES>();
@@ -79,8 +80,8 @@ __global__ void __launch_bounds__(MM_WARPS * 32, 1) mm_decode_gu(const glmvq_dec
     glmvq_pdl_wait();
     for (uint32_t i = threadIdx.x; i < MM_HIDDEN; i += blockDim.x) { x[i] = __float2bfloat16_rn(input[i]); }
     __syncthreads();
-    const uint32_t lane = threadIdx.x & 31, warp = (blockIdx.x % ctas) * MM_WARPS + threadIdx.x / 32;
-    for (uint32_t task = warp; task < MM_USED * MM_FFN; task += ctas * MM_WARPS) {
+    const uint32_t lane = threadIdx.x & 31, warp = (blockIdx.x % ctas) * WARPS + threadIdx.x / 32;
+    for (uint32_t task = warp; task < MM_USED * MM_FFN; task += ctas * WARPS) {
         // One row keeps the expert-major order (a CTA's warps read consecutive
         // rows of one expert, 3-8% faster alone); several rows interleave the
         // experts so the groups reach a shared expert's rows together.
