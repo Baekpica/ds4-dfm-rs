@@ -140,4 +140,22 @@ __global__ void mm_moe_residual_kernel(CT *cur, const __nv_bfloat16 *down, const
     if constexpr (INDEX_Q8) { mm_row_q8<MM_ROW_VALUES>(y, (mm_norm_q8 *)norm, gridDim.x); }
 }
 
+// The decode reducer already rounded cur; its RMS skips that duplicate conversion.
+template <typename T, bool ROUNDED = false>
+__global__ void mm_rms_kernel(float *out, const T *input, const __nv_bfloat16 *weight) {
+    __shared__ float scratch[MM_ROW_THREADS / 32];
+    glmvq_pdl_open();
+    float w[MM_ROW_VALUES];
+    mm_row_weights(weight, w);
+    glmvq_pdl_wait();
+    const uint64_t base = (uint64_t)blockIdx.x * MM_HIDDEN;
+    float x[MM_ROW_VALUES], y[MM_ROW_VALUES];
+    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) {
+        const float v = glmvq_value(input[base + threadIdx.x + j * MM_ROW_THREADS]);
+        x[j] = ROUNDED ? v : glmvq_round(v);
+    }
+    mm_row_rms(x, w, y, scratch);
+    for (uint32_t j = 0; j < MM_ROW_VALUES; j++) { out[base + threadIdx.x + j * MM_ROW_THREADS] = y[j]; }
+}
+
 #endif

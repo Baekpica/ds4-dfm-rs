@@ -24,7 +24,7 @@ It preserves ascending expert order and both BF16 rounding boundaries;
 decode, media spans and traces keep the separate path.
 
 `DS4_MINIMAX_PRELOAD_DECODE=0` skips targeted decode-kernel preparation.
-The default resolves 22 existing Q4 and joint projection functions during
+The default resolves 25 Q4, joint projection and decode epilogue functions during
 graph allocation, before prefill, without launches or new tensor buffers.
 The measured sustained decode gain and unresolved driver/cache mechanism
 are recorded in the same report.
@@ -40,6 +40,14 @@ The default uses 16 warps there to avoid register spills; plain R13,
 prefill and wider verification retain their schedules. Arithmetic and
 tensor allocations are unchanged. The October 27 report records both
 the cold NCU regression and the adopted repeated whole-workload gain.
+
+`DS4_MINIMAX_DECODE_RESIDUAL=0` restores separate one-row expert reduction
+and residual handling. The default adds the reduced branch directly to F32
+cur, then applies RMS without rounding the already-rounded cur again.
+Verify widths, prefill, media spans and tracing retain their paths. Both
+rounding boundaries and ascending expert order are preserved; tensor
+allocations are unchanged. The October 27 report records the actual API
+regression gate, in-model target timing and paired throughput evidence.
 
 ## DeepSeek V4.1 vision transfers
 

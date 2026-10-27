@@ -1,14 +1,15 @@
 # MiniMax-M3.1 VQ optimization, 2026-10-27
 
 Campaign target: at least three adopted prefill rounds, emphasizing long
-contexts, and three decode rounds. Current adoption: **prefill 3, decode 2**.
-HF publication remains pending the completed campaign. The
+contexts, and three decode rounds. Current adoption: **prefill 3, decode 3**.
+The optimization target is closed. The requested fresh 2K–64K DSpark sweep
+and HF performance/graph refresh remain pending. The
 [October 25 report](minimax-vq-optimization-2026-10-25.md) is historical;
 its rounds do not count toward this campaign.
 
 One GB10, CUDA 13.4.92, KMD 615.71.10, busy clocks 2,177–2,190 MHz under
 the unchanged 300–2,200 MHz policy. Artifact: the unchanged
-[MiniMax-M3.1-Flash VQ release](minimax-vq.md#model-and-format), manifest
+[MiniMax-M3.1-Flash VQ release](minimax-vq.md#model-and-format), `release.json`
 SHA-256 `2110c1e5cba8d59987e370d50dab6dde5d5f7fc82009cdc27d8131452536f4b0`.
 CUDA runtime 13.4.92 and cuBLAS/cuBLASLt 13.8.0.4 were loaded from the
 system CUDA installation; no framework libraries were loaded.
@@ -296,3 +297,97 @@ all six samples, including the prior 256-ID golden prefix. PSI is zero.
 The [D2 receipt](benchmarks/minimax-m31-2026-10-27/d2.json) contains the cold
 counter cost, resource tradeoff, affinity and raw cohort. One decode round
 remains; HF publication is still pending the completed campaign.
+
+## D3: add the decode residual during expert reduction — adopted
+
+The retained baseline's 24-CTA expert reduction materialized a 6,144-wide
+F32 branch, then a single-CTA residual kernel read it, added cur and applied
+RMS. D3 performs only that residual add in the parallel reduction, then
+uses the existing RMS kernel without converting the already BF16-rounded
+cur again. The final layer needs no successor norm and omits the residual
+launch entirely. The numerical contract is class 5.1: ascending expert
+order, separate F32 multiply/add, shared and branch BF16 boundaries, the
+residual BF16 boundary and the RMS reduction order are all preserved.
+
+This applies to **one-row F32 text MoE only**, with no media span or trace.
+Prefill and wider verification keep their paths. The existing residual
+bundle carries the output; `ffn_out` is no longer written in this case but
+its allocation is retained. `DS4_MINIMAX_DECODE_RESIDUAL=0` restores the old
+path. Both reduction functions and the new RMS function are prepared in
+either mode. The old reduce/RMS definitions moved to their existing shared
+headers so the model-free test executes the production kernels. All nine
+selected retained instruction streams are identical, including the moved
+old reduce and F32/BF16 RMS functions.
+
+The focused fixture compares full cur/norm bytes with the separate path and
+checks the residual add against an independent CPU calculation. An actual
+MoE API gate uses about 8 MB of synthetic GVQ data, aliases valid matrices
+across experts, and checks cur/norm, absent successor norm, untouched dead
+output and rejected formats. It reproduced a prefill-only buffer-validator
+restriction before the fix and passed afterward. The initial failed full
+cohort is excluded entirely; all adopted samples use the repaired binary
+`c9c627eb6294a2c0931cfdb2b569acfb1b454f64ed39b0ce947de0ad18e137f6`.
+
+Seven alternating warmed model-free pairs all improved, with median
+**3.78625 → 3.72625 µs** for the pair. These synthetic partials are hot in
+cache and omit the preceding weight stream. Cold NCU replay measured
+11.776 → 10.368 µs; issued instructions fell 14,496 → 14,240 (-1.77%). L2
+read requests stayed at 5,880 sectors; writes fell 2,304 → 1,536, saving
+24 KiB per normalized row. These are L2 requests, not DRAM bytes. Reduction
+registers increase 22 → 24, while RMS uses 62; all have zero spills and the
+same 256-thread blocks. The approximate payload floor is 1.10 → 0.99 µs at
+235 GB/s before metadata, launch/dependency latency and the single-CTA RMS
+limit; these tiny kernels are latency-bound.
+
+A paired full-model diagnostic on the same frozen binary disabled PDL to
+remove dependency waits from intrinsic durations. Both profiles used 256
+generated tokens and reproduced all 200,064 logits and IDs. At 64K:
+
+| Target | Off | On |
+|---|---:|---:|
+| Reduction, µs/call | 1.597 | 1.905 |
+| Successor residual/RMS, µs/call | 4.141 | 2.547 |
+| Combined target, µs/token | 327.085 | 251.226 |
+| Target interval including gaps, µs/token | 343.344 | 267.196 |
+
+The combined target saves **23.19%** (22.18% including gaps). Dispatch is
+57 reductions plus 56 rounded-input RMS calls per token; the last layer
+omits its norm. The reducer's extra work is outweighed by the successor
+and removed store. The diagnostic whole decode changes 12.4858 → 12.4693 s;
+PDL remains enabled for the release comparison below.
+
+Three fresh-process pairs use P1/D1/P3/P4/D2, fixed main CPU 5 and helper
+cores `5-9,15-19`, the unchanged resident 8K/64K protocol and 1,024 tokens:
+
+| Frontier | Decode off | Decode on | Change | Prefill off | Prefill on |
+|---:|---:|---:|---:|---:|---:|
+| 8K | 21.17 | 21.45 | +1.32% | 1,228.74 | 1,224.27 |
+| 64K | 20.80 | 21.09 | +1.39% | 1,145.58 | 1,144.61 |
+
+All three paired decode rates improve. Prefill medians are -0.364%/-0.085%,
+within the controls' ranges of 0.474%/0.214%; the last 64K prefill pair
+improves. No meaningful long-prefill regression was established. The off
+decode range is about 3%, so the entire observed median throughput gain is
+not attributed to this boundary. Adoption rests on the measured in-model
+work reduction, consistent paired direction, exact outputs and unchanged
+tensor allocations. Every sample matches all logits and 1,024 IDs at both
+frontiers; available memory stays above 7.14 GiB, PSI is zero and busy clocks
+are 2,177–2,190 MHz. The [D3 receipt](benchmarks/minimax-m31-2026-10-27/d3.json)
+retains the raw samples, target attribution, counters and exclusions.
+
+The campaign has **three adopted prefill and three adopted decode rounds**.
+The requested fresh 2K–64K DSpark sweep and HF graph/performance publication
+are separate remaining deliverables; this resident plain-decode table does
+not replace that sweep.
+
+## Other rejected decode probes
+
+Starting the joint projection's Q8 CTAs first slowed warmed four-layer
+samples from 144.64/144.61 to 148.73/148.09 µs, despite exact outputs and
+unchanged 48 registers. Cold replay also slowed 177.280 → 191.040 µs,
+instructions rose 0.35% and active warps fell 60.53% → 57.57%. The native
+candidate was removed before any full-model A/B. The retained opt-in `proj`
+fixture checks real QKV/indexer shapes and guards against the separate
+production APIs. A lossless BF16 router path was ineligible: only 10 of
+786,432 values in the inspected F32 router tensor are exact BF16 values;
+router values and storage were not changed.

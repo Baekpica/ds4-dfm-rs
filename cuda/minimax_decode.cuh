@@ -132,4 +132,25 @@ __global__ void __launch_bounds__(MM_WARPS * 32, 1) mm_decode_down(const glmvq_d
     }
 }
 
+// Per row (blockIdx.y): the F32 sum of weight * BF16 expert row in ascending
+// expert order, plus the shared expert's row, rounded once.
+template <bool RESIDUAL = false>
+__global__ void mm_decode_reduce(float *out, const float *partial, const float *weights,
+        const glmvq_decode_item *items, const float *shared) {
+    glmvq_pdl_open();
+    glmvq_pdl_wait();
+    const uint32_t col = blockIdx.x * blockDim.x + threadIdx.x, r = blockIdx.y;
+    if (col >= MM_HIDDEN) { return; }
+    partial += (uint64_t)r * MM_USED * MM_HIDDEN;
+    items += r * MM_USED;
+    float sum = 0.0f;
+    for (uint32_t e = 0; e < MM_USED; e++) {
+        sum = glmvq_add(sum, glmvq_mul(partial[e * MM_HIDDEN + col], weights[items[e].pair]));
+    }
+    const uint64_t at = (uint64_t)r * MM_HIDDEN + col;
+    const float branch = glmvq_round(glmvq_add(sum, glmvq_round(shared[at])));
+    if constexpr (RESIDUAL) { out[at] = glmvq_round(glmvq_add(out[at], glmvq_round(branch))); }
+    else { out[at] = branch; }
+}
+
 #endif

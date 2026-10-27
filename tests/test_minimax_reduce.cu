@@ -1,4 +1,5 @@
 // Model-free prefill MoE reduce + residual: CPU sums and the separate path.
+#include "cuda/minimax_decode.cuh"
 #include "cuda/minimax_rows.cuh"
 #include "cuda/mmq/quantize.cuh"
 #include <algorithm>
@@ -163,8 +164,75 @@ static void run(unsigned rows, bool next, bool prepared, bool timing, bool index
     CK(cudaFree(s)); CK(cudaFree(w)); CK(cudaFree(b)); CK(cudaFree(d));
 }
 
+static void run_decode_residual() {
+    std::vector<float> partial(U * H), shared(H), cur(H), weights = {0.2f, 0.3f, 0.7f, 0.8f}, norm(H);
+    std::vector<__nv_bfloat16> next(H);
+    std::vector<glmvq_decode_item> items(U);
+    const unsigned pairs[U] = {3, 0, 2, 1};
+    for (unsigned e = 0; e < U; e++) { items[e].pair = pairs[e]; }
+    for (auto &x : partial) { x = value(__float2bfloat16_rn((int(rng() % 4097) - 2048) / 313.f)); }
+    for (auto &x : cur) { x = value(__float2bfloat16_rn((int(rng() % 2049) - 1024) / 97.f)); }
+    for (auto &x : shared) { x = (int(rng() % 4097) - 2048) / 113.f; }
+    for (auto &x : next) { x = __float2bfloat16_rn((int(rng() % 127) - 63) / 97.f); }
+    auto *p = device(partial), *s = device(shared), *c = device(cur), *w = device(weights), *n = device(norm);
+    auto *b = device(norm);
+    auto *nw = device(next);
+    auto *it = device(items);
+    auto original = [&] {
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_decode_reduce<>, dim3(H / 256, 1), 256, 0, nullptr,
+            b, (const float *)p, (const float *)w, (const glmvq_decode_item *)it, (const float *)s);
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_residual_kernel<float, float>, 1, MM_ROW_THREADS, 0, nullptr,
+            c, (const float *)b, n, (const __nv_bfloat16 *)nw, (__half *)nullptr, (float *)nullptr);
+    };
+    auto fused = [&] {
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_decode_reduce<true>, dim3(H / 256, 1), 256, 0, nullptr,
+            c, (const float *)p, (const float *)w, (const glmvq_decode_item *)it, (const float *)s);
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_rms_kernel<float, true>, 1, MM_ROW_THREADS, 0, nullptr,
+            n, (const float *)c, (const __nv_bfloat16 *)nw);
+    };
+    original(); CK(cudaDeviceSynchronize());
+    auto got = read(c, H), got_norm = read(n, H);
+    for (unsigned k = 0; k < H; k++) {
+        volatile float sum = 0;
+        for (unsigned e = 0; e < U; e++) {
+            volatile float product = partial[e * H + k] * weights[pairs[e]];
+            sum = sum + product;
+        }
+        const float branch = value(__float2bfloat16_rn(sum + value(__float2bfloat16_rn(shared[k]))));
+        CHECK(got[k] == value(__float2bfloat16_rn(cur[k] + branch)) && std::isfinite(got_norm[k]));
+    }
+    CK(cudaMemcpy(c, cur.data(), H * sizeof(float), cudaMemcpyHostToDevice));
+    fused(); CK(cudaDeviceSynchronize());
+    auto actual = read(c, H), actual_norm = read(n, H);
+    CHECK(!memcmp(actual.data(), got.data(), H * sizeof(float)));
+    CHECK(!memcmp(actual_norm.data(), got_norm.data(), H * sizeof(float)));
+    CK(cudaMemcpy(c, cur.data(), H * sizeof(float), cudaMemcpyHostToDevice));
+    glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_decode_reduce<true>, dim3(H / 256, 1), 256, 0, nullptr,
+        c, (const float *)p, (const float *)w, (const glmvq_decode_item *)it, (const float *)s);
+    actual = read(c, H);
+    CHECK(!memcmp(actual.data(), got.data(), H * sizeof(float)));
+    cudaEvent_t begin, end; CK(cudaEventCreate(&begin)); CK(cudaEventCreate(&end));
+    for (unsigned sample = 0; sample < 7; sample++) {
+        float us[2];
+        for (unsigned side = 0; side < 2; side++) {
+            const unsigned mode = side ^ (sample & 1);
+            CK(cudaMemcpy(c, cur.data(), H * sizeof(float), cudaMemcpyHostToDevice));
+            CK(cudaEventRecord(begin));
+            for (unsigned i = 0; i < 128; i++) { if (mode) { fused(); } else { original(); } }
+            CK(cudaEventRecord(end)); CK(cudaEventSynchronize(end));
+            float ms; CK(cudaEventElapsedTime(&ms, begin, end)); us[mode] = ms * 1000 / 128;
+        }
+        printf("DECODE_RESIDUAL sample=%u original_us=%.6f fused_us=%.6f\n", sample, us[0], us[1]);
+    }
+    CK(cudaEventDestroy(end)); CK(cudaEventDestroy(begin));
+    CK(cudaFree(it)); CK(cudaFree(nw)); CK(cudaFree(b)); CK(cudaFree(n)); CK(cudaFree(w));
+    CK(cudaFree(c)); CK(cudaFree(s)); CK(cudaFree(p));
+    puts("DECODE_RESIDUAL_CPU_ADD_PASS");
+}
+
 int main(int argc, char **argv) {
     CHECK(argc <= 3);
+    if (argc == 2 && !strcmp(argv[1], "decode")) { run_decode_residual(); return 0; }
     if (argc >= 2) {
         const unsigned rows = (unsigned)strtoul(argv[1], nullptr, 10);
         CHECK(rows > DS4_MINIMAX_SPLIT_ROWS && rows <= 4096);

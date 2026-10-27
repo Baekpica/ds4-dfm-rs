@@ -66,7 +66,8 @@ int ds4_gpu_minimax_prepare_decode(void);
  * Prefill rows only: `bf16` DS4_MINIMAX_BF16_SHARED reads BF16 shared rows,
  * DS4_MINIMAX_BF16_OUT writes BF16 rows (both BF16-rounded where read).
  * With `residual`, prefill consumes that BF16 branch directly in cur's
- * residual/norm/q4p output; `out` is not written. */
+ * residual/norm/q4p output; one-row F32 decode folds the residual add into
+ * reduction before RMS. `out` is not written in either case. */
 int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const ds4_gpu_tensor *shared,
     const uint32_t *matrices, uint32_t rows, uint32_t bf16, const ds4_minimax_residual_out *residual);

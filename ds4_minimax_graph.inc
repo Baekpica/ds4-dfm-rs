@@ -456,8 +456,14 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
         const char *v = getenv("DS4_MINIMAX_REDUCE_RESIDUAL");
         reduce_residual = !v || strcmp(v, "0");
     }
-    const bool fused = reduce_residual && !dense && rows > DS4_MINIMAX_SPLIT_ROWS &&
-        !g->span_n && !minimax_traced();
+    static int decode_residual = -1;
+    if (decode_residual < 0) {
+        const char *v = getenv("DS4_MINIMAX_DECODE_RESIDUAL");
+        decode_residual = !v || strcmp(v, "0");
+    }
+    const bool fused = !dense && !g->span_n && !minimax_traced() &&
+        ((reduce_residual && rows > DS4_MINIMAX_SPLIT_ROWS) ||
+            (decode_residual && rows == 1 && g->cur_rows == DS4_GVQ_ROWS_F32));
     const ds4_minimax_residual_out residual = {g->cur, g->norm, qkv_q4p ? g->q4h : NULL, g->q4s,
         next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, g->cur_rows, norm_format};
     const bool ok = minimax_attention(g, m, w, il, rows, pos) &&

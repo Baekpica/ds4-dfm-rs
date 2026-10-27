@@ -2010,7 +2010,7 @@ tests/test_minimax_mma8w: tests/test_minimax_mma8w.cu cuda/minimax_mma8w.cuh cud
 tests/test_minimax_decode: tests/test_minimax_decode.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
-tests/test_minimax_reduce: tests/test_minimax_reduce.cu cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/mmq/quantize.cuh cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h ds4_glmvq.h ds4_gpu.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
+tests/test_minimax_reduce: tests/test_minimax_reduce.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/mmq/quantize.cuh cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h ds4_glmvq.h ds4_gpu.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -std=c++17 -I. -o $@ $< cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
 
 tests/test_minimax_rows.o: tests/test_minimax_rows.c ds4.h ds4_gpu.h ds4_glmvq.h ds4_minimax.h
