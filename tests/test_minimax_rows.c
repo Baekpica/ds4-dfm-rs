@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 enum { H = DS4_MINIMAX_HIDDEN, BF16_TYPE = 30, MAX_ROWS = 4096 };
@@ -107,6 +108,12 @@ static void run(ds4_gvq_ctx *ctx, unsigned rows) {
 
 int main(int argc, char **argv) {
     CHECK(argc <= 2 && ds4_gpu_init());
+    struct timespec before, after;
+    CHECK(!clock_gettime(CLOCK_MONOTONIC, &before));
+    CHECK(ds4_gpu_minimax_prepare_decode());
+    CHECK(!clock_gettime(CLOCK_MONOTONIC, &after));
+    printf("MINIMAX_PRELOAD ms=%.6f\n", (after.tv_sec - before.tv_sec) * 1000.0 +
+        (after.tv_nsec - before.tv_nsec) / 1000000.0);
     const size_t page = (size_t)sysconf(_SC_PAGESIZE), wb = H * sizeof(uint16_t);
     const size_t bytes = (wb + page - 1) / page * page;
     uint16_t *map = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

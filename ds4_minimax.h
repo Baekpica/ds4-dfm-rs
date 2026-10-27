@@ -22,6 +22,11 @@ extern "C" {
  * handoff's tools/minimax_ref.py (matches transformers 5.20.2
  * MiniMaxM3VLDecoderLayer to BF16 rounding). */
 typedef struct ds4_minimax_moe ds4_minimax_moe;
+typedef struct {
+    ds4_gpu_tensor *cur, *norm, *q4h, *q4s;
+    uint32_t next;
+    ds4_gvq_rows format;
+} ds4_minimax_residual_out;
 
 enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 6144, DS4_MINIMAX_FFN = 3072,
        DS4_MINIMAX_DENSE_FF = 12288,
@@ -49,15 +54,20 @@ enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 614
 uint64_t ds4_gpu_minimax_moe_bytes(uint32_t rows);
 ds4_minimax_moe *ds4_gpu_minimax_moe_create(ds4_gvq_ctx *gvq, uint32_t rows);
 void ds4_gpu_minimax_moe_free(ds4_minimax_moe *moe);
+/* Resolve the decode projection kernels before prefill changes loading
+ * order; no launches or model-dependent allocation. */
+int ds4_gpu_minimax_prepare_decode(void);
 /* out = round(sum over the selected experts e of weights[e] * expert_e(input)
  * + shared), the sum in F32 in ascending expert order (the reference's F32
  * index_add, then one rounding). `matrices` holds the layer's w1[128],
  * w3[128], w2[128] GVQ indices; `weights` already carry the routed scale.
  * Prefill rows only: `bf16` DS4_MINIMAX_BF16_SHARED reads BF16 shared rows,
- * DS4_MINIMAX_BF16_OUT writes BF16 rows (both BF16-rounded where read). */
+ * DS4_MINIMAX_BF16_OUT writes BF16 rows (both BF16-rounded where read).
+ * With `residual`, prefill consumes that BF16 branch directly in cur's
+ * residual/norm/q4p output; `out` is not written. */
 int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const ds4_gpu_tensor *shared,
-    const uint32_t *matrices, uint32_t rows, uint32_t bf16);
+    const uint32_t *matrices, uint32_t rows, uint32_t bf16, const ds4_minimax_residual_out *residual);
 
 /* F32 router logits of the 6144-wide rows (never TF32; up to
  * DS4_MINIMAX_SPLIT_ROWS rows each computed as a lone row), then the top-4

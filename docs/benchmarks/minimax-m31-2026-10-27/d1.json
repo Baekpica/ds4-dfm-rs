@@ -1,0 +1,290 @@
+{
+  "complete": true,
+  "samples": {
+    "off1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1201.81",
+        "gen_tokens": "256",
+        "gen_tps": "20.69",
+        "gen_tps_ss": "20.69",
+        "first_token_sec": "0.0506",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1122.82",
+        "gen_tokens": "256",
+        "gen_tps": "20.29",
+        "gen_tps_ss": "20.30",
+        "first_token_sec": "0.0517",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1195.72",
+        "gen_tokens": "256",
+        "gen_tps": "21.00",
+        "gen_tps_ss": "21.01",
+        "first_token_sec": "0.0501",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1118.77",
+        "gen_tokens": "256",
+        "gen_tps": "20.64",
+        "gen_tps_ss": "20.64",
+        "first_token_sec": "0.0493",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1198.07",
+        "gen_tokens": "256",
+        "gen_tps": "20.77",
+        "gen_tps_ss": "20.78",
+        "first_token_sec": "0.0508",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1118.65",
+        "gen_tokens": "256",
+        "gen_tps": "20.36",
+        "gen_tps_ss": "20.36",
+        "first_token_sec": "0.0508",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1194.73",
+        "gen_tokens": "256",
+        "gen_tps": "20.61",
+        "gen_tps_ss": "20.62",
+        "first_token_sec": "0.0518",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1117.63",
+        "gen_tokens": "256",
+        "gen_tps": "20.20",
+        "gen_tps_ss": "20.20",
+        "first_token_sec": "0.0513",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1203.17",
+        "gen_tokens": "256",
+        "gen_tps": "20.72",
+        "gen_tps_ss": "20.73",
+        "first_token_sec": "0.0506",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1121.87",
+        "gen_tokens": "256",
+        "gen_tps": "20.32",
+        "gen_tps_ss": "20.33",
+        "first_token_sec": "0.0508",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1195.05",
+        "gen_tokens": "256",
+        "gen_tps": "21.27",
+        "gen_tps_ss": "21.27",
+        "first_token_sec": "0.0495",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1117.82",
+        "gen_tokens": "256",
+        "gen_tps": "20.90",
+        "gen_tps_ss": "20.91",
+        "first_token_sec": "0.0499",
+        "kvcache_bytes": "2549102132"
+      }
+    ]
+  },
+  "frontiers": {
+    "8192": {
+      "prefill_tps": {
+        "off": [
+          1201.81,
+          1194.73,
+          1203.17
+        ],
+        "on": [
+          1195.72,
+          1198.07,
+          1195.05
+        ],
+        "off_median": 1201.81,
+        "on_median": 1195.72,
+        "change_pct": -0.5067356736921713
+      },
+      "gen_tps": {
+        "off": [
+          20.69,
+          20.61,
+          20.72
+        ],
+        "on": [
+          21.0,
+          20.77,
+          21.27
+        ],
+        "off_median": 20.69,
+        "on_median": 21.0,
+        "change_pct": 1.4983083615273118
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.69,
+          20.62,
+          20.73
+        ],
+        "on": [
+          21.01,
+          20.78,
+          21.27
+        ],
+        "off_median": 20.69,
+        "on_median": 21.01,
+        "change_pct": 1.5466408893185069
+      }
+    },
+    "65536": {
+      "prefill_tps": {
+        "off": [
+          1122.82,
+          1117.63,
+          1121.87
+        ],
+        "on": [
+          1118.77,
+          1118.65,
+          1117.82
+        ],
+        "off_median": 1121.87,
+        "on_median": 1118.65,
+        "change_pct": -0.2870207778084666
+      },
+      "gen_tps": {
+        "off": [
+          20.29,
+          20.2,
+          20.32
+        ],
+        "on": [
+          20.64,
+          20.36,
+          20.9
+        ],
+        "off_median": 20.29,
+        "on_median": 20.64,
+        "change_pct": 1.724987678659451
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.3,
+          20.2,
+          20.33
+        ],
+        "on": [
+          20.64,
+          20.36,
+          20.91
+        ],
+        "off_median": 20.3,
+        "on_median": 20.64,
+        "change_pct": 1.6748768472906406
+      }
+    }
+  },
+  "status": "adopted",
+  "scope": "P1 retained path; P3 compiled but disabled; plain decode",
+  "source_base": "b9803a9d",
+  "binary_sha256": "0e294f589a1c5eb265ae59f6fb3c68a9c397d5574dbf2e6e211ad332deacd04e",
+  "protocol": {
+    "module_loading": "LAZY",
+    "main_cpu": 5,
+    "helper_cpus": "5-9,15-19",
+    "main_pinning": "after graph allocation during untimed warmup",
+    "cur_bf16": 1,
+    "reduce_residual": 0,
+    "variable": "DS4_MINIMAX_PRELOAD_DECODE",
+    "ctx_alloc": 131072,
+    "warmup_prefill": 4096,
+    "generation_tokens": 256,
+    "frontiers": [
+      8192,
+      65536
+    ]
+  },
+  "numerics": "All 200064 logits and all 256 IDs bit-identical at both frontiers in every sample. Four hot decode kernel instruction streams unchanged.",
+  "resource_and_affinity": {
+    "off1": {
+      "min_available_gib": 7.411720275878906,
+      "max_psi_full_avg10": 0.0,
+      "pin_to_first_logits_sec": 11.939448356628418
+    },
+    "on1": {
+      "min_available_gib": 7.603271484375,
+      "max_psi_full_avg10": 0.0,
+      "pin_to_first_logits_sec": 11.950711011886597
+    },
+    "on2": {
+      "min_available_gib": 7.605846405029297,
+      "max_psi_full_avg10": 0.0,
+      "pin_to_first_logits_sec": 11.933730363845825
+    },
+    "off2": {
+      "min_available_gib": 7.436241149902344,
+      "max_psi_full_avg10": 0.0,
+      "pin_to_first_logits_sec": 11.956095218658447
+    },
+    "off3": {
+      "min_available_gib": 7.471561431884766,
+      "max_psi_full_avg10": 0.0,
+      "pin_to_first_logits_sec": 11.902771234512329
+    },
+    "on3": {
+      "min_available_gib": 7.444995880126953,
+      "max_psi_full_avg10": 0.0,
+      "pin_to_first_logits_sec": 11.969528675079346
+    }
+  },
+  "preload_only_model_free_ms": {
+    "off": 0.069071,
+    "on": 0.164366
+  }
+}

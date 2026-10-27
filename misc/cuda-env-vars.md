@@ -17,6 +17,18 @@ RMS, residual adds, the head and DSpark taps carry the selected format.
 Arithmetic and tensor allocations are unchanged. See the
 [October 27 measurements](../docs/minimax-vq-optimization-2026-10-27.md).
 
+`DS4_MINIMAX_REDUCE_RESIDUAL=0` restores separate expert reduction and
+residual launches. The default consumes the reduced expert branch directly
+in the residual/norm/q4p kernel for text prefill wider than eight rows.
+It preserves ascending expert order and both BF16 rounding boundaries;
+decode, media spans and traces keep the separate path.
+
+`DS4_MINIMAX_PRELOAD_DECODE=0` skips targeted decode-kernel preparation.
+The default resolves 22 existing Q4 and joint projection functions during
+graph allocation, before prefill, without launches or new tensor buffers.
+The measured sustained decode gain and unresolved driver/cache mechanism
+are recorded in the same report.
+
 ## DeepSeek V4.1 vision transfers
 
 `DS41_VISION_PINNED=0` restores direct pageable uploads from the vision

@@ -135,7 +135,7 @@ static bool minimax_graph_alloc(ds4_minimax_graph *g, const ds4_model *m, const 
     g->row_cap = cap;
     g->gvq = ds4_gpu_gvq_create_linear(w->glmvq_gpu, minimax_gvq_scratch(cap), cap);
     g->moe = g->gvq ? ds4_gpu_minimax_moe_create(g->gvq, cap) : NULL;
-    if (!g->gvq || !g->moe) { minimax_graph_free(g); return false; }
+    if (!g->gvq || !g->moe || !ds4_gpu_minimax_prepare_decode()) { minimax_graph_free(g); return false; }
 #define MINIMAX_ALLOC(field, cols, type) do { \
         g->field = ds4_gpu_tensor_alloc((uint64_t)cap * (cols) * sizeof(type)); \
         if (!g->field) { \
@@ -396,7 +396,7 @@ static bool minimax_mlp(ds4_minimax_graph *g, const ds4_model *m, const ds4_tens
 // the shared expert added in the routed sum. Decode and verify widths run the
 // shared expert's gate/up and the router logits as one launch.
 static bool minimax_moe(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
-        uint32_t rows, bool prepared) {
+        uint32_t rows, bool prepared, const ds4_minimax_residual_out *residual) {
     const uint32_t router = minimax_index(m, l->ffn_gate_inp), bias = minimax_index(m, l->ffn_exp_probs_b);
     ds4_gpu_tensor *const outs[] = {g->ff_gate, g->ff_up};
     const uint32_t gu[] = {minimax_index(m, l->ffn_gate_shexp), minimax_index(m, l->ffn_up_shexp)};
@@ -415,13 +415,13 @@ static bool minimax_moe(ds4_minimax_graph *g, const ds4_model *m, const ds4_laye
         ? DS4_MINIMAX_BF16_OUT | (g->mlp_bf16 ? DS4_MINIMAX_BF16_SHARED : 0u) : 0u;
     g->ffn_bf16 = bf16 != 0;
     return ok && ds4_gpu_minimax_moe(g->moe, g->ffn_out, g->norm, g->selected, g->route_weights, g->shared,
-        g->matrices[il], rows, bf16);
+        g->matrices[il], rows, bf16, residual);
 }
 
 // The layer's FFN into ffn_out: the dense MLP (layers 0-2) or the MoE.
 static bool minimax_ffn(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
-        uint32_t rows, bool prepared) {
-    if (il >= MINIMAX_DENSE) { return minimax_moe(g, m, l, il, rows, prepared); }
+        uint32_t rows, bool prepared, const ds4_minimax_residual_out *residual) {
+    if (il >= MINIMAX_DENSE) { return minimax_moe(g, m, l, il, rows, prepared, residual); }
     const bool ok = minimax_mlp(g, m, l->ffn_gate, l->ffn_up, l->ffn_down, g->ffn_out, MINIMAX_DENSE_FF, rows, prepared);
     g->ffn_bf16 = g->mlp_bf16;
     return ok;
@@ -442,16 +442,26 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
     const ds4_layer_weights *n = il + 1u < MINIMAX_LAYERS ? &w->layer[il + 1u] : NULL;
     const ds4_tensor *const qkv[] = {n ? n->attn_q : NULL, n ? n->attn_k : NULL, n ? n->attn_v : NULL};
     const bool qkv_q4p = next && n && minimax_q4p(g, m, qkv, 3u, rows);
+    static int reduce_residual = -1;
+    if (reduce_residual < 0) {
+        const char *v = getenv("DS4_MINIMAX_REDUCE_RESIDUAL");
+        reduce_residual = !v || strcmp(v, "0");
+    }
+    const bool fused = reduce_residual && !dense && rows > DS4_MINIMAX_SPLIT_ROWS &&
+        !g->span_n && !minimax_traced();
+    const ds4_minimax_residual_out residual = {g->cur, g->norm, qkv_q4p ? g->q4h : NULL, g->q4s,
+        next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, g->cur_rows};
     const bool ok = minimax_attention(g, m, w, il, rows, pos) &&
         ds4_gpu_minimax_residual(g->gvq, g->cur, g->attn_out, g->norm, minimax_index(m, l->ffn_norm), rows,
             gu_q4p ? g->q4h : NULL, g->q4s, g->attn_bf16, g->cur_rows) &&
         minimax_trace(il, pos, "attn", g->cur, hidden) &&
-        minimax_ffn(g, m, l, il, rows, gu_q4p) &&
+        minimax_ffn(g, m, l, il, rows, gu_q4p, fused ? &residual : NULL) &&
         (dense || (minimax_trace(il, pos, "routes", g->selected, route) &&
             minimax_trace(il, pos, "weights", g->route_weights, route))) &&
         minimax_trace(il, pos, "ffn_out", g->ffn_out, hidden) &&
-        ds4_gpu_minimax_residual(g->gvq, g->cur, g->ffn_out, g->norm, next ? minimax_index(m, next) : DS4_GVQ_NO_LINK,
-            rows, qkv_q4p ? g->q4h : NULL, g->q4s, g->ffn_bf16, g->cur_rows) &&
+        (fused || ds4_gpu_minimax_residual(g->gvq, g->cur, g->ffn_out, g->norm,
+            next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, rows, qkv_q4p ? g->q4h : NULL, g->q4s,
+            g->ffn_bf16, g->cur_rows)) &&
         minimax_trace(il, pos, "ffn", g->cur, hidden);
     g->norm_q4p = ok && qkv_q4p;
     if (!ok) { fprintf(stderr, "ds4: MiniMax layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }

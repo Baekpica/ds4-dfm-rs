@@ -242,6 +242,7 @@ tests/naive_banks
 /tests/test_minimax_decode
 /tests/test_minimax_mma8w
 /tests/test_minimax_rows
+/tests/test_minimax_reduce
 /tests/axk2_quality
 /tests/test_axk2_topk
 /tests/beam_mtp_gate

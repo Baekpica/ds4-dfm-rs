@@ -1,7 +1,7 @@
 # MiniMax-M3.1 VQ optimization, 2026-10-27
 
 Campaign target: at least three adopted prefill rounds, emphasizing long
-contexts, and three decode rounds. Current adoption: **prefill 1, decode 0**.
+contexts, and three decode rounds. Current adoption: **prefill 2, decode 1**.
 HF publication remains pending the completed campaign. The
 [October 25 report](minimax-vq-optimization-2026-10-25.md) is historical;
 its rounds do not count toward this campaign.
@@ -111,4 +111,92 @@ GPU coverage. They do not explain or invalidate the repeatable unprofiled
 regression. The GPU-state cause remains unresolved. The trial was removed;
 the prefill gain does not outweigh the decode cost for the joint target.
 The [rejected receipt](benchmarks/minimax-m31-2026-10-27/p2-rejected.json)
-retains both CPU protocols. Adopted counts remain **prefill 1, decode 0**.
+retains both CPU protocols. P2 contributes no adopted round.
+
+## D1: resolve decode projection kernels before prefill — adopted
+
+Two different prefill-only trials exposed sensitivity of later decode
+measurements to initialization conditions. Broad `CUDA_MODULE_LOADING=EAGER`
+reversed a decode comparison's sign but lowered minimum available host RAM
+by 1.3–1.4 GiB. It was not retained. The precise cache/driver mechanism is
+unresolved; no instruction-cache diagnosis is claimed.
+
+D1 calls `cudaFuncGetAttributes` for 22 existing Q4 and joint projection
+functions when allocating the MiniMax graph, after expert setup and before
+prefill. [CUDA documents this as loading a kernel before execution](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/lazy-loading.html).
+The diagnostic `DS4_MINIMAX_PRELOAD_DECODE=0` restores the previous setup.
+No GPU arithmetic or tensor allocation changes. The four hot one-row
+projection instruction streams match the prior binary exactly.
+
+These measurements explicitly use lazy module loading, P1 enabled and the
+P3 reduction trial disabled. Cold loading can use CPUs `5-9,15-19`; during
+the untimed 4K warmup, the main thread is fixed to CPU 5 and helpers retain
+that performance-core set. Samples exclude serving, media and MTP, and
+use the same 8K → 64K snapshot/proof workload with **256 generated tokens**.
+This CPU protocol differs from P1's unpinned samples and is not counted as
+an optimization round. Resolving this setup issue precedes more prefill
+work so later comparisons share a controlled baseline.
+
+Three fresh-process pairs, off/on/on/off/off/on; medians in tok/s:
+
+| Frontier | Decode off | Decode on | Change | Prefill off | Prefill on |
+|---:|---:|---:|---:|---:|---:|
+| 8K | 20.69 | 21.00 | +1.50% | 1,201.81 | 1,195.72 |
+| 64K | 20.29 | 20.64 | +1.72% | 1,121.87 | 1,118.65 |
+
+Every pair improved decode at both frontiers, including rates excluding
+the first token. The smallest 64K paired gain was 0.79%, versus a 0.59%
+control run range. Prefill marginal medians are -0.51% / -0.29%, within
+the control ranges of 0.70% / 0.46%; one pair improves, so a repeatable
+prefill regression was not established. No measurable peak-memory increase
+or PSI occurred. The preload-only model-free timer measured 0.069 / 0.164 ms
+(off/on), after CUDA initialization; this is separate from model load time.
+
+All 200,064 frontier logits and all 256 generated IDs matched at both
+frontiers in every sample. The [D1 receipt](benchmarks/minimax-m31-2026-10-27/d1.json)
+retains raw samples, affinity checks, resource bounds and the measured
+binary identity. P3 is compiled but inactive for this D1 comparison.
+
+## P3: consume expert reduction in the residual — adopted
+
+A fresh retained P1+D1 whole-workload profile measured the 64K suffix at
+51.125 s: experts 41.98%, Q4 projections 27.89%, attention 10.52%,
+residual/norm 4.47% and expert reduction 2.08% (1.061 s). Reduction was
+already close to its streaming floor. P3 removes its intermediate BF16
+branch store and read: 100,663,296 bytes per 4,096-row call, with no new
+tensor allocation. Four expert offsets/scales are loaded once per row.
+The fused kernel retains ascending expert F32 multiply/add order, shared
+BF16 rounding, branch BF16 rounding and the residual/norm/q4p order.
+`DS4_MINIMAX_REDUCE_RESIDUAL=0` restores the separate launches. Decode,
+verify, media and tracing retain their existing paths.
+
+Fourteen model-free cases cover F32/BF16 residual and shared rows, widths
+9/128/4,096, the final layer and norm without q4p. Independent CPU sums and
+the separate GPU path match exactly. A warmed seven-sample median improved
+the isolated pair from **2.697024 to 2.331488 ms (-13.55%)**. The minimum
+row traffic is about 503 MB, a 2.14 ms floor at 235 GB/s; this isolates
+synthetic skewed routes and does not reproduce every producer-cache state.
+NCU with clock control disabled measured 2.352352 ms versus the separate
+1.368192 + 1.422912 ms, 64 registers and no spills. Issued instructions
+fell 50.22% and global request sectors 40.78%; those sector counts include
+cached metadata and are not DRAM byte counts. Retained F32 RMS/residual
+instruction streams match P1 exactly.
+
+Three fresh-process pairs use the same frozen binary and fixed-CPU protocol
+as D1, with P1 and D1 enabled and only reduction fusion varied. All runs
+explicitly use lazy loading, 256 generated tokens and resident KV:
+
+| Frontier | Prefill off | Prefill on | Change | Decode off | Decode on |
+|---:|---:|---:|---:|---:|---:|
+| 8K | 1,199.88 | 1,204.84 | +0.41% | 20.85 | 21.14 |
+| 64K | 1,122.69 | 1,128.05 | +0.48% | 20.45 | 20.77 |
+
+Every pair improved prefill at both frontiers. The smallest 64K paired gain
+is 0.42%, above the control range of 0.25%; all on samples exceed all off
+samples. Decode did not regress (+1.39% / +1.56% marginal medians), but this
+prefill change contributes only one prefill round. All 200,064 logits and
+all 256 token IDs match at both frontiers in all six samples. Minimum host
+availability was 7.33–7.61 GiB with PSI zero. The
+[P3 receipt](benchmarks/minimax-m31-2026-10-27/p3.json) records the complete
+cohort, resources, affinity and target counters. The earlier pool-only and
+broad-eager diagnostic pairs remain excluded from adoption evidence.
