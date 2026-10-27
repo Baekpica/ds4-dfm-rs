@@ -37,7 +37,8 @@ enum {
     AXK2_CONTEXT = 262144,
     // One 262K bank fits beside the 98 GiB trunk with 2,048-row chunks
     // (handoff memory-budget.json); 4,096 rows need ~1 GiB more scratch.
-    AXK2_PREFILL_DEFAULT = 2048, AXK2_PREFILL_MAX = 4096,
+    // Short of memory, rows halve down to the minimum before the context.
+    AXK2_PREFILL_DEFAULT = 2048, AXK2_PREFILL_MAX = 4096, AXK2_PREFILL_MIN = 512,
     // Prefill attention runs absorb -> flash -> value over row slices of
     // this height: q_abs and the latent output take 256 KiB per row.
     AXK2_ATTN_ROWS = 256,
@@ -253,6 +254,15 @@ static ds4_context_memory axk2_memory(uint32_t ctx, uint32_t cap) {
     m.scratch_bytes = axk2_workspace_bytes(ctx, cap);
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
+}
+
+/* The largest chunk, halving from `cap` but not below AXK2_PREFILL_MIN,
+ * whose graph and `headroom` fit `free_b`. After the weights load, a 262K
+ * bank and 2,048 rows exceed the 6 GiB default headroom by ~0.7 GiB on a
+ * 128 GB Spark; 1,024 or 512 rows fit. */
+static uint32_t axk2_fit_cap(uint32_t ctx, uint32_t cap, uint64_t headroom, uint64_t free_b) {
+    while (cap / 2u >= AXK2_PREFILL_MIN && axk2_memory(ctx, cap).total_bytes + headroom > free_b) { cap /= 2u; }
+    return cap;
 }
 
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)

@@ -62305,8 +62305,9 @@ static int minimax_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_se
 static int axk2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
         axk2_fit_mode mode, ds4_batch_ctx **out, char *err, size_t errlen) {
 #define ABC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
-    const uint32_t ctx = (uint32_t)ctx_size, cap = axk2_prefill_cap(ctx);
-    const uint64_t base = axk2_memory(ctx, cap).total_bytes;
+    const uint32_t ctx = (uint32_t)ctx_size;
+    uint32_t cap = axk2_prefill_cap(ctx);
+    uint64_t base = axk2_memory(ctx, cap).total_bytes;
     if (ctx_size <= 0 || !base) {
         ABC_ERR("batch_ctx_create: A.X-K2 needs a valid context");
         return 1;
@@ -62322,6 +62323,14 @@ static int axk2_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq,
         const uint64_t outstanding = ds4_gpu_substrate_outstanding();
         free_b = free_b > outstanding ? free_b - outstanding : 0;
         const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+        // Fewer rows before fewer banks: the chunk halves until one bank fits.
+        const uint32_t fitted = axk2_fit_cap(ctx, cap, headroom, free_b);
+        if (fitted != cap) {
+            fprintf(stderr, "ds4: A.X-K2 prefill chunk %u instead of %u fits a %u-token bank in %.2f GiB\n", fitted,
+                    cap, ctx, (double)free_b / 1073741824.0);
+            cap = fitted;
+            base = axk2_memory(ctx, cap).total_bytes;
+        }
         while (chosen && base + (uint64_t)(chosen - 1u) * axk2_bank_bytes(ctx) + headroom > free_b) { chosen--; }
         if (!chosen || (mode == AXK2_STRICT_BANKS && chosen < (uint32_t)max_seq)) {
             ABC_ERR("batch_ctx_create: A.X-K2 banks and headroom exceed free memory"
@@ -74790,6 +74799,19 @@ static bool axk2_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
     return fits;
 }
 
+// The serial graph's chunk, halved like a bank's until it fits beside the
+// session headroom.
+static uint32_t axk2_session_cap(const ds4_engine *e, uint32_t ctx, uint32_t cap) {
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    uint64_t available = 0, total = 0;
+    if (e->backend != DS4_BACKEND_CUDA || (fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+        return cap;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    return axk2_fit_cap(ctx, cap, ds4_session_graph_headroom_bytes(), available);
+}
+
 static bool minimax_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                 ds4_session_graph_fit_quote *q) {
     const uint64_t need = minimax_memory(ctx, cap).total_bytes + (minimax_drafting(e) ? minimax_draft_bytes(cap) : 0u);
@@ -74964,6 +74986,7 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
     if (ds4_session_is_axk2(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
+        s->prefill_cap = axk2_session_cap(e, ctx, s->prefill_cap);
         const uint64_t estimate = axk2_memory(ctx, s->prefill_cap).total_bytes;
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
@@ -75484,7 +75507,8 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
         return minimax_session_fit(e, (uint32_t)ctx_size, minimax_prefill_cap((uint32_t)ctx_size), q);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) {
-        return axk2_session_fit(e, (uint32_t)ctx_size, axk2_prefill_cap((uint32_t)ctx_size), q);
+        const uint32_t ctx = (uint32_t)ctx_size;
+        return axk2_session_fit(e, ctx, axk2_session_cap(e, ctx, axk2_prefill_cap(ctx)), q);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return naive_session_fit(e, (unsigned)ctx_size, naive_prefill_cap((unsigned)ctx_size), q);
