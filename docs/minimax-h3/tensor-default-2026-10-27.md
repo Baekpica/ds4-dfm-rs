@@ -108,6 +108,21 @@ byte-identical at both kernel lengths.
    its compounding.
 3. A latent-level comparison, if the DiT ever exposes one.
 
+## How to select each path
+
+The tensor kernel runs unless something asks otherwise.
+
+- CLI: `h3-rs --attention scalar` for the byte-exact kernel; `--attention tensor`
+  is the default and may be passed explicitly.
+- API: the create body takes an optional `attention` field, `"tensor"` or
+  `"scalar"`. Absent means tensor, so no existing caller changes what it gets,
+  and a wrong value is refused by name (`invalid_attention`) rather than
+  silently defaulted.
+- Native and test harnesses: `H3_DIT_ATTENTION=scalar` or `=tensor`. The older
+  `H3_DIT_ATTENTION_MMA` is still honoured, 1 for tensor and 0 or empty for
+  scalar, so the A/B scripts written before the inversion keep their meaning.
+  `h3d_set_attention` overrides all of it for a host that chooses per run.
+
 ## Consequences of the decision
 
 Making the tensor path the default changes what the released output is.
