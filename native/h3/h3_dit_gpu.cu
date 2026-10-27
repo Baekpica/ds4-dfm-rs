@@ -921,39 +921,63 @@ int h3d_qkv_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
     return h3d_launch_ok("BF16 grouped QKV RoPE", error, error_size);
 }
 
-/* `h3_attention_tiled_bf16_kernel` (`:1418-1487`): one block per head and
- * eight rows, one warp per row, four dimensions per lane, online softmax with
- * a warp shuffle reduction, row-major output (`head_major_output = 0`).
+/* Rows one warp owns. 1 is the reference's mapping (one warp per row); more
+ * rows amortize the staged key rows and the barrier pair over them. The value
+ * is per translation unit so a sweep can build the reproducer with
+ * -DH3D_ATTENTION_ROWS=n and compare output hashes. */
+#ifndef H3D_ATTENTION_ROWS
+#define H3D_ATTENTION_ROWS 2
+#endif
+
+/* `h3_attention_tiled_bf16_kernel` (`:1418-1487`): one block per head, four
+ * dimensions per lane, online softmax with a warp shuffle reduction, row-major
+ * output (`head_major_output = 0`).
  *
- * Deviation from the reference, named and measured: the reference stages one
+ * Deviations from the reference, named and measured: the reference stages one
  * key row per barrier pair, so each row's load latency is exposed once per row
- * (measured on this host at ~1.3 us per row, 90% of a denoise step). This
+ * (measured on this host at ~1.3 us per row, 90% of a denoise step); this
  * stages KEYS rows per barrier pair, so one exposed latency covers KEYS rows.
- * Every row runs the reference's arithmetic in the reference's order, so the
- * output stays bit-identical. */
+ * The reference gives each warp one query row; this gives it H3D_ATTENTION_ROWS
+ * rows, so the staged rows and the barrier pair serve that many rows. Both are
+ * measured. Every row still runs the reference's arithmetic in the reference's
+ * order, so the output stays bit-identical. */
 __global__ static void h3d_attention_tiled_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t sequence, uint32_t heads, float scale) {
-    enum { HEAD_DIM = 128, QUERIES = 8, KEYS = 8 };
+    enum { HEAD_DIM = 128, KEYS = 8, ROWS = H3D_ATTENTION_ROWS,
+           QUERIES = 8 * ROWS };
     __shared__ float shared_key[KEYS][HEAD_DIM];
     __shared__ float shared_value[KEYS][HEAD_DIM];
     uint32_t warp = threadIdx.x / 32;
     uint32_t lane = threadIdx.x % 32;
     uint32_t head = blockIdx.y;
-    uint32_t row = blockIdx.x * QUERIES + warp;
-    int active = row < sequence;
-    size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
-    float result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float maximum = -INFINITY;
-    float denominator = 0.0f;
-    /* The row's four dimensions ride in registers: the reference re-reads them
+    uint32_t first_row = blockIdx.x * QUERIES + warp * ROWS;
+    int active[ROWS];
+    float result[ROWS][4];
+    float maximum[ROWS];
+    float denominator[ROWS];
+    /* Each row's four dimensions ride in registers: the reference re-reads them
      * from global for every key row, which exposes that load once per row. */
-    float query_item[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    if (active) {
+    float query_item[ROWS][4];
+#pragma unroll
+    for (uint32_t r = 0; r < ROWS; r++) {
+        uint32_t row = first_row + r;
+        active[r] = row < sequence;
+        maximum[r] = -INFINITY;
+        denominator[r] = 0.0f;
 #pragma unroll
         for (uint32_t part = 0; part < 4; part++) {
-            query_item[part] =
+            result[r][part] = 0.0f;
+            query_item[r][part] = 0.0f;
+        }
+        if (!active[r]) {
+            continue;
+        }
+        size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
+#pragma unroll
+        for (uint32_t part = 0; part < 4; part++) {
+            query_item[r][part] =
                     __bfloat162float(query[query_base + lane + part * 32]);
         }
     }
@@ -981,48 +1005,59 @@ __global__ static void h3d_attention_tiled_kernel(
             if (key_block + item >= sequence) {
                 break;
             }
-            float product = 0.0f;
-            if (active) {
 #pragma unroll
-                for (uint32_t part = 0; part < 4; part++) {
-                    uint32_t dimension = lane + part * 32;
-                    product += query_item[part] * shared_key[item][dimension];
+            for (uint32_t r = 0; r < ROWS; r++) {
+                float product = 0.0f;
+                if (active[r]) {
+#pragma unroll
+                    for (uint32_t part = 0; part < 4; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        product += query_item[r][part] *
+                                   shared_key[item][dimension];
+                    }
+#pragma unroll
+                    for (uint32_t offset = 16; offset; offset >>= 1) {
+                        product += __shfl_down_sync(0xffffffffu, product, offset);
+                    }
                 }
-#pragma unroll
-                for (uint32_t offset = 16; offset; offset >>= 1) {
-                    product += __shfl_down_sync(0xffffffffu, product, offset);
+                float rescale = 1.0f;
+                float weight = 0.0f;
+                if (active[r] && lane == 0) {
+                    float score = product * scale;
+                    float next_maximum = fmaxf(maximum[r], score);
+                    rescale = expf(maximum[r] - next_maximum);
+                    weight = expf(score - next_maximum);
+                    denominator[r] = denominator[r] * rescale + weight;
+                    maximum[r] = next_maximum;
                 }
-            }
-            float rescale = 1.0f;
-            float weight = 0.0f;
-            if (active && lane == 0) {
-                float score = product * scale;
-                float next_maximum = fmaxf(maximum, score);
-                rescale = expf(maximum - next_maximum);
-                weight = expf(score - next_maximum);
-                denominator = denominator * rescale + weight;
-                maximum = next_maximum;
-            }
-            rescale = __shfl_sync(0xffffffffu, rescale, 0);
-            weight = __shfl_sync(0xffffffffu, weight, 0);
-            if (active) {
+                rescale = __shfl_sync(0xffffffffu, rescale, 0);
+                weight = __shfl_sync(0xffffffffu, weight, 0);
+                if (active[r]) {
 #pragma unroll
-                for (uint32_t part = 0; part < 4; part++) {
-                    uint32_t dimension = lane + part * 32;
-                    result[part] = result[part] * rescale +
-                                   weight * shared_value[item][dimension];
+                    for (uint32_t part = 0; part < 4; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        result[r][part] = result[r][part] * rescale +
+                                          weight *
+                                          shared_value[item][dimension];
+                    }
                 }
             }
         }
         __syncthreads();
     }
-    denominator = __shfl_sync(0xffffffffu, denominator, 0);
-    if (!active) return;
 #pragma unroll
-    for (uint32_t item = 0; item < 4; item++) {
-        uint32_t dimension = lane + item * 32;
-        size_t index = ((size_t)row * heads + head) * HEAD_DIM + dimension;
-        output[index] = __float2bfloat16(result[item] / denominator);
+    for (uint32_t r = 0; r < ROWS; r++) {
+        denominator[r] = __shfl_sync(0xffffffffu, denominator[r], 0);
+        if (!active[r]) {
+            continue;
+        }
+        uint32_t row = first_row + r;
+#pragma unroll
+        for (uint32_t item = 0; item < 4; item++) {
+            uint32_t dimension = lane + item * 32;
+            size_t index = ((size_t)row * heads + head) * HEAD_DIM + dimension;
+            output[index] = __float2bfloat16(result[r][item] / denominator[r]);
+        }
     }
 }
 
@@ -1040,7 +1075,8 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
         return h3d_set_error(error, error_size,
                              "invalid attention tensors or shape");
     }
-    dim3 grid((sequence + 7) / 8, heads);
+    dim3 grid((sequence + 8 * H3D_ATTENTION_ROWS - 1) / (8 * H3D_ATTENTION_ROWS),
+              heads);
     h3d_attention_tiled_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
