@@ -78,6 +78,7 @@ impl Renderer for EngineRenderer {
             first_frame: first.as_ref().map(|file| file.path().to_path_buf()),
             last_frame: last.as_ref().map(|file| file.path().to_path_buf()),
             references,
+            attention: spec.attention,
             output: output.to_path_buf(),
         };
         let report = self

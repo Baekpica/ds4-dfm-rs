@@ -36,8 +36,34 @@ struct h3d_context {
     void *stage;          /* pinned upload staging, allocated on first use */
     cudaEvent_t stage_done;
     int stage_pending;    /* a DMA out of `stage` has not been waited for yet */
-    int attention_mma;    /* H3_DIT_ATTENTION_MMA: tensor-core attention, off by default */
+    int attention_mma;    /* 1 = tensor-core attention (default), 0 = byte-exact scalar */
 };
+
+/* Whether the byte-exact scalar attention was asked for, from the environment.
+ * Unset means the tensor-core kernel, which is the default. `H3_DIT_ATTENTION`
+ * takes `scalar` or `tensor`; the older `H3_DIT_ATTENTION_MMA` is still read so
+ * the A/B scripts written before the inversion keep their meaning, 1 for the
+ * tensor kernel and 0 or empty for the scalar one. */
+static int h3d_attention_scalar_from_env(void) {
+    const char *legacy = getenv("H3_DIT_ATTENTION_MMA");
+    if (legacy) {
+        return !(legacy[0] != '\0' && legacy[0] != '0');
+    }
+    const char *mode = getenv("H3_DIT_ATTENTION");
+    if (mode) {
+        return mode[0] == 's' || mode[0] == 'S';
+    }
+    return 0;
+}
+
+/* Select the attention per run. `scalar` nonzero asks for the byte-exact
+ * kernel, which is the only path that carries the reference guarantee; zero is
+ * the tensor-core default. Overrides the environment. */
+void h3d_set_attention(h3d_context *context, int scalar) {
+    if (context) {
+        context->attention_mma = !scalar;
+    }
+}
 
 static int h3d_set_error(char *error, size_t error_size, const char *format,
                          ...) {
@@ -119,11 +145,11 @@ h3d_context *h3d_create(char *error, size_t error_size) {
         h3d_destroy(context);
         return NULL;
     }
-    /* Benchmark arm, read once. The tensor-core attention is not bit-identical
-     * to the reference, so it may never be the path a gate measures: the switch
-     * decides, and unset (or "0") leaves the byte-exact kernel in place. */
-    const char *mma = getenv("H3_DIT_ATTENTION_MMA");
-    context->attention_mma = mma && mma[0] != '\0' && mma[0] != '0';
+    /* The tensor-core attention is the default and the byte-exact scalar kernel
+     * is the option, as of the operator's decision on 2026-10-27. The hosts
+     * choose with `h3d_set_attention`; the environment is read once here as the
+     * default for callers that never call it, such as the reproducer. */
+    context->attention_mma = !h3d_attention_scalar_from_env();
     return context;
 }
 

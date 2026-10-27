@@ -910,6 +910,7 @@ fn answer(server: &VideoServer, stream: &mut std::net::TcpStream) -> io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ds4_core::minimax_h3::dit::Attention;
     use ds4_core::minimax_h3::local_api::Task;
     use ds4_core::minimax_h3::video_api::VideoSize;
     use serde_json::Value;
@@ -1142,6 +1143,7 @@ mod tests {
             first_frame: None,
             last_frame: None,
             references: Vec::new(),
+            attention: Attention::Tensor,
         }
     }
 

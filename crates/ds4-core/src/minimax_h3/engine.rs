@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use sha2::{Digest, Sha256};
 
-use super::dit::{Dit, LoadOptions};
+use super::dit::{Attention, Dit, LoadOptions};
 use super::host::{reuse_schedule, temporal, Rng, Schedule};
 use super::media::{self, Fit};
 use super::partition::{Catalog, Partition, TOKENIZER};
@@ -52,6 +52,10 @@ pub struct RenderRequest {
     /// exclusive with the anchors (`h3.c:597-600`) and served from the
     /// Ref2VA partition (`h3.c:872-875`).
     pub references: Vec<reference::Reference>,
+    /// Attention path. Defaults to the tensor-core kernel; `Scalar` asks for
+    /// the byte-exact one, which is the only path that reproduces the
+    /// reference (`docs/minimax-h3/tensor-default-2026-10-27.md`).
+    pub attention: Attention,
     pub output: PathBuf,
 }
 
@@ -281,7 +285,10 @@ impl Engine {
                 schedule,
                 &text,
                 canvas.rope_scale(false),
-                LoadOptions::resident(),
+                LoadOptions {
+                    attention: request.attention,
+                    ..LoadOptions::resident()
+                },
             )
             .map_err(|error| EngineError::new(format!("transformer: {error}")))?;
             self.prepared = Some(Prepared { key, dit });

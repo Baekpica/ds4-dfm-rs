@@ -31,6 +31,7 @@
 
 use serde_json::{Map, Value};
 
+use super::dit::Attention;
 use super::presets::{self, Ratio};
 use super::render::{CANVAS_MULTIPLE, MAX_PIXELS};
 use super::video_api::{
@@ -57,7 +58,8 @@ pub const MAX_CONDITIONS: usize = 2;
 pub const MAX_REFERENCES: usize = 12;
 
 /// The five fields of the create body, and the only five.
-pub const CREATE_FIELDS: [&str; 5] = ["task", "prompt", "conditions", "target", "seed"];
+pub const CREATE_FIELDS: [&str; 6] =
+    ["task", "prompt", "conditions", "target", "seed", "attention"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {
@@ -168,6 +170,9 @@ pub struct CreateBody {
     pub conditions: Vec<Condition>,
     pub target: Target,
     pub seed: u64,
+    /// `"attention"`, optional: `tensor` is the default, `scalar` the
+    /// byte-exact kernel.
+    pub attention: Attention,
 }
 
 /// The class of one ordered reference (`h3_reference_kind`, `h3.h:30-34`).
@@ -230,6 +235,8 @@ pub struct Plan {
     pub last_frame: Option<AnchorImage>,
     /// Reference media in request order; empty for t2va and fl2va.
     pub references: Vec<ReferenceMedia>,
+    /// Attention path; `Tensor` unless the request asked for `scalar`.
+    pub attention: Attention,
 }
 
 /// Parse and validate a create body.
@@ -321,12 +328,37 @@ pub fn parse_create(body: &[u8]) -> Result<CreateBody, ApiError> {
         )
     })?;
 
+    // Optional, and the only field whose absence has a meaning: the tensor-core
+    // kernel is what runs unless the caller asks for the byte-exact one.
+    let attention = match object.get("attention") {
+        None => Attention::Tensor,
+        Some(Value::String(mode)) => match mode.as_str() {
+            "tensor" => Attention::Tensor,
+            "scalar" => Attention::Scalar,
+            other => {
+                return Err(ApiError::bad_request(
+                    "invalid_attention",
+                    Some("attention"),
+                    format!("attention must be tensor or scalar, not {other}"),
+                ))
+            }
+        },
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_attention",
+                Some("attention"),
+                "attention must be the string tensor or scalar",
+            ))
+        }
+    };
+
     Ok(CreateBody {
         task,
         prompt,
         conditions,
         target,
         seed,
+        attention,
     })
 }
 
@@ -439,6 +471,7 @@ impl CreateBody {
             first_frame,
             last_frame,
             references,
+            attention: self.attention,
         })
     }
 
@@ -1168,14 +1201,41 @@ mod tests {
     }
 
     #[test]
-    fn the_five_fields_are_the_contract() {
+    fn attention_defaults_to_tensor_and_scalar_is_opt_in() {
+        // Absent: the tensor-core kernel, which is the default.
+        let parsed = planned(body("t2va", json!([]), "16:9", 8)).unwrap();
+        assert_eq!(parsed.attention, Attention::Tensor);
+
+        // Asked for: the byte-exact kernel.
+        let mut scalar = body("t2va", json!([]), "16:9", 8);
+        scalar["attention"] = json!("scalar");
+        assert_eq!(planned(scalar).unwrap().attention, Attention::Scalar);
+
+        // Named explicitly, and the spelling is checked rather than guessed.
+        let mut tensor = body("t2va", json!([]), "16:9", 8);
+        tensor["attention"] = json!("tensor");
+        assert_eq!(planned(tensor).unwrap().attention, Attention::Tensor);
+
+        let mut bogus = body("t2va", json!([]), "16:9", 8);
+        bogus["attention"] = json!("fast");
+        let error = parse_create(bogus.to_string().as_bytes()).unwrap_err();
+        assert_eq!(error.code, "invalid_attention");
+
+        let mut wrong_type = body("t2va", json!([]), "16:9", 8);
+        wrong_type["attention"] = json!(1);
+        let error = parse_create(wrong_type.to_string().as_bytes()).unwrap_err();
+        assert_eq!(error.code, "invalid_attention");
+    }
+
+    #[test]
+    fn the_six_fields_are_the_contract() {
         let root = body("t2va", json!([]), "16:9", 8);
         let parsed = parse_create(root.to_string().as_bytes()).unwrap();
         assert_eq!(parsed.task, Task::T2va);
         assert_eq!(parsed.seed, 7);
         assert_eq!(parsed.target.short_edge, 768);
 
-        // A sixth field is refused rather than ignored.
+        // A seventh field is refused rather than ignored.
         let mut extra = root.clone();
         extra["model"] = json!("MiniMax-H3");
         let error = parse_create(extra.to_string().as_bytes()).unwrap_err();

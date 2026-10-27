@@ -786,6 +786,17 @@ impl Reduction {
     }
 }
 
+/// Which attention the DiT runs. `Tensor` is the default and is the tensor-core
+/// kernel; `Scalar` is the byte-exact kernel and the only one that reproduces
+/// the reference, so it is the one to ask for when a byte-identical output is
+/// what is wanted (`docs/minimax-h3/tensor-default-2026-10-27.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Attention {
+    #[default]
+    Tensor,
+    Scalar,
+}
+
 /// How the core runs: residency, active block count and token pairing
 /// (`h3_dit.c:1601-1665`). The reference takes the same three choices as
 /// separate loader arguments; one struct keeps the call sites readable.
@@ -797,6 +808,8 @@ pub struct LoadOptions {
     pub reduction: Reduction,
     /// Core refresh interval, 1..=6 (`h3_dit.c:1591-1592`, `:2161-2163`).
     pub core_reuse: u32,
+    /// Attention path; the tensor-core kernel unless `Scalar` is asked for.
+    pub attention: Attention,
 }
 
 impl LoadOptions {
@@ -807,6 +820,7 @@ impl LoadOptions {
             layers: DIT_BLOCKS as u32,
             reduction: Reduction::Environment,
             core_reuse: 1,
+            attention: Attention::Tensor,
         }
     }
 }
@@ -1545,6 +1559,7 @@ impl Dit {
         let weights = Weights::open(dir).map_err(|error| DitError::Weights(error.to_string()))?;
         let config = weights.config().clone();
         let gpu = device(Gpu::create())?;
+        gpu.set_attention(matches!(options.attention, Attention::Scalar));
 
         let geometry = Geometry::check(&config, &sequence, text.tokens())?;
         let hidden_width = config.hidden as u32;
