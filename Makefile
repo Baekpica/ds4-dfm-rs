@@ -2010,6 +2010,15 @@ tests/test_minimax_mma8w: tests/test_minimax_mma8w.cu cuda/minimax_mma8w.cuh cud
 tests/test_minimax_decode: tests/test_minimax_decode.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
+tests/test_minimax_reduce: tests/test_minimax_reduce.cu cuda/minimax_decode.cuh cuda/glm_vq_decode.cuh cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/mmq/quantize.cuh cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh ds4_minimax.h ds4_glmvq.h ds4_gpu.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -std=c++17 -I. -o $@ $< cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
+
+tests/test_minimax_rows.o: tests/test_minimax_rows.c ds4.h ds4_gpu.h ds4_glmvq.h ds4_minimax.h
+	$(CC) $(CFLAGS) -I. $(DEPFLAGS) -c -o $@ $<
+
+tests/test_minimax_rows: tests/test_minimax_rows.o $(CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_minimax_artifacts: tests/test_minimax_artifacts.c ds4.c ds4.h ds4_minimax.h ds4_minimax_bind.inc ds4_model_catalog.h
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
@@ -2078,7 +2087,7 @@ MINIMAX_NATIVE_DEPS = ds4_minimax.h ds4_minimax_bind.inc ds4_minimax_kv.inc ds4_
 	ds4_minimax_payload.inc ds4_minimax_session.inc ds4_minimax_batch.inc ds4_minimax_bank_payload.inc \
 	ds4_minimax_draft.inc ds4_minimax_vision.inc
 ds4.o ds4_cpu.o: $(MINIMAX_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/glm_vq_ops.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax_decode.cuh cuda/minimax_mma8w.cuh cuda/minimax_rows.cuh cuda/minimax_q8.cuh cuda/glm_vq_ops.cuh
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
 ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)
@@ -2507,7 +2516,7 @@ BUILD_OBJECTS := \
     tests/test_glm53_long.o tests/test_glm53_mixed.o tests/test_glm53_mtp_actual.o \
     tests/test_glm53_mtp_long.o tests/test_glm53_session.o tests/test_glm53_vision.o \
     tests/test_glm53_weight.o tests/test_glm_vq_cache.o tests/test_glm_vq_kv.o \
-    tests/test_glm_vq_owner.o tests/test_glm_vq_q4.o tests/test_glm_vq_quote.o \
+    tests/test_glm_vq_owner.o tests/test_glm_vq_q4.o tests/test_glm_vq_quote.o tests/test_minimax_rows.o \
     tests/test_glm_vq_sparse.o tests/test_inkling_attention.o tests/test_inkling_attn_prep.o \
     tests/test_inkling_encoders.o tests/test_inkling_forward.o tests/test_inkling_kernels.o \
     tests/test_inkling_linear.o tests/test_inkling_media.o tests/test_inkling_moe.o \
@@ -2591,7 +2600,7 @@ BUILD_PROGRAMS := \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \
-    tests/test_minimax_decode tests/test_minimax_mma8w tests/test_minimax_payload \
+    tests/test_minimax_decode tests/test_minimax_mma8w tests/test_minimax_rows tests/test_minimax_reduce tests/test_minimax_payload \
     tests/test_mmid_fast tests/test_mmq_parity tests/test_model_family_kernels \
     tests/test_model_range tests/test_motif3_batch tests/test_motif3_cuda tests/test_motif3_loader \
     tests/test_motif3_long tests/test_motif3_reference tests/test_motif3_resident \

@@ -123,6 +123,9 @@ owns the tool loop.
 
 When optimizing inference performance, prioritize end-to-end execution-path efficiency over isolated kernel micro-optimizations.
 
+- **GB10 clock prerequisite.** Keep the reference host at 300–2200 MHz for stable absolute performance and to reduce the DGX Spark trip risk reported by the operator. The operator-enabled `nvidia-clocks.service` applies persistence mode and this range automatically at boot. Do not ask the user to set clocks on each run or reboot when the service is enabled and successful; verify its status/current-boot journal read-only and record the boot identity and observed busy SM clocks. Do not stop/restart the service (`ExecStop` resets clocks), change/reset its policy, or let a profiler override it. Investigate a missing/failed service or conflicting observations before requesting user action. Missing historical clock metadata does not prove a different policy. See the [clock policy](docs/gb10-hardware.md#clock-policy-and-measurement-stability). (Codex learning)
+- **Absolute stability before adoption.** Evaluate absolute prefill/decode rates and their repeat ranges alongside paired gains/losses. If absolute levels drift materially, explain clock/throttling, thermal, memory/PSI, cache, competing-work or speculative-acceptance differences before deciding. Preserve raw samples and disclose unresolved variability; a favorable percentage or smoothed graph cannot establish stability. (Codex learning)
+
 Follow this evidence-driven sequence for every optimization round, regardless of tool:
 
 1. Measure the complete representative workload with `ds4-perf`, Nsight Systems, or another suitable tool. Establish wall time and separate prefill/decode costs. (Codex learning)
@@ -430,8 +433,8 @@ backend small and direct; this is not a generic GGUF runner.
 ## Safety
 
 - The DGX Spark reference host has a user-managed GPU clock range of
-  300–2200 MHz (confirmed 2026-09-14). Preserve it for benchmarks and
-  restored serving, and record observed clocks alongside A/B results.
+  300–2200 MHz (reconfirmed 2026-10-27). Preserve it for benchmarks and
+  restored serving; follow the systemd clock-service and stability rules above.
 - Avoid large CPU inference runs on macOS; the CPU path has previously exposed
   kernel VM failures with very large mappings.
 - Do not load independent huge model copies concurrently. Use the intended

@@ -27,11 +27,12 @@ typedef struct {
     uint32_t draft_first;
     bool ready, failed, borrowed;
     // q4h/q4s hold q4p's prepared copy of norm (the next layer's input norm).
-    bool norm_q4p;
+    bool norm_q4p, norm_q8;
     // This layer's branch rows as BF16 (prefill, from q4p or the MoE reduce;
     // every reader rounds them to BF16 first): o_proj's output, the MLP's
     // (shared or dense) output and the FFN output.
     bool attn_bf16, mlp_bf16, ffn_bf16;
+    ds4_gvq_rows cur_rows;
     uint64_t workspace_bytes, kv_bytes, score_bytes;
 #define MINIMAX_FIELD(field, cols, type) ds4_gpu_tensor *field;
     MINIMAX_ROW_BUFFERS(MINIMAX_FIELD)
@@ -134,7 +135,7 @@ static bool minimax_graph_alloc(ds4_minimax_graph *g, const ds4_model *m, const 
     g->row_cap = cap;
     g->gvq = ds4_gpu_gvq_create_linear(w->glmvq_gpu, minimax_gvq_scratch(cap), cap);
     g->moe = g->gvq ? ds4_gpu_minimax_moe_create(g->gvq, cap) : NULL;
-    if (!g->gvq || !g->moe) { minimax_graph_free(g); return false; }
+    if (!g->gvq || !g->moe || !ds4_gpu_minimax_prepare_decode()) { minimax_graph_free(g); return false; }
 #define MINIMAX_ALLOC(field, cols, type) do { \
         g->field = ds4_gpu_tensor_alloc((uint64_t)cap * (cols) * sizeof(type)); \
         if (!g->field) { \
@@ -278,8 +279,8 @@ static bool minimax_projections(ds4_minimax_graph *g, const ds4_model *m, const 
     } else if (!minimax_mm_many(g, m, outs, ws, 3u, g->norm, rows, g->norm_q4p)) {
         return false;
     }
-    const bool ok =
-        ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ, MINIMAX_INDEX, rows) != 0;
+    const bool ok = ds4_gpu_minimax_q8_pair(g->gvq, g->iq, g->ik, q, k, g->norm, MINIMAX_EMBD, MINIMAX_IQ,
+        MINIMAX_INDEX, rows, g->norm_q8 ? DS4_MINIMAX_NORM_Q8 : DS4_MINIMAX_NORM_F32) != 0;
     if (!ok) { fprintf(stderr, "ds4: MiniMax indexer projection failed (rows=%u)\n", rows); }
     return ok;
 }
@@ -395,7 +396,7 @@ static bool minimax_mlp(ds4_minimax_graph *g, const ds4_model *m, const ds4_tens
 // the shared expert added in the routed sum. Decode and verify widths run the
 // shared expert's gate/up and the router logits as one launch.
 static bool minimax_moe(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
-        uint32_t rows, bool prepared) {
+        uint32_t rows, bool prepared, const ds4_minimax_residual_out *residual) {
     const uint32_t router = minimax_index(m, l->ffn_gate_inp), bias = minimax_index(m, l->ffn_exp_probs_b);
     ds4_gpu_tensor *const outs[] = {g->ff_gate, g->ff_up};
     const uint32_t gu[] = {minimax_index(m, l->ffn_gate_shexp), minimax_index(m, l->ffn_up_shexp)};
@@ -414,13 +415,13 @@ static bool minimax_moe(ds4_minimax_graph *g, const ds4_model *m, const ds4_laye
         ? DS4_MINIMAX_BF16_OUT | (g->mlp_bf16 ? DS4_MINIMAX_BF16_SHARED : 0u) : 0u;
     g->ffn_bf16 = bf16 != 0;
     return ok && ds4_gpu_minimax_moe(g->moe, g->ffn_out, g->norm, g->selected, g->route_weights, g->shared,
-        g->matrices[il], rows, bf16);
+        g->matrices[il], rows, bf16, residual);
 }
 
 // The layer's FFN into ffn_out: the dense MLP (layers 0-2) or the MoE.
 static bool minimax_ffn(ds4_minimax_graph *g, const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
-        uint32_t rows, bool prepared) {
-    if (il >= MINIMAX_DENSE) { return minimax_moe(g, m, l, il, rows, prepared); }
+        uint32_t rows, bool prepared, const ds4_minimax_residual_out *residual) {
+    if (il >= MINIMAX_DENSE) { return minimax_moe(g, m, l, il, rows, prepared, residual); }
     const bool ok = minimax_mlp(g, m, l->ffn_gate, l->ffn_up, l->ffn_down, g->ffn_out, MINIMAX_DENSE_FF, rows, prepared);
     g->ffn_bf16 = g->mlp_bf16;
     return ok;
@@ -441,18 +442,44 @@ static bool minimax_layer(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
     const ds4_layer_weights *n = il + 1u < MINIMAX_LAYERS ? &w->layer[il + 1u] : NULL;
     const ds4_tensor *const qkv[] = {n ? n->attn_q : NULL, n ? n->attn_k : NULL, n ? n->attn_v : NULL};
     const bool qkv_q4p = next && n && minimax_q4p(g, m, qkv, 3u, rows);
+    static int norm_q8 = -1;
+    if (norm_q8 < 0) {
+        const char *v = getenv("DS4_MINIMAX_NORM_Q8");
+        norm_q8 = !v || strcmp(v, "0");
+    }
+    // Prepared QKV leaves context scratch intact until the indexer reads it.
+    const bool index_q8 = norm_q8 && qkv_q4p && rows > DS4_MINIMAX_SPLIT_ROWS &&
+        !g->span_n && !minimax_traced();
+    const ds4_minimax_norm norm_format = index_q8 ? DS4_MINIMAX_NORM_Q8 : DS4_MINIMAX_NORM_F32;
+    static int reduce_residual = -1;
+    if (reduce_residual < 0) {
+        const char *v = getenv("DS4_MINIMAX_REDUCE_RESIDUAL");
+        reduce_residual = !v || strcmp(v, "0");
+    }
+    static int decode_residual = -1;
+    if (decode_residual < 0) {
+        const char *v = getenv("DS4_MINIMAX_DECODE_RESIDUAL");
+        decode_residual = !v || strcmp(v, "0");
+    }
+    const bool fused = !dense && !g->span_n && !minimax_traced() &&
+        ((reduce_residual && rows > DS4_MINIMAX_SPLIT_ROWS) ||
+            (decode_residual && rows == 1 && g->cur_rows == DS4_GVQ_ROWS_F32));
+    const ds4_minimax_residual_out residual = {g->cur, g->norm, qkv_q4p ? g->q4h : NULL, g->q4s,
+        next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, g->cur_rows, norm_format};
     const bool ok = minimax_attention(g, m, w, il, rows, pos) &&
         ds4_gpu_minimax_residual(g->gvq, g->cur, g->attn_out, g->norm, minimax_index(m, l->ffn_norm), rows,
-            gu_q4p ? g->q4h : NULL, g->q4s, g->attn_bf16) &&
+            gu_q4p ? g->q4h : NULL, g->q4s, g->attn_bf16, g->cur_rows, DS4_MINIMAX_NORM_F32) &&
         minimax_trace(il, pos, "attn", g->cur, hidden) &&
-        minimax_ffn(g, m, l, il, rows, gu_q4p) &&
+        minimax_ffn(g, m, l, il, rows, gu_q4p, fused ? &residual : NULL) &&
         (dense || (minimax_trace(il, pos, "routes", g->selected, route) &&
             minimax_trace(il, pos, "weights", g->route_weights, route))) &&
         minimax_trace(il, pos, "ffn_out", g->ffn_out, hidden) &&
-        ds4_gpu_minimax_residual(g->gvq, g->cur, g->ffn_out, g->norm, next ? minimax_index(m, next) : DS4_GVQ_NO_LINK,
-            rows, qkv_q4p ? g->q4h : NULL, g->q4s, g->ffn_bf16) &&
+        (fused || ds4_gpu_minimax_residual(g->gvq, g->cur, g->ffn_out, g->norm,
+            next ? minimax_index(m, next) : DS4_GVQ_NO_LINK, rows, qkv_q4p ? g->q4h : NULL, g->q4s,
+            g->ffn_bf16, g->cur_rows, norm_format)) &&
         minimax_trace(il, pos, "ffn", g->cur, hidden);
     g->norm_q4p = ok && qkv_q4p;
+    g->norm_q8 = ok && index_q8;
     if (!ok) { fprintf(stderr, "ds4: MiniMax layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }
     return ok;
 }
@@ -500,15 +527,17 @@ static bool minimax_embed(ds4_minimax_graph *g, const ds4_model *m, const ds4_we
         memcpy((uint8_t *)g->host_embed + r * row, table + (uint64_t)tokens[r] * row, row);
     }
     return ds4_gpu_tensor_write(g->embed, 0u, g->host_embed, (uint64_t)rows * row) &&
-        ds4_gpu_minimax_embed(out, g->embed, rows);
+        ds4_gpu_minimax_embed(out, g->embed, rows, out == g->cur ? g->cur_rows : DS4_GVQ_ROWS_F32);
 }
 
 // Final norm and head of `row`.
 static bool minimax_head(ds4_minimax_graph *g, const ds4_model *m, const ds4_weights *w, uint32_t row) {
     const uint64_t bytes = (uint64_t)MINIMAX_EMBD * sizeof(float);
-    ds4_gpu_tensor *cur = ds4_gpu_tensor_view(g->cur, (uint64_t)row * bytes, bytes);
+    const uint64_t cur_bytes = g->cur_rows == DS4_GVQ_ROWS_BF16 ? bytes / 2 : bytes;
+    ds4_gpu_tensor *cur = ds4_gpu_tensor_view(g->cur, (uint64_t)row * cur_bytes, cur_bytes);
     ds4_gpu_tensor *norm = ds4_gpu_tensor_view(g->norm, 0u, bytes);
-    const bool ok = cur && norm && ds4_gpu_minimax_rms(g->gvq, norm, cur, minimax_index(m, w->output_norm), 1u) &&
+    const bool ok = cur && norm &&
+        ds4_gpu_minimax_rms(g->gvq, norm, cur, minimax_index(m, w->output_norm), 1u, g->cur_rows) &&
         minimax_mm(g, m, g->logits, w->output, norm, 1u) &&
         ds4_gpu_minimax_logits(g->logits, 1u, MINIMAX_TOKENS);
     ds4_gpu_tensor_free(norm);
@@ -523,16 +552,26 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
     for (uint32_t i = 0; i < rows; i++) {
         if (tokens[i] < 0 || (uint32_t)tokens[i] >= DS4_N_VOCAB) { return false; }
     }
+    // Text prefill's residual values are already BF16. Media spans and traces
+    // retain their F32 layout; every forward selects its own scratch format.
+    static int compact = -1;
+    if (compact < 0) {
+        const char *v = getenv("DS4_MINIMAX_CUR_BF16");
+        compact = !v || strcmp(v, "0");
+    }
+    g->cur_rows = compact && rows > DS4_MINIMAX_SPLIT_ROWS && !g->span_n && !minimax_traced()
+        ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     /* A failed enqueue leaves partially written K/V; the session must reset
      * before another forward. */
     g->failed = true;
     if (!minimax_kv_begin(&g->kv, rows, pos) || !minimax_embed(g, m, w, tokens, rows, g->cur) ||
         !minimax_apply_spans(g, rows, pos) || !ds4_gpu_minimax_rope(g->rope, rows, pos) ||
         !minimax_trace(0u, pos, "embed", g->cur, (uint64_t)rows * MINIMAX_EMBD * sizeof(float)) ||
-        !ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->layer[0].attn_norm), rows)) {
+        !ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->layer[0].attn_norm), rows, g->cur_rows)) {
         return false;
     }
     g->norm_q4p = false;   // layer 0's q/k/v prepare their input themselves
+    g->norm_q8 = false;
     // DS4_MINIMAX_DSPARK_TAP=entry taps the residual entering a target layer
     // (TokenSpeed's reading); the default takes it after the layer (DFlash's
     // hidden_states[layer_id + 1], vLLM's boundary idx + 1, llama.cpp's
@@ -550,11 +589,16 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
         }
         if (tap_mode != 1 && il + 1u == MINIMAX_LAYERS && tap_mode == 2 && g->draft) {
             // The last tap after the final norm: norm(cur) through the tap path.
-            if (!ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->output_norm), rows)) { return false; }
+            if (!ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->output_norm), rows, g->cur_rows)) {
+                return false;
+            }
             ds4_gpu_tensor *keep = g->cur;
+            const ds4_gvq_rows format = g->cur_rows;
             g->cur = g->norm;
+            g->cur_rows = DS4_GVQ_ROWS_F32;
             const bool ok = minimax_draft_tap(g, il, rows);
             g->cur = keep;
+            g->cur_rows = format;
             if (!ok) { return false; }
         } else if (tap_mode != 1 && !minimax_draft_tap(g, il, rows)) {
             return false;
@@ -566,7 +610,7 @@ static bool minimax_forward(ds4_minimax_graph *g, const ds4_model *m, const ds4_
         return false;
     }
     if (head == MINIMAX_HEAD_ALL && (!g->draft || rows > MINIMAX_DRAFT_BLOCK + 1u ||
-            !ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->output_norm), rows) ||
+            !ds4_gpu_minimax_rms(g->gvq, g->norm, g->cur, minimax_index(m, w->output_norm), rows, g->cur_rows) ||
             !minimax_mm(g, m, minimax_draft_vlogits(g->draft), w->output, g->norm, rows) ||
             !ds4_gpu_minimax_logits(minimax_draft_vlogits(g->draft), rows, MINIMAX_TOKENS))) {
         return false;

@@ -49,6 +49,28 @@ above ~1,000 tok/s drops in priority (1,200-1,300 tok/s is comfortable), and
 decode must reach at least 20 tok/s (with MTP where the segment's plain-decode
 bandwidth bound is lower).
 
+## GB10 clocks and absolute stability
+
+Use the operator-managed **300–2200 MHz** range, both for comparable
+absolute throughput and to reduce the Spark trip risk reported by the
+operator. The enabled `nvidia-clocks.service` applies persistence mode and
+`nvidia-smi -lgc 300,2200` automatically at boot. Verify the service and its
+current-boot journal read-only, then record the boot ID and actual busy SM
+clocks. Do not ask the user to reapply it on each run or reboot when the
+service is healthy. Do not stop/restart it (`ExecStop` resets clocks),
+change its range or let a profiler override it. Investigate missing/failed
+setup before asking for user action. The
+[hardware policy](gb10-hardware.md#clock-policy-and-measurement-stability)
+records the unit and historical clock uncertainty.
+
+A positive A/B delta alone is insufficient when absolute rates drift
+substantially. Check repeat ranges, clocks/throttling, temperature,
+memory/PSI, cache, competing CPU/GPU work and speculative acceptance;
+explain the variation before adopting or rejecting. Preserve outliers and
+show the observed range. Keep cold loading separate, and never infer a
+different historical clock policy merely because its record is missing.
+This stability check does not impose a minimum percentage gain.
+
 ## Local scout with ds4-perf
 
 Use the [ds4-perf guide](ds4-perf.md) for the four-command workflow,

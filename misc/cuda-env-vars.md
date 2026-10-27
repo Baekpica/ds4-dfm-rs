@@ -8,6 +8,47 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## MiniMax VQ residual storage
+
+`DS4_MINIMAX_CUR_BF16=0` restores F32 storage of BF16-rounded residuals.
+By default, text prefill wider than eight rows stores the same values as
+BF16; decode, verify, media spans and tensor traces keep F32. Embedding,
+RMS, residual adds, the head and DSpark taps carry the selected format.
+Arithmetic and tensor allocations are unchanged. See the
+[October 27 measurements](../docs/minimax-vq-optimization-2026-10-27.md).
+
+`DS4_MINIMAX_REDUCE_RESIDUAL=0` restores separate expert reduction and
+residual launches. The default consumes the reduced expert branch directly
+in the residual/norm/q4p kernel for text prefill wider than eight rows.
+It preserves ascending expert order and both BF16 rounding boundaries;
+decode, media spans and traces keep the separate path.
+
+`DS4_MINIMAX_PRELOAD_DECODE=0` skips targeted decode-kernel preparation.
+The default resolves 25 Q4, joint projection and decode epilogue functions during
+graph allocation, before prefill, without launches or new tensor buffers.
+The measured sustained decode gain and unresolved driver/cache mechanism
+are recorded in the same report.
+
+`DS4_MINIMAX_NORM_Q8=0` restores the separate indexer input quantizer and
+F32 norm materialization. By default, text-prefill residuals (including the
+fused MoE path) emit exact MMQ Q8 into existing context scratch when QKV
+also consumes prepared q4p input. Decode, verify, media and traces keep
+F32 norm. Prepared QKV runs before the indexer without borrowing that scratch.
+
+`DS4_MINIMAX_GU16=0` restores 32-warps for one-row R13+8 expert gate/up.
+The default uses 16 warps there to avoid register spills; plain R13,
+prefill and wider verification retain their schedules. Arithmetic and
+tensor allocations are unchanged. The October 27 report records both
+the cold NCU regression and the adopted repeated whole-workload gain.
+
+`DS4_MINIMAX_DECODE_RESIDUAL=0` restores separate one-row expert reduction
+and residual handling. The default adds the reduced branch directly to F32
+cur, then applies RMS without rounding the already-rounded cur again.
+Verify widths, prefill, media spans and tracing retain their paths. Both
+rounding boundaries and ascending expert order are preserved; tensor
+allocations are unchanged. The October 27 report records the actual API
+regression gate, in-model target timing and paired throughput evidence.
+
 ## DeepSeek V4.1 vision transfers
 
 `DS41_VISION_PINNED=0` restores direct pageable uploads from the vision

@@ -1,0 +1,256 @@
+// Model-free prefill MoE reduce + residual: CPU sums and the separate path.
+#include "cuda/minimax_decode.cuh"
+#include "cuda/minimax_rows.cuh"
+#include "cuda/mmq/quantize.cuh"
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <type_traits>
+#include <vector>
+
+enum { H = DS4_MINIMAX_HIDDEN, U = DS4_MINIMAX_USED, E = DS4_MINIMAX_EXPERTS };
+#define CHECK(x) do { if (!(x)) { fprintf(stderr, "REDUCE FAIL %d: %s\n", __LINE__, #x); exit(1); } } while (0)
+#define CK(x) CHECK((x) == cudaSuccess)
+static uint32_t state = 0x98f62a71;
+static uint32_t rng() { state ^= state << 13; state ^= state >> 17; state ^= state << 5; return state; }
+static void canonical_q8(const float *input, void *out, unsigned rows) {
+    // Same entry and dimensions as ds4_mmq_q8_0_quantize_ref; H is padded.
+    quantize_mmq_q8_1_cuda(input, nullptr, out, GGML_TYPE_Q8_0, H, H, 0, 0, H, rows, 1, 1, nullptr);
+    CK(cudaGetLastError());
+}
+static float value(float x) { return x; }
+static float value(__nv_bfloat16 x) { return __bfloat162float(x); }
+template <typename T> static T cast(float x) {
+    if constexpr (std::is_same_v<T, float>) { return x; }
+    else { return __float2bfloat16_rn(x); }
+}
+template <typename T> static T *device(const std::vector<T> &v) {
+    T *p = nullptr; CK(cudaMalloc(&p, v.size() * sizeof(T)));
+    CK(cudaMemcpy(p, v.data(), v.size() * sizeof(T), cudaMemcpyHostToDevice));
+    return p;
+}
+template <typename T> static std::vector<T> read(const T *p, size_t n) {
+    std::vector<T> out(n); CK(cudaMemcpy(out.data(), p, n * sizeof(T), cudaMemcpyDeviceToHost)); return out;
+}
+
+// Retained mm_mma_reduce, before fusion. CPU arithmetic below is independent.
+template <typename ST>
+__global__ void reference_reduce(__nv_bfloat16 *out, const __nv_bfloat16 *down, const float *weights,
+        const uint32_t *pairs, const uint32_t *order, const ST *shared, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const uint64_t token = i / H, col = i % H;
+    float sum = 0.0f;
+    for (uint32_t k = 0; k < U; k++) {
+        const uint32_t row = order[token * U + k];
+        sum = glmvq_add(sum, glmvq_mul(__bfloat162float(down[(uint64_t)row * H + col]), weights[pairs[row]]));
+    }
+    out[i] = __float2bfloat16_rn(glmvq_add(sum, glmvq_round(glmvq_value(shared[i]))));
+}
+
+template <typename CT, typename ST>
+static void run(unsigned rows, bool next, bool prepared, bool timing, bool index = false) {
+    CHECK(!index || (next && prepared));
+    const size_t n = (size_t)rows * H;
+    std::vector<uint32_t> expert(rows * U), counts(E), pairs(rows * U), order(rows * U), cursor(E), filled(rows);
+    std::vector<float> weights(rows * U), scales(rows), norm(n);
+    for (unsigned r = 0; r < rows; r++) {
+        std::array<unsigned, U> used = {E, E, E, E};
+        for (unsigned k = 0; k < U; k++) {
+            unsigned e;
+            do { e = rng() % ((r % 4) ? 32 : E); } while (std::find(used.begin(), used.end(), e) != used.end());
+            used[k] = e; expert[r * U + k] = e; counts[e]++; weights[r * U + k] = (1 + rng() % 1024) / 2048.f;
+        }
+    }
+    for (unsigned e = 1; e < E; e++) { cursor[e] = cursor[e - 1] + counts[e - 1]; }
+    for (unsigned p = 0; p < rows * U; p++) { pairs[cursor[expert[p]]++] = p; }
+    for (unsigned p = 0; p < rows * U; p++) { order[(pairs[p] / U) * U + filled[pairs[p] / U]++] = p; }
+    std::vector<__nv_bfloat16> down(n * U), branch(n), weight(H);
+    std::vector<CT> cur(n);
+    std::vector<ST> shared(n);
+    std::vector<__half> half(n);
+    for (auto &v : down) { v = __float2bfloat16_rn((int(rng() % 8193) - 4096) / 513.f); }
+    for (auto &v : shared) { v = cast<ST>((int(rng() % 2049) - 1024) / 97.f); }
+    for (auto &v : cur) { v = cast<CT>(value(__float2bfloat16_rn((int(rng() % 4097) - 2048) / 313.f))); }
+    for (auto &v : weight) { v = __float2bfloat16_rn((int(rng() % 127) - 63) / 97.f); }
+    auto *d = device(down), *b = device(branch), *w = device(weight);
+    auto *s = device(shared);
+    auto *original = device(cur), *a = device(cur), *f = device(cur);
+    auto *rw = device(weights); auto *p = device(pairs), *o = device(order);
+    auto *an = device(norm), *fn = device(norm), *as = device(scales), *fs = device(scales);
+    auto *ah = device(half), *fh = device(half);
+    const size_t qbytes = mm_norm_q8_bytes(rows), qdata = (size_t)rows * (H / MM_NORM_Q8_TILE) * sizeof(mm_norm_q8);
+    uint8_t *aq = nullptr, *fq = nullptr;
+    if (index) {
+        CK(cudaMalloc(&aq, qbytes)); CK(cudaMalloc(&fq, qbytes + 64));
+        CK(cudaMemset(fq, 0xa5, qbytes + 64));
+    }
+    CK(cudaMemset(an, 0xa5, n * sizeof(float))); CK(cudaMemset(fn, 0xa5, n * sizeof(float)));
+    auto old = [&] {
+        reference_reduce<<<(n + 255) / 256, 256>>>(b, d, rw, p, o, s, n);
+        mm_residual_kernel<<<rows, MM_ROW_THREADS>>>(a, b, an, next ? w : nullptr,
+            prepared ? ah : nullptr, prepared ? as : nullptr);
+        if (index) { canonical_q8(an, aq, rows); }
+    };
+    auto fused = [&] {
+        if (index) {
+            mm_moe_residual_kernel<CT, ST, true><<<rows, MM_ROW_THREADS>>>(f, d, rw, p, o, s,
+                (float *)fq, w, fh, fs);
+        } else {
+            mm_moe_residual_kernel<<<rows, MM_ROW_THREADS>>>(f, d, rw, p, o, s, fn, next ? w : nullptr,
+                prepared ? fh : nullptr, prepared ? fs : nullptr);
+        }
+    };
+    old(); fused(); CK(cudaDeviceSynchronize());
+    auto ac = read(a, n), fc = read(f, n);
+    CHECK(!memcmp(ac.data(), fc.data(), n * sizeof(CT)));
+    auto ab = read(b, n);
+    for (size_t i = 0; i < n; i++) {
+        const size_t row = i / H, col = i % H;
+        float sum = 0;
+        for (unsigned k = 0; k < U; k++) {
+            const unsigned at = order[row * U + k];
+            volatile float product = value(down[(size_t)at * H + col]) * weights[pairs[at]];
+            sum += product;
+        }
+        const auto expected = __float2bfloat16_rn(sum + value(__float2bfloat16_rn(value(shared[i]))));
+        CHECK(!memcmp(&expected, &ab[i], sizeof(expected)));
+        const CT expected_cur = cast<CT>(value(__float2bfloat16_rn(value(cur[i]) + value(expected))));
+        CHECK(!memcmp(&expected_cur, &fc[i], sizeof(CT)));
+    }
+    auto av = read(an, n), fv = read(fn, n);
+    if (!index) { CHECK(!memcmp(av.data(), fv.data(), n * sizeof(float))); }
+    if (!next || index) {
+        for (size_t i = 0; i < n * sizeof(float); i++) { CHECK(((const uint8_t *)fv.data())[i] == 0xa5); }
+    }
+    if (index) {
+        auto expected = read(aq, qdata), actual = read(fq, qbytes + 64);
+        CHECK(!memcmp(expected.data(), actual.data(), qdata));
+        for (size_t i = qdata; i < actual.size(); i++) { CHECK(actual[i] == 0xa5); }
+    }
+    if (prepared) {
+        auto ahv = read(ah, n), fhv = read(fh, n);
+        auto asv = read(as, rows), fsv = read(fs, rows);
+        CHECK(!memcmp(ahv.data(), fhv.data(), n * sizeof(__half)));
+        CHECK(!memcmp(asv.data(), fsv.data(), rows * sizeof(float)));
+    }
+    if (timing) {
+        cudaEvent_t start, end; CK(cudaEventCreate(&start)); CK(cudaEventCreate(&end));
+        std::vector<float> old_ms, fused_ms;
+        for (unsigned i = 0; i < 7; i++) {
+            CK(cudaMemcpy(a, original, n * sizeof(CT), cudaMemcpyDeviceToDevice));
+            CK(cudaEventRecord(start));
+            if (index) {
+                mm_moe_residual_kernel<<<rows, MM_ROW_THREADS>>>(a, d, rw, p, o, s, an, w, ah, as);
+                canonical_q8(an, aq, rows);
+            } else { old(); }
+            CK(cudaEventRecord(end)); CK(cudaEventSynchronize(end));
+            float ms; CK(cudaEventElapsedTime(&ms, start, end)); old_ms.push_back(ms);
+            CK(cudaMemcpy(f, original, n * sizeof(CT), cudaMemcpyDeviceToDevice));
+            CK(cudaEventRecord(start)); fused(); CK(cudaEventRecord(end)); CK(cudaEventSynchronize(end));
+            CK(cudaEventElapsedTime(&ms, start, end)); fused_ms.push_back(ms);
+        }
+        std::sort(old_ms.begin(), old_ms.end()); std::sort(fused_ms.begin(), fused_ms.end());
+        printf("REDUCE_TIME rows=%u index_q8=%d old_ms=%.6f fused_ms=%.6f\n", rows, index, old_ms[3], fused_ms[3]);
+        CK(cudaEventDestroy(end)); CK(cudaEventDestroy(start));
+    }
+    printf("REDUCE rows=%u cur_bf16=%d shared_bf16=%d next=%d q4p=%d index_q8=%d PASS\n", rows,
+        !std::is_same_v<CT, float>, !std::is_same_v<ST, float>, next, prepared, index);
+    if (index) { CK(cudaFree(fq)); CK(cudaFree(aq)); }
+    CK(cudaFree(fh)); CK(cudaFree(ah)); CK(cudaFree(fs)); CK(cudaFree(as)); CK(cudaFree(fn)); CK(cudaFree(an));
+    CK(cudaFree(o)); CK(cudaFree(p)); CK(cudaFree(rw)); CK(cudaFree(f)); CK(cudaFree(a)); CK(cudaFree(original));
+    CK(cudaFree(s)); CK(cudaFree(w)); CK(cudaFree(b)); CK(cudaFree(d));
+}
+
+static void run_decode_residual() {
+    std::vector<float> partial(U * H), shared(H), cur(H), weights = {0.2f, 0.3f, 0.7f, 0.8f}, norm(H);
+    std::vector<__nv_bfloat16> next(H);
+    std::vector<glmvq_decode_item> items(U);
+    const unsigned pairs[U] = {3, 0, 2, 1};
+    for (unsigned e = 0; e < U; e++) { items[e].pair = pairs[e]; }
+    for (auto &x : partial) { x = value(__float2bfloat16_rn((int(rng() % 4097) - 2048) / 313.f)); }
+    for (auto &x : cur) { x = value(__float2bfloat16_rn((int(rng() % 2049) - 1024) / 97.f)); }
+    for (auto &x : shared) { x = (int(rng() % 4097) - 2048) / 113.f; }
+    for (auto &x : next) { x = __float2bfloat16_rn((int(rng() % 127) - 63) / 97.f); }
+    auto *p = device(partial), *s = device(shared), *c = device(cur), *w = device(weights), *n = device(norm);
+    auto *b = device(norm);
+    auto *nw = device(next);
+    auto *it = device(items);
+    auto original = [&] {
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_decode_reduce<>, dim3(H / 256, 1), 256, 0, nullptr,
+            b, (const float *)p, (const float *)w, (const glmvq_decode_item *)it, (const float *)s);
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_residual_kernel<float, float>, 1, MM_ROW_THREADS, 0, nullptr,
+            c, (const float *)b, n, (const __nv_bfloat16 *)nw, (__half *)nullptr, (float *)nullptr);
+    };
+    auto fused = [&] {
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_decode_reduce<true>, dim3(H / 256, 1), 256, 0, nullptr,
+            c, (const float *)p, (const float *)w, (const glmvq_decode_item *)it, (const float *)s);
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_rms_kernel<float, true>, 1, MM_ROW_THREADS, 0, nullptr,
+            n, (const float *)c, (const __nv_bfloat16 *)nw);
+    };
+    original(); CK(cudaDeviceSynchronize());
+    auto got = read(c, H), got_norm = read(n, H);
+    for (unsigned k = 0; k < H; k++) {
+        volatile float sum = 0;
+        for (unsigned e = 0; e < U; e++) {
+            volatile float product = partial[e * H + k] * weights[pairs[e]];
+            sum = sum + product;
+        }
+        const float branch = value(__float2bfloat16_rn(sum + value(__float2bfloat16_rn(shared[k]))));
+        CHECK(got[k] == value(__float2bfloat16_rn(cur[k] + branch)) && std::isfinite(got_norm[k]));
+    }
+    CK(cudaMemcpy(c, cur.data(), H * sizeof(float), cudaMemcpyHostToDevice));
+    fused(); CK(cudaDeviceSynchronize());
+    auto actual = read(c, H), actual_norm = read(n, H);
+    CHECK(!memcmp(actual.data(), got.data(), H * sizeof(float)));
+    CHECK(!memcmp(actual_norm.data(), got_norm.data(), H * sizeof(float)));
+    CK(cudaMemcpy(c, cur.data(), H * sizeof(float), cudaMemcpyHostToDevice));
+    glmvq_launch_kernel(GLMVQ_LAUNCH_PDL, mm_decode_reduce<true>, dim3(H / 256, 1), 256, 0, nullptr,
+        c, (const float *)p, (const float *)w, (const glmvq_decode_item *)it, (const float *)s);
+    actual = read(c, H);
+    CHECK(!memcmp(actual.data(), got.data(), H * sizeof(float)));
+    cudaEvent_t begin, end; CK(cudaEventCreate(&begin)); CK(cudaEventCreate(&end));
+    for (unsigned sample = 0; sample < 7; sample++) {
+        float us[2];
+        for (unsigned side = 0; side < 2; side++) {
+            const unsigned mode = side ^ (sample & 1);
+            CK(cudaMemcpy(c, cur.data(), H * sizeof(float), cudaMemcpyHostToDevice));
+            CK(cudaEventRecord(begin));
+            for (unsigned i = 0; i < 128; i++) { if (mode) { fused(); } else { original(); } }
+            CK(cudaEventRecord(end)); CK(cudaEventSynchronize(end));
+            float ms; CK(cudaEventElapsedTime(&ms, begin, end)); us[mode] = ms * 1000 / 128;
+        }
+        printf("DECODE_RESIDUAL sample=%u original_us=%.6f fused_us=%.6f\n", sample, us[0], us[1]);
+    }
+    CK(cudaEventDestroy(end)); CK(cudaEventDestroy(begin));
+    CK(cudaFree(it)); CK(cudaFree(nw)); CK(cudaFree(b)); CK(cudaFree(n)); CK(cudaFree(w));
+    CK(cudaFree(c)); CK(cudaFree(s)); CK(cudaFree(p));
+    puts("DECODE_RESIDUAL_CPU_ADD_PASS");
+}
+
+int main(int argc, char **argv) {
+    CHECK(argc <= 3);
+    if (argc == 2 && !strcmp(argv[1], "decode")) { run_decode_residual(); return 0; }
+    if (argc >= 2) {
+        const unsigned rows = (unsigned)strtoul(argv[1], nullptr, 10);
+        CHECK(rows > DS4_MINIMAX_SPLIT_ROWS && rows <= 4096);
+        CHECK(argc == 2 || !strcmp(argv[2], "q8"));
+        run<__nv_bfloat16, __nv_bfloat16>(rows, true, true, true, argc == 3);
+    } else {
+        for (unsigned rows : {9u, 128u, 4096u}) {
+            run<float, float>(rows, true, true, false);
+            run<float, __nv_bfloat16>(rows, true, true, false);
+            run<__nv_bfloat16, float>(rows, true, true, false);
+            run<__nv_bfloat16, __nv_bfloat16>(rows, true, true, rows == 4096);
+            run<float, float>(rows, true, true, false, true);
+            run<float, __nv_bfloat16>(rows, true, true, false, true);
+            run<__nv_bfloat16, float>(rows, true, true, false, true);
+            run<__nv_bfloat16, __nv_bfloat16>(rows, true, true, rows == 4096, true);
+        }
+        run<__nv_bfloat16, __nv_bfloat16>(9, false, false, false);
+        run<__nv_bfloat16, __nv_bfloat16>(9, true, false, false);
+    }
+    puts("MINIMAX_REDUCE_PASS");
+}

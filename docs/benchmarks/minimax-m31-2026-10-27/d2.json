@@ -1,0 +1,411 @@
+{
+  "complete": true,
+  "samples": {
+    "off1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1223.52",
+        "gen_tokens": "1024",
+        "gen_tps": "20.71",
+        "gen_tps_ss": "20.71",
+        "first_token_sec": "0.0505",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1143.85",
+        "gen_tokens": "1024",
+        "gen_tps": "20.29",
+        "gen_tps_ss": "20.29",
+        "first_token_sec": "0.0515",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on1": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1228.71",
+        "gen_tokens": "1024",
+        "gen_tps": "21.39",
+        "gen_tps_ss": "21.39",
+        "first_token_sec": "0.0491",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1148.71",
+        "gen_tokens": "1024",
+        "gen_tps": "20.99",
+        "gen_tps_ss": "20.99",
+        "first_token_sec": "0.0495",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1227.63",
+        "gen_tokens": "1024",
+        "gen_tps": "21.37",
+        "gen_tps_ss": "21.38",
+        "first_token_sec": "0.0501",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1147.61",
+        "gen_tokens": "1024",
+        "gen_tps": "21.00",
+        "gen_tps_ss": "21.00",
+        "first_token_sec": "0.0495",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off2": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1225.68",
+        "gen_tokens": "1024",
+        "gen_tps": "21.26",
+        "gen_tps_ss": "21.26",
+        "first_token_sec": "0.0494",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1145.80",
+        "gen_tokens": "1024",
+        "gen_tps": "20.90",
+        "gen_tps_ss": "20.90",
+        "first_token_sec": "0.0506",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "off3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1223.87",
+        "gen_tokens": "1024",
+        "gen_tps": "20.78",
+        "gen_tps_ss": "20.78",
+        "first_token_sec": "0.0515",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1146.84",
+        "gen_tokens": "1024",
+        "gen_tps": "20.34",
+        "gen_tps_ss": "20.34",
+        "first_token_sec": "0.0503",
+        "kvcache_bytes": "2549102132"
+      }
+    ],
+    "on3": [
+      {
+        "ctx_tokens": "8192",
+        "prefill_tokens": "8192",
+        "prefill_tps": "1223.59",
+        "gen_tokens": "1024",
+        "gen_tps": "21.41",
+        "gen_tps_ss": "21.41",
+        "first_token_sec": "0.0490",
+        "kvcache_bytes": "319338036"
+      },
+      {
+        "ctx_tokens": "65536",
+        "prefill_tokens": "57344",
+        "prefill_tps": "1142.65",
+        "gen_tokens": "1024",
+        "gen_tps": "21.03",
+        "gen_tps_ss": "21.03",
+        "first_token_sec": "0.0497",
+        "kvcache_bytes": "2549102132"
+      }
+    ]
+  },
+  "frontiers": {
+    "8192": {
+      "prefill_tps": {
+        "off": [
+          1223.52,
+          1225.68,
+          1223.87
+        ],
+        "on": [
+          1228.71,
+          1227.63,
+          1223.59
+        ],
+        "off_median": 1223.87,
+        "on_median": 1227.63,
+        "change_pct": 0.3072221722895563
+      },
+      "gen_tps": {
+        "off": [
+          20.71,
+          21.26,
+          20.78
+        ],
+        "on": [
+          21.39,
+          21.37,
+          21.41
+        ],
+        "off_median": 20.78,
+        "on_median": 21.39,
+        "change_pct": 2.9355149181905738
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.71,
+          21.26,
+          20.78
+        ],
+        "on": [
+          21.39,
+          21.38,
+          21.41
+        ],
+        "off_median": 20.78,
+        "on_median": 21.39,
+        "change_pct": 2.9355149181905738
+      }
+    },
+    "65536": {
+      "prefill_tps": {
+        "off": [
+          1143.85,
+          1145.8,
+          1146.84
+        ],
+        "on": [
+          1148.71,
+          1147.61,
+          1142.65
+        ],
+        "off_median": 1145.8,
+        "on_median": 1147.61,
+        "change_pct": 0.15796823180309616
+      },
+      "gen_tps": {
+        "off": [
+          20.29,
+          20.9,
+          20.34
+        ],
+        "on": [
+          20.99,
+          21.0,
+          21.03
+        ],
+        "off_median": 20.34,
+        "on_median": 21.0,
+        "change_pct": 3.2448377581120846
+      },
+      "gen_tps_ss": {
+        "off": [
+          20.29,
+          20.9,
+          20.34
+        ],
+        "on": [
+          20.99,
+          21.0,
+          21.03
+        ],
+        "off_median": 20.34,
+        "on_median": 21.0,
+        "change_pct": 3.2448377581120846
+      }
+    }
+  },
+  "status": "adopted",
+  "scope": "P1/D1/P3/P4 retained; one-row R13+8 GU16 only; R13 and verify keep GU32",
+  "source_base": "ec860169",
+  "binary_sha256": "5c1eeba727c1250630b4affa21fa2bbdab3b3df250516b2131063f2d4b1efb0c",
+  "protocol": {
+    "module_loading": "LAZY",
+    "main_cpu": 5,
+    "helper_cpus": "5-9,15-19",
+    "cur_bf16": 1,
+    "preload_decode": 1,
+    "reduce_residual": 1,
+    "norm_q8": 1,
+    "variable": "DS4_MINIMAX_GU16",
+    "ctx_alloc": 131072,
+    "warmup_prefill": 4096,
+    "generation_tokens": 1024,
+    "frontiers": [
+      8192,
+      65536
+    ],
+    "change_from_prior_round": "Generation window enlarged from 256 to 1024 for decode resolution; not a matched comparison against earlier rates."
+  },
+  "numerics": "All 200064 frontier logits and 1024 generated IDs exact in all six runs; first 256 IDs also match prior golden. Retained GU32 SASS exact.",
+  "resource_and_affinity": {
+    "off1": {
+      "min_available_gib": 7.432125091552734,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 325,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "on1": {
+      "min_available_gib": 7.432319641113281,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 317,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "on2": {
+      "min_available_gib": 7.411277770996094,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 318,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "off2": {
+      "min_available_gib": 7.387302398681641,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 319,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "off3": {
+      "min_available_gib": 7.565361022949219,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 324,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    },
+    "on3": {
+      "min_available_gib": 7.412303924560547,
+      "max_psi_full_avg10": 0.0,
+      "main_cpu_samples": 318,
+      "busy_sm_mhz_min": 2177.0,
+      "busy_sm_mhz_max": 2190.0
+    }
+  },
+  "target_baseline_ncu": {
+    "gpu__time_duration.sum": {
+      "unit": "ns",
+      "value": 230720.0
+    },
+    "launch__registers_per_thread": {
+      "unit": "register/thread",
+      "value": 64.0
+    },
+    "smsp__inst_executed.sum": {
+      "unit": "inst",
+      "value": 45043962.0
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "unit": "hz",
+      "value": 2186808685.85
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": {
+      "unit": "sector",
+      "value": 264192.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": {
+      "unit": "sector",
+      "value": 159744.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "unit": "sector",
+      "value": 1809408.0
+    },
+    "lts__t_sectors_srcunit_tex_op_read.sum": {
+      "unit": "sector",
+      "value": 1959902.0
+    },
+    "lts__t_sectors_srcunit_tex_op_write.sum": {
+      "unit": "sector",
+      "value": 171857.0
+    }
+  },
+  "target_candidate_ncu": {
+    "gpu__time_duration.sum": {
+      "unit": "ns",
+      "value": 252576.0
+    },
+    "launch__registers_per_thread": {
+      "unit": "register/thread",
+      "value": 112.0
+    },
+    "smsp__inst_executed.sum": {
+      "unit": "inst",
+      "value": 43459578.0
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "unit": "hz",
+      "value": 2190259565.44
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": {
+      "unit": "sector",
+      "value": 0.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": {
+      "unit": "sector",
+      "value": 0.0
+    },
+    "lts__t_sectors_srcunit_tex_op_read.sum": {
+      "unit": "sector",
+      "value": 1694751.0
+    },
+    "lts__t_sectors_srcunit_tex_op_write.sum": {
+      "unit": "sector",
+      "value": 12089.0
+    }
+  },
+  "cold_ncu_tradeoff": "230.720 -> 252.576 us (+9.48% cold replay); warmed rotating distinct books/weights improve. Full workload decides adoption; no claim that spill removal explains all gain.",
+  "isolated_distinct_books": {
+    "sets": 8,
+    "off_gu_us": [
+      228.6,
+      229.6
+    ],
+    "on_gu_us": [
+      223.9,
+      224.8
+    ],
+    "off_down_us": [
+      121.8,
+      122.4
+    ],
+    "on_down_us": [
+      117.2,
+      118.0
+    ],
+    "all_BF16_bits_exact": true,
+    "difference_from_model": "Synthetic books/weights/input and ordinary launches; whole workload uses PDL and real routes."
+  },
+  "resource_tradeoff": {
+    "registers_per_thread_off": 64,
+    "registers_per_thread_on": 112,
+    "threads_per_CTA_off": 1024,
+    "threads_per_CTA_on": 512,
+    "registers_per_CTA_off": 65536,
+    "registers_per_CTA_on": 57344,
+    "resident_warps_off": 32,
+    "resident_warps_on": 16,
+    "data_allocations": "unchanged",
+    "new_local_load_store_sectors": 0
+  },
+  "source_sha256": {
+    "cuda/minimax_decode.cuh": "545f5a74e708e4704604e5ac6c94dc01b66e35eb2978174db4e9a028f8a9ed6b",
+    "ds4_minimax_gpu.cuh": "7179d0cdad53b3bd6a4c90ad2228e810a063a7f9b6e0f346c40144d026925205",
+    "tests/test_minimax_decode.cu": "4a512177c4b55a703e35689338125da1cc95ac495e1c014675e9b4d639a5217d"
+  }
+}

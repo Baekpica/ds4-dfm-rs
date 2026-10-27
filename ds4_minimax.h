@@ -22,6 +22,13 @@ extern "C" {
  * handoff's tools/minimax_ref.py (matches transformers 5.20.2
  * MiniMaxM3VLDecoderLayer to BF16 rounding). */
 typedef struct ds4_minimax_moe ds4_minimax_moe;
+typedef enum { DS4_MINIMAX_NORM_F32, DS4_MINIMAX_NORM_Q8 } ds4_minimax_norm;
+typedef struct {
+    ds4_gpu_tensor *cur, *norm, *q4h, *q4s;
+    uint32_t next;
+    ds4_gvq_rows format;
+    ds4_minimax_norm norm_format;
+} ds4_minimax_residual_out;
 
 enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 6144, DS4_MINIMAX_FFN = 3072,
        DS4_MINIMAX_DENSE_FF = 12288,
@@ -49,15 +56,21 @@ enum { DS4_MINIMAX_EXPERTS = 128, DS4_MINIMAX_USED = 4, DS4_MINIMAX_HIDDEN = 614
 uint64_t ds4_gpu_minimax_moe_bytes(uint32_t rows);
 ds4_minimax_moe *ds4_gpu_minimax_moe_create(ds4_gvq_ctx *gvq, uint32_t rows);
 void ds4_gpu_minimax_moe_free(ds4_minimax_moe *moe);
+/* Resolve the decode projection kernels before prefill changes loading
+ * order; no launches or model-dependent allocation. */
+int ds4_gpu_minimax_prepare_decode(void);
 /* out = round(sum over the selected experts e of weights[e] * expert_e(input)
  * + shared), the sum in F32 in ascending expert order (the reference's F32
  * index_add, then one rounding). `matrices` holds the layer's w1[128],
  * w3[128], w2[128] GVQ indices; `weights` already carry the routed scale.
  * Prefill rows only: `bf16` DS4_MINIMAX_BF16_SHARED reads BF16 shared rows,
- * DS4_MINIMAX_BF16_OUT writes BF16 rows (both BF16-rounded where read). */
+ * DS4_MINIMAX_BF16_OUT writes BF16 rows (both BF16-rounded where read).
+ * With `residual`, prefill consumes that BF16 branch directly in cur's
+ * residual/norm/q4p output; one-row F32 decode folds the residual add into
+ * reduction before RMS. `out` is not written in either case. */
 int ds4_gpu_minimax_moe(ds4_minimax_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
     const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, const ds4_gpu_tensor *shared,
-    const uint32_t *matrices, uint32_t rows, uint32_t bf16);
+    const uint32_t *matrices, uint32_t rows, uint32_t bf16, const ds4_minimax_residual_out *residual);
 
 /* F32 router logits of the 6144-wide rows (never TF32; up to
  * DS4_MINIMAX_SPLIT_ROWS rows each computed as a lone row), then the top-4
@@ -81,7 +94,8 @@ int ds4_gpu_minimax_route(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, ds4_gpu_te
  * DS4_MINIMAX_SPLIT_ROWS rows compute each row as a lone row; prefill rows
  * take MMQ (the input quantized once). */
 int ds4_gpu_minimax_q8_pair(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out0, ds4_gpu_tensor *out1, uint32_t w0, uint32_t w1,
-    const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows);
+    const ds4_gpu_tensor *input, uint32_t cols, uint32_t outs0, uint32_t outs1, uint32_t rows,
+    ds4_minimax_norm prepared);
 
 /* Up to DS4_MINIMAX_SPLIT_ROWS rows: the three Q4_K projections `weights`
  * (q, k, v) into outs and the indexer's Q8_0 pair into iq/ik, one launch,
@@ -91,17 +105,21 @@ int ds4_gpu_minimax_proj(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs, const ui
     ds4_gpu_tensor *iq, ds4_gpu_tensor *ik, uint32_t wiq, uint32_t wik, uint32_t outs_q, uint32_t outs_k,
     const ds4_gpu_tensor *input, uint32_t rows);
 
-/* out = gemma_rms(x) over 6144-wide rows with a BF16 weight record. */
+/* out = gemma_rms(x) over 6144-wide rows with a BF16 weight record.
+ * BF16 input rows must be disjoint from the F32 output. */
 int ds4_gpu_minimax_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
-    uint32_t weight, uint32_t rows);
+    uint32_t weight, uint32_t rows, ds4_gvq_rows format);
 
 /* cur = round(cur + branch) (the reference's BF16 residual add), then, when
  * `next` is a record, norm = gemma_rms(cur) with that weight; with q4h, the
  * norm rows also as q4p's prepared input (ds4_gpu_gvq_q4p_prepared: FP16
  * [rows][6144] in q4h, the row scales in q4s). `branch_bf16`: BF16 branch
- * rows. */
+ * rows. NORM_Q8 writes the indexer's prepared MMQ input into context scratch
+ * instead of norm; q4h must also be set, and its prepared QKV consumer must
+ * precede the indexer without borrowing that scratch. */
 int ds4_gpu_minimax_residual(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16);
+    ds4_gpu_tensor *norm, uint32_t next, uint32_t rows, ds4_gpu_tensor *q4h, ds4_gpu_tensor *q4s, int branch_bf16,
+    ds4_gvq_rows format, ds4_minimax_norm norm_output);
 
 /* SwiGLU-OAI of [rows][width] gate and up rows into `out`:
  * min(g, 7) * sigmoid(1.702 * min(g, 7)) * (clamp(u, -7, 7) + 1), in F32,
@@ -168,7 +186,8 @@ int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor *q, const d
  * ceil((hi - lo) / 128) x 130 floats). markov: logits[v] +=
  * BF16(w2[v] . w1[*prev]) over `vocab` rows (rank 256, `prev` on the
  * device). */
-int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows);
+int ds4_gpu_minimax_draft_tap(ds4_gpu_tensor *taps, const ds4_gpu_tensor *cur, uint32_t k, uint32_t rows,
+    ds4_gvq_rows format);
 int ds4_gpu_minimax_draft_widen(ds4_gpu_tensor *out, const ds4_gpu_tensor *taps, uint32_t r0, uint32_t rows);
 int ds4_gpu_minimax_draft_ring(ds4_gpu_tensor *ring_k, ds4_gpu_tensor *ring_v, const ds4_gpu_tensor *k,
     const ds4_gpu_tensor *v, uint32_t rows, uint32_t pos, uint32_t cap);
@@ -210,7 +229,7 @@ int ds4_gpu_minimax_vit_clear(void);
 int ds4_gpu_minimax_logits(ds4_gpu_tensor *logits, uint32_t rows, uint32_t tokens);
 
 /* BF16 embedding rows (host-gathered) -> the F32 hidden rows. */
-int ds4_gpu_minimax_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *rows_bf16, uint32_t rows);
+int ds4_gpu_minimax_embed(ds4_gpu_tensor *cur, const ds4_gpu_tensor *rows_bf16, uint32_t rows, ds4_gvq_rows format);
 
 #ifdef __cplusplus
 }

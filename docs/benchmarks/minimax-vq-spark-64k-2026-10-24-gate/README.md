@@ -53,6 +53,10 @@ of the three runs, not a confidence interval. [All samples](tables.md) and the
 - One NVIDIA DGX Spark / GB10, driver 615.71.10; CUDA 13.4, `sm_121a`;
   Rust 1.98.0; Linux 7.0.0-1019-nvidia. SM clock 2,411–2,431 MHz at the run
   boundaries.
+- Clock annotation (2026-10-27): those historical readings have no archived
+  per-sample clock CSV. The operator recalls a 300–2200 MHz policy too;
+  the discrepancy remains [unreconciled](../../gb10-hardware.md#clock-policy-and-measurement-stability).
+  Missing metadata does not establish an uncapped run.
 - `ds4-bench` built from `ff430197` (SHA256
   `3704f24b9a7cf40000ca9a2525f21ae1647e81d6981b97f5648fc4bd7f92cf9d`).
 - Model: the 61-part release directory, `release.json` SHA256

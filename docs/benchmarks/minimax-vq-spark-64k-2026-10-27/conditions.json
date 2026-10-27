@@ -1,0 +1,241 @@
+{
+  "date": "2026-10-27",
+  "runtime_source_commit": "84960118fc79e76a9d9b618fe5d0112101c1dbba",
+  "build_note": "Frozen before D3 commit from 6c186d36 plus the qualified D3 patch; recorded native source hashes match 84960118.",
+  "binary_sha256": "c9c627eb6294a2c0931cfdb2b569acfb1b454f64ed39b0ce947de0ad18e137f6",
+  "release_json_sha256": "2110c1e5cba8d59987e370d50dab6dde5d5f7fc82009cdc27d8131452536f4b0",
+  "tensor_manifest_json_sha256": "f62bc85bb2e058667bcf3e0844c349630707c7e9ef6d175716e9c2374f275733",
+  "prompt": "speed-bench/promessi_sposi.txt",
+  "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "toolkit": "CUDA 13.4.92",
+  "driver": "615.71.10",
+  "busy_sm_mhz": [
+    2177,
+    2190
+  ],
+  "busy_clock_filter": "GPU utilization >= 80%, sampled every second",
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "clock_policy_source": "Operator confirmed sudo nvidia-smi -lgc 300,2200 applied on 2026-10-27; agents did not change clocks.",
+  "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+  "performance_cpu_pool": [
+    5,
+    6,
+    7,
+    8,
+    9,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "main_cpu": 5,
+  "prefill_chunk": 2048,
+  "session_context": 524288,
+  "frontiers": [
+    2048,
+    4096,
+    6144,
+    8192,
+    10240,
+    12288,
+    14336,
+    16384,
+    18432,
+    20480,
+    22528,
+    24576,
+    26624,
+    28672,
+    30720,
+    32768,
+    34816,
+    36864,
+    38912,
+    40960,
+    43008,
+    45056,
+    47104,
+    49152,
+    51200,
+    53248,
+    55296,
+    57344,
+    59392,
+    61440,
+    63488,
+    65536
+  ],
+  "incremental_prefill_tokens": 2048,
+  "generated_tokens": 128,
+  "extra_warmup_prefill_tokens": 0,
+  "mtp_draft": 3,
+  "dspark_rate_gate": true,
+  "ssd_pool_slots": 9660,
+  "ssd_pool_gib_reported": 0.66,
+  "ssd_prefill_stage_gib_reported": 0.07,
+  "workspace_gib_reported": 1.0,
+  "memory_guard": {
+    "reserve_gib": 2,
+    "trip_gib": 2,
+    "psi_full_limit": 20,
+    "requested_max_gib": 128,
+    "requested_high_gib": 128,
+    "timeout_seconds": 1200
+  },
+  "environment": {
+    "CUDA_MODULE_LOADING": "LAZY",
+    "DS4_GLMVQ_PDL": "1",
+    "DS4_MINIMAX_PREFILL_CHUNK": "2048",
+    "DS4_MINIMAX_CUR_BF16": "1",
+    "DS4_MINIMAX_PRELOAD_DECODE": "1",
+    "DS4_MINIMAX_REDUCE_RESIDUAL": "1",
+    "DS4_MINIMAX_NORM_Q8": "1",
+    "DS4_MINIMAX_GU16": "1",
+    "DS4_MINIMAX_DECODE_RESIDUAL": "1"
+  },
+  "runs": [
+    {
+      "repeat": 1,
+      "source_tag": "card-c2048-dspark3-1",
+      "csv_sha256": "fc290c333076aa751b05b7f59345b1e4ec82a21dc4044dfae937c72d6e3e132f",
+      "clocks_csv_sha256": "f9d3566682a29e6335be655df30e71f3851ed9acc3910da0f8891038adf96e1f",
+      "guard_status": 0,
+      "payload_status": 0,
+      "minimum_available_gib": 6.161861419677734,
+      "maximum_psi_full_avg10": 0.0,
+      "busy_sm_mhz": [
+        2177,
+        2190
+      ],
+      "maximum_temperature_c": 72,
+      "guard_jsonl_sha256": "49329f3a312f2bdec018fb560bafb17f8639c5e8699b996f7f3ee68a3b906f60",
+      "affinity_jsonl_sha256": "3a0af6090152c354642f1147fd739eff5847e3691a64c6a2e63661ac4593c860",
+      "mean_tps": {
+        "prefill_tps": 1011.62375,
+        "gen_tps": 22.10375
+      }
+    },
+    {
+      "repeat": 2,
+      "source_tag": "card-c2048-dspark3-2",
+      "csv_sha256": "ceeb1c27a80c4e6b5aeac980684ece86c15181c11b361c17d9e94cf2261142c2",
+      "clocks_csv_sha256": "27ef13ddc07a69763978ac99f682b0ac3943e089e628a3574fcfafb60c03a847",
+      "guard_status": 0,
+      "payload_status": 0,
+      "minimum_available_gib": 5.882175445556641,
+      "maximum_psi_full_avg10": 0.0,
+      "busy_sm_mhz": [
+        2177,
+        2190
+      ],
+      "maximum_temperature_c": 72,
+      "guard_jsonl_sha256": "a7125138ee2c87e6ced5d0848c490968ede98c3671b9e198798761bd689973f0",
+      "affinity_jsonl_sha256": "d20caaf5320736f761ffc1b5ddb3bf16e90514eb9d3ab62afd3d01da89e7bf48",
+      "mean_tps": {
+        "prefill_tps": 1010.975625,
+        "gen_tps": 22.3421875
+      }
+    },
+    {
+      "repeat": 3,
+      "source_tag": "card-c2048-dspark3-3",
+      "csv_sha256": "58ae717478ce1f0b18a8368153df1a969da730e56ca73d1802bf7e0484162fa1",
+      "clocks_csv_sha256": "6082e5bb84b95a892d71ee66839609ebf1d3b21de64b36448d8e37420cf85cba",
+      "guard_status": 0,
+      "payload_status": 0,
+      "minimum_available_gib": 6.075992584228516,
+      "maximum_psi_full_avg10": 0.0,
+      "busy_sm_mhz": [
+        2177,
+        2190
+      ],
+      "maximum_temperature_c": 73,
+      "guard_jsonl_sha256": "84827e644c661e296259f9bb104fd268049b0a4c9f9f4264a78a823180b6729d",
+      "affinity_jsonl_sha256": "d2036fa5ea0e00af9648cb39d7c7152d6505918aa9b314b14177bc77c09919b4",
+      "mean_tps": {
+        "prefill_tps": 1009.7490625,
+        "gen_tps": 22.0346875
+      }
+    }
+  ],
+  "excluded": "Original card-sweep-dspark3-1 completed payload with 4096-row cap, but systemd-oomd killed Codex/controller and telemetry ended early; excluded from final throughput samples. No completed tag rerun.",
+  "historical_clock_note": "October 24 receipt reports SM 2411-2431 MHz at run boundaries, without archived per-sample clocks. Operator recalls 300-2200 MHz policy; unresolved, no uncapped-policy claim or clock-causal comparison.",
+  "absolute_stability": {
+    "prefill_tps": {
+      "run_means": [
+        1011.62375,
+        1010.975625,
+        1009.7490625
+      ],
+      "run_mean_range_pct_of_median": 0.18543350142590592,
+      "largest_frontier_range": {
+        "frontier": 38912,
+        "tps": [
+          1001.11,
+          994.22,
+          1005.26
+        ],
+        "range_pct_of_median": 1.1027759187302058
+      }
+    },
+    "gen_tps": {
+      "run_means": [
+        22.10375,
+        22.3421875,
+        22.0346875
+      ],
+      "run_mean_range_pct_of_median": 1.3911666572414227,
+      "largest_frontier_range": {
+        "frontier": 59392,
+        "tps": [
+          27.11,
+          26.92,
+          22.71
+        ],
+        "range_pct_of_median": 16.344725111441303
+      }
+    },
+    "gate_example_58k": [
+      {
+        "repeat": 1,
+        "tps": 27.11,
+        "calls": 48
+      },
+      {
+        "repeat": 2,
+        "tps": 26.92,
+        "calls": 48
+      },
+      {
+        "repeat": 3,
+        "tps": 22.71,
+        "calls": 74
+      }
+    ]
+  },
+  "native_source_sha256": {
+    "ds4_minimax_gpu.cuh": "f3c88a88e206992f167071fa6c7a02814d3f99be1b7c107e3ca40aa431fa2181",
+    "ds4_minimax_graph.inc": "ccf298b2e2086476404f1832c7af4c5b0628507440d071f4afc8f6335c551e12",
+    "cuda/minimax_decode.cuh": "f8140c222d98deb2a555b0060d24bbde608102ee54089b40ed37347855e27252",
+    "cuda/minimax_rows.cuh": "2b82853b128067861850ec31d1475bf860c401a8a9ad5facba2f18d17b837ce3",
+    "tests/test_minimax_rows.c": "b40474df6ce34d2db05157e087d4be275debf2b5745f8dd8c6fd36c154b755f5"
+  },
+  "plot_sha256": "1b3d100ca35f7e08134e941194c0ad0c8775de15c8ceff39626b6a277c6887c8",
+  "post_measurement_clock_service": {
+    "unit": "nvidia-clocks.service",
+    "fragment": "/etc/systemd/system/nvidia-clocks.service",
+    "enabled": true,
+    "active_state": "active",
+    "sub_state": "exited",
+    "result": "success",
+    "exec_main_status": 0,
+    "active_enter_timestamp": "2026-10-27 20:13:45 +09:00",
+    "verified_at": "2026-10-27T20:22:08.936569+09:00",
+    "unit_sha256": "527acab4d7163acdd7b475e4bc7ce903456620a3cda125797d5b0afb9f06b9c4",
+    "note": "Operator installed/enabled automatic boot setup after this cohort; the measured runs used the same operator-confirmed 300-2200 MHz range. No per-run or per-reboot manual request when the service is healthy."
+  }
+}

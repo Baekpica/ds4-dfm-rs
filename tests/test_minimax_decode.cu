@@ -1,10 +1,11 @@
 /* MiniMax's routed-expert decode kernels (cuda/minimax_decode.cuh) at
  * production shapes, no model: top-4 experts of 6144 -> 3072 -> 6144 on a
  * random 13-bit book, with and without the GVR8 residual stage, rotating
- * over DS4_MD_SETS distinct expert sets (default 32, ~1.5 GB) so every
- * launch streams its weights from DRAM. Prints each kernel's time and
+ * over DS4_MD_SETS distinct expert sets and per-layer books (default 32),
+ * so every launch streams its weights from DRAM. Prints each kernel's time and
  * weight-read rate; DS4_MD_ONLY=gu|down runs that kernel once (for ncu),
- * DS4_MD_RES=0|1 picks the stage (default both). Exit 0 = launches ran. */
+ * DS4_MD_RES=0|1 picks the stage (default both). DS4_MD_GU_WARPS=16 also
+ * checks every BF16 result against the original 32-warp kernel. */
 #include "cuda/minimax_decode.cuh"
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,7 @@
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { \
     printf("CUDA %s at line %d\n", cudaGetErrorString(e_), __LINE__); exit(2); } } while (0)
 
+#define CHECK(x) do { if (!(x)) { fprintf(stderr, "decode check %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 static uint64_t g_state = 0x9e3779b97f4a7c15ull;
 static uint64_t next_u64() {
     g_state ^= g_state << 13; g_state ^= g_state >> 7; g_state ^= g_state << 17;
@@ -64,21 +66,28 @@ static glmvq_matrix make_matrix(uint32_t rows, uint32_t cols, const void *book, 
 
 template <bool RES>
 static void run(int sets, const char *only) {
+    const char *setting = getenv("DS4_MD_GU_WARPS");
+    const unsigned warps = setting ? (unsigned)atoi(setting) : MM_WARPS;
+    CHECK(warps == 16 || warps == MM_WARPS);
     constexpr uint32_t books = glmvq_decode_books<13, RES>();
     CK(cudaFuncSetAttribute(mm_decode_gu<RES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        books + MM_HIDDEN * sizeof(__nv_bfloat16)));
+    CK(cudaFuncSetAttribute(mm_decode_gu<RES, 16>, cudaFuncAttributeMaxDynamicSharedMemorySize,
         books + MM_HIDDEN * sizeof(__nv_bfloat16)));
     CK(cudaFuncSetAttribute(mm_decode_down<RES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
         books + MM_USED * MM_FFN * sizeof(__nv_bfloat16)));
     int device = 0, sms = 0;
     CK(cudaGetDevice(&device));
     CK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
-    void *book = dev_book(MM_WORDS), *book2 = RES ? dev_book(GLMVQ_RES_WORDS) : nullptr;
+    std::vector<void *> book(sets), book2(sets, nullptr);
     std::vector<glmvq_decode_item *> items(sets);
     for (int s = 0; s < sets; s++) {
+        book[s] = dev_book(MM_WORDS);
+        if (RES) { book2[s] = dev_book(GLMVQ_RES_WORDS); }
         glmvq_decode_item h[MM_USED];
         for (uint32_t e = 0; e < MM_USED; e++) {
-            h[e] = {make_matrix(MM_FFN, MM_HIDDEN, book, book2), make_matrix(MM_FFN, MM_HIDDEN, book, book2),
-                make_matrix(MM_HIDDEN, MM_FFN, book, book2), e};
+            h[e] = {make_matrix(MM_FFN, MM_HIDDEN, book[s], book2[s]), make_matrix(MM_FFN, MM_HIDDEN, book[s], book2[s]),
+                make_matrix(MM_HIDDEN, MM_FFN, book[s], book2[s]), e};
         }
         CK(cudaMalloc(&items[s], sizeof(h)));
         CK(cudaMemcpy(items[s], h, sizeof(h), cudaMemcpyHostToDevice));
@@ -92,17 +101,34 @@ static void run(int sets, const char *only) {
     CK(cudaMalloc(&mid, MM_USED * MM_FFN * sizeof(__nv_bfloat16)));
     CK(cudaMalloc(&partial, MM_USED * MM_HIDDEN * sizeof(float)));
     auto gu = [&](int s) {
-        mm_decode_gu<RES><<<sms, MM_WARPS * 32, books + MM_HIDDEN * sizeof(__nv_bfloat16)>>>(items[s],
-            (const uint4 *)book, (const uint4 *)book2, input, mid);
+        if (warps == 16) {
+            mm_decode_gu<RES, 16><<<sms, 16 * 32, books + MM_HIDDEN * sizeof(__nv_bfloat16)>>>(items[s],
+                (const uint4 *)book[s], (const uint4 *)book2[s], input, mid);
+        } else {
+            mm_decode_gu<RES><<<sms, MM_WARPS * 32, books + MM_HIDDEN * sizeof(__nv_bfloat16)>>>(items[s],
+                (const uint4 *)book[s], (const uint4 *)book2[s], input, mid);
+        }
     };
     auto dn = [&](int s) {
         mm_decode_down<RES><<<sms, MM_WARPS * 32, books + MM_USED * MM_FFN * sizeof(__nv_bfloat16)>>>(items[s],
-            (const uint4 *)book, (const uint4 *)book2, mid, partial);
+            (const uint4 *)book[s], (const uint4 *)book2[s], mid, partial);
     };
     if (only) {
         if (!strcmp(only, "gu")) { gu(0); } else { dn(0); }
         CK(cudaDeviceSynchronize());
         return;
+    }
+    if (warps == 16) {
+        std::vector<__nv_bfloat16> expected(MM_USED * MM_FFN), actual(expected.size());
+        for (int s = 0; s < sets; s++) {
+            mm_decode_gu<RES><<<sms, MM_WARPS * 32, books + MM_HIDDEN * sizeof(__nv_bfloat16)>>>(items[s],
+                (const uint4 *)book[s], (const uint4 *)book2[s], input, mid);
+            CK(cudaMemcpy(expected.data(), mid, expected.size() * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost));
+            gu(s);
+            CK(cudaMemcpy(actual.data(), mid, actual.size() * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost));
+            CHECK(!memcmp(expected.data(), actual.data(), expected.size() * sizeof(__nv_bfloat16)));
+        }
+        printf("GU_PARITY %s sets=%d all_BF16_bits_exact\n", RES ? "R13+8" : "R13", sets);
     }
     // Bytes per launch: 13 bits (+8 residual) per 8 weights, gains.
     const double per = (double)MM_FFN * MM_HIDDEN * (RES ? 21.0 : 13.0) / 64.0;
@@ -129,7 +155,7 @@ static void run(int sets, const char *only) {
         CK(cudaGetLastError());
         if (pass) {
             const double gu_us = t_gu * 1e3 / sets, dn_us = t_dn * 1e3 / sets;
-            printf("%s: gate/up %.1f us (%.0f GB/s), down %.1f us (%.0f GB/s)\n", RES ? "R13+8" : "R13", gu_us,
+            printf("%s warps=%u: gate/up %.1f us (%.0f GB/s), down %.1f us (%.0f GB/s)\n", RES ? "R13+8" : "R13", warps, gu_us,
                 MM_USED * 2 * per / gu_us / 1e3, dn_us, MM_USED * per / dn_us / 1e3);
         }
     }
@@ -138,6 +164,7 @@ static void run(int sets, const char *only) {
 int main() {
     const char *s = getenv("DS4_MD_SETS"), *only = getenv("DS4_MD_ONLY"), *res = getenv("DS4_MD_RES");
     const int sets = s ? atoi(s) : 32;
+    CHECK(sets > 0 && sets <= 256);
     if (!res || !strcmp(res, "0")) { run<false>(sets, only); }
     if (!res || !strcmp(res, "1")) { run<true>(sets, only); }
     return 0;
