@@ -1242,6 +1242,31 @@ mod tests {
     }
 
     #[test]
+    fn a_short_edge_below_the_tier_is_served() {
+        // 576 is on the released canvas grid, so 16:9 there is 1024x576: the
+        // request renders rather than being refused, and the record reports
+        // the canvas it was given.
+        let (server, _dir) = test_server(renderer(|_, output| write_output(output)), 4);
+
+        let response = post(
+            &server,
+            r#"{
+                "task": "t2va",
+                "prompt": "a red cube on a wooden table",
+                "conditions": [],
+                "target": {"short_edge": 576, "aspect_ratio": "16:9", "duration_seconds": 4},
+                "seed": 0
+            }"#,
+        );
+        assert_eq!(response.status, 200);
+        let id = json_of(&response)["id"].as_str().unwrap().to_string();
+
+        let done = poll_until(&server, &id, "completed");
+        assert_eq!(done["size"], "1024x576");
+        assert_eq!(done["frames"], 107);
+    }
+
+    #[test]
     fn in_progress_is_visible_before_the_renderer_finishes() {
         let release = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&release);
@@ -1576,7 +1601,7 @@ mod tests {
             ),
             (
                 r#"{"task":"t2va","prompt":"p","conditions":[],
-                   "target":{"short_edge":480,"aspect_ratio":"16:9","duration_seconds":8},
+                   "target":{"short_edge":500,"aspect_ratio":"16:9","duration_seconds":8},
                    "seed":0}"#
                     .to_string(),
                 "unsupported_short_edge",
