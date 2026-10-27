@@ -224,5 +224,18 @@
     "cuda/minimax_rows.cuh": "2b82853b128067861850ec31d1475bf860c401a8a9ad5facba2f18d17b837ce3",
     "tests/test_minimax_rows.c": "b40474df6ce34d2db05157e087d4be275debf2b5745f8dd8c6fd36c154b755f5"
   },
-  "plot_sha256": "1b3d100ca35f7e08134e941194c0ad0c8775de15c8ceff39626b6a277c6887c8"
+  "plot_sha256": "1b3d100ca35f7e08134e941194c0ad0c8775de15c8ceff39626b6a277c6887c8",
+  "post_measurement_clock_service": {
+    "unit": "nvidia-clocks.service",
+    "fragment": "/etc/systemd/system/nvidia-clocks.service",
+    "enabled": true,
+    "active_state": "active",
+    "sub_state": "exited",
+    "result": "success",
+    "exec_main_status": 0,
+    "active_enter_timestamp": "2026-10-27 20:13:45 +09:00",
+    "verified_at": "2026-10-27T20:22:08.936569+09:00",
+    "unit_sha256": "527acab4d7163acdd7b475e4bc7ce903456620a3cda125797d5b0afb9f06b9c4",
+    "note": "Operator installed/enabled automatic boot setup after this cohort; the measured runs used the same operator-confirmed 300-2200 MHz range. No per-run or per-reboot manual request when the service is healthy."
+  }
 }

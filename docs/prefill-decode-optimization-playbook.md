@@ -53,12 +53,15 @@ bandwidth bound is lower).
 
 Use the operator-managed **300–2200 MHz** range, both for comparable
 absolute throughput and to reduce the Spark trip risk reported by the
-operator. The user runs `sudo nvidia-smi -lgc 300,2200`; an agent must not
-change/reset it or allow a profiler to override it. On this host it stays
-set until reboot. Record the boot ID, operator confirmation and actual
-busy SM clocks; after reboot, wait for the user to reapply the setting
-before measuring. The [hardware policy](gb10-hardware.md#clock-policy-and-measurement-stability)
-records the command and historical clock uncertainty.
+operator. The enabled `nvidia-clocks.service` applies persistence mode and
+`nvidia-smi -lgc 300,2200` automatically at boot. Verify the service and its
+current-boot journal read-only, then record the boot ID and actual busy SM
+clocks. Do not ask the user to reapply it on each run or reboot when the
+service is healthy. Do not stop/restart it (`ExecStop` resets clocks),
+change its range or let a profiler override it. Investigate missing/failed
+setup before asking for user action. The
+[hardware policy](gb10-hardware.md#clock-policy-and-measurement-stability)
+records the unit and historical clock uncertainty.
 
 A positive A/B delta alone is insufficient when absolute rates drift
 substantially. Check repeat ranges, clocks/throttling, temperature,

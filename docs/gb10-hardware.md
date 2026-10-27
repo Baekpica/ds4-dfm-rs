@@ -31,21 +31,47 @@ the placement of all helper threads. This core numbering is host-specific.
 
 The reference host uses **300–2200 MHz**, reconfirmed by the operator on
 2026-10-27. This is an operating constraint for stable absolute throughput
-and to reduce the DGX Spark trip risk reported by the operator; it is not
-a proven cure for every hardware, driver or memory-pressure failure.
-The operator runs:
+and to reduce the DGX Spark trip risk reported by the operator.
+The operator installed and enabled `/etc/systemd/system/nvidia-clocks.service`:
 
-```sh
-sudo nvidia-smi -lgc 300,2200
+```ini
+[Unit]
+Description=Set NVIDIA GPU Clock Limits (300-2200 MHz)
+Wants=nvidia-persistenced.service
+After=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nvidia-smi -pm 1
+ExecStart=/usr/bin/nvidia-smi -lgc 300,2200
+ExecStop=/usr/bin/nvidia-smi -rgc
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Agents do not run this sudo command, raise/reset clocks, or let a profiler
-override the range. The operator reports that it persists until reboot on
-this host. Record `/proc/sys/kernel/random/boot_id`, the confirmation and
-observed busy SM clocks with measurements. After reboot, wait for the
-operator to reapply the setting before another benchmark. Do not request
-the same setup again within an already-confirmed boot without contrary
-evidence. `nvidia-smi`'s maximum supported clock is not the configured cap.
+It reapplies the range automatically at boot. Read-only verification on
+2026-10-27 found **enabled, active (exited), Result=success, ExecMainStatus=0**;
+the current-boot journal records the successful 300–2200 MHz setup at
+20:13:45 KST. Persistence daemon is active. These are a dated verification,
+not a substitute for checking a future boot:
+
+```sh
+systemctl is-enabled nvidia-clocks.service
+systemctl show nvidia-clocks.service -p ActiveState -p SubState -p Result -p ExecMainStatus
+journalctl -b -u nvidia-clocks.service --no-pager
+```
+
+Do not ask the user to rerun the sudo command for each measurement or
+reboot when this service is enabled and successful. Record
+`/proc/sys/kernel/random/boot_id`, service status and observed busy clocks.
+Do not stop/restart the service for inspection: `ExecStop` resets the
+range. Agents preserve the unit and range, and use profiler clock control
+`none` where supported (NCU: `--clock-control none`). If the unit is
+missing/failed or observations conflict, investigate read-only and request
+user action only when necessary. `nvidia-smi`'s maximum supported clock is
+not the configured cap.
 
 Judge paired gains/losses together with absolute prefill/decode levels and
 repeat ranges. Investigate substantial drift in clocks, throttling,

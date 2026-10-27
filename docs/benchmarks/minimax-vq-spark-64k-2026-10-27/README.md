@@ -100,8 +100,10 @@ not a matched estimate of cumulative optimization gain.
 
 ## Reproduce
 
-The operator applies the clock policy after reboot. Build the source
-revision above with the documented CUDA toolchain, then use one fresh
+The operator-enabled `nvidia-clocks.service` now applies the clock policy
+at boot; verify its status read-only, without requesting repeated manual
+setup. Build the source revision above with the documented CUDA toolchain,
+then use one fresh
 process per `N=1,2,3`; clear caches only after the previous process exits.
 `DATA` below names this receipt directory; `LOG`, `AFFINITY`, `CSV`, `PROOF`
 and the guard log must be unique per run.
