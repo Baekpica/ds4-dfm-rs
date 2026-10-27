@@ -21,6 +21,23 @@ pub const TIER_SHORT_EDGE: i32 = 768;
 /// The smallest short edge the local API serves: one canvas unit.
 pub const MIN_SHORT_EDGE: i32 = CANVAS_MULTIPLE;
 
+/// The largest short edge the released area admits.
+///
+/// The requested short edge is the canvas's short side, so the smallest canvas
+/// a request can produce is its square, and `MAX_PIXELS` = 768 * 1344 puts the
+/// ceiling on the released grid at 992: 1024 * 1024 exceeds the area, and 1024's
+/// own long edge would clamp to 992 and invert the canvas. At the ceiling and
+/// below, the cap on the long edge can no longer fall under the short edge
+/// (`h3_valid_params`, `h3.c:496`).
+pub const MAX_SHORT_EDGE: i32 = {
+    let unit = CANVAS_MULTIPLE as i64;
+    let mut edge = MAX_PIXELS / unit * unit;
+    while edge * edge > MAX_PIXELS {
+        edge -= unit;
+    }
+    edge as i32
+};
+
 /// The largest ratio distortion the local API accepts.
 pub const MAX_DISTORTION: f64 = 1.25;
 
@@ -90,6 +107,10 @@ pub fn ratio_canvas(short_edge: i32, ratio: Ratio) -> (i32, i32) {
 /// whose ratio has no name (`aspect_ratio: auto`). The short edge is the
 /// caller's, the long edge is snapped to the released grid and clamped by the
 /// released area, exactly as [`ratio_canvas`] does for a name.
+///
+/// The caller keeps `short_edge` within [`MIN_SHORT_EDGE`] and
+/// [`MAX_SHORT_EDGE`]; above the ceiling the clamp drops the long edge under
+/// the short edge, so the canvas would come back inverted.
 pub fn canvas_for(short_edge: i32, width: u32, height: u32) -> (i32, i32) {
     let (long, short) = if width >= height {
         (width, height)

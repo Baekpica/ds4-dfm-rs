@@ -66,7 +66,7 @@ local contract should fail loudly.
 | `task` | `t2va`, `fl2va`, `ref2va` | the three base scripts |
 | `prompt` | non-empty string, at most 32000 characters | the scripts; the cap is the server's, `MAX_PROMPT_CHARS` |
 | `conditions` | array of condition objects: at most 2 keyframes, at most 12 references | `[]` for t2va; one `keyframe` for fl2va and i2va; image/audio/video references for ref2va (`h3.c:588`) |
-| `target.short_edge` | any multiple of 32, at least 32 | the scripts' `short_edge`; 768 is the tier the model card documents, and the canvas is built from the value (see "The canvas") |
+| `target.short_edge` | any multiple of 32, 32 through 992 | the scripts' `short_edge`; 768 is the tier the model card documents, and the canvas is built from the value (see "The canvas") |
 | `target.aspect_ratio` | `auto`, `16:9`, `9:16`, `4:3`, `3:4`, `1:1` | the scripts use `16:9` and `auto`; the rest are the platform's named ratios, each resolving to a canvas of the requested short edge (see "The canvas") |
 | `target.duration_seconds` | 4 through 15 | the scripts send 5, 8 and 10; the range is the platform document's enum, and every value aligns inside the engine's 22..362 frames |
 | `seed` | non-negative integer | every script sends `seed` |
@@ -126,6 +126,14 @@ because 576 is on the grid and 1024x576 is inside the released area. The
 record's `size` is the canvas the host resolved, which is what the job
 rendered; a long edge that had to be clamped is reported there, not hidden.
 
+The short edge is never clamped. It is the canvas's short side, so the only
+canvases a request can produce have an area of at least its square, and the
+released `768*1344` area caps it at 992: 1024x1024 is over the area, and 1024's
+own long edge would clamp to 992, inverting the shape. A request above the
+ceiling is refused rather than served as a different shape, which is how the
+reference behaves too, since it takes width and height and refuses the area
+outright (`h3_valid_params`, `h3.c:496`).
+
 The file is the canvas: this contract has no separate delivery frame, so
 there is no anamorphic scale anywhere in it.
 
@@ -152,7 +160,7 @@ those numbers and suggests 16:9, and lowering `short_edge` serves the ratio:
 | a keyframe without `frame_index`, a bad index, a duplicate index | `invalid_condition` |
 | t2va with a keyframe, fl2va without one | `invalid_condition` |
 | an https or plain-path `uri` | `unsupported_uri` / `invalid_uri` |
-| `short_edge` off the 32 grid, or below 32 | `unsupported_short_edge` |
+| `short_edge` off the 32 grid, below 32, or above the 992 ceiling | `unsupported_short_edge` |
 | `aspect_ratio` 21:9 or unknown | `invalid_aspect_ratio` |
 | `duration_seconds` outside 4..15 | `invalid_duration` |
 
@@ -179,7 +187,9 @@ Each is deliberate and named:
    320 and 384, so a smaller `short_edge` is served as an execution preview
    rather than refused. 480P and 2K belong to the other variants and to
    H3-Regenerate-2K, which this checkpoint does not provide: neither is a
-   short edge here, they are other released artifacts.
+   short edge here, they are other released artifacts. The same area that
+   bounds the long edge bounds the short one, so 992 is the ceiling and a
+   larger request is refused instead of being served inverted ("The canvas").
 5. **21:9 is refused at the tier**, with the numbers in the message; a
    `short_edge` the released area can hold serves it (see "The canvas").
 

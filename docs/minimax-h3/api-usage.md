@@ -95,7 +95,7 @@ shapes this host enforces are:
 | `task` | `t2va`, `fl2va`, `ref2va` |
 | `prompt` | non-empty, at most 32000 characters (`video_api.rs:25`) |
 | `conditions` | at most two keyframes, or at most twelve references (`local_api.rs:52`, `:55`); a keyframe needs `frame_index` 0 or 1, unique, image only |
-| `target.short_edge` | any multiple of 32, at least 32; 768 is the tier the model card documents and the canvas is built from the value (`presets.rs:13`, `:78`) |
+| `target.short_edge` | any multiple of 32, 32 through 992; 768 is the tier the model card documents and the canvas is built from the value (`presets.rs:13`, `:78`) |
 | `target.aspect_ratio` | `auto`, `16:9`, `9:16`, `4:3`, `3:4`, `1:1` |
 | `target.duration_seconds` | 4 through 15 (`local_api.rs:45-46`) |
 | `seed` | non-negative integer, required |
@@ -186,7 +186,7 @@ applies (`video_api.rs:56-113`):
 | `invalid_condition` | 400 | `conditions` | a bad role, index, type or count; ref2va without a visual, or with a keyframe |
 | `unsupported_condition` | 400 | `conditions` | a reference role on t2va/fl2va, or `base_video` |
 | `invalid_uri`, `unsupported_uri` | 400 | `conditions` | malformed data URI, a type that disagrees with the condition, an https URI or a bare path |
-| `unsupported_short_edge` | 400 | `target.short_edge` | off the 32 grid, or below 32 |
+| `unsupported_short_edge` | 400 | `target.short_edge` | off the 32 grid, below 32, or above the 992 ceiling the released area allows |
 | `invalid_aspect_ratio` | 400 | `target.aspect_ratio` | 21:9 or unknown |
 | `invalid_duration` | 400 | `target.duration_seconds` | outside 4..15, or outside the frame range |
 | `video_not_found`, `content_not_found` | 404 | `video_id` | unknown id, or a completed job whose file is gone |

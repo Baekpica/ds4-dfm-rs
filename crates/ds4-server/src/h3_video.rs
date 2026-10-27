@@ -1607,6 +1607,16 @@ mod tests {
                 "unsupported_short_edge",
             ),
             (
+                // On the grid, but above the ceiling the released area allows:
+                // its square does not fit, and the long edge would clamp under
+                // the short edge and invert the canvas.
+                r#"{"task":"t2va","prompt":"p","conditions":[],
+                   "target":{"short_edge":1024,"aspect_ratio":"1:1","duration_seconds":8},
+                   "seed":0}"#
+                    .to_string(),
+                "unsupported_short_edge",
+            ),
+            (
                 r#"{"task":"t2va","prompt":"p","conditions":[],
                    "target":{"short_edge":768,"aspect_ratio":"16:9","duration_seconds":16},
                    "seed":0}"#

@@ -367,6 +367,29 @@ impl CreateBody {
             ));
         }
 
+        // The released area bounds the whole canvas, not only its long edge
+        // (`h3_valid_params`, `h3.c:496`). The canvas keeps the requested short
+        // edge as its short side, so above `MAX_SHORT_EDGE` there is no canvas
+        // to serve: the cap would drop the long edge under the short edge and
+        // invert the shape. 1024 at 1:1 would otherwise come out 992x1024.
+        if self.target.short_edge > presets::MAX_SHORT_EDGE as u32 {
+            return Err(ApiError::bad_request(
+                "unsupported_short_edge",
+                Some("target.short_edge"),
+                format!(
+                    "short_edge {} exceeds the released {}x{} area: the canvas keeps the short \
+                     edge you name, so the request needs at least {}x{}, and {} is the largest \
+                     short edge that fits",
+                    self.target.short_edge,
+                    SHORT_EDGE,
+                    MAX_PIXELS / i64::from(SHORT_EDGE),
+                    self.target.short_edge,
+                    self.target.short_edge,
+                    presets::MAX_SHORT_EDGE
+                ),
+            ));
+        }
+
         if !(MIN_SECONDS..=MAX_SECONDS).contains(&self.target.duration_seconds) {
             return Err(ApiError::bad_request(
                 "invalid_duration",
@@ -1217,6 +1240,38 @@ mod tests {
             assert_eq!(error.code, "unsupported_short_edge");
             assert!(error.message.contains("32"));
         }
+    }
+
+    #[test]
+    fn a_short_edge_above_the_released_area_is_refused() {
+        // The canvas keeps the requested short edge as its short side, so the
+        // smallest canvas a request can produce is its square. Above the
+        // released 768*1344 area that square does not fit, and the cap on the
+        // long edge falls below the short edge and inverts the canvas: 1024 at
+        // 1:1 would come out 992x1024, and 1344 at 16:9 would come out
+        // portrait. The reference cannot reach that state, because it takes
+        // width and height and refuses the area outright (`h3_valid_params`,
+        // `h3.c:496`), so the derived canvas must refuse it too.
+        for (edge, ratio) in [(1024, "1:1"), (1344, "16:9"), (1344, "9:16")] {
+            let mut root = body("t2va", json!([]), ratio, 8);
+            root["target"]["short_edge"] = json!(edge);
+            let error = parse_create(root.to_string().as_bytes())
+                .unwrap()
+                .plan()
+                .unwrap_err();
+            assert_eq!(error.code, "unsupported_short_edge", "{ratio} at {edge}");
+            assert!(error.message.contains("992"), "{}", error.message);
+        }
+
+        // 992 is the largest short edge that fits: its square is inside the
+        // area, and it stays the canvas's short side.
+        let mut root = body("t2va", json!([]), "1:1", 8);
+        root["target"]["short_edge"] = json!(992);
+        let plan = parse_create(root.to_string().as_bytes())
+            .unwrap()
+            .plan()
+            .unwrap();
+        assert_eq!((plan.size.width, plan.size.height), (992, 992));
     }
 
     #[test]
