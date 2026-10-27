@@ -2881,14 +2881,6 @@ pub(crate) fn generate_terminal_prepared(
             }
             finish = "error";
         }
-        if req.stream
-            && req.api == Api::Openai
-            && syntax == ModelSyntax::MinimaxVq
-            && !parsed_gen.ok
-            && finish != "length"
-        {
-            finish = "error";
-        }
         break;
     }
 
@@ -3064,6 +3056,9 @@ pub(crate) fn generate_terminal_prepared(
         };
         bytes
     };
+    if oa.as_ref().is_some_and(|st| st.failed) || anth.as_ref().is_some_and(|st| st.failed) {
+        finish = "error";
+    }
     if finish != "error" && finish != "length" {
         engine.remember_chat(&parsed, &parsed_gen);
     }
@@ -3794,6 +3789,11 @@ fn generate_terminal_v41(
             ),
         }
     };
+    if st.oa.as_ref().is_some_and(|stream| stream.failed)
+        || st.anth.as_ref().is_some_and(|stream| stream.failed)
+    {
+        finish = "error";
+    }
     let outcome = GenerateOutcome {
         tool_ids: parsed_gen
             .calls

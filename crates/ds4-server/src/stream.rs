@@ -676,14 +676,84 @@ fn sse_chat_delta_n(w: &mut Writer, r: &StreamReq, id: &str, field: &str, text: 
     w.put_str("},\"finish_reason\":null}]}\n\n");
 }
 
+/// Compare the client-visible projection with the authoritative final parse.
+#[derive(Debug, Default)]
+struct ToolProjection {
+    calls: Vec<ToolCall>,
+    invalid: bool,
+}
+
+impl ToolProjection {
+    fn start(&mut self, index: i32, name: &[u8]) {
+        if index < 0 || index as usize != self.calls.len() {
+            self.invalid = true;
+            return;
+        }
+        self.calls.push(ToolCall {
+            name: String::from_utf8_lossy(name).into(),
+            ..Default::default()
+        });
+    }
+
+    fn args(&mut self, index: i32, bytes: &[u8]) {
+        if let Some(call) = self.calls.get_mut(index as usize) {
+            call.arguments.push_str(&String::from_utf8_lossy(bytes));
+        } else {
+            self.invalid = true;
+        }
+    }
+
+    fn agrees(&self, calls: &[ToolCall], repair: Option<i32>) -> bool {
+        // DSML may complete the last name-only call, never replace streamed arguments.
+        let repair = repair.filter(|&index| {
+            index >= 0
+                && index as usize + 1 == self.calls.len()
+                && self.calls[index as usize].arguments.is_empty()
+        });
+        if self.invalid
+            || calls.len() < self.calls.len()
+            || (repair.is_none() && calls.len() != self.calls.len())
+        {
+            return false;
+        }
+        self.calls
+            .iter()
+            .zip(calls)
+            .enumerate()
+            .all(|(index, (sent, final_))| {
+                if sent.name != final_.name {
+                    return false;
+                }
+                if repair == Some(index as i32) {
+                    return true;
+                }
+                let (Ok(a), Ok(b)) = (
+                    serde_json::from_str::<serde_json::Value>(&sent.arguments),
+                    serde_json::from_str::<serde_json::Value>(&final_.arguments),
+                ) else {
+                    return false;
+                };
+                a == b
+            })
+    }
+
+    fn failed(&self, calls: &[ToolCall], repair: Option<i32>, finish: &str) -> bool {
+        (self.invalid || !self.calls.is_empty())
+            && finish != "length"
+            && (finish == "error" || !self.agrees(calls, repair))
+    }
+}
+
 struct OpenaiToolSink<'a> {
     w: &'a mut Writer,
     r: &'a StreamReq,
     job: &'a str,
+    sent: &'a mut ToolProjection,
 }
 
 impl ToolSink for OpenaiToolSink<'_> {
     fn start_invoke(&mut self, index: i32, id: &str, name: &[u8]) -> bool {
+        self.sent.start(index, name);
         self.w.put_str(&format!(
             "data: {{\"id\":\"{}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":",
             self.job, self.w.created
@@ -705,6 +775,7 @@ impl ToolSink for OpenaiToolSink<'_> {
         if text.is_empty() {
             return true;
         }
+        self.sent.args(index, text);
         self.w.put_str(&format!(
             "data: {{\"id\":\"{}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":",
             self.job, self.w.created
@@ -728,16 +799,18 @@ struct AnthropicToolSink<'a> {
     next_index: &'a mut i32,
     open_block: &'a mut AnthBlock,
     job: &'a str,
+    sent: &'a mut ToolProjection,
 }
 
 impl ToolSink for AnthropicToolSink<'_> {
-    fn start_invoke(&mut self, _index: i32, id: &str, name: &[u8]) -> bool {
+    fn start_invoke(&mut self, index: i32, id: &str, name: &[u8]) -> bool {
         if *self.open_block == AnthBlock::Tool {
             return true;
         }
         if *self.open_block != AnthBlock::None {
             return false;
         }
+        self.sent.start(index, name);
         let mut start = format!(
             "{{\"type\":\"content_block_start\",\"index\":{},\"content_block\":{{\"type\":\"tool_use\",\"id\":",
             *self.next_index
@@ -752,10 +825,11 @@ impl ToolSink for AnthropicToolSink<'_> {
         true
     }
 
-    fn args_fragment(&mut self, _index: i32, text: &[u8]) -> bool {
+    fn args_fragment(&mut self, index: i32, text: &[u8]) -> bool {
         if text.is_empty() {
             return true;
         }
+        self.sent.args(index, text);
         let mut b = format!(
             "{{\"type\":\"content_block_delta\",\"index\":{},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":",
             *self.next_index
@@ -805,6 +879,8 @@ pub struct OpenaiStream {
     channels: Option<Channels>,
     iquest: Option<iquest::Channels>,
     minimax: Option<crate::tools::minimax::Stream>,
+    sent: ToolProjection,
+    pub(crate) failed: bool,
     pub mode: OpenaiMode,
     pub emit_pos: usize,
     pub active: bool,
@@ -818,6 +894,8 @@ pub fn openai_stream_start(r: &StreamReq) -> OpenaiStream {
         iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
             .then(iquest::Channels::default),
         minimax: None,
+        sent: ToolProjection::default(),
+        failed: false,
         mode: if think_mode_enabled(r.think_mode) {
             OpenaiMode::Thinking
         } else {
@@ -910,7 +988,12 @@ pub fn openai_sse_stream_update(
                 iquest::Fragment::Text(span) => sse_chat_delta_n(w, r, id, "content", &raw[span]),
                 iquest::Fragment::Call(index, call) => {
                     let call_id = st.tool.id_at(index);
-                    let mut sink = OpenaiToolSink { w, r, job: id };
+                    let mut sink = OpenaiToolSink {
+                        w,
+                        r,
+                        job: id,
+                        sent: &mut st.sent,
+                    };
                     if !sink.start_invoke(index, &call_id, call.name.as_bytes())
                         || !sink.args_fragment(index, call.arguments.as_bytes())
                         || !sink.close_invoke(index)
@@ -970,7 +1053,12 @@ pub fn openai_sse_stream_update(
         }
     }
     if st.mode == OpenaiMode::Tool {
-        let mut sink = OpenaiToolSink { w, r, job: id };
+        let mut sink = OpenaiToolSink {
+            w,
+            r,
+            job: id,
+            sent: &mut st.sent,
+        };
         if let Some(parser) = st.minimax.as_mut() {
             return parser.update(&mut sink, &mut st.tool, raw, &r.tool_orders);
         }
@@ -998,12 +1086,13 @@ pub fn openai_sse_finish_live(
     if !openai_sse_stream_update(w, r, id, st, raw, true) {
         return false;
     }
-    if st.minimax.is_some()
-        && calls.is_empty()
-        && (finish == "error" || (st.tool.emitted_any && finish != "length"))
-    {
-        // Like vLLM, fail a recognized but malformed call after streaming began.
-        stream_error(w, r, None, "invalid MiniMax tool call");
+    let repair = st
+        .tool
+        .partial_invoke_index()
+        .filter(|_| st.minimax.is_none());
+    if st.sent.failed(calls, repair, finish) {
+        st.failed = true;
+        stream_error(w, r, None, "streamed tool calls do not match final parse");
         return true;
     }
     if !calls.is_empty() && !st.tool.emitted_any {
@@ -1083,6 +1172,8 @@ enum AnthBlock {
 pub struct AnthropicStream {
     channels: Option<Channels>,
     iquest: Option<iquest::Channels>,
+    sent: ToolProjection,
+    pub(crate) failed: bool,
     mode: AnthMode,
     open_block: AnthBlock,
     next_index: i32,
@@ -1184,6 +1275,8 @@ pub fn anthropic_sse_start_live(
         channels: Channels::for_format(r.chat_format),
         iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
             .then(iquest::Channels::default),
+        sent: ToolProjection::default(),
+        failed: false,
         mode: if think_mode_enabled(r.think_mode) {
             AnthMode::Thinking
         } else {
@@ -1317,6 +1410,7 @@ pub fn anthropic_sse_stream_update(
                         next_index: &mut st.next_index,
                         open_block: &mut st.open_block,
                         job: id,
+                        sent: &mut st.sent,
                     };
                     if !sink.start_invoke(index, &call_id, call.name.as_bytes())
                         || !sink.args_fragment(index, call.arguments.as_bytes())
@@ -1397,6 +1491,7 @@ pub fn anthropic_sse_stream_update(
             next_index: &mut st.next_index,
             open_block: &mut st.open_block,
             job: id,
+            sent: &mut st.sent,
         };
         if !st.tool.update(&mut sink, raw) {
             return false;
@@ -1458,6 +1553,11 @@ pub fn anthropic_sse_finish_live(
 ) -> bool {
     if !anthropic_sse_stream_update(w, r, id, st, raw, true) {
         return false;
+    }
+    if st.sent.failed(calls, None, finish) {
+        st.failed = true;
+        stream_error(w, r, None, "streamed tool calls do not match final parse");
+        return true;
     }
     if st.sent_thinking && !st.sent_text && calls.is_empty() {
         if !anthropic_sse_open_block(w, st, AnthBlock::Text) {
@@ -2802,6 +2902,63 @@ mod stream_failure_tests {
             }
             assert!(!wire.contains("]<]minimax[>["));
         }
+    }
+
+    #[test]
+    fn final_tools_are_authoritative() {
+        let r = StreamReq {
+            syntax: ModelSyntax::MinimaxVq,
+            chat_format: ChatFormat::Minimax,
+            think_mode: ThinkMode::None,
+            has_tools: true,
+            ..StreamReq::default()
+        };
+        let raw = b"]<]minimax[>[<tool_call>]<]minimax[>[<invoke name=\"f\">]<]minimax[>[<x>3]<]minimax[>[</x>]<]minimax[>[</invoke>]<]minimax[>[</tool_call>";
+        let p = crate::tools::parse_generated_message(r.syntax, raw, false, r.chat_format, &[]);
+        assert!(p.ok && p.calls.len() == 1);
+        let mut wrong_name = p.calls.clone();
+        wrong_name[0].name = "other".into();
+        let mut wrong_args = p.calls.clone();
+        wrong_args[0].arguments = r#"{"x":4}"#.into();
+        let mut extra = p.calls.clone();
+        extra.push(p.calls[0].clone());
+        for calls in [wrong_name, wrong_args, extra] {
+            let mut w = Writer::new(CREATED_TEST);
+            let mut st = openai_stream_start(&r);
+            openai_sse_stream_update(&mut w, &r, "test", &mut st, raw, false);
+            w.out.clear();
+            openai_sse_finish_live(&mut w, &r, "test", &mut st, raw, "tool_calls", 1, 1, &calls);
+            let wire = std::str::from_utf8(&w.out).unwrap();
+            assert!(wire.contains("\"error\""), "{wire}");
+            assert!(!wire.contains("[DONE]"));
+        }
+    }
+
+    #[test]
+    fn partial_dsml_is_not_success() {
+        let mut r = StreamReq {
+            has_tools: true,
+            think_mode: ThinkMode::None,
+            ..StreamReq::default()
+        };
+        let raw =
+            b"<tool_calls><invoke name=\"f\"><parameter name=\"x\" string=\"true\">unfinished";
+        let mut w = Writer::new(CREATED_TEST);
+        let mut st = openai_stream_start(&r);
+        openai_sse_stream_update(&mut w, &r, "test", &mut st, raw, false);
+        assert!(st.tool.emitted_any && st.tool.args_open);
+        w.out.clear();
+        openai_sse_finish_live(&mut w, &r, "test", &mut st, raw, "stop", 1, 1, &[]);
+        assert!(std::str::from_utf8(&w.out).unwrap().contains("\"error\""));
+
+        r.api = Api::Anthropic;
+        let mut w = Writer::new(CREATED_TEST);
+        let mut st = anthropic_sse_start_live(&mut w, &r, "test", 1);
+        anthropic_sse_stream_update(&mut w, &r, "test", &mut st, raw, false);
+        assert!(st.tool.emitted_any && st.tool.args_open);
+        w.out.clear();
+        anthropic_sse_finish_live(&mut w, &r, "test", &mut st, raw, "stop", None, 1, &[]);
+        assert!(std::str::from_utf8(&w.out).unwrap().contains("\"error\""));
     }
 
     #[test]

@@ -203,10 +203,17 @@ impl Stream {
                     self.state = StreamState::Invoke;
                 }
                 StreamState::Invoke | StreamState::Param => {
-                    if tail[0].is_ascii_whitespace() {
-                        self.pos += 1;
-                        continue;
+                    let limit =
+                        crate::stream::utf8_stream_safe_len(raw, self.pos, raw.len(), false);
+                    let Ok(text) = std::str::from_utf8(&raw[self.pos..limit]) else {
+                        return true;
+                    };
+                    let rest = text.trim_start();
+                    self.pos += text.len() - rest.len();
+                    if rest.is_empty() {
+                        return true;
                     }
+                    let tail = &raw[self.pos..];
                     if matches!(self.state, StreamState::Invoke) {
                         if tail.starts_with(TOOL_CALL_END.as_bytes()) {
                             self.pos += TOOL_CALL_END.len();
@@ -464,7 +471,8 @@ mod tests {
             .replace("Seoul", "서울")
             .replace(">42", ">a\"\\\n]<]mini");
         let nested = call.replace("서울", "]<]minimax[>[<child>7]<]minimax[>[</child>");
-        let raw = format!("{call}\n{nested}");
+        let array = call.replace("서울", "]<]minimax[>[<item>7]<]minimax[>[</item>");
+        let raw = format!("{call}\n{nested}\n{array}");
         let orders = [order(&[
             ("city", "string"),
             ("n", "integer"),
@@ -473,7 +481,7 @@ mod tests {
             ("code", "string"),
         ])];
         let expected = parse(raw.as_bytes(), false, &orders);
-        assert!(expected.ok && expected.calls.len() == 2);
+        assert!(expected.ok && expected.calls.len() == 3);
         for width in [1, 2, 7, raw.len()] {
             let mut stream = Stream::new(0);
             let mut ids = crate::tool_stream::DsmlToolStream::default();
@@ -490,6 +498,51 @@ mod tests {
                 );
             }
             assert_ne!(sink.0[0].id, sink.0[1].id);
+        }
+    }
+
+    #[test]
+    fn stream_accepts_unicode_space() {
+        #[derive(Default)]
+        struct Sink(Vec<ToolCall>);
+        impl crate::tool_stream::ToolSink for Sink {
+            fn start_invoke(&mut self, _: i32, _: &str, name: &[u8]) -> bool {
+                self.0.push(ToolCall {
+                    name: String::from_utf8_lossy(name).into(),
+                    ..Default::default()
+                });
+                true
+            }
+            fn args_fragment(&mut self, index: i32, bytes: &[u8]) -> bool {
+                self.0[index as usize]
+                    .arguments
+                    .push_str(std::str::from_utf8(bytes).unwrap());
+                true
+            }
+            fn close_invoke(&mut self, _: i32) -> bool {
+                true
+            }
+        }
+        for ws in ["\u{3000}", "\u{00a0}", "\u{000b}"] {
+            let raw = format!("{NS}<tool_call>{NS}<invoke name=\"f\">{ws}{NS}<city>서울{NS}</city>{ws}{NS}<n>3{NS}</n>{ws}{NS}</invoke>{ws}{NS}<invoke name=\"f\">{ws}{NS}</invoke>{NS}</tool_call>");
+            let orders = [order(&[("city", "string"), ("n", "integer")])];
+            let expected = parse(raw.as_bytes(), false, &orders);
+            assert!(expected.ok && expected.calls.len() == 2);
+            for width in [1, 2, raw.len()] {
+                let mut stream = Stream::new(0);
+                let mut ids = crate::tool_stream::DsmlToolStream::default();
+                let mut sink = Sink::default();
+                for end in (width..raw.len()).step_by(width).chain([raw.len()]) {
+                    assert!(stream.update(&mut sink, &mut ids, &raw.as_bytes()[..end], &orders));
+                }
+                assert_eq!(sink.0.len(), 2, "lost invoke: {ws:?}, width {width}");
+                for (actual, expected) in sink.0.iter().zip(&expected.calls) {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&actual.arguments).unwrap(),
+                        serde_json::from_str::<Value>(&expected.arguments).unwrap()
+                    );
+                }
+            }
         }
     }
 

@@ -427,8 +427,10 @@ hold the namespace token back until the next token shows whether a tool
 block opens. OpenAI Chat streams a recognized call's name and declared string
 arguments incrementally through the common tool/SSE projector; other values
 use the same conversion as the final parser once their parameter closes.
-An unfinished call at the token budget retains `length`; a malformed recognized
-call ending naturally fails the stream instead of completing a partial call.
+An unfinished call at the token budget retains `length`. The common tool
+projector verifies already-streamed calls against the final parse; differing
+names, call counts or JSON arguments fail the stream instead of reporting a
+successful partial call. Live and final parsing share Unicode whitespace rules.
 Bare namespace prose and wrapperless invokes remain text, matching the full-wrapper
 recognition used by vLLM, SGLang and TensorRT-LLM. Jinja renders input; it does
 not guarantee that sampled output follows this grammar. See the

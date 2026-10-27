@@ -2330,7 +2330,8 @@ fn minimax_tool_abort_wire() {
             assert_eq!(outcome.finish, finish);
             for bytes in [serial, continuous] {
                 let wire = std::str::from_utf8(&bytes).unwrap();
-                assert_eq!(wire.contains("event: error"), cap != 1);
+                let started = String::from_utf8_lossy(raw).contains("<invoke name=");
+                assert_eq!(wire.contains("event: error"), cap != 1 && started);
                 assert!(!wire.contains("]<]minimax[>["));
                 assert!(!wire.contains("\"finish_reason\":\"stop\""));
             }
@@ -2925,6 +2926,31 @@ fn v41_unterminated_block_on_eos_still_reports_stop() {
     assert!(s.contains("\"finish_reason\":\"stop\""), "{s}");
     assert!(!s.contains("\"finish_reason\":\"length\""), "{s}");
     assert!(!s.contains("\"tool_calls\""), "{s}");
+}
+
+#[test]
+fn streamed_tool_failure_outcome() {
+    let mut parsed = tools_req();
+    parsed.stream = true;
+    let raw =
+        "<tool_calls><invoke name=\"bash\"><parameter name=\"command\" string=\"true\">unfinished";
+    let mut engine = ScriptedV41::new(&[(1, raw), (99, "")], 8192);
+    let mut out = Vec::new();
+    let outcome = generate_and_write(
+        &mut engine,
+        &parsed,
+        "tool-error",
+        CREATED_TEST,
+        false,
+        16,
+        &mut out,
+    )
+    .unwrap();
+    assert!(String::from_utf8_lossy(&out).contains("event: error"));
+    assert_eq!(
+        outcome.finish, "error",
+        "an API projection error is not a successful decode outcome"
+    );
 }
 
 #[test]

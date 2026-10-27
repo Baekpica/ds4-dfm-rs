@@ -392,7 +392,7 @@ impl ContStepper {
         }
         let syntax = syntax_for_model_id(self.model_id);
         self.finish = terminal_finish(self.finish);
-        if let TruncationOutcome::Repair(text) = truncation_outcome(
+        match truncation_outcome(
             syntax,
             self.req.chat_format,
             self.req.kind == ReqKind::Chat,
@@ -405,8 +405,12 @@ impl ContStepper {
             &self.acc.text,
             &self.req.tool_orders,
         ) {
-            self.acc.text = text;
-            self.acc.saw_tool_end = true;
+            TruncationOutcome::Repair(text) => {
+                self.acc.text = text;
+                self.acc.saw_tool_end = true;
+            }
+            TruncationOutcome::ErrorUnterminated => self.finish = "error",
+            _ => {}
         }
         let mut parsed_gen = if self.req.kind == ReqKind::Chat {
             let (pg, recovered_finish) = parse_generated_for_response(
@@ -429,14 +433,6 @@ impl ContStepper {
             }
         };
         let completion = self.acc.completion;
-        if self.req.stream
-            && self.req.api == Api::Openai
-            && syntax == crate::render::ModelSyntax::MinimaxVq
-            && !parsed_gen.ok
-            && self.finish != "length"
-        {
-            self.finish = "error";
-        }
         if !parsed_gen.calls.is_empty() {
             if let Some(st) = self.oa.as_ref() {
                 st.tool.apply_ids(&mut parsed_gen.calls);
@@ -591,6 +587,11 @@ impl ContStepper {
                 ),
             };
             self.w.out.extend_from_slice(&bytes);
+        }
+        if self.oa.as_ref().is_some_and(|st| st.failed)
+            || self.anth.as_ref().is_some_and(|st| st.failed)
+        {
+            self.finish = "error";
         }
         #[cfg(feature = "native")]
         if self.finish != "error" && self.finish != "length" && !parsed_gen.calls.is_empty() {

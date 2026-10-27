@@ -34,33 +34,53 @@ llama.cpp observations above are source traces, not executed parser tests.
 
 ## Decisions
 
-**#116:** the supplied bytes reproduce a model-format failure and the existing
-fallback, not a Jinja-input regression unique to ds4. Preserve full-wrapper
-recognition, as in the M3 implementations above. Do not infer a missing tool
-name/arguments, accept wrapperless calls, or turn arbitrary namespace prose into
-an API failure. The reported higher incidence of malformed strings with VQ
-makes recovery relevant, but does not identify the missing call or justify a
-different default protocol. No live sampling-frequency or quantizer diagnosis
-is claimed here.
+**#116:** the reporter already distinguishes malformed model output from the
+server's fallback policy. The decision is to retain content, rather than make
+an incomplete namespace prefix an API error: this matches the peer M3 parsers
+above. Retain full-wrapper recognition; do not infer missing names/arguments or
+accept wrapperless invokes. Holding every byte from a bare namespace until EOS
+would reintroduce #117's silent interval. The reported higher incidence with VQ
+matters, but does not establish a different default error policy. No live
+sampling-frequency or quantizer diagnosis is claimed here.
 
 **#117:** preserve comment heartbeats and emit actual OpenAI Chat tool argument
 deltas, following the SGLang/llama.cpp approach. MiniMax XML decoding belongs
 to the Rust server's family output adapter; tool IDs, JSON wire framing and SSE
-use the existing common `ToolSink`. Neither the input template nor native
-MiniMax/CUDA code changes.
+use the existing common `ToolSink`. The cause of the long-call silence is
+buffered call bytes: actual argument deltas remove that cause using the
+existing DSML transport shape. This is not a prohibition on data heartbeats:
+the server already sends Anthropic `ping` and Responses `response.in_progress`
+data events. Neither the input template nor native MiniMax/CUDA code changes.
 
 Declared string values stream incrementally, with incomplete UTF-8 and closing
 tag prefixes withheld. Other values use the existing final parser's schema
 conversion after their parameter closes. Finalization does not emit the same
-call again. A malformed recognized OpenAI tool stream reports an API error;
-token-budget truncation retains `length`. This follows vLLM's recognized-block
-failure behavior without changing bare-namespace fallback.
+call again. Once call data has reached a client, the common OpenAI/Anthropic
+projectors compare call count, names and JSON argument values with the final
+parse. A mismatch or parse failure emits an API error, for DSML and MiniMax
+alike. The existing name-only DSML completion repair remains supported.
+Token-budget truncation retains `length`; bare-namespace fallback is unchanged.
+
+The live MiniMax parser uses the same `trim_start()` whitespace semantics as
+the final parser, including U+3000, U+00A0 and vertical tab split across token
+boundaries. A string-schema value beginning with nested `<item>`/object tags
+uses the final parser's container conversion rather than streaming XML text.
 
 This closes the silent interval for a long `write_file` string. It does not
 promise data events while queued, during prefill, or while buffering one large
-non-string/nested parameter. Ordinary MiniMax reasoning already uses
-`reasoning_content` deltas. Anthropic/Responses tool streaming is outside this
-OpenAI Chat change.
+non-string/nested/untyped parameter, or while a live parser is stuck on
+incomplete/invalid syntax. Ordinary MiniMax reasoning already uses
+`reasoning_content` deltas. Other families' buffered tool paths are unchanged;
+IQuest can already emit a complete call before generation ends. If the same
+watchdog problem is reported elsewhere, reassess a common OpenAI data heartbeat
+before assuming more family-specific incremental parsers are needed.
+
+The optional live `/metrics` suggestion is deferred. `record_generation()`
+updates decoded-token accounting from a completed outcome; this PR does not
+change those counters into a live progress signal. A separate live metric would
+need explicit cancellation/double-counting semantics. Immediate decode abort on
+live-parser failure is also deferred: a tolerant final parser can still recover
+a live parse failure, so it needs a separate equivalence proof.
 
 ## Reproduction and validation
 
@@ -73,8 +93,11 @@ cargo test -p ds4-server --lib --locked minimax_long_string_deltas -- --test-thr
 On the baseline, this fails because no argument delta arrives before the close.
 The repaired test checks incremental receipt and exact JSON reconstruction.
 Other regressions cover byte-split UTF-8/tags, nested objects/arrays, numeric
-values, multiple calls/wrappers, a nested value despite a string schema,
-truncation and no duplicate final emission. Scripted generation tests exercise
+values, multiple calls/wrappers, nested object/array values despite a string
+schema, Unicode whitespace, truncation and no duplicate final emission.
+They also reject differing final names/arguments/call counts and partial DSML
+success on both OpenAI/Anthropic, including generation-outcome error accounting.
+Scripted generation tests exercise
 both serial and continuous lanes, buffered and streaming, through the real host
 projectors. The synthetic Jinja input in those tapes is not an official-template
 parity claim.
@@ -91,7 +114,7 @@ Final host checks all exited 0:
 - `cargo clippy --workspace --all-targets --locked` (existing warnings remain);
 - the eight C/Rust host-parity targets from `CONTRIBUTING.md`, built/run
   together with `make -j1`;
-- `cargo test --workspace --locked -- --test-threads=1`: 2,190 passed,
+- `cargo test --workspace --locked -- --test-threads=1`: 2,194 passed,
   34 ignored, no failures;
 - `cargo check --workspace --all-targets --locked`;
 - `cargo check -p ds4-server --lib --bin ds4-server-rs --features native --locked`
