@@ -19,9 +19,11 @@
 //! - `task: ref2va` is refused until the reference-media units land, and the
 //!   message names them (`reference`, `reference_video`, `reference_audio`,
 //!   `base_video` are their roles);
-//! - `target.short_edge` is 768, the one tier this checkpoint provides;
-//! - `aspect_ratio` 21:9 is refused: the released 768x1344 area cannot express
-//!   it without the 1.33x anamorphic stretch `presets::MAX_DISTORTION` bounds.
+//! - `target.short_edge` is any short edge on the released 32-pixel grid; 768
+//!   is the tier the model card documents, and a smaller edge is a preview;
+//! - `aspect_ratio` 21:9 at the tier's short edge is refused: the released
+//!   768x1344 area cannot express it without the 1.33x anamorphic stretch
+//!   `presets::MAX_DISTORTION` bounds (it fits below a 576 short edge).
 //!
 //! No HTTP and no GPU live here: this module parses the body and maps it onto
 //! the engine's request. The state machine and the store are
@@ -30,7 +32,7 @@
 use serde_json::{Map, Value};
 
 use super::presets::{self, Ratio};
-use super::render::MAX_PIXELS;
+use super::render::{CANVAS_MULTIPLE, MAX_PIXELS};
 use super::video_api::{
     align_frames, frames_from_seconds, AnchorImage, ApiError, VideoSize, H3_MAX_FRAMES,
     H3_MIN_FRAMES, MAX_ANCHOR_BYTES, MAX_PROMPT_CHARS,
@@ -344,13 +346,23 @@ impl CreateBody {
         &self,
         probe: &dyn Fn(&ReferenceMedia) -> Option<(u32, u32)>,
     ) -> Result<Plan, ApiError> {
-        if self.target.short_edge != SHORT_EDGE {
+        // Any short edge on the released canvas grid is served: the canvas is
+        // built from it (`presets::ratio_canvas`) and the engine renders it.
+        // 768 is the tier the model card documents; a smaller one is an
+        // execution preview, and the reference's own scale points are 256, 320
+        // and 384 (`h3.c` README, "Pick resolution and duration").
+        if self.target.short_edge < presets::MIN_SHORT_EDGE as u32
+            || self.target.short_edge % CANVAS_MULTIPLE as u32 != 0
+        {
             return Err(ApiError::bad_request(
                 "unsupported_short_edge",
                 Some("target.short_edge"),
                 format!(
-                    "short_edge {} is not served: the open checkpoint renders at {SHORT_EDGE}",
-                    self.target.short_edge
+                    "short_edge {} is off the released canvas grid: it must be a multiple of \
+                     {CANVAS_MULTIPLE} of at least {}, and {} is the tier the model card documents",
+                    self.target.short_edge,
+                    presets::MIN_SHORT_EDGE,
+                    SHORT_EDGE
                 ),
             ));
         }
@@ -609,7 +621,7 @@ impl CreateBody {
                     })?
                 }
             };
-            let canvas = presets::canvas_for(width, height);
+            let canvas = presets::canvas_for(self.target.short_edge as i32, width, height);
             check_stretch(
                 canvas,
                 f64::from(width.max(height)) / f64::from(width.min(height)),
@@ -626,7 +638,7 @@ impl CreateBody {
             )
         })?;
         let (width, height) = ratio.parts();
-        let canvas = presets::tier_canvas(ratio);
+        let canvas = presets::ratio_canvas(self.target.short_edge as i32, ratio);
         // Compare long edge over short edge on both sides: the ratio name is
         // stated as width/height, and 9:16 is tall.
         check_stretch(
@@ -639,8 +651,9 @@ impl CreateBody {
 }
 
 /// Refuse a canvas whose aspect is not the requested one beyond the stretch
-/// `presets::MAX_DISTORTION` bounds. The one case at this tier is 21:9, whose
-/// 1792 px width the released area refuses.
+/// `presets::MAX_DISTORTION` bounds. The case at the tier is 21:9, whose
+/// 1792 px width the released area refuses; a ratio the area cannot express at
+/// the requested short edge is refused the same way, with its own numbers.
 fn check_stretch(canvas: (i32, i32), want: f64, label: &str) -> Result<(), ApiError> {
     let (long, short) = (canvas.0.max(canvas.1), canvas.0.min(canvas.1));
     let got = f64::from(long) / f64::from(short);
@@ -653,11 +666,11 @@ fn check_stretch(canvas: (i32, i32), want: f64, label: &str) -> Result<(), ApiEr
         "invalid_aspect_ratio",
         Some("target.aspect_ratio"),
         format!(
-            "{label} needs {:.0}x{short} at this tier, which exceeds the {}x{} released area; \
-             the widest canvas is {long}x{short}, a {distortion:.3}x stretch. Use 16:9",
+            "{label} needs {:.0}x{short} at a {short} short edge, which exceeds the {}x{short} \
+             released area; the widest canvas is {long}x{short}, a {distortion:.3}x stretch. \
+             Use 16:9, or lower target.short_edge",
             want * f64::from(short),
-            MAX_PIXELS / i64::from(presets::TIER_SHORT_EDGE),
-            presets::TIER_SHORT_EDGE,
+            MAX_PIXELS / i64::from(short),
         ),
     ))
 }
@@ -1181,15 +1194,29 @@ mod tests {
     }
 
     #[test]
-    fn only_the_768_tier_is_served() {
+    fn any_short_edge_on_the_released_grid_is_served() {
+        // 480 is on the grid, so 16:9 there is 864x480 rather than the tier's
+        // 1344x768: the short edge is the caller's, the long edge snaps and
+        // clamps.
         let mut root = body("t2va", json!([]), "16:9", 8);
         root["target"]["short_edge"] = json!(480);
-        let error = parse_create(root.to_string().as_bytes())
+        let plan = parse_create(root.to_string().as_bytes())
             .unwrap()
             .plan()
-            .unwrap_err();
-        assert_eq!(error.code, "unsupported_short_edge");
-        assert!(error.message.contains("768"));
+            .unwrap();
+        assert_eq!((plan.size.width, plan.size.height), (864, 480));
+
+        // Off the grid, or below one canvas unit, is refused.
+        for edge in [500, 16] {
+            let mut root = body("t2va", json!([]), "16:9", 8);
+            root["target"]["short_edge"] = json!(edge);
+            let error = parse_create(root.to_string().as_bytes())
+                .unwrap()
+                .plan()
+                .unwrap_err();
+            assert_eq!(error.code, "unsupported_short_edge");
+            assert!(error.message.contains("32"));
+        }
     }
 
     #[test]

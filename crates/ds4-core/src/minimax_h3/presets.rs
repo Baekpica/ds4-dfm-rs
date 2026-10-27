@@ -1,16 +1,25 @@
-//! Canvas sizes for the released 768P tier.
+//! Canvas sizes for the released checkpoint.
 //!
-//! The short edge is 768, the long edge follows the aspect ratio, and the
-//! released area clamps it (`h3.c:490-500`). This reproduces the platform's
-//! own 1344x768 16:9 artifact: round(768 * 16/9) snaps to 1376, which exceeds
-//! the released `768*1344` area. The local API delivers that canvas directly.
+//! The short edge is the caller's, the long edge follows the aspect ratio on
+//! the released 32-pixel grid, and the released area clamps it (`h3.c:490-500`).
+//! At the 768P tier this reproduces the platform's own 1344x768 16:9 artifact:
+//! round(768 * 16/9) snaps to 1376, which exceeds the released `768*1344` area.
+//! The local API delivers that canvas directly.
 //!
-//! 480P and 2K belong to other variants and are not served by this checkpoint.
+//! 768 is the tier the model card documents, not the only short edge served.
+//! The reference's own scale points are 256, 320 and 384, and its CLI refuses
+//! only a canvas off the 32-pixel grid or over the released area (`h3.c`
+//! README, "Pick resolution and duration"). A short edge below the tier is an
+//! execution preview, not a second released tier. 480P and 2K belong to other
+//! variants and are not served by this checkpoint.
 
 use super::render::{CANVAS_MULTIPLE, MAX_PIXELS};
 
-/// The 768P tier's short edge, the default the model card documents.
+/// The 768P tier's short edge, the tier the model card documents.
 pub const TIER_SHORT_EDGE: i32 = 768;
+
+/// The smallest short edge the local API serves: one canvas unit.
+pub const MIN_SHORT_EDGE: i32 = CANVAS_MULTIPLE;
 
 /// The largest ratio distortion the local API accepts.
 pub const MAX_DISTORTION: f64 = 1.25;
@@ -67,35 +76,41 @@ impl Ratio {
 /// tier's, the long edge is snapped to the released grid and clamped by the
 /// released area. Measured against `assets/h3_direct_768p.mp4` (1344x768).
 pub fn tier_canvas(ratio: Ratio) -> (i32, i32) {
+    ratio_canvas(TIER_SHORT_EDGE, ratio)
+}
+
+/// The same rule at a caller-chosen short edge. The aspect a ratio names is
+/// stated as width over height, so 9:16 asks for a tall canvas.
+pub fn ratio_canvas(short_edge: i32, ratio: Ratio) -> (i32, i32) {
     let (width, height) = ratio.parts();
-    canvas_for(width as u32, height as u32)
+    canvas_for(short_edge, width as u32, height as u32)
 }
 
 /// The same rule for an aspect the caller states as pixels: an anchored image
 /// whose ratio has no name (`aspect_ratio: auto`). The short edge is the
-/// tier's, the long edge is snapped to the released grid and clamped by the
-/// released area, exactly as [`tier_canvas`] does for a name.
-pub fn canvas_for(width: u32, height: u32) -> (i32, i32) {
+/// caller's, the long edge is snapped to the released grid and clamped by the
+/// released area, exactly as [`ratio_canvas`] does for a name.
+pub fn canvas_for(short_edge: i32, width: u32, height: u32) -> (i32, i32) {
     let (long, short) = if width >= height {
         (width, height)
     } else {
         (height, width)
     };
-    if long == 0 || short == 0 {
+    if long == 0 || short == 0 || short_edge < MIN_SHORT_EDGE {
         return (0, 0);
     }
 
-    let edge = f64::from(TIER_SHORT_EDGE) * f64::from(long) / f64::from(short);
-    let cap = MAX_PIXELS / i64::from(TIER_SHORT_EDGE);
+    let edge = f64::from(short_edge) * f64::from(long) / f64::from(short);
+    let cap = MAX_PIXELS / i64::from(short_edge);
     let units = (edge / f64::from(CANVAS_MULTIPLE))
         .round()
         .min((cap / i64::from(CANVAS_MULTIPLE)) as f64);
     let clamped = units as i32 * CANVAS_MULTIPLE;
 
     if width >= height {
-        (clamped, TIER_SHORT_EDGE)
+        (clamped, short_edge)
     } else {
-        (TIER_SHORT_EDGE, clamped)
+        (short_edge, clamped)
     }
 }
 
@@ -117,9 +132,29 @@ mod tests {
 
         // An anchored image states its aspect as pixels; the same rule
         // applies, including the square and the cap.
-        assert_eq!(canvas_for(1920, 1080), (1344, 768));
-        assert_eq!(canvas_for(1080, 1920), (768, 1344));
-        assert_eq!(canvas_for(1024, 1024), (768, 768));
-        assert_eq!(canvas_for(0, 0), (0, 0));
+        assert_eq!(canvas_for(TIER_SHORT_EDGE, 1920, 1080), (1344, 768));
+        assert_eq!(canvas_for(TIER_SHORT_EDGE, 1080, 1920), (768, 1344));
+        assert_eq!(canvas_for(TIER_SHORT_EDGE, 1024, 1024), (768, 768));
+        assert_eq!(canvas_for(TIER_SHORT_EDGE, 0, 0), (0, 0));
+    }
+
+    #[test]
+    fn a_chosen_short_edge_scales_the_same_rule() {
+        // 576 is on the released grid and under the area, so 16:9 is 1024x576
+        // where the tier's 16:9 is 1344x768.
+        assert_eq!(ratio_canvas(576, Ratio::Wide16x9), (1024, 576));
+        assert_eq!(ratio_canvas(576, Ratio::Nine16), (576, 1024));
+        assert_eq!(ratio_canvas(384, Ratio::Square), (384, 384));
+        // 4:3 at a 256 short edge wants 341 px of width, which snaps up to
+        // the nearest unit, 352.
+        assert_eq!(ratio_canvas(256, Ratio::FourThree), (352, 256));
+
+        // The released area still bounds the long edge: 21:9 fits at 576 and
+        // does not at the tier.
+        assert_eq!(ratio_canvas(576, Ratio::Wide21x9), (1344, 576));
+        assert_eq!(tier_canvas(Ratio::Wide21x9), (1344, 768));
+
+        // Below one canvas unit there is no canvas to serve.
+        assert_eq!(canvas_for(MIN_SHORT_EDGE - 1, 16, 9), (0, 0));
     }
 }

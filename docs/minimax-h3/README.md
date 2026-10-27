@@ -46,10 +46,11 @@ frame anchors. Audio alone is insufficient for Ref2VA.
 
 On GB10, one 512×512, 56-frame, 20-step text run took **762.36 s** (12m42s)
 for a 2.333-second clip. The matched h3.c run took 764.62 s and produced the
-same MP4 bytes. The native API at its smallest square request (768×768,
+same MP4 bytes. The native API at the tier's square request (768×768,
 4 seconds requested, 107 aligned frames) took **1,340.264 s** to observed
 completion and download even at **two steps**. That includes 10-second
-status polling. Larger canvases and more steps require separate measurement.
+status polling. Larger canvases and more steps require separate measurement,
+and a lower `target.short_edge` is served at proportionally lower cost.
 
 The [dated validation](validation-2026-10-26.md) records exact inputs,
 phase timings, memory observations and qualification limits. These single
