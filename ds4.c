@@ -27,6 +27,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include <string.h>
 #include <strings.h>
 #include <sys/file.h>
@@ -74145,6 +74148,12 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         *out = NULL;
         return 1;
     }
+#endif
+#ifdef __GLIBC__
+    /* Freed load buffers (16 MiB O_DIRECT reads per part) stay in glibc's
+     * arenas once its mmap threshold rises: 0.75 GiB of a Ling-3.1 server's
+     * RSS. Return them before callers fit banks from free memory. */
+    malloc_trim(0);
 #endif
 
     *out = e;

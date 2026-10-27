@@ -492,10 +492,43 @@ impl<'a> Scan<'a> {
     }
 }
 
+/// A page-aligned O_DIRECT buffer that returns its pages on drop. A freed
+/// 16 MiB Vec raises glibc's mmap threshold, so later ones stay in the
+/// verifier threads' arenas: ~0.5 GiB of a loaded server's RSS.
+#[cfg(target_os = "linux")]
+struct DirectBuf(*mut u8, usize);
+
+#[cfg(target_os = "linux")]
+impl DirectBuf {
+    fn new(len: usize) -> Option<Self> {
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        (p != libc::MAP_FAILED).then_some(Self(p.cast(), len))
+    }
+
+    fn slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.0, self.1) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DirectBuf {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.0.cast(), self.1) };
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn direct_digest(path: &Path, scan: &mut Scan) -> Result<Option<Vec<u8>>> {
     use std::os::unix::fs::OpenOptionsExt;
-    const DIRECT_ALIGN: usize = 4096;
     const DIRECT_CHUNK: usize = 16 << 20;
     let Ok(mut file) = std::fs::OpenOptions::new()
         .read(true)
@@ -504,9 +537,10 @@ fn direct_digest(path: &Path, scan: &mut Scan) -> Result<Option<Vec<u8>>> {
     else {
         return Ok(None);
     };
-    let mut raw = vec![0u8; DIRECT_CHUNK + DIRECT_ALIGN];
-    let start = raw.as_ptr().align_offset(DIRECT_ALIGN);
-    let buf = &mut raw[start..start + DIRECT_CHUNK];
+    let Some(mut raw) = DirectBuf::new(DIRECT_CHUNK) else {
+        return Ok(None);
+    };
+    let buf = raw.slice();
     let mut hasher = Sha256::new();
     let mut pos = 0u64;
     loop {
