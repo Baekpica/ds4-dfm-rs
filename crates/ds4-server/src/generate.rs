@@ -1281,7 +1281,8 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
 pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
     match syntax {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
-        ModelSyntax::Exaone => ChatFormat::Exaone,
+        // A.X-K2 shares EXAONE's `<think>` and Hermes `<tool_call>` envelope.
+        ModelSyntax::Exaone | ModelSyntax::Axk2Vq => ChatFormat::Exaone,
         // Only the generated thinking/tool envelope is shared with Qwen.
         ModelSyntax::Qwen4Exp
         | ModelSyntax::Step37
@@ -1408,7 +1409,11 @@ pub(crate) fn thinking_visible_key(
 ) -> Option<Vec<u8>> {
     if matches!(
         syntax,
-        ModelSyntax::Step37 | ModelSyntax::Ling3Vl | ModelSyntax::IQuestQ1 | ModelSyntax::BeamVq
+        ModelSyntax::Step37
+            | ModelSyntax::Ling3Vl
+            | ModelSyntax::IQuestQ1
+            | ModelSyntax::BeamVq
+            | ModelSyntax::Axk2Vq
     ) {
         // Removing reasoning changes these families' history grammar. Re-render
         // the structured history with Jinja instead of inventing a prefix.

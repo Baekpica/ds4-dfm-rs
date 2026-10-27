@@ -25,6 +25,7 @@ pub enum TensorError {
     Ling31Vq(&'static str),
     BeamVq(&'static str),
     MinimaxVq(&'static str),
+    Axk2Vq(&'static str),
 }
 
 impl TensorError {
@@ -43,6 +44,7 @@ impl TensorError {
             TensorError::Ling31Vq(reason) => format!("ling31-vq {reason}"),
             TensorError::BeamVq(reason) => format!("beam-vq {reason}"),
             TensorError::MinimaxVq(reason) => format!("minimax-vq {reason}"),
+            TensorError::Axk2Vq(reason) => format!("axk2-vq {reason}"),
         }
     }
 }
@@ -312,8 +314,11 @@ fn parse_one(
             return Err(TensorError::OutsideFile);
         }
     }
-    // MiniMax and Beam parts carry GVQ1 tensors GLM's validator would claim.
-    if crate::minimax_vq::requested(g) {
+    // A.X-K2, MiniMax and Beam parts carry GVQ1 tensors GLM's validator
+    // would claim.
+    if crate::axk2_vq::requested(g) {
+        crate::axk2_vq::validate_part(g, &mut tensors, pos, data_pos)?;
+    } else if crate::minimax_vq::requested(g) {
         crate::minimax_vq::validate_part(g, &mut tensors, pos, data_pos)?;
     } else if crate::beam_vq::requested(g) {
         crate::beam_vq::validate_part(g, &mut tensors, pos, data_pos)?;
@@ -375,6 +380,9 @@ impl TensorInventory {
         if path.is_dir() {
             if crate::beam_vq::is_release(path) {
                 return crate::beam_vq::open_dir(path);
+            }
+            if crate::axk2_vq::is_release(path) {
+                return crate::axk2_vq::open_dir(path);
             }
             // MiniMax releases open their trunk; drafting asks for `open_minimax`.
             if crate::minimax_vq::is_release(path) {

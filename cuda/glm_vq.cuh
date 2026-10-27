@@ -32,6 +32,21 @@ struct glmvq_matrix {
 
 enum { GLMVQ_RES_WORDS = 256 };
 
+// GVQ1 version 2 (A.X-K2) stores 9- or 10-bit indices byte-major: a block
+// of 2,048 inputs is 256 low bytes (64 words, a and b per lane) and a plane
+// of the high bits (9-bit: one per index, 8 words; 10-bit: two, 16 words).
+// Version 1 packs 12 bits (96 words) with an optional 13th-bit plane (8
+// words). BITS selects the version: 9 and 10 exist only in v2.
+template <uint32_t BITS>
+__host__ __device__ constexpr bool glmvq_v2() { return BITS == 9 || BITS == 10; }
+template <uint32_t BITS>
+__host__ __device__ constexpr bool glmvq_planed() { return BITS == 13 || glmvq_v2<BITS>(); }
+// Main and plane words per 2048-input block.
+template <uint32_t BITS>
+__host__ __device__ constexpr uint32_t glmvq_block_main() { return glmvq_v2<BITS>() ? 64u : 96u; }
+template <uint32_t BITS>
+__host__ __device__ constexpr uint32_t glmvq_block_plane() { return BITS == 10 ? 16u : 8u; }
+
 __device__ __forceinline__ float glmvq_e4m3(uint8_t bits) {
     __nv_fp8_e4m3 value;
     value.__x = bits;

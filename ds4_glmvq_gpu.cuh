@@ -195,19 +195,26 @@ static bool gvq_link(ds4_gvq_model *plan, const uint8_t *h, uint32_t index, cons
     const uint32_t precision = gvq_u32(h, 20), words = gvq_u32(h, 16);
     const uint64_t gain = gvq_u64(h, 32), main = gvq_u64(h, 40), plane = gvq_u64(h, 48);
     const uint64_t elements = (uint64_t)r.rows * r.cols;
-    // E4M3 books only: K8192 rows carry the 13th-bit plane, K4096 rows none.
-    const bool wide = h[6] == 13 && words == 8192 && plane;
-    const bool narrow = h[6] == 12 && words == 4096 && !plane;
-    if (memcmp(h, "GVQ1", 4) || h[4] != 1 || h[5] || (!wide && !narrow) || h[7] != GLMVQ_VECTOR ||
+    // E4M3 books only. Version 1: K8192 rows carry the 13th-bit plane, K4096
+    // rows none. Version 2 (A.X-K2): one low byte per index and a plane of
+    // the high bit (K512, 9-bit) or two (K1024, 10-bit); no residual stage.
+    const bool v1 = h[4] == 1 && !h[5];
+    const bool wide = v1 && h[6] == 13 && words == 8192 && plane;
+    const bool narrow = v1 && h[6] == 12 && words == 4096 && !plane;
+    const bool v2 = h[4] == 2 && !h[5] && plane && r.res == DS4_GVQ_NO_LINK &&
+        ((h[6] == 9 && words == 512) || (h[6] == 10 && words == 1024));
+    const uint64_t main_bytes = v2 ? elements / 8 : elements * 3 / 16;
+    const uint64_t plane_bytes = v2 ? elements * (h[6] - 8u) / 64 : elements / 64;
+    if (memcmp(h, "GVQ1", 4) || (!wide && !narrow && !v2) || h[7] != GLMVQ_VECTOR ||
         gvq_u32(h, 8) != r.rows || gvq_u32(h, 12) != r.cols ||
         precision != GLMVQ_E4M3 || book.type != GVQ_TYPE_BOOK ||
         book.bytes != (uint64_t)words * GLMVQ_VECTOR || gvq_u64(h, 56) != r.bytes ||
         !gvq_span(gain, (uint64_t)r.rows * sizeof(__half), r.bytes) ||
-        !gvq_span(main, elements * 3 / 16, r.bytes) ||
-        (wide && !gvq_span(plane, elements / 64, r.bytes))) { return false; }
+        !gvq_span(main, main_bytes, r.bytes) ||
+        ((wide || v2) && !gvq_span(plane, plane_bytes, r.bytes))) { return false; }
     const uint8_t *data = (const uint8_t *)s.data;
     s.storage = GLMVQ_WEIGHT_VQ;
-    s.vq = {data + main, wide ? data + plane : nullptr, plan->source[r.book].data,
+    s.vq = {data + main, wide || v2 ? data + plane : nullptr, plan->source[r.book].data,
         (const __half *)(data + gain), r.rows, r.cols, GLMVQ_E4M3, nullptr, nullptr};
     return r.res == DS4_GVQ_NO_LINK || gvq_link_res(plan, s, r, hres);
 }

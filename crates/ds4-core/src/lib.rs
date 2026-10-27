@@ -8,6 +8,7 @@
 //! crate. Application crates (`ds4-cli`, `ds4-server`, …) must not call
 //! `ds4-sys` directly.
 
+mod axk2_vq;
 mod batch;
 mod beam_mtp;
 mod beam_vq;
@@ -1309,6 +1310,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.family == ModelFamily::Axk2Vq {
+        let g = axk2_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1593,6 +1600,20 @@ impl Model {
             return Err(Error {
                 code: 1,
                 message: "Beam VQ requires one CUDA model without DSpark or vision sidecars".into(),
+            });
+        }
+        // The A.X-K2 release ships no drafter, MTP layer or vision tower.
+        if identified.shape.family == ModelFamily::Axk2Vq
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some()
+                || tuning.vision_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "A.X-K2 VQ requires one CUDA release directory without sidecar paths"
+                    .into(),
             });
         }
         // MiniMax's drafter and vision tower are parts of its release.
@@ -2485,6 +2506,7 @@ impl Session<'_> {
                 | ModelFamily::Ling31Vq
                 | ModelFamily::BeamVq
                 | ModelFamily::MinimaxVq
+                | ModelFamily::Axk2Vq
         ) {
             return;
         }
@@ -4832,6 +4854,7 @@ mod tests {
             ModelFamily::Ling31Vq,
             ModelFamily::BeamVq,
             ModelFamily::MinimaxVq,
+            ModelFamily::Axk2Vq,
         ] {
             let mut session = audit_session(family);
             session.host.replace_checkpoint(&[1, 2]);

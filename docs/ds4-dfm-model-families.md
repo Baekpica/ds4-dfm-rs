@@ -71,6 +71,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
 | [Ling-3.1-flash VQ](ling31-flash-vq.md) | `release.json` directory of GVQ1 parts (`ling31_vq`) | 63 KDA and 9 latent MLA blocks, 512 VQ experts top-8, optional embedded MTP block; banks over shared scratch, prompt-end checkpoints, `LG31` disk payloads |
 | [Beam-1.0 VQ](beam-vq.md) | `release.json` directory of GVQ1 parts (`beam_vq`) | 43 SWA-512 and 9 NoPE full GQA layers (FP8 rows), 256 VQ experts top-8, host-read BF16 embedding, Harmony output; banks, partial reuse, disk KV, serial DFlash2 drafting |
+| [A.X-K2 VQ](axk2-vq.md) | `release.json` directory of GVQ1 parts (`axk2_vq`) | 61 MLA layers with the DSA top-2,048 indexer (FP8 latent and key rows), gated RMSNorm, 256 VQ experts top-8 (9/10-bit GVQ1 v2), host-read BF16 embedding, Hermes tools; banks, partial reuse, disk KV, no drafter |
 | [MiMo-V2.6-Flash RL / MOPD](#mimo-release-scope) | `general.architecture=mimo2` | 9 full-attention and 39 SWA-128 layers, 256 experts top-8, three embedded MTP blocks; artifact-specific gates |
 | [Naive-N0.5-Flash](#naive-release-scope) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers, BF16 GQA, E4M3 indexer history, continuous banks and disk KV |
 
@@ -657,6 +658,11 @@ and [host memory guard](host-memory-guard.md). Preserve unrelated owners and wor
   GiB with the 4 GiB floor). With the DFlash2 drafter the 1M plan leaves
   0.12 GiB and is unverified; `--mtp` serves one sequence on the serial lane
   and drafts only greedy requests. See the [family page](beam-vq.md#serving).
+- A.X-K2 VQ plans its native 262,144 tokens in one bank. After the weights
+  load a 128 GB Spark has ~18.6 GiB free: with the default 4 GiB floor the
+  bank runs 512-row prefill chunks (the engine halves rows, never the
+  context), and `--mem-floor-gb 2` keeps 2,048. The release has no drafter.
+  See the [family page](axk2-vq.md#serving).
 - dots3-note is text-only, with serial default and explicit bank/MTP paths
   described [above](#dots3-serving). The source 524,288-token metadata is
   preserved. Historical 262,144-context allocation and short 4K server checks

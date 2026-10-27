@@ -39,6 +39,7 @@ const LAYOUT_LING31_FP8: u32 = u32::from_le_bytes(*b"LG3F");
 const LAYOUT_BEAM: u32 = u32::from_le_bytes(*b"BEM1");
 const LAYOUT_MINIMAX: u32 = u32::from_le_bytes(*b"MMX1");
 const LAYOUT_MINIMAX_DRAFT: u32 = u32::from_le_bytes(*b"MMX2");
+const LAYOUT_AXK2: u32 = u32::from_le_bytes(*b"AXK1");
 const MINIMAX_DRAFT_WINDOW: u32 = 4096;
 const GLMVQ_DENSE_KEYS: u32 = 2048;
 
@@ -61,6 +62,7 @@ pub enum PayloadLayout {
     Ling31Vq,
     BeamVq,
     MinimaxVq,
+    Axk2Vq,
 }
 
 impl PayloadLayout {
@@ -85,6 +87,7 @@ impl PayloadLayout {
             LAYOUT_LING31 | LAYOUT_LING31_FP8 => Self::Ling31Vq,
             LAYOUT_BEAM => Self::BeamVq,
             LAYOUT_MINIMAX | LAYOUT_MINIMAX_DRAFT => Self::MinimaxVq,
+            LAYOUT_AXK2 => Self::Axk2Vq,
             _ => Self::DeepSeek,
         }
     }
@@ -108,6 +111,7 @@ impl PayloadLayout {
             Self::Ling31Vq => ModelFamily::Ling31Vq,
             Self::BeamVq => ModelFamily::BeamVq,
             Self::MinimaxVq => ModelFamily::MinimaxVq,
+            Self::Axk2Vq => ModelFamily::Axk2Vq,
         }
     }
 
@@ -126,6 +130,7 @@ impl PayloadLayout {
                         | Self::Ling31Vq
                         | Self::BeamVq
                         | Self::MinimaxVq
+                        | Self::Axk2Vq
                 ))
     }
 
@@ -325,7 +330,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::Naive
         | PayloadLayout::IQuestQ1
         | PayloadLayout::Ling31Vq
-        | PayloadLayout::BeamVq => {
+        | PayloadLayout::BeamVq
+        | PayloadLayout::Axk2Vq => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }
@@ -879,6 +885,44 @@ mod tests {
         let mut bad = prefix.clone();
         bad.fields[12] = 2;
         assert!(read(&bad, ModelFamily::BeamVq, 1048576).is_err());
+    }
+
+    #[test]
+    fn axk2_prefix_identity() {
+        // Native AXK1 header: ctx, row cap, layers, tag, 0, n, 0, latent
+        // and index-key row bytes, layers with an indexer, vocab, live rows.
+        let prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                262144,
+                2048,
+                61,
+                u32::from_le_bytes(*b"AXK1"),
+                0,
+                3,
+                0,
+                641,
+                61,
+                163840,
+                3,
+            ],
+            tokens: vec![7, 8, 9],
+        };
+        assert_eq!(prefix.layout().family(), ModelFamily::Axk2Vq);
+        let read = |p: &HostPrefix, family, ctx| {
+            let bytes = p.encode();
+            read_prefix_range(&mut Cursor::new(&bytes), 0, bytes.len() as u64, family, ctx)
+        };
+        assert_eq!(
+            read(&prefix, ModelFamily::Axk2Vq, 3).unwrap().tokens,
+            [7, 8, 9]
+        );
+        assert!(read(&prefix, ModelFamily::Axk2Vq, 2).is_err());
+        assert!(read(&prefix, ModelFamily::BeamVq, 262144).is_err());
+        let mut bad = prefix.clone();
+        bad.fields[12] = 2;
+        assert!(read(&bad, ModelFamily::Axk2Vq, 262144).is_err());
     }
 
     #[test]

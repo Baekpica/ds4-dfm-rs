@@ -29,7 +29,11 @@ pub const DEFAULT_MIN_P: f32 = 0.05;
 pub fn fixed_thinking_sampling(syntax: ModelSyntax) -> bool {
     !matches!(
         syntax,
-        ModelSyntax::IQuestQ1 | ModelSyntax::Glm53 | ModelSyntax::BeamVq | ModelSyntax::MinimaxVq
+        ModelSyntax::IQuestQ1
+            | ModelSyntax::Glm53
+            | ModelSyntax::BeamVq
+            | ModelSyntax::MinimaxVq
+            | ModelSyntax::Axk2Vq
     )
 }
 

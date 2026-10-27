@@ -18,6 +18,21 @@ struct glmvq_decode_item {
 // r0/r1: the block's 256 residual index bytes as 64 words (R13+8 layers).
 struct glmvq_decode_block { uint32_t a, b, c, plane, r0, r1; };
 
+// v2 index of this lane's vector at k-step k: byte k*32+lane of the block
+// (glmvq_decode_res's rule), then the plane's high bit(s) for vector
+// k*32+lane: 9-bit word k bit lane, 10-bit word 2k+lane/16 bits 2(lane%16).
+template <uint32_t BITS>
+__device__ __forceinline__ uint32_t glmvq_decode_index2(const glmvq_decode_block &b, uint32_t k) {
+    const uint32_t lane = threadIdx.x & 31;
+    const uint32_t word = __shfl_sync(0xffffffffu, k < 4 ? b.a : b.b, (k * 8 + lane / 4) & 31);
+    const uint32_t low = (word >> (8 * (lane & 3))) & 255u;
+    if constexpr (BITS == 9) {
+        return low | ((__shfl_sync(0xffffffffu, b.plane, k) >> lane) & 1u) << 8;
+    } else {
+        return low | ((__shfl_sync(0xffffffffu, b.plane, 2 * k + lane / 16) >> (2 * (lane & 15))) & 3u) << 8;
+    }
+}
+
 // YoungAi 7fb26cc cuda_vq_row.inc.cu:146-280: a warp loads three complete
 // 128-byte lines (256 indices), with a separate 32-byte thirteenth plane.
 // A row narrower than 2048 inputs is one partial block of STEPS k-steps
@@ -27,7 +42,12 @@ template <uint32_t BITS, uint32_t STEPS = 8, bool RES = false>
 __device__ __forceinline__ glmvq_decode_block glmvq_decode_load(
         const uint32_t *main, const uint32_t *plane, const uint32_t *res = nullptr) {
     const uint32_t lane = threadIdx.x & 31;
-    if constexpr (STEPS == 8) {
+    if constexpr (glmvq_v2<BITS>()) {
+        static_assert(!RES && STEPS >= 1 && STEPS <= 8, "v2 blocks hold 1-8 k-steps, no residual stage");
+        constexpr uint32_t words = 8 * STEPS, planes = (BITS - 8) * STEPS;
+        return {lane < words ? main[lane] : 0u, lane + 32 < words ? main[lane + 32] : 0u, 0u,
+            lane < planes ? plane[lane] : 0u, 0u, 0u};
+    } else if constexpr (STEPS == 8) {
         return {main[lane], main[lane + 32], main[lane + 64],
             BITS == 13 && lane < 8 ? plane[lane] : 0u,
             RES ? res[lane] : 0u, RES ? res[lane + 32] : 0u};
@@ -139,14 +159,19 @@ __device__ __forceinline__ float glmvq_decode_dot(const glmvq_matrix &m,
                                               : glmvq_decode_block{};
         #pragma unroll
         for (uint32_t k = 0; k < STEPS; k++) {
-            const uint32_t first = k * 12;
-            const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
-            const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
-            const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
-            const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
-            uint32_t index = __funnelshift_r(lo, hi, shift) & 4095u;
-            if constexpr (BITS == 13) {
-                index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+            uint32_t index;
+            if constexpr (glmvq_v2<BITS>()) {
+                index = glmvq_decode_index2<BITS>(cur, k);
+            } else {
+                const uint32_t first = k * 12;
+                const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
+                const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
+                const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
+                const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
+                index = __funnelshift_r(lo, hi, shift) & 4095u;
+                if constexpr (BITS == 13) {
+                    index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+                }
             }
             const uint2 word = book[index];
             const uint4 values = *(const uint4 *)(x + k * 256 + lane * GLMVQ_VECTOR);
@@ -156,30 +181,39 @@ __device__ __forceinline__ float glmvq_decode_dot(const glmvq_matrix &m,
         for (uint32_t stride = 16; stride; stride >>= 1) { sum += __shfl_xor_sync(0xffffffffu, sum, stride); }
         return glmvq_round(GAIN == GLMVQ_GAIN_DOT ? glmvq_mul(sum, gain) : sum);
     }
-    const auto *main = (const uint32_t *)m.main + (uint64_t)row * COLS * 3 / 64;
-    const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + (uint64_t)row * COLS / 256 : nullptr;
+    const auto *main = (const uint32_t *)m.main +
+        (glmvq_v2<BITS>() ? (uint64_t)row * (COLS / 32) : (uint64_t)row * COLS * 3 / 64);
+    const auto *plane = glmvq_planed<BITS>() ? (const uint32_t *)m.plane +
+        (BITS == 10 ? (uint64_t)row * (COLS / 128) : (uint64_t)row * COLS / 256) : nullptr;
     const auto *res = RES ? (const uint32_t *)m.res + (uint64_t)row * COLS / 32 : nullptr;
     for (uint32_t b = 0; b < COLS / 2048; b++) {
         // One block ahead in registers; GLM rows have no partial 384B block.
         glmvq_decode_block ahead = {};
         if (b + 1 < COLS / 2048) {
-            ahead = glmvq_decode_load<BITS, 8, RES>(main + (b + 1) * 96,
-                BITS == 13 ? plane + (b + 1) * 8 : nullptr, RES ? res + (b + 1) * 64 : nullptr);
+            ahead = glmvq_decode_load<BITS, 8, RES>(main + (b + 1) * glmvq_block_main<BITS>(),
+                glmvq_planed<BITS>() ? plane + (b + 1) * glmvq_block_plane<BITS>() : nullptr,
+                RES ? res + (b + 1) * 64 : nullptr);
         } else if constexpr (TAIL != 0) {
-            ahead = glmvq_decode_load<BITS, TAIL ? TAIL : 8u>(main + FULL * 96, BITS == 13 ? plane + FULL * 8 : nullptr);
+            ahead = glmvq_decode_load<BITS, TAIL ? TAIL : 8u>(main + FULL * glmvq_block_main<BITS>(),
+                glmvq_planed<BITS>() ? plane + FULL * glmvq_block_plane<BITS>() : nullptr);
         } else if (next) {
             ahead = glmvq_decode_load<BITS, 8, RES>(next, next_plane, next_res);
         }
         #pragma unroll
         for (uint32_t k = 0; k < 8; k++) {
-            const uint32_t first = k * 12;
-            const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
-            const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
-            const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
-            const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
-            uint32_t index = __funnelshift_r(lo, hi, shift) & 4095u;
-            if constexpr (BITS == 13) {
-                index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+            uint32_t index;
+            if constexpr (glmvq_v2<BITS>()) {
+                index = glmvq_decode_index2<BITS>(cur, k);
+            } else {
+                const uint32_t first = k * 12;
+                const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
+                const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
+                const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
+                const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
+                index = __funnelshift_r(lo, hi, shift) & 4095u;
+                if constexpr (BITS == 13) {
+                    index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+                }
             }
             const uint2 word = book[index];
             const uint4 values = *(const uint4 *)(x + b * 2048 + k * 256 + lane * GLMVQ_VECTOR);
@@ -196,14 +230,19 @@ __device__ __forceinline__ float glmvq_decode_dot(const glmvq_matrix &m,
         const glmvq_decode_block ahead = next ? glmvq_decode_load<BITS, 8>(next, next_plane) : glmvq_decode_block{};
         #pragma unroll
         for (uint32_t k = 0; k < TAIL; k++) {
-            const uint32_t first = k * 12;
-            const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
-            const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
-            const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
-            const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
-            uint32_t index = __funnelshift_r(lo, hi, shift) & 4095u;
-            if constexpr (BITS == 13) {
-                index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+            uint32_t index;
+            if constexpr (glmvq_v2<BITS>()) {
+                index = glmvq_decode_index2<BITS>(cur, k);
+            } else {
+                const uint32_t first = k * 12;
+                const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
+                const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
+                const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
+                const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
+                index = __funnelshift_r(lo, hi, shift) & 4095u;
+                if constexpr (BITS == 13) {
+                    index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+                }
             }
             const uint4 values = *(const uint4 *)(x + FULL * 2048 + k * 256 + lane * GLMVQ_VECTOR);
             sum = glmvq_decode_word8<GAIN>(book[index], values, gain, sum);
@@ -237,11 +276,17 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
         const glmvq_decode_item *items, const uint4 *book, const float *input,
         __nv_bfloat16 *mid, float clamp, float *gate, float *up, const uint4 *book2) {
     extern __shared__ __align__(16) uint8_t decode_stage[];
-    constexpr uint32_t book_bytes = glmvq_decode_books<BITS, RES>();
+    // v2 layers keep separate gate and up books: `book2` is the up book,
+    // staged after the gate book (v1 passes its residual book there).
+    constexpr uint32_t book_bytes = glmvq_decode_books<BITS, RES>() * (glmvq_v2<BITS>() ? 2u : 1u);
     auto *x = (__nv_bfloat16 *)(decode_stage + book_bytes);
     const auto *res_book = (const uint2 *)(decode_stage + (1u << BITS) * GLMVQ_VECTOR);
+    const auto *up_book = (const uint2 *)decode_stage + (glmvq_v2<BITS>() ? 1u << BITS : 0u);
     glmvq_pdl_open();
     glmvq_decode_book<BITS, RES>((uint4 *)decode_stage, book, book2);
+    if constexpr (glmvq_v2<BITS>()) {
+        glmvq_decode_book<BITS>((uint4 *)(decode_stage + (1u << BITS) * GLMVQ_VECTOR), book2);
+    }
     glmvq_pdl_wait();
     for (uint32_t i = threadIdx.x; i < HIDDEN; i += blockDim.x) {
         x[i] = __float2bfloat16_rn(input[i]);
@@ -251,17 +296,19 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
     for (uint32_t task = warp; task < GLMVQ_DEC_USED * FFN; task += gridDim.x * WARPS) {
         const uint32_t e = task / FFN, row = task % FFN;
         const glmvq_decode_item item = items[e];
-        const auto *gm = (const uint32_t *)item.gate.main + row * HIDDEN * 3 / 64;
-        const auto *gp = BITS == 13 ? (const uint32_t *)item.gate.plane + row * HIDDEN / 256 : nullptr;
-        const auto *um = (const uint32_t *)item.up.main + row * HIDDEN * 3 / 64;
-        const auto *up_plane = BITS == 13 ? (const uint32_t *)item.up.plane + row * HIDDEN / 256 : nullptr;
+        const uint32_t mw = glmvq_v2<BITS>() ? row * (HIDDEN / 32) : row * HIDDEN * 3 / 64;
+        const uint32_t pw = BITS == 10 ? row * (HIDDEN / 128) : row * HIDDEN / 256;
+        const auto *gm = (const uint32_t *)item.gate.main + mw;
+        const auto *gp = glmvq_planed<BITS>() ? (const uint32_t *)item.gate.plane + pw : nullptr;
+        const auto *um = (const uint32_t *)item.up.main + mw;
+        const auto *up_plane = glmvq_planed<BITS>() ? (const uint32_t *)item.up.plane + pw : nullptr;
         const auto *gr = RES ? (const uint32_t *)item.gate.res + row * HIDDEN / 32 : nullptr;
         const auto *ur = RES ? (const uint32_t *)item.up.res + row * HIDDEN / 32 : nullptr;
         auto carry = glmvq_decode_load<BITS, glmvq_decode_steps<HIDDEN>(), RES>(gm, gp, gr);
         const float g = glmvq_decode_dot<HIDDEN, BITS, GAIN, RES>(item.gate, row, x,
             (const uint2 *)decode_stage, &carry, um, up_plane, res_book, ur);
         const float u = glmvq_decode_dot<HIDDEN, BITS, GAIN, RES>(item.up, row, x,
-            (const uint2 *)decode_stage, &carry, nullptr, nullptr, res_book, nullptr);
+            up_book, &carry, nullptr, nullptr, res_book, nullptr);
         if (!lane) {
             mid[task] = __float2bfloat16_rn(glmvq_swiglu_value<CLAMP>(g, u, clamp));
             if constexpr (OUTPUT == GLMVQ_DEC_PROOF) { gate[task] = g; up[task] = u; }
@@ -290,8 +337,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_down(
         for (uint32_t task = warp; task < GLMVQ_DEC_USED * HIDDEN; task += gridDim.x * WARPS) {
             const uint32_t e = task / HIDDEN, row = task % HIDDEN;
             const glmvq_matrix m = items[e].down;
-            const auto *main = (const uint32_t *)m.main + row * FFN * 3 / 64;
-            const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + row * FFN / 256 : nullptr;
+            const auto *main = (const uint32_t *)m.main + (glmvq_v2<BITS>() ? row * (FFN / 32) : row * FFN * 3 / 64);
+            const auto *plane = glmvq_planed<BITS>() ? (const uint32_t *)m.plane +
+                (BITS == 10 ? row * (FFN / 128) : row * FFN / 256) : nullptr;
             const auto *res = RES ? (const uint32_t *)m.res + row * FFN / 32 : nullptr;
             auto carry = glmvq_decode_load<BITS, glmvq_decode_steps<FFN>(), RES>(main, plane, res);
             const float value = glmvq_decode_dot<FFN, BITS, GAIN, RES>(m, row,
@@ -312,8 +360,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_down(
             for (uint32_t task = warp; task < GROUP * HIDDEN; task += gridDim.x * WARPS) {
                 const uint32_t e = first + task / HIDDEN, row = task % HIDDEN;
                 const glmvq_matrix m = items[e].down;
-                const auto *main = (const uint32_t *)m.main + row * FFN * 3 / 64;
-                const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + row * FFN / 256 : nullptr;
+                const auto *main = (const uint32_t *)m.main + (glmvq_v2<BITS>() ? row * (FFN / 32) : row * FFN * 3 / 64);
+                const auto *plane = glmvq_planed<BITS>() ? (const uint32_t *)m.plane +
+                    (BITS == 10 ? row * (FFN / 128) : row * FFN / 256) : nullptr;
                 auto carry = glmvq_decode_load<BITS, glmvq_decode_steps<FFN>()>(main, plane);
                 const float value = glmvq_decode_dot<FFN, BITS, GAIN>(m, row,
                     x + (e - first) * FFN, (const uint2 *)decode_stage, &carry, nullptr, nullptr);
@@ -384,8 +433,10 @@ __device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t
         const uint2 *book2 = nullptr, const uint32_t *next_res = nullptr) {
     static_assert(!RES || COLS % 2048 == 0, "residual rows are whole 2048-input blocks");
     const uint32_t lane = threadIdx.x & 31, offset = lane * 12 / 32, shift = lane * 12 % 32;
-    const auto *main = (const uint32_t *)m.main + (uint64_t)row * COLS * 3 / 64;
-    const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + (uint64_t)row * COLS / 256 : nullptr;
+    const auto *main = (const uint32_t *)m.main +
+        (glmvq_v2<BITS>() ? (uint64_t)row * (COLS / 32) : (uint64_t)row * COLS * 3 / 64);
+    const auto *plane = glmvq_planed<BITS>() ? (const uint32_t *)m.plane +
+        (BITS == 10 ? (uint64_t)row * (COLS / 128) : (uint64_t)row * COLS / 256) : nullptr;
     const auto *res = RES ? (const uint32_t *)m.res + (uint64_t)row * COLS / 32 : nullptr;
     const float gain = __half2float(m.gain[row]);
     glmvq_decode_block cur = *carry;
@@ -399,11 +450,14 @@ __device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t
         if (b + 1 < BLOCKS) {
             if constexpr (MIXED) {
                 ahead = b + 2 == BLOCKS
-                    ? glmvq_decode_load<BITS, LAST>(main + (b + 1) * 96, BITS == 13 ? plane + (b + 1) * 8 : nullptr)
-                    : glmvq_decode_load<BITS, 8>(main + (b + 1) * 96, BITS == 13 ? plane + (b + 1) * 8 : nullptr);
+                    ? glmvq_decode_load<BITS, LAST>(main + (b + 1) * glmvq_block_main<BITS>(),
+                        glmvq_planed<BITS>() ? plane + (b + 1) * glmvq_block_plane<BITS>() : nullptr)
+                    : glmvq_decode_load<BITS, 8>(main + (b + 1) * glmvq_block_main<BITS>(),
+                        glmvq_planed<BITS>() ? plane + (b + 1) * glmvq_block_plane<BITS>() : nullptr);
             } else {
-                ahead = glmvq_decode_load<BITS, 8, RES>(main + (b + 1) * 96,
-                    BITS == 13 ? plane + (b + 1) * 8 : nullptr, RES ? res + (b + 1) * 64 : nullptr);
+                ahead = glmvq_decode_load<BITS, 8, RES>(main + (b + 1) * glmvq_block_main<BITS>(),
+                    glmvq_planed<BITS>() ? plane + (b + 1) * glmvq_block_plane<BITS>() : nullptr,
+                    RES ? res + (b + 1) * 64 : nullptr);
             }
         } else if (next) {
             ahead = glmvq_decode_load<BITS, glmvq_decode_steps<COLS>(), RES>(next, next_plane, next_res);
@@ -412,14 +466,19 @@ __device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t
         const uint32_t steps = MIXED ? (b + 1 == BLOCKS ? TAIL : 8u) : LAST;
         #pragma unroll
         for (uint32_t k = 0; k < steps; k++) {
-            const uint32_t first = k * 12;
-            const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
-            const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
-            const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
-            const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
-            uint32_t index = __funnelshift_r(lo, hi, shift) & 4095u;
-            if constexpr (BITS == 13) {
-                index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+            uint32_t index;
+            if constexpr (glmvq_v2<BITS>()) {
+                index = glmvq_decode_index2<BITS>(cur, k);
+            } else {
+                const uint32_t first = k * 12;
+                const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
+                const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
+                const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
+                const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
+                index = __funnelshift_r(lo, hi, shift) & 4095u;
+                if constexpr (BITS == 13) {
+                    index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+                }
             }
             const uint2 word = book[index];
             const uint2 word2 = RES ? book2[glmvq_decode_res(cur, k)] : make_uint2(0u, 0u);
@@ -499,10 +558,12 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
         for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
             xs[t] = x + (t < count ? item.pair[t] / GLMVQ_DEC_USED : 0u) * HIDDEN;
         }
-        const auto *gm = (const uint32_t *)item.gate.main + row * HIDDEN * 3 / 64;
-        const auto *gp = BITS == 13 ? (const uint32_t *)item.gate.plane + row * HIDDEN / 256 : nullptr;
-        const auto *um = (const uint32_t *)item.up.main + row * HIDDEN * 3 / 64;
-        const auto *upl = BITS == 13 ? (const uint32_t *)item.up.plane + row * HIDDEN / 256 : nullptr;
+        const uint32_t mw = glmvq_v2<BITS>() ? row * (HIDDEN / 32) : row * HIDDEN * 3 / 64;
+        const uint32_t pw = BITS == 10 ? row * (HIDDEN / 128) : row * HIDDEN / 256;
+        const auto *gm = (const uint32_t *)item.gate.main + mw;
+        const auto *gp = glmvq_planed<BITS>() ? (const uint32_t *)item.gate.plane + pw : nullptr;
+        const auto *um = (const uint32_t *)item.up.main + mw;
+        const auto *upl = glmvq_planed<BITS>() ? (const uint32_t *)item.up.plane + pw : nullptr;
         const auto *gr = RES ? (const uint32_t *)item.gate.res + row * HIDDEN / 32 : nullptr;
         const auto *ur = RES ? (const uint32_t *)item.up.res + row * HIDDEN / 32 : nullptr;
         float g[GLMVQ_VER_ROWS], u[GLMVQ_VER_ROWS];
@@ -554,8 +615,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
                 xs[t] = x + (uint64_t)(item.slot + (t < count ? t : 0u)) * FFN;
             }
             const glmvq_matrix m = item.down;
-            const auto *main = (const uint32_t *)m.main + row * FFN * 3 / 64;
-            const auto *plane = BITS == 13 ? (const uint32_t *)m.plane + row * FFN / 256 : nullptr;
+            const auto *main = (const uint32_t *)m.main + (glmvq_v2<BITS>() ? row * (FFN / 32) : row * FFN * 3 / 64);
+            const auto *plane = glmvq_planed<BITS>() ? (const uint32_t *)m.plane +
+                (BITS == 10 ? row * (FFN / 128) : row * FFN / 256) : nullptr;
             const auto *res = RES ? (const uint32_t *)m.res + row * FFN / 32 : nullptr;
             float value[GLMVQ_VER_ROWS];
             auto carry = glmvq_decode_load<BITS, glmvq_decode_steps<FFN>(), RES>(main, plane, res);

@@ -36,6 +36,7 @@ pub enum ModelFamily {
     Ling31Vq = 15,
     BeamVq = 16,
     MinimaxVq = 17,
+    Axk2Vq = 18,
 }
 
 impl ModelFamily {
@@ -52,6 +53,7 @@ impl ModelFamily {
             "ling31_vq" => Some(Self::Ling31Vq),
             "beam_vq" => Some(Self::BeamVq),
             "minimax_m3_vq" => Some(Self::MinimaxVq),
+            "axk2_vq" => Some(Self::Axk2Vq),
             "inkling" => Some(Self::Inkling),
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
@@ -76,6 +78,7 @@ impl ModelFamily {
             Self::Ling31Vq => "ling31_vq",
             Self::BeamVq => "beam_vq",
             Self::MinimaxVq => "minimax_m3_vq",
+            Self::Axk2Vq => "axk2_vq",
             Self::Inkling => "inkling",
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
@@ -111,6 +114,7 @@ pub enum Variant {
     Ling31FlashVq = 18,
     BeamVq = 19,
     MinimaxVq = 20,
+    Axk2Vq = 21,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -370,6 +374,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"ling31_vq") => ArchRoute::Fixed(Variant::Ling31FlashVq),
         Some(b"beam_vq") => ArchRoute::Fixed(Variant::BeamVq),
         Some(b"minimax_m3_vq") => ArchRoute::Fixed(Variant::MinimaxVq),
+        Some(b"axk2_vq") => ArchRoute::Fixed(Variant::Axk2Vq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -397,6 +402,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Ling31FlashVq => SHAPE_LING31_VQ,
         Variant::BeamVq => SHAPE_BEAM_VQ,
         Variant::MinimaxVq => SHAPE_MINIMAX_VQ,
+        Variant::Axk2Vq => SHAPE_AXK2_VQ,
     }
 }
 
@@ -1402,6 +1408,45 @@ pub(crate) const SHAPE_MINIMAX_VQ: Shape = Shape {
     expert_weight_scale: 2.0,
     rope_freq_base: 10_000_000.0,
     rope_orig_ctx: 1_048_576,
+    ..SHAPE_K2_HORIZON_375B
+};
+
+// A.X-K2: DeepSeek-V3.2-shaped MLA over hidden 7168 (64 heads, q rank 1536,
+// latent 512 + rope 64, key 192, value 128), the DSA indexer (64 x 128,
+// top-2,048) on all 61 layers, one dense layer, 256 sigmoid-routed experts
+// top-8 (x 2.5) plus one shared expert, YaRN x 2 to the native 262,144
+// positions (axk2_vq/layout.rs).
+pub(crate) const SHAPE_AXK2_VQ: Shape = Shape {
+    name: "A.X-K2-VQ",
+    family: ModelFamily::Axk2Vq,
+    variant: Variant::Axk2Vq,
+    n_layer: 61,
+    n_embd: 7168,
+    n_vocab: 163_840,
+    n_head: 64,
+    n_head_kv: 1,
+    n_head_dim: 576,
+    n_value_dim: 128,
+    n_rot: 64,
+    n_lora_q: 1536,
+    n_expert: 256,
+    n_expert_used: 8,
+    n_expert_shared: 1,
+    n_ff_exp: 2048,
+    n_ff_dense: 18432,
+    n_ff_shexp: 2048,
+    n_indexer_head: 64,
+    n_indexer_head_dim: 128,
+    n_indexer_top_k: 2048,
+    n_leading_dense: 1,
+    n_kv_lora: 512,
+    n_key_mla: 192,
+    n_value_mla: 128,
+    n_full_attn_count: 61,
+    expert_weight_scale: 2.5,
+    rope_freq_base: 1_000_000.0,
+    rope_scale_factor: 2.0,
+    rope_orig_ctx: 131_072,
     ..SHAPE_K2_HORIZON_375B
 };
 
