@@ -437,6 +437,11 @@ tests/h3/native_test: tests/h3/test_native.cu native/h3/h3_dit_gpu.cu native/h3/
 tests/h3/attn_bm: tests/h3/attn_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
 	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
 
+# Same reproducer shape for the video VAE's F32 attention kernel, which the
+# decoder calls once per layer per tile (36 layers, 12 tiles).
+tests/h3/attn_f32_bm: tests/h3/attn_f32_bm.cu native/h3/h3_dit_gpu.cu native/h3/h3_dit_gpu.h native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o
+	$(NVCC) $(H3_NVCCFLAGS) -o $@ $< native/h3/h3_text_gpu.o native/h3/h3_vision_gpu.o -lcublasLt
+
 # Portable reference tests: host-only, without model weights.
 H3_REFERENCE_TESTS := test_host_portable test_av_mux test_tokenizer_portable
 H3_REFERENCE_SUITE := $(addprefix tests/h3-,$(H3_REFERENCE_TESTS))
@@ -2631,7 +2636,7 @@ BUILD_PROGRAMS := \
 
 BUILD_OBJECTS += tests/test_iquest_prefix.o $(H3_OBJS)
 BUILD_PROGRAMS += h3-rs h3-server-rs $(H3_GATES) $(H3_REFERENCE_SUITE) \
-    tests/h3/native_test tests/h3/attn_bm tools/minimax_h3/ppm_diff
+    tests/h3/native_test tests/h3/attn_bm tests/h3/attn_f32_bm tools/minimax_h3/ppm_diff
 DEPFILES := $(addsuffix .d,$(BUILD_OBJECTS))
 -include $(wildcard $(DEPFILES))
 

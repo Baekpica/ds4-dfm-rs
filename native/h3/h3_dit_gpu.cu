@@ -1641,81 +1641,145 @@ __global__ static void h3d_attention_f32_kernel(
     }
 }
 
-/* `h3_attention_tiled_f32_kernel` (`:1489-1547`): one block per head and eight
- * rows, one warp per row, `HEAD_DIM / 32` dimensions per lane. With a 64-wide
- * head only two lanes per item carry data and only the first 64 threads fill
- * the shared key/value row, exactly as the reference does. */
+/* Key rows staged per barrier pair and rows one warp owns in the F32 kernel.
+ * 1 and 1 are the reference's mapping; more of either amortizes the staged rows
+ * and the barrier pair. Both are per translation unit so a sweep can build the
+ * reproducer with -DH3D_ATTENTION_F32_KEYS=n and -DH3D_ATTENTION_F32_ROWS=n and
+ * compare output hashes. */
+#ifndef H3D_ATTENTION_F32_KEYS
+#define H3D_ATTENTION_F32_KEYS 8
+#endif
+#ifndef H3D_ATTENTION_F32_ROWS
+#define H3D_ATTENTION_F32_ROWS 2
+#endif
+
+/* `h3_attention_tiled_f32_kernel` (`:1489-1547`): one block per head, `HEAD_DIM
+ * / 32` dimensions per lane, and a block row of QUERIES query rows. With a
+ * 64-wide head two items per lane carry data and only the first 64 threads fill
+ * a staged key/value row, exactly as the reference does.
+ *
+ * Deviations from the reference, named and measured: the reference stages one
+ * key row per barrier pair and re-reads the query row from global for every key
+ * row; this stages H3D_ATTENTION_F32_KEYS rows and holds the row's items in
+ * registers. The reference also gives each warp one query row; this gives it
+ * H3D_ATTENTION_F32_ROWS rows, served from the same staged rows. Every row runs
+ * the reference's arithmetic in the reference's order, so the output stays
+ * bit-identical. */
 template <int HEAD_DIM>
 __global__ static void h3d_attention_tiled_f32_kernel(
         float *output, const float *query, const float *key,
         const float *value, uint32_t sequence, uint32_t heads, float scale,
         int head_major_output) {
-    enum { QUERIES = 8, ITEMS = HEAD_DIM / 32 };
-    __shared__ float shared_key[HEAD_DIM];
-    __shared__ float shared_value[HEAD_DIM];
+    enum { ITEMS = HEAD_DIM / 32, KEYS = H3D_ATTENTION_F32_KEYS,
+           ROWS = H3D_ATTENTION_F32_ROWS, QUERIES = 8 * ROWS };
+    __shared__ float shared_key[KEYS][HEAD_DIM];
+    __shared__ float shared_value[KEYS][HEAD_DIM];
     uint32_t warp = threadIdx.x / 32;
     uint32_t lane = threadIdx.x % 32;
     uint32_t head = blockIdx.x;
-    uint32_t row = blockIdx.y * QUERIES + warp;
-    int active = row < sequence;
-    size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
-    float result[ITEMS];
+    uint32_t first_row = blockIdx.y * QUERIES + warp * ROWS;
+    int active[ROWS];
+    float result[ROWS][ITEMS];
+    float maximum[ROWS];
+    float denominator[ROWS];
+    float query_item[ROWS][ITEMS];
 #pragma unroll
-    for (uint32_t item = 0; item < ITEMS; item++) result[item] = 0.0f;
-    float maximum = -INFINITY;
-    float denominator = 0.0f;
-    for (uint32_t key_row = 0; key_row < sequence; key_row++) {
+    for (uint32_t r = 0; r < ROWS; r++) {
+        uint32_t row = first_row + r;
+        active[r] = row < sequence;
+        maximum[r] = -INFINITY;
+        denominator[r] = 0.0f;
+#pragma unroll
+        for (uint32_t item = 0; item < ITEMS; item++) {
+            result[r][item] = 0.0f;
+            query_item[r][item] = 0.0f;
+        }
+        if (!active[r]) {
+            continue;
+        }
+        size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
+#pragma unroll
+        for (uint32_t item = 0; item < ITEMS; item++) {
+            query_item[r][item] = query[query_base + lane + item * 32];
+        }
+    }
+    for (uint32_t key_block = 0; key_block < sequence; key_block += KEYS) {
+        /* KEYS independent loads per thread: the staged rows' latencies
+         * overlap instead of one row's latency stalling every iteration. */
         if (threadIdx.x < HEAD_DIM) {
-            size_t index = ((size_t)head * sequence + key_row) * HEAD_DIM +
-                           threadIdx.x;
-            shared_key[threadIdx.x] = key[index];
-            shared_value[threadIdx.x] = value[index];
+#pragma unroll
+            for (uint32_t item = 0; item < KEYS; item++) {
+                uint32_t source = key_block + item;
+                if (source < sequence) {
+                    size_t index =
+                            ((size_t)head * sequence + source) * HEAD_DIM +
+                            threadIdx.x;
+                    shared_key[item][threadIdx.x] = key[index];
+                    shared_value[item][threadIdx.x] = value[index];
+                }
+            }
         }
         __syncthreads();
-        float product = 0.0f;
-        if (active) {
 #pragma unroll
-            for (uint32_t item = 0; item < ITEMS; item++) {
-                uint32_t dimension = lane + item * 32;
-                product += query[query_base + dimension] *
-                           shared_key[dimension];
+        for (uint32_t item = 0; item < KEYS; item++) {
+            if (key_block + item >= sequence) {
+                break;
             }
 #pragma unroll
-            for (uint32_t offset = 16; offset; offset >>= 1) {
-                product += __shfl_down_sync(0xffffffffu, product, offset);
-            }
-        }
-        float rescale = 1.0f;
-        float weight = 0.0f;
-        if (active && lane == 0) {
-            float score = product * scale;
-            float next_maximum = fmaxf(maximum, score);
-            rescale = expf(maximum - next_maximum);
-            weight = expf(score - next_maximum);
-            denominator = denominator * rescale + weight;
-            maximum = next_maximum;
-        }
-        rescale = __shfl_sync(0xffffffffu, rescale, 0);
-        weight = __shfl_sync(0xffffffffu, weight, 0);
-        if (active) {
+            for (uint32_t r = 0; r < ROWS; r++) {
+                float product = 0.0f;
+                if (active[r]) {
 #pragma unroll
-            for (uint32_t item = 0; item < ITEMS; item++) {
-                uint32_t dimension = lane + item * 32;
-                result[item] = result[item] * rescale +
-                               weight * shared_value[dimension];
+                    for (uint32_t part = 0; part < ITEMS; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        product += query_item[r][part] *
+                                   shared_key[item][dimension];
+                    }
+#pragma unroll
+                    for (uint32_t offset = 16; offset; offset >>= 1) {
+                        product += __shfl_down_sync(0xffffffffu, product, offset);
+                    }
+                }
+                float rescale = 1.0f;
+                float weight = 0.0f;
+                if (active[r] && lane == 0) {
+                    float score = product * scale;
+                    float next_maximum = fmaxf(maximum[r], score);
+                    rescale = expf(maximum[r] - next_maximum);
+                    weight = expf(score - next_maximum);
+                    denominator[r] = denominator[r] * rescale + weight;
+                    maximum[r] = next_maximum;
+                }
+                rescale = __shfl_sync(0xffffffffu, rescale, 0);
+                weight = __shfl_sync(0xffffffffu, weight, 0);
+                if (active[r]) {
+#pragma unroll
+                    for (uint32_t part = 0; part < ITEMS; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        result[r][part] = result[r][part] * rescale +
+                                          weight *
+                                          shared_value[item][dimension];
+                    }
+                }
             }
         }
         __syncthreads();
     }
-    denominator = __shfl_sync(0xffffffffu, denominator, 0);
-    if (!active) return;
 #pragma unroll
-    for (uint32_t item = 0; item < ITEMS; item++) {
-        uint32_t dimension = lane + item * 32;
-        size_t index = head_major_output ?
-            ((size_t)head * sequence + row) * HEAD_DIM + dimension :
-            ((size_t)row * heads + head) * HEAD_DIM + dimension;
-        output[index] = result[item] / denominator;
+    for (uint32_t r = 0; r < ROWS; r++) {
+        denominator[r] = __shfl_sync(0xffffffffu, denominator[r], 0);
+        if (!active[r]) {
+            continue;
+        }
+        uint32_t row = first_row + r;
+#pragma unroll
+        for (uint32_t item = 0; item < ITEMS; item++) {
+            uint32_t dimension = lane + item * 32;
+            size_t index = head_major_output ?
+                ((size_t)head * sequence + row) * HEAD_DIM + dimension :
+                ((size_t)row * heads + head) * HEAD_DIM + dimension;
+            output[index] = result[r][item] / denominator[r];
+        }
     }
 }
 
@@ -1735,7 +1799,8 @@ int h3d_sdpa_f32(h3d_context *context, h3d_tensor *output,
                              "invalid attention tensors or shape");
     }
     if (head_dim == 64) {
-        dim3 grid(heads, (sequence + 7) / 8);
+        dim3 grid(heads, (sequence + 8 * H3D_ATTENTION_F32_ROWS - 1) /
+                                 (8 * H3D_ATTENTION_F32_ROWS));
         h3d_attention_tiled_f32_kernel<64><<<grid, 256, 0,
                                              context->stream>>>(
             (float *)output->data, (const float *)query->data,

@@ -284,6 +284,40 @@ static void short_attention_axes(h3d_context *gpu) {
     h3d_free(zero); h3d_free(value); h3d_free(output);
 }
 
+static void short_attention_f32_axes(h3d_context *gpu) {
+    char error[512] = {};
+    /* width 64 is the video VAE's head_dim, so this drives the tiled F32
+     * kernel rather than the generic one, and 17 rows leaves a partial final
+     * block for the rows-per-warp tail. */
+    constexpr uint32_t rows = 17, heads = 2, width = 64;
+    constexpr size_t elements = (size_t)rows * heads * width;
+    auto *zero = h3d_alloc(gpu, H3D_F32, elements, error, sizeof(error));
+    auto *value = h3d_alloc(gpu, H3D_F32, elements, error, sizeof(error));
+    auto *output = h3d_alloc(gpu, H3D_F32, elements, error, sizeof(error));
+    if (!zero || !value || !output) { fprintf(stderr, "%s\n", error); exit(2); }
+    std::vector<float> source(elements), expected(elements), actual(elements);
+    for (uint32_t row = 0; row < rows; ++row) {
+        for (uint32_t head = 0; head < heads; ++head) {
+            for (uint32_t dim = 0; dim < width; ++dim) {
+                // Powers of two retain an exact uniform mean for every row.
+                float item = head == 0 ? 1.0f : 2.0f;
+                source[((size_t)head * rows + row) * width + dim] = item;
+                expected[((size_t)row * heads + head) * width + dim] = item;
+            }
+        }
+    }
+    cuda_check(cudaMemsetAsync(zero->data, 0, elements * 4, gpu->stream));
+    cuda_check(cudaMemcpyAsync(value->data, source.data(), elements * 4, cudaMemcpyHostToDevice, gpu->stream));
+    cuda_check(cudaMemsetAsync(output->data, 0xff, elements * 4, gpu->stream));
+    int ok = h3d_sdpa_f32(gpu, output, zero, zero, value, rows, heads, width, 0.125f,
+                          error, sizeof(error));
+    int synced = h3d_sync(gpu, error, sizeof(error));
+    bool read = ok && synced && h3d_read(gpu, actual.data(), output, error, sizeof(error));
+    if (!ok || !synced || !read) { fprintf(stderr, "F32 attention: %s\n", error); }
+    check(read && actual == expected, "tiled F32 attention preserves head and row axes");
+    h3d_free(zero); h3d_free(value); h3d_free(output);
+}
+
 static void text_embedding_rows(h3t_context *gpu, uint32_t rows, uint32_t width) {
     char error[512] = {};
     constexpr uint32_t vocab = 3;
@@ -453,6 +487,7 @@ int main() {
     pad_plane_launch(dit, 254, 256, 1);
     pad_plane_launch(dit, 3, 2, 129);
     short_attention_axes(dit);
+    short_attention_f32_axes(dit);
     h3v_destroy(vision);
     h3t_destroy(text);
     h3d_destroy(dit);
