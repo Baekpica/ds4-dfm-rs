@@ -183,7 +183,17 @@ pub(super) fn encode(v: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         return;
     };
     let normalized = crate::mimo2::nfc(text);
-    super::step37::isolated(&normalized, cjk, |piece| {
-        super::bpe_tokenize_text_solar(v, piece.as_bytes(), out)
-    });
+    // Split Isolated: each CJK run and each span between them alone.
+    let bytes = normalized.as_bytes();
+    let mut start = 0;
+    for m in cjk.find_iter(&normalized) {
+        if start < m.start() {
+            super::bpe_tokenize_text_solar(v, &bytes[start..m.start()], out);
+        }
+        super::bpe_tokenize_text_solar(v, m.as_str().as_bytes(), out);
+        start = m.end();
+    }
+    if start < bytes.len() {
+        super::bpe_tokenize_text_solar(v, &bytes[start..], out);
+    }
 }
