@@ -31,6 +31,7 @@ typedef struct {
     ds4_gpu_tensor *q_abs, *latent_out;          // absorbed MLA, L31_MLA_EXPAND_MIN rows
     ds4_gpu_tensor *k_full, *value, *attn_tmp, *lse, *lse_tmp; // views (expanded MLA)
     ds4_gpu_tensor *logits, *inv_freq;
+    float rope_attn;                             // YaRN amplitude of the rotated tails
     ds4_gpu_tensor *state_pool, *control_pool, *last_hidden;
     ds4_gpu_tensor *recurrent[DS4_MAX_LAYER], *q_tail[DS4_MAX_LAYER], *k_tail[DS4_MAX_LAYER],
         *v_tail[DS4_MAX_LAYER];
@@ -194,12 +195,12 @@ static bool ling31_graph_state(ds4_ling31_graph *g, uint32_t layers) {
     return true;
 }
 
+// Theta 6e6 over the 64 rotary dims; factor 1 is the plain table bit for bit.
 static bool ling31_rope_table(ds4_ling31_graph *g) {
-    // rope_scaling is null: theta 6e6 over the 64 rotary dims at every context.
+    const uint32_t factor = ling31_rope_factor(g->ctx_cap);
     float inv[L31_ROPE / 2u];
-    for (uint32_t j = 0; j < L31_ROPE / 2u; j++) {
-        inv[j] = (float)pow((double)L31_ROPE_THETA, -2.0 * j / L31_ROPE);
-    }
+    if (!factor) { return false; }
+    ling_yarn_table(inv, &g->rope_attn, L31_ROPE_THETA, L31_ROPE, L31_CONTEXT_ORIG, factor);
     return ds4_gpu_tensor_write(g->inv_freq, 0, inv, sizeof(inv)) != 0;
 }
 
@@ -284,8 +285,8 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     g->ready = true;
     if (!ling31_graph_reset(g)) { ling31_graph_free(g); return false; }
     ds4_log(stderr, DS4_LOG_TIMING,
-        "ds4: Ling-3.1 graph ctx=%u chunk=%u KV=%.2f GiB state=%.1f MiB control=%.1f MiB "
-        "workspace=%.2f GiB\n", ctx, cap, (double)g->kv_bytes / 1073741824.0,
+        "ds4: Ling-3.1 graph ctx=%u chunk=%u rope=x%u KV=%.2f GiB state=%.1f MiB control=%.1f MiB "
+        "workspace=%.2f GiB\n", ctx, cap, ling31_rope_factor(ctx), (double)g->kv_bytes / 1073741824.0,
         (double)g->state_bytes / 1048576.0, (double)g->control_bytes / 1048576.0,
         (double)g->workspace_bytes / 1073741824.0);
     return true;
@@ -518,9 +519,9 @@ static bool l31_mla(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
         /* Interleaved rope on every head's 64-dim tail and on the shared key
          * tail of the 576-wide latent row, before either is cached. */
         !ds4_gpu_ling3vl_mrope(g->q, g->positions, g->inv_freq, rows, L31_HEADS, L31_KEY,
-            L31_NOPE, L31_ROPE, L31_ROPE / 2u, 0u, 1.0f) ||
+            L31_NOPE, L31_ROPE, L31_ROPE / 2u, 0u, g->rope_attn) ||
         !ds4_gpu_ling3vl_mrope(g->kv_raw, g->positions, g->inv_freq, rows, 1u, L31_KV_ROW,
-            L31_KV_LORA, L31_ROPE, L31_ROPE / 2u, 0u, 1.0f) ||
+            L31_KV_LORA, L31_ROPE, L31_ROPE / 2u, 0u, g->rope_attn) ||
         !ds4_gpu_l31_latent_norm(g->kv_norm, g->kv_raw, g->kv_norm_w[il], rows, DS4_RMS_EPS) ||
         !ds4_gpu_l31_store_latent(g->latent[il], g->k_pe[il], g->kv_norm, g->kv_raw, rows, pos,
             g->ctx_cap, g->latent_mode)) { return false; }

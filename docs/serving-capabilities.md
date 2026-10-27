@@ -63,7 +63,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | MiMo-V2.6-Flash-RL | 1048576 | 524288 | 1 | — | `DS4_MIMO2_PREFILL_CHUNK` |
 | Naive-N0.5-Flash | 1048576 | 8192 | 2 | 702 | `DS4_NAIVE_PREFILL_CHUNK` |
 | IQuest-Q1 | 524288 | — | — | — | `DS4_IQUEST_PREFILL_CHUNK` |
-| Ling-3.1-flash-VQ | 262144 | — | — | — | `DS4_LING31_PREFILL_CHUNK` |
+| Ling-3.1-flash-VQ | 1048576 | — | — | — | `DS4_LING31_PREFILL_CHUNK` |
 | Beam-1.0-501B-A23B-VQ | 1048576 | — | — | — | `DS4_BEAM_PREFILL_CHUNK` |
 | MiniMax-M3.1-Flash-VQ | 1048576 | — | — | — | `DS4_MINIMAX_PREFILL_CHUNK` |
 | A.X-K2-VQ | 262144 | — | — | — | `DS4_AXK2_PREFILL_CHUNK` |

@@ -44,7 +44,8 @@ fn family_is_its_own_contract() {
         (512, 1280, 4)
     );
     let caps = ds4_core::caps_from_shape(shape);
-    assert_eq!(caps.ctx_max, Some(262_144));
+    assert_eq!(caps.ctx_max, Some(1_048_576));
+    assert_eq!(ds4_core::native_ctx_default(caps), Some(262_144));
     assert_eq!(caps.qualified_ctx, None);
 }
 

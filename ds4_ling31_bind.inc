@@ -146,7 +146,10 @@ enum {
     // 4096-row chunks prefill 10-14% faster once allocated (8K/16K; a cold first
     // allocation stalled them below 2048) but need 1.2 GiB more workspace, which a
     // 128 GB Spark lacks beside the trunk and a bank.
-    L31_CONTEXT = 262144, L31_PREFILL_DEFAULT = 2048, L31_PREFILL_MAX = 4096,
+    L31_PREFILL_DEFAULT = 2048, L31_PREFILL_MAX = 4096,
+    // Trained positions (max_position_embeddings, rope_scaling null); the
+    // official SGLang recipe serves 1,048,576 with YaRN factor 4 over them.
+    L31_CONTEXT_ORIG = 262144, L31_YARN_FACTOR = 4, L31_CONTEXT = L31_CONTEXT_ORIG * L31_YARN_FACTOR,
     // Absorbed MLA below one expanded query tile (decode, verify, short appends);
     // the tensor-core absorbed kernel starts at 8 rows.
     L31_MLA_EXPAND_MIN = 64, L31_MLA_TC_MIN = 8,
@@ -156,6 +159,15 @@ enum {
     L31_TOKENS = 157153,
 };
 static const float L31_ROPE_THETA = 6000000.0f;
+
+/* Rope table of a `ctx` session: original up to the trained positions, YaRN
+ * factor 4 past them, 0 past 1,048,576. Static per session: cached rope keys
+ * keep one table for life, so the context, not the prompt, selects it. */
+static uint32_t ling31_rope_factor(uint32_t ctx) {
+    if (!ctx || ctx > L31_CONTEXT) { return 0u; }
+    return ctx <= L31_CONTEXT_ORIG ? 1u : L31_YARN_FACTOR;
+}
+
 // Finite, so NaN checks and logits dumps hold; exp() underflows to zero.
 static const float L31_PAD_LOGIT = -1e30f;
 

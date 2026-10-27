@@ -22,8 +22,10 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GLM_CTX_MAX: u32 = 1_048_576;
-/// Ling-3.1's max_position_embeddings (rope_scaling null).
-const LING31_CTX_MAX: u32 = 262_144;
+/// Ling-3.1's max_position_embeddings (rope_scaling null), the default.
+/// Larger contexts select YaRN factor 4 (official SGLang recipe) up to 1M.
+pub(crate) const LING31_NATIVE_CTX: u32 = 262_144;
+const LING31_CTX_MAX: u32 = 4 * LING31_NATIVE_CTX;
 /// Beam's max_position_embeddings: NoPE full layers, no RoPE scaling.
 const BEAM_CTX_MAX: u32 = 1_048_576;
 /// MiniMax-M3.1's max_position_embeddings (rope_scaling null).
@@ -657,17 +659,14 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
 /// contract defaults to it (GLM VQ follows max_position_embeddings); None
 /// keeps the host default.
 pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
-    if matches!(
-        caps.family,
+    match caps.family {
+        // YaRN rotates every cached key differently: opt in with --ctx.
+        ModelFamily::Ling31Vq => Some(LING31_NATIVE_CTX),
         ModelFamily::Glm53Vq
-            | ModelFamily::Ling31Vq
-            | ModelFamily::BeamVq
-            | ModelFamily::MinimaxVq
-            | ModelFamily::Axk2Vq
-    ) {
-        caps.ctx_max
-    } else {
-        None
+        | ModelFamily::BeamVq
+        | ModelFamily::MinimaxVq
+        | ModelFamily::Axk2Vq => caps.ctx_max,
+        _ => None,
     }
 }
 

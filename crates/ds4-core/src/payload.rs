@@ -5,6 +5,7 @@
 
 use std::io::{self, Read, Seek, SeekFrom};
 
+use crate::serving::LING31_NATIVE_CTX;
 use crate::session::SessionLedger;
 use crate::shape::ModelFamily;
 
@@ -141,6 +142,8 @@ impl PayloadLayout {
             // Dense-only VQ sessions skip pool construction. Growing across
             // that boundary requires replay, not a byte restore.
             Self::Glm53Vq => saved > ctx || (saved > GLMVQ_DENSE_KEYS) != (ctx > GLMVQ_DENSE_KEYS),
+            // Rope keys carry the saved context's table (YaRN past 262,144).
+            Self::Ling31Vq => (saved > LING31_NATIVE_CTX) != (ctx > LING31_NATIVE_CTX),
             _ => false,
         }
     }
@@ -836,6 +839,12 @@ mod tests {
         );
         assert!(read(&prefix, ModelFamily::Ling31Vq, 2).is_err());
         assert!(read(&prefix, ModelFamily::Ling3Vl, 262144).is_err());
+        // Rope keys never cross the YaRN boundary (factor 1 vs 4).
+        assert!(read(&prefix, ModelFamily::Ling31Vq, 262145).is_err());
+        let mut yarn = prefix.clone();
+        yarn.fields[2] = 524288;
+        assert!(read(&yarn, ModelFamily::Ling31Vq, 262144).is_err());
+        assert!(read(&yarn, ModelFamily::Ling31Vq, 1048576).is_ok());
         let mut bad = prefix.clone();
         bad.fields[12] = 2;
         assert!(read(&bad, ModelFamily::Ling31Vq, 262144).is_err());
