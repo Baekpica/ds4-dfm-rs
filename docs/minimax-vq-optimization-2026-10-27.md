@@ -87,3 +87,28 @@ Raw build, guard, clocks, NCU, Nsight, proofs and commands remain in ignored
 `scratch/minimax-m31-20261027/`. The scoped [P1 receipt](benchmarks/minimax-m31-2026-10-27/p1.json)
 retains the samples. These gates cover text performance and the changed
 storage path; they do not extend serving, media or 1M qualification.
+
+## P2: emit the indexer's MMQ input from the residual — rejected
+
+After P1, the 64K suffix profile was 50.94 s. Its 840 separate MMQ input
+quantizers cost 0.468 s and read a 100.7 MB F32 norm per 4,096-row call.
+The trial emitted the exact D4 Q8 input from the residual, omitted that
+F32 norm, and consumed existing context scratch without new tensors.
+Independent byte parity and integrated producer/consumer probes passed;
+all frontier logits and 256 greedy tokens matched at both frontiers.
+
+The isolated residual plus quantizer fell from 1.977248 to 1.107136 ms,
+with 64 registers and no spills. Three fresh unpinned pairs improved
+64K prefill from a median 1,122.01 to 1,137.31 tok/s (+1.36%), but decode
+fell from 20.84 to 20.36 tok/s (-2.30%). A further non-profiled pair on
+the operator's performance CPUs (`taskset -c 5-9,15-19`) reproduced the
+tradeoff: prefill 1,119.82 → 1,138.45; decode 20.68 → 20.29 (-1.89%).
+Steady-state rates excluding the first token also fell.
+
+Full Nsight traces preserving snapshots and proof dumps showed the
+opposite decode sign (~2% faster), identical kernel counts and ~99.6%
+GPU coverage. They do not explain or invalidate the repeatable unprofiled
+regression. The GPU-state cause remains unresolved. The trial was removed;
+the prefill gain does not outweigh the decode cost for the joint target.
+The [rejected receipt](benchmarks/minimax-m31-2026-10-27/p2-rejected.json)
+retains both CPU protocols. Adopted counts remain **prefill 1, decode 0**.

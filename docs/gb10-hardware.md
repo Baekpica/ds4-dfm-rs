@@ -12,6 +12,7 @@ optimization round (the 85-90% targets of the
 | Item | Value |
 |---|---|
 | GPU | NVIDIA GB10, compute capability 12.1, 48 SMs |
+| CPU performance cores on the reference host | `5-9,15-19` (operator-confirmed 2026-10-27); sysfs reports 3.9 GHz maximum, versus 2.808 GHz on the other cores. Prefer these cores for parallel CPU work, within the caller's allowed CPU set. |
 | Build target | `-gencode arch=compute_121a,code=sm_121a` (`make cuda-spark`); `-arch=sm_121a` alone emits plain `sm_121` and ptxas rejects the FP8/FP4 `mma` kinds |
 | Tensor-core instructions | `mma.sync` only: ptxas rejects `wgmma` and `tcgen05` for `sm_121a`; `cp.async.bulk` (TMA-style copies) and mbarriers are available |
 | SM clock | device attribute 2,418 MHz (nvidia-smi lists 3,003 MHz). Observed under load: 2,184-2,190 MHz while the host capped clocks at 300-2,200 MHz (2026-09-14 to 2026-10-21); 2,410-2,590 MHz on 2026-10-24 with no cap in effect |
@@ -20,6 +21,11 @@ optimization round (the 85-90% targets of the
 
 Every compute peak below scales with the SM clock: record the observed clock
 next to any A/B or roofline figure.
+
+Use `taskset -c 5-9,15-19` for this host's parallel builds and benchmark
+processes, so their CPU helpers inherit the performance-core set. Record
+affinity with measurements; a main-thread CPU sample alone does not describe
+the placement of all helper threads. This core numbering is host-specific.
 
 ## Compute (dense `mma.sync`)
 
