@@ -103,7 +103,8 @@ These reports preserve successful gates, rejected experiments and unresolved lim
 - **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
   three matched h3.c outputs, a native video API gate and measured generation cost;
   [October 27 speed baseline](minimax-h3/speed-2026-10-27.md), the port against
-  h3.c on one job, phase by phase.
+  h3.c on one job, phase by phase; [plots of that job](benchmarks/h3-768-2026-10-27/README.md),
+  the three arms on three phases.
 - **MiniMax VQ:** [October 27 prefill/decode campaign](minimax-vq-optimization-2026-10-27.md),
   three adopted rounds each; [fresh 2K–64K DSpark graph](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md),
   raw clocks, exact output checks and observed repeat ranges.
