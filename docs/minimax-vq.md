@@ -424,7 +424,16 @@ carries the `]<]minimax[>[` namespace token,
 dicts nest by key and lists by `<item>`. Top-level values follow the declared
 schema type; nested leaves stay text unless they are JSON scalars. Streams
 hold the namespace token back until the next token shows whether a tool
-block opens. Requests keep their own sampler (the model's defaults are
+block opens. OpenAI Chat streams a recognized call's name and declared string
+arguments incrementally through the common tool/SSE projector; other values
+use the same conversion as the final parser once their parameter closes.
+An unfinished call at the token budget retains `length`; a malformed recognized
+call ending naturally fails the stream instead of completing a partial call.
+Bare namespace prose and wrapperless invokes remain text, matching the full-wrapper
+recognition used by vLLM, SGLang and TensorRT-LLM. Jinja renders input; it does
+not guarantee that sampled output follows this grammar. See the
+[framework comparison and regressions](benchmarks/minimax-serving-issues-2026-10-27.md).
+Requests keep their own sampler (the model's defaults are
 temperature 1.0, top-p 0.95).
 
 ## Diagnostic switches

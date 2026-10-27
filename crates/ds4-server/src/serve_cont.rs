@@ -429,6 +429,14 @@ impl ContStepper {
             }
         };
         let completion = self.acc.completion;
+        if self.req.stream
+            && self.req.api == Api::Openai
+            && syntax == crate::render::ModelSyntax::MinimaxVq
+            && !parsed_gen.ok
+            && self.finish != "length"
+        {
+            self.finish = "error";
+        }
         if !parsed_gen.calls.is_empty() {
             if let Some(st) = self.oa.as_ref() {
                 st.tool.apply_ids(&mut parsed_gen.calls);

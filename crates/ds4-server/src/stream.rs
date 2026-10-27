@@ -804,6 +804,7 @@ pub enum OpenaiMode {
 pub struct OpenaiStream {
     channels: Option<Channels>,
     iquest: Option<iquest::Channels>,
+    minimax: Option<crate::tools::minimax::Stream>,
     pub mode: OpenaiMode,
     pub emit_pos: usize,
     pub active: bool,
@@ -816,6 +817,7 @@ pub fn openai_stream_start(r: &StreamReq) -> OpenaiStream {
         channels: Channels::for_format(r.chat_format),
         iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
             .then(iquest::Channels::default),
+        minimax: None,
         mode: if think_mode_enabled(r.think_mode) {
             OpenaiMode::Thinking
         } else {
@@ -955,7 +957,10 @@ pub fn openai_sse_stream_update(
         }
         if let Some(pos) = tool {
             st.emit_pos = pos;
-            if st.tool.init(raw, st.emit_pos) {
+            if r.chat_format == ChatFormat::Minimax {
+                st.minimax = Some(crate::tools::minimax::Stream::new(pos));
+                st.mode = OpenaiMode::Tool;
+            } else if st.tool.init(raw, st.emit_pos) {
                 st.mode = OpenaiMode::Tool;
             } else {
                 st.mode = OpenaiMode::Suppress;
@@ -966,6 +971,9 @@ pub fn openai_sse_stream_update(
     }
     if st.mode == OpenaiMode::Tool {
         let mut sink = OpenaiToolSink { w, r, job: id };
+        if let Some(parser) = st.minimax.as_mut() {
+            return parser.update(&mut sink, &mut st.tool, raw, &r.tool_orders);
+        }
         if !st.tool.update(&mut sink, raw) {
             return false;
         }
@@ -990,6 +998,14 @@ pub fn openai_sse_finish_live(
     if !openai_sse_stream_update(w, r, id, st, raw, true) {
         return false;
     }
+    if st.minimax.is_some()
+        && calls.is_empty()
+        && (finish == "error" || (st.tool.emitted_any && finish != "length"))
+    {
+        // Like vLLM, fail a recognized but malformed call after streaming began.
+        stream_error(w, r, None, "invalid MiniMax tool call");
+        return true;
+    }
     if !calls.is_empty() && !st.tool.emitted_any {
         w.put_str(&format!(
             "data: {{\"id\":\"{id}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":",
@@ -1001,7 +1017,11 @@ pub fn openai_sse_finish_live(
         append_tool_call_deltas_json(&mut deltas, calls, id);
         w.put(&deltas);
         w.put_str("},\"finish_reason\":null}]}\n\n");
-    } else if let Some(partial) = st.tool.partial_invoke_index() {
+    } else if let Some(partial) = st
+        .tool
+        .partial_invoke_index()
+        .filter(|_| st.minimax.is_none())
+    {
         // The live stream put this call's name on the wire and then failed
         // on the V4.1 artifact's mixed spellings, before its arguments
         // (docs 6.23).  Complete that index with an arguments-only delta
@@ -2667,6 +2687,122 @@ pub fn project_responses_thinking(created: i64) -> Vec<u8> {
 mod stream_failure_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn minimax_long_string_deltas() {
+        let r = StreamReq {
+            syntax: ModelSyntax::MinimaxVq,
+            chat_format: ChatFormat::Minimax,
+            think_mode: ThinkMode::None,
+            has_tools: true,
+            tool_orders: vec![ToolSchemaOrder {
+                name: "f".into(),
+                prop: vec!["code".into()],
+                prop_type: vec!["string".into()],
+                ..Default::default()
+            }],
+            ..StreamReq::default()
+        };
+        let mut w = Writer::new(CREATED_TEST);
+        let mut st = openai_stream_start(&r);
+        let mut raw =
+            b"]<]minimax[>[<tool_call>]<]minimax[>[<invoke name=\"f\">]<]minimax[>[<code>".to_vec();
+        openai_sse_stream_update(&mut w, &r, "chat_test", &mut st, &raw, false);
+        let mut args = String::new();
+        let mut names = 0;
+        let mut drain = |w: &mut Writer| {
+            let mut fragments = 0;
+            for line in std::str::from_utf8(&w.out).unwrap().lines() {
+                let Some(data) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                let chunk: serde_json::Value = serde_json::from_str(data).unwrap();
+                if let Some(call) = chunk["choices"][0]["delta"]["tool_calls"][0].as_object() {
+                    if call["function"]["name"].as_str().is_some() {
+                        names += 1;
+                    }
+                    if let Some(s) = call["function"]["arguments"].as_str() {
+                        args.push_str(s);
+                        fragments += 1;
+                    }
+                }
+            }
+            w.out.clear();
+            fragments
+        };
+        drain(&mut w);
+        let piece = "print(\"한글\\path\")\n";
+        for _ in 0..1000 {
+            raw.extend_from_slice(piece.as_bytes());
+            openai_sse_stream_update(&mut w, &r, "chat_test", &mut st, &raw, false);
+            assert!(
+                drain(&mut w) > 0,
+                "no argument delta before the closing tag"
+            );
+        }
+        raw.extend_from_slice(
+            b"]<]minimax[>[</code>]<]minimax[>[</invoke>]<]minimax[>[</tool_call>",
+        );
+        let p = crate::tools::parse_generated_message(
+            r.syntax,
+            &raw,
+            false,
+            r.chat_format,
+            &r.tool_orders,
+        );
+        assert!(p.ok && p.calls.len() == 1);
+        openai_sse_finish_live(
+            &mut w,
+            &r,
+            "chat_test",
+            &mut st,
+            &raw,
+            "tool_calls",
+            1,
+            1000,
+            &p.calls,
+        );
+        // [DONE] is not JSON; inspect argument deltas before that terminal marker.
+        let end = w
+            .out
+            .windows(b"data: [DONE]".len())
+            .position(|s| s == b"data: [DONE]")
+            .unwrap();
+        w.out.truncate(end);
+        drain(&mut w);
+        assert_eq!(names, 1, "call name must not repeat at finalization");
+        let value: serde_json::Value = serde_json::from_str(&args).unwrap();
+        assert_eq!(value["code"], piece.repeat(1000));
+    }
+
+    #[test]
+    fn minimax_partial_tool_terminal() {
+        let r = StreamReq {
+            syntax: ModelSyntax::MinimaxVq,
+            chat_format: ChatFormat::Minimax,
+            think_mode: ThinkMode::None,
+            has_tools: true,
+            ..StreamReq::default()
+        };
+        let raw =
+            b"]<]minimax[>[<tool_call>]<]minimax[>[<invoke name=\"f\">]<]minimax[>[<x>incomplete";
+        for finish in ["stop", "length"] {
+            let mut w = Writer::new(CREATED_TEST);
+            let mut st = openai_stream_start(&r);
+            openai_sse_stream_update(&mut w, &r, "chat_test", &mut st, raw, false);
+            w.out.clear();
+            openai_sse_finish_live(&mut w, &r, "chat_test", &mut st, raw, finish, 1, 1, &[]);
+            let wire = std::str::from_utf8(&w.out).unwrap();
+            if finish == "length" {
+                assert!(wire.contains("\"finish_reason\":\"length\""));
+                assert!(!wire.contains("\"error\""));
+            } else {
+                assert!(wire.contains("\"error\""));
+                assert!(!wire.contains("[DONE]"));
+            }
+            assert!(!wire.contains("]<]minimax[>["));
+        }
+    }
 
     #[test]
     fn responses_stream_error_continues_the_live_sequence() {

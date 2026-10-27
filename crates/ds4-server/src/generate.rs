@@ -2881,6 +2881,14 @@ pub(crate) fn generate_terminal_prepared(
             }
             finish = "error";
         }
+        if req.stream
+            && req.api == Api::Openai
+            && syntax == ModelSyntax::MinimaxVq
+            && !parsed_gen.ok
+            && finish != "length"
+        {
+            finish = "error";
+        }
         break;
     }
 

@@ -2208,6 +2208,136 @@ fn tools_req() -> ParsedRequest {
     parsed
 }
 
+#[test]
+fn minimax_string_wire() {
+    use ds4_core::chat_template::{RenderClock, Template};
+    let head = b"]<]minimax[>[<tool_call>]<]minimax[>[<invoke name=\"bash\">]<]minimax[>[<command>";
+    let tail = b"]<]minimax[>[</command>]<]minimax[>[</invoke>]<]minimax[>[</tool_call>";
+    let text = "print(\"한글\\path\")\n".repeat(100);
+    let mut pieces: Vec<&[u8]> = vec![head];
+    pieces.extend(std::iter::repeat_n(text.as_bytes(), 10));
+    pieces.push(tail);
+    let model = ds4_core::Variant::MinimaxVq as i32;
+    for stream in [false, true] {
+        let mut parsed = tools_req();
+        parsed.stream = stream;
+        parsed.max_tokens = 64;
+        let mut tape = ScriptedDecode::from_pieces(&pieces);
+        tape.model_id = model;
+        let mut engine = PromptSyncDecode::new(tape, 0, 1);
+        engine.template =
+            Some(Template::compile("{{ messages | tojson }}", RenderClock::Fixed(0)).unwrap());
+        let mut serial = Vec::new();
+        let result = generate_and_write(
+            &mut engine,
+            &parsed,
+            "minimax-test",
+            CREATED_TEST,
+            false,
+            64,
+            &mut serial,
+        )
+        .unwrap();
+        assert_eq!(result.finish, "tool_calls");
+        let (mut stepper, mut continuous) = ContStepper::new(
+            &parsed,
+            model,
+            "minimax-test",
+            CREATED_TEST,
+            false,
+            64,
+            b"prompt".to_vec(),
+            1,
+            8192,
+        );
+        for piece in &pieces {
+            continuous.extend(stepper.feed(piece).bytes);
+        }
+        let (tail, outcome) = stepper.finalize(true, 0, 1, ReqTimings::default(), false);
+        continuous.extend(tail);
+        assert_eq!(outcome.finish, "tool_calls");
+        for bytes in [serial, continuous] {
+            let wire = std::str::from_utf8(&bytes).unwrap();
+            let mut args = String::new();
+            if stream {
+                let mut names = 0;
+                let mut fragments = 0;
+                for data in wire
+                    .lines()
+                    .filter_map(|s| s.strip_prefix("data: "))
+                    .filter(|s| *s != "[DONE]")
+                {
+                    let chunk: serde_json::Value = serde_json::from_str(data).unwrap();
+                    let call = &chunk["choices"][0]["delta"]["tool_calls"][0]["function"];
+                    if call["name"].is_string() {
+                        names += 1;
+                    }
+                    if let Some(s) = call["arguments"].as_str() {
+                        args.push_str(s);
+                        fragments += 1;
+                    }
+                }
+                assert_eq!(names, 1);
+                assert!(fragments >= 10);
+            } else {
+                let body = wire.split_once("\r\n\r\n").unwrap().1;
+                let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                args = body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+                    .as_str()
+                    .unwrap()
+                    .into();
+            }
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&args).unwrap()["command"],
+                text.repeat(10)
+            );
+            assert!(!wire.contains("]<]minimax[>["));
+        }
+    }
+}
+
+#[test]
+fn minimax_tool_abort_wire() {
+    use ds4_core::chat_template::{RenderClock, Template};
+    let model = ds4_core::Variant::MinimaxVq as i32;
+    for raw in [
+        b"]<]minimax[>[<tool_call>]<]minimax[>[<invoke name=\"bash\">]<]minimax[>[<command>unfinished".as_slice(),
+        b"]<]minimax[>[<tool_call>]<]minimax[>[<invoke native pptx table".as_slice(),
+    ] {
+        for cap in [1, 16] {
+            let mut parsed = tools_req();
+            parsed.stream = true;
+            parsed.max_tokens = cap;
+            let mut tape = ScriptedDecode::from_pieces(&[raw]);
+            tape.model_id = model;
+            let mut engine = PromptSyncDecode::new(tape, 0, 1);
+            engine.template = Some(Template::compile(
+                "{{ messages | tojson }}", RenderClock::Fixed(0),
+            ).unwrap());
+            let mut serial = Vec::new();
+            let result = generate_and_write(
+                &mut engine, &parsed, "minimax-test", CREATED_TEST, false, 16, &mut serial,
+            ).unwrap();
+            let (mut stepper, mut continuous) = ContStepper::new(
+                &parsed, model, "minimax-test", CREATED_TEST, false, 16,
+                b"prompt".to_vec(), 1, 8192,
+            );
+            continuous.extend(stepper.feed(raw).bytes);
+            let (tail, outcome) = stepper.finalize(cap != 1, 0, 1, ReqTimings::default(), false);
+            continuous.extend(tail);
+            let finish = if cap == 1 { "length" } else { "error" };
+            assert_eq!(result.finish, finish);
+            assert_eq!(outcome.finish, finish);
+            for bytes in [serial, continuous] {
+                let wire = std::str::from_utf8(&bytes).unwrap();
+                assert_eq!(wire.contains("event: error"), cap != 1);
+                assert!(!wire.contains("]<]minimax[>["));
+                assert!(!wire.contains("\"finish_reason\":\"stop\""));
+            }
+        }
+    }
+}
+
 fn retrying_tool_decode() -> ScriptedDecode {
     let invalid = concat!(
         "<｜DSML｜tool_calls>\n",
