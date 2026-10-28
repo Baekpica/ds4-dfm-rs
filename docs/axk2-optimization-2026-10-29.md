@@ -16,6 +16,26 @@ CUDA runtime 13.4.92. One model process at a time, CPU affinity 5–9,15–19
 page cache cleared between processes, 2 GiB host-memory reserve and trip.
 No MTP, no drafter, no CPU weight offload.
 
+## Adopted rounds
+
+| Round | Commit | Change | Paired median gain |
+|---|---|---|---:|
+| P1 | `430b711f` | Direct BF16 flash output | Prefill +3.76% |
+| P2 | `7872f58f` | Cooperative key metadata gathers | Prefill +1.19% |
+| P3 | `7fcce49d` | Staged key/exponent metadata | Prefill +1.58% |
+| D1 | `bc230fd5` | Q8 async staging, input loads and shape dispatch | Decode +0.85% |
+| D2 | `913b54ba` | Compact expert gate/up loop | Decode +1.10% |
+| D3 | `8bb463ed` | Cooperative gated-norm weight staging | Decode +0.57% |
+
+These are separate paired rounds, not additive percentages or a cumulative
+A/B. D3's mean gain is 0.32%; its absolute ranges overlap. Each round below
+records all samples, numerical class, resource costs and limits.
+
+The final [three-process 2K–64K sweep](benchmarks/axk2-vq-spark-64k-2026-10-29/README.md)
+on clean code `8bb463ed` records **387.4 prefill / 15.25 decode tok/s**
+(medians of run means). This uses incremental 2K steps rather than the
+cold-8K adoption protocol below.
+
 ## Round protocol
 
 Fresh processes alternate off/on with the same executable, artifact and
@@ -112,7 +132,7 @@ Measured binary SHA256 (source above plus this round's native diff):
 Raw receipts, logs, clocks, source digests, full logits/tokens and profiles
 remain in ignored `scratch/axk2-perf/`: `p1-{0-0,1-1,2-1,3-0,4-0,5-1}`,
 `p1-long-{0-1,1-0}`, `baseline-trace`, `p1-trace`, `p1-timeline.txt` and
-`p1-fixture.log`. The final publication sweep and further rounds are pending.
+`p1-fixture.log`.
 
 ## P2 — cooperative sparse-key metadata (adopted)
 
@@ -170,8 +190,7 @@ Measured `ds4-bench` SHA256:
 `a2bbbd79dcf09bc7dfc5522f75365e08fd4b51498a50d6235b2650d61ed4896f`.
 Source is `430b711f` plus this round's native diff. Raw receipts are
 `scratch/axk2-perf/p2-*`, including clocks/host telemetry, full outputs,
-fixture timing, source/SASS receipts and the new trace. Prefill now has
-two adopted rounds; decode rounds and the final publication sweep remain.
+fixture timing, source/SASS receipts and the new trace.
 
 ## P3 — stage sparse attention metadata (adopted)
 
@@ -242,8 +261,6 @@ Measured `ds4-bench` SHA256:
 `68b5413e56116cde7bbb519be55d3cf907865cb4bfbdc505b2052aa43e3b0e56`.
 Source is `7872f58f` plus this round's native diff. Binary/source hashes
 were checked after all runs. Raw receipts are `scratch/axk2-perf/p3-*`.
-Prefill now has three adopted rounds; decode rounds and the final
-publication sweep remain.
 
 ## D1 — Q8 decode staging and input loads (adopted)
 
@@ -330,8 +347,7 @@ The broad-affinity candidate trace reduces Q8 81.37 → 73.32 ms per 16
 tokens: small 15.41 → 10.47 µs, large 67.96 → 64.65 µs. Total profiled
 decode is 1,061.1 ms, slightly above 1,058.1 ms: the unchanged Q4 q_b
 projection is slower in that trace. Thus attribution confirms the target
-saving, while the unprofiled fixed-core repeats establish adoption. A new
-whole-workload trace on the retained baseline starts the next round.
+saving, while the unprofiled fixed-core repeats establish adoption.
 
 Measured source: `7fcce49d` plus this round's native diff. SHA256:
 
@@ -340,8 +356,7 @@ Measured source: `7fcce49d` plus this round's native diff. SHA256:
 
 Receipts: ignored `scratch/axk2-perf/d1-*`, `d1b-*`, `d1c-*`,
 `q8-native-*`, `q8-default-*` and the exact payload SHA256s in
-`q8-fixture/receipt.json`. Prefill has three adopted rounds and decode one;
-final publication and two more decode adoptions remain.
+`q8-fixture/receipt.json`.
 
 ## D2 — compact expert gate/up loop (adopted)
 
@@ -533,6 +548,37 @@ Measured source: `913b54ba` plus this round's native diff. SHA256:
 - `ds4-bench`: `da68d19d0e1f47248c1be4f6cea224c7ae1e51bc2c27ed662a60b48ada21e875`
 - `ds4-bench-perf`: `5ab65bc60c82e1249028abb9f5eb5f7b4c3d4e97381f814b3c2c969935ffcc78`
 
-Receipts are in ignored `scratch/axk2-perf/d3-*` and `norm-*`. Three
-prefill and three decode rounds are adopted. Publication uses a new
-three-process incremental 2K–64K sweep on the retained code.
+Receipts are in ignored `scratch/axk2-perf/d3-*` and `norm-*`.
+
+## Final publication sweep
+
+The native object and Rust benchmark were rebuilt from clean commit
+`8bb463ed51ce597f4d1eb8379092bb8e06230bd8`. The new norm kernel's 1,048 SASS
+instructions still match the measured candidate. `ds4-bench` SHA256:
+`5837613a2788a468c98d1c280cc71a2eb96cf77e5be272aae0390260490a291d`.
+
+Three fresh CPU-9 processes each cover all 32 frontiers, 2K through 64K,
+with 2,048 new prefill tokens over the cached prefix and 128 forced greedy
+tokens. All exit zero; all 96 CSV rows, source receipts and binary hashes
+pass validation. Run means are:
+
+| Run | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| 1 | 388.50 | 15.02 |
+| 2 | 386.94 | 15.29 |
+| 3 | 387.43 | 15.25 |
+| Median | 387.4 | 15.25 |
+
+The [raw CSVs, graph, per-frontier ranges and receipt](benchmarks/axk2-vq-spark-64k-2026-10-29/README.md)
+retain the absolute variation. Busy clocks are 2,184–2,190 MHz under the
+unchanged policy, with temperatures 47–73 °C. Software power-cap flags
+occur in 6/5/8 samples, all at 2,190 MHz; no thermal-cap flag is observed.
+Minimum available memory is 10.108 GiB and full PSI avg10 stays zero.
+CPU-9 CPPC delivered-performance means are 151.911/151.935/151.929
+(nominal 150). The remaining decode spread is unresolved; no cumulative
+A/B percentage is claimed against the historical October 27 sweep.
+
+This campaign qualifies text throughput and bounded output parity. The
+historical NLL and 262K serving gates were not rerun. After the last model
+exited, cache cleanup left nvtop Compute empty and htop at about 2.1 GiB
+used. No model process is left running.

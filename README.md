@@ -54,7 +54,7 @@ documented whole-model results are omitted.
 | Ling-3.1-flash VQ v2 + Q4_K/FP8 | 774.1 | 17.70 | [2K–64K sweep, plain; MTP 2 to 32K: 23.58](docs/performance.md#ling-31-flash-vq) |
 | Beam-1.0 VQ (12/13-bit GVQ1 + Q4_K) | 830.4 | 15.86 | [2K–64K sweep, plain; DFlash2 on chat: 30.9](docs/performance.md#beam-10-vq) |
 | MiniMax-M3.1 Flash VQ (13-bit GVQ1 + R8 + Q4_K) | 1,011.0 | 22.10 | [2K–64K sweep, DSpark 3 gated, 512K session](docs/performance.md#minimax-m31-flash-vq) |
-| A.X-K2 VQ (9/10-bit GVQ1 + Q4_K/Q8_0) | 370.2 | 14.91 | [2K–64K sweep, plain](docs/performance.md#ax-k2-vq) |
+| A.X-K2 VQ (9/10-bit GVQ1 + Q4_K/Q8_0) | 387.4 | 15.25 | [2K–64K sweep, plain](docs/performance.md#ax-k2-vq) |
 | Naive-N0.5-Flash MQ87 | 518.85 | 18.85 | [8K + 32, plain](docs/performance.md#naive) |
 | IQuest-Q1 mixed quant | 132.72 | 6.77 | [8K + 32, cold KV, plain](docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md) |
 | DeepSeek V4.1 Flash VQ + code GR | 1,039.65 | 38.17 | [2K–64K full-prefill sweep, MTP auto](docs/performance.md#deepseek-v41) |
