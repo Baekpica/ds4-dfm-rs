@@ -343,14 +343,16 @@ static bool l31_logits(ds4_ling31_graph *g, const ds4_model *m, const ds4_weight
 }
 
 // Projections of one input: prefill prepares it once (Q8_1 / FP16 / BF16);
-// one decode token streams every Q4_K matrix in a single launch (KDA's five
-// 8192 x 4096: 410 -> 380 us per layer). DS4_LING31_Q4_MANY=0: one each.
+// one decode token streams KDA's five 8192 x 4096 Q4_K matrices in a single
+// launch (410 -> 380 us per layer), each output equal to its own launch:
+// a split-2 group moved one-row logits past the MTP gate's tie (0.625 > 0.5).
+// MLA's small q_a/kv_a keep the scalar kernel. DS4_LING31_Q4_MANY=0: one each.
 static bool l31_mm_many(ds4_ling31_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
     uint32_t index[5];
     for (uint32_t c = 0; c < count && c < 5u; c++) { index[c] = ling31_index(m, ws[c]); }
     const bool one = rows == 1u && g->q4_many;
-    const bool ok = count <= 5 && ((one && ds4_gpu_gvq_q4_decode_many(g->gvq, outs, index, count, x, 1u)) ||
+    const bool ok = count <= 5 && ((one && ds4_gpu_gvq_q4_decode_group(g->gvq, outs, index, count, x, 1u)) ||
         ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16));
     if (!ok) { fprintf(stderr, "ds4: Ling-3.1 linear group of %u failed (rows=%u)\n", count, rows); }
     return ok;

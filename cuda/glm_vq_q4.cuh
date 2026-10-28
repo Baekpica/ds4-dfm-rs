@@ -290,6 +290,15 @@ static glmvq_q4_load glmvq_q4_select(const glmvq_q4_config *config, const float 
     return GLMVQ_Q4_STAGE;
 }
 
+// Warps sharing a row in glmvq_q4_decode: enough warps for small matrices.
+static uint32_t glmvq_q4_split(uint32_t rows, uint32_t cols) {
+    constexpr uint32_t target_warps = 8192;
+    uint32_t split = 1;
+    while (split < GLMVQ_Q4_WARPS && split * rows < target_warps &&
+        split * 2 <= cols / GLMVQ_Q4_BLOCK) { split *= 2; }
+    return split;
+}
+
 template <uint32_t NT>
 static void glmvq_q4_launch(const void *weight, const float *input, float *out,
         uint32_t rows, uint32_t cols, uint32_t tokens, uint32_t split, cudaStream_t stream,
@@ -317,12 +326,14 @@ static void glmvq_q4_launch(const void *weight, const float *input, float *out,
 // Up to eight tokens over `count` matrices of `cols` inputs
 // (glmvq_q4_stream_many); split 2 (four rows per block) as the 6,144-row
 // projections pick alone. A token's FMA order does not depend on the width:
-// verify tokens equal one-token calls bit for bit.
+// verify tokens equal one-token calls bit for bit. At the split
+// glmvq_q4_decode picks, each row also equals its STAGE launch bit for bit.
 static cudaError_t glmvq_q4_decode_many(const void *const *weight, float *const *out, const uint32_t *rows,
         uint32_t count, uint32_t cols, const float *input, uint32_t tokens, cudaStream_t stream,
-        const glmvq_q4_config *config) {
-    constexpr uint32_t split = 2, rpb = GLMVQ_Q4_WARPS / split;
-    if (!config || !count || count > GLMVQ_Q4_MANY || !input || !cols || cols % GLMVQ_Q4_BLOCK ||
+        const glmvq_q4_config *config, uint32_t split = 2) {
+    const uint32_t rpb = GLMVQ_Q4_WARPS / max(split, 1u);
+    if (!split || GLMVQ_Q4_WARPS % split || !config || !count || count > GLMVQ_Q4_MANY || !input || !cols ||
+        cols % GLMVQ_Q4_BLOCK ||
         !tokens || tokens > GLMVQ_Q4_WARPS || (uintptr_t)input % 16) { return cudaErrorInvalidValue; }
     glmvq_q4_many many = {};
     uint32_t groups = 0;
@@ -356,10 +367,7 @@ static cudaError_t glmvq_q4_decode(const void *weight, const float *input, float
         const glmvq_q4_config *config = nullptr) {
     if (!weight || !input || !out || !rows || !cols || cols % GLMVQ_Q4_BLOCK ||
         !tokens || tokens > GLMVQ_Q4_WARPS || (uintptr_t)weight % 16) { return cudaErrorInvalidValue; }
-    uint32_t split = 1;
-    constexpr uint32_t target_warps = 8192;
-    while (split < GLMVQ_Q4_WARPS && split * rows < target_warps &&
-        split * 2 <= cols / GLMVQ_Q4_BLOCK) { split *= 2; }
+    const uint32_t split = glmvq_q4_split(rows, cols);
     if (tokens == 1) {
         glmvq_q4_launch<1>(weight, input, out, rows, cols, tokens, split, stream, config);
     } else if (tokens <= 4) {

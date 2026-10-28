@@ -53,6 +53,10 @@ int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
 /* Up to eight tokens through up to four Q4_K matrices of one input in one
  * launch (BF16-rounded F32 outputs), each token as a one-token call; 0
  * (outputs untouched) for other weights. */
+/* ds4_gpu_gvq_q4_decode_many only where every output equals its own
+ * ds4_gpu_gvq_linear bit for bit (same STAGE kernel and split); 0 otherwise. */
+int ds4_gpu_gvq_q4_decode_group(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens);
 int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens);
 /* Whether q4p (prefill Q4_K on FP16 tensor cores) runs these matrices at

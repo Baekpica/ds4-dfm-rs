@@ -906,6 +906,34 @@ extern "C" int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cons
         &ctx->q4), "GLM VQ Q4 decode many");
 }
 
+// ds4_gpu_gvq_q4_decode_many when every matrix takes glmvq_q4_decode's STAGE
+// kernel at one split: then each output equals its own launch bit for bit.
+// 0 otherwise (small matrices take the scalar kernel).
+extern "C" int ds4_gpu_gvq_q4_decode_group(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens) {
+    if (!ctx || !outs || !weights || !count || count > GLMVQ_Q4_MANY || !tokens || tokens > GLMVQ_Q4_WARPS ||
+        !ctx->direct_q4 || !gvq_stream(ctx)) { return 0; }
+    const void *w[GLMVQ_Q4_MANY];
+    float *y[GLMVQ_Q4_MANY];
+    uint32_t rows[GLMVQ_Q4_MANY], cols = 0, split = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (weights[c] >= ctx->model->source.size()) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        const uint32_t own = glmvq_q4_split(s.rows, s.cols);
+        const uint64_t staged = (uint64_t)(GLMVQ_Q4_WARPS / own) * s.cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+        const uint64_t bytes = (uint64_t)s.rows * s.cols / GLMVQ_Q4_BLOCK * GLMVQ_Q4_BYTES;
+        if (ctx->model->records[weights[c]].type != GVQ_TYPE_Q4 || (c && (s.cols != cols || own != split)) ||
+            !gvq_floats(outs[c], (uint64_t)tokens * s.rows) ||
+            glmvq_q4_select(&ctx->q4, (const float *)input->ptr, staged, bytes, tokens) != GLMVQ_Q4_STAGE) { return 0; }
+        cols = s.cols;
+        split = own;
+        w[c] = s.data; y[c] = (float *)outs[c]->ptr; rows[c] = s.rows;
+    }
+    if (!gvq_floats(input, (uint64_t)tokens * cols)) { return 0; }
+    return cuda_ok(glmvq_q4_decode_many(w, y, rows, count, cols, (const float *)input->ptr, tokens, ctx->stream,
+        &ctx->q4, split), "GLM VQ Q4 decode group");
+}
+
 // Up to eight tokens of one Q4_K matrix on the SIMT decode kernels, whatever
 // the MMA setting: each token equals a one-token ds4_gpu_gvq_linear call bit
 // for bit (staged shapes). 0 for other types and widths.
