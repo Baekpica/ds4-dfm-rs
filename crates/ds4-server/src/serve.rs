@@ -1808,7 +1808,10 @@ fn ensure_serial_session_fit<W: Write>(
     // never invent a rightsize or a refuse.
     let probe = engine.serial_session_probe()?;
     let mut bounds = serial_fit_bounds(prompt_len, budget, i64::from(cfg.ctx));
-    for variant in [ds4_core::Variant::Ling30FlashVl, ds4_core::Variant::Ling31FlashVq] {
+    for variant in [
+        ds4_core::Variant::Ling30FlashVl,
+        ds4_core::Variant::Ling31FlashVq,
+    ] {
         let ling = ds4_core::shape_for_variant(variant);
         let ling_orig_ctx = ling.rope_orig_ctx as i64;
         if engine.model_id() == ling.model_id() && i64::from(cfg.ctx) > ling_orig_ctx {
