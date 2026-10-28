@@ -1201,6 +1201,9 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
         if (!cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<float>, cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
                 "A.X-K2 flash attributes") ||
             !cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16>, cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
+                "A.X-K2 flash attributes") ||
+            !cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
                 "A.X-K2 flash attributes")) { return 0; }
         ready = true;
     }
@@ -1213,15 +1216,22 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
     const glmvq_launch mode = gvq_mode(rows);
     const cudaStream_t stream = ds4_current_stream();
     const uint8_t *cache = (const uint8_t *)latent->ptr;
-    auto launch = [&](auto *dst) {
-        using T = std::remove_pointer_t<decltype(dst)>;
-        return glmvq_launch_kernel(mode, ax_fa_kernel<T>, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA8_SMEM, stream,
+    auto launch = [&](auto kernel, auto *dst) {
+        return glmvq_launch_kernel(mode, kernel, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA8_SMEM, stream,
             dst, splits > 1 ? partial : (float *)nullptr, stats, (const float *)q->ptr,
             (const float *)q_abs->ptr, (const void *)cache, (const int8_t *)(cache + (uint64_t)cap * AX_LATENT),
             (const __nv_bfloat16 *)k_pe->ptr, selected ? (const uint32_t *)selected->ptr : (const uint32_t *)nullptr,
             pos0, splits > 1 ? per : UINT32_MAX, scale);
     };
-    cudaError_t err = ax_latent_bf16(rows) ? launch((__nv_bfloat16 *)out->ptr) : launch((float *)out->ptr);
+    static const bool coop_keys = !ax_env_off("DS4_AXK2_FLASH_KEYS");
+    cudaError_t err;
+    if (!ax_latent_bf16(rows)) {
+        err = launch(ax_fa_kernel<float>, (float *)out->ptr);
+    } else if (coop_keys) {
+        err = launch(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>, (__nv_bfloat16 *)out->ptr);
+    } else {
+        err = launch(ax_fa_kernel<__nv_bfloat16>, (__nv_bfloat16 *)out->ptr);
+    }
     if (err == cudaSuccess && splits > 1) {
         err = glmvq_launch_kernel(mode, l31_fa_combine, dim3(rows, GLMVQ_FA_HEADS), GLMVQ_FA_LATENT / 2, 0, stream,
             (float *)out->ptr, (const float *)partial, (const float *)stats, splits);

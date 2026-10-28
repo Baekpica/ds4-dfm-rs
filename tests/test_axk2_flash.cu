@@ -1,4 +1,4 @@
-// Direct BF16 output must equal the F32 flash result rounded by its consumer.
+// Both BF16 schedules must equal CPU rounding of the F32 flash result.
 #include "cuda/axk2_flash.cuh"
 
 #include <cmath>
@@ -64,24 +64,29 @@ static bool run(uint32_t rows, uint32_t pos, selection keys_mode, timing measure
     check(cudaMalloc(&guarded, count * sizeof(__nv_bfloat16) + 32));
     check(cudaMemset(guarded, 0xa5, count * sizeof(__nv_bfloat16) + 32));
     auto *direct = (__nv_bfloat16 *)(guarded + 16);
-    auto launch = [&](auto *dst) {
-        using T = std::remove_pointer_t<decltype(dst)>;
-        ax_fa_kernel<T><<<rows, GLMVQ_FA_THREADS, L31_FA8_SMEM>>>(dst, nullptr, nullptr, dq, da,
+    auto launch = [&](auto kernel, auto *dst) {
+        kernel<<<rows, GLMVQ_FA_THREADS, L31_FA8_SMEM>>>(dst, nullptr, nullptr, dq, da,
             dl, de, dp, sparse ? ds : nullptr, pos, UINT32_MAX, 0.08f);
     };
     check(cudaFuncSetAttribute(ax_fa_kernel<float>, cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM));
     check(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16>, cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM));
-    launch(out);
-    launch(direct);
+    check(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM));
+    launch(ax_fa_kernel<float>, out);
+    launch(ax_fa_kernel<__nv_bfloat16>, packed);
+    launch(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>, direct);
     check(cudaDeviceSynchronize());
     std::vector<float> ref(count);
+    std::vector<__nv_bfloat16> serial(count);
     std::vector<uint8_t> got(count * sizeof(__nv_bfloat16) + 32);
     check(cudaMemcpy(ref.data(), out, count * sizeof(float), cudaMemcpyDeviceToHost));
+    check(cudaMemcpy(serial.data(), packed, count * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost));
     check(cudaMemcpy(got.data(), guarded, got.size(), cudaMemcpyDeviceToHost));
     bool ok = true;
     for (uint64_t i = 0; i < count; i++) {
         const auto expected = __float2bfloat16_rn(ref[i]);
-        if (!std::isfinite(ref[i]) || memcmp(&expected, got.data() + 16 + i * 2, 2)) { ok = false; break; }
+        if (!std::isfinite(ref[i]) || memcmp(&expected, &serial[i], 2) ||
+            memcmp(&expected, got.data() + 16 + i * 2, 2)) { ok = false; break; }
     }
     for (uint32_t i = 0; i < 16; i++) {
         ok = ok && got[i] == 0xa5 && got[got.size() - 16 + i] == 0xa5;
@@ -91,19 +96,20 @@ static bool run(uint32_t rows, uint32_t pos, selection keys_mode, timing measure
         cudaEvent_t a, b;
         check(cudaEventCreate(&a)); check(cudaEventCreate(&b));
         for (int repeat = 0; repeat < 3; repeat++) {
-            for (int order = 0; order < 2; order++) {
-                const bool fused = (repeat + order) % 2;
+            for (int order = 0; order < 3; order++) {
+                const int mode = (repeat + order) % 3;
                 check(cudaEventRecord(a));
                 for (int i = 0; i < 20; i++) {
-                    if (fused) { launch(direct); }
+                    if (mode == 2) { launch(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>, direct); }
+                    else if (mode == 1) { launch(ax_fa_kernel<__nv_bfloat16>, packed); }
                     else {
-                        launch(out);
+                        launch(ax_fa_kernel<float>, out);
                         pack_rows<<<(count + 255) / 256, 256>>>(packed, out, L, L, count);
                     }
                 }
                 check(cudaEventRecord(b)); check(cudaEventSynchronize(b));
                 float ms; check(cudaEventElapsedTime(&ms, a, b));
-                printf("direct=%d ms=%.6f\n", fused, ms / 20);
+                printf("mode=%d ms=%.6f\n", mode, ms / 20);
             }
         }
         check(cudaEventDestroy(a)); check(cudaEventDestroy(b));

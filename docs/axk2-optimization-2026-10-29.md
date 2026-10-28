@@ -110,3 +110,62 @@ Raw receipts, logs, clocks, source digests, full logits/tokens and profiles
 remain in ignored `scratch/axk2-perf/`: `p1-{0-0,1-1,2-1,3-0,4-0,5-1}`,
 `p1-long-{0-1,1-0}`, `baseline-trace`, `p1-trace`, `p1-timeline.txt` and
 `p1-fixture.log`. The final publication sweep and further rounds are pending.
+
+## P2 — cooperative sparse-key metadata (adopted)
+
+Retained P1 attention is 22.69% of prefill wall. Its 256-row NCU probe
+spends 64.7% of long-scoreboard samples on the selected-key/exponent chain;
+its 73 GFLOP compute floor is 0.677 ms versus 2.096 ms observed. Four
+warp lanes now gather four independent keys and exponents together before
+the warp copies their latent rows. Class 5.1 scheduling; floating-point
+operations and allocations are unchanged. F32 decode stays serial.
+`DS4_AXK2_FLASH_KEYS=0` restores P1; this path requires P1's BF16 output.
+
+All six fixture cases pass against CPU-rounded F32, including canaries.
+The retained native F32 path keeps all 2,296 SASS instructions. The isolated
+BF16 serial times are 2.046923/2.015478/2.043101 ms; cooperative times are
+1.985931/1.947278/1.973226 ms (3.42% median reduction). Full NCU reports
+2.096 → 2.038 ms, 166.22 → 148.78 million executed instructions, and
+400.5 → 400.0 MB of L2-to-crossbar traffic. Both use 255 registers and an
+80-byte stack. No additional allocation or floating-point work pays for
+the gain. Synthetic selections differ from the full model.
+
+The full-model protocol extends generation to **256 tokens** to reduce
+short timing noise. Both arms use 8K cold prefill after the same 2K reset;
+P1 stays enabled and only `DS4_AXK2_FLASH_KEYS` changes.
+
+| Fresh process | Mode | Prefill tok/s | Decode tok/s |
+|---|---|---:|---:|
+| 1 | off | 534.11 | 15.37 |
+| 2 | on | 540.63 | 15.36 |
+| 3 | on | 539.42 | 15.51 |
+| 4 | off | 534.19 | 15.14 |
+| 5 | off | 532.90 | 15.44 |
+| 6 | on | 540.46 | 15.37 |
+| Median | off | 534.11 | 15.37 |
+| Median | on | 540.46 | 15.37 |
+
+Prefill gains **1.19%**, with nonoverlapping repeat ranges and positive
+paired gains in all three pairs. Decode medians agree; retain its observed
+15.14–15.51 tok/s process spread, without claiming a decode improvement.
+All six processes exit 0 with identical finite full logits and all 256
+tokens. Busy SM clocks are 2,184–2,190 MHz, CPU frequency is 3.9 GHz,
+full memory PSI stays zero, and minimum available memory is 15.687 GiB.
+Timed prefill/decode samples show no power/thermal cap. One idle startup
+sample reports a power cap at 208 MHz and 0% GPU utilization, 179 seconds
+before the frontier dump. NVML does not expose a GPU memory clock here.
+
+The new whole-workload trace reduces prefill wall 15.375 → 15.185 s and
+flash 3,488.5 → 3,318.3 ms (4.88%). Kernel interval union is 15.144 s;
+512.8 ms of overlapping durations must not be added as extra wall time.
+The profiled decode wall is 1,057.2 ms for 16 tokens. These are attribution
+measurements, separate from the unprofiled rates above.
+
+Measured `ds4-bench` SHA256:
+`7e90986eccb52ba1fbc5b115bee824a126436ceb7b65ac487990075e81e4c26b`;
+`ds4-bench-perf`:
+`a2bbbd79dcf09bc7dfc5522f75365e08fd4b51498a50d6235b2650d61ed4896f`.
+Source is `430b711f` plus this round's native diff. Raw receipts are
+`scratch/axk2-perf/p2-*`, including clocks/host telemetry, full outputs,
+fixture timing, source/SASS receipts and the new trace. Prefill now has
+two adopted rounds; decode rounds and the final publication sweep remain.
