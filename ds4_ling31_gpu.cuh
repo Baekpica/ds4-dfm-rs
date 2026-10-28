@@ -779,22 +779,34 @@ extern "C" int ds4_gpu_l31_store_latent(ds4_gpu_tensor *latent, ds4_gpu_tensor *
 }
 
 extern "C" int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-        ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, uint32_t weight, uint32_t rows, uint32_t width, float eps) {
+        ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, ds4_l31_residual mode,
+        uint32_t weight, uint32_t rows, uint32_t width, float eps) {
     const uint64_t count = (uint64_t)rows * width;
     const bool bf16 = norm_rows == DS4_GVQ_ROWS_BF16;
     const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, width);
     // The block RMS kernel's widths only: one register batch per lane.
-    if (!w || !rows || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
+    if (!w || !rows || mode < DS4_L31_RES_F32 || mode > DS4_L31_RES_BF16 || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
         !gvq_floats(cur, count) || !gvq_floats(branch, count) || !gvq_floats(norm, bf16 ? count / 2 : count)) {
         return 0;
     }
-    if (bf16) {
-        glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms<__nv_bfloat16>, rows, GLMVQ_THREADS, 0,
-            ds4_current_stream(), (float *)cur->ptr, (const float *)branch->ptr, w, (__nv_bfloat16 *)norm->ptr,
-            width, eps);
-    } else {
-        glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms<float>, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
-            (float *)cur->ptr, (const float *)branch->ptr, w, (float *)norm->ptr, width, eps);
-    }
+    auto launch = [&](auto *out) {
+        using N = std::remove_pointer_t<decltype(out)>;
+        auto kernel = mode == DS4_L31_RES_PACK ? l31_residual_rms<N, float, __nv_bfloat16>
+            : mode == DS4_L31_RES_BF16 ? l31_residual_rms<N, __nv_bfloat16> : l31_residual_rms<N>;
+        glmvq_launch_kernel(gvq_mode(rows), kernel, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
+            (float *)cur->ptr, (const float *)branch->ptr, w, out, width, eps);
+    };
+    if (bf16) { launch((__nv_bfloat16 *)norm->ptr); }
+    else { launch((float *)norm->ptr); }
     return cuda_ok(cudaGetLastError(), "Ling-3.1 residual RMS");
+}
+
+extern "C" int ds4_gpu_l31_residual_unpack(ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
+        uint32_t rows, uint32_t width) {
+    const uint64_t count = (uint64_t)rows * width;
+    if (!rows || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
+        !gvq_floats(cur, count) || !gvq_floats(branch, count)) { return 0; }
+    l31_residual_unpack<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)branch->ptr, width);
+    return cuda_ok(cudaGetLastError(), "Ling-3.1 residual unpack");
 }

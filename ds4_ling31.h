@@ -86,11 +86,19 @@ int ds4_gpu_l31_latent_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
 int ds4_gpu_l31_store_latent(ds4_gpu_tensor *latent, ds4_gpu_tensor *k_pe,
     const ds4_gpu_tensor *kv_norm, const ds4_gpu_tensor *kv_raw, uint32_t rows, uint32_t pos0,
     uint32_t cap, ds4_l31_latent mode);
+typedef enum {
+    DS4_L31_RES_F32, DS4_L31_RES_PACK, DS4_L31_RES_BF16
+} ds4_l31_residual;
+
 /* cur = bf16(cur + branch) and norm = weighted RMS of cur (BF16 weight
  * `weight`) as F32 or BF16 rows, bit-identical to the separate add,
  * rounding and RMS kernels. */
 int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-    ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, uint32_t weight, uint32_t rows, uint32_t width, float eps);
+    ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, ds4_l31_residual mode,
+    uint32_t weight, uint32_t rows, uint32_t width, float eps);
+/* Add the last branch to compact cur and restore each original F32 row. */
+int ds4_gpu_l31_residual_unpack(ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
+    uint32_t rows, uint32_t width);
 
 #ifdef __cplusplus
 }

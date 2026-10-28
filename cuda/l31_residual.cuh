@@ -10,8 +10,9 @@
  * A decode row is latency-bound: the weights load before the PDL wait, and
  * the tree's last five levels run as warp-0 shuffles (same pairs and order)
  * instead of five more block barriers. N is F32 or BF16 norm rows (the
- * values are BF16 either way). */
-template <typename N>
+ * values are BF16 either way). C/R select the residual input/output type;
+ * compact rows occupy the first half of each original F32 row. */
+template <typename N, typename C = float, typename R = C>
 __global__ void l31_residual_rms(float *cur, const float *branch, const __nv_bfloat16 *weight,
         N *norm, uint32_t width, float eps) {
     glmvq_pdl_open();
@@ -28,13 +29,17 @@ __global__ void l31_residual_rms(float *cur, const float *branch, const __nv_bfl
     #pragma unroll
     for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
         const uint32_t col = lane + j * blockDim.x;
-        x[j] = col < width ? glmvq_round(cur[base + col] + branch[base + col]) : 0.0f;
+        x[j] = col < width ? glmvq_round(
+            glmvq_value(((const C *)cur)[base * (sizeof(float) / sizeof(C)) + col]) + branch[base + col]) : 0.0f;
     }
+    // Packing aliases another thread's input within this row.
+    if constexpr (sizeof(C) != sizeof(R)) { __syncthreads(); }
     #pragma unroll
     for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
         const uint32_t col = lane + j * blockDim.x;
         if (col < width) {
-            cur[base + col] = x[j];
+            if constexpr (sizeof(R) == sizeof(float)) { ((R *)cur)[base + col] = x[j]; }
+            else { ((R *)cur)[base * 2 + col] = __float2bfloat16_rn(x[j]); }
             sum = glmvq_add(sum, glmvq_mul(x[j], x[j]));
         }
     }
@@ -63,6 +68,24 @@ __global__ void l31_residual_rms(float *cur, const float *branch, const __nv_bfl
             const float value = glmvq_mul(glmvq_round(glmvq_mul(x[j], inv)), __bfloat162float(w[j]));
             norm[base + col] = glmvq_cast<N>(glmvq_round(value));
         }
+    }
+}
+
+// The trunk's last residual restores the external F32 layout in place.
+__global__ void l31_residual_unpack(float *cur, const float *branch, uint32_t width) {
+    const uint64_t base = (uint64_t)blockIdx.x * width;
+    const auto *packed = (const __nv_bfloat16 *)cur + base * 2;
+    float x[GLMVQ_RMS_BATCH];
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+        const uint32_t col = threadIdx.x + j * blockDim.x;
+        x[j] = col < width ? glmvq_round(__bfloat162float(packed[col]) + branch[base + col]) : 0.0f;
+    }
+    __syncthreads();
+    #pragma unroll
+    for (uint32_t j = 0; j < GLMVQ_RMS_BATCH; j++) {
+        const uint32_t col = threadIdx.x + j * blockDim.x;
+        if (col < width) { cur[base + col] = x[j]; }
     }
 }
 

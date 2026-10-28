@@ -134,13 +134,57 @@ slower, and L1 lookahead did not improve timing. An earlier Q4p wait-suspend
 hint also had inconsistent isolated gains and no useful counter improvement.
 None is included in the implementation or the adopted-round count.
 
+## P3: retain the residual's BF16 representation inside the trunk
+
+The residual RMS pass is 4.3% of prefill. The residual already has a BF16
+rounding boundary, but its F32 buffer makes each 4096 × 4096 pass move at
+least 234.9 MB: about a 1.00 ms floor at 235 GB/s, close to the measured
+1.05 ms. The new path stores those same BF16 values in the first half of
+each original F32 row. The first residual packs in place after a block
+barrier; the last plain residual expands back to F32. Intermediate passes
+read and write half as many residual bytes. Norm and branch arithmetic,
+allocation sizes and the external F32 layout stay unchanged. Decode,
+verify and layer-slice calls retain the original path. The fallback is
+`DS4_LING31_RESIDUAL_BF16=0`.
+
+| 8K warmed workload | Off samples | On samples | Median gain |
+|---|---|---|---:|
+| Prefill, tok/s | 1174.98, 1191.08, 1188.83 | 1195.29, 1206.09, 1190.45 | +0.54% |
+| Decode, tok/s | 18.38, 18.96, 17.99 | 17.99, 18.85, 18.97 | +2.56% |
+
+All three Prefill pairs improve (+1.73%, +1.26%, +0.14%); every frontier,
+generated token and cycle receipt is byte-identical. The apparent Decode
+median gain has mixed pair signs and is not counted as an optimization.
+Both controls span the previously observed process variation. The 26
+Decode kernels retain their 18,792 normalized SASS instructions.
+
+Three isolated 4096-row pairs reduce the median from 1.060 to 0.787 ms
+(-25.7%), all faster with identical canonical residual and norm hashes.
+NCU measures 1.052544 → 0.761024 ms and L2 requested read/write traffic
+235,652,608 → 168,811,840 B (-28.4%). Registers rise 56 → 64, with no spill
+or occupancy loss (four blocks per SM); shared memory is unchanged. No
+additional allocation is needed. A fresh PDL-off workload profile reduces
+the 286 residual RMS calls from 296.347 to 216.820 ms. Whole prefill is
+6856.488 → 6870.994 ms in these individual captures: Q4p and KDA times
+also vary, so the three unprofiled pairs establish the Prefill result.
+The profile's 128-token Decode takes 6989.452 → 7174.564 ms; this is an
+attribution sample, not a separate speed qualification.
+
+The focused fixture checks pack, compact update and final expansion
+against independent add/round/RMS kernels for 1/3/2048 × 4096 and 65 × 3073
+shapes. Both norm types, raw F32 branches, row tails and trailing canaries
+pass exactly. This covers the nondefault F32-norm path too. Full-model
+proofs cover the default path at 8K; the final MTP and context sweep remain
+pending. [Raw evidence](benchmarks/ling31-1019-followup-2026-10-28/p3.json).
+
 ## Reproduction and remaining scope
 
 ```sh
-make tests/test_glm_vq_q4p tests/test_ling31_mlp tests/test_glm_vq_kda
+make tests/test_glm_vq_q4p tests/test_ling31_mlp tests/test_glm_vq_kda tests/test_ling31_residual
 ./tests/test_glm_vq_q4p
 ./tests/test_ling31_mlp
 ./tests/test_glm_vq_kda
+./tests/test_ling31_residual
 # Set DS4_LING31_MLP_Q4P=0 or 1 before each guarded fresh process:
 ./ds4-bench --cuda -m "$MODEL" --prompt-file speed-bench/promessi_sposi.txt \
   --ctx-start 8192 --ctx-max 8192 --warmup-prefill 8192 --gen-tokens 128 \
