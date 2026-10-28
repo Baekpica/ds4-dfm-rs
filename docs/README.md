@@ -58,6 +58,7 @@ Other recipes and dated gates retain their hardware and workload limits.
 | [Ling-3.1 VQ](ling31-flash-vq.md) | GVQ1 release directory (v2 recipe), FP8 latent KV, embedded MTP, 262K banks beside a 106 GiB trunk, 2K–64K sweep |
 | [Beam-1.0 VQ](beam-vq.md) | GVQ1 release directory, FP8 full-layer KV, Harmony header forcing, DFlash2 drafter and its losslessness gate, 1M in one bank, 2K–64K sweep |
 | [A.X-K2 VQ](axk2-vq.md) | GVQ1 v2 (9/10-bit) release directory, MLA with the DSA indexer, FP8 latent and key rows, 262K in one bank, reference-parity receipt, 2K–64K sweep |
+| [A.X-K2 optimization campaign](axk2-optimization-2026-10-29.md) | Three prefill and three decode adoptions, paired evidence, costs, fallbacks and the October 29 publication sweep |
 | [MiMo RL](mimo2-serving-2026-09-25.md) | Recorded mixed serving, bank reuse and memory limits |
 | [MiMo MOPD](ds4-dfm-model-families.md#mimo-mopd) | Separate artifact, text performance and DFlash boundaries |
 | [Naive](naive-n05-flash.md) | MQ87, banks, disk KV, long-context gates and drafter limits |

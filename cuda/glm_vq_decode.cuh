@@ -9,6 +9,7 @@ enum glmvq_decode_output { GLMVQ_DEC_NORMAL, GLMVQ_DEC_PROOF };
 // BF16 per weight, as the restore path does; DOT multiplies the FP32 dot
 // once, as the prefill tensor-core kernel does.
 enum glmvq_decode_gain { GLMVQ_GAIN_WEIGHT, GLMVQ_GAIN_DOT };
+enum glmvq_decode_schedule { GLMVQ_DEC_FULL, GLMVQ_DEC_COMPACT };
 
 struct glmvq_decode_item {
     glmvq_matrix gate, up, down;
@@ -138,7 +139,8 @@ __host__ __device__ constexpr uint32_t glmvq_decode_books() {
     return (1u << BITS) * GLMVQ_VECTOR + (RES ? GLMVQ_RES_WORDS * GLMVQ_VECTOR : 0u);
 }
 
-template <uint32_t COLS, uint32_t BITS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT, bool RES = false>
+template <uint32_t COLS, uint32_t BITS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT, bool RES = false,
+          glmvq_decode_schedule SCHEDULE = GLMVQ_DEC_FULL>
 __device__ __forceinline__ float glmvq_decode_dot(const glmvq_matrix &m,
         uint32_t row, const __nv_bfloat16 *x, const uint2 *book,
         glmvq_decode_block *carry, const uint32_t *next, const uint32_t *next_plane,
@@ -199,28 +201,39 @@ __device__ __forceinline__ float glmvq_decode_dot(const glmvq_matrix &m,
         } else if (next) {
             ahead = glmvq_decode_load<BITS, 8, RES>(next, next_plane, next_res);
         }
-        #pragma unroll
-        for (uint32_t k = 0; k < 8; k++) {
-            uint32_t index;
-            if constexpr (glmvq_v2<BITS>()) {
-                index = glmvq_decode_index2<BITS>(cur, k);
-            } else {
-                const uint32_t first = k * 12;
-                const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
-                const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
-                const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
-                const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
-                index = __funnelshift_r(lo, hi, shift) & 4095u;
-                if constexpr (BITS == 13) {
-                    index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
-                }
-            }
-            const uint2 word = book[index];
-            const uint4 values = *(const uint4 *)(x + b * 2048 + k * 256 + lane * GLMVQ_VECTOR);
-            if constexpr (RES) {
-                sum = glmvq_decode_word8_res<GAIN>(word, book2[glmvq_decode_res(cur, k)], values, gain, sum);
-            } else {
+        if constexpr (SCHEDULE == GLMVQ_DEC_COMPACT) {
+            static_assert(glmvq_v2<BITS>() && !RES, "compact decode uses v2 books");
+            // Two steps limit live codewords under the 32-warp register cap.
+            #pragma unroll 2
+            for (uint32_t k = 0; k < 8; k++) {
+                const uint2 word = book[glmvq_decode_index2<BITS>(cur, k)];
+                const uint4 values = *(const uint4 *)(x + b * 2048 + k * 256 + lane * GLMVQ_VECTOR);
                 sum = glmvq_decode_word8<GAIN>(word, values, gain, sum);
+            }
+        } else {
+            #pragma unroll
+            for (uint32_t k = 0; k < 8; k++) {
+                uint32_t index;
+                if constexpr (glmvq_v2<BITS>()) {
+                    index = glmvq_decode_index2<BITS>(cur, k);
+                } else {
+                    const uint32_t first = k * 12;
+                    const uint32_t lr = (first & 31u) > 20 ? (first + 31 - lane) / 32 : first / 32;
+                    const uint32_t hr = ((first + 1) & 31u) > 20 ? (first + 32 - lane) / 32 : (first + 1) / 32;
+                    const uint32_t lo = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, lr), first + offset);
+                    const uint32_t hi = __shfl_sync(0xffffffffu, glmvq_decode_word(cur, hr), first + offset + 1);
+                    index = __funnelshift_r(lo, hi, shift) & 4095u;
+                    if constexpr (BITS == 13) {
+                        index |= ((__shfl_sync(0xffffffffu, cur.plane, k) >> lane) & 1u) << 12;
+                    }
+                }
+                const uint2 word = book[index];
+                const uint4 values = *(const uint4 *)(x + b * 2048 + k * 256 + lane * GLMVQ_VECTOR);
+                if constexpr (RES) {
+                    sum = glmvq_decode_word8_res<GAIN>(word, book2[glmvq_decode_res(cur, k)], values, gain, sum);
+                } else {
+                    sum = glmvq_decode_word8<GAIN>(word, values, gain, sum);
+                }
             }
         }
         cur = ahead;
@@ -271,7 +284,7 @@ __device__ __forceinline__ void glmvq_decode_book(uint4 *dst, const uint4 *src, 
 // layer book. E4M3 stays packed: even the 13-bit book needs only 64 KiB.
 template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT,
           uint32_t FFN = GLMVQ_DEC_FFN, glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE, bool RES = false,
-          uint32_t HIDDEN = GLMVQ_DEC_HIDDEN>
+          uint32_t HIDDEN = GLMVQ_DEC_HIDDEN, glmvq_decode_schedule SCHEDULE = GLMVQ_DEC_FULL>
 __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
         const glmvq_decode_item *items, const uint4 *book, const float *input,
         __nv_bfloat16 *mid, float clamp, float *gate, float *up, const uint4 *book2) {
@@ -305,9 +318,9 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_decode_gu(
         const auto *gr = RES ? (const uint32_t *)item.gate.res + row * HIDDEN / 32 : nullptr;
         const auto *ur = RES ? (const uint32_t *)item.up.res + row * HIDDEN / 32 : nullptr;
         auto carry = glmvq_decode_load<BITS, glmvq_decode_steps<HIDDEN>(), RES>(gm, gp, gr);
-        const float g = glmvq_decode_dot<HIDDEN, BITS, GAIN, RES>(item.gate, row, x,
+        const float g = glmvq_decode_dot<HIDDEN, BITS, GAIN, RES, SCHEDULE>(item.gate, row, x,
             (const uint2 *)decode_stage, &carry, um, up_plane, res_book, ur);
-        const float u = glmvq_decode_dot<HIDDEN, BITS, GAIN, RES>(item.up, row, x,
+        const float u = glmvq_decode_dot<HIDDEN, BITS, GAIN, RES, SCHEDULE>(item.up, row, x,
             up_book, &carry, nullptr, nullptr, res_book, nullptr);
         if (!lane) {
             mid[task] = __float2bfloat16_rn(glmvq_swiglu_value<CLAMP>(g, u, clamp));

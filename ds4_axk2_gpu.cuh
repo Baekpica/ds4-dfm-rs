@@ -18,6 +18,9 @@
  * decode widths and from a per-call BF16 restore at prefill widths. */
 #include "ds4_axk2.h"
 #include "cuda/axk2_topk.cuh"
+#include "cuda/axk2_flash.cuh"
+#include "cuda/axk2_q8.cuh"
+#include "cuda/axk2_norm.cuh"
 
 enum { AX_EXPERTS = DS4_AXK2_EXPERTS, AX_USED = DS4_AXK2_USED, AX_HIDDEN = DS4_AXK2_HIDDEN, AX_FFN = DS4_AXK2_FFN,
        AX_TABLE = 3 * AX_EXPERTS, AX_LAYERS = DS4_AXK2_MOE_LAYERS, AX_MMA_ROWS = 256, AX_MMA_TOKENS = 64,
@@ -28,7 +31,6 @@ enum { AX_EXPERTS = DS4_AXK2_EXPERTS, AX_USED = DS4_AXK2_USED, AX_HIDDEN = DS4_A
 static_assert((uint32_t)AX_USED == (uint32_t)GLMVQ_DEC_USED, "GVQ decode geometry");
 static_assert((uint32_t)AX_HEADS == (uint32_t)GLMVQ_FA_HEADS && (uint32_t)AX_LATENT == (uint32_t)GLMVQ_FA_LATENT &&
     (uint32_t)AX_KEY == (uint32_t)L31_FA_KEY, "Ling-3.1's flash tile geometry");
-static const float AX_EPS = 1e-6f;
 using ax_form = glmvq_moe_form<AX_FFN, GLMVQ_CLAMP_GATE, GLMVQ_REDUCE_F32, AX_HIDDEN>;
 
 static uint64_t ax_align(uint64_t bytes) { return (bytes + AX_ALIGN - 1) / AX_ALIGN * AX_ALIGN; }
@@ -107,9 +109,16 @@ template <uint32_t BITS>
 static constexpr uint32_t ax_down_bytes() { return glmvq_decode_books<BITS, false>() + AX_USED * AX_FFN * 2; }
 
 template <uint32_t BITS, glmvq_decode_gain GAIN>
+static auto ax_gu_kernel() {
+    static const bool compact = !ax_env_off("DS4_AXK2_GU_COMPACT");
+    return compact
+        ? glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN, GLMVQ_DEC_COMPACT>
+        : glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN>;
+}
+
+template <uint32_t BITS, glmvq_decode_gain GAIN>
 static cudaError_t ax_decode_attrs() {
-    cudaError_t err = cudaFuncSetAttribute(
-        glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN>,
+    cudaError_t err = cudaFuncSetAttribute(ax_gu_kernel<BITS, GAIN>(),
         cudaFuncAttributeMaxDynamicSharedMemorySize, ax_gu_bytes<BITS>());
     if (err == cudaSuccess) {
         err = cudaFuncSetAttribute(glmvq_decode_down<BITS, 32, GAIN, AX_FFN, false, AX_HIDDEN, AX_USED>,
@@ -237,8 +246,7 @@ static cudaError_t ax_decode_launch(ds4_axk2_moe *moe, float *out, const float *
         const float *shared) {
     const cudaStream_t stream = ds4_current_stream();
     const glmvq_launch launch = moe->gvq->launch;
-    glmvq_launch_kernel(launch,
-        glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN>,
+    glmvq_launch_kernel(launch, ax_gu_kernel<BITS, GAIN>(),
         moe->decode_blocks, 1024, ax_gu_bytes<BITS>(), stream, items, (const uint4 *)ax_book(moe, matrices, 0),
         input, mid, INFINITY, (float *)nullptr, (float *)nullptr, (const uint4 *)ax_book(moe, matrices, 1));
     glmvq_launch_kernel(launch, glmvq_decode_down<BITS, 32, GAIN, AX_FFN, false, AX_HIDDEN, AX_USED>,
@@ -400,20 +408,6 @@ extern "C" int ds4_gpu_axk2_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, d
 
 /* ---------------------------------------------------------------- norms */
 
-enum { AX_ROW_THREADS = 256, AX_ROW_VALUES = AX_HIDDEN / AX_ROW_THREADS, AX_ROW_WARPS = AX_ROW_THREADS / 32 };
-static_assert(AX_HIDDEN % (AX_ROW_THREADS * 8) == 0 || AX_HIDDEN % AX_ROW_THREADS == 0, "whole rows per block");
-
-// Sum of `value` over the 256-thread block; every thread gets it.
-__device__ __forceinline__ float ax_block_sum(float value, float *scratch) {
-    for (uint32_t stride = 16; stride; stride >>= 1) { value += __shfl_xor_sync(0xffffffffu, value, stride); }
-    if ((threadIdx.x & 31) == 0) { scratch[threadIdx.x / 32] = value; }
-    __syncthreads();
-    float sum = 0.0f;
-    for (uint32_t w = 0; w < AX_ROW_WARPS; w++) { sum += scratch[w]; }
-    __syncthreads();
-    return sum;
-}
-
 /* One block per row (axk2_ref.rms_norm / gated_norm):
  *   cur = bf16(cur + bf16(branch))                       when branch
  *   y = bf16(w * bf16(x * rsqrt(mean(x^2) + 1e-6)))
@@ -495,55 +489,6 @@ __global__ void __launch_bounds__(AX_ROW_THREADS) ax_norm_kernel(float *out, flo
  * mid[r][k] (the same warp dot of W_down row k), CTA (0, r) also 1/rms in
  * mid[r][16]; the second kernel's CTAs take 256 columns each: the residual
  * add, y and the W_up gate. Same arithmetic and order: bit-identical. */
-enum { AX_GNORM_MID = AX_RANK + 1, AX_GNORM_ROWS = 4 };
-
-__global__ void __launch_bounds__(AX_ROW_THREADS) ax_gnorm_down_kernel(float *mid, const float *cur,
-        const float *branch, const __nv_bfloat16 *weight, const __nv_bfloat16 *down) {
-    __shared__ float scratch[AX_ROW_WARPS];
-    __shared__ __align__(16) __nv_bfloat16 y_row[AX_HIDDEN];
-    glmvq_pdl_open();
-    glmvq_pdl_wait();
-    const uint32_t t = threadIdx.x, lane = t & 31, k = blockIdx.x, r = blockIdx.y;
-    const uint64_t base = (uint64_t)r * AX_HIDDEN;
-    float x[AX_ROW_VALUES];
-    float sum = 0.0f;
-    #pragma unroll
-    for (uint32_t j = 0; j < AX_ROW_VALUES; j++) {
-        const uint32_t col = t + j * AX_ROW_THREADS;
-        float v = glmvq_round(cur[base + col]);
-        if (branch) { v = glmvq_round(glmvq_add(v, glmvq_round(branch[base + col]))); }
-        x[j] = v;
-        sum = fmaf(v, v, sum);
-    }
-    const float inv = __frsqrt_rn(glmvq_add(__fdiv_rn(ax_block_sum(sum, scratch), (float)AX_HIDDEN), AX_EPS));
-    #pragma unroll
-    for (uint32_t j = 0; j < AX_ROW_VALUES; j++) {
-        const uint32_t col = t + j * AX_ROW_THREADS;
-        y_row[col] = __float2bfloat16_rn(glmvq_round(glmvq_mul(__bfloat162float(weight[col]),
-            glmvq_round(glmvq_mul(x[j], inv)))));
-    }
-    __syncthreads();
-    if (t >= 32) { return; }
-    const uint4 *w = (const uint4 *)(down + (uint64_t)k * AX_HIDDEN);
-    const uint4 *y = (const uint4 *)y_row;
-    float acc = 0.0f;
-    #pragma unroll 4
-    for (uint32_t c = lane; c < AX_HIDDEN / 8; c += 32) {
-        const uint4 wv = w[c], yv = y[c];
-        const uint32_t ws[4] = {wv.x, wv.y, wv.z, wv.w}, ys[4] = {yv.x, yv.y, yv.z, yv.w};
-        #pragma unroll
-        for (uint32_t i = 0; i < 4; i++) {
-            acc = fmaf(__uint_as_float(ws[i] << 16), __uint_as_float(ys[i] << 16), acc);
-            acc = fmaf(__uint_as_float(ws[i] & 0xffff0000u), __uint_as_float(ys[i] & 0xffff0000u), acc);
-        }
-    }
-    for (uint32_t stride = 16; stride; stride >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, stride); }
-    if (lane) { return; }
-    const float g = glmvq_round(acc);
-    mid[r * AX_GNORM_MID + k] = glmvq_round(__fdiv_rn(g, glmvq_add(1.0f, expf(-g))));
-    if (!k) { mid[r * AX_GNORM_MID + AX_RANK] = inv; }
-}
-
 __global__ void __launch_bounds__(AX_ROW_THREADS) ax_gnorm_up_kernel(float *out, float *cur, const float *branch,
         const __nv_bfloat16 *weight, const __nv_bfloat16 *up, const float *mid) {
     glmvq_pdl_open();
@@ -582,7 +527,9 @@ extern "C" int ds4_gpu_axk2_norm(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_
         !gvq_floats(mid, (uint64_t)rows * AX_GNORM_MID)) { return 0; }
     const float *pending = branch ? (const float *)branch->ptr : (const float *)nullptr;
     if (gated && rows <= AX_GNORM_ROWS) {
-        glmvq_launch_kernel(gvq_mode(rows), ax_gnorm_down_kernel, dim3(AX_RANK, rows), AX_ROW_THREADS, 0,
+        static const auto kernel = ax_env_off("DS4_AXK2_NORM_STAGE") ?
+            ax_gnorm_down_kernel<ax_norm_load::reference> : ax_gnorm_down_kernel<ax_norm_load::staged>;
+        glmvq_launch_kernel(gvq_mode(rows), kernel, dim3(AX_RANK, rows), AX_ROW_THREADS, 0,
             ds4_current_stream(), (float *)mid->ptr, (const float *)cur->ptr, pending, w, wd);
         glmvq_launch_kernel(gvq_mode(rows), ax_gnorm_up_kernel, dim3(AX_HIDDEN / AX_ROW_THREADS, rows),
             AX_ROW_THREADS, 0, ds4_current_stream(), (float *)out->ptr, (float *)cur->ptr, pending, w, wu,
@@ -1084,6 +1031,12 @@ static ax_absorb_layout ax_absorb_plan(uint32_t rows) {
 
 extern "C" uint64_t ds4_gpu_axk2_absorb_bytes(uint32_t rows) { return rows > AX_DIRECT_ROWS ? ax_absorb_plan(rows).bytes : 0; }
 
+// Single-split prefill writes the value GEMM's BF16 operand directly.
+static bool ax_latent_bf16(uint32_t rows) {
+    static const bool enabled = !ax_env_off("DS4_AXK2_FLASH_BF16");
+    return enabled && rows >= L31_FA_SPLITS;
+}
+
 // BF16 copies of strided F32 rows: `cols` of each `stride`-float row.
 __global__ void ax_bf16_rows(__nv_bfloat16 *out, const float *in, uint32_t cols, uint32_t stride, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -1157,8 +1110,12 @@ extern "C" int ds4_gpu_axk2_value(ds4_gvq_ctx *ctx, ds4_gpu_tensor *heads, const
     auto *wb = (__nv_bfloat16 *)(base + l.kv_b), *lb = (__nv_bfloat16 *)(base + l.lat);
     auto *raw = (float *)(base + l.out);
     const uint64_t nl = (uint64_t)rows * AX_HEADS * AX_LATENT;
-    ax_bf16_rows<<<(uint32_t)((nl + 255) / 256), 256, 0, stream>>>(lb, (const float *)latent_out->ptr, AX_LATENT,
-        AX_LATENT, nl);
+    if (ax_latent_bf16(rows)) {
+        lb = (__nv_bfloat16 *)latent_out->ptr;
+    } else {
+        ax_bf16_rows<<<(uint32_t)((nl + 255) / 256), 256, 0, stream>>>(lb, (const float *)latent_out->ptr, AX_LATENT,
+            AX_LATENT, nl);
+    }
     // Head h: o_h^T [128 x rows] = W_UV_h [128 x 512] x lat_h^T [512 x rows].
     const float alpha = 1.0f, beta = 0.0f;
     if (!cuda_ok(cudaGetLastError(), "A.X-K2 value operands") ||
@@ -1170,240 +1127,6 @@ extern "C" int ds4_gpu_axk2_value(ds4_gvq_ctx *ctx, ds4_gpu_tensor *heads, const
     ax_gate_kernel<<<(uint32_t)((count + 255) / 256), 256, 0, stream>>>((float *)heads->ptr, raw,
         (const float *)gate->ptr, count);
     return cuda_ok(cudaGetLastError(), "A.X-K2 output gate");
-}
-
-/* Ling-3.1's FP8 flash tile (l31_fa_kernel<true>) over either the dense
- * causal keys 0..position or the row's DSA selection: slot i of a tile is
- * selected[row][i], skipped when it lies above the row's position (a row
- * that sees fewer than 2,048 keys selects every one of them plus masked
- * fillers). Selected rows gather their exponents one by one. */
-__global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) ax_fa_kernel(
-        float *out, float *partial, float *stats, const float *q, const float *q_abs,
-        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, const uint32_t *selected,
-        uint32_t pos0, uint32_t tiles_per_split, float scale) {
-    extern __shared__ __align__(16) uint8_t fa_shared[];
-    glmvq_pdl_open();
-    glmvq_pdl_wait();
-    uint8_t *tiles = fa_shared;
-    uint8_t *stages = fa_shared + GLMVQ_FA_TILE;
-    uint8_t *pe_tiles = fa_shared + 2 * GLMVQ_FA_TILE;
-    float *exchange = (float *)(pe_tiles + 2 * L31_FA_PE_TILE);
-    uint8_t *qpe = (uint8_t *)exchange + L31_FA_EXCHANGE;
-    uint32_t *kidx = (uint32_t *)(qpe + L31_FA_QPE);
-    int8_t *kexp = (int8_t *)(kidx + 2 * GLMVQ_FA_KEYS);
-    const uint32_t tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
-    const uint32_t g = lane >> 2, q4 = lane & 3u, group = warp & 3u, half = warp >> 2;
-    const uint32_t row = blockIdx.x, split = blockIdx.y;
-    const uint32_t position = pos0 + row, slots = selected ? (uint32_t)AX_TOPK : position + 1;
-    const uint32_t total = (slots + GLMVQ_FA_KEYS - 1) / GLMVQ_FA_KEYS;
-    const uint32_t first = split * tiles_per_split;
-    const uint32_t last = min(total, first + tiles_per_split);
-    const uint32_t head0 = group * 16;
-    const uint32_t *sel = selected ? selected + (uint64_t)row * AX_TOPK : nullptr;
-
-    for (uint32_t i = tid; i < GLMVQ_FA_HEADS * (L31_FA_ROPE / 8); i += GLMVQ_FA_THREADS) {
-        const uint32_t head = i / (L31_FA_ROPE / 8), chunk = i % (L31_FA_ROPE / 8);
-        const float *src = q + ((uint64_t)row * GLMVQ_FA_HEADS + head) * L31_FA_KEY + L31_FA_NOPE + chunk * 8;
-        const uint4 v = make_uint4(l31_fa_pack2(src), l31_fa_pack2(src + 2), l31_fa_pack2(src + 4), l31_fa_pack2(src + 6));
-        *(uint4 *)(qpe + l31_fa_pe_swz(head, chunk)) = v;
-    }
-    uint32_t qa[16][4];
-    const float *qrow = q_abs + ((uint64_t)row * GLMVQ_FA_HEADS + head0) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF;
-    #pragma unroll
-    for (uint32_t k = 0; k < 16; k++) {
-        const uint32_t col = k * 16 + 2 * q4;
-        qa[k][0] = l31_fa_pack2(qrow + (uint64_t)g * GLMVQ_FA_LATENT + col);
-        qa[k][1] = l31_fa_pack2(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col);
-        qa[k][2] = l31_fa_pack2(qrow + (uint64_t)g * GLMVQ_FA_LATENT + col + 8);
-        qa[k][3] = l31_fa_pack2(qrow + (uint64_t)(g + 8) * GLMVQ_FA_LATENT + col + 8);
-    }
-
-    // Warp w copies keys 4w..4w+3: an FP8 latent row as one 512-byte warp
-    // copy into its stage, rope rows by lanes 0-7, the exponent by lane 0.
-    auto issue = [&](uint32_t tile, uint32_t buf) {
-        uint8_t *dst = stages + buf * L31_FA8_STAGE;
-        uint8_t *pe = pe_tiles + buf * L31_FA_PE_TILE;
-        #pragma unroll
-        for (uint32_t i = 0; i < GLMVQ_FA_KEYS / GLMVQ_FA_WARPS; i++) {
-            const uint32_t key_slot = warp * (GLMVQ_FA_KEYS / GLMVQ_FA_WARPS) + i;
-            const uint32_t slot = tile * GLMVQ_FA_KEYS + key_slot;
-            uint32_t key = GLMVQ_FA_NONE;
-            if (slot < slots) { key = sel ? sel[slot] : slot; }
-            if (key > position) { key = GLMVQ_FA_NONE; }
-            if (!lane) {
-                kidx[buf * GLMVQ_FA_KEYS + key_slot] = key;
-                if (sel) { kexp[buf * GLMVQ_FA_KEYS + key_slot] = key == GLMVQ_FA_NONE ? 0 : exps[key]; }
-            }
-            const uint32_t bytes = key == GLMVQ_FA_NONE ? 0 : 16;
-            const uint64_t at = key == GLMVQ_FA_NONE ? 0 : key;
-            glmvq_fa_copy(dst + key_slot * GLMVQ_FA_LATENT + lane * 16,
-                (const uint8_t *)latent + at * GLMVQ_FA_LATENT + lane * 16, bytes);
-            if (lane < L31_FA_PE_ROW / 16) {
-                glmvq_fa_copy(pe + l31_fa_pe_swz(key_slot, lane), (const uint8_t *)(k_pe + at * L31_FA_ROPE) + lane * 16,
-                    bytes);
-            }
-        }
-        // Dense tiles copy their 32 row exponents at once (the cache starts
-        // zeroed, so rows past the live keys hold finite exponents).
-        if (!sel && tid < GLMVQ_FA_KEYS / 16) {
-            glmvq_fa_copy(kexp + buf * GLMVQ_FA_KEYS + tid * 16, exps + (uint64_t)tile * GLMVQ_FA_KEYS + tid * 16, 16);
-        }
-    };
-
-    float o[32][4] = {};
-    float m[2] = {-INFINITY, -INFINITY}, l[2] = {0.0f, 0.0f};
-    const float log2_scale = scale * 1.4426950408889634f;
-    if (first < last) { issue(first, 0); }
-    asm volatile("cp.async.commit_group;" ::: "memory");
-    for (uint32_t tile = first; tile < last; tile++) {
-        const uint32_t buf = (tile - first) & 1u;
-        asm volatile("cp.async.wait_group 0;" ::: "memory");
-        __syncthreads();
-        if (tile + 1 < last) { issue(tile + 1, buf ^ 1u); }
-        asm volatile("cp.async.commit_group;" ::: "memory");
-        const uint8_t *kt = tiles;
-        const uint8_t *pt = pe_tiles + buf * L31_FA_PE_TILE;
-        {
-            const uint8_t *stage = stages + buf * L31_FA8_STAGE;
-            #pragma unroll
-            for (uint32_t i = 0; i < GLMVQ_FA_KEYS * GLMVQ_FA_LATENT / 16 / GLMVQ_FA_THREADS; i++) {
-                const uint32_t id = i * GLMVQ_FA_THREADS + tid, key = id / 32, c = id % 32;
-                uint4 lo, hi;
-                l31_latent_bf16x16(*(const uint4 *)(stage + key * GLMVQ_FA_LATENT + c * 16),
-                    l31_pow2(kexp[buf * GLMVQ_FA_KEYS + key]), &lo, &hi);
-                *(uint4 *)(tiles + glmvq_fa_swz(key, 2 * c)) = lo;
-                *(uint4 *)(tiles + glmvq_fa_swz(key, 2 * c + 1)) = hi;
-            }
-            __syncthreads();
-        }
-
-        float s[4][4] = {};
-        #pragma unroll
-        for (uint32_t part = 0; part < 2; part++) {
-            const uint32_t quarter = 2 * half + part;
-            #pragma unroll
-            for (uint32_t k = 0; k < 8; k++) {
-                #pragma unroll
-                for (uint32_t j = 0; j < 4; j += 2) {
-                    uint32_t b[4];
-                    const uint32_t mat = lane >> 3;
-                    const uint32_t key = (j + (mat >> 1)) * 8 + (lane & 7u);
-                    const uint32_t chunk = quarter * 16 + k * 2 + (mat & 1u);
-                    glmvq_fa_ldsm4(b, kt + glmvq_fa_swz(key, chunk), false);
-                    glmvq_fa_mma(s[j], qa[part * 8 + k], b[0], b[1]);
-                    glmvq_fa_mma(s[j + 1], qa[part * 8 + k], b[2], b[3]);
-                }
-            }
-        }
-        if (!half) {
-            #pragma unroll
-            for (uint32_t k = 0; k < L31_FA_ROPE / 16; k++) {
-                uint32_t a[4];
-                const uint32_t mat = lane >> 3;
-                glmvq_fa_ldsm4(a, qpe + l31_fa_pe_swz(head0 + (mat & 1u) * 8 + (lane & 7u), k * 2 + (mat >> 1)), false);
-                #pragma unroll
-                for (uint32_t j = 0; j < 4; j += 2) {
-                    uint32_t b[4];
-                    const uint32_t key = (j + (mat >> 1)) * 8 + (lane & 7u);
-                    glmvq_fa_ldsm4(b, pt + l31_fa_pe_swz(key, k * 2 + (mat & 1u)), false);
-                    glmvq_fa_mma(s[j], a, b[0], b[1]);
-                    glmvq_fa_mma(s[j + 1], a, b[2], b[3]);
-                }
-            }
-        }
-        float *mine = exchange + (group + 4 * half) * 16 * GLMVQ_FA_KEYS;
-        #pragma unroll
-        for (uint32_t j = 0; j < 4; j++) {
-            *(float2 *)(mine + glmvq_fa_slot(g, 4 * j + q4)) = make_float2(s[j][0], s[j][1]);
-            *(float2 *)(mine + glmvq_fa_slot(g + 8, 4 * j + q4)) = make_float2(s[j][2], s[j][3]);
-        }
-        asm volatile("bar.sync %0, %1;" :: "r"(1 + group), "r"(64) : "memory");
-        const float *other = exchange + (group + 4 * (half ^ 1u)) * 16 * GLMVQ_FA_KEYS;
-        #pragma unroll
-        for (uint32_t j = 0; j < 4; j++) {
-            const float2 a = *(const float2 *)(other + glmvq_fa_slot(g, 4 * j + q4));
-            const float2 c = *(const float2 *)(other + glmvq_fa_slot(g + 8, 4 * j + q4));
-            s[j][0] += a.x; s[j][1] += a.y; s[j][2] += c.x; s[j][3] += c.y;
-        }
-        const uint32_t *ids = kidx + buf * GLMVQ_FA_KEYS;
-        float peak[2] = {m[0], m[1]};
-        #pragma unroll
-        for (uint32_t j = 0; j < 4; j++) {
-            #pragma unroll
-            for (uint32_t e = 0; e < 2; e++) {
-                const bool valid = ids[j * 8 + 2 * q4 + e] != GLMVQ_FA_NONE;
-                s[j][e] = valid ? s[j][e] * log2_scale : -INFINITY;
-                s[j][e + 2] = valid ? s[j][e + 2] * log2_scale : -INFINITY;
-                peak[0] = fmaxf(peak[0], s[j][e]);
-                peak[1] = fmaxf(peak[1], s[j][e + 2]);
-            }
-        }
-        #pragma unroll
-        for (uint32_t h = 0; h < 2; h++) {
-            peak[h] = fmaxf(peak[h], __shfl_xor_sync(0xffffffffu, peak[h], 1));
-            peak[h] = fmaxf(peak[h], __shfl_xor_sync(0xffffffffu, peak[h], 2));
-        }
-        float alpha[2], sum[2] = {0.0f, 0.0f};
-        #pragma unroll
-        for (uint32_t h = 0; h < 2; h++) {
-            const float ref = peak[h] == -INFINITY ? 0.0f : peak[h];
-            alpha[h] = exp2f(m[h] - ref);
-            m[h] = peak[h];
-            #pragma unroll
-            for (uint32_t j = 0; j < 4; j++) {
-                s[j][2 * h] = exp2f(s[j][2 * h] - ref);
-                s[j][2 * h + 1] = exp2f(s[j][2 * h + 1] - ref);
-                sum[h] += s[j][2 * h] + s[j][2 * h + 1];
-            }
-        }
-        #pragma unroll
-        for (uint32_t h = 0; h < 2; h++) {
-            sum[h] += __shfl_xor_sync(0xffffffffu, sum[h], 1);
-            sum[h] += __shfl_xor_sync(0xffffffffu, sum[h], 2);
-            l[h] = l[h] * alpha[h] + sum[h];
-        }
-        #pragma unroll
-        for (uint32_t t = 0; t < 32; t++) {
-            o[t][0] *= alpha[0]; o[t][1] *= alpha[0]; o[t][2] *= alpha[1]; o[t][3] *= alpha[1];
-        }
-        #pragma unroll
-        for (uint32_t kk = 0; kk < 2; kk++) {
-            const uint32_t pa[4] = {glmvq_fa_pack(s[2 * kk][0], s[2 * kk][1]),
-                glmvq_fa_pack(s[2 * kk][2], s[2 * kk][3]),
-                glmvq_fa_pack(s[2 * kk + 1][0], s[2 * kk + 1][1]),
-                glmvq_fa_pack(s[2 * kk + 1][2], s[2 * kk + 1][3])};
-            #pragma unroll
-            for (uint32_t t = 0; t < 32; t += 2) {
-                uint32_t b[4];
-                const uint32_t mat = lane >> 3;
-                const uint32_t key = kk * 16 + (mat & 1u) * 8 + (lane & 7u);
-                const uint32_t chunk = half * 32 + t + (mat >> 1);
-                glmvq_fa_ldsm4(b, kt + glmvq_fa_swz(key, chunk), true);
-                glmvq_fa_mma(o[t], pa, b[0], b[1]);
-                glmvq_fa_mma(o[t + 1], pa, b[2], b[3]);
-            }
-        }
-    }
-
-    const uint32_t heads[2] = {head0 + g, head0 + g + 8};
-    if (partial) {
-        const uint64_t base = ((uint64_t)row * gridDim.y + split) * GLMVQ_FA_HEADS;
-        #pragma unroll
-        for (uint32_t h = 0; h < 2; h++) {
-            float *dst = partial + (base + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q4;
-            #pragma unroll
-            for (uint32_t t = 0; t < 32; t++) { *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h], o[t][2 * h + 1]); }
-            if (!half && !q4) { stats[(base + heads[h]) * 2] = m[h]; stats[(base + heads[h]) * 2 + 1] = l[h]; }
-        }
-        return;
-    }
-    #pragma unroll
-    for (uint32_t h = 0; h < 2; h++) {
-        const float inv = l[h] > 0.0f ? 1.0f / l[h] : 0.0f;
-        float *dst = out + ((uint64_t)row * GLMVQ_FA_HEADS + heads[h]) * GLMVQ_FA_LATENT + half * GLMVQ_FA_HALF + 2 * q4;
-        #pragma unroll
-        for (uint32_t t = 0; t < 32; t++) { *(float2 *)(dst + t * 8) = make_float2(o[t][2 * h] * inv, o[t][2 * h + 1] * inv); }
-    }
 }
 
 // Decode rows split their keys over Ling's 48 CTAs; wider rows take one CTA each.
@@ -1421,7 +1144,15 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
         !partials || ds4_gpu_tensor_bytes(partials) < l31_fa_scratch_bytes()) { return 0; }
     static bool ready = false;
     if (!ready) {
-        if (!cuda_ok(cudaFuncSetAttribute(ax_fa_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
+        if (!cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<float>, cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
+                "A.X-K2 flash attributes") ||
+            !cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16>, cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
+                "A.X-K2 flash attributes") ||
+            !cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
+                "A.X-K2 flash attributes") ||
+            !cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::staged>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
                 "A.X-K2 flash attributes")) { return 0; }
         ready = true;
     }
@@ -1434,11 +1165,33 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
     const glmvq_launch mode = gvq_mode(rows);
     const cudaStream_t stream = ds4_current_stream();
     const uint8_t *cache = (const uint8_t *)latent->ptr;
-    cudaError_t err = glmvq_launch_kernel(mode, ax_fa_kernel, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA8_SMEM, stream,
-        (float *)out->ptr, splits > 1 ? partial : (float *)nullptr, stats, (const float *)q->ptr,
-        (const float *)q_abs->ptr, (const void *)cache, (const int8_t *)(cache + (uint64_t)cap * AX_LATENT),
-        (const __nv_bfloat16 *)k_pe->ptr, selected ? (const uint32_t *)selected->ptr : (const uint32_t *)nullptr,
-        pos0, splits > 1 ? per : UINT32_MAX, scale);
+    const int8_t *exps = (const int8_t *)(cache + (uint64_t)cap * AX_LATENT);
+    const void *key_data = selected ? selected->ptr : nullptr;
+    auto launch = [&](auto kernel, auto *dst) {
+        return glmvq_launch_kernel(mode, kernel, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA8_SMEM, stream,
+            dst, splits > 1 ? partial : (float *)nullptr, stats, (const float *)q->ptr,
+            (const float *)q_abs->ptr, (const void *)cache, exps,
+            (const __nv_bfloat16 *)k_pe->ptr, key_data,
+            pos0, splits > 1 ? per : UINT32_MAX, scale);
+    };
+    static const bool coop_keys = !ax_env_off("DS4_AXK2_FLASH_KEYS");
+    static const bool stage_keys = !ax_env_off("DS4_AXK2_FLASH_META");
+    cudaError_t err;
+    if (!ax_latent_bf16(rows)) {
+        err = launch(ax_fa_kernel<float>, (float *)out->ptr);
+    } else if (coop_keys && stage_keys && selected) {
+        // BF16 output leaves half of this F32-capacity tensor free for metadata.
+        auto *meta = (ax_fa_key *)((__nv_bfloat16 *)out->ptr + (uint64_t)rows * AX_HEADS * AX_LATENT);
+        ax_fa_pack_keys<<<(rows * AX_TOPK + 255) / 256, 256, 0, stream>>>(meta,
+            (const uint32_t *)selected->ptr, exps, rows, pos0);
+        if (!cuda_ok(cudaGetLastError(), "A.X-K2 flash key staging")) { return 0; }
+        key_data = meta;
+        err = launch(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::staged>, (__nv_bfloat16 *)out->ptr);
+    } else if (coop_keys) {
+        err = launch(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>, (__nv_bfloat16 *)out->ptr);
+    } else {
+        err = launch(ax_fa_kernel<__nv_bfloat16>, (__nv_bfloat16 *)out->ptr);
+    }
     if (err == cudaSuccess && splits > 1) {
         err = glmvq_launch_kernel(mode, l31_fa_combine, dim3(rows, GLMVQ_FA_HEADS), GLMVQ_FA_LATENT / 2, 0, stream,
             (float *)out->ptr, (const float *)partial, (const float *)stats, splits);
@@ -1447,40 +1200,6 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
 }
 
 /* ------------------------------------------------------- projections */
-
-/* Q8_0 decode GEMV (MiniMax's mm_q8_gemv order): warp o first stages
- * output o's row in shared memory by 16-byte loads (byte loads per block
- * held MiniMax's at ~17% of the DRAM rate), then lane l takes element l of
- * every 34-byte block (d * q exact in F32) against the F32 input, and a
- * fixed xor tree sums the lanes. */
-enum { AX_Q8_BLOCK = 32, AX_Q8_BYTES = 34, AX_Q8_WARPS = 8, AX_TYPE_Q8_0 = 8 };
-
-__global__ void __launch_bounds__(AX_Q8_WARPS * 32) ax_q8_gemv(float *out, const uint8_t *weight, const float *x,
-        uint32_t outs, uint32_t cols) {
-    extern __shared__ __align__(16) uint8_t ax_q8_rows[];
-    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, o = blockIdx.x * AX_Q8_WARPS + warp;
-    const uint32_t blocks = cols / AX_Q8_BLOCK, row_bytes = blocks * AX_Q8_BYTES;
-    uint8_t *w = ax_q8_rows + warp * row_bytes;
-    glmvq_pdl_open();
-    // The weights are constant: they stage while the predecessor drains.
-    if (o < outs) {
-        const uint4 *src = (const uint4 *)(weight + (uint64_t)o * row_bytes);
-        for (uint32_t i = lane; i < row_bytes / 16; i += 32) { ((uint4 *)w)[i] = src[i]; }
-    }
-    __syncwarp();
-    glmvq_pdl_wait();
-    if (o >= outs) { return; }
-    float acc = 0.0f;
-    #pragma unroll 4
-    for (uint32_t b = 0; b < blocks; b++) {
-        const uint8_t *block = w + b * AX_Q8_BYTES;
-        const float value = __half2float(__ushort_as_half((uint16_t)(block[0] | block[1] << 8))) *
-            (float)(int8_t)block[2 + lane];
-        acc = fmaf(value, x[b * AX_Q8_BLOCK + lane], acc);
-    }
-    for (uint32_t stride = 16; stride; stride >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, stride); }
-    if (!lane) { out[o] = acc; }
-}
 
 extern "C" int ds4_gpu_axk2_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
         uint32_t rows) {
@@ -1493,12 +1212,16 @@ extern "C" int ds4_gpu_axk2_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t w
         return ds4_mmq_q8_0_dense(s.data, (const float *)input->ptr, (float *)out->ptr, (int)s.rows, (int)rows,
             (int)s.cols, ds4_mmq_stream_for_call()) == 0 && cuda_ok(cudaGetLastError(), "A.X-K2 Q8_0 MMQ");
     }
+    static const bool stream = !ax_env_off("DS4_AXK2_Q8_STREAM");
+    const uint32_t warps = stream && s.rows == 8192 && s.cols == 1536 ? 1 : AX_Q8_WARPS;
+    const auto kernel = !stream ? ax_q8_gemv<ax_q8_path::reference> :
+        warps == 1 ? ax_q8_gemv<ax_q8_path::stream, 1> : ax_q8_gemv<ax_q8_path::stream>;
     // Rows are whole 16-byte pieces (wq_b 1,632 bytes, wk 7,616).
-    const uint32_t row_bytes = s.cols / AX_Q8_BLOCK * AX_Q8_BYTES, smem = AX_Q8_WARPS * row_bytes;
+    const uint32_t row_bytes = s.cols / AX_Q8_BLOCK * AX_Q8_BYTES, smem = warps * row_bytes;
     if (row_bytes % 16 || (uintptr_t)s.data % 16 ||
-        (smem > 48 * 1024 && !cuda_ok(cudaFuncSetAttribute(ax_q8_gemv, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (smem > 48 * 1024 && !cuda_ok(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)smem), "A.X-K2 Q8_0 GEMV attributes"))) { return 0; }
-    glmvq_launch_kernel(gvq_mode(rows), ax_q8_gemv, (s.rows + AX_Q8_WARPS - 1) / AX_Q8_WARPS, AX_Q8_WARPS * 32, smem,
+    glmvq_launch_kernel(gvq_mode(rows), kernel, (s.rows + warps - 1) / warps, warps * 32, smem,
         ds4_current_stream(), (float *)out->ptr, (const uint8_t *)s.data, (const float *)input->ptr, s.rows, s.cols);
     return cuda_ok(cudaGetLastError(), "A.X-K2 Q8_0 GEMV");
 }
