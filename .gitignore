@@ -246,6 +246,7 @@ tests/naive_banks
 /tests/test_minimax_reduce
 /tests/axk2_quality
 /tests/test_axk2_topk
+/tests/test_axk2_flash
 /tests/beam_mtp_gate
 /tests/ling31_mtp_gate
 /tests/test_ling31_residual

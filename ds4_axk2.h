@@ -121,7 +121,9 @@ int ds4_gpu_axk2_absorb(ds4_gvq_ctx *ctx, ds4_gpu_tensor *q_abs, const ds4_gpu_t
  * every causal key, or the selected [rows][2048] (keys above a row's
  * position skipped), s = (q_abs . c + q_pe . k_pe) x scale. Decode rows
  * split their keys over CTAs through `partials`
- * (ds4_gpu_axk2_flash_bytes). */
+ * (ds4_gpu_axk2_flash_bytes). `out` is a private flash/value intermediate:
+ * allocate F32 capacity and pass it unchanged to value with the same rows;
+ * single-split prefill may store BF16 (DS4_AXK2_FLASH_BF16=0 disables it). */
 uint64_t ds4_gpu_axk2_flash_bytes(void);
 int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *partials, const ds4_gpu_tensor *q,
     const ds4_gpu_tensor *q_abs, const ds4_gpu_tensor *latent, const ds4_gpu_tensor *k_pe,
