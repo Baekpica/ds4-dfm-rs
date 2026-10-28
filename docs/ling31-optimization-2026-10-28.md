@@ -35,7 +35,7 @@ bottleneck each change answered, and what was rejected.
 | `faa7f3fb` | KDA decay joins the q/k/v/gate q4p group | no value change | 1123 → 1130 | — |
 | `42daaef6` | residual RMS: weights before the PDL wait, warp-0 tail | no value change | — | 10.3 → 4.5 µs per call, ~1.4% |
 | `99e7707b` | router GEMM on TF32 tensor cores | KL 0.0082 vs 0.0085 | 1128 → 1147 | — |
-| `786182af`, `45940fbe` | one grouped launch for KDA's five decode projections | F32 order (split 2), then each matrix's split | — | 18.31 → 18.91 |
+| `786182af`, `76bc05cb` | one grouped launch for KDA's five decode projections | F32 order (split 2), then each matrix's split | — | 18.31 → 18.91 |
 | `806abba3` | FFN norm as BF16 rows; router on BF16 tensor cores | KL 0.0078 vs 0.0092 | 1147 → 1171 | — |
 | `25544c26` | attention norm as BF16 rows | no value change | 1159 → 1172 | — |
 | `7a0231b0` | KDA state in registers across MTP verify rows | no value change | — | MTP2 24.40 → 25.51 |
@@ -71,7 +71,7 @@ drift a few tok/s between sessions. After the round, 8K prefill runs at
   (410 → 380 µs per layer). Beam's split 2 changes the F32 order; val6 stayed
   within the accepted reference (|ΔNLL| 0.035 against 0.033), but the MTP
   gate's fixed 0.5 tie flagged one token at 0.625 on the final build.
-  `45940fbe` groups at the split each matrix picks alone (split 1 for 8192
+  `76bc05cb` groups at the split each matrix picks alone (split 1 for 8192
   rows), which runs at the same speed; the gate passes and decode gains 3.3%
   (18.31 → 18.91 tok/s, three pairs).
 - **Verify KDA (D3).** At three rows the recurrence read and wrote the

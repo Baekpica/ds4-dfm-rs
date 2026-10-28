@@ -209,7 +209,7 @@ The 1,024- and 2,048-row runs predate the load-buffer fix (`a0fd6d35`,
 
 ## Performance
 
-The 1019 release at `45940fbe`
+The 1019 release at `76bc05cb`
 ([sweep](benchmarks/ling31-1019-vq-spark-64k-2026-10-28/README.md), same
 protocol as below, two MTP drafts now to 64K):
 

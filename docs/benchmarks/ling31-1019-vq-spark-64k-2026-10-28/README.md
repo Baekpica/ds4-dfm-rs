@@ -2,7 +2,7 @@
 
 The [README sweep](../../../speed-bench/README.md) on the
 [Ling-3.1-flash-1019 VQ release](https://huggingface.co/Baekpica/Ling-3.1-flash-1019-VQ-GGUF)
-at `45940fbe` (branch `feat/add-ling31-1019`, [#123](https://github.com/Baekpica/ds4-dfm-rs/pull/123)):
+at `76bc05cb` (branch `feat/add-ling31-1019`, [#123](https://github.com/Baekpica/ds4-dfm-rs/pull/123)):
 three fresh `ds4-bench` processes per variant. Every frontier prefills 2,048
 new tokens on top of the cached prefix and generates 128 forced greedy
 tokens; the session then restores the prompt snapshot before the next
@@ -50,7 +50,7 @@ of the three runs, not a confidence interval. [All samples](tables.md) and the
   Rust 1.98.0; Linux 7.0.0-1019-nvidia. Clock range 300–2200 MHz
   (`nvidia-clocks.service` active); 2,184–2,190 MHz in five samples taken at
   launch, 305 MHz in one (not sampled during the sweep).
-- Source `45940fbe`, `ds4-bench` with NVTX instrumentation compiled in and
+- Source `76bc05cb`, `ds4-bench` with NVTX instrumentation compiled in and
   no profiler attached, SHA256
   `7a16df4acfe68f777c14dbbc4c28fd2c2ae1fcc9b5a0d698869e9deaf74ff8aa`.
 - Model: the release directory of recipe
