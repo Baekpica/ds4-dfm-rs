@@ -497,7 +497,12 @@ the per-launch overhead trips it after 12 cycles.
 ## 5. Numerics: the contract per class of change
 
 Correctness before speed is only useful if "correct" is defined per change.
-Three classes were used; every commit names its class.
+Three classes were used; every commit names its class. The class records the
+contract; it is not a target. Never shape, delay or reject a speed change to
+stay in 5.1: a change that moves rounding or accumulation order is accepted
+when its output stays within a noise floor measured on the same host from an
+existing configuration change (5.3 below), and bit identity is only the free
+result of pure scheduling.
 
 ### 5.1 Bit-identical (scheduling, fusion of elementwise chains, layout)
 
