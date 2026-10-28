@@ -78,17 +78,26 @@ __device__ __forceinline__ void beam_w_mma(float (&d)[4], const uint32_t (&a)[4]
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b.x), "r"(b.y));
 }
 
+__device__ __forceinline__ float4 beam_w_load4(const float *p) { return *(const float4 *)p; }
+__device__ __forceinline__ float4 beam_w_load4(const __nv_bfloat16 *p) {
+    const uint2 v = *(const uint2 *)p;
+    const __nv_bfloat162 lo = *(const __nv_bfloat162 *)&v.x, hi = *(const __nv_bfloat162 *)&v.y;
+    return make_float4(__low2float(lo), __high2float(lo), __low2float(hi), __high2float(hi));
+}
+
 // x = e4m3 * scale[row], one scale per token row (amax / 448), one block per
 // row. Within each 32-byte k block, 4-byte group m lands at byte
 // (m & 1) * 16 + (m >> 1) * 4: ldmatrix then hands lane q the bytes 8q..8q+7
 // of the block as its A registers 0 and 2, the k order of a book vector.
-__global__ void __launch_bounds__(GLMVQ_THREADS) beam_w_quant(uint8_t *out, float *scales, const float *input,
+// Input rows are F32 or BF16 (Ling-3.1's prefill FFN norm).
+template <typename T>
+__global__ void __launch_bounds__(GLMVQ_THREADS) beam_w_quant(uint8_t *out, float *scales, const T *input,
         uint32_t cols) {
     __shared__ float peak[GLMVQ_THREADS / 32];
-    const float *x = input + (uint64_t)blockIdx.x * cols;
+    const T *x = input + (uint64_t)blockIdx.x * cols;
     float amax = 0.0f;
     for (uint32_t i = threadIdx.x * 4; i < cols; i += GLMVQ_THREADS * 4) {
-        const float4 v = *(const float4 *)(x + i);
+        const float4 v = beam_w_load4(x + i);
         amax = fmaxf(amax, fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w))));
     }
     for (uint32_t stride = 16; stride; stride >>= 1) { amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, stride)); }
@@ -98,7 +107,7 @@ __global__ void __launch_bounds__(GLMVQ_THREADS) beam_w_quant(uint8_t *out, floa
     for (uint32_t w = 0; w < GLMVQ_THREADS / 32; w++) { amax = fmaxf(amax, peak[w]); }
     const float scale = amax / GLMVQ_E4M3_MAX;
     for (uint32_t i = threadIdx.x * 4; i < cols; i += GLMVQ_THREADS * 4) {
-        const float4 v = *(const float4 *)(x + i);
+        const float4 v = beam_w_load4(x + i);
         const float a = amax > 0.0f ? __fdiv_rn(v.x, scale) : 0.0f, b = amax > 0.0f ? __fdiv_rn(v.y, scale) : 0.0f;
         const float c = amax > 0.0f ? __fdiv_rn(v.z, scale) : 0.0f, d = amax > 0.0f ? __fdiv_rn(v.w, scale) : 0.0f;
         const uint32_t lo = __nv_cvt_float2_to_fp8x2(make_float2(a, b), __NV_SATFINITE, __NV_E4M3);

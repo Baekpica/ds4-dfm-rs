@@ -9,9 +9,11 @@
  * registers, so cur and norm equal the three separate kernels bit for bit.
  * A decode row is latency-bound: the weights load before the PDL wait, and
  * the tree's last five levels run as warp-0 shuffles (same pairs and order)
- * instead of five more block barriers. */
+ * instead of five more block barriers. N is F32 or BF16 norm rows (the
+ * values are BF16 either way). */
+template <typename N>
 __global__ void l31_residual_rms(float *cur, const float *branch, const __nv_bfloat16 *weight,
-        float *norm, uint32_t width, float eps) {
+        N *norm, uint32_t width, float eps) {
     glmvq_pdl_open();
     const uint64_t base = (uint64_t)blockIdx.x * width;
     const uint32_t lane = threadIdx.x;
@@ -58,7 +60,8 @@ __global__ void l31_residual_rms(float *cur, const float *branch, const __nv_bfl
         const uint32_t col = lane + j * blockDim.x;
         // glmvq_rms_value's weighted form: round, weight, round.
         if (col < width) {
-            norm[base + col] = glmvq_round(glmvq_mul(glmvq_round(glmvq_mul(x[j], inv)), __bfloat162float(w[j])));
+            const float value = glmvq_mul(glmvq_round(glmvq_mul(x[j], inv)), __bfloat162float(w[j]));
+            norm[base + col] = glmvq_cast<N>(glmvq_round(value));
         }
     }
 }

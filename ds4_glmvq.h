@@ -90,6 +90,14 @@ int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weig
  * to nearest); 0 when q4p does not take the weight at `rows`. */
 int ds4_gpu_gvq_linear_rows_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows);
+/* A BF16 weight times BF16 input rows into F32 rows (F32 accumulation, no
+ * output rounding); 0 for other weights and decode widths. */
+int ds4_gpu_gvq_linear_rows_f32(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+    const ds4_gpu_tensor *input, uint32_t rows);
+/* Prefill Q4_K matrices over BF16 input rows into F32 or BF16 rows; 0 when
+ * q4p does not take every weight at `rows`. */
+int ds4_gpu_gvq_linear_many_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_rows out_rows);
 /* Q4_K gate and up of one input with the clamped SwiGLU in one pass, at
  * decode and verify widths; 0 when the width or weights need the
  * separate projections. */

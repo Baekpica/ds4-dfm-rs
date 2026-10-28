@@ -22,7 +22,7 @@ typedef struct {
      * tensor-core decode/verify attention (DS4_LING31_FLASH=0: Motif's) and
      * the pipelined prefill range attention (DS4_LING31_FA_PIPE=0: Ling-3.0's,
      * bit-identical). Latent rows are FP8 (ling31_latent_mode). */
-    bool fused, qkv_bf16, flash, pipe, router_tf32, q4_many;
+    bool fused, qkv_bf16, flash, pipe, router_tf32, q4_many, norm_bf16;
     ds4_l31_latent latent_mode;
     uint64_t workspace_bytes, state_bytes, control_bytes, kv_bytes;
 #define L31_FIELD(field, cols, type) ds4_gpu_tensor *field;
@@ -279,12 +279,14 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     const char *fused = getenv("DS4_LING31_FUSED"), *qkv = getenv("DS4_LING31_QKV_BF16");
     const char *flash = getenv("DS4_LING31_FLASH"), *pipe = getenv("DS4_LING31_FA_PIPE");
     const char *router = getenv("DS4_LING31_ROUTER_TF32"), *many = getenv("DS4_LING31_Q4_MANY");
+    const char *norm16 = getenv("DS4_LING31_NORM_BF16");
     g->fused = !(fused && !strcmp(fused, "0"));
     g->flash = !(flash && !strcmp(flash, "0"));
     g->pipe = !(pipe && !strcmp(pipe, "0"));
     g->qkv_bf16 = !(qkv && !strcmp(qkv, "0"));
     g->router_tf32 = !(router && !strcmp(router, "0"));
     g->q4_many = !(many && !strcmp(many, "0"));
+    g->norm_bf16 = !(norm16 && !strcmp(norm16, "0"));
     g->ready = true;
     if (!ling31_graph_reset(g)) { ling31_graph_free(g); return false; }
     ds4_log(stderr, DS4_LOG_TIMING,
@@ -369,9 +371,9 @@ static bool l31_residual(ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch, uint
 // The residual, then the next RMS norm of cur into norm: one pass that
 // matches the three kernels bit for bit.
 static bool l31_residual_norm(ds4_ling31_graph *g, const ds4_model *m, const ds4_gpu_tensor *branch,
-        const ds4_tensor *w, uint32_t rows) {
+        const ds4_tensor *w, uint32_t rows, ds4_gvq_rows norm_rows) {
     if (g->fused) {
-        return ds4_gpu_l31_residual_rms(g->gvq, g->cur, branch, g->norm, ling31_index(m, w), rows,
+        return ds4_gpu_l31_residual_rms(g->gvq, g->cur, branch, g->norm, norm_rows, ling31_index(m, w), rows,
             L31_EMBD, DS4_RMS_EPS) != 0;
     }
     return l31_residual(g->cur, branch, rows) && l31_norm(g, m, g->norm, g->cur, w, rows, L31_EMBD);
@@ -545,34 +547,57 @@ static bool l31_mla(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
 // verify widths, separate projections otherwise. `mid` follows `gate`.
 static bool l31_mlp(ds4_ling31_graph *g, const ds4_model *m, ds4_gpu_tensor *out,
         const ds4_tensor *gate, const ds4_tensor *up, const ds4_tensor *down,
-        uint32_t rows, float clamp) {
+        uint32_t rows, float clamp, ds4_gvq_rows in_rows) {
     const uint32_t width = (uint32_t)gate->dim[1];
-    if (ds4_gpu_l31_gate_up(g->gvq, g->f, ling31_index(m, gate), ling31_index(m, up), g->norm, rows, clamp)) {
+    if (in_rows == DS4_GVQ_ROWS_F32 &&
+        ds4_gpu_l31_gate_up(g->gvq, g->f, ling31_index(m, gate), ling31_index(m, up), g->norm, rows, clamp)) {
         return l31_mm(g, m, out, down, g->f, rows, DS4_GVQ_BF16);
     }
     ds4_gpu_tensor *const outs[] = {g->k, g->v};
     const ds4_tensor *const ws[] = {gate, up};
-    return l31_mm_many(g, m, outs, ws, 2u, g->norm, rows) &&
+    const uint32_t index[] = {ling31_index(m, gate), ling31_index(m, up)};
+    const bool projected = in_rows == DS4_GVQ_ROWS_BF16
+        ? ds4_gpu_gvq_linear_many_rows(g->gvq, outs, index, 2u, g->norm, rows, DS4_GVQ_ROWS_F32) != 0
+        : l31_mm_many(g, m, outs, ws, 2u, g->norm, rows);
+    return projected &&
         ds4_gpu_l31_swiglu(g->f, g->k, g->v, rows, width, clamp, DS4_GVQ_ROWS_F32) &&
         l31_mm(g, m, out, down, g->f, rows, DS4_GVQ_BF16);
 }
 
-static bool l31_ffn(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
+/* Prefill FFN input as BF16 rows (the norm's values are BF16 either way)
+ * when every reader takes them: the router GEMM, the dense or shared
+ * expert's q4p and the routed E4M3 quantization read half the bytes.
+ * DS4_LING31_NORM_BF16=0 keeps F32 rows. */
+static ds4_gvq_rows l31_ffn_rows(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_weights *l,
         uint32_t il, uint32_t rows) {
+    const bool dense = il < LING31_DENSE;
+    const uint32_t gate = ling31_index(m, dense ? l->ffn_gate : l->ffn_gate_shexp);
+    const uint32_t up = ling31_index(m, dense ? l->ffn_up : l->ffn_up_shexp);
+    return g->norm_bf16 && g->fused && ds4_gpu_gvq_bf16_input(g->gvq, gate, rows) &&
+        ds4_gpu_gvq_bf16_input(g->gvq, up, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+}
+
+static bool l31_ffn(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
+        uint32_t il, uint32_t rows, ds4_gvq_rows in_rows) {
     const ds4_layer_weights *l = &w->layer[il];
     if (il < LING31_DENSE) {
-        return l31_mlp(g, m, g->ffn_out, l->ffn_gate, l->ffn_up, l->ffn_down, rows, INFINITY);
+        return l31_mlp(g, m, g->ffn_out, l->ffn_gate, l->ffn_up, l->ffn_down, rows, INFINITY, in_rows);
     }
     // FP32 router logits (BF16 weights widened), grouped sigmoid top-8; the
     // shared expert runs first so the routed reduce adds it in its pass.
     // norm rows are BF16 values, so prefill takes TF32 tensor cores (4096
-    // rows: 1.43 -> 0.66 ms). DS4_LING31_ROUTER_TF32=0 keeps F32 SIMT.
-    return l31_mm(g, m, g->router, l->ffn_gate_inp, g->norm, rows, g->router_tf32 ? DS4_GVQ_TF32 : DS4_GVQ_F32) &&
+    // rows: 1.43 -> 0.66 ms), or BF16 ones on BF16 rows (0.36 ms).
+    // DS4_LING31_ROUTER_TF32=0 keeps F32 SIMT on F32 rows.
+    const uint32_t router = ling31_index(m, l->ffn_gate_inp);
+    const bool logits = in_rows == DS4_GVQ_ROWS_BF16
+        ? ds4_gpu_gvq_linear_rows_f32(g->gvq, g->router, router, g->norm, rows) != 0
+        : l31_mm(g, m, g->router, l->ffn_gate_inp, g->norm, rows, g->router_tf32 ? DS4_GVQ_TF32 : DS4_GVQ_F32);
+    return logits &&
         ds4_gpu_ling3vl_router(g->selected, g->route_weights, g->router, m->map, m->size,
             l->ffn_exp_probs_b->abs_offset, rows, DS4_EXPERT_WEIGHT_SCALE) &&
         l31_mlp(g, m, g->attn_out, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, rows,
-            ling31_clamp(il, true)) &&
-        ds4_gpu_l31_moe(g->moe, g->ffn_out, g->norm, g->selected, g->route_weights, g->matrices[il],
+            ling31_clamp(il, true), in_rows) &&
+        ds4_gpu_l31_moe(g->moe, g->ffn_out, g->norm, in_rows, g->selected, g->route_weights, g->matrices[il],
             rows, ling31_clamp(il, false), g->attn_out);
 }
 
@@ -582,10 +607,12 @@ static bool l31_ffn(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *
 static bool l31_block(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
         uint32_t il, uint32_t rows, uint32_t pos, const ds4_tensor *next) {
     const ds4_layer_weights *l = &w->layer[il];
+    const ds4_gvq_rows ffn_rows = l31_ffn_rows(g, m, l, il, rows);
     const bool ok = (ds4_ling31_layer_is_mla(il) ? l31_mla(g, m, l, il, rows, pos) : l31_kda(g, m, l, il, rows)) &&
-        l31_residual_norm(g, m, g->attn_out, l->ffn_norm, rows) &&
-        l31_ffn(g, m, w, il, rows) &&
-        (next ? l31_residual_norm(g, m, g->ffn_out, next, rows) : l31_residual(g->cur, g->ffn_out, rows));
+        l31_residual_norm(g, m, g->attn_out, l->ffn_norm, rows, ffn_rows) &&
+        l31_ffn(g, m, w, il, rows, ffn_rows) &&
+        (next ? l31_residual_norm(g, m, g->ffn_out, next, rows, DS4_GVQ_ROWS_F32)
+              : l31_residual(g->cur, g->ffn_out, rows));
     if (!ok) { fprintf(stderr, "ds4: Ling-3.1 layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }
     return ok;
 }

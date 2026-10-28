@@ -1073,6 +1073,42 @@ extern "C" int ds4_gpu_gvq_linear_rows_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *ou
                                         : gvq_q4p_run<__nv_bfloat16, float>(ctx, &out, &weight, 1, input, rows);
 }
 
+// BF16 weights times BF16 input rows into F32 rows on tensor cores (exact
+// products, F32 accumulation: DS4_GVQ_TF32's class). 0 for other weights
+// and decode widths.
+extern "C" int ds4_gpu_gvq_linear_rows_f32(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    if (!ctx || rows <= GLMVQ_DOT_TOKENS || weight >= ctx->model->source.size() || !gvq_stream(ctx)) { return 0; }
+    const glmvq_source &s = ctx->model->source[weight];
+    if (ctx->model->records[weight].type != GVQ_TYPE_BF16 || s.storage != GLMVQ_WEIGHT_BF16 || !s.data ||
+        !gvq_floats(input, (uint64_t)rows * s.cols / 2) || !gvq_floats(out, (uint64_t)rows * s.rows)) { return 0; }
+    const float alpha = 1.0f, beta = 0.0f;
+    return cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, s.rows, rows, s.cols,
+        &alpha, s.data, CUDA_R_16BF, s.cols, input->ptr, CUDA_R_16BF, s.cols, &beta, out->ptr, CUDA_R_32F, s.rows,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ BF16 rows into F32");
+}
+
+// Q4_K matrices sharing BF16 input rows into F32 or BF16 rows: q4p prepares
+// the BF16 values once. 0 when q4p does not take every weight at `rows`.
+extern "C" int ds4_gpu_gvq_linear_many_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+        const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_rows out_rows) {
+    if (!ctx || !outs || !weights || !count || count > GVQ_LINEAR_MANY || !gvq_stream(ctx)) { return 0; }
+    const bool bf16 = out_rows == DS4_GVQ_ROWS_BF16;
+    uint32_t cols = 0;
+    for (uint32_t c = 0; c < count; c++) {
+        if (!ds4_gpu_gvq_bf16_input(ctx, weights[c], rows)) { return 0; }
+        const glmvq_source &s = ctx->model->source[weights[c]];
+        const uint64_t n = (uint64_t)rows * s.rows;
+        if ((c && s.cols != cols) || !gvq_floats(outs[c], bf16 ? n / 2 : n)) { return 0; }
+        cols = s.cols;
+    }
+    if (!gvq_floats(input, (uint64_t)rows * cols / 2) || !gvq_q4p_ready(ctx, weights, count, input, outs, rows)) {
+        return 0;
+    }
+    return bf16 ? gvq_q4p_run<__nv_bfloat16, __nv_bfloat16>(ctx, outs, weights, count, input, rows)
+                : gvq_q4p_run<float, __nv_bfloat16>(ctx, outs, weights, count, input, rows);
+}
+
 extern "C" int ds4_gpu_gvq_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
         const ds4_gpu_tensor *input, const ds4_gpu_tensor *gate, uint32_t weight,
         uint32_t rows, uint32_t width, float eps, ds4_gvq_norm kind) {
