@@ -61,6 +61,7 @@ struct ds4_gvq_ctx {
     bool expand_mix;
     bool kda_chunk;
     bool kda_mma;
+    bool kda_local17;
     bool flash;
     glmvq_launch launch;
     bool index_fused;
@@ -472,6 +473,11 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_MMA accepts 0 or 1\n");
         return nullptr;
     }
+    const char *kda_local17 = getenv("DS4_GLMVQ_KDA_LOCAL17");
+    if (kda_local17 && strcmp(kda_local17, "0") && strcmp(kda_local17, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_KDA_LOCAL17 accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *route = getenv("DS4_GLMVQ_DECODE_ROUTE");
     if (route && strcmp(route, "0") && strcmp(route, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_DECODE_ROUTE accepts 0 or 1\n");
@@ -489,6 +495,7 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         cuda_ok(cudaFuncSetAttribute(glmvq_hc_expand_mix<__nv_bfloat16, __nv_bfloat16>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)glmvq_xmix_smem<__nv_bfloat16>()), "GLM VQ mHC expand mix shared memory");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
+    ctx->kda_local17 = !kda_local17 || strcmp(kda_local17, "0");
     // Decode-width kernels launch with programmatic dependent launch.
     ctx->launch = !pdl || strcmp(pdl, "0") ? GLMVQ_LAUNCH_PDL : GLMVQ_LAUNCH_PLAIN;
     g_gvq_pdl = ctx->launch;
@@ -500,6 +507,14 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, __nv_bfloat16>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float, float, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float, __nv_bfloat16, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, float, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, __nv_bfloat16, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_scan<float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KSCAN_SMEM), "GLM VQ KDA scan shared memory") &&
@@ -1727,7 +1742,10 @@ extern "C" int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_
     auto *records = (uint8_t *)ctx->scratch->ptr;
     auto local = [&](auto *qkv, auto *f) {
         using Q = std::remove_cv_t<std::remove_pointer_t<decltype(qkv)>>;
-        glmvq_kda_local<<<dim3((uint32_t)chunks, heads), GLMVQ_KLOCAL, GLMVQ_KLOCAL_SMEM, stream>>>(records,
+        using F = std::remove_cv_t<std::remove_pointer_t<decltype(f)>>;
+        auto kernel = ctx->kda_local17 ? glmvq_kda_local<Q, F> : glmvq_kda_local<Q, F, GLMVQ_KINPUT>;
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PLAIN, kernel, dim3((uint32_t)chunks, heads),
+            ctx->kda_local17 ? GLMVQ_KLOCAL : GLMVQ_KINPUT, GLMVQ_KLOCAL_SMEM, stream, records,
             (const float *)q_tail->ptr, (const float *)k_tail->ptr, (const float *)v_tail->ptr,
             qkv, (const Q *)k->ptr, (const Q *)v->ptr, f, (const float *)beta->ptr,
             (const float *)q_weight->ptr, (const float *)k_weight->ptr, (const float *)v_weight->ptr,

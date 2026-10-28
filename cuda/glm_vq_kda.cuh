@@ -195,7 +195,8 @@ __global__ void glmvq_kda_prep(float *qn, float *kn, float *vv, float *gl, float
  * bit; k stays F32 (it feeds the state), q is kept as F16. Records are F16
  * except U; the scan rounds the state to F16 per chunk and splits V' into
  * two F16 halves. Every product accumulates in F32. */
-enum { GLMVQ_KC = 64, GLMVQ_KLOCAL = 512, GLMVQ_KSCAN = 256, GLMVQ_KAROW = GLMVQ_KC + 1,
+enum { GLMVQ_KC = 64, GLMVQ_KINPUT = GLMVQ_KC / 4 * 32, GLMVQ_KLOCAL = GLMVQ_KINPUT + 32,
+       GLMVQ_KSCAN = 256, GLMVQ_KAROW = GLMVQ_KC + 1,
        GLMVQ_KTILES = (GLMVQ_KC / 4) * (GLMVQ_KC / 4 + 1) / 2, GLMVQ_KSUB = 16 };
 
 // One (chunk, head) record; padding tokens of a short last chunk are zero.
@@ -230,8 +231,8 @@ __device__ __forceinline__ float *glmvq_kda_tblock(float *tmp, uint32_t i, uint3
     return tmp + slot * GLMVQ_KSUB * GLMVQ_KSUB;
 }
 
-/* One CTA per (chunk, head), 16 warps. Produces everything that does not
- * depend on the incoming state. The chunk's conv window reads the previous
+/* One CTA per (chunk, head); 17 warps cover all 544 A/Mq tasks at once.
+ * Produces everything independent of the incoming state. The conv window reads the previous
  * call's tail for its first three tokens; the tail advances later. */
 __device__ __forceinline__ float4 glmvq_kda_load4(const float *p) { return *(const float4 *)p; }
 __device__ __forceinline__ float4 glmvq_kda_load4(const __nv_bfloat16 *p) {
@@ -241,14 +242,15 @@ __device__ __forceinline__ float4 glmvq_kda_load4(const __nv_bfloat16 *p) {
 }
 
 // Q (raw q/k/v) and F (forget) are F32 or BF16 projection outputs read in place.
-template <typename Q, typename F>
-__global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *records,
+template <typename Q, typename F, uint32_t THREADS = GLMVQ_KLOCAL>
+__global__ void __launch_bounds__(THREADS, 1) glmvq_kda_local(uint8_t *records,
         const float *q_tail, const float *k_tail, const float *v_tail,
         const Q *q_raw, const Q *k_raw, const Q *v_raw,
         const F *forget, const float *beta_logits,
         const float *q_weight, const float *k_weight, const float *v_weight,
         const float *a_log, const float *dt_bias, uint32_t rows,
         uint32_t heads, float lower_bound) {
+    static_assert(THREADS == GLMVQ_KINPUT || THREADS == GLMVQ_KLOCAL, "16 or 17 local warps");
     constexpr uint32_t C = GLMVQ_KC, D = GLMVQ_KDA_DIM, AR = GLMVQ_KAROW, S = GLMVQ_KSUB;
     extern __shared__ __align__(16) uint8_t kda_shared[];
     __half *sq = (__half *)kda_shared;
@@ -264,7 +266,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
     // Inputs as the recurrence computes them. Warp w takes tokens 4w..4w+3 and
     // lane l dims 4l..4l+3: the conv window is 7 raw rows and the recurrence's
     // L2-norm tree (strides 64..1) becomes xor shuffles 16..1, then 2, 1 in-lane.
-    {
+    if (tid < GLMVQ_KINPUT) {
         const uint32_t d0 = lane * 4;
         const uint64_t ch = (uint64_t)head * D + d0;
         const float scale = __fdiv_rn(1.0f, __fsqrt_rn((float)D));
@@ -343,9 +345,9 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
             const uint32_t t = 4 * warp + lane;
             sb[t] = t < n ? glmvq_round(glmvq_sigmoid(beta_logits[(uint64_t)(t0 + t) * heads + head])) : 0.0f;
         }
-        for (uint32_t i = tid; i < C * AR; i += GLMVQ_KLOCAL) { sa[i] = 0.0f; }
+        for (uint32_t i = tid; i < C * AR; i += GLMVQ_KINPUT) { sa[i] = 0.0f; }
         ((uint4 *)(rec + GLMVQ_KR_MQ))[tid] = make_uint4(0, 0, 0, 0);
-        static_assert(GLMVQ_KC * GLMVQ_KC * 2 == GLMVQ_KLOCAL * 16, "one Mq clear per thread");
+        static_assert(GLMVQ_KC * GLMVQ_KC * 2 == GLMVQ_KINPUT * 16, "one Mq clear per thread");
     }
     __syncthreads();
 
@@ -360,7 +362,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
     {
         const float *glast = sg + (n - 1) * D;
         __half *qt = (__half *)(rec + GLMVQ_KR_QT), *kt = (__half *)(rec + GLMVQ_KR_KT);
-        for (uint32_t i = tid; i < C * D / 2; i += GLMVQ_KLOCAL) {
+        for (uint32_t i = tid; i < C * D / 2; i += THREADS) {
             const uint32_t t = i / (D / 2), d = i % (D / 2) * 2;
             float lo = 0.0f, hi = 0.0f;
             if (t < n) {
@@ -369,7 +371,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
             }
             *(uint32_t *)(qt + t * D + d) = glmvq_h2(lo, hi);
         }
-        for (uint32_t i = tid; i < C * D / 2; i += GLMVQ_KLOCAL) {
+        for (uint32_t i = tid; i < C * D / 2; i += THREADS) {
             const uint32_t d = i % D, t = i / D * 2;
             const float lo = t < n ? sk[t * D + d] * __expf(glast[d] - sg[t * D + d]) : 0.0f;
             const float hi = t + 1 < n ? sk[(t + 1) * D + d] * __expf(glast[d] - sg[(t + 1) * D + d]) : 0.0f;
@@ -384,7 +386,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
     // below e^-87. Each lane rotates its d order to spread the banks.
     {
         __half *mq = (__half *)(rec + GLMVQ_KR_MQ);
-        for (uint32_t task = tid; task < GLMVQ_KTILES * 4; task += GLMVQ_KLOCAL) {
+        for (uint32_t task = tid; task < GLMVQ_KTILES * 4; task += THREADS) {
             const uint32_t tile = task >> 2, part = task & 3;
             uint32_t bt = 0;
             while ((bt + 1) * (bt + 2) / 2 <= tile) { bt++; }
@@ -462,7 +464,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
         };
         for (uint32_t dist = 1; dist < 4; dist++) {
             const uint32_t count = 4 - dist;
-            for (uint32_t o = tid; o < count * S * S; o += GLMVQ_KLOCAL) {
+            for (uint32_t o = tid; o < count * S * S; o += THREADS) {
                 const uint32_t j = o / (S * S), i = j + dist, r = o / S % S, c = o % S;
                 float acc = 0.0f;
                 for (uint32_t k = j; k < i; k++) {
@@ -472,7 +474,7 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
                 x[o] = acc;
             }
             __syncthreads();
-            for (uint32_t o = tid; o < count * S * S; o += GLMVQ_KLOCAL) {
+            for (uint32_t o = tid; o < count * S * S; o += THREADS) {
                 const uint32_t j = o / (S * S), i = j + dist, r = o / S % S, c = o % S;
                 float acc = 0.0f;
                 #pragma unroll
@@ -481,27 +483,29 @@ __global__ void __launch_bounds__(GLMVQ_KLOCAL, 1) glmvq_kda_local(uint8_t *reco
             }
             __syncthreads();
         }
-        for (uint32_t o = tid; o < 6 * S * S; o += GLMVQ_KLOCAL) {
+        for (uint32_t o = tid; o < 6 * S * S; o += THREADS) {
             const uint32_t b = o / (S * S), r = o / S % S, c = o % S;
             const uint32_t j = b < 3 ? b : b < 5 ? b - 3 : 0, i = j + (b < 3 ? 1 : b < 5 ? 2 : 3);
             sa[(i * S + r) * AR + j * S + c] = tmp[o];
         }
     }
     // K~ beta = beta k e^G replaces G, which nothing reads after this.
-    for (uint32_t i = tid; i < C * D; i += GLMVQ_KLOCAL) {
+    for (uint32_t i = tid; i < C * D; i += THREADS) {
         const uint32_t t = i / D;
         sg[i] = t < n ? sb[t] * sk[i] * __expf(sg[i]) : 0.0f;
     }
     __syncthreads();
-    #pragma unroll
-    for (uint32_t j = 0; j < 4; j++) {
+    if (tid < GLMVQ_KINPUT) {
         #pragma unroll
-        for (uint32_t i = 0; i < 4; i++) { sv[(4 * warp + j) * D + lane * 4 + i] = __float2bfloat16_rn(vkeep[j][i]); }
+        for (uint32_t j = 0; j < 4; j++) {
+            #pragma unroll
+            for (uint32_t i = 0; i < 4; i++) { sv[(4 * warp + j) * D + lane * 4 + i] = __float2bfloat16_rn(vkeep[j][i]); }
+        }
     }
     __syncthreads();
 
     // W = T K~beta and U = T beta V: warp w owns rows 4w..4w+3, lane 4 dims.
-    {
+    if (tid < GLMVQ_KINPUT) {
         const uint32_t tb = warp * 4, db = lane * 4, last = min(tb + 4, n);
         float aw[4][4] = {}, au[4][4] = {};
         for (uint32_t s = 0; s < last; s++) {

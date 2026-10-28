@@ -82,12 +82,65 @@ The earlier admission-only candidate was rejected: isolated GEMM gain did
 not improve whole prefill (median -0.018%), while changing output values.
 Only the complete pipeline above is considered for adoption.
 
+## P2: cover the KDA local tail with one more warp
+
+The local KDA preparation spends about 9% of prefill. Its A/Mq work has
+544 tasks, so a 512-thread block leaves 480 threads waiting while 32 do a
+second dot product. A 544-thread block covers every task once. Only the
+original 512 threads own input and output rows; all threads join barriers.
+Every output keeps its original reduction order. The 512-thread fallback
+is `DS4_GLMVQ_KDA_LOCAL17=0`.
+
+| 8K warmed workload | Off samples | On samples | Median gain |
+|---|---|---|---:|
+| Prefill, tok/s | 1185.07, 1181.27, 1187.96 | 1203.63, 1189.97, 1191.26 | +0.52% |
+| Decode, tok/s | 18.93, 18.97, 18.92 | 18.63, 18.39, 18.92 | -1.58% |
+
+All three prefill pairs improve; all full-vocabulary logits, 128 generated
+tokens and cycle receipts are byte-identical. Isolated 4096-row/64-head
+kernel medians are 4.848 → 4.638 ms (-4.33%), with all three pairs faster.
+NCU reports 4.816 → 4.599 ms, 113 → 95 registers and no spills; shared
+memory stays 98,816 B and no allocation is added. The minimum input/output
+traffic is about 640 MB, a 2.72 ms floor at 235 GB/s. The post-dot barrier's
+share of source stall samples falls from 7.85% to 2.98% (separate replays,
+so their absolute sample counts are not comparable).
+
+A paired 128-token NSYS capture with PDL off attributes 645.427 →
+597.435 ms to the 126 local calls, saving 47.992 ms. Whole prefill is
+6884.096 → 6856.488 ms. Decode is 6860.216 → 6989.452 ms; 124.725 ms of
+the 129.236 ms difference is the unchanged grouped Q4 projection kernel.
+Its later-layer calls average about 370 or 389 microseconds across process
+runs, with matching launch geometry, allocation counts and instructions.
+A fresh extra off control is fast. After restoring and rebuilding the clean
+P1 source, which contains no 17-warp code, another whole-workload baseline
+reproduces the slow pattern: the same later-group medians average 389.127
+microseconds versus 388.621 in the candidate. This establishes that the
+slow regime exists in the original path. Physical placement remains an
+unproven explanation. P2 is retained for its consistent prefill gain,
+unchanged values and resource footprint; no Decode gain or speed-equivalence
+claim is made. The raw ranges and this limitation remain in the
+[evidence](benchmarks/ling31-1019-followup-2026-10-28/p2.json).
+
+The regression compares all local-record bytes and trailing canaries for
+BF16 inputs at 1/63/64/65/200 rows and all F32/BF16 combinations at 65 rows.
+The existing independent recurrence gate passes through 4096 rows: output
+relative RMS ≤0.00138, state ≤0.000213. The four old local kernels retain
+all normalized SASS instructions, as do the 26 decode kernels. Full-model
+performance is qualified on this Ling artifact; other families sharing the
+kernel have fixture coverage only.
+
+Two preceding local probes were rejected: shared input staging was 12.6%
+slower, and L1 lookahead did not improve timing. An earlier Q4p wait-suspend
+hint also had inconsistent isolated gains and no useful counter improvement.
+None is included in the implementation or the adopted-round count.
+
 ## Reproduction and remaining scope
 
 ```sh
-make tests/test_glm_vq_q4p tests/test_ling31_mlp
+make tests/test_glm_vq_q4p tests/test_ling31_mlp tests/test_glm_vq_kda
 ./tests/test_glm_vq_q4p
 ./tests/test_ling31_mlp
+./tests/test_glm_vq_kda
 # Set DS4_LING31_MLP_Q4P=0 or 1 before each guarded fresh process:
 ./ds4-bench --cuda -m "$MODEL" --prompt-file speed-bench/promessi_sposi.txt \
   --ctx-start 8192 --ctx-max 8192 --warmup-prefill 8192 --gen-tokens 128 \

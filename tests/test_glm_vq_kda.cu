@@ -4,6 +4,7 @@
 // judged by relative error of the normed output and the final state.
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
 #include <vector>
 #include <random>
 #include "../cuda/glm_vq_kda.cuh"
@@ -16,6 +17,44 @@ static std::vector<float> normal(size_t n, float mean, float sd) {
     std::vector<float> v(n);
     for (auto &x : v) { x = nd(rng); }
     return v;
+}
+
+template <typename T> static T *input(size_t n, float mean, float sd) {
+    const auto values = normal(n, mean, sd);
+    return up(std::vector<T>(values.begin(), values.end()));
+}
+
+// The extra warp must neither own input rows nor leave record/tail holes.
+template <typename Q, typename F> static int local_parity(uint32_t rows) {
+    const uint32_t heads = 3, width = heads * GLMVQ_KDA_DIM;
+    const size_t count = (size_t)rows * width, tail = width * GLMVQ_CONV;
+    auto *q = input<Q>(count, 0, 1), *k = input<Q>(count, 0, 1), *v = input<Q>(count, 0, 1);
+    auto *f = input<F>(count, -2, 2);
+    auto *b = input<float>(rows * heads, 0, 2), *qw = input<float>(tail, 0, .5f);
+    auto *kw = input<float>(tail, 0, .5f), *vw = input<float>(tail, 0, .5f);
+    auto *qt = input<float>(tail, 0, 1), *kt = input<float>(tail, 0, 1), *vt = input<float>(tail, 0, 1);
+    auto *a = input<float>(heads, 0, .5f), *bias = input<float>(width, -2, 1);
+    const uint32_t chunks = (rows + GLMVQ_KC - 1) / GLMVQ_KC;
+    const size_t bytes = (size_t)chunks * heads * GLMVQ_KR_BYTES;
+    uint8_t *old, *next;
+    CK(cudaMalloc(&old, bytes + 16)); CK(cudaMalloc(&next, bytes + 16));
+    CK(cudaMemset(old, 0x3c, bytes + 16)); CK(cudaMemset(next, 0xa5, bytes + 16));
+    CK(cudaFuncSetAttribute(glmvq_kda_local<Q, F, GLMVQ_KINPUT>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, GLMVQ_KLOCAL_SMEM));
+    CK(cudaFuncSetAttribute(glmvq_kda_local<Q, F>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, GLMVQ_KLOCAL_SMEM));
+    glmvq_kda_local<Q, F, GLMVQ_KINPUT><<<dim3(chunks, heads), GLMVQ_KINPUT, GLMVQ_KLOCAL_SMEM>>>(
+        old, qt, kt, vt, q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f);
+    glmvq_kda_local<Q, F><<<dim3(chunks, heads), GLMVQ_KLOCAL, GLMVQ_KLOCAL_SMEM>>>(
+        next, qt, kt, vt, q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f);
+    CK(cudaGetLastError()); CK(cudaDeviceSynchronize());
+    const auto before = down(old, bytes + 16), after = down(next, bytes + 16);
+    bool ok = std::equal(before.begin(), before.begin() + bytes, after.begin());
+    for (size_t i = bytes; i < bytes + 16; i++) { ok &= before[i] == 0x3c && after[i] == 0xa5; }
+    printf("kda local rows=%u q=%zu f=%zu: records and canary %s\n", rows, sizeof(Q), sizeof(F), ok ? "ok" : "FAIL");
+    for (void *p : {(void *)q, (void *)k, (void *)v, (void *)f, (void *)b, (void *)qw, (void *)kw,
+            (void *)vw, (void *)qt, (void *)kt, (void *)vt, (void *)a, (void *)bias, (void *)old, (void *)next}) { cudaFree(p); }
+    return !ok;
 }
 
 struct Diff { double rel, worst; };
@@ -102,6 +141,12 @@ static int run(uint32_t rows, float state_sd, bool timing) {
 
 int main() {
     int failed = 0;
+    for (uint32_t rows : {1u, 63u, 64u, 65u, 200u}) {
+        failed += local_parity<__nv_bfloat16, __nv_bfloat16>(rows);
+    }
+    failed += local_parity<float, float>(65);
+    failed += local_parity<float, __nv_bfloat16>(65);
+    failed += local_parity<__nv_bfloat16, float>(65);
     failed += run(64, 0.0f, false);
     failed += run(200, 0.3f, false);
     failed += run(2048, 0.3f, true);

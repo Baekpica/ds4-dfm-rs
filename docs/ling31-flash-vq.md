@@ -289,6 +289,7 @@ Past 64K the bench frontiers (32K-token steps, 16 tokens) decode at 17.56,
 | `DS4_LING31_ROUTER_TF32=0` | F32 SIMT router GEMM on F32 rows |
 | `DS4_LING31_NORM_BF16=0` | F32 norm rows at prefill |
 | `DS4_LING31_Q4_MANY=0` | one decode launch per Q4_K projection |
+| `DS4_GLMVQ_KDA_LOCAL17=0` | 512-thread KDA prefill preparation instead of 544 threads |
 
 ## Limits and next levers
 
