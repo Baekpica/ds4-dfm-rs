@@ -65,9 +65,8 @@ floor; decode measures 56 ms.
 **Decode (one row).** Routing stays on the device; the GVQ decode kernels
 stream the eight selected experts with the layer book resident in shared
 memory. Q4_K projections use the cooperative stream kernel (~229 GB/s per
-matrix); projections of one input (KDA's q/k/v/gate/decay, MLA's q_a/kv_a)
-stream in one grouped launch (245–254 GB/s). FP8 uses the direct dot
-(~250 GB/s). MLA attention scores the absorbed query against
+matrix); KDA's five projections of one input (q/k/v/gate/decay) stream in
+one grouped launch (245–254 GB/s). FP8 uses the direct dot (~250 GB/s). MLA attention scores the absorbed query against
 every cached latent and rope key on tensor cores ([cuda/l31_flash.cuh](../cuda/l31_flash.cuh):
 GLM VQ's flash tile plus the 64-dim rope keys, keys split over 48 CTAs).
 Latent rows are E4M3 with one power-of-two scale per row
@@ -117,7 +116,7 @@ prefill fills them too, so drafts attend the whole prompt. Verify rows equal
 decode rows up to cross-width FP order; `tests/ling31_mtp_gate` checks every
 emitted token against a one-row decode within a BF16 tie margin. The verify
 forward keeps each KDA head's state in registers across its rows (three
-rows: 127 → 97 µs per layer, bit-identical).
+rows: 127 → 97 µs per layer).
 
 ## Serving
 
@@ -190,8 +189,8 @@ rotated Q/K tails only (transformers `_compute_yarn_parameters`; the table is
 Ling-3.0's factor 2). The factor is static per session: cached rope keys keep
 one table, so the context, not the prompt, selects it, serial right-sizing
 stays above 262,144 on a YaRN boot, and disk restores across the boundary
-are rejected. Factor 1 is the old table bit for bit (frontier logits
-byte-identical); factor 4 moved a 43-token prompt's frontier by KL 0.00033.
+are rejected. Factor 1 reproduces the old table (frontier logits
+unchanged); factor 4 moved a 43-token prompt's frontier by KL 0.00033.
 
 One 1M bank holds 5.63 GiB of FP8 latent rows and 276 MiB of KDA state.
 MTP at 1M was not measured (the release's allocation model puts it with
@@ -209,6 +208,22 @@ The 1,024- and 2,048-row runs predate the load-buffer fix (`a0fd6d35`,
 0.12–0.47 GiB more); the prefill round since then is not included.
 
 ## Performance
+
+The 1019 release at `45940fbe`
+([sweep](benchmarks/ling31-1019-vq-spark-64k-2026-10-28/README.md), same
+protocol as below, two MTP drafts now to 64K):
+
+| Configuration (median of three run means) | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| MTP off, 2K–64K | 869.1 | 18.68 |
+| MTP off, 2K–32K | 961.1 | 18.85 |
+| Two embedded MTP drafts, 2K–32K | 954.2 | 25.82 |
+| Two embedded MTP drafts, 2K–64K | 864.0 | 25.23 |
+
+![Ling-3.1-flash-1019 VQ prefill and decode on one DGX Spark](benchmarks/ling31-1019-vq-spark-64k-2026-10-28/throughput.png)
+
+A whole 8K prompt prefills at about 1,170 tok/s with 4,096-row chunks; the
+[October 28 round](ling31-optimization-2026-10-28.md) has the ladder.
 
 The [2K–64K sweep](benchmarks/ling31-vq-spark-64k-v2-2026-10-18/README.md)
 with the v2 trunk at `709cf8df`: three fresh `ds4-bench` processes per

@@ -32,13 +32,13 @@ bottleneck each change answered, and what was rejected.
 |---|---|---|---:|---:|
 | `29abaabb` | 4,096-row default chunk; records-only KDA scratch | chunk noise | 1039 | 17.4–18.0 |
 | `2f7cd355` | Beam's warp-specialized experts on 12-bit layers | KL 0.0103 vs noise 0.0101 | 1039 → 1123 | — |
-| `faa7f3fb` | KDA decay joins the q/k/v/gate q4p group | bit-identical | 1123 → 1130 | — |
-| `42daaef6` | residual RMS: weights before the PDL wait, warp-0 tail | bit-identical | — | 10.3 → 4.5 µs per call, ~1.4% |
+| `faa7f3fb` | KDA decay joins the q/k/v/gate q4p group | no value change | 1123 → 1130 | — |
+| `42daaef6` | residual RMS: weights before the PDL wait, warp-0 tail | no value change | — | 10.3 → 4.5 µs per call, ~1.4% |
 | `99e7707b` | router GEMM on TF32 tensor cores | KL 0.0082 vs 0.0085 | 1128 → 1147 | — |
-| `786182af` | one grouped launch for KDA's five and MLA's two decode projections | val6 |ΔNLL| 0.035 vs 0.033 | — | 17.56 → 18.87 |
+| `786182af`, `45940fbe` | one grouped launch for KDA's five decode projections | F32 order (split 2), then each matrix's split | — | 18.31 → 18.91 |
 | `806abba3` | FFN norm as BF16 rows; router on BF16 tensor cores | KL 0.0078 vs 0.0092 | 1147 → 1171 | — |
-| `25544c26` | attention norm as BF16 rows | bit-identical | 1159 → 1172 | — |
-| `7a0231b0` | KDA state in registers across MTP verify rows | bit-identical | — | MTP2 24.40 → 25.51 |
+| `25544c26` | attention norm as BF16 rows | no value change | 1159 → 1172 | — |
+| `7a0231b0` | KDA state in registers across MTP verify rows | no value change | — | MTP2 24.40 → 25.51 |
 
 Each pair of numbers is the A/B median of its own runs; absolute levels
 drift a few tok/s between sessions. After the round, 8K prefill runs at
@@ -68,8 +68,12 @@ drift a few tok/s between sessions. After the round, 8K prefill runs at
 - **Grouped decode projections (D2).** One token's KDA projections are five
   18.9 MB Q4_K matrices sharing one input row. Five launches streamed at
   ~229 GB/s; Beam's grouped stream reached 245–254 GB/s in a harness
-  (410 → 380 µs per layer) and 7.5% end to end. Split 2 moves the F32
-  order: 12 of 40,960 outputs round differently.
+  (410 → 380 µs per layer). Beam's split 2 changes the F32 order; val6 stayed
+  within the accepted reference (|ΔNLL| 0.035 against 0.033), but the MTP
+  gate's fixed 0.5 tie flagged one token at 0.625 on the final build.
+  `45940fbe` groups at the split each matrix picks alone (split 1 for 8192
+  rows), which runs at the same speed; the gate passes and decode gains 3.3%
+  (18.31 → 18.91 tok/s, three pairs).
 - **Verify KDA (D3).** At three rows the recurrence read and wrote the
   state twice per row through L2 (127 µs per layer). Thread d now holds
   column d in registers (255 registers, 160 bytes of spill): 97 µs, same
@@ -79,7 +83,7 @@ drift a few tok/s between sessions. After the round, 8K prefill runs at
 ## Rejected, with the evidence
 
 - **Grouped q4m launch at verify widths.** One launch over the five KDA
-  matrices was bit-identical and 7% faster in a harness (three tokens:
+  matrices was 7% faster in a harness (three tokens:
   408–424 against 441–454 µs) but moved MTP2 decode 24.41 → 24.42: under
   PDL the per-matrix launches already overlap.
 - **Decode experts.** Next-task register prefetch (no gain), L2 prefetch of
@@ -108,6 +112,8 @@ against DRAM floors near 2.6 and 2.1 ms), residual RMS 4.3%, routed reduce
   a BF16 boundary can run on TF32 tensor cores without truncating anything.
 - Check grouped launches in the model, not only in a harness: PDL hides most
   launch boundaries of back-to-back kernels that already fill the GPU.
+- A fixed logit tie in a gate is not a noise floor: an F32-order change that
+  stays within the accepted output reference can still cross it.
 - Measure a decode kernel's read-only ceiling for its own access pattern
   before tuning it; small rows (240 bytes per warp) cap the stream well below
   the DRAM peak even without compute.
