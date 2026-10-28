@@ -12,7 +12,12 @@ struct glmvq_kda_snap { float *state, *q, *k, *v; uint64_t stride; };
 /* Source baseline: modeling_glm5_next.py:340-369,409-449,453-514.
  * Conv and beta are BF16; the recurrent matrix is FP32. Sequence order is
  * explicit, so an append consumes exactly the prior state and raw conv tail.
- * This bounded fallback precedes profiling of the existing chunked KDA path. */
+ * This bounded fallback precedes profiling of the existing chunked KDA path.
+ * HELD keeps column d of the head's state in registers across the rows:
+ * one read and write per call instead of two of each per row (MTP verify
+ * rows re-read it from L2), same operations and order. One decode row
+ * keeps the memory loops (255 registers measured 1.5% slower there). */
+template <bool HELD = false>
 __global__ void glmvq_kda(float *output, float *state,
         float *q_tail, float *k_tail, float *v_tail,
         const float *q_raw, const float *k_raw, const float *v_raw,
@@ -30,6 +35,11 @@ __global__ void glmvq_kda(float *output, float *state,
     __shared__ float qs[GLMVQ_KDA_DIM], ks[GLMVQ_KDA_DIM], decay[GLMVQ_KDA_DIM];
     const float scale = __fdiv_rn(1.0f, __fsqrt_rn((float)dim));
     const float a = expf(a_log[head]);
+    float st[HELD ? GLMVQ_KDA_DIM : 1];
+    if constexpr (HELD) {
+        #pragma unroll
+        for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) { st[key] = state[state_base + (uint64_t)key * dim + d]; }
+    }
 
     for (uint32_t t = 0; t < rows; t++) {
         const uint64_t input = (uint64_t)t * width + channel, tail = channel * GLMVQ_CONV;
@@ -77,24 +87,45 @@ __global__ void glmvq_kda(float *output, float *state,
         __syncthreads();
 
         float memory = 0.0f;
-        for (uint32_t key = 0; key < dim; key++) {
-            const uint64_t at = state_base + (uint64_t)key * dim + d;
-            const float decayed = glmvq_mul(state[at], decay[key]);
-            state[at] = decayed;
-            memory = glmvq_add(memory, glmvq_mul(decayed, k[key]));
+        if constexpr (HELD) {
+            #pragma unroll
+            for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) {
+                st[key] = glmvq_mul(st[key], decay[key]);
+                memory = glmvq_add(memory, glmvq_mul(st[key], k[key]));
+            }
+        } else {
+            for (uint32_t key = 0; key < dim; key++) {
+                const uint64_t at = state_base + (uint64_t)key * dim + d;
+                const float decayed = glmvq_mul(state[at], decay[key]);
+                state[at] = decayed;
+                memory = glmvq_add(memory, glmvq_mul(decayed, k[key]));
+            }
         }
         const float beta = glmvq_round(glmvq_sigmoid(beta_logits[(uint64_t)t * heads + head]));
         const float delta = glmvq_mul(glmvq_add(v[d], -memory), beta);
         float result = 0.0f;
-        for (uint32_t key = 0; key < dim; key++) {
-            const uint64_t at = state_base + (uint64_t)key * dim + d;
-            const float updated = glmvq_add(state[at], glmvq_mul(k[key], delta));
-            state[at] = updated;
-            if (keep) { snap.state[t * snap.stride + at] = updated; }
-            result = glmvq_add(result, glmvq_mul(updated, q[key]));
+        if constexpr (HELD) {
+            #pragma unroll
+            for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) {
+                st[key] = glmvq_add(st[key], glmvq_mul(k[key], delta));
+                if (keep) { snap.state[t * snap.stride + state_base + (uint64_t)key * dim + d] = st[key]; }
+                result = glmvq_add(result, glmvq_mul(st[key], q[key]));
+            }
+        } else {
+            for (uint32_t key = 0; key < dim; key++) {
+                const uint64_t at = state_base + (uint64_t)key * dim + d;
+                const float updated = glmvq_add(state[at], glmvq_mul(k[key], delta));
+                state[at] = updated;
+                if (keep) { snap.state[t * snap.stride + at] = updated; }
+                result = glmvq_add(result, glmvq_mul(updated, q[key]));
+            }
         }
         output[input] = glmvq_round(result);
         __syncthreads();
+    }
+    if constexpr (HELD) {
+        #pragma unroll
+        for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) { state[state_base + (uint64_t)key * dim + d] = st[key]; }
     }
 }
 
