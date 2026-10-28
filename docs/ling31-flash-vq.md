@@ -293,6 +293,7 @@ Past 64K the bench frontiers (32K-token steps, 16 tokens) decode at 17.56,
 | `DS4_LING31_RESIDUAL_BF16=0` | Keep F32 residual storage inside prefill trunk passes |
 | `DS4_LING31_KDA_RELOAD=0` | Keep shared KDA vectors in registers across verify-row state updates |
 | `DS4_LING31_KDA_CONV4=0` | Scalar KDA convolution-tail loads and stores instead of aligned four-tap vectors |
+| `DS4_LING31_VERIFY_REGS=0` | Runtime result-array indexing in verify experts instead of static register indices |
 
 ## Limits and next levers
 

@@ -3,6 +3,8 @@
 Follow-up to [the merged campaign](ling31-optimization-2026-10-28.md),
 from `f5baa61771f53a72a375feb5ffd7dae2794b2fdc` on
 `perf/ling31-1019-rounds`. Counts here belong to this follow-up only.
+Three Prefill and three Decode changes are retained, each with its own
+measurement, numerical scope and fallback below.
 
 ## Artifact and protocol
 
@@ -326,8 +328,76 @@ The focused fixture compares the held implementations against repeated
 one-row recurrence, including every rollback state and conv tail, complete
 output and canaries: rows 2/3/4 with snapshots, 64 heads at three rows,
 and rows 3/5/63 without snapshots. All pass bytewise. The helper and
-kernel results support retaining this small assistant MTP improvement;
-the mixed single-corpus result remains disclosed.
+kernel results support retaining this change with its register costs;
+the mixed ordinary-assistant pairs remain disclosed.
+
+## D3: keep verify expert results in registers
+
+The retained MTP2 profile spends 1338.191 of 6074.156 ms (22.03%) in
+verify gate/up and down kernels. Runtime indexing of their four-result
+arrays gives ptxas 32/16-byte stack frames even with zero reported spills.
+Unrolling only the epilogue indices, guarded by each expert's input count,
+keeps these arrays in registers. Active arithmetic and operation order
+stay unchanged. Only Ling opts in; `DS4_LING31_VERIFY_REGS=0` selects the
+original path. One-row decode and prefill are unchanged.
+
+The reproducer replays the first 68 captured verify calls: three rows,
+12-bit weights, 48 persistent blocks, 11–21 unique experts (median 14).
+Of 1,003 expert items, 581 serve one input, 215 two and 207 three. Routes,
+inputs, route weights and clamps are exact; packed VQ values and physical
+weight layout are synthetic, rotating eight 32-expert pools (720 MiB).
+The measured pipeline includes an input copy and final reduction. Its
+baseline is 284.468 µs versus 271.240 µs for those in-model gate/up+down
+calls; the regimes are not identical. Streaming each selected packed
+matrix once at 235 GB/s gives weights-only floors of 123.403/61.701 µs
+for gate/up and down, against 158.358/112.882 µs in the first 68 calls.
+These floors omit books, gains, activations and output traffic.
+
+Three isolated pairs have medians 286.776/286.724/287.303 µs off versus
+283.673/283.039/283.530 µs on; all improve, with the last complete
+mid/partial/output hash identical. Cache-flushed NCU gives gate/up
+169.376→166.272 µs and down 147.136→133.760 µs. Local requested traffic
+falls from 599,040 and 974,848 32-byte sectors to zero; global requests
+and shared storage are unchanged. These sector counts are L1 requests,
+not physical DRAM bytes. Registers change 60→64 and 57→56, still one
+1024-thread CTA per SM, with zero stack/spills and no new allocation.
+Executed warp instructions fall 45,918,976→45,682,176 and
+27,838,592→27,416,192.
+
+| MTP2 workload | Off samples, tok/s | On samples, tok/s | Median gain |
+|---|---|---|---:|
+| Ten assistant cases | 27.8637, 27.9074, 27.8058 | 28.0813, 28.1155, 28.1222 | +0.904% |
+| 8K corpus | 21.2423, 21.2032, 21.2570 | 21.4872, 21.4628, 21.4738 | +1.090% |
+
+Every pair improves in both workloads, and their off/on ranges do not
+overlap. All 33 case pairs keep the same prompt/generated tokens and
+acceptance cycles; all 66 full-vocabulary frontier/end F32 hashes match.
+The 8K prefill samples are 1199.30/1193.25/1190.45 versus
+1199.14/1199.46/1189.66 tok/s. Its path is unchanged and this variation
+is not another Prefill gain. The isolated register tradeoff is retained
+for the repeatable whole-workload gain.
+
+The focused `tests/test_glm_vq_verify --vq` fixture passes 36 cases:
+Ling FFN1280 at 12/13 bits, both gain policies, verify rows 2/3/4 with
+all expert counts 1..rows, plus the previous GLM shape. Output matches
+independent one-row calls; full intermediate arrays and unused-tail
+canaries match the fallback. All 55 retained kernel variants keep their
+98,672 normalized SASS instructions, including ordinary decode, KDA
+and the other families' verify paths. No ordinary Decode gain is claimed.
+
+In the PDL-off whole profile, gate/up falls 782.564→776.015 ms and down
+555.627→542.579 ms, saving 19.597 ms. Mean calls are 159.837→158.500 µs
+and 113.486→110.821 µs. Whole Decode is 6074.156→6037.090 ms; another
+19.691 ms comes from unchanged Q4m, so the whole difference is not credited
+to the expert change. Whole prefill is 6798.298→6887.769 ms, including
+76.109 ms of unchanged Q4p variation. Fresh-run available memory stays
+above 6.28 GiB and PSI stays zero. These attribution captures support the
+repeated throughput pairs; they do not replace them.
+
+[Full evidence](benchmarks/ling31-1019-followup-2026-10-28/d3.json).
+The ten assistant cases remain bounded performance evidence; the corpus
+continuation and final incremental sweeps do not establish general
+assistant quality or sustained serving performance.
 
 ## Rejected Decode candidates
 

@@ -77,6 +77,7 @@ struct ds4_l31_moe {
     uint32_t rows = 0, decode_blocks = 0, sms = 0;
     int mma8_blocks[2][3] = {};     // [12-bit, 13-bit][gate, up, down]
     bool gain_dot = true, route = true, restore = false, mma8 = false, mma8w = true;
+    bool verify_regs = true;
     std::vector<uint32_t> keys;     // table slot per layer, keyed by expert 0's gate
     std::vector<glmvq_mma_item> items;
     std::vector<beam_w_item> witems; // gate, up, down 128-token items (12-bit layers)
@@ -109,9 +110,13 @@ extern "C" void ds4_gpu_l31_moe_free(ds4_l31_moe *moe) {
 template <uint32_t BITS>
 static cudaError_t l31_prepare(ds4_l31_moe *moe) {
     uint32_t blocks = 0;
-    cudaError_t err = glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT, l31_form>(&blocks);
+    cudaError_t err = moe->verify_regs
+        ? glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT, l31_form, false, GLMVQ_VERIFY_STATIC>(&blocks)
+        : glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT, l31_form>(&blocks);
     if (err == cudaSuccess) {
-        err = glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_WEIGHT, l31_form>(&blocks);
+        err = moe->verify_regs
+            ? glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_WEIGHT, l31_form, false, GLMVQ_VERIFY_STATIC>(&blocks)
+            : glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_WEIGHT, l31_form>(&blocks);
     }
     if (err != cudaSuccess) { return err; }
     moe->decode_blocks = blocks;
@@ -135,6 +140,7 @@ extern "C" ds4_l31_moe *ds4_gpu_l31_moe_create(ds4_gvq_ctx *gvq, uint32_t rows) 
     gvq->kda_conv4 = !l31_env_off("DS4_LING31_KDA_CONV4");
     moe->rows = rows;
     moe->gain_dot = !l31_env_off("DS4_LING31_GAIN_DOT");
+    moe->verify_regs = !l31_env_off("DS4_LING31_VERIFY_REGS");
     moe->route = !l31_env_off("DS4_LING31_DECODE_ROUTE");
     moe->mma8w = !l31_env_off("DS4_LING31_MMA_WS");
     int device = 0, sms = 0;
@@ -306,6 +312,13 @@ static cudaError_t l31_verify_run(ds4_l31_moe *moe, float *out, const float *inp
     const glmvq_launch launch = moe->gvq->launch;
     glmvq_launch_kernel(launch, l31_verify_route, 1, GLMVQ_VER_PAIRS, 0, stream, items, plan, selected, rows,
         table, (const glmvq_source *)moe->gvq->model->device->ptr);
+    if (moe->verify_regs) {
+        return moe->gain_dot
+            ? glmvq_verify_launch<BITS, 32, GLMVQ_GAIN_DOT, l31_form, false, GLMVQ_VERIFY_STATIC>(items, plan,
+                book, input, rows, mid, partial, out, weights, clamp, moe->decode_blocks, stream, shared, launch)
+            : glmvq_verify_launch<BITS, 32, GLMVQ_GAIN_WEIGHT, l31_form, false, GLMVQ_VERIFY_STATIC>(items, plan,
+                book, input, rows, mid, partial, out, weights, clamp, moe->decode_blocks, stream, shared, launch);
+    }
     return moe->gain_dot
         ? glmvq_verify_launch<BITS, 32, GLMVQ_GAIN_DOT, l31_form>(items, plan, book, input, rows, mid, partial,
             out, weights, clamp, moe->decode_blocks, stream, shared, launch)

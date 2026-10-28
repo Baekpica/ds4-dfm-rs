@@ -58,3 +58,9 @@ and `=1` with the same order. Ordinary `eval` on an MTP-enabled model still
 maintains its draft state, so combining both modes in one model load is
 not a valid ordinary-Decode measurement. [`../d2.json`](../d2.json) records
 all twelve receipts, mode-specific samples and full F32 proof hashes.
+
+For D3, use the same `workload_perf.rs` helper in `mtp2` mode with
+`DS4_LING31_VERIFY_REGS=0` / `=1`, preserving the same six-process order.
+[`../d3.json`](../d3.json) records its receipts and 66 F32 proof hashes.
+The ordinary kernels retain their assembly; the final published sweeps
+record ordinary and MTP absolute throughput separately.

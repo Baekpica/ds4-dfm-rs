@@ -6,6 +6,7 @@
 // Tensor-core Q4_K verify rows: exact products of BF16 inputs, so each token
 // stays within one BF16 ulp of an FP64 dot of the same weights.
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 #include <vector>
 #include <random>
@@ -371,12 +372,14 @@ static void route(const std::vector<int> &sel, uint32_t rows, const std::vector<
     plan.group[plan.groups] = plan.items = (uint32_t)items.size();
 }
 
-template <glmvq_decode_gain GAIN>
+template <glmvq_decode_gain GAIN, uint32_t BITS = 13, typename FORM = glmvq_glm_form, uint32_t E = 12>
 static int vq_case(uint32_t blocks) {
-    const uint32_t E = 12, H = GLMVQ_DEC_HIDDEN, F = GLMVQ_DEC_FFN;
+    const uint32_t H = FORM::HIDDEN, F = FORM::FFN;
+    CK(glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, FORM>(&blocks));
+    CK(glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, FORM, false, GLMVQ_VERIFY_STATIC>(&blocks));
     std::uniform_int_distribution<int> byte(0, 255);
     auto bytes = [&](size_t n) { std::vector<uint8_t> v(n); for (auto &b : v) { b = (uint8_t)byte(rng); } return up(v); };
-    std::vector<uint8_t> book((size_t)8192 * 8);
+    std::vector<uint8_t> book((size_t)(1u << BITS) * 8);
     for (auto &b : book) { b = (uint8_t)byte(rng) & 0x77; }  // finite, modest E4M3
     uint8_t *dbook = up(book);
     std::vector<__half> gains(H);
@@ -384,26 +387,32 @@ static int vq_case(uint32_t blocks) {
     __half *dgain = up(gains);
     std::vector<glmvq_matrix> gate(E), upm(E), dn(E);
     for (uint32_t e = 0; e < E; e++) {
-        gate[e] = {bytes((size_t)F * H * 3 / 16), bytes((size_t)F * H / 64), dbook, dgain, F, H, GLMVQ_E4M3};
-        upm[e] = {bytes((size_t)F * H * 3 / 16), bytes((size_t)F * H / 64), dbook, dgain, F, H, GLMVQ_E4M3};
-        dn[e] = {bytes((size_t)H * F * 3 / 16), bytes((size_t)H * F / 64), dbook, dgain, H, F, GLMVQ_E4M3};
+        gate[e] = {bytes((size_t)F * H * 3 / 16), BITS == 13 ? bytes((size_t)F * H / 64) : nullptr, dbook, dgain, F, H, GLMVQ_E4M3};
+        upm[e] = {bytes((size_t)F * H * 3 / 16), BITS == 13 ? bytes((size_t)F * H / 64) : nullptr, dbook, dgain, F, H, GLMVQ_E4M3};
+        dn[e] = {bytes((size_t)H * F * 3 / 16), BITS == 13 ? bytes((size_t)H * F / 64) : nullptr, dbook, dgain, H, F, GLMVQ_E4M3};
     }
     int failures = 0;
     std::normal_distribution<float> nd(0, 1);
     for (uint32_t rows = 2; rows <= GLMVQ_VER_ROWS; rows++) {
         std::vector<int> sel(rows * 8);
-        for (uint32_t r = 0; r < rows; r++) {  // 8 distinct of 12 experts: heavy overlap
-            std::vector<int> ids(E);
-            for (uint32_t e = 0; e < E; e++) { ids[e] = (int)e; }
-            std::shuffle(ids.begin(), ids.end(), rng);
-            for (uint32_t k = 0; k < 8; k++) { sel[r * 8 + k] = ids[k]; }
+        for (uint32_t r = 0; r < rows; r++) {
+            if constexpr (E >= 40) {
+                // Expert j appears in rows-j inputs; all other experts are unique.
+                for (uint32_t k = 0; k < 8; k++) { sel[r * 8 + k] = k < rows - r ? k : rows + r * 8 + k; }
+            } else {
+                std::vector<int> ids(E);
+                for (uint32_t e = 0; e < E; e++) { ids[e] = (int)e; }
+                std::shuffle(ids.begin(), ids.end(), rng);
+                for (uint32_t k = 0; k < 8; k++) { sel[r * 8 + k] = ids[k]; }
+            }
         }
         std::vector<float> x((size_t)rows * H), w(rows * 8);
         for (auto &v : x) { v = nd(rng); }
         for (auto &v : w) { v = 0.1f + 0.2f * (byte(rng) / 255.0f); }
         float *dx = up(x), *dw = up(w), *ref, *got, *partial; __nv_bfloat16 *mid;
-        CK(cudaMalloc(&ref, x.size() * 4)); CK(cudaMalloc(&got, x.size() * 4));
-        CK(cudaMalloc(&partial, (size_t)GLMVQ_VER_PAIRS * H * 4)); CK(cudaMalloc(&mid, (size_t)GLMVQ_VER_PAIRS * F * 2));
+        const size_t mid_count = (size_t)GLMVQ_VER_PAIRS * F + 16, partial_count = (size_t)GLMVQ_VER_PAIRS * H + 16;
+        CK(cudaMalloc(&ref, x.size() * 4)); CK(cudaMalloc(&got, (x.size() + 16) * 4));
+        CK(cudaMalloc(&partial, partial_count * 4)); CK(cudaMalloc(&mid, mid_count * 2));
         for (uint32_t r = 0; r < rows; r++) {
             std::vector<glmvq_decode_item> items(8);
             std::vector<uint32_t> k(8);
@@ -411,34 +420,75 @@ static int vq_case(uint32_t blocks) {
             std::sort(k.begin(), k.end(), [&](uint32_t a, uint32_t b) { return sel[r * 8 + a] < sel[r * 8 + b]; });
             for (uint32_t j = 0; j < 8; j++) { const int e = sel[r * 8 + k[j]]; items[j] = {gate[e], upm[e], dn[e], k[j]}; }
             glmvq_decode_item *ditems = up(items);
-            CK(glmvq_decode_launch<13, 32, GLMVQ_DEC_NORMAL, GAIN>(ditems, dbook, dx + (size_t)r * H, mid, partial,
+            CK(glmvq_decode_launch<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, FORM>(ditems, dbook, dx + (size_t)r * H, mid, partial,
                 ref + (size_t)r * H, dw + r * 8, 7.0f, blocks, 0));
             CK(cudaDeviceSynchronize());
             cudaFree(ditems);
         }
         std::vector<glmvq_verify_item> items; glmvq_verify_plan plan;
         route(sel, rows, gate, upm, dn, items, plan);
+        if constexpr (E >= 40) {
+            for (uint32_t count = 1; count <= rows; count++) {
+                if (std::none_of(items.begin(), items.end(), [&](const auto &item) { return item.count == count; })) { return 1; }
+            }
+        }
         glmvq_verify_item *ditems = up(items);
         glmvq_verify_plan *dplan = up(std::vector<glmvq_verify_plan>{plan});
-        CK(glmvq_verify_launch<13, 32, GAIN>(ditems, dplan, dbook, dx, rows, mid, partial, got, dw, 7.0f, blocks, 0));
-        CK(cudaDeviceSynchronize());
-        auto a = down(ref, x.size()), b = down(got, x.size());
-        uint32_t differ = 0;
-        for (size_t i = 0; i < a.size(); i++) { differ += a[i] != b[i]; }
-        printf("vq union %s rows=%u experts=%zu groups=%u: %u of %zu differ %s\n",
-            GAIN == GLMVQ_GAIN_DOT ? "gain-dot" : "gain-weight", rows, items.size(), plan.groups,
-            differ, a.size(), differ ? "FAIL" : "ok");
-        failures += differ != 0;
+        const auto expected = down(ref, x.size());
+        std::vector<__nv_bfloat16> old_mid;
+        std::vector<float> old_partial;
+        auto canary = [](const void *data, size_t first, size_t bytes) {
+            const auto *p = (const uint8_t *)data;
+            return std::all_of(p + first, p + bytes, [](uint8_t b) { return b == 0xa5; });
+        };
+        for (auto index : {GLMVQ_VERIFY_DYNAMIC, GLMVQ_VERIFY_STATIC}) {
+            CK(cudaMemset(got, 0xa5, (x.size() + 16) * 4));
+            CK(cudaMemset(mid, 0xa5, mid_count * 2)); CK(cudaMemset(partial, 0xa5, partial_count * 4));
+            auto launch = index == GLMVQ_VERIFY_STATIC
+                ? glmvq_verify_launch<BITS, 32, GAIN, FORM, false, GLMVQ_VERIFY_STATIC>
+                : glmvq_verify_launch<BITS, 32, GAIN, FORM>;
+            CK(launch(ditems, dplan, dbook, dx, rows, mid, partial, got, dw, 7.0f, blocks, 0,
+                nullptr, GLMVQ_LAUNCH_PLAIN, nullptr));
+            CK(cudaDeviceSynchronize());
+            const auto actual = down(got, x.size() + 16), actual_partial = down(partial, partial_count);
+            const auto actual_mid = down(mid, mid_count);
+            bool ok = !memcmp(expected.data(), actual.data(), x.size() * 4) &&
+                canary(actual.data(), x.size() * 4, actual.size() * 4) &&
+                canary(actual_mid.data(), (size_t)rows * 8 * F * 2, mid_count * 2) &&
+                canary(actual_partial.data(), (size_t)rows * 8 * H * 4, partial_count * 4);
+            if (index == GLMVQ_VERIFY_DYNAMIC) { old_mid = actual_mid; old_partial = actual_partial; }
+            else { ok &= !memcmp(old_mid.data(), actual_mid.data(), mid_count * 2) &&
+                !memcmp(old_partial.data(), actual_partial.data(), partial_count * 4); }
+            printf("vq union bits=%u ffn=%u %s rows=%u experts=%zu index=%d: output, intermediates, canaries %s\n",
+                BITS, F, GAIN == GLMVQ_GAIN_DOT ? "gain-dot" : "gain-weight", rows, items.size(), (int)index, ok ? "ok" : "FAIL");
+            failures += !ok;
+        }
         cudaFree(dx); cudaFree(dw); cudaFree(ref); cudaFree(got); cudaFree(partial); cudaFree(mid);
         cudaFree(ditems); cudaFree(dplan);
     }
+    for (const auto &matrices : {gate, upm, dn}) {
+        for (const auto &matrix : matrices) { cudaFree((void *)matrix.main); cudaFree((void *)matrix.plane); }
+    }
+    cudaFree(dbook); cudaFree(dgain);
     return failures;
 }
 
-int main() {
+static int vq_cases(uint32_t blocks) {
+    using Ling = glmvq_moe_form<1280, GLMVQ_CLAMP_SILU, GLMVQ_REDUCE_F32>;
+    int failed = vq_case<GLMVQ_GAIN_WEIGHT>(blocks);
+    failed += vq_case<GLMVQ_GAIN_DOT>(blocks);
+    failed += vq_case<GLMVQ_GAIN_WEIGHT, 12, Ling, 40>(blocks);
+    failed += vq_case<GLMVQ_GAIN_DOT, 12, Ling, 40>(blocks);
+    failed += vq_case<GLMVQ_GAIN_WEIGHT, 13, Ling, 40>(blocks);
+    failed += vq_case<GLMVQ_GAIN_DOT, 13, Ling, 40>(blocks);
+    return failed;
+}
+
+int main(int argc, char **argv) {
     uint32_t blocks = 0;
     CK(glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL>(&blocks));
     CK(glmvq_decode_prepare<13, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT>(&blocks));
+    if (argc == 2 && !strcmp(argv[1], "--vq")) { return vq_cases(blocks); }
     glmvq_q4_config config;
     CK(glmvq_q4_prepare(&config, GLMVQ_Q4_AUTO));
     int failures = 0;
@@ -474,8 +524,7 @@ int main() {
     failures += expand_mix_case(37);
     failures += index_case(37, 3000);
     failures += index_case(256, 8000);
-    failures += vq_case<GLMVQ_GAIN_WEIGHT>(blocks);
-    failures += vq_case<GLMVQ_GAIN_DOT>(blocks);
+    failures += vq_cases(blocks);
     printf(failures ? "FAIL %d\n" : "GLMVQ_VERIFY_PASS\n", failures);
     return failures != 0;
 }
