@@ -384,7 +384,7 @@ static bool l31_residual_norm(ds4_ling31_graph *g, const ds4_model *m, const ds4
  * conv + SiLU, the l2 norms, beta's sigmoid and -5*sigmoid(exp(A_log)*(f+
  * dt_bias)) itself). A Q4_K gate joins q/k/v's batch (one q4p input). */
 static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_weights *l,
-        uint32_t il, uint32_t rows) {
+        uint32_t il, uint32_t rows, ds4_gvq_rows in_rows) {
     const bool gate_q4 = l->kda_g_a->type == DS4_TENSOR_Q4_K, decay_q4 = l->kda_f_a->type == DS4_TENSOR_Q4_K;
     // With both Q4_K, the decay joins the group too: one prepared input per layer.
     const bool join = gate_q4 && decay_q4 && g->fused && g->qkv_bf16;
@@ -400,15 +400,22 @@ static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_wei
     const uint32_t qkv_index[] = {ling31_index(m, l->kda_q), ling31_index(m, l->kda_k), ling31_index(m, l->kda_v),
         ling31_index(m, l->kda_g_a), ling31_index(m, l->kda_f_a)};
     const uint32_t gates_index[] = {ling31_index(m, l->kda_f_a), ling31_index(m, l->kda_g_a)};
-    const ds4_gvq_rows qkv_rows = fused && g->qkv_bf16 &&
-        ds4_gpu_gvq_linear_many_bf16(g->gvq, qkv, qkv_index, nq, g->norm, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+    // BF16 input rows (l31_attn_rows) imply the joined q4p group.
+    const bool bf16_in = in_rows == DS4_GVQ_ROWS_BF16;
+    if (bf16_in && !ds4_gpu_gvq_linear_many_rows(g->gvq, qkv, qkv_index, nq, g->norm, rows, DS4_GVQ_ROWS_BF16)) {
+        fprintf(stderr, "ds4: Ling-3.1 KDA projections of BF16 rows failed (rows=%u)\n", rows);
+        return false;
+    }
+    const ds4_gvq_rows qkv_rows = bf16_in || (fused && g->qkv_bf16 &&
+        ds4_gpu_gvq_linear_many_bf16(g->gvq, qkv, qkv_index, nq, g->norm, rows)) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     const ds4_gvq_rows gate_rows = join ? qkv_rows : fused && g->fused &&
         (decay_q4 ? ds4_gpu_gvq_linear_many_bf16(g->gvq, gates, gates_index, ng, g->norm, rows)
                   : ds4_gpu_gvq_fp8_many_bf16(g->gvq, gates, gates_index, ng, g->norm, rows))
         ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     if ((qkv_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, qkv, qkv_w, nq, g->norm, rows)) ||
         (!join && gate_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, gates, gates_w, ng, g->norm, rows)) ||
-        !l31_mm(g, m, g->beta, l->kda_beta, g->norm, rows, DS4_GVQ_BF16)) { return false; }
+        !(bf16_in ? ds4_gpu_gvq_linear_rows(g->gvq, g->beta, ling31_index(m, l->kda_beta), g->norm, in_rows, rows) != 0
+                  : l31_mm(g, m, g->beta, l->kda_beta, g->norm, rows, DS4_GVQ_BF16))) { return false; }
     if (fused) {
         const uint32_t output = ling31_index(m, l->kda_output);
         const ds4_gvq_rows heads = g->fused && ds4_gpu_gvq_bf16_input(g->gvq, output, rows)
@@ -519,12 +526,19 @@ static bool l31_mla_absorbed(ds4_ling31_graph *g, uint32_t il, uint32_t rows, ui
 }
 
 static bool l31_mla(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_weights *l,
-        uint32_t il, uint32_t rows, uint32_t pos) {
+        uint32_t il, uint32_t rows, uint32_t pos, ds4_gvq_rows in_rows) {
     const float scale = 1.0f / sqrtf((float)L31_KEY);
     ds4_gpu_tensor *const lows[] = {g->q_rank, g->kv_raw};
     const ds4_tensor *const lows_w[] = {l->attn_q_a, l->attn_kv_a_mqa};
-    if (!l31_mm_many(g, m, lows, lows_w, 2u, g->norm, rows) ||
-        !l31_mm(g, m, g->head_gate, l->attn_gate, g->norm, rows, DS4_GVQ_BF16) ||
+    const uint32_t lows_index[] = {ling31_index(m, l->attn_q_a), ling31_index(m, l->attn_kv_a_mqa)};
+    const bool bf16_in = in_rows == DS4_GVQ_ROWS_BF16;
+    const bool low = bf16_in
+        ? ds4_gpu_gvq_linear_many_rows(g->gvq, lows, lows_index, 2u, g->norm, rows, DS4_GVQ_ROWS_F32) != 0
+        : l31_mm_many(g, m, lows, lows_w, 2u, g->norm, rows);
+    const bool gated = low && (bf16_in
+        ? ds4_gpu_gvq_linear_rows(g->gvq, g->head_gate, ling31_index(m, l->attn_gate), g->norm, in_rows, rows) != 0
+        : l31_mm(g, m, g->head_gate, l->attn_gate, g->norm, rows, DS4_GVQ_BF16));
+    if (!gated ||
         !l31_norm(g, m, g->q_rank_norm, g->q_rank, l->attn_q_a_norm, rows, L31_Q_RANK) ||
         !l31_mm(g, m, g->q, l->attn_q_b, g->q_rank_norm, rows, DS4_GVQ_BF16) ||
         /* Interleaved rope on every head's 64-dim tail and on the shared key
@@ -601,17 +615,40 @@ static bool l31_ffn(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *
             rows, ling31_clamp(il, false), g->attn_out);
 }
 
-/* Layer il over norm = attn_norm(cur). Each residual also writes the RMS
- * norm its successor reads: ffn_norm, then `next` (the next layer's
- * attn_norm; NULL leaves the plain residual for the head). */
+/* Prefill attention input of layer il as BF16 rows when its projections
+ * take them: KDA's joined q4p group and BF16 beta on the fused chunk path,
+ * MLA's q_a/kv_a pair and BF16 head gate. Deterministic, so the writer (the
+ * previous residual) and the reader agree. */
+static ds4_gvq_rows l31_attn_rows(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_weights *l,
+        uint32_t il, uint32_t rows) {
+    if (!g->norm_bf16 || !g->fused) { return DS4_GVQ_ROWS_F32; }
+    bool ok;
+    if (ds4_ling31_layer_is_mla(il)) {
+        ok = l->attn_gate->type == DS4_TENSOR_BF16 &&
+            ds4_gpu_gvq_bf16_input(g->gvq, ling31_index(m, l->attn_q_a), rows) &&
+            ds4_gpu_gvq_bf16_input(g->gvq, ling31_index(m, l->attn_kv_a_mqa), rows);
+    } else {
+        const ds4_tensor *const ws[] = {l->kda_q, l->kda_k, l->kda_v, l->kda_g_a, l->kda_f_a};
+        ok = l->kda_g_a->type == DS4_TENSOR_Q4_K && l->kda_f_a->type == DS4_TENSOR_Q4_K && g->qkv_bf16 &&
+            l->kda_beta->type == DS4_TENSOR_BF16 && !g->mtp_capture && ds4_gpu_gvq_kda_fused(g->gvq, rows);
+        for (uint32_t i = 0; ok && i < 5u; i++) { ok = ds4_gpu_gvq_bf16_input(g->gvq, ling31_index(m, ws[i]), rows); }
+    }
+    return ok ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
+}
+
+/* Layer il over norm = attn_norm(cur) in `attn_rows`. Each residual also
+ * writes the RMS norm its successor reads: ffn_norm, then `next` (the next
+ * layer's attn_norm; NULL leaves the plain residual for the head). */
 static bool l31_block(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
-        uint32_t il, uint32_t rows, uint32_t pos, const ds4_tensor *next) {
+        uint32_t il, uint32_t rows, uint32_t pos, const ds4_tensor *next, ds4_gvq_rows attn_rows) {
     const ds4_layer_weights *l = &w->layer[il];
     const ds4_gvq_rows ffn_rows = l31_ffn_rows(g, m, l, il, rows);
-    const bool ok = (ds4_ling31_layer_is_mla(il) ? l31_mla(g, m, l, il, rows, pos) : l31_kda(g, m, l, il, rows)) &&
+    const ds4_gvq_rows next_rows = next ? l31_attn_rows(g, m, &w->layer[il + 1u], il + 1u, rows) : DS4_GVQ_ROWS_F32;
+    const bool ok = (ds4_ling31_layer_is_mla(il) ? l31_mla(g, m, l, il, rows, pos, attn_rows)
+                                                 : l31_kda(g, m, l, il, rows, attn_rows)) &&
         l31_residual_norm(g, m, g->attn_out, l->ffn_norm, rows, ffn_rows) &&
         l31_ffn(g, m, w, il, rows, ffn_rows) &&
-        (next ? l31_residual_norm(g, m, g->ffn_out, next, rows, DS4_GVQ_ROWS_F32)
+        (next ? l31_residual_norm(g, m, g->ffn_out, next, rows, next_rows)
               : l31_residual(g->cur, g->ffn_out, rows));
     if (!ok) { fprintf(stderr, "ds4: Ling-3.1 layer %u failed (rows=%u pos=%u)\n", il, rows, pos); }
     return ok;
@@ -620,16 +657,19 @@ static bool l31_block(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights
 static bool l31_layer(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
         uint32_t il, uint32_t rows, uint32_t pos) {
     return l31_norm(g, m, g->norm, g->cur, w->layer[il].attn_norm, rows, L31_EMBD) &&
-        l31_block(g, m, w, il, rows, pos, NULL);
+        l31_block(g, m, w, il, rows, pos, NULL, DS4_GVQ_ROWS_F32);
 }
 
 // The 72 trunk layers over the embedded rows in cur.
 static bool l31_trunk(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *w,
         uint32_t rows, uint32_t pos) {
     if (!l31_norm(g, m, g->norm, g->cur, w->layer[0].attn_norm, rows, L31_EMBD)) { return false; }
+    ds4_gvq_rows attn = DS4_GVQ_ROWS_F32;
     for (uint32_t il = 0; il < LING31_LAYERS; il++) {
         const ds4_tensor *next = il + 1u < LING31_LAYERS ? w->layer[il + 1u].attn_norm : NULL;
-        if (!l31_block(g, m, w, il, rows, pos, next)) { return false; }
+        if (!l31_block(g, m, w, il, rows, pos, next, attn)) { return false; }
+        // The rows the block's last residual wrote for layer il + 1.
+        attn = next ? l31_attn_rows(g, m, &w->layer[il + 1u], il + 1u, rows) : DS4_GVQ_ROWS_F32;
     }
     return true;
 }

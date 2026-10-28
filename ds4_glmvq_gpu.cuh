@@ -1048,11 +1048,35 @@ extern "C" int ds4_gpu_gvq_bf16_input(ds4_gvq_ctx *ctx, uint32_t weight, uint32_
         glmvq_q4p_bytes(rows, ctx->model->source[weight].cols) <= ctx->scratch->bytes;
 }
 
+// A BF16 weight over BF16 input rows above decode widths: glmvq_gemm's BF16
+// GEMM without its input conversion (the same operands), widened into out.
+static int gvq_bf16_weight_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, const glmvq_source &s,
+        const ds4_gpu_tensor *input, uint32_t rows) {
+    const uint64_t ny = (uint64_t)rows * s.rows;
+    if (!gvq_floats(input, (uint64_t)rows * s.cols / 2) || !gvq_floats(out, ny) ||
+        ctx->scratch->bytes < ny * sizeof(__nv_bfloat16) || !gvq_stream(ctx)) { return 0; }
+    auto *y = (__nv_bfloat16 *)ctx->scratch->ptr;
+    const float alpha = 1.0f, beta = 0.0f;
+    if (!cublas_ok(cublasGemmEx(ctx->handle, CUBLAS_OP_T, CUBLAS_OP_N, s.rows, rows, s.cols,
+            &alpha, s.data, CUDA_R_16BF, s.cols, input->ptr, CUDA_R_16BF, s.cols, &beta, y, CUDA_R_16BF, s.rows,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP), "GLM VQ BF16 rows")) { return 0; }
+    glmvq_convert<<<(ny + GLMVQ_THREADS - 1) / GLMVQ_THREADS, GLMVQ_THREADS, 0, ctx->stream>>>(
+        y, (float *)out->ptr, ny);
+    return cuda_ok(cudaGetLastError(), "GLM VQ BF16 rows widen");
+}
+
 // BF16 input rows go straight to the q4p FP16 preparation (the values are
-// BF16-rounded either way, so the FP16 operand is unchanged).
+// BF16-rounded either way, so the FP16 operand is unchanged), or to a BF16
+// weight's cuBLAS GEMM.
 extern "C" int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
         const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows) {
     if (in_rows == DS4_GVQ_ROWS_F32) { return ds4_gpu_gvq_linear(ctx, out, weight, input, rows, DS4_GVQ_BF16); }
+    if (!ctx || weight >= ctx->model->source.size()) { return 0; }
+    const glmvq_source &w = ctx->model->source[weight];
+    if (ctx->model->records[weight].type == GVQ_TYPE_BF16 && w.storage == GLMVQ_WEIGHT_BF16 && w.data &&
+        rows > GLMVQ_DOT_TOKENS) {
+        return gvq_bf16_weight_rows(ctx, out, w, input, rows);
+    }
     if (!ds4_gpu_gvq_bf16_input(ctx, weight, rows) || !gvq_stream(ctx)) { return 0; }
     const glmvq_source &s = ctx->model->source[weight];
     if (!gvq_floats(input, (uint64_t)rows * s.cols / 2) || !gvq_floats(out, (uint64_t)rows * s.rows) ||

@@ -83,7 +83,8 @@ int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
 /* Whether ds4_gpu_gvq_linear_rows reads BF16 input rows of `weight` at
  * these rows (prefill Q4_K), so their producer can store BF16 rows. */
 int ds4_gpu_gvq_bf16_input(ds4_gvq_ctx *ctx, uint32_t weight, uint32_t rows);
-/* ds4_gpu_gvq_linear (BF16 math) of F32 or BF16 input rows. */
+/* ds4_gpu_gvq_linear (BF16 math) of F32 or BF16 input rows (BF16 rows:
+ * prefill Q4_K through q4p, or BF16 weights above decode widths). */
 int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows);
 /* ds4_gpu_gvq_linear_rows into BF16 output rows (each the F32 value rounded
