@@ -391,6 +391,20 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   rank-16 BF16 projections (458 KB) in one block took 42 µs per row;
   recomputing the norm in 16 blocks for `W_down` and splitting `W_up` over
   28 took 13 µs, bit-identical.
+- **TF32 is exact for BF16 values.** An F32 GEMM whose operands are
+  BF16-rounded (norm rows, widened BF16 weights) runs on TF32 tensor cores
+  with exact products: Ling-3.1's router 1.43 → 0.66 ms per 4,096 rows
+  (BF16 rows on BF16 MMA: 0.36 ms).
+- **Hold a recurrent state column in registers across verify rows.**
+  Ling-3.1's KDA verify re-read and re-wrote its F32 state per row through
+  L2: three rows 127 → 97 µs per layer, bit-identical, MTP decode +4.5%.
+  One decode row at 255 registers lost 1.5%: dispatch by rows.
+- **Group decode launches only where PDL cannot overlap them.** One token's
+  five KDA projections in one stream launch: decode +7.5%. The same grouping
+  on q4m at verify widths: 7% in a harness, 0% in the model.
+- **Probe a decode access pattern's read-only ceiling.** 240-byte rows per
+  warp capped a read-only probe at 191 GB/s; the expert down kernel ran
+  within 10% of it, so no prefetch variant could win.
 
 # Agent Notes
 
