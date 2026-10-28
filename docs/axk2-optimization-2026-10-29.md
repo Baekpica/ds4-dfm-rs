@@ -12,7 +12,7 @@ Boot `f5d9ee6b-7f0f-443c-b629-4f39b4519994`; the enabled clock service
 keeps 300–2200 MHz. Observed busy clocks accompany each round. Actual native
 libraries: system libcuda 615.71.10, cuBLAS/cuBLASLt 13.8.0.4 and
 CUDA runtime 13.4.92. One model process at a time, CPU affinity 5–9,15–19
-(D1's additional whole-binary comparison pins CPU 9),
+(D1's additional whole-binary comparison and D2/D3 pin CPU 9),
 page cache cleared between processes, 2 GiB host-memory reserve and trip.
 No MTP, no drafter, no CPU weight offload.
 
@@ -20,7 +20,8 @@ No MTP, no drafter, no CPU weight offload.
 
 Fresh processes alternate off/on with the same executable, artifact and
 prompt. A 2,048-token warmup/reset allocates lazy workspace, followed by a
-cold 8,192-token prefill and 64 forced greedy tokens in P1 (256 in P2/P3).
+cold 8,192-token prefill and 64 forced greedy tokens in P1 (256 in P2/P3,
+512 in the decode rounds).
 This differs from the
 published incremental 2K–64K sweep; its numbers are not interchangeable.
 Full-vocabulary frontier logits and generated token IDs are retained.
@@ -429,6 +430,109 @@ Measured source: `bc230fd5` plus this round's native diff. SHA256:
 - `ds4-bench-perf`: `afc9b121afe0c8f3bb3fcf813b634e50bcbf6f6e79363e415c9fd5d242f01039`
 
 Receipts are in ignored `scratch/axk2-perf/d2-*`, `gu-unroll-*`,
-`gu-rotate-*` and `gu9-unroll2.*`. The next retained-baseline trace will
-also record the compact kernel's in-model contribution. Prefill has three
-adoptions and decode two; one more decode adoption and publication remain.
+`gu-rotate-*` and `gu9-unroll2.*`. The fresh retained-D2 trace records
+193.35 ms gate/up per 16 tokens (201.4 µs per call), versus 195.36 ms
+before D2. Its prefill/decode walls are 15,067.2/1,041.4 ms. The unprofiled
+paired runs above establish the throughput gain.
+
+## D3 — cooperative gated-norm weight loads (adopted)
+
+The retained-D2 trace attributes 19.46 ms per 16 tokens to
+`ax_gnorm_down_kernel`: 1,936 calls averaging 10.05 µs, or 1.87% of decode
+wall. Sixteen CTAs recompute the row norm, but only one warp in each CTA
+streams its 7,168-column `W_down` dot. The norm and down weights total
+243,712 bytes, an ideal weight-only floor of 1.04 µs at 235 GB/s with
+reuse of the norm vector. Small-grid load latency, not that bandwidth
+floor, dominates the observed time.
+
+The isolated fixture uses the actual layer-1 norm/down weights and the
+8K capture's previous residual and attention heads. Replaying the actual
+Q4 `o_proj` reconstructs the captured post-attention residual exactly.
+It rotates 414 copies of the norm/down weights (more than 96 MiB) while
+keeping those input rows hot. The original kernel's 1,040 SASS instructions
+match the model. Full NCU finds 433 long-scoreboard samples out of 543;
+258 wait at the dot's weight-dependent FMA. There are no spills or shared
+bank conflicts in the reference. Expanding the dot loop by 8/16 was slower;
+expansion by 28 was roughly even. Those variants were not adopted.
+
+The selected path lets all 256 threads stage `W_down` in shared memory
+with 16-byte asynchronous copies before the PDL input wait. It waits for
+the copies at the existing norm barrier, then executes the original warp
+dot and SiLU. The FMA, reduction and rounding order stay unchanged
+(class 5.1). `DS4_AXK2_NORM_STAGE=0` restores the reference. The path applies
+to gated norms with one to four rows; wider prefill retains its kernel.
+
+The cost is **14 KiB additional shared memory per CTA** (14,368 → 28,704
+bytes) and 44 → 66 registers, with no spills. Configured SM shared memory
+stays 100 KiB. Executed warp instructions increase 96,883 → 102,259
+(+5.55%); global weight bytes, global allocations and floating-point work
+do not grow. Full NCU latency falls 13.952 → 8.864 µs and the long-scoreboard
+per-issue ratio falls 13.18 → 2.51. Measured cycle clocks are 2.181/2.176
+GHz. NCU flushes the caches, so its latency is a separate diagnostic
+regime from the hot-input probe and the full model.
+
+Three unprofiled baseline/new probe medians are 10.688/8.464,
+10.688/8.448 and 10.656/7.360 µs, with exact outputs. A production-header
+probe with 8,192 warmup launches also checks the wider dispatch (the extra
+input rows duplicate the captured row):
+
+| Rows | Reference µs | Staged µs |
+|---:|---:|---:|
+| 1 | 10.656 | 8.400 |
+| 2 | 12.608 | 8.576 |
+| 4 | 12.576 | 10.448 |
+
+`tests/test_axk2_norm` passes nine row/residual cases: independent CPU
+RMS/FMA/XOR calculations and a BF16 SiLU rounding bound, exact reference/new
+outputs under plain and PDL launch modes, output canaries and unchanged
+inputs. Native SASS preserves all 1,040 reference-down, 3,104 prefill-norm
+and 192 up instructions. The new 1,048-instruction kernel matches the
+probe. The unchanged one-row Q4 staging and compact expert GU kernels
+also retain their SASS.
+
+Six fresh CPU-9 processes, 8K cold prefill after a 2K warmup/reset and 512
+forced greedy tokens, change only `DS4_AXK2_NORM_STAGE`:
+
+| Process | Mode | Prefill tok/s | Decode tok/s |
+|---|---|---:|---:|
+| 1 | off | 545.61 | 15.66 |
+| 2 | on | 546.01 | 15.75 |
+| 3 | on | 546.26 | 15.67 |
+| 4 | off | 547.61 | 15.66 |
+| 5 | off | 546.71 | 15.77 |
+| 6 | on | 546.45 | 15.82 |
+| Median | off | 546.71 | 15.66 |
+| Median | on | 546.26 | 15.75 |
+
+Decode's median improves **0.57%**, its mean **0.32%**. All three paired
+gains are positive: 0.57%, 0.06%, 0.32%. The absolute ranges overlap
+(15.66–15.77 off, 15.67–15.82 on); the small second-pair difference does
+not establish a noise floor. The repeated isolated gain and the in-model
+target reduction below support this small paired improvement. The extra
+shared/register/instruction cost is worthwhile here: all three measured
+narrow widths improve without extra global memory or an arithmetic change.
+Prefill's unchanged path differs by −0.08%, within its repeat range.
+
+All six runs exit zero with identical finite 163,840 logits and all 512
+token IDs. The reference also matches retained D2. Source and executable
+hashes stay unchanged. Minimum available memory is 15.856 GiB, full PSI
+zero, busy SM clocks 2,184–2,190 MHz, temperatures 52–59 °C, with no
+observed power/thermal cap. CPU-9 CPPC mean delivered-performance readings
+span 151.802–151.813 against nominal 150. These observations do not explain
+every sub-percent fluctuation; the raw ranges remain part of the result.
+
+The fresh candidate trace reduces norm-down **19.46 → 11.01 ms** per
+16 tokens, or **10.05 → 5.69 µs per call (−43.4%)**. Unchanged Q4 stream
+time varies 501.87 → 514.62 ms, so total profiled decode wall increases
+1,041.4 → 1,046.9 ms despite the target saving; prefill is 14,991.5 ms.
+This profile diagnoses the target and is not a whole-model speed claim.
+The six unprofiled processes above decide adoption.
+
+Measured source: `913b54ba` plus this round's native diff. SHA256:
+
+- `ds4-bench`: `da68d19d0e1f47248c1be4f6cea224c7ae1e51bc2c27ed662a60b48ada21e875`
+- `ds4-bench-perf`: `5ab65bc60c82e1249028abb9f5eb5f7b4c3d4e97381f814b3c2c969935ffcc78`
+
+Receipts are in ignored `scratch/axk2-perf/d3-*` and `norm-*`. Three
+prefill and three decode rounds are adopted. Publication uses a new
+three-process incremental 2K–64K sweep on the retained code.

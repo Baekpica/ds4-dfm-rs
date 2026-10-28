@@ -249,6 +249,7 @@ tests/naive_banks
 /tests/test_axk2_flash
 /tests/test_axk2_q8
 /tests/test_axk2_decode
+/tests/test_axk2_norm
 /tests/beam_mtp_gate
 /tests/ling31_mtp_gate
 /tests/test_ling31_residual
