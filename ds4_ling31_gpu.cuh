@@ -131,6 +131,7 @@ extern "C" ds4_l31_moe *ds4_gpu_l31_moe_create(ds4_gvq_ctx *gvq, uint32_t rows) 
     ds4_l31_moe *moe = new (std::nothrow) ds4_l31_moe;
     if (!moe) { return nullptr; }
     moe->gvq = gvq;
+    gvq->kda_reload = !l31_env_off("DS4_LING31_KDA_RELOAD");
     moe->rows = rows;
     moe->gain_dot = !l31_env_off("DS4_LING31_GAIN_DOT");
     moe->route = !l31_env_off("DS4_LING31_DECODE_ROUTE");

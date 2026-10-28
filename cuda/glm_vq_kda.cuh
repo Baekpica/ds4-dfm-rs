@@ -9,6 +9,15 @@ enum { GLMVQ_KDA_DIM = 128, GLMVQ_CONV = 4 };
  * to slot t of `stride` floats, at the same offsets as the live state. */
 struct glmvq_kda_snap { float *state, *q, *k, *v; uint64_t stride; };
 
+enum glmvq_kda_reads { GLMVQ_KDA_CACHED, GLMVQ_KDA_RELOAD };
+
+template <glmvq_kda_reads READS>
+__device__ __forceinline__ float glmvq_kda_read(const float *p) {
+    // Reload the small shared vectors instead of spilling the held state.
+    if constexpr (READS == GLMVQ_KDA_RELOAD) { return *(const volatile float *)p; }
+    return *p;
+}
+
 /* Source baseline: modeling_glm5_next.py:340-369,409-449,453-514.
  * Conv and beta are BF16; the recurrent matrix is FP32. Sequence order is
  * explicit, so an append consumes exactly the prior state and raw conv tail.
@@ -17,7 +26,7 @@ struct glmvq_kda_snap { float *state, *q, *k, *v; uint64_t stride; };
  * one read and write per call instead of two of each per row (MTP verify
  * rows re-read it from L2), same operations and order. One decode row
  * keeps the memory loops (255 registers measured 1.5% slower there). */
-template <bool HELD = false>
+template <bool HELD = false, glmvq_kda_reads READS = GLMVQ_KDA_CACHED>
 __global__ void glmvq_kda(float *output, float *state,
         float *q_tail, float *k_tail, float *v_tail,
         const float *q_raw, const float *k_raw, const float *v_raw,
@@ -90,8 +99,8 @@ __global__ void glmvq_kda(float *output, float *state,
         if constexpr (HELD) {
             #pragma unroll
             for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) {
-                st[key] = glmvq_mul(st[key], decay[key]);
-                memory = glmvq_add(memory, glmvq_mul(st[key], k[key]));
+                st[key] = glmvq_mul(st[key], glmvq_kda_read<READS>(decay + key));
+                memory = glmvq_add(memory, glmvq_mul(st[key], glmvq_kda_read<READS>(k + key)));
             }
         } else {
             for (uint32_t key = 0; key < dim; key++) {
@@ -107,9 +116,9 @@ __global__ void glmvq_kda(float *output, float *state,
         if constexpr (HELD) {
             #pragma unroll
             for (uint32_t key = 0; key < GLMVQ_KDA_DIM; key++) {
-                st[key] = glmvq_add(st[key], glmvq_mul(k[key], delta));
+                st[key] = glmvq_add(st[key], glmvq_mul(glmvq_kda_read<READS>(k + key), delta));
                 if (keep) { snap.state[t * snap.stride + state_base + (uint64_t)key * dim + d] = st[key]; }
-                result = glmvq_add(result, glmvq_mul(st[key], q[key]));
+                result = glmvq_add(result, glmvq_mul(st[key], glmvq_kda_read<READS>(q + key)));
             }
         } else {
             for (uint32_t key = 0; key < dim; key++) {

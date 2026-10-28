@@ -62,6 +62,7 @@ struct ds4_gvq_ctx {
     bool kda_chunk;
     bool kda_mma;
     bool kda_local17;
+    bool kda_reload = false;
     bool flash;
     glmvq_launch launch;
     bool index_fused;
@@ -1847,7 +1848,8 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
             (const float *)a_log->ptr, (const float *)dt_bias->ptr, rows, heads, lower_bound);
         if (chunked >= 0) { return chunked; }
     }
-    glmvq_launch_kernel(gvq_mode(rows), rows > 1 ? glmvq_kda<true> : glmvq_kda<false>, heads, GLMVQ_KDA_DIM, 0,
+    auto kernel = rows > 1 ? (ctx->kda_reload ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>) : glmvq_kda<false>;
+    glmvq_launch_kernel(gvq_mode(rows), kernel, heads, GLMVQ_KDA_DIM, 0,
         ds4_current_stream(), (float *)out->ptr,
         (float *)state->ptr, (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
         (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,

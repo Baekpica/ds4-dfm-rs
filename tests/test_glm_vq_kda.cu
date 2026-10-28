@@ -4,6 +4,7 @@
 // judged by relative error of the normed output and the final state.
 #include <cstdio>
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 #include <vector>
 #include <random>
@@ -139,8 +140,72 @@ static int run(uint32_t rows, float state_sd, bool timing) {
     return !ok;
 }
 
-int main() {
+enum class Snapshots { Omit, Keep };
+
+// Each verify frontier must equal an ordinary one-row recurrence, including
+// the conv tails and the state restored after any rejected draft.
+static int verify_parity(uint32_t rows, uint32_t heads, Snapshots snapshots) {
+    const size_t width = heads * GLMVQ_KDA_DIM, count = rows * width;
+    const size_t state = width * GLMVQ_KDA_DIM, tail = width * GLMVQ_CONV;
+    const size_t stride = state + 3 * tail + 16, shots = rows * stride;
+    auto *q = input<float>(count, 0, 1), *k = input<float>(count, 0, 1), *v = input<float>(count, 0, 1);
+    auto *f = input<float>(count, -2, 2), *b = input<float>(rows * heads, 0, 2);
+    auto *qw = input<float>(tail, 0, .5f), *kw = input<float>(tail, 0, .5f), *vw = input<float>(tail, 0, .5f);
+    auto *a = input<float>(heads, 0, .5f), *bias = input<float>(width, -2, 1);
+    auto initial = normal(stride, 0, .3f);
+    std::fill(initial.end() - 16, initial.end(), -1234.0f);
+    auto *reference = up(initial), *reference_out = up(std::vector<float>(count + 16, -1234));
+    auto *reference_shots = up(std::vector<float>(shots + 16, -1234));
+    for (uint32_t t = 0; t < rows; t++) {
+        glmvq_kda<<<heads, GLMVQ_KDA_DIM>>>(reference_out + t * width, reference,
+            reference + state, reference + state + tail, reference + state + 2 * tail,
+            q + t * width, k + t * width, v + t * width, f + t * width, b + t * heads,
+            qw, kw, vw, a, bias, 1, heads, -5.0f, {});
+        CK(cudaGetLastError());
+        if (snapshots == Snapshots::Keep && t + 1 < rows) {
+            CK(cudaMemcpy(reference_shots + t * stride, reference, stride * sizeof(float), cudaMemcpyDeviceToDevice));
+        }
+    }
+    const auto expected = down(reference, stride), expected_out = down(reference_out, count + 16);
+    const auto expected_shots = down(reference_shots, shots + 16);
     int failed = 0;
+    for (auto reads : {GLMVQ_KDA_CACHED, GLMVQ_KDA_RELOAD}) {
+        auto *pool = up(initial), *out = up(std::vector<float>(count + 16, -1234));
+        auto *shot = up(std::vector<float>(shots + 16, -1234));
+        const glmvq_kda_snap snap = snapshots == Snapshots::Keep
+            ? glmvq_kda_snap{shot, shot + state, shot + state + tail, shot + state + 2 * tail, stride}
+            : glmvq_kda_snap{};
+        auto kernel = reads == GLMVQ_KDA_RELOAD ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>;
+        kernel<<<heads, GLMVQ_KDA_DIM>>>(out, pool, pool + state, pool + state + tail, pool + state + 2 * tail,
+            q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f, snap);
+        CK(cudaGetLastError());
+        const auto actual = down(pool, stride), actual_out = down(out, count + 16);
+        const auto actual_shots = down(shot, shots + 16);
+        const bool ok = !memcmp(actual.data(), expected.data(), stride * sizeof(float)) &&
+            !memcmp(actual_out.data(), expected_out.data(), (count + 16) * sizeof(float)) &&
+            !memcmp(actual_shots.data(), expected_shots.data(), (shots + 16) * sizeof(float));
+        printf("kda verify rows=%u heads=%u snapshots=%d reads=%d: state, output, rollback, canaries %s\n",
+            rows, heads, (int)snapshots, (int)reads, ok ? "ok" : "FAIL");
+        failed += !ok;
+        cudaFree(pool); cudaFree(out); cudaFree(shot);
+    }
+    for (void *p : {(void *)q, (void *)k, (void *)v, (void *)f, (void *)b, (void *)qw, (void *)kw,
+            (void *)vw, (void *)a, (void *)bias, (void *)reference, (void *)reference_out, (void *)reference_shots}) {
+        cudaFree(p);
+    }
+    return failed;
+}
+
+int main(int argc, char **argv) {
+    int failed = 0;
+    for (uint32_t rows : {2u, 3u, 4u}) { failed += verify_parity(rows, 3, Snapshots::Keep); }
+    failed += verify_parity(3, 64, Snapshots::Keep);
+    for (uint32_t rows : {3u, 5u, 63u}) { failed += verify_parity(rows, 3, Snapshots::Omit); }
+    if (argc == 2 && !strcmp(argv[1], "--verify")) {
+        printf("%s\n", failed ? "FAILED" : "all ok");
+        return failed;
+    }
+    rng.seed(11);
     for (uint32_t rows : {1u, 63u, 64u, 65u, 200u}) {
         failed += local_parity<__nv_bfloat16, __nv_bfloat16>(rows);
     }

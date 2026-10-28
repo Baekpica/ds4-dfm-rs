@@ -196,3 +196,81 @@ run receipts, guard logs, full proofs, NCU/NSYS captures, fixed-state and
 teacher-forcing Rust harnesses preserve the commands and identities.
 Native/Rust inference builds passed. MTP, final incremental sweep and
 publication are still pending; this change claims no broader serving gate.
+
+## D1: reload KDA vectors instead of spilling the state
+
+The MTP2 profile spends 309.950 ms of 6182.767 ms in KDA (5.0%). Holding
+one state column across verify rows saves traffic, but retaining shared
+vectors alongside that column costs 255 registers and a 160-byte spill
+frame. Reloading the small shared q/k/decay vectors keeps the state in
+168 registers without spills. Arithmetic and operation order stay the same.
+Only Ling contexts opt in; `DS4_LING31_KDA_RELOAD=0` restores the previous
+path. One-row decode and chunked prefill keep their existing kernels.
+
+The additional MTP performance fixture uses ten existing held cases:
+Korean/English/Chinese explanation, code, math, JSON, Korean summary and
+free writing, tool call and tool follow-up. Each runs in an independent
+4096-context session with two drafts, greedy sampling and a 128-token cap,
+stopping normally. Their 719 generated tokens are divided by the sum of
+their decode times; per-case rates are not averaged. A separate 8K corpus
+case excludes EOS and generates 128 tokens. Each fresh process warms an
+8K corpus session plus eight speculative calls before the measured cases.
+This session lifecycle differs from `ds4-bench`; the published sweep keeps
+its original protocol. The [measurement source](benchmarks/ling31-1019-followup-2026-10-28/reproduce/mtp_perf.rs)
+and [raw receipts](benchmarks/ling31-1019-followup-2026-10-28/d1.json) record
+this bounded protocol.
+
+| MTP2 workload | Off samples, tok/s | On samples, tok/s | Median gain |
+|---|---|---|---:|
+| Ten assistant cases | 27.6460, 27.6612, 27.5833 | 27.6889, 27.7028, 27.6855 | +0.155% |
+| 8K corpus | 21.2106, 21.2881, 21.2240 | 21.3377, 21.1768, 21.1575 | -0.222% |
+
+All three assistant pairs improve (+0.155%, +0.151%, +0.370%); the lowest
+on rate exceeds the highest off rate. Corpus pairs have mixed signs
+(+0.599%, -0.523%, -0.313%): no corpus speed gain or equivalence is claimed.
+All 33 case pairs have identical generated tokens and acceptance cycles;
+66 full-vocabulary frontier/end F32 hashes match. The corpus continuation
+repeats near its tail, so its speculative acceptance does not represent
+assistant workloads. The ten short cases are supplementary performance
+evidence, not broad quality or production qualification.
+
+The 8K prefill controls are 1175.24/1188.16/1187.96 versus
+1201.75/1197.06/1192.22 tok/s. Their chunked path is unchanged, so that
+variation is not counted as another Prefill gain. All 26 ordinary-decode
+kernels retain their 18,792 SASS instructions, including the renamed KDA
+template. No ordinary Decode gain is claimed.
+
+Isolated 64-head, three-row KDA with rollback snapshots runs at medians
+76.676 → 71.039 microseconds (-7.35%); all three pairs improve and full
+state/output/snapshot hashes match. Cache-flushed NCU replay is
+74.752 → 72.832 microseconds. Local requested traffic falls from 246,784
+32-byte sectors (7.90 MB) to zero, while executed warp instructions rise
+1,281,536 → 1,540,608 (+20.2%) and shared-load wavefronts increase. The
+tradeoff is more shared reads for fewer spills; no allocation, arithmetic,
+or shared-storage increase. Native shared storage remains 4096 bytes.
+The 16 MiB state read/write/snapshot payload alone has an approximately
+8-microsecond L2 floor at 2.0–2.1 TB/s; residency and writeback prevent
+assuming that all of it crosses DRAM during the measured kernel.
+
+In the whole 8K/128-token profile with PDL off, KDA falls
+309.950 → 292.334 ms, saving 17.616 ms. Whole Decode is
+6182.767 → 6134.795 ms; 20.987 ms of that difference comes from unchanged
+Q4m kernels. Prefill is 6821.926 → 6918.034 ms, with most variation in
+unchanged q4p, local KDA and experts. These attribution captures do not
+replace the fresh-process throughput pairs.
+
+The focused fixture compares the held implementations against repeated
+one-row recurrence, including every rollback state and conv tail, complete
+output and canaries: rows 2/3/4 with snapshots, 64 heads at three rows,
+and rows 3/5/63 without snapshots. All pass bytewise. The helper and
+kernel results support retaining this small assistant MTP improvement;
+the mixed single-corpus result remains disclosed.
+
+## Rejected Decode candidates
+
+One-row absorbed QK tiling reduced its isolated kernel from about 46.3 to
+36.6 microseconds, but three full-model pairs gave a -3.12% Decode median
+and added 24.7% instructions plus 5.8% requested global sectors. It is not
+retained or counted. Q4m probes for a single stage, fewer warps, prepared
+input and direct global weight reads also failed to establish a consistent
+useful gain. The retained Q4m path is unchanged.
