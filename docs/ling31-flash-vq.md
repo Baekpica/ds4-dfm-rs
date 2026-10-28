@@ -292,6 +292,7 @@ Past 64K the bench frontiers (32K-token steps, 16 tokens) decode at 17.56,
 | `DS4_GLMVQ_KDA_LOCAL17=0` | 512-thread KDA prefill preparation instead of 544 threads |
 | `DS4_LING31_RESIDUAL_BF16=0` | Keep F32 residual storage inside prefill trunk passes |
 | `DS4_LING31_KDA_RELOAD=0` | Keep shared KDA vectors in registers across verify-row state updates |
+| `DS4_LING31_KDA_CONV4=0` | Scalar KDA convolution-tail loads and stores instead of aligned four-tap vectors |
 
 ## Limits and next levers
 

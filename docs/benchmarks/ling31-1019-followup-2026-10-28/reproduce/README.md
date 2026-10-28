@@ -1,4 +1,4 @@
-# Follow-up MTP measurement
+# Follow-up Decode measurement
 
 `mtp_perf.rs` is the exact measured helper, archived as evidence. It uses
 `ds4-core` session APIs and the repository's existing Ling token fixture.
@@ -42,3 +42,19 @@ reported 8K corpus case. Preserve all raw runs, including mixed signs.
 This helper warms an 8K session plus eight speculative calls, then opens
 fresh sessions for the measured cases. It is a different timing recipe
 from the published incremental `ds4-bench` sweep.
+
+For D2, use `workload_perf.rs` in the copy/build command above. It adds a
+genuine ordinary-model open, separate from the MTP-enabled model:
+
+```text
+target/release/examples/ling31_followup_perf MODEL \
+  tests/fixtures/ling31/evaluation-token-ids.json plain 128 OUTPUT.json
+target/release/examples/ling31_followup_perf MODEL \
+  tests/fixtures/ling31/evaluation-token-ids.json mtp2 128 OUTPUT.json
+```
+
+Run each mode in fresh processes, alternating `DS4_LING31_KDA_CONV4=0`
+and `=1` with the same order. Ordinary `eval` on an MTP-enabled model still
+maintains its draft state, so combining both modes in one model load is
+not a valid ordinary-Decode measurement. [`../d2.json`](../d2.json) records
+all twelve receipts, mode-specific samples and full F32 proof hashes.

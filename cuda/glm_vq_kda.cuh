@@ -10,6 +10,27 @@ enum { GLMVQ_KDA_DIM = 128, GLMVQ_CONV = 4 };
 struct glmvq_kda_snap { float *state, *q, *k, *v; uint64_t stride; };
 
 enum glmvq_kda_reads { GLMVQ_KDA_CACHED, GLMVQ_KDA_RELOAD };
+enum glmvq_kda_conv_mode { GLMVQ_KDA_SCALAR, GLMVQ_KDA_VECTOR };
+
+static bool glmvq_kda_conv4_fits(const float *qt, const float *kt, const float *vt,
+        const float *qw, const float *kw, const float *vw, glmvq_kda_snap snap) {
+    const uintptr_t inputs = (uintptr_t)qt | (uintptr_t)kt | (uintptr_t)vt |
+        (uintptr_t)qw | (uintptr_t)kw | (uintptr_t)vw;
+    const uintptr_t shots = (uintptr_t)snap.q | (uintptr_t)snap.k | (uintptr_t)snap.v | snap.stride * sizeof(float);
+    return !(inputs & 15u) && (!snap.state || !(shots & 15u));
+}
+
+__device__ __forceinline__ float glmvq_kda_conv4(float *tail, const float *weight, float raw, float *snap) {
+    const float4 prev = *(const float4 *)tail;
+    const float4 win = make_float4(prev.y, prev.z, prev.w, raw);
+    *(float4 *)tail = win;
+    if (snap) { *(float4 *)snap = win; }
+    const float4 w = *(const float4 *)weight;
+    float value = glmvq_add(0.0f, glmvq_mul(win.x, w.x));
+    value = glmvq_add(value, glmvq_mul(win.y, w.y));
+    value = glmvq_add(value, glmvq_mul(win.z, w.z));
+    return glmvq_add(value, glmvq_mul(win.w, w.w));
+}
 
 template <glmvq_kda_reads READS>
 __device__ __forceinline__ float glmvq_kda_read(const float *p) {
@@ -26,7 +47,8 @@ __device__ __forceinline__ float glmvq_kda_read(const float *p) {
  * one read and write per call instead of two of each per row (MTP verify
  * rows re-read it from L2), same operations and order. One decode row
  * keeps the memory loops (255 registers measured 1.5% slower there). */
-template <bool HELD = false, glmvq_kda_reads READS = GLMVQ_KDA_CACHED>
+template <bool HELD = false, glmvq_kda_reads READS = GLMVQ_KDA_CACHED,
+    glmvq_kda_conv_mode CONV = GLMVQ_KDA_SCALAR>
 __global__ void glmvq_kda(float *output, float *state,
         float *q_tail, float *k_tail, float *v_tail,
         const float *q_raw, const float *k_raw, const float *v_raw,
@@ -52,27 +74,36 @@ __global__ void glmvq_kda(float *output, float *state,
 
     for (uint32_t t = 0; t < rows; t++) {
         const uint64_t input = (uint64_t)t * width + channel, tail = channel * GLMVQ_CONV;
-        for (uint32_t tap = 0; tap + 1 < GLMVQ_CONV; tap++) {
-            q_tail[tail + tap] = q_tail[tail + tap + 1];
-            k_tail[tail + tap] = k_tail[tail + tap + 1];
-            v_tail[tail + tap] = v_tail[tail + tap + 1];
-        }
-        q_tail[tail + GLMVQ_CONV - 1] = q_raw[input];
-        k_tail[tail + GLMVQ_CONV - 1] = k_raw[input];
-        v_tail[tail + GLMVQ_CONV - 1] = v_raw[input];
         const bool keep = snap.state && t + 1 < rows;
-        if (keep) {
-            for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
-                snap.q[t * snap.stride + tail + tap] = q_tail[tail + tap];
-                snap.k[t * snap.stride + tail + tap] = k_tail[tail + tap];
-                snap.v[t * snap.stride + tail + tap] = v_tail[tail + tap];
-            }
-        }
         float qc = 0.0f, kc = 0.0f, vc = 0.0f;
-        for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
-            qc = glmvq_add(qc, glmvq_mul(q_tail[tail + tap], q_weight[tail + tap]));
-            kc = glmvq_add(kc, glmvq_mul(k_tail[tail + tap], k_weight[tail + tap]));
-            vc = glmvq_add(vc, glmvq_mul(v_tail[tail + tap], v_weight[tail + tap]));
+        if constexpr (CONV == GLMVQ_KDA_VECTOR) {
+            qc = glmvq_kda_conv4(q_tail + tail, q_weight + tail, q_raw[input],
+                keep ? snap.q + t * snap.stride + tail : nullptr);
+            kc = glmvq_kda_conv4(k_tail + tail, k_weight + tail, k_raw[input],
+                keep ? snap.k + t * snap.stride + tail : nullptr);
+            vc = glmvq_kda_conv4(v_tail + tail, v_weight + tail, v_raw[input],
+                keep ? snap.v + t * snap.stride + tail : nullptr);
+        } else {
+            for (uint32_t tap = 0; tap + 1 < GLMVQ_CONV; tap++) {
+                q_tail[tail + tap] = q_tail[tail + tap + 1];
+                k_tail[tail + tap] = k_tail[tail + tap + 1];
+                v_tail[tail + tap] = v_tail[tail + tap + 1];
+            }
+            q_tail[tail + GLMVQ_CONV - 1] = q_raw[input];
+            k_tail[tail + GLMVQ_CONV - 1] = k_raw[input];
+            v_tail[tail + GLMVQ_CONV - 1] = v_raw[input];
+            if (keep) {
+                for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
+                    snap.q[t * snap.stride + tail + tap] = q_tail[tail + tap];
+                    snap.k[t * snap.stride + tail + tap] = k_tail[tail + tap];
+                    snap.v[t * snap.stride + tail + tap] = v_tail[tail + tap];
+                }
+            }
+            for (uint32_t tap = 0; tap < GLMVQ_CONV; tap++) {
+                qc = glmvq_add(qc, glmvq_mul(q_tail[tail + tap], q_weight[tail + tap]));
+                kc = glmvq_add(kc, glmvq_mul(k_tail[tail + tap], k_weight[tail + tap]));
+                vc = glmvq_add(vc, glmvq_mul(v_tail[tail + tap], v_weight[tail + tap]));
+            }
         }
         qc = glmvq_round(qc); kc = glmvq_round(kc); vc = glmvq_round(vc);
         q[d] = glmvq_round(__fdiv_rn(qc, glmvq_add(1.0f, expf(-qc))));

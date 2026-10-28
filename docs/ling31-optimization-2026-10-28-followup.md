@@ -259,6 +259,69 @@ Q4m kernels. Prefill is 6821.926 → 6918.034 ms, with most variation in
 unchanged q4p, local KDA and experts. These attribution captures do not
 replace the fresh-process throughput pairs.
 
+## D2: retain the convolution window in registers
+
+KDA previously shifted each four-tap tail with scalar stores, then read it
+again for convolution and rollback snapshots. A `float4` load retains the
+window in registers, shifts it, and stores the new tail and snapshot as
+vectors. The convolution keeps its scalar operation order. Only Ling opts
+in, with `DS4_LING31_KDA_CONV4=0` as the fallback. All six tail/coefficient
+pointers, snapshot tail pointers and snapshot stride must be 16-byte
+aligned; otherwise the original kernel runs. The three scalar fallback
+kernels retain their exact assembly (880/2656/3256 instructions).
+
+The D1 protocol is extended to genuine ordinary-model loads, with MTP
+disabled at model open. Calling ordinary `eval` on an MTP-enabled model
+would still maintain the draft state and would not measure this path.
+The [archived helper](benchmarks/ling31-1019-followup-2026-10-28/reproduce/workload_perf.rs)
+runs six fresh processes per mode, each containing the separate 8K corpus
+case and ten assistant cases. There are 713 assistant tokens in ordinary
+mode and 719 with two drafts; comparisons stay within each mode.
+
+| Workload | Off samples, tok/s | On samples, tok/s | Median gain |
+|---|---|---|---:|
+| MTP2 assistant cases | 27.7496, 27.7247, 27.6961 | 27.7838, 27.9085, 27.8417 | +0.422% |
+| MTP2 8K corpus | 21.2398, 21.2364, 21.2902 | 21.2859, 21.3680, 21.3011 | +0.289% |
+| Ordinary assistant cases | 18.7699, 18.6817, 18.8717 | 18.8930, 18.9154, 18.8072 | +0.656% |
+| Ordinary 8K corpus | 18.5557, 18.7557, 18.7433 | 18.8341, 19.0617, 18.8458 | +0.547% |
+
+All three MTP assistant pairs improve (+0.123%, +0.663%, +0.526%), with
+non-overlapping off/on ranges. Both corpus comparisons also improve in
+every pair. Ordinary assistant pairs are +0.656%, +1.251%, -0.342%:
+the positive median does not establish a uniform gain or speed equivalence.
+All 66 case pairs have identical prompt/generated tokens and acceptance
+cycles, and all 132 full-vocabulary frontier/end F32 hashes match. Host
+available memory never falls below 6.00 GiB; PSI stays zero.
+
+The chunked 8K prefill path is unchanged. Its MTP off/on rates are
+1186.71/1193.39/1190.96 versus 1192.50/1179.41/1188.31 tok/s; ordinary
+rates are 1181.77/1193.86/1200.79 versus 1197.05/1200.05/1197.04. These
+variations are not counted as another Prefill gain.
+
+The isolated cold probe rotates 63 state/tail pools (275.625 MiB),
+coefficients and rollback slots. One-row medians are 52.377 → 51.890 µs;
+three-row medians 95.566 → 94.759 µs, all three pairs faster with exact
+state/output/snapshot hashes. The synthetic probe has hot projection
+inputs and colder coefficients than the model; its absolute times do not
+match in-model times. The warm probe and all raw samples are retained too.
+
+Cache-flushed NCU reports 45.696 → 41.472 µs for one row and
+73.408 → 67.840 µs for three rows. Global requested L1 sectors fall
+711,168 → 580,096 (-18.4%) and 1,281,024 → 678,912 (-47.0%); these are
+requests, not physical DRAM bytes. Registers rise 40 → 56 and 168 → 180,
+without spills or additional shared storage or allocation. The 64-head
+grid uses at most two blocks per SM in either case. Executed warp
+instructions rise 1.10% for one row and fall 0.15% for three rows.
+
+The PDL-off full profile reduces KDA from 292.334 to 263.611 ms:
+three-row calls average 63.950 → 57.630 µs, and one-row calls
+35.816 → 34.906 µs. Whole Decode is 6134.795 → 6074.156 ms; another
+21.462 ms comes from unchanged Q4m kernels, so the whole difference is
+not attributed to KDA. Whole prefill is 6918.034 → 6798.298 ms, mostly
+unchanged Q4p variation. The fixture passes 30 recurrence cases including
+one-row, cached/reloaded held state, snapshots, short prefill and canaries,
+plus the vector-alignment guard. [Full evidence](benchmarks/ling31-1019-followup-2026-10-28/d2.json).
+
 The focused fixture compares the held implementations against repeated
 one-row recurrence, including every rollback state and conv tail, complete
 output and canaries: rows 2/3/4 with snapshots, 64 heads at three rows,

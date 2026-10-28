@@ -170,24 +170,35 @@ static int verify_parity(uint32_t rows, uint32_t heads, Snapshots snapshots) {
     const auto expected_shots = down(reference_shots, shots + 16);
     int failed = 0;
     for (auto reads : {GLMVQ_KDA_CACHED, GLMVQ_KDA_RELOAD}) {
-        auto *pool = up(initial), *out = up(std::vector<float>(count + 16, -1234));
-        auto *shot = up(std::vector<float>(shots + 16, -1234));
-        const glmvq_kda_snap snap = snapshots == Snapshots::Keep
-            ? glmvq_kda_snap{shot, shot + state, shot + state + tail, shot + state + 2 * tail, stride}
-            : glmvq_kda_snap{};
-        auto kernel = reads == GLMVQ_KDA_RELOAD ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>;
-        kernel<<<heads, GLMVQ_KDA_DIM>>>(out, pool, pool + state, pool + state + tail, pool + state + 2 * tail,
-            q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f, snap);
-        CK(cudaGetLastError());
-        const auto actual = down(pool, stride), actual_out = down(out, count + 16);
-        const auto actual_shots = down(shot, shots + 16);
-        const bool ok = !memcmp(actual.data(), expected.data(), stride * sizeof(float)) &&
-            !memcmp(actual_out.data(), expected_out.data(), (count + 16) * sizeof(float)) &&
-            !memcmp(actual_shots.data(), expected_shots.data(), (shots + 16) * sizeof(float));
-        printf("kda verify rows=%u heads=%u snapshots=%d reads=%d: state, output, rollback, canaries %s\n",
-            rows, heads, (int)snapshots, (int)reads, ok ? "ok" : "FAIL");
-        failed += !ok;
-        cudaFree(pool); cudaFree(out); cudaFree(shot);
+        if (rows == 1 && reads != GLMVQ_KDA_CACHED) { continue; }
+        for (auto conv : {GLMVQ_KDA_SCALAR, GLMVQ_KDA_VECTOR}) {
+            auto *pool = up(initial), *out = up(std::vector<float>(count + 16, -1234));
+            auto *shot = up(std::vector<float>(shots + 16, -1234));
+            const glmvq_kda_snap snap = snapshots == Snapshots::Keep
+                ? glmvq_kda_snap{shot, shot + state, shot + state + tail, shot + state + 2 * tail, stride}
+                : glmvq_kda_snap{};
+            auto kernel = rows == 1 ? glmvq_kda<false>
+                : (reads == GLMVQ_KDA_RELOAD ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>);
+            if (conv == GLMVQ_KDA_VECTOR) {
+                if (!glmvq_kda_conv4_fits(pool + state, pool + state + tail, pool + state + 2 * tail,
+                        qw, kw, vw, snap)) { return 1; }
+                kernel = rows == 1 ? glmvq_kda<false, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>
+                    : (reads == GLMVQ_KDA_RELOAD ? glmvq_kda<true, GLMVQ_KDA_RELOAD, GLMVQ_KDA_VECTOR>
+                        : glmvq_kda<true, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>);
+            }
+            kernel<<<heads, GLMVQ_KDA_DIM>>>(out, pool, pool + state, pool + state + tail, pool + state + 2 * tail,
+                q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f, snap);
+            CK(cudaGetLastError());
+            const auto actual = down(pool, stride), actual_out = down(out, count + 16);
+            const auto actual_shots = down(shot, shots + 16);
+            const bool ok = !memcmp(actual.data(), expected.data(), stride * sizeof(float)) &&
+                !memcmp(actual_out.data(), expected_out.data(), (count + 16) * sizeof(float)) &&
+                !memcmp(actual_shots.data(), expected_shots.data(), (shots + 16) * sizeof(float));
+            printf("kda verify rows=%u heads=%u snapshots=%d reads=%d conv=%d: state, output, rollback, canaries %s\n",
+                rows, heads, (int)snapshots, (int)reads, (int)conv, ok ? "ok" : "FAIL");
+            failed += !ok;
+            cudaFree(pool); cudaFree(out); cudaFree(shot);
+        }
     }
     for (void *p : {(void *)q, (void *)k, (void *)v, (void *)f, (void *)b, (void *)qw, (void *)kw,
             (void *)vw, (void *)a, (void *)bias, (void *)reference, (void *)reference_out, (void *)reference_shots}) {
@@ -196,9 +207,33 @@ static int verify_parity(uint32_t rows, uint32_t heads, Snapshots snapshots) {
     return failed;
 }
 
+static int conv_alignment() {
+    alignas(16) float storage[16] = {};
+    const float *p[6] = {storage, storage, storage, storage, storage, storage};
+    glmvq_kda_snap snap = {storage, storage, storage, storage, 4};
+    auto fits = [&]() { return glmvq_kda_conv4_fits(p[0], p[1], p[2], p[3], p[4], p[5], snap); };
+    if (!fits()) { return 1; }
+    for (uint32_t i = 0; i < 6; i++) {
+        p[i] = storage + 1;
+        if (fits()) { return 1; }
+        p[i] = storage;
+    }
+    for (float **at : {&snap.q, &snap.k, &snap.v}) {
+        *at = storage + 1;
+        if (fits()) { return 1; }
+        *at = storage;
+    }
+    snap.stride = 3;
+    if (fits()) { return 1; }
+    snap.state = nullptr;
+    const bool ok = fits();
+    printf("kda conv vector alignment: %s\n", ok ? "ok" : "FAIL");
+    return !ok;
+}
+
 int main(int argc, char **argv) {
-    int failed = 0;
-    for (uint32_t rows : {2u, 3u, 4u}) { failed += verify_parity(rows, 3, Snapshots::Keep); }
+    int failed = conv_alignment();
+    for (uint32_t rows : {1u, 2u, 3u, 4u}) { failed += verify_parity(rows, 3, Snapshots::Keep); }
     failed += verify_parity(3, 64, Snapshots::Keep);
     for (uint32_t rows : {3u, 5u, 63u}) { failed += verify_parity(rows, 3, Snapshots::Omit); }
     if (argc == 2 && !strcmp(argv[1], "--verify")) {

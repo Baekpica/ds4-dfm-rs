@@ -63,6 +63,7 @@ struct ds4_gvq_ctx {
     bool kda_mma;
     bool kda_local17;
     bool kda_reload = false;
+    bool kda_conv4 = false;
     bool flash;
     glmvq_launch launch;
     bool index_fused;
@@ -1849,6 +1850,13 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
         if (chunked >= 0) { return chunked; }
     }
     auto kernel = rows > 1 ? (ctx->kda_reload ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>) : glmvq_kda<false>;
+    if (ctx->kda_conv4 && glmvq_kda_conv4_fits((const float *)q_tail->ptr, (const float *)k_tail->ptr,
+            (const float *)v_tail->ptr, (const float *)q_weight->ptr, (const float *)k_weight->ptr,
+            (const float *)v_weight->ptr, shot)) {
+        kernel = rows > 1 ? (ctx->kda_reload ? glmvq_kda<true, GLMVQ_KDA_RELOAD, GLMVQ_KDA_VECTOR>
+            : glmvq_kda<true, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>)
+            : glmvq_kda<false, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>;
+    }
     glmvq_launch_kernel(gvq_mode(rows), kernel, heads, GLMVQ_KDA_DIM, 0,
         ds4_current_stream(), (float *)out->ptr,
         (float *)state->ptr, (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
