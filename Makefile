@@ -1918,6 +1918,9 @@ tests/test_axk2_topk: tests/test_axk2_topk.cu cuda/axk2_topk.cuh
 tests/test_axk2_flash: tests/test_axk2_flash.cu cuda/axk2_flash.cuh cuda/l31_flash.cuh cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/l31_latent.cuh ds4_axk2.h
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
+tests/test_axk2_q8: tests/test_axk2_q8.cu cuda/axk2_q8.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
 .PHONY: test-axk2-topk
 test-axk2-topk: tests/test_axk2_topk
 	./tests/test_axk2_topk
@@ -2097,7 +2100,7 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_minimax.h ds4_minimax_gpu.cuh cuda/minimax
 AXK2_NATIVE_DEPS = ds4_axk2.h ds4_axk2_bind.inc ds4_axk2_graph.inc ds4_axk2_payload.inc ds4_axk2_session.inc \
 	ds4_axk2_batch.inc ds4_axk2_bank_payload.inc
 ds4.o ds4_cpu.o: $(AXK2_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_axk2.h ds4_axk2_gpu.cuh cuda/axk2_topk.cuh cuda/axk2_flash.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq.cuh \
+ds4_cuda.o ds4_cuda_range_test.o: ds4_axk2.h ds4_axk2_gpu.cuh cuda/axk2_topk.cuh cuda/axk2_flash.cuh cuda/axk2_q8.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_mma8.cuh cuda/glm_vq.cuh \
 	cuda/l31_flash.cuh cuda/l31_latent.cuh
 
 tests/test_minimax_payload: tests/test_minimax_payload.c ds4.c ds4.h ds4_gpu.h ds4_snapshot.inc $(MINIMAX_NATIVE_DEPS)
@@ -2602,7 +2605,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \

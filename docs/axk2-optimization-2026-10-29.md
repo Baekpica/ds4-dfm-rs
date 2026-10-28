@@ -11,7 +11,8 @@ One GB10, 48 SM, CUDA 13.4.92 / `sm_121a`, driver 615.71.10.
 Boot `f5d9ee6b-7f0f-443c-b629-4f39b4519994`; the enabled clock service
 keeps 300–2200 MHz. Observed busy clocks accompany each round. Actual native
 libraries: system libcuda 615.71.10, cuBLAS/cuBLASLt 13.8.0.4 and
-CUDA runtime 13.4.92. One model process at a time, CPU affinity 5–9,15–19,
+CUDA runtime 13.4.92. One model process at a time, CPU affinity 5–9,15–19
+(D1's additional whole-binary comparison pins CPU 9),
 page cache cleared between processes, 2 GiB host-memory reserve and trip.
 No MTP, no drafter, no CPU weight offload.
 
@@ -242,3 +243,101 @@ Source is `7872f58f` plus this round's native diff. Binary/source hashes
 were checked after all runs. Raw receipts are `scratch/axk2-perf/p3-*`.
 Prefill now has three adopted rounds; decode rounds and the final
 publication sweep remain.
+
+## D1 — Q8 decode staging and input loads (adopted)
+
+Retained P3's Q8 indexer projections cost 81.37 ms per 16 decoded tokens,
+7.69% of the 1,058.1 ms decode wall. The 128×7,168 projection takes
+15.41 µs and the 8,192×1,536 projection 67.96 µs per layer. At 235 GB/s,
+their weight-only floors are 4.15 and 56.89 µs. The small projection has
+only 16 CTAs; the large projection is nearer its bandwidth floor.
+
+The new path stages weights with `cp.async.cg` and exposes 16 independent
+input loads in the dot loop. The large projection uses one warp per CTA
+instead of eight; an explicit 8,192×1,536 shape predicate limits that
+mapping. Class 5.1 scheduling: sequential FMAs, reductions, rounding and
+weight bytes remain unchanged. No additional global allocation is needed;
+large-projection dynamic shared memory falls 13,056 → 1,632 bytes per CTA.
+`DS4_AXK2_Q8_STREAM=0` restores the original path. Multirow MMQ is unchanged.
+
+The isolated probe uses the artifact's exact Q8 payloads and rotates at
+least 96 MiB of copies, with finite synthetic BF16 input. It retains the
+model's shapes and compiled instructions, but not its actual input/cache
+history. Median timings over three repeats are 16.800 → 11.680 µs small
+and 70.944 → 63.776 µs large. One initial small baseline is 19.968 µs;
+the remaining two are 16.768/16.800 µs. These raw samples remain recorded.
+The large optimized path reaches about 89% of its weight-only ceiling.
+
+Full NCU with native fast-math flags reports 34.336 → 17.312 µs small
+(cold input, unlike steady-state timing) and 73.312 → 66.240 µs large.
+The final probe and model both configure 64 KiB shared memory for the new
+kernels; the original large kernel configures 100 KiB. An earlier probe
+forced the new large kernel to 100 KiB; those receipts are retained but
+are superseded by `q8-native-large-default`. Registers change 40 → 39/44,
+with no spills. Executed warp instructions fall 358,400 → 320,896 small
+and 6,012,928 → 5,275,648 large. The latter's L2 read-interface rate falls
+because fewer bytes cross that interface; it is not a DRAM bandwidth loss.
+
+`tests/test_axk2_q8` passes CPU per-lane FMA/XOR-reference and output-canary
+checks for zero input, partial output groups, and both model shapes.
+The original 280 SASS instructions and the new probe's 400 instructions
+match their native counterparts after constant-bank relocation is masked.
+Unchanged Q4 one-row staging and expert GU kernels also retain their SASS.
+
+The first, async-only candidate was not adopted: six fresh 8K/512 runs
+had decode off 15.37/15.39/15.38 and on 15.23/15.42/15.43 tok/s. Its mean
+did not improve. The revised candidate's broad-affinity measurements were:
+
+| Process | Mode | Prefill tok/s | Decode tok/s |
+|---|---|---:|---:|
+| 1 | off | 546.71 | 15.08 |
+| 2 | on | 547.24 | 15.17 |
+| 3 | on | 544.93 | 15.51 |
+| 4 | off | 546.35 | 15.37 |
+| 5 | off | 546.47 | 14.99 |
+| 6 | on | 542.36 | 15.40 |
+
+All three pairs improve decode, but the 2.12% median gain is inflated by
+unresolved absolute variability. Observed GPU clocks, temperature, PSI,
+CPU frequency and faults do not explain the slower runs. We therefore
+added a prespecified four-run old/new/new/old comparison pinned to CPU 9,
+using the saved P3 binary and the new binary, both with the same P1–P3
+paths. CPU pinning is a control, not a proven explanation of the earlier
+variation. The unchanged 8K prefill follows a 2K warmup/reset, then 512
+forced greedy tokens:
+
+| Process | Binary | Prefill tok/s | Decode tok/s |
+|---|---|---:|---:|
+| 1 | P3 | 545.80 | 15.37 |
+| 2 | D1 | 548.25 | 15.46 |
+| 3 | D1 | 546.07 | 15.53 |
+| 4 | P3 | 542.78 | 15.36 |
+| Median | P3 | 544.29 | 15.365 |
+| Median | D1 | 547.16 | 15.495 |
+
+Decode improves **0.85%**, with nonoverlapping repeat ranges and paired
+gains of 0.59% and 1.11%. Prefill's unchanged path shows +0.53% variation;
+this counts only as one decode round. All four processes exit zero with
+identical finite 163,840 logits and all 512 tokens. The earlier two series
+also pass full output comparison. Busy SM clocks stay 2,184–2,190 MHz,
+full memory PSI stays zero, and minimum available memory is 15.842 GiB.
+Raw CPPC counters are also recorded; they estimate delivered performance,
+not calibrated physical clock frequency, using the
+[Linux CPPC formula](https://kernel.org/doc/html/v6.6/admin-guide/acpi/cppc_sysfs.html).
+
+The broad-affinity candidate trace reduces Q8 81.37 → 73.32 ms per 16
+tokens: small 15.41 → 10.47 µs, large 67.96 → 64.65 µs. Total profiled
+decode is 1,061.1 ms, slightly above 1,058.1 ms: the unchanged Q4 q_b
+projection is slower in that trace. Thus attribution confirms the target
+saving, while the unprofiled fixed-core repeats establish adoption. A new
+whole-workload trace on the retained baseline starts the next round.
+
+Measured source: `7fcce49d` plus this round's native diff. SHA256:
+
+- `ds4-bench`: `0ba68b8e0144a29aefda94ea5ab0f5842fe6dcafc6407d6365faf52b9d2b6022`
+- `ds4-bench-perf`: `dd3051f804b52cb5896e8785e7c8f01334281995d12c8a8052df7f73b731cffb`
+
+Receipts: ignored `scratch/axk2-perf/d1-*`, `d1b-*`, `d1c-*`,
+`q8-native-*`, `q8-default-*` and the exact payload SHA256s in
+`q8-fixture/receipt.json`. Prefill has three adopted rounds and decode one;
+final publication and two more decode adoptions remain.

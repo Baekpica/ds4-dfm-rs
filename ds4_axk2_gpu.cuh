@@ -19,6 +19,7 @@
 #include "ds4_axk2.h"
 #include "cuda/axk2_topk.cuh"
 #include "cuda/axk2_flash.cuh"
+#include "cuda/axk2_q8.cuh"
 
 enum { AX_EXPERTS = DS4_AXK2_EXPERTS, AX_USED = DS4_AXK2_USED, AX_HIDDEN = DS4_AXK2_HIDDEN, AX_FFN = DS4_AXK2_FFN,
        AX_TABLE = 3 * AX_EXPERTS, AX_LAYERS = DS4_AXK2_MOE_LAYERS, AX_MMA_ROWS = 256, AX_MMA_TOKENS = 64,
@@ -1255,40 +1256,6 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
 
 /* ------------------------------------------------------- projections */
 
-/* Q8_0 decode GEMV (MiniMax's mm_q8_gemv order): warp o first stages
- * output o's row in shared memory by 16-byte loads (byte loads per block
- * held MiniMax's at ~17% of the DRAM rate), then lane l takes element l of
- * every 34-byte block (d * q exact in F32) against the F32 input, and a
- * fixed xor tree sums the lanes. */
-enum { AX_Q8_BLOCK = 32, AX_Q8_BYTES = 34, AX_Q8_WARPS = 8, AX_TYPE_Q8_0 = 8 };
-
-__global__ void __launch_bounds__(AX_Q8_WARPS * 32) ax_q8_gemv(float *out, const uint8_t *weight, const float *x,
-        uint32_t outs, uint32_t cols) {
-    extern __shared__ __align__(16) uint8_t ax_q8_rows[];
-    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, o = blockIdx.x * AX_Q8_WARPS + warp;
-    const uint32_t blocks = cols / AX_Q8_BLOCK, row_bytes = blocks * AX_Q8_BYTES;
-    uint8_t *w = ax_q8_rows + warp * row_bytes;
-    glmvq_pdl_open();
-    // The weights are constant: they stage while the predecessor drains.
-    if (o < outs) {
-        const uint4 *src = (const uint4 *)(weight + (uint64_t)o * row_bytes);
-        for (uint32_t i = lane; i < row_bytes / 16; i += 32) { ((uint4 *)w)[i] = src[i]; }
-    }
-    __syncwarp();
-    glmvq_pdl_wait();
-    if (o >= outs) { return; }
-    float acc = 0.0f;
-    #pragma unroll 4
-    for (uint32_t b = 0; b < blocks; b++) {
-        const uint8_t *block = w + b * AX_Q8_BYTES;
-        const float value = __half2float(__ushort_as_half((uint16_t)(block[0] | block[1] << 8))) *
-            (float)(int8_t)block[2 + lane];
-        acc = fmaf(value, x[b * AX_Q8_BLOCK + lane], acc);
-    }
-    for (uint32_t stride = 16; stride; stride >>= 1) { acc += __shfl_xor_sync(0xffffffffu, acc, stride); }
-    if (!lane) { out[o] = acc; }
-}
-
 extern "C" int ds4_gpu_axk2_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight, const ds4_gpu_tensor *input,
         uint32_t rows) {
     if (!ctx || weight >= ctx->model->source.size() || ctx->model->records[weight].type != AX_TYPE_Q8_0) { return 0; }
@@ -1300,12 +1267,16 @@ extern "C" int ds4_gpu_axk2_q8(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t w
         return ds4_mmq_q8_0_dense(s.data, (const float *)input->ptr, (float *)out->ptr, (int)s.rows, (int)rows,
             (int)s.cols, ds4_mmq_stream_for_call()) == 0 && cuda_ok(cudaGetLastError(), "A.X-K2 Q8_0 MMQ");
     }
+    static const bool stream = !ax_env_off("DS4_AXK2_Q8_STREAM");
+    const uint32_t warps = stream && s.rows == 8192 && s.cols == 1536 ? 1 : AX_Q8_WARPS;
+    const auto kernel = !stream ? ax_q8_gemv<ax_q8_path::reference> :
+        warps == 1 ? ax_q8_gemv<ax_q8_path::stream, 1> : ax_q8_gemv<ax_q8_path::stream>;
     // Rows are whole 16-byte pieces (wq_b 1,632 bytes, wk 7,616).
-    const uint32_t row_bytes = s.cols / AX_Q8_BLOCK * AX_Q8_BYTES, smem = AX_Q8_WARPS * row_bytes;
+    const uint32_t row_bytes = s.cols / AX_Q8_BLOCK * AX_Q8_BYTES, smem = warps * row_bytes;
     if (row_bytes % 16 || (uintptr_t)s.data % 16 ||
-        (smem > 48 * 1024 && !cuda_ok(cudaFuncSetAttribute(ax_q8_gemv, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (smem > 48 * 1024 && !cuda_ok(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)smem), "A.X-K2 Q8_0 GEMV attributes"))) { return 0; }
-    glmvq_launch_kernel(gvq_mode(rows), ax_q8_gemv, (s.rows + AX_Q8_WARPS - 1) / AX_Q8_WARPS, AX_Q8_WARPS * 32, smem,
+    glmvq_launch_kernel(gvq_mode(rows), kernel, (s.rows + warps - 1) / warps, warps * 32, smem,
         ds4_current_stream(), (float *)out->ptr, (const uint8_t *)s.data, (const float *)input->ptr, s.rows, s.cols);
     return cuda_ok(cudaGetLastError(), "A.X-K2 Q8_0 GEMV");
 }
