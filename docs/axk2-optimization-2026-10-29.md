@@ -19,7 +19,8 @@ No MTP, no drafter, no CPU weight offload.
 
 Fresh processes alternate off/on with the same executable, artifact and
 prompt. A 2,048-token warmup/reset allocates lazy workspace, followed by a
-cold 8,192-token prefill and 64 forced greedy tokens. This differs from the
+cold 8,192-token prefill and 64 forced greedy tokens in P1 (256 in P2/P3).
+This differs from the
 published incremental 2K–64K sweep; its numbers are not interchangeable.
 Full-vocabulary frontier logits and generated token IDs are retained.
 
@@ -169,3 +170,75 @@ Source is `430b711f` plus this round's native diff. Raw receipts are
 `scratch/axk2-perf/p2-*`, including clocks/host telemetry, full outputs,
 fixture timing, source/SASS receipts and the new trace. Prefill now has
 two adopted rounds; decode rounds and the final publication sweep remain.
+
+## P3 — stage sparse attention metadata (adopted)
+
+Retained P2 flash costs 3.318 s, 21.85% of prefill wall. The isolated
+256-row kernel spends 13.46% of all stall samples on key validation and
+the dependent exponent lookup; its 73 GFLOP compute floor remains
+0.677 ms at 107.8 TFLOPS. A small kernel now gathers each selected
+`(key, exponent)` before flash. The packed records occupy the unused tail
+of the existing F32-capacity output tensor: 16,384 metadata bytes per row
+fit within its 65,536 unused bytes. There is no additional allocation.
+
+This costs one launch per sparse slice and 8 MiB additional logical
+metadata traffic per 256-row pipeline. Class 5.1 scheduling: latent values,
+accumulation and rounding are unchanged. The measured benefit covers
+that staging cost. `DS4_AXK2_FLASH_META=0` restores P2; disabling either
+`FLASH_KEYS` or `FLASH_BF16` also bypasses staging. Dense and F32 decode
+paths retain their previous schedules.
+
+The six fixture shapes pass CPU-rounded F32 comparison and allocation
+canaries, with an added all-masked sparse row. The full pipeline, including
+staging, runs 1.843493/1.852742/1.860086 ms versus P2's
+1.976979/1.986605/1.990307 ms: 6.74% lower median latency. Full NCU gives
+2.038 → 1.810 ms flash plus 14.272 µs staging. Metadata falls to 6.21%
+of stall samples. Registers/stack remain 255/80 bytes. Executed
+instructions fall 148.78 → 143.06 million, plus 0.52 million in staging;
+L2-to-crossbar read traffic is 400.05 → 392.46 + 2.52 MB, including reduced
+local loads. This cache-interface metric excludes staging writes and is
+not DRAM traffic.
+
+SASS review caught and removed an incidental store-order change in the
+fallback. Final native kernels retain all 2,152 cooperative BF16 and 2,296
+F32 instructions; the staged kernel matches its isolated probe's 2,088.
+Synthetic selections/cache states differ from the model. Full-model
+staging costs 32.5 µs per call, above the isolated probe's 14.3 µs.
+
+The same six fresh 8K/256 processes vary only `DS4_AXK2_FLASH_META`:
+
+| Fresh process | Mode | Prefill tok/s | Decode tok/s |
+|---|---|---:|---:|
+| 1 | off | 538.15 | 15.35 |
+| 2 | on | 547.12 | 15.33 |
+| 3 | on | 546.75 | 15.37 |
+| 4 | off | 541.45 | 15.38 |
+| 5 | off | 538.22 | 15.29 |
+| 6 | on | 545.94 | 15.49 |
+| Median | off | 538.22 | 15.35 |
+| Median | on | 546.75 | 15.37 |
+
+Prefill gains **1.58%** by medians; individual pairs gain 1.67%, 0.98%
+and 1.43%. Repeat ranges do not overlap. Decode ranges overlap, so its
+0.13% median difference is not counted as a decode optimization. All six
+processes exit 0 with identical finite full logits and all 256 tokens.
+Busy SM clocks are 2,184–2,190 MHz, CPU frequency is 3.9 GHz, full PSI
+stays zero, and minimum available memory is 15.662 GiB. Three idle startup
+samples flag a power cap at 208 MHz/0% utilization, 178–180 seconds before
+the frontier; timed phases show no power/thermal cap.
+
+The retained whole-workload trace gives 15.185 → 15.064 s prefill wall.
+Flash falls 3,318.3 → 3,138.1 ms (5.43%); 1,464 staging launches add
+47.6 ms, leaving a net 132.6 ms attention-pipeline saving. Kernel interval
+union falls 15.144 → 15.020 s; 481.9 ms of overlap is not extra wall time.
+Decode wall is 1,058.9 ms for 16 tokens. These profiled wall times and the
+unprofiled rates above are distinct measurements.
+
+Measured `ds4-bench` SHA256:
+`7d031010a67727184ce3ca939e6dc847f3eafa5349208e91c5a62312297386c3`;
+`ds4-bench-perf`:
+`68b5413e56116cde7bbb519be55d3cf907865cb4bfbdc505b2052aa43e3b0e56`.
+Source is `7872f58f` plus this round's native diff. Binary/source hashes
+were checked after all runs. Raw receipts are `scratch/axk2-perf/p3-*`.
+Prefill now has three adopted rounds; decode rounds and the final
+publication sweep remain.

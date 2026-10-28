@@ -9,12 +9,26 @@
  * selected[row][i], skipped when it lies above the row's position (a row
  * that sees fewer than 2,048 keys selects every one of them plus masked
  * fillers). Sparse tiles gather each selected row's exponent. */
-enum class ax_fa_keys { serial, cooperative };
+enum class ax_fa_keys { serial, cooperative, staged };
+
+struct __align__(8) ax_fa_key { uint32_t index; int32_t exponent; };
+static_assert(DS4_AXK2_TOPK * sizeof(ax_fa_key) <=
+    DS4_AXK2_HEADS * DS4_AXK2_LATENT * sizeof(__nv_bfloat16));
+
+__global__ void ax_fa_pack_keys(ax_fa_key *out, const uint32_t *selected,
+        const int8_t *exps, uint32_t rows, uint32_t pos0) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < (uint64_t)rows * DS4_AXK2_TOPK) {
+        const uint32_t key = selected[i];
+        const bool valid = key <= pos0 + i / DS4_AXK2_TOPK;
+        out[i] = {valid ? key : GLMVQ_FA_NONE, valid ? (int32_t)exps[key] : 0};
+    }
+}
 
 template <typename T, ax_fa_keys KEYS = ax_fa_keys::serial>
 __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) ax_fa_kernel(
         T *out, float *partial, float *stats, const float *q, const float *q_abs,
-        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, const uint32_t *selected,
+        const void *latent, const int8_t *exps, const __nv_bfloat16 *k_pe, const void *selected,
         uint32_t pos0, uint32_t tiles_per_split, float scale) {
     extern __shared__ __align__(16) uint8_t fa_shared[];
     glmvq_pdl_open();
@@ -34,7 +48,7 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) ax_fa_kernel(
     const uint32_t first = split * tiles_per_split;
     const uint32_t last = min(total, first + tiles_per_split);
     const uint32_t head0 = group * 16;
-    const uint32_t *sel = selected ? selected + (uint64_t)row * DS4_AXK2_TOPK : nullptr;
+    const uint32_t *sel = selected ? (const uint32_t *)selected + (uint64_t)row * DS4_AXK2_TOPK : nullptr;
 
     for (uint32_t i = tid; i < GLMVQ_FA_HEADS * (L31_FA_ROPE / 8); i += GLMVQ_FA_THREADS) {
         const uint32_t head = i / (L31_FA_ROPE / 8), chunk = i % (L31_FA_ROPE / 8);
@@ -54,21 +68,31 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) ax_fa_kernel(
     }
 
     // Warp w copies keys 4w..4w+3: an FP8 latent row as one 512-byte warp
-    // copy into its stage, rope rows by lanes 0-7, the exponent by lane 0.
+    // copy into its stage and rope rows by lanes 0-7.
     auto issue = [&](uint32_t tile, uint32_t buf) {
         uint8_t *dst = stages + buf * L31_FA8_STAGE;
         uint8_t *pe = pe_tiles + buf * L31_FA_PE_TILE;
         constexpr uint32_t per_warp = GLMVQ_FA_KEYS / GLMVQ_FA_WARPS;
         uint32_t my_key = GLMVQ_FA_NONE;
-        if constexpr (KEYS == ax_fa_keys::cooperative) {
+        if constexpr (KEYS != ax_fa_keys::serial) {
             // Four lanes gather independent metadata before the four row copies.
             const uint32_t key_slot = warp * per_warp + lane;
             const uint32_t slot = tile * GLMVQ_FA_KEYS + key_slot;
             if (lane < per_warp) {
-                if (slot < slots) { my_key = sel ? sel[slot] : slot; }
-                if (my_key > position) { my_key = GLMVQ_FA_NONE; }
+                if constexpr (KEYS == ax_fa_keys::staged) {
+                    if (sel) {
+                        const ax_fa_key v = ((const ax_fa_key *)selected)[(uint64_t)row * DS4_AXK2_TOPK + slot];
+                        my_key = v.index;
+                        kexp[buf * GLMVQ_FA_KEYS + key_slot] = (int8_t)v.exponent;
+                    } else if (slot < slots) { my_key = slot; }
+                } else {
+                    if (slot < slots) { my_key = sel ? sel[slot] : slot; }
+                    if (my_key > position) { my_key = GLMVQ_FA_NONE; }
+                }
                 kidx[buf * GLMVQ_FA_KEYS + key_slot] = my_key;
-                if (sel) { kexp[buf * GLMVQ_FA_KEYS + key_slot] = my_key == GLMVQ_FA_NONE ? 0 : exps[my_key]; }
+                if constexpr (KEYS == ax_fa_keys::cooperative) {
+                    if (sel) { kexp[buf * GLMVQ_FA_KEYS + key_slot] = my_key == GLMVQ_FA_NONE ? 0 : exps[my_key]; }
+                }
             }
         }
         #pragma unroll
@@ -76,7 +100,7 @@ __global__ void __launch_bounds__(GLMVQ_FA_THREADS, 1) ax_fa_kernel(
             const uint32_t key_slot = warp * per_warp + i;
             const uint32_t slot = tile * GLMVQ_FA_KEYS + key_slot;
             uint32_t key = GLMVQ_FA_NONE;
-            if constexpr (KEYS == ax_fa_keys::cooperative) {
+            if constexpr (KEYS != ax_fa_keys::serial) {
                 key = __shfl_sync(0xffffffffu, my_key, i);
             } else {
                 if (slot < slots) { key = sel ? sel[slot] : slot; }

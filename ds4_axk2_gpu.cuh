@@ -1204,6 +1204,9 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
                 "A.X-K2 flash attributes") ||
             !cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
+                "A.X-K2 flash attributes") ||
+            !cuda_ok(cudaFuncSetAttribute(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::staged>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, L31_FA8_SMEM),
                 "A.X-K2 flash attributes")) { return 0; }
         ready = true;
     }
@@ -1216,17 +1219,28 @@ extern "C" int ds4_gpu_axk2_flash(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu
     const glmvq_launch mode = gvq_mode(rows);
     const cudaStream_t stream = ds4_current_stream();
     const uint8_t *cache = (const uint8_t *)latent->ptr;
+    const int8_t *exps = (const int8_t *)(cache + (uint64_t)cap * AX_LATENT);
+    const void *key_data = selected ? selected->ptr : nullptr;
     auto launch = [&](auto kernel, auto *dst) {
         return glmvq_launch_kernel(mode, kernel, dim3(rows, splits), GLMVQ_FA_THREADS, L31_FA8_SMEM, stream,
             dst, splits > 1 ? partial : (float *)nullptr, stats, (const float *)q->ptr,
-            (const float *)q_abs->ptr, (const void *)cache, (const int8_t *)(cache + (uint64_t)cap * AX_LATENT),
-            (const __nv_bfloat16 *)k_pe->ptr, selected ? (const uint32_t *)selected->ptr : (const uint32_t *)nullptr,
+            (const float *)q_abs->ptr, (const void *)cache, exps,
+            (const __nv_bfloat16 *)k_pe->ptr, key_data,
             pos0, splits > 1 ? per : UINT32_MAX, scale);
     };
     static const bool coop_keys = !ax_env_off("DS4_AXK2_FLASH_KEYS");
+    static const bool stage_keys = !ax_env_off("DS4_AXK2_FLASH_META");
     cudaError_t err;
     if (!ax_latent_bf16(rows)) {
         err = launch(ax_fa_kernel<float>, (float *)out->ptr);
+    } else if (coop_keys && stage_keys && selected) {
+        // BF16 output leaves half of this F32-capacity tensor free for metadata.
+        auto *meta = (ax_fa_key *)((__nv_bfloat16 *)out->ptr + (uint64_t)rows * AX_HEADS * AX_LATENT);
+        ax_fa_pack_keys<<<(rows * AX_TOPK + 255) / 256, 256, 0, stream>>>(meta,
+            (const uint32_t *)selected->ptr, exps, rows, pos0);
+        if (!cuda_ok(cudaGetLastError(), "A.X-K2 flash key staging")) { return 0; }
+        key_data = meta;
+        err = launch(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::staged>, (__nv_bfloat16 *)out->ptr);
     } else if (coop_keys) {
         err = launch(ax_fa_kernel<__nv_bfloat16, ax_fa_keys::cooperative>, (__nv_bfloat16 *)out->ptr);
     } else {
