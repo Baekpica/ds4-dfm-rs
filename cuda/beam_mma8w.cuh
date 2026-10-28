@@ -78,17 +78,26 @@ __device__ __forceinline__ void beam_w_mma(float (&d)[4], const uint32_t (&a)[4]
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b.x), "r"(b.y));
 }
 
+__device__ __forceinline__ float4 beam_w_load4(const float *p) { return *(const float4 *)p; }
+__device__ __forceinline__ float4 beam_w_load4(const __nv_bfloat16 *p) {
+    const uint2 v = *(const uint2 *)p;
+    const __nv_bfloat162 lo = *(const __nv_bfloat162 *)&v.x, hi = *(const __nv_bfloat162 *)&v.y;
+    return make_float4(__low2float(lo), __high2float(lo), __low2float(hi), __high2float(hi));
+}
+
 // x = e4m3 * scale[row], one scale per token row (amax / 448), one block per
 // row. Within each 32-byte k block, 4-byte group m lands at byte
 // (m & 1) * 16 + (m >> 1) * 4: ldmatrix then hands lane q the bytes 8q..8q+7
 // of the block as its A registers 0 and 2, the k order of a book vector.
-__global__ void __launch_bounds__(GLMVQ_THREADS) beam_w_quant(uint8_t *out, float *scales, const float *input,
+// Input rows are F32 or BF16 (Ling-3.1's prefill FFN norm).
+template <typename T>
+__global__ void __launch_bounds__(GLMVQ_THREADS) beam_w_quant(uint8_t *out, float *scales, const T *input,
         uint32_t cols) {
     __shared__ float peak[GLMVQ_THREADS / 32];
-    const float *x = input + (uint64_t)blockIdx.x * cols;
+    const T *x = input + (uint64_t)blockIdx.x * cols;
     float amax = 0.0f;
     for (uint32_t i = threadIdx.x * 4; i < cols; i += GLMVQ_THREADS * 4) {
-        const float4 v = *(const float4 *)(x + i);
+        const float4 v = beam_w_load4(x + i);
         amax = fmaxf(amax, fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w))));
     }
     for (uint32_t stride = 16; stride; stride >>= 1) { amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, stride)); }
@@ -98,7 +107,7 @@ __global__ void __launch_bounds__(GLMVQ_THREADS) beam_w_quant(uint8_t *out, floa
     for (uint32_t w = 0; w < GLMVQ_THREADS / 32; w++) { amax = fmaxf(amax, peak[w]); }
     const float scale = amax / GLMVQ_E4M3_MAX;
     for (uint32_t i = threadIdx.x * 4; i < cols; i += GLMVQ_THREADS * 4) {
-        const float4 v = *(const float4 *)(x + i);
+        const float4 v = beam_w_load4(x + i);
         const float a = amax > 0.0f ? __fdiv_rn(v.x, scale) : 0.0f, b = amax > 0.0f ? __fdiv_rn(v.y, scale) : 0.0f;
         const float c = amax > 0.0f ? __fdiv_rn(v.z, scale) : 0.0f, d = amax > 0.0f ? __fdiv_rn(v.w, scale) : 0.0f;
         const uint32_t lo = __nv_cvt_float2_to_fp8x2(make_float2(a, b), __NV_SATFINITE, __NV_E4M3);
@@ -123,7 +132,7 @@ __global__ void beam_w_pairs(uint32_t *token_of, float *pair_scale, const float 
 template <glmvq_mma_stage MODE>
 __global__ void __launch_bounds__(BEAM_W_THREADS, 1) beam_w_kernel(const beam_w_item *items, uint32_t nitems,
         const uint8_t *book, const uint8_t *act, const uint32_t *token_of, const float *pair_scale,
-        __nv_bfloat16 *gate, uint32_t rows, uint32_t cols, uint8_t *mid8, float *mid_scale) {
+        __nv_bfloat16 *gate, uint32_t rows, uint32_t cols, uint8_t *mid8, float *mid_scale, float clamp) {
     static_assert(MODE == GLMVQ_MMA_GATE || MODE == GLMVQ_MMA_UP, "gate/up input rows are the token rows");
     constexpr uint32_t BM = BEAM_W_BM, BT = BEAM_W_BT, S = BEAM_W_STAGES, C = BEAM_W_CONSUMERS;
     constexpr uint32_t PT = BEAM_W_PRODUCERS * 32, MT = BT / 16, STB = BEAM_W_STAGE, TQ = PT / 8, TJ = BT / TQ;
@@ -332,8 +341,8 @@ __global__ void __launch_bounds__(BEAM_W_THREADS, 1) beam_w_kernel(const beam_w_
                             const float2 x = __bfloat1622float2(gv[mm][h][n]);
                             const float y0 = glmvq_round(glmvq_mul(acc[m][n][2 * h] * sv[m][h], gn[n][0]));
                             const float y1 = glmvq_round(glmvq_mul(acc[m][n][2 * h + 1] * sv[m][h], gn[n][1]));
-                            const float v0 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.x, y0, INFINITY);
-                            const float v1 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.y, y1, INFINITY);
+                            const float v0 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.x, y0, clamp);
+                            const float v1 = glmvq_swiglu_value<GLMVQ_CLAMP_SILU>(x.y, y1, clamp);
                             acc[m][n][2 * h] = v0;
                             acc[m][n][2 * h + 1] = v1;
                             peak = fmaxf(peak, fmaxf(fabsf(v0), fabsf(v1)));
@@ -560,13 +569,13 @@ static cudaError_t beam_w_down_launch(const beam_w_item *items, uint32_t nitems,
 template <glmvq_mma_stage MODE>
 static cudaError_t beam_w_launch(const beam_w_item *items, uint32_t nitems, const uint8_t *book, const uint8_t *act,
         const uint32_t *token_of, const float *pair_scale, __nv_bfloat16 *gate, uint32_t rows, uint32_t cols,
-        uint8_t *mid8, float *mid_scale, uint32_t sms, cudaStream_t stream) {
+        uint8_t *mid8, float *mid_scale, float clamp, uint32_t sms, cudaStream_t stream) {
     static cudaError_t ready = cudaFuncSetAttribute(beam_w_kernel<MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize,
         BEAM_W_BYTES);
     if (ready != cudaSuccess) { return ready; }
     const uint32_t units = nitems * (rows / BEAM_W_BM);
     beam_w_kernel<MODE><<<min(units, sms), BEAM_W_THREADS, BEAM_W_BYTES, stream>>>(items, nitems, book, act, token_of,
-        pair_scale, gate, rows, cols, mid8, mid_scale);
+        pair_scale, gate, rows, cols, mid8, mid_scale, clamp);
     return cudaGetLastError();
 }
 

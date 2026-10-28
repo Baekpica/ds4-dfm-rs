@@ -116,6 +116,12 @@ static bool ling31_has_mtp(const ds4_model *m) {
     return model_find_tensor(m, "model.layers.72.input_layernorm.weight") != NULL;
 }
 
+static bool ling31_embedding_ssd(const ds4_model *m) {
+    ds4_str recipe;
+    return model_get_string(m, "ling_vq.recipe_id", &recipe) &&
+        ds4_streq(recipe, "ling31-1019-ivq8-all12-q4k-embssd-v1");
+}
+
 static void ling31_bind(ds4_weights *w, const ds4_model *m) {
     memset(w, 0, sizeof(*w));
     w->ling31 = xcalloc(LING31_LAYERS + 1u, sizeof(*w->ling31));
@@ -137,10 +143,13 @@ enum {
     L31_KEY = L31_NOPE + L31_ROPE, L31_VALUE = 128, L31_KV_ROW = L31_KV_LORA + L31_ROPE,
     L31_QDIM = L31_HEADS * L31_KEY, L31_VDIM = L31_HEADS * L31_VALUE, L31_LATENT = L31_HEADS * L31_KV_LORA,
     L31_DENSE_FF = 10240, L31_FF = 1280, L31_EXPERTS = 512, L31_USED = 8,
-    // 4096-row chunks prefill 10-14% faster once allocated (8K/16K; a cold first
-    // allocation stalled them below 2048) but need 1.2 GiB more workspace, which a
-    // 128 GB Spark lacks beside the trunk and a bank.
-    L31_CONTEXT = 262144, L31_PREFILL_DEFAULT = 2048, L31_PREFILL_MAX = 4096,
+    // 4096-row chunks prefill 10-15% faster than 2048 (8K/16K, and a 130K prompt
+    // at 1M) for 1.0 GiB more workspace, which one or two 262K banks leave on a
+    // 128 GB Spark; tighter fits halve the rows.
+    L31_PREFILL_DEFAULT = 4096, L31_PREFILL_MAX = 4096,
+    // Trained positions (max_position_embeddings, rope_scaling null); the
+    // official SGLang recipe serves 1,048,576 with YaRN factor 4 over them.
+    L31_CONTEXT_ORIG = 262144, L31_YARN_FACTOR = 4, L31_CONTEXT = L31_CONTEXT_ORIG * L31_YARN_FACTOR,
     // Absorbed MLA below one expanded query tile (decode, verify, short appends);
     // the tensor-core absorbed kernel starts at 8 rows.
     L31_MLA_EXPAND_MIN = 64, L31_MLA_TC_MIN = 8,
@@ -150,6 +159,15 @@ enum {
     L31_TOKENS = 157153,
 };
 static const float L31_ROPE_THETA = 6000000.0f;
+
+/* Rope table of a `ctx` session: original up to the trained positions, YaRN
+ * factor 4 past them, 0 past 1,048,576. Static per session: cached rope keys
+ * keep one table for life, so the context, not the prompt, selects it. */
+static uint32_t ling31_rope_factor(uint32_t ctx) {
+    if (!ctx || ctx > L31_CONTEXT) { return 0u; }
+    return ctx <= L31_CONTEXT_ORIG ? 1u : L31_YARN_FACTOR;
+}
+
 // Finite, so NaN checks and logits dumps hold; exp() underflows to zero.
 static const float L31_PAD_LOGIT = -1e30f;
 
@@ -235,11 +253,20 @@ static uint64_t ling31_latent_bytes(uint32_t ctx) {
 }
 
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+// Prefill KDA runs on tensor cores and stages only its chunk records; the
+// Solar chunked kernels behind DS4_GLMVQ_KDA_MMA=0 also need six F32 planes
+// (4,096 rows: 371 MB against 873 MB).
+static uint64_t ling31_kda_scratch(uint32_t rows) {
+    const char *mma = getenv("DS4_GLMVQ_KDA_MMA");
+    return mma && !strcmp(mma, "0") ? ds4_gpu_gvq_kda_bytes(rows, L31_HEADS)
+                                    : ds4_gpu_gvq_kda_mma_bytes(rows, L31_HEADS);
+}
+
 // GVQ scratch: the largest temporary any projection, KDA chunk or q4p input
 // needs at `rows` (restore+GEMM paths keep F32/BF16 temporaries).
 static uint64_t ling31_gvq_scratch(uint32_t rows) {
     const uint64_t candidates[] = {
-        ds4_gpu_gvq_kda_bytes(rows, L31_HEADS),
+        ling31_kda_scratch(rows),
         ds4_gpu_gvq_linear_bytes(L31_KDA_DIM, L31_EMBD, rows, DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(L31_EMBD, L31_KDA_DIM, rows, DS4_TENSOR_GLM_FP8, DS4_GVQ_BF16),
         ds4_gpu_gvq_linear_bytes(L31_EXPERTS, L31_EMBD, rows, DS4_TENSOR_BF16, DS4_GVQ_F32),
@@ -286,7 +313,9 @@ static ds4_context_memory ling31_memory(uint32_t ctx, uint32_t cap) {
     m.raw_cap = ctx;
     m.prefill_cap = cap;
     m.raw_bytes = (uint64_t)mla * ling31_latent_bytes(ctx) + ling31_state_bytes();
-    m.scratch_bytes = ling31_workspace_bytes(cap) + ling31_control_bytes();
+    // Reserve bounded host embedding staging, used by the 1019 recipe.
+    m.scratch_bytes = ling31_workspace_bytes(cap) + ling31_control_bytes() +
+        (uint64_t)cap * L31_EMBD * sizeof(float);
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }
@@ -300,8 +329,12 @@ static uint32_t ling31_index(const ds4_model *m, const ds4_tensor *t) {
  * Expert records link their layer book; FP8 records carry their scale. */
 static bool ling31_gpu_bind(ds4_weights *w, const ds4_model *m) {
     if (!w->ling31 || !m->n_tensors || m->n_tensors > UINT32_MAX) { return false; }
-    ds4_gvq_record *records = xcalloc((size_t)m->n_tensors, sizeof(*records));
-    for (uint32_t i = 0; i < m->n_tensors; i++) {
+    const bool ssd_embed = ling31_embedding_ssd(m);
+    if (ssd_embed && (w->token_embd->type != DS4_TENSOR_BF16 ||
+        ling31_index(m, w->token_embd) + 1u != m->n_tensors)) { return false; }
+    const uint32_t count = (uint32_t)m->n_tensors - (ssd_embed ? 1u : 0u);
+    ds4_gvq_record *records = xcalloc(count, sizeof(*records));
+    for (uint32_t i = 0; i < count; i++) {
         const ds4_tensor *t = &m->tensors[i];
         const uint64_t cols = t->ndim ? t->dim[0] : 1u;
         const uint64_t rows = cols ? t->elements / cols : 0u;
@@ -323,7 +356,7 @@ static bool ling31_gpu_bind(ds4_weights *w, const ds4_model *m) {
             records[ling31_index(m, e->down[expert])].book = book;
         }
     }
-    w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, (uint32_t)m->n_tensors);
+    w->glmvq_gpu = ds4_gpu_gvq_bind(m->map, m->size, records, count);
     free(records);
     return w->glmvq_gpu != NULL;
 }

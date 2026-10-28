@@ -126,6 +126,17 @@ When optimizing inference performance, prioritize end-to-end execution-path effi
 - **GB10 clock prerequisite.** Keep the reference host at 300–2200 MHz for stable absolute performance and to reduce the DGX Spark trip risk reported by the operator. The operator-enabled `nvidia-clocks.service` applies persistence mode and this range automatically at boot. Do not ask the user to set clocks on each run or reboot when the service is enabled and successful; verify its status/current-boot journal read-only and record the boot identity and observed busy SM clocks. Do not stop/restart the service (`ExecStop` resets clocks), change/reset its policy, or let a profiler override it. Investigate a missing/failed service or conflicting observations before requesting user action. Missing historical clock metadata does not prove a different policy. See the [clock policy](docs/gb10-hardware.md#clock-policy-and-measurement-stability). (Codex learning)
 - **Absolute stability before adoption.** Evaluate absolute prefill/decode rates and their repeat ranges alongside paired gains/losses. If absolute levels drift materially, explain clock/throttling, thermal, memory/PSI, cache, competing-work or speculative-acceptance differences before deciding. Preserve raw samples and disclose unresolved variability; a favorable percentage or smoothed graph cannot establish stability. (Codex learning)
 
+- **Never chase bit identity for speed.** Do not restrict, redesign, delay
+  or reject a speed change to keep outputs bit-identical, and do not spend
+  effort making a faster path bit-identical. A change that moves rounding or
+  accumulation order is judged by its output against a noise floor measured
+  on this host from an existing configuration change (prefill: chunk-size
+  frontier KL; decode: teacher-forced NLL and top-1 against an accepted
+  arithmetic switch). Bit identity is only a free convenience of pure
+  scheduling changes. A gate's fixed tie or threshold is not a noise floor:
+  when an order change crosses one, compare against the reference before
+  calling it a bug.
+
 Follow this evidence-driven sequence for every optimization round, regardless of tool:
 
 1. Measure the complete representative workload with `ds4-perf`, Nsight Systems, or another suitable tool. Establish wall time and separate prefill/decode costs. (Codex learning)
@@ -233,7 +244,8 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   Record load time and PSI; prefer repeated fast-load runs.
 - **Numerical tolerance.** Use an existing configuration change as the noise
   reference (GLM 8K frontier, 512 vs 1024 chunks: logit RMS 0.23, KL 2.3e-7).
-  Keep bit identity when only scheduling changes; it makes A/B trivial.
+  Pure scheduling changes come out bit-identical for free, which makes their
+  A/B trivial; never pay speed or effort for bit identity elsewhere.
 - **Noise grows with context.** Ling-3.1's 1,024- vs 2,048-row chunk KL is
   0.0002 at 32K and 0.08 at 128K (argmax flip). Gate KV and weight formats
   against it at the same long frontiers, plus teacher-forced NLL after
@@ -246,8 +258,7 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
 - **MTP verify widths are their own regime.** A 2-4 row forward falls off
   every one-row direct kernel onto convert + cuBLAS unless each kernel takes
   rows; that fallback was 15 of 70 ms per GLM one-draft step. Give direct
-  kernels a token loop that reuses each weight load and keeps the one-row
-  FMA order, so verify rows equal decode rows bit for bit and A/B stays exact.
+  kernels a token loop that reuses each weight load.
 - **Expert overlap decides draft depth.** Consecutive GLM tokens share few of
   their top-8 experts (4 rows: ~26 unique of 32), so routed-expert bytes grow
   almost linearly with verify rows; an expert-union kernel saved under 10%.
@@ -391,6 +402,20 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   rank-16 BF16 projections (458 KB) in one block took 42 µs per row;
   recomputing the norm in 16 blocks for `W_down` and splitting `W_up` over
   28 took 13 µs, bit-identical.
+- **TF32 is exact for BF16 values.** An F32 GEMM whose operands are
+  BF16-rounded (norm rows, widened BF16 weights) runs on TF32 tensor cores
+  with exact products: Ling-3.1's router 1.43 → 0.66 ms per 4,096 rows
+  (BF16 rows on BF16 MMA: 0.36 ms).
+- **Hold a recurrent state column in registers across verify rows.**
+  Ling-3.1's KDA verify re-read and re-wrote its F32 state per row through
+  L2: three rows 127 → 97 µs per layer, MTP decode +4.5%.
+  One decode row at 255 registers lost 1.5%: dispatch by rows.
+- **Group decode launches only where PDL cannot overlap them.** One token's
+  five KDA projections in one stream launch: decode +3.3%; the same grouping
+  on q4m at verify widths: 7% in a harness, 0% in the model.
+- **Probe a decode access pattern's read-only ceiling.** 240-byte rows per
+  warp capped a read-only probe at 191 GB/s; the expert down kernel ran
+  within 10% of it, so no prefetch variant could win.
 
 # Agent Notes
 

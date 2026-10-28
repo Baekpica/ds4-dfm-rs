@@ -2,9 +2,10 @@
 """Render the Ling-3.1-flash VQ 2K-64K sweeps in the model-card style.
 
 Three fresh ds4-bench processes per variant: MTP off over 2K-64K and two
-embedded MTP drafts over 2K-32K (the MTP part, a 64K session and the bench's
-host snapshot leave under 2 GiB on a 128 GB Spark). Requires matplotlib.
-usage: plot-ling31-vq-64k.py DATA_DIR
+embedded MTP drafts over the frontiers their CSVs hold (v2: 2K-32K, as the
+MTP part, a 64K session and the bench's host snapshot left under 2 GiB on a
+128 GB Spark; 1019: 2K-64K). Requires matplotlib.
+usage: plot-ling31-vq-64k.py DATA_DIR [TITLE]
 """
 import csv
 import json
@@ -19,18 +20,21 @@ import matplotlib.pyplot as plt
 
 
 DATA = Path(sys.argv[1])
+TITLE = sys.argv[2] if len(sys.argv) > 2 else "Ling-3.1-flash · VQ experts + Q4_K/FP8 nonexperts"
 DATE = DATA.name[-10:]
 GENERATED = 128
 STEP = 2048
-VARIANTS = {"plain": 65536, "mtp2": 32768}
+VARIANTS = ("plain", "mtp2")
 RUNS = {name: n for name in VARIANTS if (n := len(list(DATA.glob(f"{name}-*.csv"))))}
 COLORS = {"mtp2": "#087f8c", "plain": "#687789"}
-LABELS = {"mtp2": "MTP draft 2 (to 32K)", "plain": "MTP off"}
+LABELS = {"mtp2": "MTP draft 2", "plain": "MTP off"}
 METRICS = (("prefill_tps", "Incremental prefill"), ("gen_tps", "Decode"))
 
 
 def frontiers(name):
-    return list(range(STEP, VARIANTS[name] + 1, STEP))
+    with (DATA / f"{name}-1.csv").open() as source:
+        last = [int(row["ctx_tokens"]) for row in csv.DictReader(source)][-1]
+    return list(range(STEP, last + 1, STEP))
 
 
 def load(name, repeat):
@@ -67,7 +71,7 @@ def plot(report):
     plt.rcParams.update({"font.size": 11, "axes.spines.top": False,
                          "axes.spines.right": False, "savefig.facecolor": "white"})
     fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
-    fig.suptitle("Ling-3.1-flash · VQ experts + Q4_K/FP8 nonexperts", fontsize=18, fontweight="bold", y=0.98)
+    fig.suptitle(TITLE, fontsize=18, fontweight="bold", y=0.98)
     fig.text(0.5, 0.93, f"One DGX Spark / GB10 · 2K–64K card protocol · {DATE}",
              ha="center", color="#4b5563")
     for ax, (metric, heading) in zip(axes, METRICS):
@@ -77,8 +81,11 @@ def plot(report):
             values = data[metric]
             if RUNS[name] > 1:
                 ax.fill_between(x, values["min"], values["max"], color=COLORS[name], alpha=0.17, linewidth=0)
+            shorter = "mtp2" in RUNS and len(report["variants"]["mtp2"]["frontiers"]) < len(data["frontiers"])
             label = f"{LABELS[name]} · {values['median_run_mean']:,.1f} tok/s"
-            if name == "plain" and "mtp2" in RUNS:
+            if name == "mtp2" and len(data["frontiers"]) < len(report["variants"]["plain"]["frontiers"]):
+                label = label.replace("MTP draft 2", f"MTP draft 2 (to {data['frontiers'][-1] // 1024}K)")
+            if name == "plain" and shorter:
                 label += f" (2K–32K: {values['median_run_mean_to_32k']:,.1f})"
             ax.plot(x, values["median"], color=COLORS[name], linewidth=2, label=label)
         ax.set_title(heading, loc="left", fontsize=13, pad=10)

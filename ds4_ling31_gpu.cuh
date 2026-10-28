@@ -7,9 +7,12 @@
  *
  *   rows == 1     decode: device routing, persistent CTAs keep the book
  *   rows 2..4     MTP verify: one pass over the rows' expert union
- *   rows >= 5     prefill: host grouping, FP8 MMA on the E4M3 codewords
+ *   rows >= 5     prefill: host grouping, FP8 MMA on the E4M3 codewords;
+ *                 12-bit layers run Beam's warp-specialized kernels on
+ *                 128-token items (DS4_LING31_MMA_WS=0: glmvq_mma8_kernel)
  *   DS4_LING31_MOE_RESTORE=1: BF16 restore + cuBLAS per expert (reference) */
 #include "ds4_ling31.h"
+#include "cuda/beam_mma8w.cuh"
 #include "cuda/l31_residual.cuh"
 #include "cuda/l31_latent.cuh"
 #include "cuda/l31_flash.cuh"
@@ -43,8 +46,9 @@ static l31_decode_layout l31_decode_plan() {
 }
 
 // Prefill: E4M3 input rows and 1x128 scales, gate rows (BF16), the up
-// epilogue's E4M3 SwiGLU rows and scales, down rows (BF16), worklists.
-struct l31_mma_layout { uint64_t x8, xs, gate, mid8, ms, down, work, order, bytes; };
+// epilogue's E4M3 SwiGLU rows and scales, down rows (BF16), worklists; the
+// warp-specialized path adds its items and each pair's token row and scale.
+struct l31_mma_layout { uint64_t x8, xs, gate, mid8, ms, down, work, order, witems, token, pscale, bytes; };
 
 static l31_mma_layout l31_mma_plan(uint32_t rows) {
     l31_mma_layout l = {};
@@ -59,6 +63,9 @@ static l31_mma_layout l31_mma_plan(uint32_t rows) {
     l.down = take(pairs * L31_HIDDEN * sizeof(__nv_bfloat16));
     l.work = take(pairs * sizeof(glmvq_mma_item));
     l.order = take(pairs * sizeof(uint32_t));
+    l.witems = take(3 * (L31_EXPERTS + pairs / BEAM_W_BT) * sizeof(beam_w_item));
+    l.token = take(pairs * sizeof(uint32_t));
+    l.pscale = take(pairs * sizeof(float));
     l.bytes = at;
     return l;
 }
@@ -66,11 +73,12 @@ static l31_mma_layout l31_mma_plan(uint32_t rows) {
 struct ds4_l31_moe {
     ds4_gvq_ctx *gvq = nullptr;     // borrowed: stream, cuBLAS, routes, grouped, pairs
     ds4_gpu_tensor *decode = nullptr, *mma = nullptr;
-    uint32_t rows = 0, decode_blocks = 0;
+    uint32_t rows = 0, decode_blocks = 0, sms = 0;
     int mma8_blocks[2][3] = {};     // [12-bit, 13-bit][gate, up, down]
-    bool gain_dot = true, route = true, restore = false, mma8 = false;
+    bool gain_dot = true, route = true, restore = false, mma8 = false, mma8w = true;
     std::vector<uint32_t> keys;     // table slot per layer, keyed by expert 0's gate
     std::vector<glmvq_mma_item> items;
+    std::vector<beam_w_item> witems; // gate, up, down 128-token items (12-bit layers)
     std::vector<uint32_t> order;
     std::vector<uint8_t> token_used;
     uint64_t decode_calls = 0, verify_calls = 0, mma_calls = 0, restore_calls = 0;
@@ -125,6 +133,12 @@ extern "C" ds4_l31_moe *ds4_gpu_l31_moe_create(ds4_gvq_ctx *gvq, uint32_t rows) 
     moe->rows = rows;
     moe->gain_dot = !l31_env_off("DS4_LING31_GAIN_DOT");
     moe->route = !l31_env_off("DS4_LING31_DECODE_ROUTE");
+    moe->mma8w = !l31_env_off("DS4_LING31_MMA_WS");
+    int device = 0, sms = 0;
+    if (cudaGetDevice(&device) == cudaSuccess &&
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) == cudaSuccess) {
+        moe->sms = (uint32_t)sms;
+    }
     const char *restore = getenv("DS4_LING31_MOE_RESTORE");
     moe->restore = restore && !strcmp(restore, "1");
     const cudaError_t err12 = l31_prepare<12>(moe), err13 = l31_prepare<13>(moe);
@@ -321,8 +335,8 @@ static bool l31_group(ds4_l31_moe *moe, const ds4_gpu_tensor *selected, uint32_t
     return ds4_gpu_tensor_write(ctx->pairs, 0, ctx->grouped.data(), pairs * sizeof(uint32_t)) != 0;
 }
 
-template <uint32_t BITS>
-static int l31_mma_run(ds4_l31_moe *moe, float *out, const float *input, const float *weights,
+template <uint32_t BITS, typename T>
+static int l31_mma_run(ds4_l31_moe *moe, float *out, const T *input, const float *weights,
         const uint32_t *matrices, const uint32_t *offsets, uint32_t rows, float clamp, const float *shared) {
     ds4_gvq_ctx *ctx = moe->gvq;
     const uint64_t pairs = (uint64_t)rows * L31_USED, count = (uint64_t)rows * L31_HIDDEN;
@@ -333,58 +347,100 @@ static int l31_mma_run(ds4_l31_moe *moe, float *out, const float *input, const f
     auto *gate = (__nv_bfloat16 *)(base + l.gate), *down = (__nv_bfloat16 *)(base + l.down);
     auto *work = (glmvq_mma_item *)(base + l.work);
     auto *order = (uint32_t *)(base + l.order);
+    auto *witems = (beam_w_item *)(base + l.witems);
+    auto *token = (uint32_t *)(base + l.token);
+    auto *pscale = (float *)(base + l.pscale);
+    // 12-bit layers run the warp-specialized kernels on 128-token items;
+    // 13-bit layers (and DS4_LING31_MMA_WS=0) glmvq_mma8_kernel on 64-token items.
+    const bool wide = BITS == 12 && moe->mma8w && moe->sms;
     moe->items.clear();
-    for (uint32_t e = 0; e < L31_EXPERTS; e++) {
-        for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += L31_MMA_TOKENS) {
-            moe->items.push_back({{matrices[e], matrices[L31_EXPERTS + e], matrices[2 * L31_EXPERTS + e]},
-                start, min((uint32_t)L31_MMA_TOKENS, offsets[e + 1] - start)});
+    moe->witems.clear();
+    if (wide) {
+        for (uint32_t m = 0; m < 3; m++) {
+            for (uint32_t e = 0; e < L31_EXPERTS; e++) {
+                const glmvq_matrix &vq = ctx->model->source[matrices[m * L31_EXPERTS + e]].vq;
+                for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += BEAM_W_BT) {
+                    moe->witems.push_back({start, min((uint32_t)BEAM_W_BT, offsets[e + 1] - start), vq.gain, vq.main, 0});
+                }
+            }
+        }
+    } else {
+        for (uint32_t e = 0; e < L31_EXPERTS; e++) {
+            for (uint32_t start = offsets[e]; start < offsets[e + 1]; start += L31_MMA_TOKENS) {
+                moe->items.push_back({{matrices[e], matrices[L31_EXPERTS + e], matrices[2 * L31_EXPERTS + e]},
+                    start, min((uint32_t)L31_MMA_TOKENS, offsets[e + 1] - start)});
+            }
         }
     }
     std::fill(moe->token_used.begin(), moe->token_used.begin() + rows, 0);
     for (uint32_t i = 0; i < pairs; i++) {
-        const uint32_t token = ctx->grouped[i] / L31_USED;
-        moe->order[token * L31_USED + moe->token_used[token]++] = i;
+        const uint32_t token_row = ctx->grouped[i] / L31_USED;
+        moe->order[token_row * L31_USED + moe->token_used[token_row]++] = i;
     }
     const cudaStream_t stream = ds4_current_stream();
-    if (!cuda_ok(cudaMemcpyAsync(work, moe->items.data(), moe->items.size() * sizeof(*work),
-            cudaMemcpyHostToDevice, stream), "Ling-3.1 MMA work") ||
-        !cuda_ok(cudaMemcpyAsync(order, moe->order.data(), pairs * sizeof(*order),
+    const bool copied = wide
+        ? cuda_ok(cudaMemcpyAsync(witems, moe->witems.data(), moe->witems.size() * sizeof(beam_w_item),
+            cudaMemcpyHostToDevice, stream), "Ling-3.1 warp-specialized items")
+        : cuda_ok(cudaMemcpyAsync(work, moe->items.data(), moe->items.size() * sizeof(*work),
+            cudaMemcpyHostToDevice, stream), "Ling-3.1 MMA work");
+    if (!copied || !cuda_ok(cudaMemcpyAsync(order, moe->order.data(), pairs * sizeof(*order),
             cudaMemcpyHostToDevice, stream), "Ling-3.1 MMA order")) { return 0; }
     const auto *source = (const glmvq_source *)ctx->model->device->ptr;
     const auto *book = (const uint8_t *)ctx->model->source[matrices[0]].vq.book;
     const auto *grouped = (const uint32_t *)ctx->pairs->ptr;
-    const uint32_t nitems = (uint32_t)moe->items.size();
-    const int *blocks = moe->mma8_blocks[BITS - 12];
-    // Tokens quantize once (E4M3, 1x128 scales) for their eight experts.
-    const uint64_t xb = count / GLMVQ_MMA8_K;
-    glmvq_mma8_quant<float><<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0, stream>>>(
-        x8, xs, input, xb);
-    auto launch = [&](auto mode, const uint8_t *in, const float *scale, uint32_t rows_out, uint32_t cols_in,
-            uint8_t *q8, float *q8_scale) {
-        constexpr glmvq_mma_stage MODE = decltype(mode)::value;
-        constexpr uint32_t shared8 = glmvq_mma8_bytes<L31_MMA_ROWS, L31_MMA_TOKENS, BITS>();
-        constexpr uint32_t threads8 = glmvq_mma8_threads<L31_MMA_ROWS, 1>();
-        glmvq_mma8_kernel<L31_MMA_ROWS, L31_MMA_TOKENS, 1, MODE, BITS, GLMVQ_CLAMP_SILU><<<
-            min(nitems * (rows_out / L31_MMA_ROWS), (uint32_t)blocks[MODE]), threads8, shared8, stream>>>(
-            source, work, nitems, book, in, scale, grouped, L31_USED, gate, nullptr, down,
-            rows_out, cols_in, clamp, q8, q8_scale);
-    };
-    launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_GATE>{}, x8, xs, L31_FFN, L31_HIDDEN, nullptr, nullptr);
-    // The up epilogue writes down's E4M3 rows and scales directly.
-    launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, L31_FFN, L31_HIDDEN, mid8, ms);
-    launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_DOWN>{}, mid8, ms, L31_HIDDEN, L31_FFN, nullptr, nullptr);
+    if (wide) {
+        // Tokens quantize once (E4M3, one scale per row, ldmatrix k order) for
+        // their eight experts; each pair gets its token row and scale.
+        const uint32_t nwide = (uint32_t)moe->witems.size() / 3;
+        beam_w_quant<<<rows, GLMVQ_THREADS, 0, stream>>>(x8, xs, input, L31_HIDDEN);
+        beam_w_pairs<<<(uint32_t)((pairs + 255) / 256), 256, 0, stream>>>(token, pscale, xs, grouped, L31_USED,
+            (uint32_t)pairs);
+        cudaError_t err = beam_w_launch<GLMVQ_MMA_GATE>(witems, nwide, book, x8, token, pscale, gate,
+            L31_FFN, L31_HIDDEN, nullptr, nullptr, clamp, moe->sms, stream);
+        if (err == cudaSuccess) {
+            err = beam_w_launch<GLMVQ_MMA_UP>(witems + nwide, nwide, book, x8, token, pscale, gate,
+                L31_FFN, L31_HIDDEN, mid8, ms, clamp, moe->sms, stream);
+        }
+        if (err == cudaSuccess) {
+            err = beam_w_down_launch(witems + 2 * nwide, nwide, book, mid8, ms, down, L31_HIDDEN, L31_FFN,
+                moe->sms, stream);
+        }
+        if (!cuda_ok(err, "Ling-3.1 warp-specialized experts")) { return 0; }
+    } else {
+        const uint32_t nitems = (uint32_t)moe->items.size();
+        const int *blocks = moe->mma8_blocks[BITS - 12];
+        // Tokens quantize once (E4M3, 1x128 scales) for their eight experts.
+        const uint64_t xb = count / GLMVQ_MMA8_K;
+        glmvq_mma8_quant<T><<<(uint32_t)((xb * 32 + GLMVQ_THREADS - 1) / GLMVQ_THREADS), GLMVQ_THREADS, 0,
+            stream>>>(x8, xs, input, xb);
+        auto launch = [&](auto mode, const uint8_t *in, const float *scale, uint32_t rows_out, uint32_t cols_in,
+                uint8_t *q8, float *q8_scale) {
+            constexpr glmvq_mma_stage MODE = decltype(mode)::value;
+            constexpr uint32_t shared8 = glmvq_mma8_bytes<L31_MMA_ROWS, L31_MMA_TOKENS, BITS>();
+            constexpr uint32_t threads8 = glmvq_mma8_threads<L31_MMA_ROWS, 1>();
+            glmvq_mma8_kernel<L31_MMA_ROWS, L31_MMA_TOKENS, 1, MODE, BITS, GLMVQ_CLAMP_SILU><<<
+                min(nitems * (rows_out / L31_MMA_ROWS), (uint32_t)blocks[MODE]), threads8, shared8, stream>>>(
+                source, work, nitems, book, in, scale, grouped, L31_USED, gate, nullptr, down,
+                rows_out, cols_in, clamp, q8, q8_scale);
+        };
+        launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_GATE>{}, x8, xs, L31_FFN, L31_HIDDEN, nullptr, nullptr);
+        // The up epilogue writes down's E4M3 rows and scales directly.
+        launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_UP>{}, x8, xs, L31_FFN, L31_HIDDEN, mid8, ms);
+        launch(std::integral_constant<glmvq_mma_stage, GLMVQ_MMA_DOWN>{}, mid8, ms, L31_HIDDEN, L31_FFN, nullptr, nullptr);
+    }
     glmvq_mma_reduce<__nv_bfloat16, GLMVQ_REDUCE_F32><<<(count + GLMVQ_THREADS - 1) / GLMVQ_THREADS,
         GLMVQ_THREADS, 0, stream>>>(out, down, weights, grouped, order, L31_USED, L31_HIDDEN, count, shared);
     moe->mma_calls++;
     return cuda_ok(cudaGetLastError(), "Ling-3.1 FP8 grouped MMA");
 }
 
-__global__ void l31_gather(float *output, const float *input, const uint32_t *pairs,
+template <typename T>
+__global__ void l31_gather(float *output, const T *input, const uint32_t *pairs,
         uint32_t offset, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }
     const uint32_t token = pairs[offset + i / L31_HIDDEN] / L31_USED;
-    output[i] = input[(uint64_t)token * L31_HIDDEN + i % L31_HIDDEN];
+    output[i] = (float)input[(uint64_t)token * L31_HIDDEN + i % L31_HIDDEN];
 }
 
 // Weighted F32 accumulation into `sum` (one expert per token per launch).
@@ -404,7 +460,8 @@ __global__ void l31_reduce_end(float *out, const float *shared, uint64_t count) 
 
 // Reference: each expert's BF16 weights restored, cuBLAS BF16 GEMMs. Scratch
 // lives in the borrowed context (DS4_LING31_MOE_RESTORE=1 sizes it).
-static int l31_restore_run(ds4_l31_moe *moe, float *out, const float *input, const float *weights,
+template <typename T>
+static int l31_restore_run(ds4_l31_moe *moe, float *out, const T *input, const float *weights,
         const uint32_t *matrices, const uint32_t *offsets, uint32_t rows, float clamp, const float *shared) {
     ds4_gvq_ctx *ctx = moe->gvq;
     const uint64_t count = (uint64_t)rows * L31_HIDDEN;
@@ -447,12 +504,14 @@ static int l31_restore_run(ds4_l31_moe *moe, float *out, const float *input, con
 }
 
 extern "C" int ds4_gpu_l31_moe(ds4_l31_moe *moe, ds4_gpu_tensor *out, const ds4_gpu_tensor *input,
-        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+        ds4_gvq_rows in_rows, const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
         const uint32_t *matrices, uint32_t rows, float clamp, const ds4_gpu_tensor *shared) {
     if (!moe || !rows || rows > moe->rows || !matrices || !selected || !gvq_stream(moe->gvq)) { return 0; }
     const uint64_t pairs = (uint64_t)rows * L31_USED, count = (uint64_t)rows * L31_HIDDEN;
+    const bool bf16 = in_rows == DS4_GVQ_ROWS_BF16;
     if (pairs > selected->bytes / sizeof(int32_t) || !gvq_floats(weights, pairs) ||
-        !gvq_floats(out, count) || !gvq_floats(input, count) || (shared && !gvq_floats(shared, count)) ||
+        !gvq_floats(out, count) || !gvq_floats(input, bf16 ? count / 2 : count) ||
+        (shared && !gvq_floats(shared, count)) ||
         matrices[0] >= moe->gvq->model->source.size() || ds4_capture_active()) { return 0; }
     const float *add = shared ? (const float *)shared->ptr : nullptr;
     const uint32_t bits = l31_bits(moe, matrices);
@@ -460,6 +519,7 @@ extern "C" int ds4_gpu_l31_moe(ds4_l31_moe *moe, ds4_gpu_tensor *out, const ds4_
     if (!table) { return 0; }
     const void *book = moe->gvq->model->source[matrices[0]].vq.book;
     if (!moe->restore && moe->route && rows <= L31_VERIFY_ROWS) {
+        if (bf16) { return 0; }   // decode and verify kernels read F32 rows
         const auto *sel = (const int32_t *)selected->ptr;
         const auto *w = (const float *)weights->ptr;
         float *y = (float *)out->ptr;
@@ -478,15 +538,18 @@ extern "C" int ds4_gpu_l31_moe(ds4_l31_moe *moe, ds4_gpu_tensor *out, const ds4_
     }
     std::vector<uint32_t> offsets(L31_EXPERTS + 1);
     if (!l31_group(moe, selected, rows, offsets.data())) { return 0; }
-    if (!moe->restore && moe->mma8 && moe->mma) {
-        return bits == 13
-            ? l31_mma_run<13>(moe, (float *)out->ptr, (const float *)input->ptr, (const float *)weights->ptr,
-                matrices, offsets.data(), rows, clamp, add)
-            : l31_mma_run<12>(moe, (float *)out->ptr, (const float *)input->ptr, (const float *)weights->ptr,
-                matrices, offsets.data(), rows, clamp, add);
-    }
-    return l31_restore_run(moe, (float *)out->ptr, (const float *)input->ptr, (const float *)weights->ptr,
-        matrices, offsets.data(), rows, clamp, add);
+    auto grouped = [&](auto *x) {
+        if (!moe->restore && moe->mma8 && moe->mma) {
+            return bits == 13
+                ? l31_mma_run<13>(moe, (float *)out->ptr, x, (const float *)weights->ptr,
+                    matrices, offsets.data(), rows, clamp, add)
+                : l31_mma_run<12>(moe, (float *)out->ptr, x, (const float *)weights->ptr,
+                    matrices, offsets.data(), rows, clamp, add);
+        }
+        return l31_restore_run(moe, (float *)out->ptr, x, (const float *)weights->ptr,
+            matrices, offsets.data(), rows, clamp, add);
+    };
+    return bf16 ? grouped((const __nv_bfloat16 *)input->ptr) : grouped((const float *)input->ptr);
 }
 
 extern "C" int ds4_gpu_l31_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
@@ -694,13 +757,22 @@ extern "C" int ds4_gpu_l31_store_latent(ds4_gpu_tensor *latent, ds4_gpu_tensor *
 }
 
 extern "C" int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-        ds4_gpu_tensor *norm, uint32_t weight, uint32_t rows, uint32_t width, float eps) {
+        ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, uint32_t weight, uint32_t rows, uint32_t width, float eps) {
     const uint64_t count = (uint64_t)rows * width;
+    const bool bf16 = norm_rows == DS4_GVQ_ROWS_BF16;
     const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, width);
     // The block RMS kernel's widths only: one register batch per lane.
     if (!w || !rows || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
-        !gvq_floats(cur, count) || !gvq_floats(branch, count) || !gvq_floats(norm, count)) { return 0; }
-    glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
-        (float *)cur->ptr, (const float *)branch->ptr, w, (float *)norm->ptr, width, eps);
+        !gvq_floats(cur, count) || !gvq_floats(branch, count) || !gvq_floats(norm, bf16 ? count / 2 : count)) {
+        return 0;
+    }
+    if (bf16) {
+        glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms<__nv_bfloat16>, rows, GLMVQ_THREADS, 0,
+            ds4_current_stream(), (float *)cur->ptr, (const float *)branch->ptr, w, (__nv_bfloat16 *)norm->ptr,
+            width, eps);
+    } else {
+        glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms<float>, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
+            (float *)cur->ptr, (const float *)branch->ptr, w, (float *)norm->ptr, width, eps);
+    }
     return cuda_ok(cudaGetLastError(), "Ling-3.1 residual RMS");
 }

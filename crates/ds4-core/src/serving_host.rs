@@ -86,13 +86,14 @@ const GLMVQ_NATIVE_MAX: u32 = 4096;
 const LING31_PREFILL_CHUNK_ENV: &str = "DS4_LING31_PREFILL_CHUNK";
 const LING31_LATENT_ENV: &str = "DS4_LING31_LATENT";
 const LING31_FLASH_ENV: &str = "DS4_LING31_FLASH";
+const GLMVQ_KDA_MMA_ENV: &str = "DS4_GLMVQ_KDA_MMA";
 // FP8 latent caches round their per-row exponents up to 32 rows.
 const LING31_EXP_ALIGN: u64 = 32;
 // With FP8 latent rows one 262,144-token bank and a 2,048-row workspace
 // fit beside either release (7.7 GiB with the floor against 8.0 left by v1).
 // The chunk is part of the disk-KV identity, so it does not follow the
 // context; live-memory halving covers MTP, extra banks and BF16 latents.
-const LING31_NATIVE_DEFAULT: u32 = 2048;
+const LING31_NATIVE_DEFAULT: u32 = 4096;
 const LING31_NATIVE_MAX: u32 = 4096;
 // Halving floor when the quote does not fit: 512 rows keep 0.35 GiB of
 // workspace, most of it fixed; 1,024 rows prefill 9% below 2,048.
@@ -108,6 +109,9 @@ const LING31_ALIGN: u64 = 256;
 // FP8 MMA activation scales cover 128 inputs; glmvq_mma_item is five words.
 const LING31_SCALE_BLOCK: u64 = 128;
 const LING31_MMA_ITEM_BYTES: u64 = 20;
+// beam_w items: 128-token runs of one expert matrix, 32 bytes each.
+const LING31_WS_TOKENS: u64 = 128;
+const LING31_WS_ITEM_BYTES: u64 = 32;
 // Beam's 1M bank fits beside the 91.6 GiB trunk at 2,048-row chunks
 // (BEAM_PREFILL_DEFAULT, ds4_beam_bind.inc); 4,096 rows need ~1.4 GiB more.
 const BEAM_PREFILL_CHUNK_ENV: &str = "DS4_BEAM_PREFILL_CHUNK";
@@ -387,7 +391,12 @@ pub fn fill_quote_facts(
             let mla = u64::from(s.n_full_attn_count) + u64::from(drafts > 0);
             let logits = u64::from(s.n_vocab) * SIZEOF_F32;
             let bank = state + mla * ling31_latent_bytes(s, ctx) + logits + ctx * SIZEOF_I32;
-            let scratch = ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s);
+            // The 1019 recipe gathers BF16 embedding rows on the host and
+            // widens them to the F32 residual. Reserve this bounded staging
+            // for this family; older device-embedding recipes leave it unused.
+            let staging = u64::from(native) * u64::from(s.n_embd) * SIZEOF_F32;
+            let scratch =
+                ling31_workspace_bytes(s, u64::from(native)) + ling31_control_bytes(s) + staging;
             let mtp = if drafts > 0 {
                 drafts * state
                     + (LING31_MTP_ROWS + 2) * u64::from(s.n_embd) * SIZEOF_F32
@@ -2642,13 +2651,17 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
         + u64::from(s.n_expert)
         + 2 * used;
     let absorbed = 2 * rows.min(LING31_MLA_EXPAND_MIN) * heads * u64::from(s.n_kv_lora);
-    // ling31_gvq_scratch: chunked KDA planes or records, FP8 restores beside
-    // BF16 rows, the F32 router weight, BF16 rows, the q4p dense-down input.
+    // ling31_gvq_scratch: tensor-core KDA records (Solar chunked planes under
+    // DS4_GLMVQ_KDA_MMA=0), FP8 restores beside BF16 rows, the F32 router
+    // weight, BF16 rows, the q4p dense-down input.
     let planes = kda_prefill_scratch_bytes(rows, heads, u64::from(s.n_kda_head_dim));
+    let records = rows.div_ceil(64) * heads * GLMVQ_KDA_RECORD_BYTES;
     let kda = if planes == 0 {
         0
+    } else if std::env::var(GLMVQ_KDA_MMA_ENV).ok().as_deref() == Some("0") {
+        (planes + rows * heads * SIZEOF_F32).max(records)
     } else {
-        (planes + rows * heads * SIZEOF_F32).max(rows.div_ceil(64) * heads * GLMVQ_KDA_RECORD_BYTES)
+        records
     };
     let gvq = [
         kda,
@@ -2662,7 +2675,8 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
     .max()
     .unwrap_or(0);
     // l31_mma_plan above verify widths: E4M3 rows and scales, gate, SwiGLU
-    // E4M3 rows and scales, down, worklist and order.
+    // E4M3 rows and scales, down, worklist and order, then the 12-bit
+    // warp-specialized items and each pair's token row and scale.
     let align = |n: u64| n.div_ceil(LING31_ALIGN) * LING31_ALIGN;
     let pairs = rows * used;
     let mma = if rows > GLMVQ_VERIFY_ROWS {
@@ -2674,6 +2688,9 @@ fn ling31_workspace_bytes(s: Shape, rows: u64) -> u64 {
             + align(pairs * hidden * SIZEOF_U16)
             + align(pairs * LING31_MMA_ITEM_BYTES)
             + align(pairs * SIZEOF_U32)
+            + align(3 * (u64::from(s.n_expert) + pairs / LING31_WS_TOKENS) * LING31_WS_ITEM_BYTES)
+            + align(pairs * SIZEOF_U32)
+            + align(pairs * SIZEOF_F32)
     } else {
         0
     };
@@ -3444,7 +3461,7 @@ mod tests {
         // Native graph logs: workspace GiB per prefill chunk, state and
         // control MiB.
         let s = SHAPE_LING31_VQ;
-        for (rows, gib) in [(1024u64, 0.66), (2048, 1.26), (4096, 2.48)] {
+        for (rows, gib) in [(1024u64, 0.54), (2048, 1.03), (4096, 2.01)] {
             let quoted = ling31_workspace_bytes(s, rows) as f64 / GIB as f64;
             assert!((quoted - gib).abs() < 0.005, "{rows}: {quoted} GiB");
         }
@@ -3480,11 +3497,15 @@ mod tests {
         let latent = 32768 * (512 + 1 + 128);
         assert_eq!(ling31_latent_bytes(s, 32768), latent);
         let host = 157_184 * SIZEOF_F32 + 32768 * SIZEOF_I32;
-        assert_eq!(facts.native_chunk, Some(2048));
+        assert_eq!(facts.native_chunk, Some(4096));
         assert_eq!(facts.per_bank_bytes, Some(state + 10 * latent + host));
         assert_eq!(
             facts.scratch_bytes,
-            Some(ling31_workspace_bytes(s, 2048) + ling31_control_bytes(s))
+            Some(
+                ling31_workspace_bytes(s, 4096)
+                    + ling31_control_bytes(s)
+                    + 4096 * u64::from(s.n_embd) * SIZEOF_F32
+            )
         );
         assert_eq!(
             facts.mtp_state_bytes,
@@ -3781,8 +3802,8 @@ mod tests {
         let _env = lock_test_env();
         let _rows = EnvGuard::unset(LING31_PREFILL_CHUNK_ENV);
         let caps = serving_caps(ModelFamily::Ling31Vq, Variant::Ling31FlashVq);
-        for ctx in [4096, 131_072, 196_608, 262_144] {
-            assert_eq!(family_native_chunk(caps, ctx), 2048, "ctx {ctx}");
+        for ctx in [4096, 131_072, 262_144, 1_048_576] {
+            assert_eq!(family_native_chunk(caps, ctx), 4096, "ctx {ctx}");
         }
         assert_eq!(family_native_chunk(caps, 1000), 1000);
         let _pinned = EnvGuard::set(LING31_PREFILL_CHUNK_ENV, "1024");

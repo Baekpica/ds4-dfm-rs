@@ -27,6 +27,10 @@ const RECIPE: &[u8] = b"ling31-vq8-mix8r13-60r12-mtp13-q4h-v1";
 /// v2 (tools/ling31_vq_v2.py) re-encodes only the trunk part; the other
 /// parts keep v1's bytes and recipe id.
 const RECIPE_V2: &[u8] = b"ling31-vq8-mix8r13-60r12-mtp13-q4h-q8e-q4fg-v2";
+/// Activation-calibrated 1019 checkpoint, with a host-read BF16 embedding.
+const RECIPE_1019: &[u8] = b"ling31-1019-ivq8-all12-q4k-embssd-v1";
+const SOURCE_1019: &str = "dddfee4bb43519a92761fbc5cefe3f0d3ff4aded";
+const EMBEDDING: &str = "model.word_embeddings.weight";
 const ALIGN: u64 = 128;
 const HEADER: u64 = 128;
 const VECTOR: u8 = 8;
@@ -70,6 +74,7 @@ fn recipe_types(recipe: &[u8]) -> Option<(u32, u32, u32)> {
     match recipe {
         RECIPE => Some((BF16, FP8, FP8)),
         RECIPE_V2 => Some((Q8_0, Q4_K, Q4_K)),
+        RECIPE_1019 => Some((BF16, Q4_K, Q4_K)),
         _ => None,
     }
 }
@@ -77,7 +82,15 @@ fn recipe_types(recipe: &[u8]) -> Option<(u32, u32, u32)> {
 /// A release recipe and the recipes its parts may carry: the v2 trunk part
 /// beside unchanged v1 parts.
 pub(super) fn part_recipe_ok(release: &[u8], part: &[u8]) -> bool {
-    recipe_types(release).is_some() && (part == release || part == RECIPE)
+    recipe_types(release).is_some() && (part == release || (release == RECIPE_V2 && part == RECIPE))
+}
+
+fn source_revision(recipe: &[u8]) -> Option<&'static str> {
+    match recipe {
+        RECIPE | RECIPE_V2 => Some("a4ccd6b45c002ddb236f9cb77d52cc427482bf19"),
+        RECIPE_1019 => Some(SOURCE_1019),
+        _ => None,
+    }
 }
 
 /// The f16 scale at the start of a Q8_0 block is finite.
@@ -388,7 +401,7 @@ fn part_metadata(g: &GgufFile) -> Result<()> {
             .is_none()
         || !matches!(
             g.get_string("ling_vq.part_role"),
-            Some(b"trunk") | Some(b"mtp")
+            Some(b"trunk") | Some(b"mtp") | Some(b"embedding")
         )
         || g.split_count() > 1
     {
@@ -501,6 +514,31 @@ pub(super) fn validate_part(
 // The part's recipe fixes the embedding and KDA f/g types the layout leaves
 // open (layout::native).
 fn validate_recipe(g: &GgufFile, tensors: &[TensorInfo]) -> Result<()> {
+    let recipe = g.get_string("ling_vq.recipe_id").unwrap_or_default();
+    if g.get_string("ling_vq.part_role") == Some(b"embedding")
+        && (recipe != RECIPE_1019 || tensors.len() != 1 || tensors[0].name != EMBEDDING)
+    {
+        return Err(fail("embedding part contract"));
+    }
+    for tensor in tensors.iter().filter(|t| t.typ == CODEBOOK) {
+        let layer = tensor
+            .name
+            .strip_prefix("model.layers.")
+            .and_then(|n| n.strip_suffix(".mlp.vq_codebook"))
+            .and_then(|n| n.parse::<u32>().ok())
+            .ok_or(fail("codebook layer"))?;
+        let expected = if recipe == RECIPE_1019 {
+            4096
+        } else {
+            layout::codewords(layer)
+        };
+        if tensor.dim[1] != expected {
+            return Err(fail("codebook precision differs from recipe"));
+        }
+        if !(4..=72).contains(&layer) {
+            return Err(fail("unsupported codebook precision"));
+        }
+    }
     recipe_tensor_types(
         g.get_string("ling_vq.recipe_id").unwrap_or_default(),
         tensors,
@@ -578,6 +616,10 @@ mod tests {
         assert!(recipe_tensor_types(RECIPE_V2, &v2).is_ok());
         assert!(recipe_tensor_types(RECIPE, &v2).is_err());
         assert!(recipe_tensor_types(b"ling31-unknown", &v1).is_err());
+        let mut all12 = v2.clone();
+        all12[0].typ = BF16;
+        assert!(recipe_tensor_types(RECIPE_1019, &all12).is_ok());
+        assert!(recipe_tensor_types(RECIPE_1019, &v2).is_err());
     }
 
     // v2 releases keep v1's unchanged parts; recipes do not mix otherwise.
@@ -587,6 +629,10 @@ mod tests {
         assert!(part_recipe_ok(RECIPE_V2, RECIPE_V2));
         assert!(part_recipe_ok(RECIPE_V2, RECIPE));
         assert!(!part_recipe_ok(RECIPE, RECIPE_V2));
+        assert!(part_recipe_ok(RECIPE_1019, RECIPE_1019));
+        assert!(!part_recipe_ok(RECIPE_1019, RECIPE));
+        assert!(!part_recipe_ok(RECIPE_1019, RECIPE_V2));
+        assert!(!part_recipe_ok(RECIPE_V2, RECIPE_1019));
         assert!(!part_recipe_ok(b"ling31-unknown", b"ling31-unknown"));
     }
 }

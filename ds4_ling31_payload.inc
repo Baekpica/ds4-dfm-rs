@@ -114,6 +114,11 @@ static int ling31_payload_restore(ds4_ling31_graph *g, FILE *fp, uint64_t *left,
         payload_set_err(err, errlen, "incompatible Ling-3.1 snapshot header or length");
         return 1;
     }
+    // Cached rope keys carry the source context's static table.
+    if (ling31_rope_factor(h[2]) != ling31_rope_factor(g->ctx_cap)) {
+        payload_set_err(err, errlen, "session payload has a different Ling-3.1 YaRN factor");
+        return 1;
+    }
     int *tokens = malloc((size_t)n * sizeof(*tokens));
     uint8_t *buf = malloc(DS4_SESSION_IO_CHUNK);
     if (!tokens || !buf || !ds4_gpu_synchronize()) {

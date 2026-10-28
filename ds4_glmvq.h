@@ -17,7 +17,9 @@ typedef struct ds4_gvq_ctx ds4_gvq_ctx;
  * attention and fused index scores keep no per-key scratch; latent, pool and
  * draft caches grow linearly with the session context. */
 enum { DS4_GVQ_NO_LINK = UINT32_MAX, DS4_GVQ_CTX_MAX = 1048576 };
-typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32 } ds4_gvq_math;
+/* TF32: F32 math on tensor cores for operands that hold BF16 values, which
+ * TF32 represents exactly: products stay exact, accumulation order moves. */
+typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32, DS4_GVQ_TF32 } ds4_gvq_math;
 typedef enum { DS4_GVQ_RMS, DS4_GVQ_GATED_RMS, DS4_GVQ_PLAIN_RMS } ds4_gvq_norm;
 /* Activation rows of BF16-rounded values: F32, or BF16 packed into the
  * first half of the same buffer (mHC residuals from the fused prefill
@@ -51,6 +53,10 @@ int ds4_gpu_gvq_linear_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
 /* Up to eight tokens through up to four Q4_K matrices of one input in one
  * launch (BF16-rounded F32 outputs), each token as a one-token call; 0
  * (outputs untouched) for other weights. */
+/* ds4_gpu_gvq_q4_decode_many only where every output equals its own
+ * ds4_gpu_gvq_linear bit for bit (same STAGE kernel and split); 0 otherwise. */
+int ds4_gpu_gvq_q4_decode_group(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens);
 int ds4_gpu_gvq_q4_decode_many(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
     const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t tokens);
 /* Whether q4p (prefill Q4_K on FP16 tensor cores) runs these matrices at
@@ -81,13 +87,22 @@ int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
 /* Whether ds4_gpu_gvq_linear_rows reads BF16 input rows of `weight` at
  * these rows (prefill Q4_K), so their producer can store BF16 rows. */
 int ds4_gpu_gvq_bf16_input(ds4_gvq_ctx *ctx, uint32_t weight, uint32_t rows);
-/* ds4_gpu_gvq_linear (BF16 math) of F32 or BF16 input rows. */
+/* ds4_gpu_gvq_linear (BF16 math) of F32 or BF16 input rows (BF16 rows:
+ * prefill Q4_K through q4p, or BF16 weights above decode widths). */
 int ds4_gpu_gvq_linear_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows);
 /* ds4_gpu_gvq_linear_rows into BF16 output rows (each the F32 value rounded
  * to nearest); 0 when q4p does not take the weight at `rows`. */
 int ds4_gpu_gvq_linear_rows_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
     const ds4_gpu_tensor *input, ds4_gvq_rows in_rows, uint32_t rows);
+/* A BF16 weight times BF16 input rows into F32 rows (F32 accumulation, no
+ * output rounding); 0 for other weights and decode widths. */
+int ds4_gpu_gvq_linear_rows_f32(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t weight,
+    const ds4_gpu_tensor *input, uint32_t rows);
+/* Prefill Q4_K matrices over BF16 input rows into F32 or BF16 rows; 0 when
+ * q4p does not take every weight at `rows`. */
+int ds4_gpu_gvq_linear_many_rows(ds4_gvq_ctx *ctx, ds4_gpu_tensor *const *outs,
+    const uint32_t *weights, uint32_t count, const ds4_gpu_tensor *input, uint32_t rows, ds4_gvq_rows out_rows);
 /* Q4_K gate and up of one input with the clamped SwiGLU in one pass, at
  * decode and verify widths; 0 when the width or weights need the
  * separate projections. */
@@ -172,6 +187,8 @@ int ds4_gpu_gvq_moe(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out,
     const uint32_t *matrices, uint32_t rows, float clamp, const ds4_gpu_tensor *shared);
 /* Chunked prefill planes for `rows` tokens; 0 when rows use the recurrence. */
 uint64_t ds4_gpu_gvq_kda_bytes(uint32_t rows, uint32_t heads);
+/* The tensor-core path's chunk records alone (ds4_gpu_gvq_kda_gated). */
+uint64_t ds4_gpu_gvq_kda_mma_bytes(uint32_t rows, uint32_t heads);
 /* `snap` (optional) receives the state and tails after each row but the
  * last, one `stride`-byte slot per row, laid out like the state pool. */
 int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_tensor *state,
