@@ -392,6 +392,7 @@ __global__ void glmvq_decode_reduce(float *out, const float *partial,
  * arithmetic is the one-row kernel's: same lanes, FMA order, rounding and
  * ascending-expert reduction, so each row's output is bit-identical. */
 enum { GLMVQ_VER_ROWS = 4, GLMVQ_VER_PAIRS = GLMVQ_VER_ROWS * GLMVQ_DEC_USED, GLMVQ_VER_GROUP = 8 };
+enum glmvq_verify_index { GLMVQ_VERIFY_DYNAMIC, GLMVQ_VERIFY_STATIC };
 
 struct glmvq_verify_item {
     glmvq_matrix gate, up, down;
@@ -533,7 +534,7 @@ __device__ __forceinline__ void glmvq_verify_dot(const glmvq_matrix &m, uint32_t
 
 template <uint32_t BITS, uint32_t WARPS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT,
           uint32_t FFN = GLMVQ_DEC_FFN, glmvq_clamp CLAMP = GLMVQ_CLAMP_GATE, bool RES = false,
-          uint32_t HIDDEN = GLMVQ_DEC_HIDDEN>
+          uint32_t HIDDEN = GLMVQ_DEC_HIDDEN, glmvq_verify_index INDEX = GLMVQ_VERIFY_DYNAMIC>
 __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
         const glmvq_verify_item *items, const glmvq_verify_plan *plan, const uint4 *book,
         const float *input, uint32_t rows, __nv_bfloat16 *mid, float clamp, const uint4 *book2) {
@@ -573,14 +574,23 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_gu(
         glmvq_verify_dot<HIDDEN, BITS, GAIN, RES>(item.up, row, xs, count, (const uint2 *)verify_stage,
             &carry, nullptr, nullptr, u, res_book, nullptr);
         if (lane) { continue; }
-        for (uint32_t t = 0; t < count; t++) {
-            mid[(uint64_t)item.pair[t] * FFN + row] = __float2bfloat16_rn(glmvq_swiglu_value<CLAMP>(g[t], u[t], clamp));
+        if constexpr (INDEX == GLMVQ_VERIFY_STATIC) {
+            // Static indices keep the result arrays off the local stack.
+            #pragma unroll
+            for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+                if (t >= count) { continue; }
+                mid[(uint64_t)item.pair[t] * FFN + row] = __float2bfloat16_rn(glmvq_swiglu_value<CLAMP>(g[t], u[t], clamp));
+            }
+        } else {
+            for (uint32_t t = 0; t < count; t++) {
+                mid[(uint64_t)item.pair[t] * FFN + row] = __float2bfloat16_rn(glmvq_swiglu_value<CLAMP>(g[t], u[t], clamp));
+            }
         }
     }
 }
 
 template <uint32_t BITS, uint32_t WARPS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT, uint32_t FFN = GLMVQ_DEC_FFN,
-          bool RES = false, uint32_t HIDDEN = GLMVQ_DEC_HIDDEN>
+          bool RES = false, uint32_t HIDDEN = GLMVQ_DEC_HIDDEN, glmvq_verify_index INDEX = GLMVQ_VERIFY_DYNAMIC>
 __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
         const glmvq_verify_item *items, const glmvq_verify_plan *plan, const uint4 *book,
         const __nv_bfloat16 *mid, float *partial, const uint4 *book2) {
@@ -624,8 +634,16 @@ __global__ void __launch_bounds__(WARPS * 32, 1) glmvq_verify_down(
             glmvq_verify_dot<FFN, BITS, GAIN, RES>(m, row, xs, count, (const uint2 *)verify_stage,
                 &carry, nullptr, nullptr, value, res_book, nullptr);
             if (lane) { continue; }
-            for (uint32_t t = 0; t < count; t++) {
-                partial[(uint64_t)item.pair[t] * HIDDEN + row] = value[t];
+            if constexpr (INDEX == GLMVQ_VERIFY_STATIC) {
+                #pragma unroll
+                for (uint32_t t = 0; t < GLMVQ_VER_ROWS; t++) {
+                    if (t >= count) { continue; }
+                    partial[(uint64_t)item.pair[t] * HIDDEN + row] = value[t];
+                }
+            } else {
+                for (uint32_t t = 0; t < count; t++) {
+                    partial[(uint64_t)item.pair[t] * HIDDEN + row] = value[t];
+                }
             }
         }
     }
@@ -666,7 +684,7 @@ struct glmvq_moe_form {
 using glmvq_glm_form = glmvq_moe_form<>;
 
 template <uint32_t BITS, uint32_t WARPS, glmvq_decode_output OUTPUT, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT,
-          typename FORM = glmvq_glm_form, bool RES = false>
+          typename FORM = glmvq_glm_form, bool RES = false, glmvq_verify_index INDEX = GLMVQ_VERIFY_DYNAMIC>
 static cudaError_t glmvq_decode_prepare(uint32_t *blocks) {
     constexpr uint32_t FFN = FORM::FFN, H = FORM::HIDDEN;
     int device, shared, sms;
@@ -690,11 +708,11 @@ static cudaError_t glmvq_decode_prepare(uint32_t *blocks) {
             cudaFuncAttributeMaxDynamicSharedMemorySize, dn);
     }
     if (err == cudaSuccess) {
-        err = cudaFuncSetAttribute(glmvq_verify_gu<BITS, WARPS, GAIN, FFN, FORM::CLAMP, RES, H>,
+        err = cudaFuncSetAttribute(glmvq_verify_gu<BITS, WARPS, GAIN, FFN, FORM::CLAMP, RES, H, INDEX>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, vgu);
     }
     if (err == cudaSuccess) {
-        err = cudaFuncSetAttribute(glmvq_verify_down<BITS, WARPS, GAIN, FFN, RES, H>,
+        err = cudaFuncSetAttribute(glmvq_verify_down<BITS, WARPS, GAIN, FFN, RES, H, INDEX>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, vdn);
     }
 
@@ -724,17 +742,17 @@ static cudaError_t glmvq_decode_launch(const glmvq_decode_item *items, const voi
 
 // Rows 2-4 after glmvq_verify_route filled items and plan on the device.
 template <uint32_t BITS, uint32_t WARPS, glmvq_decode_gain GAIN = GLMVQ_GAIN_WEIGHT, typename FORM = glmvq_glm_form,
-          bool RES = false>
+          bool RES = false, glmvq_verify_index INDEX = GLMVQ_VERIFY_DYNAMIC>
 static cudaError_t glmvq_verify_launch(const glmvq_verify_item *items, const glmvq_verify_plan *plan,
         const void *book, const float *input, uint32_t rows, __nv_bfloat16 *mid, float *partial,
         float *out, const float *weights, float clamp, uint32_t blocks, cudaStream_t stream,
         const float *shared = nullptr, glmvq_launch launch = GLMVQ_LAUNCH_PLAIN, const void *book2 = nullptr) {
     constexpr uint32_t cb = glmvq_decode_books<BITS, RES>(), FFN = FORM::FFN, H = FORM::HIDDEN;
     // The caller keeps rows <= FORM::VER_ROWS and groups of FORM::VER_GROUP.
-    glmvq_launch_kernel(launch, glmvq_verify_gu<BITS, WARPS, GAIN, FFN, FORM::CLAMP, RES, H>, blocks, WARPS * 32,
+    glmvq_launch_kernel(launch, glmvq_verify_gu<BITS, WARPS, GAIN, FFN, FORM::CLAMP, RES, H, INDEX>, blocks, WARPS * 32,
         cb + rows * H * sizeof(__nv_bfloat16), stream, items, plan, (const uint4 *)book, input, rows, mid,
         clamp, (const uint4 *)book2);
-    glmvq_launch_kernel(launch, glmvq_verify_down<BITS, WARPS, GAIN, FFN, RES, H>, blocks, WARPS * 32,
+    glmvq_launch_kernel(launch, glmvq_verify_down<BITS, WARPS, GAIN, FFN, RES, H, INDEX>, blocks, WARPS * 32,
         cb + FORM::VER_GROUP * FFN * sizeof(__nv_bfloat16), stream, items, plan, (const uint4 *)book,
         (const __nv_bfloat16 *)mid, partial, (const uint4 *)book2);
     glmvq_launch_kernel(launch, glmvq_verify_reduce<FORM::REDUCE, H>, rows * H / GLMVQ_THREADS,

@@ -66,6 +66,56 @@ static bool run(uint32_t rows, uint32_t width, std::mt19937 &rng) {
         !memcmp(ref.data(), twice.data(), bytes);
     for (uint64_t i = 0; same && i < n; i++) { same = __bfloat162float(norm16[i]) == norm[i]; }
     printf("rows=%u width=%u residual+norm (F32 and BF16 rows) %s\n", rows, width, same ? "bit-identical" : "DIFFER");
+
+    float *d_compact = nullptr;
+    same = same && check(cudaMalloc(&d_compact, bytes + 16), "compact alloc") &&
+        check(cudaMemcpy(d_compact, cur.data(), bytes, cudaMemcpyHostToDevice), "compact copy") &&
+        check(cudaMemcpy(d_twice, cur.data(), bytes, cudaMemcpyHostToDevice), "compact copy") &&
+        check(cudaMemset((uint8_t *)d_compact + bytes, 0x5a, 16), "canary");
+    std::vector<uint16_t> packed(n * 2);
+    for (int stage = 0; same && stage < 3; stage++) {
+        if (stage) {
+            reference_add<<<(uint32_t)((n + 255) / 256), 256>>>(d_ref, d_ref, d_add, (uint32_t)n);
+            glmvq_round_rows<<<(uint32_t)((n + 255) / 256), 256>>>(d_ref, n);
+            if (stage == 1) {
+                glmvq_rms<<<rows, GLMVQ_THREADS>>>(d_ref, d_weight, nullptr, d_norm_ref, width, 1e-6f, GLMVQ_RMS_WEIGHTED);
+            }
+        }
+        if (!stage) {
+            l31_residual_rms<float, float, __nv_bfloat16><<<rows, GLMVQ_THREADS>>>(
+                d_compact, d_add, d_weight, d_norm, width, 1e-6f);
+            l31_residual_rms<__nv_bfloat16, float, __nv_bfloat16><<<rows, GLMVQ_THREADS>>>(
+                d_twice, d_add, d_weight, d_norm16, width, 1e-6f);
+        } else if (stage == 1) {
+            l31_residual_rms<__nv_bfloat16, __nv_bfloat16><<<rows, GLMVQ_THREADS>>>(
+                d_compact, d_add, d_weight, d_norm16, width, 1e-6f);
+            l31_residual_rms<float, __nv_bfloat16><<<rows, GLMVQ_THREADS>>>(
+                d_twice, d_add, d_weight, d_norm, width, 1e-6f);
+        } else { l31_residual_unpack<<<rows, GLMVQ_THREADS>>>(d_compact, d_add, width); }
+        same = check(cudaDeviceSynchronize(), "compact kernels") &&
+            check(cudaMemcpy(ref.data(), d_ref, bytes, cudaMemcpyDeviceToHost), "reference read") &&
+            check(cudaMemcpy(packed.data(), d_compact, bytes, cudaMemcpyDeviceToHost), "compact read");
+        if (stage == 2) { same = same && !memcmp(ref.data(), packed.data(), bytes); }
+        for (uint64_t i = 0; same && stage < 2 && i < n; i++) {
+            uint32_t bits;
+            memcpy(&bits, &ref[i], sizeof(bits));
+            same = bits == ((uint32_t)packed[(i / width) * width * 2 + i % width] << 16);
+        }
+        if (stage < 2) {
+            same = same && check(cudaMemcpy(twice.data(), d_twice, bytes, cudaMemcpyDeviceToHost), "compact read") &&
+                !memcmp(packed.data(), twice.data(), bytes) &&
+                check(cudaMemcpy(norm_ref.data(), d_norm_ref, bytes, cudaMemcpyDeviceToHost), "norm read") &&
+                check(cudaMemcpy(norm.data(), d_norm, bytes, cudaMemcpyDeviceToHost), "norm read") &&
+                check(cudaMemcpy(norm16.data(), d_norm16, n * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost), "norm read") &&
+                !memcmp(norm_ref.data(), norm.data(), bytes);
+            for (uint64_t i = 0; same && i < n; i++) { same = __bfloat162float(norm16[i]) == norm_ref[i]; }
+        }
+        uint8_t canary[16];
+        same = same && check(cudaMemcpy(canary, (uint8_t *)d_compact + bytes, 16, cudaMemcpyDeviceToHost), "canary read");
+        for (uint32_t i = 0; same && i < 16; i++) { same = canary[i] == 0x5a; }
+    }
+    printf("rows=%u width=%u compact pack/update/unpack %s\n", rows, width, same ? "bit-identical" : "DIFFER");
+    cudaFree(d_compact);
     cudaFree(d_ref); cudaFree(d_fused); cudaFree(d_add); cudaFree(d_norm_ref); cudaFree(d_norm); cudaFree(d_weight);
     cudaFree(d_twice); cudaFree(d_norm16);
     return same;
@@ -75,5 +125,6 @@ int main() {
     std::mt19937 rng(31);
     bool ok = true;
     for (uint32_t rows : {1u, 3u, 2048u}) { ok = run(rows, 4096u, rng) && ok; }
+    ok = run(65u, 3073u, rng) && ok;
     return ok ? 0 : 1;
 }

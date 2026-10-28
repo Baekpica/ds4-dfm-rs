@@ -209,21 +209,35 @@ The 1,024- and 2,048-row runs predate the load-buffer fix (`a0fd6d35`,
 
 ## Performance
 
-The 1019 release at `76bc05cb`
-([sweep](benchmarks/ling31-1019-vq-spark-64k-2026-10-28/README.md), same
-protocol as below, two MTP drafts now to 64K):
+The 1019 release at `e01b409d`, after the three Prefill and three Decode
+changes in the [follow-up](ling31-optimization-2026-10-28-followup.md):
+three fresh processes per mode, 2,048-token incremental prefill and
+128 forced greedy tokens per frontier. The
+[sweep](benchmarks/ling31-1019-followup-spark-64k-2026-10-28/README.md)
+retains all samples, clock records and repeat-proof hashes.
 
 | Configuration (median of three run means) | Prefill tok/s | Decode tok/s |
 |---|---:|---:|
-| MTP off, 2K–64K | 869.1 | 18.68 |
-| MTP off, 2K–32K | 961.1 | 18.85 |
-| Two embedded MTP drafts, 2K–32K | 954.2 | 25.82 |
-| Two embedded MTP drafts, 2K–64K | 864.0 | 25.23 |
+| MTP off, 2K–64K | 885.3 | 18.65 |
+| MTP off, 2K–32K | 982.4 | 18.81 |
+| Two embedded MTP drafts, 2K–32K | 977.8 | 26.48 |
+| Two embedded MTP drafts, 2K–64K | 882.2 | 25.79 |
 
-![Ling-3.1-flash-1019 VQ prefill and decode on one DGX Spark](benchmarks/ling31-1019-vq-spark-64k-2026-10-28/throughput.png)
+![Ling-3.1-flash-1019 VQ prefill and decode on one DGX Spark](benchmarks/ling31-1019-followup-spark-64k-2026-10-28/throughput.png)
 
-A whole 8K prompt prefills at about 1,170 tok/s with 4,096-row chunks; the
-[October 28 round](ling31-optimization-2026-10-28.md) has the ladder.
+Ordinary Decode run means span 18.29–18.70 tok/s despite identical tokens
+and stable clocks; the slower process is included in the bands and its
+cause remains unresolved. MTP means span 25.73–25.81 tok/s. Corpus
+acceptance, including repetitive continuations, does not establish
+general assistant throughput. The P1 numerical comparison covers only
+384 teacher-forced targets through 32K and has a lower 32K top-1 agreement
+than its chunk reference; longer-context quality and sustained serving
+are not newly qualified.
+
+The [earlier 1019 sweep](benchmarks/ling31-1019-vq-spark-64k-2026-10-28/README.md)
+at `76bc05cb` remains archived. Its whole 8K prompt prefilled at about
+1,170 tok/s with 4,096-row chunks; the
+[earlier October 28 round](ling31-optimization-2026-10-28.md) has that ladder.
 
 The [2K–64K sweep](benchmarks/ling31-vq-spark-64k-v2-2026-10-18/README.md)
 with the v2 trunk at `709cf8df`: three fresh `ds4-bench` processes per
@@ -289,6 +303,11 @@ Past 64K the bench frontiers (32K-token steps, 16 tokens) decode at 17.56,
 | `DS4_LING31_ROUTER_TF32=0` | F32 SIMT router GEMM on F32 rows |
 | `DS4_LING31_NORM_BF16=0` | F32 norm rows at prefill |
 | `DS4_LING31_Q4_MANY=0` | one decode launch per Q4_K projection |
+| `DS4_GLMVQ_KDA_LOCAL17=0` | 512-thread KDA prefill preparation instead of 544 threads |
+| `DS4_LING31_RESIDUAL_BF16=0` | Keep F32 residual storage inside prefill trunk passes |
+| `DS4_LING31_KDA_RELOAD=0` | Keep shared KDA vectors in registers across verify-row state updates |
+| `DS4_LING31_KDA_CONV4=0` | Scalar KDA convolution-tail loads and stores instead of aligned four-tap vectors |
+| `DS4_LING31_VERIFY_REGS=0` | Runtime result-array indexing in verify experts instead of static register indices |
 
 ## Limits and next levers
 

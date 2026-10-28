@@ -14,6 +14,7 @@
 #include "ds4_ling31.h"
 #include "cuda/beam_mma8w.cuh"
 #include "cuda/l31_residual.cuh"
+#include "cuda/l31_swiglu.cuh"
 #include "cuda/l31_latent.cuh"
 #include "cuda/l31_flash.cuh"
 
@@ -76,6 +77,7 @@ struct ds4_l31_moe {
     uint32_t rows = 0, decode_blocks = 0, sms = 0;
     int mma8_blocks[2][3] = {};     // [12-bit, 13-bit][gate, up, down]
     bool gain_dot = true, route = true, restore = false, mma8 = false, mma8w = true;
+    bool verify_regs = true;
     std::vector<uint32_t> keys;     // table slot per layer, keyed by expert 0's gate
     std::vector<glmvq_mma_item> items;
     std::vector<beam_w_item> witems; // gate, up, down 128-token items (12-bit layers)
@@ -108,9 +110,13 @@ extern "C" void ds4_gpu_l31_moe_free(ds4_l31_moe *moe) {
 template <uint32_t BITS>
 static cudaError_t l31_prepare(ds4_l31_moe *moe) {
     uint32_t blocks = 0;
-    cudaError_t err = glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT, l31_form>(&blocks);
+    cudaError_t err = moe->verify_regs
+        ? glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT, l31_form, false, GLMVQ_VERIFY_STATIC>(&blocks)
+        : glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_DOT, l31_form>(&blocks);
     if (err == cudaSuccess) {
-        err = glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_WEIGHT, l31_form>(&blocks);
+        err = moe->verify_regs
+            ? glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_WEIGHT, l31_form, false, GLMVQ_VERIFY_STATIC>(&blocks)
+            : glmvq_decode_prepare<BITS, 32, GLMVQ_DEC_NORMAL, GLMVQ_GAIN_WEIGHT, l31_form>(&blocks);
     }
     if (err != cudaSuccess) { return err; }
     moe->decode_blocks = blocks;
@@ -130,8 +136,11 @@ extern "C" ds4_l31_moe *ds4_gpu_l31_moe_create(ds4_gvq_ctx *gvq, uint32_t rows) 
     ds4_l31_moe *moe = new (std::nothrow) ds4_l31_moe;
     if (!moe) { return nullptr; }
     moe->gvq = gvq;
+    gvq->kda_reload = !l31_env_off("DS4_LING31_KDA_RELOAD");
+    gvq->kda_conv4 = !l31_env_off("DS4_LING31_KDA_CONV4");
     moe->rows = rows;
     moe->gain_dot = !l31_env_off("DS4_LING31_GAIN_DOT");
+    moe->verify_regs = !l31_env_off("DS4_LING31_VERIFY_REGS");
     moe->route = !l31_env_off("DS4_LING31_DECODE_ROUTE");
     moe->mma8w = !l31_env_off("DS4_LING31_MMA_WS");
     int device = 0, sms = 0;
@@ -303,6 +312,13 @@ static cudaError_t l31_verify_run(ds4_l31_moe *moe, float *out, const float *inp
     const glmvq_launch launch = moe->gvq->launch;
     glmvq_launch_kernel(launch, l31_verify_route, 1, GLMVQ_VER_PAIRS, 0, stream, items, plan, selected, rows,
         table, (const glmvq_source *)moe->gvq->model->device->ptr);
+    if (moe->verify_regs) {
+        return moe->gain_dot
+            ? glmvq_verify_launch<BITS, 32, GLMVQ_GAIN_DOT, l31_form, false, GLMVQ_VERIFY_STATIC>(items, plan,
+                book, input, rows, mid, partial, out, weights, clamp, moe->decode_blocks, stream, shared, launch)
+            : glmvq_verify_launch<BITS, 32, GLMVQ_GAIN_WEIGHT, l31_form, false, GLMVQ_VERIFY_STATIC>(items, plan,
+                book, input, rows, mid, partial, out, weights, clamp, moe->decode_blocks, stream, shared, launch);
+    }
     return moe->gain_dot
         ? glmvq_verify_launch<BITS, 32, GLMVQ_GAIN_DOT, l31_form>(items, plan, book, input, rows, mid, partial,
             out, weights, clamp, moe->decode_blocks, stream, shared, launch)
@@ -569,6 +585,27 @@ extern "C" int ds4_gpu_l31_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gat
     return cuda_ok(cudaGetLastError(), "Ling-3.1 SwiGLU");
 }
 
+// Prepare the down projection without a materialized SwiGLU row.
+extern "C" int ds4_gpu_l31_mlp(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t down,
+        const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up, uint32_t rows, float limit) {
+    static const bool enabled = !l31_env_off("DS4_LING31_MLP_Q4P");
+    if (!enabled || !ctx || !out || !gate || !up || !ctx->direct_q4 || down >= ctx->model->source.size() ||
+        !gvq_q4p_ready(ctx, &down, 1, gate, &out, rows) ||
+        !gvq_q4p_ready(ctx, &down, 1, up, &out, rows)) { return 0; }
+    const glmvq_source &s = ctx->model->source[down];
+    if (!gvq_floats(gate, (uint64_t)rows * s.cols) || !gvq_floats(up, (uint64_t)rows * s.cols) ||
+        !gvq_floats(out, (uint64_t)rows * s.rows) ||
+        (uintptr_t)gate->ptr % alignof(float4) || (uintptr_t)up->ptr % alignof(float4) || !gvq_stream(ctx)) {
+        return 0;
+    }
+    const auto in = glmvq_q4p_layout(ctx->scratch->ptr, rows, s.cols);
+    l31_swiglu_prepare<<<rows, GLMVQ_Q4P_PREP, 0, ctx->stream>>>((const float *)gate->ptr,
+        (const float *)up->ptr, in.xh, in.xscale, s.cols, limit);
+    return cuda_ok(cudaGetLastError(), "Ling-3.1 SwiGLU input") &&
+        cuda_ok(glmvq_q4p_gemm((const uint8_t *)s.data, in, (float *)out->ptr, s.rows, s.cols, rows,
+            ctx->stream), "Ling-3.1 SwiGLU down");
+}
+
 // One token keeps the SIMT pair below GVQ's row limit (see ds4_gpu_gvq_gate_up).
 extern "C" int ds4_gpu_l31_gate_up(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mid, uint32_t gate, uint32_t up,
         const ds4_gpu_tensor *input, uint32_t rows, float limit) {
@@ -757,22 +794,34 @@ extern "C" int ds4_gpu_l31_store_latent(ds4_gpu_tensor *latent, ds4_gpu_tensor *
 }
 
 extern "C" int ds4_gpu_l31_residual_rms(ds4_gvq_ctx *ctx, ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
-        ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, uint32_t weight, uint32_t rows, uint32_t width, float eps) {
+        ds4_gpu_tensor *norm, ds4_gvq_rows norm_rows, ds4_l31_residual mode,
+        uint32_t weight, uint32_t rows, uint32_t width, float eps) {
     const uint64_t count = (uint64_t)rows * width;
     const bool bf16 = norm_rows == DS4_GVQ_ROWS_BF16;
     const __nv_bfloat16 *w = (const __nv_bfloat16 *)gvq_weight(ctx, weight, GVQ_TYPE_BF16, width);
     // The block RMS kernel's widths only: one register batch per lane.
-    if (!w || !rows || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
+    if (!w || !rows || mode < DS4_L31_RES_F32 || mode > DS4_L31_RES_BF16 || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
         !gvq_floats(cur, count) || !gvq_floats(branch, count) || !gvq_floats(norm, bf16 ? count / 2 : count)) {
         return 0;
     }
-    if (bf16) {
-        glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms<__nv_bfloat16>, rows, GLMVQ_THREADS, 0,
-            ds4_current_stream(), (float *)cur->ptr, (const float *)branch->ptr, w, (__nv_bfloat16 *)norm->ptr,
-            width, eps);
-    } else {
-        glmvq_launch_kernel(gvq_mode(rows), l31_residual_rms<float>, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
-            (float *)cur->ptr, (const float *)branch->ptr, w, (float *)norm->ptr, width, eps);
-    }
+    auto launch = [&](auto *out) {
+        using N = std::remove_pointer_t<decltype(out)>;
+        auto kernel = mode == DS4_L31_RES_PACK ? l31_residual_rms<N, float, __nv_bfloat16>
+            : mode == DS4_L31_RES_BF16 ? l31_residual_rms<N, __nv_bfloat16> : l31_residual_rms<N>;
+        glmvq_launch_kernel(gvq_mode(rows), kernel, rows, GLMVQ_THREADS, 0, ds4_current_stream(),
+            (float *)cur->ptr, (const float *)branch->ptr, w, out, width, eps);
+    };
+    if (bf16) { launch((__nv_bfloat16 *)norm->ptr); }
+    else { launch((float *)norm->ptr); }
     return cuda_ok(cudaGetLastError(), "Ling-3.1 residual RMS");
+}
+
+extern "C" int ds4_gpu_l31_residual_unpack(ds4_gpu_tensor *cur, const ds4_gpu_tensor *branch,
+        uint32_t rows, uint32_t width) {
+    const uint64_t count = (uint64_t)rows * width;
+    if (!rows || width <= GLMVQ_RMS_NARROW || width > GLMVQ_RMS_BATCH * GLMVQ_THREADS ||
+        !gvq_floats(cur, count) || !gvq_floats(branch, count)) { return 0; }
+    l31_residual_unpack<<<rows, GLMVQ_THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)branch->ptr, width);
+    return cuda_ok(cudaGetLastError(), "Ling-3.1 residual unpack");
 }

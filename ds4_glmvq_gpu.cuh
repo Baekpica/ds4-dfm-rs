@@ -61,6 +61,9 @@ struct ds4_gvq_ctx {
     bool expand_mix;
     bool kda_chunk;
     bool kda_mma;
+    bool kda_local17;
+    bool kda_reload = false;
+    bool kda_conv4 = false;
     bool flash;
     glmvq_launch launch;
     bool index_fused;
@@ -368,6 +371,7 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
     if (!flags) { return false; }
     const cudaStream_t stream = ds4_current_stream();
     bool ok = cuda_ok(cudaMemsetAsync(flags->ptr, 0, count * sizeof(uint32_t), stream), "GLM VQ Q4 prefill scan");
+    const char *l31_down = getenv("DS4_LING31_MLP_Q4P");
     for (size_t i = 0; ok && i < count; i++) {
         const glmvq_source &s = ctx->model->source[i];
         // FP8 matrices with 128 x 128 scales fold into the same FP16 operand.
@@ -381,6 +385,8 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
             continue;
         }
         if (ctx->model->records[i].type != GVQ_TYPE_Q4 || !s.data || !glmvq_q4p_fits(s.rows, s.cols)) { continue; }
+        // Ling's shared down needs one Q4_K block beyond a 512-column group.
+        if (s.cols == 1280u && l31_down && !strcmp(l31_down, "0")) { continue; }
         const uint64_t blocks = (uint64_t)s.rows * s.cols / GLMVQ_Q4_BLOCK;
         glmvq_q4p_check<<<(unsigned)((blocks + 255) / 256), 256, 0, stream>>>(
             (const uint8_t *)s.data, blocks, (uint32_t *)flags->ptr + i);
@@ -469,6 +475,11 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         fprintf(stderr, "ds4: DS4_GLMVQ_KDA_MMA accepts 0 or 1\n");
         return nullptr;
     }
+    const char *kda_local17 = getenv("DS4_GLMVQ_KDA_LOCAL17");
+    if (kda_local17 && strcmp(kda_local17, "0") && strcmp(kda_local17, "1")) {
+        fprintf(stderr, "ds4: DS4_GLMVQ_KDA_LOCAL17 accepts 0 or 1\n");
+        return nullptr;
+    }
     const char *route = getenv("DS4_GLMVQ_DECODE_ROUTE");
     if (route && strcmp(route, "0") && strcmp(route, "1")) {
         fprintf(stderr, "ds4: DS4_GLMVQ_DECODE_ROUTE accepts 0 or 1\n");
@@ -486,6 +497,7 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         cuda_ok(cudaFuncSetAttribute(glmvq_hc_expand_mix<__nv_bfloat16, __nv_bfloat16>,
             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)glmvq_xmix_smem<__nv_bfloat16>()), "GLM VQ mHC expand mix shared memory");
     ctx->kda_chunk = !kda || strcmp(kda, "0");
+    ctx->kda_local17 = !kda_local17 || strcmp(kda_local17, "0");
     // Decode-width kernels launch with programmatic dependent launch.
     ctx->launch = !pdl || strcmp(pdl, "0") ? GLMVQ_LAUNCH_PDL : GLMVQ_LAUNCH_PLAIN;
     g_gvq_pdl = ctx->launch;
@@ -497,6 +509,14 @@ static ds4_gvq_ctx *gvq_create(const ds4_gvq_model *model, uint64_t bytes, uint3
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, __nv_bfloat16>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float, float, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<float, __nv_bfloat16, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, float, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
+        cuda_ok(cudaFuncSetAttribute(glmvq_kda_local<__nv_bfloat16, __nv_bfloat16, GLMVQ_KINPUT>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KLOCAL_SMEM), "GLM VQ KDA local shared memory") &&
         cuda_ok(cudaFuncSetAttribute(glmvq_kda_scan<float>, cudaFuncAttributeMaxDynamicSharedMemorySize,
             (int)GLMVQ_KSCAN_SMEM), "GLM VQ KDA scan shared memory") &&
@@ -1724,7 +1744,10 @@ extern "C" int ds4_gpu_gvq_kda_gated(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_
     auto *records = (uint8_t *)ctx->scratch->ptr;
     auto local = [&](auto *qkv, auto *f) {
         using Q = std::remove_cv_t<std::remove_pointer_t<decltype(qkv)>>;
-        glmvq_kda_local<<<dim3((uint32_t)chunks, heads), GLMVQ_KLOCAL, GLMVQ_KLOCAL_SMEM, stream>>>(records,
+        using F = std::remove_cv_t<std::remove_pointer_t<decltype(f)>>;
+        auto kernel = ctx->kda_local17 ? glmvq_kda_local<Q, F> : glmvq_kda_local<Q, F, GLMVQ_KINPUT>;
+        glmvq_launch_kernel(GLMVQ_LAUNCH_PLAIN, kernel, dim3((uint32_t)chunks, heads),
+            ctx->kda_local17 ? GLMVQ_KLOCAL : GLMVQ_KINPUT, GLMVQ_KLOCAL_SMEM, stream, records,
             (const float *)q_tail->ptr, (const float *)k_tail->ptr, (const float *)v_tail->ptr,
             qkv, (const Q *)k->ptr, (const Q *)v->ptr, f, (const float *)beta->ptr,
             (const float *)q_weight->ptr, (const float *)k_weight->ptr, (const float *)v_weight->ptr,
@@ -1826,7 +1849,15 @@ extern "C" int ds4_gpu_gvq_kda(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ds4_gpu_te
             (const float *)a_log->ptr, (const float *)dt_bias->ptr, rows, heads, lower_bound);
         if (chunked >= 0) { return chunked; }
     }
-    glmvq_launch_kernel(gvq_mode(rows), rows > 1 ? glmvq_kda<true> : glmvq_kda<false>, heads, GLMVQ_KDA_DIM, 0,
+    auto kernel = rows > 1 ? (ctx->kda_reload ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>) : glmvq_kda<false>;
+    if (ctx->kda_conv4 && glmvq_kda_conv4_fits((const float *)q_tail->ptr, (const float *)k_tail->ptr,
+            (const float *)v_tail->ptr, (const float *)q_weight->ptr, (const float *)k_weight->ptr,
+            (const float *)v_weight->ptr, shot)) {
+        kernel = rows > 1 ? (ctx->kda_reload ? glmvq_kda<true, GLMVQ_KDA_RELOAD, GLMVQ_KDA_VECTOR>
+            : glmvq_kda<true, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>)
+            : glmvq_kda<false, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>;
+    }
+    glmvq_launch_kernel(gvq_mode(rows), kernel, heads, GLMVQ_KDA_DIM, 0,
         ds4_current_stream(), (float *)out->ptr,
         (float *)state->ptr, (float *)q_tail->ptr, (float *)k_tail->ptr, (float *)v_tail->ptr,
         (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr,

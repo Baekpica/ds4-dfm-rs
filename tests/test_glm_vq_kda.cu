@@ -4,6 +4,8 @@
 // judged by relative error of the normed output and the final state.
 #include <cstdio>
 #include <cmath>
+#include <cstring>
+#include <algorithm>
 #include <vector>
 #include <random>
 #include "../cuda/glm_vq_kda.cuh"
@@ -16,6 +18,44 @@ static std::vector<float> normal(size_t n, float mean, float sd) {
     std::vector<float> v(n);
     for (auto &x : v) { x = nd(rng); }
     return v;
+}
+
+template <typename T> static T *input(size_t n, float mean, float sd) {
+    const auto values = normal(n, mean, sd);
+    return up(std::vector<T>(values.begin(), values.end()));
+}
+
+// The extra warp must neither own input rows nor leave record/tail holes.
+template <typename Q, typename F> static int local_parity(uint32_t rows) {
+    const uint32_t heads = 3, width = heads * GLMVQ_KDA_DIM;
+    const size_t count = (size_t)rows * width, tail = width * GLMVQ_CONV;
+    auto *q = input<Q>(count, 0, 1), *k = input<Q>(count, 0, 1), *v = input<Q>(count, 0, 1);
+    auto *f = input<F>(count, -2, 2);
+    auto *b = input<float>(rows * heads, 0, 2), *qw = input<float>(tail, 0, .5f);
+    auto *kw = input<float>(tail, 0, .5f), *vw = input<float>(tail, 0, .5f);
+    auto *qt = input<float>(tail, 0, 1), *kt = input<float>(tail, 0, 1), *vt = input<float>(tail, 0, 1);
+    auto *a = input<float>(heads, 0, .5f), *bias = input<float>(width, -2, 1);
+    const uint32_t chunks = (rows + GLMVQ_KC - 1) / GLMVQ_KC;
+    const size_t bytes = (size_t)chunks * heads * GLMVQ_KR_BYTES;
+    uint8_t *old, *next;
+    CK(cudaMalloc(&old, bytes + 16)); CK(cudaMalloc(&next, bytes + 16));
+    CK(cudaMemset(old, 0x3c, bytes + 16)); CK(cudaMemset(next, 0xa5, bytes + 16));
+    CK(cudaFuncSetAttribute(glmvq_kda_local<Q, F, GLMVQ_KINPUT>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, GLMVQ_KLOCAL_SMEM));
+    CK(cudaFuncSetAttribute(glmvq_kda_local<Q, F>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, GLMVQ_KLOCAL_SMEM));
+    glmvq_kda_local<Q, F, GLMVQ_KINPUT><<<dim3(chunks, heads), GLMVQ_KINPUT, GLMVQ_KLOCAL_SMEM>>>(
+        old, qt, kt, vt, q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f);
+    glmvq_kda_local<Q, F><<<dim3(chunks, heads), GLMVQ_KLOCAL, GLMVQ_KLOCAL_SMEM>>>(
+        next, qt, kt, vt, q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f);
+    CK(cudaGetLastError()); CK(cudaDeviceSynchronize());
+    const auto before = down(old, bytes + 16), after = down(next, bytes + 16);
+    bool ok = std::equal(before.begin(), before.begin() + bytes, after.begin());
+    for (size_t i = bytes; i < bytes + 16; i++) { ok &= before[i] == 0x3c && after[i] == 0xa5; }
+    printf("kda local rows=%u q=%zu f=%zu: records and canary %s\n", rows, sizeof(Q), sizeof(F), ok ? "ok" : "FAIL");
+    for (void *p : {(void *)q, (void *)k, (void *)v, (void *)f, (void *)b, (void *)qw, (void *)kw,
+            (void *)vw, (void *)qt, (void *)kt, (void *)vt, (void *)a, (void *)bias, (void *)old, (void *)next}) { cudaFree(p); }
+    return !ok;
 }
 
 struct Diff { double rel, worst; };
@@ -100,8 +140,113 @@ static int run(uint32_t rows, float state_sd, bool timing) {
     return !ok;
 }
 
-int main() {
+enum class Snapshots { Omit, Keep };
+
+// Each verify frontier must equal an ordinary one-row recurrence, including
+// the conv tails and the state restored after any rejected draft.
+static int verify_parity(uint32_t rows, uint32_t heads, Snapshots snapshots) {
+    const size_t width = heads * GLMVQ_KDA_DIM, count = rows * width;
+    const size_t state = width * GLMVQ_KDA_DIM, tail = width * GLMVQ_CONV;
+    const size_t stride = state + 3 * tail + 16, shots = rows * stride;
+    auto *q = input<float>(count, 0, 1), *k = input<float>(count, 0, 1), *v = input<float>(count, 0, 1);
+    auto *f = input<float>(count, -2, 2), *b = input<float>(rows * heads, 0, 2);
+    auto *qw = input<float>(tail, 0, .5f), *kw = input<float>(tail, 0, .5f), *vw = input<float>(tail, 0, .5f);
+    auto *a = input<float>(heads, 0, .5f), *bias = input<float>(width, -2, 1);
+    auto initial = normal(stride, 0, .3f);
+    std::fill(initial.end() - 16, initial.end(), -1234.0f);
+    auto *reference = up(initial), *reference_out = up(std::vector<float>(count + 16, -1234));
+    auto *reference_shots = up(std::vector<float>(shots + 16, -1234));
+    for (uint32_t t = 0; t < rows; t++) {
+        glmvq_kda<<<heads, GLMVQ_KDA_DIM>>>(reference_out + t * width, reference,
+            reference + state, reference + state + tail, reference + state + 2 * tail,
+            q + t * width, k + t * width, v + t * width, f + t * width, b + t * heads,
+            qw, kw, vw, a, bias, 1, heads, -5.0f, {});
+        CK(cudaGetLastError());
+        if (snapshots == Snapshots::Keep && t + 1 < rows) {
+            CK(cudaMemcpy(reference_shots + t * stride, reference, stride * sizeof(float), cudaMemcpyDeviceToDevice));
+        }
+    }
+    const auto expected = down(reference, stride), expected_out = down(reference_out, count + 16);
+    const auto expected_shots = down(reference_shots, shots + 16);
     int failed = 0;
+    for (auto reads : {GLMVQ_KDA_CACHED, GLMVQ_KDA_RELOAD}) {
+        if (rows == 1 && reads != GLMVQ_KDA_CACHED) { continue; }
+        for (auto conv : {GLMVQ_KDA_SCALAR, GLMVQ_KDA_VECTOR}) {
+            auto *pool = up(initial), *out = up(std::vector<float>(count + 16, -1234));
+            auto *shot = up(std::vector<float>(shots + 16, -1234));
+            const glmvq_kda_snap snap = snapshots == Snapshots::Keep
+                ? glmvq_kda_snap{shot, shot + state, shot + state + tail, shot + state + 2 * tail, stride}
+                : glmvq_kda_snap{};
+            auto kernel = rows == 1 ? glmvq_kda<false>
+                : (reads == GLMVQ_KDA_RELOAD ? glmvq_kda<true, GLMVQ_KDA_RELOAD> : glmvq_kda<true>);
+            if (conv == GLMVQ_KDA_VECTOR) {
+                if (!glmvq_kda_conv4_fits(pool + state, pool + state + tail, pool + state + 2 * tail,
+                        qw, kw, vw, snap)) { return 1; }
+                kernel = rows == 1 ? glmvq_kda<false, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>
+                    : (reads == GLMVQ_KDA_RELOAD ? glmvq_kda<true, GLMVQ_KDA_RELOAD, GLMVQ_KDA_VECTOR>
+                        : glmvq_kda<true, GLMVQ_KDA_CACHED, GLMVQ_KDA_VECTOR>);
+            }
+            kernel<<<heads, GLMVQ_KDA_DIM>>>(out, pool, pool + state, pool + state + tail, pool + state + 2 * tail,
+                q, k, v, f, b, qw, kw, vw, a, bias, rows, heads, -5.0f, snap);
+            CK(cudaGetLastError());
+            const auto actual = down(pool, stride), actual_out = down(out, count + 16);
+            const auto actual_shots = down(shot, shots + 16);
+            const bool ok = !memcmp(actual.data(), expected.data(), stride * sizeof(float)) &&
+                !memcmp(actual_out.data(), expected_out.data(), (count + 16) * sizeof(float)) &&
+                !memcmp(actual_shots.data(), expected_shots.data(), (shots + 16) * sizeof(float));
+            printf("kda verify rows=%u heads=%u snapshots=%d reads=%d conv=%d: state, output, rollback, canaries %s\n",
+                rows, heads, (int)snapshots, (int)reads, (int)conv, ok ? "ok" : "FAIL");
+            failed += !ok;
+            cudaFree(pool); cudaFree(out); cudaFree(shot);
+        }
+    }
+    for (void *p : {(void *)q, (void *)k, (void *)v, (void *)f, (void *)b, (void *)qw, (void *)kw,
+            (void *)vw, (void *)a, (void *)bias, (void *)reference, (void *)reference_out, (void *)reference_shots}) {
+        cudaFree(p);
+    }
+    return failed;
+}
+
+static int conv_alignment() {
+    alignas(16) float storage[16] = {};
+    const float *p[6] = {storage, storage, storage, storage, storage, storage};
+    glmvq_kda_snap snap = {storage, storage, storage, storage, 4};
+    auto fits = [&]() { return glmvq_kda_conv4_fits(p[0], p[1], p[2], p[3], p[4], p[5], snap); };
+    if (!fits()) { return 1; }
+    for (uint32_t i = 0; i < 6; i++) {
+        p[i] = storage + 1;
+        if (fits()) { return 1; }
+        p[i] = storage;
+    }
+    for (float **at : {&snap.q, &snap.k, &snap.v}) {
+        *at = storage + 1;
+        if (fits()) { return 1; }
+        *at = storage;
+    }
+    snap.stride = 3;
+    if (fits()) { return 1; }
+    snap.state = nullptr;
+    const bool ok = fits();
+    printf("kda conv vector alignment: %s\n", ok ? "ok" : "FAIL");
+    return !ok;
+}
+
+int main(int argc, char **argv) {
+    int failed = conv_alignment();
+    for (uint32_t rows : {1u, 2u, 3u, 4u}) { failed += verify_parity(rows, 3, Snapshots::Keep); }
+    failed += verify_parity(3, 64, Snapshots::Keep);
+    for (uint32_t rows : {3u, 5u, 63u}) { failed += verify_parity(rows, 3, Snapshots::Omit); }
+    if (argc == 2 && !strcmp(argv[1], "--verify")) {
+        printf("%s\n", failed ? "FAILED" : "all ok");
+        return failed;
+    }
+    rng.seed(11);
+    for (uint32_t rows : {1u, 63u, 64u, 65u, 200u}) {
+        failed += local_parity<__nv_bfloat16, __nv_bfloat16>(rows);
+    }
+    failed += local_parity<float, float>(65);
+    failed += local_parity<float, __nv_bfloat16>(65);
+    failed += local_parity<__nv_bfloat16, float>(65);
     failed += run(64, 0.0f, false);
     failed += run(200, 0.3f, false);
     failed += run(2048, 0.3f, true);

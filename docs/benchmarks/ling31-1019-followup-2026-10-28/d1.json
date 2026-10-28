@@ -1,0 +1,3046 @@
+{
+  "round": "D1",
+  "candidate_id": "d2",
+  "description": "Reload shared KDA vectors to avoid spilling held recurrent state",
+  "baseline_commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+  "artifact": {
+    "model": "Baekpica/Ling-3.1-flash-1019-VQ-GGUF",
+    "manifest_sha256": "940c92ca2d347e47b929dceb7d25acc852f31a58c443e368a78d1484bd4265d9",
+    "fixture_sha256": "ef463ee0f6bc3da80dd1aa17705bdf017af759b3f31b220ab22d23fb5eee4c2c",
+    "corpus_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f"
+  },
+  "hardware": {
+    "gpu": "GB10 sm_121a",
+    "cuda": "13.4.92",
+    "clock_policy_mhz": [
+      300,
+      2200
+    ],
+    "busy_sm_clock_mhz": [
+      2184,
+      2190
+    ],
+    "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994"
+  },
+  "protocol": {
+    "mtp_drafts": 2,
+    "limit": 128,
+    "assistant_context": 4096,
+    "corpus_context": 8321,
+    "warmup": "8192 corpus tokens plus 8 speculative calls; new independent session for every case",
+    "assistant_tokens_per_run": 719,
+    "corpus_tokens": 128,
+    "primary_metric": "assistant tokens divided by sum of ten decode times",
+    "prefill_separate": true,
+    "sampling": "greedy; assistant stops, corpus excludes EOS",
+    "order": [
+      "off1",
+      "on1",
+      "on2",
+      "off2",
+      "off3",
+      "on3"
+    ],
+    "helper_sha256": "cd785946a3a966adccc8b7c61f1d2acee095965fc8139592893c571eabc78a75"
+  },
+  "statistics": {
+    "pairs": [
+      {
+        "pair": 1,
+        "names": [
+          "d2-off-1",
+          "d2-on-1"
+        ],
+        "assistant_off": 27.645989787709873,
+        "assistant_on": 27.68886550272161,
+        "assistant_gain_pct": 0.15508837028797018,
+        "corpus_off": 21.21056871097186,
+        "corpus_on": 21.33772334586565,
+        "corpus_gain_pct": 0.5994871548541614,
+        "prefill_off": 1175.2440659780193,
+        "prefill_on": 1201.752428545119,
+        "proof_exact": true,
+        "cases": [
+          {
+            "id": "corpus_8k",
+            "tokens": 128,
+            "calls": 73,
+            "off_seconds": 6.034727392,
+            "on_seconds": 5.998765563,
+            "gain_pct": 0.5994871548541614,
+            "off_prefill_seconds": 6.970467018,
+            "on_prefill_seconds": 6.816711833
+          },
+          {
+            "id": "held_ko",
+            "tokens": 89,
+            "calls": 47,
+            "off_seconds": 3.901032579,
+            "on_seconds": 3.887625071,
+            "gain_pct": 0.3448765700173606,
+            "off_prefill_seconds": 0.359925182,
+            "on_prefill_seconds": 0.373001409
+          },
+          {
+            "id": "held_en",
+            "tokens": 63,
+            "calls": 28,
+            "off_seconds": 2.33551882,
+            "on_seconds": 2.326642342,
+            "gain_pct": 0.38151450438959067,
+            "off_prefill_seconds": 0.278961762,
+            "on_prefill_seconds": 0.2822768
+          },
+          {
+            "id": "held_zh",
+            "tokens": 65,
+            "calls": 33,
+            "off_seconds": 2.750676245,
+            "on_seconds": 2.731468696,
+            "gain_pct": 0.7031949159120199,
+            "off_prefill_seconds": 0.276200493,
+            "on_prefill_seconds": 0.265109891
+          },
+          {
+            "id": "held_code",
+            "tokens": 53,
+            "calls": 18,
+            "off_seconds": 1.501686745,
+            "on_seconds": 1.497372554,
+            "gain_pct": 0.2881174086218685,
+            "off_prefill_seconds": 0.31168514,
+            "on_prefill_seconds": 0.304865463
+          },
+          {
+            "id": "held_math",
+            "tokens": 128,
+            "calls": 48,
+            "off_seconds": 3.974038604,
+            "on_seconds": 3.960888653,
+            "gain_pct": 0.33199496759497293,
+            "off_prefill_seconds": 0.313341828,
+            "on_prefill_seconds": 0.309622951
+          },
+          {
+            "id": "held_json",
+            "tokens": 22,
+            "calls": 8,
+            "off_seconds": 0.67115983,
+            "on_seconds": 0.678885195,
+            "gain_pct": -1.1379486630283653,
+            "off_prefill_seconds": 0.325103683,
+            "on_prefill_seconds": 0.322135436
+          },
+          {
+            "id": "held_ko_summary",
+            "tokens": 111,
+            "calls": 42,
+            "off_seconds": 3.433591823,
+            "on_seconds": 3.427794712,
+            "gain_pct": 0.16912071716854715,
+            "off_prefill_seconds": 0.475451762,
+            "on_prefill_seconds": 0.473859248
+          },
+          {
+            "id": "held_ko_free",
+            "tokens": 128,
+            "calls": 68,
+            "off_seconds": 5.636987615,
+            "on_seconds": 5.645908182,
+            "gain_pct": -0.15800056806521967,
+            "off_prefill_seconds": 0.349003936,
+            "on_prefill_seconds": 0.340093146
+          },
+          {
+            "id": "held_tool_call",
+            "tokens": 28,
+            "calls": 11,
+            "off_seconds": 0.910093729,
+            "on_seconds": 0.907821892,
+            "gain_pct": 0.25025140063488216,
+            "off_prefill_seconds": 0.562336465,
+            "on_prefill_seconds": 0.553202299
+          },
+          {
+            "id": "held_tool_followup",
+            "tokens": 32,
+            "calls": 11,
+            "off_seconds": 0.892602623,
+            "on_seconds": 0.902709338,
+            "gain_pct": -1.1195979231135356,
+            "off_prefill_seconds": 0.594156975,
+            "on_prefill_seconds": 0.589861672
+          }
+        ]
+      },
+      {
+        "pair": 2,
+        "names": [
+          "d2-off-2",
+          "d2-on-2"
+        ],
+        "assistant_off": 27.66115399348364,
+        "assistant_on": 27.702813010023466,
+        "assistant_gain_pct": 0.15060476706660886,
+        "corpus_off": 21.288087731014247,
+        "corpus_on": 21.176774894208453,
+        "corpus_gain_pct": -0.5228879090141247,
+        "prefill_off": 1188.1595581924757,
+        "prefill_on": 1197.0590214416113,
+        "proof_exact": true,
+        "cases": [
+          {
+            "id": "corpus_8k",
+            "tokens": 128,
+            "calls": 73,
+            "off_seconds": 6.012752372,
+            "on_seconds": 6.044357587,
+            "gain_pct": -0.5228879090141247,
+            "off_prefill_seconds": 6.894696881,
+            "on_prefill_seconds": 6.843438672
+          },
+          {
+            "id": "held_ko",
+            "tokens": 89,
+            "calls": 47,
+            "off_seconds": 3.903500692,
+            "on_seconds": 3.897137907,
+            "gain_pct": 0.16326815093126168,
+            "off_prefill_seconds": 0.373982682,
+            "on_prefill_seconds": 0.370254672
+          },
+          {
+            "id": "held_en",
+            "tokens": 63,
+            "calls": 28,
+            "off_seconds": 2.328870567,
+            "on_seconds": 2.317215181,
+            "gain_pct": 0.5029910944641003,
+            "off_prefill_seconds": 0.278019536,
+            "on_prefill_seconds": 0.273931002
+          },
+          {
+            "id": "held_zh",
+            "tokens": 65,
+            "calls": 33,
+            "off_seconds": 2.734888017,
+            "on_seconds": 2.728183993,
+            "gain_pct": 0.2457321066761331,
+            "off_prefill_seconds": 0.272948015,
+            "on_prefill_seconds": 0.274352485
+          },
+          {
+            "id": "held_code",
+            "tokens": 53,
+            "calls": 18,
+            "off_seconds": 1.495870094,
+            "on_seconds": 1.493113544,
+            "gain_pct": 0.18461757386616373,
+            "off_prefill_seconds": 0.311611288,
+            "on_prefill_seconds": 0.30884419
+          },
+          {
+            "id": "held_math",
+            "tokens": 128,
+            "calls": 48,
+            "off_seconds": 3.9667792090000003,
+            "on_seconds": 3.977551215,
+            "gain_pct": -0.27082004524232595,
+            "off_prefill_seconds": 0.309472863,
+            "on_prefill_seconds": 0.314193497
+          },
+          {
+            "id": "held_json",
+            "tokens": 22,
+            "calls": 8,
+            "off_seconds": 0.674209477,
+            "on_seconds": 0.671728588,
+            "gain_pct": 0.36932907789239966,
+            "off_prefill_seconds": 0.321635788,
+            "on_prefill_seconds": 0.325942207
+          },
+          {
+            "id": "held_ko_summary",
+            "tokens": 111,
+            "calls": 42,
+            "off_seconds": 3.45032827,
+            "on_seconds": 3.4372894990000002,
+            "gain_pct": 0.3793329308978244,
+            "off_prefill_seconds": 0.484469779,
+            "on_prefill_seconds": 0.474598715
+          },
+          {
+            "id": "held_ko_free",
+            "tokens": 128,
+            "calls": 68,
+            "off_seconds": 5.624170136,
+            "on_seconds": 5.62992151,
+            "gain_pct": -0.10215726790834267,
+            "off_prefill_seconds": 0.349940934,
+            "on_prefill_seconds": 0.35118299
+          },
+          {
+            "id": "held_tool_call",
+            "tokens": 28,
+            "calls": 11,
+            "off_seconds": 0.912382832,
+            "on_seconds": 0.910133088,
+            "gain_pct": 0.2471884639359434,
+            "off_prefill_seconds": 0.556212308,
+            "on_prefill_seconds": 0.558088524
+          },
+          {
+            "id": "held_tool_followup",
+            "tokens": 32,
+            "calls": 11,
+            "off_seconds": 0.902131729,
+            "on_seconds": 0.891768472,
+            "gain_pct": 1.1621017478626428,
+            "off_prefill_seconds": 0.603664425,
+            "on_prefill_seconds": 0.58686243
+          }
+        ]
+      },
+      {
+        "pair": 3,
+        "names": [
+          "d2-off-3",
+          "d2-on-3"
+        ],
+        "assistant_off": 27.58330689103481,
+        "assistant_on": 27.685474810138423,
+        "assistant_gain_pct": 0.37039764487709625,
+        "corpus_off": 21.223986058957106,
+        "corpus_on": 21.157513259170166,
+        "corpus_gain_pct": -0.3131965861751351,
+        "prefill_off": 1187.9643780052731,
+        "prefill_on": 1192.2172535622208,
+        "proof_exact": true,
+        "cases": [
+          {
+            "id": "corpus_8k",
+            "tokens": 128,
+            "calls": 73,
+            "off_seconds": 6.030912367,
+            "on_seconds": 6.049860323,
+            "gain_pct": -0.3131965861751351,
+            "off_prefill_seconds": 6.895829666,
+            "on_prefill_seconds": 6.871230873
+          },
+          {
+            "id": "held_ko",
+            "tokens": 89,
+            "calls": 47,
+            "off_seconds": 3.898347669,
+            "on_seconds": 3.898603121,
+            "gain_pct": -0.00655239818138087,
+            "off_prefill_seconds": 0.362413724,
+            "on_prefill_seconds": 0.367458021
+          },
+          {
+            "id": "held_en",
+            "tokens": 63,
+            "calls": 28,
+            "off_seconds": 2.3278969910000002,
+            "on_seconds": 2.33133015,
+            "gain_pct": -0.14726181103090763,
+            "off_prefill_seconds": 0.276842124,
+            "on_prefill_seconds": 0.274162117
+          },
+          {
+            "id": "held_zh",
+            "tokens": 65,
+            "calls": 33,
+            "off_seconds": 2.744903242,
+            "on_seconds": 2.746791531,
+            "gain_pct": -0.06874526074108767,
+            "off_prefill_seconds": 0.26858686,
+            "on_prefill_seconds": 0.26619899
+          },
+          {
+            "id": "held_code",
+            "tokens": 53,
+            "calls": 18,
+            "off_seconds": 1.494049786,
+            "on_seconds": 1.5002832289999999,
+            "gain_pct": -0.41548441517638146,
+            "off_prefill_seconds": 0.310196567,
+            "on_prefill_seconds": 0.306504922
+          },
+          {
+            "id": "held_math",
+            "tokens": 128,
+            "calls": 48,
+            "off_seconds": 3.987267072,
+            "on_seconds": 3.9524588,
+            "gain_pct": 0.8806738731849562,
+            "off_prefill_seconds": 0.314598825,
+            "on_prefill_seconds": 0.310880313
+          },
+          {
+            "id": "held_json",
+            "tokens": 22,
+            "calls": 8,
+            "off_seconds": 0.682269944,
+            "on_seconds": 0.679806775,
+            "gain_pct": 0.36233369401179605,
+            "off_prefill_seconds": 0.320975078,
+            "on_prefill_seconds": 0.324408294
+          },
+          {
+            "id": "held_ko_summary",
+            "tokens": 111,
+            "calls": 42,
+            "off_seconds": 3.448496309,
+            "on_seconds": 3.441133057,
+            "gain_pct": 0.21397754396683677,
+            "off_prefill_seconds": 0.474197662,
+            "on_prefill_seconds": 0.479002956
+          },
+          {
+            "id": "held_ko_free",
+            "tokens": 128,
+            "calls": 68,
+            "off_seconds": 5.671176256,
+            "on_seconds": 5.615197545,
+            "gain_pct": 0.9969143659041002,
+            "off_prefill_seconds": 0.343728468,
+            "on_prefill_seconds": 0.345898533
+          },
+          {
+            "id": "held_tool_call",
+            "tokens": 28,
+            "calls": 11,
+            "off_seconds": 0.912613091,
+            "on_seconds": 0.910889061,
+            "gain_pct": 0.18926893227890762,
+            "off_prefill_seconds": 0.556604549,
+            "on_prefill_seconds": 0.557050587
+          },
+          {
+            "id": "held_tool_followup",
+            "tokens": 32,
+            "calls": 11,
+            "off_seconds": 0.899469885,
+            "on_seconds": 0.893803608,
+            "gain_pct": 0.6339510099627965,
+            "off_prefill_seconds": 0.586847326,
+            "on_prefill_seconds": 0.603784342
+          }
+        ]
+      }
+    ],
+    "assistant": {
+      "off": [
+        27.645989787709873,
+        27.66115399348364,
+        27.58330689103481
+      ],
+      "on": [
+        27.68886550272161,
+        27.702813010023466,
+        27.685474810138423
+      ],
+      "median_gain_pct": 0.15508837028797018
+    },
+    "corpus": {
+      "off": [
+        21.21056871097186,
+        21.288087731014247,
+        21.223986058957106
+      ],
+      "on": [
+        21.33772334586565,
+        21.176774894208453,
+        21.157513259170166
+      ],
+      "median_gain_pct": -0.22244249792431336
+    },
+    "prefill": {
+      "off": [
+        1175.2440659780193,
+        1188.1595581924757,
+        1187.9643780052731
+      ],
+      "on": [
+        1201.752428545119,
+        1197.0590214416113,
+        1192.2172535622208
+      ],
+      "median_gain_pct": 0.7655653321532396
+    }
+  },
+  "receipts": [
+    {
+      "name": "d2-off-1",
+      "kind": "mtp",
+      "controls": {
+        "DS4_LING31_KDA_RELOAD": "0"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-off-1.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/mtp_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-off-1.json"
+      ],
+      "start": 1793184391.4869642,
+      "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+      "diff_sha256": "7d1e90f5f0d48f5c4e55d0b43455a437916d37a0ead20e08ceef878c43d7c341",
+      "binary_sha256": "4b4aa5ff6354e19f854a220d074bee5f224f5b2cf0531ddae6f76bc389f63d5c",
+      "source_sha256": "cd785946a3a966adccc8b7c61f1d2acee095965fc8139592893c571eabc78a75",
+      "status": 0,
+      "end": 1793184510.16336,
+      "available_gib_min": 6.334606170654297,
+      "psi_full_avg10_max": 0.0,
+      "output_sha256": "a63908f614db00a0e38c2c4a710a41064edc8e62a5d79f045031335515a46884",
+      "raw_log_sha256": "88ab9a40f12894e44ad6306abbf877dc46c029e5bef5e5bc4bc5c6ec55a2972a"
+    },
+    {
+      "name": "d2-on-1",
+      "kind": "mtp",
+      "controls": {
+        "DS4_LING31_KDA_RELOAD": "1"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-on-1.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/mtp_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-on-1.json"
+      ],
+      "start": 1793184545.6774518,
+      "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+      "diff_sha256": "7d1e90f5f0d48f5c4e55d0b43455a437916d37a0ead20e08ceef878c43d7c341",
+      "binary_sha256": "4b4aa5ff6354e19f854a220d074bee5f224f5b2cf0531ddae6f76bc389f63d5c",
+      "source_sha256": "cd785946a3a966adccc8b7c61f1d2acee095965fc8139592893c571eabc78a75",
+      "status": 0,
+      "end": 1793184669.6528895,
+      "available_gib_min": 6.315406799316406,
+      "psi_full_avg10_max": 0.0,
+      "output_sha256": "c187e75bd5c11c8773eb53912278c09a434dd3dfb8009dc997f6ad39f7dfdf17",
+      "raw_log_sha256": "691c3e59cbdc8f54352b13774cb2041ed61e33810328ec162be798083118ced0"
+    },
+    {
+      "name": "d2-off-2",
+      "kind": "mtp",
+      "controls": {
+        "DS4_LING31_KDA_RELOAD": "0"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-off-2.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/mtp_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-off-2.json"
+      ],
+      "start": 1793184790.2835608,
+      "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+      "diff_sha256": "7d1e90f5f0d48f5c4e55d0b43455a437916d37a0ead20e08ceef878c43d7c341",
+      "binary_sha256": "4b4aa5ff6354e19f854a220d074bee5f224f5b2cf0531ddae6f76bc389f63d5c",
+      "source_sha256": "cd785946a3a966adccc8b7c61f1d2acee095965fc8139592893c571eabc78a75",
+      "status": 0,
+      "end": 1793184915.0186665,
+      "available_gib_min": 6.217983245849609,
+      "psi_full_avg10_max": 0.0,
+      "output_sha256": "feb0086b6a689b2641965187b5dc7972ccb95872bccfa6742e628b75dca4242d",
+      "raw_log_sha256": "4646331cde4ac81f57239480aea7a16c0b55693cd3d7e376b1bdd29046b6394f"
+    },
+    {
+      "name": "d2-on-2",
+      "kind": "mtp",
+      "controls": {
+        "DS4_LING31_KDA_RELOAD": "1"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-on-2.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/mtp_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-on-2.json"
+      ],
+      "start": 1793184670.795207,
+      "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+      "diff_sha256": "7d1e90f5f0d48f5c4e55d0b43455a437916d37a0ead20e08ceef878c43d7c341",
+      "binary_sha256": "4b4aa5ff6354e19f854a220d074bee5f224f5b2cf0531ddae6f76bc389f63d5c",
+      "source_sha256": "cd785946a3a966adccc8b7c61f1d2acee095965fc8139592893c571eabc78a75",
+      "status": 0,
+      "end": 1793184789.692868,
+      "available_gib_min": 6.372890472412109,
+      "psi_full_avg10_max": 0.0,
+      "output_sha256": "edc3ec902c62b891e2c24565f20e3fa8bb2b575ebf1613b7e261fa84bb2cdd75",
+      "raw_log_sha256": "b1946e477f3f65075598f4d764369a03e223e2248c311021ac146b6d8262740d"
+    },
+    {
+      "name": "d2-off-3",
+      "kind": "mtp",
+      "controls": {
+        "DS4_LING31_KDA_RELOAD": "0"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-off-3.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/mtp_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-off-3.json"
+      ],
+      "start": 1793184916.6019042,
+      "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+      "diff_sha256": "7d1e90f5f0d48f5c4e55d0b43455a437916d37a0ead20e08ceef878c43d7c341",
+      "binary_sha256": "4b4aa5ff6354e19f854a220d074bee5f224f5b2cf0531ddae6f76bc389f63d5c",
+      "source_sha256": "cd785946a3a966adccc8b7c61f1d2acee095965fc8139592893c571eabc78a75",
+      "status": 0,
+      "end": 1793185035.0509238,
+      "available_gib_min": 6.258228302001953,
+      "psi_full_avg10_max": 0.0,
+      "output_sha256": "452033f0db39d6a2d7e1a6d6cb22569b9ea643afb66fb0773d86317c20a6b8c6",
+      "raw_log_sha256": "9b898a79ec3965f2f277a8a91eaee57685648d1547533ea0e6a4e2f820be32e0"
+    },
+    {
+      "name": "d2-on-3",
+      "kind": "mtp",
+      "controls": {
+        "DS4_LING31_KDA_RELOAD": "1"
+      },
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "40",
+        "--timeout",
+        "900",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-on-3.memory.jsonl",
+        "--",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/mtp_perf",
+        "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+        "tests/fixtures/ling31/evaluation-token-ids.json",
+        "2",
+        "128",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-on-3.json"
+      ],
+      "start": 1793185035.6265001,
+      "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+      "diff_sha256": "7d1e90f5f0d48f5c4e55d0b43455a437916d37a0ead20e08ceef878c43d7c341",
+      "binary_sha256": "4b4aa5ff6354e19f854a220d074bee5f224f5b2cf0531ddae6f76bc389f63d5c",
+      "source_sha256": "cd785946a3a966adccc8b7c61f1d2acee095965fc8139592893c571eabc78a75",
+      "status": 0,
+      "end": 1793185160.7449546,
+      "available_gib_min": 6.353271484375,
+      "psi_full_avg10_max": 0.0,
+      "output_sha256": "b423af92fc039c7da0c8be2ddc11e723e7bcd9e2c25e63cd3a86ca47622f5ad6",
+      "raw_log_sha256": "958ecae85d861634c5b4387a7ca7a3f4364e850ba250925722cda484e66a06df"
+    }
+  ],
+  "f32_proofs": [
+    {
+      "pair": 1,
+      "case": "corpus_8k",
+      "key": "frontier_logits",
+      "sha256": "02cc4d19667809cfd1a60145b25f4cb6163e6af898a16b64aa1cc8bd845a3c73"
+    },
+    {
+      "pair": 1,
+      "case": "corpus_8k",
+      "key": "end_logits",
+      "sha256": "f68b46e5773971609cb8eaaf3654e155f7f7865185fe0f91b28fec96cd29a772"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko",
+      "key": "frontier_logits",
+      "sha256": "29c96fa6e71951f5e54516e470a95f7fcdc4b1ecd8f8071a2008d9ac18f8a2b8"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko",
+      "key": "end_logits",
+      "sha256": "91dc035090015497b64e67205bdb815b9d005f92296123dd6903b0de394f7731"
+    },
+    {
+      "pair": 1,
+      "case": "held_en",
+      "key": "frontier_logits",
+      "sha256": "f46adc36dc60567e0772112124718aeda852236247fca99487cecc94bc43274a"
+    },
+    {
+      "pair": 1,
+      "case": "held_en",
+      "key": "end_logits",
+      "sha256": "9abc86abb44e27e57b3d80863454b2d318b70d37c24d3d447fe2fc39545a7a75"
+    },
+    {
+      "pair": 1,
+      "case": "held_zh",
+      "key": "frontier_logits",
+      "sha256": "59c0b5deca8f275aa278e437356c2e2112047801aeaf06f070fb52fa7233dad4"
+    },
+    {
+      "pair": 1,
+      "case": "held_zh",
+      "key": "end_logits",
+      "sha256": "ac1bffa17cdcd0083392a1778de051623056576994cae6514387700545165275"
+    },
+    {
+      "pair": 1,
+      "case": "held_code",
+      "key": "frontier_logits",
+      "sha256": "1bb051358a5db228bd12ac15e4d57c7857d187646edbfd1dd699c403e1677e6f"
+    },
+    {
+      "pair": 1,
+      "case": "held_code",
+      "key": "end_logits",
+      "sha256": "9d2545e74d49ee4b6d87401f5cbabfe5a7bbbaa3dab0fe7088d1fdc5ac52938d"
+    },
+    {
+      "pair": 1,
+      "case": "held_math",
+      "key": "frontier_logits",
+      "sha256": "d35fd9d9db8775a0d5c99097cad796bd34ba272007afea29e5274fa586a0f8cf"
+    },
+    {
+      "pair": 1,
+      "case": "held_math",
+      "key": "end_logits",
+      "sha256": "a88ee1ad1532bad35741b228a84a566efc115bf2236ac2988660b76c3e289b8c"
+    },
+    {
+      "pair": 1,
+      "case": "held_json",
+      "key": "frontier_logits",
+      "sha256": "48cfe2aa593cc4babeb31a389af66778106da1f23d9d375fbd5f7f88e41e0c32"
+    },
+    {
+      "pair": 1,
+      "case": "held_json",
+      "key": "end_logits",
+      "sha256": "c932ee4d3b07e58e5819845d4a951de1b011dedc53ea2fa5470c3f970c17c9d0"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_summary",
+      "key": "frontier_logits",
+      "sha256": "1749a02259c36d11060d865bea70934341819e231d5c536314cc1d679beea9ae"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_summary",
+      "key": "end_logits",
+      "sha256": "a43c110aa72224b6c14b0341fa1208b728d5a5ec400cc05de826ac64186deaac"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_free",
+      "key": "frontier_logits",
+      "sha256": "91759cce7d8dca07303e9d241b1fb2981823af96e1c44e7abb69873f962547fa"
+    },
+    {
+      "pair": 1,
+      "case": "held_ko_free",
+      "key": "end_logits",
+      "sha256": "794c9e5040e0d3402dab33d146e2f233d896a7e601a5515e07d43e4c27754a8e"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_call",
+      "key": "frontier_logits",
+      "sha256": "e6420482a9b411eaeda252176543f9e43f0990cc76cc0f8cddf94e33b6175348"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_call",
+      "key": "end_logits",
+      "sha256": "de45cc4d885d2f165e2ba1b6558e78cb90f8af07009c1ffd535078381053590c"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_followup",
+      "key": "frontier_logits",
+      "sha256": "cab49c62ceed4295d3381b0dc57093c103da3c2ab73b74e908466200ce3e677d"
+    },
+    {
+      "pair": 1,
+      "case": "held_tool_followup",
+      "key": "end_logits",
+      "sha256": "1aaf6dacf2642d535476d7aa4dfeecb0497e8e0bc991b879e4c3f10d31254a61"
+    },
+    {
+      "pair": 2,
+      "case": "corpus_8k",
+      "key": "frontier_logits",
+      "sha256": "02cc4d19667809cfd1a60145b25f4cb6163e6af898a16b64aa1cc8bd845a3c73"
+    },
+    {
+      "pair": 2,
+      "case": "corpus_8k",
+      "key": "end_logits",
+      "sha256": "f68b46e5773971609cb8eaaf3654e155f7f7865185fe0f91b28fec96cd29a772"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko",
+      "key": "frontier_logits",
+      "sha256": "29c96fa6e71951f5e54516e470a95f7fcdc4b1ecd8f8071a2008d9ac18f8a2b8"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko",
+      "key": "end_logits",
+      "sha256": "91dc035090015497b64e67205bdb815b9d005f92296123dd6903b0de394f7731"
+    },
+    {
+      "pair": 2,
+      "case": "held_en",
+      "key": "frontier_logits",
+      "sha256": "f46adc36dc60567e0772112124718aeda852236247fca99487cecc94bc43274a"
+    },
+    {
+      "pair": 2,
+      "case": "held_en",
+      "key": "end_logits",
+      "sha256": "9abc86abb44e27e57b3d80863454b2d318b70d37c24d3d447fe2fc39545a7a75"
+    },
+    {
+      "pair": 2,
+      "case": "held_zh",
+      "key": "frontier_logits",
+      "sha256": "59c0b5deca8f275aa278e437356c2e2112047801aeaf06f070fb52fa7233dad4"
+    },
+    {
+      "pair": 2,
+      "case": "held_zh",
+      "key": "end_logits",
+      "sha256": "ac1bffa17cdcd0083392a1778de051623056576994cae6514387700545165275"
+    },
+    {
+      "pair": 2,
+      "case": "held_code",
+      "key": "frontier_logits",
+      "sha256": "1bb051358a5db228bd12ac15e4d57c7857d187646edbfd1dd699c403e1677e6f"
+    },
+    {
+      "pair": 2,
+      "case": "held_code",
+      "key": "end_logits",
+      "sha256": "9d2545e74d49ee4b6d87401f5cbabfe5a7bbbaa3dab0fe7088d1fdc5ac52938d"
+    },
+    {
+      "pair": 2,
+      "case": "held_math",
+      "key": "frontier_logits",
+      "sha256": "d35fd9d9db8775a0d5c99097cad796bd34ba272007afea29e5274fa586a0f8cf"
+    },
+    {
+      "pair": 2,
+      "case": "held_math",
+      "key": "end_logits",
+      "sha256": "a88ee1ad1532bad35741b228a84a566efc115bf2236ac2988660b76c3e289b8c"
+    },
+    {
+      "pair": 2,
+      "case": "held_json",
+      "key": "frontier_logits",
+      "sha256": "48cfe2aa593cc4babeb31a389af66778106da1f23d9d375fbd5f7f88e41e0c32"
+    },
+    {
+      "pair": 2,
+      "case": "held_json",
+      "key": "end_logits",
+      "sha256": "c932ee4d3b07e58e5819845d4a951de1b011dedc53ea2fa5470c3f970c17c9d0"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_summary",
+      "key": "frontier_logits",
+      "sha256": "1749a02259c36d11060d865bea70934341819e231d5c536314cc1d679beea9ae"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_summary",
+      "key": "end_logits",
+      "sha256": "a43c110aa72224b6c14b0341fa1208b728d5a5ec400cc05de826ac64186deaac"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_free",
+      "key": "frontier_logits",
+      "sha256": "91759cce7d8dca07303e9d241b1fb2981823af96e1c44e7abb69873f962547fa"
+    },
+    {
+      "pair": 2,
+      "case": "held_ko_free",
+      "key": "end_logits",
+      "sha256": "794c9e5040e0d3402dab33d146e2f233d896a7e601a5515e07d43e4c27754a8e"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_call",
+      "key": "frontier_logits",
+      "sha256": "e6420482a9b411eaeda252176543f9e43f0990cc76cc0f8cddf94e33b6175348"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_call",
+      "key": "end_logits",
+      "sha256": "de45cc4d885d2f165e2ba1b6558e78cb90f8af07009c1ffd535078381053590c"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_followup",
+      "key": "frontier_logits",
+      "sha256": "cab49c62ceed4295d3381b0dc57093c103da3c2ab73b74e908466200ce3e677d"
+    },
+    {
+      "pair": 2,
+      "case": "held_tool_followup",
+      "key": "end_logits",
+      "sha256": "1aaf6dacf2642d535476d7aa4dfeecb0497e8e0bc991b879e4c3f10d31254a61"
+    },
+    {
+      "pair": 3,
+      "case": "corpus_8k",
+      "key": "frontier_logits",
+      "sha256": "02cc4d19667809cfd1a60145b25f4cb6163e6af898a16b64aa1cc8bd845a3c73"
+    },
+    {
+      "pair": 3,
+      "case": "corpus_8k",
+      "key": "end_logits",
+      "sha256": "f68b46e5773971609cb8eaaf3654e155f7f7865185fe0f91b28fec96cd29a772"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko",
+      "key": "frontier_logits",
+      "sha256": "29c96fa6e71951f5e54516e470a95f7fcdc4b1ecd8f8071a2008d9ac18f8a2b8"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko",
+      "key": "end_logits",
+      "sha256": "91dc035090015497b64e67205bdb815b9d005f92296123dd6903b0de394f7731"
+    },
+    {
+      "pair": 3,
+      "case": "held_en",
+      "key": "frontier_logits",
+      "sha256": "f46adc36dc60567e0772112124718aeda852236247fca99487cecc94bc43274a"
+    },
+    {
+      "pair": 3,
+      "case": "held_en",
+      "key": "end_logits",
+      "sha256": "9abc86abb44e27e57b3d80863454b2d318b70d37c24d3d447fe2fc39545a7a75"
+    },
+    {
+      "pair": 3,
+      "case": "held_zh",
+      "key": "frontier_logits",
+      "sha256": "59c0b5deca8f275aa278e437356c2e2112047801aeaf06f070fb52fa7233dad4"
+    },
+    {
+      "pair": 3,
+      "case": "held_zh",
+      "key": "end_logits",
+      "sha256": "ac1bffa17cdcd0083392a1778de051623056576994cae6514387700545165275"
+    },
+    {
+      "pair": 3,
+      "case": "held_code",
+      "key": "frontier_logits",
+      "sha256": "1bb051358a5db228bd12ac15e4d57c7857d187646edbfd1dd699c403e1677e6f"
+    },
+    {
+      "pair": 3,
+      "case": "held_code",
+      "key": "end_logits",
+      "sha256": "9d2545e74d49ee4b6d87401f5cbabfe5a7bbbaa3dab0fe7088d1fdc5ac52938d"
+    },
+    {
+      "pair": 3,
+      "case": "held_math",
+      "key": "frontier_logits",
+      "sha256": "d35fd9d9db8775a0d5c99097cad796bd34ba272007afea29e5274fa586a0f8cf"
+    },
+    {
+      "pair": 3,
+      "case": "held_math",
+      "key": "end_logits",
+      "sha256": "a88ee1ad1532bad35741b228a84a566efc115bf2236ac2988660b76c3e289b8c"
+    },
+    {
+      "pair": 3,
+      "case": "held_json",
+      "key": "frontier_logits",
+      "sha256": "48cfe2aa593cc4babeb31a389af66778106da1f23d9d375fbd5f7f88e41e0c32"
+    },
+    {
+      "pair": 3,
+      "case": "held_json",
+      "key": "end_logits",
+      "sha256": "c932ee4d3b07e58e5819845d4a951de1b011dedc53ea2fa5470c3f970c17c9d0"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_summary",
+      "key": "frontier_logits",
+      "sha256": "1749a02259c36d11060d865bea70934341819e231d5c536314cc1d679beea9ae"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_summary",
+      "key": "end_logits",
+      "sha256": "a43c110aa72224b6c14b0341fa1208b728d5a5ec400cc05de826ac64186deaac"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_free",
+      "key": "frontier_logits",
+      "sha256": "91759cce7d8dca07303e9d241b1fb2981823af96e1c44e7abb69873f962547fa"
+    },
+    {
+      "pair": 3,
+      "case": "held_ko_free",
+      "key": "end_logits",
+      "sha256": "794c9e5040e0d3402dab33d146e2f233d896a7e601a5515e07d43e4c27754a8e"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_call",
+      "key": "frontier_logits",
+      "sha256": "e6420482a9b411eaeda252176543f9e43f0990cc76cc0f8cddf94e33b6175348"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_call",
+      "key": "end_logits",
+      "sha256": "de45cc4d885d2f165e2ba1b6558e78cb90f8af07009c1ffd535078381053590c"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_followup",
+      "key": "frontier_logits",
+      "sha256": "cab49c62ceed4295d3381b0dc57093c103da3c2ab73b74e908466200ce3e677d"
+    },
+    {
+      "pair": 3,
+      "case": "held_tool_followup",
+      "key": "end_logits",
+      "sha256": "1aaf6dacf2642d535476d7aa4dfeecb0497e8e0bc991b879e4c3f10d31254a61"
+    }
+  ],
+  "plain_decode_sass": [
+    {
+      "name": "_Z19glmvq_decode_reduceIL12glmvq_reduce1ELj4096EEvPfPKfS3_PK17glmvq_decode_itemS3_",
+      "new_name": "_Z19glmvq_decode_reduceIL12glmvq_reduce1ELj4096EEvPfPKfS3_PK17glmvq_decode_itemS3_",
+      "before": 80,
+      "after": 80,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z17glmvq_decode_downILj12ELj32EL17glmvq_decode_gain1ELj1280ELb0ELj4096ELj8EEvPK17glmvq_decode_itemPK5uint4PK13__nv_bfloat16PfS6_",
+      "new_name": "_Z17glmvq_decode_downILj12ELj32EL17glmvq_decode_gain1ELj1280ELb0ELj4096ELj8EEvPK17glmvq_decode_itemPK5uint4PK13__nv_bfloat16PfS6_",
+      "before": 712,
+      "after": 712,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z15glmvq_decode_guILj12ELj32EL19glmvq_decode_output0EL17glmvq_decode_gain1ELj1280EL11glmvq_clamp1ELb0ELj4096EEvPK17glmvq_decode_itemPK5uint4PKfP13__nv_bfloat16fPfSD_S8_",
+      "new_name": "_Z15glmvq_decode_guILj12ELj32EL19glmvq_decode_output0EL17glmvq_decode_gain1ELj1280EL11glmvq_clamp1ELb0ELj4096EEvPK17glmvq_decode_itemPK5uint4PKfP13__nv_bfloat16fPfSD_S8_",
+      "before": 1784,
+      "after": 1784,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z14glmvq_bf16_dotIL14glmvq_dot_math0ELj1EEvPK13__nv_bfloat16PKfPfjjjj",
+      "new_name": "_Z14glmvq_bf16_dotIL14glmvq_dot_math0ELj1EEvPK13__nv_bfloat16PKfPfjjjj",
+      "before": 440,
+      "after": 440,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z14glmvq_bf16_dotIL14glmvq_dot_math1ELj1EEvPK13__nv_bfloat16PKfPfjjjj",
+      "new_name": "_Z14glmvq_bf16_dotIL14glmvq_dot_math1ELj1EEvPK13__nv_bfloat16PKfPfjjjj",
+      "before": 368,
+      "after": 368,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z14glmvq_q4_smallILj1EEvPKhPKfPfjjjj",
+      "new_name": "_Z14glmvq_q4_smallILj1EEvPKhPKfPfjjjj",
+      "before": 352,
+      "after": 352,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z15glmvq_q4_streamILj1EL13glmvq_q4_load1EEvPKhPKfPfjjjj",
+      "new_name": "_Z15glmvq_q4_streamILj1EL13glmvq_q4_load1EEvPKhPKfPfjjjj",
+      "before": 464,
+      "after": 464,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z16step37_attn_gatePfPKfm",
+      "new_name": "_Z16step37_attn_gatePfPKfm",
+      "before": 40,
+      "after": 40,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z16l31_residual_rmsIfffEvPfPKfPK13__nv_bfloat16PT_jf",
+      "new_name": "_Z16l31_residual_rmsIfffEvPfPKfPK13__nv_bfloat16PT_jf",
+      "before": 1240,
+      "after": 1240,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z16l31_store_latentIL14ds4_l31_latent2EEvPvP13__nv_bfloat16PKfS5_jj",
+      "new_name": "_Z16l31_store_latentIL14ds4_l31_latent2EEvPvP13__nv_bfloat16PKfS5_jj",
+      "before": 120,
+      "after": 120,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z12glmvq_swigluIfL11glmvq_clamp1EEvPKfS2_PT_mf",
+      "new_name": "_Z12glmvq_swigluIfL11glmvq_clamp1EEvPKfS2_PT_mf",
+      "before": 136,
+      "after": 136,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z16l31_decode_routeP17glmvq_decode_itemPKiPKjPK12glmvq_source",
+      "new_name": "_Z16l31_decode_routeP17glmvq_decode_itemPKiPKjPK12glmvq_source",
+      "before": 120,
+      "after": 120,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z13l31_fa_kernelILb1EEvPfS0_S0_PKfS2_PKvPKaPK13__nv_bfloat16jjf",
+      "new_name": "_Z13l31_fa_kernelILb1EEvPfS0_S0_PKfS2_PKvPKaPK13__nv_bfloat16jjf",
+      "before": 2064,
+      "after": 2064,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z14l31_fa_combinePfPKfS1_j",
+      "new_name": "_Z14l31_fa_combinePfPKfS1_j",
+      "before": 400,
+      "after": 400,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z16ling3vl_rms_normPfPKfS1_jjjf",
+      "new_name": "_Z16ling3vl_rms_normPfPKfS1_jjjf",
+      "before": 96,
+      "after": 96,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z26ling3vl_value_project_bf16PfPKfPK13__nv_bfloat16jjjj",
+      "new_name": "_Z26ling3vl_value_project_bf16PfPKfPK13__nv_bfloat16jjjj",
+      "before": 360,
+      "after": 360,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z22ling3vl_qk_absorb_bf16PfPKfPK13__nv_bfloat16jjjjj",
+      "new_name": "_Z22ling3vl_qk_absorb_bf16PfPKfPK13__nv_bfloat16jjjjj",
+      "before": 360,
+      "after": 360,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z13ling3vl_mropePfPKiPKfjjjjjjmf",
+      "new_name": "_Z13ling3vl_mropePfPKiPKfjjjjjjmf",
+      "before": 432,
+      "after": 432,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z14ling3vl_routerPiPfPKfS2_f",
+      "new_name": "_Z14ling3vl_routerPiPfPKfS2_f",
+      "before": 3288,
+      "after": 3288,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z9glmvq_kdaILb0EEvPfS0_S0_S0_S0_PKfS2_S2_S2_S2_S2_S2_S2_S2_S2_jjf14glmvq_kda_snap",
+      "new_name": "_Z9glmvq_kdaILb0EL15glmvq_kda_reads0EEvPfS1_S1_S1_S1_PKfS3_S3_S3_S3_S3_S3_S3_S3_S3_jjf14glmvq_kda_snap",
+      "before": 880,
+      "after": 880,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z9glmvq_q4mILj1ELj16ELj16ELj2EL18glmvq_q4m_epilogue2EEvPKhS2_PKfPfjjjf",
+      "new_name": "_Z9glmvq_q4mILj1ELj16ELj16ELj2EL18glmvq_q4m_epilogue2EEvPKhS2_PKfPfjjjf",
+      "before": 920,
+      "after": 920,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z20glmvq_q4_stream_manyILj1EEv13glmvq_q4_manyPKfjjj",
+      "new_name": "_Z20glmvq_q4_stream_manyILj1EEv13glmvq_q4_manyPKfjjj",
+      "before": 496,
+      "after": 496,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z14glmvq_rms_warpPKfPK13__nv_bfloat16S0_Pfjjf10glmvq_norm",
+      "new_name": "_Z14glmvq_rms_warpPKfPK13__nv_bfloat16S0_Pfjjf10glmvq_norm",
+      "before": 1264,
+      "after": 1264,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z9glmvq_rmsPKfPK13__nv_bfloat16S0_Pfjf10glmvq_norm",
+      "new_name": "_Z9glmvq_rmsPKfPK13__nv_bfloat16S0_Pfjf10glmvq_norm",
+      "before": 2312,
+      "after": 2312,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z10glmvq_copyPjPKjm",
+      "new_name": "_Z10glmvq_copyPjPKjm",
+      "before": 32,
+      "after": 32,
+      "raw_equal": true
+    },
+    {
+      "name": "_Z16glmvq_round_rowsPfm",
+      "new_name": "_Z16glmvq_round_rowsPfm",
+      "before": 32,
+      "after": 32,
+      "raw_equal": true
+    }
+  ],
+  "fixture": {
+    "command": "tests/test_glm_vq_kda --verify",
+    "status": 0,
+    "log": "kda verify rows=2 heads=3 snapshots=1 reads=0: state, output, rollback, canaries ok\nkda verify rows=2 heads=3 snapshots=1 reads=1: state, output, rollback, canaries ok\nkda verify rows=3 heads=3 snapshots=1 reads=0: state, output, rollback, canaries ok\nkda verify rows=3 heads=3 snapshots=1 reads=1: state, output, rollback, canaries ok\nkda verify rows=4 heads=3 snapshots=1 reads=0: state, output, rollback, canaries ok\nkda verify rows=4 heads=3 snapshots=1 reads=1: state, output, rollback, canaries ok\nkda verify rows=3 heads=64 snapshots=1 reads=0: state, output, rollback, canaries ok\nkda verify rows=3 heads=64 snapshots=1 reads=1: state, output, rollback, canaries ok\nkda verify rows=3 heads=3 snapshots=0 reads=0: state, output, rollback, canaries ok\nkda verify rows=3 heads=3 snapshots=0 reads=1: state, output, rollback, canaries ok\nkda verify rows=5 heads=3 snapshots=0 reads=0: state, output, rollback, canaries ok\nkda verify rows=5 heads=3 snapshots=0 reads=1: state, output, rollback, canaries ok\nkda verify rows=63 heads=3 snapshots=0 reads=0: state, output, rollback, canaries ok\nkda verify rows=63 heads=3 snapshots=0 reads=1: state, output, rollback, canaries ok\nall ok\n",
+    "sha256": "32bbf3fc2f5830a44b4d6750d93bdf394eab757711a594452b22bfeb213904da"
+  },
+  "isolated": {
+    "shape": {
+      "heads": 64,
+      "dimension": 128,
+      "rows": 3,
+      "snapshots": 2
+    },
+    "baseline_median_us": [
+      75.946,
+      77.197,
+      76.676
+    ],
+    "reload_median_us": [
+      71.039,
+      66.699,
+      71.565
+    ],
+    "full_result_state_snapshot_hash": "8317b42de9be9609",
+    "ncu": {
+      "base": {
+        "gpu__time_duration.sum": {
+          "value": "74.752000",
+          "unit": "us"
+        },
+        "launch__registers_per_thread": {
+          "value": "255",
+          "unit": "register/thread"
+        },
+        "smsp__inst_executed.sum": {
+          "value": "1281536.000000",
+          "unit": "inst"
+        },
+        "memory_l2_theoretical_sectors_local": {
+          "value": "246784",
+          "unit": "sectors"
+        },
+        "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+          "value": "161762",
+          "unit": ""
+        },
+        "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+          "value": "638976.000000",
+          "unit": "sector"
+        },
+        "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+          "value": "642048.000000",
+          "unit": "sector"
+        },
+        "sm__warps_active.avg.pct_of_peak_sustained_active": {
+          "value": "11.546740",
+          "unit": "%"
+        },
+        "smsp__warps_eligible.avg.per_cycle_active": {
+          "value": "0.060620",
+          "unit": "warp"
+        }
+      },
+      "volatile": {
+        "gpu__time_duration.sum": {
+          "value": "72.832000",
+          "unit": "us"
+        },
+        "launch__registers_per_thread": {
+          "value": "168",
+          "unit": "register/thread"
+        },
+        "smsp__inst_executed.sum": {
+          "value": "1540608.000000",
+          "unit": "inst"
+        },
+        "memory_l2_theoretical_sectors_local": {
+          "value": "0",
+          "unit": "sectors"
+        },
+        "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+          "value": "404312",
+          "unit": ""
+        },
+        "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+          "value": "638976.000000",
+          "unit": "sector"
+        },
+        "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+          "value": "642048.000000",
+          "unit": "sector"
+        },
+        "sm__warps_active.avg.pct_of_peak_sustained_active": {
+          "value": "12.031599",
+          "unit": "%"
+        },
+        "smsp__warps_eligible.avg.per_cycle_active": {
+          "value": "0.070515",
+          "unit": "warp"
+        }
+      }
+    },
+    "native_resources": "\nFatbin elf code:\n================\narch = sm_121a\ncode version = [1,8]\nhost = linux\ncompile_size = 64bit\ncompressed\n\nResource usage:\n Common:\n  GLOBAL:9206 CONSTANT[3]:2400 CONSTANT[4]:336\n Function _Z9glmvq_kdaILb1EL15glmvq_kda_reads0EEvPfS1_S1_S1_S1_PKfS3_S3_S3_S3_S3_S3_S3_S3_S3_jjf14glmvq_kda_snap:\n  REG:255 STACK:160 SHARED:4096 LOCAL:0 CONSTANT[0]:1072 TEXTURE:0 SURFACE:0 SAMPLER:0\n Function _Z9glmvq_kdaILb1EL15glmvq_kda_reads1EEvPfS1_S1_S1_S1_PKfS3_S3_S3_S3_S3_S3_S3_S3_S3_jjf14glmvq_kda_snap:\n  REG:168 STACK:0 SHARED:4096 LOCAL:0 CONSTANT[0]:1072 TEXTURE:0 SURFACE:0 SAMPLER:0\n"
+  },
+  "profiles": {
+    "mtp-kda-base-profile": {
+      "receipt": {
+        "name": "mtp-kda-base-profile",
+        "command": [
+          "python3",
+          "tools/host_memory_guard.py",
+          "--max-gib",
+          "128",
+          "--high-gib",
+          "128",
+          "--reserve-gib",
+          "2",
+          "--trip-gib",
+          "2",
+          "--psi-full-limit",
+          "40",
+          "--timeout",
+          "900",
+          "--log",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/mtp-kda-base-profile.memory.jsonl",
+          "--",
+          "taskset",
+          "-c",
+          "5-9,15-19",
+          "/usr/local/cuda/bin/nsys",
+          "profile",
+          "--trace=cuda,nvtx",
+          "--sample=none",
+          "--cpuctxsw=none",
+          "--force-overwrite=true",
+          "-o",
+          "scratch/ling31-perf-20261028/mtp-kda-base-profile",
+          "./ds4-bench-perf",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+          "--prompt-file",
+          "speed-bench/promessi_sposi.txt",
+          "--ctx-start",
+          "8192",
+          "--ctx-max",
+          "8192",
+          "--warmup-prefill",
+          "8192",
+          "--gen-tokens",
+          "128",
+          "--csv",
+          "scratch/ling31-perf-20261028/mtp-kda-base-profile.csv",
+          "--mtp-draft",
+          "2"
+        ],
+        "controls": {
+          "DS4_GLMVQ_PDL": "0"
+        },
+        "start": 1793183889.3054748,
+        "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "binary_sha256": "e46ae0eee7befb3410e658b987f967b80deb1d785b6bbee1636b560715e22e78",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "status": 0,
+        "end": 1793183985.8346395
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6821.925778,
+          "kernel_union_ms": 6764.558381,
+          "kernels": [
+            [
+              "glmvq_q4p",
+              3101.081,
+              1224,
+              2533.563,
+              140
+            ],
+            [
+              "beam_w_kernel",
+              1000.826,
+              272,
+              3679.506,
+              168
+            ],
+            [
+              "glmvq_kda_local",
+              590.939,
+              126,
+              4689.988,
+              95
+            ],
+            [
+              "beam_w_down_kernel",
+              553.16,
+              136,
+              4067.351,
+              168
+            ],
+            [
+              "glmvq_kda_scan",
+              332.561,
+              126,
+              2639.374,
+              248
+            ],
+            [
+              "glmvq_mma_reduce",
+              239.728,
+              136,
+              1762.705,
+              40
+            ],
+            [
+              "l31_residual_rms",
+              215.92,
+              286,
+              754.965,
+              64
+            ],
+            [
+              "ling31_fattn_pipe_kernel",
+              207.744,
+              27,
+              7694.205,
+              216
+            ],
+            [
+              "glmvq_q4p_prep",
+              167.331,
+              432,
+              387.339,
+              40
+            ],
+            [
+              "nvjet_sm121_tss_mma_192x128x64_1...",
+              55.86,
+              136,
+              410.735,
+              255
+            ],
+            [
+              "l31_swiglu_prepare",
+              46.517,
+              144,
+              323.037,
+              40
+            ],
+            [
+              "Kernel2",
+              32.413,
+              144,
+              225.087,
+              72
+            ],
+            [
+              "beam_w_quant",
+              29.648,
+              136,
+              218.001,
+              35
+            ],
+            [
+              "ling3vl_mrope",
+              26.586,
+              39,
+              681.702,
+              30
+            ],
+            [
+              "mul_mat_q",
+              24.744,
+              36,
+              687.345,
+              255
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__2...",
+              23.906,
+              27,
+              885.413,
+              255
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__3...",
+              23.664,
+              27,
+              876.447,
+              255
+            ],
+            [
+              "ling3vl_router",
+              23.208,
+              136,
+              170.649,
+              72
+            ],
+            [
+              "step37_attn_gate",
+              19.538,
+              18,
+              1085.451,
+              16
+            ],
+            [
+              "glmvq_convert",
+              11.802,
+              172,
+              68.619,
+              16
+            ],
+            [
+              "glmvq_rms",
+              8.891,
+              31,
+              286.809,
+              80
+            ],
+            [
+              "quantize_mmq_q8_1",
+              7.06,
+              18,
+              392.205,
+              24
+            ],
+            [
+              "nvjet_sm121_tst_mma_128x208x64_4...",
+              7.008,
+              2,
+              3503.833,
+              255
+            ],
+            [
+              "ling3vl_expand_k_pe",
+              4.352,
+              27,
+              161.172,
+              22
+            ],
+            [
+              "gvq_concat",
+              2.138,
+              3,
+              712.539,
+              16
+            ],
+            [
+              "fill_f32_kernel",
+              1.476,
+              2,
+              738.107,
+              16
+            ],
+            [
+              "ling3vl_rms_norm",
+              1.463,
+              21,
+              69.665,
+              18
+            ],
+            [
+              "l31_residual_unpack",
+              1.399,
+              2,
+              699.404,
+              70
+            ],
+            [
+              "glmvq_q4_stream",
+              1.386,
+              1,
+              1386.039,
+              51
+            ],
+            [
+              "glmvq_kda_tail",
+              1.278,
+              126,
+              10.147,
+              26
+            ],
+            [
+              "nvjet_sm121_tst_mma_192x128x64_5...",
+              0.651,
+              2,
+              325.422,
+              255
+            ],
+            [
+              "l31_latent_dequant",
+              0.616,
+              27,
+              22.803,
+              40
+            ],
+            [
+              "beam_w_pairs",
+              0.466,
+              136,
+              3.423,
+              16
+            ],
+            [
+              "glmvq_bf16_dot",
+              0.382,
+              1,
+              381.694,
+              34
+            ],
+            [
+              "mul_mat_q_stream_k_fixup",
+              0.37,
+              18,
+              20.538,
+              120
+            ],
+            [
+              "l31_store_latent",
+              0.359,
+              21,
+              17.115,
+              18
+            ],
+            [
+              "glmvq_fp8_restore",
+              0.073,
+              2,
+              36.672,
+              16
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.012,
+              1,
+              12.128,
+              37
+            ],
+            [
+              "glmvq_copy",
+              0.003,
+              2,
+              1.408,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "beam_w_quant",
+              27.446,
+              136
+            ],
+            [
+              "glmvq_rms",
+              26.923,
+              31
+            ],
+            [
+              "fill_f32_kernel",
+              1.12,
+              2
+            ],
+            [
+              "Kernel2",
+              0.626,
+              144
+            ],
+            [
+              "glmvq_q4p",
+              0.344,
+              1224
+            ],
+            [
+              "glmvq_q4p_prep",
+              0.124,
+              432
+            ],
+            [
+              "mul_mat_q",
+              0.123,
+              36
+            ],
+            [
+              "l31_residual_rms",
+              0.08,
+              286
+            ],
+            [
+              "beam_w_kernel",
+              0.077,
+              272
+            ],
+            [
+              "glmvq_convert",
+              0.049,
+              172
+            ],
+            [
+              "l31_swiglu_prepare",
+              0.041,
+              144
+            ],
+            [
+              "glmvq_mma_reduce",
+              0.039,
+              136
+            ],
+            [
+              "beam_w_down_kernel",
+              0.039,
+              136
+            ],
+            [
+              "beam_w_pairs",
+              0.038,
+              136
+            ],
+            [
+              "ling3vl_router",
+              0.038,
+              136
+            ],
+            [
+              "glmvq_kda_tail",
+              0.036,
+              126
+            ],
+            [
+              "glmvq_kda_local",
+              0.035,
+              126
+            ],
+            [
+              "glmvq_kda_scan",
+              0.035,
+              126
+            ],
+            [
+              "ling3vl_mrope",
+              0.011,
+              39
+            ],
+            [
+              "l31_latent_dequant",
+              0.008,
+              27
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 6182.766642,
+          "kernel_union_ms": 6105.234463,
+          "kernels": [
+            [
+              "glmvq_q4m",
+              3463.545,
+              40316,
+              85.91,
+              70
+            ],
+            [
+              "glmvq_verify_gu",
+              782.601,
+              4896,
+              159.845,
+              60
+            ],
+            [
+              "glmvq_verify_down",
+              555.607,
+              4896,
+              113.482,
+              57
+            ],
+            [
+              "glmvq_kda",
+              309.95,
+              4599,
+              67.395,
+              40
+            ],
+            [
+              "glmvq_bf16_dot",
+              217.908,
+              10581,
+              20.594,
+              34
+            ],
+            [
+              "glmvq_q4_stream",
+              209.761,
+              230,
+              912.004,
+              51
+            ],
+            [
+              "glmvq_copy",
+              144.307,
+              4204,
+              34.326,
+              16
+            ],
+            [
+              "l31_residual_rms",
+              63.113,
+              10583,
+              5.964,
+              56
+            ],
+            [
+              "l31_fa_kernel",
+              58.21,
+              801,
+              72.672,
+              255
+            ],
+            [
+              "glmvq_fp8_dot",
+              51.761,
+              1225,
+              42.254,
+              37
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              40.658,
+              801,
+              50.759,
+              42
+            ],
+            [
+              "ling3vl_router",
+              35.655,
+              5108,
+              6.98,
+              72
+            ],
+            [
+              "ling3vl_value_project_bf16",
+              32.431,
+              801,
+              40.489,
+              42
+            ],
+            [
+              "l31_verify_route",
+              26.205,
+              4896,
+              5.352,
+              40
+            ],
+            [
+              "glmvq_q4_stream_many",
+              24.28,
+              67,
+              362.391,
+              46
+            ],
+            [
+              "glmvq_rms_warp",
+              19.003,
+              4599,
+              4.132,
+              48
+            ],
+            [
+              "glmvq_decode_gu",
+              16.555,
+              212,
+              78.091,
+              64
+            ],
+            [
+              "glmvq_rms",
+              13.571,
+              1742,
+              7.791,
+              80
+            ],
+            [
+              "glmvq_verify_reduce",
+              10.577,
+              4896,
+              2.16,
+              38
+            ],
+            [
+              "glmvq_decode_down",
+              9.813,
+              212,
+              46.286,
+              48
+            ],
+            [
+              "ling3vl_mrope",
+              4.464,
+              1675,
+              2.665,
+              30
+            ],
+            [
+              "l31_fa_combine",
+              4.433,
+              801,
+              5.534,
+              38
+            ],
+            [
+              "ling3vl_rms_norm",
+              2.324,
+              874,
+              2.659,
+              18
+            ],
+            [
+              "argmax_kernel",
+              1.71,
+              144,
+              11.875,
+              37
+            ],
+            [
+              "glmvq_q4_small",
+              1.692,
+              86,
+              19.676,
+              40
+            ],
+            [
+              "l31_store_latent",
+              1.237,
+              874,
+              1.416,
+              18
+            ],
+            [
+              "argmax_rows_kernel",
+              0.992,
+              72,
+              13.783,
+              38
+            ],
+            [
+              "step37_attn_gate",
+              0.967,
+              801,
+              1.207,
+              16
+            ],
+            [
+              "l31_decode_route",
+              0.504,
+              212,
+              2.379,
+              56
+            ],
+            [
+              "glmvq_decode_reduce",
+              0.337,
+              212,
+              1.587,
+              32
+            ],
+            [
+              "fill_f32_kernel",
+              0.284,
+              361,
+              0.786,
+              16
+            ],
+            [
+              "add_kernel",
+              0.275,
+              217,
+              1.269,
+              16
+            ],
+            [
+              "glmvq_round_rows",
+              0.234,
+              217,
+              1.076,
+              16
+            ],
+            [
+              "glmvq_swiglu",
+              0.175,
+              148,
+              1.183,
+              16
+            ],
+            [
+              "gvq_concat",
+              0.095,
+              73,
+              1.308,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "glmvq_rms",
+              45.076,
+              1742
+            ],
+            [
+              "glmvq_q4m",
+              11.329,
+              40316
+            ],
+            [
+              "l31_residual_rms",
+              3.024,
+              10583
+            ],
+            [
+              "glmvq_bf16_dot",
+              3.021,
+              10581
+            ],
+            [
+              "glmvq_copy",
+              1.951,
+              4204
+            ],
+            [
+              "ling3vl_router",
+              1.445,
+              5108
+            ],
+            [
+              "l31_verify_route",
+              1.43,
+              4896
+            ],
+            [
+              "glmvq_verify_reduce",
+              1.415,
+              4896
+            ],
+            [
+              "glmvq_verify_down",
+              1.384,
+              4896
+            ],
+            [
+              "glmvq_verify_gu",
+              1.383,
+              4896
+            ],
+            [
+              "glmvq_rms_warp",
+              1.358,
+              4599
+            ],
+            [
+              "glmvq_kda",
+              1.308,
+              4599
+            ],
+            [
+              "ling3vl_mrope",
+              0.476,
+              1675
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.359,
+              1225
+            ],
+            [
+              "l31_fa_combine",
+              0.261,
+              801
+            ],
+            [
+              "ling3vl_rms_norm",
+              0.255,
+              874
+            ],
+            [
+              "l31_store_latent",
+              0.254,
+              874
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              0.24,
+              801
+            ],
+            [
+              "l31_fa_kernel",
+              0.234,
+              801
+            ],
+            [
+              "step37_attn_gate",
+              0.226,
+              801
+            ]
+          ]
+        }
+      },
+      "nsys_sha256": "ebd3bc77db68b9242e5005dd4cb19ad2c5d3b7e4b41165c74cf41c3e63c0a544"
+    },
+    "d2-on-profile": {
+      "receipt": {
+        "name": "d2-on-profile",
+        "command": [
+          "python3",
+          "tools/host_memory_guard.py",
+          "--max-gib",
+          "128",
+          "--high-gib",
+          "128",
+          "--reserve-gib",
+          "2",
+          "--trip-gib",
+          "2",
+          "--psi-full-limit",
+          "40",
+          "--timeout",
+          "900",
+          "--log",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-ling31-1019/scratch/ling31-perf-20261028/d2-on-profile.memory.jsonl",
+          "--",
+          "taskset",
+          "-c",
+          "5-9,15-19",
+          "/usr/local/cuda/bin/nsys",
+          "profile",
+          "--trace=cuda,nvtx",
+          "--sample=none",
+          "--cpuctxsw=none",
+          "--force-overwrite=true",
+          "-o",
+          "scratch/ling31-perf-20261028/d2-on-profile",
+          "./ds4-bench-perf",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Ling-3.1-flash-1019-VQ-GGUF",
+          "--prompt-file",
+          "speed-bench/promessi_sposi.txt",
+          "--ctx-start",
+          "8192",
+          "--ctx-max",
+          "8192",
+          "--warmup-prefill",
+          "8192",
+          "--gen-tokens",
+          "128",
+          "--csv",
+          "scratch/ling31-perf-20261028/d2-on-profile.csv",
+          "--mtp-draft",
+          "2"
+        ],
+        "controls": {
+          "DS4_GLMVQ_PDL": "0"
+        },
+        "start": 1793185267.6800117,
+        "commit": "ccf50851dcf1f8a0fc98fb45af258e58306af54b",
+        "diff_sha256": "a735d4306b753da3623ac276e182ff5b8c43fa1b33c6c345a3d82e0f7eee09bb",
+        "binary_sha256": "8b203219f371ce25c232df935162c6fef5235b077731d2b6ad3a8f9edb5688da",
+        "boot_id": "f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+        "status": 0,
+        "end": 1793185364.2323623
+      },
+      "summary": {
+        "ds4.prefill": {
+          "wall_ms": 6918.033653,
+          "kernel_union_ms": 6861.979418,
+          "kernels": [
+            [
+              "glmvq_q4p",
+              3164.774,
+              1224,
+              2585.6,
+              140
+            ],
+            [
+              "beam_w_kernel",
+              1013.809,
+              272,
+              3727.239,
+              168
+            ],
+            [
+              "glmvq_kda_local",
+              608.11,
+              126,
+              4826.269,
+              95
+            ],
+            [
+              "beam_w_down_kernel",
+              558.929,
+              136,
+              4109.772,
+              168
+            ],
+            [
+              "glmvq_kda_scan",
+              335.705,
+              126,
+              2664.328,
+              248
+            ],
+            [
+              "glmvq_mma_reduce",
+              238.341,
+              136,
+              1752.504,
+              40
+            ],
+            [
+              "l31_residual_rms",
+              216.484,
+              286,
+              756.937,
+              64
+            ],
+            [
+              "ling31_fattn_pipe_kernel",
+              207.352,
+              27,
+              7679.695,
+              216
+            ],
+            [
+              "glmvq_q4p_prep",
+              166.566,
+              432,
+              385.569,
+              40
+            ],
+            [
+              "nvjet_sm121_tss_mma_192x128x64_1...",
+              55.663,
+              136,
+              409.288,
+              255
+            ],
+            [
+              "l31_swiglu_prepare",
+              46.715,
+              144,
+              324.412,
+              40
+            ],
+            [
+              "Kernel2",
+              29.926,
+              144,
+              207.823,
+              72
+            ],
+            [
+              "beam_w_quant",
+              29.349,
+              136,
+              215.804,
+              35
+            ],
+            [
+              "ling3vl_mrope",
+              26.592,
+              39,
+              681.836,
+              30
+            ],
+            [
+              "mul_mat_q",
+              23.693,
+              36,
+              658.15,
+              255
+            ],
+            [
+              "ling3vl_router",
+              23.262,
+              136,
+              171.044,
+              72
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__2...",
+              23.247,
+              27,
+              861.007,
+              255
+            ],
+            [
+              "nvjet_sm121_tst_mma_64x104x64__3...",
+              23.238,
+              27,
+              860.649,
+              255
+            ],
+            [
+              "step37_attn_gate",
+              19.508,
+              18,
+              1083.759,
+              16
+            ],
+            [
+              "glmvq_convert",
+              12.1,
+              172,
+              70.348,
+              16
+            ],
+            [
+              "glmvq_rms",
+              9.169,
+              31,
+              295.784,
+              80
+            ],
+            [
+              "nvjet_sm121_tst_mma_128x208x64_4...",
+              7.683,
+              2,
+              3841.374,
+              255
+            ],
+            [
+              "quantize_mmq_q8_1",
+              7.118,
+              18,
+              395.431,
+              24
+            ],
+            [
+              "ling3vl_expand_k_pe",
+              4.381,
+              27,
+              162.264,
+              22
+            ],
+            [
+              "gvq_concat",
+              2.394,
+              3,
+              797.899,
+              16
+            ],
+            [
+              "ling3vl_rms_norm",
+              1.482,
+              21,
+              70.551,
+              18
+            ],
+            [
+              "fill_f32_kernel",
+              1.477,
+              2,
+              738.496,
+              16
+            ],
+            [
+              "l31_residual_unpack",
+              1.404,
+              2,
+              702.16,
+              70
+            ],
+            [
+              "glmvq_q4_stream",
+              1.388,
+              1,
+              1388.096,
+              51
+            ],
+            [
+              "glmvq_kda_tail",
+              1.283,
+              126,
+              10.181,
+              26
+            ],
+            [
+              "nvjet_sm121_tst_mma_192x128x64_5...",
+              0.639,
+              2,
+              319.327,
+              255
+            ],
+            [
+              "l31_latent_dequant",
+              0.623,
+              27,
+              23.061,
+              40
+            ],
+            [
+              "mul_mat_q_stream_k_fixup",
+              0.441,
+              18,
+              24.473,
+              120
+            ],
+            [
+              "beam_w_pairs",
+              0.374,
+              136,
+              2.751,
+              16
+            ],
+            [
+              "glmvq_bf16_dot",
+              0.372,
+              1,
+              372.416,
+              34
+            ],
+            [
+              "l31_store_latent",
+              0.353,
+              21,
+              16.805,
+              18
+            ],
+            [
+              "glmvq_fp8_restore",
+              0.076,
+              2,
+              37.84,
+              16
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.012,
+              1,
+              11.648,
+              37
+            ],
+            [
+              "glmvq_copy",
+              0.003,
+              2,
+              1.408,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "beam_w_quant",
+              26.982,
+              136
+            ],
+            [
+              "glmvq_rms",
+              26.074,
+              31
+            ],
+            [
+              "fill_f32_kernel",
+              1.138,
+              2
+            ],
+            [
+              "Kernel2",
+              0.601,
+              144
+            ],
+            [
+              "glmvq_q4p",
+              0.345,
+              1224
+            ],
+            [
+              "glmvq_q4p_prep",
+              0.124,
+              432
+            ],
+            [
+              "mul_mat_q",
+              0.121,
+              36
+            ],
+            [
+              "l31_residual_rms",
+              0.081,
+              286
+            ],
+            [
+              "beam_w_kernel",
+              0.077,
+              272
+            ],
+            [
+              "glmvq_convert",
+              0.049,
+              172
+            ],
+            [
+              "l31_swiglu_prepare",
+              0.041,
+              144
+            ],
+            [
+              "glmvq_mma_reduce",
+              0.039,
+              136
+            ],
+            [
+              "beam_w_pairs",
+              0.039,
+              136
+            ],
+            [
+              "beam_w_down_kernel",
+              0.039,
+              136
+            ],
+            [
+              "ling3vl_router",
+              0.038,
+              136
+            ],
+            [
+              "glmvq_kda_tail",
+              0.036,
+              126
+            ],
+            [
+              "glmvq_kda_scan",
+              0.035,
+              126
+            ],
+            [
+              "glmvq_kda_local",
+              0.035,
+              126
+            ],
+            [
+              "ling3vl_mrope",
+              0.011,
+              39
+            ],
+            [
+              "l31_latent_dequant",
+              0.008,
+              27
+            ]
+          ]
+        },
+        "ds4.decode": {
+          "wall_ms": 6134.794664,
+          "kernel_union_ms": 6060.644795,
+          "kernels": [
+            [
+              "glmvq_q4m",
+              3442.558,
+              40316,
+              85.389,
+              70
+            ],
+            [
+              "glmvq_verify_gu",
+              781.909,
+              4896,
+              159.704,
+              60
+            ],
+            [
+              "glmvq_verify_down",
+              555.988,
+              4896,
+              113.56,
+              57
+            ],
+            [
+              "glmvq_kda",
+              292.334,
+              4599,
+              63.565,
+              40
+            ],
+            [
+              "glmvq_bf16_dot",
+              215.335,
+              10581,
+              20.351,
+              34
+            ],
+            [
+              "glmvq_q4_stream",
+              206.732,
+              230,
+              898.836,
+              51
+            ],
+            [
+              "glmvq_copy",
+              144.208,
+              4204,
+              34.303,
+              16
+            ],
+            [
+              "l31_residual_rms",
+              63.289,
+              10583,
+              5.98,
+              56
+            ],
+            [
+              "l31_fa_kernel",
+              58.47,
+              801,
+              72.997,
+              255
+            ],
+            [
+              "glmvq_fp8_dot",
+              51.507,
+              1225,
+              42.046,
+              37
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              41.488,
+              801,
+              51.795,
+              42
+            ],
+            [
+              "ling3vl_router",
+              35.506,
+              5108,
+              6.951,
+              72
+            ],
+            [
+              "ling3vl_value_project_bf16",
+              33.13,
+              801,
+              41.361,
+              42
+            ],
+            [
+              "l31_verify_route",
+              26.204,
+              4896,
+              5.352,
+              40
+            ],
+            [
+              "glmvq_q4_stream_many",
+              24.354,
+              67,
+              363.498,
+              46
+            ],
+            [
+              "glmvq_rms_warp",
+              18.094,
+              4599,
+              3.934,
+              48
+            ],
+            [
+              "glmvq_decode_gu",
+              16.433,
+              212,
+              77.514,
+              64
+            ],
+            [
+              "glmvq_rms",
+              13.222,
+              1742,
+              7.59,
+              80
+            ],
+            [
+              "glmvq_verify_reduce",
+              10.416,
+              4896,
+              2.127,
+              38
+            ],
+            [
+              "glmvq_decode_down",
+              9.709,
+              212,
+              45.796,
+              48
+            ],
+            [
+              "ling3vl_mrope",
+              4.587,
+              1675,
+              2.738,
+              30
+            ],
+            [
+              "l31_fa_combine",
+              4.386,
+              801,
+              5.476,
+              38
+            ],
+            [
+              "ling3vl_rms_norm",
+              2.341,
+              874,
+              2.678,
+              18
+            ],
+            [
+              "glmvq_q4_small",
+              1.823,
+              86,
+              21.201,
+              40
+            ],
+            [
+              "argmax_kernel",
+              1.625,
+              144,
+              11.282,
+              37
+            ],
+            [
+              "l31_store_latent",
+              1.308,
+              874,
+              1.497,
+              18
+            ],
+            [
+              "argmax_rows_kernel",
+              0.987,
+              72,
+              13.712,
+              38
+            ],
+            [
+              "step37_attn_gate",
+              0.938,
+              801,
+              1.171,
+              16
+            ],
+            [
+              "l31_decode_route",
+              0.446,
+              212,
+              2.102,
+              56
+            ],
+            [
+              "glmvq_decode_reduce",
+              0.331,
+              212,
+              1.562,
+              32
+            ],
+            [
+              "fill_f32_kernel",
+              0.28,
+              361,
+              0.775,
+              16
+            ],
+            [
+              "add_kernel",
+              0.258,
+              217,
+              1.188,
+              16
+            ],
+            [
+              "glmvq_round_rows",
+              0.204,
+              217,
+              0.94,
+              16
+            ],
+            [
+              "glmvq_swiglu",
+              0.157,
+              148,
+              1.059,
+              16
+            ],
+            [
+              "gvq_concat",
+              0.09,
+              73,
+              1.227,
+              16
+            ]
+          ],
+          "gaps": [
+            [
+              "glmvq_rms",
+              41.576,
+              1742
+            ],
+            [
+              "glmvq_q4m",
+              11.369,
+              40316
+            ],
+            [
+              "l31_residual_rms",
+              3.03,
+              10583
+            ],
+            [
+              "glmvq_bf16_dot",
+              3.027,
+              10581
+            ],
+            [
+              "glmvq_copy",
+              2.013,
+              4204
+            ],
+            [
+              "ling3vl_router",
+              1.446,
+              5108
+            ],
+            [
+              "l31_verify_route",
+              1.432,
+              4896
+            ],
+            [
+              "glmvq_verify_reduce",
+              1.409,
+              4896
+            ],
+            [
+              "glmvq_verify_down",
+              1.388,
+              4896
+            ],
+            [
+              "glmvq_verify_gu",
+              1.382,
+              4896
+            ],
+            [
+              "glmvq_rms_warp",
+              1.351,
+              4599
+            ],
+            [
+              "glmvq_kda",
+              1.317,
+              4599
+            ],
+            [
+              "ling3vl_mrope",
+              0.476,
+              1675
+            ],
+            [
+              "glmvq_fp8_dot",
+              0.359,
+              1225
+            ],
+            [
+              "l31_fa_combine",
+              0.261,
+              801
+            ],
+            [
+              "l31_store_latent",
+              0.253,
+              874
+            ],
+            [
+              "ling3vl_rms_norm",
+              0.25,
+              874
+            ],
+            [
+              "ling3vl_qk_absorb_bf16",
+              0.239,
+              801
+            ],
+            [
+              "l31_fa_kernel",
+              0.235,
+              801
+            ],
+            [
+              "step37_attn_gate",
+              0.227,
+              801
+            ]
+          ]
+        }
+      },
+      "nsys_sha256": "9b1ad29bae9fb6ce552012f4c69d535a748e8d9dfdf433cea262dac3f0039682"
+    }
+  },
+  "limitations": [
+    "Three fresh pairs and ten short assistant cases do not establish production or broad quality qualification.",
+    "Corpus paired gains have mixed signs; no corpus improvement or equivalence claim.",
+    "Corpus helper warmup/session lifecycle differs from ds4-bench; published sweep remains ds4-bench.",
+    "Ordinary decode kernels unchanged; no ordinary Decode speed gain claimed.",
+    "Shared-load warp instructions increase while local spill traffic disappears."
+  ]
+}
