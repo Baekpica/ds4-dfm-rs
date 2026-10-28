@@ -6,6 +6,35 @@ from `f5baa61771f53a72a375feb5ffd7dae2794b2fdc` on
 Three Prefill and three Decode changes are retained, each with its own
 measurement, numerical scope and fallback below.
 
+The final runtime is `e01b409ddb413fdcc7c275eb008745f8629f35c2`.
+The [publication sweep](benchmarks/ling31-1019-followup-spark-64k-2026-10-28/README.md)
+uses three fresh processes per mode, 2,048-token incremental prefill and
+128 forced greedy tokens at every frontier. These are medians of run
+means, not whole-prompt prefill rates or the sum of the per-round gains.
+
+| Configuration | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| MTP off, 2K–64K | 885.3 | 18.65 |
+| MTP off, 2K–32K | 982.4 | 18.81 |
+| Two embedded MTP drafts, 2K–32K | 977.8 | 26.48 |
+| Two embedded MTP drafts, 2K–64K | 882.2 | 25.79 |
+
+All 192 full-vocabulary frontier proofs are finite; repeated logits,
+generated tokens and acceptance cycles match within each mode. The final
+MTP state gate passes 16 cases / 1,312 tokens, with 549 speculative calls
+and zero tokens beyond the existing 0.5 logit tie. This tie is a regression
+threshold, not a numerical noise floor.
+
+Ordinary Decode run means are 18.7013, 18.2913 and 18.6513 tok/s; MTP2
+means are 25.8106, 25.7881 and 25.7281. The slower ordinary process stays
+in all tables and bands. Observed busy clocks remain 2184–2190 MHz, PSI
+is zero, and a live snapshot found no active power/thermal limit or
+competing GPU process. Its cause remains unresolved; no uniform ordinary
+Decode gain or speed-equivalence claim is made. Minimum available memory
+across these sweeps is 5.78 GiB. This qualifies bounded performance to
+64K; the P1 quality comparison below ends at 32K, and sustained serving
+and 1M operation were not requalified.
+
 ## Artifact and protocol
 
 The all-12-bit `Baekpica/Ling-3.1-flash-1019-VQ-GGUF` release, manifest
@@ -176,8 +205,8 @@ The focused fixture checks pack, compact update and final expansion
 against independent add/round/RMS kernels for 1/3/2048 × 4096 and 65 × 3073
 shapes. Both norm types, raw F32 branches, row tails and trailing canaries
 pass exactly. This covers the nondefault F32-norm path too. Full-model
-proofs cover the default path at 8K; the final MTP and context sweep remain
-pending. [Raw evidence](benchmarks/ling31-1019-followup-2026-10-28/p3.json).
+proofs cover the default path at 8K; the final MTP gate and 64K sweep above
+also pass. [Raw evidence](benchmarks/ling31-1019-followup-2026-10-28/p3.json).
 
 ## Reproduction and remaining scope
 
@@ -196,8 +225,8 @@ make tests/test_glm_vq_q4p tests/test_ling31_mlp tests/test_glm_vq_kda tests/tes
 The local campaign directory is `scratch/ling31-perf-20261028/`: its ledger,
 run receipts, guard logs, full proofs, NCU/NSYS captures, fixed-state and
 teacher-forcing Rust harnesses preserve the commands and identities.
-Native/Rust inference builds passed. MTP, final incremental sweep and
-publication are still pending; this change claims no broader serving gate.
+Native/Rust inference builds, focused fixtures, the final MTP gate and
+incremental sweep passed; this change claims no broader serving gate.
 
 ## D1: reload KDA vectors instead of spilling the state
 

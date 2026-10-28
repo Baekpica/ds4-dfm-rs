@@ -53,11 +53,11 @@ def summarize(runs):
             values = [[float(row[metric]) for row in run] for run in samples]
             columns = list(zip(*values))
             run_means = [mean(v) for v in values]
-            shared = [mean(v[: len(frontiers("mtp2"))]) for v in values]
+            shared = [mean(v[: 32768 // STEP]) for v in values]
             variant[metric] = {
                 "run_means": run_means,
                 "median_run_mean": median(run_means),
-                # The MTP variant's 2K-32K range, for a like-for-like legend.
+                # Keep the 32K prefix even when both variants run to 64K.
                 "median_run_mean_to_32k": median(shared),
                 "median": [median(c) for c in columns],
                 "min": [min(c) for c in columns],
@@ -94,11 +94,10 @@ def plot(report):
         ax.legend(loc="upper right", framealpha=0.92)
         ax.margins(y=0.2)
         if metric == "prefill_tps":
-            # The 2K point is each process's first prefill (first-use
-            # allocation); keep it in the data, but scale to the steady curve.
-            steady = [v for name in RUNS for v in report["variants"][name][metric]["min"][1:]]
+            # Include first-use allocation at 2K in the visible range.
+            bottom = min(v for name in RUNS for v in report["variants"][name][metric]["min"])
             top = max(v for name in RUNS for v in report["variants"][name][metric]["max"])
-            ax.set_ylim(0.9 * min(steady), 1.06 * top)
+            ax.set_ylim(0.9 * bottom, 1.06 * top)
     axes[-1].set_xlabel("Context tokens (K = 1,024)")
     axes[-1].set_xticks([2, 8, 16, 24, 32, 40, 48, 56, 64])
     axes[-1].set_xlim(2, 64)
