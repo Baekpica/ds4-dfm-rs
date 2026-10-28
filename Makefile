@@ -1921,6 +1921,9 @@ tests/test_axk2_flash: tests/test_axk2_flash.cu cuda/axk2_flash.cuh cuda/l31_fla
 tests/test_axk2_q8: tests/test_axk2_q8.cu cuda/axk2_q8.cuh cuda/glm_vq.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
 
+tests/test_axk2_decode: tests/test_axk2_decode.cu cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
 .PHONY: test-axk2-topk
 test-axk2-topk: tests/test_axk2_topk
 	./tests/test_axk2_topk
@@ -2605,7 +2608,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk tests/test_axk2_flash tests/test_axk2_q8 tests/test_axk2_decode \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \

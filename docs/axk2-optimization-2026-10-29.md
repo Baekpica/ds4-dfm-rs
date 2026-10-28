@@ -341,3 +341,94 @@ Receipts: ignored `scratch/axk2-perf/d1-*`, `d1b-*`, `d1c-*`,
 `q8-native-*`, `q8-default-*` and the exact payload SHA256s in
 `q8-fixture/receipt.json`. Prefill has three adopted rounds and decode one;
 final publication and two more decode adoptions remain.
+
+## D2 — compact expert gate/up loop (adopted)
+
+The fresh retained-D1 trace, now pinned to CPU 9, records 15,000.6 ms
+prefill and 1,060.3 ms decode wall per 16 tokens. Expert gate/up consumes
+195.36 ms (18.43% of decode wall). Eight selected experts stream
+33.10/36.77 MB for the 9/10-bit gate/up pair, giving weight-only floors
+of 140.8/156.4 µs at 235 GB/s, versus 203.5 µs average in the model.
+The 32-warp kernel caps registers at 64; its fully expanded inner loop
+spills live values to local memory. Previously tested smaller warp counts
+did not provide a useful isolated gain.
+
+The v2 compact schedule expands two codewords at a time. It retains the
+same FMA sequence, reduction, gain placement, tail block and activation.
+Class 5.1 scheduling. Only A.X-K2 selects it;
+`DS4_AXK2_GU_COMPACT=0` restores the original schedule. The generic default
+and all other families remain unchanged. No global allocation, shared
+memory requirement, weight bytes or floating-point work is added.
+
+The actual-payload probe replays the ascending expert selections captured
+at the 8K frontier, with synthetic BF16 input and a 64 MiB cache flush.
+Three baseline/new medians (µs) are:
+
+| Bits | Original | Compact |
+|---|---|---|
+| 9 | 162.592 / 162.592 / 160.608 | 159.552 / 159.056 / 159.552 |
+| 10 | 183.136 / 183.136 / 188.304 | 178.016 / 179.008 / 178.832 |
+
+Median latency falls 1.87%/2.35%. A separate rotation through three whole
+GGUF copies preserves the gain: 162.208 → 160.096 µs for 9 bits and
+187.216 → 178.016 µs for 10 bits. Each part is 1,591,391,872 or
+1,767,565,696 bytes; three copies hold more selected weights than L2.
+These probes are faster than the full-model kernel, so their cache/input
+history does not completely reproduce the model. They do not establish
+whole-model gains on their own. Expansion by four was slower; expansion
+by one was roughly even and was not selected.
+
+The cost is additional loop instructions. Full NCU's cold-cache replay
+records 39.96 → 43.15 million executed warp instructions (+8.0%), while
+local-read sectors fall 1,196,032 → 409,600 and local-write sectors
+989,184 → 399,360. Registers stay at 64 and the 9-bit stack falls
+56 → 24 bytes. Configured shared memory stays 32 KiB. NCU replay latency
+increases 172.800 → 181.312 µs, opposite the unprofiled probe result;
+this diagnostic regime difference is retained explicitly. The complete
+unprofiled workload below decides whether the tradeoff is useful.
+
+`tests/test_axk2_decode` checks both bit widths and both gain modes,
+independent sampled CPU FMA/XOR dots, complete gate/up/activation parity,
+and allocation canaries. All pass. All **38 existing GU/down kernels**,
+including the MiniMax kernels using the shared dot helper, retain their
+SASS after relocation normalization. The new native 2,160-instruction
+9-bit kernel matches the probe. The unchanged Q4 one-row staging kernel
+also retains all 464 instructions.
+
+Six fresh processes use CPU 9, 8K cold prefill after a 2K warmup/reset,
+and 512 forced greedy tokens. Only `DS4_AXK2_GU_COMPACT` changes:
+
+| Process | Mode | Prefill tok/s | Decode tok/s |
+|---|---|---:|---:|
+| 1 | off | 546.19 | 15.49 |
+| 2 | on | 546.01 | 15.64 |
+| 3 | on | 545.49 | 15.70 |
+| 4 | off | 547.45 | 15.48 |
+| 5 | off | 542.38 | 15.56 |
+| 6 | on | 545.77 | 15.66 |
+| Median | off | 546.19 | 15.49 |
+| Median | on | 545.77 | 15.66 |
+
+Decode improves **1.10%**, with paired gains 0.97%, 1.42% and 0.64%.
+The absolute ranges, 15.48–15.56 off and 15.64–15.70 on, do not overlap.
+The extra integer instructions are worthwhile in this workload: total
+latency falls, local traffic falls, and memory requirements do not grow.
+Prefill's unchanged path differs by −0.08%, within its repeat range.
+
+All six runs exit zero with identical finite 163,840 logits and all 512
+tokens; the baseline also matches D1's retained outputs. Minimum available
+memory is 15.881 GiB and full PSI stays zero. Busy SM clocks are
+2,184–2,190 MHz. Decode temperatures span 52–59 °C with no observed
+power/thermal cap. CPPC mean delivered-performance readings on CPU 9
+span 151.797–151.813, against nominal 150, with no meaningful arm drift.
+Source and executable hashes remain unchanged throughout the series.
+
+Measured source: `bc230fd5` plus this round's native diff. SHA256:
+
+- `ds4-bench`: `3970ef73dfbbb08a4e8a966ef5cd1ce38bed254a39fdaa0c52d51c7073579588`
+- `ds4-bench-perf`: `afc9b121afe0c8f3bb3fcf813b634e50bcbf6f6e79363e415c9fd5d242f01039`
+
+Receipts are in ignored `scratch/axk2-perf/d2-*`, `gu-unroll-*`,
+`gu-rotate-*` and `gu9-unroll2.*`. The next retained-baseline trace will
+also record the compact kernel's in-model contribution. Prefill has three
+adoptions and decode two; one more decode adoption and publication remain.

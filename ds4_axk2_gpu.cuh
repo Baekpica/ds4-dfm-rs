@@ -109,9 +109,16 @@ template <uint32_t BITS>
 static constexpr uint32_t ax_down_bytes() { return glmvq_decode_books<BITS, false>() + AX_USED * AX_FFN * 2; }
 
 template <uint32_t BITS, glmvq_decode_gain GAIN>
+static auto ax_gu_kernel() {
+    static const bool compact = !ax_env_off("DS4_AXK2_GU_COMPACT");
+    return compact
+        ? glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN, GLMVQ_DEC_COMPACT>
+        : glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN>;
+}
+
+template <uint32_t BITS, glmvq_decode_gain GAIN>
 static cudaError_t ax_decode_attrs() {
-    cudaError_t err = cudaFuncSetAttribute(
-        glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN>,
+    cudaError_t err = cudaFuncSetAttribute(ax_gu_kernel<BITS, GAIN>(),
         cudaFuncAttributeMaxDynamicSharedMemorySize, ax_gu_bytes<BITS>());
     if (err == cudaSuccess) {
         err = cudaFuncSetAttribute(glmvq_decode_down<BITS, 32, GAIN, AX_FFN, false, AX_HIDDEN, AX_USED>,
@@ -239,8 +246,7 @@ static cudaError_t ax_decode_launch(ds4_axk2_moe *moe, float *out, const float *
         const float *shared) {
     const cudaStream_t stream = ds4_current_stream();
     const glmvq_launch launch = moe->gvq->launch;
-    glmvq_launch_kernel(launch,
-        glmvq_decode_gu<BITS, 32, GLMVQ_DEC_NORMAL, GAIN, AX_FFN, GLMVQ_CLAMP_GATE, false, AX_HIDDEN>,
+    glmvq_launch_kernel(launch, ax_gu_kernel<BITS, GAIN>(),
         moe->decode_blocks, 1024, ax_gu_bytes<BITS>(), stream, items, (const uint4 *)ax_book(moe, matrices, 0),
         input, mid, INFINITY, (float *)nullptr, (float *)nullptr, (const uint4 *)ax_book(moe, matrices, 1));
     glmvq_launch_kernel(launch, glmvq_decode_down<BITS, 32, GAIN, AX_FFN, false, AX_HIDDEN, AX_USED>,
