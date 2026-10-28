@@ -825,7 +825,7 @@ extern "C" int ds4_gpu_gvq_linear_bf16(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, ui
         ctx->restore, GLMVQ_OUT_BF16), "GLM VQ linear BF16 rows");
 }
 
-enum { GVQ_LINEAR_MANY = 4 };
+enum { GVQ_LINEAR_MANY = 5 };
 
 /* Matrices sharing one input. Prefill Q4_K quantizes it to Q8_1 once and
  * BF16 converts it once (each output otherwise as ds4_gpu_gvq_linear, so

@@ -340,9 +340,9 @@ static bool l31_logits(ds4_ling31_graph *g, const ds4_model *m, const ds4_weight
 // Projections of one input: prefill prepares it once (Q8_1 / FP16 / BF16).
 static bool l31_mm_many(ds4_ling31_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
-    uint32_t index[4];
-    for (uint32_t c = 0; c < count; c++) { index[c] = ling31_index(m, ws[c]); }
-    const bool ok = count <= 4 && ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
+    uint32_t index[5];
+    for (uint32_t c = 0; c < count && c < 5u; c++) { index[c] = ling31_index(m, ws[c]); }
+    const bool ok = count <= 5 && ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
     if (!ok) { fprintf(stderr, "ds4: Ling-3.1 linear group of %u failed (rows=%u)\n", count, rows); }
     return ok;
 }
@@ -377,26 +377,28 @@ static bool l31_residual_norm(ds4_ling31_graph *g, const ds4_model *m, const ds4
 static bool l31_kda(ds4_ling31_graph *g, const ds4_model *m, const ds4_layer_weights *l,
         uint32_t il, uint32_t rows) {
     const bool gate_q4 = l->kda_g_a->type == DS4_TENSOR_Q4_K, decay_q4 = l->kda_f_a->type == DS4_TENSOR_Q4_K;
-    ds4_gpu_tensor *const qkv[] = {g->q, g->k, g->v, g->g};
-    const ds4_tensor *const qkv_w[] = {l->kda_q, l->kda_k, l->kda_v, l->kda_g_a};
+    // With both Q4_K, the decay joins the group too: one prepared input per layer.
+    const bool join = gate_q4 && decay_q4 && g->fused && g->qkv_bf16;
+    ds4_gpu_tensor *const qkv[] = {g->q, g->k, g->v, g->g, g->f};
+    const ds4_tensor *const qkv_w[] = {l->kda_q, l->kda_k, l->kda_v, l->kda_g_a, l->kda_f_a};
     ds4_gpu_tensor *const gates[] = {g->f, g->g};
     const ds4_tensor *const gates_w[] = {l->kda_f_a, l->kda_g_a};
-    const uint32_t nq = gate_q4 ? 4u : 3u, ng = gate_q4 ? 1u : 2u;
+    const uint32_t nq = join ? 5u : gate_q4 ? 4u : 3u, ng = gate_q4 ? 1u : 2u;
     // Prefill chunks read q/k/v (decode's BF16 rounding), the FP8 decay and
     // gate (cuBLAS's BF16 results, unwidened) as BF16 rows, and the output
     // projection reads the gated norm's already rounded BF16 heads.
     const bool fused = !g->mtp_capture && ds4_gpu_gvq_kda_fused(g->gvq, rows);
     const uint32_t qkv_index[] = {ling31_index(m, l->kda_q), ling31_index(m, l->kda_k), ling31_index(m, l->kda_v),
-        ling31_index(m, l->kda_g_a)};
+        ling31_index(m, l->kda_g_a), ling31_index(m, l->kda_f_a)};
     const uint32_t gates_index[] = {ling31_index(m, l->kda_f_a), ling31_index(m, l->kda_g_a)};
     const ds4_gvq_rows qkv_rows = fused && g->qkv_bf16 &&
         ds4_gpu_gvq_linear_many_bf16(g->gvq, qkv, qkv_index, nq, g->norm, rows) ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
-    const ds4_gvq_rows gate_rows = fused && g->fused &&
+    const ds4_gvq_rows gate_rows = join ? qkv_rows : fused && g->fused &&
         (decay_q4 ? ds4_gpu_gvq_linear_many_bf16(g->gvq, gates, gates_index, ng, g->norm, rows)
                   : ds4_gpu_gvq_fp8_many_bf16(g->gvq, gates, gates_index, ng, g->norm, rows))
         ? DS4_GVQ_ROWS_BF16 : DS4_GVQ_ROWS_F32;
     if ((qkv_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, qkv, qkv_w, nq, g->norm, rows)) ||
-        (gate_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, gates, gates_w, ng, g->norm, rows)) ||
+        (!join && gate_rows == DS4_GVQ_ROWS_F32 && !l31_mm_many(g, m, gates, gates_w, ng, g->norm, rows)) ||
         !l31_mm(g, m, g->beta, l->kda_beta, g->norm, rows, DS4_GVQ_BF16)) { return false; }
     if (fused) {
         const uint32_t output = ling31_index(m, l->kda_output);
