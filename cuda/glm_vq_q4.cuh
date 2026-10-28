@@ -181,11 +181,12 @@ __global__ void __launch_bounds__(256, 4) glmvq_q4_stream(const uint8_t *weight,
     }
 }
 
-/* Up to four matrices sharing one input (Beam's q/k/v/gate): one STAGE
- * launch whose blocks take rpb-row groups matrix by matrix, so the 1,024-row
- * k/v projections stream beside the large ones instead of running the
- * latency-bound scalar kernel in their own launches. */
-enum { GLMVQ_Q4_MANY = 4 };
+/* Up to five matrices sharing one input (Beam's q/k/v/gate, Ling-3.1's
+ * q/k/v/gate/decay): one STAGE launch whose blocks take rpb-row groups
+ * matrix by matrix, so the 1,024-row k/v projections stream beside the
+ * large ones instead of running the latency-bound scalar kernel in their
+ * own launches. */
+enum { GLMVQ_Q4_MANY = 5 };
 struct glmvq_q4_many {
     const uint8_t *weight[GLMVQ_Q4_MANY];
     float *out[GLMVQ_Q4_MANY];

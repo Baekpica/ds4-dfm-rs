@@ -22,7 +22,7 @@ typedef struct {
      * tensor-core decode/verify attention (DS4_LING31_FLASH=0: Motif's) and
      * the pipelined prefill range attention (DS4_LING31_FA_PIPE=0: Ling-3.0's,
      * bit-identical). Latent rows are FP8 (ling31_latent_mode). */
-    bool fused, qkv_bf16, flash, pipe, router_tf32;
+    bool fused, qkv_bf16, flash, pipe, router_tf32, q4_many;
     ds4_l31_latent latent_mode;
     uint64_t workspace_bytes, state_bytes, control_bytes, kv_bytes;
 #define L31_FIELD(field, cols, type) ds4_gpu_tensor *field;
@@ -278,12 +278,13 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     g->workspace_bytes = ling31_workspace_bytes(cap);
     const char *fused = getenv("DS4_LING31_FUSED"), *qkv = getenv("DS4_LING31_QKV_BF16");
     const char *flash = getenv("DS4_LING31_FLASH"), *pipe = getenv("DS4_LING31_FA_PIPE");
-    const char *router = getenv("DS4_LING31_ROUTER_TF32");
+    const char *router = getenv("DS4_LING31_ROUTER_TF32"), *many = getenv("DS4_LING31_Q4_MANY");
     g->fused = !(fused && !strcmp(fused, "0"));
     g->flash = !(flash && !strcmp(flash, "0"));
     g->pipe = !(pipe && !strcmp(pipe, "0"));
     g->qkv_bf16 = !(qkv && !strcmp(qkv, "0"));
     g->router_tf32 = !(router && !strcmp(router, "0"));
+    g->q4_many = !(many && !strcmp(many, "0"));
     g->ready = true;
     if (!ling31_graph_reset(g)) { ling31_graph_free(g); return false; }
     ds4_log(stderr, DS4_LOG_TIMING,
@@ -339,12 +340,16 @@ static bool l31_logits(ds4_ling31_graph *g, const ds4_model *m, const ds4_weight
     return true;
 }
 
-// Projections of one input: prefill prepares it once (Q8_1 / FP16 / BF16).
+// Projections of one input: prefill prepares it once (Q8_1 / FP16 / BF16);
+// one decode token streams every Q4_K matrix in a single launch (KDA's five
+// 8192 x 4096: 410 -> 380 us per layer). DS4_LING31_Q4_MANY=0: one each.
 static bool l31_mm_many(ds4_ling31_graph *g, const ds4_model *m, ds4_gpu_tensor *const *outs,
         const ds4_tensor *const *ws, uint32_t count, const ds4_gpu_tensor *x, uint32_t rows) {
     uint32_t index[5];
     for (uint32_t c = 0; c < count && c < 5u; c++) { index[c] = ling31_index(m, ws[c]); }
-    const bool ok = count <= 5 && ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16);
+    const bool one = rows == 1u && g->q4_many;
+    const bool ok = count <= 5 && ((one && ds4_gpu_gvq_q4_decode_many(g->gvq, outs, index, count, x, 1u)) ||
+        ds4_gpu_gvq_linear_many(g->gvq, outs, index, count, x, rows, DS4_GVQ_BF16));
     if (!ok) { fprintf(stderr, "ds4: Ling-3.1 linear group of %u failed (rows=%u)\n", count, rows); }
     return ok;
 }
