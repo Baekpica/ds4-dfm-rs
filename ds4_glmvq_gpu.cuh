@@ -751,7 +751,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
     const uint32_t type = ctx->model->records[index].type;
     if ((type != GVQ_TYPE_BF16 && type != GVQ_TYPE_FP8 && type != GVQ_TYPE_VQ && type != GVQ_TYPE_Q4) ||
         !gvq_floats(input, (uint64_t)rows * s.cols) || !gvq_floats(out, (uint64_t)rows * s.rows) ||
-        (math != DS4_GVQ_BF16 && math != DS4_GVQ_F32) || !gvq_stream(ctx)) { return 0; }
+        math > DS4_GVQ_TF32 || !gvq_stream(ctx)) { return 0; }
     if (type == GVQ_TYPE_FP8 && ctx->direct_fp8 && rows <= GLMVQ_FP8_TOKENS && math == DS4_GVQ_BF16) {
         const uint32_t split = glmvq_fp8_split(s.rows, s.cols);
         if (split && glmvq_fp8_fits(s.data, s.scale, input->ptr, out->ptr, s.rows, s.cols)) {
@@ -766,7 +766,7 @@ extern "C" int ds4_gpu_gvq_linear(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_
         glmvq_bf16_fits(s.data, input->ptr, out->ptr, s.cols)) {
         ctx->bf16_calls++;
         return cuda_ok(glmvq_bf16_decode(s.data, (const float *)input->ptr, (float *)out->ptr,
-            s.rows, s.cols, math == DS4_GVQ_F32 ? GLMVQ_DOT_F32 : GLMVQ_DOT_BF16, ctx->stream, rows, ctx->launch),
+            s.rows, s.cols, math != DS4_GVQ_BF16 ? GLMVQ_DOT_F32 : GLMVQ_DOT_BF16, ctx->stream, rows, ctx->launch),
             "GLM VQ BF16 decode");
     }
     if (type == GVQ_TYPE_Q4 && ctx->direct_q4) {

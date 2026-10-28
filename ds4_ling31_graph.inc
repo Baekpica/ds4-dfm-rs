@@ -22,7 +22,7 @@ typedef struct {
      * tensor-core decode/verify attention (DS4_LING31_FLASH=0: Motif's) and
      * the pipelined prefill range attention (DS4_LING31_FA_PIPE=0: Ling-3.0's,
      * bit-identical). Latent rows are FP8 (ling31_latent_mode). */
-    bool fused, qkv_bf16, flash, pipe;
+    bool fused, qkv_bf16, flash, pipe, router_tf32;
     ds4_l31_latent latent_mode;
     uint64_t workspace_bytes, state_bytes, control_bytes, kv_bytes;
 #define L31_FIELD(field, cols, type) ds4_gpu_tensor *field;
@@ -278,10 +278,12 @@ static bool ling31_graph_alloc(ds4_ling31_graph *g, const ds4_model *m, const ds
     g->workspace_bytes = ling31_workspace_bytes(cap);
     const char *fused = getenv("DS4_LING31_FUSED"), *qkv = getenv("DS4_LING31_QKV_BF16");
     const char *flash = getenv("DS4_LING31_FLASH"), *pipe = getenv("DS4_LING31_FA_PIPE");
+    const char *router = getenv("DS4_LING31_ROUTER_TF32");
     g->fused = !(fused && !strcmp(fused, "0"));
     g->flash = !(flash && !strcmp(flash, "0"));
     g->pipe = !(pipe && !strcmp(pipe, "0"));
     g->qkv_bf16 = !(qkv && !strcmp(qkv, "0"));
+    g->router_tf32 = !(router && !strcmp(router, "0"));
     g->ready = true;
     if (!ling31_graph_reset(g)) { ling31_graph_free(g); return false; }
     ds4_log(stderr, DS4_LOG_TIMING,
@@ -558,7 +560,9 @@ static bool l31_ffn(ds4_ling31_graph *g, const ds4_model *m, const ds4_weights *
     }
     // FP32 router logits (BF16 weights widened), grouped sigmoid top-8; the
     // shared expert runs first so the routed reduce adds it in its pass.
-    return l31_mm(g, m, g->router, l->ffn_gate_inp, g->norm, rows, DS4_GVQ_F32) &&
+    // norm rows are BF16 values, so prefill takes TF32 tensor cores (4096
+    // rows: 1.43 -> 0.66 ms). DS4_LING31_ROUTER_TF32=0 keeps F32 SIMT.
+    return l31_mm(g, m, g->router, l->ffn_gate_inp, g->norm, rows, g->router_tf32 ? DS4_GVQ_TF32 : DS4_GVQ_F32) &&
         ds4_gpu_ling3vl_router(g->selected, g->route_weights, g->router, m->map, m->size,
             l->ffn_exp_probs_b->abs_offset, rows, DS4_EXPERT_WEIGHT_SCALE) &&
         l31_mlp(g, m, g->attn_out, l->ffn_gate_shexp, l->ffn_up_shexp, l->ffn_down_shexp, rows,

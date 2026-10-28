@@ -17,7 +17,9 @@ typedef struct ds4_gvq_ctx ds4_gvq_ctx;
  * attention and fused index scores keep no per-key scratch; latent, pool and
  * draft caches grow linearly with the session context. */
 enum { DS4_GVQ_NO_LINK = UINT32_MAX, DS4_GVQ_CTX_MAX = 1048576 };
-typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32 } ds4_gvq_math;
+/* TF32: F32 math on tensor cores for operands that hold BF16 values, which
+ * TF32 represents exactly: products stay exact, accumulation order moves. */
+typedef enum { DS4_GVQ_BF16, DS4_GVQ_F32, DS4_GVQ_TF32 } ds4_gvq_math;
 typedef enum { DS4_GVQ_RMS, DS4_GVQ_GATED_RMS, DS4_GVQ_PLAIN_RMS } ds4_gvq_norm;
 /* Activation rows of BF16-rounded values: F32, or BF16 packed into the
  * first half of the same buffer (mHC residuals from the fused prefill
