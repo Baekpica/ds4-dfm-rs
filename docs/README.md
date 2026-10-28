@@ -100,6 +100,8 @@ Other recipes and dated gates retain their hardware and workload limits.
 The [performance guide](performance.md) explains the README examples.
 These reports preserve successful gates, rejected experiments and unresolved limits.
 
+- **Ling-3.1 1019:** [October 28 follow-up](ling31-optimization-2026-10-28-followup.md),
+  per-change throughput, numerical gates and Decode variability.
 - **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
   three matched h3.c outputs, a native video API gate and measured generation cost.
 - **MiniMax VQ:** [October 27 prefill/decode campaign](minimax-vq-optimization-2026-10-27.md),

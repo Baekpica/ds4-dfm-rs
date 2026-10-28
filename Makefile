@@ -1901,6 +1901,9 @@ tests/test_ling31_residual: tests/test_ling31_residual.cu cuda/l31_residual.cuh 
 test-ling31-residual: tests/test_ling31_residual
 	./tests/test_ling31_residual
 
+tests/test_ling31_mlp: tests/test_ling31_mlp.cu cuda/l31_swiglu.cuh cuda/glm_vq_q4p.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_ops.cuh
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $<
+
 tests/test_ling31_flash: tests/test_ling31_flash.cu cuda/l31_flash.cuh cuda/l31_latent.cuh ds4_ling31.h cuda/glm_vq_flash.cuh cuda/glm_vq.cuh cuda/glm_vq_ops.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -Xptxas -v -o $@ $< 2> $@.ptxas || { cat $@.ptxas >&2; exit 1; }
 	@grep -A1 "l31_fa_kernel" $@.ptxas | grep -E "registers|spill" || true
@@ -2078,7 +2081,7 @@ ds4_cuda.o ds4_cuda_range_test.o: ds4_glm53_compact.h ds4_glm53_compact_gpu.cuh 
 LING31_NATIVE_DEPS = ds4_ling31.h ds4_ling31_bind.inc ds4_ling31_graph.inc ds4_ling31_payload.inc \
 	ds4_ling31_session.inc ds4_ling31_mtp.inc ds4_ling31_batch.inc ds4_ling31_bank_payload.inc
 ds4.o ds4_cpu.o: $(LING31_NATIVE_DEPS)
-ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh cuda/l31_flash.cuh
+ds4_cuda.o ds4_cuda_range_test.o: ds4_ling31.h ds4_ling31_gpu.cuh cuda/l31_residual.cuh cuda/l31_flash.cuh cuda/l31_swiglu.cuh
 BEAM_NATIVE_DEPS = ds4_beam.h ds4_beam_bind.inc ds4_beam_graph.inc ds4_beam_payload.inc ds4_beam_session.inc ds4_beam_draft.inc \
 	ds4_beam_batch.inc ds4_beam_bank_payload.inc
 ds4.o ds4_cpu.o: $(BEAM_NATIVE_DEPS)
@@ -2596,7 +2599,7 @@ BUILD_PROGRAMS := \
     tests/test_inkling_norm tests/test_inkling_payload tests/test_inkling_q8_batch \
     tests/test_inkling_session tests/test_iquest_dispatch tests/test_iquest_prefix \
     tests/test_iquest_primitives tests/test_k2_lifecycle tests/test_k2_rewind \
-    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_axk2_topk \
+    tests/test_ling31_flash tests/test_ling31_prefill_attn tests/test_ling31_residual tests/test_ling31_mlp tests/test_axk2_topk \
     tests/test_ling31_stop tests/test_ling3vl_matmul tests/test_ling3vl_media tests/test_ling3vl_mla \
     tests/test_ling3vl_mla_expand tests/test_ling3vl_moefuse tests/test_ling3vl_primitives \
     tests/test_ling3vl_q5pair tests/test_ling3vl_vision tests/test_minimax_artifacts \

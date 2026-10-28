@@ -89,8 +89,14 @@ int main() {
     int failures = 0;
     failures += fp8_case(8192, 4096, 640, false);
     failures += fp8_case(1024, 512, 300, true);
+    failures += fp8_case(256, 768, 257, false);
     struct Case { uint32_t rows, cols, tokens; bool big; };
-    for (Case c : {Case{2048, 1536, 640, false}, Case{512, 4096, 300, true}, Case{2048, 1536, 1000, false}}) {
+    for (Case c : {Case{2048, 1536, 640, false}, Case{512, 4096, 300, true}, Case{2048, 1536, 1000, false},
+            Case{4096, 1280, 640, false}, Case{512, 768, 300, true}, Case{128, 256, 257, false}}) {
+        if (!glmvq_q4p_fits(c.rows, c.cols)) {
+            printf("Q4_K block-aligned shape rejected: rows=%u cols=%u\n", c.rows, c.cols);
+            return 1;
+        }
         const uint32_t blocks = c.cols / GLMVQ_Q4_BLOCK;
         std::vector<uint8_t> w((size_t)c.rows * blocks * GLMVQ_Q4_BYTES);
         for (size_t b = 0; b < w.size() / GLMVQ_Q4_BYTES; b++) {

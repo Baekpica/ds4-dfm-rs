@@ -368,6 +368,7 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
     if (!flags) { return false; }
     const cudaStream_t stream = ds4_current_stream();
     bool ok = cuda_ok(cudaMemsetAsync(flags->ptr, 0, count * sizeof(uint32_t), stream), "GLM VQ Q4 prefill scan");
+    const char *l31_down = getenv("DS4_LING31_MLP_Q4P");
     for (size_t i = 0; ok && i < count; i++) {
         const glmvq_source &s = ctx->model->source[i];
         // FP8 matrices with 128 x 128 scales fold into the same FP16 operand.
@@ -381,6 +382,8 @@ static bool gvq_q4p_scan(ds4_gvq_ctx *ctx) {
             continue;
         }
         if (ctx->model->records[i].type != GVQ_TYPE_Q4 || !s.data || !glmvq_q4p_fits(s.rows, s.cols)) { continue; }
+        // Ling's shared down needs one Q4_K block beyond a 512-column group.
+        if (s.cols == 1280u && l31_down && !strcmp(l31_down, "0")) { continue; }
         const uint64_t blocks = (uint64_t)s.rows * s.cols / GLMVQ_Q4_BLOCK;
         glmvq_q4p_check<<<(unsigned)((blocks + 255) / 256), 256, 0, stream>>>(
             (const uint8_t *)s.data, blocks, (uint32_t *)flags->ptr + i);

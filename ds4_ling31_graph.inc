@@ -575,8 +575,9 @@ static bool l31_mlp(ds4_ling31_graph *g, const ds4_model *m, ds4_gpu_tensor *out
     const bool projected = in_rows == DS4_GVQ_ROWS_BF16
         ? ds4_gpu_gvq_linear_many_rows(g->gvq, outs, index, 2u, g->norm, rows, DS4_GVQ_ROWS_F32) != 0
         : l31_mm_many(g, m, outs, ws, 2u, g->norm, rows);
-    return projected &&
-        ds4_gpu_l31_swiglu(g->f, g->k, g->v, rows, width, clamp, DS4_GVQ_ROWS_F32) &&
+    if (!projected) { return false; }
+    if (ds4_gpu_l31_mlp(g->gvq, out, ling31_index(m, down), g->k, g->v, rows, clamp)) { return true; }
+    return ds4_gpu_l31_swiglu(g->f, g->k, g->v, rows, width, clamp, DS4_GVQ_ROWS_F32) &&
         l31_mm(g, m, out, down, g->f, rows, DS4_GVQ_BF16);
 }
 

@@ -38,6 +38,8 @@ int ds4_gpu_l31_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
     const ds4_gpu_tensor *up, uint32_t rows, uint32_t width, float limit, ds4_gvq_rows out_rows);
 int ds4_gpu_l31_gate_up(ds4_gvq_ctx *ctx, ds4_gpu_tensor *mid, uint32_t gate, uint32_t up,
     const ds4_gpu_tensor *input, uint32_t rows, float limit);
+int ds4_gpu_l31_mlp(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t down,
+    const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up, uint32_t rows, float limit);
 
 /* BF16 k_b [heads][latent][nope] and v_b [heads][value][latent] from the FP8
  * kv_b [heads*(nope+value), latent] (FP8 x scale, then BF16 RNE). */

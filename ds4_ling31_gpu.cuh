@@ -14,6 +14,7 @@
 #include "ds4_ling31.h"
 #include "cuda/beam_mma8w.cuh"
 #include "cuda/l31_residual.cuh"
+#include "cuda/l31_swiglu.cuh"
 #include "cuda/l31_latent.cuh"
 #include "cuda/l31_flash.cuh"
 
@@ -567,6 +568,27 @@ extern "C" int ds4_gpu_l31_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gat
             (float *)out->ptr, count, limit);
     }
     return cuda_ok(cudaGetLastError(), "Ling-3.1 SwiGLU");
+}
+
+// Prepare the down projection without a materialized SwiGLU row.
+extern "C" int ds4_gpu_l31_mlp(ds4_gvq_ctx *ctx, ds4_gpu_tensor *out, uint32_t down,
+        const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up, uint32_t rows, float limit) {
+    static const bool enabled = !l31_env_off("DS4_LING31_MLP_Q4P");
+    if (!enabled || !ctx || !out || !gate || !up || !ctx->direct_q4 || down >= ctx->model->source.size() ||
+        !gvq_q4p_ready(ctx, &down, 1, gate, &out, rows) ||
+        !gvq_q4p_ready(ctx, &down, 1, up, &out, rows)) { return 0; }
+    const glmvq_source &s = ctx->model->source[down];
+    if (!gvq_floats(gate, (uint64_t)rows * s.cols) || !gvq_floats(up, (uint64_t)rows * s.cols) ||
+        !gvq_floats(out, (uint64_t)rows * s.rows) ||
+        (uintptr_t)gate->ptr % alignof(float4) || (uintptr_t)up->ptr % alignof(float4) || !gvq_stream(ctx)) {
+        return 0;
+    }
+    const auto in = glmvq_q4p_layout(ctx->scratch->ptr, rows, s.cols);
+    l31_swiglu_prepare<<<rows, GLMVQ_Q4P_PREP, 0, ctx->stream>>>((const float *)gate->ptr,
+        (const float *)up->ptr, in.xh, in.xscale, s.cols, limit);
+    return cuda_ok(cudaGetLastError(), "Ling-3.1 SwiGLU input") &&
+        cuda_ok(glmvq_q4p_gemm((const uint8_t *)s.data, in, (float *)out->ptr, s.rows, s.cols, rows,
+            ctx->stream), "Ling-3.1 SwiGLU down");
 }
 
 // One token keeps the SIMT pair below GVQ's row limit (see ds4_gpu_gvq_gate_up).
