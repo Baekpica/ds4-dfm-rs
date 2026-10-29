@@ -1631,6 +1631,14 @@ enum { MM_SC_ROWS = 32, MM_SC_GROUP = 32, MM_SC_LD = DS4_MINIMAX_HEAD + 8,
 __global__ void mm_score_mma_kernel(float *scores, const float *query, const uint8_t *pool, uint32_t pos,
         uint32_t first, uint32_t count, uint32_t stride);
 static bool mm_score_mma_ready(void);
+#ifdef DS4_CUDA_HAVE_MXF4
+__global__ void mm_score_fp4_kernel(float *scores, const float *query, const uint8_t *pool, uint32_t pos,
+        uint32_t first, uint32_t count, uint32_t stride);
+static bool mm_score_fp4(void) {
+    static const bool enabled = !getenv("DS4_MINIMAX_SCORE_FP4") || strcmp(getenv("DS4_MINIMAX_SCORE_FP4"), "0") != 0;
+    return enabled;
+}
+#endif
 
 // Decoded keys of one block plus the query vectors of MM_SCORE_ROWS rows.
 static const uint32_t MM_SCORE_SMEM = (MM_BLOCK * (MM_HEAD + 1) + MM_SCORE_ROWS * MM_KV_HEADS * MM_HEAD) * sizeof(float);
@@ -1666,9 +1674,17 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
                 });
             } else if (!mm_score_tiled()) {
                 if (!mm_score_mma_ready()) { return 0; }
-                mm_score_mma_kernel<<<dim3((count + MM_SC_ROWS - 1) / MM_SC_ROWS, (stride + MM_SC_GROUP - 1) / MM_SC_GROUP),
-                    256, MM_SC_SMEM_BYTES, stream>>>((float *)scores->ptr, (const float *)query->ptr,
-                    (const uint8_t *)pool->ptr, pos, first, count, stride);
+                const dim3 grid((count + MM_SC_ROWS - 1) / MM_SC_ROWS, (stride + MM_SC_GROUP - 1) / MM_SC_GROUP);
+#ifdef DS4_CUDA_HAVE_MXF4
+                if (mm_score_fp4()) {
+                    mm_score_fp4_kernel<<<grid, 256, 0, stream>>>((float *)scores->ptr, (const float *)query->ptr,
+                        (const uint8_t *)pool->ptr, pos, first, count, stride);
+                } else
+#endif
+                {
+                    mm_score_mma_kernel<<<grid, 256, MM_SC_SMEM_BYTES, stream>>>((float *)scores->ptr,
+                        (const float *)query->ptr, (const uint8_t *)pool->ptr, pos, first, count, stride);
+                }
             } else {
                 mm_score_kernel<<<dim3(stride, (count + MM_SCORE_ROWS - 1) / MM_SCORE_ROWS), MM_SCORE_THREADS,
                     MM_SCORE_SMEM, stream>>>((float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)pool->ptr,
@@ -1944,9 +1960,113 @@ __global__ void __launch_bounds__(256) mm_score_mma_kernel(float *scores, const 
     }
 }
 
+// Two NVFP4 query components reduce quantization error while consuming the
+// existing key bytes directly; long-context output quality gates block selection.
+#ifdef DS4_CUDA_HAVE_MXF4
+__device__ __forceinline__ void mm_mma_nvfp4(float *c, const uint32_t *a, uint32_t b0, uint32_t b1,
+        uint32_t as, uint32_t bs) {
+    asm volatile("mma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64.row.col.f32.e2m1.e2m1.f32.ue4m3 "
+        "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, %10, {0,0}, %11, {0,0};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(as), "r"(bs));
+}
+
+__global__ void __launch_bounds__(256) mm_score_fp4_kernel(float *scores, const float *query,
+        const uint8_t *pool, uint32_t pos, uint32_t first, uint32_t count, uint32_t stride) {
+    // Pad 72-byte rows to 80 bytes so the fragment quads use distinct shared banks.
+    __shared__ uint32_t qp[128][20], rp[128][20], kp[128][20];
+    const uint32_t lane = threadIdx.x & 31, warp = threadIdx.x / 32, g = lane / 4, t = lane % 4;
+    const uint32_t tile = blockIdx.x * MM_SC_ROWS, rows = min((uint32_t)MM_SC_ROWS, count - tile);
+    const uint32_t last = pos + first + tile + rows - 1;
+    const uint32_t b0 = blockIdx.y * MM_SC_GROUP, b1 = min(b0 + MM_SC_GROUP, last / MM_BLOCK + 1);
+    if (b0 >= b1) { return; }
+    const float *q = query + (uint64_t)(first + tile) * MM_KV_HEADS * MM_HEAD;
+    for (uint32_t v = warp; v < 128; v += 8) {
+        uint8_t *dst = (uint8_t *)qp[v], *low = (uint8_t *)rp[v];
+        if (v < rows * MM_KV_HEADS) {
+            mm_fp4_encode(q + (uint64_t)v * MM_HEAD, dst, dst + MM_FP4_DATA);
+            __syncwarp();
+            // Key staging is still unused; each warp borrows one float row.
+            float *residual = (float *)kp + warp * MM_HEAD;
+            const float scale = glmvq_e4m3(dst[MM_FP4_DATA + lane / 4]);
+            #pragma unroll
+            for (uint32_t i = 0; i < 4; i++) {
+                const uint32_t d = lane * 4 + i, nibble = (dst[d / 2] >> (4 * (d % 2))) & 15;
+                const float high = ds4_e2m1fn_value(nibble) * scale * (nibble & 8 ? -1.0f : 1.0f);
+                residual[d] = glmvq_round(q[(uint64_t)v * MM_HEAD + d]) - high;
+            }
+            __syncwarp();
+            mm_fp4_encode(residual, low, low + MM_FP4_DATA);
+            __syncwarp();
+        } else {
+            dst[lane * 2] = dst[lane * 2 + 1] = low[lane * 2] = low[lane * 2 + 1] = 0;
+            if (!(lane & 3)) { dst[MM_FP4_DATA + lane / 4] = low[MM_FP4_DATA + lane / 4] = 1; }
+        }
+    }
+    __syncthreads();
+    const uint32_t va = warp * 16 + g, vb = va + 8;
+    const uint32_t pa = pos + first + tile + va / MM_KV_HEADS, pb = pos + first + tile + vb / MM_KV_HEADS;
+    uint32_t qa[2][4], qs[2], ra[2][4], rs[2];
+    #pragma unroll
+    for (uint32_t k = 0; k < 2; k++) {
+        qa[k][0] = qp[va][k * 8 + t]; qa[k][1] = qp[vb][k * 8 + t];
+        qa[k][2] = qp[va][k * 8 + t + 4]; qa[k][3] = qp[vb][k * 8 + t + 4];
+        qs[k] = qp[warp * 16 + g + (t % 2) * 8][16 + k];
+        ra[k][0] = rp[va][k * 8 + t]; ra[k][1] = rp[vb][k * 8 + t];
+        ra[k][2] = rp[va][k * 8 + t + 4]; ra[k][3] = rp[vb][k * 8 + t + 4];
+        rs[k] = rp[warp * 16 + g + (t % 2) * 8][16 + k];
+    }
+    for (uint32_t b = b0; b < b1; b++) {
+        const uint32_t t0 = b * MM_BLOCK, visible = min((uint32_t)MM_BLOCK, last + 1 - t0);
+        __syncthreads();
+        for (uint32_t i = threadIdx.x; i < 128 * 18; i += 256) {
+            const uint32_t key = i / 18, word = i % 18;
+            kp[key][word] = key < visible ? ((const uint32_t *)(pool + (uint64_t)t0 * MM_FP4_ROW))[i] : 0;
+        }
+        __syncthreads();
+        float best_a = -INFINITY, best_b = -INFINITY;
+        #pragma unroll 1
+        for (uint32_t half = 0; half < 2; half++) {
+            float s[8][4];
+            #pragma unroll
+            for (uint32_t n = 0; n < 8; n++) { s[n][0] = s[n][1] = s[n][2] = s[n][3] = 0.0f; }
+            #pragma unroll
+            for (uint32_t k = 0; k < 2; k++) {
+                #pragma unroll
+                for (uint32_t n = 0; n < 8; n++) {
+                    const uint32_t key = half * 64 + n * 8 + g;
+                    mm_mma_nvfp4(s[n], qa[k], kp[key][k * 8 + t], kp[key][k * 8 + t + 4], qs[k], kp[key][16 + k]);
+                    mm_mma_nvfp4(s[n], ra[k], kp[key][k * 8 + t], kp[key][k * 8 + t + 4], rs[k], kp[key][16 + k]);
+                }
+            }
+            #pragma unroll
+            for (uint32_t n = 0; n < 8; n++) {
+                const uint32_t key = t0 + half * 64 + n * 8 + 2 * t;
+                best_a = fmaxf(best_a, key <= pa ? s[n][0] : -INFINITY);
+                best_a = fmaxf(best_a, key + 1 <= pa ? s[n][1] : -INFINITY);
+                best_b = fmaxf(best_b, key <= pb ? s[n][2] : -INFINITY);
+                best_b = fmaxf(best_b, key + 1 <= pb ? s[n][3] : -INFINITY);
+            }
+        }
+        best_a = fmaxf(best_a, __shfl_xor_sync(0xffffffffu, best_a, 1));
+        best_a = fmaxf(best_a, __shfl_xor_sync(0xffffffffu, best_a, 2));
+        best_b = fmaxf(best_b, __shfl_xor_sync(0xffffffffu, best_b, 1));
+        best_b = fmaxf(best_b, __shfl_xor_sync(0xffffffffu, best_b, 2));
+        if (!t) {
+            if (va / MM_KV_HEADS < rows) { scores[((uint64_t)tile * MM_KV_HEADS + va) * stride + b] = best_a; }
+            if (vb / MM_KV_HEADS < rows) { scores[((uint64_t)tile * MM_KV_HEADS + vb) * stride + b] = best_b; }
+        }
+    }
+}
+#endif
+
 static bool mm_score_mma_ready(void) {
     static bool ready = false;
     if (!ready) {
+#ifdef DS4_CUDA_HAVE_MXF4
+        cudaFuncAttributes attributes;
+        if (!cuda_ok(cudaFuncGetAttributes(&attributes, mm_score_fp4_kernel), "MiniMax NVFP4 score preload")) { return false; }
+#endif
         if (!cuda_ok(cudaFuncSetAttribute(mm_score_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                 MM_SC_SMEM_BYTES), "MiniMax MMA score shared memory")) { return false; }
         ready = true;

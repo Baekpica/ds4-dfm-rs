@@ -14,7 +14,9 @@
 //! paired NLL within NLL_BAND of the reference and top-1 at least TOP1_FLOOR,
 //! bands fixed from the engine's known differences (Q8_1 / E4M3 prefill
 //! activations, gain after the dot, accumulation order), not exact agreement.
-//! Usage: minimax_quality MODEL REFERENCE_JSON OUTPUT_JSON [PREFILL] [CONTEXT]
+//! Usage: minimax_quality [--record] MODEL REFERENCE_JSON OUTPUT_JSON [PREFILL] [CONTEXT]
+//! --record writes measured positions in the reference schema for same-host comparisons.
+//! Input cases need tokens only; unmeasured prefix positions remain null.
 use ds4_core::{Backend, Model, ModelFamily, TokenBuffer};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -128,6 +130,27 @@ impl Tally {
     }
 }
 
+fn capture(logits: &[f32], next: Option<i32>) -> Result<Value, String> {
+    if logits.len() <= TOKENS
+        || logits.iter().any(|v| !v.is_finite())
+        || logits[TOKENS..].iter().any(|&v| v > PAD_LOGIT_MAX)
+        || next.is_some_and(|v| v < 0 || v as usize >= TOKENS)
+    {
+        return Err("invalid logits or next token for a reference position".into());
+    }
+    let ids = top8(logits);
+    let values: Vec<f32> = ids.iter().map(|&id| logits[id]).collect();
+    let nll = next.map(|next| {
+        let max = logits[ids[0]] as f64;
+        let sum: f64 = logits[..TOKENS]
+            .iter()
+            .map(|&v| (v as f64 - max).exp())
+            .sum();
+        max + sum.ln() - logits[next as usize] as f64
+    });
+    Ok(json!({"top8_ids": ids, "top8_logits": values, "nll": nll}))
+}
+
 // One position: ours against the reference's top-8 and next-token NLL.
 fn check(
     logits: &[f32],
@@ -164,10 +187,14 @@ fn check(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let recording = args.first().is_some_and(|s| s == "--record");
+    if recording {
+        args.remove(0);
+    }
     if !(3..=5).contains(&args.len()) {
         return Err(
-            "usage: minimax_quality MODEL REFERENCE_JSON OUTPUT_JSON [PREFILL] [CONTEXT]".into(),
+            "usage: minimax_quality [--record] MODEL REFERENCE_JSON OUTPUT_JSON [PREFILL] [CONTEXT]".into(),
         );
     }
     let reference: Value = serde_json::from_slice(&std::fs::read(&args[1])?)?;
@@ -189,6 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vocab = model.vocab().n_vocab() as usize;
     let (mut all, mut assistant) = (Tally::default(), Tally::default());
     let mut cases = Vec::new();
+    let mut recorded_cases = Vec::new();
     for (index, case) in reference["cases"]
         .as_array()
         .ok_or("reference needs cases")?
@@ -204,6 +232,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             prefill.min(ids.len())
         };
+        if ids.is_empty() {
+            return Err(format!("case {index} is empty").into());
+        }
+        let mut captured = recording.then(|| {
+            let mut value = case.clone();
+            for key in ["top8_ids", "top8_logits", "nll"] {
+                value[key] = json!(vec![Value::Null; ids.len()]);
+            }
+            value
+        });
         let mask = assistant_mask(&ids);
         let (mut tally, mut ai) = (Tally::default(), Tally::default());
         let mut session = model.session(context)?;
@@ -211,6 +249,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         session.sync(&TokenBuffer::from_tokens(ids[..first].to_vec()))?;
         let prefill_s = started.elapsed().as_secs_f64();
         let mut record = |logits: &[f32], at: usize| -> Result<(), String> {
+            if let Some(ref mut value) = captured {
+                let position = capture(logits, ids.get(at + 1).copied())?;
+                for key in ["top8_ids", "top8_logits", "nll"] {
+                    value[key][at] = position[key].clone();
+                }
+                return Ok(());
+            }
             let (ours, theirs, err, worst, nll) =
                 check(logits, case, at, ids.get(at + 1).copied())?;
             tally.add(&ours, &theirs, err, worst, nll);
@@ -221,20 +266,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         record(&session.copy_logits(vocab)?, first - 1)?;
         let started = std::time::Instant::now();
+        let mut decode_forward_s = 0.0;
         for (at, &token) in ids.iter().enumerate().skip(first) {
+            let forward = std::time::Instant::now();
             session.eval(token)?;
-            record(&session.copy_logits(vocab)?, at)?;
+            let logits = session.copy_logits(vocab)?;
+            // The copy completes GPU work; reference scoring stays outside this timer.
+            decode_forward_s += forward.elapsed().as_secs_f64();
+            record(&logits, at)?;
         }
         let decode_s = started.elapsed().as_secs_f64();
         drop(session);
         let row = json!({"case": index, "tokens": ids.len(), "prefill": first,
-            "prefill_s": prefill_s, "decode_s": decode_s,
+            "prefill_s": prefill_s, "decode_s": decode_s, "decode_forward_s": decode_forward_s,
             "all": tally.report(), "assistant": ai.report()});
         println!("{row}");
         std::io::stdout().flush()?;
         all.merge(&tally);
         assistant.merge(&ai);
         cases.push(row);
+        if let Some(value) = captured {
+            recorded_cases.push(value);
+        }
+    }
+    if recording {
+        let mut out = reference;
+        out["source"] = json!("ds4 MiniMax same-host teacher-forced reference");
+        out["cases"] = json!(recorded_cases);
+        out["measurements"] = json!(cases);
+        std::fs::write(&args[2], serde_json::to_vec_pretty(&out)?)?;
+        return Ok(());
     }
     let pass = (assistant.paired > 0).then(|| {
         let n = assistant.positions as f64;
@@ -255,4 +316,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captured_position_round_trips_and_rejects_invalid_values() {
+        let mut logits = vec![0.0; TOKENS + 3];
+        logits[TOKENS..].fill(-1e30);
+        logits[7] = 1.0;
+        let row = capture(&logits, Some(7)).unwrap();
+        let expected = (1.0 + (TOKENS - 1) as f64 * (-1.0f64).exp()).ln();
+        assert!((row["nll"].as_f64().unwrap() - expected).abs() < 1e-10);
+        let reference = json!({"top8_ids": [row["top8_ids"]], "top8_logits": [row["top8_logits"]], "nll": [row["nll"]]});
+        let (a, b, err, worst, nll) = check(&logits, &reference, 0, Some(7)).unwrap();
+        assert_eq!(a, b);
+        assert_eq!((err, worst), (0.0, 0.0));
+        let (ours, theirs) = nll.unwrap();
+        assert!((ours - theirs).abs() < 1e-12);
+        assert!(capture(&logits, Some(-1)).is_err());
+        logits[TOKENS] = 0.0;
+        assert!(capture(&logits, None).is_err());
+        logits[TOKENS] = -1e30;
+        logits[0] = f32::NAN;
+        assert!(capture(&logits, None).is_err());
+    }
 }

@@ -1,0 +1,1240 @@
+{
+  "fp4-retained-profile": {
+    "command": {
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "20",
+        "--timeout",
+        "1200",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/fp4-retained-profile/memory.jsonl",
+        "--",
+        "/usr/local/cuda/bin/nsys",
+        "profile",
+        "--trace=cuda,nvtx",
+        "--sample=none",
+        "--cpuctxsw=none",
+        "--capture-range=nvtx",
+        "--nvtx-capture=ds4.prefill",
+        "--capture-range-end=none",
+        "-o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/fp4-retained-profile/trace",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "python3",
+        "docs/benchmarks/minimax-vq-spark-64k-2026-10-27/pin-main.py",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/fp4-retained-profile/stderr.log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/fp4-retained-profile/affinity.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiniMax-M3.1-Flash-VQ-GGUF",
+        "--prompt-file",
+        "speed-bench/promessi_sposi.txt",
+        "--ctx-start",
+        "8192",
+        "--ctx-max",
+        "65536",
+        "--step-incr",
+        "57344",
+        "--ctx-alloc",
+        "131072",
+        "--gen-tokens",
+        "32",
+        "--csv",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/fp4-retained-profile/bench.csv",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/fp4-retained-profile/proof",
+        "--warmup-prefill",
+        "4096"
+      ],
+      "controls": {
+        "CUDA_MODULE_LOADING": "LAZY",
+        "DS4_MINIMAX_PREFILL_CHUNK": "2048",
+        "DS4_GLMVQ_PDL": "1",
+        "DS4_MINIMAX_SCORE_FP4": "0"
+      },
+      "source": "ef41bd6d627b62d8d51f8616e7b755acdb61ce05",
+      "binary_sha256": "d56e58cfa48cfe506c2ceb9cec6551aefd1d7215617c0371d18ec542089d109a",
+      "boot": "f5d9ee6b-7f0f-443c-b629-4f39b4519994"
+    },
+    "chunks": [
+      {
+        "frontier": 2048,
+        "wall_ms": 1819.328342,
+        "gpu_union_ms": 1815.92168,
+        "groups_ms": {
+          "other": 183.64193899999984,
+          "q4_prefill": 519.1792789999994,
+          "kv_store": 26.749429,
+          "index_topk": 0.23647799999999994,
+          "attention": 72.820306,
+          "residual": 41.645259,
+          "experts": 970.0945720000003
+        }
+      },
+      {
+        "frontier": 4096,
+        "wall_ms": 1881.429581,
+        "gpu_union_ms": 1878.006122,
+        "groups_ms": {
+          "other": 183.16149200000007,
+          "q4_prefill": 518.6770790000005,
+          "kv_store": 26.701744,
+          "index_score": 10.503753,
+          "index_topk": 2.966526,
+          "attention": 138.45492899999996,
+          "residual": 41.957733,
+          "experts": 954.0432330000003
+        }
+      },
+      {
+        "frontier": 6144,
+        "wall_ms": 1894.296889,
+        "gpu_union_ms": 1890.850041,
+        "groups_ms": {
+          "other": 182.03802399999992,
+          "q4_prefill": 520.8707399999997,
+          "kv_store": 26.812432,
+          "index_score": 11.501945999999998,
+          "index_topk": 3.0973810000000004,
+          "attention": 147.82283899999996,
+          "residual": 41.61038499999999,
+          "experts": 955.5614260000003
+        }
+      },
+      {
+        "frontier": 8192,
+        "wall_ms": 1909.933967,
+        "gpu_union_ms": 1906.478638,
+        "groups_ms": {
+          "other": 182.78417199999993,
+          "q4_prefill": 516.591255,
+          "kv_store": 26.954449000000004,
+          "index_score": 16.43371000000001,
+          "index_topk": 3.1792969999999996,
+          "attention": 152.91546699999998,
+          "residual": 41.576748999999985,
+          "experts": 961.5377290000002,
+          "q4_decode": 3.469569
+        }
+      },
+      {
+        "frontier": 10240,
+        "wall_ms": 1908.921239,
+        "gpu_union_ms": 1905.523251,
+        "groups_ms": {
+          "other": 183.14594199999968,
+          "q4_prefill": 521.6539659999997,
+          "kv_store": 27.580459000000005,
+          "index_score": 18.226403000000005,
+          "index_topk": 3.3622700000000005,
+          "attention": 162.76894600000003,
+          "residual": 41.824238000000015,
+          "experts": 945.4066099999993
+        }
+      },
+      {
+        "frontier": 12288,
+        "wall_ms": 1913.091122,
+        "gpu_union_ms": 1909.682775,
+        "groups_ms": {
+          "other": 184.26210799999987,
+          "q4_prefill": 519.5932469999998,
+          "kv_store": 27.179119999999998,
+          "index_score": 21.295266000000005,
+          "index_topk": 3.407623000000001,
+          "attention": 166.70036199999998,
+          "residual": 42.047426999999985,
+          "experts": 943.3300519999996
+        }
+      },
+      {
+        "frontier": 14336,
+        "wall_ms": 1932.737891,
+        "gpu_union_ms": 1929.260831,
+        "groups_ms": {
+          "other": 183.210002,
+          "q4_prefill": 521.83557,
+          "kv_store": 27.665101999999997,
+          "index_score": 24.203176,
+          "index_topk": 3.997786,
+          "attention": 166.628599,
+          "residual": 42.163685999999984,
+          "experts": 957.960314
+        }
+      },
+      {
+        "frontier": 16384,
+        "wall_ms": 1933.064127,
+        "gpu_union_ms": 1929.702784,
+        "groups_ms": {
+          "other": 182.687763,
+          "q4_prefill": 518.4166499999998,
+          "kv_store": 26.89099300000001,
+          "index_score": 29.768180999999995,
+          "index_topk": 4.061273999999999,
+          "attention": 171.15527100000003,
+          "residual": 41.78276000000001,
+          "experts": 953.4060169999998
+        }
+      },
+      {
+        "frontier": 18432,
+        "wall_ms": 1937.750422,
+        "gpu_union_ms": 1934.346932,
+        "groups_ms": {
+          "other": 182.85903799999994,
+          "q4_prefill": 521.4619770000002,
+          "kv_store": 27.768775,
+          "index_score": 31.051949,
+          "index_topk": 3.656188,
+          "attention": 175.6879380000001,
+          "residual": 41.89169,
+          "experts": 948.4152170000002
+        }
+      },
+      {
+        "frontier": 20480,
+        "wall_ms": 1955.406681,
+        "gpu_union_ms": 1951.956752,
+        "groups_ms": {
+          "other": 182.88893399999986,
+          "q4_prefill": 519.3401090000001,
+          "kv_store": 27.362859999999998,
+          "index_score": 35.742749999999994,
+          "index_topk": 3.6375370000000005,
+          "attention": 179.72236599999994,
+          "residual": 41.76747199999999,
+          "experts": 959.9564629999999
+        }
+      },
+      {
+        "frontier": 22528,
+        "wall_ms": 1971.134283,
+        "gpu_union_ms": 1967.686825,
+        "groups_ms": {
+          "other": 183.46500299999983,
+          "q4_prefill": 523.6895159999999,
+          "kv_store": 26.559508000000005,
+          "index_score": 36.97944599999999,
+          "index_topk": 3.8396480000000004,
+          "attention": 181.24833399999994,
+          "residual": 41.592427,
+          "experts": 968.7843809999997
+        }
+      },
+      {
+        "frontier": 24576,
+        "wall_ms": 1962.079485,
+        "gpu_union_ms": 1958.691352,
+        "groups_ms": {
+          "other": 183.60427500000014,
+          "q4_prefill": 525.9258370000003,
+          "kv_store": 27.165867999999993,
+          "index_score": 40.611123000000006,
+          "index_topk": 3.862018000000001,
+          "attention": 181.923595,
+          "residual": 41.991178999999995,
+          "experts": 952.0543199999993
+        }
+      },
+      {
+        "frontier": 26624,
+        "wall_ms": 1966.799987,
+        "gpu_union_ms": 1963.396504,
+        "groups_ms": {
+          "other": 183.43519599999982,
+          "q4_prefill": 516.0429509999997,
+          "kv_store": 27.38669499999999,
+          "index_score": 43.550335000000004,
+          "index_topk": 4.096731000000001,
+          "attention": 184.117494,
+          "residual": 41.624652,
+          "experts": 961.5719670000002
+        }
+      },
+      {
+        "frontier": 28672,
+        "wall_ms": 1984.370006,
+        "gpu_union_ms": 1980.86338,
+        "groups_ms": {
+          "other": 183.05928999999995,
+          "q4_prefill": 522.0259659999995,
+          "kv_store": 27.427947999999997,
+          "index_score": 48.83867,
+          "index_topk": 4.1271889999999996,
+          "attention": 192.81668100000002,
+          "residual": 41.956008000000004,
+          "experts": 959.0427779999999
+        }
+      },
+      {
+        "frontier": 30720,
+        "wall_ms": 1984.677971,
+        "gpu_union_ms": 1981.212114,
+        "groups_ms": {
+          "other": 183.59018399999985,
+          "q4_prefill": 521.9815970000004,
+          "kv_store": 27.009679000000002,
+          "index_score": 49.611173,
+          "index_topk": 4.776243000000001,
+          "attention": 193.23024700000002,
+          "residual": 41.774283000000004,
+          "experts": 957.6775989999995
+        }
+      },
+      {
+        "frontier": 32768,
+        "wall_ms": 2006.246834,
+        "gpu_union_ms": 2002.770902,
+        "groups_ms": {
+          "other": 183.33572199999995,
+          "q4_prefill": 521.7021249999998,
+          "kv_store": 26.942319,
+          "index_score": 53.90258999999998,
+          "index_topk": 4.884818999999998,
+          "attention": 200.43382500000007,
+          "residual": 41.94087100000001,
+          "experts": 968.0697330000004
+        }
+      },
+      {
+        "frontier": 34816,
+        "wall_ms": 2015.181539,
+        "gpu_union_ms": 2011.722851,
+        "groups_ms": {
+          "other": 183.46313099999986,
+          "q4_prefill": 517.8364230000004,
+          "kv_store": 27.942219000000005,
+          "index_score": 56.473956,
+          "index_topk": 4.398781,
+          "attention": 203.691746,
+          "residual": 41.53150599999999,
+          "experts": 974.8155659999995
+        }
+      },
+      {
+        "frontier": 36864,
+        "wall_ms": 1993.266407,
+        "gpu_union_ms": 1989.795879,
+        "groups_ms": {
+          "other": 183.20703299999974,
+          "q4_prefill": 511.75882900000016,
+          "kv_store": 27.263276000000012,
+          "index_score": 59.174382,
+          "index_topk": 4.387486000000002,
+          "attention": 203.816933,
+          "residual": 41.39719800000001,
+          "experts": 956.8739909999997
+        }
+      },
+      {
+        "frontier": 38912,
+        "wall_ms": 1988.070388,
+        "gpu_union_ms": 1984.55547,
+        "groups_ms": {
+          "other": 182.44032600000003,
+          "q4_prefill": 521.5792190000002,
+          "kv_store": 26.509008000000005,
+          "index_score": 61.48371000000001,
+          "index_topk": 4.626068000000003,
+          "attention": 206.85354800000005,
+          "residual": 41.66887800000001,
+          "experts": 937.8616420000002
+        }
+      },
+      {
+        "frontier": 40960,
+        "wall_ms": 2014.030414,
+        "gpu_union_ms": 2010.624048,
+        "groups_ms": {
+          "other": 183.28672100000014,
+          "q4_prefill": 516.7553239999996,
+          "kv_store": 27.232554999999994,
+          "index_score": 67.67719099999998,
+          "index_topk": 4.680467000000002,
+          "attention": 211.02618600000005,
+          "residual": 41.60913700000001,
+          "experts": 956.8264030000007
+        }
+      },
+      {
+        "frontier": 43008,
+        "wall_ms": 2049.781262,
+        "gpu_union_ms": 2046.228557,
+        "groups_ms": {
+          "other": 184.15351899999987,
+          "q4_prefill": 527.3466710000001,
+          "kv_store": 27.223272,
+          "index_score": 68.50662299999998,
+          "index_topk": 4.876598000000001,
+          "attention": 208.154817,
+          "residual": 42.378722,
+          "experts": 982.0607980000007
+        }
+      },
+      {
+        "frontier": 45056,
+        "wall_ms": 2021.038702,
+        "gpu_union_ms": 2017.621579,
+        "groups_ms": {
+          "other": 183.51457099999988,
+          "q4_prefill": 531.536867,
+          "kv_store": 26.548788000000002,
+          "index_score": 73.05106099999998,
+          "index_topk": 4.919349999999997,
+          "attention": 202.12481900000006,
+          "residual": 41.86922599999999,
+          "experts": 952.5661320000002
+        }
+      },
+      {
+        "frontier": 47104,
+        "wall_ms": 2026.213281,
+        "gpu_union_ms": 2022.857916,
+        "groups_ms": {
+          "other": 183.683677,
+          "q4_prefill": 522.6576480000001,
+          "kv_store": 27.621993999999994,
+          "index_score": 76.26959100000002,
+          "index_topk": 5.617132000000002,
+          "attention": 206.73242999999997,
+          "residual": 41.462894000000006,
+          "experts": 957.333431999999
+        }
+      },
+      {
+        "frontier": 49152,
+        "wall_ms": 2018.548709,
+        "gpu_union_ms": 2015.194213,
+        "groups_ms": {
+          "other": 183.25338900000017,
+          "q4_prefill": 526.3824279999999,
+          "kv_store": 26.740374000000006,
+          "index_score": 77.70275600000001,
+          "index_topk": 5.673835999999999,
+          "attention": 208.188226,
+          "residual": 41.845000000000006,
+          "experts": 943.8670340000001
+        }
+      },
+      {
+        "frontier": 51200,
+        "wall_ms": 2046.119279,
+        "gpu_union_ms": 2042.759564,
+        "groups_ms": {
+          "other": 183.62549100000015,
+          "q4_prefill": 518.6826090000002,
+          "kv_store": 27.30385300000001,
+          "index_score": 81.79412199999999,
+          "index_topk": 5.304623000000002,
+          "attention": 216.17902899999996,
+          "residual": 41.385518000000005,
+          "experts": 966.5204690000004
+        }
+      },
+      {
+        "frontier": 53248,
+        "wall_ms": 2037.450844,
+        "gpu_union_ms": 2034.095421,
+        "groups_ms": {
+          "other": 183.0998009999999,
+          "q4_prefill": 518.1106059999995,
+          "kv_store": 26.990162,
+          "index_score": 86.95193399999998,
+          "index_topk": 5.244745999999999,
+          "attention": 209.33768899999993,
+          "residual": 41.97959499999998,
+          "experts": 960.7328379999997
+        }
+      },
+      {
+        "frontier": 55296,
+        "wall_ms": 2023.766166,
+        "gpu_union_ms": 2020.40089,
+        "groups_ms": {
+          "other": 182.48359299999993,
+          "q4_prefill": 516.0847419999999,
+          "kv_store": 27.169327000000003,
+          "index_score": 88.016269,
+          "index_topk": 5.433198000000002,
+          "attention": 210.22266699999994,
+          "residual": 41.338478000000016,
+          "experts": 947.7956750000004
+        }
+      },
+      {
+        "frontier": 57344,
+        "wall_ms": 2047.429283,
+        "gpu_union_ms": 2044.006016,
+        "groups_ms": {
+          "other": 182.9133880000002,
+          "q4_prefill": 522.1490909999998,
+          "kv_store": 26.770736999999993,
+          "index_score": 91.94855700000001,
+          "index_topk": 5.470888,
+          "attention": 207.97501300000005,
+          "residual": 41.591052,
+          "experts": 963.6479130000006
+        }
+      },
+      {
+        "frontier": 59392,
+        "wall_ms": 2048.550233,
+        "gpu_union_ms": 2045.152574,
+        "groups_ms": {
+          "other": 182.93910799999986,
+          "q4_prefill": 521.4668360000003,
+          "kv_store": 27.02557999999999,
+          "index_score": 94.23419700000002,
+          "index_topk": 5.77707,
+          "attention": 211.90594799999997,
+          "residual": 41.64778899999998,
+          "experts": 958.6505180000003
+        }
+      },
+      {
+        "frontier": 61440,
+        "wall_ms": 2052.653653,
+        "gpu_union_ms": 2049.263096,
+        "groups_ms": {
+          "other": 183.85198400000021,
+          "q4_prefill": 521.3095929999998,
+          "kv_store": 27.140172999999994,
+          "index_score": 96.92284899999999,
+          "index_topk": 5.64277,
+          "attention": 208.46773900000002,
+          "residual": 41.76756199999998,
+          "experts": 962.5339439999999
+        }
+      },
+      {
+        "frontier": 63488,
+        "wall_ms": 2049.163956,
+        "gpu_union_ms": 2045.626904,
+        "groups_ms": {
+          "other": 183.08427500000008,
+          "q4_prefill": 520.7391899999999,
+          "kv_store": 26.946860999999988,
+          "index_score": 99.987776,
+          "index_topk": 6.7225,
+          "attention": 214.597832,
+          "residual": 41.631021000000004,
+          "experts": 950.3545539999998
+        }
+      },
+      {
+        "frontier": 65536,
+        "wall_ms": 2060.745453,
+        "gpu_union_ms": 2056.943732,
+        "groups_ms": {
+          "other": 183.46842500000014,
+          "q4_prefill": 523.421131,
+          "kv_store": 26.848879999999994,
+          "index_score": 105.85544599999999,
+          "index_topk": 6.580550999999996,
+          "attention": 220.39406,
+          "residual": 41.391503,
+          "experts": 945.2456220000006,
+          "q4_decode": 2.617609
+        }
+      }
+    ],
+    "phases": [
+      {
+        "phase": "ds4.prefill",
+        "wall_ms": 7508.293981,
+        "gpu_union_ms": 7491.725437,
+        "groups_ms": {
+          "other": 731.6256270000007,
+          "q4_prefill": 2075.3183529999974,
+          "kv_store": 107.21805400000001,
+          "index_topk": 9.479682000000002,
+          "attention": 512.0135410000001,
+          "residual": 166.790126,
+          "experts": 3841.2369600000034,
+          "index_score": 38.439409,
+          "q4_decode": 3.469569
+        }
+      },
+      {
+        "phase": "ds4.decode",
+        "wall_ms": 1515.854427,
+        "gpu_union_ms": 1506.049184,
+        "groups_ms": {
+          "other": 576.1938170000013,
+          "kv_store": 31.93710000000001,
+          "index_score": 39.03007700000007,
+          "index_topk": 38.44638600000002,
+          "attention": 133.24812799999995,
+          "q4_decode": 549.5806500000002,
+          "residual": 40.2566349999999,
+          "expert_decode": 545.9953019999987
+        }
+      },
+      {
+        "phase": "ds4.prefill",
+        "wall_ms": 55954.641175,
+        "gpu_union_ms": 55852.675618,
+        "groups_ms": {
+          "other": 5132.0118890000695,
+          "q4_prefill": 14591.486717999978,
+          "kv_store": 760.2163850000003,
+          "index_score": 1719.8314819999998,
+          "index_topk": 133.06538999999995,
+          "attention": 5506.102339999997,
+          "residual": 1168.8517719999973,
+          "experts": 26793.361982000035,
+          "q4_decode": 2.617609
+        }
+      },
+      {
+        "phase": "ds4.decode",
+        "wall_ms": 1536.449763,
+        "gpu_union_ms": 1525.971889,
+        "groups_ms": {
+          "other": 574.487556999999,
+          "kv_store": 42.09765099999998,
+          "index_score": 62.92266799999989,
+          "index_topk": 33.942226999999995,
+          "attention": 123.88539399999995,
+          "q4_decode": 540.7136550000006,
+          "residual": 40.083451,
+          "expert_decode": 544.0266030000009
+        }
+      }
+    ]
+  },
+  "p1-profile-on": {
+    "command": {
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "128",
+        "--high-gib",
+        "128",
+        "--reserve-gib",
+        "2",
+        "--trip-gib",
+        "2",
+        "--psi-full-limit",
+        "20",
+        "--timeout",
+        "1200",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/p1-profile-on/memory.jsonl",
+        "--",
+        "/usr/local/cuda/bin/nsys",
+        "profile",
+        "--trace=cuda,nvtx",
+        "--sample=none",
+        "--cpuctxsw=none",
+        "--capture-range=nvtx",
+        "--nvtx-capture=ds4.prefill",
+        "--capture-range-end=none",
+        "-o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/p1-profile-on/trace",
+        "taskset",
+        "-c",
+        "5-9,15-19",
+        "python3",
+        "docs/benchmarks/minimax-vq-spark-64k-2026-10-27/pin-main.py",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/p1-profile-on/stderr.log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/p1-profile-on/affinity.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/ds4-bench-perf",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiniMax-M3.1-Flash-VQ-GGUF",
+        "--prompt-file",
+        "speed-bench/promessi_sposi.txt",
+        "--ctx-start",
+        "8192",
+        "--ctx-max",
+        "65536",
+        "--step-incr",
+        "57344",
+        "--ctx-alloc",
+        "131072",
+        "--gen-tokens",
+        "32",
+        "--csv",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/p1-profile-on/bench.csv",
+        "--dump-frontier-logits-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029/p1-profile-on/proof",
+        "--warmup-prefill",
+        "4096"
+      ],
+      "controls": {
+        "CUDA_MODULE_LOADING": "LAZY",
+        "DS4_MINIMAX_PREFILL_CHUNK": "2048",
+        "DS4_GLMVQ_PDL": "1",
+        "DS4_MINIMAX_SCORE_FP4": "1"
+      },
+      "source": "ef41bd6d627b62d8d51f8616e7b755acdb61ce05",
+      "binary_sha256": "50068c20fc39110eb0df4e57f7798ea8c2996d8a7b215bfafb9b2a17c1833f9e",
+      "boot": "f5d9ee6b-7f0f-443c-b629-4f39b4519994"
+    },
+    "chunks": [
+      {
+        "frontier": 2048,
+        "wall_ms": 1822.171253,
+        "gpu_union_ms": 1818.836366,
+        "groups_ms": {
+          "other": 179.4530590000001,
+          "q4_prefill": 521.0734749999997,
+          "kv_store": 26.689794000000003,
+          "index_topk": 0.243457,
+          "attention": 74.187158,
+          "residual": 41.523462000000016,
+          "experts": 974.1242629999996
+        }
+      },
+      {
+        "frontier": 4096,
+        "wall_ms": 1895.100393,
+        "gpu_union_ms": 1891.703744,
+        "groups_ms": {
+          "other": 178.32012399999994,
+          "q4_prefill": 525.5150590000002,
+          "kv_store": 27.00979400000001,
+          "index_score": 8.964341,
+          "index_topk": 2.9740909999999987,
+          "attention": 139.25509200000005,
+          "residual": 41.61034099999999,
+          "experts": 966.5674749999994
+        }
+      },
+      {
+        "frontier": 6144,
+        "wall_ms": 1900.226646,
+        "gpu_union_ms": 1896.815406,
+        "groups_ms": {
+          "other": 179.5155709999998,
+          "q4_prefill": 516.0874589999999,
+          "kv_store": 27.584516000000004,
+          "index_score": 9.941138000000004,
+          "index_topk": 3.161514000000001,
+          "attention": 148.16177800000003,
+          "residual": 41.53408300000002,
+          "experts": 969.2781090000002
+        }
+      },
+      {
+        "frontier": 8192,
+        "wall_ms": 1890.263038,
+        "gpu_union_ms": 1886.726321,
+        "groups_ms": {
+          "other": 177.8229389999998,
+          "q4_prefill": 513.4720149999995,
+          "kv_store": 27.356644,
+          "index_score": 11.235063999999994,
+          "index_topk": 3.1946630000000007,
+          "attention": 152.39589700000002,
+          "residual": 41.565445000000004,
+          "experts": 955.2869380000002,
+          "q4_decode": 3.381
+        }
+      },
+      {
+        "frontier": 10240,
+        "wall_ms": 1907.733289,
+        "gpu_union_ms": 1904.345954,
+        "groups_ms": {
+          "other": 177.57448799999983,
+          "q4_prefill": 518.356475,
+          "kv_store": 27.033854999999992,
+          "index_score": 15.912780000000003,
+          "index_topk": 3.309994000000001,
+          "attention": 163.188179,
+          "residual": 41.720938000000004,
+          "experts": 955.7141020000001
+        }
+      },
+      {
+        "frontier": 12288,
+        "wall_ms": 1906.925542,
+        "gpu_union_ms": 1903.531455,
+        "groups_ms": {
+          "other": 177.66645300000025,
+          "q4_prefill": 523.8192210000003,
+          "kv_store": 27.079814000000013,
+          "index_score": 18.09204600000001,
+          "index_topk": 3.3267260000000016,
+          "attention": 165.269813,
+          "residual": 41.35490899999999,
+          "experts": 945.438981
+        }
+      },
+      {
+        "frontier": 14336,
+        "wall_ms": 1912.334003,
+        "gpu_union_ms": 1908.919404,
+        "groups_ms": {
+          "other": 177.41403799999998,
+          "q4_prefill": 522.7015079999996,
+          "kv_store": 27.226117,
+          "index_score": 19.201298000000005,
+          "index_topk": 4.037959,
+          "attention": 165.06850300000008,
+          "residual": 41.69444600000002,
+          "experts": 950.0469849999992
+        }
+      },
+      {
+        "frontier": 16384,
+        "wall_ms": 1929.629759,
+        "gpu_union_ms": 1926.232086,
+        "groups_ms": {
+          "other": 178.43081800000002,
+          "q4_prefill": 522.4803879999996,
+          "kv_store": 26.717665,
+          "index_score": 22.148150000000008,
+          "index_topk": 4.044841,
+          "attention": 168.273249,
+          "residual": 41.455078,
+          "experts": 961.2008019999997
+        }
+      },
+      {
+        "frontier": 18432,
+        "wall_ms": 1932.678629,
+        "gpu_union_ms": 1929.211836,
+        "groups_ms": {
+          "other": 178.61814700000002,
+          "q4_prefill": 513.9163599999997,
+          "kv_store": 27.135490999999995,
+          "index_score": 25.378205,
+          "index_topk": 3.625673000000002,
+          "attention": 174.1245919999999,
+          "residual": 41.10621999999999,
+          "experts": 963.629769
+        }
+      },
+      {
+        "frontier": 20480,
+        "wall_ms": 1943.872162,
+        "gpu_union_ms": 1940.408794,
+        "groups_ms": {
+          "other": 177.5208509999999,
+          "q4_prefill": 516.5595580000005,
+          "kv_store": 27.488165000000006,
+          "index_score": 27.814854000000004,
+          "index_topk": 3.6667970000000003,
+          "attention": 178.58923999999993,
+          "residual": 41.175715,
+          "experts": 966.0509249999997
+        }
+      },
+      {
+        "frontier": 22528,
+        "wall_ms": 1937.131985,
+        "gpu_union_ms": 1933.69921,
+        "groups_ms": {
+          "other": 178.1460820000002,
+          "q4_prefill": 514.658166,
+          "kv_store": 27.258016999999988,
+          "index_score": 28.455811000000004,
+          "index_topk": 3.877863,
+          "attention": 179.846848,
+          "residual": 41.18048399999998,
+          "experts": 958.6976900000002
+        }
+      },
+      {
+        "frontier": 24576,
+        "wall_ms": 1951.479764,
+        "gpu_union_ms": 1948.143212,
+        "groups_ms": {
+          "other": 177.01127800000015,
+          "q4_prefill": 520.9979909999997,
+          "kv_store": 26.511072000000006,
+          "index_score": 29.835884,
+          "index_topk": 3.8447180000000034,
+          "attention": 181.57375599999995,
+          "residual": 41.306695,
+          "experts": 965.6021969999998
+        }
+      },
+      {
+        "frontier": 26624,
+        "wall_ms": 1959.440296,
+        "gpu_union_ms": 1956.062241,
+        "groups_ms": {
+          "other": 177.89363400000002,
+          "q4_prefill": 525.428011,
+          "kv_store": 27.01468799999999,
+          "index_score": 34.64562600000001,
+          "index_topk": 4.101065000000001,
+          "attention": 181.951586,
+          "residual": 41.916292999999996,
+          "experts": 961.5049669999999
+        }
+      },
+      {
+        "frontier": 28672,
+        "wall_ms": 1978.477815,
+        "gpu_union_ms": 1974.869518,
+        "groups_ms": {
+          "other": 180.46651900000015,
+          "q4_prefill": 519.205957,
+          "kv_store": 27.827365999999994,
+          "index_score": 37.157759,
+          "index_topk": 4.090187,
+          "attention": 188.277421,
+          "residual": 41.226366999999996,
+          "experts": 975.0146399999998
+        }
+      },
+      {
+        "frontier": 30720,
+        "wall_ms": 1962.112846,
+        "gpu_union_ms": 1958.72519,
+        "groups_ms": {
+          "other": 177.33923099999996,
+          "q4_prefill": 517.5085339999999,
+          "kv_store": 26.580610000000004,
+          "index_score": 37.69289399999998,
+          "index_topk": 4.825226,
+          "attention": 191.48569100000003,
+          "residual": 41.284743000000006,
+          "experts": 960.5184330000001
+        }
+      },
+      {
+        "frontier": 32768,
+        "wall_ms": 1972.123047,
+        "gpu_union_ms": 1968.772705,
+        "groups_ms": {
+          "other": 178.14824499999995,
+          "q4_prefill": 513.112636,
+          "kv_store": 27.22582700000001,
+          "index_score": 40.09091700000001,
+          "index_topk": 4.865805999999998,
+          "attention": 198.09763999999993,
+          "residual": 41.596453,
+          "experts": 964.0775789999997
+        }
+      },
+      {
+        "frontier": 34816,
+        "wall_ms": 1994.075198,
+        "gpu_union_ms": 1990.621809,
+        "groups_ms": {
+          "other": 178.7940730000001,
+          "q4_prefill": 522.4952340000003,
+          "kv_store": 27.357125,
+          "index_score": 41.46819700000001,
+          "index_topk": 4.429195,
+          "attention": 200.603346,
+          "residual": 41.27514699999999,
+          "experts": 972.632193
+        }
+      },
+      {
+        "frontier": 36864,
+        "wall_ms": 1965.096278,
+        "gpu_union_ms": 1961.756268,
+        "groups_ms": {
+          "other": 178.41601599999998,
+          "q4_prefill": 509.5234899999999,
+          "kv_store": 26.71187099999999,
+          "index_score": 43.800945999999996,
+          "index_topk": 4.395270000000003,
+          "attention": 201.797369,
+          "residual": 41.111473000000004,
+          "experts": 954.476406
+        }
+      },
+      {
+        "frontier": 38912,
+        "wall_ms": 1988.721712,
+        "gpu_union_ms": 1984.996487,
+        "groups_ms": {
+          "other": 177.75567199999986,
+          "q4_prefill": 521.8703990000001,
+          "kv_store": 26.818978999999995,
+          "index_score": 46.38782500000001,
+          "index_topk": 4.6552120000000015,
+          "attention": 205.74966100000003,
+          "residual": 41.004461,
+          "experts": 959.2168989999998
+        }
+      },
+      {
+        "frontier": 40960,
+        "wall_ms": 1988.281071,
+        "gpu_union_ms": 1984.873285,
+        "groups_ms": {
+          "other": 177.77251299999966,
+          "q4_prefill": 516.4562779999998,
+          "kv_store": 27.013377999999992,
+          "index_score": 50.75631700000002,
+          "index_topk": 4.744046000000001,
+          "attention": 210.12387800000002,
+          "residual": 41.399270999999985,
+          "experts": 955.079666
+        }
+      },
+      {
+        "frontier": 43008,
+        "wall_ms": 2003.452693,
+        "gpu_union_ms": 2000.05915,
+        "groups_ms": {
+          "other": 177.45649799999984,
+          "q4_prefill": 522.9198279999997,
+          "kv_store": 26.554592,
+          "index_score": 50.92700700000001,
+          "index_topk": 4.850409999999999,
+          "attention": 206.806622,
+          "residual": 41.45818199999999,
+          "experts": 967.5972419999995
+        }
+      },
+      {
+        "frontier": 45056,
+        "wall_ms": 1991.538327,
+        "gpu_union_ms": 1988.190956,
+        "groups_ms": {
+          "other": 177.66952100000015,
+          "q4_prefill": 518.0031979999999,
+          "kv_store": 26.549283,
+          "index_score": 53.005061999999995,
+          "index_topk": 4.845897999999997,
+          "attention": 202.1578110000001,
+          "residual": 41.149764999999995,
+          "experts": 963.318382
+        }
+      },
+      {
+        "frontier": 47104,
+        "wall_ms": 1981.615391,
+        "gpu_union_ms": 1978.257941,
+        "groups_ms": {
+          "other": 177.58398299999993,
+          "q4_prefill": 518.9400989999999,
+          "kv_store": 27.387553000000008,
+          "index_score": 56.53950099999999,
+          "index_topk": 5.662990999999998,
+          "attention": 206.52451000000002,
+          "residual": 41.130498,
+          "experts": 942.9568950000006
+        }
+      },
+      {
+        "frontier": 49152,
+        "wall_ms": 2004.665335,
+        "gpu_union_ms": 2001.229457,
+        "groups_ms": {
+          "other": 177.77173000000008,
+          "q4_prefill": 519.9806120000001,
+          "kv_store": 26.59318700000001,
+          "index_score": 57.95592499999997,
+          "index_topk": 5.767215999999999,
+          "attention": 209.67206600000006,
+          "residual": 41.368106000000026,
+          "experts": 960.5751080000001
+        }
+      },
+      {
+        "frontier": 51200,
+        "wall_ms": 2025.337067,
+        "gpu_union_ms": 2021.880644,
+        "groups_ms": {
+          "other": 179.18675300000018,
+          "q4_prefill": 522.035341,
+          "kv_store": 28.166022000000005,
+          "index_score": 62.003064000000016,
+          "index_topk": 5.327086000000002,
+          "attention": 219.55023699999998,
+          "residual": 41.286657000000005,
+          "experts": 962.6856380000005
+        }
+      },
+      {
+        "frontier": 53248,
+        "wall_ms": 1995.390657,
+        "gpu_union_ms": 1991.945784,
+        "groups_ms": {
+          "other": 177.37577099999993,
+          "q4_prefill": 519.2188710000001,
+          "kv_store": 26.493345000000005,
+          "index_score": 62.74443899999998,
+          "index_topk": 5.20421,
+          "attention": 207.889696,
+          "residual": 41.221161,
+          "experts": 950.2454859999997
+        }
+      },
+      {
+        "frontier": 55296,
+        "wall_ms": 2002.398098,
+        "gpu_union_ms": 1998.957957,
+        "groups_ms": {
+          "other": 178.12686999999994,
+          "q4_prefill": 523.2946339999999,
+          "kv_store": 27.68285100000001,
+          "index_score": 65.95648700000002,
+          "index_topk": 5.448012000000002,
+          "attention": 210.30573800000002,
+          "residual": 41.15549099999999,
+          "experts": 945.3971829999999
+        }
+      },
+      {
+        "frontier": 57344,
+        "wall_ms": 2032.53942,
+        "gpu_union_ms": 2029.006772,
+        "groups_ms": {
+          "other": 177.8649580000001,
+          "q4_prefill": 525.8675449999998,
+          "kv_store": 26.929285000000004,
+          "index_score": 67.054373,
+          "index_topk": 5.423499999999997,
+          "attention": 206.93564599999996,
+          "residual": 41.73648099999999,
+          "experts": 975.6459579999997
+        }
+      },
+      {
+        "frontier": 59392,
+        "wall_ms": 2021.085184,
+        "gpu_union_ms": 2017.600185,
+        "groups_ms": {
+          "other": 178.89020299999999,
+          "q4_prefill": 513.6111070000001,
+          "kv_store": 27.691911,
+          "index_score": 69.56250299999999,
+          "index_topk": 5.647091,
+          "attention": 211.43920500000002,
+          "residual": 41.40611099999999,
+          "experts": 967.8429639999996
+        }
+      },
+      {
+        "frontier": 61440,
+        "wall_ms": 2024.513961,
+        "gpu_union_ms": 2021.056259,
+        "groups_ms": {
+          "other": 178.852051,
+          "q4_prefill": 513.5011460000001,
+          "kv_store": 28.304420999999998,
+          "index_score": 73.03349500000002,
+          "index_topk": 5.748458999999998,
+          "attention": 210.21117399999997,
+          "residual": 41.312967999999984,
+          "experts": 968.4989400000002
+        }
+      },
+      {
+        "frontier": 63488,
+        "wall_ms": 2025.860236,
+        "gpu_union_ms": 2022.475045,
+        "groups_ms": {
+          "other": 178.22428300000004,
+          "q4_prefill": 522.03755,
+          "kv_store": 27.126499,
+          "index_score": 73.99925499999999,
+          "index_topk": 6.551631,
+          "attention": 214.24504000000002,
+          "residual": 41.27520099999999,
+          "experts": 957.510176
+        }
+      },
+      {
+        "frontier": 65536,
+        "wall_ms": 2036.454631,
+        "gpu_union_ms": 2032.693341,
+        "groups_ms": {
+          "other": 177.92547299999995,
+          "q4_prefill": 523.086492,
+          "kv_store": 26.573568,
+          "index_score": 75.67686300000001,
+          "index_topk": 6.527187,
+          "attention": 220.81737600000002,
+          "residual": 41.190855000000006,
+          "experts": 957.2402850000004,
+          "q4_decode": 2.612391
+        }
+      }
+    ],
+    "phases": [
+      {
+        "phase": "ds4.prefill",
+        "wall_ms": 7511.341882,
+        "gpu_union_ms": 7494.551374,
+        "groups_ms": {
+          "other": 715.111693,
+          "q4_prefill": 2076.148008000001,
+          "kv_store": 108.64074799999995,
+          "index_topk": 9.57372499999999,
+          "attention": 513.9999250000002,
+          "residual": 166.23333100000008,
+          "experts": 3865.256784999999,
+          "index_score": 30.140543000000008,
+          "q4_decode": 3.381
+        }
+      },
+      {
+        "phase": "ds4.decode",
+        "wall_ms": 1519.407449,
+        "gpu_union_ms": 1506.181032,
+        "groups_ms": {
+          "other": 575.6863440000016,
+          "kv_store": 32.03412700000003,
+          "index_score": 39.432575999999955,
+          "index_topk": 39.16577099999989,
+          "attention": 134.44065399999994,
+          "q4_decode": 549.1658340000004,
+          "residual": 40.30097600000001,
+          "expert_decode": 546.5054510000003
+        }
+      },
+      {
+        "phase": "ds4.prefill",
+        "wall_ms": 55381.050234,
+        "gpu_union_ms": 55278.99213,
+        "groups_ms": {
+          "other": 4985.896152000036,
+          "q4_prefill": 14541.586629000054,
+          "kv_store": 759.0525570000012,
+          "index_score": 1287.2974830000005,
+          "index_topk": 132.84426899999994,
+          "attention": 5480.575893000008,
+          "residual": 1157.5001689999972,
+          "experts": 26888.416491000004,
+          "q4_decode": 2.612391
+        }
+      },
+      {
+        "phase": "ds4.decode",
+        "wall_ms": 1541.95504,
+        "gpu_union_ms": 1528.437823,
+        "groups_ms": {
+          "other": 575.0248759999985,
+          "kv_store": 42.56020799999996,
+          "index_score": 63.432892999999865,
+          "index_topk": 33.954439000000036,
+          "attention": 123.61644000000001,
+          "q4_decode": 541.8247590000003,
+          "residual": 40.41538699999992,
+          "expert_decode": 544.3813499999999
+        }
+      }
+    ]
+  }
+}

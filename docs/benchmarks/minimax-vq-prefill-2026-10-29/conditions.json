@@ -1,0 +1,26 @@
+{
+  "source": "ef41bd6d627b62d8d51f8616e7b755acdb61ce05 plus archived source.diff",
+  "artifact": "/home/sunghoon/workspace/ds4-exaone/models/MiniMax-M3.1-Flash-VQ-GGUF",
+  "release_json_sha256": "2110c1e5cba8d59987e370d50dab6dde5d5f7fc82009cdc27d8131452536f4b0",
+  "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "quality_reference_sha256": "4f37196c0cb3f41894da4d867958e9da34df422f93b5fcbc81359e023cbbda3c",
+  "native_sha256": {
+    "ds4-bench-perf": "50068c20fc39110eb0df4e57f7798ea8c2996d8a7b215bfafb9b2a17c1833f9e",
+    "ds4_cuda.o": "16f0772f0dd13781edf4d54cd54a65d6c52c0f42f90783ee1427a0e17d96c022",
+    "tests/test_minimax_rows": "13d1020f62c01f23d23e1b22d70c455b551389a4b7b6bfd52fda8f24601ef053"
+  },
+  "raw": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-minimax-m31-2/scratch/minimax-m31-20261029",
+  "hardware": {
+    "gpu": "GB10 sm_121a",
+    "cuda": "13.4.92",
+    "cublas": "13.8.0.4",
+    "kmd": "615.71.10",
+    "clock_policy_mhz": [
+      300,
+      2200
+    ],
+    "boot": "f5d9ee6b-7f0f-443c-b629-4f39b4519994"
+  },
+  "calibration_quality_sha256": "f75923803cc231c424a37f407993890b20efbe8a62468c69415324373675ab99",
+  "fixed_decode_quality_sha256": "ba9c4cccb8298ce0bc9cd82f1921c25394fb1cc41fa369c456c9d6244220b093"
+}
