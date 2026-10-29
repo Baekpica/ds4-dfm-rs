@@ -1,0 +1,53 @@
+scope,shape,arm,metric,value,unit,source
+attention_kernel,4352,scalar,ms_per_call,295.572,ms,tests/h3/attn_bm round 1
+attention_kernel,4352,scalar,ms_per_call,295.551,ms,tests/h3/attn_bm round 2
+attention_kernel,4352,scalar,ms_per_call,295.578,ms,tests/h3/attn_bm round 3
+attention_kernel,4352,tensor,ms_per_call,10.183,ms,tests/h3/attn_bm round 1
+attention_kernel,4352,tensor,ms_per_call,10.010,ms,tests/h3/attn_bm round 2
+attention_kernel,4352,tensor,ms_per_call,10.011,ms,tests/h3/attn_bm round 3
+attention_kernel,18432,scalar,ms_per_call,5320.108,ms,tests/h3/attn_bm round 1
+attention_kernel,18432,scalar,ms_per_call,5320.188,ms,tests/h3/attn_bm round 2
+attention_kernel,18432,scalar,ms_per_call,5322.482,ms,tests/h3/attn_bm round 3
+attention_kernel,18432,tensor,ms_per_call,181.557,ms,tests/h3/attn_bm round 1
+attention_kernel,18432,tensor,ms_per_call,180.919,ms,tests/h3/attn_bm round 2
+attention_kernel,18432,tensor,ms_per_call,179.869,ms,tests/h3/attn_bm round 3
+attention_kernel,4352,scalar,speedup_vs_tensor,29.36,times,means of three rounds
+attention_kernel,18432,scalar,speedup_vs_tensor,29.43,times,means of three rounds
+attention_kernel,4352,scalar,out_fnv,c6196e81bc4634e0,hex,gate value held
+attention_kernel,18432,scalar,out_fnv,5c1e3810028a8fa5,hex,gate value held
+attention_kernel,4352,tensor,out_fnv,0503f90953abd8ad,hex,expected to differ
+attention_kernel,18432,tensor,out_fnv,73f99e598a805de4,hex,expected to differ
+jobA,768,scalar,TEXT,27.539,s,same binary switch off
+jobA,768,tensor,TEXT,27.533,s,same binary switch on
+jobA,768,scalar,LOAD,7.296,s,same binary switch off
+jobA,768,tensor,LOAD,7.160,s,same binary switch on
+jobA,768,scalar,DENOISE_2evals,585.267,s,same binary switch off
+jobA,768,tensor,DENOISE_2evals,40.294,s,same binary switch on
+jobA,768,scalar,AUDIO,2.593,s,same binary switch off
+jobA,768,tensor,AUDIO,2.577,s,same binary switch on
+jobA,768,scalar,FRAMES,197.742,s,same binary switch off
+jobA,768,tensor,FRAMES,197.945,s,same binary switch on
+jobA,768,scalar,VIDEO,0.664,s,same binary switch off
+jobA,768,tensor,VIDEO,0.623,s,same binary switch on
+jobA,768,scalar,wall,821.994,s,same binary switch off
+jobA,768,tensor,wall,277.019,s,same binary switch on
+jobA,768,scalar,speedup_wall,2.967,times,821.994 over 277.019
+jobA,768,scalar,speedup_denoise,14.525,times,585.267 over 40.294
+jobA,768,scalar,seconds_per_denoise_step,292.634,s,585.267 over 2 evaluations
+jobA,768,tensor,seconds_per_denoise_step,20.147,s,40.294 over 2 evaluations
+jobA,768,scalar,attention_share_of_step,0.963,fraction,derived from the two rows above
+jobA,768,scalar,render_bytes,1769313,bytes,same binary switch off
+jobA,768,tensor,render_bytes,1697716,bytes,same binary switch on
+jobA,768,scalar,render_sha256,69816f7f4683d41b1c677e1e6028b36294ca8a87e77efba78c6056a3154a16f4,hex,campaign gate unchanged
+jobA,768,tensor,render_sha256,5cb28765208c49d73d1b1789b5479b44b66ef2cd381da65ec656eff86ec424f4,hex,expected to differ
+quality,768,tensor_vs_scalar,psnr_y,42.748093,dB,ffmpeg psnr
+quality,768,tensor_vs_scalar,psnr_u,51.172882,dB,ffmpeg psnr
+quality,768,tensor_vs_scalar,psnr_v,50.360666,dB,ffmpeg psnr
+quality,768,tensor_vs_scalar,psnr_average,44.177786,dB,ffmpeg psnr
+quality,768,tensor_vs_scalar,psnr_min,40.106739,dB,ffmpeg psnr
+quality,768,tensor_vs_scalar,ssim_y,0.982939,ratio,ffmpeg ssim
+quality,768,tensor_vs_scalar,ssim_all,0.986782,ratio,ffmpeg ssim
+quality,4352,tensor_vs_scalar,attention_max_abs,0.00024414062,absolute,scalar arm reading the tensor dump
+quality,4352,tensor_vs_scalar,attention_rms,0.000023465292,absolute,scalar arm reading the tensor dump
+quality,18432,tensor_vs_scalar,attention_max_abs,0.00012207031,absolute,scalar arm reading the tensor dump
+quality,18432,tensor_vs_scalar,attention_rms,0.000011488895,absolute,scalar arm reading the tensor dump

@@ -29,6 +29,7 @@ struct CTensor {
 unsafe extern "C" {
     fn h3d_create(error: *mut c_char, error_size: usize) -> *mut Context;
     fn h3d_destroy(context: *mut Context);
+    fn h3d_set_attention(context: *mut Context, scalar: c_int);
 
     fn h3d_alloc(
         context: *mut Context,
@@ -661,6 +662,13 @@ impl Gpu {
         NonNull::new(raw)
             .map(|raw| Gpu { raw })
             .ok_or_else(|| message(&error))
+    }
+
+    /// Select the attention path for this context. `scalar` true asks for the
+    /// byte-exact scalar kernel, the only path that reproduces the reference;
+    /// false selects the tensor-core default. Overrides the environment.
+    pub fn set_attention(&self, scalar: bool) {
+        unsafe { h3d_set_attention(self.raw.as_ptr(), scalar as c_int) };
     }
 
     pub fn alloc(&self, dtype: Dtype, elements: usize) -> Result<Tensor, String> {

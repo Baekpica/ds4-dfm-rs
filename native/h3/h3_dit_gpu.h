@@ -45,6 +45,11 @@ typedef struct h3d_tensor h3d_tensor;
 h3d_context *h3d_create(char *error, size_t error_size);
 void h3d_destroy(h3d_context *context);
 
+/* Attention path for this context. `scalar` nonzero selects the byte-exact
+ * scalar kernel, the only path that reproduces the reference; zero is the
+ * tensor-core default. Overrides H3_DIT_ATTENTION and H3_DIT_ATTENTION_MMA. */
+void h3d_set_attention(h3d_context *context, int scalar);
+
 h3d_tensor *h3d_alloc(h3d_context *context, int dtype, size_t elements,
                       char *error, size_t error_size);
 void h3d_free(h3d_tensor *tensor);

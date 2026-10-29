@@ -19,9 +19,11 @@
 //! - `task: ref2va` is refused until the reference-media units land, and the
 //!   message names them (`reference`, `reference_video`, `reference_audio`,
 //!   `base_video` are their roles);
-//! - `target.short_edge` is 768, the one tier this checkpoint provides;
-//! - `aspect_ratio` 21:9 is refused: the released 768x1344 area cannot express
-//!   it without the 1.33x anamorphic stretch `presets::MAX_DISTORTION` bounds.
+//! - `target.short_edge` is any short edge on the released 32-pixel grid; 768
+//!   is the tier the model card documents, and a smaller edge is a preview;
+//! - `aspect_ratio` 21:9 at the tier's short edge is refused: the released
+//!   768x1344 area cannot express it without the 1.33x anamorphic stretch
+//!   `presets::MAX_DISTORTION` bounds (it fits below a 576 short edge).
 //!
 //! No HTTP and no GPU live here: this module parses the body and maps it onto
 //! the engine's request. The state machine and the store are
@@ -29,8 +31,9 @@
 
 use serde_json::{Map, Value};
 
+use super::dit::Attention;
 use super::presets::{self, Ratio};
-use super::render::MAX_PIXELS;
+use super::render::{CANVAS_MULTIPLE, MAX_PIXELS};
 use super::video_api::{
     align_frames, frames_from_seconds, AnchorImage, ApiError, VideoSize, H3_MAX_FRAMES,
     H3_MIN_FRAMES, MAX_ANCHOR_BYTES, MAX_PROMPT_CHARS,
@@ -54,8 +57,15 @@ pub const MAX_CONDITIONS: usize = 2;
 /// The reference's cap on ordered references (`h3.c:588`).
 pub const MAX_REFERENCES: usize = 12;
 
-/// The five fields of the create body, and the only five.
-pub const CREATE_FIELDS: [&str; 5] = ["task", "prompt", "conditions", "target", "seed"];
+/// The six fields of the create body, and the only six.
+pub const CREATE_FIELDS: [&str; 6] = [
+    "task",
+    "prompt",
+    "conditions",
+    "target",
+    "seed",
+    "attention",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Task {
@@ -166,6 +176,9 @@ pub struct CreateBody {
     pub conditions: Vec<Condition>,
     pub target: Target,
     pub seed: u64,
+    /// `"attention"`, optional: `tensor` is the default, `scalar` the
+    /// byte-exact kernel.
+    pub attention: Attention,
 }
 
 /// The class of one ordered reference (`h3_reference_kind`, `h3.h:30-34`).
@@ -228,6 +241,8 @@ pub struct Plan {
     pub last_frame: Option<AnchorImage>,
     /// Reference media in request order; empty for t2va and fl2va.
     pub references: Vec<ReferenceMedia>,
+    /// Attention path; `Tensor` unless the request asked for `scalar`.
+    pub attention: Attention,
 }
 
 /// Parse and validate a create body.
@@ -319,12 +334,37 @@ pub fn parse_create(body: &[u8]) -> Result<CreateBody, ApiError> {
         )
     })?;
 
+    // Optional, and the only field whose absence has a meaning: the tensor-core
+    // kernel is what runs unless the caller asks for the byte-exact one.
+    let attention = match object.get("attention") {
+        None => Attention::Tensor,
+        Some(Value::String(mode)) => match mode.as_str() {
+            "tensor" => Attention::Tensor,
+            "scalar" => Attention::Scalar,
+            other => {
+                return Err(ApiError::bad_request(
+                    "invalid_attention",
+                    Some("attention"),
+                    format!("attention must be tensor or scalar, not {other}"),
+                ))
+            }
+        },
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_attention",
+                Some("attention"),
+                "attention must be the string tensor or scalar",
+            ))
+        }
+    };
+
     Ok(CreateBody {
         task,
         prompt,
         conditions,
         target,
         seed,
+        attention,
     })
 }
 
@@ -344,13 +384,46 @@ impl CreateBody {
         &self,
         probe: &dyn Fn(&ReferenceMedia) -> Option<(u32, u32)>,
     ) -> Result<Plan, ApiError> {
-        if self.target.short_edge != SHORT_EDGE {
+        // Any short edge on the released canvas grid is served: the canvas is
+        // built from it (`presets::ratio_canvas`) and the engine renders it.
+        // 768 is the tier the model card documents; a smaller one is an
+        // execution preview, and the reference's own scale points are 256, 320
+        // and 384 (`h3.c` README, "Pick resolution and duration").
+        if self.target.short_edge < presets::MIN_SHORT_EDGE as u32
+            || self.target.short_edge % CANVAS_MULTIPLE as u32 != 0
+        {
             return Err(ApiError::bad_request(
                 "unsupported_short_edge",
                 Some("target.short_edge"),
                 format!(
-                    "short_edge {} is not served: the open checkpoint renders at {SHORT_EDGE}",
-                    self.target.short_edge
+                    "short_edge {} is off the released canvas grid: it must be a multiple of \
+                     {CANVAS_MULTIPLE} of at least {}, and {} is the tier the model card documents",
+                    self.target.short_edge,
+                    presets::MIN_SHORT_EDGE,
+                    SHORT_EDGE
+                ),
+            ));
+        }
+
+        // The released area bounds the whole canvas, not only its long edge
+        // (`h3_valid_params`, `h3.c:496`). The canvas keeps the requested short
+        // edge as its short side, so above `MAX_SHORT_EDGE` there is no canvas
+        // to serve: the cap would drop the long edge under the short edge and
+        // invert the shape. 1024 at 1:1 would otherwise come out 992x1024.
+        if self.target.short_edge > presets::MAX_SHORT_EDGE as u32 {
+            return Err(ApiError::bad_request(
+                "unsupported_short_edge",
+                Some("target.short_edge"),
+                format!(
+                    "short_edge {} exceeds the released {}x{} area: the canvas keeps the short \
+                     edge you name, so the request needs at least {}x{}, and {} is the largest \
+                     short edge that fits",
+                    self.target.short_edge,
+                    SHORT_EDGE,
+                    MAX_PIXELS / i64::from(SHORT_EDGE),
+                    self.target.short_edge,
+                    self.target.short_edge,
+                    presets::MAX_SHORT_EDGE
                 ),
             ));
         }
@@ -404,6 +477,7 @@ impl CreateBody {
             first_frame,
             last_frame,
             references,
+            attention: self.attention,
         })
     }
 
@@ -609,7 +683,7 @@ impl CreateBody {
                     })?
                 }
             };
-            let canvas = presets::canvas_for(width, height);
+            let canvas = presets::canvas_for(self.target.short_edge as i32, width, height);
             check_stretch(
                 canvas,
                 f64::from(width.max(height)) / f64::from(width.min(height)),
@@ -626,7 +700,7 @@ impl CreateBody {
             )
         })?;
         let (width, height) = ratio.parts();
-        let canvas = presets::tier_canvas(ratio);
+        let canvas = presets::ratio_canvas(self.target.short_edge as i32, ratio);
         // Compare long edge over short edge on both sides: the ratio name is
         // stated as width/height, and 9:16 is tall.
         check_stretch(
@@ -639,8 +713,9 @@ impl CreateBody {
 }
 
 /// Refuse a canvas whose aspect is not the requested one beyond the stretch
-/// `presets::MAX_DISTORTION` bounds. The one case at this tier is 21:9, whose
-/// 1792 px width the released area refuses.
+/// `presets::MAX_DISTORTION` bounds. The case at the tier is 21:9, whose
+/// 1792 px width the released area refuses; a ratio the area cannot express at
+/// the requested short edge is refused the same way, with its own numbers.
 fn check_stretch(canvas: (i32, i32), want: f64, label: &str) -> Result<(), ApiError> {
     let (long, short) = (canvas.0.max(canvas.1), canvas.0.min(canvas.1));
     let got = f64::from(long) / f64::from(short);
@@ -653,11 +728,11 @@ fn check_stretch(canvas: (i32, i32), want: f64, label: &str) -> Result<(), ApiEr
         "invalid_aspect_ratio",
         Some("target.aspect_ratio"),
         format!(
-            "{label} needs {:.0}x{short} at this tier, which exceeds the {}x{} released area; \
-             the widest canvas is {long}x{short}, a {distortion:.3}x stretch. Use 16:9",
+            "{label} needs {:.0}x{short} at a {short} short edge, which exceeds the {}x{short} \
+             released area; the widest canvas is {long}x{short}, a {distortion:.3}x stretch. \
+             Use 16:9, or lower target.short_edge",
             want * f64::from(short),
-            MAX_PIXELS / i64::from(presets::TIER_SHORT_EDGE),
-            presets::TIER_SHORT_EDGE,
+            MAX_PIXELS / i64::from(short),
         ),
     ))
 }
@@ -1132,14 +1207,41 @@ mod tests {
     }
 
     #[test]
-    fn the_five_fields_are_the_contract() {
+    fn attention_defaults_to_tensor_and_scalar_is_opt_in() {
+        // Absent: the tensor-core kernel, which is the default.
+        let parsed = planned(body("t2va", json!([]), "16:9", 8)).unwrap();
+        assert_eq!(parsed.attention, Attention::Tensor);
+
+        // Asked for: the byte-exact kernel.
+        let mut scalar = body("t2va", json!([]), "16:9", 8);
+        scalar["attention"] = json!("scalar");
+        assert_eq!(planned(scalar).unwrap().attention, Attention::Scalar);
+
+        // Named explicitly, and the spelling is checked rather than guessed.
+        let mut tensor = body("t2va", json!([]), "16:9", 8);
+        tensor["attention"] = json!("tensor");
+        assert_eq!(planned(tensor).unwrap().attention, Attention::Tensor);
+
+        let mut bogus = body("t2va", json!([]), "16:9", 8);
+        bogus["attention"] = json!("fast");
+        let error = parse_create(bogus.to_string().as_bytes()).unwrap_err();
+        assert_eq!(error.code, "invalid_attention");
+
+        let mut wrong_type = body("t2va", json!([]), "16:9", 8);
+        wrong_type["attention"] = json!(1);
+        let error = parse_create(wrong_type.to_string().as_bytes()).unwrap_err();
+        assert_eq!(error.code, "invalid_attention");
+    }
+
+    #[test]
+    fn the_six_fields_are_the_contract() {
         let root = body("t2va", json!([]), "16:9", 8);
         let parsed = parse_create(root.to_string().as_bytes()).unwrap();
         assert_eq!(parsed.task, Task::T2va);
         assert_eq!(parsed.seed, 7);
         assert_eq!(parsed.target.short_edge, 768);
 
-        // A sixth field is refused rather than ignored.
+        // A seventh field is refused rather than ignored.
         let mut extra = root.clone();
         extra["model"] = json!("MiniMax-H3");
         let error = parse_create(extra.to_string().as_bytes()).unwrap_err();
@@ -1181,15 +1283,61 @@ mod tests {
     }
 
     #[test]
-    fn only_the_768_tier_is_served() {
+    fn any_short_edge_on_the_released_grid_is_served() {
+        // 480 is on the grid, so 16:9 there is 864x480 rather than the tier's
+        // 1344x768: the short edge is the caller's, the long edge snaps and
+        // clamps.
         let mut root = body("t2va", json!([]), "16:9", 8);
         root["target"]["short_edge"] = json!(480);
-        let error = parse_create(root.to_string().as_bytes())
+        let plan = parse_create(root.to_string().as_bytes())
             .unwrap()
             .plan()
-            .unwrap_err();
-        assert_eq!(error.code, "unsupported_short_edge");
-        assert!(error.message.contains("768"));
+            .unwrap();
+        assert_eq!((plan.size.width, plan.size.height), (864, 480));
+
+        // Off the grid, or below one canvas unit, is refused.
+        for edge in [500, 16] {
+            let mut root = body("t2va", json!([]), "16:9", 8);
+            root["target"]["short_edge"] = json!(edge);
+            let error = parse_create(root.to_string().as_bytes())
+                .unwrap()
+                .plan()
+                .unwrap_err();
+            assert_eq!(error.code, "unsupported_short_edge");
+            assert!(error.message.contains("32"));
+        }
+    }
+
+    #[test]
+    fn a_short_edge_above_the_released_area_is_refused() {
+        // The canvas keeps the requested short edge as its short side, so the
+        // smallest canvas a request can produce is its square. Above the
+        // released 768*1344 area that square does not fit, and the cap on the
+        // long edge falls below the short edge and inverts the canvas: 1024 at
+        // 1:1 would come out 992x1024, and 1344 at 16:9 would come out
+        // portrait. The reference cannot reach that state, because it takes
+        // width and height and refuses the area outright (`h3_valid_params`,
+        // `h3.c:496`), so the derived canvas must refuse it too.
+        for (edge, ratio) in [(1024, "1:1"), (1344, "16:9"), (1344, "9:16")] {
+            let mut root = body("t2va", json!([]), ratio, 8);
+            root["target"]["short_edge"] = json!(edge);
+            let error = parse_create(root.to_string().as_bytes())
+                .unwrap()
+                .plan()
+                .unwrap_err();
+            assert_eq!(error.code, "unsupported_short_edge", "{ratio} at {edge}");
+            assert!(error.message.contains("992"), "{}", error.message);
+        }
+
+        // 992 is the largest short edge that fits: its square is inside the
+        // area, and it stays the canvas's short side.
+        let mut root = body("t2va", json!([]), "1:1", 8);
+        root["target"]["short_edge"] = json!(992);
+        let plan = parse_create(root.to_string().as_bytes())
+            .unwrap()
+            .plan()
+            .unwrap();
+        assert_eq!((plan.size.width, plan.size.height), (992, 992));
     }
 
     #[test]

@@ -46,14 +46,22 @@ frame anchors. Audio alone is insufficient for Ref2VA.
 
 On GB10, one 512×512, 56-frame, 20-step text run took **762.36 s** (12m42s)
 for a 2.333-second clip. The matched h3.c run took 764.62 s and produced the
-same MP4 bytes. The native API at its smallest square request (768×768,
+same MP4 bytes. The native API at the tier's square request (768×768,
 4 seconds requested, 107 aligned frames) took **1,340.264 s** to observed
 completion and download even at **two steps**. That includes 10-second
-status polling. Larger canvases and more steps require separate measurement.
+status polling. Larger canvases and more steps require separate measurement,
+and a lower `target.short_edge` is served at proportionally lower cost.
 
 The [dated validation](validation-2026-10-26.md) records exact inputs,
 phase timings, memory observations and qualification limits. These single
 runs are execution receipts, not throughput or broad quality guarantees.
+
+Those receipts are the byte-exact scalar path's, which is now the option rather
+than the default: the tensor-core kernel runs unless a caller asks otherwise, and
+on the same 512×512, 56-frame, 20-step shape it measures 139.418 s against the
+scalar kernel's 460.399 s, both on one binary. It is not byte-identical to the
+reference, which is why the choice is a switch
+([why it is the default](tensor-default-2026-10-27.md)).
 The [v0.1.4 integration review](validation-2026-10-26.md#v014-integration-review--2026-10-27)
 records subsequent fixes and model-free checks; full-model renders were not
 repeated for that review.
@@ -90,6 +98,7 @@ The model's license is included in the downloaded repository.
 - [Starting and using the API](api-usage.md)
 - [Reference probes and media comparison](../../tools/minimax_h3/README.md)
 - [GB10 maintainer validation, 2026-10-26](validation-2026-10-26.md)
+- [Speed baseline against h3.c, 2026-10-27](speed-2026-10-27.md)
 
 Model-free checks include H3 core and server unit tests, the portable
 host/tokenizer gates, and `make tests/h3-test_av_mux`. The CUDA boundary gate

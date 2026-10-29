@@ -36,7 +36,34 @@ struct h3d_context {
     void *stage;          /* pinned upload staging, allocated on first use */
     cudaEvent_t stage_done;
     int stage_pending;    /* a DMA out of `stage` has not been waited for yet */
+    int attention_mma;    /* 1 = tensor-core attention (default), 0 = byte-exact scalar */
 };
+
+/* Whether the byte-exact scalar attention was asked for, from the environment.
+ * Unset means the tensor-core kernel, which is the default. `H3_DIT_ATTENTION`
+ * takes `scalar` or `tensor`; the older `H3_DIT_ATTENTION_MMA` is still read so
+ * the A/B scripts written before the inversion keep their meaning, 1 for the
+ * tensor kernel and 0 or empty for the scalar one. */
+static int h3d_attention_scalar_from_env(void) {
+    const char *legacy = getenv("H3_DIT_ATTENTION_MMA");
+    if (legacy) {
+        return !(legacy[0] != '\0' && legacy[0] != '0');
+    }
+    const char *mode = getenv("H3_DIT_ATTENTION");
+    if (mode) {
+        return mode[0] == 's' || mode[0] == 'S';
+    }
+    return 0;
+}
+
+/* Select the attention per run. `scalar` nonzero asks for the byte-exact
+ * kernel, which is the only path that carries the reference guarantee; zero is
+ * the tensor-core default. Overrides the environment. */
+void h3d_set_attention(h3d_context *context, int scalar) {
+    if (context) {
+        context->attention_mma = !scalar;
+    }
+}
 
 static int h3d_set_error(char *error, size_t error_size, const char *format,
                          ...) {
@@ -118,6 +145,11 @@ h3d_context *h3d_create(char *error, size_t error_size) {
         h3d_destroy(context);
         return NULL;
     }
+    /* The tensor-core attention is the default and the byte-exact scalar kernel
+     * is the option, as of the operator's decision on 2026-10-27. The hosts
+     * choose with `h3d_set_attention`; the environment is read once here as the
+     * default for callers that never call it, such as the reproducer. */
+    context->attention_mma = !h3d_attention_scalar_from_env();
     return context;
 }
 
@@ -921,75 +953,417 @@ int h3d_qkv_rope(h3d_context *context, h3d_tensor *query, h3d_tensor *key,
     return h3d_launch_ok("BF16 grouped QKV RoPE", error, error_size);
 }
 
-/* `h3_attention_tiled_bf16_kernel` (`:1418-1487`): one block per head and
- * eight rows, one warp per row, four dimensions per lane, online softmax with
- * a warp shuffle reduction, row-major output (`head_major_output = 0`). */
+/* Rows one warp owns. 1 is the reference's mapping (one warp per row); more
+ * rows amortize the staged key rows and the barrier pair over them. The value
+ * is per translation unit so a sweep can build the reproducer with
+ * -DH3D_ATTENTION_ROWS=n and compare output hashes. */
+#ifndef H3D_ATTENTION_ROWS
+#define H3D_ATTENTION_ROWS 2
+#endif
+
+/* `h3_attention_tiled_bf16_kernel` (`:1418-1487`): one block per head, four
+ * dimensions per lane, online softmax with a warp shuffle reduction, row-major
+ * output (`head_major_output = 0`).
+ *
+ * Deviations from the reference, named and measured: the reference stages one
+ * key row per barrier pair, so each row's load latency is exposed once per row
+ * (measured on this host at ~1.3 us per row, 90% of a denoise step); this
+ * stages KEYS rows per barrier pair, so one exposed latency covers KEYS rows.
+ * The reference gives each warp one query row; this gives it H3D_ATTENTION_ROWS
+ * rows, so the staged rows and the barrier pair serve that many rows. Both are
+ * measured. Every row still runs the reference's arithmetic in the reference's
+ * order, so the output stays bit-identical. */
 __global__ static void h3d_attention_tiled_kernel(
         __nv_bfloat16 *output, const __nv_bfloat16 *query,
         const __nv_bfloat16 *key, const __nv_bfloat16 *value,
         uint32_t sequence, uint32_t heads, float scale) {
-    enum { HEAD_DIM = 128, QUERIES = 8 };
-    __shared__ float shared_key[HEAD_DIM];
-    __shared__ float shared_value[HEAD_DIM];
+    enum { HEAD_DIM = 128, KEYS = 8, ROWS = H3D_ATTENTION_ROWS,
+           QUERIES = 8 * ROWS };
+    __shared__ float shared_key[KEYS][HEAD_DIM];
+    __shared__ float shared_value[KEYS][HEAD_DIM];
     uint32_t warp = threadIdx.x / 32;
     uint32_t lane = threadIdx.x % 32;
     uint32_t head = blockIdx.y;
-    uint32_t row = blockIdx.x * QUERIES + warp;
-    int active = row < sequence;
-    size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
-    float result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float maximum = -INFINITY;
-    float denominator = 0.0f;
-    for (uint32_t key_row = 0; key_row < sequence; key_row++) {
+    uint32_t first_row = blockIdx.x * QUERIES + warp * ROWS;
+    int active[ROWS];
+    float result[ROWS][4];
+    float maximum[ROWS];
+    float denominator[ROWS];
+    /* Each row's four dimensions ride in registers: the reference re-reads them
+     * from global for every key row, which exposes that load once per row. */
+    float query_item[ROWS][4];
+#pragma unroll
+    for (uint32_t r = 0; r < ROWS; r++) {
+        uint32_t row = first_row + r;
+        active[r] = row < sequence;
+        maximum[r] = -INFINITY;
+        denominator[r] = 0.0f;
+#pragma unroll
+        for (uint32_t part = 0; part < 4; part++) {
+            result[r][part] = 0.0f;
+            query_item[r][part] = 0.0f;
+        }
+        if (!active[r]) {
+            continue;
+        }
+        size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
+#pragma unroll
+        for (uint32_t part = 0; part < 4; part++) {
+            query_item[r][part] =
+                    __bfloat162float(query[query_base + lane + part * 32]);
+        }
+    }
+    for (uint32_t key_block = 0; key_block < sequence; key_block += KEYS) {
+        /* KEYS independent loads per thread: the staged rows' latencies
+         * overlap instead of one row's latency stalling every iteration. */
         if (threadIdx.x < HEAD_DIM) {
-            size_t index = ((size_t)head * sequence + key_row) * HEAD_DIM +
-                           threadIdx.x;
-            shared_key[threadIdx.x] = __bfloat162float(key[index]);
-            shared_value[threadIdx.x] = __bfloat162float(value[index]);
+#pragma unroll
+            for (uint32_t item = 0; item < KEYS; item++) {
+                uint32_t source = key_block + item;
+                if (source < sequence) {
+                    size_t index =
+                            ((size_t)head * sequence + source) * HEAD_DIM +
+                            threadIdx.x;
+                    shared_key[item][threadIdx.x] =
+                            __bfloat162float(key[index]);
+                    shared_value[item][threadIdx.x] =
+                            __bfloat162float(value[index]);
+                }
+            }
         }
         __syncthreads();
-        float product = 0.0f;
-        if (active) {
 #pragma unroll
-            for (uint32_t item = 0; item < 4; item++) {
-                uint32_t dimension = lane + item * 32;
-                product += __bfloat162float(query[query_base + dimension]) *
-                           shared_key[dimension];
+        for (uint32_t item = 0; item < KEYS; item++) {
+            if (key_block + item >= sequence) {
+                break;
             }
 #pragma unroll
-            for (uint32_t offset = 16; offset; offset >>= 1) {
-                product += __shfl_down_sync(0xffffffffu, product, offset);
-            }
-        }
-        float rescale = 1.0f;
-        float weight = 0.0f;
-        if (active && lane == 0) {
-            float score = product * scale;
-            float next_maximum = fmaxf(maximum, score);
-            rescale = expf(maximum - next_maximum);
-            weight = expf(score - next_maximum);
-            denominator = denominator * rescale + weight;
-            maximum = next_maximum;
-        }
-        rescale = __shfl_sync(0xffffffffu, rescale, 0);
-        weight = __shfl_sync(0xffffffffu, weight, 0);
-        if (active) {
+            for (uint32_t r = 0; r < ROWS; r++) {
+                float product = 0.0f;
+                if (active[r]) {
 #pragma unroll
-            for (uint32_t item = 0; item < 4; item++) {
-                uint32_t dimension = lane + item * 32;
-                result[item] = result[item] * rescale +
-                               weight * shared_value[dimension];
+                    for (uint32_t part = 0; part < 4; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        product += query_item[r][part] *
+                                   shared_key[item][dimension];
+                    }
+#pragma unroll
+                    for (uint32_t offset = 16; offset; offset >>= 1) {
+                        product += __shfl_down_sync(0xffffffffu, product, offset);
+                    }
+                }
+                float rescale = 1.0f;
+                float weight = 0.0f;
+                if (active[r] && lane == 0) {
+                    float score = product * scale;
+                    float next_maximum = fmaxf(maximum[r], score);
+                    rescale = expf(maximum[r] - next_maximum);
+                    weight = expf(score - next_maximum);
+                    denominator[r] = denominator[r] * rescale + weight;
+                    maximum[r] = next_maximum;
+                }
+                rescale = __shfl_sync(0xffffffffu, rescale, 0);
+                weight = __shfl_sync(0xffffffffu, weight, 0);
+                if (active[r]) {
+#pragma unroll
+                    for (uint32_t part = 0; part < 4; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        result[r][part] = result[r][part] * rescale +
+                                          weight *
+                                          shared_value[item][dimension];
+                    }
+                }
             }
         }
         __syncthreads();
     }
-    denominator = __shfl_sync(0xffffffffu, denominator, 0);
-    if (!active) return;
 #pragma unroll
-    for (uint32_t item = 0; item < 4; item++) {
-        uint32_t dimension = lane + item * 32;
-        size_t index = ((size_t)row * heads + head) * HEAD_DIM + dimension;
-        output[index] = __float2bfloat16(result[item] / denominator);
+    for (uint32_t r = 0; r < ROWS; r++) {
+        denominator[r] = __shfl_sync(0xffffffffu, denominator[r], 0);
+        if (!active[r]) {
+            continue;
+        }
+        uint32_t row = first_row + r;
+#pragma unroll
+        for (uint32_t item = 0; item < 4; item++) {
+            uint32_t dimension = lane + item * 32;
+            size_t index = ((size_t)row * heads + head) * HEAD_DIM + dimension;
+            output[index] = __float2bfloat16(result[r][item] / denominator[r]);
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Tensor-core attention — a benchmark arm, OFF BY DEFAULT.
+ *
+ * `H3_DIT_ATTENTION_MMA` selects this twin of `h3d_attention_tiled_kernel`. It
+ * exists to measure what the scalar path cannot reach: the operator asked for
+ * it as a switch that can be turned on and off (2026-10-27), so it is a
+ * measurement arm and never the path a gate reads.
+ *
+ * It is NOT bit-identical to the reference, by construction, and the three
+ * deviations are named rather than hidden:
+ *   - the scores accumulate through `mma` dot products, so the reduction tree
+ *     replaces the reference's four-element lane partial and five-step shuffle;
+ *   - the online softmax takes one maximum per 64-key tile instead of rescaling
+ *     on every key row;
+ *   - P rounds to BF16 for the second MMA; the reference keeps it in FP32. This
+ *     is the same named deviation the ds41 kernel carries
+ *     (`cuda/ds41_attn_mma.cuh:135-139`).
+ * Scores, the running maximum/sum and the output accumulator stay FP32, so the
+ * arithmetic is the reference's in kind, not in order.
+ *
+ * Shape: one CTA covers H3D_MMA_ROWS query rows of one head and a warp owns
+ * H3D_MMA_M of them with all H3D_MMA_HD key dimensions, so a row's softmax
+ * statistics never cross a warp and no partial-score exchange is needed (the
+ * `spart` stage ds41 needs for its K-split does not apply here).
+ * ------------------------------------------------------------------------- */
+
+/* `mma.sync.m16n8k16` BF16 in, FP32 accumulate; mirrors `cuda/ds41_attn_mma.cuh:151-155`. */
+__device__ __forceinline__ static void h3d_mma_step(float *c, const uint32_t *a,
+                                                    uint32_t b0, uint32_t b1) {
+    asm volatile(
+            "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+            "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+            : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+            : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+/* 16x16 BF16 tile from shared memory, row-major, and its transpose; mirrors
+ * `cuda/ds41_attn_mma.cuh:144-150` (`ds4_fa_ldsm4`/`ds4_fa_ldsm4t`). */
+__device__ __forceinline__ static void h3d_mma_load(uint32_t *r, const void *p) {
+    const uint32_t at = (uint32_t)__cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(at));
+}
+
+__device__ __forceinline__ static void h3d_mma_load_trans(uint32_t *r,
+                                                          const void *p) {
+    const uint32_t at = (uint32_t)__cvta_generic_to_shared(p);
+    asm volatile(
+            "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+            : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(at));
+}
+
+/* Two values as one BF16x2 register: the low half is column c and the high half
+ * c+1, which is the fragment element order. Mirrors
+ * `cuda/ds41_attn_mma.cuh:155-157` (`ds4_fa_bf16x2`). A value already BF16
+ * survives the round trip exactly, so this serves the Q fragments too. */
+__device__ __forceinline__ static uint32_t h3d_mma_pair(float low, float high) {
+    const uint32_t lo = __bfloat16_as_ushort(__float2bfloat16(low));
+    const uint32_t hi = __bfloat16_as_ushort(__float2bfloat16(high));
+    return lo | (hi << 16);
+}
+
+enum {
+    H3D_MMA_HD = 128,                 /* head dimension, the one shape served */
+    H3D_MMA_KEYS = 64,                /* key rows staged per tile */
+    H3D_MMA_M = 16,                   /* query rows a warp owns */
+    H3D_MMA_WARPS = 4,
+    H3D_MMA_ROWS = H3D_MMA_M * H3D_MMA_WARPS,
+    H3D_MMA_LD = H3D_MMA_HD + 8,      /* +8 bf16 spreads ldmatrix rows across banks */
+    H3D_MMA_DIMS = H3D_MMA_HD / 8,    /* n8 slices of the output */
+    H3D_MMA_KS = H3D_MMA_HD / 16,     /* k16 steps over the head dimension */
+    H3D_MMA_NS = H3D_MMA_KEYS / 8,    /* n8 slices of the scores */
+    H3D_MMA_CHUNKS = H3D_MMA_HD / 8   /* 16-byte copies in one staged row */
+};
+
+__global__ static void h3d_attention_mma_kernel(
+        __nv_bfloat16 *output, const __nv_bfloat16 *query,
+        const __nv_bfloat16 *key, const __nv_bfloat16 *value,
+        uint32_t sequence, uint32_t heads, float scale) {
+    __shared__ __align__(16) __nv_bfloat16 shared_key[H3D_MMA_KEYS][H3D_MMA_LD];
+    __shared__ __align__(16) __nv_bfloat16 shared_value[H3D_MMA_KEYS][H3D_MMA_LD];
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t quad = lane >> 2u;             /* the accumulator row a lane serves */
+    const uint32_t column = (lane & 3u) * 2u;     /* first of its two columns */
+    const uint32_t matrix = lane >> 3u;           /* ldmatrix: which 8x8 quadrant */
+    const uint32_t head = blockIdx.y;
+    const uint32_t first_row = blockIdx.x * H3D_MMA_ROWS + warp * H3D_MMA_M;
+    const uint32_t row0 = first_row + quad, row1 = row0 + 8u;
+    const int live0 = row0 < sequence, live1 = row1 < sequence;
+    /* A row past the end is read from the last real row and never written; that
+     * keeps the CTA's reads in bounds without branching the MMAs. */
+    const uint32_t read0 = live0 ? row0 : sequence - 1u;
+    const uint32_t read1 = live1 ? row1 : sequence - 1u;
+    const __nv_bfloat16 *query0 =
+            query + ((size_t)head * sequence + read0) * H3D_MMA_HD;
+    const __nv_bfloat16 *query1 =
+            query + ((size_t)head * sequence + read1) * H3D_MMA_HD;
+
+    /* Q lives in registers as the eight k16 A fragments, built once per CTA. */
+    uint32_t a[H3D_MMA_KS][4];
+#pragma unroll
+    for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+        const uint32_t dim = step * 16u + column;
+        a[step][0] = h3d_mma_pair(__bfloat162float(query0[dim]),
+                                  __bfloat162float(query0[dim + 1u]));
+        a[step][1] = h3d_mma_pair(__bfloat162float(query1[dim]),
+                                  __bfloat162float(query1[dim + 1u]));
+        a[step][2] = h3d_mma_pair(__bfloat162float(query0[dim + 8u]),
+                                  __bfloat162float(query0[dim + 9u]));
+        a[step][3] = h3d_mma_pair(__bfloat162float(query1[dim + 8u]),
+                                  __bfloat162float(query1[dim + 9u]));
+    }
+
+    float maximum0 = -INFINITY, maximum1 = -INFINITY;
+    float denominator0 = 0.0f, denominator1 = 0.0f;
+    float result[H3D_MMA_DIMS][4];
+#pragma unroll
+    for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+        result[dim][0] = result[dim][1] = result[dim][2] = result[dim][3] = 0.0f;
+    }
+
+    for (uint32_t base = 0; base < sequence; base += H3D_MMA_KEYS) {
+        __syncthreads();   /* the previous tile's staged rows are fully consumed */
+        /* Stage K and V: 16-byte copies, one row per sixteen lanes. A row past
+         * the end is zeroed; its scores are masked below, so it contributes
+         * nothing and the staging stays branch-free. */
+        for (uint32_t index = threadIdx.x;
+             index < H3D_MMA_KEYS * H3D_MMA_CHUNKS;
+             index += H3D_MMA_WARPS * 32u) {
+            const uint32_t row = index / H3D_MMA_CHUNKS;
+            const uint32_t chunk = index % H3D_MMA_CHUNKS;
+            const uint32_t source = base + row;
+            if (source < sequence) {
+                const size_t at =
+                        ((size_t)head * sequence + source) * H3D_MMA_HD +
+                        chunk * 8u;
+                *(uint4 *)&shared_key[row][chunk * 8u] =
+                        *(const uint4 *)(key + at);
+                *(uint4 *)&shared_value[row][chunk * 8u] =
+                        *(const uint4 *)(value + at);
+            } else {
+                const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
+                *(uint4 *)&shared_key[row][chunk * 8u] = zero;
+                *(uint4 *)&shared_value[row][chunk * 8u] = zero;
+            }
+        }
+        __syncthreads();
+
+        /* Scores: S = Q * K^T over all H3D_MMA_KEYS staged keys. */
+        float score[H3D_MMA_NS][4];
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            score[slice][0] = score[slice][1] = 0.0f;
+            score[slice][2] = score[slice][3] = 0.0f;
+        }
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KS; step++) {
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_KEYS / 16; part++) {
+                const uint32_t row = part * 16u + (matrix >> 1u) * 8u + (lane & 7u);
+                const uint32_t col = step * 16u + (matrix & 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load(b, &shared_key[row][col]);
+                h3d_mma_step(score[2u * part], a[step], b[0], b[1]);
+                h3d_mma_step(score[2u * part + 1u], a[step], b[2], b[3]);
+            }
+        }
+
+        /* Scale, then mask the tail keys out of the softmax. */
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            const uint32_t first = slice * 8u + column;
+            score[slice][0] *= scale;
+            score[slice][1] *= scale;
+            score[slice][2] *= scale;
+            score[slice][3] *= scale;
+            if (base + first >= sequence) {
+                score[slice][0] = -INFINITY;
+                score[slice][2] = -INFINITY;
+            }
+            if (base + first + 1u >= sequence) {
+                score[slice][1] = -INFINITY;
+                score[slice][3] = -INFINITY;
+            }
+        }
+
+        /* One maximum per tile, reduced across the four lanes of a row. */
+        float tile0 = -INFINITY, tile1 = -INFINITY;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            tile0 = fmaxf(tile0, fmaxf(score[slice][0], score[slice][1]));
+            tile1 = fmaxf(tile1, fmaxf(score[slice][2], score[slice][3]));
+        }
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 1));
+        tile0 = fmaxf(tile0, __shfl_xor_sync(0xffffffffu, tile0, 2));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 1));
+        tile1 = fmaxf(tile1, __shfl_xor_sync(0xffffffffu, tile1, 2));
+        const float next0 = fmaxf(maximum0, tile0);
+        const float next1 = fmaxf(maximum1, tile1);
+        const float rescale0 = expf(maximum0 - next0);
+        const float rescale1 = expf(maximum1 - next1);
+
+        float weight[H3D_MMA_NS][4];
+        float part0 = 0.0f, part1 = 0.0f;
+#pragma unroll
+        for (uint32_t slice = 0; slice < H3D_MMA_NS; slice++) {
+            weight[slice][0] = expf(score[slice][0] - next0);
+            weight[slice][1] = expf(score[slice][1] - next0);
+            weight[slice][2] = expf(score[slice][2] - next1);
+            weight[slice][3] = expf(score[slice][3] - next1);
+            part0 += weight[slice][0] + weight[slice][1];
+            part1 += weight[slice][2] + weight[slice][3];
+        }
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 1);
+        part0 += __shfl_xor_sync(0xffffffffu, part0, 2);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 1);
+        part1 += __shfl_xor_sync(0xffffffffu, part1, 2);
+        denominator0 = denominator0 * rescale0 + part0;
+        denominator1 = denominator1 * rescale1 + part1;
+        maximum0 = next0;
+        maximum1 = next1;
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            result[dim][0] *= rescale0;
+            result[dim][1] *= rescale0;
+            result[dim][2] *= rescale1;
+            result[dim][3] *= rescale1;
+        }
+
+        /* O += P * V, P packed from the weights as the A fragments. */
+#pragma unroll
+        for (uint32_t step = 0; step < H3D_MMA_KEYS / 16; step++) {
+            uint32_t p[4];
+            p[0] = h3d_mma_pair(weight[2u * step][0], weight[2u * step][1]);
+            p[1] = h3d_mma_pair(weight[2u * step][2], weight[2u * step][3]);
+            p[2] = h3d_mma_pair(weight[2u * step + 1u][0],
+                                weight[2u * step + 1u][1]);
+            p[3] = h3d_mma_pair(weight[2u * step + 1u][2],
+                                weight[2u * step + 1u][3]);
+#pragma unroll
+            for (uint32_t part = 0; part < H3D_MMA_DIMS / 2; part++) {
+                const uint32_t row =
+                        step * 16u + (matrix & 1u) * 8u + (lane & 7u);
+                const uint32_t col = part * 16u + (matrix >> 1u) * 8u;
+                uint32_t b[4];
+                h3d_mma_load_trans(b, &shared_value[row][col]);
+                h3d_mma_step(result[2u * part], p, b[0], b[1]);
+                h3d_mma_step(result[2u * part + 1u], p, b[2], b[3]);
+            }
+        }
+    }
+
+    __syncthreads();
+    if (live0) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row0 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][0] / denominator0);
+            output[at + 1u] = __float2bfloat16(result[dim][1] / denominator0);
+        }
+    }
+    if (live1) {
+#pragma unroll
+        for (uint32_t dim = 0; dim < H3D_MMA_DIMS; dim++) {
+            const size_t at = ((size_t)row1 * heads + head) * H3D_MMA_HD +
+                              dim * 8u + column;
+            output[at] = __float2bfloat16(result[dim][2] / denominator1);
+            output[at + 1u] = __float2bfloat16(result[dim][3] / denominator1);
+        }
     }
 }
 
@@ -1007,7 +1381,18 @@ int h3d_sdpa(h3d_context *context, h3d_tensor *output,
         return h3d_set_error(error, error_size,
                              "invalid attention tensors or shape");
     }
-    dim3 grid((sequence + 7) / 8, heads);
+    /* The benchmark arm: same tensors and scale, tensor-core arithmetic. */
+    if (context->attention_mma) {
+        dim3 mma_grid((sequence + H3D_MMA_ROWS - 1) / H3D_MMA_ROWS, heads);
+        h3d_attention_mma_kernel<<<mma_grid, H3D_MMA_WARPS * 32u, 0,
+                                   context->stream>>>(
+            (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
+            (const __nv_bfloat16 *)key->data,
+            (const __nv_bfloat16 *)value->data, sequence, heads, scale);
+        return h3d_launch_ok("BF16 attention (mma)", error, error_size);
+    }
+    dim3 grid((sequence + 8 * H3D_ATTENTION_ROWS - 1) / (8 * H3D_ATTENTION_ROWS),
+              heads);
     h3d_attention_tiled_kernel<<<grid, 256, 0, context->stream>>>(
         (__nv_bfloat16 *)output->data, (const __nv_bfloat16 *)query->data,
         (const __nv_bfloat16 *)key->data, (const __nv_bfloat16 *)value->data,
@@ -1572,81 +1957,145 @@ __global__ static void h3d_attention_f32_kernel(
     }
 }
 
-/* `h3_attention_tiled_f32_kernel` (`:1489-1547`): one block per head and eight
- * rows, one warp per row, `HEAD_DIM / 32` dimensions per lane. With a 64-wide
- * head only two lanes per item carry data and only the first 64 threads fill
- * the shared key/value row, exactly as the reference does. */
+/* Key rows staged per barrier pair and rows one warp owns in the F32 kernel.
+ * 1 and 1 are the reference's mapping; more of either amortizes the staged rows
+ * and the barrier pair. Both are per translation unit so a sweep can build the
+ * reproducer with -DH3D_ATTENTION_F32_KEYS=n and -DH3D_ATTENTION_F32_ROWS=n and
+ * compare output hashes. */
+#ifndef H3D_ATTENTION_F32_KEYS
+#define H3D_ATTENTION_F32_KEYS 8
+#endif
+#ifndef H3D_ATTENTION_F32_ROWS
+#define H3D_ATTENTION_F32_ROWS 2
+#endif
+
+/* `h3_attention_tiled_f32_kernel` (`:1489-1547`): one block per head, `HEAD_DIM
+ * / 32` dimensions per lane, and a block row of QUERIES query rows. With a
+ * 64-wide head two items per lane carry data and only the first 64 threads fill
+ * a staged key/value row, exactly as the reference does.
+ *
+ * Deviations from the reference, named and measured: the reference stages one
+ * key row per barrier pair and re-reads the query row from global for every key
+ * row; this stages H3D_ATTENTION_F32_KEYS rows and holds the row's items in
+ * registers. The reference also gives each warp one query row; this gives it
+ * H3D_ATTENTION_F32_ROWS rows, served from the same staged rows. Every row runs
+ * the reference's arithmetic in the reference's order, so the output stays
+ * bit-identical. */
 template <int HEAD_DIM>
 __global__ static void h3d_attention_tiled_f32_kernel(
         float *output, const float *query, const float *key,
         const float *value, uint32_t sequence, uint32_t heads, float scale,
         int head_major_output) {
-    enum { QUERIES = 8, ITEMS = HEAD_DIM / 32 };
-    __shared__ float shared_key[HEAD_DIM];
-    __shared__ float shared_value[HEAD_DIM];
+    enum { ITEMS = HEAD_DIM / 32, KEYS = H3D_ATTENTION_F32_KEYS,
+           ROWS = H3D_ATTENTION_F32_ROWS, QUERIES = 8 * ROWS };
+    __shared__ float shared_key[KEYS][HEAD_DIM];
+    __shared__ float shared_value[KEYS][HEAD_DIM];
     uint32_t warp = threadIdx.x / 32;
     uint32_t lane = threadIdx.x % 32;
     uint32_t head = blockIdx.x;
-    uint32_t row = blockIdx.y * QUERIES + warp;
-    int active = row < sequence;
-    size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
-    float result[ITEMS];
+    uint32_t first_row = blockIdx.y * QUERIES + warp * ROWS;
+    int active[ROWS];
+    float result[ROWS][ITEMS];
+    float maximum[ROWS];
+    float denominator[ROWS];
+    float query_item[ROWS][ITEMS];
 #pragma unroll
-    for (uint32_t item = 0; item < ITEMS; item++) result[item] = 0.0f;
-    float maximum = -INFINITY;
-    float denominator = 0.0f;
-    for (uint32_t key_row = 0; key_row < sequence; key_row++) {
+    for (uint32_t r = 0; r < ROWS; r++) {
+        uint32_t row = first_row + r;
+        active[r] = row < sequence;
+        maximum[r] = -INFINITY;
+        denominator[r] = 0.0f;
+#pragma unroll
+        for (uint32_t item = 0; item < ITEMS; item++) {
+            result[r][item] = 0.0f;
+            query_item[r][item] = 0.0f;
+        }
+        if (!active[r]) {
+            continue;
+        }
+        size_t query_base = ((size_t)head * sequence + row) * HEAD_DIM;
+#pragma unroll
+        for (uint32_t item = 0; item < ITEMS; item++) {
+            query_item[r][item] = query[query_base + lane + item * 32];
+        }
+    }
+    for (uint32_t key_block = 0; key_block < sequence; key_block += KEYS) {
+        /* KEYS independent loads per thread: the staged rows' latencies
+         * overlap instead of one row's latency stalling every iteration. */
         if (threadIdx.x < HEAD_DIM) {
-            size_t index = ((size_t)head * sequence + key_row) * HEAD_DIM +
-                           threadIdx.x;
-            shared_key[threadIdx.x] = key[index];
-            shared_value[threadIdx.x] = value[index];
+#pragma unroll
+            for (uint32_t item = 0; item < KEYS; item++) {
+                uint32_t source = key_block + item;
+                if (source < sequence) {
+                    size_t index =
+                            ((size_t)head * sequence + source) * HEAD_DIM +
+                            threadIdx.x;
+                    shared_key[item][threadIdx.x] = key[index];
+                    shared_value[item][threadIdx.x] = value[index];
+                }
+            }
         }
         __syncthreads();
-        float product = 0.0f;
-        if (active) {
 #pragma unroll
-            for (uint32_t item = 0; item < ITEMS; item++) {
-                uint32_t dimension = lane + item * 32;
-                product += query[query_base + dimension] *
-                           shared_key[dimension];
+        for (uint32_t item = 0; item < KEYS; item++) {
+            if (key_block + item >= sequence) {
+                break;
             }
 #pragma unroll
-            for (uint32_t offset = 16; offset; offset >>= 1) {
-                product += __shfl_down_sync(0xffffffffu, product, offset);
-            }
-        }
-        float rescale = 1.0f;
-        float weight = 0.0f;
-        if (active && lane == 0) {
-            float score = product * scale;
-            float next_maximum = fmaxf(maximum, score);
-            rescale = expf(maximum - next_maximum);
-            weight = expf(score - next_maximum);
-            denominator = denominator * rescale + weight;
-            maximum = next_maximum;
-        }
-        rescale = __shfl_sync(0xffffffffu, rescale, 0);
-        weight = __shfl_sync(0xffffffffu, weight, 0);
-        if (active) {
+            for (uint32_t r = 0; r < ROWS; r++) {
+                float product = 0.0f;
+                if (active[r]) {
 #pragma unroll
-            for (uint32_t item = 0; item < ITEMS; item++) {
-                uint32_t dimension = lane + item * 32;
-                result[item] = result[item] * rescale +
-                               weight * shared_value[dimension];
+                    for (uint32_t part = 0; part < ITEMS; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        product += query_item[r][part] *
+                                   shared_key[item][dimension];
+                    }
+#pragma unroll
+                    for (uint32_t offset = 16; offset; offset >>= 1) {
+                        product += __shfl_down_sync(0xffffffffu, product, offset);
+                    }
+                }
+                float rescale = 1.0f;
+                float weight = 0.0f;
+                if (active[r] && lane == 0) {
+                    float score = product * scale;
+                    float next_maximum = fmaxf(maximum[r], score);
+                    rescale = expf(maximum[r] - next_maximum);
+                    weight = expf(score - next_maximum);
+                    denominator[r] = denominator[r] * rescale + weight;
+                    maximum[r] = next_maximum;
+                }
+                rescale = __shfl_sync(0xffffffffu, rescale, 0);
+                weight = __shfl_sync(0xffffffffu, weight, 0);
+                if (active[r]) {
+#pragma unroll
+                    for (uint32_t part = 0; part < ITEMS; part++) {
+                        uint32_t dimension = lane + part * 32;
+                        result[r][part] = result[r][part] * rescale +
+                                          weight *
+                                          shared_value[item][dimension];
+                    }
+                }
             }
         }
         __syncthreads();
     }
-    denominator = __shfl_sync(0xffffffffu, denominator, 0);
-    if (!active) return;
 #pragma unroll
-    for (uint32_t item = 0; item < ITEMS; item++) {
-        uint32_t dimension = lane + item * 32;
-        size_t index = head_major_output ?
-            ((size_t)head * sequence + row) * HEAD_DIM + dimension :
-            ((size_t)row * heads + head) * HEAD_DIM + dimension;
-        output[index] = result[item] / denominator;
+    for (uint32_t r = 0; r < ROWS; r++) {
+        denominator[r] = __shfl_sync(0xffffffffu, denominator[r], 0);
+        if (!active[r]) {
+            continue;
+        }
+        uint32_t row = first_row + r;
+#pragma unroll
+        for (uint32_t item = 0; item < ITEMS; item++) {
+            uint32_t dimension = lane + item * 32;
+            size_t index = head_major_output ?
+                ((size_t)head * sequence + row) * HEAD_DIM + dimension :
+                ((size_t)row * heads + head) * HEAD_DIM + dimension;
+            output[index] = result[r][item] / denominator[r];
+        }
     }
 }
 
@@ -1666,7 +2115,8 @@ int h3d_sdpa_f32(h3d_context *context, h3d_tensor *output,
                              "invalid attention tensors or shape");
     }
     if (head_dim == 64) {
-        dim3 grid(heads, (sequence + 7) / 8);
+        dim3 grid(heads, (sequence + 8 * H3D_ATTENTION_F32_ROWS - 1) /
+                                 (8 * H3D_ATTENTION_F32_ROWS));
         h3d_attention_tiled_f32_kernel<64><<<grid, 256, 0,
                                              context->stream>>>(
             (float *)output->data, (const float *)query->data,

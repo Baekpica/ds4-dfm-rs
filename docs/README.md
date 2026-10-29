@@ -104,7 +104,12 @@ These reports preserve successful gates, rejected experiments and unresolved lim
 - **Ling-3.1 1019:** [October 28 follow-up](ling31-optimization-2026-10-28-followup.md),
   per-change throughput, numerical gates and Decode variability.
 - **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
-  three matched h3.c outputs, a native video API gate and measured generation cost.
+  three matched h3.c outputs, a native video API gate and measured generation cost;
+  [October 27 speed baseline](minimax-h3/speed-2026-10-27.md), the port against
+  h3.c on one job, phase by phase; [that job with both attention arms on one
+  binary](benchmarks/h3-jobA-2026-10-27/README.md); [the attention sweep across
+  sequence lengths](benchmarks/h3-attention-2026-10-27/README.md); and [why the
+  tensor path is the default](minimax-h3/tensor-default-2026-10-27.md).
 - **MiniMax VQ:** [October 27 prefill/decode campaign](minimax-vq-optimization-2026-10-27.md),
   three adopted rounds each; [fresh 2K–64K DSpark graph](benchmarks/minimax-vq-spark-64k-2026-10-27/README.md),
   raw clocks, exact output checks and observed repeat ranges.

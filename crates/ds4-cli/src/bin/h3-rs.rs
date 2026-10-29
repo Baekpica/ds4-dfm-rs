@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ds4_core::minimax_h3::dit::{Dit, DitError, LoadMode, LoadOptions, Reduction};
+use ds4_core::minimax_h3::dit::{Attention, Dit, DitError, LoadMode, LoadOptions, Reduction};
 use ds4_core::minimax_h3::host::{reuse_schedule, temporal, Rng, Schedule};
 use ds4_core::minimax_h3::render::mux_mp4;
 use ds4_core::minimax_h3::render::{check_frames, Canvas, RgbFrames};
@@ -73,6 +73,9 @@ struct Options {
     token_reduction: bool,
     /// `--core-reuse` (`main.c:33`, `:305`, `:392`).
     core_reuse: u32,
+    /// `--attention`: `tensor` is the tensor-core kernel and the default,
+    /// `scalar` the byte-exact one.
+    attention: Attention,
     /// `--frames-dir` (`main.c:57`, `:339`, `:492`): the decoded frames.
     frames_dir: Option<PathBuf>,
     /// `--preview-dir` (`main.c:58`, `:340`, `:493`).
@@ -226,6 +229,7 @@ fn run() -> Result<ExitCode, String> {
         layers: options.layers as u32,
         reduction,
         core_reuse: options.core_reuse,
+        attention: options.attention,
     };
 
     let started = Instant::now();
@@ -727,6 +731,7 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
         stream: false,
         token_reduction: false,
         core_reuse: 1,
+        attention: Attention::Tensor,
         frames_dir: None,
         preview_dir: None,
         show: false,
@@ -827,6 +832,15 @@ fn parse(args: Vec<String>) -> Result<Option<Options>, String> {
                 options.core_reuse = unsigned(&mut argv, &flag)?
                     .try_into()
                     .map_err(|_| "--core-reuse is larger than 6".to_string())?
+            }
+            "--attention" => {
+                options.attention = match value(&mut argv, &flag)?.as_str() {
+                    "tensor" => Attention::Tensor,
+                    "scalar" => Attention::Scalar,
+                    other => {
+                        return Err(format!("--attention must be tensor or scalar, not {other}"))
+                    }
+                }
             }
             "--info" => options.info = true,
             "--hash" => options.hash = true,
@@ -938,6 +952,8 @@ Usage: h3-rs -d MODEL_DIR -p PROMPT [options]
   --use-reference-rope      rope scale 1.0 even at 256x256
   --ssd-streaming           stream the DiT blocks from the checkpoint
   --token-reduction         pair video tokens in middle DiT blocks
+  --attention tensor|scalar attention kernel; tensor is the default, scalar
+                            is byte-exact and slower
                             (window from H3_TOKEN_REDUCTION_* env)
   --core-reuse N            core refresh: 1 exact, 4 fast, 6 aggressive
   --frames-dir PATH         write one PPM per generated frame

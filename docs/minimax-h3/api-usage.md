@@ -41,9 +41,11 @@ python3 tools/host_memory_guard.py --max-gib 128 --high-gib 128 \
 ```
 
 The native-engine example uses two steps to check execution. Use `--steps 20`
-for the normal denoise setting. On GB10, the smallest square API request
-below took about 22m20s at two steps, including status polling; see the
-[measured workload](validation-2026-10-26.md#native-api-gate).
+for the normal denoise setting. On GB10, the tier's square request below took
+about 22m20s at two steps, including status polling; see the
+[measured workload](validation-2026-10-26.md#native-api-gate). A smaller
+`short_edge` is served and costs less: the DiT step grows with the square of
+the packed token count, which is why a lower short edge is the preview setting.
 
 The engine keeps the prompt embedding and prepared DiT across requests and
 serves one render at a time in arrival order; the engine channel is the queue
@@ -84,8 +86,10 @@ video_id=$(curl --fail-with-body -sS http://127.0.0.1:8090/v1/videos \
 Use the returned id for polling and download; ids are not sequential names.
 The shell examples require `jq`.
 
-Exactly five fields, and an unknown one is refused rather than ignored
-(`local_api.rs:55`, `:184-277`). The full table is the contract page; the
+Exactly six fields, and an unknown one is refused rather than ignored
+(`local_api.rs:55`, `:184-277`). `attention` is the only optional one: absent
+means the tensor-core kernel, `scalar` asks for the byte-exact kernel. The full
+table is the contract page; the
 shapes this host enforces are:
 
 | Field | Rule |
@@ -93,10 +97,11 @@ shapes this host enforces are:
 | `task` | `t2va`, `fl2va`, `ref2va` |
 | `prompt` | non-empty, at most 32000 characters (`video_api.rs:25`) |
 | `conditions` | at most two keyframes, or at most twelve references (`local_api.rs:52`, `:55`); a keyframe needs `frame_index` 0 or 1, unique, image only |
-| `target.short_edge` | 768 |
+| `target.short_edge` | any multiple of 32, 32 through 992; 768 is the tier the model card documents and the canvas is built from the value (`presets.rs:13`, `:78`) |
 | `target.aspect_ratio` | `auto`, `16:9`, `9:16`, `4:3`, `3:4`, `1:1` |
 | `target.duration_seconds` | 4 through 15 (`local_api.rs:45-46`) |
 | `seed` | non-negative integer, required |
+| `attention` | `tensor` or `scalar`; optional, absent means `tensor`. `tensor` is the tensor-core kernel and the default; `scalar` is the byte-exact kernel and is slower (see [why](tensor-default-2026-10-27.md)) |
 
 A keyframe `uri` must be a base64 data URI (PNG, JPEG or WebP), at most
 16 MiB decoded (`video_api.rs:30`, `local_api.rs:598-620`). Nothing is
@@ -184,7 +189,7 @@ applies (`video_api.rs:56-113`):
 | `invalid_condition` | 400 | `conditions` | a bad role, index, type or count; ref2va without a visual, or with a keyframe |
 | `unsupported_condition` | 400 | `conditions` | a reference role on t2va/fl2va, or `base_video` |
 | `invalid_uri`, `unsupported_uri` | 400 | `conditions` | malformed data URI, a type that disagrees with the condition, an https URI or a bare path |
-| `unsupported_short_edge` | 400 | `target.short_edge` | any tier but 768 |
+| `unsupported_short_edge` | 400 | `target.short_edge` | off the 32 grid, below 32, or above the 992 ceiling the released area allows |
 | `invalid_aspect_ratio` | 400 | `target.aspect_ratio` | 21:9 or unknown |
 | `invalid_duration` | 400 | `target.duration_seconds` | outside 4..15, or outside the frame range |
 | `video_not_found`, `content_not_found` | 404 | `video_id` | unknown id, or a completed job whose file is gone |
