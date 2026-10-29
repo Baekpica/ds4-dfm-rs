@@ -2124,6 +2124,7 @@ static bool mm_score_mma_ready(void) {
 
 // Raw page words of block b for this thread's two (side, key, half) units of
 // mm_attn_mma_kernel's decode.
+template <bool Packed>
 __device__ __forceinline__ void mm_at_raw(const uint8_t *pages, const int32_t *table, uint32_t kv, uint32_t b,
         uint4 *d0, uint4 *d1, uint32_t *sc) {
     const uint64_t page_id = table ? (uint64_t)table[b] : (uint64_t)b;
@@ -2131,7 +2132,8 @@ __device__ __forceinline__ void mm_at_raw(const uint8_t *pages, const int32_t *t
     #pragma unroll
     for (uint32_t u = 0; u < 2; u++) {
         const uint32_t i = threadIdx.x + u * MM_AT_ROWS * 32;
-        const uint32_t side = i / (2u * MM_BLOCK), key = i / 2 % MM_BLOCK, half = i % 2;
+        const uint32_t side = i / (2u * MM_BLOCK), key = Packed ? i % MM_BLOCK : i / 2 % MM_BLOCK,
+            half = Packed ? i / MM_BLOCK % 2 : i % 2;
         const uint8_t *base = page + side * (MM_PAGE / 2);
         d0[u] = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32);
         d1[u] = *(const uint4 *)(base + key * MM_FP4_DATA + half * 32 + 16);
@@ -2140,12 +2142,36 @@ __device__ __forceinline__ void mm_at_raw(const uint8_t *pages, const int32_t *t
 }
 static_assert(4u * MM_BLOCK == 2u * MM_AT_ROWS * 32, "two decode units per thread");
 
+#if defined(DS4_CUDA_HAVE_MXF4) && (__CUDACC_VER_MAJOR__ > 13 || \
+    (__CUDACC_VER_MAJOR__ == 13 && __CUDACC_VER_MINOR__ >= 4))
+#define DS4_MINIMAX_HAVE_PAIR_CVT 1
+static bool mm_attn_pack(void) {
+    static const bool enabled = !getenv("DS4_MINIMAX_ATTN_PACK") || strcmp(getenv("DS4_MINIMAX_ATTN_PACK"), "0") != 0;
+    return enabled;
+}
+
+// Finite E2M1 times E4M3 needs at most six significant bits: BF16 products are exact.
+__device__ __forceinline__ void mm_fp4_bf16_pair(const uint32_t *words, uint32_t sc, uint32_t *packed) {
+    #pragma unroll
+    for (uint32_t w = 0; w < 8; w++) {
+        const uint8_t code = sc >> (w / 2 * 8);
+        const __nv_bfloat162 scale = __nv_cvt_fp8x2_to_bf162raw((uint16_t)code * 0x101u, __NV_E4M3);
+        #pragma unroll
+        for (uint32_t k = 0; k < 4; k++) {
+            const __nv_bfloat162 value = __nv_cvt_fp4x2_to_bf162raw((uint8_t)(words[w] >> (k * 8)), __NV_E2M1);
+            const __nv_bfloat162 product = __hmul2(value, scale);
+            packed[w * 4 + k] = *(const uint32_t *)&product;
+        }
+    }
+}
+#endif
+
 // Heads as F32 rows or, when q4p prepares o_proj's input from them, BF16
 // rows (the values are BF16-rounded either way).
 __device__ __forceinline__ void mm_at_store(float *p, float v) { *p = v; }
 __device__ __forceinline__ void mm_at_store(__nv_bfloat16 *p, float v) { *p = __float2bfloat16_rn(v); }
 
-template <typename OUT, typename QT>
+template <typename OUT, typename QT, bool Packed>
 __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(OUT *heads, const QT *q,
         const uint8_t *pages, const int32_t *table, const int32_t *blocks, uint32_t pos, uint32_t rows) {
     extern __shared__ __align__(16) uint8_t mm_at_smem[];
@@ -2185,17 +2211,22 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(OUT *he
     // entry is known before the current block's MMAs, which hide the loads.
     uint4 d0[2], d1[2];
     uint32_t sc[2];
-    if (b != UINT32_MAX) { mm_at_raw(pages, table, kv, b, d0, d1, sc); }
+    if (b != UINT32_MAX) { mm_at_raw<Packed>(pages, table, kv, b, d0, d1, sc); }
     while (b != UINT32_MAX) {
         // Block b's K and V pages of this head into shared memory as BF16:
         // 512 units of (side, key, 64 values), 32 data bytes and 4 scales each.
         #pragma unroll
         for (uint32_t u = 0; u < 2; u++) {
             const uint32_t i = threadIdx.x + u * MM_AT_ROWS * 32;
-            const uint32_t side = i / (2u * MM_BLOCK), key = i / 2 % MM_BLOCK, half = i % 2;
+            const uint32_t side = i / (2u * MM_BLOCK), key = Packed ? i % MM_BLOCK : i / 2 % MM_BLOCK,
+                half = Packed ? i / MM_BLOCK % 2 : i % 2;
             const uint32_t words[8] = {d0[u].x, d0[u].y, d0[u].z, d0[u].w, d1[u].x, d1[u].y, d1[u].z, d1[u].w};
             uint32_t packed[32];
-            mm_fp4_bf16(words, sc[u], packed);
+#ifdef DS4_MINIMAX_HAVE_PAIR_CVT
+            if constexpr (Packed) { mm_fp4_bf16_pair(words, sc[u], packed); }
+            else
+#endif
+            { mm_fp4_bf16(words, sc[u], packed); }
             uint4 *dst = (uint4 *)((side ? vs : ks) + key * MM_AT_LD + half * 64);
             #pragma unroll
             for (uint32_t k = 0; k < 8; k++) {
@@ -2212,7 +2243,7 @@ __global__ void __launch_bounds__(MM_AT_ROWS * 32, 1) mm_attn_mma_kernel(OUT *he
         uint32_t nb = UINT32_MAX;
         #pragma unroll
         for (uint32_t w = 0; w < MM_AT_ROWS; w++) { nb = min(nb, next[(it + 1) & 1][w]); }
-        if (nb != UINT32_MAX) { mm_at_raw(pages, table, kv, nb, d0, d1, sc); }
+        if (nb != UINT32_MAX) { mm_at_raw<Packed>(pages, table, kv, nb, d0, d1, sc); }
         if (take) {
             const uint32_t t0 = b * MM_BLOCK;
             #pragma unroll 1
@@ -2554,10 +2585,19 @@ extern "C" int ds4_gpu_minimax_attn(ds4_gpu_tensor *heads, const ds4_gpu_tensor 
         const auto launch = [&](auto *out, const auto *qrows) {
             using OUT = std::remove_pointer_t<decltype(out)>;
             using QT = std::remove_const_t<std::remove_pointer_t<decltype(qrows)>>;
-            static const cudaError_t ready = cudaFuncSetAttribute(mm_attn_mma_kernel<OUT, QT>,
+            static const cudaError_t ready = cudaFuncSetAttribute(mm_attn_mma_kernel<OUT, QT, false>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, MM_AT_SMEM);
             if (!cuda_ok(ready, "MiniMax MMA attention shared memory")) { return; }
-            mm_attn_mma_kernel<<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>(out, qrows, (const uint8_t *)pages->ptr,
+#ifdef DS4_MINIMAX_HAVE_PAIR_CVT
+            static const cudaError_t packed_ready = cudaFuncSetAttribute(mm_attn_mma_kernel<OUT, QT, true>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, MM_AT_SMEM);
+            if (!cuda_ok(packed_ready, "MiniMax packed attention shared memory")) { return; }
+            if (mm_attn_pack()) {
+                mm_attn_mma_kernel<OUT, QT, true><<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>(out, qrows,
+                    (const uint8_t *)pages->ptr, slots, (const int32_t *)blocks->ptr, pos, rows);
+            } else
+#endif
+            mm_attn_mma_kernel<OUT, QT, false><<<grid, MM_AT_ROWS * 32, MM_AT_SMEM, stream>>>(out, qrows, (const uint8_t *)pages->ptr,
                 slots, (const int32_t *)blocks->ptr, pos, rows);
         };
         const bool hb = bf16 & DS4_MINIMAX_BF16_HEADS, qb = bf16 & DS4_MINIMAX_BF16_Q;

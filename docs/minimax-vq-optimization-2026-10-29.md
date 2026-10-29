@@ -1,6 +1,6 @@
 # MiniMax VQ: long-context prefill, October 29
 
-**Two new Prefill rounds adopted; the three-round campaign is in progress.**
+**Three new Prefill rounds adopted; the final matched sweep is in progress.**
 October 25/27 rounds are historical and do not count here.
 [Receipts](benchmarks/minimax-vq-prefill-2026-10-29/README.md) retain raw
 samples, numerical costs and workload boundaries.
@@ -195,7 +195,87 @@ Larger key groups lose short-context parallelism; a 64-query tile uses
 50 KiB shared/90 registers, permits only one resident CTA, and loses to
 the retained 32-query tile. Neither is included.
 
+## P3: materialize sparse-attention KV as BF16 pairs
+
+A fresh whole profile of retained P2 (`p3-baseline`) puts attention at
+220.177 ms, 10.84% of the last 64K chunk, versus 152.379 ms at 8K.
+Each query still selects 16 blocks, but eight-query CTAs traverse their
+union. A temporary blocks-only hook captures all 60 layers at both
+frontiers while preserving the ordinary BF16/fused execution path.
+All full frontier logits and generated IDs match P2; the hook is removed
+and capture timings are excluded. Across layers the mean union grows
+**23.277 → 40.002 blocks**, reducing mean active warps per block from
+5.50 to 3.20. Fixed selected-key count therefore does not imply fixed
+execution cost as context grows.
+
+The isolated reproducer replays captured layer 36 at 8K and layer 4 at
+64K, nearest the respective BF16-kernel medians. It uses synthetic finite
+queries/pages with the real block lists, shape, layouts and causal mask.
+Its 64K baseline is 3.738 ms in full NCU versus 3.727 ms in the model.
+The compilation context/shared offsets differ; this is not a claim of
+identical SASS or weight-stream cache state. QK+PV has about 137.44 GFLOP
+per layer, a 1.27 ms floor at 108 TFLOP/s; baseline tensor utilization is
+34.0% of peak. Half-to-F32 conversion and scalar scaling alone account for
+87.33 million of 335.31 million issued instructions. Shared stores also
+have 21.83 million bank conflicts.
+
+Use CUDA 13.4's native
+[FP4](https://docs.nvidia.com/cuda/archive/13.4.1/cuda-math-api/cuda_math_api/group__CUDA__MATH__FP4__MISC.html)
+and [FP8](https://docs.nvidia.com/cuda/archive/13.4.1/cuda-math-api/cuda_math_api/group__CUDA__MATH__FP8__MISC.html)
+conversion APIs to form BF16 pairs and multiply each pair by its scale.
+Finite E2M1 × E4M3 products need at most six significant bits and fit BF16
+exactly. Assign consecutive lanes to consecutive keys when writing the
+decoded tile, avoiding the two halves of one row hitting the same banks.
+MMA order, values, global allocation and KV format stay unchanged.
+`DS4_MINIMAX_ATTN_PACK=0` restores P2. The new path requires the existing
+native MXF4 build capability and CUDA 13.4 or newer; older builds retain
+the previous dispatch. Widths up to eight are unchanged.
+
+| Isolated 64K measure | P2 | P3 |
+|---|---:|---:|
+| Warm median ms | 3.7697 | 3.4714 |
+| Full NCU ms | 3.7403 | 3.4508 |
+| Issued instructions, million | 335.31 | 282.13 |
+| Store bank conflicts | 21,832,093 | 13,589 |
+| Store wavefronts, million | 44.01 | 22.19 |
+| Requested global-load sectors, million | 50.60 | 53.33 |
+| Registers/thread | 252 | 228 |
+
+The extra **5.39% requested load sectors** are a measured cost of the
+striped scale loads; the two changes together reduce instructions and time.
+There is no extra tensor allocation, stack or local traffic. Native shared
+allocation remains 69,760 bytes. The conversion alone takes 3.5712 ms in
+the same warm fixture; striping supplies the remaining improvement. These
+are two parts of **one adopted attention round**, not two round counts.
+
+Actual-model last-chunk attention falls **219.824 → 203.481 ms (−7.4%)**
+at 64K and 152.330 → 142.074 ms (−6.7%) at 8K. The profiled 64K suffix
+falls 55111.02 → 54638.39 ms (−0.86%); unrelated-region variation is retained
+in the receipt.
+
+| Frontier | Prefill off, median [range] | Prefill on, median [range] | Median gain | Paired gains |
+|---:|---:|---:|---:|---|
+| 8192 | 1089.11 [1087.97, 1090.65] | 1094.98 [1092.58, 1097.08] | +0.54% | +0.64%, +0.73%, +0.18% |
+| 65536 | 1037.59 [1037.18, 1037.90] | 1046.67 [1046.17, 1047.05] | **+0.88%** | +0.80%, +0.91%, +0.91% |
+
+All six runs exit 0 and all off/on/repeated 400128 finite logits and
+512 IDs match exactly. Native attention fixtures cover 9/31/33/2048 rows,
+causal partial blocks, all four F32/BF16 input/output combinations, reversed
+page tables, output canaries and CPU uniform-query averages. Both switches
+produce the same four output hashes. The isolated codec matches an independent
+CPU oracle for 2,080,768 BF16 values across every finite positive scale and
+FP4 pair; all 16,777,216 attention outputs match across the three variants.
+All 29 retained native instruction streams match P2.
+
+Raw Decode medians are 21.27 → 21.36 and 20.86 → 20.94 (+0.42%/+0.38%),
+with paired signs +/+/− and on ranges 20.74–21.36 / 20.26–20.95. Profile
+GPU unions change −0.05%/−0.48%. The observed Decode variation remains;
+no Decode speedup is claimed. CPU 5 stays at 3.9 GHz, busy SM at 2184–2190
+MHz, PSI is zero and minimum available memory is 8.042 GiB. Repeated gains
+at both frontiers, unchanged outputs and lower target time justify the
+extra staging requests.
+
 Quality is qualified here through 64K text prompts. The 1M fixture is
 synthetic; this campaign has not rerun full-model 1M, media or HTTP gates.
-The final matched 2K–64K DSpark sweep and one further Prefill adoption
-remain open.
+The final matched 2K–64K DSpark sweep remains open. Per-round gains above
+use each preceding retained baseline and are not a cumulative A/B estimate.

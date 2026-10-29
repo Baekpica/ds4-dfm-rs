@@ -1,7 +1,7 @@
 # MiniMax VQ October 29 receipts
 
 See the [campaign report](../../minimax-vq-optimization-2026-10-29.md).
-P1 and P2 are new Prefill adoptions; this folder does not count historical rounds.
+P1, P2 and P3 are new Prefill adoptions; this folder does not count historical rounds.
 
 - `p1-performance.json`, six `p1-{off,on}*.csv`: fresh 8K/64K suffix
   Prefill and raw greedy Decode samples, including all negative results.
@@ -21,6 +21,11 @@ P1 and P2 are new Prefill adoptions; this folder does not count historical round
 - `p2-conditions.json`, `p2-proofs.json`, `p2-retained-instructions.json`:
   measured identities, full-output hashes and unchanged instruction streams.
 - `p2-rejected-converter.json`: the earlier unadopted converter-only cohort.
+- `p3-performance.json`, six `p3-{off,on}*.csv`: P3's fresh pairs.
+- `p3-kernel.json`, `p3-profiles.json`, `p3-routes.json`: conversion/mapping
+  screens, actual-model attribution and captured block-list identities.
+- `p3-conditions.json`, `p3-proofs.json`, `p3-retained-instructions.json`:
+  source/binary identities, output hashes and retained instruction streams.
 
 Large logits, captured references, Nsight reports, guard logs, dirty patches,
 failed trials and build logs remain under `scratch/minimax-m31-20261029/`.
@@ -35,6 +40,8 @@ DS4_MINIMAX_SCORE_FP4=0 tests/test_minimax_rows score
 DS4_MINIMAX_SCORE_FP4=1 tests/test_minimax_rows score
 DS4_MINIMAX_SCORE_FP4=1 DS4_MINIMAX_SCORE_PREP=0 tests/test_minimax_rows score
 DS4_MINIMAX_SCORE_FP4=1 DS4_MINIMAX_SCORE_PREP=1 tests/test_minimax_rows score
+DS4_MINIMAX_ATTN_PACK=0 tests/test_minimax_rows attention
+DS4_MINIMAX_ATTN_PACK=1 tests/test_minimax_rows attention
 ```
 
 `make-quality-cases.py MODEL PROMPT OUTPUT` needs the artifact tokenizer and
