@@ -1,0 +1,51 @@
+{
+  "warm_ms": {
+    "8192": [
+      0.183811,
+      0.144691
+    ],
+    "16384": [
+      0.358288,
+      0.283766
+    ],
+    "32768": [
+      0.638435,
+      0.503795
+    ],
+    "65536": [
+      1.275498,
+      0.992634
+    ]
+  },
+  "ncu": {
+    "off_ms": 1.71664,
+    "on_ms": 1.067584,
+    "warning": "Scalar cold replay is an unexplained outlier; do not use its ratio. Previous scalar cold was 1.315200 ms.",
+    "instructions": [
+      297827776,
+      202633024
+    ],
+    "global_requested_sectors": [
+      27642112,
+      17680640
+    ],
+    "registers": [
+      80,
+      80
+    ],
+    "user_shared_bytes": [
+      30720,
+      30720
+    ],
+    "local_traffic": [
+      0,
+      0
+    ]
+  },
+  "codec_log": "host-memory-guard: available=118.77 GiB, scope max/high=16.00/14.00, reserve=2.00, trip=2.00, PSI limit=20% (0=record only)\nprimitive PASS 1114154 values; signed-zero differences=272269\nencoder PASS 8704 vectors including full finite BF16 range; scale bytes equal, decoded values equal\n",
+  "native_logs": {
+    "0": "host-memory-guard: available=118.50 GiB, scope max/high=16.00/14.00, reserve=2.00, trip=2.00, PSI limit=20% (0=record only)\nds4: CUDA backend initialized on NVIDIA GB10 (sm_121)\nds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)\nds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)\nMINIMAX_SCORE rows=9 pos=2047 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=31 pos=2039 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=33 pos=4081 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=128 pos=65408 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=2048 pos=63488 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=9 pos=1048567 CPU_scores_and_causal_selection PASS\n",
+    "1": "host-memory-guard: available=118.54 GiB, scope max/high=16.00/14.00, reserve=2.00, trip=2.00, PSI limit=20% (0=record only)\nds4: CUDA backend initialized on NVIDIA GB10 (sm_121)\nds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)\nds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)\nMINIMAX_SCORE rows=9 pos=2047 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=31 pos=2039 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=33 pos=4081 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=128 pos=65408 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=2048 pos=63488 CPU_scores_and_causal_selection PASS\nMINIMAX_SCORE rows=9 pos=1048567 CPU_scores_and_causal_selection PASS\n"
+  },
+  "build_hashes": "f0ccb2421bc0cbf5e6d6d8deeec78a57f2a5e2b1e204240817d6cbeb76979843  ds4-bench-perf\ndb4a1a31f88bb16893746328f6ab26188327b487628ce8fa7aba4e1599aebdb4  ds4_cuda.o\n44d64fb07a8f58357da3e855b8fd780aed553ee09b2093a79771f182e07d3d4d  tests/test_minimax_rows\n"
+}

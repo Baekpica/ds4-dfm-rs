@@ -1,6 +1,6 @@
 # MiniMax VQ: long-context prefill, October 29
 
-**One new Prefill round adopted; the three-round campaign is in progress.**
+**Two new Prefill rounds adopted; the three-round campaign is in progress.**
 October 25/27 rounds are historical and do not count here.
 [Receipts](benchmarks/minimax-vq-prefill-2026-10-29/README.md) retain raw
 samples, numerical costs and workload boundaries.
@@ -140,7 +140,62 @@ Residual process variation is unresolved, so **no Decode speedup is claimed**.
 - Single-component FP4 passed the legacy gate but had 64K ΔNLL +0.02907
   against +0.00817 from the accepted perturbation. It was not adopted.
 
+## P2: prepare both query components in registers
+
+P1's retained whole profile still attributed 75–78 ms of the last 64K
+chunk to scoring. Detailed NCU source attribution put 37.2% of the scorer's
+issued instructions in query encoding. Keep the four query values per lane
+in registers, convert pairs with CUDA's native nearest-even E2M1 conversion,
+and derive the residual directly from the high-component register bytes.
+This removes a query reload, shared residual traffic and three warp barriers
+per vector. The BF16 boundaries, E4M3 scales, dot order, key writer and
+32-query/32-key-block geometry remain the same. Signed-zero encodings may
+differ; no effort is spent canonicalizing them.
+
+`DS4_MINIMAX_SCORE_PREP=0` restores P1 preparation inside the native FP4
+scorer. Both paths use 80 registers, zero stack/local traffic and 30 KiB
+user shared memory. There is no added tensor allocation. At 64K the isolated
+warm median is **1.2755 → 0.9926 ms**. Full NCU counts fall from 297.83 to
+202.63 million instructions and from 27.64 to 17.68 million requested global
+load sectors. The candidate's cold replay is 1.0676 ms; its paired scalar
+capture is an unexplained 1.7166 ms outlier (previously 1.3152 ms), so that
+inflated cold speedup is not used.
+
+The actual-model last-chunk scorer falls **75.641 → 61.478 ms (−18.7%)**
+at 64K and 11.236 → 8.941 ms at 8K. Whole-profile suffix time falls
+55408.66 → 55063.20 ms; these profiled times are separate from adoption TPS.
+
+| Frontier | Prefill off, median [range] | Prefill on, median [range] | Median gain | Paired gains |
+|---:|---:|---:|---:|---|
+| 8192 | 1090.20 [1087.95, 1093.07] | 1093.11 [1091.27, 1094.68] | +0.27% | +0.41%, +0.47%, −0.16% |
+| 65536 | 1035.78 [1031.73, 1037.09] | 1040.01 [1038.14, 1041.63] | **+0.41%** | +0.44%, +0.80%, +0.23% |
+
+All six runs exit 0, with 400128 finite frontier logits and 512 generated
+IDs exactly equal across both settings and their repeats. The off path also
+matches P1. Native score fixtures pass both settings at all six shapes;
+the codec check covers 1,114,154 primitive values and 8,704 complete finite
+vectors, including ties and the full BF16 range. Ten retained scorer,
+tail and Decode instruction streams match P1. Minimum available memory is
+8.255 GiB, PSI is zero and busy clocks are 2177–2190 MHz.
+
+Raw greedy Decode medians are 21.13 → 21.04 at 8K and 20.78 → 20.66 at
+64K (−0.43%/−0.58%). Paired signs are −/+/+ at both frontiers, and ranges
+overlap: 20.94–21.26 versus 20.73–21.39, and 20.53–20.87 versus
+20.26–20.98. These now use identical token histories and unchanged Decode
+instructions. The separate 32-token profile varies more (GPU union
++2.39%/+3.19%); clock/PSI observations do not explain it. This unresolved
+process variation is retained, with no Decode speedup claim. The consistent
+64K Prefill gain and reduced work without an additional resource cost support
+adoption; no consistent Decode regression is established by these pairs.
+
+The earlier native-converter-only trial is **not** a separate adoption:
+64K Prefill median −0.03%, 8K −0.30%, despite a 16.7% scorer improvement.
+It also changed the KV writer, whose measured time increased slightly.
+Larger key groups lose short-context parallelism; a 64-query tile uses
+50 KiB shared/90 registers, permits only one resident CTA, and loses to
+the retained 32-query tile. Neither is included.
+
 Quality is qualified here through 64K text prompts. The 1M fixture is
 synthetic; this campaign has not rerun full-model 1M, media or HTTP gates.
-The final matched 2K–64K DSpark sweep and two further Prefill adoptions
+The final matched 2K–64K DSpark sweep and one further Prefill adoption
 remain open.

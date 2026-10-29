@@ -1632,12 +1632,18 @@ __global__ void mm_score_mma_kernel(float *scores, const float *query, const uin
         uint32_t first, uint32_t count, uint32_t stride);
 static bool mm_score_mma_ready(void);
 #ifdef DS4_CUDA_HAVE_MXF4
+template <bool Prepared>
 __global__ void mm_score_fp4_kernel(float *scores, const float *query, const uint8_t *pool, uint32_t pos,
         uint32_t first, uint32_t count, uint32_t stride);
 static bool mm_score_fp4(void) {
     static const bool enabled = !getenv("DS4_MINIMAX_SCORE_FP4") || strcmp(getenv("DS4_MINIMAX_SCORE_FP4"), "0") != 0;
     return enabled;
 }
+static bool mm_score_prep(void) {
+    static const bool enabled = !getenv("DS4_MINIMAX_SCORE_PREP") || strcmp(getenv("DS4_MINIMAX_SCORE_PREP"), "0") != 0;
+    return enabled;
+}
+
 #endif
 
 // Decoded keys of one block plus the query vectors of MM_SCORE_ROWS rows.
@@ -1677,8 +1683,13 @@ extern "C" int ds4_gpu_minimax_select(ds4_gpu_tensor *blocks, ds4_gpu_tensor *sc
                 const dim3 grid((count + MM_SC_ROWS - 1) / MM_SC_ROWS, (stride + MM_SC_GROUP - 1) / MM_SC_GROUP);
 #ifdef DS4_CUDA_HAVE_MXF4
                 if (mm_score_fp4()) {
-                    mm_score_fp4_kernel<<<grid, 256, 0, stream>>>((float *)scores->ptr, (const float *)query->ptr,
-                        (const uint8_t *)pool->ptr, pos, first, count, stride);
+                    if (mm_score_prep()) {
+                        mm_score_fp4_kernel<true><<<grid, 256, 0, stream>>>((float *)scores->ptr, (const float *)query->ptr,
+                            (const uint8_t *)pool->ptr, pos, first, count, stride);
+                    } else {
+                        mm_score_fp4_kernel<false><<<grid, 256, 0, stream>>>((float *)scores->ptr, (const float *)query->ptr,
+                            (const uint8_t *)pool->ptr, pos, first, count, stride);
+                    }
                 } else
 #endif
                 {
@@ -1971,6 +1982,34 @@ __device__ __forceinline__ void mm_mma_nvfp4(float *c, const uint32_t *a, uint32
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(as), "r"(bs));
 }
 
+// Keep each query in registers across both quantization passes.
+template <bool Residual>
+__device__ __forceinline__ void mm_score_query(float (&v)[4], uint8_t *dst) {
+    const uint32_t lane = threadIdx.x & 31;
+    float amax = 0.0f;
+    #pragma unroll
+    for (uint32_t i = 0; i < 4; i++) {
+        v[i] = glmvq_round(v[i]);
+        amax = fmaxf(amax, fabsf(v[i]));
+    }
+    amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
+    amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2));
+    const uint8_t code = __nv_cvt_float_to_fp8(fmaxf(__fdiv_rn(amax, 6.0f), 0.001953125f), __NV_SATFINITE, __NV_E4M3);
+    const float scale = glmvq_e4m3(code);
+    const uint8_t a = __nv_cvt_float2_to_fp4x2(make_float2(__fdiv_rn(v[0], scale), __fdiv_rn(v[1], scale)),
+        __NV_E2M1, cudaRoundNearest);
+    const uint8_t b = __nv_cvt_float2_to_fp4x2(make_float2(__fdiv_rn(v[2], scale), __fdiv_rn(v[3], scale)),
+        __NV_E2M1, cudaRoundNearest);
+    dst[lane * 2] = a; dst[lane * 2 + 1] = b;
+    if (!(lane & 3)) { dst[MM_FP4_DATA + lane / 4] = code; }
+    if constexpr (Residual) {
+        const float2 high0 = mm_e2m1x2(a), high1 = mm_e2m1x2(b);
+        v[0] -= high0.x * scale; v[1] -= high0.y * scale;
+        v[2] -= high1.x * scale; v[3] -= high1.y * scale;
+    }
+}
+
+template <bool Prepared>
 __global__ void __launch_bounds__(256) mm_score_fp4_kernel(float *scores, const float *query,
         const uint8_t *pool, uint32_t pos, uint32_t first, uint32_t count, uint32_t stride) {
     // Pad 72-byte rows to 80 bytes so the fragment quads use distinct shared banks.
@@ -1984,20 +2023,28 @@ __global__ void __launch_bounds__(256) mm_score_fp4_kernel(float *scores, const 
     for (uint32_t v = warp; v < 128; v += 8) {
         uint8_t *dst = (uint8_t *)qp[v], *low = (uint8_t *)rp[v];
         if (v < rows * MM_KV_HEADS) {
-            mm_fp4_encode(q + (uint64_t)v * MM_HEAD, dst, dst + MM_FP4_DATA);
-            __syncwarp();
-            // Key staging is still unused; each warp borrows one float row.
-            float *residual = (float *)kp + warp * MM_HEAD;
-            const float scale = glmvq_e4m3(dst[MM_FP4_DATA + lane / 4]);
-            #pragma unroll
-            for (uint32_t i = 0; i < 4; i++) {
-                const uint32_t d = lane * 4 + i, nibble = (dst[d / 2] >> (4 * (d % 2))) & 15;
-                const float high = ds4_e2m1fn_value(nibble) * scale * (nibble & 8 ? -1.0f : 1.0f);
-                residual[d] = glmvq_round(q[(uint64_t)v * MM_HEAD + d]) - high;
+            if constexpr (Prepared) {
+                float values[4];
+                #pragma unroll
+                for (uint32_t i = 0; i < 4; i++) { values[i] = q[(uint64_t)v * MM_HEAD + lane * 4 + i]; }
+                mm_score_query<true>(values, dst);
+                mm_score_query<false>(values, low);
+            } else {
+                mm_fp4_encode(q + (uint64_t)v * MM_HEAD, dst, dst + MM_FP4_DATA);
+                __syncwarp();
+                // Key staging is still unused; each warp borrows one float row.
+                float *residual = (float *)kp + warp * MM_HEAD;
+                const float scale = glmvq_e4m3(dst[MM_FP4_DATA + lane / 4]);
+                #pragma unroll
+                for (uint32_t i = 0; i < 4; i++) {
+                    const uint32_t d = lane * 4 + i, nibble = (dst[d / 2] >> (4 * (d % 2))) & 15;
+                    const float high = ds4_e2m1fn_value(nibble) * scale * (nibble & 8 ? -1.0f : 1.0f);
+                    residual[d] = glmvq_round(q[(uint64_t)v * MM_HEAD + d]) - high;
+                }
+                __syncwarp();
+                mm_fp4_encode(residual, low, low + MM_FP4_DATA);
+                __syncwarp();
             }
-            __syncwarp();
-            mm_fp4_encode(residual, low, low + MM_FP4_DATA);
-            __syncwarp();
         } else {
             dst[lane * 2] = dst[lane * 2 + 1] = low[lane * 2] = low[lane * 2 + 1] = 0;
             if (!(lane & 3)) { dst[MM_FP4_DATA + lane / 4] = low[MM_FP4_DATA + lane / 4] = 1; }
@@ -2065,7 +2112,8 @@ static bool mm_score_mma_ready(void) {
     if (!ready) {
 #ifdef DS4_CUDA_HAVE_MXF4
         cudaFuncAttributes attributes;
-        if (!cuda_ok(cudaFuncGetAttributes(&attributes, mm_score_fp4_kernel), "MiniMax NVFP4 score preload")) { return false; }
+        if (!cuda_ok(cudaFuncGetAttributes(&attributes, mm_score_fp4_kernel<false>), "MiniMax NVFP4 score preload") ||
+            !cuda_ok(cudaFuncGetAttributes(&attributes, mm_score_fp4_kernel<true>), "MiniMax query preparation preload")) { return false; }
 #endif
         if (!cuda_ok(cudaFuncSetAttribute(mm_score_mma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                 MM_SC_SMEM_BYTES), "MiniMax MMA score shared memory")) { return false; }
