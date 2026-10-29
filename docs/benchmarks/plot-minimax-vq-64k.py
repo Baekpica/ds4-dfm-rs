@@ -27,6 +27,7 @@ PREFILL_CHUNK = CONDITIONS.get("prefill_chunk", 4096)
 FRONTIERS = list(range(2048, 65537, 2048))
 GENERATED = 128
 NAME, COLOR, LABEL = "dspark3", "#087f8c", "DSpark draft 3"
+LABEL = CONDITIONS.get("label", LABEL)
 RUNS = len(list(DATA.glob(f"{NAME}-*.csv")))
 METRICS = (("prefill_tps", "Incremental prefill"), ("gen_tps", "Decode"))
 
@@ -72,6 +73,7 @@ def plot(report, before=None):
                 label=f"{LABEL} · {data['median_run_mean']:,.1f} tok/s")
         if before:
             old = before[0]["variants"][NAME][metric]
+            ax.fill_between(x, old["min"], old["max"], color="#687789", alpha=0.12, linewidth=0)
             ax.plot(x, old["median"], color="#687789", linewidth=1.3, linestyle="--",
                     label=f"{before[1]} · {old['median_run_mean']:,.1f} tok/s")
         ax.set_title(heading, loc="left", fontsize=13, pad=10)
@@ -82,12 +84,13 @@ def plot(report, before=None):
     axes[-1].set_xlabel("Context tokens (K = 1,024)")
     axes[-1].set_xticks([2, 8, 16, 24, 32, 40, 48, 56, 64])
     axes[-1].set_xlim(2, 64)
-    fig.text(0.5, 0.06, f"Curves: per-frontier medians; bands: observed min–max of {RUNS} fresh runs.\n"
+    note = "\n" + CONDITIONS["note"] if CONDITIONS.get("note") else ""
+    fig.text(0.5, 0.075 if note else 0.06, f"Curves: per-frontier medians; bands: observed min–max of {RUNS} fresh runs.\n"
              "Legend: median of run means. 2,048-token incremental prefill + 128 forced greedy tokens per frontier.\n"
              f"524,288-token session: index keys resident, K/V pages in the SSD tier · {PREFILL_CHUNK:,}-row prefill cap\n"
-             "ds4-bench · promessi_sposi.txt · DSpark drafter, 3 proposals per step · forced non-EOS greedy · CUDA 13.4",
+             "ds4-bench · promessi_sposi.txt · DSpark drafter, 3 proposals per step · forced non-EOS greedy · CUDA 13.4" + note,
              ha="center", va="center", fontsize=9, color="#4b5563", linespacing=1.6)
-    fig.subplots_adjust(top=0.87, bottom=0.19, left=0.1, right=0.97, hspace=0.3)
+    fig.subplots_adjust(top=0.87, bottom=0.22 if note else 0.19, left=0.1, right=0.97, hspace=0.3)
     fig.savefig(DATA / "throughput.png", dpi=180)
     plt.close(fig)
 

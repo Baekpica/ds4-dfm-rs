@@ -341,5 +341,34 @@
       "stderr": "sudo: a password is required\n"
     },
     "requested_user_compaction": true
+  },
+  "resolution": {
+    "operator_reported_compaction_complete": true,
+    "recovery_snapshot_sha256": {
+      "meminfo": "09b28cd0549505818be24caeacc24726f8cdb5cdd12350edb62bffceec09e08d",
+      "buddyinfo": "3e0b59dd6a7b5840d9ec8bda64f99579b469148ef6c07828b28f7fe9fb5c2786",
+      "pressure-memory": "5fac1eda2a689826c1bf2a476a6e54fe7b9e4632c78e289ad580f8e7d4f127e8",
+      "vmstat": "a552722dfdc1de6c2c290a1fff0bc96e88e6db0dad6a39a3d0c84c85077456b6",
+      "nvtop.json": "bba26f38606d80e4e7ff1992b24c39f9bfd9d8894c646e7aa77f3ec2c767fd9a",
+      "htop.txt": "04f58b88f4d62d4ef9e9a2ead78838436d3fc3cfa01a83ea543e5d87129fcbc4"
+    },
+    "subsequent_valid_runs": [
+      "card-r2-off1",
+      "card-r2-on1",
+      "card-r2-on2",
+      "card-r2-off2",
+      "card-r2-off3",
+      "card-r2-on3"
+    ],
+    "all_subsequent_psi_zero": true,
+    "clear_cache_before_every_run": true,
+    "after_final_run": {
+      "nvtop_compute_empty": true,
+      "htop_used_gib": 1.82,
+      "free_gib": 119,
+      "available_gib": 118,
+      "psi_full_avg10": 0
+    },
+    "causality": "Completion after compaction supports recovery; it does not by itself prove the allocation failure root cause."
   }
 }

@@ -28,6 +28,13 @@ P1, P2 and P3 are new Prefill adoptions; this folder does not count historical r
   source/binary identities, output hashes and retained instruction streams.
 - `card-startup-failures.json`: two invalid final-sweep startup attempts,
   with zero measured frontiers, kernel allocation errors and recovery state.
+- `card-performance.json`, `card-summary.json`, `card-conditions.json`:
+  six completed fresh sweeps, full-output hashes, raw rates, cycle records,
+  repeated-ID differences, commands, clocks and memory/PSI observations.
+- `card/{off,on}/dspark3-*.csv`, `*-clocks.txt`: the six raw sweep CSVs and
+  clock CSVs. `card/on/throughput.png` shows both settings' observed ranges.
+- `card-continuations.json`: decoded 8K/64K examples from both settings.
+  These repetitive forced continuations do not qualify Decode speedup.
 
 Large logits, captured references, Nsight reports, guard logs, dirty patches,
 failed trials and build logs remain under `scratch/minimax-m31-20261029/`.
@@ -58,3 +65,22 @@ Fixed Decode uses captured cases 0 and 4 and computes
 The quality example's capture unit test was run with:
 `cargo test -j2 -p ds4-cli --example minimax_quality --release --features native`.
 No full workspace, HTTP, media or full-model 1M qualification is claimed.
+
+The final curve uses all three switches (`DS4_MINIMAX_SCORE_FP4`,
+`DS4_MINIMAX_SCORE_PREP`, `DS4_MINIMAX_ATTN_PACK`) set to 0 versus 1.
+It preserves the card protocol: 524288 allocation, 2048 increments/cap,
+128 forced output tokens, DSpark draft 3, no extra warmup. Exact commands
+and controls are in `card-conditions.json`. Repeat equality applies to
+Prefill logits; generated-ID variation from the forced-EOS/timing-gate
+path is retained in `card-performance.json` and explained in the report.
+
+Regenerate the plotted medians and both min–max bands with the existing
+plotter and a Python environment containing matplotlib:
+
+```sh
+DATA=docs/benchmarks/minimax-vq-prefill-2026-10-29/card
+uv run --offline --no-project --with matplotlib python \
+  docs/benchmarks/plot-minimax-vq-64k.py "$DATA/on" "$DATA/off" 'All three off'
+```
+
+The render was inspected and its values checked against `card-summary.json`.

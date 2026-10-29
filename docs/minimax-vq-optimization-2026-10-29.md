@@ -1,9 +1,10 @@
 # MiniMax VQ: long-context prefill, October 29
 
-**Three new Prefill rounds adopted; the final matched sweep awaits host recovery.**
+**Three new Prefill rounds adopted; the final six-run comparison is complete.**
 October 25/27 rounds are historical and do not count here.
 [Receipts](benchmarks/minimax-vq-prefill-2026-10-29/README.md) retain raw
 samples, numerical costs and workload boundaries.
+Adoption commits: P1 `c1991b96`, P2 `0354dfaf`, P3 `4570b639`.
 
 ## Protocol
 
@@ -22,6 +23,41 @@ is `speed-bench/promessi_sposi.txt`. After a 4096-token warmup, it prefills
 at each frontier. Three pairs run off/on/on/off/off/on. **The 64K rate is
 a suffix rate, not a cold full-prompt rate or the last 2K chunk's rate.**
 Profiles generate 32 tokens and establish attribution, not adoption TPS.
+
+## Final matched 2K–64K result
+
+At `3a3486be` (documentation after P3), the same frozen binary runs all
+three new switches off versus on in the order off/on/on/off/off/on.
+These six fresh processes use the existing card protocol: 2048-token
+increments, 128 forced greedy output tokens per frontier, DSpark draft 3,
+524288-token allocation with SSD-tier K/V, and no extra warmup. The artifact,
+prompt, 2048 cap, PDL, CPU affinity, clocks and memory guard remain fixed.
+The comparison includes DSpark context preparation during Prefill.
+
+| Prefill measure | All off, median [range] | All on, median [range] | Median gain | Paired gains |
+|---|---:|---:|---:|---|
+| Mean of 32 frontier rates | 1001.85 [996.93, 1004.99] | 1020.29 [1019.50, 1020.53] | **+1.84%** | +2.26%, +1.55%, +1.84% |
+| 8K, last 2048 tokens | 1051.22 [1050.04, 1056.41] | 1059.90 [1054.06, 1060.38] | +0.83% | +0.33%, +0.27%, +0.98% |
+| 64K, last 2048 tokens | 962.45 [948.29, 962.49] | 990.08 [987.69, 995.63] | **+2.87%** | +3.45%, +4.41%, +2.62% |
+
+The 8K→64K decline from frontier medians shrinks **8.44% → 6.59%**, or
+1.86 percentage points. Individual-run declines are 8.34–9.79% off and
+6.06–6.86% on. This reduces the measured long-context decline; 64K remains
+below 1000 tok/s. The mean above is an arithmetic mean of incremental
+frontier rates, not a cold full-64K prompt rate. The per-round suffix gains
+are not added or multiplied to obtain this result.
+
+All six processes exit 0. All 192 full frontier records are finite, and
+all 32 Prefill logit files match exactly across the three repeats of each
+setting. All 24576 emitted IDs and DSpark cycle budgets are valid. Output
+IDs can differ within a setting under this forced-continuation benchmark;
+the Decode limitation is recorded below. Minimum available memory is
+5.811 GiB, PSI stays zero, CPU 5 stays at 3.9 GHz and busy SM samples are
+2177–2190 MHz. The first 2K samples and some later points vary visibly;
+stable sampled clocks/PSI do not explain every transient. All raw samples
+and both observed bands are retained, without smoothing or outlier removal.
+
+![Fresh matched MiniMax Prefill comparison; Decode is an unqualified forced-continuation observation](benchmarks/minimax-vq-prefill-2026-10-29/card/on/throughput.png)
 
 ## Why prefill slows with context
 
@@ -280,12 +316,7 @@ synthetic; this campaign has not rerun full-model 1M, media or HTTP gates.
 Per-round gains above use each preceding retained baseline and are not a
 cumulative A/B estimate.
 
-## Final matched sweep: startup interrupted
-
-The selected final comparison uses all three switches off versus on, six
-fresh processes, 2K–64K in 2048-token increments, 128 forced greedy tokens,
-DSpark draft 3 and a 524288-token SSD-tier session. It retains the 2048 cap,
-2 GiB reserve/trip, 20% PSI guard and CPU/clock policy, without added warmup.
+## Final sweep recovery and Decode limits
 
 Two all-off attempts at `4570b639` stop **before any measured frontier**:
 guard exit 75, payload −15, kernel `NV_ERR_NO_MEMORY`, peak PSI 30.59% and
@@ -297,8 +328,38 @@ limit. About 7 GiB remains available, but Normal-zone free blocks of order
 fragmentation is the working explanation, not a proven root cause.
 
 After both processes exit, `nvtop` shows no Compute process; `clear_cache`
-recovers 119 GiB free and `htop` shows 1.71 GiB used. Manual compaction
-requires a sudo password, so the unchanged-option retry awaits operator
-recovery. The [failure receipt](benchmarks/minimax-vq-prefill-2026-10-29/card-startup-failures.json)
-preserves commands, kernel messages, guard observations and hashes.
-No final curve or cumulative speedup is claimed from these attempts.
+recovers 119 GiB free and `htop` shows 1.71 GiB used. The operator then
+completes manual compaction, which required a sudo password unavailable to
+the agent. All six subsequent runs finish with PSI zero, with `clear_cache`
+still executed before every run. This supports host recovery without
+proving the original allocation-failure cause. The
+[failure receipt](benchmarks/minimax-vq-prefill-2026-10-29/card-startup-failures.json)
+preserves both invalid attempts and the resolution. They contribute no
+performance samples. After the final run, Compute is empty, PSI is zero,
+and `clear_cache` recovers 119 GiB free / 1.82 GiB used in `htop`.
+
+The initial final-sweep checker stopped after on2 because it also required
+identical generated IDs. Every Prefill logit file matched on1, but the
+8K continuation differed at 27 positions, starting at emitted index 60.
+At the preceding call, on1 accepts/emits 1/1 while on2 accepts/emits 2/1:
+the speculative path commits EOS, which the forced-length benchmark filters
+from its emitted stream. The timing-based gate can choose plain versus
+speculative steps differently, leaving different internal histories after
+that filtered EOS. See `crates/ds4-core/src/minimax_mtp.rs` and
+`crates/ds4-cli/src/bench.rs`. This is a forced-continuation limit, not a
+Prefill mismatch or proof of ordinary serving behavior.
+
+The original checker and its failure are preserved. The resumed checker
+keeps exact repeated Prefill logits, finite outputs, valid IDs/counts and
+cycle budgets, and records Decode differences explicitly. It revalidates
+the completed runs and launches only the remaining runs, using the same
+binary and settings. On3 repeats on2's 8K variation; off3 also varies at
+18K (first difference at emitted index 55). No native code is changed.
+
+Both paths produce repetitive raw-Promessi continuations. Raw Decode means
+are 22.018 → 22.342 tok/s; 8K is 19.54 → 19.18 and 64K is 19.60 → 23.61.
+Different token histories, EOS handling and timing-gate decisions confound
+these comparisons. **No Decode speedup, deterministic forced continuation
+or representative MTP quality is qualified by this curve.** The per-round
+plain and matched fixed-tail checks above remain the Decode regression
+evidence for the Prefill changes.
