@@ -1,6 +1,6 @@
 # MiniMax VQ: long-context prefill, October 29
 
-**Three new Prefill rounds adopted; the final matched sweep is in progress.**
+**Three new Prefill rounds adopted; the final matched sweep awaits host recovery.**
 October 25/27 rounds are historical and do not count here.
 [Receipts](benchmarks/minimax-vq-prefill-2026-10-29/README.md) retain raw
 samples, numerical costs and workload boundaries.
@@ -277,5 +277,28 @@ extra staging requests.
 
 Quality is qualified here through 64K text prompts. The 1M fixture is
 synthetic; this campaign has not rerun full-model 1M, media or HTTP gates.
-The final matched 2K–64K DSpark sweep remains open. Per-round gains above
-use each preceding retained baseline and are not a cumulative A/B estimate.
+Per-round gains above use each preceding retained baseline and are not a
+cumulative A/B estimate.
+
+## Final matched sweep: startup interrupted
+
+The selected final comparison uses all three switches off versus on, six
+fresh processes, 2K–64K in 2048-token increments, 128 forced greedy tokens,
+DSpark draft 3 and a 524288-token SSD-tier session. It retains the 2048 cap,
+2 GiB reserve/trip, 20% PSI guard and CPU/clock policy, without added warmup.
+
+Two all-off attempts at `4570b639` stop **before any measured frontier**:
+guard exit 75, payload −15, kernel `NV_ERR_NO_MEMORY`, peak PSI 30.59% and
+24.08%. Their CSV files contain only a header. They are invalid performance
+samples and do not qualify this sweep. The retry records no cgroup
+high/max/OOM events: current peaks at 111.14 GiB against a 115.80 GiB high
+limit. About 7 GiB remains available, but Normal-zone free blocks of order
+9 and above are exhausted while allocation/compaction stalls rise. Host
+fragmentation is the working explanation, not a proven root cause.
+
+After both processes exit, `nvtop` shows no Compute process; `clear_cache`
+recovers 119 GiB free and `htop` shows 1.71 GiB used. Manual compaction
+requires a sudo password, so the unchanged-option retry awaits operator
+recovery. The [failure receipt](benchmarks/minimax-vq-prefill-2026-10-29/card-startup-failures.json)
+preserves commands, kernel messages, guard observations and hashes.
+No final curve or cumulative speedup is claimed from these attempts.

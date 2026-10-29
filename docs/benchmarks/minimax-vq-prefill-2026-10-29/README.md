@@ -26,6 +26,8 @@ P1, P2 and P3 are new Prefill adoptions; this folder does not count historical r
   screens, actual-model attribution and captured block-list identities.
 - `p3-conditions.json`, `p3-proofs.json`, `p3-retained-instructions.json`:
   source/binary identities, output hashes and retained instruction streams.
+- `card-startup-failures.json`: two invalid final-sweep startup attempts,
+  with zero measured frontiers, kernel allocation errors and recovery state.
 
 Large logits, captured references, Nsight reports, guard logs, dirty patches,
 failed trials and build logs remain under `scratch/minimax-m31-20261029/`.

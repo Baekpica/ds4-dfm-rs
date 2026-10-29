@@ -243,8 +243,9 @@ it latency-bound (21.1 against 24.5 tok/s row by row).
 ## Performance
 
 The [October 29 follow-up](minimax-vq-optimization-2026-10-29.md) targets
-the long-context prefill slope. It records fresh per-change comparisons,
-same-host numerical calibration and fixed-token Decode checks.
+the long-context prefill slope. It records three new adopted rounds, fresh
+per-change comparisons, same-host numerical calibration and fixed-token
+Decode checks. The final 524K-session sweep awaits host allocation recovery.
 
 The [October 27 campaign](minimax-vq-optimization-2026-10-27.md) adopts
 three prefill and three plain-decode rounds. Its fresh
