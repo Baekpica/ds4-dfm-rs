@@ -1,0 +1,125 @@
+{
+  "warm": {
+    "p3-striped-65536-0.log": {
+      "samples_ms": [
+        3.772371,
+        3.773184,
+        3.763885,
+        3.769741,
+        3.768288,
+        3.769472,
+        3.855725
+      ],
+      "median_ms": 3.769741
+    },
+    "p3-striped-65536-1.log": {
+      "samples_ms": [
+        3.576192,
+        3.571181,
+        3.5384,
+        3.537645,
+        3.569843,
+        3.576602,
+        3.571462
+      ],
+      "median_ms": 3.571181
+    },
+    "p3-striped-65536-2.log": {
+      "samples_ms": [
+        3.471379,
+        3.471373,
+        3.455072,
+        3.454989,
+        3.47296,
+        3.479495,
+        3.430758
+      ],
+      "median_ms": 3.471373
+    },
+    "p3-striped-8192-0.log": {
+      "samples_ms": [
+        2.446759,
+        2.413677,
+        2.446893,
+        2.411738,
+        2.461075,
+        2.451398,
+        2.411738
+      ],
+      "median_ms": 2.446759
+    },
+    "p3-striped-8192-1.log": {
+      "samples_ms": [
+        2.317146,
+        2.35225,
+        2.315258,
+        2.362976,
+        2.333613,
+        2.345677,
+        2.354112
+      ],
+      "median_ms": 2.345677
+    },
+    "p3-striped-8192-2.log": {
+      "samples_ms": [
+        2.353261,
+        2.320582,
+        2.250496,
+        2.305389,
+        2.372518,
+        2.253555,
+        2.28487
+      ],
+      "median_ms": 2.305389
+    }
+  },
+  "counters": {
+    "p3-striped-0": {
+      "gpu__time_duration.sum": "3.740320",
+      "smsp__inst_executed.sum": "335307264.000000",
+      "sm__cycles_elapsed.avg.per_second": "2.196504",
+      "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": "34.035171",
+      "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": "21832093",
+      "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": "44014419",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "50603008.000000",
+      "launch__registers_per_thread": "252",
+      "launch__shared_mem_per_block": "70.720000",
+      "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": "0",
+      "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": "0"
+    },
+    "p3-striped-2": {
+      "gpu__time_duration.sum": "3.450784",
+      "smsp__inst_executed.sum": "282125312.000000",
+      "sm__cycles_elapsed.avg.per_second": "2.196211",
+      "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": "36.895794",
+      "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": "13589",
+      "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": "22193111",
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "53331968.000000",
+      "launch__registers_per_thread": "228",
+      "launch__shared_mem_per_block": "70.720000",
+      "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": "0",
+      "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": "0"
+    }
+  },
+  "codec_log": "host-memory-guard: available=118.68 GiB, scope max/high=16.00/14.00, reserve=2.00, trip=2.00, PSI limit=20% (0=record only)\nPASS 32512 finite scale/pair cases; 2080768 BF16 values match scalar and independent CPU bits\n",
+  "native_logs": {
+    "0": "host-memory-guard: available=118.44 GiB, scope max/high=16.00/14.00, reserve=2.00, trip=2.00, PSI limit=20% (0=record only)\nds4: CUDA backend initialized on NVIDIA GB10 (sm_121)\nds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)\nds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)\nMINIMAX_ATTN_PASS rows=9 pos=125 hash=2c10de090f9f8383\nMINIMAX_ATTN_PASS rows=31 pos=2047 hash=fa605b1ba0fb8383\nMINIMAX_ATTN_PASS rows=33 pos=8191 hash=6258deba4f058383\nMINIMAX_ATTN_PASS rows=2048 pos=63488 hash=49a12ee9d9aa0383\n",
+    "1": "host-memory-guard: available=118.15 GiB, scope max/high=16.00/14.00, reserve=2.00, trip=2.00, PSI limit=20% (0=record only)\nds4: CUDA backend initialized on NVIDIA GB10 (sm_121)\nds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)\nds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)\nMINIMAX_ATTN_PASS rows=9 pos=125 hash=2c10de090f9f8383\nMINIMAX_ATTN_PASS rows=31 pos=2047 hash=fa605b1ba0fb8383\nMINIMAX_ATTN_PASS rows=33 pos=8191 hash=6258deba4f058383\nMINIMAX_ATTN_PASS rows=2048 pos=63488 hash=49a12ee9d9aa0383\n"
+  },
+  "build_hashes": "60ab4a2b93aadb8c067c5460f685e2940c10ae96435fc3923470bf542476992d  ds4-bench-perf\n7a7cb9e50485e640697393b8fbb757e3301d9b5bd8992ee789ef4186b7efb98f  ds4_cuda.o\n080658e9fa1b5861442616b5b1c09b3e4d4bee846c7a8dc74a832f1df9834123  tests/test_minimax_rows\n",
+  "harness_instructions": {
+    "production_vs_isolated": false,
+    "isolated_false_retained": true,
+    "production_instructions": 1800,
+    "isolated_instructions": 1800
+  },
+  "source_sha256": {
+    "p3-common.cuh": "4f469cdf6b8701074f05cd89ae589dc3a62ed94c71675f8e294c45c7b3fbb1ce",
+    "p3-attn-kernel.cuh": "b7a7b1cf2da66d396eae96e78486c4309f11fa466559f2112fb11ac2d5388e36",
+    "p3-packed.cuh": "71c3abc9af00938f5c9516f9eaa37f6b849dd2c6d3321d4160aaafc71f0f3610",
+    "p3-attn-striped-kernel.cuh": "43f2419368a970752a96ecdb898ffc0cede7dd9080ddddefc8a2e10419a6894c",
+    "p3-attn-striped.cu": "3e9df231e4d9940439cc923bc34eaaa1887f31d53edd103f6de10174f75ae1b0",
+    "p3-codec.cu": "c6210bc916a5728f4cc474eb5b52d165e2585c86e6bfc2c0ce64f234dd3a809e",
+    "p3-capture.diff": "98b76bd6421b3c9fb8f71e2d52a7045bb2397b0d13acd235d1bee6549e5d6a87"
+  }
+}

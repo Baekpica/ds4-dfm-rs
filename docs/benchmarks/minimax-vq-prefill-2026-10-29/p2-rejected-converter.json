@@ -1,0 +1,287 @@
+{
+  "binary_sha256": "077f6c8b6df5c3598caaad88e8266581059ae00edd1f7e454ccc60437a835d4f",
+  "runs": [
+    {
+      "tag": "p2-off1",
+      "setting": 0,
+      "samples": [
+        {
+          "ctx_tokens": 8192.0,
+          "prefill_tokens": 8192.0,
+          "prefill_tps": 1094.74,
+          "gen_tokens": 256.0,
+          "gen_tps": 21.28,
+          "gen_tps_ss": 21.29,
+          "first_token_sec": 0.051,
+          "kvcache_bytes": 319338036.0
+        },
+        {
+          "ctx_tokens": 65536.0,
+          "prefill_tokens": 57344.0,
+          "prefill_tps": 1037.51,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.88,
+          "gen_tps_ss": 20.89,
+          "first_token_sec": 0.0494,
+          "kvcache_bytes": 2549102132.0
+        }
+      ],
+      "min_available_gib": 8.318618774414062,
+      "max_psi_full_avg10": 0.0,
+      "busy_clock_mhz": [
+        2184.0,
+        2190.0
+      ]
+    },
+    {
+      "tag": "p2-on1",
+      "setting": 1,
+      "samples": [
+        {
+          "ctx_tokens": 8192.0,
+          "prefill_tokens": 8192.0,
+          "prefill_tps": 1092.86,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.94,
+          "gen_tps_ss": 20.95,
+          "first_token_sec": 0.0516,
+          "kvcache_bytes": 319338036.0
+        },
+        {
+          "ctx_tokens": 65536.0,
+          "prefill_tokens": 57344.0,
+          "prefill_tps": 1038.87,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.52,
+          "gen_tps_ss": 20.53,
+          "first_token_sec": 0.0509,
+          "kvcache_bytes": 2549102132.0
+        }
+      ],
+      "min_available_gib": 8.294750213623047,
+      "max_psi_full_avg10": 0.0,
+      "busy_clock_mhz": [
+        2184.0,
+        2190.0
+      ]
+    },
+    {
+      "tag": "p2-on2",
+      "setting": 1,
+      "samples": [
+        {
+          "ctx_tokens": 8192.0,
+          "prefill_tokens": 8192.0,
+          "prefill_tps": 1088.34,
+          "gen_tokens": 256.0,
+          "gen_tps": 21.21,
+          "gen_tps_ss": 21.22,
+          "first_token_sec": 0.0519,
+          "kvcache_bytes": 319338036.0
+        },
+        {
+          "ctx_tokens": 65536.0,
+          "prefill_tokens": 57344.0,
+          "prefill_tps": 1035.1,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.84,
+          "gen_tps_ss": 20.84,
+          "first_token_sec": 0.0497,
+          "kvcache_bytes": 2549102132.0
+        }
+      ],
+      "min_available_gib": 8.2952880859375,
+      "max_psi_full_avg10": 0.0,
+      "busy_clock_mhz": [
+        2184.0,
+        2190.0
+      ]
+    },
+    {
+      "tag": "p2-off2",
+      "setting": 0,
+      "samples": [
+        {
+          "ctx_tokens": 8192.0,
+          "prefill_tokens": 8192.0,
+          "prefill_tps": 1091.57,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.84,
+          "gen_tps_ss": 20.85,
+          "first_token_sec": 0.0526,
+          "kvcache_bytes": 319338036.0
+        },
+        {
+          "ctx_tokens": 65536.0,
+          "prefill_tokens": 57344.0,
+          "prefill_tps": 1033.82,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.39,
+          "gen_tps_ss": 20.39,
+          "first_token_sec": 0.0505,
+          "kvcache_bytes": 2549102132.0
+        }
+      ],
+      "min_available_gib": 8.291118621826172,
+      "max_psi_full_avg10": 0.0,
+      "busy_clock_mhz": [
+        2184.0,
+        2190.0
+      ]
+    },
+    {
+      "tag": "p2-off3",
+      "setting": 0,
+      "samples": [
+        {
+          "ctx_tokens": 8192.0,
+          "prefill_tokens": 8192.0,
+          "prefill_tps": 1088.18,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.73,
+          "gen_tps_ss": 20.74,
+          "first_token_sec": 0.0521,
+          "kvcache_bytes": 319338036.0
+        },
+        {
+          "ctx_tokens": 65536.0,
+          "prefill_tokens": 57344.0,
+          "prefill_tps": 1035.4,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.24,
+          "gen_tps_ss": 20.24,
+          "first_token_sec": 0.051,
+          "kvcache_bytes": 2549102132.0
+        }
+      ],
+      "min_available_gib": 8.30685043334961,
+      "max_psi_full_avg10": 0.0,
+      "busy_clock_mhz": [
+        2184.0,
+        2190.0
+      ]
+    },
+    {
+      "tag": "p2-on3",
+      "setting": 1,
+      "samples": [
+        {
+          "ctx_tokens": 8192.0,
+          "prefill_tokens": 8192.0,
+          "prefill_tps": 1087.96,
+          "gen_tokens": 256.0,
+          "gen_tps": 21.29,
+          "gen_tps_ss": 21.29,
+          "first_token_sec": 0.0514,
+          "kvcache_bytes": 319338036.0
+        },
+        {
+          "ctx_tokens": 65536.0,
+          "prefill_tokens": 57344.0,
+          "prefill_tps": 1033.58,
+          "gen_tokens": 256.0,
+          "gen_tps": 20.87,
+          "gen_tps_ss": 20.87,
+          "first_token_sec": 0.049,
+          "kvcache_bytes": 2549102132.0
+        }
+      ],
+      "min_available_gib": 8.267375946044922,
+      "max_psi_full_avg10": 0.0,
+      "busy_clock_mhz": [
+        2184.0,
+        2190.0
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "frontier": 8192,
+      "metric": "prefill_tps",
+      "off": [
+        1094.74,
+        1091.57,
+        1088.18
+      ],
+      "on": [
+        1092.86,
+        1088.34,
+        1087.96
+      ],
+      "median_off": 1091.57,
+      "median_on": 1088.34,
+      "median_gain_pct": -0.29590406478742226,
+      "paired_gain_pct": [
+        -0.1717302738549864,
+        -0.29590406478742226,
+        -0.02021724347075482
+      ]
+    },
+    {
+      "frontier": 8192,
+      "metric": "gen_tps",
+      "off": [
+        21.28,
+        20.84,
+        20.73
+      ],
+      "on": [
+        20.94,
+        21.21,
+        21.29
+      ],
+      "median_off": 20.84,
+      "median_on": 21.21,
+      "median_gain_pct": 1.775431861804222,
+      "paired_gain_pct": [
+        -1.5977443609022535,
+        1.775431861804222,
+        2.7013989387361326
+      ]
+    },
+    {
+      "frontier": 65536,
+      "metric": "prefill_tps",
+      "off": [
+        1037.51,
+        1033.82,
+        1035.4
+      ],
+      "on": [
+        1038.87,
+        1035.1,
+        1033.58
+      ],
+      "median_off": 1035.4,
+      "median_on": 1035.1,
+      "median_gain_pct": -0.028974309445639612,
+      "paired_gain_pct": [
+        0.13108307389806395,
+        0.12381265597491975,
+        -0.1757774773034737
+      ]
+    },
+    {
+      "frontier": 65536,
+      "metric": "gen_tps",
+      "off": [
+        20.88,
+        20.39,
+        20.24
+      ],
+      "on": [
+        20.52,
+        20.84,
+        20.87
+      ],
+      "median_off": 20.39,
+      "median_on": 20.84,
+      "median_gain_pct": 2.2069641981363297,
+      "paired_gain_pct": [
+        -1.724137931034475,
+        2.2069641981363297,
+        3.1126482213438944
+      ]
+    }
+  ]
+}

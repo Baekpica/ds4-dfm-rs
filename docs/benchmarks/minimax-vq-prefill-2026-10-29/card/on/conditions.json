@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-29",
+  "prefill_chunk": 2048,
+  "busy_sm_mhz": [
+    2177,
+    2190
+  ],
+  "label": "All three on",
+  "note": "Decode: repetitive forced continuations; EOS/gate paths vary. No Decode speedup qualification."
+}

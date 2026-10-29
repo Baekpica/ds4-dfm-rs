@@ -1,0 +1,38 @@
+{
+  "tokenizer_sha256": "bb1f1626cf01448f1e3b6036d0a061ffc66c91d9046aada14ea23a5441b5ad6e",
+  "examples": [
+    {
+      "tag": "card-r2-off1",
+      "frontier": 8192,
+      "tokens": 128,
+      "distinct_tokens": 49,
+      "text": "» «Cir, cir, etc. etc. etc. etc. Tramaglino and\nMondella, Tramaglino and Mondella, etc. etc.<tool_call>]<]minimax[>[\n\n\n\n\n\n349\n\n349\n\n349\n\n349\n\n «Cosa comanda?» ris\n\n «Cosa comanda,» ris\n\n «C don Abbondio, breviario open, looking at the\nC don Abbond reticella green, reticella green, with nappa, nappa, mustacchi arricciated, mustacchi arricciated, mustacchi ar349\n\n349\n\n349\n\n",
+      "ids_sha256": "107d50cfc03e92b2cf5e8a1fef81afdf4ac01339578fbde0bc1496f84600b715"
+    },
+    {
+      "tag": "card-r2-off1",
+      "frontier": 65536,
+      "tokens": 128,
+      "distinct_tokens": 19,
+      "text": "' fra Kristoffor, fchc. Kristoffor, fchc. Kristoffor,invoke\n\ninvoke\n\ninvoke\n\ninvoke\n\ninvoke\n\ninvoke\n\ninvoke\n]<]minimax[>[invoke\n\ninvoke\ninvoke\ninvoke\ninvoke\nrename\n\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\n Prometti sposi\n\n Prometti sposi\n\n Prometti sposi\n\n Prometti sposi\n\n Prometti sposi\n\n Prometti spinvoke\n\ninvoke\n\ninvoke\n\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke\ninvoke",
+      "ids_sha256": "538bceb2bc374ea53919f9a41358f1328afd89d8bc90f74f571edaed62a2de28"
+    },
+    {
+      "tag": "card-r2-on1",
+      "frontier": 8192,
+      "tokens": 128,
+      "distinct_tokens": 16,
+      "text": " my respect, my respect,vi. »\n\nIl mio rispetto.... my respect,vi. »\n\nIl mio ris<tool_call>\n\n]<]minimax[>[\n]<]minimax[>[<tool_call>\n]<]minimax[>[\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n]<]minimax[>[<tool_call>\n]<]minimax[>[</tool_call>\n\n\n]<]minimax[>[<tool_call>\n\n]<]minimax[>[<tool_call>\n",
+      "ids_sha256": "e73612d77698cff2e6aba231dee1cb3f7297793194097eb73fa9fddd856a1392"
+    },
+    {
+      "tag": "card-r2-on1",
+      "frontier": 65536,
+      "tokens": 128,
+      "distinct_tokens": 9,
+      "text": "' servagey. sensey. sensey. sensey.invoke. invoke. invoke.invoke. invoke. invoke.invoke.invoke.invoke. invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke chapters. invoke. invoke. invoke. invoke. invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invoke.invokeinvoke.invoke.invoke.invoke.invoke.invoke.",
+      "ids_sha256": "51863aef39b55d907fb45011f8e9ef56bfe908fce79275a9e44fe02203c1fd4b"
+    }
+  ],
+  "scope": "Forced raw-Promessi continuations; inspect repetition. These rates do not qualify representative MTP acceptance or chat quality."
+}
