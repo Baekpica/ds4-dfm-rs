@@ -73,6 +73,7 @@
 #include "ds4_beam.h"
 #include "ds4_minimax.h"
 #include "ds4_axk2.h"
+#include "ds4_mimo2vq.h"
 
 /* Keep the runtime-KV selection available to CPU-only placement/accounting
  * builds too.  ds4_gpu.h owns the same ABI enum in accelerator builds. */
@@ -417,6 +418,7 @@ typedef enum {
     DS4_VARIANT_BEAM_VQ         = 19,
     DS4_VARIANT_MINIMAX_VQ      = 20,
     DS4_VARIANT_AXK2_VQ         = 21,
+    DS4_VARIANT_MIMO26_FLASH_VQ = 22,
 } ds4_variant;
 
 typedef struct {
@@ -2933,6 +2935,11 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_MIMO26_FLASH:
         g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
+        break;
+    case DS4_VARIANT_MIMO26_FLASH_VQ:
+        g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
+        g_ds4_shape.variant = DS4_VARIANT_MIMO26_FLASH_VQ;
+        g_ds4_shape.name = "MiMo-V2.6-Flash-VQ";
         break;
     case DS4_VARIANT_IQUEST_Q1:
         g_ds4_shape = DS4_SHAPE_IQUEST_Q1;
@@ -5603,6 +5610,16 @@ typedef struct {
     ds4_minimax_draft_layer layer[MINIMAX_DRAFT_LAYERS];
 } ds4_minimax_draft;
 
+/* MiMo VQ: one MoE layer's K8192 book, its GVR8 book on R13+8 layers, and
+ * the GVQ record indices of gate[256], up[256], down[256] (the MoE call's
+ * matrix table, filled when the pointer plan binds). */
+typedef struct {
+    ds4_tensor *book, *res_book;
+    ds4_tensor *gate[DS4_MIMO2VQ_EXPERTS], *up[DS4_MIMO2VQ_EXPERTS], *down[DS4_MIMO2VQ_EXPERTS];
+    ds4_tensor *gate_res[DS4_MIMO2VQ_EXPERTS], *up_res[DS4_MIMO2VQ_EXPERTS], *down_res[DS4_MIMO2VQ_EXPERTS];
+    uint32_t matrices[3 * DS4_MIMO2VQ_EXPERTS];
+} ds4_mimo2vq_layer;
+
 /* A.X-K2: the gated RMSNorms' rank-16 gates and the routed experts with
  * their gate (4L), up (4L+3) and down (4L+2) books. */
 typedef struct {
@@ -5625,6 +5642,7 @@ typedef struct {
     ds4_minimax_layer *minimax; /* MiniMax VQ: index norms and layers 3-59's experts. */
     ds4_minimax_draft *minimax_draft; /* MiniMax DSpark, when its part is mapped. */
     ds4_axk2_layer *axk2;       /* A.X-K2 VQ: gated-norm gates and layers 1-60's experts. */
+    ds4_mimo2vq_layer *mimo2vq; /* MiMo VQ: layers 1-47's experts (index il - 1). */
 #if !defined(DS4_NO_GPU) && !defined(__APPLE__)
     ds4_gvq_model *glmvq_gpu;
 #endif
@@ -10104,6 +10122,7 @@ static void step37_bind_draft(ds4_weights *w, const ds4_model *m) {
 
 #include "ds4_mimo2_plan.h"
 #include "ds4_mimo2_bind.inc"
+#include "ds4_mimo2vq_bind.inc"
 #include "ds4_naive_bind.inc"
 #include "ds4_iquest_bind.inc"
 
@@ -10379,7 +10398,11 @@ static void weights_bind(
     }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
-        mimo2_bind(w, m);
+        if (DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) {
+            mimo2vq_bind(w, m);
+        } else {
+            mimo2_bind(w, m);
+        }
         return;
     }
 
@@ -11021,6 +11044,7 @@ static void weights_free(ds4_weights *w) {
     free(w->minimax);
     free(w->minimax_draft);
     free(w->axk2);
+    free(w->mimo2vq);
     memset(w, 0, sizeof(*w));
 }
 
@@ -37603,6 +37627,10 @@ typedef struct {
     const ds4_tensor *attn_norm[5], *q[5], *k[5], *v[5], *o[5];
     const ds4_tensor *q_norm[5], *k_norm[5], *sinks[5];
     const ds4_tensor *ffn_norm[5], *gate[5], *up[5], *down[5];
+    /* VQ release part: its own mask-token row, and the BF16 q/k norms and
+     * sinks widened once for the attention's host-side weight upload. */
+    const ds4_tensor *mask;
+    float q_weight[5][128], k_weight[5][128], sink[5][64];
 } ds4_mimo2_dflash;
 #endif
 
@@ -37613,6 +37641,7 @@ struct ds4_engine {
 #ifndef DS4_NO_GPU
     ds4_glm53_stream glm53_stream;
     ds4_model vision_model;
+    ds4_model audio_model;  /* MiMo VQ: the release's audio part. */
     ds4_glm53_vision_weights vision_weights;
     ds4_step37_vision_weights step37_vision_weights;
     ds4_ling3vl_vision_weights ling3vl_vision_weights;
@@ -62572,7 +62601,7 @@ static int mimo2_batch_ctx_create_impl(
     ctx->seq_cap = (uint32_t)ctx_size;
     ctx->max_seq = chosen;
     for (;;) {
-        ctx->mimo2 = mimo2_batch_create(ctx->ctx_size, ctx->max_seq, cap);
+        ctx->mimo2 = mimo2_batch_create(&e->model, &e->weights, ctx->ctx_size, ctx->max_seq, cap);
         if (ctx->mimo2) { break; }
         if (mode == M2_STRICT_BANKS || ctx->max_seq <= 1u) {
             MBC_ERR("batch_ctx_create: MiMo bank allocation failed (ctx=%d max_seq=%u)",
@@ -72994,6 +73023,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     e->mtp_model.fd = -1;
 #ifndef DS4_NO_GPU
     e->vision_model.fd = -1;
+    e->audio_model.fd = -1;
 #endif
     e->backend = opt->backend;
     e->quality = opt->quality;
@@ -73314,6 +73344,17 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 return 1;
             }
             v41_vision_bind(&e->weights, &e->vision_model);
+        } else if (DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) {
+            /* The release's audio part sits beside its vision part; Rust
+             * hashed both with the release before this open. */
+            char audio[4096];
+            const char *slash = strrchr(opt->vision_path, '/');
+            const int dir = slash ? (int)(slash - opt->vision_path) + 1 : 0;
+            if (snprintf(audio, sizeof(audio), "%.*saudio-q8_0.gguf", dir, opt->vision_path) >= (int)sizeof(audio)) {
+                ds4_die("MiMo VQ audio part path too long");
+            }
+            model_open(&e->audio_model, audio, true, false);
+            mimo2vq_media_bind(&e->mimo2_media, &e->vision_model, &e->audio_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
             mimo2_media_bind(&e->mimo2_media, &e->vision_model);
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) {
@@ -73430,7 +73471,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (e->mtp_draft_tokens > BEAM_DF_BLOCK - 1) { e->mtp_draft_tokens = BEAM_DF_BLOCK - 1; }
         } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
 #ifndef DS4_NO_GPU
-            if (!mimo2_dflash_bind(&e->dflash, &e->mtp_model)) {
+            const bool bound = DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ
+                ? mimo2vq_dflash_bind(&e->dflash, &e->mtp_model)
+                : mimo2_dflash_bind(&e->dflash, &e->mtp_model);
+            if (!bound) {
                 fprintf(stderr, "ds4: DFlash file is not the five-layer draft\n");
                 ds4_engine_close(e);
                 *out = NULL;
@@ -73589,7 +73633,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         }
         if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ) &&
+             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ || DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ) &&
             res_pol[0] != DS4_RESIDENCY_EAGER_DEVICE) {
             fprintf(stderr, "ds4: VQ source pointer plans require eager weight residency\n");
             ds4_engine_close(e);
@@ -73649,7 +73693,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * The builder defers to BASE imports, but an MTP-only manifest must
          * leave BASE's local producer available. Failure/opt-out keeps raw. */
         {
-            if (!load_slice && !opt->ssd_streaming) {
+            // MiMo VQ's memory plan has no additive Q8 replica of its body.
+            if (!load_slice && !opt->ssd_streaming && DS4_MODEL_VARIANT != DS4_VARIANT_MIMO26_FLASH_VQ) {
                 int built = 0;
                 if ((e->model.split_count > 1u || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ) &&
                     e->model.n_tensors <= UINT32_MAX) {
@@ -73806,6 +73851,15 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     e->vision_model.size,
                     e->vision_model.tensor_data_pos,
                     e->vision_model.size - e->vision_model.tensor_data_pos) != 0;
+            // MiMo VQ: the audio part and the widened media vectors.
+            if (e->vision_map_ready && e->audio_model.map) {
+                const ds4_mimo2_media *media = &e->mimo2_media;
+                e->vision_map_ready = ds4_gpu_set_aux_model_map_range(
+                        e->audio_model.map, e->audio_model.size, e->audio_model.tensor_data_pos,
+                        e->audio_model.size - e->audio_model.tensor_data_pos) != 0 &&
+                    ds4_gpu_set_aux_model_map_range(media->shadow, media->shadow_bytes, 0,
+                        media->shadow_bytes) != 0;
+            }
             if (!e->vision_map_ready) {
                 fprintf(stderr,
                         "ds4: CUDA failed to map the vision encoder\n");
@@ -73977,6 +74031,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     if (si == 0 && (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
                                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
                                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+                                    DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ ||
                                     (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ && ling31_embedding_ssd(mm))) &&
                         t == e->weights.token_embd) {
                         tin[i].active = 0;
@@ -74017,7 +74072,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING31_VQ ||
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_BEAM_VQ ||
                     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MINIMAX_VQ ||
-                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ;
+                    DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ ||
+                    DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
                     : ds4_units_verify(tin, n, &up, units, nu);
@@ -74126,6 +74182,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_AXK2_VQ &&
             !axk2_gpu_bind(&e->weights, &e->model)) {
             fprintf(stderr, "ds4: A.X-K2 source pointer binding failed\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        if (DS4_MODEL_VARIANT == DS4_VARIANT_MIMO26_FLASH_VQ &&
+            !mimo2vq_gpu_bind(&e->weights, &e->model)) {
+            fprintf(stderr, "ds4: MiMo VQ source pointer binding failed\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -74427,6 +74490,7 @@ void ds4_engine_close(ds4_engine *e) {
     glm53_stream_report(&e->glm53_stream);
     glm53_stream_free(&e->glm53_stream);
     if (e->vision_model.map) model_close(&e->vision_model);
+    if (e->audio_model.map) model_close(&e->audio_model);
 #endif
     model_close(&e->model);
 #ifndef DS4_NO_GPU
@@ -75129,7 +75193,8 @@ static int ds4_session_alloc_graph(ds4_session *s) {
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = mimo2_session_fit(e, ctx, s->prefill_cap, NULL) &&
-            mimo2_graph_alloc(&s->mimo2_graph, ctx, s->prefill_cap, s->engine->mimo2_dflash);
+            mimo2_graph_alloc(&s->mimo2_graph, &e->model, &e->weights, ctx, s->prefill_cap,
+                s->engine->mimo2_dflash);
         ds4_gpu_mem_scope_end();
         if (!ok) {
             mimo2_graph_free(&s->mimo2_graph);

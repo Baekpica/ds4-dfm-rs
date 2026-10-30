@@ -103,6 +103,10 @@ name = "axk2_quality"
 required-features = ["native"]
 
 [[example]]
+name = "mimo2_vq_quality"
+required-features = ["native"]
+
+[[example]]
 name = "minimax_vision"
 required-features = ["native"]
 

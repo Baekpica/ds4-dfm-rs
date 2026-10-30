@@ -704,6 +704,21 @@ pub fn kv_rows(layer: u32, ctx: u32, cap: u32) -> Option<u32> {
     Some((SWA_WINDOW + cap - 1).min(ctx))
 }
 
+/// The VQ release's full-attention rows (`ds4_mimo2_plan.h` mimo2_kv_row):
+/// E4M3 K and V heads, then one f16 scale per head each.
+const FP8_ROW: u64 = 4 * (192 + 128) + 2 * 4 * 2;
+
+/// `kv_bytes` of the VQ release (FP8 full layers; DS4_MIMO2VQ_FULL_KV=f16
+/// keeps f16 rows).
+pub(crate) fn vq_kv_bytes(ctx: u32, cap: u32) -> Option<u64> {
+    let f16 = kv_bytes(ctx, cap)?;
+    if std::env::var("DS4_MIMO2VQ_FULL_KV").ok().as_deref() == Some("f16") {
+        return Some(f16);
+    }
+    let full = u64::from(ctx) * FULL.len() as u64;
+    Some(f16 - full * 4 * (192 + 128) * 2 + full * FP8_ROW)
+}
+
 /// Per-bank trunk KV from `ds4_mimo2_plan.h`; scratch is shared.
 pub(crate) fn kv_bytes(ctx: u32, cap: u32) -> Option<u64> {
     if ctx == 0 || ctx > INDEX_LIMIT || cap == 0 || cap > ctx || cap > PREFILL_MAX {
@@ -716,6 +731,58 @@ pub(crate) fn kv_bytes(ctx: u32, cap: u32) -> Option<u64> {
         raw = raw.saturating_add(u64::from(rows) * heads * (192 + 128) * 2);
     }
     Some(raw)
+}
+
+/// The VQ release's per-owner scratch (`ds4_mimo2_plan.h`
+/// mimo2vq_scratch_bytes): BF16 embedding rows, F32 sinks, the GVQ context's
+/// cuBLAS workspace and routes, the expert runtime's decode plan
+/// (m2vq_decode_plan: items, mid/partial rows, verify plan and 47 layers'
+/// expert tables) and, above verify widths, its FP8 MMA planes.
+pub(crate) fn vq_scratch_bytes(cap: u32) -> u64 {
+    const DECODE: u64 = 972_800;
+    const CUBLAS: u64 = 32 << 20;
+    const GVQ_SCRATCH: u64 = 256;
+    const VERIFY_ROWS: u64 = 4;
+    const MMA_ITEM: u64 = 20;
+    // Warp-specialized items (cuda/minimax_mma8w.cuh mw_item): 64 pairs each.
+    const MW_ITEM: u64 = 48;
+    const MW_PAIRS: u64 = 64;
+    let align = |n: u64| n.div_ceil(256) * 256;
+    let rows = u64::from(cap);
+    let pairs = rows * 8;
+    let mma = if rows > VERIFY_ROWS {
+        align(rows * EMBED)
+            + align(rows * EMBED / 128 * 4)
+            + align(pairs * EXPERT_FF * 2)
+            + align(pairs * EXPERT_FF)
+            + align(pairs * EXPERT_FF / 128 * 4)
+            + align(pairs * EMBED * 2)
+            + align(pairs * MMA_ITEM)
+            + align(pairs * 4)
+            + align(3 * (pairs / MW_PAIRS + 256) * MW_ITEM)
+            + align(pairs * 4)
+    } else {
+        0
+    };
+    rows * EMBED * 2 + u64::from(BLOCKS) * 64 * 4 + GVQ_SCRATCH + CUBLAS + pairs * 4 + DECODE + mma
+}
+
+/// The media graph's buffers at its largest image (`ds4_mimo2_media.inc`
+/// M2V_MAX patches): staged patches, hidden, norm, qkv, attention, both FFN
+/// rows and the merged projection, all F32.
+pub fn media_workspace_bytes() -> u64 {
+    const PATCHES: u64 = 32_768;
+    const HIDDEN: u64 = 1280;
+    let floats = PATCHES * (1536 + 2 * HIDDEN + 3072 + 2048 + 2 * 4608) + PATCHES / 4 * EMBED;
+    floats * 4
+}
+
+/// `context_bytes` of the VQ release: its expert runtime replaces the
+/// routed rows.
+pub fn vq_context_bytes(ctx: u32, cap: u32) -> Option<u64> {
+    let routed = u64::from(cap) * (3 * 8 * EXPERT_FF + 8 * EMBED) * 4;
+    let kv = kv_bytes(ctx, cap)?;
+    Some(context_bytes(ctx, cap)? - kv + vq_kv_bytes(ctx, cap)? - routed + vq_scratch_bytes(cap))
 }
 
 /// Scratch plus trunk KV bytes from `ds4_mimo2_plan.h`. Draft KV is extra.

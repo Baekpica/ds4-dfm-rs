@@ -1972,6 +1972,9 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::Inkling => crate::inkling::validate_main(g),
         ModelFamily::Step37 => crate::Step37Plan::validate(g),
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::validate(g),
+        ModelFamily::Mimo2 if shape.variant == Variant::Mimo26FlashVq => Err(ValidateError::Token(
+            "MiMo VQ requires a complete release directory",
+        )),
         ModelFamily::Mimo2 => crate::Mimo2Plan::validate(g),
         ModelFamily::NaiveN05 => crate::naive::validate_metadata(g),
         ModelFamily::IQuestQ1 => crate::iquest::validate(g),
@@ -2005,6 +2008,13 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
 }
 
 pub fn validate_gguf(path: &std::path::Path) -> Result<Shape, ValidateError> {
+    if path.is_dir() && crate::mimo2_vq::is_release(path) {
+        let id = crate::mimo2_vq::identify(path)?;
+        let inventory = TensorInventory::open(path)
+            .map_err(|e| ValidateError::TokenKey("MiMo VQ inventory", e.token()))?;
+        crate::mimo2_vq::validate_inventory(&inventory)?;
+        return Ok(id.shape);
+    }
     if path.is_dir() && crate::minimax_vq::is_release(path) {
         let id = crate::minimax_vq::identify(path)?;
         let inventory = TensorInventory::open(path)
@@ -2099,6 +2109,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Step37Flash => crate::shape::SHAPE_STEP37_FLASH,
                         Variant::Ling30FlashVl => crate::shape::SHAPE_LING30_FLASH_VL,
                         Variant::Mimo26Flash => crate::shape::SHAPE_MIMO26_FLASH,
+                        Variant::Mimo26FlashVq => crate::shape::SHAPE_MIMO26_FLASH_VQ,
                         Variant::NaiveN05Flash => crate::shape::SHAPE_NAIVE_N05_FLASH,
                         Variant::IQuestQ1 => crate::shape::SHAPE_IQUEST_Q1,
                         Variant::DeepSeek41Flash => crate::shape::SHAPE_V41_FLASH,

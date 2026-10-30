@@ -1,0 +1,46 @@
+{
+ "commit": "d249bf4170b534ab79635243a888a693ff9671ab",
+ "note": "ds4-bench was built from 7939b08b, which differs from this commit only by rustfmt",
+ "ds4_bench_sha256": "58cc63821e889e1167e1bd52f89b0dfa3a5dd741019db05177904a50d1fde666",
+ "release": "Baekpica/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF@f1cd8523381bc0086178d6c146e2818f0211f0ed",
+ "release_json_sha256": "17b16b6c92732be42292917c44ea4043941383333182b8f8f15bb17c9c5d35c3",
+ "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+ "host": "DGX Spark / GB10, CUDA 13.4.92, driver 615.71.10, clock range 300-2200 MHz, boot f5d9ee6b-7f0f-443c-b629-4f39b4519994",
+ "command": "ds4-bench --cuda -m RELEASE --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 [--mtp-draft 2]",
+ "cpu": "taskset -c 9",
+ "guard": "tools/host_memory_guard.py --reserve-gib 2 --trip-gib 2",
+ "busy_sm_mhz": [
+  2177,
+  2190
+ ],
+ "busy_samples": 270,
+ "memory": {
+  "plain-1": {
+   "min_available_gib": 24.64,
+   "max_psi_full_avg10": 0.0
+  },
+  "plain-2": {
+   "min_available_gib": 24.68,
+   "max_psi_full_avg10": 0.0
+  },
+  "plain-3": {
+   "min_available_gib": 24.63,
+   "max_psi_full_avg10": 0.0
+  },
+  "mtp2-1": {
+   "min_available_gib": 23.54,
+   "max_psi_full_avg10": 0.0
+  },
+  "mtp2-2": {
+   "min_available_gib": 23.58,
+   "max_psi_full_avg10": 0.0
+  },
+  "mtp2-3": {
+   "min_available_gib": 23.6,
+   "max_psi_full_avg10": 0.0
+  }
+ },
+ "discarded": {
+  "discarded-plain-2.csv": "first plain run 2; cargo clippy ran on the other cores during its 12K-14K frontiers (prefill -6% there, one 1,995 MHz sample)"
+ }
+}

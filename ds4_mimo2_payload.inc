@@ -2,7 +2,12 @@
  * restore the same prefix into different physical slots. MTP is not encoded.
  * Restore clears draft cursors so a reused graph cannot trial on a stale
  * hidden row; the next step is ordinary decode and rebuilds that row. */
-enum { M2_PAYLOAD_MAGIC = 0x324f4d49, M2_KV_WIDTH = 192 + 128 };
+/* "IMO3": the VQ release's full layers keep FP8 rows (mimo2_kv_row). */
+enum { M2_PAYLOAD_MAGIC = 0x324f4d49, M2_PAYLOAD_MAGIC_FP8 = 0x334f4d49, M2_KV_WIDTH = 192 + 128 };
+
+static uint32_t mimo2_payload_magic(void) {
+    return mimo2_fp8_rows(0) ? M2_PAYLOAD_MAGIC_FP8 : M2_PAYLOAD_MAGIC;
+}
 typedef enum { M2_PAYLOAD_SAVE, M2_PAYLOAD_LOAD } mimo2_payload_dir;
 
 static unsigned mimo2_saved_rows(unsigned il, unsigned n) {
@@ -12,8 +17,7 @@ static unsigned mimo2_saved_rows(unsigned il, unsigned n) {
 static uint64_t mimo2_payload_body(unsigned n) {
     uint64_t bytes = (uint64_t)n * sizeof(uint32_t) + (uint64_t)DS4_N_VOCAB * sizeof(float);
     for (unsigned il = 0; il < MIMO2_LAYERS; il++) {
-        bytes += (uint64_t)mimo2_saved_rows(il, n) *
-            (mimo2_is_full(il) ? 4 : 8) * M2_KV_WIDTH * sizeof(uint16_t);
+        bytes += (uint64_t)mimo2_saved_rows(il, n) * mimo2_kv_row(il);
     }
     return bytes;
 }
@@ -35,7 +39,7 @@ static int mimo2_payload_ring(mimo2_payload_dir dir, FILE *fp, ds4_mimo2_graph *
                               unsigned il, unsigned n, uint8_t *buf,
                               uint64_t *left, char *err, size_t errlen) {
     unsigned rows = mimo2_saved_rows(il, n), first = n - rows;
-    const uint64_t row = (mimo2_is_full(il) ? 4 : 8) * M2_KV_WIDTH * sizeof(uint16_t);
+    const uint64_t row = mimo2_kv_row(il);
     while (rows) {
         const unsigned slot = first % g->kv_cap[il];
         unsigned span = g->kv_cap[il] - slot;
@@ -71,7 +75,7 @@ static int mimo2_payload_save(ds4_mimo2_graph *g, const int *tokens, unsigned n,
     }
     const uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS] = {
         DS4_SESSION_PAYLOAD_MAGIC, DS4_SESSION_PAYLOAD_VERSION, g->context, g->cap,
-        MIMO2_LAYERS, M2_PAYLOAD_MAGIC, M2_KV_WIDTH, n, 0, sizeof(uint16_t),
+        MIMO2_LAYERS, mimo2_payload_magic(), M2_KV_WIDTH, n, 0, sizeof(uint16_t),
         M2_WINDOW, DS4_N_VOCAB, n,
     };
     int rc = 0;
@@ -116,7 +120,7 @@ static int mimo2_payload_restore(ds4_mimo2_graph *g, FILE *fp, uint64_t *left,
     const unsigned n = h[7];
     if (!mimo2_payload_layout(g, n) || h[0] != DS4_SESSION_PAYLOAD_MAGIC ||
         h[1] != DS4_SESSION_PAYLOAD_VERSION || h[2] < n || h[2] > M2_CONTEXT ||
-        !h[3] || h[3] > M2_MAX_BATCH || h[3] > h[2] || h[4] != MIMO2_LAYERS || h[5] != M2_PAYLOAD_MAGIC ||
+        !h[3] || h[3] > M2_MAX_BATCH || h[3] > h[2] || h[4] != MIMO2_LAYERS || h[5] != mimo2_payload_magic() ||
         h[6] != M2_KV_WIDTH || h[8] || h[9] != sizeof(uint16_t) ||
         h[10] != M2_WINDOW || h[11] != DS4_N_VOCAB || h[12] != n ||
         *left != mimo2_payload_body(n)) {

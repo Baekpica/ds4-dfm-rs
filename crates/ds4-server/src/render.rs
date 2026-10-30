@@ -216,7 +216,8 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         10 => ModelSyntax::Step37,
         // 18: Ling-3.1 keeps Bailing V3's template, tool markers and parser.
         11 | 18 => ModelSyntax::Ling3Vl,
-        12 => ModelSyntax::Mimo2,
+        // 22: MiMo VQ keeps MiMo's template, tool markers and media.
+        12 | 22 => ModelSyntax::Mimo2,
         14 => ModelSyntax::Qwen35,
         13 => ModelSyntax::NaiveN05,
         15 => ModelSyntax::IQuestQ1,

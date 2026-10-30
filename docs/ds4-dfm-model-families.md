@@ -73,6 +73,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [Beam-1.0 VQ](beam-vq.md) | `release.json` directory of GVQ1 parts (`beam_vq`) | 43 SWA-512 and 9 NoPE full GQA layers (FP8 rows), 256 VQ experts top-8, host-read BF16 embedding, Harmony output; banks, partial reuse, disk KV, serial DFlash2 drafting |
 | [A.X-K2 VQ](axk2-vq.md) | `release.json` directory of GVQ1 parts (`axk2_vq`) | 61 MLA layers with the DSA top-2,048 indexer (FP8 latent and key rows), gated RMSNorm, 256 VQ experts top-8 (9/10-bit GVQ1 v2), host-read BF16 embedding, Hermes tools; banks, partial reuse, disk KV, no drafter |
 | [MiMo-V2.6-Flash RL / MOPD](#mimo-release-scope) | `general.architecture=mimo2` | 9 full-attention and 39 SWA-128 layers, 256 experts top-8, three embedded MTP blocks; artifact-specific gates |
+| [MiMo-V2.6-Flash VQ](mimo2-vq.md) | `release.json` directory of GVQ1 parts (`mimo2_vq`) | the same graph with 256 VQ experts top-8 (13-bit GVQ1, 8-bit residual on 32 layers), FP8 full-layer K/V, host-read BF16 embedding, Q8_0 vision/audio parts; banks, partial reuse, disk KV, embedded MTP or DFlash |
 | [Naive-N0.5-Flash](#naive-release-scope) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers, BF16 GQA, E4M3 indexer history, continuous banks and disk KV |
 
 The scheduler implementation may differ because the model states differ, but
@@ -417,6 +418,14 @@ text plan with MTP off: partial reuse, disk continuation and serial
 image/video/audio input passed on GB10. The prior 512K serial-text and 256K
 serial-media/DFlash gates are separate. A 1M one-bank text plan answered a
 1,040,506-token prompt; two banks did not fit.
+
+### MiMo VQ
+
+The [VQ releases](mimo2-vq.md) (RL and UNCENSORED, one runtime) keep their
+own gates: assistant-turn quality against the handoff teacher, a 32K
+teacher-forced NLL pair, the two-bank reuse and restart gate, serial image,
+video and audio input, and the 1M plan with every part loaded. Nothing
+transfers to or from the mixed artifacts.
 
 ### MiMo MOPD
 

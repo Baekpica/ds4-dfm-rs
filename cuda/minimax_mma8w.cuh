@@ -427,9 +427,11 @@ static cudaError_t mw_launch(const mw_item *items, uint32_t nitems, const uint8_
     return cudaGetLastError();
 }
 
-/* SwiGLU-OAI of the BF16 gate and up rows, then down's input: E4M3 rows in
- * its k order with one scale per (pair, 128 rows), a warp per block (four
- * values per lane; the block's peak by shuffles). */
+/* SwiGLU (MiniMax's OAI form; MiMo's gate form) of the BF16 gate and up
+ * rows, then down's input: E4M3 rows in its k order with one scale per
+ * (pair, 128 rows), a warp per block (four values per lane; the block's
+ * peak by shuffles). */
+template <glmvq_clamp CLAMP = GLMVQ_CLAMP_OAI>
 __global__ void mw_swiglu_quant(uint8_t *mid8, float *mid_scale, const __nv_bfloat16 *gate,
         const __nv_bfloat16 *up, uint32_t rows, uint32_t pairs, float limit) {
     const uint64_t w = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) / 32;
@@ -442,9 +444,9 @@ __global__ void mw_swiglu_quant(uint8_t *mid8, float *mid_scale, const __nv_bflo
     const float2 g1 = __bfloat1622float2(*(const __nv_bfloat162 *)&gr.y);
     const float2 u0 = __bfloat1622float2(*(const __nv_bfloat162 *)&ur.x);
     const float2 u1 = __bfloat1622float2(*(const __nv_bfloat162 *)&ur.y);
-    const float v[4] = {glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g0.x, u0.x, limit),
-        glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g0.y, u0.y, limit), glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g1.x, u1.x, limit),
-        glmvq_swiglu_value<GLMVQ_CLAMP_OAI>(g1.y, u1.y, limit)};
+    const float v[4] = {glmvq_swiglu_value<CLAMP>(g0.x, u0.x, limit),
+        glmvq_swiglu_value<CLAMP>(g0.y, u0.y, limit), glmvq_swiglu_value<CLAMP>(g1.x, u1.x, limit),
+        glmvq_swiglu_value<CLAMP>(g1.y, u1.y, limit)};
     float peak = fmaxf(fmaxf(fabsf(v[0]), fabsf(v[1])), fmaxf(fabsf(v[2]), fabsf(v[3])));
     for (uint32_t s = 16; s; s >>= 1) { peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, s)); }
     const float scale = peak / GLMVQ_E4M3_MAX;
