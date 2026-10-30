@@ -90,6 +90,20 @@ pub fn probe_mtp_sidecar(
             message: "a distributed launch does not attach an MTP sidecar".into(),
         });
     }
+    // The MiMo VQ release drafts only with its own verified DFlash part
+    // (the open also checks it belongs to the `-m` release).
+    if shape.variant == crate::Variant::Mimo26FlashVq {
+        let path = std::path::Path::new(path);
+        let part =
+            crate::mimo2_vq::drafter_path(path.parent().unwrap_or(std::path::Path::new(".")));
+        if part.and_then(|p| p.canonicalize().ok()) == path.canonicalize().ok() {
+            return Ok(());
+        }
+        return Err(Error {
+            code: 1,
+            message: "MiMo VQ DFlash must be a release's dflash part".into(),
+        });
+    }
     // MiMo's and Beam's external drafts are block-drafter files (DFlash,
     // DFlash2), not DeepSeek nextn sidecars. The open validates them with the
     // same checks and passes a null bind map, so the preflight uses them too.

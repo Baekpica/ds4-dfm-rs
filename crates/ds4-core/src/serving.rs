@@ -666,6 +666,7 @@ pub fn native_ctx_default(caps: ServingCaps) -> Option<u32> {
         | ModelFamily::BeamVq
         | ModelFamily::MinimaxVq
         | ModelFamily::Axk2Vq => caps.ctx_max,
+        ModelFamily::Mimo2 if caps.variant == Variant::Mimo26FlashVq => caps.ctx_max,
         _ => None,
     }
 }
@@ -815,19 +816,21 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: Some(crate::naive::QUALIFIED_PROMPT),
             media_serial: false,
         },
-        // The VQ release runs the same lanes; its gates are its own, so no
-        // limit transfers from the mixed artifact until they pass.
+        // The VQ release runs the same lanes under its own gates: two-bank
+        // HTTP reuse and disk restore, and two embedded drafts on the serial
+        // lane (docs/benchmarks/mimo2-vq-serving-2026-10-30). Auto drafts
+        // there, so the default 1M plan is one serial sequence.
         ModelFamily::Mimo2 if variant == Variant::Mimo26FlashVq => ServingCaps {
             family,
             variant,
             banks: BankLane::OptIn,
             bank_support: Support::Present,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
             snapshot: Support::Present,
             mtp: MtpKind::Embedded,
-            mtp_support: Support::Present,
+            mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
             spec_draft_min: 2,
             host: HostNeed::Cuda,
@@ -3617,6 +3620,14 @@ mod tests {
         assert_eq!(native_ctx_default(vq), Some(1_048_576));
         let source = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
         assert_eq!(native_ctx_default(source), None);
+    }
+
+    #[test]
+    fn mimo_vq_context_defaults_to_native() {
+        let vq = serving_caps(ModelFamily::Mimo2, Variant::Mimo26FlashVq);
+        assert_eq!(native_ctx_default(vq), Some(1_048_576));
+        let mixed = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
+        assert_eq!(native_ctx_default(mixed), None);
     }
 
     #[test]

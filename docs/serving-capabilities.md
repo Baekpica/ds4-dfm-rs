@@ -32,6 +32,7 @@ The request's effective and qualified plan remains authoritative.
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
 | Ling-3.0-flash-VL | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 | MiMo-V2.6-Flash-RL | opt_in / unverified | partial / unverified | unverified | unverified | Embedded / serial / qualified |
+| MiMo-V2.6-Flash-VQ | opt_in / unverified | partial / qualified | qualified | unverified | Embedded / serial / qualified |
 | Naive-N0.5-Flash | opt_in / qualified | partial / qualified | qualified | qualified | External / serial + bank / unverified |
 | IQuest-Q1 | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
 | Ling-3.1-flash-VQ | persistent / unverified | partial / unverified | unverified | unverified | Embedded / serial + bank / unverified |
@@ -61,6 +62,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | Step-3.7-Flash | 262144 | 65536 | 2 | 6300 | `DS4_STEP37_PREFILL_CHUNK` |
 | Ling-3.0-flash-VL | 262144 | 65536 | 2 | — | `DS4_LING3VL_PREFILL_CHUNK` |
 | MiMo-V2.6-Flash-RL | 1048576 | 524288 | 1 | — | `DS4_MIMO2_PREFILL_CHUNK` |
+| MiMo-V2.6-Flash-VQ | 1048576 | — | — | — | `DS4_MIMO2_PREFILL_CHUNK` |
 | Naive-N0.5-Flash | 1048576 | 8192 | 2 | 702 | `DS4_NAIVE_PREFILL_CHUNK` |
 | IQuest-Q1 | 524288 | — | — | — | `DS4_IQUEST_PREFILL_CHUNK` |
 | Ling-3.1-flash-VQ | 1048576 | — | — | — | `DS4_LING31_PREFILL_CHUNK` |

@@ -1,0 +1,137 @@
+{
+ "mtp-off": {
+  "phases": {
+   "seed": {
+    "passed": true,
+    "errors": [],
+    "pid": 2453173,
+    "executable_sha256": "a82c84703c21076ca8a35171525fa2da767f4da3df0b0ff2c2ce47205f6f19e3",
+    "result_sha256": "5873271d4e353bc1273d2248bd798dc864da3d5c5b696e03eeb77fbf3e20c12c"
+   },
+   "warm": {
+    "passed": true,
+    "errors": [],
+    "pid": 2453173,
+    "executable_sha256": "a82c84703c21076ca8a35171525fa2da767f4da3df0b0ff2c2ce47205f6f19e3",
+    "result_sha256": "2be003750dfc2a80b9103b248e8471a0eded26fa7cf1961eb3a5b212c2e1ea2f"
+   },
+   "restored": {
+    "passed": true,
+    "errors": [],
+    "pid": 2454137,
+    "executable_sha256": "a82c84703c21076ca8a35171525fa2da767f4da3df0b0ff2c2ce47205f6f19e3",
+    "result_sha256": "072f1477b5a44b2c234d7e400fcd14d6106e5e25df1161521a7c163ff535faf6"
+   },
+   "cold": {
+    "passed": true,
+    "errors": [],
+    "pid": 2454783,
+    "executable_sha256": "a82c84703c21076ca8a35171525fa2da767f4da3df0b0ff2c2ce47205f6f19e3",
+    "result_sha256": "1297c5548f52f26e4f0d6c3536212ae798e38cec07ccc60440cdcd703f4752fd"
+   }
+  },
+  "requests": [
+   {
+    "phase": "seed",
+    "case": "seed",
+    "answer": "4",
+    "prompt_tokens": 589,
+    "cached_tokens": 0,
+    "reuse": "cold",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "warm",
+    "case": "append",
+    "answer": "5",
+    "prompt_tokens": 614,
+    "cached_tokens": 590,
+    "reuse": "fork",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "warm",
+    "case": "edit",
+    "answer": "6",
+    "prompt_tokens": 614,
+    "cached_tokens": 589,
+    "reuse": "partial",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "warm",
+    "case": "fork",
+    "answer": "8",
+    "prompt_tokens": 639,
+    "cached_tokens": 615,
+    "reuse": "exact",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "restored",
+    "case": "restart",
+    "answer": "9",
+    "prompt_tokens": 664,
+    "cached_tokens": 640,
+    "reuse": "fork",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "cold",
+    "case": "append",
+    "answer": "5",
+    "prompt_tokens": 614,
+    "cached_tokens": 0,
+    "reuse": "cold",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "cold",
+    "case": "edit",
+    "answer": "6",
+    "prompt_tokens": 614,
+    "cached_tokens": 0,
+    "reuse": "cold",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "cold",
+    "case": "fork",
+    "answer": "8",
+    "prompt_tokens": 639,
+    "cached_tokens": 0,
+    "reuse": "cold",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "cold",
+    "case": "restart",
+    "answer": "9",
+    "prompt_tokens": 664,
+    "cached_tokens": 0,
+    "reuse": "cold",
+    "speculation": false,
+    "passed": true
+   },
+   {
+    "phase": "cold",
+    "case": "seed",
+    "answer": "4",
+    "prompt_tokens": 589,
+    "cached_tokens": 0,
+    "reuse": "cold",
+    "speculation": false,
+    "passed": true
+   }
+  ],
+  "fixture_sha256": "970a2f50f6da66513eed800b5a51201022ebb68438a1c96e49f6a3635f0dc813"
+ }
+}

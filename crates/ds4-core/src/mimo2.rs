@@ -767,6 +767,16 @@ pub(crate) fn vq_scratch_bytes(cap: u32) -> u64 {
     rows * EMBED * 2 + u64::from(BLOCKS) * 64 * 4 + GVQ_SCRATCH + CUBLAS + pairs * 4 + DECODE + mma
 }
 
+/// The media graph's buffers at its largest image (`ds4_mimo2_media.inc`
+/// M2V_MAX patches): staged patches, hidden, norm, qkv, attention, both FFN
+/// rows and the merged projection, all F32.
+pub fn media_workspace_bytes() -> u64 {
+    const PATCHES: u64 = 32_768;
+    const HIDDEN: u64 = 1280;
+    let floats = PATCHES * (1536 + 2 * HIDDEN + 3072 + 2048 + 2 * 4608) + PATCHES / 4 * EMBED;
+    floats * 4
+}
+
 /// `context_bytes` of the VQ release: its expert runtime replaces the
 /// routed rows.
 pub fn vq_context_bytes(ctx: u32, cap: u32) -> Option<u64> {

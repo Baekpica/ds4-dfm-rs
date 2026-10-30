@@ -695,7 +695,13 @@ pub fn fill_quote_facts(
         }
     } else if caps.family == ModelFamily::Mimo2 {
         if host.vision || facts.vision_loaded {
-            let media_work = GIB;
+            // The VQ release prices its largest image's media buffers; the
+            // mixed artifact keeps its recorded 1 GiB.
+            let media_work = if caps.variant == Variant::Mimo26FlashVq {
+                crate::mimo2::media_workspace_bytes()
+            } else {
+                GIB
+            };
             let serial = if quote_bank_lane(req, caps, facts) {
                 let cap = native.min(ctx_tokens).max(1);
                 mimo_context_bytes(caps.variant, ctx_tokens, cap)
@@ -865,16 +871,30 @@ pub fn attach_host_quote(
         mtp_bytes =
             part(crate::MinimaxFeature::Draft).saturating_sub(part(crate::MinimaxFeature::Trunk));
     }
-    // MiMo VQ maps its MTP part beside the trunk only when drafting with it
-    // (a DFlash `--mtp` file is priced as that file).
-    if let (Variant::Mimo26FlashVq, MtpMode::On, Some(path), None) =
-        (caps.variant, req.mtp_mode, model_path, mtp_path)
+    // MiMo VQ maps its MTP part beside the trunk only when drafting with it,
+    // which its qualified MTP also does under auto (a DFlash `--mtp` file is
+    // priced as that file).
+    let drafts = req.mtp_mode == MtpMode::On
+        || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified);
+    if let (Variant::Mimo26FlashVq, true, Some(path), None) =
+        (caps.variant, drafts, model_path, mtp_path)
     {
         let part = |feature| crate::mimo2_vq::resident_bytes(path, feature).unwrap_or(0);
         mtp_bytes =
             part(crate::Mimo2VqFeature::Mtp).saturating_sub(part(crate::Mimo2VqFeature::Trunk));
     }
-    let vision_bytes = artifact_span_bytes(vision_path);
+    // MiMo VQ releases map their own vision and audio parts (the open's
+    // `media_paths`): price them and their media workspace without `--vision`.
+    let release_media = match (caps.variant, model_path) {
+        (Variant::Mimo26FlashVq, Some(path)) => match crate::mimo2_vq::media_paths(path) {
+            (Some(v), Some(a)) => {
+                Some(artifact_span_bytes(Some(&v)) + artifact_span_bytes(Some(&a)))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let vision_bytes = artifact_span_bytes(vision_path) + release_media.unwrap_or(0);
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
     let drafter_pending = req.backend == Backend::Cuda
         && !resident
@@ -951,7 +971,7 @@ pub fn attach_host_quote(
             quote_available(live, mapped, resident).saturating_add(allocated)
         },
         native_chunk: req.native_chunk,
-        vision,
+        vision: vision || release_media.is_some(),
     };
     fill_quote_facts(facts, &quote_req, caps, shape, host);
     if !resident {
