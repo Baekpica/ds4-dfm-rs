@@ -223,7 +223,6 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     ds4_gpu_tensor *up = ds4_gpu_tensor_alloc((uint64_t)n * DF_FF * sizeof(float));
     ds4_gpu_tensor *mid = ds4_gpu_tensor_alloc((uint64_t)n * DF_FF * sizeof(float));
     ds4_gpu_tensor *ffn = ds4_gpu_tensor_alloc((uint64_t)n * DF_H * sizeof(float));
-    float *host_cat = malloc((size_t)ctx * 5 * DF_H * sizeof(float));
     float *hq = malloc((size_t)n * DF_Q * sizeof(float));
     float *hk = malloc(((size_t)ctx + n) * DF_KV * sizeof(float));
     float *hv = malloc(((size_t)ctx + n) * DF_KV * sizeof(float));
@@ -233,19 +232,17 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     const char *cpu_env = getenv("DS4_MIMO2_DFLASH_CPU");
     const int cpu_attn = cpu_env && cpu_env[0] == '1' && cpu_env[1] == '\0';
     bool ok = cat && proj && noise && normed && q && k_ctx && v_ctx && k_noise && v_noise &&
-        attn && gate && up && mid && ffn && host_cat && hq && hk && hv && ho && k_pos;
+        attn && gate && up && mid && ffn && hq && hk && hv && ho && k_pos;
     if (ok) {
-        for (unsigned i = 0; i < ctx; i++) {
-            const unsigned slot = ctx_pos[i] % DF_WIN;
-            ok = ds4_gpu_tensor_read(g->dflash_tap,
-                ((uint64_t)slot * 5) * DF_H * sizeof(float),
-                host_cat + (size_t)i * 5 * DF_H,
-                5ull * DF_H * sizeof(float));
-            if (!ok) { break; }
-        }
+        // The context's taps are consecutive ring slots: at most two copies.
+        const uint64_t slot_bytes = 5ull * DF_H * sizeof(float);
+        const unsigned first_slot = begin % DF_WIN;
+        const unsigned head = ctx < DF_WIN - first_slot ? ctx : DF_WIN - first_slot;
+        ok = ds4_gpu_tensor_copy(cat, 0, g->dflash_tap, first_slot * slot_bytes, head * slot_bytes) &&
+            (head == ctx || ds4_gpu_tensor_copy(cat, head * slot_bytes, g->dflash_tap, 0,
+                (uint64_t)(ctx - head) * slot_bytes));
     }
-    ok = ok && ds4_gpu_tensor_write(cat, 0, host_cat, (uint64_t)ctx * 5 * DF_H * sizeof(float)) &&
-        plain_graph_matmul_tensor(proj, d->model, d->fc, 20480, DF_H, cat, ctx) &&
+    ok = ok && plain_graph_matmul_tensor(proj, d->model, d->fc, 20480, DF_H, cat, ctx) &&
         mimo2_norm(proj, proj, d->model, d->hidden_norm, ctx);
     ids[0] = first;
     for (unsigned i = 1; i < n; i++) { ids[i] = DF_MASK; }
@@ -313,15 +310,30 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
             ds4_gpu_exaone_add_tensor(noise, ffn, (uint64_t)n * DF_H);
     }
     ok = ok && mimo2_norm(normed, noise, d->model, d->output_norm, n);
+    /* Proposal rows 1..n-1 through the head in one matmul; the qkv scratch
+     * is free until the verify forward. */
+    const uint64_t logit_bytes = (uint64_t)(n - 1) * DS4_N_VOCAB * sizeof(float);
+    ds4_gpu_tensor *rows = ok ? ds4_gpu_tensor_view(normed, DF_H * sizeof(float),
+        (uint64_t)(n - 1) * DF_H * sizeof(float)) : NULL;
+    ok = ok && rows;
+    if (ok && ds4_gpu_tensor_bytes(g->qkv) >= logit_bytes) {
+        ok = plain_graph_matmul_tensor(g->qkv, &s->engine->model, base->output, DF_H, DS4_N_VOCAB,
+                rows, n - 1) &&
+            ds4_gpu_tensor_read(g->qkv, 0, g->verify_logits, logit_bytes);
+    } else {
+        for (unsigned row = 1; ok && row < n; row++) {
+            ds4_gpu_tensor *one = ds4_gpu_tensor_view(normed, (uint64_t)row * DF_H * sizeof(float),
+                DF_H * sizeof(float));
+            ok = one && plain_graph_matmul_tensor(g->logits, &s->engine->model, base->output,
+                    DF_H, DS4_N_VOCAB, one, 1) &&
+                ds4_gpu_tensor_read(g->logits, 0, g->verify_logits + (size_t)(row - 1) * DS4_N_VOCAB,
+                    (uint64_t)DS4_N_VOCAB * sizeof(float));
+            ds4_gpu_tensor_free(one);
+        }
+    }
+    ds4_gpu_tensor_free(rows);
     for (unsigned row = 1; ok && row < n; row++) {
-        ds4_gpu_tensor *one = ds4_gpu_tensor_view(normed, (uint64_t)row * DF_H * sizeof(float),
-            DF_H * sizeof(float));
-        ok = one && plain_graph_matmul_tensor(g->logits, &s->engine->model, base->output,
-                DF_H, DS4_N_VOCAB, one, 1) &&
-            ds4_gpu_tensor_read(g->logits, 0, s->logits, (uint64_t)DS4_N_VOCAB * sizeof(float));
-        ds4_gpu_tensor_free(one);
-        if (!ok) { break; }
-        const int id = df_argmax(s->logits);
+        const int id = df_argmax(g->verify_logits + (size_t)(row - 1) * DS4_N_VOCAB);
         if (id < 0) { ok = false; break; }
         g->trial[row] = id;
     }
@@ -330,7 +342,7 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     ds4_gpu_tensor_free(v_ctx); ds4_gpu_tensor_free(k_noise); ds4_gpu_tensor_free(v_noise);
     ds4_gpu_tensor_free(attn); ds4_gpu_tensor_free(gate); ds4_gpu_tensor_free(up);
     ds4_gpu_tensor_free(mid); ds4_gpu_tensor_free(ffn);
-    free(host_cat); free(hq); free(hk); free(hv); free(ho); free(k_pos);
+    free(hq); free(hk); free(hv); free(ho); free(k_pos);
     return ok;
 }
 

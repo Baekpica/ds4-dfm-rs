@@ -273,13 +273,11 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
         !mimo2_forward(g, &s->engine->model, &s->engine->weights, g->trial, n, base)) {
         return mimo2_session_fail(s, err, errlen) ? -1 : -1;
     }
+    if (!mimo2_head_rows(g, &s->engine->model, &s->engine->weights, n, g->verify_logits)) {
+        return mimo2_session_fail(s, err, errlen) ? -1 : -1;
+    }
     for (unsigned row = 0; row < n; row++) {
-        float *logits = g->verify_logits + (size_t)row * DS4_N_VOCAB;
-        if (!mimo2_head(g, &s->engine->model, &s->engine->weights, row) ||
-            !ds4_gpu_tensor_read(g->logits, 0, logits, (uint64_t)DS4_N_VOCAB * sizeof(float))) {
-            return mimo2_session_fail(s, err, errlen) ? -1 : -1;
-        }
-        const int id = mimo2_argmax(logits);
+        const int id = mimo2_argmax(g->verify_logits + (size_t)row * DS4_N_VOCAB);
         if (id < 0) { return mimo2_session_fail(s, err, errlen) ? -1 : -1; }
         target[row] = id;
     }

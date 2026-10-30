@@ -384,6 +384,26 @@ static bool mimo2_head(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weights
     return ok;
 }
 
+/* Verify rows through the head in one matmul, so the 0.62 GiB Q8_0 head
+ * streams once rather than once per row. The logits land in the qkv
+ * scratch, free after the forward; a cap too small for them keeps the
+ * one-row head. */
+static bool mimo2_head_rows(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weights *w,
+                            unsigned n, float *out) {
+    const uint64_t bytes = (uint64_t)n * DS4_N_VOCAB * sizeof(float);
+    if (n > 1 && ds4_gpu_tensor_bytes(g->qkv) >= bytes) {
+        return mimo2_norm(g->ws.b_norm, g->ws.b_cur, m, w->output_norm, n) &&
+            plain_graph_matmul_tensor(g->qkv, m, w->output, M2_EMBED, DS4_N_VOCAB, g->ws.b_norm, n) &&
+            ds4_gpu_tensor_read(g->qkv, 0, out, bytes);
+    }
+    for (unsigned row = 0; row < n; row++) {
+        if (!mimo2_head(g, m, w, row) ||
+            !ds4_gpu_tensor_read(g->logits, 0, out + (size_t)row * DS4_N_VOCAB,
+                                 (uint64_t)DS4_N_VOCAB * sizeof(float))) { return false; }
+    }
+    return true;
+}
+
 /* Ask the kernel to read `rows` tokens' embedding rows ahead: a cold gather
  * faults its rows in from the SSD one page at a time (Beam measured ~66 ms
  * per 2,048 rows). Advisory only. */
