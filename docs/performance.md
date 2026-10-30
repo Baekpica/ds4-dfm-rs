@@ -303,6 +303,33 @@ serving receipts; this text throughput campaign does not extend them.
 
 ![A.X-K2 VQ prefill and decode on one DGX Spark](benchmarks/axk2-vq-spark-64k-2026-10-29/throughput.png)
 
+## MiMo-V2.6-Flash VQ
+
+MiMo-V2.6-Flash-RL UNCENSORED with GVQ1 routed experts (13-bit on all 47
+MoE layers, an 8-bit residual stage on 32) and Q8_0 nonexperts
+([model card](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-UNCENSORED-VQ-GGUF);
+the [RL release](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-VQ-GGUF)
+shares its runtime and shapes) recorded **1,226.5 prefill / 23.97 decode**
+without drafting across the 32 frontiers of the
+[October 30 2K–64K sweep](benchmarks/mimo2-vq-spark-64k-2026-10-30/README.md)
+(2K–32K: 1,359.9 / 24.46), and **1,228.4 / 25.16** with two embedded MTP
+drafts, the server default. These are medians of three run means in three
+fresh `ds4-bench` processes per variant on one DGX Spark / GB10, measured
+code `d249bf41`: 2,048-token incremental prefills and 128 forced greedy
+tokens per frontier. Busy SM clocks 2,177–2,190 MHz under the
+300–2,200 MHz policy; minimum available memory 23.54 GiB, PSI 0.
+
+Prefill falls from 1,487.3 at 2K to 998.0 at 64K, decode from 24.77 to
+23.03. MTP decode follows each frontier's acceptance (21.6–31.6): the MTP
+blocks draft without the prompt's K/V, so the mean gain is 5% (15% at 2K).
+The first working build ran 597.9 / 20.72
+([optimization report](mimo2-vq-optimization-2026-10-30.md)). The
+[MiMo VQ page](mimo2-vq.md) records the execution paths, serving plans and
+quality gates. Throughput does not qualify serving limits or long-context
+quality.
+
+![MiMo-V2.6-Flash VQ prefill and decode on one DGX Spark](benchmarks/mimo2-vq-spark-64k-2026-10-30/throughput.png)
+
 ## DeepSeek V4.1
 
 DeepSeek V4.1 Flash `vq8sh14-q4k-mtpnative`, original Engram tables and

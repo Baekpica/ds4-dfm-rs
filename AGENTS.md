@@ -416,6 +416,16 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
 - **Probe a decode access pattern's read-only ceiling.** 240-byte rows per
   warp capped a read-only probe at 191 GB/s; the expert down kernel ran
   within 10% of it, so no prefetch variant could win.
+- **GQA decode attention is an MMA.** MiMo's 16 query heads per KV head are
+  the m16 rows of an f16 MMA over one row of FP8 codes; choosing the k order
+  per lane (dims 48t..48t+47 of a key, values 16g..16g+15) makes fragments
+  contiguous. Lanes loading their own 16-byte segments capped a read-only
+  probe at 150 GB/s; a block staging whole rows with contiguous cp.async
+  reached 182-191 (64K-256K), 4.4x the per-key shuffle walk.
+- **Widen an FP8 KV tile once per head pair.** Eight warps over two query
+  heads of one KV head, the next tile's codes in registers during the MMAs:
+  MiMo's prefill attention 8.9 -> 68-74 TFLOPS. A second f16 component of Q
+  and P bought nothing against E4M3 keys; against exact f16 keys it did.
 
 # Agent Notes
 

@@ -393,6 +393,14 @@ The bandwidth figure is informational; we don't tier on it.
   The default caches causal-prefix scores for separate Q/K/V buffers with
   16 heads, head dimension 64, stride 1024 and 1–8192 rows. Windowed/local
   audio and other layouts retain their existing paths.
+- `DS4_MIMO2VQ_GA8=0` restores the MiMo VQ release's earlier full-layer FP8
+  attention: `mimo2_hmma::prefill<Fp8>` above eight rows and the split walk
+  at 1–8. The default `mimo2_ga8` kernels widen each FP8 tile once per head
+  pair and run single f16 Q and P. Read once per process. See the
+  [optimization report](../docs/mimo2-vq-optimization-2026-10-30.md).
+- `DS4_MIMO2VQ_MMAW=0` keeps the VQ release's prefill experts on
+  `glmvq_mma8_kernel`; the default warp-specialized kernels produce the same
+  rows bit for bit.
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;
