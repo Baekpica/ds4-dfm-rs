@@ -744,6 +744,9 @@ pub(crate) fn vq_scratch_bytes(cap: u32) -> u64 {
     const GVQ_SCRATCH: u64 = 256;
     const VERIFY_ROWS: u64 = 4;
     const MMA_ITEM: u64 = 20;
+    // Warp-specialized items (cuda/minimax_mma8w.cuh mw_item): 64 pairs each.
+    const MW_ITEM: u64 = 48;
+    const MW_PAIRS: u64 = 64;
     let align = |n: u64| n.div_ceil(256) * 256;
     let rows = u64::from(cap);
     let pairs = rows * 8;
@@ -755,6 +758,8 @@ pub(crate) fn vq_scratch_bytes(cap: u32) -> u64 {
             + align(pairs * EXPERT_FF / 128 * 4)
             + align(pairs * EMBED * 2)
             + align(pairs * MMA_ITEM)
+            + align(pairs * 4)
+            + align(3 * (pairs / MW_PAIRS + 256) * MW_ITEM)
             + align(pairs * 4)
     } else {
         0
