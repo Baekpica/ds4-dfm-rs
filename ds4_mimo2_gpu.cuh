@@ -4,8 +4,24 @@
 #include "cuda/mimo2_prefill.cuh"
 #include "cuda/mimo2_dflash_attn.cuh"
 
+static bool m2_ga8_available = false;
+// Decode slices for one row: the blocks the GPU holds at once, so no slice
+// waits for a second wave.
+static unsigned m2_ga8_slices = mimo2_ga8::SLICES;
+
 static void m2_hmma_init(void) {
     m2_hmma_available = mimo2_hmma::supported();
+    const char *ga8 = getenv("DS4_MIMO2VQ_GA8");
+    m2_ga8_available = m2_hmma_available && !(ga8 && !strcmp(ga8, "0")) && mimo2_ga8::init();
+    int device = 0, sms = 0, per_sm = 0;
+    if (m2_ga8_available && cudaGetDevice(&device) == cudaSuccess &&
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) == cudaSuccess &&
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, mimo2_ga8::decode, 32 * M2_FP8_HEADS,
+            mimo2_ga8::DECODE_SMEM) ==
+            cudaSuccess && sms > 0 && per_sm > 0) {
+        m2_ga8_slices = min((unsigned)(sms * per_sm), (unsigned)mimo2_ga8::SLICES);
+    }
+    (void)cudaGetLastError();
 }
 
 extern "C" int ds4_gpu_mimo2_attn_add(
@@ -121,18 +137,36 @@ extern "C" int ds4_gpu_mimo2_kv_store_fp8(
 }
 
 static float *m2_split_buf = nullptr;
+// Decode partials of mimo2_ga8::decode: SLICES (row, slice) pairs of 64 heads.
+static float *m2_ga8_buf = nullptr;
 /* Which attention kernel the last call launched. The decode-round test
  * reads this so a matching walk result cannot hide a missed dispatch. */
 static int m2_attn_path = 0;
 /* 5: tensor-core full-attention prefill. 0 is the walk or the shared tile. */
-enum { M2_PATH_HMMA = 5, M2_PATH_SWA_HMMA = 6 };
+enum { M2_PATH_HMMA = 5, M2_PATH_SWA_HMMA = 6, M2_PATH_GA8 = 7 };
 
 // ds4_gpu_cleanup calls this. A second init must allocate again, not leak.
 static void m2_split_release(void) {
     m2df_release();
+    if (m2_ga8_buf) {
+        (void)cudaFree(m2_ga8_buf);
+        m2_ga8_buf = nullptr;
+    }
     if (!m2_split_buf) { return; }
     (void)cudaFree(m2_split_buf);
     m2_split_buf = nullptr;
+}
+
+static int m2_ga8_ready(void) {
+    if (m2_ga8_buf) { return 1; }
+    if (ds4_capture_active()) { return 0; }
+    const size_t bytes = (size_t)mimo2_ga8::SLICES * 64 * (2 + 128) * sizeof(float);
+    if (cudaMalloc(&m2_ga8_buf, bytes) != cudaSuccess) {
+        m2_ga8_buf = nullptr;
+        (void)cudaGetLastError();
+        return 0;
+    }
+    return 1;
 }
 
 static int m2_split_ready(void) {
@@ -227,7 +261,20 @@ static int m2_attention_fp8(
         q->bytes < (uint64_t)rows * HEADS * KEY * sizeof(float) ||
         positions->bytes < (uint64_t)rows * sizeof(uint32_t) ||
         cache->bytes < (uint64_t)capacity * M2_FP8_ROW) { return 0; }
-    if (rows <= SPLIT_ROWS && m2_split_ready()) {
+    if (rows <= SPLIT_ROWS && m2_ga8_available && m2_ga8_ready()) {
+        // A block per (slice, row), a warp per KV head; SLICES (row, slice) pairs in all.
+        const unsigned group = rows == 1 ? 1 : rows == 2 ? 2 : rows <= 4 ? 4 : 8;
+        const unsigned slices = max(1u, m2_ga8_slices / group);
+        const size_t n = (size_t)mimo2_ga8::SLICES * 64;
+        float *pmax = m2_ga8_buf, *pden = pmax + n, *pacc = pden + n;
+        m2_attn_path = M2_PATH_GA8;
+        mimo2_ga8::decode<<<dim3(slices, rows), 32 * M2_FP8_HEADS, mimo2_ga8::DECODE_SMEM,
+            ds4_current_stream()>>>(
+            pmax, pden, pacc, (const float *)q->ptr, (const uint8_t *)cache->ptr,
+            (const unsigned *)positions->ptr, capacity, slices);
+        mimo2_ga8::merge<<<dim3(HEADS, rows), VALUE, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, pmax, pden, pacc, slices);
+    } else if (rows <= SPLIT_ROWS && m2_split_ready()) {
         const size_t n = (size_t)M2_DECODE_SPLITS * 64;
         float *pmax = m2_split_buf, *pden = pmax + n, *pacc = pden + n;
         m2_attn_path = 3;
@@ -238,6 +285,12 @@ static int m2_attention_fp8(
             mimo2_attn_merge<<<64, 32, 0, ds4_current_stream()>>>(
                 (float *)out->ptr + (uint64_t)r * HEADS * VALUE, pmax, pden, pacc, M2_DECODE_SPLITS);
         }
+    } else if (m2_ga8_available) {
+        m2_attn_path = M2_PATH_GA8;
+        mimo2_ga8::prefill<<<dim3((rows + mimo2_ga8::ROWS - 1) / mimo2_ga8::ROWS, HEADS / 2),
+            mimo2_ga8::THREADS, mimo2_ga8::SMEM, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const uint8_t *)cache->ptr,
+            (const unsigned *)positions->ptr, rows, capacity);
     } else if (m2_hmma_available) {
         m2_attn_path = M2_PATH_HMMA;
         mimo2_hmma::prefill<mimo2_hmma::Fp8><<<dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),

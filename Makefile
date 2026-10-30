@@ -2053,6 +2053,14 @@ test-minimax-artifacts: tests/test_minimax_artifacts
 test-minimax-mma8w: tests/test_minimax_mma8w
 	./tests/test_minimax_mma8w
 
+# MiMo VQ full-layer FP8 attention (prefill and decode) vs the f16-staged kernels and FP64 (no model).
+tests/mimo2_ga8: tests/mimo2_ga8.cu ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $<
+
+.PHONY: test-mimo2-ga8
+test-mimo2-ga8: tests/mimo2_ga8
+	./tests/mimo2_ga8
+
 # R13+8 residual stage: restore bits, decode/verify experts and FP8 prefill MMA.
 tests/test_glm_vq_res: tests/test_glm_vq_res.cu cuda/glm_vq.cuh cuda/glm_vq_linear.cuh cuda/glm_vq_q4.cuh cuda/q4_k.cuh cuda/glm_vq_decode.cuh cuda/glm_vq_ops.cuh cuda/glm_vq_mma.cuh cuda/glm_vq_mma8.cuh
 	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -o $@ $< -lcublas
@@ -2577,7 +2585,7 @@ BUILD_PROGRAMS := \
     tests/iquest_verify tests/libds4ple_test.so tests/libglm_vq_attention.so \
     tests/libglm_vq_decode.so tests/libglm_vq_fp8.so tests/libglm_vq_index.so \
     tests/libglm_vq_linear.so tests/libglm_vq_mma.so tests/libglm_vq_test.so tests/ling31_mtp_gate \
-    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality \
+    tests/ling31_quality tests/minimax_quality tests/minimax_state tests/minimax_vision tests/axk2_quality tests/mimo2_vq_quality tests/mimo2_ga8 \
     tests/naive_attention_profile tests/naive_banks tests/naive_bind tests/naive_dense \
     tests/naive_draft_bind tests/naive_draft_graph tests/naive_draft_ops tests/naive_gate \
     tests/naive_graph tests/naive_index_profile tests/naive_index_u2_profile tests/naive_memory \
