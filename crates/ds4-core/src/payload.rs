@@ -26,6 +26,8 @@ pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
 pub const LAYOUT_LING3VL: u32 = 0x3347_4e4c; /* "LNG3" */
 const LAYOUT_INKLING: u32 = 0x334c_4b49; /* "IKL3" */
 const LAYOUT_MIMO2: u32 = 0x324f_4d49; /* "IMO2" */
+// The VQ release's FP8 full-layer rows; native restore checks the format.
+const LAYOUT_MIMO2_FP8: u32 = 0x334f_4d49; /* "IMO3" */
 const LAYOUT_IQUEST: u32 = 0x3151_5149;
 const LAYOUT_NAIVE: u32 = 0x3530_4e4e;
 const LAYOUT_NAIVE_DRAFT: u32 = 0x4430_4e4e;
@@ -78,7 +80,7 @@ impl PayloadLayout {
             LAYOUT_LING3VL => Self::Ling3Vl,
             LAYOUT_INKLING => Self::Inkling,
             LAYOUT_IQUEST => Self::IQuestQ1,
-            LAYOUT_MIMO2 => Self::Mimo2,
+            LAYOUT_MIMO2 | LAYOUT_MIMO2_FP8 => Self::Mimo2,
             LAYOUT_NAIVE | LAYOUT_NAIVE_DRAFT => Self::Naive,
             LAYOUT_GLM_COMPACT
             | LAYOUT_GLM_EXPANDED
@@ -388,6 +390,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
 fn mimo_payload_magic_is_mimo() {
     let mut fields = [0u32; U32_FIELDS];
     fields[5] = LAYOUT_MIMO2;
+    assert_eq!(PayloadLayout::from_fields(&fields), PayloadLayout::Mimo2);
+    fields[5] = LAYOUT_MIMO2_FP8;
     assert_eq!(PayloadLayout::from_fields(&fields), PayloadLayout::Mimo2);
     assert_eq!(PayloadLayout::Mimo2.family(), ModelFamily::Mimo2);
 }

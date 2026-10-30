@@ -238,6 +238,12 @@ pub fn probe_vision_sidecar(
             message: "--vision requires one full GLM-5.3, Step, Ling or MiMo CUDA model".into(),
         });
     }
+    if shape.variant == crate::Variant::Mimo26FlashVq {
+        return Err(Error {
+            code: 1,
+            message: "MiMo VQ maps its release's own vision and audio parts".into(),
+        });
+    }
     if shape.family == ModelFamily::Mimo2 {
         return crate::mimo2::inspect_projector(std::path::Path::new(path)).map_err(|error| {
             Error {

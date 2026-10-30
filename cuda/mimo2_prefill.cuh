@@ -13,7 +13,9 @@ enum { QK = 192, V = 128, HEADS = 64, WQ = 16, WARPS = 4,
 struct A { half2 x[4]; };
 struct B { half2 x[2]; };
 struct C { float x[4] = {}; };
-enum Copy { Scalar, Async };
+// Fp8: the VQ release's full rows (cuda/mimo2_primitives.cuh), widened to
+// f16 tiles with their head scales as they are staged.
+enum Copy { Scalar, Async, Fp8 };
 
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
 // KV rows and their shared strides are 16-byte aligned. Copying eight
@@ -125,9 +127,10 @@ __device__ __forceinline__ void consume(
 
 template<Copy CopyKind = Scalar, unsigned Window = 0>
 __global__ static void prefill(
-        float *out, const float *q, const __half *cache, const float *sinks,
+        float *out, const float *q, const void *cache_raw, const float *sinks,
         const unsigned *positions, unsigned rows, unsigned kv_heads, unsigned capacity) {
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+    const __half *cache = static_cast<const __half *>(cache_raw);
     const unsigned lane = threadIdx.x % 32, warp = threadIdx.x / 32;
     const unsigned row0 = blockIdx.x * TQ, head = blockIdx.y;
     const unsigned kv_head = head / (HEADS / kv_heads), stride = kv_heads * (QK + V);
@@ -181,6 +184,22 @@ __global__ static void prefill(
             }
             asm volatile("cp.async.commit_group;" ::: "memory");
             asm volatile("cp.async.wait_group 0;" ::: "memory");
+        } else if constexpr (CopyKind == Fp8) {
+            const uint8_t *rows8 = static_cast<const uint8_t *>(cache_raw);
+            for (unsigned i = threadIdx.x; i < TK * QK; i += blockDim.x) {
+                const unsigned key = base + i / QK, col = i % QK;
+                const uint8_t *r = rows8 + (uint64_t)(key % capacity) * M2_FP8_ROW;
+                sk[i / QK][col] = key <= last
+                    ? __float2half_rn(m2_e4m3(r[kv_head * QK + col]) * m2_fp8_scale(r, 0, kv_head))
+                    : __float2half(0);
+            }
+            for (unsigned i = threadIdx.x; i < TK * V; i += blockDim.x) {
+                const unsigned key = base + i / V, col = i % V;
+                const uint8_t *r = rows8 + (uint64_t)(key % capacity) * M2_FP8_ROW;
+                sv[i / V][col] = key <= last
+                    ? __float2half_rn(m2_e4m3(r[M2_FP8_KEYS + kv_head * V + col]) * m2_fp8_scale(r, 1, kv_head))
+                    : __float2half(0);
+            }
         } else {
             for (unsigned i = threadIdx.x; i < TK * QK; i += blockDim.x) {
                 const unsigned key = base + i / QK, col = i % QK;

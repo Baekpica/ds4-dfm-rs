@@ -106,6 +106,20 @@ extern "C" int ds4_gpu_mimo2_kv_store(
     return cuda_ok(cudaGetLastError(), "MiMo KV store");
 }
 
+extern "C" int ds4_gpu_mimo2_kv_store_fp8(
+        ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t capacity) {
+    if (!cache || !k || !v || !positions || !rows || !capacity || rows > capacity ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t) ||
+        cache->bytes < (uint64_t)capacity * M2_FP8_ROW ||
+        k->bytes < (uint64_t)rows * M2_FP8_KEYS * sizeof(float) ||
+        v->bytes < (uint64_t)rows * M2_FP8_HEADS * 128 * sizeof(float)) { return 0; }
+    mimo2_kv_store_fp8<<<rows, 2 * M2_FP8_HEADS * 32, 0, ds4_current_stream()>>>(
+        (uint8_t *)cache->ptr, (const float *)k->ptr, (const float *)v->ptr,
+        rows, (const unsigned *)positions->ptr, capacity);
+    return cuda_ok(cudaGetLastError(), "MiMo FP8 KV store");
+}
+
 static float *m2_split_buf = nullptr;
 /* Which attention kernel the last call launched. The decode-round test
  * reads this so a matching walk result cannot hide a missed dispatch. */
@@ -156,10 +170,89 @@ extern "C" int ds4_gpu_mimo2_dflash_attn(
         q0, n, ctx, ds4_current_stream());
 }
 
+static int m2_attention_run(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *positions, const float *sinks, uint32_t kv_heads, uint32_t capacity,
+        uint32_t rows, uint32_t window, uint32_t pos0);
+static int m2_attention_fp8(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *positions, uint32_t capacity, uint32_t rows);
+
 extern "C" int ds4_gpu_mimo2_attention(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
         const ds4_gpu_tensor *positions, const void *map, uint64_t size,
         uint64_t sink_offset, uint32_t kv_heads, uint32_t capacity,
+        uint32_t rows, uint32_t window, uint32_t pos0) {
+    enum { HEADS = 64 };
+    const float *sinks = nullptr;
+    if (map) {
+        const uint64_t bytes = HEADS * sizeof(float);
+        if (sink_offset > size || bytes > size - sink_offset) { return 0; }
+        sinks = (const float *)cuda_model_range_ptr(map, sink_offset, bytes, "MiMo sinks");
+        if (!sinks) { return 0; }
+    }
+    return m2_attention_run(out, q, cache, positions, sinks, kv_heads, capacity, rows, window, pos0);
+}
+
+// The VQ release widens its BF16 sinks once into F32 rows of 64 heads; its
+// full layers may keep FP8 rows (no sink there).
+extern "C" int ds4_gpu_mimo2_attention_sinks(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *positions, const ds4_gpu_tensor *sinks, uint32_t sink_row,
+        uint32_t kv_heads, uint32_t capacity, uint32_t rows, uint32_t window, uint32_t pos0,
+        uint32_t fp8) {
+    enum { HEADS = 64 };
+    if (fp8) {
+        if (sinks || kv_heads != M2_FP8_HEADS || window) { return 0; }
+        return m2_attention_fp8(out, q, cache, positions, capacity, rows);
+    }
+    const float *row = nullptr;
+    if (sinks) {
+        if ((uint64_t)(sink_row + 1) * HEADS * sizeof(float) > sinks->bytes) { return 0; }
+        row = (const float *)sinks->ptr + (uint64_t)sink_row * HEADS;
+    }
+    return m2_attention_run(out, q, cache, positions, row, kv_heads, capacity, rows, window, pos0);
+}
+
+/* Full-layer FP8 rows: the split decode for 1-8 rows (decode and verify
+ * widths), tensor-core tiles above. Both widen the stored codes into the
+ * f16 tiles the F16 cache would stage. */
+static int m2_attention_fp8(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *positions, uint32_t capacity, uint32_t rows) {
+    enum { HEADS = 64, KEY = 192, VALUE = 128, CONTEXT = 1048576, MAX_ROWS = 65535, SPLIT_ROWS = 8 };
+    if (!out || !q || !cache || !positions || !rows || rows > MAX_ROWS ||
+        !capacity || capacity > CONTEXT || rows > capacity ||
+        out->bytes < (uint64_t)rows * HEADS * VALUE * sizeof(float) ||
+        q->bytes < (uint64_t)rows * HEADS * KEY * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t) ||
+        cache->bytes < (uint64_t)capacity * M2_FP8_ROW) { return 0; }
+    if (rows <= SPLIT_ROWS && m2_split_ready()) {
+        const size_t n = (size_t)M2_DECODE_SPLITS * 64;
+        float *pmax = m2_split_buf, *pden = pmax + n, *pacc = pden + n;
+        m2_attn_path = 3;
+        for (uint32_t r = 0; r < rows; r++) {
+            mimo2_attn_split<true><<<dim3(M2_DECODE_SPLITS, M2_FP8_HEADS), 512, 0, ds4_current_stream()>>>(
+                pmax, pden, pacc, (const float *)q->ptr + (uint64_t)r * HEADS * KEY, cache->ptr, nullptr,
+                (const unsigned *)positions->ptr + r, M2_FP8_HEADS, capacity, M2_DECODE_SPLITS, 0);
+            mimo2_attn_merge<<<64, 32, 0, ds4_current_stream()>>>(
+                (float *)out->ptr + (uint64_t)r * HEADS * VALUE, pmax, pden, pacc, M2_DECODE_SPLITS);
+        }
+    } else if (m2_hmma_available) {
+        m2_attn_path = M2_PATH_HMMA;
+        mimo2_hmma::prefill<mimo2_hmma::Fp8><<<dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),
+            32 * mimo2_hmma::WARPS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, cache->ptr, nullptr,
+            (const unsigned *)positions->ptr, rows, M2_FP8_HEADS, capacity);
+    } else {
+        return 0;
+    }
+    return cuda_ok(cudaGetLastError(), "MiMo FP8 full attention");
+}
+
+static int m2_attention_run(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *positions, const float *sinks, uint32_t kv_heads, uint32_t capacity,
         uint32_t rows, uint32_t window, uint32_t pos0) {
     enum { HEADS = 64, KEY = 192, VALUE = 128, CONTEXT = 1048576, MAX_ROWS = 65535 };
     const uint64_t cache_bytes = (uint64_t)capacity * kv_heads * (KEY + VALUE) * sizeof(__half);
@@ -169,13 +262,6 @@ extern "C" int ds4_gpu_mimo2_attention(
         out->bytes < (uint64_t)rows * HEADS * VALUE * sizeof(float) ||
         q->bytes < (uint64_t)rows * HEADS * KEY * sizeof(float) ||
         positions->bytes < (uint64_t)rows * sizeof(uint32_t) || cache->bytes < cache_bytes) { return 0; }
-    const float *sinks = nullptr;
-    if (map) {
-        const uint64_t bytes = HEADS * sizeof(float);
-        if (sink_offset > size || bytes > size - sink_offset) { return 0; }
-        sinks = (const float *)cuda_model_range_ptr(map, sink_offset, bytes, "MiMo sinks");
-        if (!sinks) { return 0; }
-    }
     /* Session admission owns position bounds, contiguous rows and ring retention.
      * No scalar position is baked into capture; all queries read live state.
      * m2_use_tile is the measured crossover. The L2 load keeps the KV head

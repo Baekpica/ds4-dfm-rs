@@ -4892,6 +4892,17 @@ int ds4_gpu_exaone_rms_norm_tensor(
         uint32_t                n_tokens,
         float                   eps);
 
+/* The same RMSNorm over a BF16 weight (MiMo's VQ release). */
+int ds4_gpu_exaone_rms_norm_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                n,
+        uint32_t                n_tokens,
+        float                   eps);
+
 int ds4_gpu_exaone_add_tensor(
         ds4_gpu_tensor       *x,
         const ds4_gpu_tensor *y,
@@ -5112,6 +5123,18 @@ int ds4_gpu_mimo2_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
         const void *map, uint64_t size, uint64_t sink_offset,
         uint32_t kv_heads, uint32_t capacity, uint32_t rows, uint32_t window,
         uint32_t pos0);
+/* ds4_gpu_mimo2_attention with the sinks of row `sink_row` of an F32
+ * [layers][64] tensor (none when `sinks` is NULL). `fp8`: a full layer's
+ * rows are the VQ release's E4M3 K/V with f16 head scales (1,296 B). */
+int ds4_gpu_mimo2_attention_sinks(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *sinks, uint32_t sink_row,
+        uint32_t kv_heads, uint32_t capacity, uint32_t rows, uint32_t window,
+        uint32_t pos0, uint32_t fp8);
+/* Store a full layer's K/V rows in that FP8 form (four KV heads). */
+int ds4_gpu_mimo2_kv_store_fp8(ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t capacity);
 int ds4_gpu_mimo2_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
         const ds4_gpu_tensor *logits, const void *map, uint64_t size,
         uint64_t offset, uint32_t rows);

@@ -989,6 +989,9 @@ fn mtp_names(shape: &Shape) -> Vec<BindName> {
 /// Names `weights_bind` looks up for the main GGUF (not MTP/DSpark siblings).
 pub fn bind_names(shape: &Shape) -> Vec<BindName> {
     let mut out = Vec::new();
+    if shape.variant == crate::Variant::Mimo26FlashVq {
+        return layout_names(crate::mimo2_vq::layouts());
+    }
     match shape.family {
         ModelFamily::Glm53Vq => return layout_names(crate::glm_vq::layouts()),
         ModelFamily::Ling31Vq => return layout_names(crate::ling31_vq::layouts()),
@@ -1223,6 +1226,9 @@ impl BindPlan {
                 | ModelFamily::Glm53Vq
                 | ModelFamily::BeamVq
                 | ModelFamily::Axk2Vq => {
+                    slot.name.contains(".mlp.experts.") && slot.name.ends_with(".gate_proj.weight")
+                }
+                ModelFamily::Mimo2 if self.shape.variant == crate::Variant::Mimo26FlashVq => {
                     slot.name.contains(".mlp.experts.") && slot.name.ends_with(".gate_proj.weight")
                 }
                 // MiniMax names its routed gate w1.

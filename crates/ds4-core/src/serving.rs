@@ -815,6 +815,28 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: Some(crate::naive::QUALIFIED_PROMPT),
             media_serial: false,
         },
+        // The VQ release runs the same lanes; its gates are its own, so no
+        // limit transfers from the mixed artifact until they pass.
+        ModelFamily::Mimo2 if variant == Variant::Mimo26FlashVq => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::OptIn,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            spec_draft_min: 2,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::mimo2::INDEX_LIMIT),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: true,
+        },
         // Target banks run without MTP; media and speculation use serial.
         ModelFamily::Mimo2 => ServingCaps {
             family,
@@ -1617,6 +1639,7 @@ impl ServingCaps {
             Variant::Step37Flash => "step35",
             Variant::Ling30FlashVl => "bailingmoe3",
             Variant::Mimo26Flash => "mimo2",
+            Variant::Mimo26FlashVq => "mimo2_vq",
             Variant::Qwen35_27B => "qwen35",
             Variant::NaiveN05Flash => "naive_n05_flash",
             Variant::IQuestQ1 => "iquest_q1",

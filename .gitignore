@@ -245,6 +245,7 @@ tests/naive_banks
 /tests/test_minimax_rows
 /tests/test_minimax_reduce
 /tests/axk2_quality
+/tests/mimo2_vq_quality
 /tests/test_axk2_topk
 /tests/test_axk2_flash
 /tests/test_axk2_q8

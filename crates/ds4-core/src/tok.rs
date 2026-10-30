@@ -688,6 +688,11 @@ impl Vocab {
                 .map_err(|_| TokError::InvalidTokenizer("MiniMax release metadata"))?;
             return Self::load_tables(&g, family, Some(minimax::tables(path)?));
         }
+        if family == ModelFamily::Mimo2 && path.is_dir() {
+            let g = crate::mimo2_vq::metadata(path)
+                .map_err(|_| TokError::InvalidTokenizer("MiMo release metadata"))?;
+            return Self::load_tables(&g, family, Some(mimo2::tables(path)?));
+        }
         let g = GgufFile::open(path)?;
         Self::load(&g, family)
     }

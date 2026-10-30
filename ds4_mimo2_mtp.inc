@@ -43,8 +43,7 @@ static bool mimo2_journal_slot(ds4_mimo2_graph *g, unsigned depth, unsigned pos,
 static bool mimo2_draft_head(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weights *w,
                              unsigned il) {
     const ds4_layer_weights *l = &w->layer[il];
-    return ds4_gpu_exaone_rms_norm_tensor(g->ws.b_norm, g->ws.b_cur, m->map, m->size,
-            l->layer_output_norm->abs_offset, M2_EMBED, 1, DS4_RMS_EPS) &&
+    return mimo2_norm(g->ws.b_norm, g->ws.b_cur, m, l->layer_output_norm, 1) &&
         plain_graph_matmul_tensor(g->logits, m, w->output, M2_EMBED, DS4_N_VOCAB, g->ws.b_norm, 1);
 }
 
@@ -69,12 +68,9 @@ static int mimo2_draft_step(ds4_mimo2_graph *g, const ds4_model *m, const ds4_we
     bool ok = left && right &&
         ds4_gpu_tensor_write(g->tokens, 0, &token, sizeof(token)) &&
         ds4_gpu_tensor_write(g->positions, 0, &pos, sizeof(pos)) &&
-        ds4_gpu_embed_tokens_quant_tensor(g->ws.b_attn_out, g->tokens, m->map, m->size,
-            w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, 1, M2_EMBED) &&
-        ds4_gpu_exaone_rms_norm_tensor(left, g->ws.b_attn_out, m->map, m->size,
-            l->nextn_enorm->abs_offset, M2_EMBED, 1, DS4_RMS_EPS) &&
-        ds4_gpu_exaone_rms_norm_tensor(right, g->hidden, m->map, m->size,
-            l->nextn_hnorm->abs_offset, M2_EMBED, 1, DS4_RMS_EPS) &&
+        mimo2_embed(g, m, w, &token, 1, g->ws.b_attn_out) &&
+        mimo2_norm(left, g->ws.b_attn_out, m, l->nextn_enorm, 1) &&
+        mimo2_norm(right, g->hidden, m, l->nextn_hnorm, 1) &&
         plain_graph_matmul_tensor(g->ws.b_cur, m, l->nextn_eh_proj,
             2 * M2_EMBED, M2_EMBED, g->joined, 1) &&
         ds4_gpu_step37_rope(g->rope_swa, g->freq_swa, g->positions, M2_ROT, 1) &&
@@ -120,7 +116,9 @@ int ds4_session_mimo2_encode_audio(ds4_session *s, const float *mel, unsigned fr
                                    char *err, size_t errlen) {
 #ifndef DS4_NO_GPU
     if (s && s->engine && s->engine->vision_ready && s->engine->mimo2_media.bound) {
-        return mimo2_audio_rows(&s->engine->mimo2_media, &s->engine->vision_model,
+        // The VQ release keeps its audio encoder in a separate part.
+        const ds4_model *audio = s->engine->mimo2_media.audio;
+        return mimo2_audio_rows(&s->engine->mimo2_media, audio ? audio : &s->engine->vision_model,
                                 mel, frames, out, cap, rows);
     }
 #else
@@ -235,6 +233,8 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
         return -1;
     }
     if (max_tokens <= 0 || !s->engine || s->engine->mtp_draft_tokens <= 1) { return 0; }
+    // The VQ release binds its MTP blocks only when their part is mapped.
+    if (!s->engine->mimo2_dflash && !s->engine->weights.layer[MIMO2_LAYERS].attn_qkv) { return 0; }
     ds4_mimo2_graph *g = &s->mimo2_graph;
     if (!s->mimo2_graph_ready || !s->checkpoint_valid || g->trial_n || g->failed ||
         g->position != (unsigned)s->checkpoint.len ||

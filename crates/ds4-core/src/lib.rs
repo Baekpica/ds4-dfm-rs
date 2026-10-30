@@ -32,6 +32,7 @@ mod mapped;
 mod mem;
 mod mem_gov;
 mod mimo2;
+mod mimo2_vq;
 pub mod minimax_h3;
 mod minimax_mtp;
 mod minimax_vq;
@@ -109,6 +110,7 @@ pub use mimo2::{
     MIXED_SHARDS, MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START,
     VISION_END, VISION_START,
 };
+pub use mimo2_vq::Feature as Mimo2VqFeature;
 pub use minimax_vq::media as minimax_media;
 pub use minimax_vq::Feature as MinimaxFeature;
 pub use payload::{
@@ -1316,6 +1318,12 @@ fn open_input_assets(path: &Path, shape: &Shape) -> Result<(GgufFile, Vocab)> {
             message: format!("metadata failed: {}", e.token()),
         })?;
         (g, Vocab::load_path(path, shape.family))
+    } else if shape.variant == Variant::Mimo26FlashVq {
+        let g = mimo2_vq::metadata(path).map_err(|e| Error {
+            code: 1,
+            message: format!("metadata failed: {}", e.token()),
+        })?;
+        (g, Vocab::load_path(path, shape.family))
     } else {
         let g = GgufFile::open(path).map_err(|e| Error {
             code: 1,
@@ -1368,6 +1376,12 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             ProbeParts::WithMtp => MinimaxFeature::Draft,
         };
         TensorInventory::open_minimax(Path::new(path), feature)
+    } else if identified.shape.variant == Variant::Mimo26FlashVq {
+        let feature = match parts {
+            ProbeParts::Trunk => Mimo2VqFeature::Trunk,
+            ProbeParts::WithMtp => Mimo2VqFeature::Mtp,
+        };
+        TensorInventory::open_mimo2_vq(Path::new(path), feature)
     } else {
         TensorInventory::open(std::path::Path::new(path))
     }
@@ -1385,7 +1399,7 @@ pub fn probe_model_artifact(path: &str, parts: ProbeParts) -> Result<()> {
             message: e.to_string(),
         })?;
     }
-    if identified.shape.family == ModelFamily::Mimo2 {
+    if identified.shape.variant == Variant::Mimo26Flash {
         Mimo2Plan::validate_inventory(&inventory).map_err(|e| Error {
             code: 1,
             message: e.to_string(),
@@ -1672,10 +1686,26 @@ impl Model {
                 message: "MiMo requires one full CUDA model without a DSpark sidecar".into(),
             });
         }
+        if identified.shape.variant == Variant::Mimo26FlashVq && tuning.vision_path.is_some() {
+            return Err(Error {
+                code: 1,
+                message: "MiMo VQ maps its release's own vision and audio parts".into(),
+            });
+        }
         if dflash {
+            let root = std::path::PathBuf::from(path);
             let path = std::path::Path::new(mtp_path.unwrap());
             if identified.shape.family == ModelFamily::BeamVq {
                 beam_vq::dflash2::inspect(path).map_err(|message| Error { code: 1, message })?;
+            } else if identified.shape.variant == Variant::Mimo26FlashVq {
+                // Only the release's own DFlash part, hashed with the release.
+                let part = mimo2_vq::drafter_path(&root);
+                if part.and_then(|p| p.canonicalize().ok()) != path.canonicalize().ok() {
+                    return Err(Error {
+                        code: 1,
+                        message: "MiMo VQ DFlash must be the release's dflash part".into(),
+                    });
+                }
             } else {
                 crate::mimo2::inspect_dflash(path).map_err(|error| Error {
                     code: 1,
@@ -1703,6 +1733,11 @@ impl Model {
             TensorInventory::open_minimax(
                 Path::new(path),
                 minimax_vq::feature(tuning.mtp_draft_tokens),
+            )
+        } else if identified.shape.variant == Variant::Mimo26FlashVq {
+            TensorInventory::open_mimo2_vq(
+                Path::new(path),
+                mimo2_vq::feature(tuning.mtp_draft_tokens, dflash),
             )
         } else {
             TensorInventory::open(std::path::Path::new(path))
@@ -1950,6 +1985,14 @@ impl Model {
         if identified.shape.family == ModelFamily::MinimaxVq {
             tuning.vision_path =
                 minimax_vq::vision_path(Path::new(path)).map(|p| p.to_string_lossy().into_owned());
+        }
+        // MiMo VQ maps its release's vision part; native opens the audio part
+        // beside it. Both are hashed here first.
+        if identified.shape.variant == Variant::Mimo26FlashVq {
+            let (vision, audio) = mimo2_vq::media_paths(Path::new(path));
+            tuning.vision_path = vision
+                .filter(|_| audio.is_some())
+                .map(|p| p.to_string_lossy().into_owned());
         }
         let vision_path = tuning
             .vision_path

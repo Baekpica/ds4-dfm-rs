@@ -115,6 +115,7 @@ pub enum Variant {
     BeamVq = 19,
     MinimaxVq = 20,
     Axk2Vq = 21,
+    Mimo26FlashVq = 22,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -375,6 +376,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"beam_vq") => ArchRoute::Fixed(Variant::BeamVq),
         Some(b"minimax_m3_vq") => ArchRoute::Fixed(Variant::MinimaxVq),
         Some(b"axk2_vq") => ArchRoute::Fixed(Variant::Axk2Vq),
+        Some(b"mimo2_vq") => ArchRoute::Fixed(Variant::Mimo26FlashVq),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -403,6 +405,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::BeamVq => SHAPE_BEAM_VQ,
         Variant::MinimaxVq => SHAPE_MINIMAX_VQ,
         Variant::Axk2Vq => SHAPE_AXK2_VQ,
+        Variant::Mimo26FlashVq => SHAPE_MIMO26_FLASH_VQ,
     }
 }
 
@@ -1461,6 +1464,14 @@ pub(crate) const SHAPE_NAIVE_N05_FLASH: Shape = Shape {
     n_indexer_top_k: 2048,
     n_full_attn_count: 0,
     rms_eps: 1e-5,
+    ..SHAPE_MIMO26_FLASH
+};
+
+// MiMo's VQ release (mimo2_vq/layout.rs): the same graph and runtime
+// family; only the artifact contract and stored types differ.
+pub(crate) const SHAPE_MIMO26_FLASH_VQ: Shape = Shape {
+    name: "MiMo-V2.6-Flash-VQ",
+    variant: Variant::Mimo26FlashVq,
     ..SHAPE_MIMO26_FLASH
 };
 

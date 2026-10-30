@@ -564,9 +564,14 @@ pub fn fill_quote_facts(
         }
         (ModelFamily::Mimo2, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
-            let bytes = crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0);
+            let bytes = mimo_context_bytes(caps.variant, ctx_tokens, cap);
             if quote_batch_alloc(req, caps, facts) {
-                let kv = crate::mimo2::kv_bytes(ctx_tokens, cap).unwrap_or(0);
+                let kv = if caps.variant == Variant::Mimo26FlashVq {
+                    crate::mimo2::vq_kv_bytes(ctx_tokens, cap)
+                } else {
+                    crate::mimo2::kv_bytes(ctx_tokens, cap)
+                }
+                .unwrap_or(0);
                 let draft = u64::from((crate::mimo2::SWA_WINDOW + cap - 1).min(ctx_tokens))
                     * u64::from(crate::mimo2::MTP_BLOCKS)
                     * 8
@@ -693,7 +698,7 @@ pub fn fill_quote_facts(
             let media_work = GIB;
             let serial = if quote_bank_lane(req, caps, facts) {
                 let cap = native.min(ctx_tokens).max(1);
-                crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0)
+                mimo_context_bytes(caps.variant, ctx_tokens, cap)
             } else {
                 0
             };
@@ -859,6 +864,15 @@ pub fn attach_host_quote(
         let part = |feature| crate::minimax_vq::resident_bytes(path, feature).unwrap_or(0);
         mtp_bytes =
             part(crate::MinimaxFeature::Draft).saturating_sub(part(crate::MinimaxFeature::Trunk));
+    }
+    // MiMo VQ maps its MTP part beside the trunk only when drafting with it
+    // (a DFlash `--mtp` file is priced as that file).
+    if let (Variant::Mimo26FlashVq, MtpMode::On, Some(path), None) =
+        (caps.variant, req.mtp_mode, model_path, mtp_path)
+    {
+        let part = |feature| crate::mimo2_vq::resident_bytes(path, feature).unwrap_or(0);
+        mtp_bytes =
+            part(crate::Mimo2VqFeature::Mtp).saturating_sub(part(crate::Mimo2VqFeature::Trunk));
     }
     let vision_bytes = artifact_span_bytes(vision_path);
     let mut dspark_bytes = artifact_span_bytes(dspark_path);
@@ -1037,6 +1051,11 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
         // Beam's embedding part stays on SSD: only the trunk is resident.
         if crate::beam_vq::is_release(path) {
             return crate::beam_vq::trunk_bytes(path).unwrap_or(0);
+        }
+        // MiMo's embedding part stays on SSD; MTP joins only when drafting.
+        if crate::mimo2_vq::is_release(path) {
+            return crate::mimo2_vq::resident_bytes(path, crate::Mimo2VqFeature::Trunk)
+                .unwrap_or(0);
         }
         // MiniMax's embedding and vision parts stay on SSD.
         if crate::minimax_vq::is_release(path) {
@@ -1751,6 +1770,15 @@ fn dots3_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
         * u64::from(shape.n_swa_kv_lora + shape.n_rot)
         * SIZEOF_U16
         * CHECKPOINT_SLOTS
+}
+
+// C mimo2_memory for the artifact: the VQ release swaps the routed rows for
+// its own expert runtime.
+fn mimo_context_bytes(variant: Variant, ctx: u32, cap: u32) -> u64 {
+    if variant == Variant::Mimo26FlashVq {
+        return crate::mimo2::vq_context_bytes(ctx, cap).unwrap_or(0);
+    }
+    crate::mimo2::context_bytes(ctx, cap).unwrap_or(0)
 }
 
 fn mimo_checkpoint_pool_bytes() -> u64 {
