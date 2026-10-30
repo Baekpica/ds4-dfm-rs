@@ -13,7 +13,7 @@ typedef struct {
     void *qwen_ple_cuda, *qwen_ple_store;
     int glm53_stream, vocab, mimo2_media, mtp_ready, dspark_ready;
     ds4_weights weights;
-    ds4_model model, mtp_model, dspark_model, vision_model;
+    ds4_model model, mtp_model, dspark_model, vision_model, audio_model;
     void *directional_steering_dirs, *directional_steering_file;
 } ds4_engine;
 
