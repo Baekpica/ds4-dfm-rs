@@ -423,6 +423,154 @@ __device__ __forceinline__ void consume(
         }
     }
 }
+
+/* E4M3 Q x E4M3 K (prefill8). K codes go straight from cp.async into a
+ * shared tile (rows of KB bytes put ldmatrix rows in distinct banks) and are
+ * m16n8k32 B fragments as stored: no widening and half the K tile traffic.
+ * Q is E4M3 with one scale per (row, head); QC = 2 adds the residual as a
+ * second component. Scores take the Q and K scales after the dot; each
+ * 128-dim group accumulates in a fresh FP32 register (the FP8 MMA truncates
+ * long sums). V and PV are those of prefill. */
+enum { KB = QK + 16, GROUP_DIMS = 128 };
+constexpr unsigned SMEM8 = 2u * TK * KB + 2u * TK * VS * sizeof(__half) + 2u * TK * sizeof(float);
+
+struct Raw8 { uint4 v[VPIECES]; __half vs[VPIECES]; __half ks; };
+
+__device__ __forceinline__ void mma8(float c[4], const unsigned a[4], unsigned b0, unsigned b1) {
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
+                 "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+// Four floats as E4M3 bytes in k order (byte 0 = first).
+__device__ __forceinline__ unsigned e4m3x4(float4 x) {
+    const unsigned lo = __nv_cvt_float2_to_fp8x2(make_float2(x.x, x.y), __NV_SATFINITE, __NV_E4M3);
+    const unsigned hi = __nv_cvt_float2_to_fp8x2(make_float2(x.z, x.w), __NV_SATFINITE, __NV_E4M3);
+    return lo | hi << 16;
+}
+
+__device__ __forceinline__ float4 e4m3x4_value(unsigned codes) {
+    const float2 lo = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(codes & 0xffffu), __NV_E4M3)));
+    const float2 hi = __half22float2(__half2(__nv_cvt_fp8x2_to_halfraw2(
+        (__nv_fp8x2_storage_t)(codes >> 16), __NV_E4M3)));
+    return make_float4(lo.x, lo.y, hi.x, hi.y);
+}
+
+// K codes of the tile at `base` by cp.async (zero past `last`), then the
+// V codes and K scales into registers, as fetch.
+__device__ __forceinline__ void fetch8(Raw8 &raw, uint8_t (*k)[KB], const uint8_t *cache, unsigned base,
+                                       unsigned last, unsigned capacity, unsigned kv) {
+#pragma unroll
+    for (int i = 0; i < KPIECES; i++) {
+        const unsigned p = threadIdx.x + i * THREADS, key = base + p / (QK / 16);
+        const bool live = key <= last;
+        const uint8_t *row = slot(cache, live ? key : base, capacity);
+        mimo2_hmma::cp16(&k[p / (QK / 16)][p % (QK / 16) * 16], row + kv * QK + p % (QK / 16) * 16,
+                         live ? 16u : 0u);
+    }
+    asm volatile("cp.async.commit_group;" ::: "memory");
+    raw.ks = __ushort_as_half(0);
+    if (threadIdx.x < TK && base + threadIdx.x <= last) {
+        raw.ks = reinterpret_cast<const __half *>(slot(cache, base + threadIdx.x, capacity) + M2_FP8_SCALES)[kv];
+    }
+#pragma unroll
+    for (int i = 0; i < VPIECES; i++) {
+        const unsigned p = threadIdx.x + i * THREADS, key = base + p / (V / 16);
+        raw.v[i] = make_uint4(0, 0, 0, 0);
+        raw.vs[i] = __ushort_as_half(0);
+        if (key > last) { continue; }
+        const uint8_t *row = slot(cache, key, capacity);
+        raw.v[i] = __ldcg(reinterpret_cast<const uint4 *>(row + M2_FP8_KEYS + kv * V) + p % (V / 16));
+        raw.vs[i] = reinterpret_cast<const __half *>(row + M2_FP8_SCALES)[M2_FP8_HEADS + kv];
+    }
+}
+
+// V widened as widen does, K scales as floats; then the K codes have landed.
+__device__ __forceinline__ void widen8(__half (*v)[VS], float *ks, const Raw8 &raw) {
+#pragma unroll
+    for (int i = 0; i < VPIECES; i++) {
+        const unsigned p = threadIdx.x + i * THREADS;
+        widen16(&v[p / (V / 16)][p % (V / 16) * 16], raw.v[i], raw.vs[i]);
+    }
+    if (threadIdx.x < TK) { ks[threadIdx.x] = __half2float(raw.ks); }
+    asm volatile("cp.async.wait_all;" ::: "memory");
+}
+
+// consume with E4M3 scores: `qs` holds each row's Q scale times SCALE.
+template<unsigned QC>
+__device__ __forceinline__ void consume8(
+        float o[V / 8][4], float m[2], float l[2], const unsigned qa[QC][QK / 32][4],
+        const uint8_t (*k)[KB], const __half (*v)[VS], const float *ks, const float qs[2],
+        unsigned base, const unsigned pos[2], bool mask, unsigned lane) {
+    const unsigned mtx = lane / 8, r = lane % 8;
+    float s[TK / 8][4] = {}, part[TK / 8][4] = {};
+#pragma unroll
+    for (int kc = 0; kc < QK / 32; kc++) {
+#pragma unroll
+        for (int nb = 0; nb < TK / 8; nb += 2) {
+            unsigned b[4];
+            ldsm4(b, &k[(nb + mtx / 2) * 8 + r][kc * 32 + (mtx % 2) * 16], false);
+#pragma unroll
+            for (int c = 0; c < (int)QC; c++) {
+                mma8(kc * 32 < GROUP_DIMS ? s[nb] : part[nb], qa[c][kc], b[0], b[1]);
+                mma8(kc * 32 < GROUP_DIMS ? s[nb + 1] : part[nb + 1], qa[c][kc], b[2], b[3]);
+            }
+        }
+    }
+
+    float top[2] = {-INFINITY, -INFINITY};
+#pragma unroll
+    for (int nb = 0; nb < TK / 8; nb++) {
+#pragma unroll
+        for (int e = 0; e < 4; e++) {
+            const unsigned local = nb * 8 + (lane % 4) * 2 + e % 2;
+            const float dot = s[nb][e] + part[nb][e];
+            const float x = mask && base + local > pos[e / 2] ? -INFINITY : dot * qs[e / 2] * ks[local];
+            s[nb][e] = x;
+            top[e / 2] = fmaxf(top[e / 2], x);
+        }
+    }
+    float alpha[2];
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+        top[i] = fmaxf(top[i], __shfl_xor_sync(0xffffffff, top[i], 1));
+        top[i] = fmaxf(top[i], __shfl_xor_sync(0xffffffff, top[i], 2));
+        const float next = fmaxf(m[i], top[i]);
+        alpha[i] = next == -INFINITY ? 1.0f : exp2f(m[i] - next);
+        m[i] = next;
+        l[i] *= alpha[i];
+    }
+#pragma unroll
+    for (int nb = 0; nb < TK / 8; nb++) {
+#pragma unroll
+        for (int e = 0; e < 4; e++) {
+            const float p = m[e / 2] == -INFINITY ? 0.0f : exp2f(s[nb][e] - m[e / 2]);
+            s[nb][e] = p;
+            l[e / 2] += p;
+        }
+    }
+#pragma unroll
+    for (int n = 0; n < V / 8; n++) {
+#pragma unroll
+        for (int e = 0; e < 4; e++) { o[n][e] *= alpha[e / 2]; }
+    }
+
+#pragma unroll
+    for (int j = 0; j < TK / 16; j++) {
+        const unsigned pa[4] = {pack(s[2 * j][0], s[2 * j][1]), pack(s[2 * j][2], s[2 * j][3]),
+                                pack(s[2 * j + 1][0], s[2 * j + 1][1]),
+                                pack(s[2 * j + 1][2], s[2 * j + 1][3])};
+#pragma unroll
+        for (int n = 0; n < V / 8; n += 2) {
+            unsigned b[4];
+            ldsm4(b, &v[16 * j + (mtx % 2) * 8 + r][(n + mtx / 2) * 8], true);
+            mma(o[n], pa, b[0], b[1]);
+            mma(o[n + 1], pa, b[2], b[3]);
+        }
+    }
+}
 #endif
 
 // Grid (row tiles, 32 head pairs); rows are contiguous positions.
@@ -470,6 +618,107 @@ __global__ __launch_bounds__(THREADS, 1) static void prefill(
         if (more) { fetch(raw, cache, base + TK, last, capacity, kv); }
         consume(o, m, l, qa, k + t * TK, v + t * TK, base, pos, base + TK - 1 > low, lane);
         if (more) { widen(k + (t ^ 1) * TK, v + (t ^ 1) * TK, raw); }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+        l[i] += __shfl_xor_sync(0xffffffff, l[i], 1);
+        l[i] += __shfl_xor_sync(0xffffffff, l[i], 2);
+    }
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+        if (!alive[i]) { continue; }
+        float *dst = out + ((uint64_t)row[i] * 64 + head) * V + (lane % 4) * 2;
+#pragma unroll
+        for (int n = 0; n < V / 8; n++) {
+            *reinterpret_cast<float2 *>(dst + n * 8) =
+                make_float2(o[n][2 * i] / l[i], o[n][2 * i + 1] / l[i]);
+        }
+    }
+#else
+    asm volatile("trap;");
+#endif
+}
+
+// prefill with E4M3 Q x E4M3 K scores (see consume8).
+template<unsigned QC>
+__global__ __launch_bounds__(THREADS, 1) static void prefill8(
+        float *out, const float *q, const uint8_t *cache, const unsigned *positions,
+        unsigned rows, unsigned capacity) {
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 890
+    extern __shared__ __align__(16) unsigned char smem[];
+    uint8_t (*k)[KB] = reinterpret_cast<uint8_t (*)[KB]>(smem);
+    __half (*v)[VS] = reinterpret_cast<__half (*)[VS]>(smem + 2u * TK * KB);
+    float *ks = reinterpret_cast<float *>(smem + 2u * TK * KB + 2u * TK * VS * sizeof(__half));
+    const unsigned lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    const unsigned row0 = blockIdx.x * ROWS, head = blockIdx.y * 2 + warp / 4, kv = head / GROUP;
+    const unsigned first = row0 + (warp % 4) * 16 + lane / 4;
+    const unsigned row[2] = {first, first + 8};
+    bool alive[2];
+    unsigned pos[2];
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+        alive[i] = row[i] < rows;
+        pos[i] = alive[i] ? positions[row[i]] : 0;
+    }
+    const unsigned low = __reduce_min_sync(0xffffffff, min(pos[0], pos[1]));
+
+    // A fragments: rows g, g + 8; dims 4t..4t+3 and 16+4t.. of each 32. The
+    // quad of a row covers its 192 dims, so it shares the row's amax.
+    const unsigned t4 = (lane % 4) * 4;
+    float amax[2] = {};
+#pragma unroll
+    for (int kc = 0; kc < QK / 32; kc++) {
+#pragma unroll
+        for (int e = 0; e < 4; e++) {
+            if (!alive[e % 2]) { continue; }
+            const float4 x = *reinterpret_cast<const float4 *>(
+                q + ((uint64_t)row[e % 2] * 64 + head) * QK + kc * 32 + (e / 2) * 16 + t4);
+            amax[e % 2] = fmaxf(amax[e % 2], fmaxf(fmaxf(fabsf(x.x), fabsf(x.y)), fmaxf(fabsf(x.z), fabsf(x.w))));
+        }
+    }
+    float qs[2], inv[2];
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+        amax[i] = fmaxf(amax[i], __shfl_xor_sync(0xffffffff, amax[i], 1));
+        amax[i] = fmaxf(amax[i], __shfl_xor_sync(0xffffffff, amax[i], 2));
+        inv[i] = amax[i] > 0.0f ? 448.0f / amax[i] : 0.0f;
+        qs[i] = amax[i] / 448.0f * SCALE;
+    }
+    unsigned qa[QC][QK / 32][4];
+#pragma unroll
+    for (int kc = 0; kc < QK / 32; kc++) {
+#pragma unroll
+        for (int e = 0; e < 4; e++) {
+            float4 x = make_float4(0, 0, 0, 0);
+            if (alive[e % 2]) {
+                x = *reinterpret_cast<const float4 *>(
+                    q + ((uint64_t)row[e % 2] * 64 + head) * QK + kc * 32 + (e / 2) * 16 + t4);
+            }
+            const float f = inv[e % 2];
+            x = make_float4(x.x * f, x.y * f, x.z * f, x.w * f);
+            qa[0][kc][e] = e4m3x4(x);
+            if (QC > 1) {
+                const float4 h = e4m3x4_value(qa[0][kc][e]);
+                qa[QC - 1][kc][e] = e4m3x4(make_float4(x.x - h.x, x.y - h.y, x.z - h.z, x.w - h.w));
+            }
+        }
+    }
+
+    float o[V / 8][4] = {}, m[2] = {-INFINITY, -INFINITY}, l[2] = {};
+    const unsigned last = positions[min(row0 + ROWS, rows) - 1];
+    Raw8 raw;
+    fetch8(raw, k, cache, 0, last, capacity, kv);
+    widen8(v, ks, raw);
+    __syncthreads();
+    unsigned t = 0;
+    for (unsigned base = 0; base <= last; base += TK, t ^= 1) {
+        const bool more = base + TK <= last;
+        if (more) { fetch8(raw, k + (t ^ 1) * TK, cache, base + TK, last, capacity, kv); }
+        consume8<QC>(o, m, l, qa, k + t * TK, v + t * TK, ks + t * TK, qs, base, pos,
+                     base + TK - 1 > low, lane);
+        if (more) { widen8(v + (t ^ 1) * TK, ks + (t ^ 1) * TK, raw); }
         __syncthreads();
     }
 
@@ -730,6 +979,8 @@ __global__ __launch_bounds__(V) static void merge(
 // Backend initialization: the 86 KB tile pair needs the opt-in carveout.
 static bool init() {
     return cudaFuncSetAttribute(prefill, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM) == cudaSuccess &&
+        cudaFuncSetAttribute(prefill8<1>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM8) == cudaSuccess &&
+        cudaFuncSetAttribute(prefill8<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM8) == cudaSuccess &&
         cudaFuncSetAttribute(decode, cudaFuncAttributeMaxDynamicSharedMemorySize, DECODE_SMEM) == cudaSuccess;
 }
 } // namespace mimo2_ga8
