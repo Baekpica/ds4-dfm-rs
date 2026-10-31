@@ -285,6 +285,8 @@ int main(void) {
     }
     if (ds4_bridge_session_sample(NULL, 1.0f, 0, 1.0f, 0.05f, &rng) != -1)
         fail("sample");
+    if (ds4_bridge_session_set_spec_sampler(NULL, NULL, NULL) != -1)
+        fail("set_spec_sampler");
     if (ds4_bridge_session_sample_excluding(NULL, 1.0f, 0, 1.0f,
                                             0.05f, &rng, 1) != -1) {
         fail("sample_excluding");
@@ -296,6 +298,12 @@ int main(void) {
     }
     if (ds4_bridge_step37_commit(NULL, 1, err, sizeof(err)) == 0) {
         fail("Step commit NULL session");
+    }
+    if (ds4_bridge_ling31_trial(NULL, 1, 4, NULL, NULL, 4, err, sizeof(err)) != -1) {
+        fail("Ling-3.1 trial NULL session");
+    }
+    if (ds4_bridge_ling31_commit(NULL, 1, err, sizeof(err)) == 0) {
+        fail("Ling-3.1 commit NULL session");
     }
     if (ds4_bridge_mimo2_trial(NULL, 1, 4, NULL, NULL, 4, err, sizeof(err)) != -1) {
         fail("MiMo trial NULL session");

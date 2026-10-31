@@ -136,6 +136,9 @@ int ds4_session_iquest_trial(ds4_session *s, int first, int max_tokens,
         if (ok) { target[k] = sample_argmax(logits, IQ_VOCAB); }
     }
     if (!ok) { iquest_session_fail(s, err, errlen); return -1; }
+    if (spec_sampling(&s->spec)) {
+        spec_sample_rows(&s->spec, g->trial_logits, IQ_VOCAB, IQ_VOCAB, tokens, n, target);
+    }
     memcpy(g->trial_tokens, tokens, n * sizeof(int));
     g->trial_base = base; g->trial_n = n;
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1);

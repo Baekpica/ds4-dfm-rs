@@ -731,6 +731,24 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_ling31_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_ling31_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_inkling_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
@@ -1094,6 +1112,22 @@ extern "C" {
         top_p: c_float,
         min_p: c_float,
         rng: *mut u64,
+    ) -> c_int;
+
+    pub fn ds4_bridge_session_set_spec_sampler(
+        s: *mut ds4_bridge_session,
+        verify: Option<
+            unsafe extern "C" fn(
+                *mut c_void,
+                *const c_float,
+                usize,
+                u32,
+                *const i32,
+                u32,
+                *mut i32,
+            ),
+        >,
+        ud: *mut c_void,
     ) -> c_int;
 
     pub fn ds4_bridge_session_sample_excluding(

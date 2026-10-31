@@ -223,6 +223,8 @@ struct PromptSyncDecode {
     prefix_budgets: Vec<i32>,
     trimmed_positions: Vec<i32>,
     sample_params: Vec<(f32, i32, f32, f32)>,
+    spec_samplers: Vec<ds4_core::Sampler>,
+    prefix_lengths: Vec<usize>,
 }
 
 impl PromptSyncDecode {
@@ -253,6 +255,8 @@ impl PromptSyncDecode {
             prefix_budgets: Vec::new(),
             trimmed_positions: Vec::new(),
             sample_params: Vec::new(),
+            spec_samplers: Vec::new(),
+            prefix_lengths: Vec::new(),
         }
     }
 }
@@ -377,17 +381,29 @@ impl DecodeIo for PromptSyncDecode {
         self.inner.eval(token)
     }
 
-    fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
+    fn eval_spec(
+        &mut self,
+        first: i32,
+        budget: i32,
+        sampler: ds4_core::Sampler,
+        _rng: &mut u64,
+        allow: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<Vec<i32>, GenerateError> {
         self.prefix_budgets.push(budget);
+        if sampler.temperature > 0.0 {
+            self.spec_samplers.push(sampler);
+        }
         if self.prefix_width == 0 {
             return Ok(Vec::new());
         }
         self.eval(first)?;
         let mut tokens = vec![first];
         let mut rng = 1;
-        while tokens.len() < self.prefix_width.min(budget as usize)
-            && !self.token_is_stop(*tokens.last().unwrap())
-        {
+        while tokens.len() < self.prefix_width.min(budget as usize) {
+            let last = *tokens.last().unwrap();
+            if self.token_is_stop(last) || !allow(&self.token_text(last)?) {
+                break;
+            }
             let token = self.inner.sample(0.0, 0, 1.0, 0.0, &mut rng);
             self.inner.eval(token)?;
             tokens.push(token);
@@ -395,6 +411,7 @@ impl DecodeIo for PromptSyncDecode {
         if self.model_id() == ds4_server::ModelSyntax::Glm53 as i32 {
             self.inner.live.extend_from_slice(&tokens);
         }
+        self.prefix_lengths.push(tokens.len());
         Ok(tokens)
     }
 
@@ -495,6 +512,46 @@ fn mtp_prefix_limits() {
     }
 }
 
+// A sampling request drafts too: its prefix verifies against the request's
+// own sampler, as a greedy one does against argmax.
+#[test]
+fn mtp_prefix_sampled() {
+    let mut parsed = user_req();
+    parsed.temperature = 1.0;
+    parsed.top_p = 0.95;
+    let mut engine = PromptSyncDecode::new(
+        ScriptedDecode::from_pieces(&[b"<|content_text|>Hello", b" world", b"!"]),
+        0,
+        1,
+    );
+    engine.inner.model_id = 9;
+    engine.prefix_width = 9;
+    let mut out = Vec::new();
+    let result = generate_and_write(
+        &mut engine,
+        &parsed,
+        "mtp-sampled",
+        CREATED_TEST,
+        false,
+        8,
+        &mut out,
+    )
+    .unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("Hello world!"), "{text}");
+    assert_eq!(result.timings.decode_steps, 1);
+    assert_eq!(engine.prefix_budgets, [8]);
+    assert_eq!(
+        engine.spec_samplers,
+        [ds4_core::Sampler {
+            temperature: 1.0,
+            top_k: parsed.top_k,
+            top_p: 0.95,
+            min_p: parsed.min_p,
+        }]
+    );
+}
+
 #[test]
 fn mtp_prefix_stops() {
     for stream in [false, true] {
@@ -572,8 +629,8 @@ fn glm_tool_prefix(surface: WireSurface, stream: bool, close: usize) {
     parsed.think_mode = ThinkMode::None;
     parsed.temperature = 0.0;
 
-    // The journal has already committed the whole prefix when output sees
-    // the close tag. Only its un-emitted tail may be discarded.
+    // The close tag ends the speculative prefix before commit: its tail is
+    // never drafted, so nothing is discarded.
     let mut pieces = vec![TAIL; WIDTH];
     if close == 0 {
         pieces[0] =
@@ -605,7 +662,11 @@ fn glm_tool_prefix(surface: WireSurface, stream: bool, close: usize) {
     assert!(wire.contains(&result.tool_ids[0]), "{wire}");
     assert!(!wire.contains(std::str::from_utf8(TAIL).unwrap()), "{wire}");
     assert_eq!(engine.prefix_budgets, [8]);
-    assert_eq!(engine.inner.idx, WIDTH, "all accepted rows were evaluated");
+    assert_eq!(
+        engine.inner.idx,
+        close + 1,
+        "rows past the close stay undrafted"
+    );
     assert_eq!(result.timings.decode_tokens, (close + 1) as i32);
     assert_eq!(result.frontier, (close + 2) as i32);
     assert_eq!(engine.pos(), result.frontier);
@@ -615,12 +676,7 @@ fn glm_tool_prefix(surface: WireSurface, stream: bool, close: usize) {
         .chain(1..=(close + 1) as i32)
         .collect::<Vec<_>>();
     assert_eq!(engine.inner.live, expected_history);
-    let expected_trims = if close + 1 < WIDTH {
-        vec![result.frontier]
-    } else {
-        Vec::new()
-    };
-    assert_eq!(engine.trimmed_positions, expected_trims);
+    assert!(engine.trimmed_positions.is_empty());
 }
 
 macro_rules! glm_tool_prefix_case {
@@ -646,7 +702,7 @@ glm_tool_prefix_case!(glm_tool_prefix_re_s_middle, Responses, true, 1);
 glm_tool_prefix_case!(glm_tool_prefix_re_s_final, Responses, true, 3);
 
 #[test]
-fn mtp_tool_tail_invalidates() {
+fn mtp_tool_tail_undrafted() {
     let block = concat!(
         "<｜DSML｜tool_calls><｜DSML｜invoke name=\"bash\">",
         "<｜DSML｜parameter name=\"command\" string=\"true\">ls",
@@ -666,11 +722,52 @@ fn mtp_tool_tail_invalidates() {
         &mut out,
     )
     .unwrap();
+    // The closed call ends the prefix before commit: the session keeps the
+    // tool call as its frontier instead of an invalidated, drafted tail.
     assert_eq!(result.tool_ids.len(), 1);
-    assert_eq!(result.frontier, 0);
-    assert_eq!(engine.invalidations, 1);
+    assert_eq!(result.frontier, 2);
+    assert_eq!(engine.invalidations, 0);
+    assert_eq!(engine.prefix_lengths, [1]);
     assert!(engine.trimmed_positions.is_empty());
     assert!(!String::from_utf8(out).unwrap().contains("UNEMITTED_TAIL"));
+}
+
+/// Structural tool syntax takes the argmax: a sampled prefix ends at the
+/// call marker before commit, while a greedy one drafts through it.
+#[test]
+fn mtp_prefix_cuts_at_tool_syntax() {
+    let pieces: [&[u8]; 5] = [
+        b"Calling.",
+        "<｜DSML｜tool_calls>".as_bytes(),
+        "\n<｜DSML｜invoke name=\"bash\">\n".as_bytes(),
+        "<｜DSML｜parameter name=\"command\" string=\"true\">ls".as_bytes(),
+        "</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>".as_bytes(),
+    ];
+    for temperature in [0.0, 1.0] {
+        let mut parsed = tools_req();
+        parsed.temperature = temperature;
+        let mut engine = PromptSyncDecode::new(ScriptedDecode::from_pieces(&pieces), 0, 1);
+        engine.prefix_width = 9;
+        let mut out = Vec::new();
+        let result = generate_and_write(
+            &mut engine,
+            &parsed,
+            "mtp-tool",
+            CREATED_TEST,
+            false,
+            16,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(result.finish, "tool_calls");
+        assert_eq!(result.tool_ids.len(), 1);
+        let first = engine.prefix_lengths[0];
+        if temperature > 0.0 {
+            assert_eq!(first, 2, "{:?}", engine.prefix_lengths);
+        } else {
+            assert_eq!(first, pieces.len(), "{:?}", engine.prefix_lengths);
+        }
+    }
 }
 
 #[test]
@@ -710,16 +807,25 @@ fn mtp_disconnect() {
 
 #[test]
 fn mtp_sampling_policy() {
+    // Every request speculates: against its sampler (thinking: the fixed
+    // tuple), and with a forced control prefix that has not yet started.
     for mode in 0..3 {
         let mut parsed = user_req();
-        match mode {
-            0 => parsed.temperature = 0.7,
-            1 => parsed.think_mode = ThinkMode::Low,
+        let temperature = match mode {
+            0 => {
+                parsed.temperature = 0.7;
+                0.7
+            }
+            1 => {
+                parsed.think_mode = ThinkMode::Low;
+                ds4_server::parse::DEFAULT_TEMPERATURE
+            }
             _ => {
                 parsed.has_tool_results = true;
                 parsed.required_think_end_prefix = vec![7];
+                0.0
             }
-        }
+        };
         let mut script = ScriptedDecode::from_pieces(&[b"<|content_text|>Hello"]);
         script.model_id = 9;
         let mut engine = PromptSyncDecode::new(script, 0, 1);
@@ -734,8 +840,13 @@ fn mtp_sampling_policy() {
             &mut Vec::new(),
         )
         .unwrap();
-        assert!(engine.prefix_budgets.is_empty());
+        assert!(!engine.prefix_budgets.is_empty());
         assert!(engine.events.contains(&"eval"));
+        assert!(engine
+            .spec_samplers
+            .iter()
+            .all(|s| s.temperature == temperature));
+        assert_eq!(engine.spec_samplers.is_empty(), temperature == 0.0);
     }
 }
 
@@ -788,13 +899,22 @@ fn iquest_thinking_sampling() {
                 "model {model_id}, requested {temperature}: {:?}",
                 engine.sample_params
             );
-            // Greedy thinking reaches the engine's greedy commit, where the
-            // embedded MTP drafts run, only on the families that keep the
-            // request's sampler.
-            assert_eq!(
-                !engine.prefix_budgets.is_empty(),
-                (model_id == iquest || model_id == glm) && temperature == 0.0
+            // Every thinking request reaches the speculative commit; its
+            // drafts verify against the sampler it decodes with.
+            assert!(!engine.prefix_budgets.is_empty());
+            let (temperature, top_k, top_p, min_p) = expected;
+            let sampled = ds4_core::Sampler {
+                temperature,
+                top_k,
+                top_p,
+                min_p,
+            };
+            assert!(
+                engine.spec_samplers.iter().all(|&s| s == sampled),
+                "model {model_id}: {:?}",
+                engine.spec_samplers
             );
+            assert_eq!(engine.spec_samplers.is_empty(), temperature == 0.0);
         }
     }
 }

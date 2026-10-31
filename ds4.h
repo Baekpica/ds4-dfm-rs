@@ -1397,6 +1397,13 @@ int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
 int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
                       int top_k, float top_p, float min_p, uint64_t *rng);
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng);
+/* The host's sample-and-match over one trial's verify rows: row i (after
+ * tokens[..=i]) at rows + i * stride; fills target[0..n). */
+typedef void (*ds4_spec_verify_fn)(void *ud, const float *rows, size_t stride, uint32_t vocab,
+                                   const int *tokens, uint32_t n, int *target);
+/* Verify speculative trials with `verify` until cleared; NULL keeps argmax.
+ * `ud` must outlive those trials. */
+void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_verify_fn verify, void *ud);
 int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                  int top_k, float top_p, float min_p,
                                  uint64_t *rng, int excluded_id);
@@ -1447,6 +1454,10 @@ int ds4_session_iquest_commit(ds4_session *s, int keep, char *err, size_t errlen
 int ds4_session_glm53_trial(ds4_session *s, int first, int max_tokens,
                             int *tokens, int *target, int cap, char *err, size_t errlen);
 int ds4_session_glm53_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Ling-3.1 VQ embedded MTP: the same trial and host-acceptance contract. */
+int ds4_session_ling31_trial(ds4_session *s, int first, int max_tokens,
+                             int *tokens, int *target, int cap, char *err, size_t errlen);
+int ds4_session_ling31_commit(ds4_session *s, int keep, char *err, size_t errlen);
 /* dots3 uses the same four-row native trial/host acceptance contract.
  * A failed device operation invalidates the native generation. */
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,

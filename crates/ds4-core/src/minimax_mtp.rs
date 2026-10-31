@@ -74,6 +74,7 @@ impl crate::Session<'_> {
         first: i32,
         max_tokens: i32,
         eos: i32,
+        limit: &mut dyn FnMut(&[i32]) -> usize,
     ) -> crate::Result<Vec<i32>> {
         if max_tokens <= 0 {
             return Ok(Vec::new());
@@ -122,6 +123,7 @@ impl crate::Session<'_> {
                 message: "invalid MiniMax trial result".into(),
             });
         };
+        let keep = limit(&tokens[..keep]).clamp(1, keep);
         // SAFETY: keep is a prefix of the matching pending native trial.
         let rc = unsafe {
             ds4_sys::ds4_bridge_minimax_commit(

@@ -8,6 +8,13 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Drafts verify against the request's own sampler in every drafting family
+  ([sampled speculation](docs/speculative-sampling.md)): sampled, thinking
+  and tool-result requests speculate on the serial and bank lanes instead of
+  decoding one token at a time. A forced position ends a draft prefix before
+  commit; MiMo keeps the request's sampler while it thinks. Sampling moves to
+  Rust and sorts only the head of the distribution for top-p: MiMo VQ decodes
+  a sampled code answer at 32.7 tok/s with two drafts, from 18.4.
 - Adds [A.X-K2 VQ](docs/axk2-vq.md) (SK Telecom A.X K2 with 9/10-bit GVQ1
   experts): MLA with the DSA sparse indexer over FP8 latent and key rows,
   gated RMSNorm, the native 262,144-token context in one bank, Hermes tool

@@ -278,8 +278,9 @@ fn session_ready<'m>(
     }
 }
 
-fn use_mtp_spec(temp: f32, mtp: Option<&str>, draft: i32) -> bool {
-    temp <= 0.0 && mtp.is_some() && draft > 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+// Drafts verify against the agent's sampler at any temperature.
+fn use_mtp_spec(mtp: Option<&str>, draft: i32) -> bool {
+    mtp.is_some() && draft > 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
 fn mtp_open_options(args: &AgentArgs) -> Vec<ds4_core::ModelOpenOption> {
@@ -451,7 +452,7 @@ pub fn run(name: &str, args: AgentArgs) -> Result<i32, String> {
         args.threads,
         mtp_open_options(&args),
         args.dist,
-        use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
+        use_mtp_spec(args.mtp.as_deref(), args.mtp_draft)
     );
     let cache_identity = ds4_server::cache_identity::CacheIdentity::capture_with_sources(
         std::path::Path::new(&args.model),
@@ -610,7 +611,13 @@ pub fn run(name: &str, args: AgentArgs) -> Result<i32, String> {
                 .saturating_sub(session.pos())
                 .saturating_sub(1);
             let max_tokens = args.tokens.min(room).max(0);
-            let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft);
+            let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft);
+            let sampler = ds4_core::Sampler {
+                temperature: args.temp,
+                top_k: 0,
+                top_p: args.top_p,
+                min_p: args.min_p,
+            };
             let eos = model.token_eos();
             let mut raw = Vec::new();
             let mut generated = 0i32;
@@ -625,7 +632,14 @@ pub fn run(name: &str, args: AgentArgs) -> Result<i32, String> {
                 }
                 let accepted = if use_mtp {
                     session
-                        .eval_speculative_argmax(token, max_tokens - generated, eos)
+                        .eval_speculative(
+                            token,
+                            max_tokens - generated,
+                            eos,
+                            sampler,
+                            &mut rng,
+                            &mut crate::stop_cut(&model),
+                        )
                         .map_err(|error| error.to_string())?
                 } else {
                     session.eval(token).map_err(|error| error.to_string())?;
@@ -1286,14 +1300,9 @@ mod tests {
         assert_eq!(parsed.mtp.as_deref(), Some("mtp.gguf"));
         assert_eq!(parsed.mtp_draft, 2);
         assert_eq!(parsed.mtp_margin, 4.5);
-        assert!(use_mtp_spec(
-            parsed.temp,
-            parsed.mtp.as_deref(),
-            parsed.mtp_draft
-        ));
-        assert!(!use_mtp_spec(0.0, None, 2));
-        assert!(!use_mtp_spec(0.0, Some("mtp.gguf"), 1));
-        assert!(!use_mtp_spec(0.5, Some("mtp.gguf"), 2));
+        assert!(use_mtp_spec(parsed.mtp.as_deref(), parsed.mtp_draft));
+        assert!(!use_mtp_spec(None, 2));
+        assert!(!use_mtp_spec(Some("mtp.gguf"), 1));
     }
 
     #[test]

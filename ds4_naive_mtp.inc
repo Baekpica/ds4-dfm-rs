@@ -68,6 +68,11 @@ int ds4_session_naive_trial(ds4_session *s, int first, int max_tokens,
     d->trial_pos = g->position;
     if (!naive_forward(g, &e->model, &e->weights, d->trial, n, g->position) ||
         !naive_verify_rows(g, &e->model, &e->weights, n, target)) { return naive_trial_fail(s, err, errlen); }
+    if (spec_sampling(&s->spec)) {
+        const float *rows = spec_host_rows(g->draft.ws->verify, N05_VOCAB, n);
+        if (!rows) { return naive_trial_fail(s, err, errlen); }
+        spec_sample_rows(&s->spec, rows, N05_VOCAB, N05_VOCAB, d->trial, n, target);
+    }
     d->trial_n = n;
     memcpy(tokens, d->trial, n * sizeof(*tokens));
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1);

@@ -233,6 +233,10 @@ int ds4_bridge_glm53_trial(ds4_bridge_session *s, int32_t first, int32_t max_tok
                            int32_t *tokens, int32_t *target, int32_t cap,
                            char *err, size_t errlen);
 int ds4_bridge_glm53_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_ling31_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                            int32_t *tokens, int32_t *target, int32_t cap,
+                            char *err, size_t errlen);
+int ds4_bridge_ling31_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
 int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen);
@@ -457,6 +461,13 @@ int ds4_bridge_session_distributed_route_ready(ds4_bridge_session *s,
 int ds4_bridge_session_sample(ds4_bridge_session *s,
                               float temperature, int top_k, float top_p, float min_p,
                               uint64_t *rng);
+/* The host's sample-and-match over one trial's verify rows. */
+typedef void (*ds4_bridge_spec_verify_fn)(void *ud, const float *rows, size_t stride,
+                                          uint32_t vocab, const int32_t *tokens, uint32_t n,
+                                          int32_t *target);
+/* Speculative trials verify with `verify` until cleared (NULL). */
+int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s,
+                                        ds4_bridge_spec_verify_fn verify, void *ud);
 int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,
                                         float temperature, int top_k,
                                         float top_p, float min_p,

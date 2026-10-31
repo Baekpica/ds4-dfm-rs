@@ -1370,3 +1370,12 @@ fn numeric_effort_is_v41_only() {
     );
     assert!(parse_chat_request(&env(), body).is_err());
 }
+
+/// MiMo's card sets temperature 1.0 and top-p 0.95; thinking keeps them.
+#[test]
+fn mimo_thinking_keeps_request_sampler() {
+    use ds4_server::parse::fixed_thinking_sampling;
+    use ds4_server::render::ModelSyntax;
+    assert!(!fixed_thinking_sampling(ModelSyntax::Mimo2));
+    assert!(fixed_thinking_sampling(ModelSyntax::DeepSeek));
+}
