@@ -32,6 +32,9 @@ typedef struct {
     int mtp_tok[M2_MTP_RING];
     unsigned mtp_fill[MIMO2_DRAFT_LAYERS], mtp_base[MIMO2_DRAFT_LAYERS];
     unsigned context, cap, position;
+    /* One past the newest row written (drafts included): the SWA ring keeps
+     * rows at or after high - ring, so a rewind below it is refused. */
+    unsigned high;
     unsigned *host_positions;
     float *verify_logits;
     int trial[M2_TRIAL];
@@ -226,6 +229,7 @@ static bool mimo2_graph_clone_bank(ds4_mimo2_graph *g,
     *g = *shared;
     g->owns_scratch = false;
     g->position = 0;
+    g->high = 0;
     g->failed = false;
     g->hidden_valid = false;
     g->spans = NULL;
@@ -518,6 +522,7 @@ static bool mimo2_forward(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weig
     if (!mimo2_head(g, m, w, n - 1) || !mimo2_mtp_push(g, tokens, n, pos)) { return false; }
     g->hidden_valid = true;
     g->position = pos + n;
+    if (g->high < g->position) { g->high = g->position; }
     g->failed = false;
     return true;
 }

@@ -112,6 +112,7 @@ static int mimo2_payload_restore(ds4_mimo2_graph *g, FILE *fp, uint64_t *left,
     /* A failed/partial restore can never be reused as a committed prefix. */
     g->failed = true;
     g->position = 0;
+    g->high = 0;
     mimo2_payload_drop_draft(g);
     *tokens_out = NULL;
     const unsigned n = h[7];
@@ -147,6 +148,8 @@ static int mimo2_payload_restore(ds4_mimo2_graph *g, FILE *fp, uint64_t *left,
     free(buf);
     if (rc) { free(tokens); return 1; }
     g->position = n;
+    // The snapshot holds one window of SWA rows: no rewind below n.
+    g->high = n + g->cap + M2_WINDOW;
     g->failed = false;
     mimo2_mtp_rebase(g, n);
     *tokens_out = tokens;

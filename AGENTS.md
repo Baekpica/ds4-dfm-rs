@@ -110,6 +110,12 @@ owns the tool loop.
 - Price what grows with context before fixed weights: Ling-3.1's BF16 latent
   KV (2.53 GiB per 262K bank) forced serial 512-row prefill; FP8 rows admit
   2,048-row banks.
+- A serial lane must resume at the common prefix, not only on extension:
+  agent clients re-render the last answer, so an extend-only sync prefilled
+  every MiMo turn from zero (cached_tokens 0 even for an identical resend).
+  Positional and SWA state rewinds while the ring, counted from the newest
+  row written, holds the window; drafter windows re-run below the prefix.
+  Gate with an identical resend and a re-rendered continuation.
 - Recurrent-state (KDA, linear-attention) payloads restore only a prompt that
   extends the saved history: test disk restore with the next turn; re-sending
   a turn always misses.
