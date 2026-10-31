@@ -26,7 +26,7 @@ name them too.
 | Performance optimization | [Optimization guidelines](#inference-performance-optimization-guidelines) and phase order, [GB10 know-how](#gb10-dgx-spark-bottleneck-know-how), [playbook](docs/prefill-decode-optimization-playbook.md), [gb10-hardware.md](docs/gb10-hardware.md), [ds4-perf.md](docs/ds4-perf.md), the family doc and its latest `docs/<family>-optimization-*.md` |
 | Builds, probes, profiling, or a brief that names tools | Check the live toolchain first (`nvcc --version`, `readlink -f /usr/local/cuda`, `nvidia-smi`); call tools as `/usr/local/cuda/bin/{nvcc,nsys,ncu}` (the Makefile's `CUDA_HOME`), never a versioned path copied from notes |
 | Anything that loads a model (bench, server, resident tests, nsys) | [Safety](#safety), [host-memory-guard.md](docs/host-memory-guard.md) (resident-model runs: 2 GiB reserve/trip). One GPU job at a time; never ncu on a full-model process |
-| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md) |
+| Model family serving or a new family | [serving contract](#new-model-family-serving-contract), [model families](docs/ds4-dfm-model-families.md), [sampled speculation](docs/speculative-sampling.md) for MTP and drafters |
 | Commits | [Common Rules](#common-rules), [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 Parallel analysis agents: one kernel or scope per agent; read-only (no GPU
@@ -434,6 +434,12 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   accepted switches' band: gate operand formats on the model.
 - **Run ncu with `--clock-control none`.** Its default locks the base
   clock for the profile (2.40 GHz on GB10, above the 2,200 MHz policy).
+- **Host sampling is decode time once drafts verify sampled rows.** Sorting
+  MiMo's 152,576 logits for top-p took 13 ms per draw on a Grace core, and a
+  sampled MTP2 step draws up to four times: 127 ms against 79 greedy.
+  Sorting the head first (tokens ≥ 1e-3 of the top probability, the full
+  order's prefix) took the step to 83 ms: sampled code 18.4 → 32.7 tok/s.
+  Time a sampled request whenever drafting or the sampler changes.
 
 # Agent Notes
 
@@ -534,6 +540,8 @@ backend small and direct; this is not a generic GGUF runner.
 
 ## MTP / compressed-KV decode rules
 
+- Drafts verify against the request's sampler at every temperature; never gate drafting on temperature, thinking or a forced control prefix. A trial draws its verify rows with `spec_sample_rows` (sample-and-match, last draw rewound); a forced position ends the prefix before commit through the host's `limit`: [sampled speculation](docs/speculative-sampling.md). Greedy-only verification and whole-request prefix gates once left MTP off for every thinking request and every agent turn with tool results.
+- `--mtp-mode on` removes `DS4_MTP_SPEC_DISABLE` from the environment: an A/B that sets the switch beside the flag drafts in both runs (MiMo timed the same twice). An off run drops the drafting flags and passes `--mtp-mode off`.
 - Lossless = verified tokens AND committed compressed-KV == the accepted-prefix transition. Not bit-identity (cross-width MoE order differs), not tokens alone (carried state sets future logits).
 - Emit compressor state in the verify forward, roll back rejects; never re-emit in a second pass (a commit-reforward emit was ~100% wrong).
 - Gate on ‖Δcompressed-cache‖ and long context, not short-prompt tokens — short context hides cache corruption behind raw/windowed KV.

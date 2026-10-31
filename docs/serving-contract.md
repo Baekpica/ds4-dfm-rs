@@ -113,8 +113,11 @@ Native restore holds the validated file open through the payload read.
 
 ### Draft execution
 
-MTP weights loaded is not "this request speculated". Sampled Step
-requests keep predictor state and use ordinary decode.
+MTP weights loaded is not "this request speculated". Drafts verify
+against the request's sampler at every temperature, and a forced position
+(control token, tool syntax's argmax under sampling, a closed DSML call, a
+stop token) ends the prefix before commit:
+[sampled speculation](speculative-sampling.md).
 
 ## Inspect
 

@@ -45,8 +45,8 @@ Keep thinking enabled for normal use; do not force `reasoning_effort=none`.
 The recorded HTTP checks use `reasoning_effort=high` with a 256-token budget.
 At runtime revision `f94697c5`, IQuest honors explicit sampling parameters
 in both serial and continuous lanes and retains reasoning-bearing history
-for cache retirement. Temperature 0 enables greedy MTP when requested;
-positive temperatures use ordinary target sampling.
+for cache retirement. MTP, when requested, verifies drafts against the
+request's sampler at any temperature ([sampled speculation](speculative-sampling.md)).
 
 The output parser separates reasoning and extracts
 `<iquest_tool_call>NAME<arg_key>KEY</arg_key><arg_value>VALUE</arg_value>…`

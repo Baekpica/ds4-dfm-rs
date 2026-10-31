@@ -87,8 +87,8 @@ See the [artifact and API scope](ds4-dfm-model-families.md#glm-53-flash-release-
 Inkling Small uses serial CUDA serving with text output. Chat, Responses and
 Messages accept PNG/JPEG images; only Chat accepts 16 kHz PCM/float WAV audio.
 Legacy Completions accepts text only. The optional eight-layer MTP sidecar
-preserves the wire contracts and uses speculative decoding for unforced greedy
-tokens. See [MQ85GB validation and limits](inkling-small.md).
+preserves the wire contracts and uses speculative decoding at every
+temperature ([sampled speculation](speculative-sampling.md)). See [MQ85GB validation and limits](inkling-small.md).
 
 ## Inline images
 

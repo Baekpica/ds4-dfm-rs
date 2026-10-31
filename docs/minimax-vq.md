@@ -217,8 +217,8 @@ row's logits therefore equal a decode of the same token bit for bit
 (`DS4_MINIMAX_VERIFY_CHECK=1` re-runs each verified row as a decode and
 reports the difference), and greedy DSpark output equals plain decoding.
 
-DSpark runs on the serial lane (`--mtp-mode on --mtp-draft N`, N ≤ 7,
-greedy only); its cost is one draft pass (about 13 ms: 1.77 GB of Q8_0
+DSpark runs on the serial lane (`--mtp-mode on --mtp-draft N`, N ≤ 7, any
+temperature: [sampled speculation](speculative-sampling.md)); its cost is one draft pass (about 13 ms: 1.77 GB of Q8_0
 layers, the 0.69 GB head and one Markov GEMV per proposal) plus the verify
 forward, whose routed experts grow with every row. Two or three proposals
 are the useful range on GB10.

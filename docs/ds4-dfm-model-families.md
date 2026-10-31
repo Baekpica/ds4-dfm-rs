@@ -665,8 +665,8 @@ and [host memory guard](host-memory-guard.md). Preserve unrelated owners and wor
   what the bank fit leaves. See the [family page](ling31-flash-vq.md#serving).
 - Beam-1.0 VQ plans its native 1,048,576 tokens in one bank (115.4 of 117.2
   GiB with the 4 GiB floor). With the DFlash2 drafter the 1M plan leaves
-  0.12 GiB and is unverified; `--mtp` serves one sequence on the serial lane
-  and drafts only greedy requests. See the [family page](beam-vq.md#serving).
+  0.12 GiB and is unverified; `--mtp` serves one sequence on the serial lane.
+  See the [family page](beam-vq.md#serving).
 - A.X-K2 VQ plans its native 262,144 tokens in one bank. After the weights
   load a 128 GB Spark has ~18.6 GiB free: with the default 4 GiB floor the
   bank runs 512-row prefill chunks (the engine halves rows, never the

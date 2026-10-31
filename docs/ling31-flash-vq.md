@@ -169,10 +169,9 @@ history, so only a prompt that extends that history restores: re-sending an
 earlier turn after a restart cannot hit. After a restart the next turn
 restored 2,094 of 2,115 tokens from disk (123,931 of 123,957 at 262K).
 
-**MTP use.** Drafting is greedy only: thinking requests sample at the server's
-temperature 1.0 and decode without drafts, so MTP speeds up non-thinking
-greedy requests (`"think": false`, `temperature: 0`). Two drafts are the best
-measured setting (8K prose: 15.6 → 24.2 tok/s; three drafts 22.9). Served,
+**MTP use.** Drafts verify against the request's sampler, thinking requests
+included ([sampled speculation](speculative-sampling.md)). Two drafts are the
+best measured setting (8K prose: 15.6 → 24.2 tok/s; three drafts 22.9). Served,
 a 159-token greedy code answer decodes at 26.3–26.6 tok/s in the serial lane
 and 25.1–26.1 in the bank lane.
 

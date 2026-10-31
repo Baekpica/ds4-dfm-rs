@@ -139,7 +139,8 @@ and **32.03** with draft 7, margin 2 (+22%). The settings were chosen at
 | draft 7, margin 3 (the common default) | 27.6 |
 | draft 15, margin 2 | 29.3 |
 
-Drafting is greedy only and runs on the serial lane: the native open refuses
+Drafting runs on the serial lane at any temperature
+([sampled speculation](speculative-sampling.md)): the native open refuses
 banks beside the drafter, so `--mtp` serves one sequence.
 
 ## Serving
@@ -241,9 +242,8 @@ gains 22% (above).
 
 ## Limits and next levers
 
-- Drafting is greedy and serial: sampled requests (Beam's recommended
-  temperature 0.7 included) decode without drafts, and `--mtp` serves one
-  sequence because the native open refuses banks beside the drafter.
+- Drafting is serial: `--mtp` serves one sequence because the native open
+  refuses banks beside the drafter.
 - DFlash2 follows the text. It gained 28% on five chat prompts and lost
   2.8% of decode on the README sweep's raw Italian prose, where most blocks are
   doubtful and each attempt still costs its 13 ms draft. Misses do not

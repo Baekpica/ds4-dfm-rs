@@ -21,6 +21,7 @@ artifact and workload. They do not describe live processes or qualify a new buil
 | [Serving contract](serving-contract.md) | Shared options, requested/effective/qualified plans, owner/worker and reuse |
 | [Generated capabilities](serving-capabilities.md) | Runtime lanes, modes, bounds and recorded qualification |
 | [Chat templates](chat-templates.md) | Official input assets, normalization and continuation |
+| [Sampled speculation](speculative-sampling.md) | Draft verification at every temperature: policy, family contract and coverage |
 | [API matrix](ds4-api-surface-matrix.md) | HTTP objects, routing, media forms and unsupported requests |
 | [Memory guard](host-memory-guard.md) | Large-model admission, job limits and cleanup |
 | [MiniMax-H3 API](minimax-h3/api-usage.md) | Start the separate video host, create/poll/download jobs and manage retention |
