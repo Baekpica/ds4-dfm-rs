@@ -461,12 +461,13 @@ int ds4_bridge_session_distributed_route_ready(ds4_bridge_session *s,
 int ds4_bridge_session_sample(ds4_bridge_session *s,
                               float temperature, int top_k, float top_p, float min_p,
                               uint64_t *rng);
-/* The host's draw of one verify row from its sampler and stream. */
-typedef int (*ds4_bridge_spec_draw_fn)(void *ud, const float *row, uint32_t vocab,
-                                       uint64_t *rng);
-/* Speculative trials draw verify rows with `draw` until cleared (NULL). */
-int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s, ds4_bridge_spec_draw_fn draw,
-                                        void *ud, uint64_t *rng);
+/* The host's sample-and-match over one trial's verify rows. */
+typedef void (*ds4_bridge_spec_verify_fn)(void *ud, const float *rows, size_t stride,
+                                          uint32_t vocab, const int32_t *tokens, uint32_t n,
+                                          int32_t *target);
+/* Speculative trials verify with `verify` until cleared (NULL). */
+int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s,
+                                        ds4_bridge_spec_verify_fn verify, void *ud);
 int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,
                                         float temperature, int top_k,
                                         float top_p, float min_p,

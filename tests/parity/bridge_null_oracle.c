@@ -285,7 +285,7 @@ int main(void) {
     }
     if (ds4_bridge_session_sample(NULL, 1.0f, 0, 1.0f, 0.05f, &rng) != -1)
         fail("sample");
-    if (ds4_bridge_session_set_spec_sampler(NULL, NULL, NULL, &rng) != -1)
+    if (ds4_bridge_session_set_spec_sampler(NULL, NULL, NULL) != -1)
         fail("set_spec_sampler");
     if (ds4_bridge_session_sample_excluding(NULL, 1.0f, 0, 1.0f,
                                             0.05f, &rng, 1) != -1) {

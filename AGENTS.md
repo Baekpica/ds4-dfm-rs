@@ -540,7 +540,7 @@ backend small and direct; this is not a generic GGUF runner.
 
 ## MTP / compressed-KV decode rules
 
-- Drafts verify against the request's sampler at every temperature; never gate drafting on temperature, thinking or a forced control prefix. A trial draws its verify rows with `spec_sample_rows` (sample-and-match, last draw rewound); a forced position ends the prefix before commit through the host's `limit`: [sampled speculation](docs/speculative-sampling.md). Greedy-only verification and whole-request prefix gates once left MTP off for every thinking request and every agent turn with tool results.
+- Drafts verify against the request's sampler at every temperature; never gate drafting on temperature, thinking or a forced control prefix. A trial draws its verify rows with `spec_sample_rows` (sample-and-match, every draw spent; only an uncut prefix's last draw is the next token); a forced position ends the prefix before commit through the host's `limit`: [sampled speculation](docs/speculative-sampling.md). Greedy-only verification and whole-request prefix gates once left MTP off for every thinking request and every agent turn with tool results.
 - `--mtp-mode on` removes `DS4_MTP_SPEC_DISABLE` from the environment: an A/B that sets the switch beside the flag drafts in both runs (MiMo timed the same twice). An off run drops the drafting flags and passes `--mtp-mode off`.
 - Lossless = verified tokens AND committed compressed-KV == the accepted-prefix transition. Not bit-identity (cross-width MoE order differs), not tokens alone (carried state sets future logits).
 - Emit compressor state in the verify forward, roll back rejects; never re-emit in a second pass (a commit-reforward emit was ~100% wrong).

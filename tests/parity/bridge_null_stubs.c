@@ -397,9 +397,8 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
     (void)s; (void)temperature; (void)top_k; (void)top_p; (void)min_p; (void)rng;
     STUB("ds4_session_sample");
 }
-void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_draw_fn draw, void *ud,
-                                  uint64_t *rng) {
-    (void)s; (void)draw; (void)ud; (void)rng;
+void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_verify_fn verify, void *ud) {
+    (void)s; (void)verify; (void)ud;
     STUB("ds4_session_set_spec_sampler");
 }
 int ds4_session_sample_excluding(ds4_session *s, float temperature,

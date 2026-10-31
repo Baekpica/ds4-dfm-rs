@@ -1216,11 +1216,11 @@ int ds4_bridge_session_sample(ds4_bridge_session *s,
     return ds4_session_sample(s->session, temperature, top_k, top_p, min_p, rng);
 }
 
-int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s, ds4_bridge_spec_draw_fn draw,
-                                        void *ud, uint64_t *rng)
+int ds4_bridge_session_set_spec_sampler(ds4_bridge_session *s,
+                                        ds4_bridge_spec_verify_fn verify, void *ud)
 {
     if (!s || !s->session) return -1;
-    ds4_session_set_spec_sampler(s->session, draw, ud, rng);
+    ds4_session_set_spec_sampler(s->session, verify, ud);
     return 0;
 }
 

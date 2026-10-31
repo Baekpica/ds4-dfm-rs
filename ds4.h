@@ -1397,12 +1397,13 @@ int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
 int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
                       int top_k, float top_p, float min_p, uint64_t *rng);
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng);
-/* The host's draw of one verify row from its own sampler and stream. */
-typedef int (*ds4_spec_draw_fn)(void *ud, const float *row, uint32_t vocab, uint64_t *rng);
-/* Verify speculative trials with `draw` (sample-and-match) until cleared;
- * draw NULL keeps argmax. `ud` and `rng` must outlive those trials. */
-void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_draw_fn draw, void *ud,
-                                  uint64_t *rng);
+/* The host's sample-and-match over one trial's verify rows: row i (after
+ * tokens[..=i]) at rows + i * stride; fills target[0..n). */
+typedef void (*ds4_spec_verify_fn)(void *ud, const float *rows, size_t stride, uint32_t vocab,
+                                   const int *tokens, uint32_t n, int *target);
+/* Verify speculative trials with `verify` until cleared; NULL keeps argmax.
+ * `ud` must outlive those trials. */
+void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_verify_fn verify, void *ud);
 int ds4_session_sample_excluding(ds4_session *s, float temperature,
                                  int top_k, float top_p, float min_p,
                                  uint64_t *rng, int excluded_id);

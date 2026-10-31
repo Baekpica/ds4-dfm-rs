@@ -1094,26 +1094,40 @@ pub struct Session<'m> {
     _not_send: PhantomData<*const ()>,
 }
 
-type SpecDrawFn =
-    unsafe extern "C" fn(*mut std::ffi::c_void, *const f32, u32, *mut u64) -> std::os::raw::c_int;
+type SpecVerifyFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const f32, usize, u32, *const i32, u32, *mut i32);
 
-/// A trial's draw of one verify row with the request's sampler.
-unsafe extern "C" fn spec_draw(
+/// One trial's sampler, stream and draws, lent to native for the trial.
+struct SpecTrial<'r> {
+    sampler: Sampler,
+    rng: &'r mut u64,
+    target: Vec<i32>,
+    drawn: usize,
+}
+
+/// A trial's sample-and-match over its verify rows ([`sample::match_rows`]).
+unsafe extern "C" fn spec_verify(
     ud: *mut std::ffi::c_void,
-    row: *const f32,
+    rows: *const f32,
+    stride: usize,
     vocab: u32,
-    rng: *mut u64,
-) -> std::os::raw::c_int {
-    // SAFETY: eval_speculative lends its Sampler as `ud` and the stream as
-    // `rng` for the trial; native passes one live row of `vocab` logits.
-    let (sampler, row, rng) = unsafe {
+    tokens: *const i32,
+    n: u32,
+    target: *mut i32,
+) {
+    // SAFETY: eval_speculative lends its SpecTrial as `ud` for the trial;
+    // native passes n tokens and targets and n live rows `stride` apart.
+    let (trial, tokens, target) = unsafe {
         (
-            &*ud.cast::<Sampler>(),
-            std::slice::from_raw_parts(row, vocab as usize),
-            &mut *rng,
+            &mut *ud.cast::<SpecTrial>(),
+            std::slice::from_raw_parts(tokens, n as usize),
+            std::slice::from_raw_parts_mut(target, n as usize),
         )
     };
-    sample::draw(row, sampler, rng, [-1, -1])
+    let row =
+        |i: usize| unsafe { std::slice::from_raw_parts(rows.add(i * stride), vocab as usize) };
+    trial.drawn = sample::match_rows(row, tokens, &trial.sampler, trial.rng, target);
+    trial.target = target.to_vec();
 }
 
 pub struct SessionSnapshot {
@@ -3335,10 +3349,10 @@ impl Session<'_> {
     /// argmax at temperature 0) and a draft is kept while it equals the draw,
     /// ending after `eos`. `limit(prefix)` then cuts the prefix before commit
     /// where the host's own policy says the plain loop must decide (a forced
-    /// token, a stop token). The last draw is rewound into `rng`: the next
-    /// ordinary [`Self::sample`] of the committed row repeats it, so a stream
-    /// keeps plain sampling's distribution and, at equal logits, its seed's
-    /// tokens.
+    /// token, a stop token). Every draw is spent from `rng`; an uncut step
+    /// hands its last kept row's draw to the next ordinary [`Self::sample`]
+    /// of that row with the same sampler ([`sample::pending_token`]), so a
+    /// stream keeps plain sampling's distribution.
     pub fn eval_speculative(
         &mut self,
         first: i32,
@@ -3348,23 +3362,42 @@ impl Session<'_> {
         rng: &mut u64,
         limit: &mut dyn FnMut(&[i32]) -> usize,
     ) -> Result<Vec<i32>> {
+        self.host.pending_draw = None;
         let raw = self.raw.as_ptr();
-        let mut sampler = sampler;
-        let draw = (sampler.temperature > 0.0).then_some(spec_draw as SpecDrawFn);
-        let ud = (&mut sampler as *mut Sampler).cast();
-        // SAFETY: `sampler` and `rng` outlive the trial; the clear below
-        // drops native's borrow before either goes away.
-        unsafe { ds4_bridge_session_set_spec_sampler(raw, draw, ud, rng) };
-        let accepted = self.eval_family_spec(first, max_tokens, eos, limit);
-        unsafe {
-            ds4_bridge_session_set_spec_sampler(
-                raw,
-                None,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
+        let sampling = sampler.temperature > 0.0;
+        let mut trial = SpecTrial {
+            sampler,
+            rng,
+            target: Vec::new(),
+            drawn: 0,
         };
-        accepted
+        let verify = sampling.then_some(spec_verify as SpecVerifyFn);
+        let ud = (&mut trial as *mut SpecTrial).cast();
+        // SAFETY: `trial` outlives the call; the clear below drops native's
+        // borrow before it goes away.
+        unsafe { ds4_bridge_session_set_spec_sampler(raw, verify, ud) };
+        let mut cut = false;
+        let accepted = {
+            let mut cutting = |prefix: &[i32]| {
+                let keep = limit(prefix);
+                cut |= keep < prefix.len();
+                keep
+            };
+            self.eval_family_spec(first, max_tokens, eos, &mut cutting)
+        };
+        unsafe { ds4_bridge_session_set_spec_sampler(raw, None, std::ptr::null_mut()) };
+        let accepted = accepted?;
+        // Every verify draw is spent. An uncut step hands its last kept row's
+        // draw to the next plain sample there.
+        let pending =
+            sample::pending_token(&trial.target, trial.drawn, accepted.len(), cut, sampling);
+        self.host.pending_draw = pending.map(|token| sample::PendingDraw {
+            pos: self.pos(),
+            generation: self.native_generation(),
+            token,
+            sampler,
+        });
+        Ok(accepted)
     }
 
     fn eval_family_spec(
@@ -3572,7 +3605,8 @@ impl Session<'_> {
     }
 
     /// One draw from the committed row's logits ([`sample::draw`]): the
-    /// same sampler a speculative trial verifies with. -1 without logits.
+    /// same sampler a speculative trial verifies with. A speculative step's
+    /// handed-on draw for this row is that draw. -1 without logits.
     pub fn sample(
         &mut self,
         temperature: f32,
@@ -3587,6 +3621,12 @@ impl Session<'_> {
             top_p,
             min_p,
         };
+        if let Some(pending) = self.host.pending_draw.take() {
+            let here = pending.pos == self.pos() && pending.generation == self.native_generation();
+            if here && pending.sampler == sampler {
+                return pending.token;
+            }
+        }
         let raw = self.raw.as_ptr();
         sample::with_row(self.shape.n_vocab as usize, |row| {
             // SAFETY: native copies at most `row.len()` floats into the row.
@@ -4363,11 +4403,18 @@ mod tests {
     #[no_mangle]
     extern "C" fn ds4_bridge_session_set_spec_sampler(
         _s: *mut ds4_bridge_session,
-        _draw: Option<
-            unsafe extern "C" fn(*mut std::ffi::c_void, *const f32, u32, *mut u64) -> i32,
+        _verify: Option<
+            unsafe extern "C" fn(
+                *mut std::ffi::c_void,
+                *const f32,
+                usize,
+                u32,
+                *const i32,
+                u32,
+                *mut i32,
+            ),
         >,
         _ud: *mut std::ffi::c_void,
-        _rng: *mut u64,
     ) -> i32 {
         0
     }

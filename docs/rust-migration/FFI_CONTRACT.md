@@ -89,7 +89,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_session_prefill_cap` | chunk cap used by the native graph |
 | `ds4_bridge_session_exaone_rewind_span` | EXAONE sliding-window reuse span |
 | `ds4_bridge_session_sample` | `ds4_session_sample` (caller-owned rng) |
-| `ds4_bridge_session_set_spec_sampler` | `ds4_session_set_spec_sampler`: speculative trials draw each verify row through the host's `draw` callback until cleared (NULL); `ud` and `rng` must outlive those trials |
+| `ds4_bridge_session_set_spec_sampler` | `ds4_session_set_spec_sampler`: speculative trials hand their verify rows to the host's `verify` callback (sample-and-match) until cleared (NULL); `ud` must outlive those trials |
 | `ds4_bridge_session_save_payload` | path wrapper over `ds4_session_save_payload` (native writes header+tokens+GPU tail) |
 | `ds4_bridge_session_load_payload` | path wrapper; `payload_bytes` = file size |
 | `ds4_bridge_session_load_payload_range` | path + checked `offset`/`length`; native consumes exactly that embedded DSV4 range |

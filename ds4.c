@@ -41037,38 +41037,26 @@ static int sample_top_p_min_p_override_excluding(
                                         excluded_id, excluded_eot);
 }
 
-/* The host's draw a speculative trial verifies with; draw NULL keeps argmax
- * targets. */
+/* The host's sample-and-match a speculative trial verifies with; NULL keeps
+ * argmax targets. */
 typedef struct {
-    ds4_spec_draw_fn draw;
+    ds4_spec_verify_fn verify;
     void *ud;
-    uint64_t *rng;
 } ds4_spec_sampler;
 
 #ifndef DS4_NO_GPU
 static bool spec_sampling(const ds4_spec_sampler *sp) {
-    return sp && sp->draw && sp->rng;
+    return sp && sp->verify;
 }
 
 /* Verify targets drawn by the host's sampler (sample-and-match, the default
  * of TensorRT-LLM and llama.cpp; vLLM's and SGLang's target-only acceptance
- * keeps the same distribution). Rows are drawn in order through `draw`, and
- * the first draw that rejects the next draft ends the trial. Later rows repeat that draw: acceptance never reads past the first
- * mismatch, and every target stays a valid token id. The last draw is
- * rewound. The next ordinary sample of the committed row then draws the same
- * token, and a stream spends one draw per token as plain sampling does. */
+ * keeps the same distribution): the host draws row i (after tokens[..=i]) in
+ * order and stops at the first draw that rejects the next draft (Rust's
+ * sample::match_rows on the serial lane). */
 static void spec_sample_rows(const ds4_spec_sampler *sp, const float *rows, size_t stride,
                              uint32_t vocab, const int *tokens, uint32_t n, int *target) {
-    uint64_t before = *sp->rng;
-    uint32_t drawn = 0;
-    while (drawn < n) {
-        before = *sp->rng;
-        target[drawn] = sp->draw(sp->ud, rows + (size_t)drawn * stride, vocab, sp->rng);
-        drawn++;
-        if (drawn == n || target[drawn - 1] != tokens[drawn]) { break; }
-    }
-    for (uint32_t i = drawn; i < n; i++) { target[i] = target[drawn - 1]; }
-    *sp->rng = before;
+    sp->verify(sp->ud, rows, stride, vocab, tokens, n, target);
 }
 
 /* Host rows for spec_sample_rows: the families that reduce verify rows to
@@ -65865,10 +65853,20 @@ static void family_banked_capture_checkpoint(
 }
 
 
-/* A sampling bank's verify-row draw: the bank's own sampler and stream. */
-static int cont_spec_draw(void *ud, const float *row, uint32_t vocab, uint64_t *rng) {
-    const ds4_family_cont_bank *cb = ud;
-    return sample_top_p_min_p(row, vocab, cb->temperature, cb->top_k, cb->top_p, cb->min_p, rng);
+/* A sampling bank's sample-and-match (sample::match_rows on the bank's own
+ * sampler and stream). Every draw is spent; family_cont_spec emits the last
+ * kept row's draw as the next token only where that draw was not cut. */
+static void cont_spec_verify(void *ud, const float *rows, size_t stride, uint32_t vocab,
+                             const int *tokens, uint32_t n, int *target) {
+    ds4_family_cont_bank *cb = ud;
+    uint32_t drawn = 0;
+    while (drawn < n) {
+        target[drawn] = sample_top_p_min_p(rows + (size_t)drawn * stride, vocab, cb->temperature,
+                                           cb->top_k, cb->top_p, cb->min_p, &cb->rng);
+        drawn++;
+        if (drawn == n || target[drawn - 1] != tokens[drawn]) { break; }
+    }
+    for (uint32_t i = drawn; i < n; i++) { target[i] = target[drawn - 1]; }
 }
 
 /* Drafts are checked with the bank's sampler: a forced token, or a greedy
@@ -65905,14 +65903,13 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
     /* A sampling bank verifies with its own sampler and stream (sample-and-
-     * match); the rewound last draw is the next ordinary sample. */
+     * match); an uncut prefix's last draw is the next token. */
     ds4_session s = {.engine = ctx->e, .checkpoint_valid = true,
         .logits = (gr ? gr->bank_logits : ir ? ir->bank_logits : lr ? lr->bank_logits
                    : nr ? nr->bank_logits : rt->bank_logits) + (size_t)bank * DS4_N_VOCAB,
         .checkpoint = {.v = ctx->bank_hist + (size_t)bank * ctx->seq_cap,
                        .len = (int)pos, .cap = (int)ctx->seq_cap},
-        .spec = {.draw = cb->temperature > 0.0f ? cont_spec_draw : NULL, .ud = cb,
-                 .rng = &cb->rng}};
+        .spec = {.verify = cb->temperature > 0.0f ? cont_spec_verify : NULL, .ud = cb}};
     if (gr) {
         s.glm53_graph_ready = true; s.glm53_graph = gr->graph[bank];
     } else if (ir) {
@@ -66011,9 +66008,14 @@ static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
             ? cb->sample_override(ud, cb->user) : DS4_SAMPLE_OVERRIDE_NONE);
         const int excluded = cb->sample_exclude
             ? cb->sample_exclude(ud, cb->user) : -1;
-        const int token = sample_top_p_min_p_override_excluding(s.logits, DS4_N_VOCAB,
-            cb->temperature, cb->top_k, cb->top_p, cb->min_p, &cb->rng, override,
-            excluded, &ctx->e->vocab);
+        /* An uncut sampled prefix already drew this row (target[keep - 1]);
+         * a cut or a different policy here takes a fresh draw. */
+        const bool drawn = s.spec.verify && emitted == keep &&
+            override == DS4_SAMPLE_OVERRIDE_NONE && excluded < 0;
+        const int token = drawn ? target[keep - 1]
+            : sample_top_p_min_p_override_excluding(s.logits, DS4_N_VOCAB,
+                cb->temperature, cb->top_k, cb->top_p, cb->min_p, &cb->rng, override,
+                excluded, &ctx->e->vocab);
         if (token < 0) {
             payload_set_err(err, errlen, "bank speculative EOS exclusion left no token");
             goto fail;
@@ -78522,10 +78524,9 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
     return sample_top_p_min_p(s->logits, DS4_N_VOCAB, temperature, top_k, top_p, min_p, rng);
 }
 
-void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_draw_fn draw, void *ud,
-                                  uint64_t *rng) {
+void ds4_session_set_spec_sampler(ds4_session *s, ds4_spec_verify_fn verify, void *ud) {
     if (!s) { return; }
-    s->spec = (ds4_spec_sampler){.draw = draw, .ud = ud, .rng = rng};
+    s->spec = (ds4_spec_sampler){.verify = verify, .ud = ud};
 }
 
 int ds4_session_sample_excluding(ds4_session *s, float temperature,

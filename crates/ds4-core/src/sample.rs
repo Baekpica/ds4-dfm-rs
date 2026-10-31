@@ -1,8 +1,8 @@
 //! The request sampler over one logits row: temperature, top-k, top-p and
 //! min-p with the native engine's xorshift stream (`ds4.c`
 //! `sample_top_p_min_p` is its oracle). Plain decode and draft verification
-//! draw through this one function, so a speculative step's rewound draw is
-//! the next plain draw.
+//! draw through this one function, so the draw a speculative step hands on
+//! is a plain draw of the same row.
 
 use std::cell::RefCell;
 
@@ -36,6 +36,17 @@ struct Cand {
     id: i32,
     logit: f32,
     prob: f32,
+}
+
+/// The verify draw a speculative step handed to the next position (session
+/// `pos`, native `generation`): the next plain sample there with the same
+/// sampler returns it; anything else drops it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PendingDraw {
+    pub pos: i32,
+    pub generation: u64,
+    pub token: i32,
+    pub sampler: Sampler,
 }
 
 thread_local! {
@@ -275,6 +286,53 @@ fn draw_top_k(
     top[filtered - 1].0
 }
 
+/// Sample-and-match over a trial's verify rows: row `i` (the target after
+/// `tokens[..=i]`) is drawn in order with `s`, and the first draw that
+/// differs from the next draft ends the trial. `target[i]` is row `i`'s draw;
+/// rows past the end repeat the last draw, which acceptance never reads.
+/// Every draw is spent: `rng` ends past all of them, so a draw whose position
+/// the host decides itself never conditions a later one ([`pending_token`]
+/// hands on the last). Returns how many rows were drawn.
+pub fn match_rows<'r>(
+    row: impl Fn(usize) -> &'r [f32],
+    tokens: &[i32],
+    s: &Sampler,
+    rng: &mut u64,
+    target: &mut [i32],
+) -> usize {
+    let n = tokens.len().min(target.len());
+    let mut drawn = 0;
+    while drawn < n {
+        target[drawn] = draw(row(drawn), s, rng, [-1, -1]);
+        drawn += 1;
+        if drawn == n || target[drawn - 1] != tokens[drawn] {
+            break;
+        }
+    }
+    for i in drawn..n {
+        target[i] = target[drawn - 1];
+    }
+    drawn
+}
+
+/// The token a speculative step leaves for the next position: the draw of
+/// the last kept row, once `kept` tokens are committed. It stands only when
+/// the host kept every accepted draft (no `cut`: a cut row's draw matched,
+/// so it is conditioned) and samples that position with the verify sampler;
+/// otherwise the position takes a fresh draw past all of the trial's.
+pub fn pending_token(
+    target: &[i32],
+    drawn: usize,
+    kept: usize,
+    cut: bool,
+    same_sampler: bool,
+) -> Option<i32> {
+    if cut || !same_sampler || kept == 0 || kept > drawn {
+        return None;
+    }
+    target.get(kept - 1).copied()
+}
+
 /// The first largest finite logit outside `excluded`; without exclusions
 /// token 0 when none is finite, as the native argmax.
 fn argmax(logits: &[f32], skip: &impl Fn(usize) -> bool, excluded: [i32; 2]) -> i32 {
@@ -365,6 +423,66 @@ mod tests {
             let sigma = (n as f64 * p * (1.0 - p)).sqrt();
             assert!((c as f64 - n as f64 * p).abs() < 4.0 * sigma, "{counts:?}");
         }
+    }
+
+    /// Codex's case on PR #129: two uniform rows, draft 0 for position 1,
+    /// whose policy differs from the verify sampler (here an EOS exclusion
+    /// that keeps both tokens), so the host cuts a matched draft there. The
+    /// token the plain loop then samples at position 1 must stay uniform.
+    #[test]
+    fn a_cut_position_draws_unconditioned() {
+        let uniform = [0.0f32, 0.0];
+        let s = sampler(1.0, 0, 1.0, 0.0);
+        let (mut zeros, runs) = (0, 20_000);
+        let mut rng = 0x5eed;
+        for _ in 0..runs {
+            let tokens = [7, 0];
+            let mut target = [0; 2];
+            let drawn = super::match_rows(|_| &uniform[..], &tokens, &s, &mut rng, &mut target);
+            let keep = if target[0] == tokens[1] { 2 } else { 1 };
+            // The host cuts to `first`: position 1 is its own decision.
+            let cut = keep > 1;
+            let kept = 1;
+            let next = match super::pending_token(&target, drawn, kept, cut, false) {
+                Some(token) => token,
+                None => draw(&uniform, &s, &mut rng, [5, -1]),
+            };
+            zeros += (next == 0) as u32;
+        }
+        let share = zeros as f64 / runs as f64;
+        assert!((share - 0.5).abs() < 0.02, "token 0 share {share}");
+    }
+
+    /// A free position keeps the target's distribution: the accepted draft
+    /// or, after a mismatch, the handed-on draw.
+    #[test]
+    fn a_free_position_keeps_the_distribution() {
+        let uniform = [0.0f32, 0.0];
+        let s = sampler(1.0, 0, 1.0, 0.0);
+        let (mut zeros, runs) = (0, 20_000);
+        let mut rng = 0xfeed;
+        for _ in 0..runs {
+            let tokens = [7, 0];
+            let mut target = [0; 2];
+            let drawn = super::match_rows(|_| &uniform[..], &tokens, &s, &mut rng, &mut target);
+            let kept = if target[0] == tokens[1] { 2 } else { 1 };
+            let token = if kept == 2 {
+                tokens[1]
+            } else {
+                super::pending_token(&target, drawn, kept, false, true).unwrap()
+            };
+            zeros += (token == 0) as u32;
+        }
+        let share = zeros as f64 / runs as f64;
+        assert!((share - 0.5).abs() < 0.02, "token 0 share {share}");
+    }
+
+    /// Uncut, the last kept row's draw is the next position's token.
+    #[test]
+    fn an_uncut_step_hands_on_its_last_draw() {
+        assert_eq!(super::pending_token(&[3, 9, 9], 2, 2, false, true), Some(9));
+        assert_eq!(super::pending_token(&[3, 9, 9], 2, 2, true, true), None);
+        assert_eq!(super::pending_token(&[3, 9, 9], 2, 2, false, false), None);
     }
 
     #[test]

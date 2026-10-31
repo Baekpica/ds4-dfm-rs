@@ -21,19 +21,22 @@ SGLang's target-only rejection of argmax drafts. Temperature 0 keeps argmax.
 | TensorRT-LLM | MTP samples target tokens with the request's parameters and matches; relaxed acceptance is opt-in and lossy |
 | llama.cpp | `--spec-draft-sampling greedy` (default): sample and accept |
 
-The last draw is rewound: the next ordinary `sample` of the committed row
-repeats it. Each emitted token takes one draw, as in plain sampling, so a fixed
-seed reproduces the plain stream until the verify forward's batched arithmetic
-moves a draw across a near-tie.
+Every draw is spent. When the host keeps the whole accepted prefix, the last
+kept row's draw (the mismatch, or the row after the last draft) is the next
+token if the plain loop samples that position with the same sampler; a cut
+position, or one the host decides another way, takes a fresh draw past all of
+the trial's. A draw whose position was cut matched its draft, so reusing it,
+or replaying the stream before it, would bias the next token (Codex on #129:
+draft 0 over two uniform rows then came out 25% instead of 50%).
 
 ## Contract
 
 ```
  host (server, CLI, agent)        core: Session::eval_speculative      native trial
  -------------------------        -------------------------------      ------------
- sampler + rng          ------->  lend sample::draw as the trial's ->  forward first + drafts;
-                                  row draw                             spec_sample_rows calls the
-                                                                       draw per row, in order
+ sampler + rng          ------->  lend sample::match_rows to the  ->  forward first + drafts;
+                                  trial                                spec_sample_rows hands it
+                                                                       the verify rows
                                   keep = matched prefix, ending   <-   (argmax at temperature 0)
                                   after EOS
  limit(prefix): stop token,  <->  keep = limit(prefix)
@@ -43,9 +46,10 @@ moves a draw across a near-tie.
 1. A family's trial leaves each verify row's logits readable (a host buffer, or
    a device tensor read with `spec_host_rows`) and fills its targets with
    `spec_sample_rows` when `spec_sampling(&s->spec)`, argmax otherwise. That
-   helper hands each row to the host's draw (Rust's `sample::draw`; a bank's
-   own sampler on the native bank lane) and rewinds the last draw. Rows after
-   the first mismatch repeat its draw; acceptance never reads them.
+   helper hands the rows to the host's sample-and-match (Rust's
+   `sample::match_rows`; a bank's own sampler on the native bank lane),
+   which spends every draw. Rows after the first mismatch repeat its draw;
+   acceptance never reads them.
 2. Rust keeps the prefix whose drafts match their targets, ending after EOS,
    and cuts it with the host's `limit` before commit. Every serial family,
    Ling-3.1 included, goes through this path.

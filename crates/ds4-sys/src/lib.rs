@@ -1116,9 +1116,18 @@ extern "C" {
 
     pub fn ds4_bridge_session_set_spec_sampler(
         s: *mut ds4_bridge_session,
-        draw: Option<unsafe extern "C" fn(*mut c_void, *const c_float, u32, *mut u64) -> c_int>,
+        verify: Option<
+            unsafe extern "C" fn(
+                *mut c_void,
+                *const c_float,
+                usize,
+                u32,
+                *const i32,
+                u32,
+                *mut i32,
+            ),
+        >,
         ud: *mut c_void,
-        rng: *mut u64,
     ) -> c_int;
 
     pub fn ds4_bridge_session_sample_excluding(
