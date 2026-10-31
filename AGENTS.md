@@ -266,7 +266,9 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
 - **Drafts need the prompt.** A draft layer whose KV starts at decode drafts
   blind at first (GLM one-draft acceptance 0.63 → 0.97 within one run).
   Fill its KV during prefill. Check generated text for loops: a repeating
-  bench continuation accepts ~100% and overstates MTP gains.
+  bench continuation accepts ~100% and overstates MTP gains. Sliding-window
+  draft blocks see only their window: MiMo's (128 positions) gained 5-8%
+  acceptance from the prompt and verify rows.
 - **Peaks.** Per SM and clock `mma.sync` does 1,024 F16/BF16 FLOP, 2,048
   FP8/INT8 and 4,096 NVFP4: ~108 / 215 TFLOPS at the 2.19 GHz cap, 128 / 255
   / 509 at ~2.5 GHz; cuBLAS BF16 65–90 TFLOPS. Streaming reads 231–246 GB/s
@@ -426,6 +428,12 @@ The notes below were measured on GB10, sm_121, CUDA 13.4, busy clock
   heads of one KV head, the next tile's codes in registers during the MMAs:
   MiMo's prefill attention 8.9 -> 68-74 TFLOPS. A second f16 component of Q
   and P bought nothing against E4M3 keys; against exact f16 keys it did.
+  E4M3 Q (one scale per row and head) makes the stored keys MMA fragments
+  without widening: 69 -> 95 TFLOPS at 64K. Its error on random rows was
+  100x f16 Q's, yet NLL pairs after 32K and 131K prompts stayed inside the
+  accepted switches' band: gate operand formats on the model.
+- **Run ncu with `--clock-control none`.** Its default locks the base
+  clock for the profile (2.40 GHz on GB10, above the 2,200 MHz policy).
 
 # Agent Notes
 

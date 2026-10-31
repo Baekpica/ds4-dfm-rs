@@ -5,6 +5,10 @@
 #include "cuda/mimo2_dflash_attn.cuh"
 
 static bool m2_ga8_available = false;
+/* Full-layer prefill scores: 1 E4M3 Q x E4M3 K (prefill8, the default),
+ * 0 f16 Q x widened K (DS4_MIMO2VQ_GA8_QK=f16, mimo2_ga8::prefill), 2 E4M3 Q
+ * with a residual component (=fp8x2, a diagnostic of the Q rounding). */
+static unsigned m2_ga8_qk = 1;
 // Decode slices for one row: the blocks the GPU holds at once, so no slice
 // waits for a second wave.
 static unsigned m2_ga8_slices = mimo2_ga8::SLICES;
@@ -13,6 +17,8 @@ static void m2_hmma_init(void) {
     m2_hmma_available = mimo2_hmma::supported();
     const char *ga8 = getenv("DS4_MIMO2VQ_GA8");
     m2_ga8_available = m2_hmma_available && !(ga8 && !strcmp(ga8, "0")) && mimo2_ga8::init();
+    const char *qk = getenv("DS4_MIMO2VQ_GA8_QK");
+    m2_ga8_qk = qk && !strcmp(qk, "f16") ? 0 : qk && !strcmp(qk, "fp8x2") ? 2 : 1;
     int device = 0, sms = 0, per_sm = 0;
     if (m2_ga8_available && cudaGetDevice(&device) == cudaSuccess &&
         cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) == cudaSuccess &&
@@ -287,10 +293,21 @@ static int m2_attention_fp8(
         }
     } else if (m2_ga8_available) {
         m2_attn_path = M2_PATH_GA8;
-        mimo2_ga8::prefill<<<dim3((rows + mimo2_ga8::ROWS - 1) / mimo2_ga8::ROWS, HEADS / 2),
-            mimo2_ga8::THREADS, mimo2_ga8::SMEM, ds4_current_stream()>>>(
-            (float *)out->ptr, (const float *)q->ptr, (const uint8_t *)cache->ptr,
-            (const unsigned *)positions->ptr, rows, capacity);
+        const dim3 grid((rows + mimo2_ga8::ROWS - 1) / mimo2_ga8::ROWS, HEADS / 2);
+        float *o = (float *)out->ptr;
+        const float *qp = (const float *)q->ptr;
+        const uint8_t *rows8 = (const uint8_t *)cache->ptr;
+        const unsigned *pos = (const unsigned *)positions->ptr;
+        if (m2_ga8_qk == 1) {
+            mimo2_ga8::prefill8<1><<<grid, mimo2_ga8::THREADS, mimo2_ga8::SMEM8, ds4_current_stream()>>>(
+                o, qp, rows8, pos, rows, capacity);
+        } else if (m2_ga8_qk == 2) {
+            mimo2_ga8::prefill8<2><<<grid, mimo2_ga8::THREADS, mimo2_ga8::SMEM8, ds4_current_stream()>>>(
+                o, qp, rows8, pos, rows, capacity);
+        } else {
+            mimo2_ga8::prefill<<<grid, mimo2_ga8::THREADS, mimo2_ga8::SMEM, ds4_current_stream()>>>(
+                o, qp, rows8, pos, rows, capacity);
+        }
     } else if (m2_hmma_available) {
         m2_attn_path = M2_PATH_HMMA;
         mimo2_hmma::prefill<mimo2_hmma::Fp8><<<dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),

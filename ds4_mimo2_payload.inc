@@ -1,7 +1,7 @@
 /* Persist logical KV rows, not ring capacity. A different prefill width may
  * restore the same prefix into different physical slots. MTP is not encoded.
- * Restore clears draft cursors so a reused graph cannot trial on a stale
- * hidden row; the next step is ordinary decode and rebuilds that row. */
+ * Restore restarts the MTP blocks at the restored frontier so a reused graph
+ * cannot trial on a stale target row; the next step is ordinary decode. */
 /* "IMO3": the VQ release's full layers keep FP8 rows (mimo2_kv_row). */
 enum { M2_PAYLOAD_MAGIC = 0x324f4d49, M2_PAYLOAD_MAGIC_FP8 = 0x334f4d49, M2_KV_WIDTH = 192 + 128 };
 
@@ -96,10 +96,7 @@ static void mimo2_payload_drop_draft(ds4_mimo2_graph *g) {
     g->span_n = 0;
     g->media_tag = 0;
     g->checkpoint_tag = 0;
-    for (unsigned depth = 0; depth < MIMO2_DRAFT_LAYERS; depth++) {
-        g->draft_pos[depth] = 0;
-        g->draft_saved[depth] = 0;
-    }
+    mimo2_mtp_rebase(g, 0);
     /* The tap ring is not in the snapshot. A reused graph must not
      * speculate from positions that belong to another prefix. */
     if (g->dflash_pos) {
@@ -151,6 +148,7 @@ static int mimo2_payload_restore(ds4_mimo2_graph *g, FILE *fp, uint64_t *left,
     if (rc) { free(tokens); return 1; }
     g->position = n;
     g->failed = false;
+    mimo2_mtp_rebase(g, n);
     *tokens_out = tokens;
     return 0;
 }

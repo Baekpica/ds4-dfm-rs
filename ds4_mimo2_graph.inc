@@ -5,6 +5,7 @@
  * and a request may hold four clips. 8 spans was about 8 seconds. */
 enum {
     M2_TRIAL = 8,
+    M2_MTP_RING = 256,
     M2_VIDEO_RAW_CAP = 64 * 1024 * 1024,
     M2_MIN_FRAME_BYTES = 32 * 256 * 3,
     M2_MEDIA_INPUTS = 4,
@@ -22,11 +23,14 @@ typedef struct {
     ds4_exaone_batch_ws ws;
     ds4_gpu_tensor *qkv, *positions, *tokens, *freq_full, *freq_swa;
     ds4_gpu_tensor *rope_full, *rope_swa, *logits;
-    ds4_gpu_tensor *hidden, *joined, *journal;
     ds4_gpu_tensor *kv[MIMO2_LAYERS + MIMO2_DRAFT_LAYERS];
     unsigned kv_cap[MIMO2_LAYERS + MIMO2_DRAFT_LAYERS];
-    unsigned draft_pos[MIMO2_DRAFT_LAYERS];
-    unsigned draft_saved[MIMO2_DRAFT_LAYERS];
+    /* Embedded MTP: the last M2_MTP_RING target rows (before the final norm)
+     * and their tokens, by position. Block d's rows below mtp_fill[d] carry
+     * committed tokens; its RoPE positions count from mtp_base[d]. */
+    ds4_gpu_tensor *mtp_hidden;
+    int mtp_tok[M2_MTP_RING];
+    unsigned mtp_fill[MIMO2_DRAFT_LAYERS], mtp_base[MIMO2_DRAFT_LAYERS];
     unsigned context, cap, position;
     unsigned *host_positions;
     float *verify_logits;
@@ -59,7 +63,7 @@ static void mimo2_graph_free(ds4_mimo2_graph *g) {
         exaone_batch_ws_free(&g->ws);
         ds4_gpu_tensor *all[] = {g->qkv, g->positions, g->tokens, g->freq_full,
                                 g->freq_swa, g->rope_full, g->rope_swa, g->logits,
-                                g->hidden, g->joined, g->journal};
+                                g->mtp_hidden};
         for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
             ds4_gpu_tensor_free(all[i]);
         }
@@ -184,12 +188,12 @@ static bool mimo2_graph_alloc(ds4_mimo2_graph *g, const ds4_model *m, const ds4_
         g->bytes += bytes;
     }
     if (g->bytes != estimate.total_bytes) { mimo2_graph_free(g); return false; }
-    /* Draft KV is outside the trunk estimate. One journal slot per block
-     * covers the single step that block takes in a trial. */
-    g->hidden = ds4_gpu_tensor_alloc((uint64_t)M2_EMBED * sizeof(float));
-    g->joined = ds4_gpu_tensor_alloc(2ull * M2_EMBED * sizeof(float));
+    /* Draft KV and the MTP row ring (4 MiB) are outside the trunk estimate. */
     const uint64_t draft_row = 8ull * (192 + 128) * sizeof(uint16_t);
-    g->journal = ds4_gpu_tensor_alloc(MIMO2_DRAFT_LAYERS * draft_row);
+    if (!dflash && w->layer[MIMO2_LAYERS].attn_qkv) {
+        g->mtp_hidden = ds4_gpu_tensor_alloc((uint64_t)M2_MTP_RING * M2_EMBED * sizeof(float));
+        if (!g->mtp_hidden) { mimo2_graph_free(g); return false; }
+    }
     g->verify_logits = xcalloc((size_t)M2_TRIAL * DS4_N_VOCAB, sizeof(float));
     for (unsigned il = 0; il < MIMO2_DRAFT_LAYERS; il++) {
         const unsigned layer = MIMO2_LAYERS + il;
@@ -197,7 +201,7 @@ static bool mimo2_graph_alloc(ds4_mimo2_graph *g, const ds4_model *m, const ds4_
         g->kv[layer] = ds4_gpu_tensor_alloc((uint64_t)g->kv_cap[layer] * draft_row);
         if (!g->kv[layer]) { mimo2_graph_free(g); return false; }
     }
-    if (!g->hidden || !g->joined || !g->journal || !g->verify_logits) {
+    if (!g->verify_logits) {
         mimo2_graph_free(g);
         return false;
     }
@@ -231,6 +235,7 @@ static bool mimo2_graph_clone_bank(ds4_mimo2_graph *g,
     g->dflash_pos = NULL;
     g->dflash_saved = NULL;
     g->dflash_on = false;
+    g->mtp_hidden = NULL;
     memset(g->kv, 0, sizeof(g->kv));
     for (unsigned il = 0; il < MIMO2_LAYERS; il++) {
         const uint64_t bytes = (uint64_t)g->kv_cap[il] * mimo2_kv_row(il);
@@ -438,6 +443,47 @@ static bool mimo2_embed(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weight
         ds4_gpu_qwen4exp_bf16_to_f32_tensor(out, g->embed, (uint64_t)n * M2_EMBED);
 }
 
+/* Restart every MTP block at `pos` (reset or restore): rows before it
+ * belong to another prefix or are not in the ring. */
+static void mimo2_mtp_rebase(ds4_mimo2_graph *g, unsigned pos) {
+    for (unsigned d = 0; d < MIMO2_DRAFT_LAYERS; d++) {
+        g->mtp_fill[d] = pos;
+        g->mtp_base[d] = pos;
+    }
+}
+
+typedef enum { M2_RING_STORE, M2_RING_LOAD } mimo2_ring_dir;
+
+/* Rows pos..pos+n-1 between `rows` and the MTP ring: two spans at most. */
+static bool mimo2_ring_copy(ds4_mimo2_graph *g, ds4_gpu_tensor *rows, unsigned pos,
+                            unsigned n, mimo2_ring_dir dir) {
+    const uint64_t row = (uint64_t)M2_EMBED * sizeof(float);
+    for (unsigned i = 0; i < n;) {
+        const unsigned slot = (pos + i) % M2_MTP_RING;
+        unsigned span = M2_MTP_RING - slot;
+        if (span > n - i) { span = n - i; }
+        const bool ok = dir == M2_RING_STORE
+            ? ds4_gpu_tensor_copy(g->mtp_hidden, slot * row, rows, i * row, span * row)
+            : ds4_gpu_tensor_copy(rows, i * row, g->mtp_hidden, slot * row, span * row);
+        if (!ok) { return false; }
+        i += span;
+    }
+    return true;
+}
+
+/* Keep the forward's last rows for the MTP blocks: a draft row reads the
+ * target row at its own position, up to a window behind the frontier. */
+static bool mimo2_mtp_push(ds4_mimo2_graph *g, const int *tokens, unsigned n, unsigned pos) {
+    if (!g->mtp_hidden) { return true; }
+    const unsigned skip = n > M2_MTP_RING ? n - M2_MTP_RING : 0;
+    const uint64_t row = (uint64_t)M2_EMBED * sizeof(float);
+    ds4_gpu_tensor *rows = ds4_gpu_tensor_view(g->ws.b_cur, skip * row, (n - skip) * row);
+    const bool ok = rows && mimo2_ring_copy(g, rows, pos + skip, n - skip, M2_RING_STORE);
+    ds4_gpu_tensor_free(rows);
+    for (unsigned i = skip; i < n; i++) { g->mtp_tok[(pos + i) % M2_MTP_RING] = tokens[i]; }
+    return ok;
+}
+
 static bool mimo2_forward(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weights *w,
                            const int *tokens, unsigned n, unsigned pos) {
     if (!g || !tokens || g->failed || !n || n > g->cap || pos != g->position ||
@@ -469,11 +515,7 @@ static bool mimo2_forward(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weig
             }
         }
     }
-    if (!mimo2_head(g, m, w, n - 1)) { return false; }
-    if (!ds4_gpu_tensor_copy(g->hidden, 0, g->ws.b_cur,
-            (uint64_t)(n - 1) * M2_EMBED * sizeof(float), (uint64_t)M2_EMBED * sizeof(float))) {
-        return false;
-    }
+    if (!mimo2_head(g, m, w, n - 1) || !mimo2_mtp_push(g, tokens, n, pos)) { return false; }
     g->hidden_valid = true;
     g->position = pos + n;
     g->failed = false;

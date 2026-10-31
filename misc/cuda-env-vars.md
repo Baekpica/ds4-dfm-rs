@@ -398,6 +398,12 @@ The bandwidth figure is informational; we don't tier on it.
   at 1–8. The default `mimo2_ga8` kernels widen each FP8 tile once per head
   pair and run single f16 Q and P. Read once per process. See the
   [optimization report](../docs/mimo2-vq-optimization-2026-10-30.md).
+- `DS4_MIMO2VQ_GA8_QK=f16` restores f16 Q against widened K tiles in the VQ
+  release's full-layer prefill attention. The default `mimo2_ga8::prefill8`
+  feeds the stored E4M3 K codes to FP8 MMAs with E4M3 Q (one scale per row
+  and head); `=fp8x2` adds a residual Q component, a diagnostic of the Q
+  rounding. Read once per process. See the
+  [optimization report](../docs/mimo2-vq-optimization-2026-10-31.md).
 - `DS4_MIMO2VQ_MMAW=0` keeps the VQ release's prefill experts on
   `glmvq_mma8_kernel`; the default warp-specialized kernels produce the same
   rows bit for bit.

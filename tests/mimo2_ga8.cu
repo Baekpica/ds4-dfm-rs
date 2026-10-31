@@ -86,11 +86,22 @@ static double reference_error(const std::vector<float> &got, const std::vector<f
     return error;
 }
 
+// 0 mimo2_hmma::prefill<Fp8>, 1 mimo2_ga8::prefill, 2-3 prefill8<1-2>.
 static void launch(int ga8, float *out, const float *q, const uint8_t *cache,
                    const unsigned *positions, unsigned rows, unsigned capacity) {
-    if (ga8) {
-        mimo2_ga8::prefill<<<dim3((rows + mimo2_ga8::ROWS - 1) / mimo2_ga8::ROWS, HEADS / 2),
-            mimo2_ga8::THREADS, mimo2_ga8::SMEM>>>(out, q, cache, positions, rows, capacity);
+    const dim3 grid((rows + mimo2_ga8::ROWS - 1) / mimo2_ga8::ROWS, HEADS / 2);
+    if (ga8 == 1) {
+        mimo2_ga8::prefill<<<grid, mimo2_ga8::THREADS, mimo2_ga8::SMEM>>>(out, q, cache, positions, rows, capacity);
+        return;
+    }
+    if (ga8 >= 2) {
+        if (ga8 == 2) {
+            mimo2_ga8::prefill8<1><<<grid, mimo2_ga8::THREADS, mimo2_ga8::SMEM8>>>(
+                out, q, cache, positions, rows, capacity);
+        } else {
+            mimo2_ga8::prefill8<2><<<grid, mimo2_ga8::THREADS, mimo2_ga8::SMEM8>>>(
+                out, q, cache, positions, rows, capacity);
+        }
         return;
     }
     mimo2_hmma::prefill<mimo2_hmma::Fp8><<<dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),
@@ -122,15 +133,19 @@ static int run(unsigned frontier, unsigned rows, int reps, int check) {
     if (!ds4_gpu_mimo2_kv_store_fp8(&tc, &tk, &tv, &tp, capacity, capacity)) { return 2; }
     const unsigned *prow = positions + frontier;
 
-    std::vector<float> old(no), ga8(no);
-    launch(0, out, q, cache, prow, rows, capacity);
-    cudaMemcpy(old.data(), out, no * 4, cudaMemcpyDeviceToHost);
-    cudaMemset(out, 0xff, no * 4);
-    launch(1, out, q, cache, prow, rows, capacity);
-    if (cudaMemcpy(ga8.data(), out, no * 4, cudaMemcpyDeviceToHost) != cudaSuccess) {
-        fprintf(stderr, "ga8 launch failed: %s\n", cudaGetErrorString(cudaGetLastError()));
-        return 3;
+    enum { KERNELS = 4 };
+    static const char *const names[KERNELS] = {"old", "ga8", "fp8", "fp8x2"};
+    std::vector<std::vector<float>> got(KERNELS, std::vector<float>(no));
+    int rc = 0;
+    for (int ga = 0; ga < KERNELS; ga++) {
+        cudaMemset(out, 0xff, no * 4);
+        launch(ga, out, q, cache, prow, rows, capacity);
+        if (cudaMemcpy(got[ga].data(), out, no * 4, cudaMemcpyDeviceToHost) != cudaSuccess) {
+            fprintf(stderr, "%s launch failed: %s\n", names[ga], cudaGetErrorString(cudaGetLastError()));
+            return 3;
+        }
     }
+    const std::vector<float> &old = got[0], &ga8 = got[1];
     double num = 0, den = 0, worst = 0;
     for (uint64_t i = 0; i < no; i++) {
         const double d = (double)ga8[i] - old[i];
@@ -138,7 +153,7 @@ static int run(unsigned frontier, unsigned rows, int reps, int check) {
         den += (double)old[i] * old[i];
         worst = std::max(worst, fabs(d));
     }
-    int rc = std::isfinite(num) ? 0 : 4;
+    if (!std::isfinite(num)) { rc = 4; }
     printf("frontier=%u rows=%u ga8_vs_old rel_rms=%.3g max_abs=%.3g", frontier, rows, sqrt(num / den), worst);
     if (check) {
         std::vector<float> hq(nq);
@@ -146,13 +161,19 @@ static int run(unsigned frontier, unsigned rows, int reps, int check) {
         cudaMemcpy(hq.data(), q, nq * 4, cudaMemcpyDeviceToHost);
         cudaMemcpy(hc.data(), cache, hc.size(), cudaMemcpyDeviceToHost);
         const double e_old = reference_error(old, hq, hc, frontier, rows);
-        const double e_new = reference_error(ga8, hq, hc, frontier, rows);
-        // Single f16 Q and P against the old kernel's two components.
+        // Single f16 Q and P against the old kernel's two components; the
+        // E4M3 Q variants are reported, their bound is the model gate.
         const double limit = std::max(2e-3, 4 * e_old);
-        printf(" fp64 old=%.3g ga8=%.3g limit=%.3g", e_old, e_new, limit);
-        if (!(e_new <= limit)) { rc = 5; }
+        printf(" fp64 old=%.3g", e_old);
+        for (int ga = 1; ga < KERNELS; ga++) {
+            const double e = reference_error(got[ga], hq, hc, frontier, rows);
+            printf(" %s=%.3g", names[ga], e);
+            if (ga == 1 && !(e <= limit)) { rc = 5; }
+            if (!std::isfinite(e)) { rc = 5; }
+        }
+        printf(" limit=%.3g", limit);
     }
-    for (int ga : {0, 1}) {
+    for (int ga = 0; ga < KERNELS; ga++) {
         cudaEvent_t a, b;
         cudaEventCreate(&a);
         cudaEventCreate(&b);
@@ -164,7 +185,7 @@ static int run(unsigned frontier, unsigned rows, int reps, int check) {
         float ms = 0;
         cudaEventElapsedTime(&ms, a, b);
         const double flop = 2.0 * rows * HEADS * (KEY + VALUE) * (frontier + (rows + 1) / 2.0);
-        printf(" %s=%.3fms(%.1fTF)", ga ? "ga8" : "old", ms / reps, flop / (ms / reps * 1e-3) / 1e12);
+        printf(" %s=%.3fms(%.1fTF)", names[ga], ms / reps, flop / (ms / reps * 1e-3) / 1e12);
     }
     printf("\n");
     cudaFree(q); cudaFree(k); cudaFree(v); cudaFree(out); cudaFree(cache); cudaFree(positions);

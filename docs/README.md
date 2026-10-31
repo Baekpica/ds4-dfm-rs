@@ -106,7 +106,10 @@ These reports preserve successful gates, rejected experiments and unresolved lim
   per-change throughput, numerical gates and Decode variability.
 - **MiniMax-H3:** [October 26 BF16 validation](minimax-h3/validation-2026-10-26.md),
   three matched h3.c outputs, a native video API gate and measured generation cost.
-- **MiMo VQ:** [October 30 prefill/decode campaign](mimo2-vq-optimization-2026-10-30.md):
+- **MiMo VQ:** [October 31 MTP context and long prefill](mimo2-vq-optimization-2026-10-31.md):
+  MTP blocks see the prompt, E4M3 full-layer prefill scores;
+  [2K–64K sweep](benchmarks/mimo2-vq-spark-64k-2026-10-31/README.md).
+  [October 30 prefill/decode campaign](mimo2-vq-optimization-2026-10-30.md):
   full-layer FP8 attention for prefill and decode, warp-specialized experts;
   [2K–64K sweep](benchmarks/mimo2-vq-spark-64k-2026-10-30/README.md) and
   [serving receipts](benchmarks/mimo2-vq-serving-2026-10-30/README.md).
